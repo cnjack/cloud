@@ -1,0 +1,39 @@
+.wordmark {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-h3);
+  letter-spacing: 0;
+  color: var(--color-text);
+  text-decoration: none;
+  user-select: none;
+}
+.wordmark:hover {
+  text-decoration: none;
+}
+
+.bracket {
+  color: var(--color-accent);
+}
+
+.j {
+  color: var(--color-accent);
+}
+
+.rest {
+  color: var(--color-text);
+}
+
+.cloud {
+  margin-left: var(--space-2);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tracking-label);
+  color: var(--color-text-dim);
+  align-self: center;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}

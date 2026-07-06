@@ -1,0 +1,23 @@
+.card {
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-5);
+}
+
+.interactive {
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.interactive:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-panel-raised);
+}
+
+.interactive:active {
+  transform: translateY(1px);
+}
