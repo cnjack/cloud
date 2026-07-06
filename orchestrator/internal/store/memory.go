@@ -184,18 +184,133 @@ func (m *MemStore) CountActiveRuns(_ context.Context) (int, error) {
 	return n, nil
 }
 
-func (m *MemStore) UpdateRun(_ context.Context, r *domain.Run) error {
+// transitionLocked applies a status change plus a field mutator to the CURRENTLY
+// stored row (never a caller snapshot), enforcing the state machine. It mirrors
+// PGStore's "re-read committed row, mutate named fields, return committed copy"
+// semantics so the two stores stay behaviourally identical. Caller holds m.mu.
+func (m *MemStore) transitionLocked(id string, to domain.RunStatus, mut func(*domain.Run)) (*domain.Run, error) {
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if !domain.CanTransition(cur.Status, to) {
+		return nil, ErrInvalidTransition
+	}
+	cur.Status = to
+	mut(&cur)
+	m.runs[id] = cur
+	cp := cur
+	return &cp, nil
+}
+
+func (m *MemStore) ScheduleRun(_ context.Context, id, jobName, tokenHash, phase string) (*domain.Run, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	cur, ok := m.runs[r.ID]
+	return m.transitionLocked(id, domain.StatusScheduling, func(r *domain.Run) {
+		r.Phase = phase
+		r.K8sJobName = jobName
+		r.TokenHash = tokenHash
+	})
+}
+
+func (m *MemStore) MarkRunning(_ context.Context, id, phase string, startedAt time.Time) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.transitionLocked(id, domain.StatusRunning, func(r *domain.Run) {
+		r.Phase = phase
+		if r.StartedAt == nil {
+			t := startedAt
+			r.StartedAt = &t
+		}
+	})
+}
+
+func (m *MemStore) MarkSucceeded(_ context.Context, id, phase string, finishedAt time.Time) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.transitionLocked(id, domain.StatusSucceeded, func(r *domain.Run) {
+		r.Phase = phase
+		if r.FinishedAt == nil {
+			t := finishedAt
+			r.FinishedAt = &t
+		}
+	})
+}
+
+func (m *MemStore) MarkFailed(_ context.Context, id, phase string, reason domain.FailureReason, msg string, finishedAt time.Time) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.transitionLocked(id, domain.StatusFailed, func(r *domain.Run) {
+		r.Phase = phase
+		if r.FailureReason == "" {
+			r.FailureReason = reason
+		}
+		if r.FailureMessage == "" {
+			r.FailureMessage = msg
+		}
+		r.Error = r.FailureMessage
+		if r.FinishedAt == nil {
+			t := finishedAt
+			r.FinishedAt = &t
+		}
+	})
+}
+
+func (m *MemStore) SetRunnerFailure(_ context.Context, id string, reason domain.FailureReason, msg string) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
 	if !ok {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
-	if !domain.CanTransition(cur.Status, r.Status) {
-		return ErrInvalidTransition
+	if cur.Status.Terminal() {
+		cp := cur
+		return &cp, nil // already terminal: leave it
 	}
-	m.runs[r.ID] = *r
+	if cur.FailureReason == "" {
+		cur.FailureReason = reason
+	}
+	if cur.FailureMessage == "" {
+		cur.FailureMessage = msg
+	}
+	m.runs[id] = cur
+	cp := cur
+	return &cp, nil
+}
+
+func (m *MemStore) CancelRun(_ context.Context, id, phase string, finishedAt time.Time) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.transitionLocked(id, domain.StatusCanceled, func(r *domain.Run) {
+		r.Phase = phase
+		if r.FinishedAt == nil {
+			t := finishedAt
+			r.FinishedAt = &t
+		}
+	})
+}
+
+func (m *MemStore) ClearJobName(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.runs[id]; ok {
+		r.K8sJobName = ""
+		m.runs[id] = r
+	}
 	return nil
+}
+
+func (m *MemStore) ListTerminalRunsWithJob(_ context.Context) ([]domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Run
+	for _, r := range m.runs {
+		if r.Status.Terminal() && r.K8sJobName != "" {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
 }
 
 // --- events ---

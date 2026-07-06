@@ -53,8 +53,17 @@ func NewProcessLauncher(cfg ProcessConfig) *ProcessLauncher {
 // CreateJob starts a detached runner container named spec.Name. Idempotent: if a
 // container with that name already exists (running or exited) it returns nil.
 func (p *ProcessLauncher) CreateJob(ctx context.Context, spec JobSpec) error {
-	// Idempotency: skip if a container with this name already exists.
-	if state, _ := p.inspectState(ctx, spec.Name); state != JobMissing {
+	// Idempotency: skip if a container with this name already exists. Propagate a
+	// transient inspect error instead of swallowing it — otherwise a docker
+	// hiccup (JobUnknown, err) would be treated as "exists" and we'd return nil
+	// WITHOUT starting a container, and the reconciler would persist scheduling
+	// with a Job that never came up and then permanently fail the run. Returning
+	// the error makes the reconciler retry the same run next tick.
+	state, err := p.inspectState(ctx, spec.Name)
+	if err != nil {
+		return fmt.Errorf("inspect before create %s: %w", spec.Name, err)
+	}
+	if state != JobMissing {
 		return nil
 	}
 

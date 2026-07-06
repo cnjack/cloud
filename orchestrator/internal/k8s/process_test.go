@@ -126,3 +126,42 @@ func splitLines(s string) []string {
 	}
 	return out
 }
+
+// TestProcessCreateJobPropagatesInspectError is the regression for
+// "ProcessLauncher.CreateJob swallows the inspect error". A TRANSIENT docker
+// failure during the pre-create inspect (daemon busy/timeout) must NOT be read
+// as "container exists" and cause CreateJob to return nil without starting a
+// container — that would make the reconciler persist scheduling for a Job that
+// never came up and then spuriously fail the run. CreateJob must instead return
+// the error so the reconciler retries the same run next tick.
+func TestProcessCreateJobPropagatesInspectError(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "calls.log")
+	dockerPath := filepath.Join(dir, "docker")
+
+	// inspect always fails with a NON-"No such object" error (transient daemon
+	// failure). run must NEVER be reached if CreateJob correctly aborts.
+	script := `#!/usr/bin/env bash
+echo "$1" >> "` + logFile + `"
+case "$1" in
+  inspect) echo "Cannot connect to the Docker daemon" >&2; exit 1 ;;
+  run)     echo "container-id"; exit 0 ;;
+  *)       exit 0 ;;
+esac
+`
+	if err := os.WriteFile(dockerPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProcessLauncher(ProcessConfig{Image: "runner:test", Docker: dockerPath})
+
+	err := p.CreateJob(ctx, JobSpec{Name: "jcloud-run-abc", RunID: "abc", Env: map[string]string{"RUN_ID": "abc"}})
+	if err == nil {
+		t.Fatal("CreateJob returned nil on a transient inspect error (swallowed error regression)")
+	}
+	// It must not have started a container.
+	logBytes, _ := os.ReadFile(logFile)
+	if countLines(string(logBytes), "run") != 0 {
+		t.Fatalf("CreateJob started a container despite the inspect error:\n%s", logBytes)
+	}
+}

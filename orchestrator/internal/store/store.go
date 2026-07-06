@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
 )
@@ -48,13 +49,51 @@ type Store interface {
 	GetRun(ctx context.Context, id string) (*domain.Run, error)
 	GetRunByTokenHash(ctx context.Context, tokenHash string) (*domain.Run, error)
 	ListRuns(ctx context.Context, projectID string, limit int) ([]domain.Run, error)
-	// UpdateRunStatus atomically transitions status and the associated
-	// bookkeeping fields. It enforces the domain state machine and returns the
-	// updated run. If the transition is illegal it returns ErrInvalidTransition.
-	UpdateRun(ctx context.Context, r *domain.Run) error
+
+	// Run mutators. Each of these re-reads the committed row inside a
+	// transaction (SELECT ... FOR UPDATE), validates the state-machine
+	// transition against the CURRENT stored status (not a caller snapshot), and
+	// applies ONLY the fields it names — so two concurrent writers can never
+	// clobber each other's untouched fields (the "stale full-row" lost-update
+	// hazard). Each returns the freshly-committed row so the caller never has to
+	// write a stale in-memory copy back. An illegal transition returns
+	// ErrInvalidTransition; a missing run returns ErrNotFound.
+
+	// ScheduleRun moves a queued run to scheduling and is the ONLY method that
+	// writes k8s_job_name and token_hash. phase is set to the given value.
+	ScheduleRun(ctx context.Context, id, jobName, tokenHash, phase string) (*domain.Run, error)
+	// MarkRunning moves a scheduling run to running, stamping started_at only if
+	// it is currently null.
+	MarkRunning(ctx context.Context, id, phase string, startedAt time.Time) (*domain.Run, error)
+	// MarkSucceeded moves a run to succeeded, stamping finished_at if null.
+	MarkSucceeded(ctx context.Context, id, phase string, finishedAt time.Time) (*domain.Run, error)
+	// MarkFailed moves a run to failed, stamping finished_at if null. It
+	// PRESERVES any already-set failure_reason/failure_message (e.g. a specific
+	// runner-reported reason): the given reason/message are written only where
+	// the stored value is empty. error mirrors the resulting failure_message.
+	MarkFailed(ctx context.Context, id, phase string, reason domain.FailureReason, msg string, finishedAt time.Time) (*domain.Run, error)
+	// SetRunnerFailure records a runner-reported failure_reason/message WITHOUT
+	// changing status, and only while the run is still non-terminal. It is
+	// first-writer-wins: it writes only where the stored fields are empty, so a
+	// later generic classification cannot overwrite a specific runner reason and
+	// vice-versa. A no-op (already terminal, or fields already set) is not an
+	// error. Returns the committed row (possibly unchanged).
+	SetRunnerFailure(ctx context.Context, id string, reason domain.FailureReason, msg string) (*domain.Run, error)
+	// CancelRun moves a run to canceled and stamps finished_at. It does NOT
+	// touch k8s_job_name/token_hash, so the committed row it returns still names
+	// the Job the caller must delete.
+	CancelRun(ctx context.Context, id, phase string, finishedAt time.Time) (*domain.Run, error)
+	// ClearJobName blanks k8s_job_name (used by the reconciler cleanup path once
+	// a terminal run's Job is confirmed deleted, so it is not re-processed). It
+	// does not change status and is a no-op if the run is missing.
+	ClearJobName(ctx context.Context, id string) error
 
 	// Reconciler queries
 	ListRunsByStatus(ctx context.Context, statuses ...domain.RunStatus) ([]domain.Run, error)
+	// ListTerminalRunsWithJob returns terminal runs that still carry a
+	// k8s_job_name, so the reconciler can delete their orphaned Jobs and clear
+	// the name. This is the cleanup path for a cancel that raced Job creation.
+	ListTerminalRunsWithJob(ctx context.Context) ([]domain.Run, error)
 	CountActiveRuns(ctx context.Context) (int, error)
 
 	// Events
@@ -89,6 +128,6 @@ type Store interface {
 	Close()
 }
 
-// ErrInvalidTransition is returned by UpdateRun when a status change is not
-// permitted by the domain state machine.
+// ErrInvalidTransition is returned by the run mutators when a status change is
+// not permitted by the domain state machine.
 var ErrInvalidTransition = errors.New("invalid run status transition")

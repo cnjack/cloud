@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -31,6 +33,21 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.MemStore, *sse.Hub) {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, st, hub
+}
+
+// newTestServerWithLauncher builds a server wired to a FakeLauncher so cancel's
+// Job-deletion behaviour can be asserted.
+func newTestServerWithLauncher(t *testing.T) (*httptest.Server, *store.MemStore, *k8s.FakeLauncher) {
+	t.Helper()
+	st := store.NewMemStore()
+	hub := sse.NewHub()
+	fake := k8s.NewFakeLauncher()
+	cfg := &config.Config{ConsoleToken: consoleToken}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(st, cfg, log, hub, fake)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts, st, fake
 }
 
 func do(t *testing.T, method, url, token string, body any) *http.Response {
@@ -219,10 +236,7 @@ func TestRetryLinksRetriedFrom(t *testing.T) {
 
 	// Force terminal (failed) directly in store.
 	got, _ := st.GetRun(context.Background(), run.ID)
-	got.Status = domain.StatusFailed
-	got.FailureReason = domain.FailureCloneFailed
-	got.FailureMessage = "boom"
-	_ = st.UpdateRun(context.Background(), got)
+	_, _ = st.MarkFailed(context.Background(), got.ID, "Failed", domain.FailureCloneFailed, "boom", time.Now())
 
 	// Retry -> new run, retried_from = original (AC-10).
 	resp = do(t, "POST", ts.URL+"/api/v1/runs/"+run.ID+"/retry", consoleToken, nil)
@@ -267,6 +281,48 @@ func TestCancelRun(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestCancelDeletesCommittedJobAndKeepsFields is the regression for the cancel
+// half of the "cancel racing reconciler orphans Jobs + stale full-row write
+// wipes k8s_job_name/token_hash" finding. Cancel must (1) NOT wipe
+// k8s_job_name/token_hash (the old full-row write did), and (2) delete the Job
+// named in the COMMITTED row so no orphan keeps running.
+func TestCancelDeletesCommittedJobAndKeepsFields(t *testing.T) {
+	ts, st, fake := newTestServerWithLauncher(t)
+	p := createProject(t, ts)
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+		map[string]string{"prompt": "task"})
+	var run domain.Run
+	decode(t, resp, &run)
+	ctx := context.Background()
+
+	// Drive to scheduling with a real job name + token hash.
+	if _, err := st.ScheduleRun(ctx, run.ID, "jcloud-run-"+run.ID, "tokhash", "PreparingWorkspace"); err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+
+	resp = do(t, "POST", ts.URL+"/api/v1/runs/"+run.ID+"/cancel", consoleToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cancel: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.Status != domain.StatusCanceled {
+		t.Fatalf("status=%s want canceled", got.Status)
+	}
+	if got.K8sJobName == "" {
+		t.Fatal("cancel wiped k8s_job_name (stale full-row write regression)")
+	}
+	if got.TokenHash == "" {
+		t.Fatal("cancel wiped token_hash (stale full-row write regression)")
+	}
+	// The Job named in the committed row must have been deleted.
+	deleted := fake.Deleted
+	if len(deleted) != 1 || deleted[0] != "jcloud-run-"+run.ID {
+		t.Fatalf("cancel deleted jobs=%v want [jcloud-run-%s]", deleted, run.ID)
+	}
+}
+
 func TestEventsListAfterSeq(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
@@ -309,11 +365,9 @@ func TestIngestAuthAndIdempotency(t *testing.T) {
 
 	// Give the run a token (as the reconciler would at Job creation).
 	tok, _ := auth.GenerateRunToken()
-	got, _ := st.GetRun(ctx, run.ID)
-	got.TokenHash = auth.HashToken(tok)
-	got.Status = domain.StatusScheduling
-	got.K8sJobName = "j"
-	_ = st.UpdateRun(ctx, got)
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", auth.HashToken(tok), "PreparingWorkspace"); err != nil {
+		t.Fatalf("setup schedule: %v", err)
+	}
 
 	body := map[string]any{"events": []map[string]any{
 		{"seq": 10, "type": "agent.text", "payload": map[string]any{"text": "hi"}},
@@ -358,11 +412,7 @@ func TestIngestRunFailureRefinesReason(t *testing.T) {
 	ctx := context.Background()
 
 	tok, _ := auth.GenerateRunToken()
-	got, _ := st.GetRun(ctx, run.ID)
-	got.TokenHash = auth.HashToken(tok)
-	got.Status = domain.StatusScheduling // legal from queued
-	got.K8sJobName = "j"
-	if err := st.UpdateRun(ctx, got); err != nil {
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", auth.HashToken(tok), "PreparingWorkspace"); err != nil {
 		t.Fatalf("setup token: %v", err)
 	}
 
@@ -372,7 +422,7 @@ func TestIngestRunFailureRefinesReason(t *testing.T) {
 	resp = do(t, "POST", ts.URL+"/internal/v1/runs/"+run.ID+"/events", tok, body)
 	resp.Body.Close()
 
-	got, _ = st.GetRun(ctx, run.ID)
+	got, _ := st.GetRun(ctx, run.ID)
 	if got.FailureReason != domain.FailureCloneFailed {
 		t.Fatalf("reason=%s want clone_failed", got.FailureReason)
 	}
@@ -395,17 +445,13 @@ func TestSSEReplayThenTerminal(t *testing.T) {
 	_, _ = st.AppendEvents(ctx, run.ID, []store.EventInput{
 		{Seq: 2, Type: domain.EventAgentText, Payload: map[string]any{"text": "working"}},
 	})
-	got, _ := st.GetRun(ctx, run.ID)
-	got.Status = domain.StatusScheduling
-	_ = st.UpdateRun(ctx, got)
-	got, _ = st.GetRun(ctx, run.ID)
-	got.Status = domain.StatusRunning
-	got.StartedAt = ptr(time.Now())
-	_ = st.UpdateRun(ctx, got)
-	got, _ = st.GetRun(ctx, run.ID)
-	got.Status = domain.StatusSucceeded
-	got.FinishedAt = ptr(time.Now())
-	if err := st.UpdateRun(ctx, got); err != nil {
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", "h", "PreparingWorkspace"); err != nil {
+		t.Fatalf("drive scheduling: %v", err)
+	}
+	if _, err := st.MarkRunning(ctx, run.ID, "StreamingTurn", time.Now()); err != nil {
+		t.Fatalf("drive running: %v", err)
+	}
+	if _, err := st.MarkSucceeded(ctx, run.ID, "Succeeded", time.Now()); err != nil {
 		t.Fatalf("drive terminal: %v", err)
 	}
 	// Emit terminal status event (seq 3).
@@ -442,6 +488,137 @@ func TestSSEReplayThenTerminal(t *testing.T) {
 	}
 }
 
+// TestSSEClosesWhenTerminalDuringReplay is the regression for "SSE stream never
+// terminates when the run goes terminal during the replay window". The
+// connect-time run snapshot is NON-terminal (running), but a terminal run.status
+// event is already in the durable log (it committed after the client's GetRun
+// but is delivered via replay). The old code decided closure only from the
+// stale snapshot, entered the live loop, and hung forever emitting heartbeats.
+// The fix closes the stream when a terminal run.status appears in replay (and
+// re-checks the run after replay).
+func TestSSEClosesWhenTerminalDuringReplay(t *testing.T) {
+	ts, st, _ := newTestServer(t)
+	p := createProject(t, ts)
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+		map[string]string{"prompt": "task"})
+	var run domain.Run
+	decode(t, resp, &run)
+	ctx := context.Background()
+
+	// Drive the run to running (connect-time snapshot is non-terminal).
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", "h", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkRunning(ctx, run.ID, "StreamingTurn", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// A terminal run.status(succeeded) event is already durable (it committed
+	// just after the client's GetRun would have run). The run ROW is left running
+	// here to model the snapshot being observed before the terminal commit landed
+	// on the row; the terminal EVENT is what must close the stream.
+	if _, err := st.AppendInternalEvent(ctx, run.ID, domain.EventRunStatus,
+		map[string]any{"status": "succeeded", "phase": "Succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The stream must complete (not hang). A client-side timeout guards the
+	// regression: a hang would exceed it and the read would return a truncated
+	// body without the terminal marker.
+	sctx, scancel := context.WithTimeout(ctx, 5*time.Second)
+	defer scancel()
+	req, _ := http.NewRequestWithContext(sctx, "GET",
+		ts.URL+"/api/v1/runs/"+run.ID+"/stream?after_seq=0", nil)
+	req.Header.Set("Authorization", "Bearer "+consoleToken)
+	sresp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sresp.Body.Close()
+	b, _ := io.ReadAll(sresp.Body) // returns only when the server closes the stream
+	if sctx.Err() != nil {
+		t.Fatal("stream did not close: hung until client timeout (terminal-during-replay regression)")
+	}
+	if !strings.Contains(string(b), "run terminal") {
+		t.Fatalf("stream did not emit terminal marker; got:\n%s", string(b))
+	}
+}
+
+// TestSSEOutOfOrderLiveEventsRecovered is the regression for "live SSE fan-out
+// discards out-of-order publishes as already-replayed". A live event published
+// with a seq beyond the next contiguous one (an earlier event was published out
+// of order or dropped by the hub buffer) used to advance the high-water mark and
+// cause the skipped seqs to be dropped as "duplicates", so a connected console
+// permanently missed them. The fix backfills the gap from the durable log.
+func TestSSEOutOfOrderLiveEventsRecovered(t *testing.T) {
+	ts, st, hub := newTestServer(t)
+	p := createProject(t, ts)
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+		map[string]string{"prompt": "task"})
+	var run domain.Run
+	decode(t, resp, &run)
+	ctx := context.Background()
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", "h", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx, scancel := context.WithTimeout(ctx, 5*time.Second)
+	defer scancel()
+	req, _ := http.NewRequestWithContext(sctx, "GET",
+		ts.URL+"/api/v1/runs/"+run.ID+"/stream?after_seq=0", nil)
+	req.Header.Set("Authorization", "Bearer "+consoleToken)
+	sresp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sresp.Body.Close()
+
+	// Wait until the stream has a live subscriber (replay done, in live loop).
+	waitForSubscriber(t, hub, run.ID)
+
+	// Durably append seqs 2,3,4 but publish ONLY seq 4 first (out of order: 2,3
+	// have not been published). The old code would set lastSent=4 and drop 2,3.
+	ev2, _ := st.AppendInternalEvent(ctx, run.ID, domain.EventAgentText, map[string]any{"n": 2})
+	ev3, _ := st.AppendInternalEvent(ctx, run.ID, domain.EventAgentText, map[string]any{"n": 3})
+	ev4, _ := st.AppendInternalEvent(ctx, run.ID, domain.EventAgentText, map[string]any{"n": 4})
+	hub.Publish(run.ID, ev4) // out-of-order: gap at 2,3 triggers backfill
+	_ = ev2
+	_ = ev3
+
+	// Then a terminal event to close the stream deterministically.
+	evT, _ := st.AppendInternalEvent(ctx, run.ID, domain.EventRunStatus,
+		map[string]any{"status": "succeeded", "phase": "Succeeded"})
+	hub.Publish(run.ID, evT)
+
+	b, _ := io.ReadAll(sresp.Body)
+	body := string(b)
+	if sctx.Err() != nil {
+		t.Fatal("stream hung")
+	}
+	// Every seq 1..4 plus the terminal frame must appear; none dropped.
+	for _, want := range []string{`"n":2`, `"n":3`, `"n":4`, "run terminal"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("stream missing %q (out-of-order event dropped); got:\n%s", want, body)
+		}
+	}
+}
+
+// waitForSubscriber blocks until the hub has at least one live subscriber for
+// runID (i.e. handleStream finished replay and entered the live loop), so the
+// test can publish live events deterministically.
+func waitForSubscriber(t *testing.T, hub *sse.Hub, runID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if hub.SubscriberCount(runID) > 0 {
+			// Give the handler a beat to reach the blocking select on the channel.
+			time.Sleep(20 * time.Millisecond)
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("stream never established a live subscriber")
+}
+
 // TestIngestSeqIsServerAllocated proves the runner's client seq does not become
 // the durable/SSE seq: the server renumbers events monotonically and does not
 // collide with the run.status(queued) event emitted at creation.
@@ -456,11 +633,9 @@ func TestIngestSeqIsServerAllocated(t *testing.T) {
 
 	// run.status(queued) already took seq 1 at creation.
 	tok, _ := auth.GenerateRunToken()
-	got, _ := st.GetRun(ctx, run.ID)
-	got.TokenHash = auth.HashToken(tok)
-	got.Status = domain.StatusScheduling
-	got.K8sJobName = "j"
-	_ = st.UpdateRun(ctx, got)
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", auth.HashToken(tok), "PreparingWorkspace"); err != nil {
+		t.Fatalf("setup schedule: %v", err)
+	}
 
 	// Runner posts with high client seqs that WOULD have collided with the
 	// internal seq space under the old first-writer-wins scheme.
@@ -500,13 +675,12 @@ func TestSSEStreamAcceptsQueryToken(t *testing.T) {
 	ctx := context.Background()
 
 	// Drive terminal so the stream replays and closes without hanging.
-	got, _ := st.GetRun(ctx, run.ID)
-	got.Status = domain.StatusScheduling
-	_ = st.UpdateRun(ctx, got)
-	got, _ = st.GetRun(ctx, run.ID)
-	got.Status = domain.StatusCanceled
-	got.FinishedAt = ptr(time.Now())
-	_ = st.UpdateRun(ctx, got)
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", "h", "PreparingWorkspace"); err != nil {
+		t.Fatalf("drive scheduling: %v", err)
+	}
+	if _, err := st.CancelRun(ctx, run.ID, "CanceledByOperator", time.Now()); err != nil {
+		t.Fatalf("drive canceled: %v", err)
+	}
 	_, _ = st.AppendInternalEvent(ctx, run.ID, domain.EventRunStatus, map[string]any{"status": "canceled"})
 
 	// No Authorization header at all: browser EventSource can't send one. The
@@ -539,6 +713,67 @@ func TestSSEStreamAcceptsQueryToken(t *testing.T) {
 	}
 }
 
+// TestSSEStreamClosesOnServerShutdown is the regression for "graceful shutdown
+// never completes while any SSE client is connected". A live SSE handler blocks
+// on its request context; http.Server.Shutdown does not cancel that. main wires
+// the server's BaseContext to a context it cancels on shutdown so streams
+// observe it, write a final comment, and return. This test reproduces that
+// wiring: it cancels the BaseContext and asserts the stream returns promptly
+// with the shutdown marker instead of hanging until Shutdown's deadline.
+func TestSSEStreamClosesOnServerShutdown(t *testing.T) {
+	st := store.NewMemStore()
+	hub := sse.NewHub()
+	cfg := &config.Config{ConsoleToken: consoleToken}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(st, cfg, log, hub, nil)
+
+	// Mirror main.go: BaseContext returns a cancelable context; canceling it must
+	// unblock in-flight streams.
+	baseCtx, cancelStreams := context.WithCancel(context.Background())
+	ts := httptest.NewUnstartedServer(srv.Handler())
+	ts.Config.BaseContext = func(net.Listener) context.Context { return baseCtx }
+	ts.Start()
+	t.Cleanup(ts.Close)
+
+	ctx := context.Background()
+	p := &domain.Project{ID: domain.NewID(), Name: "p", RepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	_ = st.CreateProject(ctx, p)
+	run := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Prompt: "x", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
+	_ = st.CreateRun(ctx, run)
+	// Non-terminal so the stream enters the live loop and blocks.
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", "h", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/runs/"+run.ID+"/stream?after_seq=0", nil)
+	req.Header.Set("Authorization", "Bearer "+consoleToken)
+	sresp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sresp.Body.Close()
+
+	waitForSubscriber(t, hub, run.ID) // stream is live and blocking
+
+	// Simulate graceful shutdown: cancel the base context.
+	cancelStreams()
+
+	// The read must return promptly (not hang) with the shutdown marker.
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(sresp.Body)
+		done <- string(b)
+	}()
+	select {
+	case body := <-done:
+		if !strings.Contains(body, "server shutting down") {
+			t.Fatalf("stream closed without shutdown marker; got:\n%s", body)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSE stream did not close after server shutdown (graceful-shutdown regression)")
+	}
+}
+
 func TestArtifactRoundTrip(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
@@ -549,11 +784,7 @@ func TestArtifactRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	tok, _ := auth.GenerateRunToken()
-	got, _ := st.GetRun(ctx, run.ID)
-	got.TokenHash = auth.HashToken(tok)
-	got.Status = domain.StatusScheduling // legal from queued
-	got.K8sJobName = "j"
-	if err := st.UpdateRun(ctx, got); err != nil {
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", auth.HashToken(tok), "PreparingWorkspace"); err != nil {
 		t.Fatalf("setup token: %v", err)
 	}
 

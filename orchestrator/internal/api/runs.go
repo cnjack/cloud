@@ -106,20 +106,20 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete the Job first (best-effort) so no orphan keeps running, then mark
-	// canceled. Order matters: if we crash after delete but before the status
-	// write, the next reconcile sees a scheduling/running run with a missing Job
-	// and fails it — acceptable, and the operator already intended to stop it.
-	if s.launcher != nil && run.K8sJobName != "" {
-		if err := s.launcher.DeleteJob(r.Context(), run.K8sJobName); err != nil {
-			s.log.Warn("cancel: delete job", "run", run.ID, "err", err)
-		}
-	}
+	// CAS to canceled FIRST, atomically, then act on the COMMITTED row. Doing the
+	// status change first closes the race with the reconciler's Job creation: if
+	// the reconciler committed queued->scheduling concurrently, CancelRun's
+	// re-read sees the committed job name (it never wipes it), so we delete the
+	// right Job below. If the reconciler's ScheduleRun instead lost the CAS race
+	// and its Job is orphaned, the reconciler's terminal-with-job cleanup reaps
+	// it. Either way no Job is left running unreferenced.
 	now := time.Now().UTC()
-	run.Status = domain.StatusCanceled
-	run.Phase = "CanceledByOperator"
-	run.FinishedAt = &now
-	if err := s.st.UpdateRun(r.Context(), run); err != nil {
+	committed, err := s.st.CancelRun(r.Context(), run.ID, "CanceledByOperator", now)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "run not found")
+			return
+		}
 		if errors.Is(err, store.ErrInvalidTransition) {
 			writeError(w, http.StatusConflict, "conflict", "run cannot be canceled from its current state")
 			return
@@ -127,8 +127,18 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not cancel run")
 		return
 	}
-	s.emitStatus(r.Context(), run)
-	writeJSON(w, http.StatusOK, run)
+
+	// Delete the Job named in the COMMITTED row (best-effort). If it fails or the
+	// name is still empty here but a reconciler later attaches one, the
+	// reconciler's terminal-with-job cleanup path deletes it. We leave the job
+	// name on the row so that cleanup can find and reap it.
+	if s.launcher != nil && committed.K8sJobName != "" {
+		if err := s.launcher.DeleteJob(r.Context(), committed.K8sJobName); err != nil {
+			s.log.Warn("cancel: delete job", "run", committed.ID, "err", err)
+		}
+	}
+	s.emitStatus(r.Context(), committed)
+	writeJSON(w, http.StatusOK, committed)
 }
 
 func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {

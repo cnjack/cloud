@@ -40,8 +40,9 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 // order guarantees a reconnecting client misses nothing and sees no gaps.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
-	run, err := s.st.GetRun(r.Context(), runID)
-	if errors.Is(err, store.ErrNotFound) {
+	// Confirm the run exists (404 otherwise). Terminality is re-checked after
+	// replay from a fresh read, so we do not rely on this snapshot's status.
+	if _, err := s.st.GetRun(r.Context(), runID); errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "run not found")
 		return
 	} else if err != nil {
@@ -65,24 +66,33 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	after := int64(queryInt(r, "after_seq", 0))
 
 	// Subscribe BEFORE replaying so no event slips through the gap between the
-	// replay read and going live. Any live event with seq <= lastSent is
-	// de-duplicated below.
+	// replay read and going live.
 	ch, unsub := s.hub.Subscribe(runID)
 	defer unsub()
 
-	// Replay durable backlog in pages.
-	lastSent := after
+	// st tracks exactly which seqs have been delivered so the live phase can
+	// distinguish a true duplicate (already sent) from an out-of-order publish we
+	// have not sent yet, and can detect and backfill gaps from the durable log.
+	st := &streamState{sent: map[int64]bool{}, lastSent: after}
+
+	// Replay durable backlog in pages. If a terminal run.status appears in the
+	// backlog, close immediately — the run finished during/before the replay
+	// window and there is nothing more to stream.
 	for {
-		batch, err := s.st.ListEvents(ctx, runID, lastSent, 500)
+		batch, err := s.st.ListEvents(ctx, runID, st.lastSent, 500)
 		if err != nil {
 			s.log.Error("stream: replay", "run", runID, "err", err)
 			return
 		}
 		for _, ev := range batch {
-			if err := writeSSE(w, ev); err != nil {
+			if err := st.deliver(w, ev); err != nil {
 				return
 			}
-			lastSent = ev.Seq
+			if isTerminalStatusEvent(ev) {
+				writeSSEComment(w, "run terminal; stream complete")
+				flusher.Flush()
+				return
+			}
 		}
 		flusher.Flush()
 		if len(batch) < 500 {
@@ -90,17 +100,19 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If the run was already terminal when we connected and we've replayed
-	// everything, end the stream with a final marker so clients can close.
-	if run.Status.Terminal() {
-		fresh, err := s.st.GetRun(ctx, runID)
-		if err == nil && fresh.Status.Terminal() {
-			// Drain any late live events already queued, then finish.
-			drainLive(w, flusher, ch, lastSent)
-			writeSSEComment(w, "run terminal; stream complete")
-			flusher.Flush()
+	// The run may have gone terminal between our connect-time GetRun and the end
+	// of replay (its terminal run.status could have committed after Subscribe but
+	// been published before we subscribed, so it is neither replayed above nor
+	// guaranteed on the live channel). Re-fetch: if terminal, backfill any events
+	// we have not yet sent from the durable log and finish. This is the fix for
+	// the "SSE never terminates when the run went terminal during replay" hang.
+	if fresh, err := s.st.GetRun(ctx, runID); err == nil && fresh.Status.Terminal() {
+		if err := st.backfill(ctx, w, flusher, s.st, runID); err != nil {
 			return
 		}
+		writeSSEComment(w, "run terminal; stream complete")
+		flusher.Flush()
+		return
 	}
 
 	// Go live. Heartbeat comments keep intermediaries from closing idle conns.
@@ -110,20 +122,37 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			// The request context is derived from the server's BaseContext, which
+			// the server cancels on graceful shutdown (as well as on client
+			// disconnect). Write a best-effort final comment so a shutting-down
+			// server does not cut the stream mid-frame; harmless if the client
+			// already went away.
+			writeSSEComment(w, "server shutting down")
+			flusher.Flush()
 			return
 		case ev, ok := <-ch:
 			if !ok {
 				return
 			}
-			if ev.Seq <= lastSent {
-				continue // already replayed
+			if st.sent[ev.Seq] {
+				continue // genuine duplicate (replay/live overlap): already delivered
 			}
-			if err := writeSSE(w, ev); err != nil {
+			// A gap (ev.Seq beyond the next contiguous seq) means an earlier
+			// event was published out of order or dropped by the hub buffer.
+			// Backfill the missing seqs from the durable log before delivering
+			// this one, so the client never sees a gap and never loses an event.
+			if ev.Seq > st.lastSent+1 {
+				if err := st.backfill(ctx, w, flusher, s.st, runID); err != nil {
+					return
+				}
+			}
+			// deliver is idempotent, so a backfill that already covered ev is a
+			// no-op here.
+			if err := st.deliver(w, ev); err != nil {
 				return
 			}
-			lastSent = ev.Seq
 			flusher.Flush()
-			if isTerminalStatusEvent(ev) {
+			if st.terminalSeen {
 				writeSSEComment(w, "run terminal; stream complete")
 				flusher.Flush()
 				return
@@ -135,25 +164,58 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// drainLive flushes any buffered live events (with seq beyond lastSent) without
-// blocking, used when a run is already terminal at connect time.
-func drainLive(w http.ResponseWriter, flusher http.Flusher, ch <-chan domain.RunEvent, lastSent int64) {
+// streamState tracks per-connection delivery so out-of-order live publishes and
+// hub-buffer drops are recovered from the durable log rather than silently lost.
+type streamState struct {
+	sent         map[int64]bool // every seq written to the client
+	lastSent     int64          // highest contiguous seq written (no gaps below it)
+	terminalSeen bool           // a terminal run.status was written
+}
+
+// deliver writes one event and records it. It advances lastSent past any now-
+// contiguous run of already-sent seqs so gap detection stays accurate even when
+// events arrive out of order.
+func (st *streamState) deliver(w http.ResponseWriter, ev domain.RunEvent) error {
+	if st.sent[ev.Seq] {
+		return nil
+	}
+	if err := writeSSE(w, ev); err != nil {
+		return err
+	}
+	st.sent[ev.Seq] = true
+	if isTerminalStatusEvent(ev) {
+		st.terminalSeen = true
+	}
+	for st.sent[st.lastSent+1] {
+		st.lastSent++
+	}
+	return nil
+}
+
+// backfill delivers every durable event with seq beyond what we've sent that we
+// have not yet delivered, closing gaps left by out-of-order or dropped live
+// publishes. It pages until caught up.
+func (st *streamState) backfill(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, store eventLister, runID string) error {
 	for {
-		select {
-		case ev, ok := <-ch:
-			if !ok {
-				return
+		batch, err := store.ListEvents(ctx, runID, st.lastSent, 500)
+		if err != nil {
+			return err
+		}
+		for _, ev := range batch {
+			if err := st.deliver(w, ev); err != nil {
+				return err
 			}
-			if ev.Seq > lastSent {
-				if err := writeSSE(w, ev); err != nil {
-					return
-				}
-				flusher.Flush()
-			}
-		default:
-			return
+		}
+		flusher.Flush()
+		if len(batch) < 500 {
+			return nil
 		}
 	}
+}
+
+// eventLister is the slice of the store the stream backfill needs.
+type eventLister interface {
+	ListEvents(ctx context.Context, runID string, afterSeq int64, limit int) ([]domain.RunEvent, error)
 }
 
 func isTerminalStatusEvent(ev domain.RunEvent) bool {
@@ -246,7 +308,10 @@ func (s *Server) handleIngestEvents(w http.ResponseWriter, r *http.Request, runI
 }
 
 // applyRunnerFailure looks for a run.failure event and, if present, records the
-// reason/message on the run so a subsequent Job-failure reconcile keeps it.
+// reason/message on the run so a subsequent Job-failure reconcile keeps it. It
+// delegates to SetRunnerFailure, which re-reads the committed row, writes only
+// the failure fields (first-writer-wins), and never touches status or any other
+// column — so it cannot clobber a concurrent reconciler transition.
 func (s *Server) applyRunnerFailure(ctx context.Context, runID string, events []ingestEvent) {
 	for _, e := range events {
 		if e.Type != domain.EventRunFailure {
@@ -261,21 +326,7 @@ func (s *Server) applyRunnerFailure(ctx context.Context, runID string, events []
 		if msg == "" {
 			msg = "runner reported a failure"
 		}
-		run, err := s.st.GetRun(ctx, runID)
-		if err != nil {
-			return
-		}
-		// Only stamp the reason while the run is still non-terminal; the
-		// reconciler will flip status to failed from cluster state. If the run
-		// is already terminal, leave it.
-		if run.Status.Terminal() {
-			return
-		}
-		run.FailureReason = fr
-		run.FailureMessage = msg
-		// Persist as a no-op status write (same status) so fields save without
-		// an illegal transition.
-		if err := s.st.UpdateRun(ctx, run); err != nil {
+		if _, err := s.st.SetRunnerFailure(ctx, runID, fr, msg); err != nil {
 			s.log.Warn("ingest: record failure reason", "run", runID, "err", err)
 		}
 		return

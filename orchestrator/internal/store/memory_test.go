@@ -168,3 +168,142 @@ func TestConcurrentIngestOrderingAndUniqueness(t *testing.T) {
 		}
 	}
 }
+
+// seedRunAt creates a project and a run driven to `status` (via the real
+// mutators) so mutator-preservation tests start from a realistic row.
+func seedRunAt(t *testing.T, m *MemStore, status domain.RunStatus) string {
+	t.Helper()
+	ctx := context.Background()
+	id := seedRun(t, m)
+	switch status {
+	case domain.StatusQueued:
+	case domain.StatusScheduling:
+		if _, err := m.ScheduleRun(ctx, id, "job-"+id, "hash-"+id, "PreparingWorkspace"); err != nil {
+			t.Fatal(err)
+		}
+	case domain.StatusRunning:
+		if _, err := m.ScheduleRun(ctx, id, "job-"+id, "hash-"+id, "PreparingWorkspace"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.MarkRunning(ctx, id, "StreamingTurn", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatalf("seedRunAt: unsupported status %s", status)
+	}
+	return id
+}
+
+// TestMarkFailedPreservesRunnerReason is the root-cause regression for the
+// stale-full-row lost update (pg.go:223): a runner-reported specific reason set
+// via SetRunnerFailure must survive a subsequent generic MarkFailed. With the
+// old full-row UpdateRun the reconciler's stale empty copy clobbered it.
+func TestMarkFailedPreservesRunnerReason(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	id := seedRunAt(t, m, domain.StatusRunning)
+
+	// Runner reports the specific reason first.
+	if _, err := m.SetRunnerFailure(ctx, id, domain.FailureCloneFailed, "fatal: repo not found"); err != nil {
+		t.Fatal(err)
+	}
+	// Reconciler then fails from generic cluster state.
+	got, err := m.MarkFailed(ctx, id, "Failed", domain.FailureAgentError, "runner Job failed", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FailureReason != domain.FailureCloneFailed {
+		t.Fatalf("reason=%s want clone_failed (runner-reported must win)", got.FailureReason)
+	}
+	if got.FailureMessage != "fatal: repo not found" {
+		t.Fatalf("message=%q want the runner message", got.FailureMessage)
+	}
+	if got.Error != got.FailureMessage {
+		t.Fatalf("error=%q want to mirror failure_message %q", got.Error, got.FailureMessage)
+	}
+}
+
+// TestMarkFailedNeverWipesJobOrToken proves the failure path does not blank
+// k8s_job_name/token_hash the way the old full-row write (with a stale copy)
+// could — those fields are only ever written by ScheduleRun.
+func TestMarkFailedNeverWipesJobOrToken(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	id := seedRunAt(t, m, domain.StatusScheduling)
+
+	got, err := m.MarkFailed(ctx, id, "Failed", domain.FailureAgentError, "boom", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.K8sJobName == "" {
+		t.Fatal("k8s_job_name was wiped by MarkFailed")
+	}
+	if got.TokenHash == "" {
+		t.Fatal("token_hash was wiped by MarkFailed")
+	}
+}
+
+// TestSetRunnerFailureNoOpWhenTerminal proves a late runner failure ingest does
+// not resurrect fields on an already-terminal run and never errors.
+func TestSetRunnerFailureNoOpWhenTerminal(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	id := seedRunAt(t, m, domain.StatusScheduling)
+	if _, err := m.MarkSucceeded(ctx, id, "Succeeded", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.SetRunnerFailure(ctx, id, domain.FailureCloneFailed, "too late")
+	if err != nil {
+		t.Fatalf("SetRunnerFailure on terminal run errored: %v", err)
+	}
+	if got.FailureReason != "" || got.FailureMessage != "" {
+		t.Fatalf("terminal run got failure fields stamped: %+v", got)
+	}
+	if got.Status != domain.StatusSucceeded {
+		t.Fatalf("status changed to %s; SetRunnerFailure must not alter status", got.Status)
+	}
+}
+
+// TestConcurrentFailNeverLosesRunnerReason races SetRunnerFailure against
+// MarkFailed under -race and asserts the specific reason always wins. This is
+// the concurrency regression for the lost-update hazard.
+func TestConcurrentFailNeverLosesRunnerReason(t *testing.T) {
+	ctx := context.Background()
+	for i := 0; i < 200; i++ {
+		m := NewMemStore()
+		id := seedRunAt(t, m, domain.StatusRunning)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		// Ingest records the specific reason.
+		go func() {
+			defer wg.Done()
+			_, _ = m.SetRunnerFailure(ctx, id, domain.FailureCloneFailed, "specific")
+		}()
+		// Reconciler fails with a generic reason.
+		go func() {
+			defer wg.Done()
+			_, _ = m.MarkFailed(ctx, id, "Failed", domain.FailureAgentError, "generic", time.Now())
+		}()
+		wg.Wait()
+
+		got, _ := m.GetRun(ctx, id)
+		if got.Status != domain.StatusFailed {
+			t.Fatalf("iter %d: status=%s want failed", i, got.Status)
+		}
+		// Whichever ordering occurred, the field-set semantics guarantee the
+		// specific reason is never overwritten by the generic one once set. If
+		// SetRunnerFailure landed first, reason must be clone_failed. If MarkFailed
+		// landed first, reason is agent_error and SetRunnerFailure was a no-op
+		// (terminal). It must NEVER be an empty reason and never lose a set value.
+		if got.FailureReason == "" {
+			t.Fatalf("iter %d: empty failure reason after concurrent fail", i)
+		}
+		if got.FailureReason == domain.FailureAgentError && got.FailureMessage != "generic" {
+			t.Fatalf("iter %d: agent_error but message=%q", i, got.FailureMessage)
+		}
+		if got.FailureReason == domain.FailureCloneFailed && got.FailureMessage != "specific" {
+			t.Fatalf("iter %d: clone_failed but message=%q", i, got.FailureMessage)
+		}
+	}
+}

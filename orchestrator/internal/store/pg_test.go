@@ -112,3 +112,75 @@ func TestPGConcurrentIngestNoCollision(t *testing.T) {
 		}
 	}
 }
+
+// TestPGMarkFailedPreservesRunnerReason is the real-DB regression for the
+// stale-full-row lost-update finding: a runner-reported specific reason recorded
+// via SetRunnerFailure must survive a subsequent generic MarkFailed. Requires
+// JCLOUD_PG_DSN.
+func TestPGMarkFailedPreservesRunnerReason(t *testing.T) {
+	ctx := context.Background()
+	st, runID := pgTestStore(t)
+
+	if _, err := st.ScheduleRun(ctx, runID, "job", "hash", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkRunning(ctx, runID, "StreamingTurn", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// Runner records the specific reason first.
+	if _, err := st.SetRunnerFailure(ctx, runID, domain.FailureCloneFailed, "fatal: repo not found"); err != nil {
+		t.Fatal(err)
+	}
+	// Reconciler fails from generic cluster state.
+	got, err := st.MarkFailed(ctx, runID, "Failed", domain.FailureAgentError, "runner Job failed", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FailureReason != domain.FailureCloneFailed {
+		t.Fatalf("reason=%s want clone_failed (runner-reported must win)", got.FailureReason)
+	}
+	if got.FailureMessage != "fatal: repo not found" {
+		t.Fatalf("message=%q want runner message", got.FailureMessage)
+	}
+	if got.Error != got.FailureMessage {
+		t.Fatalf("error=%q want to mirror failure_message", got.Error)
+	}
+	// Job name / token hash must not have been wiped.
+	if got.K8sJobName != "job" || got.TokenHash != "hash" {
+		t.Fatalf("MarkFailed wiped job/token: job=%q token=%q", got.K8sJobName, got.TokenHash)
+	}
+}
+
+// TestPGConcurrentFailPreservesReason races SetRunnerFailure against MarkFailed
+// on a real DB (row-lock serialised) and asserts the specific reason is never
+// lost. Requires JCLOUD_PG_DSN.
+func TestPGConcurrentFailPreservesReason(t *testing.T) {
+	ctx := context.Background()
+	st, runID := pgTestStore(t)
+	if _, err := st.ScheduleRun(ctx, runID, "job", "hash", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkRunning(ctx, runID, "StreamingTurn", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = st.SetRunnerFailure(ctx, runID, domain.FailureCloneFailed, "specific") }()
+	go func() { defer wg.Done(); _, _ = st.MarkFailed(ctx, runID, "Failed", domain.FailureAgentError, "generic", time.Now()) }()
+	wg.Wait()
+
+	got, err := st.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.StatusFailed {
+		t.Fatalf("status=%s want failed", got.Status)
+	}
+	if got.FailureReason == "" {
+		t.Fatal("empty failure reason after concurrent fail")
+	}
+	if got.FailureReason == domain.FailureCloneFailed && got.FailureMessage != "specific" {
+		t.Fatalf("clone_failed but message=%q", got.FailureMessage)
+	}
+}
