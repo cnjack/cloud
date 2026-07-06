@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -108,10 +109,22 @@ func run(log *slog.Logger) error {
 
 	// --- HTTP server ---
 	srv := api.New(st, cfg, log, hub, launcher)
+
+	// streamCtx is the BaseContext for every request, so an SSE handler's
+	// r.Context() derives from it. http.Server.Shutdown only closes IDLE
+	// connections; a long-lived SSE stream blocks on its request context, which
+	// Shutdown does NOT cancel. Cancelling streamCtx on shutdown unblocks those
+	// handlers so they write a final `: server shutting down` comment and return,
+	// instead of Shutdown waiting the full timeout and returning a deadline error
+	// that looks like a crash on every rollout with a connected console.
+	streamCtx, cancelStreams := context.WithCancel(context.Background())
+	defer cancelStreams()
+
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return streamCtx },
 		// No WriteTimeout: SSE streams are long-lived.
 	}
 
@@ -130,7 +143,15 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	// Unblock in-flight SSE streams so they finish promptly, then drain the rest.
+	cancelStreams()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return httpServer.Shutdown(shutdownCtx)
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		// A deadline here means some connection did not drain in time; log it as a
+		// warning rather than a fatal exit so a clean rollout is not reported as a
+		// crash.
+		log.Warn("graceful shutdown did not complete cleanly", "err", err)
+	}
+	return nil
 }

@@ -51,6 +51,14 @@ func (h *Hub) Subscribe(runID string) (<-chan domain.RunEvent, func()) {
 	return s.ch, unsub
 }
 
+// SubscriberCount returns the number of live subscribers for runID. Used by
+// tests to synchronise on a stream having entered its live phase.
+func (h *Hub) SubscriberCount(runID string) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.subs[runID])
+}
+
 // Publish delivers ev to every current subscriber of runID. Non-blocking: a
 // subscriber whose buffer is full is skipped (see Subscribe).
 func (h *Hub) Publish(runID string, ev domain.RunEvent) {

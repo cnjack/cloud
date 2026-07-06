@@ -268,6 +268,10 @@ orchestrator 的兜底分类**不覆盖**它。
 - **心跳**:每 15s 一行 SSE 注释(`: heartbeat`),防中间层断闲连接。
 - **结束**:run 进入终态后,流补发终态 `run.status` 事件,再发一行注释
   `: run terminal; stream complete`,随后**服务器关闭连接**。客户端据此停止重连。
+- **优雅停机**:orchestrator 收到 SIGTERM 优雅停机时,会给每个在连的流补发一行
+  注释 `: server shutting down` 并关闭连接(非终态)。这是一条普通 SSE 注释,
+  客户端按「注释行忽略」处理即可;若 run 尚未终态,客户端应带 `after_seq=<lastSeq>`
+  重连以续流。契约无破坏性变更(仍是 replay-then-live、`seq` 单调、注释行可忽略)。
 
 **SSE 帧格式**(每帧三行 + 空行):
 

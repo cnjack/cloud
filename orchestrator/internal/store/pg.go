@@ -205,6 +205,27 @@ func (s *PGStore) ListRunsByStatus(ctx context.Context, statuses ...domain.RunSt
 	return out, rows.Err()
 }
 
+func (s *PGStore) ListTerminalRunsWithJob(ctx context.Context) ([]domain.Run, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+runCols+` FROM runs
+		 WHERE k8s_job_name <> '' AND status = ANY($1)
+		 ORDER BY created_at ASC`,
+		[]string{string(domain.StatusSucceeded), string(domain.StatusFailed), string(domain.StatusCanceled)})
+	if err != nil {
+		return nil, fmt.Errorf("list terminal runs with job: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) CountActiveRuns(ctx context.Context) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx,
@@ -216,41 +237,167 @@ func (s *PGStore) CountActiveRuns(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// UpdateRun persists a run, enforcing the state-machine transition against the
-// currently-stored status inside a transaction (compare-and-set). This prevents
-// two reconcile passes (or a cancel racing a reconcile) from making conflicting
-// illegal transitions.
-func (s *PGStore) UpdateRun(ctx context.Context, r *domain.Run) error {
+// lockRunTx begins a transaction and locks the run row FOR UPDATE, returning the
+// committed row. Callers mutate only the fields they own via tx.Exec and then
+// commit with commitAndReload. The returned tx MUST be rolled back by the caller
+// (deferred) if not committed.
+func (s *PGStore) lockRunTx(ctx context.Context, id string) (pgx.Tx, *domain.Run, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin update run: %w", err)
+		return nil, nil, fmt.Errorf("begin run tx: %w", err)
+	}
+	run, err := scanRun(tx.QueryRow(ctx, `SELECT `+runCols+` FROM runs WHERE id=$1 FOR UPDATE`, id))
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, nil, err // ErrNotFound already normalised by scanRun
+	}
+	return tx, run, nil
+}
+
+// commitAndReload commits and returns the freshly-committed row so the caller
+// never has to write a stale in-memory copy back.
+func (s *PGStore) commitAndReload(ctx context.Context, tx pgx.Tx, id string) (*domain.Run, error) {
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit run tx: %w", err)
+	}
+	return s.GetRun(ctx, id)
+}
+
+// ScheduleRun: queued -> scheduling. The ONLY writer of k8s_job_name/token_hash.
+func (s *PGStore) ScheduleRun(ctx context.Context, id, jobName, tokenHash, phase string) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-
-	var current domain.RunStatus
-	err = tx.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1 FOR UPDATE`, r.ID).Scan(&current)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
+	if !domain.CanTransition(cur.Status, domain.StatusScheduling) {
+		return nil, fmt.Errorf("%w: %s -> scheduling", ErrInvalidTransition, cur.Status)
 	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET status=$2, phase=$3, k8s_job_name=$4, token_hash=$5 WHERE id=$1`,
+		id, domain.StatusScheduling, phase, jobName, tokenHash); err != nil {
+		return nil, fmt.Errorf("schedule run: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// MarkRunning: scheduling -> running, stamping started_at if null.
+func (s *PGStore) MarkRunning(ctx context.Context, id, phase string, startedAt time.Time) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
 	if err != nil {
-		return fmt.Errorf("lock run: %w", err)
+		return nil, err
 	}
-	if !domain.CanTransition(current, r.Status) {
-		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current, r.Status)
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if !domain.CanTransition(cur.Status, domain.StatusRunning) {
+		return nil, fmt.Errorf("%w: %s -> running", ErrInvalidTransition, cur.Status)
 	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET status=$2, phase=$3,
+		    started_at=COALESCE(started_at,$4) WHERE id=$1`,
+		id, domain.StatusRunning, phase, startedAt); err != nil {
+		return nil, fmt.Errorf("mark running: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
 
-	_, err = tx.Exec(ctx,
-		`UPDATE runs SET status=$2, phase=$3, error=$4, k8s_job_name=$5,
-		    failure_reason=$6, failure_message=$7, attempt=$8, token_hash=$9,
-		    started_at=$10, finished_at=$11
+// MarkSucceeded: -> succeeded, stamping finished_at if null.
+func (s *PGStore) MarkSucceeded(ctx context.Context, id, phase string, finishedAt time.Time) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if !domain.CanTransition(cur.Status, domain.StatusSucceeded) {
+		return nil, fmt.Errorf("%w: %s -> succeeded", ErrInvalidTransition, cur.Status)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET status=$2, phase=$3,
+		    finished_at=COALESCE(finished_at,$4) WHERE id=$1`,
+		id, domain.StatusSucceeded, phase, finishedAt); err != nil {
+		return nil, fmt.Errorf("mark succeeded: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// MarkFailed: -> failed, preserving an already-set failure_reason/message. The
+// given reason/message are applied only where the stored field is empty, so a
+// specific runner-reported reason recorded by a concurrent ingest is never
+// clobbered by the reconciler's generic cluster-derived classification.
+func (s *PGStore) MarkFailed(ctx context.Context, id, phase string, reason domain.FailureReason, msg string, finishedAt time.Time) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if !domain.CanTransition(cur.Status, domain.StatusFailed) {
+		return nil, fmt.Errorf("%w: %s -> failed", ErrInvalidTransition, cur.Status)
+	}
+	// CASE preserves any non-empty stored value; error mirrors the resulting
+	// failure_message (also preserved if already set).
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET status=$2, phase=$3,
+		    failure_reason  = CASE WHEN failure_reason=''  THEN $4 ELSE failure_reason  END,
+		    failure_message = CASE WHEN failure_message='' THEN $5 ELSE failure_message END,
+		    error           = CASE WHEN failure_message='' THEN $5 ELSE failure_message END,
+		    finished_at     = COALESCE(finished_at,$6)
 		 WHERE id=$1`,
-		r.ID, r.Status, r.Phase, r.Error, r.K8sJobName,
-		r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
-		r.StartedAt, r.FinishedAt)
-	if err != nil {
-		return fmt.Errorf("update run: %w", err)
+		id, domain.StatusFailed, phase, string(reason), msg, finishedAt); err != nil {
+		return nil, fmt.Errorf("mark failed: %w", err)
 	}
-	return tx.Commit(ctx)
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// SetRunnerFailure records a runner-reported reason/message without changing
+// status, first-writer-wins and only while non-terminal. A no-op is not an error.
+func (s *PGStore) SetRunnerFailure(ctx context.Context, id string, reason domain.FailureReason, msg string) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if cur.Status.Terminal() {
+		_ = tx.Rollback(ctx)
+		return cur, nil // already terminal: leave it
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET
+		    failure_reason  = CASE WHEN failure_reason=''  THEN $2 ELSE failure_reason  END,
+		    failure_message = CASE WHEN failure_message='' THEN $3 ELSE failure_message END
+		 WHERE id=$1`,
+		id, string(reason), msg); err != nil {
+		return nil, fmt.Errorf("set runner failure: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// CancelRun: -> canceled. Leaves k8s_job_name/token_hash intact so the returned
+// committed row still names the Job the caller must delete.
+func (s *PGStore) CancelRun(ctx context.Context, id, phase string, finishedAt time.Time) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if !domain.CanTransition(cur.Status, domain.StatusCanceled) {
+		return nil, fmt.Errorf("%w: %s -> canceled", ErrInvalidTransition, cur.Status)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET status=$2, phase=$3,
+		    finished_at=COALESCE(finished_at,$4) WHERE id=$1`,
+		id, domain.StatusCanceled, phase, finishedAt); err != nil {
+		return nil, fmt.Errorf("cancel run: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// ClearJobName blanks k8s_job_name (reconciler cleanup after Job deletion). No
+// status change; a missing run is a no-op.
+func (s *PGStore) ClearJobName(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE runs SET k8s_job_name='' WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("clear job name: %w", err)
+	}
+	return nil
 }
 
 // --- Events -----------------------------------------------------------------

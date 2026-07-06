@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/k8s"
@@ -157,9 +158,7 @@ func TestReconcilePreservesRunnerReportedFailure(t *testing.T) {
 	got, _ := st.GetRun(ctx, run.ID)
 
 	// Simulate runner-reported clone failure recorded while still scheduling.
-	got.FailureReason = domain.FailureCloneFailed
-	got.FailureMessage = "fatal: repository not found"
-	if err := st.UpdateRun(ctx, got); err != nil { // no-op status transition
+	if _, err := st.SetRunnerFailure(ctx, got.ID, domain.FailureCloneFailed, "fatal: repository not found"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -222,5 +221,146 @@ func TestReconcileUnlimitedCapacity(t *testing.T) {
 	rec.Tick(ctx)
 	if n := len(fake.CreatedNames()); n != 5 {
 		t.Fatalf("unlimited: scheduled %d, want 5", n)
+	}
+}
+
+// TestReconcileStaleCopyDoesNotClobberRunnerReason is the regression for the
+// root-cause lost-update finding as it manifests in the reconciler: Tick lists a
+// run with an empty FailureReason, the runner then ingests a specific reason,
+// and the SAME tick's ActionMarkFailed must NOT overwrite it with the generic
+// cluster-derived reason. It reproduces the exact interleaving by handing apply a
+// STALE run copy (empty reason) after the store row has the runner reason.
+func TestReconcileStaleCopyDoesNotClobberRunnerReason(t *testing.T) {
+	ctx := context.Background()
+	rec, st, fake := testRec(t, 4)
+	run := seedProjectAndRun(t, st)
+	rec.Tick(ctx) // queued -> scheduling
+	staleAtListTime, _ := st.GetRun(ctx, run.ID) // FailureReason == "" here
+	// Advance to running so MarkFailed is a legal transition.
+	fake.SetState(staleAtListTime.K8sJobName, k8s.JobRunning)
+	rec.Tick(ctx)
+	staleAtListTime, _ = st.GetRun(ctx, run.ID)
+	staleAtListTime.FailureReason = "" // ensure the snapshot is empty (as at list time)
+
+	// Runner ingest records a specific reason AFTER the reconciler's list read.
+	if _, err := st.SetRunnerFailure(ctx, run.ID, domain.FailureCloneFailed, "fatal: repo not found"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The reconciler now applies MarkFailed using its STALE copy.
+	rec.apply(ctx, staleAtListTime, Decision{
+		Action:        ActionMarkFailed,
+		FailureReason: domain.FailureAgentError,
+		FailureMsg:    "runner Job failed",
+	})
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.FailureReason != domain.FailureCloneFailed {
+		t.Fatalf("reason=%s want clone_failed (runner-reported must survive stale reconciler copy)", got.FailureReason)
+	}
+	if got.FailureMessage != "fatal: repo not found" {
+		t.Fatalf("message=%q want runner message", got.FailureMessage)
+	}
+}
+
+// TestReconcileCleansUpTerminalJobs is the regression for the cleanup half of
+// the cancel-racing-reconciler finding: a terminal (canceled) run that still
+// carries a k8s_job_name — because a cancel raced Job creation, or its
+// best-effort DeleteJob failed transiently — must have its Job reaped by the
+// reconciler and its name cleared. Before the fix, decide() never returned
+// ActionDeleteJob for terminal runs and Tick never listed them, so the Job ran
+// unreferenced forever.
+func TestReconcileCleansUpTerminalJobs(t *testing.T) {
+	ctx := context.Background()
+	rec, st, fake := testRec(t, 4)
+	run := seedProjectAndRun(t, st)
+
+	// Put the run into scheduling (job name set), then cancel it while leaving
+	// the job name attached (the orphan scenario).
+	if _, err := st.ScheduleRun(ctx, run.ID, k8s.JobName(run.ID), "hash", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CancelRun(ctx, run.ID, "CanceledByOperator", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// The Job still exists in the cluster (cancel's delete "failed"/raced).
+	fake.SetState(k8s.JobName(run.ID), k8s.JobRunning)
+
+	rec.Tick(ctx)
+
+	// The reconciler must have deleted the Job...
+	var deleted bool
+	for _, name := range fake.Deleted {
+		if name == k8s.JobName(run.ID) {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Fatalf("terminal run's Job was not deleted; Deleted=%v", fake.Deleted)
+	}
+	// ...and cleared the job name so it is not re-processed.
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.K8sJobName != "" {
+		t.Fatalf("job name not cleared after cleanup: %q", got.K8sJobName)
+	}
+	if got.Status != domain.StatusCanceled {
+		t.Fatalf("status=%s want canceled (cleanup must not change status)", got.Status)
+	}
+}
+
+// TestReconcileTokenStableAcrossFailedPersist is the regression for the
+// "token regen + idempotent CreateJob mismatch" finding. It models the
+// unrecoverable crash-before-commit state: a PRIOR process created the runner
+// Job with token1 and crashed before persisting the hash, so the run is still
+// queued with NO token_hash while a token1 Job lingers in the cluster. The next
+// reconcile's createJob must make the persisted hash match the token the LIVE
+// Job carries — otherwise every runner request 401s (constant-time hash compare
+// fails). The fix deletes the leftover Job before CreateJob, so CreateJob is
+// never a no-op against the stale-token Job and the fresh Job carries the token
+// whose hash we persist.
+//
+// The FakeLauncher faithfully models idempotency-by-name (an existing Job keeps
+// its ORIGINAL env), so without the delete-first fix the live Job would still
+// carry token1 while the store persists hash(token2).
+func TestReconcileTokenStableAcrossFailedPersist(t *testing.T) {
+	ctx := context.Background()
+	rec, st, fake := testRec(t, 4)
+	run := seedProjectAndRun(t, st)
+	jobName := k8s.JobName(run.ID)
+
+	// Simulate the prior crashed process: a token1 Job exists, but the run is
+	// still queued with no persisted hash.
+	const token1 = "prior-crashed-token"
+	if err := fake.CreateJob(ctx, k8s.JobSpec{
+		Name:  jobName,
+		RunID: run.ID,
+		Env:   map[string]string{"RUN_TOKEN": token1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// One reconcile: queued -> scheduling. createJob must delete the token1 Job
+	// and recreate with a fresh token whose hash it persists.
+	rec.Tick(ctx)
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.Status != domain.StatusScheduling {
+		t.Fatalf("status=%s want scheduling", got.Status)
+	}
+	if got.TokenHash == "" {
+		t.Fatal("token hash must be persisted after schedule")
+	}
+
+	// The LIVE Job's RUN_TOKEN must hash to the persisted token_hash.
+	liveSpec, ok := fake.LiveSpec(jobName)
+	if !ok {
+		t.Fatal("no live Job after reconcile")
+	}
+	liveToken := liveSpec.Env["RUN_TOKEN"]
+	if liveToken == token1 {
+		t.Fatal("live Job still carries the stale crashed token (delete-before-create missing)")
+	}
+	if auth.HashToken(liveToken) != got.TokenHash {
+		t.Fatal("persisted token hash does not match the live Job's RUN_TOKEN (runner would 401)")
 	}
 }

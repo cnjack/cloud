@@ -97,70 +97,44 @@ func (r *Reconciler) Tick(ctx context.Context) {
 			capacity-- // consumed a slot this tick
 		}
 	}
+
+	// Reap Jobs left attached to terminal runs (canceled-racing-schedule, or a
+	// cancel whose best-effort delete failed). See cleanupTerminalJobs.
+	r.cleanupTerminalJobs(ctx)
 }
 
 // apply performs the side effects for one decision. Returns true if it made a
-// scheduling change worth decrementing capacity for.
+// scheduling change worth decrementing capacity for. Every persistence step goes
+// through a targeted store mutator that re-reads the committed row and writes
+// only its own fields, so a concurrent cancel/ingest can never be clobbered.
 func (r *Reconciler) apply(ctx context.Context, run *domain.Run, d Decision) bool {
 	switch d.Action {
 	case ActionCreateJob:
-		// Generate the per-run runner token now, at Job-create time, so the
-		// plaintext exists only transiently (in the Job env) and only its hash
-		// is persisted. If we crash after CreateJob but before persisting the
-		// hash, the next tick regenerates a fresh token and recreates the Job
-		// (idempotent by name) — the runner has not started ingesting yet.
-		token, err := auth.GenerateRunToken()
-		if err != nil {
-			r.log.Error("reconcile: gen run token", "run", run.ID, "err", err)
-			return false
-		}
-		jobName := k8s.JobName(run.ID)
-		spec := k8s.JobSpec{
-			Name:           jobName,
-			RunID:          run.ID,
-			Env:            r.jobEnv(ctx, run, token),
-			TimeoutSeconds: r.cfg.RunTimeoutSecs,
-		}
-		if err := r.launcher.CreateJob(ctx, spec); err != nil {
-			r.log.Error("reconcile: create job", "run", run.ID, "err", err)
-			return false
-		}
-		run.K8sJobName = jobName
-		run.TokenHash = auth.HashToken(token)
-		run.Status = domain.StatusScheduling
-		run.Phase = "PreparingWorkspace"
-		r.persist(ctx, run)
-		return true
+		return r.createJob(ctx, run)
 
 	case ActionMarkRunning:
-		run.Status = domain.StatusRunning
-		run.Phase = "StreamingTurn"
-		if run.StartedAt == nil {
-			t := r.now()
-			run.StartedAt = &t
+		if committed, err := r.st.MarkRunning(ctx, run.ID, "StreamingTurn", r.now()); err != nil {
+			r.log.Error("reconcile: mark running", "run", run.ID, "err", err)
+		} else {
+			r.emitStatus(ctx, committed)
 		}
-		r.persist(ctx, run)
 
 	case ActionMarkSucceeded:
-		run.Status = domain.StatusSucceeded
-		run.Phase = "Succeeded"
-		r.finish(run)
-		r.persist(ctx, run)
+		if committed, err := r.st.MarkSucceeded(ctx, run.ID, "Succeeded", r.now()); err != nil {
+			r.log.Error("reconcile: mark succeeded", "run", run.ID, "err", err)
+		} else {
+			r.emitStatus(ctx, committed)
+		}
 
 	case ActionMarkFailed:
-		run.Status = domain.StatusFailed
-		run.Phase = "Failed"
-		// Preserve a runner-reported reason if one was already set via ingest;
-		// only fill from the cluster-derived classification when empty.
-		if run.FailureReason == "" {
-			run.FailureReason = d.FailureReason
+		// MarkFailed preserves any runner-reported failure_reason/message set via
+		// a concurrent ingest; d.* fill only where the stored fields are empty.
+		committed, err := r.st.MarkFailed(ctx, run.ID, "Failed", d.FailureReason, d.FailureMsg, r.now())
+		if err != nil {
+			r.log.Error("reconcile: mark failed", "run", run.ID, "err", err)
+		} else {
+			r.emitStatus(ctx, committed)
 		}
-		if run.FailureMessage == "" {
-			run.FailureMessage = d.FailureMsg
-		}
-		run.Error = run.FailureMessage
-		r.finish(run)
-		r.persist(ctx, run)
 
 	case ActionDeleteJob:
 		if run.K8sJobName != "" {
@@ -172,21 +146,88 @@ func (r *Reconciler) apply(ctx context.Context, run *domain.Run, d Decision) boo
 	return false
 }
 
-func (r *Reconciler) finish(run *domain.Run) {
-	if run.FinishedAt == nil {
-		t := r.now()
-		run.FinishedAt = &t
+// createJob mints a per-run token, creates the runner Job, and persists the job
+// name + token hash via ScheduleRun.
+//
+// Token/idempotency correctness: this path runs only for a QUEUED run, which
+// should have no live Job. But if a PRIOR tick created a Job with token1 and
+// then failed to persist (transient DB error / crash before commit), the run is
+// still queued with NO hash while a token1 Job lingers. Because CreateJob is
+// idempotent-by-name and an existing Job keeps its ORIGINAL env, a naive retry
+// would generate token2, no-op against the token1 Job, and persist hash(token2)
+// — so the runner (token1) would 401 forever. To make the persisted hash always
+// authoritative, we DELETE any same-named Job first so CreateJob always produces
+// a fresh Job carrying the token we are about to persist. Deleting a
+// non-existent Job is a no-op, so this is safe on the normal first-create path.
+// See finding "token regen + idempotent CreateJob mismatch".
+func (r *Reconciler) createJob(ctx context.Context, run *domain.Run) bool {
+	token, err := auth.GenerateRunToken()
+	if err != nil {
+		r.log.Error("reconcile: gen run token", "run", run.ID, "err", err)
+		return false
 	}
+	jobName := k8s.JobName(run.ID)
+
+	// Clear any leftover same-named Job from a prior failed-persist tick so the
+	// Job we create carries the token whose hash we persist below.
+	if err := r.launcher.DeleteJob(ctx, jobName); err != nil {
+		r.log.Warn("reconcile: delete leftover job before create", "run", run.ID, "err", err)
+	}
+
+	spec := k8s.JobSpec{
+		Name:           jobName,
+		RunID:          run.ID,
+		Env:            r.jobEnv(ctx, run, token),
+		TimeoutSeconds: r.cfg.RunTimeoutSecs,
+	}
+	if err := r.launcher.CreateJob(ctx, spec); err != nil {
+		r.log.Error("reconcile: create job", "run", run.ID, "err", err)
+		return false
+	}
+	committed, err := r.st.ScheduleRun(ctx, run.ID, jobName, auth.HashToken(token), "PreparingWorkspace")
+	if err != nil {
+		// A concurrent cancel may have committed queued->canceled first; the Job
+		// we just created is now orphaned. Delete it so it does not run to
+		// completion unreferenced. The terminal-with-job cleanup path also covers
+		// this, but deleting eagerly is cheap and immediate.
+		r.log.Error("reconcile: schedule run", "run", run.ID, "err", err)
+		if delErr := r.launcher.DeleteJob(ctx, jobName); delErr != nil {
+			r.log.Warn("reconcile: delete orphaned job after schedule failure", "run", run.ID, "err", delErr)
+		}
+		return false
+	}
+	r.emitStatus(ctx, committed)
+	return true
 }
 
-// persist writes the run and emits a run.status event so live subscribers and
-// the durable event log both reflect the transition.
-func (r *Reconciler) persist(ctx context.Context, run *domain.Run) {
-	if err := r.st.UpdateRun(ctx, run); err != nil {
-		r.log.Error("reconcile: update run", "run", run.ID, "status", run.Status, "err", err)
+// cleanupTerminalJobs deletes Jobs still attached to terminal runs (e.g. a
+// cancel that raced Job creation, or a cancel whose best-effort DeleteJob failed
+// transiently) and clears the job name once the Job is gone. This is the only
+// path that reaps orphaned Jobs, since decide() never returns ActionDeleteJob
+// for terminal runs.
+func (r *Reconciler) cleanupTerminalJobs(ctx context.Context) {
+	runs, err := r.st.ListTerminalRunsWithJob(ctx)
+	if err != nil {
+		r.log.Error("reconcile: list terminal runs with job", "err", err)
 		return
 	}
-	r.emitStatus(ctx, run)
+	for i := range runs {
+		run := runs[i]
+		if err := r.launcher.DeleteJob(ctx, run.K8sJobName); err != nil {
+			r.log.Warn("reconcile: cleanup delete job", "run", run.ID, "job", run.K8sJobName, "err", err)
+			continue // retry next tick; leave the name so we try again
+		}
+		state, err := r.launcher.GetJobState(ctx, run.K8sJobName)
+		if err != nil {
+			r.log.Warn("reconcile: cleanup get job state", "run", run.ID, "err", err)
+			continue
+		}
+		if state == k8s.JobMissing {
+			if err := r.st.ClearJobName(ctx, run.ID); err != nil {
+				r.log.Warn("reconcile: cleanup clear job name", "run", run.ID, "err", err)
+			}
+		}
+	}
 }
 
 // emitStatus appends a run.status event (and run.failure when failed).
