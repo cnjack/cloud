@@ -1,0 +1,78 @@
+# 02 · 决策账本
+
+三轮 + 补充对话锁定的架构决策。每条含:决策、选择、理由、被否方案。
+
+---
+
+## 第一轮 —— 骨架
+
+### D01 · 控制面归属 → 全新独立 orchestrator
+不绑在 jtype-web 上,自建独立控制面,拥有 `projects`/`runs`/调度,向下用 HTTP+MCP 驱动 jcode runner,向侧用 MCP/webhook 和 jtype 看板双向打通。
+- **被否**:扩展 jtype-web(Rust)——虽继承现成租户/OAuth/MCP,但被判定为耦合过重;扩展 jcode Go web(无多租户)。
+
+### D02 · 技术栈 → Go
+与 jcode agent 同语言 → 直接复用 `internal/config`、`internal/model`、`internal/session`、`handler` 接口;K8s 调度用官方 client-go;团队一套技能。**副作用:orchestrator 与 agent 同语言,原本最大的跨语言运维面几乎消失**,只剩"和 jtype 用 MCP/HTTP 对接"。
+- **被否**:Rust(可搬 jtype-web 的 OAuth/租户/webhook,但与 agent 跨语言、K8s 生态弱);Node/TS。
+
+### D03 · 身份/租户 → 外部 OIDC(Keycloak / 企业 SSO)
+orchestrator 作 OIDC relying party;device flow 从 Keycloak 来给 CLI/runner;天然打通钉钉/飞书 SSO。OIDC org/group → orchestrator 的 tenant/project。
+- **被否**:复用 jtype 当 IdP;控制面自建 auth。
+
+### D04 · Runner 隔离/调度 → K8s Job per active issue
+每个 active issue 一个(长活)worker Job;pod 边界 = 租户/安全边界。**K8s 本身即 supervision tree**(替掉 Symphony 的 Elixir/BEAM)。
+- **被否**:常驻 outbound runner 热池(jbrowser 模式,启动快但跨租户需擦除、有状态泄露风险);复用 jcode DockerExecutor attach(只 attach、不解决供给/隔离)。
+
+### D08 · Git 集成深度 → 默认 draft PR/MR,可退只读
+默认 clone → 推 namespaced 分支(`agent/*`)→ 开 draft PR/MR,人工 review 迭代;敏感项目可配置为只返回 diff。**硬把关:不自动 merge、不自动 CI、密钥隔离**(与 Copilot/Codex/Symphony 三家一致)。draft PR 同时是唯一工作追踪产物。
+- **被否**:只读(Codex apply 模式);全写不给退路。
+
+### D11 · 看板角色 → 触发源 + 回写 sink 都要
+API/webhook 是规范触发源,看板是众多"触发 + 回写"适配器之一。agent 用 jtype MCP 自己回写卡片。你的 `agent-orchestration-design.md` 作为"看板即队列"适配器落地。
+
+---
+
+## 第二轮 —— 独立控制面打开的新分叉
+
+### D02(细化)· 见上。
+
+### D03(细化)· 见上 —— 选了外部 OIDC。
+
+### D10 · BYOK 密钥 → 控制面 LLM 代理 + sandbox 拿短期 temp token
+> 初版曾是"明文 env 注入 agent 阶段(+ egress 白名单补救)",第三轮细化后**修订**为下:
+
+控制面跑一个 **LLM 代理**,持有真 key + endpoint;按 run 签发**短期 temp token** 给 sandbox。agent 在 sandbox 里用 temp token 调代理,**真 key 与 endpoint 永不出控制面**。即使 sandbox 被彻底攻陷,也只有一个限流、可撤销、短 TTL 的代理 token,不是真 key。因此不需要 engine/sandbox 双 pod 拆分——单 sandbox pod 即可。
+- **被否**:明文 env 注入 sandbox(key 待在跑生成代码的 pod 里);独立可信 engine pod 驱动 sandbox(2 pod/run,过重);vault 实时拉取。
+
+### D09 · Provider 顺序 → Gitea 优先
+Gitea 先(GitHub 式 API,较简单),然后 GitHub + GitLab 一起补。
+
+### 首批集成优先级(多选)
+Gitea 优先 → GitHub + GitLab;控制台 Run 按钮 / CLI;Git webhook @mention(先 GitHub 之外亦 Gitea);jtype 看板卡片拖动;钉钉 / 飞书 bot。落地顺序见 [06-reuse-roadmap-risks.md](06-reuse-roadmap-risks.md)。
+
+---
+
+## 第三轮 —— Symphony 重新打开的分叉
+
+### D07 · 编排契约 → 采用 Symphony SPEC
+在 Go 里实现 [Symphony](https://github.com/openai/symphony) 协议,把 **jtype 看板做成 Symphony 兼容 tracker**(看板列 = `active_states`/`terminal_states`)。拿到 OpenAI 内部验证过的状态机 / 退避 / stall / blocked / reconcile 语义,并可与生态互操作。你自己的 `agent-orchestration-design.md` 基本是它的子集。
+- **被否**:借鉴但自定义;直接跑 Elixir 参考实现(与 Go+K8s 割裂)。
+
+### D06 · 状态/恢复 → 幂等 reconciler + Postgres
+像 K8s controller:run/claim 落库(Postgres),但逻辑设计成可靠 reconcile,重启靠重读看板 + DB 恢复。兼顾 Symphony 的韧性,又给 API/webhook/CLI 触发的 run 一个落脚处。
+- **被否**:Symphony 式无 DB(全内存,重启丢 retry timer/live session、非看板触发的 run 无处存);DB 支撑的租约队列。
+
+### D05 · 执行模型 → 长活 worker + per-issue 持久 PVC
+每个 active issue 一个长活 worker Job,连跑多轮 turn(Symphony 续跑);workspace 用 **per-issue PVC** 跨 pod 重启存活,恢复最快、最省 clone。
+- **代价/护栏**:要管 PVC 生命周期 + 跨租户擦除。**注意:PVC 是运行期工作副本,不是权威副本**(权威副本在控制面 Store,见 D12)。
+- **被否**:纯 ephemeral(一 Job 一轮,续跑慢);长活 worker + pod 本地盘(崩溃重排要重 clone)。
+
+---
+
+## 补充 —— 存储 / 记忆 / 同步
+
+### D12 · 会话/记忆存储 → 改造 jcode 成可插拔 Store,云后端 = orchestrator 自有 store
+把 jcode 写死在 `~/.jcode/` 的 `session.Recorder` 与 `internal/memory` 抽成可插拔 `Store`(`LocalStore` / `RemoteStore` 两实现)。云端后端 = **orchestrator 自有 store(Postgres + 对象存储)**,不依赖 jtype。memory 两 scope(`project (tenant,proj)` + `global (tenant)`)存租户级;会话 transcript 进对象存储、控制面建索引;PVC 仅运行期工作副本。**机制上选 pluggable storage,而非外挂 hook**(单一写路径;实时 UI 走已有 `AgentEventHandler`)。详见 [03-storage-memory-sync.md](03-storage-memory-sync.md)。
+- **被否**:memory 存进 jtype 复用其 local-first 同步(更缝生态,但引入外部依赖);先全进 orchestrator 后期迁 jtype。
+
+### D13 · local↔cloud 同步 → 在 orchestrator 内自建
+借鉴 jtype 的 lamport clock / sync cursor 概念,但在 orchestrator 内自建、不依赖 jtype。session 是 append-only 日志(按 `(session_id, seq)` 取并集,近乎无冲突);memory 是小结构化 notes(按 note key LWW + 控制面蒸馏 pipeline 当合并权威)。同一个 Store seam 支撑本地/云端一致。
