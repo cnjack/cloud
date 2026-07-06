@@ -290,11 +290,15 @@ func (m *MemStore) CancelRun(_ context.Context, id, phase string, finishedAt tim
 	})
 }
 
-func (m *MemStore) ClearJobName(_ context.Context, id string) error {
+// MarkJobCleaned stamps JobCleanedAt once the run's Job is confirmed deleted.
+// K8sJobName is KEPT (historical record). Idempotent: a prior stamp is
+// preserved. No status change; a missing run is a no-op.
+func (m *MemStore) MarkJobCleaned(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if r, ok := m.runs[id]; ok {
-		r.K8sJobName = ""
+	if r, ok := m.runs[id]; ok && r.JobCleanedAt == nil {
+		t := time.Now().UTC()
+		r.JobCleanedAt = &t
 		m.runs[id] = r
 	}
 	return nil
@@ -305,7 +309,7 @@ func (m *MemStore) ListTerminalRunsWithJob(_ context.Context) ([]domain.Run, err
 	defer m.mu.Unlock()
 	var out []domain.Run
 	for _, r := range m.runs {
-		if r.Status.Terminal() && r.K8sJobName != "" {
+		if r.Status.Terminal() && r.K8sJobName != "" && r.JobCleanedAt == nil {
 			out = append(out, r)
 		}
 	}

@@ -202,7 +202,8 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run) bool {
 
 // cleanupTerminalJobs deletes Jobs still attached to terminal runs (e.g. a
 // cancel that raced Job creation, or a cancel whose best-effort DeleteJob failed
-// transiently) and clears the job name once the Job is gone. This is the only
+// transiently) and stamps job_cleaned_at once the Job is confirmed gone.
+// k8s_job_name is preserved as the run's historical record. This is the only
 // path that reaps orphaned Jobs, since decide() never returns ActionDeleteJob
 // for terminal runs.
 func (r *Reconciler) cleanupTerminalJobs(ctx context.Context) {
@@ -215,7 +216,7 @@ func (r *Reconciler) cleanupTerminalJobs(ctx context.Context) {
 		run := runs[i]
 		if err := r.launcher.DeleteJob(ctx, run.K8sJobName); err != nil {
 			r.log.Warn("reconcile: cleanup delete job", "run", run.ID, "job", run.K8sJobName, "err", err)
-			continue // retry next tick; leave the name so we try again
+			continue // retry next tick; job_cleaned_at stays null so we try again
 		}
 		state, err := r.launcher.GetJobState(ctx, run.K8sJobName)
 		if err != nil {
@@ -223,8 +224,11 @@ func (r *Reconciler) cleanupTerminalJobs(ctx context.Context) {
 			continue
 		}
 		if state == k8s.JobMissing {
-			if err := r.st.ClearJobName(ctx, run.ID); err != nil {
-				r.log.Warn("reconcile: cleanup clear job name", "run", run.ID, "err", err)
+			// Stamp the cleanup marker; k8s_job_name is KEPT as historical record
+			// (audit + e2e verification) — the marker alone removes the run from
+			// the next tick's cleanup scan.
+			if err := r.st.MarkJobCleaned(ctx, run.ID); err != nil {
+				r.log.Warn("reconcile: cleanup mark job cleaned", "run", run.ID, "err", err)
 			}
 		}
 	}

@@ -265,11 +265,12 @@ func TestReconcileStaleCopyDoesNotClobberRunnerReason(t *testing.T) {
 
 // TestReconcileCleansUpTerminalJobs is the regression for the cleanup half of
 // the cancel-racing-reconciler finding: a terminal (canceled) run that still
-// carries a k8s_job_name — because a cancel raced Job creation, or its
+// carries an un-reaped Job — because a cancel raced Job creation, or its
 // best-effort DeleteJob failed transiently — must have its Job reaped by the
-// reconciler and its name cleared. Before the fix, decide() never returned
-// ActionDeleteJob for terminal runs and Tick never listed them, so the Job ran
-// unreferenced forever.
+// reconciler. Bookkeeping is the job_cleaned_at marker: k8s_job_name is
+// PRESERVED as the run's historical record (audit + e2e J3-S6 verifies
+// independent worker Jobs by name), and the stamped marker keeps the run out of
+// subsequent cleanup scans.
 func TestReconcileCleansUpTerminalJobs(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 4)
@@ -289,22 +290,50 @@ func TestReconcileCleansUpTerminalJobs(t *testing.T) {
 	rec.Tick(ctx)
 
 	// The reconciler must have deleted the Job...
-	var deleted bool
+	deleteCount := 0
 	for _, name := range fake.Deleted {
 		if name == k8s.JobName(run.ID) {
-			deleted = true
+			deleteCount++
 		}
 	}
-	if !deleted {
+	if deleteCount == 0 {
 		t.Fatalf("terminal run's Job was not deleted; Deleted=%v", fake.Deleted)
 	}
-	// ...and cleared the job name so it is not re-processed.
 	got, _ := st.GetRun(ctx, run.ID)
-	if got.K8sJobName != "" {
-		t.Fatalf("job name not cleared after cleanup: %q", got.K8sJobName)
+	// ...while PRESERVING k8s_job_name as the historical record...
+	if got.K8sJobName != k8s.JobName(run.ID) {
+		t.Fatalf("k8s_job_name=%q want %q (Job identity must persist after cleanup)", got.K8sJobName, k8s.JobName(run.ID))
+	}
+	// ...and stamping job_cleaned_at instead.
+	if got.JobCleanedAt == nil {
+		t.Fatal("job_cleaned_at not set after cleanup")
 	}
 	if got.Status != domain.StatusCanceled {
 		t.Fatalf("status=%s want canceled (cleanup must not change status)", got.Status)
+	}
+
+	// The run must not be re-listed for cleanup: another tick must not issue a
+	// second DeleteJob for it.
+	before := deleteCount
+	rec.Tick(ctx)
+	after := 0
+	for _, name := range fake.Deleted {
+		if name == k8s.JobName(run.ID) {
+			after++
+		}
+	}
+	if after != before {
+		t.Fatalf("cleaned run was re-processed: delete count %d -> %d (job_cleaned_at filter broken)", before, after)
+	}
+	// And listing must exclude it.
+	pending, err := st.ListTerminalRunsWithJob(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range pending {
+		if r.ID == run.ID {
+			t.Fatal("cleaned run still returned by ListTerminalRunsWithJob")
+		}
 	}
 }
 

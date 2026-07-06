@@ -74,7 +74,8 @@
   "attempt": 1,
   "created_at": "2026-07-07T12:00:01Z",
   "started_at": "2026-07-07T12:00:09Z",
-  "finished_at": null
+  "finished_at": null,
+  "job_cleaned_at": null
 }
 ```
 
@@ -85,7 +86,12 @@
 - `failure_reason` / `failure_message`:仅当 `status == "failed"` 非空;
   `failure_message` 保证非空且人类可读(见 §1.4)。
 - `started_at`:转入 `running` 时置。`finished_at`:进入任一终态时置。
-- **`k8s_job_name` 供运维排障**;UI 可不展示。
+- **`k8s_job_name` 供运维排障**;UI 可不展示。**该字段是 run 历史记录的一部分,
+  终态后也永不清空**(审计 + e2e 按名核对各 run 独立 worker Job)。
+- `job_cleaned_at`(可空,省略即 `null`):reconciler 确认该终态 run 的 Job 已
+  从集群删除(回收孤儿 Job)后打的时间戳;`k8s_job_name` 保持不变。仅供审计/
+  排障,console 无需展示或依赖。(迁移 `0003_job_cleaned_at`;新增可空字段,
+  非破坏性变更。)
 - 服务器**从不**把 run token 序列化给 console 客户端。
 
 ### 1.3 Run 状态徽章体系(单一事实源)

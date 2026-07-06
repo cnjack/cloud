@@ -128,6 +128,11 @@ type Run struct {
 	CreatedAt      time.Time     `json:"created_at"`
 	StartedAt      *time.Time    `json:"started_at,omitempty"`
 	FinishedAt     *time.Time    `json:"finished_at,omitempty"`
+	// JobCleanedAt is stamped when the reconciler has confirmed the run's
+	// terminal Job was deleted from the cluster. K8sJobName is NEVER cleared —
+	// it is part of the run's historical record (audit + e2e verification); this
+	// marker is what keeps the cleanup path from re-processing the run.
+	JobCleanedAt *time.Time `json:"job_cleaned_at,omitempty"`
 
 	// TokenHash is the SHA-256 (hex) of the per-run bearer token injected into
 	// the Job. Never serialised to API clients.
