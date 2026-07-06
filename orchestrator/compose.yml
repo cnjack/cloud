@@ -1,0 +1,23 @@
+# Local dev dependencies for the orchestrator. `make dev` brings up Postgres and
+# runs the server against it. Only Postgres is containerised here; the object
+# store / cluster are out of scope for this compose (K8s is orbstack/kind).
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: jcloud-postgres
+    environment:
+      POSTGRES_USER: jcloud
+      POSTGRES_PASSWORD: jcloud
+      POSTGRES_DB: jcloud
+    ports:
+      - "5432:5432"
+    volumes:
+      - jcloud_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jcloud -d jcloud"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  jcloud_pgdata:

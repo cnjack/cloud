@@ -1,0 +1,7 @@
+bin/
+.env
+*.md
+.git
+.gitignore
+compose.yml
+Makefile
