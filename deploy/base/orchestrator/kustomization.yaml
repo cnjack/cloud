@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: jcloud
 resources:
   - serviceaccount.yaml
+  - runner-serviceaccount.yaml
   - rbac.yaml
   - configmap.yaml
   - secret.yaml
