@@ -15,7 +15,12 @@
 #   RUN_ID           opaque id echoed into logs/output (default: random)
 #   MODEL_NAME       "provider/model" as jcode expects (default: mock/mock-model)
 #   MODEL_PROVIDER   provider key used in config (default: derived from MODEL_NAME)
-#   RUN_TIMEOUT      hard ceiling for the agent run (default: 300s)
+#   RUN_TIMEOUT      hard ceiling for the agent run (default: 300s). Should be
+#                    set slightly below the Job's activeDeadlineSeconds
+#                    (RUN_TIMEOUT_SECONDS, default 1800s) so acpdrive's own
+#                    deadline fires first and this script can report a clean
+#                    reason=timeout instead of the cluster killing the pod out
+#                    from under an in-progress run.
 #   START_MOCKLLM    if "1", start the bundled mockllm on 127.0.0.1:8081 and
 #                    point MODEL_BASE_URL at it (self-contained mode)
 #   MOCK_SCENARIO    scenario name for the bundled mockllm (default: write_file)
@@ -41,8 +46,9 @@ report_failure() {
 }
 
 # die REASON MESSAGE — report the failure (if the orchestrator is wired) then
-# exit non-zero. REASON ∈ {clone_failed, setup_failed, agent_error}. Two-arg form
-# is preferred; a single arg is treated as an agent_error message for back-compat.
+# exit non-zero. REASON ∈ {clone_failed, setup_failed, agent_error, timeout}
+# (see docs/11-api.md §1.4). Two-arg form is preferred; a single arg is treated
+# as an agent_error message for back-compat.
 die() {
   local reason message
   if [ "$#" -ge 2 ]; then
@@ -157,14 +163,35 @@ RUN_RC=$?
 set -e
 # acpdrive drives the agent loop AND streams agent.text/tool events to the
 # orchestrator as it runs. A non-zero rc means the agent errored / was refused.
-[ "$RUN_RC" -eq 0 ] || die agent_error "headless agent run failed (rc=$RUN_RC)"
+# rc=124 is acpdrive's dedicated exit code for "hit our own --timeout deadline"
+# (conventional timeout(1) status), so report reason=timeout (a real enum
+# value; see docs/11-api.md §1.4) instead of the generic agent_error — this
+# matters most under the process launcher, which has no K8s
+# activeDeadlineSeconds to fall back on for classification.
+if [ "$RUN_RC" -eq 124 ]; then
+  die timeout "headless agent run exceeded RUN_TIMEOUT=$RUN_TIMEOUT"
+elif [ "$RUN_RC" -ne 0 ]; then
+  die agent_error "headless agent run failed (rc=$RUN_RC)"
+fi
 log "headless run finished ok"
 
 # --- 5. Produce the diff -----------------------------------------------------
-# Baseline is HEAD at clone (BASE_REF). 'git add -N .' stages intents for
-# untracked files so `git diff` includes newly-created files.
+# Baseline is HEAD at clone (BASE_REF), NOT the index: the agent may have
+# staged (`git add`) or even committed changes, and a plain `git diff` (which
+# only compares worktree-vs-index) would silently omit those, or produce an
+# empty diff (falsely failing the run at the empty-diff check below) if the
+# agent committed. Diffing against BASE_REF captures worktree + index + any
+# commits made since clone in one patch. 'git add -N .' stages intents for
+# untracked files so untracked new files show up in a `diff <ref>` too.
 git -C "$WORKSPACE" add -N . >/dev/null 2>&1 || true
-DIFF="$(git -C "$WORKSPACE" --no-pager diff)"
+if [ -n "$BASE_REF" ]; then
+  DIFF="$(git -C "$WORKSPACE" --no-pager diff --binary "$BASE_REF")"
+else
+  # No baseline (e.g. clone produced an empty repo with no HEAD): fall back to
+  # a plain worktree-vs-index diff, the best we can do without a ref.
+  log "no BASE_REF recorded; falling back to plain 'git diff' (worktree vs index)"
+  DIFF="$(git -C "$WORKSPACE" --no-pager diff --binary)"
+fi
 
 mkdir -p "$OUT_DIR" 2>/dev/null || true
 if printf '%s\n' "$DIFF" > "$OUT_DIR/diff.patch" 2>/dev/null; then

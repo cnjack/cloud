@@ -54,7 +54,7 @@ func main() {
 	switch cmd {
 	case "report-failure":
 		fs := flag.NewFlagSet("report-failure", flag.ExitOnError)
-		reason := fs.String("reason", "agent_error", "failure reason (clone_failed|setup_failed|agent_error)")
+		reason := fs.String("reason", "agent_error", "failure reason (clone_failed|setup_failed|agent_error|timeout)")
 		message := fs.String("message", "", "human-readable failure message")
 		seq := fs.Int64("seq", 1, "client seq (idempotency key; server allocates the durable seq)")
 		_ = fs.Parse(args)

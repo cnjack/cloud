@@ -120,13 +120,15 @@ docker run -d --name "$MOCK_CTR" --network "$NET" --network-alias mockllm \
   -e MOCK_ADDR=":8081" -e MOCK_SCENARIO="$SCENARIO" \
   --entrypoint /usr/local/bin/mockllm "$IMAGE" >/dev/null || fail "mockllm sidecar failed to start"
 # wait for mockllm
+ready=0
 for _ in $(seq 1 50); do
   if docker run --rm --network "$NET" --platform "linux/$TARGETARCH" \
        --entrypoint bash "$IMAGE" -c '(exec 3<>/dev/tcp/mockllm/8081) 2>/dev/null' >/dev/null 2>&1; then
-    break
+    ready=1; break
   fi
   sleep 0.2
 done
+[ "$ready" = "1" ] || { docker logs "$MOCK_CTR" || true; fail "mockllm never became ready"; }
 pass "mockllm sidecar up"
 
 # === 5. start the orchestrator (process launcher) ===

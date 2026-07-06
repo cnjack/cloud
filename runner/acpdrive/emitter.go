@@ -16,7 +16,12 @@ package main
 //     authoritative global seq server-side, so re-sending a batch after a 5xx or
 //     network error is safe and never collides with orchestrator-internal events.
 //   - Retries on network errors / 5xx with capped exponential backoff; gives up a
-//     batch after maxAttempts so a wedged orchestrator can't stall shutdown.
+//     batch after maxAttempts. maxAttempts alone bounds one batch, not the whole
+//     shutdown drain (a full buffer can be ~100 batches) — so Close's final
+//     drain is additionally bounded by an overall shutdownDeadline (default
+//     10s) and abandons the rest of the queue after the first batch that fails
+//     permanently, so a wedged/unreachable orchestrator can never stall
+//     container shutdown for more than shutdownDeadline.
 //
 // The emitter is entirely best-effort: the agent run's success is judged by the
 // diff, not by event delivery, so every failure here is logged and swallowed.
@@ -58,9 +63,10 @@ type Emitter struct {
 	token   string
 	client  *http.Client
 
-	flushInterval time.Duration
-	batchMax      int
-	maxAttempts   int
+	flushInterval    time.Duration
+	batchMax         int
+	maxAttempts      int
+	shutdownDeadline time.Duration
 
 	mu      sync.Mutex
 	seq     int64
@@ -81,6 +87,18 @@ type EmitterConfig struct {
 	BatchMax      int           // flush when this many buffered (default 10)
 	MaxAttempts   int           // per-batch send attempts (default 5)
 	HTTPTimeout   time.Duration // per-request timeout (default 10s)
+
+	// ShutdownDeadline bounds the TOTAL time Close's final drain may spend
+	// trying to flush the queue (default 10s). It is a wall-clock budget for
+	// the whole drain, not a per-batch timeout: with a full buffer and an
+	// unreachable orchestrator, retrying every batch to exhaustion could
+	// otherwise take ~55s per batch (maxAttempts * (HTTPTimeout + backoff)) *
+	// up to ~100 batches, blocking container shutdown for tens of minutes.
+	// Once the deadline elapses, or the first batch during shutdown fails
+	// permanently (retries exhausted or a non-retryable status), the rest of
+	// the queue is abandoned — event delivery is always best-effort and must
+	// never hold up the run's exit.
+	ShutdownDeadline time.Duration
 }
 
 // NewEmitter returns a started emitter, or nil if baseURL/runID/token are not all
@@ -105,16 +123,20 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	if cfg.HTTPTimeout <= 0 {
 		cfg.HTTPTimeout = 10 * time.Second
 	}
+	if cfg.ShutdownDeadline <= 0 {
+		cfg.ShutdownDeadline = 10 * time.Second
+	}
 	e := &Emitter{
-		baseURL:       cfg.BaseURL,
-		runID:         cfg.RunID,
-		token:         cfg.Token,
-		client:        &http.Client{Timeout: cfg.HTTPTimeout},
-		flushInterval: cfg.FlushInterval,
-		batchMax:      cfg.BatchMax,
-		maxAttempts:   cfg.MaxAttempts,
-		ch:            make(chan event, cfg.BufferSize),
-		done:          make(chan struct{}),
+		baseURL:          cfg.BaseURL,
+		runID:            cfg.RunID,
+		token:            cfg.Token,
+		client:           &http.Client{Timeout: cfg.HTTPTimeout},
+		flushInterval:    cfg.FlushInterval,
+		batchMax:         cfg.BatchMax,
+		maxAttempts:      cfg.MaxAttempts,
+		shutdownDeadline: cfg.ShutdownDeadline,
+		ch:               make(chan event, cfg.BufferSize),
+		done:             make(chan struct{}),
 	}
 	e.wg.Add(1)
 	go e.loop()
@@ -168,9 +190,11 @@ func (e *Emitter) EmitText(text string) {
 	e.Emit(eventAgentText, map[string]any{"text": text})
 }
 
-// Close flushes remaining events and stops the background loop. Bounded by the
-// caller's patience via the returned deadline: it blocks until the queue drains
-// or the loop's shutdown drain budget elapses.
+// Close flushes remaining events and stops the background loop. It blocks
+// until the queue drains, the first batch fails permanently during shutdown,
+// or shutdownDeadline (default 10s) elapses — whichever comes first — so a
+// wedged/unreachable orchestrator can never block the caller (and therefore
+// container shutdown) for more than that budget.
 func (e *Emitter) Close() {
 	if e == nil {
 		return
@@ -202,22 +226,37 @@ func (e *Emitter) loop() {
 			batch = append(batch, ev)
 			drain()
 			if len(batch) >= e.batchMax {
-				e.send(batch)
+				e.send(batch, time.Time{})
 				batch = batch[:0]
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
-				e.send(batch)
+				e.send(batch, time.Time{})
 				batch = batch[:0]
 			}
 		case <-e.done:
-			// Final drain: pull everything still queued and flush in batches.
+			// Final drain: pull everything still queued and flush in batches,
+			// but bounded by an overall deadline so a wedged/unreachable
+			// orchestrator can never stall container shutdown. Abandon the
+			// rest of the queue as soon as either the deadline elapses or one
+			// batch fails permanently (retries exhausted, or a non-retryable
+			// status) — if the orchestrator can't take one batch it won't
+			// take the next hundred either, so there's no point paying the
+			// per-batch retry cost for each of them.
+			shutdownDeadline := time.Now().Add(e.shutdownDeadline)
 			for {
 				drain()
 				if len(batch) == 0 {
 					break
 				}
-				e.send(batch)
+				if time.Now().After(shutdownDeadline) {
+					fmt.Fprintf(os.Stderr, "[emitter] shutdown deadline exceeded; abandoning remaining queued events\n")
+					break
+				}
+				if ok := e.send(batch, shutdownDeadline); !ok {
+					fmt.Fprintf(os.Stderr, "[emitter] batch failed during shutdown drain; abandoning remaining queued events\n")
+					break
+				}
 				batch = batch[:0]
 			}
 			return
@@ -225,12 +264,22 @@ func (e *Emitter) loop() {
 	}
 }
 
-// send POSTs a batch with retry/backoff. A drop note (if any drops occurred) is
-// prepended so the console can render a "N events dropped" marker. Best-effort:
-// on permanent failure the batch is logged and abandoned.
-func (e *Emitter) send(batch []event) {
+// send POSTs a batch with retry/backoff, returning whether it was ultimately
+// delivered. A drop note (if any drops occurred) is prepended so the console
+// can render a "N events dropped" marker. Best-effort: on permanent failure
+// the batch is logged and abandoned (returns false), and the caller decides
+// what to do next — the hot-path callers (batchMax/ticker flushes) ignore the
+// result since event delivery must never block the agent loop, while the
+// shutdown drain in loop() uses it to abandon the rest of the queue rather
+// than retry every remaining batch against a dead orchestrator.
+//
+// deadline, if non-zero, additionally bounds the retry loop: once passed, send
+// stops retrying and gives up immediately instead of sleeping through another
+// backoff. This is what keeps Close()'s final drain within shutdownDeadline
+// even when a single batch is mid-retry when the deadline arrives.
+func (e *Emitter) send(batch []event, deadline time.Time) bool {
 	if len(batch) == 0 {
-		return
+		return true
 	}
 	// Snapshot & reset the drop counter, injecting a note event if needed.
 	e.mu.Lock()
@@ -249,7 +298,7 @@ func (e *Emitter) send(batch []event) {
 	body, err := json.Marshal(map[string]any{"events": batch})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[emitter] marshal batch: %v\n", err)
-		return
+		return false
 	}
 	url := fmt.Sprintf("%s/internal/v1/runs/%s/events", e.baseURL, e.runID)
 
@@ -257,17 +306,22 @@ func (e *Emitter) send(batch []event) {
 	for attempt := 1; attempt <= e.maxAttempts; attempt++ {
 		ok, retryable := e.post(url, body)
 		if ok {
-			return
+			return true
 		}
 		if !retryable || attempt == e.maxAttempts {
 			fmt.Fprintf(os.Stderr, "[emitter] giving up on batch of %d after %d attempt(s)\n", len(batch), attempt)
-			return
+			return false
+		}
+		if !deadline.IsZero() && time.Now().Add(backoff).After(deadline) {
+			fmt.Fprintf(os.Stderr, "[emitter] shutdown deadline would be exceeded by next retry; giving up on batch of %d after %d attempt(s)\n", len(batch), attempt)
+			return false
 		}
 		time.Sleep(backoff)
 		if backoff < 5*time.Second {
 			backoff *= 2
 		}
 	}
+	return false
 }
 
 // post sends one request. Returns (ok, retryable). 2xx => ok. 5xx / network =>
