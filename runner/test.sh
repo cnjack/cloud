@@ -127,10 +127,25 @@ grep -q '===JCODE_DIFF_BEGIN' "$TMP/run.stdout" || fail "stdout missing diff mar
 pass "stdout carries the diff between markers"
 
 # no TUI escape sequences anywhere (bracketed-paste / alt-screen / cursor moves)
-if LC_ALL=C grep -aP '\x1b\[\?(1049|2004|25)[hl]|\x1b\[[0-9;]*[ABCDHJK]' \
-     "$TMP/run.stdout" "$TMP/run.stderr" >/dev/null 2>&1; then
-  fail "found TUI/ANSI escape sequences in output (TUI leaked?)"
-fi
+# NOTE: this must NOT use `grep -P` — BSD grep (macOS /usr/bin/grep, the dev
+# platform) has no -P support and exits 2 ("invalid option"). Since grep was
+# used directly as an if-condition, that exit-2 was indistinguishable from
+# "no match" (exit 1) and the fail branch was never taken: the check always
+# passed, silently, on macOS. Build the ESC byte with printf (POSIX-portable)
+# and use BRE/ERE alternation instead of \x1b/-P, then explicitly check grep's
+# exit status: 0 = found (fail), 1 = clean (pass), >1 = grep itself errored
+# (fail loudly rather than silently "pass").
+ESC="$(printf '\033')"
+set +e
+LC_ALL=C grep -aE "${ESC}\\[\\?(1049|2004|25)[hl]|${ESC}\\[[0-9;]*[ABCDHJK]" \
+     "$TMP/run.stdout" "$TMP/run.stderr" >/dev/null 2>&1
+GREP_RC=$?
+set -e
+case "$GREP_RC" in
+  0) fail "found TUI/ANSI escape sequences in output (TUI leaked?)" ;;
+  1) : ;; # no match — clean
+  *) fail "TUI-escape check itself errored (grep rc=$GREP_RC) — cannot verify" ;;
+esac
 pass "no TUI escape codes in logs"
 
 # both agent turns must have reached the mock (turn1 tool call + turn2 finish)

@@ -82,6 +82,14 @@ func main() {
 	defer stop()
 
 	if err := run(sigCtx, agentBin, agentArgs, workspace, prompt, verbose); err != nil {
+		// Distinguish "hit our own --timeout deadline" from any other agent
+		// error with a dedicated exit code (124, the conventional timeout exit
+		// status used by GNU coreutils' `timeout(1)`) so entrypoint.sh can
+		// report run.failure reason=timeout instead of the generic agent_error.
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Fprintf(os.Stderr, "[acpdrive] error: run exceeded --timeout=%s: %v\n", timeout, err)
+			os.Exit(124)
+		}
 		fatal("%v", err)
 	}
 }

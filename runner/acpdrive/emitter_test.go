@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -204,6 +205,88 @@ func TestEmitterDropsOldestUnderBackpressure(t *testing.T) {
 	}
 	if !sawNote {
 		t.Fatal("expected a drop-note event to be delivered after backpressure")
+	}
+}
+
+// TestEmitterCloseBoundedWhenOrchestratorUnreachable proves the fix for the
+// "Close() can block the runner container for tens of minutes" issue: with a
+// full buffer and an orchestrator that never responds, Close must still
+// return within roughly ShutdownDeadline, not maxAttempts*batches*HTTPTimeout
+// (which for a full 1024-event buffer used to be on the order of 90 minutes).
+func TestEmitterCloseBoundedWhenOrchestratorUnreachable(t *testing.T) {
+	// A listener that accepts TCP connections but never writes an HTTP
+	// response, so every request hangs until the client's HTTPTimeout fires.
+	// This simulates an orchestrator that is unreachable/wedged (as opposed to
+	// actively refusing, which would fail fast and not exercise the deadline).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Never respond; just hold the connection open until the client
+			// gives up (its Timeout) or closes it.
+			go func(c net.Conn) {
+				buf := make([]byte, 4096)
+				for {
+					if _, err := c.Read(buf); err != nil {
+						c.Close()
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+
+	const shutdownDeadline = 500 * time.Millisecond
+	e := newTestEmitter(t, "http://"+ln.Addr().String(), EmitterConfig{
+		BufferSize: 1024,
+		// FlushInterval/BatchMax deliberately large enough that filling the
+		// buffer below can never trigger a normal-path (undeadlined) send
+		// before Close() is called: this test isolates the shutdown drain
+		// specifically (the thing the finding + fix are about), not the
+		// pre-existing per-batch maxAttempts bound on the hot path.
+		FlushInterval:    time.Hour,
+		BatchMax:         100000,
+		MaxAttempts:      5,
+		HTTPTimeout:      50 * time.Millisecond,
+		ShutdownDeadline: shutdownDeadline,
+	})
+
+	// Fill the buffer so the shutdown drain has many batches to (fail to) send.
+	for i := 0; i < 1024; i++ {
+		e.Emit(eventAgentText, map[string]any{"i": i})
+	}
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		e.Close()
+		close(done)
+	}()
+
+	// Generous upper bound over shutdownDeadline: the drain loop's first batch
+	// send isn't itself deadline-preemptible mid-request (only the retry
+	// backoff between attempts is), so one attempt's full HTTPTimeout can run
+	// past the deadline before it's next checked. That slop is O(HTTPTimeout),
+	// not O(bufferSize/batchMax * maxAttempts * HTTPTimeout) — which is
+	// exactly the bug this test proves is fixed (that used to be ~90 minutes
+	// for a full 1024-event buffer).
+	upperBound := shutdownDeadline + 5*time.Second
+	select {
+	case <-done:
+		elapsed := time.Since(start)
+		if elapsed > upperBound {
+			t.Fatalf("Close() took %s, want <= %s (shutdownDeadline=%s)", elapsed, upperBound, shutdownDeadline)
+		}
+		t.Logf("Close() returned in %s (shutdownDeadline=%s)", elapsed, shutdownDeadline)
+	case <-time.After(upperBound):
+		t.Fatalf("Close() did not return within %s (shutdownDeadline=%s) — shutdown is unbounded", upperBound, shutdownDeadline)
 	}
 }
 
