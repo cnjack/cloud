@@ -46,8 +46,8 @@ This directory (`cloud/deploy/`) is self-contained: it does not modify
 
 | Component | Manifests | Image | Notes |
 |---|---|---|---|
-| **postgres** | `base/postgres/` | `postgres:16-alpine` (pre-pulled) | Deployment(1) + PVC(1Gi) + Service(ClusterIP:5432) + Secret (creds + full `DATABASE_URL`) |
-| **orchestrator** | `base/orchestrator/` | `jcloud/orchestrator:dev` (local build) | Deployment(1) + Service(ClusterIP:8080) + ServiceAccount + Role/RoleBinding + ConfigMap/Secret env. `-migrate-only` initContainer runs migrations before the main container starts. |
+| **postgres** | `base/postgres/` | `postgres:16-alpine` (pre-pulled) | Deployment(1) + PVC(1Gi) + Service(ClusterIP:5432) + Secret (`POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` only — the full `DATABASE_URL` DSN lives solely in `base/orchestrator/secret.yaml`) |
+| **orchestrator** | `base/orchestrator/` | `jcloud/orchestrator:dev` (local build) | Deployment(1) + Service(ClusterIP:8080) + ServiceAccount + Role/RoleBinding + ConfigMap/Secret env. `-migrate-only` initContainer runs migrations before the main container starts. Also ships a separate, privilege-less `runner` ServiceAccount (`runner-serviceaccount.yaml`) for runner Job pods — see "Runner Job ServiceAccount" below. |
 | **mockllm** | `base/mockllm/` | `jcloud/mockllm:dev` (local build, own Dockerfile at `deploy/mockllm/Dockerfile`) | Deployment(1) + Service(ClusterIP:8081). Scripted OpenAI-compatible server (source: `cloud/runner/mockllm`, untouched) so runner Jobs can complete an agent loop with no real API key. |
 | **git-seed** | `base/gitseed/` | `jcloud/gitseed:dev` (local build, `deploy/gitseed/Dockerfile`) + `alpine/git` for the seed initContainer | Deployment(1) + PVC(256Mi) + Service(ClusterIP `git`:9418). Serves a bare repo (`seed.git`) over the anonymous `git://` protocol so runner Jobs have a real, in-cluster clonable `REPO_URL`. |
 
@@ -124,6 +124,48 @@ pass it, the ConfigMap in `base/orchestrator/configmap.yaml` and
 `POST /internal/v1/runs/{id}/events|artifact`) — it only prints the diff to
 stdout and `/out/diff.patch`. `GET /api/v1/runs/{id}/artifact` therefore 404s
 even on a `succeeded` run today. See "What was verified" below.
+
+## Runner Job ServiceAccount (least privilege)
+
+Runner Job pods execute LLM-driven, per-run agent commands (arbitrary shell in
+the agent loop) and never need to talk to the Kubernetes API. Previously
+`RUNNER_SERVICE_ACCOUNT` in `base/orchestrator/configmap.yaml` was set to `""`,
+so runner pods fell back to the namespace `default` ServiceAccount — with no
+`automountServiceAccountToken: false` anywhere in `deploy/` — meaning every
+runner pod got a live API-server token mounted at
+`/var/run/secrets/kubernetes.io/serviceaccount` for free. A prompt-injected or
+misbehaving run could have read that token and used it against the API
+server, exactly the credential-exfiltration path the per-run `RUN_TOKEN`
+design is meant to avoid.
+
+Fix shipped in this manifest set:
+- `base/orchestrator/runner-serviceaccount.yaml` — a dedicated `runner`
+  ServiceAccount with `automountServiceAccountToken: false` and **no**
+  Role/RoleBinding bound to it (unlike the orchestrator's own `orchestrator`
+  ServiceAccount in `serviceaccount.yaml` + `rbac.yaml`).
+- `base/orchestrator/configmap.yaml` — `RUNNER_SERVICE_ACCOUNT` now set to
+  `"runner"` instead of `""`.
+
+This required **no orchestrator code changes**: `RUNNER_SERVICE_ACCOUNT` is
+already read by `cloud/orchestrator/internal/config/config.go` `Load()` into
+`Config.ServiceAccount`, and already consumed by
+`cloud/orchestrator/internal/k8s/client.go` `buildJob()`, which sets
+`PodSpec.ServiceAccountName: c.cfg.ServiceAccount`. The knob existed but was
+never pointed at a real (locked-down) ServiceAccount — this manifest change
+closes that gap end-to-end. **No further orchestrator changes are required**
+for this specific finding.
+
+One residual, smaller-scope gap worth flagging to whoever next touches
+`internal/k8s/client.go`: `buildJob()`'s `PodSpec` does not itself set
+`AutomountServiceAccountToken: false`. Today that's fine because the
+ServiceAccount-level setting above is inherited by any pod that doesn't
+explicitly request a token, and no manifest or code path here overrides it —
+but if a future change ever sets `AutomountServiceAccountToken: true` at the
+Pod level (or points `RUNNER_SERVICE_ACCOUNT` at a different SA that lacks the
+`false` setting), the protection silently disappears. Setting it explicitly at
+the Pod level in `buildJob()` would make the guarantee non-bypassable
+regardless of which ServiceAccount is named — left as follow-up since
+orchestrator source is out of scope for this change.
 
 ## First-run walkthrough
 

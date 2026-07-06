@@ -24,7 +24,11 @@ data:
   # Reachable from runner Pods for future ingest callbacks
   # (POST /internal/v1/runs/{id}/events|artifact); Service DNS, in-namespace.
   ORCH_BASE_URL: "http://orchestrator.jcloud.svc.cluster.local:8080"
-  RUNNER_SERVICE_ACCOUNT: ""
+  # Dedicated, privilege-less ServiceAccount for runner Job pods (see
+  # runner-serviceaccount.yaml — automountServiceAccountToken: false, no RBAC
+  # bound). Consumed by config.Config.ServiceAccount and set as
+  # PodSpec.ServiceAccountName in internal/k8s/client.go buildJob().
+  RUNNER_SERVICE_ACCOUNT: "runner"
   JOB_TTL_SECONDS: "3600"
   RUN_TIMEOUT_SECONDS: "1800"
   RUNNER_CPU_LIMIT: "2"
