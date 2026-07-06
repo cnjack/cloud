@@ -89,7 +89,7 @@
   overflow: hidden;
 }
 
-.tableHead,
+.tableHeadRow,
 .row {
   display: grid;
   grid-template-columns: 110px 1fr 130px 96px;

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockClient } from './mockClient';
-import type { ApiClient } from './client';
+import { ApiError, type ApiClient } from './client';
 import { initialEventState, reduceEvents } from './eventReducer';
 import type { RunEvent } from './types';
 
@@ -93,6 +93,64 @@ describe('mockClient — lifecycle', () => {
     const canceled = await cancelP;
     expect(canceled.status).toBe('canceled');
     expect(canceled.finished_at).toBeTruthy();
+  });
+});
+
+// Contract alignment (11-api.md §2.2): cancel on a terminal run → 409, retry on
+// a non-terminal run → 409, retry sets attempt = orig + 1. The mock must throw
+// the same 409s as the HTTP client so demo/e2e exercise real conflict handling.
+describe('mockClient — cancel/retry conflict semantics (409)', () => {
+  it('cancel on a terminal (succeeded) run throws 409 conflict', async () => {
+    const client = createMockClient();
+    const { run } = await makeProjectAndRun(client);
+    await flush(8000); // drive to succeeded
+
+    const p = client.cancelRun(run.id).then(
+      () => ({ ok: true as const }),
+      (e) => ({ ok: false as const, err: e }),
+    );
+    await flush(300);
+    const res = await p;
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.err).toBeInstanceOf(ApiError);
+      expect((res.err as ApiError).status).toBe(409);
+    }
+  });
+
+  it('retry on a non-terminal (running) run throws 409 conflict', async () => {
+    const client = createMockClient();
+    const { run } = await makeProjectAndRun(client);
+    await flush(1300); // now running (non-terminal)
+
+    const p = client.retryRun(run.id).then(
+      () => ({ ok: true as const }),
+      (e) => ({ ok: false as const, err: e }),
+    );
+    await flush(300);
+    const res = await p;
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.err).toBeInstanceOf(ApiError);
+      expect((res.err as ApiError).status).toBe(409);
+    }
+  });
+
+  it('retry of a terminal run increments attempt (orig + 1)', async () => {
+    const client = createMockClient();
+    const { run } = await makeProjectAndRun(client, 'please fail this run');
+    await flush(8000); // failed → terminal
+
+    const origP = client.getRun(run.id);
+    await flush(200);
+    const orig = await origP;
+    expect(orig.attempt).toBe(1);
+
+    const retryP = client.retryRun(run.id);
+    await flush(500);
+    const retried = await retryP;
+    expect(retried.attempt).toBe(2);
+    expect(retried.retried_from).toBe(run.id);
   });
 });
 

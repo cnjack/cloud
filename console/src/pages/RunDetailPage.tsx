@@ -20,7 +20,7 @@ import { Button } from '../components/Button';
 import { StatusBadge } from '../components/StatusBadge';
 import { Timeline } from '../components/Timeline';
 import { DiffView } from '../components/DiffView';
-import { LoadingBlock, ErrorBlock } from '../components/States';
+import { LoadingBlock, ErrorBlock, InlineHint } from '../components/States';
 import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
 import { ApiError } from '../api/client';
@@ -42,23 +42,28 @@ export function RunDetailPage() {
   const toast = useToast();
   const api = useApi();
 
-  const run = useRun(runId);
+  const [tab, setTab] = useState<Tab>('events');
+
+  // Live event stream (replay-then-live). Keep it open until terminal.
+  // When the stream dies fatally, fall back to polling the run so status still
+  // advances (see useRun's refetchInterval).
+  const stream = useRunStream(runId);
+  const streamFailed = stream.phase === 'error' && !stream.terminal;
+  const run = useRun(runId, streamFailed);
   const cancel = useCancelRun();
   const retry = useRetryRun();
-
-  const [tab, setTab] = useState<Tab>('events');
 
   const status = run.data?.status;
   const terminal = status ? isTerminal(status) : false;
 
-  // Live event stream (replay-then-live). Keep it open until terminal.
-  const stream = useRunStream(runId, !!run.data);
-
   // Diff loads once the run has succeeded (or when the diff tab is opened).
   const diff = useDiff(runId, tab === 'diff' && status === 'succeeded');
 
+  // Only dead-end when there's no cached run to show. A failed *refetch* (e.g.
+  // the terminal-status invalidate hitting a network blip) keeps the previously
+  // fetched data in TanStack Query v5 — don't discard the fully-rendered page.
   if (run.isLoading) return <LoadingBlock label="Loading run…" />;
-  if (run.isError)
+  if (run.isError && !run.data)
     return (
       <ErrorBlock error={run.error} onRetry={() => run.refetch()} title="Couldn't load run" />
     );
@@ -176,6 +181,31 @@ export function RunDetailPage() {
             {r.failure_message || r.error || 'The run failed without a message.'}
           </div>
         </div>
+      )}
+
+      {/* Live-stream lost while the run is still active: surface it (the stream
+          won't auto-recover) with a Reconnect action. Status keeps advancing via
+          the polling fallback (useRun refetchInterval) in the meantime. */}
+      {streamFailed && (
+        <div className={styles.streamError} role="alert" data-testid="stream-error">
+          <span className={styles.streamErrorText}>
+            Live updates disconnected. Falling back to periodic refresh.
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={stream.reconnect}
+            data-testid="stream-reconnect"
+          >
+            Reconnect
+          </Button>
+        </div>
+      )}
+
+      {/* Non-blocking notice when the latest run refresh failed but we still have
+          the cached run to show (we don't dead-end the whole page for this). */}
+      {run.isError && run.data && (
+        <InlineHint>Couldn't refresh the latest run details — showing the last known state.</InlineHint>
       )}
 
       {/* Stretch: draft MR link (ST-1) — only when present. */}

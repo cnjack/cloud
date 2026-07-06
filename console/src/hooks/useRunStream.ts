@@ -9,11 +9,14 @@
  *
  * The reducer's derivedStatus is mirrored into the run-detail query cache so the
  * status header advances live without a separate poll. When the run reaches a
- * terminal status we close the stream.
+ * terminal status we close the stream so the browser's EventSource does not
+ * auto-reconnect forever (the server closes a terminal stream — per docs
+ * 11-api.md §2.3 the client must stop reconnecting).
  */
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useApi } from '../api/ApiProvider';
+import type { StreamHandle } from '../api/client';
 import { qk } from '../api/queries';
 import {
   initialEventState,
@@ -50,13 +53,16 @@ export function useRunStream(runId: string, enabled = true) {
     state: initialEventState(),
   }));
   const [phase, setPhase] = useState<StreamPhase>('connecting');
+  // Bumped by reconnect() to force the subscribe effect to re-run after a fatal
+  // stream error (native EventSource does not auto-reconnect on a non-200).
+  const [nonce, setNonce] = useState(0);
 
-  // Keep the latest lastSeq in a ref so the effect can read it without
-  // re-subscribing on every event.
-  const lastSeqRef = useRef(0);
-  lastSeqRef.current = wrap.state.lastSeq;
+  // Hold the live StreamHandle so the terminal-status effect can close it
+  // without tearing down / re-running the subscribe effect.
+  const handleRef = useRef<StreamHandle | null>(null);
 
   const derivedStatus = wrap.state.derivedStatus;
+  const terminal = derivedStatus ? isTerminal(derivedStatus) : false;
 
   // Mirror derived status into the run cache so the header updates live.
   useEffect(() => {
@@ -74,28 +80,50 @@ export function useRunStream(runId: string, enabled = true) {
     }
   }, [derivedStatus, runId, qc]);
 
+  // Close the stream once we've observed a terminal status. The server closes a
+  // terminal SSE connection; if we leave the EventSource open the browser treats
+  // that close as an error and auto-reconnects (~every 3s) forever, re-replaying
+  // the run's whole history each time. Closing here stops that loop.
+  useEffect(() => {
+    if (terminal) {
+      handleRef.current?.close();
+      handleRef.current = null;
+      setPhase('closed');
+    }
+  }, [terminal]);
+
   useEffect(() => {
     if (!enabled || !runId) return;
+    // Don't (re)open a stream for an already-terminal run — the close effect
+    // owns teardown and the server would just replay history and close again.
+    if (terminal) return;
     let cancelled = false;
-    let handle: { close: () => void } | null = null;
+    let handle: StreamHandle | null = null;
 
     dispatch({ kind: 'reset' });
-    lastSeqRef.current = 0;
     setPhase('connecting');
 
     (async () => {
       // 1. Replay backlog.
+      let afterSeq = 0;
       try {
         const backlog = await api.listEvents(runId, 0);
         if (cancelled) return;
-        if (backlog.length) dispatch({ kind: 'events', events: backlog });
+        if (backlog.length) {
+          dispatch({ kind: 'events', events: backlog });
+          // Cursor for the live stream comes straight from the backlog — the
+          // reducer/ref is only updated during render, so reading it here (same
+          // synchronous tick) would still be 0 and force a full re-replay.
+          // Backlog is seq-ascending per the contract; Math.max guards drift.
+          afterSeq = backlog.reduce((m, e) => Math.max(m, e.seq), 0);
+        }
       } catch {
         // Non-fatal: the stream will replay from 0 anyway.
       }
       if (cancelled) return;
 
       // 2. Follow live from our cursor.
-      handle = api.streamRun(runId, lastSeqRef.current, {
+      handle = api.streamRun(runId, afterSeq, {
         onOpen: () => !cancelled && setPhase('live'),
         onFrame: (frame) => {
           if (cancelled) return;
@@ -108,17 +136,24 @@ export function useRunStream(runId: string, enabled = true) {
           if (!cancelled) setPhase('error');
         },
       });
+      handleRef.current = handle;
     })();
 
     return () => {
       cancelled = true;
       handle?.close();
+      if (handleRef.current === handle) handleRef.current = null;
       setPhase('closed');
     };
-  }, [api, runId, enabled, qc]);
+    // `nonce` re-runs the effect for an explicit reconnect after a fatal error.
+    // `terminal` is intentionally read (not a dep) to gate the initial open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, runId, enabled, qc, nonce]);
 
-  // Close the stream once we've observed a terminal status.
-  const terminal = derivedStatus ? isTerminal(derivedStatus) : false;
+  // Re-subscribe after a fatal stream error (401/404/SSE-hostile proxy). The
+  // native EventSource permanently closed; this opens a fresh one from our
+  // current cursor.
+  const reconnect = useCallback(() => setNonce((n) => n + 1), []);
 
   return {
     events: wrap.state.events,
@@ -126,5 +161,6 @@ export function useRunStream(runId: string, enabled = true) {
     derivedStatus,
     phase: terminal ? 'closed' : phase,
     terminal,
+    reconnect,
   };
 }

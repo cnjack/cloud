@@ -5,8 +5,21 @@
  * this file. Includes a "Download .diff" affordance.
  */
 import { useMemo } from 'react';
-import { parseDiff } from '../lib/diff';
+import { parseDiff, type DiffLineType } from '../lib/diff';
 import styles from './DiffView.module.css';
+
+// Per-line semantics for assistive tech. Add/del are otherwise conveyed only by
+// color + the (decorative) +/- glyph, so screen readers get an explicit label.
+const SIGN_LABEL: Partial<Record<DiffLineType, string>> = {
+  add: 'added line',
+  del: 'removed line',
+};
+
+const SIGN_GLYPH: Partial<Record<DiffLineType, string>> = {
+  add: '+',
+  del: '−',
+  hunk: '@',
+};
 
 export function DiffView({
   patch,
@@ -61,16 +74,16 @@ export function DiffView({
                       <tr key={j} className={styles.line} data-type={line.type}>
                         <td className={styles.lineNo}>{line.oldNo ?? ''}</td>
                         <td className={styles.lineNo}>{line.newNo ?? ''}</td>
-                        <td className={styles.sign} aria-hidden>
-                          {line.type === 'add'
-                            ? '+'
-                            : line.type === 'del'
-                              ? '−'
-                              : line.type === 'hunk'
-                                ? '@'
-                                : ''}
+                        <td className={styles.sign}>
+                          {/* The +/- glyph is decorative (color-duplicated); the
+                              visually-hidden label carries the add/del meaning to
+                              screen readers. */}
+                          {SIGN_LABEL[line.type] && (
+                            <span className={styles.srOnly}>{SIGN_LABEL[line.type]}</span>
+                          )}
+                          <span aria-hidden="true">{SIGN_GLYPH[line.type] ?? ''}</span>
                         </td>
-                        <td className={styles.content}>{line.text || ' '}</td>
+                        <td className={styles.content}>{line.text || ' '}</td>
                       </tr>
                     ))}
                 </tbody>

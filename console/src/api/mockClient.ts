@@ -223,13 +223,18 @@ export function createMockClient(): ApiClient {
     return value;
   }
 
-  function makeRun(projectId: string, prompt: string, retriedFrom?: string): StoredRun {
+  function makeRun(
+    projectId: string,
+    prompt: string,
+    retriedFrom?: string,
+    attempt = 1,
+  ): StoredRun {
     const run: StoredRun = {
       id: genId('run'),
       project_id: projectId,
       prompt,
       status: 'queued',
-      attempt: 1,
+      attempt,
       retried_from: retriedFrom ?? null,
       created_at: nowISO(),
       started_at: null,
@@ -294,18 +299,34 @@ export function createMockClient(): ApiClient {
     async cancelRun(runId: string) {
       const r = runs.get(runId);
       if (!r) throw new ApiError(404, 'run not found');
-      if (!['succeeded', 'failed', 'canceled'].includes(r.status)) {
-        for (const t of r._timers) clearTimeout(t);
-        r._timers = [];
-        setStatus(r, 'canceled');
+      // 11-api.md §2.2: cancel on an already-terminal run is a 409 conflict.
+      // Match the HTTP client so demo/e2e exercise the same conflict path.
+      if (['succeeded', 'failed', 'canceled'].includes(r.status)) {
+        throw new ApiError(409, 'run already finished', {
+          error: { code: 'conflict', message: 'run already finished' },
+        });
       }
+      for (const t of r._timers) clearTimeout(t);
+      r._timers = [];
+      setStatus(r, 'canceled');
       return delay(publicRun(r));
     },
 
     async retryRun(runId: string) {
       const orig = runs.get(runId);
       if (!orig) throw new ApiError(404, 'run not found');
-      return delay(publicRun(makeRun(orig.project_id, orig.prompt, orig.id)));
+      // 11-api.md §2.2: only terminal runs may be retried; retry on a
+      // non-terminal run is a 409 conflict. The new run's attempt = orig + 1.
+      if (!['succeeded', 'failed', 'canceled'].includes(orig.status)) {
+        throw new ApiError(409, 'run not finished', {
+          error: { code: 'conflict', message: 'run not finished' },
+        });
+      }
+      return delay(
+        publicRun(
+          makeRun(orig.project_id, orig.prompt, orig.id, (orig.attempt ?? 1) + 1),
+        ),
+      );
     },
 
     async listEvents(runId: string, afterSeq = 0) {
