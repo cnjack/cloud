@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: git
+  namespace: jcloud
+  labels:
+    app.kubernetes.io/name: git-seed
+    app.kubernetes.io/part-of: jcloud
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: git-seed
+  ports:
+    - name: git
+      port: 9418
+      targetPort: 9418

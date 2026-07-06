@@ -1,0 +1,40 @@
+# Namespace-scoped RBAC for the orchestrator's client-go JobLauncher
+# (cloud/orchestrator/internal/k8s/client.go). It creates/observes/deletes
+# batch/v1 Jobs and (forward-looking, for log tailing / pod-phase inspection
+# not yet wired into the reconciler but part of the intended contract) reads
+# pods and pod logs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orchestrator
+  namespace: jcloud
+  labels:
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/part-of: jcloud
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orchestrator
+  namespace: jcloud
+  labels:
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/part-of: jcloud
+subjects:
+  - kind: ServiceAccount
+    name: orchestrator
+    namespace: jcloud
+roleRef:
+  kind: Role
+  name: orchestrator
+  apiGroup: rbac.authorization.k8s.io

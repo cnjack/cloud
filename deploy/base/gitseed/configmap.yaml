@@ -1,0 +1,50 @@
+# Seed script run by the initContainer to materialize a tiny bare repo that
+# `git daemon --export-all` then serves read-only over git:// to runner Jobs.
+# This gives J1 (docs/10-prd.md) a real, in-cluster, no-auth clone target
+# (git://git.jcloud.svc.cluster.local/seed.git) so we are not dependent on the
+# host's localhost network being reachable from inside a Job pod.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitseed-script
+  namespace: jcloud
+  labels:
+    app.kubernetes.io/name: gitseed
+    app.kubernetes.io/part-of: jcloud
+data:
+  seed.sh: |
+    #!/bin/sh
+    set -eu
+    export HOME=/tmp
+    git config --global user.email "seed@jcloud.local"
+    git config --global user.name  "jcloud seed"
+    git config --global init.defaultBranch main
+
+    WORK=/tmp/seed-work
+    BARE=/srv/git/seed.git
+
+    if [ -d "$BARE" ] && [ -f "$BARE/HEAD" ]; then
+      echo "[gitseed] $BARE already initialized, skipping"
+      exit 0
+    fi
+
+    rm -rf "$WORK"
+    mkdir -p "$WORK"
+    cd "$WORK"
+    git init -q
+    cat > README.md <<'EOF'
+    # seed
+
+    This is the jcloud in-cluster seed repository used for local e2e runs.
+
+    Runner Jobs clone this over git://git.jcloud.svc.cluster.local/seed.git and
+    the agent is asked to make a small edit (see the run prompt); the resulting
+    diff is what the MVP proves end-to-end.
+    EOF
+    git add README.md
+    git commit -q -m "seed: initial commit"
+
+    mkdir -p "$BARE"
+    git clone -q --bare "$WORK" "$BARE"
+    touch "$BARE/git-daemon-export-ok"
+    echo "[gitseed] initialized $BARE"
