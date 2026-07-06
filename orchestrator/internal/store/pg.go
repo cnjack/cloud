@@ -271,11 +271,13 @@ func (s *PGStore) AppendEvents(ctx context.Context, runID string, events []Event
 		if payload == nil {
 			payload = map[string]any{}
 		}
+		// Caller-assigned seq: this is an internal emitter, so tag the row
+		// source='internal' with client_seq=seq (the dedupe key mirrors the seq).
 		tag, err := tx.Exec(ctx,
-			`INSERT INTO run_events (run_id, seq, type, payload)
-			 VALUES ($1,$2,$3,$4)
+			`INSERT INTO run_events (run_id, seq, source, client_seq, type, payload)
+			 VALUES ($1,$2,$3,$4,$5,$6)
 			 ON CONFLICT (run_id, seq) DO NOTHING`,
-			runID, e.Seq, e.Type, payload)
+			runID, e.Seq, SourceInternal, e.Seq, e.Type, payload)
 		if err != nil {
 			return 0, fmt.Errorf("insert event seq=%d: %w", e.Seq, err)
 		}
@@ -285,6 +287,107 @@ func (s *PGStore) AppendEvents(ctx context.Context, runID string, events []Event
 		return 0, fmt.Errorf("commit events: %w", err)
 	}
 	return inserted, nil
+}
+
+// AppendRunnerEvents ingests runner events with server-side seq allocation and
+// per-source idempotency. The runs row is locked FOR UPDATE so concurrent
+// allocators for the same run serialize and the per-run seq counter is
+// gap-tolerant but strictly monotonic.
+func (s *PGStore) AppendRunnerEvents(ctx context.Context, runID string, events []EventInput) ([]domain.RunEvent, error) {
+	if len(events) == 0 {
+		return nil, nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin append runner events: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Lock the run to serialize seq allocation across concurrent ingest calls.
+	var exists bool
+	err = tx.QueryRow(ctx, `SELECT true FROM runs WHERE id=$1 FOR UPDATE`, runID).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lock run for seq alloc: %w", err)
+	}
+
+	var next int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(seq),0) FROM run_events WHERE run_id=$1`, runID).Scan(&next); err != nil {
+		return nil, fmt.Errorf("read max seq: %w", err)
+	}
+
+	out := make([]domain.RunEvent, 0, len(events))
+	for _, e := range events {
+		payload := e.Payload
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		seq := next + 1
+		var ts time.Time
+		err := tx.QueryRow(ctx,
+			`INSERT INTO run_events (run_id, seq, source, client_seq, type, payload)
+			 VALUES ($1,$2,$3,$4,$5,$6)
+			 ON CONFLICT (run_id, source, client_seq) DO NOTHING
+			 RETURNING seq, ts`,
+			runID, seq, SourceRunner, e.Seq, e.Type, payload).Scan(&seq, &ts)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue // duplicate client_seq for this source: idempotent skip, no seq consumed
+		}
+		if err != nil {
+			return nil, fmt.Errorf("insert runner event client_seq=%d: %w", e.Seq, err)
+		}
+		next = seq
+		out = append(out, domain.RunEvent{
+			RunID: runID, Seq: seq, TS: ts, Type: e.Type, Payload: payload,
+		})
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit runner events: %w", err)
+	}
+	return out, nil
+}
+
+// AppendInternalEvent appends one internally-emitted event, allocating the next
+// global seq under a run row lock so it never races runner ingest.
+func (s *PGStore) AppendInternalEvent(ctx context.Context, runID, typ string, payload map[string]any) (domain.RunEvent, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.RunEvent{}, fmt.Errorf("begin internal event: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var exists bool
+	err = tx.QueryRow(ctx, `SELECT true FROM runs WHERE id=$1 FOR UPDATE`, runID).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.RunEvent{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.RunEvent{}, fmt.Errorf("lock run for internal event: %w", err)
+	}
+
+	var seq int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(seq),0)+1 FROM run_events WHERE run_id=$1`, runID).Scan(&seq); err != nil {
+		return domain.RunEvent{}, fmt.Errorf("alloc internal seq: %w", err)
+	}
+	var ts time.Time
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO run_events (run_id, seq, source, client_seq, type, payload)
+		 VALUES ($1,$2,$3,$4,$5,$6)
+		 RETURNING ts`,
+		runID, seq, SourceInternal, seq, typ, payload).Scan(&ts); err != nil {
+		return domain.RunEvent{}, fmt.Errorf("insert internal event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.RunEvent{}, fmt.Errorf("commit internal event: %w", err)
+	}
+	return domain.RunEvent{RunID: runID, Seq: seq, TS: ts, Type: typ, Payload: payload}, nil
 }
 
 func (s *PGStore) NextEventSeq(ctx context.Context, runID string) (int64, error) {

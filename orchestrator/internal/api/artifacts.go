@@ -64,19 +64,13 @@ func (s *Server) handleIngestArtifact(w http.ResponseWriter, r *http.Request, ru
 		writeError(w, http.StatusInternalServerError, "internal", "could not store artifact")
 		return
 	}
-	// Emit a run.artifact event so the stream signals availability.
-	if s.hub != nil {
-		if seq, err := s.st.NextEventSeq(r.Context(), runID); err == nil {
-			payload := map[string]any{"kind": req.Kind, "bytes": len(req.Content)}
-			if _, err := s.st.AppendEvents(r.Context(), runID, []store.EventInput{
-				{Seq: seq, Type: domain.EventRunArtifact, Payload: payload},
-			}); err == nil {
-				s.hub.Publish(runID, domain.RunEvent{
-					RunID: runID, Seq: seq, TS: time.Now().UTC(),
-					Type: domain.EventRunArtifact, Payload: payload,
-				})
-			}
-		}
+	// Emit a run.artifact event so the stream signals availability. The store
+	// allocates the seq atomically (no NextEventSeq race with runner ingest).
+	payload := map[string]any{"kind": req.Kind, "bytes": len(req.Content)}
+	if ev, err := s.st.AppendInternalEvent(r.Context(), runID, domain.EventRunArtifact, payload); err != nil {
+		s.log.Warn("ingest artifact: emit event", "run", runID, "err", err)
+	} else if s.hub != nil {
+		s.hub.Publish(runID, ev)
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"kind": req.Kind, "bytes": len(req.Content)})
 }

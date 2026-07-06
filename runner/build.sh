@@ -39,6 +39,10 @@ echo "[build] compiling acpdrive..."
 ( cd "$HERE/acpdrive" && GOOS=linux GOARCH="$TARGETARCH" CGO_ENABLED=0 \
     go build -ldflags "-s -w" -o "$HERE/bin/acpdrive" . )
 
+echo "[build] compiling orchclient..."
+( cd "$HERE/orchclient" && GOOS=linux GOARCH="$TARGETARCH" CGO_ENABLED=0 \
+    go build -ldflags "-s -w" -o "$HERE/bin/orchclient" . )
+
 echo "[build] compiling mockllm..."
 ( cd "$HERE/mockllm" && GOOS=linux GOARCH="$TARGETARCH" CGO_ENABLED=0 \
     go build -ldflags "-s -w" -o "$HERE/bin/mockllm" . )

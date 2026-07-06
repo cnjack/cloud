@@ -1,8 +1,12 @@
-# jcode headless runner (P0)
+# jcode headless runner (P0 + orchestrator wiring)
 
-**Status: PROVEN.** `jcode` runs fully headless (no TTY) inside a Linux
+**Status: PROVEN + WIRED.** `jcode` runs fully headless (no TTY) inside a Linux
 container, clones a repo, executes a coding task through the complete agent
 loop (LLM → tool call → tool execution → LLM → done), and emits a `git diff`.
+It now also **streams live events** (agent text, tool calls, tool results) to
+the orchestrator, **uploads the diff artifact**, and **reports precise failure
+reasons** — the full runner↔orchestrator loop is proven end-to-end without
+Kubernetes (see [Full-loop integration test](#full-loop-integration-test)).
 
 This directory retires the #1 risk of the Cloud Agent initiative: that jcode
 could not run unattended without a terminal.
@@ -68,30 +72,111 @@ guard so nothing can stall.
 
 ---
 
+## Event pipeline (runner → orchestrator)
+
+As the agent runs, jcode emits ACP `session/update` notifications. `acpdrive`
+maps them to orchestrator run events and ships them live:
+
+| ACP notification | → orchestrator event | payload |
+|---|---|---|
+| `AgentMessageChunk` | `agent.text` | `{text}` |
+| `ToolCall` (initial) | `agent.tool_call` | `{name, args, call_id, title, kind, locations}` |
+| `ToolCallUpdate` (terminal `completed`/`failed`) | `agent.tool_result` | `{call_id, output, is_error, name}` |
+
+Intermediate `ToolCallUpdate`s (`pending`/`in_progress`) are ignored so the
+console never sees spurious empty results.
+
+**The emitter ([`acpdrive/emitter.go`](./acpdrive/emitter.go)) never blocks the
+agent loop.** `SessionUpdate` is on jcode's hot path, so it only does a
+non-blocking channel send. Properties:
+
+- **Batching:** flush every 500 ms **or** when 10 events are buffered.
+- **Retry:** `POST /internal/v1/runs/{id}/events` with `Bearer $RUN_TOKEN`;
+  retries on 5xx/network with capped exponential backoff; gives up a batch after
+  5 attempts so a wedged orchestrator can't stall shutdown.
+- **Backpressure:** a bounded buffer; when full it **drops the oldest** event
+  (fresh activity matters most for a live console) and emits a single
+  `agent.text` note recording the dropped count.
+- **Idempotent seq:** each event carries a monotonic client seq used only as a
+  per-source idempotency key. The **orchestrator allocates the authoritative
+  global seq server-side**, so runner events never collide with the
+  orchestrator's own `run.status`/`run.artifact` events (this closed a real
+  silent-drop hazard — see `cloud/docs/11-api.md` §5.1).
+- **Standalone-safe:** if `ORCH_BASE_URL`/`RUN_ID`/`RUN_TOKEN` are not all
+  present the emitter is a no-op, so `test.sh` and direct `docker run` still work.
+
+**Failure & artifact reporting** are done by
+[`orchclient`](./orchclient/main.go), a tiny stdlib-only binary the entrypoint
+shells out to (the base image has no curl/wget):
+
+- Before any non-zero exit, `entrypoint.sh` calls
+  `orchclient report-failure --reason <clone_failed|setup_failed|agent_error>`
+  so the console shows a precise reason instead of the cluster fallback.
+- On success it pipes the diff to `orchclient upload-artifact --kind diff`,
+  which the orchestrator stores and signals via a `run.artifact` event.
+
+Like the emitter, `orchclient` is a clean no-op when the orchestrator env is
+absent, so it never masks a standalone run's real outcome.
+
+---
+
 ## Layout
 
 ```
 runner/
-├── Dockerfile        # debian-slim + git + ca-certs + prebuilt binaries
-├── entrypoint.sh     # clone → write config → drive ACP run → emit diff
-├── build.sh          # host cross-compile jcode+acpdrive+mockllm → bin/, docker build
-├── test.sh           # full local proof (build, sidecar mock, no-TTY run, assert)
-├── acpdrive/         # minimal headless ACP client (Go)
-├── mockllm/          # table-driven mock OpenAI-compatible server (Go)
-├── patches/          # empty — NO patch to jcode was required
-└── bin/              # build output (gitignored)
+├── Dockerfile           # debian-slim + git + ca-certs + prebuilt binaries
+├── entrypoint.sh        # clone → config → drive ACP run → stream events → upload diff / report failure
+├── build.sh             # host cross-compile jcode+acpdrive+orchclient+mockllm → bin/, docker build
+├── test.sh              # standalone headless proof (build, sidecar mock, no-TTY run, assert)
+├── test-integration.sh  # FULL-LOOP proof: REST → runner (process launcher) → events/artifact → succeeded
+├── acpdrive/            # headless ACP client (Go) + event emitter + ACP→event mapper
+│   ├── main.go          #   drives one jcode turn (initialize→session/new→prompt)
+│   ├── emitter.go       #   non-blocking buffered event pipeline (batch, retry, drop-oldest)
+│   └── mapper.go        #   ACP session/update → agent.text / agent.tool_call / agent.tool_result
+├── orchclient/          # stdlib-only helper: POST run.failure events + upload diff artifact
+├── mockllm/             # table-driven mock OpenAI-compatible server (Go)
+├── patches/             # empty — NO patch to jcode was required
+└── bin/                 # build output (gitignored)
 ```
 
 ## Run it
 
 ```bash
 cd cloud/runner
-./test.sh            # builds everything and runs the full proof
+./test.sh            # standalone headless proof (no orchestrator)
 ```
 
 Prerequisites on the build host: Docker (tested with v29), Go (tested 1.26),
 and the jcode source checkout at `../../jcode`. On Apple Silicon the image is
 built for `linux/arm64`, which OrbStack runs natively.
+
+### Full-loop integration test
+
+`test-integration.sh` proves the **entire** runner↔orchestrator pipeline with
+**no Kubernetes** — it uses the orchestrator's `process` JobLauncher, which runs
+each runner as a local `docker run` container with the exact env a K8s Job would
+inject:
+
+```bash
+make -C ../orchestrator pg-up      # dev Postgres on :5432 (once)
+cd cloud/runner
+./test-integration.sh
+```
+
+It builds the runner image + the orchestrator binary, starts a mockllm sidecar,
+launches the orchestrator with `JOB_LAUNCHER=process`, then via the REST API
+creates a project (`file:///seed`) and a run, and asserts:
+
+- the run reaches `status=succeeded`;
+- the event log contains `agent.text` **and** `agent.tool_call` **and**
+  `agent.tool_result` **and** `run.artifact` **and** a terminal
+  `run.status(succeeded)`;
+- the event `seq`s are **unique, gapless and monotonic** (the seq-collision fix);
+- the artifact endpoint returns the scripted diff.
+
+The `process` launcher lives in the orchestrator
+(`internal/k8s/process.go`, selected by `JOB_LAUNCHER=process`) and is also handy
+for local dev without a cluster.
 
 ### Running the container directly
 
@@ -120,9 +205,11 @@ docker run --rm \
 ```
 
 **entrypoint.sh env:** `REPO_URL`, `TASK_PROMPT`, `MODEL_BASE_URL`,
-`MODEL_API_KEY` (required); `RUN_ID`, `MODEL_NAME` (default `mock/mock-model`),
-`MODEL_PROVIDER`, `RUN_TIMEOUT` (default `300s`), `START_MOCKLLM`,
-`MOCK_SCENARIO` (optional).
+`MODEL_API_KEY` (required); `RUN_ID`, `REPO_BRANCH` (default: remote's default
+branch), `MODEL_NAME` (default `mock/mock-model`), `MODEL_PROVIDER`,
+`RUN_TIMEOUT` (default `300s`), `START_MOCKLLM`, `MOCK_SCENARIO` (optional).
+When wired to an orchestrator it also reads `ORCH_BASE_URL`, `RUN_TOKEN` (with
+`RUN_ID`) to stream events and upload the diff artifact.
 
 ---
 
@@ -201,9 +288,9 @@ dominated by the one-time Go compile.
   to the Dockerfile, or layer task-specific images `FROM jcode-runner`.
 - **Persistent volume (PVC)** for `/workspace` and the output — currently a
   bind mount / ephemeral dir.
-- **Event streaming.** ACP already emits `session/update` notifications
-  (agent message chunks, tool-call status) that `acpdrive` currently logs to
-  stderr; wiring these to a real event bus is the integration step.
+- ~~**Event streaming.**~~ **DONE** — `acpdrive` now maps ACP `session/update`
+  notifications to `agent.text`/`agent.tool_call`/`agent.tool_result` events and
+  streams them to the orchestrator (see [Event pipeline](#event-pipeline-runner--orchestrator)).
 - **Multi-turn / resumable sessions**, auth, secret management, and
   cancellation semantics beyond the single-run timeout.
 

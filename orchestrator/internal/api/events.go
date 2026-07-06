@@ -220,7 +220,11 @@ func (s *Server) handleIngestEvents(w http.ResponseWriter, r *http.Request, runI
 		}
 		inputs = append(inputs, store.EventInput{Seq: e.Seq, Type: e.Type, Payload: e.Payload})
 	}
-	accepted, err := s.st.AppendEvents(r.Context(), runID, inputs)
+	// Runner ingest: the runner's seq is a per-source idempotency key; the store
+	// allocates the authoritative global seq so runner events never collide with
+	// internally-emitted ones (see cloud/docs/11-api.md §5.1). `stored` carries
+	// the allocated seq for each newly-inserted event.
+	stored, err := s.st.AppendRunnerEvents(r.Context(), runID, inputs)
 	if err != nil {
 		s.log.Error("ingest events", "run", runID, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not persist events")
@@ -231,16 +235,14 @@ func (s *Server) handleIngestEvents(w http.ResponseWriter, r *http.Request, runI
 	// classification does not overwrite the more specific one.
 	s.applyRunnerFailure(r.Context(), runID, req.Events)
 
-	// Fan out to live subscribers (best-effort; durability already done).
+	// Fan out to live subscribers using the server-allocated seq (best-effort;
+	// durability already done).
 	if s.hub != nil {
-		for _, e := range req.Events {
-			s.hub.Publish(runID, domain.RunEvent{
-				RunID: runID, Seq: e.Seq, TS: time.Now().UTC(),
-				Type: e.Type, Payload: e.Payload,
-			})
+		for _, ev := range stored {
+			s.hub.Publish(runID, ev)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"accepted": accepted})
+	writeJSON(w, http.StatusOK, map[string]any{"accepted": len(stored)})
 }
 
 // applyRunnerFailure looks for a run.failure event and, if present, records the

@@ -69,11 +69,20 @@ func run(log *slog.Logger) error {
 	// --- realtime hub ---
 	hub := sse.NewHub()
 
-	// --- k8s launcher (optional) ---
+	// --- launcher (optional) ---
 	var launcher k8s.JobLauncher
-	if cfg.DisableK8s {
-		log.Warn("K8s disabled (DISABLE_K8S=1): runs will queue but not schedule")
-	} else {
+	switch {
+	case cfg.DisableK8s:
+		log.Warn("launcher disabled (DISABLE_K8S=1): runs will queue but not schedule")
+	case cfg.JobLauncher == "process":
+		// Local dev / full-loop integration: run each runner as a docker container.
+		log.Info("using process launcher (docker run)", "image", cfg.RunnerImage, "network", cfg.RunnerNetwork)
+		launcher = k8s.NewProcessLauncher(k8s.ProcessConfig{
+			Image:     cfg.RunnerImage,
+			Network:   cfg.RunnerNetwork,
+			ExtraArgs: cfg.RunnerDockerArgs,
+		})
+	default:
 		client, err := k8s.NewClient(k8s.Config{
 			Kubeconfig:     cfg.Kubeconfig,
 			Namespace:      cfg.Namespace,

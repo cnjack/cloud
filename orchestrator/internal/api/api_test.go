@@ -442,6 +442,103 @@ func TestSSEReplayThenTerminal(t *testing.T) {
 	}
 }
 
+// TestIngestSeqIsServerAllocated proves the runner's client seq does not become
+// the durable/SSE seq: the server renumbers events monotonically and does not
+// collide with the run.status(queued) event emitted at creation.
+func TestIngestSeqIsServerAllocated(t *testing.T) {
+	ts, st, _ := newTestServer(t)
+	p := createProject(t, ts)
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+		map[string]string{"prompt": "task"})
+	var run domain.Run
+	decode(t, resp, &run)
+	ctx := context.Background()
+
+	// run.status(queued) already took seq 1 at creation.
+	tok, _ := auth.GenerateRunToken()
+	got, _ := st.GetRun(ctx, run.ID)
+	got.TokenHash = auth.HashToken(tok)
+	got.Status = domain.StatusScheduling
+	got.K8sJobName = "j"
+	_ = st.UpdateRun(ctx, got)
+
+	// Runner posts with high client seqs that WOULD have collided with the
+	// internal seq space under the old first-writer-wins scheme.
+	body := map[string]any{"events": []map[string]any{
+		{"seq": 1, "type": "agent.text", "payload": map[string]any{"text": "hi"}},
+		{"seq": 2, "type": "agent.tool_call", "payload": map[string]any{"tool": "read"}},
+	}}
+	resp = do(t, "POST", ts.URL+"/internal/v1/runs/"+run.ID+"/events", tok, body)
+	var res struct {
+		Accepted int `json:"accepted"`
+	}
+	decode(t, resp, &res)
+	if res.Accepted != 2 {
+		t.Fatalf("accepted=%d want 2", res.Accepted)
+	}
+
+	// Durable log: seq 1 = internal run.status, seq 2,3 = runner events. No drop.
+	events, _ := st.ListEvents(ctx, run.ID, 0, 100)
+	if len(events) != 3 {
+		t.Fatalf("events=%d want 3 (queued + 2 runner)", len(events))
+	}
+	if events[0].Type != domain.EventRunStatus || events[0].Seq != 1 {
+		t.Fatalf("event0 = %s seq %d want run.status seq 1", events[0].Type, events[0].Seq)
+	}
+	if events[1].Seq != 2 || events[2].Seq != 3 {
+		t.Fatalf("runner seqs = %d,%d want 2,3", events[1].Seq, events[2].Seq)
+	}
+}
+
+func TestSSEStreamAcceptsQueryToken(t *testing.T) {
+	ts, st, _ := newTestServer(t)
+	p := createProject(t, ts)
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+		map[string]string{"prompt": "task"})
+	var run domain.Run
+	decode(t, resp, &run)
+	ctx := context.Background()
+
+	// Drive terminal so the stream replays and closes without hanging.
+	got, _ := st.GetRun(ctx, run.ID)
+	got.Status = domain.StatusScheduling
+	_ = st.UpdateRun(ctx, got)
+	got, _ = st.GetRun(ctx, run.ID)
+	got.Status = domain.StatusCanceled
+	got.FinishedAt = ptr(time.Now())
+	_ = st.UpdateRun(ctx, got)
+	_, _ = st.AppendInternalEvent(ctx, run.ID, domain.EventRunStatus, map[string]any{"status": "canceled"})
+
+	// No Authorization header at all: browser EventSource can't send one. The
+	// ?access_token= query param must authenticate.
+	sctx, scancel := context.WithTimeout(ctx, 10*time.Second)
+	defer scancel()
+	req, _ := http.NewRequestWithContext(sctx, "GET",
+		ts.URL+"/api/v1/runs/"+run.ID+"/stream?after_seq=0&access_token="+consoleToken, nil)
+	sresp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sresp.Body.Close()
+	if sresp.StatusCode != http.StatusOK {
+		t.Fatalf("stream with access_token: status=%d want 200", sresp.StatusCode)
+	}
+	if ct := sresp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("content-type=%q want text/event-stream", ct)
+	}
+
+	// A bad access_token must be rejected.
+	req2, _ := http.NewRequest("GET", ts.URL+"/api/v1/runs/"+run.ID+"/stream?access_token=wrong", nil)
+	r2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Body.Close()
+	if r2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bad access_token: status=%d want 401", r2.StatusCode)
+	}
+}
+
 func TestArtifactRoundTrip(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
