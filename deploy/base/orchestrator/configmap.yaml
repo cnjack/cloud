@@ -36,5 +36,7 @@ data:
   # an agent loop with no real key (PRD e2e requirement). Swap to a real
   # OpenAI-compatible endpoint for non-demo use.
   MODEL_BASE_URL: "http://mockllm.jcloud.svc.cluster.local:8081/v1"
+  # provider/model id written into the runner's jcode config (custom_models).
+  MODEL_NAME: "mock/mock-model"
 
   DISABLE_K8S: "0"
