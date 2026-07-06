@@ -83,16 +83,21 @@ type Store interface {
 	// touch k8s_job_name/token_hash, so the committed row it returns still names
 	// the Job the caller must delete.
 	CancelRun(ctx context.Context, id, phase string, finishedAt time.Time) (*domain.Run, error)
-	// ClearJobName blanks k8s_job_name (used by the reconciler cleanup path once
-	// a terminal run's Job is confirmed deleted, so it is not re-processed). It
-	// does not change status and is a no-op if the run is missing.
-	ClearJobName(ctx context.Context, id string) error
+	// MarkJobCleaned stamps job_cleaned_at once the reconciler has confirmed a
+	// terminal run's Job is deleted from the cluster. It KEEPS k8s_job_name —
+	// the Job name is part of the run's historical record (audit + e2e
+	// verification; see 11-api.md Run schema). Idempotent: an already-set
+	// job_cleaned_at is preserved. It does not change status and is a no-op if
+	// the run is missing.
+	MarkJobCleaned(ctx context.Context, id string) error
 
 	// Reconciler queries
 	ListRunsByStatus(ctx context.Context, statuses ...domain.RunStatus) ([]domain.Run, error)
-	// ListTerminalRunsWithJob returns terminal runs that still carry a
-	// k8s_job_name, so the reconciler can delete their orphaned Jobs and clear
-	// the name. This is the cleanup path for a cancel that raced Job creation.
+	// ListTerminalRunsWithJob returns terminal runs whose Job has not yet been
+	// confirmed deleted (k8s_job_name != '' AND job_cleaned_at IS NULL), so the
+	// reconciler can reap orphaned Jobs — e.g. a cancel that raced Job creation
+	// — exactly once. Reaped runs keep their Job name; MarkJobCleaned is what
+	// removes them from this scan.
 	ListTerminalRunsWithJob(ctx context.Context) ([]domain.Run, error)
 	CountActiveRuns(ctx context.Context) (int, error)
 

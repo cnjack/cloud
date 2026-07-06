@@ -110,14 +110,14 @@ func (s *PGStore) DeleteProject(ctx context.Context, id string) error {
 
 const runCols = `id, project_id, prompt, status, phase, error, k8s_job_name,
 	retried_from, failure_reason, failure_message, attempt, token_hash,
-	created_at, started_at, finished_at`
+	created_at, started_at, finished_at, job_cleaned_at`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
 	err := row.Scan(&r.ID, &r.ProjectID, &r.Prompt, &r.Status, &r.Phase, &r.Error,
 		&r.K8sJobName, &r.RetriedFrom, &r.FailureReason, &r.FailureMessage,
 		&r.Attempt, &r.TokenHash,
-		&r.CreatedAt, &r.StartedAt, &r.FinishedAt)
+		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -130,10 +130,10 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 		r.ID, r.ProjectID, r.Prompt, r.Status, r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
-		r.CreatedAt, r.StartedAt, r.FinishedAt)
+		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
@@ -208,7 +208,7 @@ func (s *PGStore) ListRunsByStatus(ctx context.Context, statuses ...domain.RunSt
 func (s *PGStore) ListTerminalRunsWithJob(ctx context.Context) ([]domain.Run, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+runCols+` FROM runs
-		 WHERE k8s_job_name <> '' AND status = ANY($1)
+		 WHERE k8s_job_name <> '' AND job_cleaned_at IS NULL AND status = ANY($1)
 		 ORDER BY created_at ASC`,
 		[]string{string(domain.StatusSucceeded), string(domain.StatusFailed), string(domain.StatusCanceled)})
 	if err != nil {
@@ -390,12 +390,15 @@ func (s *PGStore) CancelRun(ctx context.Context, id, phase string, finishedAt ti
 	return s.commitAndReload(ctx, tx, id)
 }
 
-// ClearJobName blanks k8s_job_name (reconciler cleanup after Job deletion). No
-// status change; a missing run is a no-op.
-func (s *PGStore) ClearJobName(ctx context.Context, id string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE runs SET k8s_job_name='' WHERE id=$1`, id)
+// MarkJobCleaned stamps job_cleaned_at once the run's Job is confirmed deleted.
+// k8s_job_name is KEPT (historical record; see 11-api.md Run schema). Idempotent
+// via COALESCE: a prior stamp is preserved. No status change; a missing run is a
+// no-op.
+func (s *PGStore) MarkJobCleaned(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE runs SET job_cleaned_at=COALESCE(job_cleaned_at, now()) WHERE id=$1`, id)
 	if err != nil {
-		return fmt.Errorf("clear job name: %w", err)
+		return fmt.Errorf("mark job cleaned: %w", err)
 	}
 	return nil
 }

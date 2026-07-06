@@ -184,3 +184,70 @@ func TestPGConcurrentFailPreservesReason(t *testing.T) {
 		t.Fatalf("clone_failed but message=%q", got.FailureMessage)
 	}
 }
+
+// TestPGMarkJobCleanedPreservesJobName is the real-DB regression for the
+// job_cleaned_at rework (migration 0003): cleanup bookkeeping must stamp
+// job_cleaned_at while KEEPING k8s_job_name (the run's historical record), and
+// ListTerminalRunsWithJob must stop returning the run once stamped. Requires
+// JCLOUD_PG_DSN.
+func TestPGMarkJobCleanedPreservesJobName(t *testing.T) {
+	ctx := context.Background()
+	st, runID := pgTestStore(t)
+
+	if _, err := st.ScheduleRun(ctx, runID, "jcloud-run-"+runID, "hash", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CancelRun(ctx, runID, "CanceledByOperator", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Un-cleaned terminal run with a job: must be listed.
+	pending, err := st.ListTerminalRunsWithJob(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range pending {
+		if r.ID == runID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("terminal run with un-cleaned job not listed for cleanup")
+	}
+
+	if err := st.MarkJobCleaned(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.K8sJobName != "jcloud-run-"+runID {
+		t.Fatalf("k8s_job_name=%q want preserved (historical record)", got.K8sJobName)
+	}
+	if got.JobCleanedAt == nil {
+		t.Fatal("job_cleaned_at not stamped")
+	}
+	first := *got.JobCleanedAt
+
+	// Idempotent: a second stamp must not move the timestamp.
+	if err := st.MarkJobCleaned(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetRun(ctx, runID)
+	if got.JobCleanedAt == nil || !got.JobCleanedAt.Equal(first) {
+		t.Fatalf("job_cleaned_at moved on re-stamp: %v -> %v", first, got.JobCleanedAt)
+	}
+
+	// Cleaned run must no longer be listed.
+	pending, err = st.ListTerminalRunsWithJob(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range pending {
+		if r.ID == runID {
+			t.Fatal("cleaned run still returned by ListTerminalRunsWithJob")
+		}
+	}
+}
