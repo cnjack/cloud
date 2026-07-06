@@ -66,12 +66,22 @@ export function useRuns(projectId: string) {
   });
 }
 
-export function useRun(runId: string) {
+export function useRun(runId: string, pollWhileNonTerminal = false) {
   const api = useApi();
   return useQuery({
     queryKey: qk.run(runId),
     queryFn: () => api.getRun(runId),
     enabled: !!runId,
+    // Polling fallback: when the live SSE stream is unavailable (e.g. a fatal
+    // stream error), advance the run status by polling GET /runs/{id} while the
+    // run is still non-terminal — mirroring the useRuns list-page pattern so the
+    // header still reaches a terminal state without the stream.
+    refetchInterval: (query) => {
+      if (!pollWhileNonTerminal) return false;
+      const data = query.state.data as Run | undefined;
+      if (!data) return false;
+      return isTerminal(data.status) ? false : 3000;
+    },
   });
 }
 

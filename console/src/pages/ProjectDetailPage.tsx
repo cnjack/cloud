@@ -127,15 +127,20 @@ export function ProjectDetailPage() {
           />
         ) : (
           <div className={styles.tableWrap} role="table" data-testid="runs-table">
-            <div className={styles.tableHead} role="row">
-              <span role="columnheader">Run</span>
-              <span role="columnheader">Task</span>
-              <span role="columnheader">Status</span>
-              <span role="columnheader">Created</span>
+            <div className={styles.tableHead} role="rowgroup">
+              <div className={styles.tableHeadRow} role="row">
+                <span role="columnheader">Run</span>
+                <span role="columnheader">Task</span>
+                <span role="columnheader">Status</span>
+                <span role="columnheader">Created</span>
+              </div>
             </div>
-            <ul className={styles.rows}>
+            {/* role=rowgroup on the list + role=presentation on each <li> so the
+                native list semantics don't interpose between table and row (ARIA
+                required-owned-elements: rows must be owned by table/rowgroup). */}
+            <ul className={styles.rows} role="rowgroup">
               {runs.data!.map((run) => (
-                <li key={run.id}>
+                <li key={run.id} role="presentation">
                   <Link
                     to={`/runs/${run.id}`}
                     className={styles.row}

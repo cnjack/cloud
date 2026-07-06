@@ -123,6 +123,19 @@
   vertical-align: top;
   color: var(--color-text-faint);
 }
+
+/* Visually-hidden but exposed to assistive tech (per-line add/del label). */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .line[data-type='add'] .sign {
   color: var(--jc-diff-add-fg);
 }
