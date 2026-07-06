@@ -1,0 +1,40 @@
+# Non-secret orchestrator env, mirroring cloud/orchestrator/.env.example and
+# cloud/orchestrator/internal/config/config.go Load(). Secrets (CONSOLE_TOKEN,
+# DATABASE_URL, MODEL_API_KEY) live in secret.yaml instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orchestrator-config
+  namespace: jcloud
+  labels:
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/part-of: jcloud
+data:
+  ADDR: ":8080"
+  RECONCILE_INTERVAL: "3s"
+  MAX_CONCURRENT_RUNS: "4"
+  STALL_TIMEOUT: "10m"
+  BACKOFF_BASE_MS: "10000"
+  BACKOFF_MAX_MS: "300000"
+
+  # KUBECONFIG intentionally left unset (empty) => client-go in-cluster config
+  # via the mounted ServiceAccount token. Do NOT set this key here.
+  K8S_NAMESPACE: "jcloud"
+  RUNNER_IMAGE: "jcloud/runner:dev"
+  # Reachable from runner Pods for future ingest callbacks
+  # (POST /internal/v1/runs/{id}/events|artifact); Service DNS, in-namespace.
+  ORCH_BASE_URL: "http://orchestrator.jcloud.svc.cluster.local:8080"
+  RUNNER_SERVICE_ACCOUNT: ""
+  JOB_TTL_SECONDS: "3600"
+  RUN_TIMEOUT_SECONDS: "1800"
+  RUNNER_CPU_LIMIT: "2"
+  RUNNER_MEMORY_LIMIT: "4Gi"
+  RUNNER_CPU_REQUEST: "500m"
+  RUNNER_MEMORY_REQUEST: "1Gi"
+
+  # BYO-model MVP: point at the in-cluster mockllm so runner Jobs can complete
+  # an agent loop with no real key (PRD e2e requirement). Swap to a real
+  # OpenAI-compatible endpoint for non-demo use.
+  MODEL_BASE_URL: "http://mockllm.jcloud.svc.cluster.local:8081/v1"
+
+  DISABLE_K8S: "0"

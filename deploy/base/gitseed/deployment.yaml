@@ -1,0 +1,95 @@
+# In-cluster git server: alpine/git image running `git daemon --export-all`
+# over the anonymous git:// protocol (port 9418), serving a bare repo seeded
+# by an initContainer. This exists ONLY so e2e runs (J1) have a real,
+# in-cluster clonable REPO_URL without depending on host networking.
+#
+# Tradeoff vs. "point REPO_URL at something on localhost / the host":
+#   - A repo on the OrbStack HOST (e.g. a bare repo under $HOME served by
+#     `git daemon` on the Mac, or plain `file:///Users/...`) is NOT reachable
+#     from inside a runner Pod unless you either (a) run `git daemon` bound to
+#     an interface the pod can route to (OrbStack's `host.orbstack.internal`
+#     DNS name resolves from inside containers and IS an option — see
+#     deploy/README.md "Alternative: host-served repo"), or (b) hostPath-mount
+#     the repo into every runner Job (couples the Job spec to the dev machine,
+#     breaks portability to any other k8s).
+#   - Shipping our own tiny git:// server keeps the whole stack self-contained
+#     and portable to any k8s (kind/minikube/a real cluster), which matters
+#     more than saving one Deployment for an MVP that's meant to be
+#     reproducible. git:// (unauthenticated, read-only, export-all) is fine
+#     here because it never leaves the cluster network and carries no secrets.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git-seed
+  namespace: jcloud
+  labels:
+    app.kubernetes.io/name: git-seed
+    app.kubernetes.io/part-of: jcloud
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: git-seed
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: git-seed
+        app.kubernetes.io/part-of: jcloud
+    spec:
+      initContainers:
+        - name: seed
+          image: alpine/git:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "/scripts/seed.sh"]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: data
+              mountPath: /srv/git
+      containers:
+        - name: git-daemon
+          # NOT alpine/git: that image's `git` package excludes git-daemon
+          # (Alpine ships it as a separate `git-daemon` apk package). Built
+          # locally by `make build-gitseed` from deploy/gitseed/Dockerfile.
+          image: jcloud/gitseed:dev
+          imagePullPolicy: Never
+          # image entrypoint is `git`; override Cmd to run the daemon
+          # directly in the foreground on all interfaces.
+          command:
+            - git
+            - daemon
+            - --reuseaddr
+            - --base-path=/srv/git
+            - --export-all
+            - --verbose
+            - --listen=0.0.0.0
+            - --port=9418
+            - /srv/git
+          ports:
+            - containerPort: 9418
+              name: git
+          volumeMounts:
+            - name: data
+              mountPath: /srv/git
+          readinessProbe:
+            tcpSocket:
+              port: 9418
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: gitseed-script
+            defaultMode: 0755
+        - name: data
+          persistentVolumeClaim:
+            claimName: gitseed-data

@@ -1,0 +1,9 @@
+# Declared for completeness / reproducibility on a fresh cluster. On this
+# OrbStack cluster `jcloud` already exists (pre-created per task instructions);
+# applying this is a harmless no-op against the existing namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jcloud
+  labels:
+    app.kubernetes.io/part-of: jcloud

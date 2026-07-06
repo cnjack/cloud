@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: jcloud
+  labels:
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/part-of: jcloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orchestrator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orchestrator
+        app.kubernetes.io/part-of: jcloud
+    spec:
+      serviceAccountName: orchestrator
+      # Migrations run automatically at boot too (cmd/orchestrator/main.go
+      # always calls store.Migrate before serving), but running them explicitly
+      # via -migrate-only in an initContainer means a broken migration fails
+      # the Pod fast and visibly (kubectl describe pod shows Init:Error)
+      # instead of surfacing only as a crash-looping main container.
+      initContainers:
+        - name: migrate
+          image: jcloud/orchestrator:dev
+          imagePullPolicy: Never
+          args: ["-migrate-only"]
+          envFrom:
+            - configMapRef:
+                name: orchestrator-config
+            - secretRef:
+                name: orchestrator-secret
+      containers:
+        - name: orchestrator
+          image: jcloud/orchestrator:dev
+          imagePullPolicy: Never # locally built; OrbStack shares the Docker image store.
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: orchestrator-config
+            - secretRef:
+                name: orchestrator-secret
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi

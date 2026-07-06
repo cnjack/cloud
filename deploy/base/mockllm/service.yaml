@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mockllm
+  namespace: jcloud
+  labels:
+    app.kubernetes.io/name: mockllm
+    app.kubernetes.io/part-of: jcloud
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mockllm
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081

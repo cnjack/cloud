@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: jcloud
+# NOTE: namespace.yaml is intentionally NOT listed here. The `jcloud` namespace
+# is treated as pre-existing/externally-owned (per task setup, it's created
+# once outside this manifest set); it is applied separately (idempotently) by
+# `make up` via `kubectl apply -f base/namespace.yaml`, and `make down` never
+# deletes it -- only the resources below. This avoids `kubectl delete -k .`
+# tearing down the namespace itself (slow to recreate, and other tenants of
+# the namespace would be surprised by that).
+resources:
+  - postgres
+  - mockllm
+  - gitseed
+  - orchestrator
