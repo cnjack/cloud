@@ -1,0 +1,9 @@
+# Keep the build context small: the image only needs bin/, the Dockerfile, and
+# entrypoint.sh. Exclude source dirs and helper scripts — but NOT entrypoint.sh
+# (the Dockerfile COPYies it).
+acpdrive/
+mockllm/
+patches/
+build.sh
+test.sh
+README.md
