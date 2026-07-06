@@ -37,6 +37,7 @@ type Config struct {
 	OrchBaseURL    string            // ORCH_BASE_URL (required) — reachable from runner pods
 	ModelBaseURL   string            // MODEL_BASE_URL — passed to runner
 	ModelAPIKey    string            // MODEL_API_KEY — passed to runner
+	ModelName      string            // MODEL_NAME — "provider/model" passed to runner (default "mock/mock-model")
 	JobTTLSeconds  int32             // JOB_TTL_SECONDS, default 3600
 	RunTimeoutSecs int64             // RUN_TIMEOUT_SECONDS, default 1800 (Job activeDeadlineSeconds)
 	CPULimit       string            // RUNNER_CPU_LIMIT, default "2"
@@ -46,6 +47,14 @@ type Config struct {
 	ServiceAccount string            // RUNNER_SERVICE_ACCOUNT (optional)
 	ExtraJobLabels map[string]string // (reserved) not env-driven yet
 	DisableK8s     bool              // DISABLE_K8S=1 — run without a cluster (API-only/dev)
+
+	// Launcher selection. "kubernetes" (default) schedules K8s Jobs; "process"
+	// runs each runner as a local `docker run` container for local dev and the
+	// full-loop integration test (see runner/test-integration.sh). "process"
+	// needs no cluster and RUNNER_IMAGE must be a locally-available image.
+	JobLauncher      string   // JOB_LAUNCHER, default "kubernetes"
+	RunnerNetwork    string   // RUNNER_NETWORK — docker network for process launcher (optional)
+	RunnerDockerArgs []string // RUNNER_DOCKER_ARGS — extra `docker run` args, space-split (optional)
 }
 
 // Load resolves configuration from the environment, returning an error listing
@@ -66,6 +75,7 @@ func Load() (*Config, error) {
 		OrchBaseURL:       os.Getenv("ORCH_BASE_URL"),
 		ModelBaseURL:      os.Getenv("MODEL_BASE_URL"),
 		ModelAPIKey:       os.Getenv("MODEL_API_KEY"),
+		ModelName:         getenv("MODEL_NAME", "mock/mock-model"),
 		JobTTLSeconds:     int32(getint("JOB_TTL_SECONDS", 3600)),
 		RunTimeoutSecs:    getint64("RUN_TIMEOUT_SECONDS", 1800),
 		CPULimit:          getenv("RUNNER_CPU_LIMIT", "2"),
@@ -74,6 +84,9 @@ func Load() (*Config, error) {
 		MemoryRequest:     getenv("RUNNER_MEMORY_REQUEST", "1Gi"),
 		ServiceAccount:    os.Getenv("RUNNER_SERVICE_ACCOUNT"),
 		DisableK8s:        getbool("DISABLE_K8S", false),
+		JobLauncher:       getenv("JOB_LAUNCHER", "kubernetes"),
+		RunnerNetwork:     os.Getenv("RUNNER_NETWORK"),
+		RunnerDockerArgs:  strings.Fields(os.Getenv("RUNNER_DOCKER_ARGS")),
 	}
 
 	var missing []string

@@ -208,26 +208,17 @@ func (r *Reconciler) emitStatus(ctx context.Context, run *domain.Run) {
 	}
 }
 
-// emit appends one internally-generated event, assigning the next seq, and
+// emit appends one internally-generated event, letting the store allocate the
+// next global seq atomically (no NextEventSeq race with runner ingest), and
 // notifies the publisher.
 func (r *Reconciler) emit(ctx context.Context, runID, typ string, payload map[string]any) {
-	seq, err := r.st.NextEventSeq(ctx, runID)
+	ev, err := r.st.AppendInternalEvent(ctx, runID, typ, payload)
 	if err != nil {
-		r.log.Error("reconcile: next seq", "run", runID, "err", err)
-		return
-	}
-	if _, err := r.st.AppendEvents(ctx, runID, []store.EventInput{{Seq: seq, Type: typ, Payload: payload}}); err != nil {
-		r.log.Error("reconcile: append event", "run", runID, "err", err)
+		r.log.Error("reconcile: emit event", "run", runID, "type", typ, "err", err)
 		return
 	}
 	if r.pub != nil {
-		r.pub.Publish(runID, domain.RunEvent{
-			RunID:   runID,
-			Seq:     seq,
-			TS:      r.now(),
-			Type:    typ,
-			Payload: payload,
-		})
+		r.pub.Publish(runID, ev)
 	}
 }
 
@@ -241,6 +232,7 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string) 
 		"ORCH_BASE_URL":  r.cfg.OrchBaseURL,
 		"MODEL_BASE_URL": r.cfg.ModelBaseURL,
 		"MODEL_API_KEY":  r.cfg.ModelAPIKey,
+		"MODEL_NAME":     r.cfg.ModelName,
 		"RUN_TOKEN":      token,
 	}
 	// REPO_URL / REPO_BRANCH come from the run's project.

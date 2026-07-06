@@ -7,7 +7,8 @@
 > 范围锁定见 [10-prd.md](10-prd.md);状态机语义源自 Symphony,见
 > [05-symphony-and-references.md](05-symphony-and-references.md)。
 >
-> _最后更新:2026-07-07_
+> _最后更新:2026-07-07(runner↔orchestrator 事件流水线接线:服务端 seq 分配、
+> MODEL_NAME、SSE access_token)_
 
 ---
 
@@ -123,7 +124,8 @@ orchestrator 的兜底分类**不覆盖**它。
 { "seq": 7, "ts": "2026-07-07T12:00:10Z", "type": "agent.tool_call", "payload": { "tool": "edit", "args": { "path": "README.md" } } }
 ```
 
-- `seq`:该 run 内单调递增、从 1 起、唯一。`(run_id, seq)` 是幂等键。
+- `seq`:该 run 内单调递增、从 1 起、唯一,**由服务端权威分配**(见 §5.1)。
+  `(run_id, seq)` 唯一。runner 上报时携带的 `seq` 仅作按来源的幂等键,非最终 `seq`。
 - `type` 取值见 §4 事件类型表。`payload` 是与 type 对应的自由 JSON 对象。
 
 ### 1.6 RunArtifact
@@ -251,8 +253,13 @@ orchestrator 的兜底分类**不覆盖**它。
 
 #### `GET /api/v1/runs/{id}/stream` — SSE 实时流(replay-then-live)
 
-查询参数:`after_seq`(默认 0)。
+查询参数:`after_seq`(默认 0)、`access_token`(可选,见下)。
 
+- **认证(仅本端点)**:除标准 `Authorization: Bearer <CONSOLE_TOKEN>` 外,
+  本端点**额外**接受 `?access_token=<CONSOLE_TOKEN>` 查询参数(常量时间比较,
+  与 header 等价)。原因:浏览器原生 `EventSource` **无法**设置自定义 header,
+  故控制台以查询参数携带 token。**仅**此只读流端点开放该方式;所有写端点仍
+  只认 header。二者择一即可;都提供时以 header 优先。
 - **响应头**:`Content-Type: text/event-stream`。
 - **语义**:先**回放** `seq > after_seq` 的持久化事件,**再切到实时**。订阅在
   回放前建立,保证无缝、无漏、无重(`seq` 单调,重复自动去重)。
@@ -310,8 +317,10 @@ for (const type of ["run.status","agent.text","agent.tool_call","agent.tool_resu
 // 服务器在终态后关闭连接;若需自动重连中间断线,用 after_seq=lastSeq 重开。
 ```
 
-> 注:浏览器原生 `EventSource` 无法设自定义 Header。控制台若用 Bearer,请用
-> `fetch()` + `ReadableStream` 手动解析 SSE,或由同源反代注入 Authorization。
+> 注:浏览器原生 `EventSource` 无法设自定义 Header。两条可行路径:
+> (a) 用 `?access_token=<CONSOLE_TOKEN>` 查询参数(本 stream 端点专门支持,见
+> §2.3 认证);(b) 用 `fetch()` + `ReadableStream` 手动解析 SSE 并带 Bearer;
+> 或由同源反代注入 Authorization。控制台当前走 (a)。
 
 ---
 
@@ -353,13 +362,19 @@ runner 通过 `POST /internal/v1/runs/{id}/events` 上报;orchestrator 也会内
 ```
 
 - 每个事件需 `seq > 0` 且 `type` 非空。
-- **幂等**:按 `(run_id, seq)` 去重;重复 seq 静默忽略。断线可安全重发同批。
-- runner 自己维护 `seq`(建议从 1 单调递增,勿与 orchestrator 内生事件冲突——
-  orchestrator 内生事件也走同一 seq 空间,故 runner 应把自己观察到的最大 seq
-  作为基准;实践上 runner 用一段独立的高位区间或先 GET events 取 max seq 亦可。
-  最简单可靠做法:runner 只发自己的事件、orchestrator 只在状态转移时发 `run.status`,
-  二者 seq 冲突时以先落库者为准,后者被幂等忽略——故 runner 应对偶发 `accepted<发送数`
-  容忍)。
+- **runner 的 `seq` 只是「按来源的幂等键」,不是最终落库/SSE 的 `seq`。**
+  runner 从 1 单调自增即可(用于安全重发去重),**不需要**关心 orchestrator
+  内生事件的 seq。
+- **服务端分配 seq(修复了原 seq 冲突隐患)**:ingest 时,orchestrator 在一个
+  事务内(对该 run 行加锁)为每条**新**事件分配全局单调递增的 `seq`
+  (= 该 run 当前 `max(seq)+1`),并按 `(run_id, source='runner', client_seq)`
+  去重。因此:
+  - runner 事件与 orchestrator 内生事件(`run.status` / `run.artifact` /
+    `run.failure`,`source='internal'`)**共享同一条单调 `seq` 序列但永不冲突**,
+    不会再有事件被静默丢弃。
+  - 重发同一批(相同 `client_seq`)是幂等空操作,不再消耗新的 `seq`。
+- 对 console 的 SSE 契约不变:`seq` 仍是该 run 内从 1 起、单调递增、唯一的整数
+  ——只是其**权威分配方从客户端移到了服务端**(见迁移 `0002_event_seq_alloc`)。
 - 上报 `run.failure` 可精化失败分类(见 §1.4)。
 
 响应 `200`:
@@ -368,7 +383,8 @@ runner 通过 `POST /internal/v1/runs/{id}/events` 上报;orchestrator 也会内
 { "accepted": 3 }
 ```
 
-`accepted` = 本次**新插入**的事件数(去重后)。
+`accepted` = 本次**新插入**的事件数(按 `client_seq` 去重后)。注意返回的
+`accepted` 与事件最终的 `seq` 无关;runner 无需据此推断 seq。
 
 ### 5.2 `POST /internal/v1/runs/{id}/artifact` — 上报产物
 
@@ -405,6 +421,7 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
 | `REPO_BRANCH` | project.default_branch | 基线分支(契约扩展项;runner 可用可忽略) |
 | `MODEL_BASE_URL` | 环境 `MODEL_BASE_URL` | OpenAI 兼容 provider base URL |
 | `MODEL_API_KEY` | 环境 `MODEL_API_KEY` | 模型 key(MVP 直注入;P3 换 LLM 代理 + temp token) |
+| `MODEL_NAME` | 环境 `MODEL_NAME`(默认 `mock/mock-model`) | jcode 的 `provider/model` 标识;runner 据此为未知 provider 写 `custom_models` 配置项 |
 | `ORCH_BASE_URL` | 环境 `ORCH_BASE_URL` | orchestrator 基址,runner 回传事件/产物用 |
 | `RUN_TOKEN` | 每 run 随机生成 | Bearer,仅本 run 有效;打 `/internal/v1/runs/{RUN_ID}/*` |
 
@@ -419,6 +436,19 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
    `reason ∈ {clone_failed, setup_failed}`,再让进程非 0 退出——这样详情页失败
    原因才能精确到 clone/setup,而非兜底的 `agent_error`。
 5. `RUN_TOKEN` 只在本 run 的 Job env 里出现,orchestrator 只存其哈希;勿外泄。
+
+**当前实现(已接线并端到端验证)**:
+
+- **事件流水线**:`acpdrive` 把 jcode 的 ACP `session/update` 通知映射为事件——
+  `AgentMessageChunk → agent.text`;`ToolCall(初始) → agent.tool_call{name,args,call_id}`;
+  `ToolCallUpdate(终态 completed/failed) → agent.tool_result{call_id,output,is_error}`
+  ——经**有缓冲、不阻塞 agent loop** 的发射器批量 POST(500ms 或 10 条触发一次
+  flush;5xx/网络错误按退避重试;缓冲满时丢最旧并补一条 `agent.text` 丢弃计数)。
+- **失败/产物上报**:`entrypoint.sh` 在非 0 退出前调 `orchclient report-failure`
+  (clone_failed / setup_failed / agent_error);成功时 `orchclient upload-artifact`
+  上传 diff(基线 = clone 时 HEAD,`git add -N .` 纳入未跟踪文件)。`orchclient`
+  是一个仅依赖标准库的小工具(base 镜像无 curl/wget);当 `ORCH_BASE_URL/RUN_ID/
+  RUN_TOKEN` 任一缺失时为安全空操作,保证 runner 可独立运行。
 
 ---
 

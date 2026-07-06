@@ -160,27 +160,21 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // emitStatus appends and publishes an initial/updated run.status event from the
-// API side (mirrors the reconciler's emitter for API-driven transitions).
+// API side (mirrors the reconciler's emitter for API-driven transitions). The
+// store allocates the global seq atomically so this never races runner ingest.
 func (s *Server) emitStatus(ctx context.Context, run *domain.Run) {
 	payload := map[string]any{"status": string(run.Status), "phase": run.Phase}
 	if run.Status == domain.StatusFailed {
 		payload["failure_reason"] = string(run.FailureReason)
 		payload["failure_message"] = run.FailureMessage
 	}
-	seq, err := s.st.NextEventSeq(ctx, run.ID)
+	ev, err := s.st.AppendInternalEvent(ctx, run.ID, domain.EventRunStatus, payload)
 	if err != nil {
-		s.log.Error("emit status: next seq", "run", run.ID, "err", err)
-		return
-	}
-	if _, err := s.st.AppendEvents(ctx, run.ID, []store.EventInput{{Seq: seq, Type: domain.EventRunStatus, Payload: payload}}); err != nil {
-		s.log.Error("emit status: append", "run", run.ID, "err", err)
+		s.log.Error("emit status", "run", run.ID, "err", err)
 		return
 	}
 	if s.hub != nil {
-		s.hub.Publish(run.ID, domain.RunEvent{
-			RunID: run.ID, Seq: seq, TS: time.Now().UTC(),
-			Type: domain.EventRunStatus, Payload: payload,
-		})
+		s.hub.Publish(run.ID, ev)
 	}
 }
 

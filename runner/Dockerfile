@@ -14,9 +14,12 @@
 #   The extension point for a fully self-contained build (multi-stage `FROM golang`
 #   compiling from a COPYied source tree) is documented in README.md.
 #
-# The image expects three binaries in the build context (produced by build.sh):
+# The image expects these binaries in the build context (produced by build.sh):
 #   ./bin/jcode      linux/<arch> static, built with `-tags jcode_headless` CGO off
 #   ./bin/acpdrive   linux/<arch> ACP client that drives one headless jcode turn
+#                    AND streams agent text/tool events to the orchestrator
+#   ./bin/orchclient linux/<arch> stdlib-only helper the entrypoint uses to POST
+#                    run.failure events and upload the diff artifact
 #   ./bin/mockllm    linux/<arch> (optional; only bundled for self-contained tests)
 #
 # P0 keeps the base minimal: git + ca-certificates only. Language toolchains
@@ -31,14 +34,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Prebuilt static binaries (compiled on host for the image's target arch).
-COPY bin/jcode    /usr/local/bin/jcode
-COPY bin/acpdrive /usr/local/bin/acpdrive
+COPY bin/jcode     /usr/local/bin/jcode
+COPY bin/acpdrive  /usr/local/bin/acpdrive
+COPY bin/orchclient /usr/local/bin/orchclient
 # mockllm is bundled so the container can run fully self-contained in tests; in
 # production the MODEL_BASE_URL points at a real (or sidecar) model instead.
-COPY bin/mockllm  /usr/local/bin/mockllm
+COPY bin/mockllm   /usr/local/bin/mockllm
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/jcode /usr/local/bin/acpdrive /usr/local/bin/mockllm /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/jcode /usr/local/bin/acpdrive /usr/local/bin/orchclient /usr/local/bin/mockllm /usr/local/bin/entrypoint.sh
 
 # jcode writes its config + logs under $HOME/.jcode. Keep it explicit.
 ENV HOME=/root

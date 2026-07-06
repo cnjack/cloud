@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"sort"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
 )
@@ -16,6 +18,7 @@ type MemStore struct {
 	projects  map[string]domain.Project
 	runs      map[string]domain.Run
 	events    map[string][]domain.RunEvent  // keyed by runID, kept sorted by seq
+	dedupe    map[string]bool               // keyed by runID+"|"+source+"|"+client_seq
 	artifacts map[string]domain.RunArtifact // keyed by runID+"/"+kind
 }
 
@@ -25,8 +28,27 @@ func NewMemStore() *MemStore {
 		projects:  map[string]domain.Project{},
 		runs:      map[string]domain.Run{},
 		events:    map[string][]domain.RunEvent{},
+		dedupe:    map[string]bool{},
 		artifacts: map[string]domain.RunArtifact{},
 	}
+}
+
+// dedupeKey builds the per-source idempotency key mirroring the DB unique index
+// on (run_id, source, client_seq).
+func dedupeKey(runID, source string, clientSeq int64) string {
+	return runID + "|" + source + "|" + strconv.FormatInt(clientSeq, 10)
+}
+
+// maxSeqLocked returns the current highest seq for a run (0 if none). Caller
+// must hold m.mu.
+func (m *MemStore) maxSeqLocked(runID string) int64 {
+	var max int64
+	for _, e := range m.events[runID] {
+		if e.Seq > max {
+			max = e.Seq
+		}
+	}
+	return max
 }
 
 func (m *MemStore) Close() {}
@@ -197,6 +219,7 @@ func (m *MemStore) AppendEvents(_ context.Context, runID string, events []EventI
 		m.events[runID] = append(m.events[runID], domain.RunEvent{
 			RunID: runID, Seq: e.Seq, Type: e.Type, Payload: payload,
 		})
+		m.dedupe[dedupeKey(runID, SourceInternal, e.Seq)] = true
 		existing[e.Seq] = true
 		inserted++
 	}
@@ -206,16 +229,55 @@ func (m *MemStore) AppendEvents(_ context.Context, runID string, events []EventI
 	return inserted, nil
 }
 
+func (m *MemStore) AppendRunnerEvents(_ context.Context, runID string, events []EventInput) ([]domain.RunEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.runs[runID]; !ok {
+		return nil, ErrNotFound
+	}
+	next := m.maxSeqLocked(runID)
+	out := make([]domain.RunEvent, 0, len(events))
+	for _, e := range events {
+		key := dedupeKey(runID, SourceRunner, e.Seq)
+		if m.dedupe[key] {
+			continue // idempotent by (run_id, runner, client_seq); no seq consumed
+		}
+		payload := e.Payload
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		next++
+		ev := domain.RunEvent{RunID: runID, Seq: next, TS: time.Now().UTC(), Type: e.Type, Payload: payload}
+		m.events[runID] = append(m.events[runID], ev)
+		m.dedupe[key] = true
+		out = append(out, ev)
+	}
+	sort.Slice(m.events[runID], func(i, j int) bool {
+		return m.events[runID][i].Seq < m.events[runID][j].Seq
+	})
+	return out, nil
+}
+
+func (m *MemStore) AppendInternalEvent(_ context.Context, runID, typ string, payload map[string]any) (domain.RunEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.runs[runID]; !ok {
+		return domain.RunEvent{}, ErrNotFound
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	seq := m.maxSeqLocked(runID) + 1
+	ev := domain.RunEvent{RunID: runID, Seq: seq, TS: time.Now().UTC(), Type: typ, Payload: payload}
+	m.events[runID] = append(m.events[runID], ev)
+	m.dedupe[dedupeKey(runID, SourceInternal, seq)] = true
+	return ev, nil
+}
+
 func (m *MemStore) NextEventSeq(_ context.Context, runID string) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var max int64
-	for _, e := range m.events[runID] {
-		if e.Seq > max {
-			max = e.Seq
-		}
-	}
-	return max + 1, nil
+	return m.maxSeqLocked(runID) + 1, nil
 }
 
 func (m *MemStore) ListEvents(_ context.Context, runID string, afterSeq int64, limit int) ([]domain.RunEvent, error) {

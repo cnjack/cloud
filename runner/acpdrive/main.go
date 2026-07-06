@@ -110,7 +110,16 @@ func run(ctx context.Context, agentBin string, agentArgs []string, workspace, pr
 		_ = cmd.Wait()
 	}()
 
-	client := &driverClient{workspace: workspace}
+	// Event emitter: ships agent text + tool activity to the orchestrator. Nil
+	// (safe no-op) when ORCH_BASE_URL/RUN_ID/RUN_TOKEN are absent, e.g. the pure
+	// headless proof, so acpdrive keeps working standalone.
+	emitter := NewEmitterFromEnv()
+	defer emitter.Close()
+	if emitter != nil {
+		logf("event emitter active -> %s (run %s)", os.Getenv("ORCH_BASE_URL"), os.Getenv("RUN_ID"))
+	}
+
+	client := &driverClient{workspace: workspace, emitter: emitter}
 	conn := acp.NewClientSideConnection(client, stdin, stdout)
 	if verbose {
 		conn.SetLogger(slog.Default())
@@ -167,10 +176,16 @@ func run(ctx context.Context, agentBin string, agentArgs []string, workspace, pr
 // driverClient implements acp.Client. In full_access mode jcode never calls
 // RequestPermission, and jcode uses its own LocalExecutor for file/terminal
 // ops (not the client fs methods), so these are safe fallbacks.
-type driverClient struct{ workspace string }
+type driverClient struct {
+	workspace string
+	emitter   *Emitter
+}
 
 var _ acp.Client = (*driverClient)(nil)
 
+// SessionUpdate is on jcode's hot path. It logs to stderr for local debugging
+// and hands the notification to the mapper, which queues run events on the
+// non-blocking emitter (never blocks the agent loop).
 func (c *driverClient) SessionUpdate(_ context.Context, params acp.SessionNotification) error {
 	u := params.Update
 	switch {
@@ -181,6 +196,7 @@ func (c *driverClient) SessionUpdate(_ context.Context, params acp.SessionNotifi
 	case u.ToolCallUpdate != nil:
 		fmt.Fprintf(os.Stderr, "[tool] %s -> %v\n", u.ToolCallUpdate.ToolCallId, u.ToolCallUpdate.Status)
 	}
+	mapSessionUpdate(c.emitter, u)
 	return nil
 }
 

@@ -53,7 +53,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/runs", s.console(s.handleListRuns))
 	mux.Handle("GET /api/v1/runs/{id}", s.console(s.handleGetRun))
 	mux.Handle("GET /api/v1/runs/{id}/events", s.console(s.handleListEvents))
-	mux.Handle("GET /api/v1/runs/{id}/stream", s.console(s.handleStream))
+	// SSE stream also accepts the console token via ?access_token= because a
+	// browser EventSource cannot set an Authorization header (see 11-api.md §2.3).
+	mux.Handle("GET /api/v1/runs/{id}/stream", s.consoleStream(s.handleStream))
 	mux.Handle("GET /api/v1/runs/{id}/artifact", s.console(s.handleGetArtifact))
 	mux.Handle("POST /api/v1/runs/{id}/cancel", s.console(s.handleCancelRun))
 	mux.Handle("POST /api/v1/runs/{id}/retry", s.console(s.handleRetryRun))
@@ -73,6 +75,26 @@ func (s *Server) console(h http.HandlerFunc) http.Handler {
 		tok, ok := auth.BearerToken(r.Header.Get("Authorization"))
 		if !ok || !auth.ConstantTimeEqual(tok, s.cfg.ConsoleToken) {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "valid console bearer token required")
+			return
+		}
+		h(w, r)
+	})
+}
+
+// consoleStream authenticates the SSE endpoint, accepting the console token
+// EITHER as a Bearer header (CLI/fetch clients) OR as an ?access_token= query
+// param. The query-param fallback exists because the browser's native
+// EventSource cannot attach an Authorization header. Both use the same
+// constant-time compare. Only the read-only stream endpoint allows this; every
+// mutating endpoint remains header-only.
+func (s *Server) consoleStream(h http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok, ok := auth.BearerToken(r.Header.Get("Authorization"))
+		if !ok {
+			tok = r.URL.Query().Get("access_token")
+		}
+		if tok == "" || !auth.ConstantTimeEqual(tok, s.cfg.ConsoleToken) {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "valid console bearer token or access_token required")
 			return
 		}
 		h(w, r)
