@@ -1,11 +1,12 @@
 /*
- * AuthProvider + OnboardingGate — the runtime login gate state machine:
+ * AuthProvider + OnboardingGate — the M4 auth gate state machine (probe = /me):
  *   - orchestrator down → setup guide; recovers → advances to sign-in
- *   - reachable, no token → sign-in; valid token → landing card → app
- *   - stored token valid → straight to the app (no landing ceremony)
+ *   - reachable, no session → sign-in (provider buttons + Advanced console token)
+ *   - valid console token → landing card → app; stored valid token → straight in
  *   - stored token rejected → sign-in with rotation notice, stored copy cleared
  *   - session 401 (http-client hook) → back to sign-in
  *   - sign-out clears the stored token
+ *   - OAuth ?welcome= → welcome card, then Get started → app (param stripped)
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -13,57 +14,56 @@ import { MemoryRouter } from 'react-router-dom';
 import { AuthProvider, useAuth } from './AuthProvider';
 import { OnboardingGate } from '../pages/OnboardingGate';
 import { TOKEN_STORAGE_KEY } from '../api/config';
-import type { SystemInfo } from '../api/types';
+import type { AuthProviderInfo, Me } from '../api/types';
 
-function snapshot(): SystemInfo {
+function me(): Me {
   return {
-    version: { version: '1.4.0', commit: 'abc1234' },
-    capacity: { max_concurrent_runs: 4, running: 1, queued: 2, scheduling: 0 },
-    guardrails: { run_timeout_seconds: 1800, job_ttl_seconds: 3600 },
-    provider: { gitea_enabled: true, gitea_url: 'http://gitea:3000' },
-    runner: { image: 'jcloud/runner:dev' },
-    namespace: 'jcloud',
-    launcher: 'kubernetes',
+    user: { id: 'u1', display_name: 'Ada Lovelace', avatar_url: '', is_cluster_admin: true },
+    is_service: false,
+    identities: [{ provider: 'gitea', username: 'ada' }],
   };
 }
 
-/**
- * Controllable orchestrator stub: `mode.current` flips between 'down'
- * (connection refused) and 'up' (answers 200 for VALID_TOKEN, else 401).
- */
 const VALID_TOKEN = 'good-token';
 
-function stubFetch(mode: { current: 'down' | 'up' }) {
-  const fn = vi.fn(async (_url: string, init?: RequestInit) => {
+function jsonRes(status: number, body: unknown): Response {
+  const text = JSON.stringify(body);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: `S${status}`,
+    json: async () => JSON.parse(text),
+    text: async () => text,
+  } as unknown as Response;
+}
+
+/**
+ * Controllable orchestrator stub. `mode.current` flips 'down' (refused) / 'up'.
+ * /auth/providers returns `providers`; /api/v1/me returns the user for a valid
+ * console token (or, when cookieSession, unconditionally) else 401.
+ */
+function stubFetch(
+  mode: { current: 'down' | 'up' },
+  opts: { providers?: AuthProviderInfo[]; cookieSession?: boolean } = {},
+) {
+  const providers = opts.providers ?? [];
+  const fn = vi.fn(async (url: string, init?: RequestInit) => {
     if (mode.current === 'down') throw new TypeError('fetch failed');
+    const u = String(url);
+    if (u.includes('/auth/providers')) return jsonRes(200, { providers });
+    if (u.includes('/auth/logout')) return jsonRes(200, { ok: true });
+    // /api/v1/me
     const headers = (init?.headers ?? {}) as Record<string, string>;
-    if (headers.Authorization === `Bearer ${VALID_TOKEN}`) {
-      const body = JSON.stringify(snapshot());
-      return {
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: async () => JSON.parse(body),
-        text: async () => body,
-      } as unknown as Response;
+    if (opts.cookieSession || headers.Authorization === `Bearer ${VALID_TOKEN}`) {
+      return jsonRes(200, me());
     }
-    return {
-      ok: false,
-      status: 401,
-      statusText: 'Unauthorized',
-      json: async () => ({ error: { code: 'unauthorized' } }),
-      text: async () => '',
-    } as unknown as Response;
+    return jsonRes(401, { error: { code: 'unauthorized' } });
   });
   vi.stubGlobal('fetch', fn);
   return fn;
 }
 
-/**
- * This jsdom build ships no window.localStorage; install an in-memory Storage
- * so the token-persistence paths are actually exercised (the production code
- * only touches storage behind try/catch, so it must not silently no-op here).
- */
+/** jsdom here ships no window.localStorage — install an in-memory Storage. */
 function installMemoryStorage(): Storage {
   const store = new Map<string, string>();
   const storage: Storage = {
@@ -76,14 +76,10 @@ function installMemoryStorage(): Storage {
       return store.size;
     },
   };
-  Object.defineProperty(window, 'localStorage', {
-    value: storage,
-    configurable: true,
-  });
+  Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
   return storage;
 }
 
-/** Exposes imperative auth actions the shell would normally wire up. */
 function AuthProbe() {
   const auth = useAuth();
   return (
@@ -95,8 +91,6 @@ function AuthProbe() {
 }
 
 function renderGate() {
-  // MemoryRouter mirrors production, where BrowserRouter wraps the gate
-  // (the Wordmark on gate screens is a router <Link>).
   return render(
     <AuthProvider>
       <MemoryRouter>
@@ -109,14 +103,15 @@ function renderGate() {
   );
 }
 
-async function signIn(token: string) {
-  fireEvent.change(screen.getByLabelText('Console token'), {
-    target: { value: token },
-  });
-  fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+async function signInWithToken(token: string) {
+  fireEvent.change(screen.getByLabelText('Console token'), { target: { value: token } });
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in with token' }));
 }
 
-beforeEach(() => installMemoryStorage());
+beforeEach(() => {
+  installMemoryStorage();
+  window.history.replaceState(null, '', '/');
+});
 afterEach(() => vi.unstubAllGlobals());
 
 describe('OnboardingGate — environment layer', () => {
@@ -126,27 +121,49 @@ describe('OnboardingGate — environment layer', () => {
     renderGate();
 
     await waitFor(() => expect(screen.getByTestId('setup-guide')).toBeTruthy());
-    // The three deploy commands are shown, copyable.
     expect(screen.getByText('make up')).toBeTruthy();
 
     mode.current = 'up';
     fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
-    // No token configured → reachable now lands on sign-in, not the app.
     await waitFor(() => expect(screen.getByTestId('sign-in')).toBeTruthy());
   });
 });
 
-describe('OnboardingGate — sign-in layer', () => {
-  it('signs in with a valid token: landing card, stored token, then the app', async () => {
-    stubFetch({ current: 'up' });
+describe('OnboardingGate — sign-in layer (providers + Advanced)', () => {
+  it('renders provider buttons and keeps the console token behind Advanced', async () => {
+    stubFetch(
+      { current: 'up' },
+      { providers: [{ id: 'gitea', name: 'Gitea', login_url: '/auth/login/gitea' }] },
+    );
+    renderGate();
+
+    await waitFor(() => expect(screen.getByTestId('provider-buttons')).toBeTruthy());
+    const btn = screen.getByText('Continue with Gitea').closest('a')!;
+    expect(btn.getAttribute('href')).toBe('/auth/login/gitea');
+
+    // Advanced (console token) is collapsed until toggled.
+    expect(screen.queryByTestId('console-token-form')).toBeNull();
+    fireEvent.click(screen.getByTestId('advanced-toggle'));
+    expect(screen.getByTestId('console-token-form')).toBeTruthy();
+  });
+
+  it('auto-expands Advanced when no provider is configured', async () => {
+    stubFetch({ current: 'up' }, { providers: [] });
+    renderGate();
+    await waitFor(() => expect(screen.getByTestId('sign-in')).toBeTruthy());
+    expect(screen.queryByTestId('provider-buttons')).toBeNull();
+    expect(screen.getByTestId('console-token-form')).toBeTruthy();
+  });
+
+  it('signs in with a valid console token: landing card, stored token, then the app', async () => {
+    stubFetch({ current: 'up' }, { providers: [] });
     renderGate();
 
     await waitFor(() => expect(screen.getByTestId('sign-in')).toBeTruthy());
-    await signIn(VALID_TOKEN);
+    await signInWithToken(VALID_TOKEN);
 
-    // Manual sign-in gets the landing ceremony with the cluster snapshot.
     await waitFor(() => expect(screen.getByTestId('landing-card')).toBeTruthy());
-    expect(screen.getByText('jcloud')).toBeTruthy(); // namespace fact
+    expect(screen.getByText('Ada Lovelace')).toBeTruthy(); // principal fact
     expect(window.localStorage.getItem(TOKEN_STORAGE_KEY)).toBe(VALID_TOKEN);
 
     fireEvent.click(screen.getByRole('button', { name: 'Enter console' }));
@@ -154,15 +171,13 @@ describe('OnboardingGate — sign-in layer', () => {
   });
 
   it('rejects a bad token inline without leaving the sign-in screen', async () => {
-    stubFetch({ current: 'up' });
+    stubFetch({ current: 'up' }, { providers: [] });
     renderGate();
 
     await waitFor(() => expect(screen.getByTestId('sign-in')).toBeTruthy());
-    await signIn('wrong-token');
+    await signInWithToken('wrong-token');
 
-    await waitFor(() =>
-      expect(screen.getByText(/rejected by the orchestrator/i)).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByText(/rejected by the orchestrator/i)).toBeTruthy());
     expect(window.localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
   });
 
@@ -177,13 +192,28 @@ describe('OnboardingGate — sign-in layer', () => {
 
   it('drops a stale stored token and explains the rotation on sign-in', async () => {
     window.localStorage.setItem(TOKEN_STORAGE_KEY, 'rotated-away');
-    stubFetch({ current: 'up' });
+    stubFetch({ current: 'up' }, { providers: [] });
     renderGate();
 
     await waitFor(() => expect(screen.getByTestId('sign-in')).toBeTruthy());
     expect(screen.getByText(/saved token was rejected/i)).toBeTruthy();
-    // The known-bad copy must not survive to silently retry on reload.
     expect(window.localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
+  });
+});
+
+describe('OnboardingGate — welcome card (OAuth redirect)', () => {
+  it('shows the first-admin welcome from ?welcome=first-admin, then enters the console', async () => {
+    window.history.replaceState(null, '', '/?welcome=first-admin');
+    stubFetch({ current: 'up' }, { cookieSession: true });
+    renderGate();
+
+    await waitFor(() => expect(screen.getByTestId('welcome-card')).toBeTruthy());
+    expect(screen.getByText(/first user/i)).toBeTruthy();
+    // The param is stripped from the address bar so a refresh won't replay it.
+    expect(window.location.search).not.toContain('welcome');
+
+    fireEvent.click(screen.getByTestId('welcome-enter'));
+    expect(screen.getByTestId('app')).toBeTruthy();
   });
 });
 
@@ -197,7 +227,7 @@ describe('OnboardingGate — session layer', () => {
     fireEvent.click(screen.getByTestId('force-401'));
 
     await waitFor(() => expect(screen.getByTestId('sign-in')).toBeTruthy());
-    expect(screen.getByText(/stopped working/i)).toBeTruthy();
+    expect(screen.getByText(/session ended/i)).toBeTruthy();
     expect(window.localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
   });
 

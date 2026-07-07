@@ -159,6 +159,34 @@ function SystemCards({ data }: { data: SystemInfo }) {
         </dl>
       </Card>
 
+      {/* Auth (M2/M4) */}
+      <Card className={styles.card}>
+        <div className={styles.cardHead}>
+          <h2 className={styles.cardTitle}>Auth</h2>
+          <span
+            className={styles.pill}
+            data-on={(data.auth?.providers.length ?? 0) > 0 || undefined}
+            data-testid="auth-status"
+          >
+            {(data.auth?.providers.length ?? 0) > 0
+              ? `${data.auth!.providers.length} provider${data.auth!.providers.length === 1 ? '' : 's'}`
+              : 'token only'}
+          </span>
+        </div>
+        <dl className={styles.rows}>
+          <Row
+            label="OAuth providers"
+            value={
+              data.auth && data.auth.providers.length > 0
+                ? data.auth.providers.join(', ')
+                : 'none (console token only)'
+            }
+            mono
+          />
+          <Row label="Users" value={String(data.auth?.users_count ?? 0)} mono />
+        </dl>
+      </Card>
+
       {/* Version */}
       <Card className={styles.card}>
         <div className={styles.cardHead}>

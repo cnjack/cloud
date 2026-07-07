@@ -17,6 +17,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const role = useRole();
   // Sign-out only makes sense for a real verified session (gate mounted, not demo).
   const auth = useOptionalAuth();
+  const me = auth?.me ?? null;
+  const providers = auth?.providers ?? [];
   const onSignOut = auth && !demo ? auth.logout : undefined;
   const navigate = useNavigate();
   const params = useParams();
@@ -56,7 +58,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </span>
           )}
           <ThemeToggle />
-          <IdentityChip role={role} onSignOut={onSignOut} />
+          <IdentityChip me={me} providers={providers} role={role} onSignOut={onSignOut} />
         </div>
       </header>
       <main className={styles.content}>{children}</main>

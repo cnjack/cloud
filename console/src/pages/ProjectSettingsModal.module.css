@@ -1,3 +1,29 @@
+/* Tabs across the top of the settings body. */
+.tabs {
+  display: flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+.tab {
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: none;
+  color: var(--color-text-dim);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+.tab:hover {
+  color: var(--color-text);
+}
+.tab[data-active] {
+  color: var(--color-text);
+  border-bottom-color: var(--color-accent);
+}
+
 .body {
   display: flex;
   flex-direction: column;

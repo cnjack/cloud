@@ -9,8 +9,11 @@ import {
 } from '@tanstack/react-query';
 import { useApi } from './ApiProvider';
 import type {
+  AddMemberInput,
   CreateProjectInput,
   CreateRunInput,
+  CreateServiceInput,
+  Member,
   Project,
   Run,
   UpdateProjectInput,
@@ -18,12 +21,16 @@ import type {
 import { isTerminal } from './types';
 
 export const qk = {
+  me: ['me'] as const,
   projects: ['projects'] as const,
   project: (id: string) => ['project', id] as const,
   runs: (projectId: string) => ['runs', projectId] as const,
   run: (runId: string) => ['run', runId] as const,
   diff: (runId: string) => ['diff', runId] as const,
   system: ['system'] as const,
+  services: (projectId: string) => ['services', projectId] as const,
+  members: (projectId: string) => ['members', projectId] as const,
+  users: (q: string) => ['users', q] as const,
 };
 
 export function useProjects() {
@@ -124,6 +131,36 @@ export function useCreateRun(projectId: string) {
   });
 }
 
+/**
+ * Dispatch a run against a specific service (multi-service projects). projectId
+ * is only used to invalidate the project's run list after the run is created.
+ */
+export function useCreateServiceRun(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ serviceId, input }: { serviceId: string; input: CreateRunInput }) =>
+      api.createServiceRun(serviceId, input),
+    onSuccess: (run: Run) => {
+      qc.invalidateQueries({ queryKey: qk.runs(projectId) });
+      qc.setQueryData(qk.run(run.id), run);
+    },
+  });
+}
+
+/** Add a repository (service) to a project. Refreshes the project + its services. */
+export function useCreateService(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateServiceInput) => api.createService(projectId, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.services(projectId) });
+      qc.invalidateQueries({ queryKey: qk.project(projectId) });
+    },
+  });
+}
+
 export function useCancelRun() {
   const api = useApi();
   const qc = useQueryClient();
@@ -171,5 +208,61 @@ export function useSystem(enabled = true) {
     queryFn: () => api.getSystem(),
     enabled,
     refetchInterval: 5000,
+  });
+}
+
+/* ---- members (blueprint §2) ---------------------------------------------- */
+
+export function useMembers(projectId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.members(projectId),
+    queryFn: () => api.listMembers(projectId),
+    enabled: enabled && !!projectId,
+  });
+}
+
+export function useAddMember(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: AddMemberInput) => api.addMember(projectId, input),
+    onSuccess: (member: Member) => {
+      qc.setQueryData<Member[]>(qk.members(projectId), (prev) => {
+        const list = prev ? [...prev] : [];
+        const i = list.findIndex((m) => m.user_id === member.user_id);
+        if (i >= 0) list[i] = member;
+        else list.push(member);
+        return list;
+      });
+      qc.invalidateQueries({ queryKey: qk.members(projectId) });
+    },
+  });
+}
+
+export function useRemoveMember(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => api.removeMember(projectId, userId),
+    onSuccess: (_void, userId: string) => {
+      qc.setQueryData<Member[]>(qk.members(projectId), (prev) =>
+        prev ? prev.filter((m) => m.user_id !== userId) : prev,
+      );
+      qc.invalidateQueries({ queryKey: qk.members(projectId) });
+    },
+  });
+}
+
+/**
+ * User search for the add-member picker. Debounce-friendly: pass the live query
+ * string; the query only fires once it is non-empty so an empty box is quiet.
+ */
+export function useSearchUsers(q: string) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.users(q),
+    queryFn: () => api.searchUsers(q),
+    enabled: q.trim().length > 0,
   });
 }

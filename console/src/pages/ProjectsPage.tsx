@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useProjects } from '../api/queries';
+import { useOptionalAuth } from '../auth/AuthProvider';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { EmptyState } from '../components/EmptyState';
@@ -17,6 +18,7 @@ export function ProjectsPage() {
   const { data: projects, isLoading, isError, error, refetch } = useProjects();
   const [modalOpen, setModalOpen] = useState(false);
   const navigate = useNavigate();
+  const auth = useOptionalAuth();
 
   return (
     <div className={styles.page}>
@@ -82,6 +84,8 @@ export function ProjectsPage() {
       <CreateProjectModal
         open={modalOpen}
         onClose={() => setModalOpen(false)}
+        me={auth?.me ?? null}
+        providers={auth?.providers ?? []}
         onCreated={(project) => {
           setModalOpen(false);
           navigate(`/projects/${project.id}`);

@@ -14,18 +14,26 @@
 import type { ApiClient, StreamCallbacks, StreamHandle } from './client';
 import { ApiError } from './client';
 import type {
+  AddMemberInput,
   CreateProjectInput,
   CreateRunInput,
+  CreateServiceInput,
   FailureReason,
+  Me,
+  Member,
+  MemberRole,
   Project,
   Run,
   RunArtifact,
   RunEvent,
   RunEventType,
   RunStatus,
+  Service,
   SystemInfo,
   UpdateProjectInput,
+  UserSearchResult,
 } from './types';
+import { providerForRepoUrl } from '../lib/repo';
 
 let idCounter = 1;
 function genId(prefix: string): string {
@@ -72,9 +80,92 @@ index 3b18e51..9daeafb 100644
 +Hello
 `;
 
+/**
+ * Demo identity (VITE_DEMO): a signed-in cluster-admin user so the identity chip,
+ * members picker and link affordances all have realistic data without a backend.
+ */
+const DEMO_ME: Me = {
+  user: {
+    id: 'u_ada',
+    display_name: 'Ada Lovelace',
+    avatar_url: '',
+    is_cluster_admin: true,
+  },
+  is_service: false,
+  identities: [{ provider: 'gitea', username: 'ada' }],
+};
+
+const DEMO_USERS: UserSearchResult[] = [
+  { id: 'u_ada', display_name: 'Ada Lovelace', is_cluster_admin: true },
+  { id: 'u_grace', display_name: 'Grace Hopper', is_cluster_admin: false },
+  { id: 'u_alan', display_name: 'Alan Turing', is_cluster_admin: false },
+  { id: 'u_katherine', display_name: 'Katherine Johnson', is_cluster_admin: false },
+];
+
+/** "owner/name" from a provider-shaped http(s) URL, or "" otherwise. */
+function ownerName(raw: string): string {
+  try {
+    const u = new URL(raw.trim());
+    const parts = u.pathname
+      .replace(/\.git$/, '')
+      .split('/')
+      .filter(Boolean);
+    return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : '';
+  } catch {
+    return '';
+  }
+}
+
 export function createMockClient(): ApiClient {
   const projects = new Map<string, Project>();
   const runs = new Map<string, StoredRun>();
+  // Services + members keyed by project id (blueprint §1/§2). A project starts
+  // with a single 'default' service — the "one repo = one project" simple UX.
+  const services = new Map<string, Service[]>();
+  const members = new Map<string, Member[]>();
+
+  const asMember = (u: UserSearchResult, role: MemberRole): Member => ({
+    user_id: u.id,
+    role,
+    display_name: u.display_name,
+    avatar_url: u.avatar_url,
+    username: u.id === 'u_ada' ? 'ada' : undefined,
+    is_cluster_admin: u.is_cluster_admin,
+  });
+
+  /** Build a default service for a freshly-created project. */
+  function defaultServiceFor(p: Project): Service {
+    const prov = providerForRepoUrl(p.repo_url);
+    return {
+      id: genId('svc'),
+      project_id: p.id,
+      name: 'default',
+      repo_kind: prov ? 'provider' : 'raw',
+      provider: prov ?? undefined,
+      repo_owner_name: prov ? p.provider_repo || ownerName(p.repo_url) : undefined,
+      raw_repo_url: prov ? undefined : p.repo_url,
+      default_branch: p.default_branch,
+      git_mode: (p.git_mode as Service['git_mode']) ?? 'readonly',
+      created_at: p.created_at,
+    };
+  }
+
+  /** Attach the services array + the demo principal's role onto a project view. */
+  function projectView(p: Project): Project {
+    return {
+      ...p,
+      role: 'owner',
+      owner_user_id: DEMO_ME.user.id,
+      services: services.get(p.id) ?? [],
+    };
+  }
+
+  /** Register a project with its default service + owner membership. */
+  function registerProject(p: Project): void {
+    projects.set(p.id, p);
+    services.set(p.id, [defaultServiceFor(p)]);
+    members.set(p.id, [asMember(DEMO_USERS[0]!, 'owner')]);
+  }
 
   // Seed projects so demo mode isn't a cold empty state after first click.
   // J1's empty-state assertion still holds because seeding is opt-in via env.
@@ -92,7 +183,7 @@ export function createMockClient(): ApiClient {
       provider_url: '',
       provider_repo: '',
     };
-    projects.set(readonly.id, readonly);
+    registerProject(readonly);
 
     const draftPr: Project = {
       id: genId('proj'),
@@ -105,7 +196,9 @@ export function createMockClient(): ApiClient {
       provider_url: 'http://gitea.jcloud.svc.cluster.local:3000',
       provider_repo: 'jcloud/seed',
     };
-    projects.set(draftPr.id, draftPr);
+    registerProject(draftPr);
+    // Seed a second member so the members tab has something to show.
+    members.get(draftPr.id)!.push(asMember(DEMO_USERS[1]!, 'viewer'));
   }
 
   function emit(run: StoredRun, type: RunEventType, payload: RunEvent['payload']) {
@@ -299,11 +392,15 @@ export function createMockClient(): ApiClient {
   }
 
   return {
+    async getMe() {
+      return delay(DEMO_ME);
+    },
+
     async listProjects() {
       return delay(
-        [...projects.values()].sort((a, b) =>
-          b.created_at.localeCompare(a.created_at),
-        ),
+        [...projects.values()]
+          .sort((a, b) => b.created_at.localeCompare(a.created_at))
+          .map(projectView),
       );
     },
 
@@ -341,16 +438,17 @@ export function createMockClient(): ApiClient {
         git_mode: gitMode,
         provider: gitMode === 'draft_pr' ? (provider as Project['provider']) : '',
         provider_url: gitMode === 'draft_pr' ? providerUrl : '',
-        provider_repo: gitMode === 'draft_pr' ? providerRepo : '',
+        provider_repo:
+          gitMode === 'draft_pr' ? providerRepo || ownerName(repoUrl) : '',
       };
-      projects.set(p.id, p);
-      return delay(p);
+      registerProject(p);
+      return delay(projectView(p));
     },
 
     async getProject(id: string) {
       const p = projects.get(id);
       if (!p) throw new ApiError(404, 'project not found');
-      return delay(p);
+      return delay(projectView(p));
     },
 
     async updateProject(id: string, input: UpdateProjectInput) {
@@ -373,12 +471,22 @@ export function createMockClient(): ApiClient {
       if (input.provider_url?.trim()) next.provider_url = input.provider_url.trim();
       if (input.provider_repo?.trim()) next.provider_repo = input.provider_repo.trim();
       projects.set(id, next);
-      return delay(next);
+      // Keep the default service in sync so the composer/settings reflect a mode
+      // or branch change (matches the orchestrator's patchDefaultService shim).
+      const svcList = services.get(id);
+      if (svcList && svcList.length > 0) {
+        const def = svcList.find((s) => s.name === 'default') ?? svcList[0]!;
+        def.default_branch = next.default_branch;
+        def.git_mode = (next.git_mode as Service['git_mode']) ?? def.git_mode;
+      }
+      return delay(projectView(next));
     },
 
     async deleteProject(id: string) {
       if (!projects.has(id)) throw new ApiError(404, 'project not found');
       projects.delete(id);
+      services.delete(id);
+      members.delete(id);
       // Cascade: drop this project's runs (matches the orchestrator's cascade).
       for (const [rid, r] of runs) {
         if (r.project_id === id) {
@@ -531,8 +639,126 @@ export function createMockClient(): ApiClient {
         runner: { image: 'ghcr.io/jcloud/runner:demo' },
         namespace: 'jcloud',
         launcher: 'kubernetes',
+        auth: {
+          providers: ['gitea'],
+          users_count: DEMO_USERS.length,
+        },
       };
       return delay(info);
+    },
+
+    /* ---- services (blueprint §4) ------------------------------------------ */
+    async listServices(projectId: string) {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      return delay([...(services.get(projectId) ?? [])]);
+    },
+
+    async createService(projectId: string, input: CreateServiceInput) {
+      const p = projects.get(projectId);
+      if (!p) throw new ApiError(404, 'project not found');
+      const name = input.name?.trim() || 'default';
+      const list = services.get(projectId) ?? [];
+      if (list.some((s) => s.name === name)) {
+        throw new ApiError(409, `a service named '${name}' already exists`, {
+          error: { code: 'conflict', message: `service '${name}' exists` },
+        });
+      }
+      const gitMode = (input.git_mode ?? 'readonly').trim() || 'readonly';
+      if (gitMode !== 'readonly' && gitMode !== 'draft_pr') {
+        throw badRequest("git_mode must be 'readonly' or 'draft_pr'");
+      }
+      const repoUrl = input.repo_url?.trim() ?? '';
+      const prov = input.owner_name?.trim()
+        ? input.provider ?? 'gitea'
+        : providerForRepoUrl(repoUrl);
+      if (gitMode === 'draft_pr' && !prov) {
+        throw badRequest(
+          "git_mode 'draft_pr' requires a provider repository (owner/name); raw repos are read-only",
+        );
+      }
+      const svc: Service = {
+        id: genId('svc'),
+        project_id: projectId,
+        name,
+        repo_kind: prov ? 'provider' : 'raw',
+        provider: prov ?? undefined,
+        repo_owner_name: prov
+          ? input.owner_name?.trim() || ownerName(repoUrl)
+          : undefined,
+        raw_repo_url: prov ? undefined : repoUrl,
+        default_branch: input.default_branch?.trim() || 'main',
+        git_mode: gitMode,
+        created_at: nowISO(),
+      };
+      list.push(svc);
+      services.set(projectId, list);
+      return delay(svc);
+    },
+
+    async createServiceRun(serviceId: string, input: CreateRunInput) {
+      let projectId: string | undefined;
+      for (const [pid, list] of services) {
+        if (list.some((s) => s.id === serviceId)) {
+          projectId = pid;
+          break;
+        }
+      }
+      if (!projectId) throw new ApiError(404, 'service not found');
+      const run = makeRun(projectId, input.prompt);
+      run.service_id = serviceId;
+      return delay(publicRun(run));
+    },
+
+    /* ---- members (blueprint §2) ------------------------------------------- */
+    async listMembers(projectId: string) {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      return delay([...(members.get(projectId) ?? [])]);
+    },
+
+    async addMember(projectId: string, input: AddMemberInput) {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      const target =
+        DEMO_USERS.find((u) => u.id === input.user_id) ??
+        DEMO_USERS.find(
+          (u) =>
+            !!input.username &&
+            u.display_name.toLowerCase().includes(input.username.toLowerCase()),
+        );
+      if (!target) throw new ApiError(404, 'user not found');
+      const list = members.get(projectId) ?? [];
+      const existing = list.find((m) => m.user_id === target.id);
+      const member = asMember(target, input.role);
+      if (existing) existing.role = input.role;
+      else list.push(member);
+      members.set(projectId, list);
+      return delay(member);
+    },
+
+    async removeMember(projectId: string, userId: string) {
+      const list = members.get(projectId) ?? [];
+      const target = list.find((m) => m.user_id === userId);
+      if (!target) throw new ApiError(404, 'member not found');
+      if (
+        target.role === 'owner' &&
+        list.filter((m) => m.role === 'owner').length <= 1
+      ) {
+        throw new ApiError(409, 'cannot remove the last owner', {
+          error: { code: 'conflict', message: 'cannot remove the last owner' },
+        });
+      }
+      members.set(
+        projectId,
+        list.filter((m) => m.user_id !== userId),
+      );
+      await new Promise((r) => setTimeout(r, ms(120)));
+    },
+
+    async searchUsers(q: string) {
+      const needle = q.trim().toLowerCase();
+      const out = DEMO_USERS.filter(
+        (u) => !needle || u.display_name.toLowerCase().includes(needle),
+      ).slice(0, 20);
+      return delay(out);
     },
   };
 }

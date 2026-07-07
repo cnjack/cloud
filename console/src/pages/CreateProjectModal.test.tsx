@@ -1,10 +1,12 @@
 /*
- * CreateProjectModal.test.tsx — F3 (git integration in create) + F5 (copy).
+ * CreateProjectModal — the "dumb UX" new-project form (M4, blueprint §5).
  * Verifies:
- *  - default submit sends git_mode=readonly (no provider fields)
- *  - selecting Draft PR reveals provider fields, validates provider_repo, and
- *    submits the full draft_pr payload (provider=gitea + provider_repo/url)
- *  - the repo hint uses the accurate copy, not the misleading "never leaves"
+ *  - two fields (name + repo) submit git_mode=readonly by default
+ *  - the Draft PR toggle submits git_mode=draft_pr with NO provider fields (the
+ *    server smart-parses the URL)
+ *  - Draft PR against a raw repo (git://) is blocked inline
+ *  - a draft_pr repo whose provider the user hasn't linked shows a Link prompt
+ *  - the repo helper copy is accurate (F5)
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -12,7 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
 import type { ApiClient } from '../api/client';
-import type { CreateProjectInput, Project } from '../api/types';
+import type { AuthProviderInfo, CreateProjectInput, Me, Project } from '../api/types';
 import { CreateProjectModal } from './CreateProjectModal';
 
 function makeClient(): { client: ApiClient; created: CreateProjectInput[] } {
@@ -24,25 +26,32 @@ function makeClient(): { client: ApiClient; created: CreateProjectInput[] } {
         id: 'p_new',
         name: input.name,
         repo_url: input.repo_url,
-        default_branch: input.default_branch,
+        default_branch: input.default_branch ?? 'main',
         created_at: '2026-07-07T00:00:00Z',
         git_mode: input.git_mode ?? 'readonly',
-        provider: input.provider ?? '',
-        provider_url: input.provider_url ?? '',
-        provider_repo: input.provider_repo ?? '',
       } as Project;
     },
   };
   return { client: client as ApiClient, created };
 }
 
-function renderModal(client: ApiClient, onCreated = vi.fn()) {
+function renderModal(
+  client: ApiClient,
+  opts: { me?: Me | null; providers?: AuthProviderInfo[]; onCreated?: () => void } = {},
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const onCreated = opts.onCreated ?? vi.fn();
   render(
     <QueryClientProvider client={qc}>
       <ApiProvider client={client}>
         <ToastProvider>
-          <CreateProjectModal open onClose={vi.fn()} onCreated={onCreated} />
+          <CreateProjectModal
+            open
+            onClose={vi.fn()}
+            onCreated={onCreated}
+            me={opts.me ?? null}
+            providers={opts.providers ?? []}
+          />
         </ToastProvider>
       </ApiProvider>
     </QueryClientProvider>,
@@ -53,7 +62,7 @@ function renderModal(client: ApiClient, onCreated = vi.fn()) {
 const fill = (testId: string, value: string) =>
   fireEvent.change(screen.getByTestId(testId), { target: { value } });
 
-describe('CreateProjectModal — git integration (F3) + copy (F5)', () => {
+describe('CreateProjectModal — simplified form (M4)', () => {
   it('submits git_mode=readonly by default with no provider fields', async () => {
     const { client, created } = makeClient();
     const { onCreated } = renderModal(client);
@@ -64,53 +73,97 @@ describe('CreateProjectModal — git integration (F3) + copy (F5)', () => {
 
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
     expect(created).toHaveLength(1);
-    expect(created[0]).toMatchObject({
+    expect(created[0]).toEqual({
       name: 'demo',
       repo_url: 'https://gitea.local/acme/demo.git',
       git_mode: 'readonly',
     });
-    expect(created[0]!.provider_repo).toBeUndefined();
   });
 
-  it('reveals provider fields and submits the draft_pr payload', async () => {
+  it('submits git_mode=draft_pr with no provider fields (server smart-parses URL)', async () => {
     const { client, created } = makeClient();
     const { onCreated } = renderModal(client);
 
     fill('project-name-input', 'seed');
-    fill('project-repo-input', 'https://gitea.local/jcloud/seed.git');
-
-    // Draft PR fields are hidden until the mode is selected.
-    expect(screen.queryByTestId('draft-pr-fields')).toBeNull();
+    fill('project-repo-input', 'https://github.com/jcloud/seed');
     fireEvent.click(screen.getByTestId('git-mode-draft_pr'));
-    expect(screen.getByTestId('draft-pr-fields')).toBeTruthy();
-
-    fill('provider-repo-input', 'jcloud/seed');
-    fill('provider-url-input', 'http://gitea.internal:3000');
     fireEvent.click(screen.getByTestId('create-project-submit'));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    expect(created[0]).toMatchObject({
+    expect(created[0]).toEqual({
+      name: 'seed',
+      repo_url: 'https://github.com/jcloud/seed',
       git_mode: 'draft_pr',
-      provider: 'gitea',
-      provider_repo: 'jcloud/seed',
-      provider_url: 'http://gitea.internal:3000',
     });
   });
 
-  it('blocks submit with an invalid provider_repo shape', async () => {
+  it('blocks a Draft PR against a raw (git://) repo before submit', async () => {
     const { client, created } = makeClient();
     renderModal(client);
 
     fill('project-name-input', 'seed');
-    fill('project-repo-input', 'https://gitea.local/jcloud/seed.git');
+    fill('project-repo-input', 'git://seed.internal/seed.git');
     fireEvent.click(screen.getByTestId('git-mode-draft_pr'));
-    fill('provider-repo-input', 'not-a-valid-repo');
     fireEvent.click(screen.getByTestId('create-project-submit'));
 
-    await waitFor(() =>
-      expect(screen.getByText(/owner\/name/i)).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByText(/provider repository URL/i)).toBeTruthy());
     expect(created).toHaveLength(0);
+  });
+
+  it('prompts to link the provider when draft_pr targets an unlinked provider', () => {
+    const { client } = makeClient();
+    const me: Me = {
+      user: { display_name: 'Grace', is_cluster_admin: false },
+      is_service: false,
+      identities: [], // no gitea identity linked
+    };
+    const providers: AuthProviderInfo[] = [
+      { id: 'gitea', name: 'Gitea', login_url: '/auth/login/gitea' },
+    ];
+    renderModal(client, { me, providers });
+
+    fill('project-repo-input', 'https://gitea.local/acme/demo.git');
+    // Readonly → no prompt.
+    expect(screen.queryByTestId('link-prompt')).toBeNull();
+    fireEvent.click(screen.getByTestId('git-mode-draft_pr'));
+
+    expect(screen.getByTestId('link-prompt')).toBeTruthy();
+    const btn = screen.getByTestId('link-provider-btn');
+    expect(btn.getAttribute('href')).toBe('/auth/link/gitea');
+  });
+
+  it('does not prompt to link when the user already linked the provider', () => {
+    const { client } = makeClient();
+    const me: Me = {
+      user: { display_name: 'Ada', is_cluster_admin: true },
+      is_service: false,
+      identities: [{ provider: 'gitea', username: 'ada' }],
+    };
+    renderModal(client, {
+      me,
+      providers: [{ id: 'gitea', name: 'Gitea', login_url: '/auth/login/gitea' }],
+    });
+
+    fill('project-repo-input', 'https://gitea.local/acme/demo.git');
+    fireEvent.click(screen.getByTestId('git-mode-draft_pr'));
+    expect(screen.queryByTestId('link-prompt')).toBeNull();
+  });
+
+  it('never prompts the console-token service principal to link', () => {
+    const { client } = makeClient();
+    const me: Me = {
+      user: { display_name: 'console token', is_cluster_admin: true },
+      is_service: true,
+      identities: [],
+    };
+    renderModal(client, {
+      me,
+      providers: [{ id: 'gitea', name: 'Gitea', login_url: '/auth/login/gitea' }],
+    });
+
+    fill('project-repo-input', 'https://gitea.local/acme/demo.git');
+    fireEvent.click(screen.getByTestId('git-mode-draft_pr'));
+    expect(screen.queryByTestId('link-prompt')).toBeNull();
   });
 
   it('uses accurate repo helper copy (F5), not the misleading claim', () => {

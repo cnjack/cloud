@@ -12,7 +12,7 @@
  */
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { useRun, useCancelRun, useRetryRun, useDiff } from '../api/queries';
+import { useRun, useProject, useCancelRun, useRetryRun, useDiff } from '../api/queries';
 import { useApi } from '../api/ApiProvider';
 import { useRunStream } from '../hooks/useRunStream';
 import { isTerminal, type FailureReason } from '../api/types';
@@ -51,6 +51,10 @@ export function RunDetailPage() {
   const stream = useRunStream(runId);
   const streamFailed = stream.phase === 'error' && !stream.terminal;
   const run = useRun(runId, streamFailed);
+  // The run's project carries the requesting principal's role — a viewer sees no
+  // Retry/Cancel affordances (blueprint §2; the backend also 403s these).
+  const project = useProject(run.data?.project_id ?? '');
+  const canAct = (project.data?.role ?? 'owner') !== 'viewer';
   const cancel = useCancelRun();
   const retry = useRetryRun();
 
@@ -170,7 +174,7 @@ export function RunDetailPage() {
         </div>
 
         <div className={styles.headerActions}>
-          {canCancel && (
+          {canCancel && canAct && (
             <Button
               variant="danger"
               onClick={doCancel}
@@ -180,7 +184,7 @@ export function RunDetailPage() {
               Cancel
             </Button>
           )}
-          {canRetry && (
+          {canRetry && canAct && (
             <Button
               variant="primary"
               onClick={doRetry}

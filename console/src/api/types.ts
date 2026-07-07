@@ -45,8 +45,37 @@ export type FailureReason =
  */
 export type GitMode = 'readonly' | 'draft_pr';
 
-/** The only provider in the MVP (11-api.md §1.1, decision D09). */
-export type GitProvider = 'gitea';
+/**
+ * Git providers the orchestrator understands (multitenant blueprint §1). Gitea is
+ * the only one wired end-to-end for push/PR; github/gitlab classify repos and
+ * carry OAuth identities.
+ */
+export type GitProvider = 'gitea' | 'github' | 'gitlab';
+
+/** A project member's role on a project (blueprint §2 RBAC). */
+export type MemberRole = 'owner' | 'member' | 'viewer';
+
+/** How a service addresses its repository (blueprint §1). */
+export type RepoKind = 'provider' | 'raw';
+
+/**
+ * A service is one repository configuration inside a project. The simple "one
+ * repo = one project" UX is a project with a single service named `default`;
+ * the console only surfaces the service dimension once a project has more than
+ * one (multitenant blueprint §0/§4).
+ */
+export interface Service {
+  id: string;
+  project_id: string;
+  name: string;
+  repo_kind: RepoKind;
+  provider?: GitProvider | string;
+  repo_owner_name?: string;
+  raw_repo_url?: string;
+  default_branch: string;
+  git_mode: GitMode;
+  created_at: string;
+}
 
 export interface Project {
   id: string;
@@ -56,17 +85,32 @@ export interface Project {
   created_at: string;
   /** ST-1 git integration. Absent is treated as `readonly` by the UI. */
   git_mode?: GitMode;
-  /** Provider for draft_pr; `gitea` only in the MVP. Empty for readonly. */
+  /** Provider for draft_pr. Empty for readonly. */
   provider?: GitProvider | '' | string;
-  /** Gitea base URL for draft_pr (optional; orchestrator falls back to GITEA_URL). */
+  /** Provider base URL for draft_pr (optional; orchestrator falls back to GITEA_URL). */
   provider_url?: string;
-  /** `owner/name` on the provider; required when git_mode=draft_pr. */
+  /** `owner/name` on the provider; set when git_mode=draft_pr. */
   provider_repo?: string;
+  /**
+   * The requesting principal's role on this project (blueprint §2). A
+   * cluster-admin / service principal reports "owner". Absent for demo/legacy
+   * shapes — the UI treats absent as owner (full affordances).
+   */
+  role?: MemberRole;
+  /** The project's owner user id (empty for a service-principal-created project). */
+  owner_user_id?: string;
+  /**
+   * All services of the project (compat shim flattens the default service's repo
+   * fields above). The console shows the service dimension only when length > 1.
+   */
+  services?: Service[];
 }
 
 export interface Run {
   id: string;
   project_id: string;
+  /** The service this run was created against (blueprint §1). */
+  service_id?: string;
   prompt: string;
   status: RunStatus;
   /** Fine-grained run-phase detail (e.g. PreparingWorkspace). Optional. */
@@ -183,6 +227,66 @@ export interface SystemInfo {
   namespace: string;
   /** kubernetes | process | disabled */
   launcher: string;
+  /**
+   * Auth snapshot (M2/M4): the configured OAuth provider ids and the user count.
+   * Never a secret. Optional so older snapshots (and lean test fixtures) still
+   * type-check; the Cluster view renders empty state when absent.
+   */
+  auth?: {
+    providers: string[];
+    users_count: number;
+  };
+}
+
+/* ---- auth / identity (multitenant blueprint §2) -------------------------- */
+
+export interface MeUser {
+  id?: string;
+  display_name: string;
+  avatar_url?: string;
+  is_cluster_admin: boolean;
+}
+
+export interface MeIdentity {
+  provider: string;
+  username: string;
+}
+
+/**
+ * GET /api/v1/me — the current principal. All three principal kinds (user,
+ * console-token service, cluster-admin) return 200; only an unauthenticated
+ * request 401s. is_service marks the CONSOLE_TOKEN principal.
+ */
+export interface Me {
+  user: MeUser;
+  is_service?: boolean;
+  identities: MeIdentity[];
+}
+
+/** One entry of GET /auth/providers (unauthenticated). */
+export interface AuthProviderInfo {
+  id: string;
+  name: string;
+  /** Server route to start the OAuth flow, e.g. /auth/login/gitea. */
+  login_url: string;
+}
+
+/** One row of GET /api/v1/projects/{id}/members. */
+export interface Member {
+  user_id: string;
+  role: MemberRole;
+  display_name: string;
+  avatar_url?: string;
+  username?: string;
+  is_cluster_admin: boolean;
+}
+
+/** One result of GET /api/v1/users?q= (add-member picker). */
+export interface UserSearchResult {
+  id: string;
+  display_name: string;
+  avatar_url?: string;
+  is_cluster_admin: boolean;
 }
 
 /* ---- request bodies ------------------------------------------------------ */
@@ -190,7 +294,8 @@ export interface SystemInfo {
 export interface CreateProjectInput {
   name: string;
   repo_url: string;
-  default_branch: string;
+  /** Optional; the orchestrator defaults to `main`. */
+  default_branch?: string;
   /**
    * ST-1 git integration (11-api.md §2.1). Omit for readonly (diff-only). When
    * git_mode=draft_pr the orchestrator requires provider_repo (owner/name) and
@@ -221,6 +326,30 @@ export interface CreateRunInput {
   prompt: string;
 }
 
+/**
+ * POST /projects/{id}/services (blueprint §4). repo_url is smart-parsed by the
+ * server; git_mode defaults readonly. name defaults `default`.
+ */
+export interface CreateServiceInput {
+  name?: string;
+  repo_url?: string;
+  provider?: GitProvider;
+  owner_name?: string;
+  git_mode?: GitMode;
+  default_branch?: string;
+}
+
+/**
+ * POST /projects/{id}/members. Identify the target by user_id OR by
+ * {provider, username} (blueprint §2).
+ */
+export interface AddMemberInput {
+  user_id?: string;
+  provider?: string;
+  username?: string;
+  role: MemberRole;
+}
+
 /* ---- list envelopes (11-api.md §2: lists are wrapped, not bare arrays) --- */
 
 export interface ProjectsEnvelope {
@@ -231,6 +360,18 @@ export interface RunsEnvelope {
 }
 export interface EventsEnvelope {
   events: RunEvent[];
+}
+export interface ServicesEnvelope {
+  services: Service[];
+}
+export interface MembersEnvelope {
+  members: Member[];
+}
+export interface UsersEnvelope {
+  users: UserSearchResult[];
+}
+export interface AuthProvidersEnvelope {
+  providers: AuthProviderInfo[];
 }
 
 /** Nested error envelope: { error: { code, message } } (11-api.md §0). */

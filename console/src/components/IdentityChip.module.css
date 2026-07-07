@@ -1,4 +1,72 @@
-/* Identity chip — subtle, mono, hairline. Names the trust level in the header. */
+/* Identity chip — avatar + name + role, with a dropdown menu. */
+.wrap {
+  position: relative;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 3px var(--space-2) 3px 3px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-panel-raised);
+  color: var(--color-text);
+  font-size: var(--fs-caption);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.trigger:hover {
+  border-color: var(--color-border-strong);
+}
+
+.avatar,
+.avatarFallback {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: var(--radius-pill);
+  object-fit: cover;
+}
+.avatarFallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  font-weight: var(--fw-bold);
+}
+.avatarFallback[data-service] {
+  background: var(--color-panel-hover);
+  color: var(--color-text-muted);
+}
+
+.name {
+  color: var(--color-text);
+  font-weight: var(--fw-medium);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.badge {
+  color: var(--color-accent);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  font-size: var(--fs-tiny);
+  font-family: var(--font-mono);
+}
+
+.caret {
+  color: var(--color-text-faint);
+  font-size: var(--fs-tiny);
+}
+
+/* --- fallback (no principal) --- */
 .chip {
   display: inline-flex;
   align-items: center;
@@ -9,62 +77,164 @@
   background: var(--color-panel-raised);
   font-family: var(--font-mono);
   font-size: var(--fs-tiny);
-  line-height: 1;
   color: var(--color-text-dim);
   white-space: nowrap;
-  cursor: default;
 }
-
 .dot {
   width: 6px;
   height: 6px;
   border-radius: var(--radius-pill);
   flex: none;
   margin-left: var(--space-1);
-  background: var(--color-text-faint);
-}
-/* cluster-admin gets the accent dot; project-admin stays neutral. */
-.chip[data-role='cluster-admin'] .dot {
   background: var(--color-accent);
 }
-
-.principal {
-  color: var(--color-text-muted);
-}
-
-.sep {
-  color: var(--color-text-faint);
-}
-
 .role {
   color: var(--color-text);
   letter-spacing: var(--tracking-label);
   text-transform: uppercase;
   font-size: var(--fs-tiny);
 }
-
-.signOut {
+.signOutInline {
   margin-left: var(--space-1);
   padding: 2px var(--space-2);
   border: 0;
   border-left: 1px solid var(--color-border);
-  border-radius: 0;
   background: none;
   font-family: var(--font-mono);
   font-size: var(--fs-tiny);
-  line-height: 1;
   color: var(--color-text-faint);
   cursor: pointer;
 }
-
-.signOut:hover {
+.signOutInline:hover {
   color: var(--color-danger-fg);
 }
 
+/* --- dropdown menu --- */
+.menu {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  min-width: 240px;
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-panel-raised);
+  box-shadow: var(--shadow-2);
+}
+
+.menuHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.menuHeadText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.menuName {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.menuBadge {
+  font-size: var(--fs-tiny);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--color-accent);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-2) var(--space-2);
+}
+.sectionLabel {
+  font-size: var(--fs-tiny);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--color-text-faint);
+}
+.serviceNote {
+  font-size: var(--fs-caption);
+  color: var(--color-text-dim);
+  line-height: var(--lh-normal);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+.identityIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: var(--radius-pill);
+  background: var(--color-panel-hover);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  font-weight: var(--fw-bold);
+  text-transform: uppercase;
+}
+.identityName {
+  font-size: var(--fs-caption);
+  color: var(--color-text);
+}
+.identityProvider {
+  margin-left: auto;
+  font-size: var(--fs-tiny);
+  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-caption);
+  color: var(--color-text);
+}
+.menuItem:hover {
+  text-decoration: none;
+  background: var(--color-panel-hover);
+}
+
+.signOut {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border: 0;
+  border-top: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: none;
+  text-align: left;
+  font-size: var(--fs-caption);
+  color: var(--color-danger-fg);
+  cursor: pointer;
+}
+.signOut:hover {
+  background: var(--color-panel-hover);
+}
+
 @media (max-width: 768px) {
-  /* On narrow screens keep just the role to save space. */
-  .principal,
-  .sep {
+  .name {
     display: none;
   }
 }

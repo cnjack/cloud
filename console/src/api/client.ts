@@ -7,18 +7,29 @@
  * 11-api.md drifts from the fallback route spec, reconcile it here.
  */
 import type {
+  AddMemberInput,
+  AuthProviderInfo,
+  AuthProvidersEnvelope,
   CreateProjectInput,
   CreateRunInput,
+  CreateServiceInput,
   EventsEnvelope,
+  Me,
+  Member,
+  MembersEnvelope,
   Project,
   ProjectsEnvelope,
   Run,
   RunArtifact,
   RunEvent,
   RunsEnvelope,
+  Service,
+  ServicesEnvelope,
   StreamFrame,
   SystemInfo,
   UpdateProjectInput,
+  UserSearchResult,
+  UsersEnvelope,
 } from './types';
 
 export class ApiError extends Error {
@@ -44,6 +55,12 @@ export interface StreamCallbacks {
 }
 
 export interface ApiClient {
+  /**
+   * GET /api/v1/me — the current principal (user / identities / is_service).
+   * 200 for every authenticated principal; only an unauthenticated request 401s.
+   */
+  getMe(): Promise<Me>;
+
   listProjects(): Promise<Project[]>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(id: string): Promise<Project>;
@@ -73,9 +90,24 @@ export interface ApiClient {
 
   /**
    * GET /api/v1/system — the read-only cluster-admin snapshot (capacity,
-   * guardrails, provider, runner, version). Never carries a secret.
+   * guardrails, provider, runner, version, auth). Never carries a secret.
    */
   getSystem(): Promise<SystemInfo>;
+
+  /* ---- services (blueprint §4) ------------------------------------------- */
+  /** GET /api/v1/projects/{id}/services — the project's repo configurations. */
+  listServices(projectId: string): Promise<Service[]>;
+  /** POST /api/v1/projects/{id}/services — add a repository to a project. */
+  createService(projectId: string, input: CreateServiceInput): Promise<Service>;
+  /** POST /api/v1/services/{id}/runs — dispatch a run against a specific service. */
+  createServiceRun(serviceId: string, input: CreateRunInput): Promise<Run>;
+
+  /* ---- members (blueprint §2) -------------------------------------------- */
+  listMembers(projectId: string): Promise<Member[]>;
+  addMember(projectId: string, input: AddMemberInput): Promise<Member>;
+  removeMember(projectId: string, userId: string): Promise<void>;
+  /** GET /api/v1/users?q= — user search for the add-member picker. */
+  searchUsers(q: string): Promise<UserSearchResult[]>;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -144,6 +176,10 @@ export function createHttpClient(
   ): Promise<T> {
     const res = await fetch(`${BASE}${path}`, {
       ...init,
+      // Primary auth is the httpOnly jcloud_session cookie (blueprint §2); a
+      // same-origin fetch carries it automatically. The legacy console token, if
+      // present, still rides as a Bearer header (Advanced path).
+      credentials: 'same-origin',
       headers: {
         Accept: 'application/json',
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
@@ -158,6 +194,8 @@ export function createHttpClient(
   }
 
   return {
+    getMe: () => req<Me>('/me'),
+
     // Lists are wrapped in envelopes (11-api.md §2); unwrap to bare arrays.
     listProjects: async () =>
       (await req<ProjectsEnvelope>('/projects')).projects,
@@ -268,5 +306,87 @@ export function createHttpClient(
     },
 
     getSystem: () => req<SystemInfo>('/system'),
+
+    // Services (blueprint §4).
+    listServices: async (projectId) =>
+      (
+        await req<ServicesEnvelope>(
+          `/projects/${encodeURIComponent(projectId)}/services`,
+        )
+      ).services,
+
+    createService: (projectId, input) =>
+      req<Service>(`/projects/${encodeURIComponent(projectId)}/services`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
+    createServiceRun: (serviceId, input) =>
+      req<Run>(`/services/${encodeURIComponent(serviceId)}/runs`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
+    // Members (blueprint §2).
+    listMembers: async (projectId) =>
+      (
+        await req<MembersEnvelope>(
+          `/projects/${encodeURIComponent(projectId)}/members`,
+        )
+      ).members,
+
+    addMember: (projectId, input) =>
+      req<Member>(`/projects/${encodeURIComponent(projectId)}/members`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
+    removeMember: async (projectId, userId) => {
+      await req<void>(
+        `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,
+        { method: 'DELETE' },
+      );
+    },
+
+    searchUsers: async (q) =>
+      (await req<UsersEnvelope>(`/users?q=${encodeURIComponent(q)}`)).users,
   };
+}
+
+/* ------------------------------------------------------------------------- */
+
+/**
+ * The two auth-flow endpoints the AuthProvider needs live OUTSIDE the ApiClient
+ * (the auth state machine sits above ApiProvider and cannot read the client).
+ * They are plain same-origin fetches against /auth/* (not /api/v1).
+ */
+
+/** GET /auth/providers — configured OAuth providers (unauthenticated). */
+export async function fetchAuthProviders(): Promise<AuthProviderInfo[]> {
+  try {
+    const res = await fetch('/auth/providers', {
+      headers: { Accept: 'application/json' },
+      credentials: 'same-origin',
+    });
+    if (!res.ok) return [];
+    const body = (await res.json()) as AuthProvidersEnvelope;
+    return body.providers ?? [];
+  } catch {
+    // Orchestrator unreachable — the gate shows the setup guide; providers load
+    // on the next reprobe.
+    return [];
+  }
+}
+
+/** POST /auth/logout — revoke the session + clear the cookie. Best-effort. */
+export async function postLogout(token: string | undefined): Promise<void> {
+  try {
+    await fetch('/auth/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+  } catch {
+    /* network error — the local session is cleared regardless */
+  }
 }

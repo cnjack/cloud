@@ -1,4 +1,4 @@
-.fieldset {
+.wrap {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -10,14 +10,13 @@
 }
 
 .legend {
-  padding: 0 var(--space-2);
   font-size: var(--fs-caption);
   font-weight: var(--fw-medium);
   color: var(--color-text-muted);
   letter-spacing: 0.2px;
 }
 
-/* Segmented control — two hairline-bordered segments, violet fill when active. */
+/* Segmented control — two hairline-bordered segments, accent fill when active. */
 .segmented {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -67,12 +66,4 @@
   font-size: var(--fs-tiny);
   color: var(--color-text-faint);
   line-height: var(--lh-normal);
-}
-
-.draftFields {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--color-border-subtle);
 }

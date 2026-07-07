@@ -2,14 +2,15 @@
  * OnboardingGate — full-screen gate in front of the console, driven by the
  * AuthProvider state machine:
  *
- *   probing         → connecting splash
- *   unreachable     → setup guide (copyable commands, auto-reprobe every 3s)
- *   unauthenticated → sign-in (console token, masked)
- *   ready + landing → landing card (cluster snapshot) right after a manual sign-in
- *   ready           → the app
+ *   probing            → connecting splash
+ *   unreachable        → setup guide (copyable commands, auto-reprobe every 3s)
+ *   unauthenticated    → sign-in: OAuth provider buttons + Advanced console token
+ *   ready + welcome    → OAuth welcome card (first-admin / new)
+ *   ready + landing    → manual console-token landing card
+ *   ready              → the app
  *
- * Demo mode (VITE_DEMO=1) never reaches this file's screens: AuthProvider
- * boots straight to 'ready'.
+ * Demo mode (VITE_DEMO=1) never reaches this file's screens: AuthProvider boots
+ * straight to 'ready' with a synthetic principal.
  */
 import { useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -98,16 +99,40 @@ function SetupGuide() {
 const REASON_COPY: Record<string, string | null> = {
   none: null,
   rejected: 'The saved token was rejected — it may have been rotated. Enter the current one.',
-  expired: 'Your session token stopped working (rotated or revoked). Sign in again.',
+  expired: 'Your session ended (expired or revoked). Sign in again.',
   'signed-out': 'Signed out.',
 };
 
+function ProviderButtons() {
+  const { providers } = useAuth();
+  if (providers.length === 0) return null;
+  return (
+    <div className={styles.providers} data-testid="provider-buttons">
+      {providers.map((p) => (
+        // A full navigation to the server route (NOT client routing) so the OAuth
+        // round trip + Set-Cookie happen on the orchestrator.
+        <a key={p.id} href={p.login_url} className={styles.provider} data-provider={p.id}>
+          <span className={styles.providerIcon} aria-hidden>
+            {p.name.charAt(0)}
+          </span>
+          <span>Continue with {p.name}</span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function SignIn() {
-  const { login, reason } = useAuth();
+  const { login, reason, providers, loginError } = useAuth();
   const [token, setToken] = useState('');
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
-  const notice = REASON_COPY[reason] ?? null;
+  // Advanced (console token) is collapsed when OAuth providers exist, and
+  // auto-expanded when there are none. A manual toggle overrides the default.
+  const [advManual, setAdvManual] = useState<boolean | null>(null);
+  const noProviders = providers.length === 0;
+  const advOpen = advManual ?? noProviders;
+  const notice = loginError ?? REASON_COPY[reason] ?? null;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -123,71 +148,114 @@ function SignIn() {
       <Card className={styles.card} data-testid="sign-in">
         <h1 className={styles.title}>Sign in</h1>
         <p className={styles.lede}>
-          Paste the console token — the <code>CONSOLE_TOKEN</code> the
-          orchestrator was deployed with. Holding it makes you the cluster
-          admin of this single-tenant console.
+          {noProviders
+            ? 'No OAuth provider is configured. Use the console token the orchestrator was deployed with.'
+            : 'Continue with your git provider to get a personal, per-user session.'}
         </p>
         {notice && (
-          <p className={styles.notice} role="status">
+          <p
+            className={loginError ? styles.errorNotice : styles.notice}
+            role="status"
+            data-testid="signin-notice"
+          >
             {notice}
           </p>
         )}
-        <form onSubmit={submit} className={styles.form}>
-          <TextField
-            label="Console token"
-            type="password"
-            autoComplete="off"
-            autoFocus
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            error={error}
-            placeholder="dev-console-token"
-            hint="Stored locally in this browser. OIDC sign-in is on the roadmap."
-          />
-          <Button type="submit" variant="primary" loading={busy}>
-            Sign in
+
+        <ProviderButtons />
+
+        <div className={styles.advanced} data-testid="advanced">
+          {!noProviders && (
+            <button
+              type="button"
+              className={styles.advToggle}
+              aria-expanded={advOpen}
+              onClick={() => setAdvManual(!advOpen)}
+              data-testid="advanced-toggle"
+            >
+              <span className={styles.advCaret} data-open={advOpen || undefined} aria-hidden>
+                ▸
+              </span>
+              Advanced: console token
+            </button>
+          )}
+          {advOpen && (
+            <form onSubmit={submit} className={styles.form} data-testid="console-token-form">
+              <TextField
+                label="Console token"
+                type="password"
+                autoComplete="off"
+                autoFocus={noProviders}
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                error={error}
+                placeholder="dev-console-token"
+                hint="The CONSOLE_TOKEN the orchestrator was deployed with — cluster-admin. Stored locally in this browser."
+              />
+              <Button type="submit" variant={noProviders ? 'primary' : 'secondary'} loading={busy}>
+                Sign in with token
+              </Button>
+            </form>
+          )}
+        </div>
+      </Card>
+    </GateFrame>
+  );
+}
+
+function WelcomeCard() {
+  const { welcome, dismissWelcome, me } = useAuth();
+  const firstAdmin = welcome === 'first-admin';
+  return (
+    <GateFrame>
+      <Card className={styles.card} data-testid="welcome-card" data-welcome={welcome ?? undefined}>
+        <h1 className={styles.title}>
+          {firstAdmin ? 'You’re the first user — cluster admin' : `Welcome, ${me?.user.display_name ?? 'friend'}`}
+        </h1>
+        <p className={styles.lede}>
+          {firstAdmin
+            ? 'You signed in first, so you’re now the cluster administrator: you can see every project and manage capacity. Everyone who joins after you starts as a regular user.'
+            : 'You’re signed in. Create a project to point jcode Cloud at a repository, or open one you’ve been added to.'}
+        </p>
+        <div className={styles.footerRow}>
+          <span className={styles.autoNote}>Signed in as {me?.user.display_name}</span>
+          <Button variant="primary" onClick={dismissWelcome} autoFocus data-testid="welcome-enter">
+            Get started
           </Button>
-        </form>
+        </div>
       </Card>
     </GateFrame>
   );
 }
 
 function Landing() {
-  const { system, enterConsole } = useAuth();
+  const { me, enterConsole } = useAuth();
+  const identity = me?.identities?.[0];
   return (
     <GateFrame>
       <Card className={styles.card} data-testid="landing-card">
         <h1 className={styles.title}>You&rsquo;re in — cluster admin</h1>
-        <p className={styles.lede}>Connected to this orchestrator:</p>
+        <p className={styles.lede}>Signed in to this orchestrator:</p>
         <dl className={styles.facts}>
           <div className={styles.fact}>
-            <dt>Version</dt>
-            <dd>
-              {system?.version.version ?? '—'}
-              {system?.version.commit && system.version.commit !== 'none'
-                ? ` (${system.version.commit.slice(0, 7)})`
-                : ''}
-            </dd>
+            <dt>Principal</dt>
+            <dd>{me?.user.display_name ?? '—'}</dd>
           </div>
           <div className={styles.fact}>
-            <dt>Namespace</dt>
-            <dd>{system?.namespace ?? '—'}</dd>
+            <dt>Access</dt>
+            <dd>{me?.user.is_cluster_admin ? 'cluster admin' : 'member'}</dd>
           </div>
           <div className={styles.fact}>
-            <dt>Launcher</dt>
-            <dd>{system?.launcher ?? '—'}</dd>
+            <dt>Session</dt>
+            <dd>{me?.is_service ? 'console token' : 'user session'}</dd>
           </div>
           <div className={styles.fact}>
-            <dt>Gitea draft-PR</dt>
-            <dd>{system?.provider.gitea_enabled ? 'enabled' : 'off'}</dd>
+            <dt>Identity</dt>
+            <dd>{identity ? `${identity.provider}/${identity.username}` : '—'}</dd>
           </div>
         </dl>
         <div className={styles.footerRow}>
-          <span className={styles.autoNote}>
-            Capacity {system?.capacity.running ?? 0} running ·{' '}
-            {system?.capacity.queued ?? 0} queued
-          </span>
+          <span className={styles.autoNote}>Everything runs headless in your cluster.</span>
           <Button variant="primary" onClick={enterConsole} autoFocus>
             Enter console
           </Button>
@@ -198,7 +266,7 @@ function Landing() {
 }
 
 export function OnboardingGate({ children }: { children: ReactNode }) {
-  const { status, landing } = useAuth();
+  const { status, landing, welcome } = useAuth();
 
   switch (status) {
     case 'probing':
@@ -212,6 +280,7 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
     case 'unauthenticated':
       return <SignIn />;
     case 'ready':
+      if (welcome) return <WelcomeCard />;
       return landing ? <Landing /> : <>{children}</>;
   }
 }

@@ -213,6 +213,67 @@ describe('httpClient — artifact', () => {
   });
 });
 
+describe('httpClient — me / services / members (M4)', () => {
+  it('GETs /api/v1/me', async () => {
+    const { calls } = mockFetch(() => ({
+      body: { user: { display_name: 'Ada', is_cluster_admin: true }, identities: [] },
+    }));
+    const client = createHttpClient('t');
+    const me = await client.getMe();
+    expect(calls[0]!.url).toBe('/api/v1/me');
+    expect(me.user.display_name).toBe('Ada');
+  });
+
+  it('lists + creates services and dispatches a service run', async () => {
+    const { calls } = mockFetch(({ url, init }) => {
+      if (url.endsWith('/services') && init?.method === 'POST')
+        return { status: 201, body: JSON.parse(init.body as string) };
+      if (url.endsWith('/services'))
+        return { body: { services: [{ id: 's1', name: 'default' }] } };
+      return { status: 201, body: { id: 'r9', ...JSON.parse(init!.body as string) } };
+    });
+    const client = createHttpClient('t');
+
+    const list = await client.listServices('p1');
+    expect(calls[0]!.url).toBe('/api/v1/projects/p1/services');
+    expect(list[0]!.id).toBe('s1');
+
+    await client.createService('p1', { name: 'web', repo_url: 'https://github.com/a/b', git_mode: 'readonly' });
+    expect(calls[1]!.url).toBe('/api/v1/projects/p1/services');
+    expect(calls[1]!.init!.method).toBe('POST');
+
+    await client.createServiceRun('s1', { prompt: 'go' });
+    expect(calls[2]!.url).toBe('/api/v1/services/s1/runs');
+    expect(calls[2]!.init!.method).toBe('POST');
+  });
+
+  it('lists + adds + removes members and searches users', async () => {
+    const { calls } = mockFetch(({ url, init }) => {
+      if (url.includes('/users?q=')) return { body: { users: [{ id: 'u1', display_name: 'Ada' }] } };
+      if (url.endsWith('/members') && init?.method === 'POST')
+        return { body: { user_id: 'u2', role: 'member', display_name: 'Grace' } };
+      if (url.endsWith('/members')) return { body: { members: [{ user_id: 'u1', role: 'owner' }] } };
+      return { status: 204 }; // DELETE member
+    });
+    const client = createHttpClient('t');
+
+    const members = await client.listMembers('p1');
+    expect(calls[0]!.url).toBe('/api/v1/projects/p1/members');
+    expect(members[0]!.user_id).toBe('u1');
+
+    await client.addMember('p1', { user_id: 'u2', role: 'member' });
+    expect(calls[1]!.init!.method).toBe('POST');
+
+    await client.removeMember('p1', 'u2');
+    expect(calls[2]!.url).toBe('/api/v1/projects/p1/members/u2');
+    expect(calls[2]!.init!.method).toBe('DELETE');
+
+    const users = await client.searchUsers('ad');
+    expect(calls[3]!.url).toBe('/api/v1/users?q=ad');
+    expect(users[0]!.display_name).toBe('Ada');
+  });
+});
+
 describe('httpClient — system', () => {
   it('GETs /api/v1/system with the bearer token and returns the snapshot', async () => {
     const snapshot = {

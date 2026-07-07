@@ -38,10 +38,20 @@ export function ApiProvider({
   // whole auth object) means the http client is built exactly once.
   const getToken = auth?.getToken;
   const onUnauthorized = auth?.handleUnauthorized;
+  // The console role is now derived from the authenticated principal (M4):
+  // a cluster admin (or the console-token service principal) gets the
+  // cluster-admin presentation; every other user is scoped to project-admin.
+  // An explicitly injected `role` (tests/stories) still wins.
+  const me = auth?.me ?? null;
+  const derivedRole: Role | undefined = me
+    ? me.user.is_cluster_admin || me.is_service
+      ? 'cluster-admin'
+      : 'project-admin'
+    : undefined;
 
   const value = useMemo<ApiContextValue>(() => {
     if (client) {
-      return { client, demo: false, role: resolveRole(role) };
+      return { client, demo: false, role: role ? resolveRole(role) : (derivedRole ?? 'cluster-admin') };
     }
     const cfg = loadConfig();
     return {
@@ -49,9 +59,9 @@ export function ApiProvider({
         ? createMockClient()
         : createHttpClient(getToken ?? cfg.consoleToken, { onUnauthorized }),
       demo: cfg.demo,
-      role: role ?? cfg.role,
+      role: role ?? derivedRole ?? cfg.role,
     };
-  }, [client, role, getToken, onUnauthorized]);
+  }, [client, role, derivedRole, getToken, onUnauthorized]);
 
   return <ApiContext.Provider value={value}>{children}</ApiContext.Provider>;
 }

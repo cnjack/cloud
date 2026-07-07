@@ -363,6 +363,87 @@ describe('mockClient — streaming (replay-then-live) into the reducer', () => {
   });
 });
 
+describe('mockClient — identity / services / members (M4 demo parity)', () => {
+  it('returns a signed-in cluster-admin from getMe', async () => {
+    const client = createMockClient();
+    const p = client.getMe();
+    await flush(200);
+    const me = await p;
+    expect(me.user.is_cluster_admin).toBe(true);
+    expect(me.identities.length).toBeGreaterThan(0);
+  });
+
+  it('a new project has a default service, and add-repository grows the list', async () => {
+    const client = createMockClient();
+    const projP = client.createProject({
+      name: 'demo',
+      repo_url: 'https://github.com/acme/demo',
+      default_branch: 'main',
+    });
+    await flush(200);
+    const project = await projP;
+    expect(project.role).toBe('owner');
+    expect(project.services).toHaveLength(1);
+
+    const svcP = client.createService(project.id, {
+      name: 'web',
+      repo_url: 'https://github.com/acme/web',
+      git_mode: 'readonly',
+    });
+    await flush(200);
+    await svcP;
+
+    const listP = client.listServices(project.id);
+    await flush(200);
+    expect(await listP).toHaveLength(2);
+  });
+
+  it('seeds the creator as owner, adds a member by search and removes them', async () => {
+    const client = createMockClient();
+    const projP = client.createProject({
+      name: 'demo',
+      repo_url: 'https://github.com/acme/demo',
+      default_branch: 'main',
+    });
+    await flush(200);
+    const project = await projP;
+
+    const m0P = client.listMembers(project.id);
+    await flush(200);
+    expect(await m0P).toHaveLength(1); // creator (owner)
+
+    const searchP = client.searchUsers('grace');
+    await flush(200);
+    const found = await searchP;
+    expect(found.length).toBeGreaterThan(0);
+
+    const addP = client.addMember(project.id, { user_id: found[0]!.id, role: 'viewer' });
+    await flush(200);
+    await addP;
+
+    const m1P = client.listMembers(project.id);
+    await flush(200);
+    expect(await m1P).toHaveLength(2);
+
+    const rmP = client.removeMember(project.id, found[0]!.id);
+    await flush(200);
+    await rmP;
+
+    const m2P = client.listMembers(project.id);
+    await flush(200);
+    expect(await m2P).toHaveLength(1);
+  });
+
+  it('getSystem carries the auth block (providers + users_count)', async () => {
+    const client = createMockClient();
+    const p = client.getSystem();
+    await flush(200);
+    const sys = await p;
+    expect(sys.auth?.providers).toContain('gitea');
+    expect(sys.auth?.users_count).toBeGreaterThan(0);
+  });
+});
+
 describe('mockClient — getSystem (cluster snapshot)', () => {
   it('returns a plausible snapshot with no secrets and derives capacity from live runs', async () => {
     const client = createMockClient();

@@ -14,7 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
 import { ApiError, type ApiClient, type StreamCallbacks, type StreamHandle } from '../api/client';
-import type { Run } from '../api/types';
+import type { MemberRole, Project, Run } from '../api/types';
 import { qk } from '../api/queries';
 import { RunDetailPage } from './RunDetailPage';
 
@@ -37,7 +37,7 @@ interface Ctl {
   getRun: ReturnType<typeof vi.fn>;
 }
 
-function makeClient(): { client: ApiClient; ctl: Ctl } {
+function makeClient(role?: MemberRole): { client: ApiClient; ctl: Ctl } {
   const ctl: Ctl = { streamCalls: [], getRun: vi.fn() };
   const client: Partial<ApiClient> = {
     getRun: ctl.getRun as ApiClient['getRun'],
@@ -47,6 +47,13 @@ function makeClient(): { client: ApiClient; ctl: Ctl } {
       return { close: () => {} };
     },
     diffDownloadUrl: () => '',
+    // The page reads the run's project to learn the requesting principal's role.
+    ...(role
+      ? {
+          getProject: async () =>
+            ({ id: 'proj1', name: 'demo', repo_url: '', default_branch: 'main', created_at: '', role }) as Project,
+        }
+      : {}),
   };
   return { client: client as ApiClient, ctl };
 }
@@ -140,5 +147,25 @@ describe('RunDetailPage — resilient error states', () => {
 
     await waitFor(() => expect(screen.getByTestId('run-status-header')).toBeTruthy());
     expect(screen.queryByTestId('pr-link')).toBeNull();
+  });
+});
+
+describe('RunDetailPage — viewer gating (blueprint §2)', () => {
+  it('hides Cancel on a running run for a viewer', async () => {
+    const { client, ctl } = makeClient('viewer');
+    ctl.getRun.mockResolvedValue(baseRun({ status: 'running' }));
+    renderPage(client, baseRun({ status: 'running' }));
+
+    await waitFor(() => expect(screen.getByTestId('run-status-header')).toBeTruthy());
+    await waitFor(() => expect(screen.queryByTestId('cancel-btn')).toBeNull());
+    expect(screen.queryByTestId('retry-btn')).toBeNull();
+  });
+
+  it('shows Retry on a finished run for a member', async () => {
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(baseRun({ status: 'failed', finished_at: '2026-07-07T00:05:00Z' }));
+    renderPage(client, baseRun({ status: 'failed', finished_at: '2026-07-07T00:05:00Z' }));
+
+    await waitFor(() => expect(screen.getByTestId('retry-btn')).toBeTruthy());
   });
 });

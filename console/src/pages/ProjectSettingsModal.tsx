@@ -1,37 +1,28 @@
 /*
- * ProjectSettingsModal — F4. Edits a project's default branch + git integration
- * (mode / provider / provider URL / provider repo) via PATCH, and offers a
- * Delete project action behind a confirm step (DELETE). On delete the caller
- * navigates back to the projects list and shows a toast.
+ * ProjectSettingsModal — owner/cluster-admin project settings (blueprint §2/§5).
+ * Two tabs:
+ *   - General: default branch + git mode (Read-only diff | Draft PR) + a
+ *     Delete-project action behind a confirm step.
+ *   - Members: roster with role management + add-by-search (MembersPanel).
  *
- * The PATCH only sends fields the operator actually changed relative to the
- * loaded project, matching the orchestrator's "only provided fields" semantics
- * (11-api.md §2.1). Flipping to readonly always sends git_mode so the switch is
- * honoured; draft_pr additionally sends provider/repo (+ optional url).
+ * The General PATCH sends only fields the operator changed relative to the loaded
+ * project, plus git_mode (so a mode flip always applies), matching the
+ * orchestrator's "only provided fields" shim (11-api.md §2.1). The repo URL is
+ * fixed for a project's history, so it is shown read-only.
  */
 import { useState } from 'react';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
-import {
-  GitIntegrationFields,
-  gitIntegrationPayload,
-  validateGitIntegration,
-  type GitIntegrationState,
-} from '../components/GitIntegrationFields';
+import { GitModeToggle } from '../components/GitModeToggle';
+import { MembersPanel } from './MembersPanel';
 import { useUpdateProject, useDeleteProject } from '../api/queries';
 import { useToast } from '../components/Toast';
 import { ApiError } from '../api/client';
 import type { GitMode, Project, UpdateProjectInput } from '../api/types';
 import styles from './ProjectSettingsModal.module.css';
 
-function toGitState(p: Project): GitIntegrationState {
-  return {
-    gitMode: (p.git_mode as GitMode) ?? 'readonly',
-    providerUrl: p.provider_url ?? '',
-    providerRepo: p.provider_repo ?? '',
-  };
-}
+type Tab = 'general' | 'members';
 
 export function ProjectSettingsModal({
   open,
@@ -48,18 +39,21 @@ export function ProjectSettingsModal({
   const del = useDeleteProject();
   const toast = useToast();
 
+  // Absent role (demo / legacy) is treated as owner (full affordances).
+  const canManage = (project.role ?? 'owner') === 'owner';
+
+  const [tab, setTab] = useState<Tab>('general');
   const [branch, setBranch] = useState(project.default_branch);
-  const [git, setGit] = useState<GitIntegrationState>(() => toGitState(project));
-  const [errors, setErrors] = useState<{ providerRepo?: string }>({});
+  const [gitMode, setGitMode] = useState<GitMode>((project.git_mode as GitMode) ?? 'readonly');
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const busy = update.isPending || del.isPending;
 
   const reset = () => {
     setBranch(project.default_branch);
-    setGit(toGitState(project));
-    setErrors({});
+    setGitMode((project.git_mode as GitMode) ?? 'readonly');
     setConfirmDelete(false);
+    setTab('general');
   };
 
   const close = () => {
@@ -70,17 +64,12 @@ export function ProjectSettingsModal({
 
   const save = (e: React.FormEvent) => {
     e.preventDefault();
-    const nextErrors = validateGitIntegration(git);
-    setErrors(nextErrors);
-    if (Object.keys(nextErrors).length) return;
-
-    // Build a minimal PATCH: default_branch only if changed, plus the git
-    // integration payload (git_mode always carried so a mode switch applies).
-    const input: UpdateProjectInput = { ...gitIntegrationPayload(git) };
+    // git_mode is always carried so a mode switch applies; default_branch only
+    // when changed.
+    const input: UpdateProjectInput = { git_mode: gitMode };
     if (branch.trim() && branch.trim() !== project.default_branch) {
       input.default_branch = branch.trim();
     }
-
     update.mutate(
       { id: project.id, input },
       {
@@ -89,8 +78,7 @@ export function ProjectSettingsModal({
           onClose();
         },
         onError: (err) => {
-          const msg =
-            err instanceof ApiError ? err.message : 'Failed to update project.';
+          const msg = err instanceof ApiError ? err.message : 'Failed to update project.';
           toast.push({ kind: 'error', message: msg });
         },
       },
@@ -104,12 +92,33 @@ export function ProjectSettingsModal({
         onDeleted();
       },
       onError: (err) => {
-        const msg =
-          err instanceof ApiError ? err.message : 'Failed to delete project.';
+        const msg = err instanceof ApiError ? err.message : 'Failed to delete project.';
         toast.push({ kind: 'error', message: msg });
       },
     });
   };
+
+  const footer =
+    tab === 'general' ? (
+      <>
+        <Button variant="ghost" onClick={close} type="button">
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          type="submit"
+          form="project-settings-form"
+          loading={update.isPending}
+          data-testid="project-settings-save"
+        >
+          Save changes
+        </Button>
+      </>
+    ) : (
+      <Button variant="secondary" onClick={close} type="button" data-testid="members-done">
+        Done
+      </Button>
+    );
 
   return (
     <Modal
@@ -117,93 +126,103 @@ export function ProjectSettingsModal({
       onClose={close}
       title="Project settings"
       data-testid="project-settings-modal"
-      footer={
-        <>
-          <Button variant="ghost" onClick={close} type="button">
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            type="submit"
-            form="project-settings-form"
-            loading={update.isPending}
-            data-testid="project-settings-save"
-          >
-            Save changes
-          </Button>
-        </>
-      }
+      footer={footer}
     >
-      <form id="project-settings-form" onSubmit={save} noValidate>
-        <div className={styles.body}>
-          <TextField
-            label="Repository"
-            value={project.repo_url}
-            readOnly
-            hint="The repository URL is fixed for the project's history."
-            className={styles.repoField}
-            data-testid="settings-repo"
-          />
-          <TextField
-            label="Default branch"
-            placeholder="main"
-            value={branch}
-            onChange={(e) => setBranch(e.target.value)}
-            data-testid="settings-branch-input"
-            autoComplete="off"
-          />
-          <GitIntegrationFields
-            value={git}
-            onChange={setGit}
-            errors={errors}
-          />
+      <div className={styles.tabs} role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'general'}
+          className={styles.tab}
+          data-active={tab === 'general' || undefined}
+          onClick={() => setTab('general')}
+          data-testid="tab-general"
+        >
+          General
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'members'}
+          className={styles.tab}
+          data-active={tab === 'members' || undefined}
+          onClick={() => setTab('members')}
+          data-testid="tab-members"
+        >
+          Members
+        </button>
+      </div>
 
-          <section className={styles.danger} data-testid="danger-zone">
-            <div className={styles.dangerText}>
-              <span className={styles.dangerTitle}>Delete project</span>
-              <span className={styles.dangerHint}>
-                Permanently removes this project and all of its runs, events and
-                artifacts. This cannot be undone.
-              </span>
-            </div>
-            {confirmDelete ? (
-              <div className={styles.confirmRow} data-testid="delete-confirm">
-                <span className={styles.confirmLabel}>Delete for good?</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setConfirmDelete(false)}
-                  disabled={del.isPending}
-                >
-                  Keep
-                </Button>
+      {tab === 'general' ? (
+        <form id="project-settings-form" onSubmit={save} noValidate>
+          <div className={styles.body}>
+            <TextField
+              label="Repository"
+              value={project.repo_url}
+              readOnly
+              hint="The repository URL is fixed for the project's history."
+              className={styles.repoField}
+              data-testid="settings-repo"
+            />
+            <TextField
+              label="Default branch"
+              placeholder="main"
+              value={branch}
+              onChange={(e) => setBranch(e.target.value)}
+              data-testid="settings-branch-input"
+              autoComplete="off"
+            />
+            <GitModeToggle value={gitMode} onChange={setGitMode} />
+
+            <section className={styles.danger} data-testid="danger-zone">
+              <div className={styles.dangerText}>
+                <span className={styles.dangerTitle}>Delete project</span>
+                <span className={styles.dangerHint}>
+                  Permanently removes this project and all of its runs, events and
+                  artifacts. This cannot be undone.
+                </span>
+              </div>
+              {confirmDelete ? (
+                <div className={styles.confirmRow} data-testid="delete-confirm">
+                  <span className={styles.confirmLabel}>Delete for good?</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setConfirmDelete(false)}
+                    disabled={del.isPending}
+                  >
+                    Keep
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="danger"
+                    size="sm"
+                    loading={del.isPending}
+                    onClick={remove}
+                    data-testid="project-delete-confirm"
+                  >
+                    Delete project
+                  </Button>
+                </div>
+              ) : (
                 <Button
                   type="button"
                   variant="danger"
                   size="sm"
-                  loading={del.isPending}
-                  onClick={remove}
-                  data-testid="project-delete-confirm"
+                  onClick={() => setConfirmDelete(true)}
+                  disabled={busy}
+                  data-testid="project-delete"
                 >
                   Delete project
                 </Button>
-              </div>
-            ) : (
-              <Button
-                type="button"
-                variant="danger"
-                size="sm"
-                onClick={() => setConfirmDelete(true)}
-                disabled={busy}
-                data-testid="project-delete"
-              >
-                Delete project
-              </Button>
-            )}
-          </section>
-        </div>
-      </form>
+              )}
+            </section>
+          </div>
+        </form>
+      ) : (
+        <MembersPanel projectId={project.id} canManage={canManage} />
+      )}
     </Modal>
   );
 }
