@@ -13,7 +13,7 @@
 | **A · 普通使用者 / project admin** | 建项目、派 run、盯实时进度、审 diff/PR、失败重试 | Console(项目/run/settings) | 完整 |
 | **B · 集群管理员** | 容量、运行中 worker、provider 状态、guardrail、版本 | Console `/system`(Cluster)+ kubectl | 只读视图(本轮新建) |
 
-**诚实声明**:MVP 是单租户 + 单个静态 console token,**没有真正的 OIDC/RBAC**。console 现在有**运行时登录门**(引导→登录→会话失效回登录,见 `console/src/auth/AuthProvider.tsx`):进入控制台前 token 必须通过 `GET /api/v1/system` 的服务端校验,所以角色是**已验证的信任级别**——但仍是共享 token,不是按用户身份/按请求授权。`VITE_ROLE`(默认 `cluster-admin`)仍只影响呈现。header 身份 chip 的 tooltip 与本文都明说这点。真正的多租户 RBAC 见 [02-decision-log.md](02-decision-log.md) D03(外部 OIDC,future)。
+**诚实声明(2026-07-07 更新)**:多 provider OAuth 登录 + 服务端四级 RBAC **已落地**(见 [13-multitenant-blueprint.md](13-multitenant-blueprint.md)):用户经 Gitea/GitHub/GitLab OAuth 登录(首个用户自动成为 cluster-admin),项目按 `project_members`(owner/member/viewer)按请求鉴权,run 归属触发用户,push/开 PR/发 review 用**该用户自己的 OAuth token**(runner pod 永远拿不到任何 provider 凭证)。`CONSOLE_TOKEN` 保留为集群管理服务凭证(脚本/e2e 用),等价 cluster-admin。GitHub/GitLab 的 OAuth 实现为单测级(本地 e2e 只闭环 Gitea)。
 
 ---
 
