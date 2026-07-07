@@ -37,12 +37,12 @@ func (f *fakePRFactory) PRClient(domain.GitProvider, string, string) (provider.P
 func newReviewServer(t *testing.T, st *store.MemStore, factory provider.Factory) (*httptest.Server, *Server) {
 	t.Helper()
 	hub := sse.NewHub()
-	cfg := &config.Config{
+	cfg := withTestModel(&config.Config{
 		ConsoleToken:    consoleToken,
 		GiteaURL:        "http://gitea.test",
 		GiteaToken:      "gitea-pat",
 		SourceBundleTTL: time.Minute,
-	}
+	})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, hub, nil)
 	if factory != nil {

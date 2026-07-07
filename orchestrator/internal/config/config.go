@@ -36,9 +36,9 @@ type Config struct {
 	Namespace      string            // K8S_NAMESPACE, default "jcloud"
 	RunnerImage    string            // RUNNER_IMAGE (required)
 	OrchBaseURL    string            // ORCH_BASE_URL (required) — reachable from runner pods
-	ModelBaseURL   string            // MODEL_BASE_URL — passed to runner
-	ModelAPIKey    string            // MODEL_API_KEY — passed to runner
-	ModelName      string            // MODEL_NAME — "provider/model" passed to runner (default "mock/mock-model")
+	ModelBaseURL   string            // MODEL_BASE_URL — env fallback for the effective model config (see internal/modelcfg)
+	ModelAPIKey    string            // MODEL_API_KEY — env fallback for the effective model config
+	ModelName      string            // MODEL_NAME — "provider/model" env fallback; NO silent mock default (fail-visible red line)
 	JobTTLSeconds  int32             // JOB_TTL_SECONDS, default 3600
 	RunTimeoutSecs int64             // RUN_TIMEOUT_SECONDS, default 1800 (Job activeDeadlineSeconds)
 	CPULimit       string            // RUNNER_CPU_LIMIT, default "2"
@@ -128,7 +128,7 @@ func Load() (*Config, error) {
 		OrchBaseURL:       os.Getenv("ORCH_BASE_URL"),
 		ModelBaseURL:      os.Getenv("MODEL_BASE_URL"),
 		ModelAPIKey:       os.Getenv("MODEL_API_KEY"),
-		ModelName:         getenv("MODEL_NAME", "mock/mock-model"),
+		ModelName:         os.Getenv("MODEL_NAME"),
 		JobTTLSeconds:     int32(getint("JOB_TTL_SECONDS", 3600)),
 		RunTimeoutSecs:    getint64("RUN_TIMEOUT_SECONDS", 1800),
 		CPULimit:          getenv("RUNNER_CPU_LIMIT", "2"),

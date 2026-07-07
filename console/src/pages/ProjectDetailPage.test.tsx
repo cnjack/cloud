@@ -9,7 +9,7 @@
  *  - owner: "+ Add repository" opens a form that creates a service, with the
  *    draft_pr-needs-a-provider-repo validation inline
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -55,11 +55,19 @@ interface Calls {
   services: { pid: string; input: CreateServiceInput }[];
 }
 
-function makeClient(p: Project): { client: ApiClient; calls: Calls } {
+function makeClient(
+  p: Project,
+  opts: { modelConfigured?: boolean } = {},
+): { client: ApiClient; calls: Calls } {
   const calls: Calls = { serviceRuns: [], services: [] };
   const client: Partial<ApiClient> = {
     getProject: async () => p,
     listRuns: async () => [] as Run[],
+    // Feature A: the composer keys enable/disable off this. Default configured.
+    getModelConfig: async () => ({
+      configured: opts.modelConfigured ?? true,
+      source: (opts.modelConfigured ?? true) ? 'env' : 'none',
+    }),
     createServiceRun: async (sid, input) => {
       calls.serviceRuns.push({ sid, input });
       return { id: 'r2', project_id: 'p1', service_id: sid, prompt: input.prompt, status: 'queued', created_at: '' } as Run;
@@ -72,11 +80,11 @@ function makeClient(p: Project): { client: ApiClient; calls: Calls } {
   return { client: client as ApiClient, calls };
 }
 
-function renderPage(client: ApiClient) {
+function renderPage(client: ApiClient, role?: 'cluster-admin' | 'project-admin') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <ApiProvider client={client}>
+      <ApiProvider client={client} role={role}>
         <ToastProvider>
           <MemoryRouter initialEntries={['/projects/p1']}>
             <Routes>
@@ -127,6 +135,66 @@ describe('ProjectDetailPage — multi-repo composer', () => {
     await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
     // Defaults to the 'default' service.
     expect(calls.serviceRuns[0]).toMatchObject({ sid: 'svc_default', input: { prompt: 'ship it' } });
+  });
+});
+
+describe('ProjectDetailPage — model not configured (Feature A)', () => {
+  it('disables the composer and links an admin to the Cluster page', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      modelConfigured: false,
+    });
+    renderPage(client, 'cluster-admin');
+
+    await waitFor(() => expect(screen.getByTestId('model-not-configured')).toBeTruthy());
+    // Input + Run button are disabled.
+    expect((screen.getByTestId('run-input') as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByTestId('run-submit') as HTMLButtonElement).disabled).toBe(true);
+    // Admin gets a link to configure it.
+    expect(screen.getByTestId('model-config-link')).toBeTruthy();
+
+    // Even forcing a submit dispatches nothing.
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'do a thing' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls.serviceRuns).toHaveLength(0);
+  });
+
+  it('tells a non-admin to contact an administrator (no config link)', async () => {
+    const { client } = makeClient(project('member', [svc('svc_default', 'default')]), {
+      modelConfigured: false,
+    });
+    renderPage(client, 'project-admin');
+
+    await waitFor(() => expect(screen.getByTestId('model-not-configured')).toBeTruthy());
+    expect(screen.queryByTestId('model-config-link')).toBeNull();
+    expect(screen.getByText(/contact a cluster administrator/i)).toBeTruthy();
+  });
+
+  it('keeps the composer usable with a neutral warning when the status check fails', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    (client as { getModelConfig?: unknown }).getModelConfig = async () => {
+      throw new Error('network down');
+    };
+    renderPage(client, 'cluster-admin');
+
+    // Neutral "couldn't verify" strip — NOT the blocking not-configured alert.
+    await waitFor(() => expect(screen.getByTestId('model-unverified')).toBeTruthy());
+    expect(screen.queryByTestId('model-not-configured')).toBeNull();
+    // Composer stays enabled (the backend 409 is the backstop).
+    expect((screen.getByTestId('run-input') as HTMLTextAreaElement).disabled).toBe(false);
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'go' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+  });
+
+  it('does not even fetch the model status for a viewer (enabled gating)', async () => {
+    const { client } = makeClient(project('viewer', [svc('svc_default', 'default')]));
+    const spy = vi.fn(async () => ({ configured: true }));
+    (client as { getModelConfig?: unknown }).getModelConfig = spy;
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByTestId('runs-empty')).toBeTruthy());
+    expect(spy).not.toHaveBeenCalled();
   });
 });
 

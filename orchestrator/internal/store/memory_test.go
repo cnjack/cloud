@@ -455,3 +455,58 @@ func TestMemServiceGitConfigRoundTrip(t *testing.T) {
 		t.Fatalf("ListServices len=%d want 2", len(svcs))
 	}
 }
+
+// TestMemStoreModelConfigRoundTrip covers the Feature A single-row model config:
+// ErrNotFound when unset, upsert, read-back, and clear (idempotent).
+func TestMemStoreModelConfigRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+
+	// Unset => ErrNotFound.
+	if _, err := m.GetModelConfig(ctx); err != ErrNotFound {
+		t.Fatalf("get unset: err=%v want ErrNotFound", err)
+	}
+
+	// Set + read back.
+	if err := m.SetModelConfig(ctx, &domain.ModelConfig{
+		BaseURL: "http://x/v1", ModelName: "a/b", APIKeyEnc: []byte("enc"), UpdatedBy: "u1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.GetModelConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseURL != "http://x/v1" || got.ModelName != "a/b" || string(got.APIKeyEnc) != "enc" || got.UpdatedBy != "u1" {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+
+	// Upsert (single row): a second set replaces, not appends.
+	if err := m.SetModelConfig(ctx, &domain.ModelConfig{
+		BaseURL: "http://y/v1", ModelName: "c/d", APIKeyEnc: nil, UpdatedBy: "u2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = m.GetModelConfig(ctx)
+	if got.BaseURL != "http://y/v1" || got.APIKeyEnc != nil {
+		t.Fatalf("upsert mismatch: %+v", got)
+	}
+
+	// Mutating the returned copy must not affect the store (defensive copy).
+	got.BaseURL = "mutated"
+	again, _ := m.GetModelConfig(ctx)
+	if again.BaseURL != "http://y/v1" {
+		t.Fatalf("store aliased its internal row: %q", again.BaseURL)
+	}
+
+	// Clear => ErrNotFound again; clearing twice is a no-op.
+	if err := m.ClearModelConfig(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ClearModelConfig(ctx); err != nil {
+		t.Fatalf("clear twice should be a no-op, got %v", err)
+	}
+	if _, err := m.GetModelConfig(ctx); err != ErrNotFound {
+		t.Fatalf("get after clear: err=%v want ErrNotFound", err)
+	}
+}

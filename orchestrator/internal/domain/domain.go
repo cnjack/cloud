@@ -446,3 +446,22 @@ type RunArtifact struct {
 	Bytes     []byte    `json:"-"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// ModelConfig is the cluster-wide LLM configuration a cluster admin sets from
+// the console (Feature A). It is the single-row cluster_model_config table and,
+// when present, takes precedence over the MODEL_* environment variables (see
+// internal/modelcfg.Resolve). APIKeyEnc is the AES-256-GCM ciphertext of the
+// API key (nil/empty when the endpoint needs no key); the plaintext is NEVER
+// serialised to API clients — hence `json:"-"` on the encrypted blob.
+type ModelConfig struct {
+	// BaseURL is the OpenAI-compatible base URL (http/https).
+	BaseURL string `json:"base_url"`
+	// ModelName is the "provider/model" id written into the runner's jcode config.
+	ModelName string `json:"model_name"`
+	// APIKeyEnc is the encrypted API key (nonce||ciphertext), or nil when absent.
+	APIKeyEnc []byte `json:"-"`
+	// UpdatedAt / UpdatedBy record the last write (audit; UpdatedBy is a user id
+	// or "" for the service principal).
+	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedBy string    `json:"updated_by"`
+}

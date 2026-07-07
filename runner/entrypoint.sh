@@ -11,6 +11,7 @@
 #   TASK_PROMPT      the coding task (agent runs) — a review prompt is built
 #                    internally for review runs.
 #   MODEL_BASE_URL   OpenAI-compatible base URL (or set START_MOCKLLM=1)
+#   MODEL_NAME       "provider/model" id (or set START_MOCKLLM=1) — NO mock default
 #   MODEL_API_KEY    API key (a dummy value is fine for the mock)
 #
 # Runner contract env (blueprint §3), injected by the orchestrator:
@@ -31,7 +32,7 @@
 # Orchestrator wiring (present under the control plane; absent standalone):
 #   RUN_ID, RUN_TOKEN, ORCH_BASE_URL
 #
-# Optional: RUN_TIMEOUT, MODEL_NAME/MODEL_PROVIDER, START_MOCKLLM, MOCK_SCENARIO,
+# Optional: RUN_TIMEOUT, MODEL_PROVIDER, START_MOCKLLM, MOCK_SCENARIO,
 #   WORKSPACE, OUT_DIR.
 #
 # Output:
@@ -78,7 +79,10 @@ GIT_MODE="${GIT_MODE:-readonly}"
 # BASE_BRANCH is the new contract name; REPO_BRANCH is accepted as a back-compat
 # alias for the clone path.
 BASE_BRANCH="${BASE_BRANCH:-${REPO_BRANCH:-}}"
-MODEL_NAME="${MODEL_NAME:-mock/mock-model}"
+# MODEL_NAME has NO silent mock default (fail-visible red line): a real run must
+# be told which model to use. The bundled mock rig (START_MOCKLLM=1) sets it
+# explicitly below; otherwise it is required (validated in step 1).
+MODEL_NAME="${MODEL_NAME:-}"
 MODEL_API_KEY="${MODEL_API_KEY:-dummy-key}"
 
 log "run_id=$RUN_ID kind=$RUN_KIND source_mode=$SOURCE_MODE git_mode=$GIT_MODE"
@@ -90,6 +94,8 @@ if [ "${START_MOCKLLM:-0}" = "1" ]; then
   MOCK_ADDR=":8081" MOCK_SCENARIO="${MOCK_SCENARIO:-write_file}" mockllm >&2 &
   MOCK_PID=$!
   MODEL_BASE_URL="http://127.0.0.1:8081/v1"
+  # The mock rig is the ONLY place a mock model id is an acceptable default.
+  MODEL_NAME="${MODEL_NAME:-mock/mock-model}"
   for _ in $(seq 1 50); do
     if (exec 3<>/dev/tcp/127.0.0.1/8081) 2>/dev/null; then
       exec 3>&- 3<&-
@@ -103,6 +109,7 @@ trap '[ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true' EXIT
 # --- 1. Validate inputs ------------------------------------------------------
 [ -n "${TASK_PROMPT:-}" ]    || die setup_failed "TASK_PROMPT is required"
 [ -n "${MODEL_BASE_URL:-}" ] || die setup_failed "MODEL_BASE_URL is required (or set START_MOCKLLM=1)"
+[ -n "${MODEL_NAME:-}" ]     || die setup_failed "MODEL_NAME is required (or set START_MOCKLLM=1)"
 
 MODEL_PROVIDER="${MODEL_PROVIDER:-${MODEL_NAME%%/*}}"
 MODEL_ID="${MODEL_NAME#*/}"

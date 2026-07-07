@@ -15,6 +15,7 @@ import type {
   CreateServiceInput,
   Member,
   Project,
+  PutModelConfigInput,
   Run,
   UpdateProjectInput,
 } from './types';
@@ -29,6 +30,7 @@ export const qk = {
   diff: (runId: string) => ['diff', runId] as const,
   pr: (runId: string) => ['pr', runId] as const,
   system: ['system'] as const,
+  modelConfig: ['model-config'] as const,
   services: (projectId: string) => ['services', projectId] as const,
   members: (projectId: string) => ['members', projectId] as const,
   users: (q: string) => ['users', q] as const,
@@ -246,6 +248,48 @@ export function useSystem(enabled = true) {
     queryFn: () => api.getSystem(),
     enabled,
     refetchInterval: 5000,
+  });
+}
+
+/* ---- cluster model config (Feature A) ------------------------------------ */
+
+/**
+ * The effective LLM config. Read by ANY logged-in principal (the composer keys
+ * its enable/disable off `configured`); the Cluster page's admin form reads the
+ * source/base_url/model_name/api_key_set detail. Kept fresh on a modest interval
+ * so a just-saved config propagates to an open composer without a manual reload.
+ */
+export function useModelConfig(enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.modelConfig,
+    queryFn: () => api.getModelConfig(),
+    enabled,
+    refetchInterval: 15000,
+  });
+}
+
+export function useSetModelConfig() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: PutModelConfigInput) => api.setModelConfig(input),
+    onSuccess: (info) => {
+      qc.setQueryData(qk.modelConfig, info);
+      qc.invalidateQueries({ queryKey: qk.modelConfig });
+    },
+  });
+}
+
+export function useClearModelConfig() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.clearModelConfig(),
+    onSuccess: (info) => {
+      qc.setQueryData(qk.modelConfig, info);
+      qc.invalidateQueries({ queryKey: qk.modelConfig });
+    },
   });
 }
 

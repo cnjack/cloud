@@ -13,6 +13,7 @@ import (
 	"github.com/cnjack/jcloud/internal/credentials"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/k8s"
+	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -53,6 +54,12 @@ type Reconciler struct {
 	factory provider.Factory      // builds PR clients per resolved token
 	pusher  Pusher                // pushes the runner bundle's branch
 	creds   *credentials.Resolver // resolves the acting token (user OAuth / gitea PAT)
+
+	// models resolves (and caches) the effective LLM config at Job launch
+	// (Feature A). New seeds a cipher-less default; main.go overrides it with the
+	// API server's shared instance (WithModelResolver) so a console PUT/DELETE's
+	// cache invalidation is immediately visible here. Never nil.
+	models *modelcfg.Resolver
 }
 
 // New builds a Reconciler. pub may be nil. The draft-PR / review stack is set
@@ -65,6 +72,7 @@ func New(st store.Store, launcher k8s.JobLauncher, cfg *config.Config, log *slog
 		log:      log,
 		pub:      pub,
 		now:      func() time.Time { return time.Now().UTC() },
+		models:   modelcfg.NewResolver(st, nil, cfg),
 	}
 }
 
@@ -76,6 +84,16 @@ func (r *Reconciler) WithPRStack(factory provider.Factory, pusher Pusher, creds 
 	r.factory = factory
 	r.pusher = pusher
 	r.creds = creds
+	return r
+}
+
+// WithModelResolver replaces the default model-config resolver with a shared
+// instance (the API server's, in main.go) so PUT/DELETE cache invalidation is
+// visible to Job scheduling immediately (Feature A). Returns r for chaining.
+func (r *Reconciler) WithModelResolver(m *modelcfg.Resolver) *Reconciler {
+	if m != nil {
+		r.models = m
+	}
 	return r
 }
 
@@ -510,6 +528,29 @@ func (r *Reconciler) apply(ctx context.Context, run *domain.Run, d Decision) boo
 // non-existent Job is a no-op, so this is safe on the normal first-create path.
 // See finding "token regen + idempotent CreateJob mismatch".
 func (r *Reconciler) createJob(ctx context.Context, run *domain.Run) bool {
+	// Fail-visible gate (CLAUDE.md red line #1): resolve the EFFECTIVE model
+	// config at Job-launch time. The API gate blocks creation, but a run can be
+	// queued while configured and then have its config cleared before it is
+	// scheduled — in that window we must NOT silently launch a runner with no
+	// model. A definitively-unconfigured model fails the run visibly; a resolve
+	// ERROR is transient (DB blip, key rotation mid-flight) and is retried next
+	// tick, consistent with the other transient-error paths in Tick.
+	model, err := r.models.Resolve(ctx)
+	if err != nil {
+		r.log.Error("reconcile: resolve model config", "run", run.ID, "err", err)
+		return false // transient; retry next tick
+	}
+	if !model.Configured() {
+		msg := modelcfg.NotConfiguredMessage("")
+		if committed, merr := r.st.MarkFailed(ctx, run.ID, "Failed", domain.FailureSetupFailed, msg, r.now()); merr != nil {
+			r.log.Error("reconcile: mark failed (model not configured)", "run", run.ID, "err", merr)
+		} else {
+			r.log.Warn("reconcile: run failed — model not configured", "run", run.ID)
+			r.emitStatus(ctx, committed)
+		}
+		return false
+	}
+
 	token, err := auth.GenerateRunToken()
 	if err != nil {
 		r.log.Error("reconcile: gen run token", "run", run.ID, "err", err)
@@ -526,7 +567,7 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run) bool {
 	spec := k8s.JobSpec{
 		Name:           jobName,
 		RunID:          run.ID,
-		Env:            r.jobEnv(ctx, run, token),
+		Env:            r.jobEnv(ctx, run, token, model),
 		TimeoutSeconds: r.cfg.RunTimeoutSecs,
 	}
 	if err := r.launcher.CreateJob(ctx, spec); err != nil {
@@ -623,10 +664,13 @@ func (r *Reconciler) emit(ctx context.Context, runID, typ string, payload map[st
 }
 
 // jobEnv assembles the runner container environment per the M3 runner contract
-// (blueprint §3). token is the freshly-minted plaintext RUN_TOKEN. NO provider
-// token is ever injected: the runner reads (via a source bundle it fetches over
-// the RUN_TOKEN) and writes a bundle it uploads; the orchestrator pushes.
-func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string) map[string]string {
+// (blueprint §3). token is the freshly-minted plaintext RUN_TOKEN; model is the
+// EFFECTIVE model config resolved at Job-launch (Feature A) — the runner is
+// pointed at exactly what the admin set (DB) or the env fallback, never a mock
+// default. NO provider token is ever injected: the runner reads (via a source
+// bundle it fetches over the RUN_TOKEN) and writes a bundle it uploads; the
+// orchestrator pushes.
+func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, model modelcfg.Resolved) map[string]string {
 	kind := run.Kind
 	if kind == "" {
 		kind = domain.RunKindAgent
@@ -635,9 +679,9 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string) 
 		"RUN_ID":         run.ID,
 		"TASK_PROMPT":    run.Prompt,
 		"ORCH_BASE_URL":  r.cfg.OrchBaseURL,
-		"MODEL_BASE_URL": r.cfg.ModelBaseURL,
-		"MODEL_API_KEY":  r.cfg.ModelAPIKey,
-		"MODEL_NAME":     r.cfg.ModelName,
+		"MODEL_BASE_URL": model.BaseURL,
+		"MODEL_API_KEY":  model.APIKey,
+		"MODEL_NAME":     model.ModelName,
 		"RUN_TOKEN":      token,
 		"RUN_KIND":       string(kind),
 	}

@@ -28,11 +28,23 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.MemStore, *sse.Hub) {
 	st := store.NewMemStore()
 	hub := sse.NewHub()
 	cfg := &config.Config{ConsoleToken: consoleToken}
+	withTestModel(cfg)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, hub, nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, st, hub
+}
+
+// withTestModel sets the env-source model config so the fail-visible run gate
+// (Feature A) treats the server as configured — every run-creating test would
+// otherwise 409 model_not_configured. Tests that exercise the unconfigured path
+// build their own config without these fields.
+func withTestModel(c *config.Config) *config.Config {
+	c.ModelBaseURL = "http://model.test/v1"
+	c.ModelName = "mock/mock-model"
+	c.ModelAPIKey = "test-key"
+	return c
 }
 
 // newTestServerWithLauncher builds a server wired to a FakeLauncher so cancel's
@@ -42,7 +54,7 @@ func newTestServerWithLauncher(t *testing.T) (*httptest.Server, *store.MemStore,
 	st := store.NewMemStore()
 	hub := sse.NewHub()
 	fake := k8s.NewFakeLauncher()
-	cfg := &config.Config{ConsoleToken: consoleToken}
+	cfg := withTestModel(&config.Config{ConsoleToken: consoleToken})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, hub, fake)
 	ts := httptest.NewServer(srv.Handler())

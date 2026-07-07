@@ -5,6 +5,9 @@
 #   - namespace jcode (namespace.yaml here; base's jcloud namespace not used)
 #   - NO gitseed (runs target the real git.scgzyun.com, which shares this
 #     cluster — that also makes the @mention webhook reachable in-cluster)
+#   - NO mockllm (fail-visible red line #1): a real cluster must NOT default to a
+#     mock LLM. A cluster admin sets the model from the console (stored encrypted
+#     in cluster_model_config); until then runs surface as "not configured".
 #   - images come from ghcr.io (pullPolicy Always via patch; base uses Never)
 #   - console Deployment/Service (NodePort 30080) — nginx serving the SPA and
 #     proxying /api + /auth to the orchestrator
@@ -17,7 +20,6 @@ namespace: jcode
 resources:
   - namespace.yaml
   - ../../base/postgres
-  - ../../base/mockllm
   - ../../base/orchestrator
   - console.yaml
   - ingress.yaml
@@ -25,9 +27,6 @@ resources:
 images:
   - name: jcloud/orchestrator
     newName: ghcr.io/cnjack/jcloud-orchestrator
-    newTag: latest
-  - name: jcloud/mockllm
-    newName: ghcr.io/cnjack/jcloud-mockllm
     newTag: latest
 
 patches:
@@ -42,17 +41,12 @@ patches:
       - op: replace
         path: /spec/template/spec/initContainers/0/imagePullPolicy
         value: Always
-  - target:
-      kind: Deployment
-      name: mockllm
-    patch: |-
-      - op: replace
-        path: /spec/template/spec/containers/0/imagePullPolicy
-        value: Always
 
   # Environment values over the base ConfigMap. CONSOLE_URL is the browser
   # entry (NodePort); WEBHOOK_URL works because gitea shares this cluster —
   # with WEBHOOK_SECRET set, adding a gitea repo auto-registers its hook.
+  # MODEL_* is deliberately NOT patched here (see header note): the model is set
+  # from the console, never wired to a mock in a product cluster.
   - target:
       kind: ConfigMap
       name: orchestrator-config
@@ -65,6 +59,5 @@ patches:
         K8S_NAMESPACE: jcode
         RUNNER_IMAGE: ghcr.io/cnjack/jcloud-runner:latest
         ORCH_BASE_URL: http://orchestrator.jcode.svc.cluster.local:8080
-        MODEL_BASE_URL: http://mockllm.jcode.svc.cluster.local:8081/v1
         CONSOLE_URL: https://cloud.j-code.net
         WEBHOOK_URL: http://orchestrator.jcode.svc.cluster.local:8080/webhooks/gitea

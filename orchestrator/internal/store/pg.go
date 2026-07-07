@@ -829,6 +829,51 @@ func (s *PGStore) GetRunBundle(ctx context.Context, runID string) ([]byte, error
 	return data, nil
 }
 
+// --- Cluster model config (Feature A) ---------------------------------------
+
+// GetModelConfig returns the single-row cluster model config (id=1), or
+// ErrNotFound when no admin has set one. api_key_enc stays encrypted.
+func (s *PGStore) GetModelConfig(ctx context.Context) (*domain.ModelConfig, error) {
+	var c domain.ModelConfig
+	err := s.pool.QueryRow(ctx,
+		`SELECT base_url, model_name, api_key_enc, updated_at, updated_by
+		 FROM cluster_model_config WHERE id=1`).
+		Scan(&c.BaseURL, &c.ModelName, &c.APIKeyEnc, &c.UpdatedAt, &c.UpdatedBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get model config: %w", err)
+	}
+	return &c, nil
+}
+
+// SetModelConfig upserts the single row (id=1). api_key_enc may be nil.
+func (s *PGStore) SetModelConfig(ctx context.Context, c *domain.ModelConfig) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO cluster_model_config (id, base_url, model_name, api_key_enc, updated_at, updated_by)
+		 VALUES (1, $1, $2, $3, now(), $4)
+		 ON CONFLICT (id) DO UPDATE SET
+		   base_url=EXCLUDED.base_url,
+		   model_name=EXCLUDED.model_name,
+		   api_key_enc=EXCLUDED.api_key_enc,
+		   updated_at=now(),
+		   updated_by=EXCLUDED.updated_by`,
+		c.BaseURL, c.ModelName, c.APIKeyEnc, c.UpdatedBy)
+	if err != nil {
+		return fmt.Errorf("set model config: %w", err)
+	}
+	return nil
+}
+
+// ClearModelConfig deletes the row (no-op when absent).
+func (s *PGStore) ClearModelConfig(ctx context.Context) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM cluster_model_config WHERE id=1`); err != nil {
+		return fmt.Errorf("clear model config: %w", err)
+	}
+	return nil
+}
+
 // --- Events -----------------------------------------------------------------
 
 func (s *PGStore) AppendEvents(ctx context.Context, runID string, events []EventInput) (int, error) {

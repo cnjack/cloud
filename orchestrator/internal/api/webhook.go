@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/provider"
 )
 
@@ -211,6 +212,24 @@ func (s *Server) processMention(ctx context.Context, p *giteaIssueCommentPayload
 	svc, ok := s.resolveWebhookService(ctx, user, p.Repository.FullName)
 	if !ok {
 		reply("jcode couldn't find a jcloud project you can run on for this repository.")
+		return
+	}
+
+	// Fail-visible gate (CLAUDE.md red line #1): if no LLM is configured, reply on
+	// the PR explaining why — do NOT create a run that would fail headlessly. A
+	// transient resolve error (DB blip, key rotation mid-flight) is a DIFFERENT
+	// state: log it and report it as temporary so the user retries; never
+	// misreport it as "not configured". Like every other reply on this path,
+	// these replies are not de-duplicated across redeliveries (consistent with
+	// the M7 reply behaviour).
+	resolved, rerr := s.models.Resolve(ctx)
+	if rerr != nil {
+		s.log.Error("webhook: resolve model config", "repo", p.Repository.FullName, "err", rerr)
+		reply("jcode hit a temporary internal problem — please try again shortly.")
+		return
+	}
+	if !resolved.Configured() {
+		reply("jcode can't run yet — " + modelcfg.NotConfiguredMessage(s.cfg.ConsoleURL))
 		return
 	}
 

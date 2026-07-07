@@ -201,6 +201,18 @@ type Store interface {
 	PutRunBundle(ctx context.Context, runID string, data []byte) error
 	GetRunBundle(ctx context.Context, runID string) ([]byte, error)
 
+	// --- Cluster model config (Feature A) ------------------------------------
+	// GetModelConfig returns the single-row cluster LLM configuration, or
+	// ErrNotFound when no admin has set one (the caller then falls back to the
+	// MODEL_* env, or reports "not configured"). Never returns a plaintext key —
+	// api_key_enc stays encrypted.
+	GetModelConfig(ctx context.Context) (*domain.ModelConfig, error)
+	// SetModelConfig upserts the single row (id=1). APIKeyEnc may be nil (no key).
+	SetModelConfig(ctx context.Context, c *domain.ModelConfig) error
+	// ClearModelConfig deletes the row so resolution falls back to env / "not
+	// configured". A missing row is a no-op (not an error).
+	ClearModelConfig(ctx context.Context) error
+
 	// --- Auth: users & identities (M2) ---------------------------------------
 	// CreateUserWithIdentity creates a new user together with its first identity
 	// in one transaction. It decides is_cluster_admin atomically: the user becomes

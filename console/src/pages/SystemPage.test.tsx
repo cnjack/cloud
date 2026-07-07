@@ -5,13 +5,14 @@
  *   - error state: a failed getSystem shows the ErrorBlock with a Retry.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
+import { ToastProvider } from '../components/Toast';
 import { ApiError, type ApiClient } from '../api/client';
 import type { Role } from '../api/config';
-import type { SystemInfo } from '../api/types';
+import type { ModelConfigInfo, SystemInfo } from '../api/types';
 import { SystemPage } from './SystemPage';
 
 function snapshot(overrides: Partial<SystemInfo> = {}): SystemInfo {
@@ -31,12 +32,20 @@ function renderPage(client: Partial<ApiClient>, role: Role) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  // A benign default so the Model card's useModelConfig resolves; tests that
+  // exercise the Model card override these.
+  const full: Partial<ApiClient> = {
+    getModelConfig: async (): Promise<ModelConfigInfo> => ({ configured: false, source: 'none' }),
+    ...client,
+  };
   return render(
     <QueryClientProvider client={qc}>
-      <ApiProvider client={client as ApiClient} role={role}>
-        <MemoryRouter initialEntries={['/system']}>
-          <SystemPage />
-        </MemoryRouter>
+      <ApiProvider client={full as ApiClient} role={role}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/system']}>
+            <SystemPage />
+          </MemoryRouter>
+        </ToastProvider>
       </ApiProvider>
     </QueryClientProvider>,
   );
@@ -75,6 +84,59 @@ describe('SystemPage', () => {
       expect(screen.getByText("Couldn't load the cluster snapshot")).toBeTruthy(),
     );
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+  });
+
+  it('Model card: saves a config and shows a success toast (Feature A)', async () => {
+    const setModelConfig = vi.fn().mockResolvedValue({
+      configured: true, source: 'db', base_url: 'https://api.openai.com/v1',
+      model_name: 'openai/gpt-4o', api_key_set: true,
+    } satisfies ModelConfigInfo);
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(snapshot()),
+      getModelConfig: vi.fn().mockResolvedValue({ configured: false, source: 'none' } satisfies ModelConfigInfo),
+      setModelConfig,
+      clearModelConfig: vi.fn(),
+    };
+    renderPage(client, 'cluster-admin');
+
+    // Wait for the form to mount (it renders only once the config has loaded,
+    // so typing can never race the prefill).
+    const baseInput = await screen.findByTestId('model-base-url');
+    expect(screen.getByTestId('model-status').textContent).toContain('Not configured');
+
+    fireEvent.change(baseInput, { target: { value: 'https://api.openai.com/v1' } });
+    fireEvent.change(screen.getByTestId('model-name'), { target: { value: 'openai/gpt-4o' } });
+    fireEvent.change(screen.getByTestId('model-api-key'), { target: { value: 'sk-secret' } });
+    fireEvent.click(screen.getByTestId('model-save'));
+
+    await waitFor(() =>
+      expect(setModelConfig).toHaveBeenCalledWith({
+        base_url: 'https://api.openai.com/v1', model_name: 'openai/gpt-4o', api_key: 'sk-secret',
+      }),
+    );
+    // Feedback rides the app-wide toast (same mechanism as PrPanel etc.).
+    await waitFor(() => expect(screen.getByText('Model configuration saved.')).toBeTruthy());
+  });
+
+  it('Model card: surfaces a save error via toast (400 validation)', async () => {
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(snapshot()),
+      getModelConfig: vi.fn().mockResolvedValue({ configured: false, source: 'none' } satisfies ModelConfigInfo),
+      setModelConfig: vi.fn().mockRejectedValue(new ApiError(400, "model_name must be in 'provider/model' form")),
+      clearModelConfig: vi.fn(),
+    };
+    renderPage(client, 'cluster-admin');
+
+    const baseInput = await screen.findByTestId('model-base-url');
+    fireEvent.change(baseInput, { target: { value: 'http://x/v1' } });
+    fireEvent.change(screen.getByTestId('model-name'), { target: { value: 'bad' } });
+    fireEvent.click(screen.getByTestId('model-save'));
+
+    // The toast carries the backend's exact message (the form label also says
+    // "provider/model", so match the full sentence).
+    await waitFor(() =>
+      expect(screen.getByText("model_name must be in 'provider/model' form")).toBeTruthy(),
+    );
   });
 
   it('shows unlimited concurrency when max_concurrent_runs is 0 (no bar)', async () => {

@@ -47,6 +47,11 @@ func (s *Server) handleRequestReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "this run has no pull request to review")
 		return
 	}
+	// Fail-visible gate: a review run also invokes the LLM — refuse it if none is
+	// configured (CLAUDE.md red line #1).
+	if !s.modelConfigured(w, r) {
+		return
+	}
 
 	svc, err := s.st.GetService(r.Context(), src.ServiceID)
 	if err != nil {

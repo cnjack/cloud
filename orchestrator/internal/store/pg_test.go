@@ -448,3 +448,51 @@ func containsRun(runs []domain.Run, id string) bool {
 	}
 	return false
 }
+
+// TestPGModelConfigRoundTrip validates the Feature A single-row model config
+// against a real Postgres: the id=1 CHECK, bytea api_key_enc round-trip, upsert,
+// and delete. Requires JCLOUD_PG_DSN.
+func TestPGModelConfigRoundTrip(t *testing.T) {
+	st, _ := pgTestStore(t)
+	ctx := context.Background()
+	t.Cleanup(func() { _ = st.ClearModelConfig(ctx) })
+
+	if _, err := st.GetModelConfig(ctx); err != ErrNotFound {
+		t.Fatalf("get unset: err=%v want ErrNotFound", err)
+	}
+	if err := st.SetModelConfig(ctx, &domain.ModelConfig{
+		BaseURL: "https://api.openai.com/v1", ModelName: "openai/gpt-4o",
+		APIKeyEnc: []byte{0x00, 0x01, 0x02, 0xff}, UpdatedBy: "admin-user",
+	}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got, err := st.GetModelConfig(ctx)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.BaseURL != "https://api.openai.com/v1" || got.ModelName != "openai/gpt-4o" ||
+		len(got.APIKeyEnc) != 4 || got.APIKeyEnc[3] != 0xff || got.UpdatedBy != "admin-user" {
+		t.Fatalf("round-trip mismatch: %+v (enc=%v)", got, got.APIKeyEnc)
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Fatal("updated_at should be stamped")
+	}
+
+	// Upsert replaces the single row (never a second row).
+	if err := st.SetModelConfig(ctx, &domain.ModelConfig{
+		BaseURL: "http://vllm/v1", ModelName: "local/llama", APIKeyEnc: nil, UpdatedBy: "u2",
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, _ = st.GetModelConfig(ctx)
+	if got.BaseURL != "http://vllm/v1" || got.APIKeyEnc != nil {
+		t.Fatalf("upsert mismatch: %+v", got)
+	}
+
+	if err := st.ClearModelConfig(ctx); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if _, err := st.GetModelConfig(ctx); err != ErrNotFound {
+		t.Fatalf("get after clear: err=%v want ErrNotFound", err)
+	}
+}

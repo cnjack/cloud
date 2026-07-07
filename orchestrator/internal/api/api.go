@@ -21,6 +21,7 @@ import (
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/gitcli"
 	"github.com/cnjack/jcloud/internal/k8s"
+	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
@@ -53,6 +54,11 @@ type Server struct {
 	// (M5 GET /runs/{id}/pr). Same seam the reconciler uses; a test overrides it
 	// with a fake. Never nil in production (built from cfg.GiteaURL in New).
 	factory provider.Factory
+
+	// models resolves (and caches) the effective LLM configuration (Feature A).
+	// Shared with the reconciler via Models() so a console PUT/DELETE's
+	// Invalidate() is immediately visible to Job scheduling. Never nil.
+	models *modelcfg.Resolver
 }
 
 // New builds a Server. launcher may be nil (K8s disabled). The token cipher and
@@ -94,6 +100,9 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// PR-status client factory (M5). Shares the same builder the reconciler uses;
 	// a deployment without a provider simply reports state="unknown" per PR.
 	s.factory = provider.NewFactory(cfg.GiteaURL)
+	// Effective-model resolver (Feature A): one cached instance for every gate
+	// (run create/retry/review, webhook, and — via Models() — the reconciler).
+	s.models = modelcfg.NewResolver(st, s.cipher, cfg)
 	return s
 }
 
@@ -104,6 +113,11 @@ func (s *Server) Credentials() *credentials.Resolver { return s.creds }
 // Git exposes the git CLI wrapper (source bundle / branch push) so the
 // reconciler pushes with the same binary the source endpoint uses.
 func (s *Server) Git() *gitcli.Git { return s.git }
+
+// Models exposes the shared model-config resolver so the reconciler resolves
+// the effective LLM config through the SAME cache the API invalidates on
+// PUT/DELETE (Feature A).
+func (s *Server) Models() *modelcfg.Resolver { return s.models }
 
 // buildOAuthProviders constructs the login providers from config. Unknown ids
 // are skipped defensively (config only emits gitea/github/gitlab).
@@ -155,6 +169,13 @@ func (s *Server) Handler() http.Handler {
 	// Read-only admin snapshot for the cluster-admin console view (11-api.md §
 	// "System / admin"). Never returns a secret.
 	mux.Handle("GET /api/v1/system", s.authed(s.handleGetSystem))
+
+	// Cluster model config (Feature A). GET is readable by any logged-in
+	// principal (non-admins get only {configured}); PUT/DELETE are cluster-admin
+	// only (enforced in the handler). The plaintext API key is never returned.
+	mux.Handle("GET /api/v1/system/model", s.authed(s.handleGetModelConfig))
+	mux.Handle("PUT /api/v1/system/model", s.authed(s.handlePutModelConfig))
+	mux.Handle("DELETE /api/v1/system/model", s.authed(s.handleDeleteModelConfig))
 
 	// User search (any logged-in user; for the add-member picker).
 	mux.Handle("GET /api/v1/users", s.authed(s.handleSearchUsers))

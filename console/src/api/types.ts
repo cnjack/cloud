@@ -284,6 +284,36 @@ export interface SystemInfo {
   };
 }
 
+/* ---- cluster model config (Feature A) ------------------------------------ */
+
+/**
+ * GET /api/v1/system/model — the effective LLM configuration.
+ *
+ * Any logged-in principal sees `configured`; only a cluster-admin additionally
+ * sees source/base_url/model_name/api_key_set. The plaintext API key is NEVER
+ * returned — only whether one is set (api_key_set). source is where the
+ * effective config came from: an admin-set DB row, the MODEL_* env fallback, or
+ * "none" when nothing is configured (the fail-visible state).
+ */
+export interface ModelConfigInfo {
+  configured: boolean;
+  source?: 'db' | 'env' | 'none' | string;
+  base_url?: string;
+  model_name?: string;
+  api_key_set?: boolean;
+}
+
+/**
+ * PUT /api/v1/system/model body (cluster-admin only). api_key may be empty for
+ * keyless OpenAI-compatible endpoints. base_url must be http(s); model_name must
+ * be "provider/model".
+ */
+export interface PutModelConfigInput {
+  base_url: string;
+  model_name: string;
+  api_key: string;
+}
+
 /* ---- auth / identity (multitenant blueprint §2) -------------------------- */
 
 export interface MeUser {

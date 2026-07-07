@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/k8s"
+	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -25,6 +27,11 @@ func testRec(t *testing.T, maxConcurrent int) (*Reconciler, *store.MemStore, *k8
 		RunTimeoutSecs:    1800,
 		OrchBaseURL:       "http://orch",
 		RunnerImage:       "runner:test",
+		// Feature A: the env-source model config so createJob's fail-visible gate
+		// treats the cluster as configured and schedules (mirrors the e2e rig).
+		ModelBaseURL: "http://model.test/v1",
+		ModelName:    "mock/mock-model",
+		ModelAPIKey:  "test-key",
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return New(st, fake, cfg, log, nil), st, fake
@@ -97,7 +104,110 @@ func jobEnvForService(t *testing.T, svc domain.Service, tokenCfg, urlCfg string)
 	if err := st.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	return rec.jobEnv(ctx, run, "run-token")
+	return rec.jobEnv(ctx, run, "run-token", envModel())
+}
+
+// envModel is a resolved env-source model config for the jobEnv unit tests
+// (Feature A): jobEnv now takes the effective model config, not cfg fields.
+func envModel() modelcfg.Resolved {
+	return modelcfg.Resolved{
+		Source: modelcfg.SourceEnv, BaseURL: "http://model.test/v1",
+		ModelName: "mock/mock-model", APIKey: "test-key", APIKeySet: true,
+	}
+}
+
+// TestCreateJobFailsVisiblyWhenModelNotConfigured is the fail-visible gate at
+// Job-launch (CLAUDE.md red line #1): a run queued while the model was
+// configured but scheduled after it was cleared must be marked FAILED with a
+// visible run.failure event — never launched against a mock/empty model.
+func TestCreateJobFailsVisiblyWhenModelNotConfigured(t *testing.T) {
+	ctx := context.Background()
+	rec, st, fake := testRec(t, 4)
+	// Model becomes unconfigured (env cleared, no DB row).
+	rec.cfg.ModelBaseURL, rec.cfg.ModelName, rec.cfg.ModelAPIKey = "", "", ""
+	run := seedProjectAndRun(t, st)
+
+	rec.Tick(ctx)
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.Status != domain.StatusFailed {
+		t.Fatalf("status=%q want failed", got.Status)
+	}
+	if got.FailureReason != domain.FailureSetupFailed {
+		t.Fatalf("failure_reason=%q want setup_failed", got.FailureReason)
+	}
+	if len(fake.Created) != 0 {
+		t.Fatalf("created %d jobs, want 0 (must not launch a runner with no model)", len(fake.Created))
+	}
+	events, _ := st.ListEvents(ctx, run.ID, 0, 100)
+	var sawFailure bool
+	for _, e := range events {
+		if e.Type == domain.EventRunFailure {
+			sawFailure = true
+		}
+	}
+	if !sawFailure {
+		t.Fatalf("expected a visible run.failure event; got %d events", len(events))
+	}
+}
+
+// erroringModelStore wraps a MemStore so GetModelConfig fails — the transient
+// (DB blip / key rotation) shape, distinct from "no row" (not configured).
+type erroringModelStore struct {
+	*store.MemStore
+}
+
+func (e *erroringModelStore) GetModelConfig(context.Context) (*domain.ModelConfig, error) {
+	return nil, errTransientModel
+}
+
+var errTransientModel = errors.New("transient db error")
+
+// TestCreateJobRetriesOnModelResolveError: a TRANSIENT model-config resolve
+// error must NOT permanently fail the run — the tick logs and skips (run stays
+// queued, no Job), and once the store recovers the next tick schedules it,
+// consistent with the other transient-error paths in Tick.
+func TestCreateJobRetriesOnModelResolveError(t *testing.T) {
+	ctx := context.Background()
+	inner := store.NewMemStore()
+	st := &erroringModelStore{MemStore: inner}
+	fake := k8s.NewFakeLauncher()
+	cfg := &config.Config{
+		ReconcileInterval: time.Millisecond,
+		MaxConcurrentRuns: 4,
+		RunTimeoutSecs:    1800,
+		OrchBaseURL:       "http://orch",
+		RunnerImage:       "runner:test",
+		ModelBaseURL:      "http://model.test/v1",
+		ModelName:         "mock/mock-model",
+		ModelAPIKey:       "test-key",
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	rec := New(st, fake, cfg, log, nil)
+	run := seedProjectAndRun(t, inner)
+
+	// While the store errors: no Job, and the run is NOT failed — still queued.
+	rec.Tick(ctx)
+	got, _ := inner.GetRun(ctx, run.ID)
+	if got.Status != domain.StatusQueued {
+		t.Fatalf("status=%q want queued (transient error must not fail the run)", got.Status)
+	}
+	if len(fake.Created) != 0 {
+		t.Fatalf("created %d jobs, want 0 while resolve errors", len(fake.Created))
+	}
+
+	// Store recovers (point the resolver at the healthy inner store): the very
+	// next tick schedules the run. Errors were never cached, so no TTL wait.
+	rec.st = inner
+	rec.models = modelcfg.NewResolver(inner, nil, cfg)
+	rec.Tick(ctx)
+	got, _ = inner.GetRun(ctx, run.ID)
+	if got.Status != domain.StatusScheduling {
+		t.Fatalf("status=%q want scheduling after recovery", got.Status)
+	}
+	if len(fake.Created) != 1 {
+		t.Fatalf("created %d jobs, want 1 after recovery", len(fake.Created))
+	}
 }
 
 // assertNoToken asserts the M3 credential-free contract: NO provider token of
@@ -244,7 +354,7 @@ func TestJobEnvReviewInjectsPRRefs(t *testing.T) {
 		PRHeadBranch: "jcode/run-abc", PRBaseBranch: "main", CreatedAt: time.Now(),
 	}
 	_ = st.CreateRun(ctx, run)
-	env := rec.jobEnv(ctx, run, "tok")
+	env := rec.jobEnv(ctx, run, "tok", envModel())
 	if env["RUN_KIND"] != string(domain.RunKindReview) {
 		t.Fatalf("RUN_KIND=%q want review", env["RUN_KIND"])
 	}

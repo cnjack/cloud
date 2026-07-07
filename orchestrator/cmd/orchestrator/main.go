@@ -117,7 +117,10 @@ func run(log *slog.Logger) error {
 	if launcher != nil {
 		factory := provider.NewFactory(cfg.GiteaURL)
 		rec := reconciler.New(st, launcher, cfg, log, hub).
-			WithPRStack(factory, srv.Git(), srv.Credentials())
+			WithPRStack(factory, srv.Git(), srv.Credentials()).
+			// Share the API's model resolver so a console PUT/DELETE invalidates
+			// the SAME cache the scheduler resolves through (Feature A).
+			WithModelResolver(srv.Models())
 		if !srv.Git().Available() {
 			log.Warn("git binary not found: draft-PR push + source bundling disabled")
 		} else {

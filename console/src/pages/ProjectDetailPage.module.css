@@ -68,6 +68,12 @@
   padding: var(--space-5);
 }
 
+/* Spacing wrapper for the shared ModelGate notice above the composer form
+   (the notice itself lives in components/ModelGate.module.css). */
+.composerNotice {
+  margin-bottom: var(--space-4);
+}
+
 .serviceRow {
   display: flex;
   align-items: center;

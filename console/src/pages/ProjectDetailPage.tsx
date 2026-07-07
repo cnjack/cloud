@@ -21,6 +21,7 @@ import {
   useProviderRepos,
 } from '../api/queries';
 import { useOptionalAuth } from '../auth/AuthProvider';
+import { useModelGate } from '../components/ModelGate';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { TextField, TextAreaField } from '../components/Field';
@@ -87,6 +88,13 @@ export function ProjectDetailPage() {
   const canRun = role !== 'viewer';
   const canManage = role === 'owner';
 
+  // Fail-visible (Feature A): a run cannot start without an LLM configured, so
+  // the composer disables itself and explains why rather than letting the user
+  // dispatch a run that would 409. The query only runs where the composer is
+  // actually rendered (member+ with at least one repo) — a viewer / empty
+  // project never polls (same enabled convention as useProviderRepos above).
+  const modelGate = useModelGate(canRun && services.length > 0);
+
   // Default the composer's service selection to the 'default' (or first) service.
   const activeServiceId =
     selectedService ||
@@ -96,6 +104,7 @@ export function ProjectDetailPage() {
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!modelGate.configured) return; // gate: no LLM configured (also 409'd by the API)
     if (!prompt.trim()) {
       setPromptError('Describe the task for the agent.');
       return;
@@ -248,6 +257,9 @@ export function ProjectDetailPage() {
 
       {canRun && services.length > 0 && (
         <Card className={styles.composer}>
+          {modelGate.notice && (
+            <div className={styles.composerNotice}>{modelGate.notice}</div>
+          )}
           <form onSubmit={submit} noValidate>
             {multiService && (
               <div className={styles.serviceRow}>
@@ -278,6 +290,7 @@ export function ProjectDetailPage() {
               error={promptError}
               data-testid="run-input"
               rows={3}
+              disabled={!modelGate.configured}
             />
             <div className={styles.composerActions}>
               <span className={styles.composerHint}>
@@ -287,6 +300,7 @@ export function ProjectDetailPage() {
                 type="submit"
                 variant="primary"
                 loading={runBusy}
+                disabled={!modelGate.configured}
                 data-testid="run-submit"
               >
                 Run

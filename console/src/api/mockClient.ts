@@ -22,8 +22,10 @@ import type {
   Me,
   Member,
   MemberRole,
+  ModelConfigInfo,
   PrInfo,
   Project,
+  PutModelConfigInput,
   ReviewRunSummary,
   Run,
   RunArtifact,
@@ -142,6 +144,17 @@ export function createMockClient(): ApiClient {
   // with a single 'default' service — the "one repo = one project" simple UX.
   const services = new Map<string, Service[]>();
   const members = new Map<string, Member[]>();
+
+  // Feature A: the cluster model config. Demo starts CONFIGURED (source=env, as
+  // the local rig would) so the composer is enabled; the Cluster page's admin
+  // form mutates it via set/clear.
+  let modelConfig: ModelConfigInfo = {
+    configured: true,
+    source: 'env',
+    base_url: 'http://mockllm.jcloud.svc.cluster.local:8081/v1',
+    model_name: 'mock/mock-model',
+    api_key_set: true,
+  };
 
   const asMember = (u: UserSearchResult, role: MemberRole): Member => ({
     user_id: u.id,
@@ -717,6 +730,45 @@ export function createMockClient(): ApiClient {
         },
       };
       return delay(info);
+    },
+
+    /* ---- cluster model config (Feature A) --------------------------------- */
+    async getModelConfig(): Promise<ModelConfigInfo> {
+      return delay({ ...modelConfig });
+    },
+
+    async setModelConfig(input: PutModelConfigInput): Promise<ModelConfigInfo> {
+      // Mirror the orchestrator's validation so demo/e2e exercise the same
+      // paths. The AUTHORITATIVE rules live in
+      // orchestrator/internal/api/system_model.go (validateBaseURL /
+      // validateModelName) — reconcile drift there first, then copy here.
+      const base = input.base_url?.trim() ?? '';
+      if (!/^https?:\/\/.+/i.test(base)) {
+        throw badRequest('base_url must be an http(s) URL');
+      }
+      const model = input.model_name?.trim() ?? '';
+      const [provider, ...rest] = model.split('/');
+      if (!provider || rest.join('/') === '') {
+        throw badRequest("model_name must be in 'provider/model' form");
+      }
+      modelConfig = {
+        configured: true,
+        source: 'db',
+        base_url: base,
+        model_name: model,
+        api_key_set: !!input.api_key,
+      };
+      return delay({ ...modelConfig });
+    },
+
+    async clearModelConfig(): Promise<ModelConfigInfo> {
+      // KNOWN divergence from the real DELETE: the orchestrator falls back to
+      // the MODEL_* env (source 'env') when it is set, while the demo always
+      // lands on 'none'. Harmless in practice — the console's Clear button is
+      // gated on source==='db', and the demo's initial 'env' state is replaced
+      // by 'db' on any save, so this branch only ever follows a db state.
+      modelConfig = { configured: false, source: 'none', api_key_set: false };
+      return delay({ ...modelConfig });
     },
 
     /* ---- services (blueprint §4) ------------------------------------------ */

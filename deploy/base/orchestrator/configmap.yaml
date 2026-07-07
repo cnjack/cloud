@@ -1,6 +1,13 @@
 # Non-secret orchestrator env, mirroring cloud/orchestrator/.env.example and
 # cloud/orchestrator/internal/config/config.go Load(). Secrets (CONSOLE_TOKEN,
-# DATABASE_URL, MODEL_API_KEY) live in secret.yaml instead.
+# DATABASE_URL) live in secret.yaml instead.
+#
+# NOTE: MODEL_* is intentionally ABSENT here (fail-visible red line #1). The
+# effective model config is set by a cluster admin from the console (stored
+# encrypted in cluster_model_config) or, for the local e2e rig ONLY, injected as
+# env by the ROOT kustomization's mockllm patch (deploy/kustomization.yaml). A
+# product deployment must NOT default MODEL_* to a mock — an unconfigured LLM
+# surfaces as an honest "not configured" state, never a silent fake run.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -36,12 +43,8 @@ data:
   RUNNER_CPU_REQUEST: "500m"
   RUNNER_MEMORY_REQUEST: "1Gi"
 
-  # BYO-model MVP: point at the in-cluster mockllm so runner Jobs can complete
-  # an agent loop with no real key (PRD e2e requirement). Swap to a real
-  # OpenAI-compatible endpoint for non-demo use.
-  MODEL_BASE_URL: "http://mockllm.jcloud.svc.cluster.local:8081/v1"
-  # provider/model id written into the runner's jcode config (custom_models).
-  MODEL_NAME: "mock/mock-model"
+  # MODEL_* deliberately NOT set here (see header note): configured via the
+  # console (DB) in real deployments; re-added as env by the root e2e-rig patch.
 
   DISABLE_K8S: "0"
 

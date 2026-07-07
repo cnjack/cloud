@@ -44,7 +44,10 @@ const SAMPLE_PR: PrInfo = {
   review_runs: [],
 };
 
-function makeClient(role?: MemberRole): { client: ApiClient; ctl: Ctl } {
+function makeClient(
+  role?: MemberRole,
+  opts: { modelConfigured?: boolean } = {},
+): { client: ApiClient; ctl: Ctl } {
   const ctl: Ctl = { streamCalls: [], getRun: vi.fn() };
   const client: Partial<ApiClient> = {
     getRun: ctl.getRun as ApiClient['getRun'],
@@ -56,6 +59,11 @@ function makeClient(role?: MemberRole): { client: ApiClient; ctl: Ctl } {
     diffDownloadUrl: () => '',
     getPR: async () => SAMPLE_PR,
     requestReview: async () => baseRun({ id: 'rev_new', kind: 'review', status: 'queued' }),
+    // Feature A: Retry keys enable/disable off this. Default configured.
+    getModelConfig: async () => ({
+      configured: opts.modelConfigured ?? true,
+      source: (opts.modelConfigured ?? true) ? 'env' : 'none',
+    }),
     // The page reads the run's project to learn the requesting principal's role.
     ...(role
       ? {
@@ -206,6 +214,21 @@ describe('RunDetailPage — viewer gating (blueprint §2)', () => {
     renderPage(client, baseRun({ status: 'failed', finished_at: '2026-07-07T00:05:00Z' }));
 
     await waitFor(() => expect(screen.getByTestId('retry-btn')).toBeTruthy());
+  });
+});
+
+describe('RunDetailPage — model gate on Retry (Feature A)', () => {
+  it('disables Retry with a notice when no LLM is configured', async () => {
+    const failed = baseRun({ status: 'failed', finished_at: '2026-07-07T00:05:00Z' });
+    const { client, ctl } = makeClient('member', { modelConfigured: false });
+    ctl.getRun.mockResolvedValue(failed);
+    renderPage(client, failed);
+
+    await waitFor(() => expect(screen.getByTestId('retry-btn')).toBeTruthy());
+    await waitFor(() =>
+      expect((screen.getByTestId('retry-btn') as HTMLButtonElement).disabled).toBe(true),
+    );
+    expect(screen.getByTestId('model-not-configured')).toBeTruthy();
   });
 });
 

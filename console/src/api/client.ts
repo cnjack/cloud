@@ -17,10 +17,12 @@ import type {
   Me,
   Member,
   MembersEnvelope,
+  ModelConfigInfo,
   PrInfo,
   Project,
   ProjectsEnvelope,
   ProviderRepo,
+  PutModelConfigInput,
   Run,
   RunArtifact,
   RunEvent,
@@ -103,6 +105,18 @@ export interface ApiClient {
    * guardrails, provider, runner, version, auth). Never carries a secret.
    */
   getSystem(): Promise<SystemInfo>;
+
+  /* ---- cluster model config (Feature A) --------------------------------- */
+  /**
+   * GET /api/v1/system/model — the effective LLM config. Any principal sees
+   * `configured`; a cluster-admin additionally gets source/base_url/model_name/
+   * api_key_set. The plaintext key is never returned.
+   */
+  getModelConfig(): Promise<ModelConfigInfo>;
+  /** PUT /api/v1/system/model — set the cluster model (cluster-admin only). */
+  setModelConfig(input: PutModelConfigInput): Promise<ModelConfigInfo>;
+  /** DELETE /api/v1/system/model — clear the DB row; falls back to env/none. */
+  clearModelConfig(): Promise<ModelConfigInfo>;
 
   /* ---- services (blueprint §4) ------------------------------------------- */
   /** GET /api/v1/projects/{id}/services — the project's repo configurations. */
@@ -322,6 +336,17 @@ export function createHttpClient(
     },
 
     getSystem: () => req<SystemInfo>('/system'),
+
+    getModelConfig: () => req<ModelConfigInfo>('/system/model'),
+
+    setModelConfig: (input) =>
+      req<ModelConfigInfo>('/system/model', {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+
+    clearModelConfig: () =>
+      req<ModelConfigInfo>('/system/model', { method: 'DELETE' }),
 
     // Services (blueprint §4).
     listServices: async (projectId) =>

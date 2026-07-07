@@ -1,0 +1,31 @@
+/* ModelGate — compact inline warning strip for the run-gating surfaces. */
+.notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--status-failed-dot, var(--color-border-strong));
+  background: var(--status-failed-bg, var(--color-bg-inset));
+  border-radius: var(--radius-md, 8px);
+  font-size: var(--fs-caption);
+}
+
+/* "Couldn't verify" is neutral, not an error state. */
+.notice[data-variant='unverified'] {
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-inset);
+}
+
+.text {
+  color: var(--color-text);
+}
+
+.link {
+  color: var(--color-accent);
+  font-weight: var(--fw-medium, 500);
+  text-decoration: none;
+}
+.link:hover {
+  text-decoration: underline;
+}

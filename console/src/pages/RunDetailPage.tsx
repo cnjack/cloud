@@ -18,6 +18,7 @@ import { useRunStream } from '../hooks/useRunStream';
 import { isTerminal, type FailureReason } from '../api/types';
 import { Button } from '../components/Button';
 import { StatusBadge } from '../components/StatusBadge';
+import { useModelGate } from '../components/ModelGate';
 import { Timeline } from '../components/Timeline';
 import { DiffView } from '../components/DiffView';
 import { Markdown } from '../components/Markdown';
@@ -62,6 +63,12 @@ export function RunDetailPage() {
 
   const status = run.data?.status;
   const terminal = status ? isTerminal(status) : false;
+
+  // Fail-visible (Feature A): Retry creates a fresh run, so it gets the same
+  // treatment as the composer — disabled with a notice when no LLM is
+  // configured (the backend 409 remains the backstop). Queried only where the
+  // Retry affordance can exist (member+ on a terminal run).
+  const modelGate = useModelGate(canAct && terminal);
 
   // Diff loads once the run has succeeded (or when the diff tab is opened).
   const diff = useDiff(runId, tab === 'diff' && status === 'succeeded');
@@ -214,6 +221,7 @@ export function RunDetailPage() {
               variant="primary"
               onClick={doRetry}
               loading={retry.isPending}
+              disabled={!modelGate.configured}
               data-testid="retry-btn"
             >
               Retry
@@ -221,6 +229,9 @@ export function RunDetailPage() {
           )}
         </div>
       </header>
+
+      {/* Model gate notice (Feature A): explains a disabled Retry. */}
+      {canRetry && canAct && modelGate.notice}
 
       {/* Failure banner */}
       {failed && (

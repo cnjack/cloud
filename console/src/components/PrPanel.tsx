@@ -12,6 +12,7 @@ import { usePR, useRequestReview } from '../api/queries';
 import { ApiError } from '../api/client';
 import type { PrState, ReviewRunSummary } from '../api/types';
 import { Button } from './Button';
+import { useModelGate } from './ModelGate';
 import { StatusBadge } from './StatusBadge';
 import { Markdown } from './Markdown';
 import { LoadingBlock, ErrorBlock } from './States';
@@ -53,6 +54,9 @@ export function PrPanel({ runId, canReview }: { runId: string; canReview: boolea
   const navigate = useNavigate();
   const toast = useToast();
   const requestReview = useRequestReview();
+  // Fail-visible (Feature A): a review run invokes the LLM too, so the button
+  // gets the same disabled+notice treatment as the composer (409 backstops).
+  const modelGate = useModelGate(canReview);
 
   const doReview = () =>
     requestReview.mutate(runId, {
@@ -108,10 +112,12 @@ export function PrPanel({ runId, canReview }: { runId: string; canReview: boolea
             variant="primary"
             onClick={doReview}
             loading={requestReview.isPending}
+            disabled={!modelGate.configured}
             data-testid="request-review-btn"
           >
             Request AI review
           </Button>
+          {modelGate.notice}
         </div>
       )}
 

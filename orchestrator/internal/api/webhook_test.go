@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -95,6 +96,14 @@ type webhookFixture struct {
 // set), a gitea PAT (so the user-less receipt/reply resolves a credential), and a
 // fake provider capturing PR-detail reads + issue-comment receipts.
 func newWebhookServer(t *testing.T, st *store.MemStore, secret string) (*httptest.Server, *Server, *provider.FakeProvider) {
+	return newWebhookServerModel(t, st, secret, true)
+}
+
+// newWebhookServerModel is newWebhookServer with an explicit knob for whether the
+// cluster has a model configured (Feature A). modelConfigured=false leaves the
+// MODEL_* env empty so processMention hits the fail-visible gate and replies.
+// st is the Store interface so a test can wrap MemStore with failure injection.
+func newWebhookServerModel(t *testing.T, st store.Store, secret string, modelConfigured bool) (*httptest.Server, *Server, *provider.FakeProvider) {
 	t.Helper()
 	cfg := &config.Config{
 		ConsoleToken:    consoleToken,
@@ -103,6 +112,9 @@ func newWebhookServer(t *testing.T, st *store.MemStore, secret string) (*httptes
 		GiteaToken:      "gitea-pat",
 		WebhookSecret:   secret,
 		SourceBundleTTL: time.Minute,
+	}
+	if modelConfigured {
+		withTestModel(cfg)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, sse.NewHub(), nil)
@@ -318,6 +330,84 @@ func TestWebhookTaskCommandCreatesAgentRun(t *testing.T) {
 	}
 	if r.Origin != domain.RunOriginWebhook {
 		t.Errorf("origin=%q want webhook", r.Origin)
+	}
+}
+
+// TestWebhookModelNotConfiguredReplies is the fail-visible gate on the webhook
+// path (CLAUDE.md red line #1): when no LLM is configured, a valid @jcode
+// command must NOT create a run — instead it replies on the PR pointing the user
+// at the console to configure the model.
+func TestWebhookModelNotConfiguredReplies(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, fake := newWebhookServerModel(t, st, webhookSecret, false /* no model */)
+	member := mkGiteaUser(t, st, "dev", "1001") // first user => cluster admin
+	svc := seedWebhookProject(t, st, fake, "jcloud/seed", member, domain.RoleMember)
+
+	body := commentPayload("created", true, 250, 1001, "@jcode Add a CONTRIBUTING.md", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	// No run created.
+	runs, _ := st.ListRunsByService(context.Background(), svc.ID, 10)
+	if len(runs) != 0 {
+		t.Fatalf("created %d runs, want 0 (model not configured)", len(runs))
+	}
+	// A single explanatory reply pointing at the console (ConsoleURL).
+	if fake.CommentCount() != 1 {
+		t.Fatalf("posted %d comments, want 1 explanatory reply", fake.CommentCount())
+	}
+	got := fake.Comments[0].Body
+	if !bytes.Contains([]byte(got), []byte("LLM is not configured")) ||
+		!bytes.Contains([]byte(got), []byte("http://console.test")) {
+		t.Fatalf("reply should explain + link the console; got %q", got)
+	}
+}
+
+// erroringModelStore wraps a MemStore so GetModelConfig fails — the transient
+// (DB blip) shape, distinct from the definitive "no row" not-configured state.
+type erroringModelStore struct {
+	*store.MemStore
+}
+
+func (e *erroringModelStore) GetModelConfig(context.Context) (*domain.ModelConfig, error) {
+	return nil, errTransientModel
+}
+
+var errTransientModel = errors.New("transient db error")
+
+// TestWebhookModelResolveErrorRepliesTemporary: a TRANSIENT model-config resolve
+// error must NOT be misreported as "not configured" — it replies "temporary
+// problem, try again" (and is logged), so the mention isn't silently lost and
+// the user isn't sent to reconfigure a model that is actually fine.
+func TestWebhookModelResolveErrorRepliesTemporary(t *testing.T) {
+	inner := store.NewMemStore()
+	st := &erroringModelStore{MemStore: inner}
+	ts, _, fake := newWebhookServerModel(t, st, webhookSecret, true /* env-configured, but resolve errors first */)
+	member := mkGiteaUser(t, inner, "dev", "1001")
+	svc := seedWebhookProject(t, inner, fake, "jcloud/seed", member, domain.RoleMember)
+
+	body := commentPayload("created", true, 251, 1001, "@jcode Add a CONTRIBUTING.md", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	// No run created; ONE reply that says temporary — not "not configured".
+	runs, _ := inner.ListRunsByService(context.Background(), svc.ID, 10)
+	if len(runs) != 0 {
+		t.Fatalf("created %d runs, want 0 (resolve errored)", len(runs))
+	}
+	if fake.CommentCount() != 1 {
+		t.Fatalf("posted %d comments, want 1", fake.CommentCount())
+	}
+	got := fake.Comments[0].Body
+	if !bytes.Contains([]byte(got), []byte("temporary")) {
+		t.Fatalf("reply should say temporary, got %q", got)
+	}
+	if bytes.Contains([]byte(got), []byte("not configured")) {
+		t.Fatalf("transient error must not be misreported as not-configured: %q", got)
 	}
 }
 

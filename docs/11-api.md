@@ -549,9 +549,9 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
 | `TASK_PROMPT` | run.prompt | 任务描述,喂给 agent |
 | `REPO_URL` | service.repo(clone url 由 service 推导) | 要 clone 的仓库 |
 | `REPO_BRANCH` | service.default_branch | 基线分支(契约扩展项;runner 可用可忽略) |
-| `MODEL_BASE_URL` | 环境 `MODEL_BASE_URL` | OpenAI 兼容 provider base URL |
-| `MODEL_API_KEY` | 环境 `MODEL_API_KEY` | 模型 key(MVP 直注入;P3 换 LLM 代理 + temp token) |
-| `MODEL_NAME` | 环境 `MODEL_NAME`(默认 `mock/mock-model`) | jcode 的 `provider/model` 标识;runner 据此为未知 provider 写 `custom_models` 配置项 |
+| `MODEL_BASE_URL` | 生效模型配置(DB 行优先,env `MODEL_BASE_URL` 兜底;见 `internal/modelcfg`) | OpenAI 兼容 provider base URL |
+| `MODEL_API_KEY` | 生效模型配置(DB 行加密存储,env 兜底;可为空 = keyless 端点) | 模型 key(MVP 直注入;P3 换 LLM 代理 + temp token) |
+| `MODEL_NAME` | 生效模型配置(DB 行优先,env 兜底)。**必填,无 mock 默认**(fail-visible 红线 D14;唯一例外:runner 独立运行时 `START_MOCKLLM=1` 显式声明 mock rig) | jcode 的 `provider/model` 标识;runner 据此为未知 provider 写 `custom_models` 配置项 |
 | `ORCH_BASE_URL` | 环境 `ORCH_BASE_URL` | orchestrator 基址,runner 回传事件/产物用 |
 | `RUN_TOKEN` | 每 run 随机生成 | Bearer,仅本 run 有效;打 `/internal/v1/runs/{RUN_ID}/*` |
 | `GIT_MODE` | project.git_mode(缺 token/host 不匹配时降级) | **(ST-1)** `readonly`(默认,diff-only)\| `draft_pr`(推分支) |

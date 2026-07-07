@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -49,6 +50,11 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	if req.Prompt == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "prompt is required")
+		return
+	}
+	// Fail-visible gate: refuse to queue a run the runner could not actually
+	// execute because no LLM is configured (CLAUDE.md red line #1).
+	if !s.modelConfigured(w, r) {
 		return
 	}
 	// triggered_by is the current user (nil for the service principal).
@@ -263,6 +269,10 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "only a finished run can be retried")
 		return
 	}
+	// Fail-visible gate: a retry is a fresh run — refuse it if no LLM is set.
+	if !s.modelConfigured(w, r) {
+		return
+	}
 	origID := orig.ID
 	retry := newQueuedRun(orig.ProjectID, orig.ServiceID, orig.Prompt, &origID, principalFrom(r.Context()).userIDPtr())
 	retry.Attempt = orig.Attempt + 1
@@ -303,6 +313,25 @@ func (s *Server) emitStatus(ctx context.Context, run *domain.Run) {
 	if s.hub != nil {
 		s.hub.Publish(run.ID, ev)
 	}
+}
+
+// modelConfigured is the fail-visible gate shared by every run-creating handler
+// (create / retry / review). It resolves the effective model config and, when
+// nothing is configured, writes a typed 409 model_not_configured and returns
+// false so the caller stops WITHOUT queuing a run that could never execute
+// (CLAUDE.md red line #1). A resolve error is a 500 (also stops the caller).
+func (s *Server) modelConfigured(w http.ResponseWriter, r *http.Request) bool {
+	resolved, err := s.models.Resolve(r.Context())
+	if err != nil {
+		s.log.Error("resolve model config", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not resolve model configuration")
+		return false
+	}
+	if !resolved.Configured() {
+		writeError(w, http.StatusConflict, "model_not_configured", modelcfg.NotConfiguredMessage(""))
+		return false
+	}
+	return true
 }
 
 func queryInt(r *http.Request, key string, def int) int {

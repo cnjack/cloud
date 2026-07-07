@@ -1,7 +1,39 @@
-# Root kustomization so `kubectl apply -k deploy/` (or -k deploy/base/) both
-# work. This MVP has no overlays (single target: local OrbStack), so it just
-# points at base/.
+# Root kustomization: the local OrbStack e2e-rig target (`kubectl apply -k
+# deploy/`). It points at base/ PLUS the e2e-rig mockllm wiring below.
+#
+# NOTE: applying `-k deploy/base/` ALONE is no longer a complete deployment —
+# base deliberately carries no MODEL_* wiring (fail-visible red line #1), so
+# runs there stay honestly "model not configured" until an admin sets the
+# model from the console. Use THIS root target for the local e2e rig, or
+# overlays/company for the product cluster.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - base
+
+# --- e2e RIG ONLY — PRODUCT DEPLOYMENTS MUST NOT DO THIS --------------------
+# base no longer defaults MODEL_* to a mock (fail-visible red line #1): a real
+# deployment configures the model from the console (stored encrypted in
+# cluster_model_config). The local OrbStack rig, however, has no admin sitting
+# there to click "Save" before e2e/j*.sh run — so here, and ONLY here, we
+# EXPLICITLY re-add the in-cluster mockllm as the env-source model config so the
+# reconciler's Resolve() falls back to it and the runner completes an agent loop
+# with no real key. This is deliberate, visible, and scoped to the e2e rig.
+patches:
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: orchestrator-config
+        namespace: jcloud
+      data:
+        MODEL_BASE_URL: "http://mockllm.jcloud.svc.cluster.local:8081/v1"
+        MODEL_NAME: "mock/mock-model"
+  - patch: |-
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: orchestrator-secret
+        namespace: jcloud
+      stringData:
+        MODEL_API_KEY: "dummy-mock-key"

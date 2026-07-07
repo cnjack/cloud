@@ -76,3 +76,11 @@ Gitea 优先 → GitHub + GitLab;控制台 Run 按钮 / CLI;Git webhook @mention
 
 ### D13 · local↔cloud 同步 → 在 orchestrator 内自建
 借鉴 jtype 的 lamport clock / sync cursor 概念,但在 orchestrator 内自建、不依赖 jtype。session 是 append-only 日志(按 `(session_id, seq)` 取并集,近乎无冲突);memory 是小结构化 notes(按 note key LWW + 控制面蒸馏 pipeline 当合并权威)。同一个 Store seam 支撑本地/云端一致。
+
+---
+
+## 补充 —— 产品体验红线
+
+### D14 · 未配置依赖 → fail-visible,禁止静默 mock
+任何未配置的依赖(LLM/provider/webhook)都是**一等公民状态**:API 返回带类型错误(`model_not_configured`),UI 禁用对应操作并给出去向提示,自动化路径可见地回帖原因。mock 实现只允许在测试/显式 e2e rig 中由脚手架显式接线,**永不作为产品 manifest 的默认兜底**。LLM 配置支持管理员在 Cluster 页自助填写(DB 存储,key 用 AUTH_TOKEN_KEY 加密),env 仅作显式覆盖。
+- **被否**:base configmap 默认指 mockllm(生产静默跑假 agent,用户误判 AI 已生效——真实事故);"没配就报 500"(不可操作,无去向)。

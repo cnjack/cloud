@@ -26,6 +26,7 @@ type MemStore struct {
 	identities map[string]domain.UserIdentity  // keyed by identity id
 	sessions   map[string]domain.Session       // keyed by session id
 	members    map[string]domain.ProjectMember // keyed by projectID+"|"+userID
+	modelCfg   *domain.ModelConfig             // single-row cluster model config (nil = unset)
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -746,6 +747,42 @@ func (m *MemStore) GetRunBundle(_ context.Context, runID string) ([]byte, error)
 	cp := make([]byte, len(a.Bytes))
 	copy(cp, a.Bytes)
 	return cp, nil
+}
+
+// --- cluster model config (Feature A) ---
+
+// GetModelConfig returns the single-row model config, or ErrNotFound when unset.
+func (m *MemStore) GetModelConfig(_ context.Context) (*domain.ModelConfig, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.modelCfg == nil {
+		return nil, ErrNotFound
+	}
+	cp := *m.modelCfg
+	if m.modelCfg.APIKeyEnc != nil {
+		cp.APIKeyEnc = append([]byte(nil), m.modelCfg.APIKeyEnc...)
+	}
+	return &cp, nil
+}
+
+// SetModelConfig upserts the single row.
+func (m *MemStore) SetModelConfig(_ context.Context, c *domain.ModelConfig) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := *c
+	if c.APIKeyEnc != nil {
+		cp.APIKeyEnc = append([]byte(nil), c.APIKeyEnc...)
+	}
+	m.modelCfg = &cp
+	return nil
+}
+
+// ClearModelConfig deletes the row (no-op when already unset).
+func (m *MemStore) ClearModelConfig(_ context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.modelCfg = nil
+	return nil
 }
 
 var _ Store = (*MemStore)(nil)

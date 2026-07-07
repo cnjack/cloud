@@ -1,8 +1,9 @@
 /*
  * SystemPage — the cluster-admin's home ("Cluster" view). Renders the read-only
  * GET /api/v1/system snapshot as clean info cards: Capacity (with a simple bar),
- * Guardrails, Provider, Runner, Version. All read-only — this console has no
- * admin *mutations*; kubectl remains the write path (honest about the MVP).
+ * Guardrails, Provider, Runner, Version — plus the ONE admin mutation this
+ * console has: the Model card (Feature A), where a cluster admin sets the LLM
+ * the agent uses. Everything else stays read-only (kubectl remains that path).
  *
  * Role gating: the route itself is presentation-gated to cluster-admin (the nav
  * link is hidden for project-admin, and this page shows a plain notice if a
@@ -10,12 +11,22 @@
  * orchestrator has one console token; real RBAC is on the roadmap (see 11-api.md
  * § "System / admin").
  */
-import { useSystem } from '../api/queries';
+import { useState } from 'react';
+import {
+  useSystem,
+  useModelConfig,
+  useSetModelConfig,
+  useClearModelConfig,
+} from '../api/queries';
 import { useRole } from '../api/ApiProvider';
+import { ApiError } from '../api/client';
 import { Card } from '../components/Card';
+import { Button } from '../components/Button';
+import { TextField } from '../components/Field';
 import { LoadingBlock, ErrorBlock } from '../components/States';
 import { EmptyState } from '../components/EmptyState';
-import type { SystemInfo } from '../api/types';
+import { useToast } from '../components/Toast';
+import type { ModelConfigInfo, SystemInfo } from '../api/types';
 import styles from './SystemPage.module.css';
 
 export function SystemPage() {
@@ -44,8 +55,9 @@ export function SystemPage() {
         <div>
           <h1 className={styles.title}>Cluster</h1>
           <p className={styles.subtitle}>
-            Read-only snapshot of this orchestrator: capacity, guardrails, and
-            wiring. Changes are made out-of-band (env / kubectl).
+            Snapshot of this orchestrator: capacity, guardrails, and wiring. The
+            model is configured here; other changes are made out-of-band (env /
+            kubectl).
           </p>
         </div>
       </header>
@@ -81,6 +93,9 @@ function SystemCards({ data }: { data: SystemInfo }) {
 
   return (
     <div className={styles.grid} data-testid="system-cards">
+      {/* Model (Feature A) — configured status + admin form. */}
+      <ModelCard />
+
       {/* Capacity */}
       <Card className={styles.card}>
         <div className={styles.cardHead}>
@@ -198,6 +213,164 @@ function SystemCards({ data }: { data: SystemInfo }) {
         </dl>
       </Card>
     </div>
+  );
+}
+
+/**
+ * ModelCard — the cluster LLM configuration (Feature A). Shows the effective
+ * configured/source status and, since the Cluster page is cluster-admin only,
+ * an inline form to set (Base URL, Model, API key) or clear it. Save/clear
+ * feedback goes through the app-wide toast (ToastProvider wraps the whole app
+ * in main.tsx), matching PrPanel and the settings modals. The plaintext API key
+ * is never displayed — only whether one is set.
+ */
+function ModelCard() {
+  const cfg = useModelConfig(true);
+  const info = cfg.data;
+  const configured = info?.configured ?? false;
+
+  return (
+    <Card className={[styles.card, styles.modelCard].join(' ')}>
+      <div className={styles.cardHead}>
+        <h2 className={styles.cardTitle}>Model</h2>
+        {info && (
+          <span
+            className={styles.pill}
+            data-on={configured || undefined}
+            data-testid="model-status"
+          >
+            {configured ? `Configured · ${info.source ?? ''}` : 'Not configured'}
+          </span>
+        )}
+      </div>
+
+      {cfg.isLoading ? (
+        <LoadingBlock label="Loading model configuration…" />
+      ) : cfg.isError ? (
+        <ErrorBlock
+          error={cfg.error}
+          onRetry={() => cfg.refetch()}
+          title="Couldn't load the model configuration"
+        />
+      ) : info ? (
+        <ModelForm info={info} />
+      ) : null}
+    </Card>
+  );
+}
+
+/**
+ * ModelForm — the admin edit form. Mounted only once the CURRENT config has
+ * loaded, so the plain lazy useState initializers ARE the prefill: no effect,
+ * no touched-tracking, and a background refetch can never clobber in-progress
+ * edits (initializers run once, on mount). The API key is never returned by the
+ * server, so it always starts empty — an empty save stores a keyless config.
+ */
+function ModelForm({ info }: { info: ModelConfigInfo }) {
+  const toast = useToast();
+  const setCfg = useSetModelConfig();
+  const clearCfg = useClearModelConfig();
+
+  const [baseUrl, setBaseUrl] = useState(info.base_url ?? '');
+  const [modelName, setModelName] = useState(info.model_name ?? '');
+  const [apiKey, setApiKey] = useState('');
+
+  const save = (e: React.FormEvent) => {
+    e.preventDefault();
+    setCfg.mutate(
+      { base_url: baseUrl.trim(), model_name: modelName.trim(), api_key: apiKey },
+      {
+        onSuccess: () => {
+          setApiKey('');
+          toast.push({ kind: 'success', message: 'Model configuration saved.' });
+        },
+        onError: (err) =>
+          toast.push({
+            kind: 'error',
+            message:
+              err instanceof ApiError ? err.message : 'Could not save the model configuration.',
+          }),
+      },
+    );
+  };
+
+  const clear = () => {
+    clearCfg.mutate(undefined, {
+      onSuccess: (next) => {
+        setApiKey('');
+        setBaseUrl(next.base_url ?? '');
+        setModelName(next.model_name ?? '');
+        toast.push({ kind: 'success', message: 'Model configuration cleared.' });
+      },
+      onError: (err) =>
+        toast.push({
+          kind: 'error',
+          message:
+            err instanceof ApiError ? err.message : 'Could not clear the model configuration.',
+        }),
+    });
+  };
+
+  return (
+    <>
+      <p className={styles.modelHint} data-testid="model-hint">
+        {info.configured
+          ? 'The agent uses this OpenAI-compatible endpoint. Runs are blocked when no model is configured.'
+          : 'No LLM is configured — runs are blocked until you set one below. This is required before the agent can run.'}
+      </p>
+
+      <form className={styles.modelForm} onSubmit={save} noValidate>
+        <TextField
+          label="Base URL"
+          placeholder="https://api.openai.com/v1"
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+          data-testid="model-base-url"
+          autoComplete="off"
+          required
+        />
+        <TextField
+          label="Model (provider/model)"
+          placeholder="openai/gpt-4o"
+          value={modelName}
+          onChange={(e) => setModelName(e.target.value)}
+          data-testid="model-name"
+          autoComplete="off"
+          required
+        />
+        <TextField
+          label="API key"
+          type="password"
+          placeholder={info.api_key_set ? '•••••••• (set — retype to change)' : 'sk-…  (blank for keyless endpoints)'}
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          data-testid="model-api-key"
+          autoComplete="off"
+          hint="Stored encrypted. Never displayed after saving."
+        />
+        <div className={styles.modelActions}>
+          <Button
+            type="submit"
+            variant="primary"
+            loading={setCfg.isPending}
+            data-testid="model-save"
+          >
+            Save
+          </Button>
+          {info.source === 'db' && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={clear}
+              loading={clearCfg.isPending}
+              data-testid="model-clear"
+            >
+              Clear
+            </Button>
+          )}
+        </div>
+      </form>
+    </>
   );
 }
 
