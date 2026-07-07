@@ -27,6 +27,7 @@ export const qk = {
   runs: (projectId: string) => ['runs', projectId] as const,
   run: (runId: string) => ['run', runId] as const,
   diff: (runId: string) => ['diff', runId] as const,
+  pr: (runId: string) => ['pr', runId] as const,
   system: ['system'] as const,
   services: (projectId: string) => ['services', projectId] as const,
   members: (projectId: string) => ['members', projectId] as const,
@@ -192,6 +193,39 @@ export function useDiff(runId: string, enabled: boolean) {
     queryFn: () => api.getDiff(runId),
     enabled: enabled && !!runId,
     retry: false,
+  });
+}
+
+/**
+ * The run's PR view (link, live state, review runs). Enabled only when the PR
+ * tab is open. Refetches on a modest interval so a newly-requested review's
+ * status (and a merge/close on the provider) surfaces without a manual reload.
+ */
+export function usePR(runId: string, enabled: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.pr(runId),
+    queryFn: () => api.getPR(runId),
+    enabled: enabled && !!runId,
+    refetchInterval: enabled ? 5000 : false,
+  });
+}
+
+/**
+ * Request an AI review of a run's PR. On success the caller navigates to the new
+ * review run; we also refresh the PR view so the reviews list picks up the new
+ * (queued) run.
+ */
+export function useRequestReview() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) => api.requestReview(runId),
+    onSuccess: (run: Run, runId: string) => {
+      qc.setQueryData(qk.run(run.id), run);
+      qc.invalidateQueries({ queryKey: qk.pr(runId) });
+      qc.invalidateQueries({ queryKey: qk.runs(run.project_id) });
+    },
   });
 }
 

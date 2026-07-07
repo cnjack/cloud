@@ -20,6 +20,8 @@ import { Button } from '../components/Button';
 import { StatusBadge } from '../components/StatusBadge';
 import { Timeline } from '../components/Timeline';
 import { DiffView } from '../components/DiffView';
+import { Markdown } from '../components/Markdown';
+import { PrPanel } from '../components/PrPanel';
 import { LoadingBlock, ErrorBlock, InlineHint } from '../components/States';
 import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
@@ -35,7 +37,7 @@ const FAILURE_LABELS: Record<FailureReason, string> = {
   push_failed: 'Branch push failed',
 };
 
-type Tab = 'events' | 'diff';
+type Tab = 'events' | 'diff' | 'pr';
 
 export function RunDetailPage() {
   const { runId = '' } = useParams();
@@ -77,6 +79,10 @@ export function RunDetailPage() {
   const canCancel = !isTerminal(r.status);
   const canRetry = isTerminal(r.status);
   const failed = r.status === 'failed';
+  // A review run (blueprint §5) has no Diff/PR tabs — its body IS the review
+  // output. An agent run gets a third "PR" tab once its draft PR exists.
+  const isReview = r.kind === 'review';
+  const hasPRTab = !isReview && !!r.pr_url;
 
   const doCancel = () =>
     cancel.mutate(runId, {
@@ -234,65 +240,108 @@ export function RunDetailPage() {
         <InlineHint>Couldn't refresh the latest run details — showing the last known state.</InlineHint>
       )}
 
-      {/* Tabs */}
-      <div className={styles.tabs} role="tablist">
-        <button
-          role="tab"
-          aria-selected={tab === 'events'}
-          className={styles.tab}
-          data-active={tab === 'events' || undefined}
-          onClick={() => setTab('events')}
-          data-testid="tab-events"
-          type="button"
-        >
-          Events
-          {stream.events.length > 0 && (
-            <span className={styles.tabCount}>{stream.events.length}</span>
-          )}
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === 'diff'}
-          className={styles.tab}
-          data-active={tab === 'diff' || undefined}
-          onClick={() => setTab('diff')}
-          data-testid="tab-diff"
-          type="button"
-        >
-          Diff
-        </button>
-      </div>
-
-      {/* Tab panels */}
-      <div className={styles.panel}>
-        {tab === 'events' ? (
-          stream.events.length === 0 ? (
-            <div className={styles.waiting}>
-              <Spinner label={terminal ? 'No events recorded.' : 'Waiting for events…'} />
+      {/* A review run's body IS its markdown output — no Diff/PR tabs. */}
+      {isReview ? (
+        <div className={styles.panel} data-testid="review-panel">
+          {r.review_output ? (
+            <div className={styles.reviewOutput} data-testid="review-output">
+              <Markdown source={r.review_output} />
+            </div>
+          ) : !terminal ? (
+            <div className={styles.reviewProgress}>
+              <div className={styles.reviewProgressHint} data-testid="review-in-progress">
+                <Spinner label="Review in progress…" />
+              </div>
+              {stream.events.length > 0 && <Timeline events={stream.events} live={live} />}
             </div>
           ) : (
-            <Timeline events={stream.events} live={live} />
-          )
-        ) : status !== 'succeeded' ? (
-          <div className={styles.waiting}>
-            <span className={styles.waitingText}>
-              {failed
-                ? 'This run failed, so no diff was produced.'
-                : 'The diff will be available once the run succeeds.'}
-            </span>
+            <div className={styles.waiting}>
+              <span className={styles.waitingText}>
+                {failed
+                  ? 'This review run failed, so no output was produced.'
+                  : 'No review output was produced.'}
+              </span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Tabs */}
+          <div className={styles.tabs} role="tablist">
+            <button
+              role="tab"
+              aria-selected={tab === 'events'}
+              className={styles.tab}
+              data-active={tab === 'events' || undefined}
+              onClick={() => setTab('events')}
+              data-testid="tab-events"
+              type="button"
+            >
+              Events
+              {stream.events.length > 0 && (
+                <span className={styles.tabCount}>{stream.events.length}</span>
+              )}
+            </button>
+            <button
+              role="tab"
+              aria-selected={tab === 'diff'}
+              className={styles.tab}
+              data-active={tab === 'diff' || undefined}
+              onClick={() => setTab('diff')}
+              data-testid="tab-diff"
+              type="button"
+            >
+              Diff
+            </button>
+            {hasPRTab && (
+              <button
+                role="tab"
+                aria-selected={tab === 'pr'}
+                className={styles.tab}
+                data-active={tab === 'pr' || undefined}
+                onClick={() => setTab('pr')}
+                data-testid="tab-pr"
+                type="button"
+              >
+                PR
+              </button>
+            )}
           </div>
-        ) : diff.isLoading ? (
-          <LoadingBlock label="Loading diff…" />
-        ) : diff.isError ? (
-          <ErrorBlock error={diff.error} onRetry={() => diff.refetch()} title="Couldn't load diff" />
-        ) : (
-          <DiffView
-            patch={diff.data?.content ?? ''}
-            downloadUrl={api.diffDownloadUrl(runId)}
-            downloadName={`${shortId(runId)}.diff`}
-          />
-        )}
-      </div>
+
+          {/* Tab panels */}
+          <div className={styles.panel}>
+            {tab === 'pr' ? (
+              <PrPanel runId={runId} canReview={canAct} />
+            ) : tab === 'events' ? (
+              stream.events.length === 0 ? (
+                <div className={styles.waiting}>
+                  <Spinner label={terminal ? 'No events recorded.' : 'Waiting for events…'} />
+                </div>
+              ) : (
+                <Timeline events={stream.events} live={live} />
+              )
+            ) : status !== 'succeeded' ? (
+              <div className={styles.waiting}>
+                <span className={styles.waitingText}>
+                  {failed
+                    ? 'This run failed, so no diff was produced.'
+                    : 'The diff will be available once the run succeeds.'}
+                </span>
+              </div>
+            ) : diff.isLoading ? (
+              <LoadingBlock label="Loading diff…" />
+            ) : diff.isError ? (
+              <ErrorBlock error={diff.error} onRetry={() => diff.refetch()} title="Couldn't load diff" />
+            ) : (
+              <DiffView
+                patch={diff.data?.content ?? ''}
+                downloadUrl={api.diffDownloadUrl(runId)}
+                downloadName={`${shortId(runId)}.diff`}
+              />
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

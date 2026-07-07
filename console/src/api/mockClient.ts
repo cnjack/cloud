@@ -22,7 +22,9 @@ import type {
   Me,
   Member,
   MemberRole,
+  PrInfo,
   Project,
+  ReviewRunSummary,
   Run,
   RunArtifact,
   RunEvent,
@@ -59,6 +61,8 @@ function badRequest(message: string): ApiError {
 interface StoredRun extends Run {
   _events: RunEvent[];
   _diff?: string;
+  /** For a kind=review run: the agent run id whose PR it reviews. */
+  _reviewFor?: string;
   _timers: ReturnType<typeof setTimeout>[];
   _subs: Set<(ev: RunEvent) => void>;
   _statusSubs: Set<(run: Run) => void>;
@@ -79,6 +83,21 @@ index 3b18e51..9daeafb 100644
  A tiny sample repository used by jcode Cloud Agent.
 +Hello
 `;
+
+/** A finished AI review's markdown output (demo mode). Exercises the markdown
+ *  renderer: headings, a list, bold, inline code and a fenced code block. */
+const SAMPLE_REVIEW_MD = `## AI review
+
+Overall this change is **small and safe**. A couple of notes:
+
+- The new \`Hello\` line is appended cleanly to \`README.md\`.
+- Consider whether the file should end with a trailing newline.
+
+\`\`\`diff
++Hello
+\`\`\`
+
+**Verdict:** looks good to merge.`;
 
 /**
  * Demo identity (VITE_DEMO): a signed-in cluster-admin user so the identity chip,
@@ -345,6 +364,7 @@ export function createMockClient(): ApiClient {
     const {
       _events,
       _diff,
+      _reviewFor,
       _timers,
       _subs,
       _statusSubs,
@@ -352,6 +372,7 @@ export function createMockClient(): ApiClient {
     } = run;
     void _events;
     void _diff;
+    void _reviewFor;
     void _timers;
     void _subs;
     void _statusSubs;
@@ -372,6 +393,7 @@ export function createMockClient(): ApiClient {
     const run: StoredRun = {
       id: genId('run'),
       project_id: projectId,
+      kind: 'agent',
       prompt,
       status: 'queued',
       attempt,
@@ -389,6 +411,65 @@ export function createMockClient(): ApiClient {
     runs.set(run.id, run);
     startPlayback(run);
     return run;
+  }
+
+  /** A review run's playback: queued → running (a little prose) → succeeded with
+   *  review_output set, mirroring the runner posting REVIEW.md then the run
+   *  succeeding (blueprint §3/§5). */
+  function startReviewPlayback(run: StoredRun) {
+    schedule(run, 300, () => setStatus(run, 'scheduling'));
+    schedule(run, 900, () => {
+      setStatus(run, 'running');
+      emit(run, 'agent.text', { text: 'Reading the pull request diff…' });
+    });
+    schedule(run, 2000, () => {
+      emit(run, 'agent.text', { text: 'Reviewing the change and drafting comments.' });
+    });
+    schedule(run, 3200, () => {
+      run.review_output = SAMPLE_REVIEW_MD;
+      emit(run, 'run.artifact', { kind: 'review' });
+      setStatus(run, 'succeeded');
+    });
+  }
+
+  /** Create a review run against a succeeded agent run's PR. */
+  function makeReviewRun(src: StoredRun): StoredRun {
+    const run: StoredRun = {
+      id: genId('run'),
+      project_id: src.project_id,
+      service_id: src.service_id,
+      kind: 'review',
+      prompt: `AI review of PR ${src.pr_url}`,
+      status: 'queued',
+      attempt: 1,
+      retried_from: null,
+      created_at: nowISO(),
+      started_at: null,
+      finished_at: null,
+      pr_url: null,
+      pr_number: null,
+      review_output: '',
+      _reviewFor: src.id,
+      _events: [],
+      _timers: [],
+      _subs: new Set(),
+      _statusSubs: new Set(),
+    };
+    runs.set(run.id, run);
+    startReviewPlayback(run);
+    return run;
+  }
+
+  /** Map a stored review run to its PR-tab summary. */
+  function reviewSummary(run: StoredRun): ReviewRunSummary {
+    return {
+      id: run.id,
+      status: run.status,
+      review_output: run.review_output ?? '',
+      review_posted_at: run.status === 'succeeded' ? run.finished_at : null,
+      created_at: run.created_at,
+      triggered_by_display_name: DEMO_ME.user.display_name,
+    };
   }
 
   return {
@@ -548,6 +629,50 @@ export function createMockClient(): ApiClient {
           makeRun(orig.project_id, orig.prompt, orig.id, (orig.attempt ?? 1) + 1),
         ),
       );
+    },
+
+    async getPR(runId: string): Promise<PrInfo> {
+      const r = runs.get(runId);
+      if (!r) throw new ApiError(404, 'run not found');
+      // User-requested review runs targeting this PR, newest first.
+      const userReviews = [...runs.values()]
+        .filter((x) => x.kind === 'review' && x._reviewFor === runId)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .map(reviewSummary);
+      // Plus a single pre-existing completed fake review so the tab isn't empty
+      // in demo mode (per brief: fake PR state=open + one completed review).
+      const baseline: ReviewRunSummary = {
+        id: `rev_demo_${runId}`,
+        status: 'succeeded',
+        review_output: SAMPLE_REVIEW_MD,
+        review_posted_at: r.finished_at ?? nowISO(-600_000),
+        created_at: nowISO(-600_000),
+        triggered_by_display_name: 'Ada Lovelace',
+      };
+      return delay({
+        url: r.pr_url ?? '',
+        state: 'open',
+        head_branch: `agent/run-${runId}`,
+        review_runs: [...userReviews, baseline],
+      });
+    },
+
+    async requestReview(runId: string) {
+      const src = runs.get(runId);
+      if (!src) throw new ApiError(404, 'run not found');
+      // Mirror the orchestrator preconditions (blueprint §4): a succeeded agent
+      // run with a PR. Both surface as 409 conflicts.
+      if (src.status !== 'succeeded') {
+        throw new ApiError(409, 'only a succeeded run can be reviewed', {
+          error: { code: 'conflict', message: 'only a succeeded run can be reviewed' },
+        });
+      }
+      if (!src.pr_url) {
+        throw new ApiError(409, 'this run has no pull request to review', {
+          error: { code: 'conflict', message: 'this run has no pull request to review' },
+        });
+      }
+      return delay(publicRun(makeReviewRun(src)));
     },
 
     async listEvents(runId: string, afterSeq = 0) {

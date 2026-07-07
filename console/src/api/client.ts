@@ -17,6 +17,7 @@ import type {
   Me,
   Member,
   MembersEnvelope,
+  PrInfo,
   Project,
   ProjectsEnvelope,
   Run,
@@ -74,6 +75,15 @@ export interface ApiClient {
   getRun(runId: string): Promise<Run>;
   cancelRun(runId: string): Promise<Run>;
   retryRun(runId: string): Promise<Run>;
+
+  /* ---- PR review (blueprint §4/§5) --------------------------------------- */
+  /** GET /api/v1/runs/{id}/pr — the run's PR, live state, and its review runs. */
+  getPR(runId: string): Promise<PrInfo>;
+  /**
+   * POST /api/v1/runs/{id}/review — request an AI review of a succeeded agent
+   * run's PR. Returns the newly-created kind=review run.
+   */
+  requestReview(runId: string): Promise<Run>;
 
   /** Replay events with seq > afterSeq (0 = from start). */
   listEvents(runId: string, afterSeq?: number): Promise<RunEvent[]>;
@@ -243,6 +253,13 @@ export function createHttpClient(
 
     retryRun: (runId) =>
       req<Run>(`/runs/${encodeURIComponent(runId)}/retry`, {
+        method: 'POST',
+      }),
+
+    getPR: (runId) => req<PrInfo>(`/runs/${encodeURIComponent(runId)}/pr`),
+
+    requestReview: (runId) =>
+      req<Run>(`/runs/${encodeURIComponent(runId)}/review`, {
         method: 'POST',
       }),
 

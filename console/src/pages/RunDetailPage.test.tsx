@@ -14,7 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
 import { ApiError, type ApiClient, type StreamCallbacks, type StreamHandle } from '../api/client';
-import type { MemberRole, Project, Run } from '../api/types';
+import type { MemberRole, PrInfo, Project, Run } from '../api/types';
 import { qk } from '../api/queries';
 import { RunDetailPage } from './RunDetailPage';
 
@@ -37,6 +37,13 @@ interface Ctl {
   getRun: ReturnType<typeof vi.fn>;
 }
 
+const SAMPLE_PR: PrInfo = {
+  url: 'https://gitea.local/jcloud/seed/pulls/42',
+  state: 'open',
+  head_branch: 'jcode/run-run1',
+  review_runs: [],
+};
+
 function makeClient(role?: MemberRole): { client: ApiClient; ctl: Ctl } {
   const ctl: Ctl = { streamCalls: [], getRun: vi.fn() };
   const client: Partial<ApiClient> = {
@@ -47,6 +54,8 @@ function makeClient(role?: MemberRole): { client: ApiClient; ctl: Ctl } {
       return { close: () => {} };
     },
     diffDownloadUrl: () => '',
+    getPR: async () => SAMPLE_PR,
+    requestReview: async () => baseRun({ id: 'rev_new', kind: 'review', status: 'queued' }),
     // The page reads the run's project to learn the requesting principal's role.
     ...(role
       ? {
@@ -167,5 +176,62 @@ describe('RunDetailPage — viewer gating (blueprint §2)', () => {
     renderPage(client, baseRun({ status: 'failed', finished_at: '2026-07-07T00:05:00Z' }));
 
     await waitFor(() => expect(screen.getByTestId('retry-btn')).toBeTruthy());
+  });
+});
+
+describe('RunDetailPage — PR tab + review runs (blueprint §5)', () => {
+  it('shows a PR tab for an agent run with a PR and renders the PR panel', async () => {
+    const prRun = baseRun({
+      status: 'succeeded',
+      finished_at: '2026-07-07T00:05:00Z',
+      pr_url: 'https://gitea.local/jcloud/seed/pulls/42',
+      pr_number: 42,
+    });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(prRun);
+    renderPage(client, prRun);
+
+    const prTab = await screen.findByTestId('tab-pr');
+    act(() => prTab.click());
+    await waitFor(() => expect(screen.getByTestId('pr-panel')).toBeTruthy());
+    expect(screen.getByTestId('pr-external-link')).toBeTruthy();
+  });
+
+  it('does not show a PR tab for an agent run without a PR', async () => {
+    const noPr = baseRun({ status: 'succeeded', finished_at: '2026-07-07T00:05:00Z' });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(noPr);
+    renderPage(client, noPr);
+
+    await waitFor(() => expect(screen.getByTestId('run-status-header')).toBeTruthy());
+    expect(screen.queryByTestId('tab-pr')).toBeNull();
+  });
+
+  it('renders a review run body as markdown with no Diff/PR tabs', async () => {
+    const review = baseRun({
+      kind: 'review',
+      status: 'succeeded',
+      finished_at: '2026-07-07T00:05:00Z',
+      review_output: '## Review\n\nThis change is **safe**.',
+    });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(review);
+    renderPage(client, review);
+
+    const body = await screen.findByTestId('review-output');
+    expect(body.textContent).toContain('Review');
+    expect(body.querySelector('strong')?.textContent).toBe('safe');
+    // A review run has no Diff / PR tabs.
+    expect(screen.queryByTestId('tab-diff')).toBeNull();
+    expect(screen.queryByTestId('tab-pr')).toBeNull();
+  });
+
+  it('shows a review-in-progress state while a review run is still running', async () => {
+    const running = baseRun({ kind: 'review', status: 'running' });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(running);
+    renderPage(client, running);
+
+    await waitFor(() => expect(screen.getByTestId('review-in-progress')).toBeTruthy());
   });
 });

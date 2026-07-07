@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "console",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "console"],
+      "port": 5173
+    },
+    {
+      "name": "console-demo",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:demo", "--prefix", "console", "--", "--port", "5174"],
+      "port": 5174
+    }
+  ]
+}

@@ -59,6 +59,13 @@ export type MemberRole = 'owner' | 'member' | 'viewer';
 export type RepoKind = 'provider' | 'raw';
 
 /**
+ * A run's kind (blueprint §1/§5): an ordinary `agent` invocation that produces a
+ * diff / draft PR, or a `review` run that reviews a PR and produces review_output.
+ * Absent is treated as `agent` by the UI.
+ */
+export type RunKind = 'agent' | 'review';
+
+/**
  * A service is one repository configuration inside a project. The simple "one
  * repo = one project" UX is a project with a single service named `default`;
  * the console only surfaces the service dimension once a project has more than
@@ -111,6 +118,8 @@ export interface Run {
   project_id: string;
   /** The service this run was created against (blueprint §1). */
   service_id?: string;
+  /** agent (default) or review (blueprint §5). Absent is treated as agent. */
+  kind?: RunKind;
   prompt: string;
   status: RunStatus;
   /** Fine-grained run-phase detail (e.g. PreparingWorkspace). Optional. */
@@ -133,6 +142,41 @@ export interface Run {
    */
   pr_url?: string | null;
   pr_number?: number | null;
+  /**
+   * The markdown a review run (kind=review) produced (blueprint §5). Empty/absent
+   * for agent runs; populated once the runner posts its review output.
+   */
+  review_output?: string;
+  /** When the review comment was posted to the PR (idempotency marker). */
+  review_posted_at?: string | null;
+}
+
+/* ---- PR view (GET /runs/{id}/pr; blueprint §4/§5) ------------------------ */
+
+/** Live PR state from the provider. `unknown` when it can't be determined. */
+export type PrState = 'open' | 'merged' | 'closed' | 'unknown';
+
+/** One review run summarised for the PR tab. */
+export interface ReviewRunSummary {
+  id: string;
+  status: RunStatus;
+  review_output: string;
+  review_posted_at?: string | null;
+  created_at: string;
+  /** Display name of the user who requested the review (empty for a service run). */
+  triggered_by_display_name?: string;
+}
+
+/**
+ * GET /api/v1/runs/{id}/pr — the run's pull request, its live state, and the
+ * review runs targeting it (newest first). state is queried live from the
+ * provider and degrades to "unknown" rather than failing.
+ */
+export interface PrInfo {
+  url: string;
+  state: PrState | string;
+  head_branch: string;
+  review_runs: ReviewRunSummary[];
 }
 
 /** Event types emitted on the run stream. Contract with runner + orchestrator. */

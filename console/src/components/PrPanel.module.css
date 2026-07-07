@@ -1,0 +1,147 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* PR link + state */
+.linkRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.prLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--color-accent);
+  word-break: break-all;
+}
+.prLink:hover {
+  color: var(--color-accent-hover);
+}
+.arrow {
+  color: var(--color-text-dim);
+}
+.noPr {
+  font-size: var(--fs-sm);
+  color: var(--color-text-dim);
+}
+.branch {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  color: var(--color-text-muted);
+  background: var(--color-panel-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  padding: 2px var(--space-2);
+}
+
+/* PR state pill — reuses the StatusBadge pill language, coloured by tokens. */
+.stateBadge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-sans);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-caption);
+  letter-spacing: 0.2px;
+  line-height: 1;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.stateBadge[data-state='open'] {
+  background: var(--status-succeeded-bg);
+  color: var(--status-succeeded-fg);
+}
+.stateBadge[data-state='merged'] {
+  background: var(--color-panel-raised);
+  color: var(--color-accent);
+  border-color: var(--color-accent-dim);
+}
+.stateBadge[data-state='closed'] {
+  background: var(--status-failed-bg);
+  color: var(--status-failed-fg);
+}
+.stateBadge[data-state='unknown'] {
+  background: var(--status-queued-bg);
+  color: var(--status-queued-fg);
+}
+
+.actionRow {
+  display: flex;
+}
+
+/* reviews */
+.reviews {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+}
+.reviewsTitle {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  color: var(--color-text);
+  margin: 0;
+}
+.empty {
+  font-size: var(--fs-sm);
+  color: var(--color-text-dim);
+  margin: 0;
+}
+.reviewList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.review {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-panel);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.reviewHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.reviewMeta {
+  font-size: var(--fs-caption);
+  color: var(--color-text-dim);
+}
+.toggle {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--color-accent);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  padding: 0;
+}
+.toggle:hover {
+  color: var(--color-accent-hover);
+}
+.reviewBody {
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: var(--space-3);
+}
+.pending {
+  font-size: var(--fs-sm);
+  color: var(--color-text-dim);
+  margin: 0;
+}

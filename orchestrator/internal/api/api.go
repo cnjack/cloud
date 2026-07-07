@@ -48,6 +48,11 @@ type Server struct {
 	creds    *credentials.Resolver
 	git      *gitcli.Git
 	srcCache *sourceCache
+
+	// factory builds a PR client per resolved token for the live PR-status lookup
+	// (M5 GET /runs/{id}/pr). Same seam the reconciler uses; a test overrides it
+	// with a fake. Never nil in production (built from cfg.GiteaURL in New).
+	factory provider.Factory
 }
 
 // New builds a Server. launcher may be nil (K8s disabled). The token cipher and
@@ -86,6 +91,9 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	s.creds = credentials.NewResolver(st, s.cipher, s.oauth, cfg.GiteaToken, log)
 	s.git = gitcli.New()
 	s.srcCache = newSourceCache(cfg.SourceBundleTTL)
+	// PR-status client factory (M5). Shares the same builder the reconciler uses;
+	// a deployment without a provider simply reports state="unknown" per PR.
+	s.factory = provider.NewFactory(cfg.GiteaURL)
 	return s
 }
 
@@ -177,6 +185,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/runs/{id}/artifact", s.authedStream(s.handleGetArtifact))
 	mux.Handle("POST /api/v1/runs/{id}/cancel", s.authed(s.handleCancelRun))
 	mux.Handle("POST /api/v1/runs/{id}/retry", s.authed(s.handleRetryRun))
+	// PR review (M5): request an AI review of a succeeded agent run's PR, and read
+	// the PR's live state + its review runs. review is a mutation (member+); the
+	// pr view is read-only (viewer+).
+	mux.Handle("POST /api/v1/runs/{id}/review", s.authed(s.handleRequestReview))
+	mux.Handle("GET /api/v1/runs/{id}/pr", s.authed(s.handleGetPR))
 
 	// Internal endpoints — require the per-run RUN_TOKEN.
 	mux.Handle("POST /internal/v1/runs/{id}/events", s.runToken(s.handleIngestEvents))

@@ -224,6 +224,24 @@
   overflow: hidden;
 }
 
+/* review run body (blueprint §5) */
+.reviewOutput {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+}
+.reviewProgress {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.reviewProgressHint {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
 .waiting {
   display: flex;
   align-items: center;

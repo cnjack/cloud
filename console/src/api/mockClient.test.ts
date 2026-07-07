@@ -499,3 +499,65 @@ describe('mockClient — getSystem (cluster snapshot)', () => {
     expect((await p2).provider.gitea_enabled).toBe(true);
   });
 });
+
+// PR review flow (blueprint §5): getPR reports a live PR + reviews; requestReview
+// spawns a kind=review run that produces markdown output.
+describe('mockClient — PR review flow', () => {
+  it('getPR returns an open PR, head branch and a baseline review', async () => {
+    const client = createMockClient();
+    const { run } = await makeProjectAndRun(client);
+    await flush(8000); // drive to succeeded (pr_url populated)
+
+    const prP = client.getPR(run.id);
+    await flush(200);
+    const pr = await prP;
+    expect(pr.state).toBe('open');
+    expect(pr.url).toContain('/pulls/');
+    expect(pr.head_branch).toContain(run.id);
+    expect(pr.review_runs.length).toBeGreaterThanOrEqual(1);
+    expect(pr.review_runs.some((r) => r.review_output.length > 0)).toBe(true);
+  });
+
+  it('requestReview creates a review run that produces markdown output', async () => {
+    const client = createMockClient();
+    const { run } = await makeProjectAndRun(client);
+    await flush(8000); // succeeded
+
+    const revP = client.requestReview(run.id);
+    await flush(200);
+    const review = await revP;
+    expect(review.kind).toBe('review');
+    expect(review.status).toBe('queued');
+
+    await flush(4000); // drive the review playback to succeeded
+    const doneP = client.getRun(review.id);
+    await flush(200);
+    const done = await doneP;
+    expect(done.status).toBe('succeeded');
+    expect(done.review_output).toContain('AI review');
+
+    // The new review now appears in the PR's review list.
+    const prP = client.getPR(run.id);
+    await flush(200);
+    const pr = await prP;
+    expect(pr.review_runs.some((r) => r.id === review.id)).toBe(true);
+  });
+
+  it('requestReview on a non-succeeded run is a 409 conflict', async () => {
+    const client = createMockClient();
+    const { run } = await makeProjectAndRun(client);
+    await flush(1300); // running (non-terminal, no PR yet)
+
+    const p = client.requestReview(run.id).then(
+      () => ({ ok: true as const }),
+      (e) => ({ ok: false as const, err: e }),
+    );
+    await flush(300);
+    const res = await p;
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.err).toBeInstanceOf(ApiError);
+      expect((res.err as ApiError).status).toBe(409);
+    }
+  });
+});
