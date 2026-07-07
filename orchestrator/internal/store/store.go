@@ -90,6 +90,18 @@ type Store interface {
 	// job_cleaned_at is preserved. It does not change status and is a no-op if
 	// the run is missing.
 	MarkJobCleaned(ctx context.Context, id string) error
+	// SetRunGit records the branch/commit the runner pushed (from a run.git
+	// event) WITHOUT changing status. First-writer-wins per field: it writes only
+	// where the stored value is empty, so a duplicate event is a no-op. It never
+	// touches status/pr_url and is a no-op on a missing run. Returns the committed
+	// row (possibly unchanged). This is the ONLY writer of git_branch/commit_sha.
+	SetRunGit(ctx context.Context, id, branch, commitSHA string) (*domain.Run, error)
+	// MarkPRCreated stamps pr_url/pr_number once the orchestrator has opened (or
+	// found) the draft PR (ST-1). It is IDEMPOTENT and first-writer-wins: it
+	// writes only where pr_url is currently empty, so a retry that raced another
+	// tick cannot double-open or clobber an already-recorded PR. It does not
+	// change status and is a no-op on a missing run. Returns the committed row.
+	MarkPRCreated(ctx context.Context, id, prURL string, prNumber int) (*domain.Run, error)
 
 	// Reconciler queries
 	ListRunsByStatus(ctx context.Context, statuses ...domain.RunStatus) ([]domain.Run, error)
@@ -100,6 +112,11 @@ type Store interface {
 	// removes them from this scan.
 	ListTerminalRunsWithJob(ctx context.Context) ([]domain.Run, error)
 	CountActiveRuns(ctx context.Context) (int, error)
+	// ListRunsAwaitingPR returns succeeded runs that have a pushed branch
+	// (git_branch <> '') but no PR yet (pr_url = ''), so the reconciler can open
+	// the draft PR (ST-1). The project-mode gate (draft_pr) is applied by the
+	// reconciler after joining the project. Ordered oldest-first.
+	ListRunsAwaitingPR(ctx context.Context) ([]domain.Run, error)
 
 	// Events
 	// AppendEvents inserts events idempotently by (run_id, seq); duplicates are

@@ -200,6 +200,7 @@ export function createHttpClient(token: string | undefined): ApiClient {
         'agent.tool_result',
         'run.artifact',
         'run.failure',
+        'run.git',
       ]) {
         es.addEventListener(t, handle as EventListener);
       }

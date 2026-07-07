@@ -18,6 +18,7 @@ import (
 	"github.com/cnjack/jcloud/internal/api"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/k8s"
+	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/reconciler"
 	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
@@ -101,9 +102,20 @@ func run(log *slog.Logger) error {
 		launcher = client
 	}
 
+	// --- git provider (ST-1 draft PRs; optional) ---
+	// When GITEA_URL + GITEA_TOKEN are set, the reconciler opens draft PRs for
+	// draft_pr-mode projects. Absent config degrades to diff-only (never fatal).
+	var prov provider.Provider
+	if gc, err := provider.NewGiteaClient(cfg.GiteaURL, cfg.GiteaToken); err == nil {
+		prov = gc
+		log.Info("gitea draft-PR provider enabled", "url", cfg.GiteaURL)
+	} else {
+		log.Info("gitea draft-PR provider disabled (GITEA_URL/GITEA_TOKEN unset): runs stay diff-only")
+	}
+
 	// --- reconciler ---
 	if launcher != nil {
-		rec := reconciler.New(st, launcher, cfg, log, hub)
+		rec := reconciler.New(st, launcher, cfg, log, hub).WithProvider(prov)
 		go rec.Run(ctx)
 	}
 

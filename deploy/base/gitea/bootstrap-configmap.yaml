@@ -1,0 +1,92 @@
+# Bootstrap script run by the gitea-bootstrap Job. It is idempotent (safe to
+# re-run): every step tolerates "already exists". It provisions the ST-1 draft-PR
+# target and hands the orchestrator its credentials:
+#
+#   1. wait for Gitea's API to be healthy
+#   2. register the admin user (the FIRST registered user becomes a Gitea admin)
+#   3. mint an API token for that user (basic-auth to the tokens API)
+#   4. create org `jcloud` + repo `seed` (auto_init => a main branch + a commit,
+#      the same seed content shape the git-daemon gitseed uses), so draft PRs
+#      have a base branch to target
+#   5. write GITEA_URL + GITEA_TOKEN into the `gitea-orchestrator` Secret that the
+#      orchestrator Deployment consumes via envFrom
+#
+# The token is minted at runtime (not known when authoring manifests), which is
+# exactly why it is delivered through a Job-written Secret rather than a static
+# one. kubectl is available in the alpine/k8s image the Job runs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitea-bootstrap-script
+  namespace: jcloud
+  labels:
+    app.kubernetes.io/name: gitea
+    app.kubernetes.io/part-of: jcloud
+data:
+  bootstrap.sh: |
+    #!/bin/sh
+    set -eu
+
+    GITEA_URL="${GITEA_URL:-http://gitea.jcloud.svc.cluster.local:3000}"
+    ADMIN_USER="${GITEA_ADMIN_USER:-jcloud-admin}"
+    ADMIN_PASS="${GITEA_ADMIN_PASSWORD:-jcloud-admin-pass-123}"
+    ADMIN_EMAIL="${GITEA_ADMIN_EMAIL:-admin@jcloud.local}"
+    ORG="${GITEA_ORG:-jcloud}"
+    REPO="${GITEA_REPO:-seed}"
+    ORCH_SECRET="${GITEA_ORCH_SECRET:-gitea-orchestrator}"
+
+    log() { echo "[gitea-bootstrap] $*"; }
+    api() { # METHOD PATH [JSON]  (token auth)
+      if [ -n "${3:-}" ]; then
+        curl -sS -X "$1" -H "Authorization: token $TOKEN" \
+          -H 'Content-Type: application/json' -d "$3" "$GITEA_URL/api/v1$2"
+      else
+        curl -sS -X "$1" -H "Authorization: token $TOKEN" "$GITEA_URL/api/v1$2"
+      fi
+    }
+
+    # 1. wait for Gitea.
+    log "waiting for Gitea at $GITEA_URL"
+    i=0
+    while [ "$i" -lt 120 ]; do
+      if curl -sS -o /dev/null "$GITEA_URL/api/healthz"; then break; fi
+      i=$((i+1)); sleep 2
+    done
+    curl -sS -o /dev/null "$GITEA_URL/api/healthz" || { log "Gitea never became healthy"; exit 1; }
+    log "Gitea is up"
+
+    # 2. register the admin user (first user => admin). Idempotent: a 200/302 on
+    #    first run, harmless failure if the user already exists.
+    curl -sS -o /dev/null -X POST "$GITEA_URL/user/sign_up" \
+      --data-urlencode "user_name=$ADMIN_USER" \
+      --data-urlencode "email=$ADMIN_EMAIL" \
+      --data-urlencode "password=$ADMIN_PASS" \
+      --data-urlencode "retype=$ADMIN_PASS" || true
+    log "ensured admin user $ADMIN_USER"
+
+    # 3. mint an API token via basic auth (idempotent by unique token name).
+    TOKEN_NAME="orchestrator-$(date +%s)"
+    TOKEN="$(curl -sS -X POST \
+      -u "$ADMIN_USER:$ADMIN_PASS" -H 'Content-Type: application/json' \
+      -d "{\"name\":\"$TOKEN_NAME\",\"scopes\":[\"write:repository\",\"write:organization\",\"read:user\"]}" \
+      "$GITEA_URL/api/v1/users/$ADMIN_USER/tokens" | sed -n 's/.*"sha1":"\([^"]*\)".*/\1/p')"
+    [ -n "$TOKEN" ] || { log "failed to mint API token"; exit 1; }
+    log "minted API token ($TOKEN_NAME)"
+
+    # 4. create org + repo (auto_init => main branch + initial commit). Idempotent.
+    api POST "/orgs" "{\"username\":\"$ORG\"}" >/dev/null 2>&1 || true
+    api POST "/orgs/$ORG/repos" \
+      "{\"name\":\"$REPO\",\"auto_init\":true,\"default_branch\":\"main\",\"private\":false,\"description\":\"jcloud draft-PR seed repo (ST-1)\"}" \
+      >/dev/null 2>&1 || true
+    if [ "$(api GET "/repos/$ORG/$REPO" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | head -1)" != "$REPO" ]; then
+      log "repo $ORG/$REPO not present after create"; exit 1
+    fi
+    log "org/$ORG repo/$REPO ready (auto-init main)"
+
+    # 5. write GITEA_URL + GITEA_TOKEN into the orchestrator Secret.
+    kubectl create secret generic "$ORCH_SECRET" -n jcloud \
+      --from-literal=GITEA_URL="$GITEA_URL" \
+      --from-literal=GITEA_TOKEN="$TOKEN" \
+      --dry-run=client -o yaml | kubectl apply -f -
+    log "wrote Secret/$ORCH_SECRET (GITEA_URL, GITEA_TOKEN)"
+    log "bootstrap complete"

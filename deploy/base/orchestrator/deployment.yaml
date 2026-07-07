@@ -45,6 +45,14 @@ spec:
                 name: orchestrator-config
             - secretRef:
                 name: orchestrator-secret
+            # GITEA_URL + GITEA_TOKEN for the ST-1 draft-PR flow. Written at
+            # runtime by the gitea-bootstrap Job, so it is OPTIONAL — the
+            # orchestrator boots and runs diff-only until the token lands, then a
+            # rollout restart (or the next pod) picks it up. Absent creds are not
+            # fatal (config.Load treats GITEA_* as optional).
+            - secretRef:
+                name: gitea-orchestrator
+                optional: true
           readinessProbe:
             httpGet:
               path: /healthz

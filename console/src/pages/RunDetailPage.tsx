@@ -32,6 +32,7 @@ const FAILURE_LABELS: Record<FailureReason, string> = {
   setup_failed: 'Project setup failed',
   agent_error: 'Agent error',
   timeout: 'Timed out',
+  push_failed: 'Branch push failed',
 };
 
 type Tab = 'events' | 'diff';
@@ -132,6 +133,27 @@ export function RunDetailPage() {
                 retry of {shortId(r.retried_from)}
               </Link>
             )}
+            {/* Stretch (ST-1): draft PR chip — bordered secondary chip with a
+                mono PR number, opens the Gitea PR in a new tab. Only when the
+                orchestrator has opened the draft PR (git_mode=draft_pr). */}
+            {r.pr_url && (
+              <a
+                className={styles.prChip}
+                href={r.pr_url}
+                target="_blank"
+                rel="noreferrer"
+                title="Open the draft pull request on Gitea"
+                data-testid="pr-link"
+              >
+                Draft PR
+                {typeof r.pr_number === 'number' && r.pr_number > 0 && (
+                  <span className={styles.prNumber}>#{r.pr_number}</span>
+                )}
+                <span className={styles.prArrow} aria-hidden>
+                  ↗
+                </span>
+              </a>
+            )}
           </div>
           <p className={styles.prompt}>{r.prompt}</p>
           <dl className={styles.timing}>
@@ -206,13 +228,6 @@ export function RunDetailPage() {
           the cached run to show (we don't dead-end the whole page for this). */}
       {run.isError && run.data && (
         <InlineHint>Couldn't refresh the latest run details — showing the last known state.</InlineHint>
-      )}
-
-      {/* Stretch: draft MR link (ST-1) — only when present. */}
-      {r.mr_url && (
-        <a className={styles.mrLink} href={r.mr_url} target="_blank" rel="noreferrer" data-testid="mr-link">
-          View draft MR ↗
-        </a>
       )}
 
       {/* Tabs */}

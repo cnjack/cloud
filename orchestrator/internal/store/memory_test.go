@@ -307,3 +307,135 @@ func TestConcurrentFailNeverLosesRunnerReason(t *testing.T) {
 		}
 	}
 }
+
+// TestMemMarkPRCreatedIdempotent is the MemStore regression for MarkPRCreated
+// (ST-1): the FIRST writer wins; a later call with different values is a no-op,
+// so a retried reconcile can never clobber an already-recorded draft PR.
+func TestMemMarkPRCreatedIdempotent(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	id := seedRun(t, m)
+
+	got, err := m.MarkPRCreated(ctx, id, "http://gitea/pulls/5", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PRURL != "http://gitea/pulls/5" || got.PRNumber != 5 {
+		t.Fatalf("first mark: url=%q num=%d", got.PRURL, got.PRNumber)
+	}
+	// Second call with different values MUST be ignored (first-writer-wins).
+	got, err = m.MarkPRCreated(ctx, id, "http://gitea/pulls/9", 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PRURL != "http://gitea/pulls/5" || got.PRNumber != 5 {
+		t.Fatalf("second mark clobbered: url=%q num=%d want pulls/5 #5", got.PRURL, got.PRNumber)
+	}
+	// Status must be untouched.
+	if got.Status != domain.StatusQueued {
+		t.Fatalf("MarkPRCreated changed status to %s", got.Status)
+	}
+}
+
+// TestMemMarkPRCreatedConcurrent races two PR creators; exactly one value wins
+// and it is never lost or half-written.
+func TestMemMarkPRCreatedConcurrent(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	id := seedRun(t, m)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = m.MarkPRCreated(ctx, id, "http://a/1", 1) }()
+	go func() { defer wg.Done(); _, _ = m.MarkPRCreated(ctx, id, "http://b/2", 2) }()
+	wg.Wait()
+
+	got, _ := m.GetRun(ctx, id)
+	if got.PRURL == "" || got.PRNumber == 0 {
+		t.Fatal("no PR recorded after concurrent create")
+	}
+	// The url and number must correspond to the SAME winner (no torn write).
+	if (got.PRURL == "http://a/1") != (got.PRNumber == 1) {
+		t.Fatalf("torn write: url=%q num=%d", got.PRURL, got.PRNumber)
+	}
+}
+
+// TestMemSetRunGitFirstWriterWins proves branch/commit are recorded once and a
+// duplicate run.git event does not overwrite them.
+func TestMemSetRunGitFirstWriterWins(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	id := seedRun(t, m)
+
+	got, err := m.SetRunGit(ctx, id, "agent/run-1", "abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GitBranch != "agent/run-1" || got.CommitSHA != "abc123" {
+		t.Fatalf("first set: branch=%q commit=%q", got.GitBranch, got.CommitSHA)
+	}
+	got, _ = m.SetRunGit(ctx, id, "agent/run-2", "def456")
+	if got.GitBranch != "agent/run-1" || got.CommitSHA != "abc123" {
+		t.Fatalf("second set clobbered: branch=%q commit=%q", got.GitBranch, got.CommitSHA)
+	}
+}
+
+// TestMemListRunsAwaitingPR proves the scan returns only succeeded runs with a
+// branch and no PR.
+func TestMemListRunsAwaitingPR(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	p := &domain.Project{ID: domain.NewID(), Name: "p", RepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	_ = m.CreateProject(ctx, p)
+
+	// r1: succeeded + branch + no PR -> included.
+	r1 := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Status: domain.StatusSucceeded, GitBranch: "agent/run-1", CreatedAt: time.Now()}
+	_ = m.CreateRun(ctx, r1)
+	// r2: succeeded + branch + PR already set -> excluded.
+	r2 := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Status: domain.StatusSucceeded, GitBranch: "agent/run-2", PRURL: "http://x/1", PRNumber: 1, CreatedAt: time.Now()}
+	_ = m.CreateRun(ctx, r2)
+	// r3: succeeded but no branch -> excluded.
+	r3 := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Status: domain.StatusSucceeded, CreatedAt: time.Now()}
+	_ = m.CreateRun(ctx, r3)
+	// r4: running with branch -> excluded (not terminal-succeeded).
+	r4 := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Status: domain.StatusRunning, GitBranch: "agent/run-4", CreatedAt: time.Now()}
+	_ = m.CreateRun(ctx, r4)
+
+	out, err := m.ListRunsAwaitingPR(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].ID != r1.ID {
+		ids := make([]string, len(out))
+		for i, r := range out {
+			ids[i] = r.ID
+		}
+		t.Fatalf("awaiting = %v want just %s", ids, r1.ID)
+	}
+}
+
+// TestMemProjectGitConfigRoundTrip proves project git config persists and
+// defaults to readonly.
+func TestMemProjectGitConfigRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	// Default (no git_mode) -> readonly.
+	p1 := &domain.Project{ID: domain.NewID(), Name: "ro", RepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	_ = m.CreateProject(ctx, p1)
+	got1, _ := m.GetProject(ctx, p1.ID)
+	if got1.GitMode != domain.GitModeReadonly {
+		t.Fatalf("default git_mode = %q want readonly", got1.GitMode)
+	}
+	// Explicit draft_pr config round-trips.
+	p2 := &domain.Project{
+		ID: domain.NewID(), Name: "pr", RepoURL: "u", DefaultBranch: "main",
+		GitMode: domain.GitModeDraftPR, Provider: domain.ProviderGitea,
+		ProviderURL: "http://gitea", ProviderRepo: "o/r", CreatedAt: time.Now(),
+	}
+	_ = m.CreateProject(ctx, p2)
+	got2, _ := m.GetProject(ctx, p2.ID)
+	if got2.GitMode != domain.GitModeDraftPR || got2.Provider != domain.ProviderGitea ||
+		got2.ProviderURL != "http://gitea" || got2.ProviderRepo != "o/r" {
+		t.Fatalf("draft_pr config not round-tripped: %+v", got2)
+	}
+}

@@ -39,11 +39,31 @@ func (s *PGStore) Close() { s.pool.Close() }
 
 // --- Projects ---------------------------------------------------------------
 
+const projectCols = `id, name, repo_url, default_branch, created_at,
+	git_mode, provider, provider_url, provider_repo`
+
+func scanProject(row pgx.Row) (*domain.Project, error) {
+	var p domain.Project
+	err := row.Scan(&p.ID, &p.Name, &p.RepoURL, &p.DefaultBranch, &p.CreatedAt,
+		&p.GitMode, &p.Provider, &p.ProviderURL, &p.ProviderRepo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan project: %w", err)
+	}
+	return &p, nil
+}
+
 func (s *PGStore) CreateProject(ctx context.Context, p *domain.Project) error {
+	if p.GitMode == "" {
+		p.GitMode = domain.GitModeReadonly
+	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO projects (id, name, repo_url, default_branch, created_at)
-		 VALUES ($1,$2,$3,$4,$5)`,
-		p.ID, p.Name, p.RepoURL, p.DefaultBranch, p.CreatedAt)
+		`INSERT INTO projects (`+projectCols+`)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		p.ID, p.Name, p.RepoURL, p.DefaultBranch, p.CreatedAt,
+		string(p.GitMode), string(p.Provider), p.ProviderURL, p.ProviderRepo)
 	if err != nil {
 		return fmt.Errorf("create project: %w", err)
 	}
@@ -51,41 +71,35 @@ func (s *PGStore) CreateProject(ctx context.Context, p *domain.Project) error {
 }
 
 func (s *PGStore) GetProject(ctx context.Context, id string) (*domain.Project, error) {
-	var p domain.Project
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, name, repo_url, default_branch, created_at FROM projects WHERE id=$1`, id).
-		Scan(&p.ID, &p.Name, &p.RepoURL, &p.DefaultBranch, &p.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get project: %w", err)
-	}
-	return &p, nil
+	return scanProject(s.pool.QueryRow(ctx,
+		`SELECT `+projectCols+` FROM projects WHERE id=$1`, id))
 }
 
 func (s *PGStore) ListProjects(ctx context.Context) ([]domain.Project, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, name, repo_url, default_branch, created_at FROM projects ORDER BY created_at DESC`)
+		`SELECT `+projectCols+` FROM projects ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
 	defer rows.Close()
 	var out []domain.Project
 	for rows.Next() {
-		var p domain.Project
-		if err := rows.Scan(&p.ID, &p.Name, &p.RepoURL, &p.DefaultBranch, &p.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan project: %w", err)
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, p)
+		out = append(out, *p)
 	}
 	return out, rows.Err()
 }
 
 func (s *PGStore) UpdateProject(ctx context.Context, p *domain.Project) error {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE projects SET name=$2, repo_url=$3, default_branch=$4 WHERE id=$1`,
-		p.ID, p.Name, p.RepoURL, p.DefaultBranch)
+		`UPDATE projects SET name=$2, repo_url=$3, default_branch=$4,
+		    git_mode=$5, provider=$6, provider_url=$7, provider_repo=$8
+		 WHERE id=$1`,
+		p.ID, p.Name, p.RepoURL, p.DefaultBranch,
+		string(p.GitMode), string(p.Provider), p.ProviderURL, p.ProviderRepo)
 	if err != nil {
 		return fmt.Errorf("update project: %w", err)
 	}
@@ -110,14 +124,16 @@ func (s *PGStore) DeleteProject(ctx context.Context, id string) error {
 
 const runCols = `id, project_id, prompt, status, phase, error, k8s_job_name,
 	retried_from, failure_reason, failure_message, attempt, token_hash,
-	created_at, started_at, finished_at, job_cleaned_at`
+	created_at, started_at, finished_at, job_cleaned_at,
+	git_branch, commit_sha, pr_url, pr_number`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
 	err := row.Scan(&r.ID, &r.ProjectID, &r.Prompt, &r.Status, &r.Phase, &r.Error,
 		&r.K8sJobName, &r.RetriedFrom, &r.FailureReason, &r.FailureMessage,
 		&r.Attempt, &r.TokenHash,
-		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt)
+		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt,
+		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -130,10 +146,11 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		r.ID, r.ProjectID, r.Prompt, r.Status, r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
-		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt)
+		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
+		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
@@ -401,6 +418,71 @@ func (s *PGStore) MarkJobCleaned(ctx context.Context, id string) error {
 		return fmt.Errorf("mark job cleaned: %w", err)
 	}
 	return nil
+}
+
+// SetRunGit records the runner-reported branch/commit (from a run.git event)
+// without changing status. First-writer-wins per field via CASE, so a duplicate
+// event is a no-op. Locks the row to serialise with a concurrent PR-create read.
+func (s *PGStore) SetRunGit(ctx context.Context, id, branch, commitSHA string) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	_ = cur
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET
+		    git_branch = CASE WHEN git_branch='' THEN $2 ELSE git_branch END,
+		    commit_sha = CASE WHEN commit_sha='' THEN $3 ELSE commit_sha END
+		 WHERE id=$1`,
+		id, branch, commitSHA); err != nil {
+		return nil, fmt.Errorf("set run git: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// MarkPRCreated stamps pr_url/pr_number, idempotent + first-writer-wins: it
+// writes only where pr_url is currently empty (CASE), so a retry or a raced
+// second tick never double-opens or clobbers an already-recorded PR. The row is
+// locked FOR UPDATE so the empty-check and the write are atomic.
+func (s *PGStore) MarkPRCreated(ctx context.Context, id, prURL string, prNumber int) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	_ = cur
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET
+		    pr_url    = CASE WHEN pr_url=''   THEN $2 ELSE pr_url    END,
+		    pr_number = CASE WHEN pr_url=''   THEN $3 ELSE pr_number END
+		 WHERE id=$1`,
+		id, prURL, prNumber); err != nil {
+		return nil, fmt.Errorf("mark pr created: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// ListRunsAwaitingPR returns succeeded runs with a pushed branch but no PR yet.
+func (s *PGStore) ListRunsAwaitingPR(ctx context.Context) ([]domain.Run, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+runCols+` FROM runs
+		 WHERE status=$1 AND git_branch <> '' AND pr_url = ''
+		 ORDER BY created_at ASC`,
+		string(domain.StatusSucceeded))
+	if err != nil {
+		return nil, fmt.Errorf("list runs awaiting pr: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
 }
 
 // --- Events -----------------------------------------------------------------

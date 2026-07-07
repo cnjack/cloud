@@ -98,6 +98,37 @@ func CanTransition(from, to RunStatus) bool {
 	return transitions[from][to]
 }
 
+// GitMode is a project's git-integration mode (stretch goal ST-1; decision D08).
+type GitMode string
+
+const (
+	// GitModeReadonly is the default: a run ends in a diff artifact only. Nothing
+	// is pushed and no PR is opened — today's (J1-J3) behavior.
+	GitModeReadonly GitMode = "readonly"
+	// GitModeDraftPR: after a successful run with a non-empty diff, the runner
+	// pushes an agent/run-<id> branch and the orchestrator opens a DRAFT PR on the
+	// configured provider. Never auto-merges, never triggers CI (hard gate, D08).
+	GitModeDraftPR GitMode = "draft_pr"
+)
+
+// ValidGitMode reports whether m is a recognised git mode.
+func ValidGitMode(m GitMode) bool {
+	switch m {
+	case GitModeReadonly, GitModeDraftPR:
+		return true
+	}
+	return false
+}
+
+// GitProvider identifies the git host the draft-PR flow targets. Gitea first
+// (D09); GitHub/GitLab are future work.
+type GitProvider string
+
+const (
+	// ProviderGitea is the only provider wired in the MVP (decision D09).
+	ProviderGitea GitProvider = "gitea"
+)
+
 // Project is a repository configuration that runs are created against.
 type Project struct {
 	ID            string    `json:"id"`
@@ -105,6 +136,14 @@ type Project struct {
 	RepoURL       string    `json:"repo_url"`
 	DefaultBranch string    `json:"default_branch"`
 	CreatedAt     time.Time `json:"created_at"`
+
+	// Git integration (ST-1). GitMode defaults to readonly (diff-only). When
+	// draft_pr, Provider/ProviderURL/ProviderRepo point at the git host the
+	// orchestrator opens the draft PR on. ProviderRepo is "owner/name".
+	GitMode      GitMode     `json:"git_mode"`
+	Provider     GitProvider `json:"provider,omitempty"`
+	ProviderURL  string      `json:"provider_url,omitempty"`
+	ProviderRepo string      `json:"provider_repo,omitempty"`
 }
 
 // Run is a single agent invocation against a project.
@@ -133,6 +172,15 @@ type Run struct {
 	// it is part of the run's historical record (audit + e2e verification); this
 	// marker is what keeps the cleanup path from re-processing the run.
 	JobCleanedAt *time.Time `json:"job_cleaned_at,omitempty"`
+
+	// Draft-PR state (ST-1). GitBranch/CommitSHA are reported by the runner via
+	// the run.git event once it has pushed agent/run-<id>. PRURL/PRNumber are
+	// stamped by the reconciler once it has opened (or found) the draft PR.
+	// All empty for readonly-mode runs.
+	GitBranch string `json:"git_branch,omitempty"`
+	CommitSHA string `json:"commit_sha,omitempty"`
+	PRURL     string `json:"pr_url,omitempty"`
+	PRNumber  int    `json:"pr_number,omitempty"`
 
 	// TokenHash is the SHA-256 (hex) of the per-run bearer token injected into
 	// the Job. Never serialised to API clients.
@@ -163,6 +211,10 @@ const (
 	// classification (payload {reason, message}); the reconciler also emits it
 	// when it fails a run from cluster state. See PRD AC-9.
 	EventRunFailure = "run.failure"
+	// EventRunGit is emitted by the runner after it pushes the agent/run-<id>
+	// branch in draft_pr mode (payload {branch, commit_sha}). The orchestrator
+	// persists it and uses branch as the idempotency key for PR creation (ST-1).
+	EventRunGit = "run.git"
 )
 
 // ArtifactKind enumerates the kinds of artifact a run can produce.
@@ -188,12 +240,17 @@ const (
 	FailureAgentError FailureReason = "agent_error"
 	// FailureTimeout: the Job exceeded its activeDeadlineSeconds guardrail.
 	FailureTimeout FailureReason = "timeout"
+	// FailurePushFailed: in draft_pr mode, the runner produced a diff but could
+	// not push the agent/run-<id> branch to the provider (bad token, network,
+	// protected branch). The run is failed so the failure is visible rather than
+	// silently dropping the push. See ST-1 / decision D08.
+	FailurePushFailed FailureReason = "push_failed"
 )
 
 // ValidFailureReason reports whether r is a recognised failure reason.
 func ValidFailureReason(r FailureReason) bool {
 	switch r {
-	case FailureCloneFailed, FailureSetupFailed, FailureAgentError, FailureTimeout:
+	case FailureCloneFailed, FailureSetupFailed, FailureAgentError, FailureTimeout, FailurePushFailed:
 		return true
 	}
 	return false

@@ -24,6 +24,17 @@
 #   START_MOCKLLM    if "1", start the bundled mockllm on 127.0.0.1:8081 and
 #                    point MODEL_BASE_URL at it (self-contained mode)
 #   MOCK_SCENARIO    scenario name for the bundled mockllm (default: write_file)
+#   GIT_MODE         "readonly" (default; diff-only) | "draft_pr". In draft_pr
+#                    mode, after a successful non-empty diff the runner commits to
+#                    a namespaced branch and pushes it (ST-1).
+#   GIT_BRANCH       the branch to create/push in draft_pr mode
+#                    (default: agent/run-<RUN_ID>)
+#   GIT_PUSH_URL     https origin to push to, e.g.
+#                    https://gitea.host/owner/repo.git (required for draft_pr)
+#   GIT_TOKEN        provider token injected as https userinfo for the push
+#                    (required for draft_pr; passed on the CLI only, never stored)
+#   GIT_BASE_BRANCH  the PR base branch (informational; PR base is set by the
+#                    orchestrator from the project default branch)
 #
 # Output:
 #   - the git diff is printed to STDOUT (between markers) AND written to
@@ -207,6 +218,58 @@ printf '===JCODE_DIFF_END run_id=%s===\n' "$RUN_ID"
 
 if [ -z "$DIFF" ]; then
   die agent_error "run produced an empty diff (no changes)"
+fi
+
+# --- 5b. Draft-PR push (ST-1) ------------------------------------------------
+# When GIT_MODE=draft_pr, the orchestrator injected the push contract. Commit the
+# agent's changes onto a namespaced branch agent/run-<RUN_ID> and push it to the
+# provider over https with the token, then report a run.git event so the
+# orchestrator can open the draft PR. A push failure is fatal with a precise
+# reason=push_failed (a real enum value; see docs/11-api.md §1.4) rather than the
+# generic agent_error — the diff is already produced, so this isolates "the run
+# worked but we couldn't publish the branch". readonly mode skips this entirely
+# (the default), leaving today's diff-only behavior unchanged.
+if [ "${GIT_MODE:-readonly}" = "draft_pr" ]; then
+  PUSH_BRANCH="${GIT_BRANCH:-agent/run-$RUN_ID}"
+  [ -n "${GIT_PUSH_URL:-}" ] || die push_failed "GIT_MODE=draft_pr but GIT_PUSH_URL is unset"
+  [ -n "${GIT_TOKEN:-}" ]    || die push_failed "GIT_MODE=draft_pr but GIT_TOKEN is unset"
+  log "draft_pr mode: committing changes onto $PUSH_BRANCH and pushing"
+
+  # Stage everything the agent produced (worktree + untracked) and commit it onto
+  # a fresh branch off the clone HEAD. -A includes deletions/renames the diff
+  # captured. If the agent already committed, those commits are on HEAD and are
+  # carried by the branch too; this commit just captures any remaining worktree
+  # changes (a no-op commit is avoided with --allow-empty guarded by the diff
+  # check above, so there is always something to publish).
+  git -C "$WORKSPACE" checkout -q -b "$PUSH_BRANCH" \
+    || die push_failed "could not create branch $PUSH_BRANCH"
+  git -C "$WORKSPACE" add -A >/dev/null 2>&1 || true
+  if ! git -C "$WORKSPACE" diff --cached --quiet; then
+    git -C "$WORKSPACE" commit -q -m "[jcode] ${TASK_PROMPT%%$'\n'*}" \
+      || die push_failed "could not commit changes onto $PUSH_BRANCH"
+  fi
+  PUSH_SHA="$(git -C "$WORKSPACE" rev-parse HEAD 2>/dev/null || echo '')"
+
+  # Build an authenticated push URL by injecting the token as the userinfo of the
+  # https origin (https://<token>@host/owner/repo.git). This is passed on the
+  # command line to a subprocess only; it is not written to disk. Supports a
+  # token that already carries a "user:pass" form too.
+  AUTH_URL="$(printf '%s' "$GIT_PUSH_URL" | sed -E "s#^https://#https://${GIT_TOKEN}@#")"
+  if [ "$AUTH_URL" = "$GIT_PUSH_URL" ]; then
+    # Not an https:// URL (or sed no-op) — try http:// too, else fail clearly.
+    AUTH_URL="$(printf '%s' "$GIT_PUSH_URL" | sed -E "s#^http://#http://${GIT_TOKEN}@#")"
+  fi
+  if ! git -C "$WORKSPACE" push --quiet "$AUTH_URL" "$PUSH_BRANCH:$PUSH_BRANCH" 2>/tmp/git-push.err; then
+    log "git push failed: $(tr -d '\n' < /tmp/git-push.err | sed -E "s#${GIT_TOKEN}#***#g")"
+    die push_failed "could not push $PUSH_BRANCH to the provider"
+  fi
+  log "pushed $PUSH_BRANCH ($PUSH_SHA)"
+
+  # Report the pushed branch so the orchestrator opens the draft PR (best-effort;
+  # a report failure does not fail the run — the branch is already published).
+  if command -v orchclient >/dev/null 2>&1 && [ -n "${ORCH_BASE_URL:-}" ] && [ -n "${RUN_TOKEN:-}" ]; then
+    orchclient report-git --branch "$PUSH_BRANCH" --commit "$PUSH_SHA" || true
+  fi
 fi
 
 # --- 6. Upload the diff artifact to the orchestrator (best-effort) -----------

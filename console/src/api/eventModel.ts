@@ -53,6 +53,14 @@ export interface ArtifactItem {
   artifact: string;
 }
 
+export interface GitItem {
+  seq: number;
+  ts: string;
+  kind: 'git';
+  branch: string;
+  commitSha?: string;
+}
+
 export interface UnknownItem {
   seq: number;
   ts: string;
@@ -68,6 +76,7 @@ export type TimelineItem =
   | StatusItem
   | FailureItem
   | ArtifactItem
+  | GitItem
   | UnknownItem;
 
 function pretty(value: unknown): string {
@@ -127,6 +136,14 @@ export function toTimelineItem(ev: RunEvent): TimelineItem {
 
     case 'run.artifact':
       return { ...base, kind: 'artifact', artifact: String(p.kind ?? 'artifact') };
+
+    case 'run.git':
+      return {
+        ...base,
+        kind: 'git',
+        branch: String(p.branch ?? ''),
+        commitSha: p.commit_sha ? String(p.commit_sha) : undefined,
+      };
 
     default:
       return { ...base, kind: 'unknown', type: ev.type, raw: pretty(p) };

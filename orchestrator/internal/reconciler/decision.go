@@ -18,6 +18,8 @@
 package reconciler
 
 import (
+	"strings"
+
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/k8s"
 )
@@ -126,4 +128,54 @@ func decide(run domain.Run, jobState k8s.JobState, hasCapacity bool) Decision {
 		// Terminal (succeeded/failed/canceled) or blocked: reconciler leaves it.
 		return Decision{Action: ActionNone}
 	}
+}
+
+// shouldOpenPR is the PURE decision for the draft-PR flow (ST-1): given a run
+// and its project, should the reconciler open a draft PR this tick? It is
+// separated from the side-effecting provider call so it is exhaustively
+// unit-tested with no store/provider/HTTP.
+//
+// The gate: the run must be succeeded, the project must be draft_pr mode with a
+// gitea provider + a repo configured, the runner must have reported a pushed
+// branch (git_branch), and no PR may exist yet (pr_url empty). `providerReady`
+// lets the caller decline when no provider client is configured (degrade to
+// diff-only). All conditions must hold; any false is a clean skip.
+func shouldOpenPR(run domain.Run, proj domain.Project, providerReady bool) bool {
+	if !providerReady {
+		return false
+	}
+	if run.Status != domain.StatusSucceeded {
+		return false
+	}
+	if proj.GitMode != domain.GitModeDraftPR || proj.Provider != domain.ProviderGitea {
+		return false
+	}
+	if strings.TrimSpace(proj.ProviderRepo) == "" {
+		return false
+	}
+	if strings.TrimSpace(run.GitBranch) == "" {
+		return false // runner has not reported a pushed branch yet
+	}
+	if run.PRURL != "" {
+		return false // already opened
+	}
+	return true
+}
+
+// prTitle builds the draft PR title "[jcode] <prompt first line>", trimmed to a
+// sane length so an over-long prompt does not produce a giant title.
+func prTitle(prompt string) string {
+	line := prompt
+	if i := strings.IndexAny(prompt, "\r\n"); i >= 0 {
+		line = prompt[:i]
+	}
+	line = strings.TrimSpace(line)
+	const max = 72
+	if len(line) > max {
+		line = strings.TrimSpace(line[:max-1]) + "…"
+	}
+	if line == "" {
+		line = "agent run"
+	}
+	return "[jcode] " + line
 }

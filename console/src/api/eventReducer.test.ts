@@ -92,4 +92,23 @@ describe('reduceEvents', () => {
     s = reduceEvents(s, [ev(1), ev(2, 'agent.tool_call')]);
     expect(s.derivedStatus).toBeUndefined();
   });
+
+  it('derives the draft-PR link from the run.status frame carrying pr_url (ST-1)', () => {
+    let s = initialEventState();
+    // Terminal succeeded first (no PR yet).
+    s = reduceEvents(s, ev(4, 'run.status', { status: 'succeeded' }));
+    expect(s.prURL).toBeUndefined();
+    // The reconciler re-emits run.status with pr_url once the PR is opened.
+    s = reduceEvents(
+      s,
+      ev(5, 'run.status', {
+        status: 'succeeded',
+        pr_url: 'https://gitea.local/o/r/pulls/42',
+        pr_number: 42,
+      }),
+    );
+    expect(s.prURL).toBe('https://gitea.local/o/r/pulls/42');
+    expect(s.prNumber).toBe(42);
+    expect(s.derivedStatus).toBe('succeeded');
+  });
 });

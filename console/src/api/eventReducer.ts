@@ -23,6 +23,9 @@ export interface EventState {
   lastSeq: number;
   /** Latest status derived from run.status events, if any. */
   derivedStatus?: RunStatus;
+  /** ST-1: draft PR link, from the latest run.status frame that carries pr_url. */
+  prURL?: string;
+  prNumber?: number;
   /** Set of seqs held, for O(1) dedupe. Not for rendering. */
   seen: Set<number>;
 }
@@ -73,6 +76,8 @@ export function reduceEvents(
   const seen = new Set(state.seen);
   let lastSeq = state.lastSeq;
   let derivedStatus = state.derivedStatus;
+  let prURL = state.prURL;
+  let prNumber = state.prNumber;
 
   for (const ev of fresh) {
     seen.add(ev.seq);
@@ -82,14 +87,27 @@ export function reduceEvents(
   // Derive status from the run.status event with the HIGHEST seq (latest wins),
   // independent of arrival order.
   let bestStatusSeq = -1;
+  // Draft-PR link (ST-1): the reconciler re-emits run.status carrying pr_url
+  // once the PR is opened (after the run is terminal). Take it from the
+  // highest-seq status frame that has one.
+  let bestPRSeq = -1;
   for (const ev of events) {
     if (ev.type === 'run.status' && typeof ev.payload?.status === 'string') {
       if (ev.seq > bestStatusSeq) {
         bestStatusSeq = ev.seq;
         derivedStatus = ev.payload.status as RunStatus;
       }
+      const url = ev.payload.pr_url;
+      if (typeof url === 'string' && url !== '' && ev.seq > bestPRSeq) {
+        bestPRSeq = ev.seq;
+        prURL = url;
+        prNumber =
+          typeof ev.payload.pr_number === 'number'
+            ? ev.payload.pr_number
+            : prNumber;
+      }
     }
   }
 
-  return { events, lastSeq, derivedStatus, seen };
+  return { events, lastSeq, derivedStatus, prURL, prNumber, seen };
 }

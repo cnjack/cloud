@@ -2,13 +2,16 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/k8s"
+	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -22,13 +25,15 @@ type Publisher interface {
 type Reconciler struct {
 	st       store.Store
 	launcher k8s.JobLauncher
+	prov     provider.Provider // git provider for draft PRs (ST-1); nil => diff-only
 	cfg      *config.Config
 	log      *slog.Logger
 	pub      Publisher
 	now      func() time.Time // injectable clock for tests
 }
 
-// New builds a Reconciler. pub may be nil.
+// New builds a Reconciler. pub may be nil. The provider is set separately via
+// WithProvider so existing callers/tests are unaffected.
 func New(st store.Store, launcher k8s.JobLauncher, cfg *config.Config, log *slog.Logger, pub Publisher) *Reconciler {
 	return &Reconciler{
 		st:       st,
@@ -38,6 +43,14 @@ func New(st store.Store, launcher k8s.JobLauncher, cfg *config.Config, log *slog
 		pub:      pub,
 		now:      func() time.Time { return time.Now().UTC() },
 	}
+}
+
+// WithProvider sets the git provider used to open draft PRs (ST-1). Nil (the
+// default) means the draft-PR flow degrades to diff-only. Returns r for
+// chaining.
+func (r *Reconciler) WithProvider(p provider.Provider) *Reconciler {
+	r.prov = p
+	return r
 }
 
 // Run drives the loop until ctx is cancelled, ticking every cfg.ReconcileInterval.
@@ -101,6 +114,95 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// Reap Jobs left attached to terminal runs (canceled-racing-schedule, or a
 	// cancel whose best-effort delete failed). See cleanupTerminalJobs.
 	r.cleanupTerminalJobs(ctx)
+
+	// Open draft PRs for succeeded draft_pr-mode runs that pushed a branch but
+	// have no PR yet (ST-1). Runs in its own pass off ListRunsAwaitingPR so it is
+	// crash-safe and idempotent: a run stays in the scan until pr_url is stamped.
+	r.reconcilePRs(ctx)
+}
+
+// reconcilePRs opens a draft PR for each succeeded draft_pr-mode run that has a
+// pushed branch but no PR. It is a no-op when no provider is configured. Each
+// PR-create is idempotent: it first looks up an existing PR by head branch
+// (covering a crash after create-before-persist), and MarkPRCreated is
+// first-writer-wins so two ticks cannot double-record.
+func (r *Reconciler) reconcilePRs(ctx context.Context) {
+	if r.prov == nil {
+		return // draft-PR flow disabled (no provider configured) — diff-only.
+	}
+	runs, err := r.st.ListRunsAwaitingPR(ctx)
+	if err != nil {
+		r.log.Error("reconcile: list runs awaiting pr", "err", err)
+		return
+	}
+	for i := range runs {
+		run := runs[i]
+		proj, err := r.st.GetProject(ctx, run.ProjectID)
+		if err != nil {
+			r.log.Warn("reconcile pr: get project", "run", run.ID, "err", err)
+			continue
+		}
+		if !shouldOpenPR(run, *proj, true) {
+			continue
+		}
+		r.openDraftPR(ctx, &run, proj)
+	}
+}
+
+// openDraftPR looks up (idempotency) or creates the draft PR, then persists
+// pr_url/pr_number and emits a run.status refresh so the console's live stream
+// picks up the link. NEVER merges, NEVER triggers CI (hard gate, D08).
+func (r *Reconciler) openDraftPR(ctx context.Context, run *domain.Run, proj *domain.Project) {
+	owner, repo, ok := provider.SplitRepo(proj.ProviderRepo)
+	if !ok {
+		r.log.Warn("reconcile pr: bad provider_repo", "run", run.ID, "repo", proj.ProviderRepo)
+		return
+	}
+
+	// Idempotency: an existing open PR for this head branch wins (covers a crash
+	// between create and persist, and a human who opened it manually).
+	pr, err := r.prov.FindOpenPRByHead(ctx, owner, repo, run.GitBranch)
+	if err != nil {
+		r.log.Warn("reconcile pr: find existing", "run", run.ID, "err", err)
+		return // transient; retry next tick (run stays in the scan)
+	}
+	if pr == nil {
+		pr, err = r.prov.CreateDraftPR(ctx, provider.CreateDraftPRInput{
+			Owner: owner,
+			Repo:  repo,
+			Head:  run.GitBranch,
+			Base:  proj.DefaultBranch,
+			Title: prTitle(run.Prompt),
+			Body:  prBody(run),
+		})
+		if err != nil {
+			r.log.Warn("reconcile pr: create draft", "run", run.ID, "err", err)
+			return // transient; retry next tick
+		}
+		r.log.Info("reconcile pr: opened draft PR", "run", run.ID, "pr", pr.Number, "url", pr.URL)
+	}
+
+	committed, err := r.st.MarkPRCreated(ctx, run.ID, pr.URL, pr.Number)
+	if err != nil {
+		r.log.Error("reconcile pr: mark pr created", "run", run.ID, "err", err)
+		return
+	}
+	// Re-emit run.status so the SSE stream carries pr_url to a live console.
+	r.emitStatus(ctx, committed)
+}
+
+// prBody is the PR description linking the run for traceability.
+func prBody(run *domain.Run) string {
+	var b strings.Builder
+	b.WriteString("Draft PR opened by jcode Cloud Agent for run `")
+	b.WriteString(run.ID)
+	b.WriteString("`.\n\n")
+	b.WriteString("**Task**\n\n")
+	b.WriteString(strings.TrimSpace(run.Prompt))
+	b.WriteString("\n\n")
+	fmt.Fprintf(&b, "Branch `%s` @ `%s`.\n\n", run.GitBranch, run.CommitSHA)
+	b.WriteString("_Not auto-merged and CI is not auto-triggered — review and iterate._\n")
+	return b.String()
 }
 
 // apply performs the side effects for one decision. Returns true if it made a
@@ -244,6 +346,12 @@ func (r *Reconciler) emitStatus(ctx context.Context, run *domain.Run) {
 		payload["failure_reason"] = string(run.FailureReason)
 		payload["failure_message"] = run.FailureMessage
 	}
+	// Carry the draft-PR link so a live console updates its header without an
+	// extra GET (ST-1). Only present once the PR has been opened.
+	if run.PRURL != "" {
+		payload["pr_url"] = run.PRURL
+		payload["pr_number"] = run.PRNumber
+	}
 	r.emit(ctx, run.ID, domain.EventRunStatus, payload)
 	if run.Status == domain.StatusFailed {
 		r.emit(ctx, run.ID, domain.EventRunFailure, map[string]any{
@@ -284,8 +392,58 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string) 
 	if proj, err := r.st.GetProject(ctx, run.ProjectID); err == nil {
 		env["REPO_URL"] = proj.RepoURL
 		env["REPO_BRANCH"] = proj.DefaultBranch
+		r.addGitPushEnv(env, run, proj)
 	} else {
 		r.log.Error("reconcile: get project for env", "run", run.ID, "err", err)
 	}
 	return env
+}
+
+// addGitPushEnv injects the draft-PR push contract into the runner env when the
+// project is git_mode=draft_pr and a Gitea token is configured. The runner uses
+// these to commit to agent/run-<id> and push over https with the token, then
+// reports a run.git event (see runner/entrypoint.sh, docs/11-api.md §6):
+//
+//	GIT_MODE=draft_pr        selects the push branch after a successful diff
+//	GIT_BRANCH=agent/run-<id> the namespaced branch to create/push (D08)
+//	GIT_PUSH_URL             the https origin to push to (provider_url + repo)
+//	GIT_TOKEN                the PAT injected as a bearer for the https push
+//	GIT_BASE_BRANCH          the PR base (project default branch), for context
+//
+// If the token or provider config is missing, GIT_MODE is left as readonly so
+// the run degrades to diff-only (never fails for a missing push target).
+func (r *Reconciler) addGitPushEnv(env map[string]string, run *domain.Run, proj *domain.Project) {
+	env["GIT_MODE"] = string(domain.GitModeReadonly)
+	if proj.GitMode != domain.GitModeDraftPR {
+		return
+	}
+	if r.cfg.GiteaToken == "" {
+		r.log.Warn("draft_pr project but GITEA_TOKEN unset; runner will stay diff-only", "run", run.ID)
+		return
+	}
+	pushURL := giteaPushURL(r.cfg.GiteaURL, proj)
+	if pushURL == "" {
+		r.log.Warn("draft_pr project but push URL could not be derived; diff-only", "run", run.ID)
+		return
+	}
+	env["GIT_MODE"] = string(domain.GitModeDraftPR)
+	env["GIT_BRANCH"] = "agent/run-" + run.ID
+	env["GIT_PUSH_URL"] = pushURL
+	env["GIT_TOKEN"] = r.cfg.GiteaToken
+	env["GIT_BASE_BRANCH"] = proj.DefaultBranch
+}
+
+// giteaPushURL builds the https push origin "<base>/<owner>/<repo>.git" from the
+// Gitea base URL and the project's provider_repo. Prefers the project's
+// provider_url when set, else the orchestrator-wide GITEA_URL.
+func giteaPushURL(defaultBase string, proj *domain.Project) string {
+	base := strings.TrimRight(strings.TrimSpace(proj.ProviderURL), "/")
+	if base == "" {
+		base = strings.TrimRight(strings.TrimSpace(defaultBase), "/")
+	}
+	owner, repo, ok := provider.SplitRepo(proj.ProviderRepo)
+	if base == "" || !ok {
+		return ""
+	}
+	return fmt.Sprintf("%s/%s/%s.git", base, owner, repo)
 }
