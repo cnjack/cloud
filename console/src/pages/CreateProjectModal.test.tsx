@@ -93,4 +93,20 @@ describe('CreateProjectModal — name-only form', () => {
     expect(screen.queryByTestId('git-mode-control')).toBeNull();
     expect(screen.queryByTestId('link-prompt')).toBeNull();
   });
+
+  it('keeps focus on the name input while typing (does not jump to close button)', () => {
+    const { client } = makeClient();
+    renderModal(client);
+
+    const input = screen.getByTestId('project-name-input');
+    // The modal autofocuses the name field, not the header close button.
+    expect(document.activeElement).toBe(input);
+
+    // Each keystroke re-renders the parent (new onClose identity); focus must
+    // stay put rather than being yanked back to the first focusable control.
+    fill('project-name-input', 'd');
+    expect(document.activeElement).toBe(input);
+    fill('project-name-input', 'de');
+    expect(document.activeElement).toBe(input);
+  });
 });

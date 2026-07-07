@@ -21,25 +21,33 @@ export function Modal({
   'data-testid': testId,
 }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  // Keep the latest onClose without re-running the open effect: callers often
+  // pass an inline handler whose identity changes every render (e.g. on each
+  // keystroke), and we must not re-focus/re-bind on those re-renders.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     };
     document.addEventListener('keydown', onKey);
-    // Focus the first focusable control for keyboard users.
-    const first = panelRef.current?.querySelector<HTMLElement>(
-      'input, textarea, button, [tabindex]',
-    );
-    first?.focus();
+    // Focus a form field first so keyboard users land in the body; fall back to
+    // any focusable control. Querying plain document order would grab the
+    // header's close button, which precedes the body in the DOM.
+    const panel = panelRef.current;
+    const target =
+      panel?.querySelector<HTMLElement>('input, textarea, select') ??
+      panel?.querySelector<HTMLElement>('button, [tabindex]');
+    target?.focus();
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
