@@ -195,6 +195,12 @@
   font-family: var(--font-mono);
   font-size: var(--fs-caption);
   color: var(--color-accent);
+  /* Run ids can be long unbroken hashes; clip to the column so they never
+     spill over the Task cell. min-width:0 lets the grid item shrink. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .prompt {

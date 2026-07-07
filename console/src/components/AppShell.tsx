@@ -2,7 +2,7 @@
  * AppShell — top nav (wordmark + project switcher + demo tag + identity chip)
  * and the routed content region. Responsive: primary ≥1024px, usable at 768px.
  */
-import { NavLink, useNavigate, useParams } from 'react-router-dom';
+import { NavLink, useNavigate, useMatch } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { Wordmark } from './Wordmark';
 import { ProjectSwitcher } from './ProjectSwitcher';
@@ -21,8 +21,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   const providers = auth?.providers ?? [];
   const onSignOut = auth && !demo ? auth.logout : undefined;
   const navigate = useNavigate();
-  const params = useParams();
-  const activeProjectId = params.projectId;
+  // AppShell wraps <Routes> (it isn't itself a routed element), so useParams()
+  // would always be empty here. useMatch reads the params from the current URL
+  // regardless of where in the tree it's called — so the switcher reflects the
+  // project you're viewing instead of being stuck on "All projects".
+  const projectMatch = useMatch('/projects/:projectId');
+  const activeProjectId = projectMatch?.params.projectId;
 
   return (
     <div className={styles.shell}>
