@@ -1,4 +1,10 @@
-# Build + push the jcloud images to GitHub Packages (ghcr.io).
+# Build + push the jcloud images to GitHub Packages (ghcr.io), and cut a release.
+#
+# Every push to main is a release: the `version` job bumps the patch of the
+# latest vX.Y.Z git tag (starting at 0.0.1 when there are none), all four image
+# jobs push `<version>` + `latest` (+ the commit SHA for traceability), and the
+# final `release` job creates the matching `v<version>` git tag — but only after
+# every image has been pushed, so a failed build never leaves a dangling tag.
 #
 # Images (all linux/amd64 — the target company cluster is amd64-only):
 #   ghcr.io/<owner>/jcloud-orchestrator   from orchestrator/
@@ -6,21 +12,50 @@
 #                                         public cnjack/jcode checkout)
 #   ghcr.io/<owner>/jcloud-console        from console/ (vite build + nginx)
 #   ghcr.io/<owner>/jcloud-mockllm        from deploy/mockllm/Dockerfile
-#
-# Tags: `latest` on main, plus the commit SHA (and git tags when pushed).
 name: images
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
   workflow_dispatch:
+
+# Serialize releases so two overlapping runs can't compute the same version.
+concurrency:
+  group: images-release
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: bump
+        name: Compute next patch version
+        run: |
+          git fetch --tags --force
+          latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n1)
+          if [ -z "$latest" ]; then
+            version=0.0.1
+          else
+            v=${latest#v}
+            major=${v%%.*}
+            rest=${v#*.}
+            minor=${rest%%.*}
+            patch=${rest##*.}
+            version="$major.$minor.$((patch + 1))"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Latest tag: ${latest:-<none>} -> next: v$version"
+
   orchestrator:
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -38,9 +73,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-orchestrator
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=latest
             type=sha,format=long
-            type=ref,event=tag
       - uses: docker/build-push-action@v6
         with:
           context: orchestrator
@@ -49,12 +84,13 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=v${{ needs.version.outputs.version }}
             COMMIT=${{ github.sha }}
           cache-from: type=gha,scope=orchestrator
           cache-to: type=gha,mode=max,scope=orchestrator
 
   runner:
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -87,9 +123,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-runner
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=latest
             type=sha,format=long
-            type=ref,event=tag
       - uses: docker/build-push-action@v6
         with:
           context: runner
@@ -99,6 +135,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   console:
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -116,9 +153,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-console
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=latest
             type=sha,format=long
-            type=ref,event=tag
       - uses: docker/build-push-action@v6
         with:
           context: console
@@ -130,6 +167,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=console
 
   mockllm:
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -147,9 +185,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-mockllm
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=latest
             type=sha,format=long
-            type=ref,event=tag
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -158,3 +196,21 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  release:
+    # Tag only once every image for this version has been pushed, so the git tag
+    # always corresponds to a fully published release.
+    needs: [version, orchestrator, runner, console, mockllm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create and push v${{ needs.version.outputs.version }} tag
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
