@@ -8,6 +8,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -15,7 +17,9 @@ import (
 
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
+	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/k8s"
+	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -27,11 +31,68 @@ type Server struct {
 	log      *slog.Logger
 	hub      *sse.Hub
 	launcher k8s.JobLauncher // used to delete Jobs on cancel; may be nil in API-only mode
+
+	// Auth (M2). cipher encrypts identity tokens; oauth is the set of configured
+	// login providers keyed by id; stateKey signs the OAuth CSRF state. All are
+	// zero/empty when no OAuth provider is configured — the system then runs on
+	// CONSOLE_TOKEN alone (backward compatible).
+	cipher   *auth.Cipher
+	oauth    map[domain.GitProvider]provider.OAuthProvider
+	stateKey []byte
 }
 
-// New builds a Server. launcher may be nil (K8s disabled).
+// New builds a Server. launcher may be nil (K8s disabled). The token cipher and
+// OAuth provider registry are built from cfg, so no OAuth config => empty
+// registry => auth endpoints report no providers and CONSOLE_TOKEN still works.
 func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, launcher k8s.JobLauncher) *Server {
-	return &Server{st: st, cfg: cfg, log: log, hub: hub, launcher: launcher}
+	s := &Server{st: st, cfg: cfg, log: log, hub: hub, launcher: launcher}
+
+	// Token cipher (nil when AUTH_TOKEN_KEY is unset). config.Load has already
+	// validated the key when any provider is configured.
+	if c, err := auth.NewCipher(cfg.AuthTokenKey); err != nil {
+		log.Error("auth token cipher disabled: invalid AUTH_TOKEN_KEY", "err", err)
+	} else {
+		s.cipher = c
+	}
+
+	// OAuth provider registry.
+	s.oauth = buildOAuthProviders(cfg.OAuthProviders)
+
+	// Derive the HMAC key that signs OAuth state from the token key so it is
+	// stable across restarts (a cookie mid-flow survives a rollout). Falls back to
+	// a per-process random key when no token key is set (no providers => unused).
+	if kb, err := auth.DecodeTokenKey(cfg.AuthTokenKey); err == nil {
+		h := sha256.Sum256(append(kb, []byte("jcloud-oauth-state")...))
+		s.stateKey = h[:]
+	} else {
+		rk := make([]byte, 32)
+		_, _ = rand.Read(rk)
+		s.stateKey = rk
+	}
+	return s
+}
+
+// buildOAuthProviders constructs the login providers from config. Unknown ids
+// are skipped defensively (config only emits gitea/github/gitlab).
+func buildOAuthProviders(cfgs []config.OAuthProviderConfig) map[domain.GitProvider]provider.OAuthProvider {
+	out := map[domain.GitProvider]provider.OAuthProvider{}
+	for _, pc := range cfgs {
+		oc := provider.OAuthConfig{
+			ClientID:     pc.ClientID,
+			ClientSecret: pc.ClientSecret,
+			ExternalURL:  pc.ExternalURL,
+			InternalURL:  pc.InternalURL,
+		}
+		switch domain.GitProvider(pc.ID) {
+		case domain.ProviderGitea:
+			out[domain.ProviderGitea] = provider.NewGiteaOAuth(oc)
+		case domain.ProviderGitHub:
+			out[domain.ProviderGitHub] = provider.NewGitHubOAuth(oc)
+		case domain.ProviderGitLab:
+			out[domain.ProviderGitLab] = provider.NewGitLabOAuth(oc)
+		}
+	}
+	return out
 }
 
 // Handler builds the full route tree with middleware applied.
@@ -41,39 +102,56 @@ func (s *Server) Handler() http.Handler {
 	// Health (unauthenticated).
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
-	// Console/CLI endpoints — require the static CONSOLE_TOKEN.
+	// Auth endpoints (multitenant blueprint §2). Provider list + login start +
+	// callback are unauthenticated (they establish the session); link/logout/me
+	// require an existing principal.
+	mux.HandleFunc("GET /auth/providers", s.handleAuthProviders)
+	mux.HandleFunc("GET /auth/login/{provider}", s.handleAuthLogin)
+	mux.HandleFunc("GET /auth/callback/{provider}", s.handleAuthCallback)
+	mux.Handle("GET /auth/link/{provider}", s.authed(s.handleAuthLink))
+	mux.Handle("POST /auth/logout", s.authed(s.handleAuthLogout))
+	mux.Handle("GET /api/v1/me", s.authed(s.handleMe))
+
 	// Read-only admin snapshot for the cluster-admin console view (11-api.md §
 	// "System / admin"). Never returns a secret.
-	mux.Handle("GET /api/v1/system", s.console(s.handleGetSystem))
+	mux.Handle("GET /api/v1/system", s.authed(s.handleGetSystem))
 
-	mux.Handle("POST /api/v1/projects", s.console(s.handleCreateProject))
-	mux.Handle("GET /api/v1/projects", s.console(s.handleListProjects))
-	mux.Handle("GET /api/v1/projects/{id}", s.console(s.handleGetProject))
-	mux.Handle("PATCH /api/v1/projects/{id}", s.console(s.handleUpdateProject))
-	mux.Handle("DELETE /api/v1/projects/{id}", s.console(s.handleDeleteProject))
+	// User search (any logged-in user; for the add-member picker).
+	mux.Handle("GET /api/v1/users", s.authed(s.handleSearchUsers))
+
+	mux.Handle("POST /api/v1/projects", s.authed(s.handleCreateProject))
+	mux.Handle("GET /api/v1/projects", s.authed(s.handleListProjects))
+	mux.Handle("GET /api/v1/projects/{id}", s.authed(s.handleGetProject))
+	mux.Handle("PATCH /api/v1/projects/{id}", s.authed(s.handleUpdateProject))
+	mux.Handle("DELETE /api/v1/projects/{id}", s.authed(s.handleDeleteProject))
+
+	// Project members (owner/cluster-admin manage).
+	mux.Handle("GET /api/v1/projects/{id}/members", s.authed(s.handleListMembers))
+	mux.Handle("POST /api/v1/projects/{id}/members", s.authed(s.handleAddMember))
+	mux.Handle("DELETE /api/v1/projects/{id}/members/{userID}", s.authed(s.handleRemoveMember))
 
 	// Services (multitenant blueprint §4). A service is a repo config inside a
 	// project; runs are created against a service.
-	mux.Handle("POST /api/v1/projects/{id}/services", s.console(s.handleCreateService))
-	mux.Handle("GET /api/v1/projects/{id}/services", s.console(s.handleListServices))
-	mux.Handle("PATCH /api/v1/services/{id}", s.console(s.handleUpdateService))
-	mux.Handle("DELETE /api/v1/services/{id}", s.console(s.handleDeleteService))
-	mux.Handle("POST /api/v1/services/{id}/runs", s.console(s.handleCreateServiceRun))
-	mux.Handle("GET /api/v1/services/{id}/runs", s.console(s.handleListServiceRuns))
+	mux.Handle("POST /api/v1/projects/{id}/services", s.authed(s.handleCreateService))
+	mux.Handle("GET /api/v1/projects/{id}/services", s.authed(s.handleListServices))
+	mux.Handle("PATCH /api/v1/services/{id}", s.authed(s.handleUpdateService))
+	mux.Handle("DELETE /api/v1/services/{id}", s.authed(s.handleDeleteService))
+	mux.Handle("POST /api/v1/services/{id}/runs", s.authed(s.handleCreateServiceRun))
+	mux.Handle("GET /api/v1/services/{id}/runs", s.authed(s.handleListServiceRuns))
 
 	// Compat shim: POST /projects/{id}/runs routes to the project's default
 	// service; GET stays project-scoped.
-	mux.Handle("POST /api/v1/projects/{id}/runs", s.console(s.handleCreateRun))
-	mux.Handle("GET /api/v1/projects/{id}/runs", s.console(s.handleListRuns))
-	mux.Handle("GET /api/v1/runs", s.console(s.handleListRuns))
-	mux.Handle("GET /api/v1/runs/{id}", s.console(s.handleGetRun))
-	mux.Handle("GET /api/v1/runs/{id}/events", s.console(s.handleListEvents))
-	// SSE stream also accepts the console token via ?access_token= because a
+	mux.Handle("POST /api/v1/projects/{id}/runs", s.authed(s.handleCreateRun))
+	mux.Handle("GET /api/v1/projects/{id}/runs", s.authed(s.handleListRuns))
+	mux.Handle("GET /api/v1/runs", s.authed(s.handleListRuns))
+	mux.Handle("GET /api/v1/runs/{id}", s.authed(s.handleGetRun))
+	mux.Handle("GET /api/v1/runs/{id}/events", s.authed(s.handleListEvents))
+	// SSE stream also accepts a session/console token via ?access_token= because a
 	// browser EventSource cannot set an Authorization header (see 11-api.md §2.3).
-	mux.Handle("GET /api/v1/runs/{id}/stream", s.consoleStream(s.handleStream))
-	mux.Handle("GET /api/v1/runs/{id}/artifact", s.console(s.handleGetArtifact))
-	mux.Handle("POST /api/v1/runs/{id}/cancel", s.console(s.handleCancelRun))
-	mux.Handle("POST /api/v1/runs/{id}/retry", s.console(s.handleRetryRun))
+	mux.Handle("GET /api/v1/runs/{id}/stream", s.authedStream(s.handleStream))
+	mux.Handle("GET /api/v1/runs/{id}/artifact", s.authedStream(s.handleGetArtifact))
+	mux.Handle("POST /api/v1/runs/{id}/cancel", s.authed(s.handleCancelRun))
+	mux.Handle("POST /api/v1/runs/{id}/retry", s.authed(s.handleRetryRun))
 
 	// Internal endpoints — require the per-run RUN_TOKEN.
 	mux.Handle("POST /internal/v1/runs/{id}/events", s.runToken(s.handleIngestEvents))
@@ -84,35 +162,32 @@ func (s *Server) Handler() http.Handler {
 
 // --- middleware -------------------------------------------------------------
 
-// console wraps a handler with static-console-token auth.
-func (s *Server) console(h http.HandlerFunc) http.Handler {
+// authed resolves the request principal (session cookie, Bearer session token,
+// or CONSOLE_TOKEN) and places it in the context. A 401 with the machine-readable
+// code "unauthorized" (which the console keys off) is returned when unresolved.
+func (s *Server) authed(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tok, ok := auth.BearerToken(r.Header.Get("Authorization"))
-		if !ok || !auth.ConstantTimeEqual(tok, s.cfg.ConsoleToken) {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "valid console bearer token required")
+		p, ok := s.resolvePrincipal(r, false)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
 			return
 		}
-		h(w, r)
+		h(w, r.WithContext(withPrincipal(r.Context(), p)))
 	})
 }
 
-// consoleStream authenticates the SSE endpoint, accepting the console token
-// EITHER as a Bearer header (CLI/fetch clients) OR as an ?access_token= query
-// param. The query-param fallback exists because the browser's native
-// EventSource cannot attach an Authorization header. Both use the same
-// constant-time compare. Only the read-only stream endpoint allows this; every
-// mutating endpoint remains header-only.
-func (s *Server) consoleStream(h http.HandlerFunc) http.Handler {
+// authedStream is authed for the read-only stream/download endpoints: it also
+// accepts a session or console token via ?access_token= (browser EventSource /
+// anchor download cannot attach an Authorization header). Every mutating endpoint
+// remains header/cookie only.
+func (s *Server) authedStream(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tok, ok := auth.BearerToken(r.Header.Get("Authorization"))
+		p, ok := s.resolvePrincipal(r, true)
 		if !ok {
-			tok = r.URL.Query().Get("access_token")
-		}
-		if tok == "" || !auth.ConstantTimeEqual(tok, s.cfg.ConsoleToken) {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "valid console bearer token or access_token required")
+			writeError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
 			return
 		}
-		h(w, r)
+		h(w, r.WithContext(withPrincipal(r.Context(), p)))
 	})
 }
 

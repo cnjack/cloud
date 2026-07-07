@@ -56,10 +56,15 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Any logged-in principal may create a project and becomes its owner. A
+	// service principal (CONSOLE_TOKEN) has no user, so owner_user_id stays NULL
+	// and no member row is written — cluster-admins see every project regardless.
+	prin := principalFrom(r.Context())
 	p := &domain.Project{
-		ID:        domain.NewID(),
-		Name:      req.Name,
-		CreatedAt: time.Now().UTC(),
+		ID:          domain.NewID(),
+		Name:        req.Name,
+		CreatedAt:   time.Now().UTC(),
+		OwnerUserID: prin.userID(),
 	}
 	if err := s.st.CreateProject(r.Context(), p); err != nil {
 		s.log.Error("create project", "err", err)
@@ -79,7 +84,18 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	pv, err := s.projectViewOf(r.Context(), p)
+	if uid := prin.userID(); uid != "" {
+		if err := s.st.UpsertMember(r.Context(), &domain.ProjectMember{
+			ProjectID: p.ID, UserID: uid, Role: domain.RoleOwner, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			// Rollback so we never leave a project the creator cannot see.
+			_ = s.st.DeleteProject(r.Context(), p.ID)
+			s.log.Error("create owner membership", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal", "could not create project membership")
+			return
+		}
+	}
+	pv, err := s.projectViewOf(r.Context(), p, domain.RoleOwner)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load project")
 		return
@@ -88,14 +104,28 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	ps, err := s.st.ListProjects(r.Context())
+	prin := principalFrom(r.Context())
+	// Cluster-admins (and the service principal) see every project; a regular user
+	// sees only the projects they are a member of (blueprint §2 RBAC matrix).
+	var ps []domain.Project
+	var err error
+	if prin.isClusterAdmin() {
+		ps, err = s.st.ListProjects(r.Context())
+	} else {
+		ps, err = s.st.ListProjectsForUser(r.Context(), prin.userID())
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not list projects")
 		return
 	}
 	views := make([]projectView, 0, len(ps))
 	for i := range ps {
-		pv, err := s.projectViewOf(r.Context(), &ps[i])
+		role, _, err := s.effectiveRole(r.Context(), prin, ps[i].ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "could not resolve project access")
+			return
+		}
+		pv, err := s.projectViewOf(r.Context(), &ps[i], role)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", "could not load project")
 			return
@@ -106,7 +136,8 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
-	p, err := s.st.GetProject(r.Context(), r.PathValue("id"))
+	projectID := r.PathValue("id")
+	p, err := s.st.GetProject(r.Context(), projectID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "project not found")
 		return
@@ -115,7 +146,17 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not get project")
 		return
 	}
-	pv, err := s.projectViewOf(r.Context(), p)
+	prin := principalFrom(r.Context())
+	role, hasAccess, err := s.effectiveRole(r.Context(), prin, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not resolve project access")
+		return
+	}
+	if !hasAccess {
+		writeError(w, http.StatusForbidden, "forbidden", "you are not a member of this project")
+		return
+	}
+	pv, err := s.projectViewOf(r.Context(), p, role)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load project")
 		return
@@ -132,6 +173,10 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not get project")
+		return
+	}
+	// Project settings changes require owner (or cluster-admin).
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), id, domain.RoleOwner) {
 		return
 	}
 	var req createProjectReq
@@ -152,7 +197,12 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	if s.patchDefaultServiceFromProjectReq(r.Context(), w, existing.ID, req) {
 		return // an error response was already written
 	}
-	pv, err := s.projectViewOf(r.Context(), existing)
+	role, _, err := s.effectiveRole(r.Context(), principalFrom(r.Context()), existing.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not resolve project access")
+		return
+	}
+	pv, err := s.projectViewOf(r.Context(), existing, role)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load project")
 		return
@@ -200,7 +250,15 @@ func (s *Server) patchDefaultServiceFromProjectReq(ctx context.Context, w http.R
 }
 
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
-	err := s.st.DeleteProject(r.Context(), r.PathValue("id"))
+	projectID := r.PathValue("id")
+	if !s.projectExists(w, r, projectID) {
+		return
+	}
+	// Deleting a project requires owner (or cluster-admin).
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleOwner) {
+		return
+	}
+	err := s.st.DeleteProject(r.Context(), projectID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "project not found")
 		return
@@ -222,6 +280,15 @@ type projectView struct {
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 
+	// Role is the requesting principal's role on this project (M2). A
+	// cluster-admin or the CONSOLE_TOKEN service principal reports "owner" — the
+	// strongest role — since they have full authority everywhere; a real member
+	// reports their stored owner/member/viewer role.
+	Role string `json:"role,omitempty"`
+	// OwnerUserID is the project's owner (empty for a service-principal-created
+	// project).
+	OwnerUserID string `json:"owner_user_id,omitempty"`
+
 	MaxConcurrentRuns *int              `json:"max_concurrent_runs,omitempty"`
 	RunTimeoutSecs    *int64            `json:"run_timeout_secs,omitempty"`
 	ProviderAllowlist []string          `json:"provider_allowlist,omitempty"`
@@ -239,7 +306,7 @@ type projectView struct {
 	Services []domain.Service `json:"services"`
 }
 
-func (s *Server) projectViewOf(ctx context.Context, p *domain.Project) (*projectView, error) {
+func (s *Server) projectViewOf(ctx context.Context, p *domain.Project, role domain.Role) (*projectView, error) {
 	services, err := s.st.ListServices(ctx, p.ID)
 	if err != nil {
 		return nil, err
@@ -251,6 +318,8 @@ func (s *Server) projectViewOf(ctx context.Context, p *domain.Project) (*project
 		ID:                p.ID,
 		Name:              p.Name,
 		CreatedAt:         p.CreatedAt,
+		Role:              string(role),
+		OwnerUserID:       p.OwnerUserID,
 		MaxConcurrentRuns: p.MaxConcurrentRuns,
 		RunTimeoutSecs:    p.RunTimeoutSecs,
 		ProviderAllowlist: p.ProviderAllowlist,

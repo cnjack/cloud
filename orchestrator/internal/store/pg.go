@@ -40,17 +40,21 @@ func (s *PGStore) Close() { s.pool.Close() }
 // --- Projects ---------------------------------------------------------------
 
 const projectCols = `id, name, created_at,
-	max_concurrent_runs, run_timeout_secs, provider_allowlist, injected_env`
+	max_concurrent_runs, run_timeout_secs, provider_allowlist, injected_env, owner_user_id`
 
 func scanProject(row pgx.Row) (*domain.Project, error) {
 	var p domain.Project
+	var ownerUserID *string
 	err := row.Scan(&p.ID, &p.Name, &p.CreatedAt,
-		&p.MaxConcurrentRuns, &p.RunTimeoutSecs, &p.ProviderAllowlist, &p.InjectedEnv)
+		&p.MaxConcurrentRuns, &p.RunTimeoutSecs, &p.ProviderAllowlist, &p.InjectedEnv, &ownerUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scan project: %w", err)
+	}
+	if ownerUserID != nil {
+		p.OwnerUserID = *ownerUserID
 	}
 	return &p, nil
 }
@@ -62,9 +66,9 @@ func (s *PGStore) CreateProject(ctx context.Context, p *domain.Project) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO projects (`+projectCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		p.ID, p.Name, p.CreatedAt,
-		p.MaxConcurrentRuns, p.RunTimeoutSecs, p.ProviderAllowlist, env)
+		p.MaxConcurrentRuns, p.RunTimeoutSecs, p.ProviderAllowlist, env, nullStr(p.OwnerUserID))
 	if err != nil {
 		return fmt.Errorf("create project: %w", err)
 	}
@@ -241,7 +245,7 @@ func (s *PGStore) DeleteService(ctx context.Context, id string) error {
 const runCols = `id, project_id, service_id, prompt, status, kind, phase, error, k8s_job_name,
 	retried_from, failure_reason, failure_message, attempt, token_hash,
 	created_at, started_at, finished_at, job_cleaned_at,
-	git_branch, commit_sha, pr_url, pr_number, review_output`
+	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
@@ -249,7 +253,7 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 		&r.K8sJobName, &r.RetriedFrom, &r.FailureReason, &r.FailureMessage,
 		&r.Attempt, &r.TokenHash,
 		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt,
-		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput)
+		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -265,11 +269,11 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
-		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput)
+		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}

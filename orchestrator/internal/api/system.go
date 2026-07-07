@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/version"
@@ -17,8 +18,17 @@ type systemResponse struct {
 	Guardrails systemGuardrails `json:"guardrails"`
 	Provider   systemProvider   `json:"provider"`
 	Runner     systemRunner     `json:"runner"`
+	Auth       systemAuth       `json:"auth"`
 	Namespace  string           `json:"namespace"`
 	Launcher   string           `json:"launcher"`
+}
+
+// systemAuth is the auth snapshot the console (M4) reads to render the login
+// page and the admin user count. providers is the list of configured OAuth
+// provider ids (never a secret).
+type systemAuth struct {
+	Providers  []string `json:"providers"`
+	UsersCount int      `json:"users_count"`
 }
 
 type systemVersion struct {
@@ -59,6 +69,13 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	usersCount, err := s.st.CountUsers(r.Context())
+	if err != nil {
+		s.log.Error("count users", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not read users")
+		return
+	}
+
 	resp := systemResponse{
 		Version: systemVersion{
 			Version: version.Version,
@@ -83,10 +100,25 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 		Runner: systemRunner{
 			Image: s.cfg.RunnerImage,
 		},
+		Auth: systemAuth{
+			Providers:  s.configuredProviderIDs(),
+			UsersCount: usersCount,
+		},
 		Namespace: s.cfg.Namespace,
 		Launcher:  launcherKind(s.cfg.JobLauncher, s.cfg.DisableK8s),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// configuredProviderIDs returns the sorted ids of the configured OAuth providers
+// for the auth snapshot (never a secret — just "gitea"/"github"/"gitlab").
+func (s *Server) configuredProviderIDs() []string {
+	out := make([]string, 0, len(s.oauth))
+	for id := range s.oauth {
+		out = append(out, string(id))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // launcherKind reports the effective launcher for the admin snapshot. It mirrors

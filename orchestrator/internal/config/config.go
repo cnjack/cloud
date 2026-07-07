@@ -3,6 +3,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strconv"
@@ -63,6 +64,32 @@ type Config struct {
 	// Both empty => draft-PR mode degrades to diff-only (never fails a run).
 	GiteaURL   string // GITEA_URL — Gitea base URL for the PR API + push origin
 	GiteaToken string // GITEA_TOKEN — PAT injected to runner + used by orchestrator
+
+	// --- Auth / OAuth (M2; multitenant blueprint §2) ---
+	// AuthTokenKey is AUTH_TOKEN_KEY: a base64-encoded 32-byte key for the
+	// AES-256-GCM encryption of provider tokens in user_identities. Required once
+	// any OAuth provider is configured (see Load); ignored (may be empty) when no
+	// provider is configured — the system then runs on CONSOLE_TOKEN alone.
+	AuthTokenKey string
+	// ConsoleURL is CONSOLE_URL: where /auth/callback 302s back to after login.
+	ConsoleURL string
+	// SessionTTL is SESSION_TTL (default 30d): how long a login session lasts.
+	SessionTTL time.Duration
+	// OAuthProviders is the set of OAuth providers whose CLIENT_ID is configured.
+	// Empty => the auth endpoints report no providers and login is CONSOLE_TOKEN
+	// only (backward compatible).
+	OAuthProviders []OAuthProviderConfig
+}
+
+// OAuthProviderConfig is one configured OAuth provider (multitenant blueprint
+// §2). ID is "gitea" | "github" | "gitlab". ExternalURL is browser-reachable
+// (authorize redirect); InternalURL is server-to-server (token exchange + API).
+type OAuthProviderConfig struct {
+	ID           string
+	ClientID     string
+	ClientSecret string
+	ExternalURL  string
+	InternalURL  string
 }
 
 // Load resolves configuration from the environment, returning an error listing
@@ -97,6 +124,10 @@ func Load() (*Config, error) {
 		RunnerDockerArgs:  strings.Fields(os.Getenv("RUNNER_DOCKER_ARGS")),
 		GiteaURL:          os.Getenv("GITEA_URL"),
 		GiteaToken:        os.Getenv("GITEA_TOKEN"),
+		AuthTokenKey:      os.Getenv("AUTH_TOKEN_KEY"),
+		ConsoleURL:        getenv("CONSOLE_URL", "http://localhost:5173"),
+		SessionTTL:        getdur("SESSION_TTL", 30*24*time.Hour),
+		OAuthProviders:    loadOAuthProviders(),
 	}
 
 	var missing []string
@@ -117,7 +148,63 @@ func Load() (*Config, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required env: %s", strings.Join(missing, ", "))
 	}
+
+	// AUTH_TOKEN_KEY is required (and must be a valid base64 32-byte key) ONLY
+	// when at least one OAuth provider is configured — the token cipher is used to
+	// store identity tokens. With no providers the system runs on CONSOLE_TOKEN
+	// and the key is optional (blueprint §2 / backward compatibility).
+	if len(c.OAuthProviders) > 0 {
+		if c.AuthTokenKey == "" {
+			return nil, fmt.Errorf("AUTH_TOKEN_KEY is required when any AUTH_*_CLIENT_ID is configured")
+		}
+		if err := validateTokenKey(c.AuthTokenKey); err != nil {
+			return nil, err
+		}
+	}
 	return c, nil
+}
+
+// oauthProviderDefaults lists the supported providers and their public default
+// hosts. Gitea has no public default (it is always self-hosted, so its URLs must
+// be configured); github/gitlab default to their public hosts.
+var oauthProviderDefaults = []struct{ id, extDef, intDef string }{
+	{"gitea", "", ""},
+	{"github", "https://github.com", "https://github.com"},
+	{"gitlab", "https://gitlab.com", "https://gitlab.com"},
+}
+
+// loadOAuthProviders reads AUTH_{P}_CLIENT_ID/_CLIENT_SECRET/_EXTERNAL_URL/
+// _INTERNAL_URL for each supported provider. A provider is "configured" iff its
+// CLIENT_ID is set; unset providers are simply absent from /auth/providers.
+func loadOAuthProviders() []OAuthProviderConfig {
+	var out []OAuthProviderConfig
+	for _, p := range oauthProviderDefaults {
+		prefix := "AUTH_" + strings.ToUpper(p.id) + "_"
+		clientID := os.Getenv(prefix + "CLIENT_ID")
+		if clientID == "" {
+			continue
+		}
+		out = append(out, OAuthProviderConfig{
+			ID:           p.id,
+			ClientID:     clientID,
+			ClientSecret: os.Getenv(prefix + "CLIENT_SECRET"),
+			ExternalURL:  getenv(prefix+"EXTERNAL_URL", p.extDef),
+			InternalURL:  getenv(prefix+"INTERNAL_URL", p.intDef),
+		})
+	}
+	return out
+}
+
+// validateTokenKey checks AUTH_TOKEN_KEY decodes to exactly 32 bytes (AES-256).
+func validateTokenKey(b64 string) error {
+	key, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return fmt.Errorf("AUTH_TOKEN_KEY is not valid base64: %w", err)
+	}
+	if len(key) != 32 {
+		return fmt.Errorf("AUTH_TOKEN_KEY must decode to 32 bytes for AES-256, got %d", len(key))
+	}
+	return nil
 }
 
 func getenv(k, def string) string {

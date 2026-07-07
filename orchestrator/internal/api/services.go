@@ -115,6 +115,10 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load project")
 		return
 	}
+	// Creating/editing a service is a project-settings action: owner only.
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleOwner) {
+		return
+	}
 	var req createServiceReq
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
@@ -159,6 +163,9 @@ func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load project")
+		return
+	}
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleViewer) {
 		return
 	}
 	services, err := s.st.ListServices(r.Context(), projectID)
@@ -238,6 +245,9 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not get service")
 		return
 	}
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), svc.ProjectID, domain.RoleOwner) {
+		return
+	}
 	var req patchServiceReq
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
@@ -263,11 +273,15 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.st.GetService(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+	svc, err := s.st.GetService(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "service not found")
 		return
 	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not get service")
+		return
+	}
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), svc.ProjectID, domain.RoleOwner) {
 		return
 	}
 	// A service with runs cannot be deleted (runs.service_id has no cascade —

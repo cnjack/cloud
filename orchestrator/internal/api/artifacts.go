@@ -14,6 +14,18 @@ import (
 // filename so the console's "download .diff" works; otherwise JSON.
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
+	run, err := s.st.GetRun(r.Context(), runID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load run")
+		return
+	}
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), run.ProjectID, domain.RoleViewer) {
+		return
+	}
 	kind := domain.ArtifactKind(r.URL.Query().Get("kind"))
 	if kind == "" {
 		kind = domain.ArtifactDiff

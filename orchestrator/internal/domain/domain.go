@@ -204,7 +204,9 @@ type Project struct {
 	RunTimeoutSecs    *int64            `json:"run_timeout_secs,omitempty"`
 	ProviderAllowlist []string          `json:"provider_allowlist,omitempty"`
 	InjectedEnv       map[string]string `json:"injected_env,omitempty"`
-	// owner_user_id is deferred to M2 (it FKs the users table created there).
+	// OwnerUserID is the user who created/owns the project (M2). Empty for a
+	// project created by a service principal (CONSOLE_TOKEN), which has no user.
+	OwnerUserID string `json:"owner_user_id,omitempty"`
 }
 
 // Service is a single repository configuration inside a project. Runs are
@@ -245,6 +247,10 @@ type Run struct {
 	// RetriedFrom links a retry run to the original run it was created from
 	// (PRD J2-S4 / AC-10). Nil for first-attempt runs.
 	RetriedFrom *string `json:"retried_from,omitempty"`
+	// TriggeredByUserID is the user who created the run (M2). Nil for a run
+	// triggered by a service principal (CONSOLE_TOKEN) or a legacy run; M3's
+	// draft-PR push falls back to the global GITEA_TOKEN when it is nil.
+	TriggeredByUserID *string `json:"triggered_by_user_id,omitempty"`
 	// FailureReason / FailureMessage are set together whenever Status ==
 	// StatusFailed. FailureMessage is always human-readable and non-empty on
 	// failure (PRD J2-S3 / AC-9).

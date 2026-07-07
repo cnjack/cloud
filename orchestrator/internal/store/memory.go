@@ -14,24 +14,32 @@ import (
 // and idempotency semantics as PGStore so tests exercise real behaviour without
 // a database. It is safe for concurrent use.
 type MemStore struct {
-	mu        sync.Mutex
-	projects  map[string]domain.Project
-	services  map[string]domain.Service
-	runs      map[string]domain.Run
-	events    map[string][]domain.RunEvent  // keyed by runID, kept sorted by seq
-	dedupe    map[string]bool               // keyed by runID+"|"+source+"|"+client_seq
-	artifacts map[string]domain.RunArtifact // keyed by runID+"/"+kind
+	mu         sync.Mutex
+	projects   map[string]domain.Project
+	services   map[string]domain.Service
+	runs       map[string]domain.Run
+	events     map[string][]domain.RunEvent    // keyed by runID, kept sorted by seq
+	dedupe     map[string]bool                 // keyed by runID+"|"+source+"|"+client_seq
+	artifacts  map[string]domain.RunArtifact   // keyed by runID+"/"+kind
+	users      map[string]domain.User          // keyed by user id
+	identities map[string]domain.UserIdentity  // keyed by identity id
+	sessions   map[string]domain.Session       // keyed by session id
+	members    map[string]domain.ProjectMember // keyed by projectID+"|"+userID
 }
 
 // NewMemStore returns an empty in-memory store.
 func NewMemStore() *MemStore {
 	return &MemStore{
-		projects:  map[string]domain.Project{},
-		services:  map[string]domain.Service{},
-		runs:      map[string]domain.Run{},
-		events:    map[string][]domain.RunEvent{},
-		dedupe:    map[string]bool{},
-		artifacts: map[string]domain.RunArtifact{},
+		projects:   map[string]domain.Project{},
+		services:   map[string]domain.Service{},
+		runs:       map[string]domain.Run{},
+		events:     map[string][]domain.RunEvent{},
+		dedupe:     map[string]bool{},
+		artifacts:  map[string]domain.RunArtifact{},
+		users:      map[string]domain.User{},
+		identities: map[string]domain.UserIdentity{},
+		sessions:   map[string]domain.Session{},
+		members:    map[string]domain.ProjectMember{},
 	}
 }
 
@@ -113,6 +121,11 @@ func (m *MemStore) DeleteProject(_ context.Context, id string) error {
 	for rid, r := range m.runs {
 		if r.ProjectID == id {
 			delete(m.runs, rid)
+		}
+	}
+	for k, mem := range m.members {
+		if mem.ProjectID == id {
+			delete(m.members, k)
 		}
 	}
 	return nil

@@ -15,11 +15,15 @@ import (
 // handleListEvents returns durable events with seq > after_seq (default 0).
 func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
-	if _, err := s.st.GetRun(r.Context(), runID); errors.Is(err, store.ErrNotFound) {
+	run, err := s.st.GetRun(r.Context(), runID)
+	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "run not found")
 		return
 	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load run")
+		return
+	}
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), run.ProjectID, domain.RoleViewer) {
 		return
 	}
 	after := int64(queryInt(r, "after_seq", 0))
@@ -42,11 +46,15 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
 	// Confirm the run exists (404 otherwise). Terminality is re-checked after
 	// replay from a fresh read, so we do not rely on this snapshot's status.
-	if _, err := s.st.GetRun(r.Context(), runID); errors.Is(err, store.ErrNotFound) {
+	run, err := s.st.GetRun(r.Context(), runID)
+	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "run not found")
 		return
 	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load run")
+		return
+	}
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), run.ProjectID, domain.RoleViewer) {
 		return
 	}
 

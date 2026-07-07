@@ -13,6 +13,10 @@ import (
 // ErrNotFound is returned when a requested entity does not exist.
 var ErrNotFound = errors.New("not found")
 
+// ErrIdentityTaken is returned by AttachIdentity when the (provider, provider_uid)
+// is already linked to a DIFFERENT user (the /auth/link conflict case).
+var ErrIdentityTaken = errors.New("identity already linked to another user")
+
 // EventInput is a single event to append. For AppendEvents the Seq is the
 // authoritative global seq (caller-assigned). For AppendRunnerEvents the Seq is
 // only the runner's client-side sequence number, used as a per-source
@@ -163,6 +167,64 @@ type Store interface {
 	// Artifacts
 	PutArtifact(ctx context.Context, a *domain.RunArtifact) error
 	GetArtifact(ctx context.Context, runID string, kind domain.ArtifactKind) (*domain.RunArtifact, error)
+
+	// --- Auth: users & identities (M2) ---------------------------------------
+	// CreateUserWithIdentity creates a new user together with its first identity
+	// in one transaction. It decides is_cluster_admin atomically: the user becomes
+	// cluster-admin iff it is the FIRST user in the system, determined under a
+	// lock so two concurrent first logins cannot both become admin. Returns
+	// firstUser=true when it minted the cluster admin. Callers pre-fill both ids.
+	CreateUserWithIdentity(ctx context.Context, u *domain.User, id *domain.UserIdentity) (firstUser bool, err error)
+	// GetUser returns a user by id (ErrNotFound if absent).
+	GetUser(ctx context.Context, id string) (*domain.User, error)
+	// GetIdentity looks up an identity by its provider + provider_uid (the login
+	// key). ErrNotFound if no such identity.
+	GetIdentity(ctx context.Context, provider domain.GitProvider, providerUID string) (*domain.UserIdentity, error)
+	// ListIdentities returns a user's linked identities.
+	ListIdentities(ctx context.Context, userID string) ([]domain.UserIdentity, error)
+	// UpdateIdentityToken re-encrypts an identity's stored tokens after a fresh
+	// login/refresh. refreshEnc may be nil; expiresAt may be nil.
+	UpdateIdentityToken(ctx context.Context, identityID string, accessEnc, refreshEnc []byte, expiresAt *time.Time) error
+	// AttachIdentity links id to userID (the /auth/link flow). If the
+	// (provider, provider_uid) already belongs to userID it refreshes the tokens;
+	// if it belongs to another user it returns ErrIdentityTaken.
+	AttachIdentity(ctx context.Context, userID string, id *domain.UserIdentity) error
+	// CountUsers returns the number of users (admin snapshot / tests).
+	CountUsers(ctx context.Context) (int, error)
+	// SearchUsers returns up to limit users matching q (case-insensitive) on
+	// display_name or any linked identity username. Empty q returns the first
+	// limit users. Used by the add-member picker.
+	SearchUsers(ctx context.Context, q string, limit int) ([]domain.User, error)
+	// GetUserByProviderUsername resolves a user from a (provider, username) pair,
+	// backing the add-member "{provider,username,role}" form. ErrNotFound if no
+	// identity matches.
+	GetUserByProviderUsername(ctx context.Context, provider domain.GitProvider, username string) (*domain.User, error)
+
+	// --- Auth: sessions ------------------------------------------------------
+	// CreateSession stores a new session (only its token_hash is persisted).
+	CreateSession(ctx context.Context, s *domain.Session) error
+	// GetUserBySessionToken returns the user for a currently-valid session
+	// (revoked_at IS NULL AND expires_at > now()) identified by token hash.
+	// ErrNotFound when there is no valid session for the hash.
+	GetUserBySessionToken(ctx context.Context, tokenHash string) (*domain.User, error)
+	// RevokeSession stamps revoked_at on the session with the given token hash.
+	// A missing/already-revoked session is a no-op (not an error).
+	RevokeSession(ctx context.Context, tokenHash string) error
+
+	// --- Auth: project members & ownership -----------------------------------
+	// ListMembers returns a project's members (any order; the API sorts/enriches).
+	ListMembers(ctx context.Context, projectID string) ([]domain.ProjectMember, error)
+	// GetMember returns one membership (ErrNotFound if the user is not a member).
+	GetMember(ctx context.Context, projectID, userID string) (*domain.ProjectMember, error)
+	// UpsertMember inserts or updates a membership role.
+	UpsertMember(ctx context.Context, m *domain.ProjectMember) error
+	// RemoveMember deletes a membership. ErrNotFound if it did not exist.
+	RemoveMember(ctx context.Context, projectID, userID string) error
+	// CountProjectOwners counts members with role='owner' (last-owner guard).
+	CountProjectOwners(ctx context.Context, projectID string) (int, error)
+	// ListProjectsForUser returns the projects the user is a member of, newest
+	// first (the non-admin project list).
+	ListProjectsForUser(ctx context.Context, userID string) ([]domain.Project, error)
 
 	// Lifecycle
 	Close()
