@@ -202,3 +202,33 @@ repo_url 智能解析(server 端统一):`git://` 或未知 host → raw;`http(s)
 | M6 | e2e 脚本 + 全量验证 + 体验走查 | sonnet+本人 | e2e/ deploy/ |
 
 每个 M 完成:构建+单测全绿 → 我验收 → commit(可 push)→ 下一个。
+
+## 8 · @mention webhook(第二轮追加,2026-07-07)
+
+> 状态:实施中。Gitea PR 评论 `@jcode …` 触发云端 run;GitHub/GitLab 留接口。
+
+### 触发面与语义
+- Gitea `issue_comment`(action=created)且 issue 是 PR、评论以 `@jcode`(不区分大小写,允许前导空白)开头:
+  - `@jcode review` → 对该 PR 创建 kind=review run(pr_head/pr_base 取自 webhook payload;pr_url 预填现有 PR)。
+  - `@jcode <任务文本>` → agent run,**基线 = PR head 分支**,产出**推回同一分支**(PR 自动更新):
+    run 预填 pr_url/pr_number(现有 PR)+ pr_head_branch=head;jobEnv 规则:pr_head_branch 非空的 agent run → BASE_BRANCH=BRANCH_NAME=该分支;entrypoint 在 BRANCH_NAME==BASE_BRANCH 时 bundle = 克隆时 SHA..HEAD;push pass 见 run.pr_url 已存在 → **update 模式**:ff-only push 同名分支、跳过开 PR。
+- 其他评论/编辑/删除一律 200 no-op。
+
+### 端点与安全
+- `POST /webhooks/gitea`(公开路径):校验 `X-Gitea-Signature`(HMAC-SHA256(raw body, WEBHOOK_SECRET)),不匹配 401;`X-Gitea-Event != issue_comment` → 200 忽略。
+- **身份映射是硬门槛**:评论者 gitea uid → user_identities → jcloud 用户,且须为目标项目 member+;triggered_by=该用户(push 用其 OAuth token,与 §3 一致)。映射失败/无权限 → 用 GITEA_TOKEN PAT 回帖说明,不创建 run。webhook 路径**不允许**服务主体回退。
+- 去重:runs 新增 origin('api'|'webhook',默认 api)、origin_comment_id、origin_comment_url;origin_comment_id 唯一部分索引;重投递 → 200 no-op。
+- service 解析:payload repo full_name ↔ service(provider=gitea, repo_owner_name);多项目命中取"评论者是成员"的第一个;无命中 → PAT 回帖说明。
+
+### 回执
+- 受理成功:PAT 回帖 `🚀 jcode run started — <CONSOLE_URL>/runs/<id>`;失败场景回帖一句原因。v1 不发完成回执(update 模式 PR 自身会更新;review 会出现 review comment)。
+
+### 部署
+- bootstrap 追加:幂等生成 WEBHOOK_SECRET 入 gitea-orchestrator Secret;对 jcloud org 建 org 级 webhook(target `http://orchestrator.jcloud.svc.cluster.local:8080/webhooks/gitea`,secret 同步,events=issue_comment)。orchestrator env 接 WEBHOOK_SECRET(未配置 → webhook 路由 404,系统照常)。
+
+### UI(极简)
+- run 详情状态头:origin=webhook 时显示小 chip「from PR comment ↗」链接 origin_comment_url。不加新页面。
+
+### 验收
+- Go 单测:验签/事件过滤/解析(review vs 任务)/映射与 RBAC 拒绝/去重/update push 模式。
+- e2e j6-webhook.sh:API 以 jcloud-admin 发评论 `@jcode review` → review run + PR 出现 review;发 `@jcode Add CONTRIBUTING.md ...` → agent run + **同分支新 commit**(PR 更新)+ 回执评论。
