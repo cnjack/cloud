@@ -80,20 +80,29 @@ export function useRunStream(runId: string, enabled = true) {
     }
   }, [derivedStatus, runId, qc]);
 
-  // ST-1: the draft PR is opened by the reconciler a moment AFTER the run goes
-  // terminal, so the single terminal refetch above races ahead of pr_url and the
-  // SSE stream is already closed. Poll the authoritative run a bounded few times
-  // until pr_url lands (readonly runs simply never find one and stop). This is
-  // what makes the "Draft PR #N" chip appear without a manual reload (finding F11).
+  // Late-populated fields land a moment AFTER the run goes terminal, while the
+  // SSE stream is already closed, so the single terminal refetch above races
+  // ahead of them. Poll the authoritative run a bounded few times until the
+  // kind's "late field" arrives:
+  //   - agent runs:  pr_url (the reconciler opens the draft PR post-terminal;
+  //     readonly runs simply never find one and stop) — finding F11.
+  //   - review runs: review_output (the runner posts REVIEW.md around the same
+  //     moment the Job completes; without this the page said "No review output
+  //     was produced" until a manual reload) — M6 live find.
   useEffect(() => {
     if (!terminal) return;
     let cancelled = false;
     const timers: ReturnType<typeof setTimeout>[] = [];
+    const settled = (run: Run | undefined): boolean => {
+      if (!run) return false;
+      if (run.kind === 'review') return Boolean(run.review_output);
+      return Boolean(run.pr_url);
+    };
     [1000, 2000, 4000, 8000].forEach((delay) => {
       timers.push(
         setTimeout(() => {
           if (cancelled) return;
-          if (qc.getQueryData<Run>(qk.run(runId))?.pr_url) return; // already have it
+          if (settled(qc.getQueryData<Run>(qk.run(runId)))) return;
           void qc.invalidateQueries({ queryKey: qk.run(runId) });
         }, delay),
       );
