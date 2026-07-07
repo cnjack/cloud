@@ -70,12 +70,14 @@ export function RunDetailPage() {
   // the terminal-status invalidate hitting a network blip) keeps the previously
   // fetched data in TanStack Query v5 — don't discard the fully-rendered page.
   if (run.isLoading) return <LoadingBlock label="Loading run…" />;
-  if (run.isError && !run.data)
+  if (!run.data)
+    // Covers plain errors AND any state where no run is available (e.g. 403 on
+    // a run in a project you're not a member of) — never white-screen (M7 find).
     return (
       <ErrorBlock error={run.error} onRetry={() => run.refetch()} title="Couldn't load run" />
     );
 
-  const r = run.data!;
+  const r = run.data;
   const canCancel = !isTerminal(r.status);
   const canRetry = isTerminal(r.status);
   const failed = r.status === 'failed';
