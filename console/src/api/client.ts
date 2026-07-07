@@ -118,7 +118,26 @@ async function parseError(res: Response): Promise<never> {
   throw new ApiError(res.status, message, body);
 }
 
-export function createHttpClient(token: string | undefined): ApiClient {
+/**
+ * Token source: a static string (tests/legacy) or a getter (login gate) so the
+ * client picks up runtime token changes without being rebuilt.
+ */
+export type TokenSource = string | undefined | (() => string | undefined);
+
+export interface HttpClientOptions {
+  /**
+   * Fired on any 401 — the session-level "token was revoked/rotated" signal.
+   * The auth layer clears the stored token and routes back to the login gate.
+   */
+  onUnauthorized?: () => void;
+}
+
+export function createHttpClient(
+  token: TokenSource,
+  opts: HttpClientOptions = {},
+): ApiClient {
+  const getToken = typeof token === 'function' ? token : () => token;
+
   async function req<T>(
     path: string,
     init?: RequestInit,
@@ -128,10 +147,11 @@ export function createHttpClient(token: string | undefined): ApiClient {
       headers: {
         Accept: 'application/json',
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-        ...authHeaders(token),
+        ...authHeaders(getToken()),
         ...init?.headers,
       },
     });
+    if (res.status === 401) opts.onUnauthorized?.();
     if (!res.ok) return parseError(res);
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
@@ -200,7 +220,8 @@ export function createHttpClient(token: string | undefined): ApiClient {
       // as a query param. The orchestrator accepts either for the stream route;
       // the proxy also forwards it. In prod the token is a same-origin secret.
       const params = new URLSearchParams({ after_seq: String(afterSeq) });
-      if (token) params.set('access_token', token);
+      const streamToken = getToken();
+      if (streamToken) params.set('access_token', streamToken);
       const url = `${BASE}/runs/${encodeURIComponent(runId)}/stream?${params}`;
       const es = new EventSource(url);
 
@@ -241,7 +262,8 @@ export function createHttpClient(token: string | undefined): ApiClient {
 
     diffDownloadUrl: (runId) => {
       const params = new URLSearchParams({ kind: 'diff', download: '1' });
-      if (token) params.set('access_token', token);
+      const dlToken = getToken();
+      if (dlToken) params.set('access_token', dlToken);
       return `${BASE}/runs/${encodeURIComponent(runId)}/artifact?${params}`;
     },
 

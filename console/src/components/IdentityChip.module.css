@@ -43,6 +43,24 @@
   font-size: var(--fs-tiny);
 }
 
+.signOut {
+  margin-left: var(--space-1);
+  padding: 2px var(--space-2);
+  border: 0;
+  border-left: 1px solid var(--color-border);
+  border-radius: 0;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  line-height: 1;
+  color: var(--color-text-faint);
+  cursor: pointer;
+}
+
+.signOut:hover {
+  color: var(--color-danger-fg);
+}
+
 @media (max-width: 768px) {
   /* On narrow screens keep just the role to save space. */
   .principal,

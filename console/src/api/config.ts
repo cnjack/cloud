@@ -34,3 +34,46 @@ export function loadConfig(): RuntimeConfig {
     role: resolveRole(env.VITE_ROLE),
   };
 }
+
+/* --- runtime token storage (login gate) ----------------------------------
+ *
+ * The login gate persists the console token in localStorage so a manual
+ * sign-in survives reloads. Resolution order: stored token > VITE_CONSOLE_TOKEN.
+ *
+ * Security note (deliberate MVP tradeoff): localStorage is readable by any
+ * script on the origin, i.e. an XSS hole leaks the token. Acceptable for the
+ * single-tenant dev console (localhost + a dev token); a real deployment moves
+ * to httpOnly-cookie sessions / OIDC (see docs/02-decision-log.md D03).
+ */
+
+export const TOKEN_STORAGE_KEY = 'jcloud.console.token';
+
+/** Read the stored token; tolerates storage being unavailable (SSR/private mode). */
+export function readStoredToken(): string | undefined {
+  try {
+    return window.localStorage.getItem(TOKEN_STORAGE_KEY) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeStoredToken(token: string): void {
+  try {
+    window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } catch {
+    /* storage unavailable — session just won't survive a reload */
+  }
+}
+
+export function clearStoredToken(): void {
+  try {
+    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Boot-time token: a manually saved token wins over the env default. */
+export function resolveInitialToken(): string | undefined {
+  return readStoredToken() ?? loadConfig().consoleToken;
+}

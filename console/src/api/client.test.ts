@@ -236,3 +236,40 @@ describe('httpClient — system', () => {
     expect(sys.launcher).toBe('kubernetes');
   });
 });
+
+describe('httpClient — runtime token source (login gate)', () => {
+  it('reads the token through a getter on every request, so rotation needs no rebuild', async () => {
+    const { calls } = mockFetch(() => ({ body: { projects: [] } }));
+    let token: string | undefined = 'first';
+    const client = createHttpClient(() => token);
+
+    await client.listProjects();
+    token = 'second';
+    await client.listProjects();
+
+    const h = (i: number) => (calls[i]!.init!.headers as Record<string, string>).Authorization;
+    expect(h(0)).toBe('Bearer first');
+    expect(h(1)).toBe('Bearer second');
+  });
+
+  it('fires onUnauthorized on a 401 and still throws the ApiError', async () => {
+    mockFetch(() => ({
+      status: 401,
+      body: { error: { code: 'unauthorized', message: 'valid console bearer token required' } },
+    }));
+    const onUnauthorized = vi.fn();
+    const client = createHttpClient('stale', { onUnauthorized });
+
+    await expect(client.listProjects()).rejects.toBeInstanceOf(ApiError);
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire onUnauthorized on non-401 failures', async () => {
+    mockFetch(() => ({ status: 500, body: { error: { message: 'boom' } } }));
+    const onUnauthorized = vi.fn();
+    const client = createHttpClient('t', { onUnauthorized });
+
+    await expect(client.listProjects()).rejects.toBeInstanceOf(ApiError);
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+});

@@ -9,9 +9,19 @@
  * Dark engineering UI: near-black ground, hairline borders, slate text ramp,
  * violet accent, Inter for prose, IBM Plex Mono for code/identifiers/data.
  * Fonts load via <link> in index.html and fall back to system stacks offline.
+ *
+ * THEMING: `:root` holds the DARK palette (default). The LIGHT palette lives in
+ * the `:root[data-theme='light']` block at the bottom and re-points the SAME
+ * semantic tokens at a light primitive family. index.html stamps a concrete
+ * `data-theme` on <html> before first paint (localStorage > OS preference), so
+ * there is no theme flash and no bare `@media` duplication. The header
+ * ThemeToggle flips `data-theme` and persists the choice. Components never see
+ * any of this — they only ever read the semantic `--color-*` tokens.
  */
 
 :root {
+  color-scheme: dark;
+
   /* ---- Brand primitives (raw values; only referenced by semantic tokens) -- */
   --jc-void: #0a0a0c;      /* page ground */
   --jc-void-900: #0c0c0e;  /* aside / inset ground */
@@ -68,6 +78,41 @@
   --jc-diff-del-bg: #1e1210;
   --jc-diff-del-fg: #e08b80;
   --jc-diff-meta-fg: #8f9bb3;
+
+  /* ---- LIGHT primitives -------------------------------------------------- */
+  /* Referenced only by the :root[data-theme='light'] semantic block below.
+     Declared here (harmless in dark) so the two themes read in parallel: raw
+     values live with the other primitives, semantic mapping lives per-theme.
+     A warm off-white paper ground, white cards, ink-slate text, a deeper
+     violet that keeps AA contrast on white, and soft pastel status tints. */
+  --jc-paper: #f5f5f7;      /* page ground */
+  --jc-paper-inset: #ececef; /* inset fields / code chips */
+  --jc-paper-card: #ffffff; /* card / panel */
+  --jc-paper-raised: #fbfbfc; /* raised panel (header controls, menus) */
+  --jc-paper-hover: #eeeef1; /* row / control hover */
+
+  --jc-line-100: #e4e4e9;   /* card border */
+  --jc-line-200: #d6d6dd;   /* control / strong border */
+  --jc-line-050: #eeeef2;   /* subtle hairline */
+
+  --jc-slate-ink-900: #1a1a1f; /* primary text (near-black) */
+  --jc-slate-ink-600: #52525b; /* muted text */
+  --jc-slate-ink-500: #6a6a74; /* dim text */
+  --jc-slate-ink-400: #8a8a94; /* faint text */
+
+  --jc-violet-600: #5a5ae4; /* accent on light (deeper for white-bg contrast) */
+  --jc-violet-700: #4a4ad6; /* accent hover on light */
+
+  /* light status tints: pastel bg + darker readable fg */
+  --jc-blue-bg-l: #e9eefb;
+  --jc-blue-fg-l: #3a5aa6;
+  --jc-green-bg-l: #e3f3ea;
+  --jc-green-fg-l: #2c8659;
+  --jc-red-bg-l: #fbe8e5;
+  --jc-red-fg-l: #bf4438;
+  --jc-amber-bg-l: #f7efdc;
+  --jc-amber-fg-l: #8a6a1c;
+  --jc-diff-meta-fg-l: #5c6a84;
 
   /* ---- Semantic surface tokens ------------------------------------------- */
   --color-bg: var(--jc-void);
@@ -195,4 +240,88 @@
 
   --z-modal: 1000;
   --z-toast: 1100;
+}
+
+/* ===========================================================================
+ * LIGHT THEME — re-points the semantic tokens only (type/spacing/radii/motion
+ * are theme-agnostic and inherit from :root). Applied when index.html stamps
+ * data-theme="light" on <html> (localStorage choice or OS preference). Every
+ * declaration here mirrors a semantic token declared in :root above; keep them
+ * 1:1 so no token is left dark-only.
+ * ======================================================================== */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  /* surfaces */
+  --color-bg: var(--jc-paper);
+  --color-bg-inset: var(--jc-paper-inset);
+  --color-panel: var(--jc-paper-card);
+  --color-panel-raised: var(--jc-paper-raised);
+  --color-panel-hover: var(--jc-paper-hover);
+  --color-code-bg: var(--jc-paper-inset);
+  --color-overlay: rgba(24, 24, 27, 0.35);
+
+  --color-border: var(--jc-line-100);
+  --color-border-strong: var(--jc-line-200);
+  --color-border-subtle: var(--jc-line-050);
+
+  /* text */
+  --color-text: var(--jc-slate-ink-900);
+  --color-text-muted: var(--jc-slate-ink-600);
+  --color-text-dim: var(--jc-slate-ink-500);
+  --color-text-faint: var(--jc-slate-ink-400);
+
+  /* accent — deeper violet on light; white sits on top of a filled button */
+  --color-accent: var(--jc-violet-600);
+  --color-accent-hover: var(--jc-violet-700);
+  --color-accent-dim: var(--jc-violet-500);
+  --color-on-accent: var(--jc-white);
+  --color-focus-ring: var(--jc-violet-600);
+
+  /* status badges */
+  --status-queued-bg: var(--jc-paper-hover);
+  --status-queued-fg: var(--jc-slate-ink-600);
+  --status-queued-dot: var(--jc-slate-350);
+
+  --status-scheduling-bg: var(--jc-amber-bg-l);
+  --status-scheduling-fg: var(--jc-amber-fg-l);
+  --status-scheduling-dot: var(--jc-amber);
+
+  --status-running-bg: var(--jc-blue-bg-l);
+  --status-running-fg: var(--jc-blue-fg-l);
+  --status-running-dot: var(--jc-blue);
+
+  --status-succeeded-bg: var(--jc-green-bg-l);
+  --status-succeeded-fg: var(--jc-green-fg-l);
+  --status-succeeded-dot: var(--jc-green);
+
+  --status-failed-bg: var(--jc-red-bg-l);
+  --status-failed-fg: var(--jc-red-fg-l);
+  --status-failed-dot: var(--jc-red);
+
+  --status-canceled-bg: var(--jc-paper-hover);
+  --status-canceled-fg: var(--jc-slate-ink-500);
+  --status-canceled-dot: var(--jc-slate-ink-400);
+
+  --status-blocked-bg: var(--jc-red-bg-l);
+  --status-blocked-fg: var(--jc-red-fg-l);
+  --status-blocked-dot: var(--jc-red);
+
+  /* semantic action colors */
+  --color-success: var(--jc-green-fg-l);
+  --color-danger: var(--jc-red-fg-l);
+  --color-danger-fg: var(--jc-red-fg-l);
+  --color-warning: var(--jc-amber-fg-l);
+
+  /* diff */
+  --jc-diff-add-bg: var(--jc-green-bg-l);
+  --jc-diff-add-fg: var(--jc-green-fg-l);
+  --jc-diff-del-bg: var(--jc-red-bg-l);
+  --jc-diff-del-fg: var(--jc-red-fg-l);
+  --jc-diff-meta-fg: var(--jc-diff-meta-fg-l);
+
+  /* elevation — softer, lower-opacity shadows read better on a light ground */
+  --shadow-1: 0 1px 2px rgba(24, 24, 27, 0.08);
+  --shadow-2: 0 8px 30px rgba(24, 24, 27, 0.12);
+  --shadow-3: 0 24px 70px rgba(24, 24, 27, 0.18);
 }

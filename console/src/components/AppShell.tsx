@@ -7,12 +7,17 @@ import type { ReactNode } from 'react';
 import { Wordmark } from './Wordmark';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { IdentityChip } from './IdentityChip';
+import { ThemeToggle } from './ThemeToggle';
 import { useDemoMode, useRole } from '../api/ApiProvider';
+import { useOptionalAuth } from '../auth/AuthProvider';
 import styles from './AppShell.module.css';
 
 export function AppShell({ children }: { children: ReactNode }) {
   const demo = useDemoMode();
   const role = useRole();
+  // Sign-out only makes sense for a real verified session (gate mounted, not demo).
+  const auth = useOptionalAuth();
+  const onSignOut = auth && !demo ? auth.logout : undefined;
   const navigate = useNavigate();
   const params = useParams();
   const activeProjectId = params.projectId;
@@ -50,7 +55,8 @@ export function AppShell({ children }: { children: ReactNode }) {
               DEMO
             </span>
           )}
-          <IdentityChip role={role} />
+          <ThemeToggle />
+          <IdentityChip role={role} onSignOut={onSignOut} />
         </div>
       </header>
       <main className={styles.content}>{children}</main>
