@@ -1,0 +1,69 @@
+# Company-cluster overlay: the jcloud stack in namespace `jcode` on the on-prem
+# cluster (context wangwenhui@local), consuming the ghcr.io images CI publishes.
+#
+# Differences vs the local base:
+#   - namespace jcode (namespace.yaml here; base's jcloud namespace not used)
+#   - NO gitseed (runs target the real git.scgzyun.com, which shares this
+#     cluster — that also makes the @mention webhook reachable in-cluster)
+#   - images come from ghcr.io (pullPolicy Always via patch; base uses Never)
+#   - console Deployment/Service (NodePort 30080) — nginx serving the SPA and
+#     proxying /api + /auth to the orchestrator
+#   - REAL credentials are applied out-of-band from the gitignored
+#     deploy/secrets/orchestrator-secret.company.local.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: jcode
+
+resources:
+  - namespace.yaml
+  - ../../base/postgres
+  - ../../base/mockllm
+  - ../../base/orchestrator
+  - console.yaml
+
+images:
+  - name: jcloud/orchestrator
+    newName: ghcr.io/cnjack/jcloud-orchestrator
+    newTag: latest
+  - name: jcloud/mockllm
+    newName: ghcr.io/cnjack/jcloud-mockllm
+    newTag: latest
+
+patches:
+  # ghcr images must actually be pulled (base pins Never for the local store).
+  - target:
+      kind: Deployment
+      name: orchestrator
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
+      - op: replace
+        path: /spec/template/spec/initContainers/0/imagePullPolicy
+        value: Always
+  - target:
+      kind: Deployment
+      name: mockllm
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
+
+  # Environment values over the base ConfigMap. CONSOLE_URL is the browser
+  # entry (NodePort); WEBHOOK_URL works because gitea shares this cluster —
+  # with WEBHOOK_SECRET set, adding a gitea repo auto-registers its hook.
+  - target:
+      kind: ConfigMap
+      name: orchestrator-config
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: orchestrator-config
+      data:
+        K8S_NAMESPACE: jcode
+        RUNNER_IMAGE: ghcr.io/cnjack/jcloud-runner:latest
+        ORCH_BASE_URL: http://orchestrator.jcode.svc.cluster.local:8080
+        MODEL_BASE_URL: http://mockllm.jcode.svc.cluster.local:8081/v1
+        CONSOLE_URL: http://192.168.10.221:30080
+        WEBHOOK_URL: http://orchestrator.jcode.svc.cluster.local:8080/webhooks/gitea
