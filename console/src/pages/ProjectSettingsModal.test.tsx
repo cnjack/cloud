@@ -1,7 +1,7 @@
 /*
  * ProjectSettingsModal — M4. Covers:
- *  - General tab PATCH (only changed default_branch + git_mode; draft_pr flip
- *    sends just git_mode — no provider fields, the server parses the repo)
+ *  - General tab PATCH (a rename is the only project-level edit now — repo
+ *    config lives on services; save sends { name } only when it changed)
  *  - the Delete flow behind a confirm step
  *  - the Members tab: roster render, add-by-search, role change, remove
  */
@@ -24,11 +24,21 @@ function baseProject(overrides: Partial<Project> = {}): Project {
   return {
     id: 'p1',
     name: 'demo',
-    repo_url: 'https://gitea.local/acme/demo.git',
-    default_branch: 'main',
     created_at: '2026-07-07T00:00:00Z',
-    git_mode: 'readonly',
     role: 'owner',
+    services: [
+      {
+        id: 'svc_default',
+        project_id: 'p1',
+        name: 'default',
+        repo_kind: 'provider',
+        provider: 'gitea',
+        repo_owner_name: 'acme/demo',
+        default_branch: 'main',
+        git_mode: 'readonly',
+        created_at: '2026-07-07T00:00:00Z',
+      },
+    ],
     ...overrides,
   };
 }
@@ -97,37 +107,40 @@ function renderModal(client: ApiClient, project: Project, onDeleted = vi.fn(), o
 }
 
 describe('ProjectSettingsModal — General (PATCH)', () => {
-  it('sends only the changed default_branch plus the git_mode', async () => {
+  it('sends only the changed name (a rename is the only project-level edit)', async () => {
     const project = baseProject();
     const { client, ctl } = makeClient(project);
     const { onClose } = renderModal(client, project);
 
-    fireEvent.change(screen.getByTestId('settings-branch-input'), { target: { value: 'dev' } });
+    fireEvent.change(screen.getByTestId('settings-name-input'), { target: { value: 'renamed' } });
     fireEvent.click(screen.getByTestId('project-settings-save'));
 
     await waitFor(() => expect(ctl.patches).toHaveLength(1));
     expect(ctl.patches[0]!.id).toBe('p1');
-    expect(ctl.patches[0]!.input).toEqual({ git_mode: 'readonly', default_branch: 'dev' });
+    expect(ctl.patches[0]!.input).toEqual({ name: 'renamed' });
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('flips readonly → draft_pr sending only git_mode (no provider fields)', async () => {
+  it('does not PATCH at all when the name is unchanged', async () => {
     const project = baseProject();
     const { client, ctl } = makeClient(project);
-    renderModal(client, project);
+    const { onClose } = renderModal(client, project);
 
-    fireEvent.click(screen.getByTestId('git-mode-draft_pr'));
     fireEvent.click(screen.getByTestId('project-settings-save'));
 
-    await waitFor(() => expect(ctl.patches).toHaveLength(1));
-    expect(ctl.patches[0]!.input).toEqual({ git_mode: 'draft_pr' });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(ctl.patches).toHaveLength(0);
   });
 
-  it('pre-selects the draft_pr mode for an existing draft_pr project', () => {
-    const project = baseProject({ git_mode: 'draft_pr', provider: 'gitea', provider_repo: 'jcloud/seed' });
+  it('pre-fills the name and carries no repo config fields', () => {
+    const project = baseProject();
     const { client } = makeClient(project);
     renderModal(client, project);
-    expect(screen.getByTestId('git-mode-draft_pr').getAttribute('aria-checked')).toBe('true');
+    expect((screen.getByTestId('settings-name-input') as HTMLInputElement).value).toBe('demo');
+    // Branch / git-mode / readonly repo moved to services on the project page.
+    expect(screen.queryByTestId('settings-branch-input')).toBeNull();
+    expect(screen.queryByTestId('git-mode-control')).toBeNull();
+    expect(screen.queryByTestId('settings-repo')).toBeNull();
   });
 });
 

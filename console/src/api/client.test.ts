@@ -54,62 +54,59 @@ describe('httpClient — request shaping', () => {
     expect(headers.Authorization).toBeUndefined();
   });
 
-  it('POSTs create-project with a JSON body and content-type', async () => {
+  it('POSTs create-project with a name-only JSON body and content-type', async () => {
     const { calls } = mockFetch(({ init }) => ({
       status: 201,
       body: JSON.parse(init!.body as string),
     }));
     const client = createHttpClient('t');
-    const project = await client.createProject({
-      name: 'demo',
-      repo_url: 'https://git/demo.git',
-      default_branch: 'main',
-    });
+    const project = await client.createProject({ name: 'demo' });
 
     expect(calls[0]!.init!.method).toBe('POST');
     const headers = calls[0]!.init!.headers as Record<string, string>;
     expect(headers['Content-Type']).toBe('application/json');
+    // The orchestrator rejects unknown fields (DisallowUnknownFields), so the
+    // body must be exactly { name } — no legacy repo fields.
+    const body = JSON.parse(calls[0]!.init!.body as string);
+    expect(body).toEqual({ name: 'demo' });
     expect(project.name).toBe('demo');
   });
 
-  it('POSTs create-project with the git integration payload (draft_pr)', async () => {
+  it('POSTs create-service with the git integration payload (draft_pr)', async () => {
     const { calls } = mockFetch(({ init }) => ({
       status: 201,
       body: JSON.parse(init!.body as string),
     }));
     const client = createHttpClient('t');
-    await client.createProject({
-      name: 'seed',
+    await client.createService('p1', {
+      name: 'default',
       repo_url: 'https://gitea.local/jcloud/seed.git',
       default_branch: 'main',
       git_mode: 'draft_pr',
       provider: 'gitea',
-      provider_url: 'http://gitea.internal:3000',
-      provider_repo: 'jcloud/seed',
+      owner_name: 'jcloud/seed',
     });
+    expect(calls[0]!.url).toBe('/api/v1/projects/p1/services');
     const body = JSON.parse(calls[0]!.init!.body as string);
     expect(body).toMatchObject({
       git_mode: 'draft_pr',
       provider: 'gitea',
-      provider_url: 'http://gitea.internal:3000',
-      provider_repo: 'jcloud/seed',
+      owner_name: 'jcloud/seed',
+      repo_url: 'https://gitea.local/jcloud/seed.git',
     });
   });
 
-  it('PATCHes update-project to /projects/{id} with only the changed fields', async () => {
+  it('PATCHes update-project to /projects/{id} with only the changed name', async () => {
     const { calls } = mockFetch(({ init }) => ({
       status: 200,
       body: { id: 'p1', name: 'demo', ...JSON.parse(init!.body as string) },
     }));
     const client = createHttpClient('t');
-    await client.updateProject('p1', {
-      default_branch: 'dev',
-      git_mode: 'readonly',
-    });
+    await client.updateProject('p1', { name: 'renamed' });
     expect(calls[0]!.url).toBe('/api/v1/projects/p1');
     expect(calls[0]!.init!.method).toBe('PATCH');
     const body = JSON.parse(calls[0]!.init!.body as string);
-    expect(body).toEqual({ default_branch: 'dev', git_mode: 'readonly' });
+    expect(body).toEqual({ name: 'renamed' });
   });
 
   it('DELETEs a project and tolerates a 204 No Content response', async () => {
@@ -141,15 +138,16 @@ describe('httpClient — request shaping', () => {
     expect(events[0]!.seq).toBe(8);
   });
 
-  it('creates a run under the project path', async () => {
+  it('creates a run under the service path', async () => {
     const { calls } = mockFetch(({ init }) => ({
       status: 201,
       body: { id: 'run_x', ...JSON.parse(init!.body as string) },
     }));
     const client = createHttpClient('t');
-    await client.createRun('p1', { prompt: 'do it' });
-    expect(calls[0]!.url).toBe('/api/v1/projects/p1/runs');
+    await client.createServiceRun('s1', { prompt: 'do it' });
+    expect(calls[0]!.url).toBe('/api/v1/services/s1/runs');
     expect(calls[0]!.init!.method).toBe('POST');
+    expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ prompt: 'do it' });
   });
 
   it('POSTs to cancel and retry endpoints', async () => {

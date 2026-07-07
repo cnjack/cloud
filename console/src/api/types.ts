@@ -87,17 +87,7 @@ export interface Service {
 export interface Project {
   id: string;
   name: string;
-  repo_url: string;
-  default_branch: string;
   created_at: string;
-  /** ST-1 git integration. Absent is treated as `readonly` by the UI. */
-  git_mode?: GitMode;
-  /** Provider for draft_pr. Empty for readonly. */
-  provider?: GitProvider | '' | string;
-  /** Provider base URL for draft_pr (optional; orchestrator falls back to GITEA_URL). */
-  provider_url?: string;
-  /** `owner/name` on the provider; set when git_mode=draft_pr. */
-  provider_repo?: string;
   /**
    * The requesting principal's role on this project (blueprint §2). A
    * cluster-admin / service principal reports "owner". Absent for demo/legacy
@@ -107,8 +97,9 @@ export interface Project {
   /** The project's owner user id (empty for a service-principal-created project). */
   owner_user_id?: string;
   /**
-   * All services of the project (compat shim flattens the default service's repo
-   * fields above). The console shows the service dimension only when length > 1.
+   * All repositories of the project. A project is a pure container — repo config
+   * lives ONLY here (the old flattened repo_url/git_mode fields are gone with the
+   * simple-mode shim). The UI shows the service dimension only when length > 1.
    */
   services?: Service[];
 }
@@ -346,35 +337,21 @@ export interface UserSearchResult {
 
 /* ---- request bodies ------------------------------------------------------ */
 
+/**
+ * POST /projects — a project is created empty (name only); repositories are
+ * attached afterwards via createService. The orchestrator rejects unknown
+ * fields loudly (DisallowUnknownFields), so no legacy repo fields here.
+ */
 export interface CreateProjectInput {
   name: string;
-  repo_url: string;
-  /** Optional; the orchestrator defaults to `main`. */
-  default_branch?: string;
-  /**
-   * ST-1 git integration (11-api.md §2.1). Omit for readonly (diff-only). When
-   * git_mode=draft_pr the orchestrator requires provider_repo (owner/name) and
-   * defaults provider to `gitea`. provider_url is optional.
-   */
-  git_mode?: GitMode;
-  provider?: GitProvider;
-  provider_url?: string;
-  provider_repo?: string;
 }
 
 /**
- * PATCH /projects/{id} body (11-api.md §2.1). All fields optional — only the
- * ones provided are updated. The orchestrator ignores empty strings, so the UI
- * sends only the fields the operator actually changed.
+ * PATCH /projects/{id} body. A project rename is the only project-level edit;
+ * repo config changes go through the service endpoints instead.
  */
 export interface UpdateProjectInput {
   name?: string;
-  repo_url?: string;
-  default_branch?: string;
-  git_mode?: GitMode;
-  provider?: GitProvider;
-  provider_url?: string;
-  provider_repo?: string;
 }
 
 export interface CreateRunInput {
@@ -392,6 +369,18 @@ export interface CreateServiceInput {
   owner_name?: string;
   git_mode?: GitMode;
   default_branch?: string;
+  /** The provider's numeric repo id (from the repo picker) — rename-proof identity. */
+  provider_repo_id?: number;
+}
+
+/** One entry from GET /providers/{id}/repos — the onboarding repo picker. */
+export interface ProviderRepo {
+  id: number;
+  full_name: string;
+  description?: string;
+  default_branch: string;
+  private: boolean;
+  html_url?: string;
 }
 
 /**

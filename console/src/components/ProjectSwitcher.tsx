@@ -4,6 +4,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useProjects } from '../api/queries';
+import { projectRepoSummary } from '../lib/repo';
 import styles from './ProjectSwitcher.module.css';
 
 export function ProjectSwitcher({
@@ -70,7 +71,7 @@ export function ProjectSwitcher({
               type="button"
             >
               <span className={styles.itemName}>{p.name}</span>
-              <span className={styles.itemRepo}>{p.repo_url}</span>
+              <span className={styles.itemRepo}>{projectRepoSummary(p.services)}</span>
             </button>
           ))}
           {projects && projects.length === 0 && (

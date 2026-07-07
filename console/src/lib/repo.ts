@@ -12,7 +12,7 @@
  *   - git://, ssh, file://, or an http(s) URL without an owner/name path → raw
  *     (no provider; never eligible for draft_pr)
  */
-import type { GitProvider } from '../api/types';
+import type { GitProvider, Service } from '../api/types';
 
 /** Well-known public hosts → provider (mirrors DefaultProviderHosts()). */
 const KNOWN_HOSTS: Record<string, GitProvider> = {
@@ -49,4 +49,20 @@ function ownerNameFromPath(path: string): string {
   const parts = stripped.split('/').filter(Boolean);
   if (parts.length < 2) return '';
   return `${parts[0]}/${parts[1]}`;
+}
+
+/** A short human label for one repository (service): "owner/name" or the raw URL. */
+export function serviceRepoLabel(svc: Service): string {
+  return (svc.repo_kind === 'provider' ? svc.repo_owner_name : svc.raw_repo_url) ?? svc.name;
+}
+
+/**
+ * The one-line repo summary a project card/switcher shows now that repo config
+ * lives only on services: nothing / the sole repo's label / a count.
+ */
+export function projectRepoSummary(services: Service[] | undefined): string {
+  const list = services ?? [];
+  if (list.length === 0) return 'No repositories';
+  if (list.length === 1 && list[0]) return serviceRepoLabel(list[0]);
+  return `${list.length} repositories`;
 }

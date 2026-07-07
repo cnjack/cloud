@@ -246,3 +246,90 @@
     grid-area: created;
   }
 }
+
+/* repo picker (Drone-style onboarding) */
+.repoPicker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.pickerTabs {
+  display: flex;
+  gap: var(--space-1);
+}
+.pickerTab {
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-sm);
+  padding: 2px 10px;
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+.pickerTab[data-active] {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+}
+.pickerList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.pickerItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+}
+.pickerItem:hover:not(:disabled) {
+  background: var(--color-bg-subtle);
+}
+.pickerItem:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+li:last-child > .pickerItem {
+  border-bottom: 0;
+}
+.pickerRepoName {
+  font-family: var(--font-mono);
+  font-size: var(--fs-body-sm);
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.pickerPrivate {
+  font-size: var(--fs-caption);
+  color: var(--color-text-faint);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
+}
+.pickerRepoDesc {
+  font-size: var(--fs-caption);
+  color: var(--color-text-muted);
+}
+.pickerHint {
+  font-size: var(--fs-caption);
+  color: var(--color-text-muted);
+  margin: 0;
+}
+.pickerDivider {
+  font-size: var(--fs-caption);
+  color: var(--color-text-faint);
+  text-align: center;
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}

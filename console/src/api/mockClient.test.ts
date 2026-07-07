@@ -14,22 +14,28 @@ async function flush(ms: number) {
   await vi.advanceTimersByTimeAsync(ms);
 }
 
+// A project is a pure container now: create it empty, attach a 'default'
+// service (the repo config), then dispatch the run against that service.
 async function makeProjectAndRun(
   client: ApiClient,
   prompt = 'Add a line Hello to README',
 ) {
-  const projectP = client.createProject({
-    name: 'demo',
+  const projectP = client.createProject({ name: 'demo' });
+  await flush(500);
+  const project = await projectP;
+
+  const serviceP = client.createService(project.id, {
+    name: 'default',
     repo_url: 'https://gitea.local/acme/demo.git',
     default_branch: 'main',
   });
   await flush(500);
-  const project = await projectP;
+  const service = await serviceP;
 
-  const runP = client.createRun(project.id, { prompt });
+  const runP = client.createServiceRun(service.id, { prompt });
   await flush(500);
   const run = await runP;
-  return { project, run };
+  return { project, service, run };
 }
 
 describe('mockClient — lifecycle', () => {
@@ -154,48 +160,66 @@ describe('mockClient — cancel/retry conflict semantics (409)', () => {
   });
 });
 
-// Git integration + project CRUD (F3/F4). The mock must mirror the orchestrator
-// contract (11-api.md §2.1) so demo/e2e hit the same payload shape and 400s.
-describe('mockClient — project git integration + CRUD', () => {
-  it('stores git integration fields when creating a draft_pr project', async () => {
+// Git integration (now on services) + project CRUD (F3/F4). The mock must
+// mirror the orchestrator contract so demo/e2e hit the same payload shape and
+// 400s: repo config lives ONLY on services; a project PATCH is a rename.
+describe('mockClient — service git integration + project CRUD', () => {
+  async function makeProject(client: ApiClient, name = 'demo') {
+    const p = client.createProject({ name });
+    await flush(200);
+    return p;
+  }
+
+  it('stores git integration fields when creating a draft_pr service', async () => {
     const client = createMockClient();
-    const p = client.createProject({
-      name: 'seed',
+    const project = await makeProject(client, 'seed');
+    const p = client.createService(project.id, {
+      name: 'default',
       repo_url: 'https://gitea.local/jcloud/seed.git',
       default_branch: 'main',
       git_mode: 'draft_pr',
-      provider: 'gitea',
-      provider_url: 'http://gitea.internal:3000',
-      provider_repo: 'jcloud/seed',
     });
     await flush(200);
-    const project = await p;
-    expect(project.git_mode).toBe('draft_pr');
-    expect(project.provider).toBe('gitea');
-    expect(project.provider_repo).toBe('jcloud/seed');
-    expect(project.provider_url).toBe('http://gitea.internal:3000');
+    const svc = await p;
+    expect(svc.git_mode).toBe('draft_pr');
+    expect(svc.provider).toBe('gitea');
+    expect(svc.repo_kind).toBe('provider');
+    expect(svc.repo_owner_name).toBe('jcloud/seed');
   });
 
-  it('defaults a readonly project to empty provider fields', async () => {
+  it('defaults a new service to readonly on the main branch', async () => {
     const client = createMockClient();
-    const p = client.createProject({
-      name: 'demo',
+    const project = await makeProject(client);
+    const p = client.createService(project.id, {
       repo_url: 'https://gitea.local/acme/demo.git',
-      default_branch: 'main',
     });
     await flush(200);
-    const project = await p;
-    expect(project.git_mode).toBe('readonly');
-    expect(project.provider_repo).toBe('');
+    const svc = await p;
+    expect(svc.git_mode).toBe('readonly');
+    expect(svc.default_branch).toBe('main');
+    expect(svc.name).toBe('default');
   });
 
-  it('rejects draft_pr without provider_repo (400 bad_request)', async () => {
+  it('classifies a non-provider repo URL as raw (no provider fields)', async () => {
     const client = createMockClient();
+    const project = await makeProject(client);
+    const p = client.createService(project.id, {
+      repo_url: 'git://seed.internal/seed.git',
+    });
+    await flush(200);
+    const svc = await p;
+    expect(svc.repo_kind).toBe('raw');
+    expect(svc.provider).toBeUndefined();
+    expect(svc.repo_owner_name).toBeUndefined();
+    expect(svc.raw_repo_url).toBe('git://seed.internal/seed.git');
+  });
+
+  it('rejects a draft_pr service on a raw (non-provider) repo (400 bad_request)', async () => {
+    const client = createMockClient();
+    const project = await makeProject(client, 'seed');
     const p = client
-      .createProject({
-        name: 'seed',
-        repo_url: 'https://gitea.local/jcloud/seed.git',
-        default_branch: 'main',
+      .createService(project.id, {
+        repo_url: 'git://seed.internal/seed.git',
         git_mode: 'draft_pr',
       })
       .then(
@@ -211,32 +235,19 @@ describe('mockClient — project git integration + CRUD', () => {
     }
   });
 
-  it('PATCH updates default_branch + flips git_mode to draft_pr', async () => {
+  it('PATCH renames the project (the only project-level edit)', async () => {
     const client = createMockClient();
-    const createP = client.createProject({
-      name: 'demo',
-      repo_url: 'https://gitea.local/acme/demo.git',
-      default_branch: 'main',
-    });
-    await flush(200);
-    const created = await createP;
+    const created = await makeProject(client);
 
-    const patchP = client.updateProject(created.id, {
-      default_branch: 'dev',
-      git_mode: 'draft_pr',
-      provider: 'gitea',
-      provider_repo: 'acme/demo',
-    });
+    const patchP = client.updateProject(created.id, { name: 'renamed' });
     await flush(200);
     const updated = await patchP;
-    expect(updated.default_branch).toBe('dev');
-    expect(updated.git_mode).toBe('draft_pr');
-    expect(updated.provider_repo).toBe('acme/demo');
+    expect(updated.name).toBe('renamed');
 
     // Persisted: a subsequent GET reflects the patch.
     const getP = client.getProject(created.id);
     await flush(200);
-    expect((await getP).default_branch).toBe('dev');
+    expect((await getP).name).toBe('renamed');
   });
 
   it('DELETE removes the project and cascades its runs', async () => {
@@ -373,17 +384,21 @@ describe('mockClient — identity / services / members (M4 demo parity)', () => 
     expect(me.identities.length).toBeGreaterThan(0);
   });
 
-  it('a new project has a default service, and add-repository grows the list', async () => {
+  it('a new project starts with no services, and add-repository grows the list', async () => {
     const client = createMockClient();
-    const projP = client.createProject({
-      name: 'demo',
-      repo_url: 'https://github.com/acme/demo',
-      default_branch: 'main',
-    });
+    const projP = client.createProject({ name: 'demo' });
     await flush(200);
     const project = await projP;
     expect(project.role).toBe('owner');
-    expect(project.services).toHaveLength(1);
+    expect(project.services).toHaveLength(0);
+
+    const defaultP = client.createService(project.id, {
+      name: 'default',
+      repo_url: 'https://github.com/acme/demo',
+      git_mode: 'readonly',
+    });
+    await flush(200);
+    await defaultP;
 
     const svcP = client.createService(project.id, {
       name: 'web',
@@ -400,11 +415,7 @@ describe('mockClient — identity / services / members (M4 demo parity)', () => 
 
   it('seeds the creator as owner, adds a member by search and removes them', async () => {
     const client = createMockClient();
-    const projP = client.createProject({
-      name: 'demo',
-      repo_url: 'https://github.com/acme/demo',
-      default_branch: 'main',
-    });
+    const projP = client.createProject({ name: 'demo' });
     await flush(200);
     const project = await projP;
 
@@ -476,23 +487,24 @@ describe('mockClient — getSystem (cluster snapshot)', () => {
     expect(raw).not.toContain('password');
   });
 
-  it('flips gitea_enabled when a draft_pr project exists', async () => {
+  it('flips gitea_enabled when a draft_pr service exists', async () => {
     const client = createMockClient();
 
     const p1 = client.getSystem();
     await flush(200);
     expect((await p1).provider.gitea_enabled).toBe(false);
 
-    const projP = client.createProject({
-      name: 'pr',
+    const projP = client.createProject({ name: 'pr' });
+    await flush(300);
+    const project = await projP;
+
+    const svcP = client.createService(project.id, {
+      name: 'default',
       repo_url: 'https://gitea.local/o/r.git',
-      default_branch: 'main',
       git_mode: 'draft_pr',
-      provider: 'gitea',
-      provider_repo: 'o/r',
     });
     await flush(300);
-    await projP;
+    await svcP;
 
     const p2 = client.getSystem();
     await flush(200);

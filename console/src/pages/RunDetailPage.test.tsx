@@ -60,7 +60,7 @@ function makeClient(role?: MemberRole): { client: ApiClient; ctl: Ctl } {
     ...(role
       ? {
           getProject: async () =>
-            ({ id: 'proj1', name: 'demo', repo_url: '', default_branch: 'main', created_at: '', role }) as Project,
+            ({ id: 'proj1', name: 'demo', created_at: '', role, services: [] }) as Project,
         }
       : {}),
   };

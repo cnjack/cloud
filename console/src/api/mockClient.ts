@@ -152,23 +152,6 @@ export function createMockClient(): ApiClient {
     is_cluster_admin: u.is_cluster_admin,
   });
 
-  /** Build a default service for a freshly-created project. */
-  function defaultServiceFor(p: Project): Service {
-    const prov = providerForRepoUrl(p.repo_url);
-    return {
-      id: genId('svc'),
-      project_id: p.id,
-      name: 'default',
-      repo_kind: prov ? 'provider' : 'raw',
-      provider: prov ?? undefined,
-      repo_owner_name: prov ? p.provider_repo || ownerName(p.repo_url) : undefined,
-      raw_repo_url: prov ? undefined : p.repo_url,
-      default_branch: p.default_branch,
-      git_mode: (p.git_mode as Service['git_mode']) ?? 'readonly',
-      created_at: p.created_at,
-    };
-  }
-
   /** Attach the services array + the demo principal's role onto a project view. */
   function projectView(p: Project): Project {
     return {
@@ -179,11 +162,31 @@ export function createMockClient(): ApiClient {
     };
   }
 
-  /** Register a project with its default service + owner membership. */
-  function registerProject(p: Project): void {
+  /** Register a project (a pure container) with its services + owner membership. */
+  function registerProject(p: Project, svcs: Service[] = []): void {
     projects.set(p.id, p);
-    services.set(p.id, [defaultServiceFor(p)]);
+    services.set(p.id, svcs);
     members.set(p.id, [asMember(DEMO_USERS[0]!, 'owner')]);
+  }
+
+  /** Build a seeded service (demo fixtures only). */
+  function seedService(
+    projectId: string,
+    ownerNamePath: string,
+    gitMode: Service['git_mode'],
+    createdAt: string,
+  ): Service {
+    return {
+      id: genId('svc'),
+      project_id: projectId,
+      name: 'default',
+      repo_kind: 'provider',
+      provider: 'gitea',
+      repo_owner_name: ownerNamePath,
+      default_branch: 'main',
+      git_mode: gitMode,
+      created_at: createdAt,
+    };
   }
 
   // Seed projects so demo mode isn't a cold empty state after first click.
@@ -194,28 +197,16 @@ export function createMockClient(): ApiClient {
     const readonly: Project = {
       id: genId('proj'),
       name: 'demo',
-      repo_url: 'https://gitea.local/acme/demo.git',
-      default_branch: 'main',
       created_at: nowISO(-3600_000),
-      git_mode: 'readonly',
-      provider: '',
-      provider_url: '',
-      provider_repo: '',
     };
-    registerProject(readonly);
+    registerProject(readonly, [seedService(readonly.id, 'acme/demo', 'readonly', readonly.created_at)]);
 
     const draftPr: Project = {
       id: genId('proj'),
       name: 'seed (draft PR)',
-      repo_url: 'https://gitea.local/jcloud/seed.git',
-      default_branch: 'main',
       created_at: nowISO(-1800_000),
-      git_mode: 'draft_pr',
-      provider: 'gitea',
-      provider_url: 'http://gitea.jcloud.svc.cluster.local:3000',
-      provider_repo: 'jcloud/seed',
     };
-    registerProject(draftPr);
+    registerProject(draftPr, [seedService(draftPr.id, 'jcloud/seed', 'draft_pr', draftPr.created_at)]);
     // Seed a second member so the members tab has something to show.
     members.get(draftPr.id)!.push(asMember(DEMO_USERS[1]!, 'viewer'));
   }
@@ -257,18 +248,19 @@ export function createMockClient(): ApiClient {
   }
 
   function startPlayback(run: StoredRun) {
-    const project = projects.get(run.project_id);
+    // Repo identity lives on the run's service now (a project is a pure
+    // container); makeRun sets service_id before playback starts.
+    const svc = (services.get(run.project_id) ?? []).find((s) => s.id === run.service_id);
+    const repoLabel = svc?.repo_owner_name ?? svc?.raw_repo_url ?? 'repository';
     const willFail =
       /\bfail\b/i.test(run.prompt) ||
-      (project ? /(bad|invalid|nonexistent|does-not-exist)/i.test(project.repo_url) : false);
+      /(bad|invalid|nonexistent|does-not-exist)/i.test(repoLabel);
 
     schedule(run, 400, () => setStatus(run, 'scheduling'));
     schedule(run, 1200, () => {
       setStatus(run, 'running');
       emit(run, 'agent.text', {
-        text: `Cloning ${project?.repo_url ?? 'repository'} (branch ${
-          project?.default_branch ?? 'main'
-        })…`,
+        text: `Cloning ${repoLabel} (branch ${svc?.default_branch ?? 'main'})…`,
       });
     });
 
@@ -287,7 +279,7 @@ export function createMockClient(): ApiClient {
         fail(
           run,
           'clone_failed',
-          `Could not clone ${project?.repo_url ?? 'the repository'}: repository not found. Check the repo URL and clone credentials.`,
+          `Could not clone ${repoLabel}: repository not found. Check the repo URL and clone credentials.`,
         ),
       );
       return;
@@ -386,6 +378,7 @@ export function createMockClient(): ApiClient {
 
   function makeRun(
     projectId: string,
+    serviceId: string | undefined,
     prompt: string,
     retriedFrom?: string,
     attempt = 1,
@@ -393,6 +386,7 @@ export function createMockClient(): ApiClient {
     const run: StoredRun = {
       id: genId('run'),
       project_id: projectId,
+      service_id: serviceId,
       kind: 'agent',
       prompt,
       status: 'queued',
@@ -488,41 +482,17 @@ export function createMockClient(): ApiClient {
     },
 
     async createProject(input: CreateProjectInput) {
-      // Mirror the orchestrator's create validation (11-api.md §2.1 /
-      // handleCreateProject): required name/repo_url, git_mode enum, and the
-      // draft_pr provider/provider_repo rules — so demo/e2e hit the same 400s.
+      // Mirror the orchestrator's create validation (handleCreateProject): a
+      // project is a pure container — name is the only field; repos are attached
+      // afterwards via createService.
       const name = input.name?.trim() ?? '';
-      const repoUrl = input.repo_url?.trim() ?? '';
-      if (!name || !repoUrl) {
-        throw badRequest('name and repo_url are required');
-      }
-      const gitMode = (input.git_mode ?? '').trim() || 'readonly';
-      if (gitMode !== 'readonly' && gitMode !== 'draft_pr') {
-        throw badRequest("git_mode must be 'readonly' or 'draft_pr'");
-      }
-      let provider = (input.provider ?? '').trim();
-      let providerUrl = (input.provider_url ?? '').trim();
-      let providerRepo = (input.provider_repo ?? '').trim();
-      if (gitMode === 'draft_pr') {
-        if (!provider) provider = 'gitea'; // gitea is the only MVP provider (D09)
-        if (provider !== 'gitea') {
-          throw badRequest("provider must be 'gitea' for draft_pr");
-        }
-        if (!providerRepo) {
-          throw badRequest('provider_repo (owner/name) is required for draft_pr');
-        }
+      if (!name) {
+        throw badRequest('name is required');
       }
       const p: Project = {
         id: genId('proj'),
         name,
-        repo_url: repoUrl,
-        default_branch: input.default_branch?.trim() || 'main',
         created_at: nowISO(),
-        git_mode: gitMode,
-        provider: gitMode === 'draft_pr' ? (provider as Project['provider']) : '',
-        provider_url: gitMode === 'draft_pr' ? providerUrl : '',
-        provider_repo:
-          gitMode === 'draft_pr' ? providerRepo || ownerName(repoUrl) : '',
       };
       registerProject(p);
       return delay(projectView(p));
@@ -537,31 +507,11 @@ export function createMockClient(): ApiClient {
     async updateProject(id: string, input: UpdateProjectInput) {
       const existing = projects.get(id);
       if (!existing) throw new ApiError(404, 'project not found');
-      // Match handleUpdateProject: apply only non-empty provided fields; the
+      // Match handleUpdateProject: a rename is the only project-level edit; the
       // orchestrator ignores empty strings (can't clear a field via PATCH).
       const next: Project = { ...existing };
       if (input.name?.trim()) next.name = input.name.trim();
-      if (input.repo_url?.trim()) next.repo_url = input.repo_url.trim();
-      if (input.default_branch?.trim()) next.default_branch = input.default_branch.trim();
-      if (input.git_mode?.trim()) {
-        const gm = input.git_mode.trim();
-        if (gm !== 'readonly' && gm !== 'draft_pr') {
-          throw badRequest("git_mode must be 'readonly' or 'draft_pr'");
-        }
-        next.git_mode = gm;
-      }
-      if (input.provider?.trim()) next.provider = input.provider.trim();
-      if (input.provider_url?.trim()) next.provider_url = input.provider_url.trim();
-      if (input.provider_repo?.trim()) next.provider_repo = input.provider_repo.trim();
       projects.set(id, next);
-      // Keep the default service in sync so the composer/settings reflect a mode
-      // or branch change (matches the orchestrator's patchDefaultService shim).
-      const svcList = services.get(id);
-      if (svcList && svcList.length > 0) {
-        const def = svcList.find((s) => s.name === 'default') ?? svcList[0]!;
-        def.default_branch = next.default_branch;
-        def.git_mode = (next.git_mode as Service['git_mode']) ?? def.git_mode;
-      }
       return delay(projectView(next));
     },
 
@@ -587,11 +537,6 @@ export function createMockClient(): ApiClient {
           .sort((a, b) => b.created_at.localeCompare(a.created_at))
           .map(publicRun),
       );
-    },
-
-    async createRun(projectId: string, input: CreateRunInput) {
-      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
-      return delay(publicRun(makeRun(projectId, input.prompt)));
     },
 
     async getRun(runId: string) {
@@ -628,7 +573,7 @@ export function createMockClient(): ApiClient {
       }
       return delay(
         publicRun(
-          makeRun(orig.project_id, orig.prompt, orig.id, (orig.attempt ?? 1) + 1),
+          makeRun(orig.project_id, orig.service_id, orig.prompt, orig.id, (orig.attempt ?? 1) + 1),
         ),
       );
     },
@@ -744,8 +689,8 @@ export function createMockClient(): ApiClient {
         else if (r.status === 'queued') queued++;
         else if (r.status === 'scheduling') scheduling++;
       }
-      const giteaEnabled = [...projects.values()].some(
-        (p) => p.git_mode === 'draft_pr',
+      const giteaEnabled = [...services.values()].some((list) =>
+        list.some((s) => s.git_mode === 'draft_pr'),
       );
       const info: SystemInfo = {
         version: { version: '1.4.0-demo', commit: 'demo0000' },
@@ -822,6 +767,21 @@ export function createMockClient(): ApiClient {
       return delay(svc);
     },
 
+    async listProviderRepos(provider: string, q?: string) {
+      // Demo: a small static gitea catalogue; other providers report "not
+      // linked" the same way the orchestrator does (403).
+      if (provider !== 'gitea') {
+        throw new ApiError(403, `no ${provider} credential available — link your ${provider} account first`);
+      }
+      const all = [
+        { id: 101, full_name: 'acme/demo', description: 'Demo web app', default_branch: 'main', private: false },
+        { id: 102, full_name: 'acme/api', description: 'Backend API', default_branch: 'main', private: true },
+        { id: 103, full_name: 'jcloud/seed', description: 'Seed repository', default_branch: 'main', private: false },
+      ];
+      const needle = (q ?? '').trim().toLowerCase();
+      return delay(needle ? all.filter((r) => r.full_name.toLowerCase().includes(needle)) : all);
+    },
+
     async createServiceRun(serviceId: string, input: CreateRunInput) {
       let projectId: string | undefined;
       for (const [pid, list] of services) {
@@ -831,9 +791,7 @@ export function createMockClient(): ApiClient {
         }
       }
       if (!projectId) throw new ApiError(404, 'service not found');
-      const run = makeRun(projectId, input.prompt);
-      run.service_id = serviceId;
-      return delay(publicRun(run));
+      return delay(publicRun(makeRun(projectId, serviceId, input.prompt)));
     },
 
     /* ---- members (blueprint §2) ------------------------------------------- */

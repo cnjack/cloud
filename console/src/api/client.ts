@@ -20,6 +20,7 @@ import type {
   PrInfo,
   Project,
   ProjectsEnvelope,
+  ProviderRepo,
   Run,
   RunArtifact,
   RunEvent,
@@ -71,7 +72,6 @@ export interface ApiClient {
   deleteProject(id: string): Promise<void>;
 
   listRuns(projectId: string): Promise<Run[]>;
-  createRun(projectId: string, input: CreateRunInput): Promise<Run>;
   getRun(runId: string): Promise<Run>;
   cancelRun(runId: string): Promise<Run>;
   retryRun(runId: string): Promise<Run>;
@@ -111,6 +111,11 @@ export interface ApiClient {
   createService(projectId: string, input: CreateServiceInput): Promise<Service>;
   /** POST /api/v1/services/{id}/runs — dispatch a run against a specific service. */
   createServiceRun(serviceId: string, input: CreateRunInput): Promise<Run>;
+  /**
+   * GET /providers/{id}/repos?q= — the Drone-style onboarding picker: repos the
+   * caller's provider credential can see. 403 when no credential is linked.
+   */
+  listProviderRepos(provider: string, q?: string): Promise<ProviderRepo[]>;
 
   /* ---- members (blueprint §2) -------------------------------------------- */
   listMembers(projectId: string): Promise<Member[]>;
@@ -238,12 +243,6 @@ export function createHttpClient(
         )
       ).runs,
 
-    createRun: (projectId, input) =>
-      req<Run>(`/projects/${encodeURIComponent(projectId)}/runs`, {
-        method: 'POST',
-        body: JSON.stringify(input),
-      }),
-
     getRun: (runId) => req<Run>(`/runs/${encodeURIComponent(runId)}`),
 
     cancelRun: (runId) =>
@@ -343,6 +342,13 @@ export function createHttpClient(
         method: 'POST',
         body: JSON.stringify(input),
       }),
+
+    listProviderRepos: async (provider, q) =>
+      (
+        await req<{ repos: ProviderRepo[] }>(
+          `/providers/${encodeURIComponent(provider)}/repos${q ? `?q=${encodeURIComponent(q)}` : ''}`,
+        )
+      ).repos,
 
     // Members (blueprint §2).
     listMembers: async (projectId) =>

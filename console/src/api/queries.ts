@@ -120,21 +120,9 @@ export function useRun(runId: string, pollWhileNonTerminal = false) {
   });
 }
 
-export function useCreateRun(projectId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: CreateRunInput) => api.createRun(projectId, input),
-    onSuccess: (run: Run) => {
-      qc.invalidateQueries({ queryKey: qk.runs(projectId) });
-      qc.setQueryData(qk.run(run.id), run);
-    },
-  });
-}
-
 /**
- * Dispatch a run against a specific service (multi-service projects). projectId
- * is only used to invalidate the project's run list after the run is created.
+ * Dispatch a run against a specific service (runs are always service-scoped).
+ * projectId is only used to invalidate the project's run list afterwards.
  */
 export function useCreateServiceRun(projectId: string) {
   const api = useApi();
@@ -146,6 +134,22 @@ export function useCreateServiceRun(projectId: string) {
       qc.invalidateQueries({ queryKey: qk.runs(projectId) });
       qc.setQueryData(qk.run(run.id), run);
     },
+  });
+}
+
+/**
+ * The Drone-style repo picker listing. Only fires while the add-repository form
+ * is open (enabled); a 403 (no linked credential) surfaces as isError and the
+ * form falls back to manual URL entry.
+ */
+export function useProviderRepos(provider: string, q: string, enabled: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ['provider-repos', provider, q],
+    queryFn: () => api.listProviderRepos(provider, q),
+    enabled: enabled && !!provider,
+    staleTime: 30_000,
+    retry: false,
   });
 }
 

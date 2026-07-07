@@ -11,15 +11,16 @@
  * is UX): a viewer sees no composer and no Settings; only an owner (or
  * cluster-admin) can change settings / add a repository / manage members.
  */
-import { useMemo, useState } from 'react';
+import { useDeferredValue, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   useProject,
   useRuns,
-  useCreateRun,
   useCreateServiceRun,
   useCreateService,
+  useProviderRepos,
 } from '../api/queries';
+import { useOptionalAuth } from '../auth/AuthProvider';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { TextField, TextAreaField } from '../components/Field';
@@ -33,7 +34,7 @@ import { ProjectSettingsModal } from './ProjectSettingsModal';
 import { ApiError } from '../api/client';
 import { providerForRepoUrl } from '../lib/repo';
 import { shortId, summarize, timeAgo } from '../lib/format';
-import type { GitMode, Service } from '../api/types';
+import type { GitMode, GitProvider, ProviderRepo, Service } from '../api/types';
 import styles from './ProjectDetailPage.module.css';
 
 /** A human label for a service in the repository selector. */
@@ -50,7 +51,6 @@ export function ProjectDetailPage() {
 
   const project = useProject(projectId);
   const runs = useRuns(projectId);
-  const createRun = useCreateRun(projectId);
   const createServiceRun = useCreateServiceRun(projectId);
   const createService = useCreateService(projectId);
 
@@ -66,9 +66,23 @@ export function ProjectDetailPage() {
   const [repoMode, setRepoMode] = useState<GitMode>('readonly');
   const [repoErr, setRepoErr] = useState<{ name?: string; url?: string }>({});
 
+  // Drone-style repo picker (the primary add path; manual URL is the fallback).
+  const auth = useOptionalAuth();
+  const pickerProviders = useMemo(() => {
+    const ids = (auth?.providers ?? []).map((p) => p.id);
+    // gitea always gets a tab: the orchestrator can list via its PAT fallback
+    // even when OAuth login isn't configured (console-token deployments).
+    return ids.includes('gitea') ? ids : ['gitea', ...ids];
+  }, [auth]);
+  const [pickerProvider, setPickerProvider] = useState('gitea');
+  const [repoQuery, setRepoQuery] = useState('');
+  const deferredQuery = useDeferredValue(repoQuery);
+  const providerRepos = useProviderRepos(pickerProvider, deferredQuery, addOpen);
+
   const p = project.data;
   const services = useMemo(() => p?.services ?? [], [p]);
   const multiService = services.length > 1;
+  const soleService = services.length === 1 ? services[0] : undefined;
   const role = p?.role ?? 'owner';
   const canRun = role !== 'viewer';
   const canManage = role === 'owner';
@@ -87,24 +101,52 @@ export function ProjectDetailPage() {
       return;
     }
     setPromptError(undefined);
-    const onDone = {
-      onSuccess: (run: { id: string }) => {
-        setPrompt('');
-        toast.push({ kind: 'success', message: 'Run dispatched.' });
-        navigate(`/runs/${run.id}`);
+    // Runs are always service-scoped; the selector only shows for multi-repo
+    // projects, otherwise the sole service is used implicitly.
+    if (!activeServiceId) return;
+    createServiceRun.mutate(
+      { serviceId: activeServiceId, input: { prompt: prompt.trim() } },
+      {
+        onSuccess: (run: { id: string }) => {
+          setPrompt('');
+          toast.push({ kind: 'success', message: 'Run dispatched.' });
+          navigate(`/runs/${run.id}`);
+        },
+        onError: (err: unknown) => {
+          const msg = err instanceof ApiError ? err.message : 'Failed to start run.';
+          toast.push({ kind: 'error', message: msg });
+        },
       },
-      onError: (err: unknown) => {
-        const msg = err instanceof ApiError ? err.message : 'Failed to start run.';
-        toast.push({ kind: 'error', message: msg });
+    );
+  };
+
+  // One click on a picked repo attaches it with sensible defaults: the repo's
+  // own name + default branch, draft_pr (the closed loop provider repos exist
+  // for), and the numeric provider_repo_id as its rename-proof identity.
+  const pickRepo = (r: ProviderRepo) => {
+    const name = r.full_name.split('/').pop() || r.full_name;
+    createService.mutate(
+      {
+        name,
+        provider: pickerProvider as GitProvider,
+        owner_name: r.full_name,
+        default_branch: r.default_branch || 'main',
+        git_mode: 'draft_pr',
+        provider_repo_id: r.id,
       },
-    };
-    // Multi-service projects dispatch against the selected service; a single-repo
-    // project uses the project shim (no service concept surfaced).
-    if (multiService && activeServiceId) {
-      createServiceRun.mutate({ serviceId: activeServiceId, input: { prompt: prompt.trim() } }, onDone);
-    } else {
-      createRun.mutate({ prompt: prompt.trim() }, onDone);
-    }
+      {
+        onSuccess: () => {
+          toast.push({ kind: 'success', message: `Repository “${r.full_name}” added.` });
+          setAddOpen(false);
+          setRepoQuery('');
+        },
+        onError: (err) =>
+          toast.push({
+            kind: 'error',
+            message: err instanceof ApiError ? err.message : 'Failed to add repository.',
+          }),
+      },
+    );
   };
 
   const submitRepo = (e: React.FormEvent) => {
@@ -146,7 +188,7 @@ export function ProjectDetailPage() {
       />
     );
 
-  const runBusy = createRun.isPending || createServiceRun.isPending;
+  const runBusy = createServiceRun.isPending;
 
   return (
     <div className={styles.page}>
@@ -162,13 +204,21 @@ export function ProjectDetailPage() {
         <div>
           <h1 className={styles.title}>{p!.name}</h1>
           <div className={styles.repoRow}>
-            <code className={styles.repo}>{p!.repo_url}</code>
-            <span className={styles.branch}>{p!.default_branch}</span>
-            <GitModeBadge gitMode={p!.git_mode} providerRepo={p!.provider_repo} />
-            {multiService && (
+            {soleService ? (
+              <>
+                <code className={styles.repo}>{serviceLabel(soleService)}</code>
+                <span className={styles.branch}>{soleService.default_branch}</span>
+                <GitModeBadge
+                  gitMode={soleService.git_mode}
+                  providerRepo={soleService.repo_owner_name}
+                />
+              </>
+            ) : multiService ? (
               <span className={styles.repoCount} data-testid="repo-count">
                 {services.length} repositories
               </span>
+            ) : (
+              <span className={styles.branch}>No repositories yet</span>
             )}
           </div>
         </div>
@@ -184,7 +234,19 @@ export function ProjectDetailPage() {
         )}
       </header>
 
-      {canRun && (
+      {canRun && services.length === 0 && (
+        <EmptyState
+          data-testid="no-repo-empty"
+          title="Add a repository to get started"
+          description={
+            canManage
+              ? 'Attach a git repository below — runs are dispatched against a repository.'
+              : 'A project owner needs to attach a repository before runs can be dispatched.'
+          }
+        />
+      )}
+
+      {canRun && services.length > 0 && (
         <Card className={styles.composer}>
           <form onSubmit={submit} noValidate>
             {multiService && (
@@ -301,6 +363,71 @@ export function ProjectDetailPage() {
           <div className={styles.addRepo}>
             {addOpen ? (
               <Card className={styles.addRepoCard}>
+                {/* Drone-style picker: search what your provider credential can
+                    see and one-click attach; manual URL entry remains below. */}
+                <div className={styles.repoPicker} data-testid="repo-picker">
+                  {pickerProviders.length > 1 && (
+                    <div className={styles.pickerTabs} role="tablist">
+                      {pickerProviders.map((id) => (
+                        <button
+                          key={id}
+                          type="button"
+                          role="tab"
+                          aria-selected={pickerProvider === id}
+                          className={styles.pickerTab}
+                          data-active={pickerProvider === id || undefined}
+                          onClick={() => setPickerProvider(id)}
+                        >
+                          {id}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <TextField
+                    label="Pick a repository"
+                    placeholder="Search repositories…"
+                    value={repoQuery}
+                    onChange={(e) => setRepoQuery(e.target.value)}
+                    data-testid="repo-picker-search"
+                    autoComplete="off"
+                  />
+                  {providerRepos.isLoading ? (
+                    <p className={styles.pickerHint}>Loading repositories…</p>
+                  ) : providerRepos.isError ? (
+                    <p className={styles.pickerHint} data-testid="repo-picker-error">
+                      {providerRepos.error instanceof ApiError
+                        ? providerRepos.error.message
+                        : `Couldn't list ${pickerProvider} repositories.`}{' '}
+                      Add the repository by URL below instead.
+                    </p>
+                  ) : providerRepos.data && providerRepos.data.length === 0 ? (
+                    <p className={styles.pickerHint}>No repositories match.</p>
+                  ) : (
+                    <ul className={styles.pickerList}>
+                      {(providerRepos.data ?? []).map((r) => (
+                        <li key={r.id}>
+                          <button
+                            type="button"
+                            className={styles.pickerItem}
+                            onClick={() => pickRepo(r)}
+                            disabled={createService.isPending}
+                            data-testid="repo-pick"
+                            data-repo={r.full_name}
+                          >
+                            <span className={styles.pickerRepoName}>
+                              {r.full_name}
+                              {r.private && <span className={styles.pickerPrivate}>private</span>}
+                            </span>
+                            {r.description && (
+                              <span className={styles.pickerRepoDesc}>{r.description}</span>
+                            )}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <div className={styles.pickerDivider}>or add by URL</div>
+                </div>
                 <form onSubmit={submitRepo} noValidate className={styles.addRepoForm}>
                   <TextField
                     label="Repository name"

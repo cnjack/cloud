@@ -1,25 +1,20 @@
 /*
  * ProjectSettingsModal — owner/cluster-admin project settings (blueprint §2/§5).
  * Two tabs:
- *   - General: default branch + git mode (Read-only diff | Draft PR) + a
- *     Delete-project action behind a confirm step.
+ *   - General: project rename + a Delete-project action behind a confirm step.
+ *     Repo config (branch / git mode) lives on the project page per repository —
+ *     a project is a pure container now.
  *   - Members: roster with role management + add-by-search (MembersPanel).
- *
- * The General PATCH sends only fields the operator changed relative to the loaded
- * project, plus git_mode (so a mode flip always applies), matching the
- * orchestrator's "only provided fields" shim (11-api.md §2.1). The repo URL is
- * fixed for a project's history, so it is shown read-only.
  */
 import { useState } from 'react';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
-import { GitModeToggle } from '../components/GitModeToggle';
 import { MembersPanel } from './MembersPanel';
 import { useUpdateProject, useDeleteProject } from '../api/queries';
 import { useToast } from '../components/Toast';
 import { ApiError } from '../api/client';
-import type { GitMode, Project, UpdateProjectInput } from '../api/types';
+import type { Project } from '../api/types';
 import styles from './ProjectSettingsModal.module.css';
 
 type Tab = 'general' | 'members';
@@ -43,15 +38,13 @@ export function ProjectSettingsModal({
   const canManage = (project.role ?? 'owner') === 'owner';
 
   const [tab, setTab] = useState<Tab>('general');
-  const [branch, setBranch] = useState(project.default_branch);
-  const [gitMode, setGitMode] = useState<GitMode>((project.git_mode as GitMode) ?? 'readonly');
+  const [name, setName] = useState(project.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const busy = update.isPending || del.isPending;
 
   const reset = () => {
-    setBranch(project.default_branch);
-    setGitMode((project.git_mode as GitMode) ?? 'readonly');
+    setName(project.name);
     setConfirmDelete(false);
     setTab('general');
   };
@@ -64,14 +57,13 @@ export function ProjectSettingsModal({
 
   const save = (e: React.FormEvent) => {
     e.preventDefault();
-    // git_mode is always carried so a mode switch applies; default_branch only
-    // when changed.
-    const input: UpdateProjectInput = { git_mode: gitMode };
-    if (branch.trim() && branch.trim() !== project.default_branch) {
-      input.default_branch = branch.trim();
+    const next = name.trim();
+    if (!next || next === project.name) {
+      onClose();
+      return;
     }
     update.mutate(
-      { id: project.id, input },
+      { id: project.id, input: { name: next } },
       {
         onSuccess: (updated) => {
           toast.push({ kind: 'success', message: `Project “${updated.name}” updated.` });
@@ -157,22 +149,14 @@ export function ProjectSettingsModal({
         <form id="project-settings-form" onSubmit={save} noValidate>
           <div className={styles.body}>
             <TextField
-              label="Repository"
-              value={project.repo_url}
-              readOnly
-              hint="The repository URL is fixed for the project's history."
-              className={styles.repoField}
-              data-testid="settings-repo"
-            />
-            <TextField
-              label="Default branch"
-              placeholder="main"
-              value={branch}
-              onChange={(e) => setBranch(e.target.value)}
-              data-testid="settings-branch-input"
+              label="Name"
+              placeholder="demo"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              hint="Repository settings (branch, git mode) live on each repository on the project page."
+              data-testid="settings-name-input"
               autoComplete="off"
             />
-            <GitModeToggle value={gitMode} onChange={setGitMode} />
 
             <section className={styles.danger} data-testid="danger-zone">
               <div className={styles.dangerText}>
