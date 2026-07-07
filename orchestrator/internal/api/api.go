@@ -42,6 +42,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
 	// Console/CLI endpoints — require the static CONSOLE_TOKEN.
+	// Read-only admin snapshot for the cluster-admin console view (11-api.md §
+	// "System / admin"). Never returns a secret.
+	mux.Handle("GET /api/v1/system", s.console(s.handleGetSystem))
+
 	mux.Handle("POST /api/v1/projects", s.console(s.handleCreateProject))
 	mux.Handle("GET /api/v1/projects", s.console(s.handleListProjects))
 	mux.Handle("GET /api/v1/projects/{id}", s.console(s.handleGetProject))

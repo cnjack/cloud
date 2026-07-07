@@ -4,6 +4,7 @@
  * defensiveness in one place so components stay clean.
  */
 import type { RunEvent } from './types';
+import { isTerminal, type RunStatus } from './types';
 
 export interface TextItem {
   seq: number;
@@ -148,4 +149,33 @@ export function toTimelineItem(ev: RunEvent): TimelineItem {
     default:
       return { ...base, kind: 'unknown', type: ev.type, raw: pretty(p) };
   }
+}
+
+/**
+ * F7 (timeline ordering): on a fast clone failure the red terminal `run.failure`
+ * block and the terminal `run.status(failed)` frame can micro-order in either
+ * sequence, so a human reading top-to-bottom could see "failed → running →
+ * failed" and be unsure which row is the true end state. Events already render
+ * in strict seq order (the reducer sorts + dedupes), but ordering alone doesn't
+ * disambiguate the *end state*.
+ *
+ * This returns the seq of the run's terminal `run.status` event — the SINGLE
+ * authoritative end-of-run marker — or undefined if the run has not ended. The
+ * Timeline gives that one row a "final" treatment so the end state is
+ * unambiguous regardless of how the failure/status frames interleaved. Because
+ * it keys off status (not arrival), a duplicate or out-of-order status frame
+ * never produces a second "final" row: only the highest-seq terminal status wins.
+ */
+export function terminalStatusSeq(events: RunEvent[]): number | undefined {
+  let best: number | undefined;
+  for (const ev of events) {
+    if (
+      ev.type === 'run.status' &&
+      typeof ev.payload?.status === 'string' &&
+      isTerminal(ev.payload.status as RunStatus)
+    ) {
+      if (best === undefined || ev.seq > best) best = ev.seq;
+    }
+  }
+  return best;
 }

@@ -166,6 +166,24 @@
   font-size: var(--fs-caption);
 }
 
+/* F7: the terminal status row reads as the unambiguous end of the run. A subtle
+   left rule + brighter label lifts it above any micro-ordered failure/status
+   frames so top-to-bottom reading always lands on the true end state. */
+.row[data-final] .sysRow {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--color-border-strong);
+}
+.row[data-final] .sysLabel {
+  color: var(--color-text-muted);
+}
+.finalTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--color-text-faint);
+}
+
 .failure {
   display: flex;
   flex-direction: column;

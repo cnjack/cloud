@@ -19,7 +19,9 @@ func seedDraftPRRun(t *testing.T, st *store.MemStore, branch string) (domain.Pro
 	t.Helper()
 	ctx := context.Background()
 	p := &domain.Project{
-		ID: domain.NewID(), Name: "gp", RepoURL: "http://git/x.git", DefaultBranch: "main",
+		// repo_url shares the provider host (the real-world invariant for a
+		// draft_pr project) so the reconciler's host-match rule injects the token.
+		ID: domain.NewID(), Name: "gp", RepoURL: "http://gitea.test/jcloud/seed.git", DefaultBranch: "main",
 		GitMode: domain.GitModeDraftPR, Provider: domain.ProviderGitea,
 		ProviderURL: "http://gitea.test", ProviderRepo: "jcloud/seed",
 		CreatedAt: time.Now(),

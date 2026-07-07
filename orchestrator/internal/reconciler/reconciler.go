@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -392,28 +393,44 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string) 
 	if proj, err := r.st.GetProject(ctx, run.ProjectID); err == nil {
 		env["REPO_URL"] = proj.RepoURL
 		env["REPO_BRANCH"] = proj.DefaultBranch
-		r.addGitPushEnv(env, run, proj)
+		r.addGitEnv(env, run, proj)
 	} else {
 		r.log.Error("reconcile: get project for env", "run", run.ID, "err", err)
 	}
 	return env
 }
 
-// addGitPushEnv injects the draft-PR push contract into the runner env when the
-// project is git_mode=draft_pr and a Gitea token is configured. The runner uses
-// these to commit to agent/run-<id> and push over https with the token, then
-// reports a run.git event (see runner/entrypoint.sh, docs/11-api.md §6):
+// addGitEnv injects the git-integration contract into the runner env. It sets
+// GIT_MODE and, when a provider token applies, GIT_TOKEN. Two independent
+// concerns are handled here:
 //
-//	GIT_MODE=draft_pr        selects the push branch after a successful diff
-//	GIT_BRANCH=agent/run-<id> the namespaced branch to create/push (D08)
-//	GIT_PUSH_URL             the https origin to push to (provider_url + repo)
-//	GIT_TOKEN                the PAT injected as a bearer for the https push
-//	GIT_BASE_BRANCH          the PR base (project default branch), for context
+//   - Clone auth (F1): a PRIVATE repo can only be READ if the runner clones with
+//     credentials, and the clone happens BEFORE any push logic — so GIT_TOKEN
+//     must be injected for BOTH readonly AND draft_pr whenever the token applies.
+//     GIT_MODE semantics are unchanged: readonly never pushes/opens a PR.
+//   - Push contract (ST-1): draft_pr additionally gets GIT_BRANCH/GIT_PUSH_URL/
+//     GIT_BASE_BRANCH so the runner can push agent/run-<id> after a good diff.
 //
-// If the token or provider config is missing, GIT_MODE is left as readonly so
-// the run degrades to diff-only (never fails for a missing push target).
-func (r *Reconciler) addGitPushEnv(env map[string]string, run *domain.Run, proj *domain.Project) {
+// HOST-MATCH RULE (security): the configured Gitea token is a credential for the
+// provider host ONLY. We inject it iff (a) cfg.GiteaToken is non-empty AND (b)
+// REPO_URL is an http(s) URL whose host matches the provider host (proj.
+// ProviderURL when set, else cfg.GiteaURL). We NEVER inject the token for
+// file:// (or any non-http) repos, nor when REPO_URL points at an unrelated git
+// host — that would leak the Gitea PAT to a third party. See gitHostMatchesProvider.
+func (r *Reconciler) addGitEnv(env map[string]string, run *domain.Run, proj *domain.Project) {
+	// Default: readonly, no token. draft_pr may upgrade GIT_MODE below.
 	env["GIT_MODE"] = string(domain.GitModeReadonly)
+
+	// Clone-token injection (F1) — applies to readonly AND draft_pr.
+	tokenApplies := r.cfg.GiteaToken != "" && gitHostMatchesProvider(proj.RepoURL, proj.ProviderURL, r.cfg.GiteaURL)
+	if tokenApplies {
+		// GIT_TOKEN lets the runner build an authenticated clone URL for a private
+		// repo (see runner/entrypoint.sh). Present in readonly too so private
+		// repos are cloneable to be READ, independent of PR mode.
+		env["GIT_TOKEN"] = r.cfg.GiteaToken
+	}
+
+	// Push contract (ST-1) — draft_pr only.
 	if proj.GitMode != domain.GitModeDraftPR {
 		return
 	}
@@ -426,11 +443,45 @@ func (r *Reconciler) addGitPushEnv(env map[string]string, run *domain.Run, proj 
 		r.log.Warn("draft_pr project but push URL could not be derived; diff-only", "run", run.ID)
 		return
 	}
+	if !tokenApplies {
+		// The repo host does not match the provider — we withheld GIT_TOKEN above,
+		// so we cannot push either. Stay diff-only rather than leak the token.
+		r.log.Warn("draft_pr project but repo host does not match provider; diff-only", "run", run.ID, "repo_url", proj.RepoURL)
+		return
+	}
 	env["GIT_MODE"] = string(domain.GitModeDraftPR)
 	env["GIT_BRANCH"] = "agent/run-" + run.ID
 	env["GIT_PUSH_URL"] = pushURL
-	env["GIT_TOKEN"] = r.cfg.GiteaToken
+	// GIT_TOKEN already set above (tokenApplies) — used for both clone and push.
 	env["GIT_BASE_BRANCH"] = proj.DefaultBranch
+}
+
+// gitHostMatchesProvider reports whether repoURL is an http(s) URL whose host
+// (host:port) matches the configured provider host, so the Gitea PAT may be
+// safely injected as clone/push credentials. providerURL (project-level) wins
+// when set, else the orchestrator-wide defaultBase (cfg.GiteaURL) is used.
+//
+// Returns false for file:// and any non-http(s) scheme (no host to match, and a
+// token is meaningless for a local path), and false when either host is empty or
+// the hosts differ — this is the guard that stops the Gitea token from leaking to
+// an unrelated git host referenced by a project's repo_url. Host comparison is
+// case-insensitive on hostname and includes the port (a different port is a
+// different endpoint).
+func gitHostMatchesProvider(repoURL, providerURL, defaultBase string) bool {
+	ru, err := url.Parse(strings.TrimSpace(repoURL))
+	if err != nil || (ru.Scheme != "http" && ru.Scheme != "https") {
+		return false
+	}
+	base := strings.TrimSpace(providerURL)
+	if base == "" {
+		base = strings.TrimSpace(defaultBase)
+	}
+	pu, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	rh, ph := strings.ToLower(ru.Host), strings.ToLower(pu.Host)
+	return rh != "" && ph != "" && rh == ph
 }
 
 // giteaPushURL builds the https push origin "<base>/<owner>/<repo>.git" from the

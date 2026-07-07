@@ -17,6 +17,8 @@ import type {
   RunEvent,
   RunsEnvelope,
   StreamFrame,
+  SystemInfo,
+  UpdateProjectInput,
 } from './types';
 
 export class ApiError extends Error {
@@ -45,6 +47,10 @@ export interface ApiClient {
   listProjects(): Promise<Project[]>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(id: string): Promise<Project>;
+  /** PATCH /projects/{id} — only the provided fields are updated (11-api.md §2.1). */
+  updateProject(id: string, input: UpdateProjectInput): Promise<Project>;
+  /** DELETE /projects/{id} — cascades runs/events/artifacts; 204 No Content. */
+  deleteProject(id: string): Promise<void>;
 
   listRuns(projectId: string): Promise<Run[]>;
   createRun(projectId: string, input: CreateRunInput): Promise<Run>;
@@ -64,6 +70,12 @@ export interface ApiClient {
   getDiff(runId: string): Promise<RunArtifact>;
   /** Absolute-ish URL for downloading the raw .diff (used by an <a download>). */
   diffDownloadUrl(runId: string): string;
+
+  /**
+   * GET /api/v1/system — the read-only cluster-admin snapshot (capacity,
+   * guardrails, provider, runner, version). Never carries a secret.
+   */
+  getSystem(): Promise<SystemInfo>;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -137,6 +149,18 @@ export function createHttpClient(token: string | undefined): ApiClient {
       }),
 
     getProject: (id) => req<Project>(`/projects/${encodeURIComponent(id)}`),
+
+    updateProject: (id, input) =>
+      req<Project>(`/projects/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+
+    deleteProject: async (id) => {
+      await req<void>(`/projects/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+    },
 
     // Project-scoped runs route (11-api.md §2.2).
     listRuns: async (projectId) =>
@@ -220,5 +244,7 @@ export function createHttpClient(token: string | undefined): ApiClient {
       if (token) params.set('access_token', token);
       return `${BASE}/runs/${encodeURIComponent(runId)}/artifact?${params}`;
     },
+
+    getSystem: () => req<SystemInfo>('/system'),
   };
 }

@@ -12,7 +12,11 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { RunEvent } from '../api/types';
-import { toTimelineItem, type TimelineItem } from '../api/eventModel';
+import {
+  toTimelineItem,
+  terminalStatusSeq,
+  type TimelineItem,
+} from '../api/eventModel';
 import { formatTime } from '../lib/format';
 import { StatusBadge } from './StatusBadge';
 import type { RunStatus } from '../api/types';
@@ -31,6 +35,9 @@ export function Timeline({
   const [pinned, setPinned] = useState(true);
   const [hasNew, setHasNew] = useState(false);
   const prevCount = useRef(events.length);
+
+  // F7: the seq of the run's terminal status frame (undefined until the run ends).
+  const terminalSeq = terminalStatusSeq(events);
 
   // Track whether the user is at the bottom; pause auto-scroll if they scroll up.
   const onScroll = () => {
@@ -80,7 +87,13 @@ export function Timeline({
       >
         <ol className={styles.list}>
           {events.map((ev) => (
-            <TimelineRow key={ev.seq} item={toTimelineItem(ev)} />
+            <TimelineRow
+              key={ev.seq}
+              item={toTimelineItem(ev)}
+              // F7: mark the terminal run.status row as the final end state so it
+              // reads unambiguously regardless of failure/status micro-ordering.
+              final={ev.seq === terminalSeq}
+            />
           ))}
         </ol>
         {live && (
@@ -100,7 +113,13 @@ export function Timeline({
   );
 }
 
-function TimelineRow({ item }: { item: TimelineItem }) {
+function TimelineRow({
+  item,
+  final = false,
+}: {
+  item: TimelineItem;
+  final?: boolean;
+}) {
   const time = formatTime(item.ts);
 
   switch (item.kind) {
@@ -148,11 +167,20 @@ function TimelineRow({ item }: { item: TimelineItem }) {
 
     case 'status':
       return (
-        <li className={styles.row} data-kind="status">
+        <li
+          className={styles.row}
+          data-kind="status"
+          data-final={final || undefined}
+        >
           <RowGutter time={time} marker="status" />
           <div className={styles.sysRow}>
-            <span className={styles.sysLabel}>status</span>
+            <span className={styles.sysLabel}>{final ? 'final status' : 'status'}</span>
             <StatusBadge status={item.status as RunStatus} size="sm" />
+            {final && (
+              <span className={styles.finalTag} data-testid="timeline-final">
+                end of run
+              </span>
+            )}
           </div>
         </li>
       );

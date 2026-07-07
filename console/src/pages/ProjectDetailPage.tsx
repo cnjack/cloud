@@ -14,6 +14,8 @@ import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
 import { LoadingBlock, ErrorBlock } from '../components/States';
 import { useToast } from '../components/Toast';
+import { GitModeBadge } from '../components/GitModeBadge';
+import { ProjectSettingsModal } from './ProjectSettingsModal';
 import { ApiError } from '../api/client';
 import { shortId, summarize, timeAgo } from '../lib/format';
 import styles from './ProjectDetailPage.module.css';
@@ -29,6 +31,7 @@ export function ProjectDetailPage() {
 
   const [prompt, setPrompt] = useState('');
   const [promptError, setPromptError] = useState<string>();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -81,8 +84,20 @@ export function ProjectDetailPage() {
           <div className={styles.repoRow}>
             <code className={styles.repo}>{p.repo_url}</code>
             <span className={styles.branch}>{p.default_branch}</span>
+            <GitModeBadge
+              gitMode={p.git_mode}
+              providerRepo={p.provider_repo}
+            />
           </div>
         </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setSettingsOpen(true)}
+          data-testid="project-settings-btn"
+        >
+          Settings
+        </Button>
       </header>
 
       <Card className={styles.composer}>
@@ -173,6 +188,16 @@ export function ProjectDetailPage() {
           </div>
         )}
       </section>
+
+      <ProjectSettingsModal
+        open={settingsOpen}
+        project={p}
+        onClose={() => setSettingsOpen(false)}
+        onDeleted={() => {
+          setSettingsOpen(false);
+          navigate('/');
+        }}
+      />
     </div>
   );
 }

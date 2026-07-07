@@ -112,6 +112,11 @@ type Store interface {
 	// removes them from this scan.
 	ListTerminalRunsWithJob(ctx context.Context) ([]domain.Run, error)
 	CountActiveRuns(ctx context.Context) (int, error)
+	// CountRunsByStatus returns a per-status count for the given statuses across
+	// ALL projects, as a map keyed by status. Statuses not present in the store
+	// are reported as 0 (every requested status is present as a key). Read-only;
+	// used by the admin system snapshot (GET /api/v1/system).
+	CountRunsByStatus(ctx context.Context, statuses ...domain.RunStatus) (map[domain.RunStatus]int, error)
 	// ListRunsAwaitingPR returns succeeded runs that have a pushed branch
 	// (git_branch <> '') but no PR yet (pr_url = ''), so the reconciler can open
 	// the draft PR (ST-1). The project-mode gate (draft_pr) is applied by the

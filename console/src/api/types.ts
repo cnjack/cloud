@@ -35,12 +35,33 @@ export type FailureReason =
   // agent/run-<id> branch to the provider. See 11-api.md §1.4.
   | 'push_failed';
 
+/**
+ * git_mode (ST-1; 11-api.md §1.1):
+ *  - `readonly` (default) — a successful run ends in a diff artifact only;
+ *    nothing is pushed, no PR is opened.
+ *  - `draft_pr` — after a successful run with a non-empty diff the runner pushes
+ *    an `agent/run-<id>` branch and the orchestrator opens a draft PR on the
+ *    provider. Never auto-merges, never triggers CI.
+ */
+export type GitMode = 'readonly' | 'draft_pr';
+
+/** The only provider in the MVP (11-api.md §1.1, decision D09). */
+export type GitProvider = 'gitea';
+
 export interface Project {
   id: string;
   name: string;
   repo_url: string;
   default_branch: string;
   created_at: string;
+  /** ST-1 git integration. Absent is treated as `readonly` by the UI. */
+  git_mode?: GitMode;
+  /** Provider for draft_pr; `gitea` only in the MVP. Empty for readonly. */
+  provider?: GitProvider | '' | string;
+  /** Gitea base URL for draft_pr (optional; orchestrator falls back to GITEA_URL). */
+  provider_url?: string;
+  /** `owner/name` on the provider; required when git_mode=draft_pr. */
+  provider_repo?: string;
 }
 
 export interface Run {
@@ -133,12 +154,67 @@ export interface RunArtifact {
   created_at: string;
 }
 
+/* ---- system / admin snapshot (11-api.md § "System / admin") -------------- */
+
+/**
+ * The read-only cluster-admin snapshot from GET /api/v1/system. It NEVER carries
+ * a secret: `provider.gitea_enabled` is a derived boolean (the PAT is set), the
+ * token itself is never on the wire. Mirrors the orchestrator systemResponse.
+ */
+export interface SystemInfo {
+  version: { version: string; commit: string };
+  capacity: {
+    /** MAX_CONCURRENT_RUNS; 0 means unlimited. */
+    max_concurrent_runs: number;
+    running: number;
+    queued: number;
+    scheduling: number;
+  };
+  guardrails: {
+    run_timeout_seconds: number;
+    job_ttl_seconds: number;
+  };
+  provider: {
+    /** True iff GITEA_TOKEN is set on the orchestrator; the token is never returned. */
+    gitea_enabled: boolean;
+    gitea_url: string;
+  };
+  runner: { image: string };
+  namespace: string;
+  /** kubernetes | process | disabled */
+  launcher: string;
+}
+
 /* ---- request bodies ------------------------------------------------------ */
 
 export interface CreateProjectInput {
   name: string;
   repo_url: string;
   default_branch: string;
+  /**
+   * ST-1 git integration (11-api.md §2.1). Omit for readonly (diff-only). When
+   * git_mode=draft_pr the orchestrator requires provider_repo (owner/name) and
+   * defaults provider to `gitea`. provider_url is optional.
+   */
+  git_mode?: GitMode;
+  provider?: GitProvider;
+  provider_url?: string;
+  provider_repo?: string;
+}
+
+/**
+ * PATCH /projects/{id} body (11-api.md §2.1). All fields optional — only the
+ * ones provided are updated. The orchestrator ignores empty strings, so the UI
+ * sends only the fields the operator actually changed.
+ */
+export interface UpdateProjectInput {
+  name?: string;
+  repo_url?: string;
+  default_branch?: string;
+  git_mode?: GitMode;
+  provider?: GitProvider;
+  provider_url?: string;
+  provider_repo?: string;
 }
 
 export interface CreateRunInput {

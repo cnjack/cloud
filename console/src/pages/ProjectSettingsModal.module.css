@@ -1,0 +1,57 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Read-only repo field reads as identifier data, not an editable input. */
+.repoField {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+}
+
+/* Danger zone — hairline-bordered, danger-tinted footer inside the form. */
+.danger {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--status-failed-bg);
+}
+
+.dangerText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.dangerTitle {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+  color: var(--color-danger-fg);
+}
+
+.dangerHint {
+  font-size: var(--fs-tiny);
+  color: var(--color-text-faint);
+  line-height: var(--lh-normal);
+}
+
+.confirmRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.confirmLabel {
+  font-size: var(--fs-tiny);
+  color: var(--color-text-muted);
+}

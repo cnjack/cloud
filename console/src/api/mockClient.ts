@@ -23,6 +23,8 @@ import type {
   RunEvent,
   RunEventType,
   RunStatus,
+  SystemInfo,
+  UpdateProjectInput,
 } from './types';
 
 let idCounter = 1;
@@ -34,6 +36,16 @@ function genId(prefix: string): string {
 
 function nowISO(offsetMs = 0): string {
   return new Date(Date.now() + offsetMs).toISOString();
+}
+
+/**
+ * Build a 400 ApiError with the same nested envelope shape the HTTP client
+ * parses (11-api.md §0), so validation errors read identically in demo/e2e.
+ */
+function badRequest(message: string): ApiError {
+  return new ApiError(400, message, {
+    error: { code: 'bad_request', message },
+  });
 }
 
 interface StoredRun extends Run {
@@ -64,17 +76,36 @@ export function createMockClient(): ApiClient {
   const projects = new Map<string, Project>();
   const runs = new Map<string, StoredRun>();
 
-  // Seed one project so demo mode isn't a cold empty state after first click.
+  // Seed projects so demo mode isn't a cold empty state after first click.
   // J1's empty-state assertion still holds because seeding is opt-in via env.
+  // Two projects showcase both git modes (F5): a readonly diff-only project and
+  // a draft_pr project whose runs open a Gitea draft PR.
   if (import.meta.env?.VITE_DEMO_SEED === '1') {
-    const p: Project = {
+    const readonly: Project = {
       id: genId('proj'),
       name: 'demo',
       repo_url: 'https://gitea.local/acme/demo.git',
       default_branch: 'main',
       created_at: nowISO(-3600_000),
+      git_mode: 'readonly',
+      provider: '',
+      provider_url: '',
+      provider_repo: '',
     };
-    projects.set(p.id, p);
+    projects.set(readonly.id, readonly);
+
+    const draftPr: Project = {
+      id: genId('proj'),
+      name: 'seed (draft PR)',
+      repo_url: 'https://gitea.local/jcloud/seed.git',
+      default_branch: 'main',
+      created_at: nowISO(-1800_000),
+      git_mode: 'draft_pr',
+      provider: 'gitea',
+      provider_url: 'http://gitea.jcloud.svc.cluster.local:3000',
+      provider_repo: 'jcloud/seed',
+    };
+    projects.set(draftPr.id, draftPr);
   }
 
   function emit(run: StoredRun, type: RunEventType, payload: RunEvent['payload']) {
@@ -277,12 +308,40 @@ export function createMockClient(): ApiClient {
     },
 
     async createProject(input: CreateProjectInput) {
+      // Mirror the orchestrator's create validation (11-api.md §2.1 /
+      // handleCreateProject): required name/repo_url, git_mode enum, and the
+      // draft_pr provider/provider_repo rules — so demo/e2e hit the same 400s.
+      const name = input.name?.trim() ?? '';
+      const repoUrl = input.repo_url?.trim() ?? '';
+      if (!name || !repoUrl) {
+        throw badRequest('name and repo_url are required');
+      }
+      const gitMode = (input.git_mode ?? '').trim() || 'readonly';
+      if (gitMode !== 'readonly' && gitMode !== 'draft_pr') {
+        throw badRequest("git_mode must be 'readonly' or 'draft_pr'");
+      }
+      let provider = (input.provider ?? '').trim();
+      let providerUrl = (input.provider_url ?? '').trim();
+      let providerRepo = (input.provider_repo ?? '').trim();
+      if (gitMode === 'draft_pr') {
+        if (!provider) provider = 'gitea'; // gitea is the only MVP provider (D09)
+        if (provider !== 'gitea') {
+          throw badRequest("provider must be 'gitea' for draft_pr");
+        }
+        if (!providerRepo) {
+          throw badRequest('provider_repo (owner/name) is required for draft_pr');
+        }
+      }
       const p: Project = {
         id: genId('proj'),
-        name: input.name,
-        repo_url: input.repo_url,
-        default_branch: input.default_branch || 'main',
+        name,
+        repo_url: repoUrl,
+        default_branch: input.default_branch?.trim() || 'main',
         created_at: nowISO(),
+        git_mode: gitMode,
+        provider: gitMode === 'draft_pr' ? (provider as Project['provider']) : '',
+        provider_url: gitMode === 'draft_pr' ? providerUrl : '',
+        provider_repo: gitMode === 'draft_pr' ? providerRepo : '',
       };
       projects.set(p.id, p);
       return delay(p);
@@ -292,6 +351,42 @@ export function createMockClient(): ApiClient {
       const p = projects.get(id);
       if (!p) throw new ApiError(404, 'project not found');
       return delay(p);
+    },
+
+    async updateProject(id: string, input: UpdateProjectInput) {
+      const existing = projects.get(id);
+      if (!existing) throw new ApiError(404, 'project not found');
+      // Match handleUpdateProject: apply only non-empty provided fields; the
+      // orchestrator ignores empty strings (can't clear a field via PATCH).
+      const next: Project = { ...existing };
+      if (input.name?.trim()) next.name = input.name.trim();
+      if (input.repo_url?.trim()) next.repo_url = input.repo_url.trim();
+      if (input.default_branch?.trim()) next.default_branch = input.default_branch.trim();
+      if (input.git_mode?.trim()) {
+        const gm = input.git_mode.trim();
+        if (gm !== 'readonly' && gm !== 'draft_pr') {
+          throw badRequest("git_mode must be 'readonly' or 'draft_pr'");
+        }
+        next.git_mode = gm;
+      }
+      if (input.provider?.trim()) next.provider = input.provider.trim();
+      if (input.provider_url?.trim()) next.provider_url = input.provider_url.trim();
+      if (input.provider_repo?.trim()) next.provider_repo = input.provider_repo.trim();
+      projects.set(id, next);
+      return delay(next);
+    },
+
+    async deleteProject(id: string) {
+      if (!projects.has(id)) throw new ApiError(404, 'project not found');
+      projects.delete(id);
+      // Cascade: drop this project's runs (matches the orchestrator's cascade).
+      for (const [rid, r] of runs) {
+        if (r.project_id === id) {
+          for (const t of r._timers) clearTimeout(t);
+          runs.delete(rid);
+        }
+      }
+      await new Promise((r) => setTimeout(r, ms(120)));
     },
 
     async listRuns(projectId: string) {
@@ -400,6 +495,44 @@ export function createMockClient(): ApiClient {
       const content = r?._diff ?? '';
       // A data: URL keeps download working with no server in demo mode.
       return `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`;
+    },
+
+    async getSystem(): Promise<SystemInfo> {
+      // Derive capacity from the live in-memory runs so the cluster view reflects
+      // demo activity (start a run and watch running/scheduling move). Any Gitea
+      // draft_pr project flips gitea_enabled so the Provider card is populated.
+      let running = 0;
+      let queued = 0;
+      let scheduling = 0;
+      for (const r of runs.values()) {
+        if (r.status === 'running') running++;
+        else if (r.status === 'queued') queued++;
+        else if (r.status === 'scheduling') scheduling++;
+      }
+      const giteaEnabled = [...projects.values()].some(
+        (p) => p.git_mode === 'draft_pr',
+      );
+      const info: SystemInfo = {
+        version: { version: '1.4.0-demo', commit: 'demo0000' },
+        capacity: {
+          max_concurrent_runs: 4,
+          running,
+          queued,
+          scheduling,
+        },
+        guardrails: {
+          run_timeout_seconds: 1800,
+          job_ttl_seconds: 3600,
+        },
+        provider: {
+          gitea_enabled: giteaEnabled,
+          gitea_url: 'http://gitea.jcloud.svc.cluster.local:3000',
+        },
+        runner: { image: 'ghcr.io/jcloud/runner:demo' },
+        namespace: 'jcloud',
+        launcher: 'kubernetes',
+      };
+      return delay(info);
     },
   };
 }

@@ -46,6 +46,173 @@ func seedProjectAndRun(t *testing.T, st *store.MemStore) domain.Run {
 	return *run
 }
 
+// gitEnvFor seeds a project (with the given repoURL, providerURL, gitMode) and a
+// queued run, then returns the jobEnv the reconciler would inject. cfg.GiteaToken
+// / cfg.GiteaURL are set from tokenCfg/urlCfg so the host-match rule can be
+// exercised without a cluster.
+func gitEnvFor(t *testing.T, repoURL, providerURL, providerRepo string, gitMode domain.GitMode, tokenCfg, urlCfg string) map[string]string {
+	t.Helper()
+	ctx := context.Background()
+	st := store.NewMemStore()
+	fake := k8s.NewFakeLauncher()
+	cfg := &config.Config{
+		ReconcileInterval: time.Millisecond,
+		MaxConcurrentRuns: 4,
+		RunTimeoutSecs:    1800,
+		OrchBaseURL:       "http://orch",
+		RunnerImage:       "runner:test",
+		GiteaToken:        tokenCfg,
+		GiteaURL:          urlCfg,
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	rec := New(st, fake, cfg, log, nil)
+	p := &domain.Project{
+		ID: domain.NewID(), Name: "p", RepoURL: repoURL, DefaultBranch: "main",
+		GitMode: gitMode, Provider: domain.ProviderGitea,
+		ProviderURL: providerURL, ProviderRepo: providerRepo,
+		CreatedAt: time.Now(),
+	}
+	if err := st.CreateProject(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: p.ID, Prompt: "do the thing",
+		Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now(),
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	return rec.jobEnv(ctx, run, "run-token")
+}
+
+// TestJobEnvInjectsGitTokenForReadonlyMatchingHost is the F1 regression: a
+// PRIVATE repo must be cloneable to be READ, so GIT_TOKEN is injected for a
+// readonly project whose repo host matches the provider host — independent of PR
+// mode. GIT_MODE stays readonly (no push contract).
+func TestJobEnvInjectsGitTokenForReadonlyMatchingHost(t *testing.T) {
+	env := gitEnvFor(t,
+		"https://git.example.com/ai/priv.git", // repo
+		"https://git.example.com",             // provider_url (same host)
+		"ai/priv",
+		domain.GitModeReadonly,
+		"secret-pat", "https://git.example.com")
+	if env["GIT_TOKEN"] != "secret-pat" {
+		t.Fatalf("GIT_TOKEN=%q want secret-pat (private repo must be cloneable in readonly)", env["GIT_TOKEN"])
+	}
+	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
+		t.Fatalf("GIT_MODE=%q want readonly", env["GIT_MODE"])
+	}
+	// readonly must NOT carry the push contract.
+	if env["GIT_PUSH_URL"] != "" || env["GIT_BRANCH"] != "" {
+		t.Fatalf("readonly must not carry push contract: push=%q branch=%q", env["GIT_PUSH_URL"], env["GIT_BRANCH"])
+	}
+}
+
+// TestJobEnvUsesDefaultGiteaURLWhenProviderURLEmpty verifies a readonly project
+// with no provider_url falls back to the orchestrator-wide GITEA_URL for the
+// host match (the common single-provider deployment).
+func TestJobEnvUsesDefaultGiteaURLWhenProviderURLEmpty(t *testing.T) {
+	env := gitEnvFor(t,
+		"https://git.example.com/ai/priv.git",
+		"", // no provider_url
+		"ai/priv",
+		domain.GitModeReadonly,
+		"secret-pat", "https://git.example.com") // GITEA_URL supplies the host
+	if env["GIT_TOKEN"] != "secret-pat" {
+		t.Fatalf("GIT_TOKEN=%q want secret-pat (host match via GITEA_URL fallback)", env["GIT_TOKEN"])
+	}
+}
+
+// TestJobEnvNoTokenForMismatchedHost is the security regression: the Gitea PAT
+// must NOT leak to an unrelated git host referenced by repo_url.
+func TestJobEnvNoTokenForMismatchedHost(t *testing.T) {
+	env := gitEnvFor(t,
+		"https://github.com/someone/other.git", // DIFFERENT host
+		"https://git.example.com",              // provider host
+		"someone/other",
+		domain.GitModeReadonly,
+		"secret-pat", "https://git.example.com")
+	if _, ok := env["GIT_TOKEN"]; ok {
+		t.Fatalf("GIT_TOKEN must NOT be injected for a mismatched host (leak); got %q", env["GIT_TOKEN"])
+	}
+	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
+		t.Fatalf("GIT_MODE=%q want readonly", env["GIT_MODE"])
+	}
+}
+
+// TestJobEnvNoTokenForFileRepo verifies file:// repos never receive the token
+// (no host to match; the in-cluster anonymous gitseed uses http, not file).
+func TestJobEnvNoTokenForFileRepo(t *testing.T) {
+	env := gitEnvFor(t,
+		"file:///seed/repo.git",
+		"https://git.example.com",
+		"ai/priv",
+		domain.GitModeReadonly,
+		"secret-pat", "https://git.example.com")
+	if _, ok := env["GIT_TOKEN"]; ok {
+		t.Fatalf("GIT_TOKEN must NOT be injected for a file:// repo; got %q", env["GIT_TOKEN"])
+	}
+}
+
+// TestJobEnvNoTokenWhenUnconfigured verifies the public-repo / no-token path:
+// with GITEA_TOKEN unset, nothing is injected and the runner does a bare
+// (anonymous) clone — the in-cluster gitseed behavior stays intact.
+func TestJobEnvNoTokenWhenUnconfigured(t *testing.T) {
+	env := gitEnvFor(t,
+		"https://git.example.com/ai/pub.git",
+		"https://git.example.com",
+		"ai/pub",
+		domain.GitModeReadonly,
+		"", "https://git.example.com") // no token configured
+	if _, ok := env["GIT_TOKEN"]; ok {
+		t.Fatalf("GIT_TOKEN must be absent when GITEA_TOKEN unset; got %q", env["GIT_TOKEN"])
+	}
+}
+
+// TestJobEnvDraftPRMatchingHostGetsFullContract verifies draft_pr on a matching
+// host gets both the clone token AND the push contract.
+func TestJobEnvDraftPRMatchingHostGetsFullContract(t *testing.T) {
+	env := gitEnvFor(t,
+		"https://git.example.com/ai/priv.git",
+		"https://git.example.com",
+		"ai/priv",
+		domain.GitModeDraftPR,
+		"secret-pat", "https://git.example.com")
+	if env["GIT_TOKEN"] != "secret-pat" {
+		t.Fatalf("GIT_TOKEN=%q want secret-pat", env["GIT_TOKEN"])
+	}
+	if env["GIT_MODE"] != string(domain.GitModeDraftPR) {
+		t.Fatalf("GIT_MODE=%q want draft_pr", env["GIT_MODE"])
+	}
+	if env["GIT_PUSH_URL"] != "https://git.example.com/ai/priv.git" {
+		t.Fatalf("GIT_PUSH_URL=%q want the provider push origin", env["GIT_PUSH_URL"])
+	}
+	if env["GIT_BRANCH"] == "" || env["GIT_BASE_BRANCH"] != "main" {
+		t.Fatalf("draft_pr push contract incomplete: branch=%q base=%q", env["GIT_BRANCH"], env["GIT_BASE_BRANCH"])
+	}
+}
+
+// TestJobEnvDraftPRMismatchedHostStaysDiffOnly verifies a draft_pr project whose
+// repo host does NOT match the provider degrades to diff-only (no token, no push)
+// rather than leaking the PAT.
+func TestJobEnvDraftPRMismatchedHostStaysDiffOnly(t *testing.T) {
+	env := gitEnvFor(t,
+		"https://github.com/someone/other.git", // mismatched host
+		"https://git.example.com",
+		"someone/other",
+		domain.GitModeDraftPR,
+		"secret-pat", "https://git.example.com")
+	if _, ok := env["GIT_TOKEN"]; ok {
+		t.Fatalf("GIT_TOKEN must NOT be injected for mismatched host in draft_pr; got %q", env["GIT_TOKEN"])
+	}
+	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
+		t.Fatalf("GIT_MODE=%q want readonly (draft_pr degrades to diff-only on host mismatch)", env["GIT_MODE"])
+	}
+	if env["GIT_PUSH_URL"] != "" {
+		t.Fatalf("mismatched-host draft_pr must not carry push URL; got %q", env["GIT_PUSH_URL"])
+	}
+}
+
 func TestReconcileFullLifecycle(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 4)

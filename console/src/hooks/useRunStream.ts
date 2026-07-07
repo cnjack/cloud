@@ -80,10 +80,32 @@ export function useRunStream(runId: string, enabled = true) {
     }
   }, [derivedStatus, runId, qc]);
 
-  // ST-1: the draft PR is opened AFTER the run goes terminal, so its link
-  // arrives on a later run.status frame carrying pr_url/pr_number (not the full
-  // run). Patch those onto the cached run so the "Draft PR #N" chip appears live
-  // without another refetch.
+  // ST-1: the draft PR is opened by the reconciler a moment AFTER the run goes
+  // terminal, so the single terminal refetch above races ahead of pr_url and the
+  // SSE stream is already closed. Poll the authoritative run a bounded few times
+  // until pr_url lands (readonly runs simply never find one and stop). This is
+  // what makes the "Draft PR #N" chip appear without a manual reload (finding F11).
+  useEffect(() => {
+    if (!terminal) return;
+    let cancelled = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    [1000, 2000, 4000, 8000].forEach((delay) => {
+      timers.push(
+        setTimeout(() => {
+          if (cancelled) return;
+          if (qc.getQueryData<Run>(qk.run(runId))?.pr_url) return; // already have it
+          void qc.invalidateQueries({ queryKey: qk.run(runId) });
+        }, delay),
+      );
+    });
+    return () => {
+      cancelled = true;
+      timers.forEach(clearTimeout);
+    };
+  }, [terminal, runId, qc]);
+
+  // The draft PR link can also arrive on a later run.status frame carrying
+  // pr_url/pr_number (not the full run); patch those onto the cached run too.
   const prURL = wrap.state.prURL;
   const prNumber = wrap.state.prNumber;
   useEffect(() => {

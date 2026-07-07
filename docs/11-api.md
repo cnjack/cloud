@@ -350,6 +350,48 @@ data: {"seq":7,"ts":"2026-07-07T12:00:10Z","type":"agent.tool_call","payload":{"
   `Content-Disposition: attachment; filename="<run-id>.diff"`,body 为原始 diff。
 - 错误:`404`(产物尚不存在)。
 
+### 2.5 System / admin
+
+#### `GET /api/v1/system` — 集群管理只读快照
+
+集群管理员(cluster-admin)视图的数据源:一次性返回容量、护栏、provider、
+runner、版本等运行时快照。**只读**,console bearer token 鉴权(同其它
+`/api/v1` 端点)。
+
+**安全不变量:永不返回任何 secret** —— 不含 `GITEA_TOKEN`、`CONSOLE_TOKEN`、
+`DATABASE_URL`(DSN)或任何令牌。`provider.gitea_enabled` 是从 `GITEA_TOKEN`
+是否非空派生出的**布尔信号**,token 本身绝不序列化。
+
+响应 `200`:
+
+```json
+{
+  "version":   { "version": "1.4.0", "commit": "abc1234" },
+  "capacity":  {
+    "max_concurrent_runs": 4,   // MAX_CONCURRENT_RUNS(0 = 无限)
+    "running": 1,               // 跨所有 project 的 running 计数
+    "queued": 2,                // 跨所有 project 的 queued 计数
+    "scheduling": 1             // 跨所有 project 的 scheduling 计数
+  },
+  "guardrails": {
+    "run_timeout_seconds": 1800,  // RUN_TIMEOUT_SECONDS(Job activeDeadlineSeconds)
+    "job_ttl_seconds": 3600       // JOB_TTL_SECONDS(完成后 Job 回收)
+  },
+  "provider":  {
+    "gitea_enabled": true,        // = GITEA_TOKEN 非空(token 不返回)
+    "gitea_url": "http://gitea.jcloud.svc.cluster.local:3000"
+  },
+  "runner":    { "image": "ghcr.io/acme/runner:v1" },  // RUNNER_IMAGE
+  "namespace": "jcloud",         // K8S_NAMESPACE
+  "launcher":  "kubernetes"      // JOB_LAUNCHER:kubernetes | process | disabled(DISABLE_K8S)
+}
+```
+
+- 容量计数由 store 单次查询(`CountRunsByStatus`,只读、跨所有 project)。
+- 错误:`401`(缺/错 token)、`500`(容量查询失败)。
+- 鉴权口径与运行时可见性映射到 console 的两种角色(见 console `VITE_ROLE`);
+  当前为单租户 MVP,尚无 OIDC/RBAC,角色仅是**展示层**信号,并非服务端授权。
+
 ---
 
 ## 3 · 前端集成示例(SSE)
@@ -480,15 +522,30 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
 | `MODEL_NAME` | 环境 `MODEL_NAME`(默认 `mock/mock-model`) | jcode 的 `provider/model` 标识;runner 据此为未知 provider 写 `custom_models` 配置项 |
 | `ORCH_BASE_URL` | 环境 `ORCH_BASE_URL` | orchestrator 基址,runner 回传事件/产物用 |
 | `RUN_TOKEN` | 每 run 随机生成 | Bearer,仅本 run 有效;打 `/internal/v1/runs/{RUN_ID}/*` |
-| `GIT_MODE` | project.git_mode(缺 token 时降级) | **(ST-1)** `readonly`(默认,diff-only)\| `draft_pr`(推分支) |
+| `GIT_MODE` | project.git_mode(缺 token/host 不匹配时降级) | **(ST-1)** `readonly`(默认,diff-only)\| `draft_pr`(推分支) |
 | `GIT_BRANCH` | `agent/run-<RUN_ID>` | **(ST-1)** `draft_pr` 时要创建/推送的命名分支 |
 | `GIT_PUSH_URL` | `provider_url`(或 `GITEA_URL`)+ `provider_repo` | **(ST-1)** https 推送 origin,如 `http://gitea.../owner/repo.git` |
-| `GIT_TOKEN` | 环境 `GITEA_TOKEN` | **(ST-1)** provider token,作为 https userinfo 推送用;仅命令行传参,不落盘 |
+| `GIT_TOKEN` | 环境 `GITEA_TOKEN` | **(F1/ST-1)** provider token,作为 https userinfo。用于 **(a) CLONE 私有仓库**(`readonly` **和** `draft_pr` 都注入——私有仓库要能被 clone 才能被 READ)**和 (b) `draft_pr` 推分支**。仅命令行传参,不落盘,**不打日志**(clone/push URL 与 git stderr 均脱敏后才输出) |
 | `GIT_BASE_BRANCH` | project.default_branch | **(ST-1)** PR base 分支(信息性;PR base 实际由 orchestrator 设) |
 
-> **(ST-1)** 仅当 project `git_mode=draft_pr` **且** orchestrator 配了 `GITEA_TOKEN`
-> 时才注入上面这组 `GIT_*`(且 `GIT_MODE=draft_pr`)。缺 token 或缺 provider 配置
-> 时 `GIT_MODE=readonly`,runner 退化为纯 diff——**readonly 默认路径完全不变**。
+> **(F1 · GIT_TOKEN 注入的 host-match 规则)** 当 orchestrator 配了 `GITEA_TOKEN`
+> **且** `REPO_URL` 是 http(s) **且**其 host(host:port,大小写不敏感)与所配
+> provider host(优先 `project.provider_url`,否则 orchestrator 的 `GITEA_URL`)
+> **一致**时,注入 `GIT_TOKEN`——`readonly` 与 `draft_pr` **两种模式都注入**,这样
+> 私有仓库在只读模式下也能被 clone 读取。**绝不**为 `file://`(或任何非 http(s))
+> 仓库注入,也**绝不**在 `REPO_URL` host 与 provider host 不一致时注入——避免把
+> Gitea token 泄露给无关的 git host。host 不匹配的 `draft_pr` 项目降级为纯 diff
+> (`GIT_MODE=readonly`,不推分支)。`GIT_MODE` 语义不变:`readonly` 永不推送/开 PR。
+>
+> **(ST-1)** 仅当 project `git_mode=draft_pr`、配了 `GITEA_TOKEN` **且**上述 host
+> 匹配时才额外注入 `GIT_BRANCH`/`GIT_PUSH_URL`/`GIT_BASE_BRANCH` 并置
+> `GIT_MODE=draft_pr`。缺 token / 缺 provider 配置 / host 不匹配时
+> `GIT_MODE=readonly`——**readonly 默认路径(公有仓库 / 集群内匿名 gitseed)完全不变**。
+>
+> **(F2 · clone/push 失败诊断)** `git clone`/`git push` 失败时,runner 把 git 的
+> stderr **脱敏**(剥离 `token@` 与任何 userinfo)后取尾部若干字符,拼进
+> `run.failure` 的 `reason=clone_failed`/`push_failed` 消息里,详情页因此能显示真实
+> 原因(auth vs not-found vs network),而不再是一句无信息的 `git clone … failed`。
 
 **契约要点(runner agent 必读)**:
 

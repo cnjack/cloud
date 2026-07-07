@@ -1,0 +1,46 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--fs-tiny);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+  padding: 3px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  flex: none;
+}
+
+/* readonly — neutral hairline chip, muted text. */
+.badge[data-mode='readonly'] {
+  color: var(--color-text-dim);
+}
+.badge[data-mode='readonly'] .dot {
+  background: var(--color-text-faint);
+}
+
+/* draft_pr — violet accent so it reads as the reviewable-PR promise. */
+.badge[data-mode='draft_pr'] {
+  color: var(--color-accent);
+  border-color: var(--color-accent-dim);
+}
+.badge[data-mode='draft_pr'] .dot {
+  background: var(--color-accent);
+}
+
+.arrow {
+  color: var(--color-text-dim);
+}
+
+.repo {
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+}

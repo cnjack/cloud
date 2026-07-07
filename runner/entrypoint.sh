@@ -31,8 +31,12 @@
 #                    (default: agent/run-<RUN_ID>)
 #   GIT_PUSH_URL     https origin to push to, e.g.
 #                    https://gitea.host/owner/repo.git (required for draft_pr)
-#   GIT_TOKEN        provider token injected as https userinfo for the push
-#                    (required for draft_pr; passed on the CLI only, never stored)
+#   GIT_TOKEN        provider token injected as https userinfo. Used to (a) CLONE
+#                    a PRIVATE repo (BOTH readonly and draft_pr — a private repo
+#                    must be cloneable to be READ; F1) and (b) PUSH in draft_pr.
+#                    The orchestrator injects it only when REPO_URL's host matches
+#                    the configured provider host. Passed on the CLI only, never
+#                    stored, never logged (a redacted URL is logged instead).
 #   GIT_BASE_BRANCH  the PR base branch (informational; PR base is set by the
 #                    orchestrator from the project default branch)
 #
@@ -118,17 +122,60 @@ if [ -e "$WORKSPACE" ] && [ -n "$(ls -A "$WORKSPACE" 2>/dev/null || true)" ]; th
   die setup_failed "workspace must be empty"
 fi
 mkdir -p "$WORKSPACE"
+
+# --- Authenticated clone URL (F1) -------------------------------------------
+# A PRIVATE repo can only be READ if the clone carries credentials, and the clone
+# happens BEFORE any push logic — so a tokenless clone fails clone_failed in BOTH
+# readonly and draft_pr mode. When GIT_TOKEN is set AND REPO_URL is http(s), inject
+# the token as https userinfo (https://<token>@host/owner/repo.git) — the same
+# pattern used for the push URL below. The token is passed to `git clone` on the
+# command line only; it is NEVER written to disk and NEVER logged (we log a
+# redacted URL). With no token (public repos / file://) we clone the bare
+# REPO_URL, so the in-cluster anonymous gitseed keeps working unchanged.
+CLONE_URL="$REPO_URL"
+CLONE_URL_REDACTED="$REPO_URL"
+if [ -n "${GIT_TOKEN:-}" ]; then
+  case "$REPO_URL" in
+    https://*)
+      CLONE_URL="$(printf '%s' "$REPO_URL" | sed -E "s#^https://#https://${GIT_TOKEN}@#")"
+      CLONE_URL_REDACTED="$(printf '%s' "$REPO_URL" | sed -E "s#^https://#https://***@#")"
+      ;;
+    http://*)
+      CLONE_URL="$(printf '%s' "$REPO_URL" | sed -E "s#^http://#http://${GIT_TOKEN}@#")"
+      CLONE_URL_REDACTED="$(printf '%s' "$REPO_URL" | sed -E "s#^http://#http://***@#")"
+      ;;
+    *)
+      # Non-http(s) (e.g. file://) — a token is meaningless; clone bare.
+      : ;;
+  esac
+fi
+
+# redact_stream: strip the token (and any injected userinfo) from a text stream so
+# a git error tail can be surfaced (F2) without ever leaking the credential.
+redact_stream() {
+  if [ -n "${GIT_TOKEN:-}" ]; then
+    sed -E -e "s#${GIT_TOKEN}#***#g" -e 's#(https?://)[^/@[:space:]]+@#\1***@#g'
+  else
+    sed -E 's#(https?://)[^/@[:space:]]+@#\1***@#g'
+  fi
+}
+
 # REPO_BRANCH selects the baseline branch; empty => clone the remote's default.
 # (orchestrator injects REPO_BRANCH from project.default_branch, which may be "".)
+# stderr is captured to a temp file so, on failure, a REDACTED tail is surfaced in
+# the clone_failed message (F2) — a human can then tell auth vs not-found vs
+# network from the console instead of a bare "git clone ... failed".
+CLONE_ERR="$(mktemp 2>/dev/null || echo /tmp/git-clone.err)"
 if [ -n "${REPO_BRANCH:-}" ]; then
-  log "cloning $REPO_URL (branch $REPO_BRANCH) -> $WORKSPACE"
-  git clone --quiet --branch "$REPO_BRANCH" "$REPO_URL" "$WORKSPACE" \
-    || die clone_failed "git clone of $REPO_URL (branch $REPO_BRANCH) failed"
+  log "cloning $CLONE_URL_REDACTED (branch $REPO_BRANCH) -> $WORKSPACE"
+  git clone --quiet --branch "$REPO_BRANCH" "$CLONE_URL" "$WORKSPACE" 2>"$CLONE_ERR" \
+    || die clone_failed "git clone of $CLONE_URL_REDACTED (branch $REPO_BRANCH) failed: $(redact_stream < "$CLONE_ERR" | tr '\n' ' ' | tail -c 500)"
 else
-  log "cloning $REPO_URL (default branch) -> $WORKSPACE"
-  git clone --quiet "$REPO_URL" "$WORKSPACE" \
-    || die clone_failed "git clone of $REPO_URL failed"
+  log "cloning $CLONE_URL_REDACTED (default branch) -> $WORKSPACE"
+  git clone --quiet "$CLONE_URL" "$WORKSPACE" 2>"$CLONE_ERR" \
+    || die clone_failed "git clone of $CLONE_URL_REDACTED failed: $(redact_stream < "$CLONE_ERR" | tr '\n' ' ' | tail -c 500)"
 fi
+rm -f "$CLONE_ERR" 2>/dev/null || true
 
 # Ensure a stable git identity so 'git diff' / any commits work in the container.
 git -C "$WORKSPACE" config user.email "runner@jcode.local"
@@ -259,10 +306,16 @@ if [ "${GIT_MODE:-readonly}" = "draft_pr" ]; then
     # Not an https:// URL (or sed no-op) — try http:// too, else fail clearly.
     AUTH_URL="$(printf '%s' "$GIT_PUSH_URL" | sed -E "s#^http://#http://${GIT_TOKEN}@#")"
   fi
-  if ! git -C "$WORKSPACE" push --quiet "$AUTH_URL" "$PUSH_BRANCH:$PUSH_BRANCH" 2>/tmp/git-push.err; then
-    log "git push failed: $(tr -d '\n' < /tmp/git-push.err | sed -E "s#${GIT_TOKEN}#***#g")"
-    die push_failed "could not push $PUSH_BRANCH to the provider"
+  PUSH_ERR="$(mktemp 2>/dev/null || echo /tmp/git-push.err)"
+  if ! git -C "$WORKSPACE" push --quiet "$AUTH_URL" "$PUSH_BRANCH:$PUSH_BRANCH" 2>"$PUSH_ERR"; then
+    # Surface a REDACTED git error tail (same redaction as the clone path, F2) so
+    # the console shows the real reason without ever leaking the token.
+    PUSH_ERR_TAIL="$(redact_stream < "$PUSH_ERR" | tr '\n' ' ' | tail -c 500)"
+    log "git push failed: $PUSH_ERR_TAIL"
+    rm -f "$PUSH_ERR" 2>/dev/null || true
+    die push_failed "could not push $PUSH_BRANCH to the provider: $PUSH_ERR_TAIL"
   fi
+  rm -f "$PUSH_ERR" 2>/dev/null || true
   log "pushed $PUSH_BRANCH ($PUSH_SHA)"
 
   # Report the pushed branch so the orchestrator opens the draft PR (best-effort;

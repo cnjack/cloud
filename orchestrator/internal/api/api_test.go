@@ -928,3 +928,121 @@ func TestCreateDraftPRProject(t *testing.T) {
 		t.Fatalf("default git_mode=%q want readonly", p.GitMode)
 	}
 }
+
+// TestSystemSnapshot exercises GET /api/v1/system: it requires the console token,
+// reports build/guardrail/provider/runner config, reflects live run counts from
+// the store, and — the load-bearing invariant — NEVER leaks a secret (no token,
+// no DSN, no console token) into the response body.
+func TestSystemSnapshot(t *testing.T) {
+	st := store.NewMemStore()
+	hub := sse.NewHub()
+	// A config with real secrets set, so the no-leak assertion is meaningful.
+	cfg := &config.Config{
+		ConsoleToken:      consoleToken,
+		DatabaseURL:       "postgres://user:s3cr3t-dsn@db/jcloud",
+		MaxConcurrentRuns: 4,
+		RunTimeoutSecs:    1800,
+		JobTTLSeconds:     3600,
+		Namespace:         "jcloud",
+		RunnerImage:       "ghcr.io/acme/runner:v1",
+		JobLauncher:       "kubernetes",
+		GiteaURL:          "http://gitea.jcloud.svc.cluster.local:3000",
+		GiteaToken:        "gitea-pat-DO-NOT-LEAK",
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(st, cfg, log, hub, nil)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	// Requires auth.
+	resp := do(t, "GET", ts.URL+"/api/v1/system", "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no token: status=%d want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Seed some runs across statuses: 1 running, 1 scheduling, 2 queued.
+	ctx := context.Background()
+	p := &domain.Project{ID: domain.NewID(), Name: "p", RepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	if err := st.CreateProject(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	mkRun := func() *domain.Run {
+		r := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Prompt: "x", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
+		if err := st.CreateRun(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	running := mkRun()
+	if _, err := st.ScheduleRun(ctx, running.ID, "j1", "h1", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkRunning(ctx, running.ID, "Running", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	sched := mkRun()
+	if _, err := st.ScheduleRun(ctx, sched.ID, "j2", "h2", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+	mkRun() // queued
+	mkRun() // queued
+
+	// Fetch snapshot and read the RAW body for the no-leak scan.
+	resp = do(t, "GET", ts.URL+"/api/v1/system", consoleToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("system: status=%d want 200", resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	// No secret may appear anywhere in the serialized snapshot.
+	for _, secret := range []string{cfg.GiteaToken, cfg.ConsoleToken, cfg.DatabaseURL, "s3cr3t-dsn"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("SECRET LEAK: response body contains %q\nbody: %s", secret, raw)
+		}
+	}
+
+	var got systemResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode: %v\nbody: %s", err, raw)
+	}
+	if got.Capacity.MaxConcurrentRuns != 4 {
+		t.Fatalf("max_concurrent_runs=%d want 4", got.Capacity.MaxConcurrentRuns)
+	}
+	if got.Capacity.Running != 1 {
+		t.Fatalf("running=%d want 1", got.Capacity.Running)
+	}
+	if got.Capacity.Scheduling != 1 {
+		t.Fatalf("scheduling=%d want 1", got.Capacity.Scheduling)
+	}
+	if got.Capacity.Queued != 2 {
+		t.Fatalf("queued=%d want 2", got.Capacity.Queued)
+	}
+	if got.Guardrails.RunTimeoutSeconds != 1800 || got.Guardrails.JobTTLSeconds != 3600 {
+		t.Fatalf("guardrails=%+v want {1800,3600}", got.Guardrails)
+	}
+	if !got.Provider.GiteaEnabled {
+		t.Fatal("gitea_enabled=false want true (GiteaToken set)")
+	}
+	if got.Provider.GiteaURL != cfg.GiteaURL {
+		t.Fatalf("gitea_url=%q want %q", got.Provider.GiteaURL, cfg.GiteaURL)
+	}
+	if got.Runner.Image != cfg.RunnerImage {
+		t.Fatalf("runner.image=%q want %q", got.Runner.Image, cfg.RunnerImage)
+	}
+	if got.Namespace != "jcloud" || got.Launcher != "kubernetes" {
+		t.Fatalf("namespace/launcher = %q/%q want jcloud/kubernetes", got.Namespace, got.Launcher)
+	}
+	if got.Version.Version == "" {
+		t.Fatal("version empty")
+	}
+
+	// With no Gitea token, gitea_enabled must be false.
+	cfg.GiteaToken = ""
+	resp = do(t, "GET", ts.URL+"/api/v1/system", consoleToken, nil)
+	decode(t, resp, &got)
+	if got.Provider.GiteaEnabled {
+		t.Fatal("gitea_enabled=true want false (GiteaToken empty)")
+	}
+}

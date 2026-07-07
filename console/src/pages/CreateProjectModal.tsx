@@ -1,12 +1,20 @@
 /*
  * CreateProjectModal — J1-S2/S3 & J2-S1. Fields: name, git repo URL, default
- * branch (defaults to `main`). name + repo URL required. On success closes and
- * navigates to the new project's run list.
+ * branch (defaults to `main`), and the git-integration section (F3: readonly
+ * diff | draft PR + provider repo/url). name + repo URL required. On success
+ * closes and navigates to the new project's run list.
  */
 import { useState } from 'react';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
+import {
+  GitIntegrationFields,
+  emptyGitIntegration,
+  gitIntegrationPayload,
+  validateGitIntegration,
+  type GitIntegrationState,
+} from '../components/GitIntegrationFields';
 import { useCreateProject } from '../api/queries';
 import { useToast } from '../components/Toast';
 import { ApiError } from '../api/client';
@@ -27,12 +35,18 @@ export function CreateProjectModal({
   const [name, setName] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
   const [branch, setBranch] = useState('main');
-  const [errors, setErrors] = useState<{ name?: string; repo?: string }>({});
+  const [git, setGit] = useState<GitIntegrationState>(emptyGitIntegration);
+  const [errors, setErrors] = useState<{
+    name?: string;
+    repo?: string;
+    providerRepo?: string;
+  }>({});
 
   const reset = () => {
     setName('');
     setRepoUrl('');
     setBranch('main');
+    setGit(emptyGitIntegration);
     setErrors({});
   };
 
@@ -47,6 +61,7 @@ export function CreateProjectModal({
     const nextErrors: typeof errors = {};
     if (!name.trim()) nextErrors.name = 'Name is required.';
     if (!repoUrl.trim()) nextErrors.repo = 'Repository URL is required.';
+    Object.assign(nextErrors, validateGitIntegration(git));
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
 
@@ -55,6 +70,7 @@ export function CreateProjectModal({
         name: name.trim(),
         repo_url: repoUrl.trim(),
         default_branch: branch.trim() || 'main',
+        ...gitIntegrationPayload(git),
       },
       {
         onSuccess: (project) => {
@@ -113,7 +129,7 @@ export function CreateProjectModal({
             value={repoUrl}
             onChange={(e) => setRepoUrl(e.target.value)}
             error={errors.repo}
-            hint="Cloned inside your cluster — never leaves your domain."
+            hint="Cloned into an ephemeral workspace in your cluster. Private repos need a configured provider token."
             data-testid="project-repo-input"
             autoComplete="off"
           />
@@ -124,6 +140,11 @@ export function CreateProjectModal({
             onChange={(e) => setBranch(e.target.value)}
             data-testid="project-branch-input"
             autoComplete="off"
+          />
+          <GitIntegrationFields
+            value={git}
+            onChange={setGit}
+            errors={{ providerRepo: errors.providerRepo }}
           />
         </div>
       </form>

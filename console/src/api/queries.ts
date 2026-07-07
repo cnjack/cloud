@@ -13,6 +13,7 @@ import type {
   CreateRunInput,
   Project,
   Run,
+  UpdateProjectInput,
 } from './types';
 import { isTerminal } from './types';
 
@@ -22,6 +23,7 @@ export const qk = {
   runs: (projectId: string) => ['runs', projectId] as const,
   run: (runId: string) => ['run', runId] as const,
   diff: (runId: string) => ['diff', runId] as const,
+  system: ['system'] as const,
 };
 
 export function useProjects() {
@@ -46,6 +48,31 @@ export function useCreateProject() {
     onSuccess: (project: Project) => {
       qc.invalidateQueries({ queryKey: qk.projects });
       qc.setQueryData(qk.project(project.id), project);
+    },
+  });
+}
+
+export function useUpdateProject() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UpdateProjectInput }) =>
+      api.updateProject(id, input),
+    onSuccess: (project: Project) => {
+      qc.setQueryData(qk.project(project.id), project);
+      qc.invalidateQueries({ queryKey: qk.projects });
+    },
+  });
+}
+
+export function useDeleteProject() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteProject(id),
+    onSuccess: (_void, id: string) => {
+      qc.removeQueries({ queryKey: qk.project(id) });
+      qc.invalidateQueries({ queryKey: qk.projects });
     },
   });
 }
@@ -128,5 +155,21 @@ export function useDiff(runId: string, enabled: boolean) {
     queryFn: () => api.getDiff(runId),
     enabled: enabled && !!runId,
     retry: false,
+  });
+}
+
+/**
+ * The cluster-admin system snapshot. Capacity counts drift as runs start/finish,
+ * so refresh on a modest interval to keep the Cluster view live-ish without a
+ * stream. `enabled` gates the fetch to cluster-admins — a project-admin who
+ * lands on /system never issues the request (the gate is honest, not just visual).
+ */
+export function useSystem(enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.system,
+    queryFn: () => api.getSystem(),
+    enabled,
+    refetchInterval: 5000,
   });
 }

@@ -9,7 +9,7 @@
  * These assert against a fake ApiClient that records streamRun() args and lets
  * the test drive onOpen/onFrame/onError by hand.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -83,6 +83,43 @@ describe('useRunStream — cursor + lifecycle', () => {
     await waitFor(() => expect(streamCalls.length).toBe(1));
     // The bug was after_seq always 0; the fix resumes from the backlog tail.
     expect(streamCalls[0]!.afterSeq).toBe(4);
+  });
+
+  it('F11: keeps polling the run after terminal so a late pr_url lands without reload', async () => {
+    vi.useFakeTimers();
+    try {
+      const backlog = [statusEvent(1, 'queued'), statusEvent(2, 'running')];
+      const { client, streamCalls } = makeFakeClient(backlog);
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const invalidateSpy = vi.spyOn(qc, 'invalidateQueries');
+      const Wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={qc}>
+          <ApiProvider client={client}>{children}</ApiProvider>
+        </QueryClientProvider>
+      );
+      renderHook(() => useRunStream('run1'), { wrapper: Wrapper });
+      await vi.waitFor(() => expect(streamCalls.length).toBe(1));
+
+      // Terminal succeeded arrives; the draft PR (pr_url) is NOT here yet.
+      act(() => {
+        streamCalls[0]!.cb.onOpen?.();
+        streamCalls[0]!.cb.onFrame({ event: 'run.status', data: statusEvent(3, 'succeeded') });
+      });
+      invalidateSpy.mockClear();
+
+      // Advance through the bounded poll window (1s,2s,4s,8s). Each tick re-fetches
+      // the authoritative run until pr_url appears — here it never does, so it
+      // polls the full bounded set and stops (readonly runs are the same shape).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16000);
+      });
+      const runInvalidations = invalidateSpy.mock.calls.filter(
+        (c) => JSON.stringify(c[0]).includes('run1'),
+      ).length;
+      expect(runInvalidations).toBeGreaterThanOrEqual(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('closes the SSE handle once a terminal status is observed', async () => {

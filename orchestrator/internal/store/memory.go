@@ -187,6 +187,21 @@ func (m *MemStore) CountActiveRuns(_ context.Context) (int, error) {
 	return n, nil
 }
 
+func (m *MemStore) CountRunsByStatus(_ context.Context, statuses ...domain.RunStatus) (map[domain.RunStatus]int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[domain.RunStatus]int, len(statuses))
+	for _, s := range statuses {
+		out[s] = 0 // every requested status is present as a key, defaulting to 0
+	}
+	for _, r := range m.runs {
+		if _, ok := out[r.Status]; ok {
+			out[r.Status]++
+		}
+	}
+	return out, nil
+}
+
 // transitionLocked applies a status change plus a field mutator to the CURRENTLY
 // stored row (never a caller snapshot), enforcing the state machine. It mirrors
 // PGStore's "re-read committed row, mutate named fields, return committed copy"

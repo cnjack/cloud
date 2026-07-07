@@ -254,6 +254,33 @@ func (s *PGStore) CountActiveRuns(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+func (s *PGStore) CountRunsByStatus(ctx context.Context, statuses ...domain.RunStatus) (map[domain.RunStatus]int, error) {
+	out := make(map[domain.RunStatus]int, len(statuses))
+	if len(statuses) == 0 {
+		return out, nil
+	}
+	strs := make([]string, len(statuses))
+	for i, st := range statuses {
+		strs[i] = string(st)
+		out[st] = 0 // every requested status is present as a key, defaulting to 0
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT status, count(*) FROM runs WHERE status = ANY($1) GROUP BY status`, strs)
+	if err != nil {
+		return nil, fmt.Errorf("count runs by status: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var st string
+		var n int
+		if err := rows.Scan(&st, &n); err != nil {
+			return nil, fmt.Errorf("scan count row: %w", err)
+		}
+		out[domain.RunStatus(st)] = n
+	}
+	return out, rows.Err()
+}
+
 // lockRunTx begins a transaction and locks the run row FOR UPDATE, returning the
 // committed row. Callers mutate only the fields they own via tx.Exec and then
 // commit with commitAndReload. The returned tx MUST be rolled back by the caller

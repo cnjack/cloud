@@ -1,0 +1,52 @@
+/* Identity chip — subtle, mono, hairline. Names the trust level in the header. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 3px var(--space-2) 3px var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-panel-raised);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  line-height: 1;
+  color: var(--color-text-dim);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  flex: none;
+  margin-left: var(--space-1);
+  background: var(--color-text-faint);
+}
+/* cluster-admin gets the accent dot; project-admin stays neutral. */
+.chip[data-role='cluster-admin'] .dot {
+  background: var(--color-accent);
+}
+
+.principal {
+  color: var(--color-text-muted);
+}
+
+.sep {
+  color: var(--color-text-faint);
+}
+
+.role {
+  color: var(--color-text);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  font-size: var(--fs-tiny);
+}
+
+@media (max-width: 768px) {
+  /* On narrow screens keep just the role to save space. */
+  .principal,
+  .sep {
+    display: none;
+  }
+}
