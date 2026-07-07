@@ -1,0 +1,291 @@
+package api
+
+import (
+	"errors"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/store"
+)
+
+// serviceInput is the normalized input for creating a service, shared by the
+// POST /projects/{id}/services handler and the POST /projects shim.
+type serviceInput struct {
+	Name          string
+	RepoURL       string // opaque URL; smart-parsed when OwnerName is empty
+	Provider      string // explicit provider hint (optional)
+	OwnerName     string // explicit "owner/name" (provider form); wins over RepoURL
+	GitMode       string
+	DefaultBranch string
+}
+
+// resolveService validates + normalizes a serviceInput into a domain.Service
+// (ID/ProjectID/CreatedAt left unset for the caller to fill). On a validation
+// error it returns (nil, code, msg); on success (svc, "", "").
+func resolveService(in serviceInput) (*domain.Service, string, string) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		name = "default"
+	}
+	gitMode := domain.GitMode(strings.TrimSpace(in.GitMode))
+	if gitMode == "" {
+		gitMode = domain.GitModeReadonly
+	}
+	if !domain.ValidGitMode(gitMode) {
+		return nil, "bad_request", "git_mode must be 'readonly' or 'draft_pr'"
+	}
+	branch := strings.TrimSpace(in.DefaultBranch)
+	if branch == "" {
+		branch = "main"
+	}
+
+	spec, code, msg := classifyRepo(in.RepoURL, in.Provider, in.OwnerName)
+	if code != "" {
+		return nil, code, msg
+	}
+
+	svc := &domain.Service{
+		Name:          name,
+		RepoKind:      spec.RepoKind,
+		Provider:      spec.Provider,
+		RepoOwnerName: spec.RepoOwnerName,
+		RawRepoURL:    spec.RawRepoURL,
+		DefaultBranch: branch,
+		GitMode:       gitMode,
+	}
+	if code, msg := validateServiceConstraints(svc); code != "" {
+		return nil, code, msg
+	}
+	return svc, "", ""
+}
+
+// classifyRepo turns a (repo_url | {provider, owner_name}) input into a RepoSpec.
+// An explicit owner_name is authoritative (provider form). Otherwise repo_url is
+// smart-parsed (domain.ParseRepoURL) and an explicit provider hint overrides the
+// parsed provider when the URL is provider-shaped.
+func classifyRepo(repoURL, providerHint, ownerName string) (domain.RepoSpec, string, string) {
+	ownerName = strings.TrimSpace(ownerName)
+	prov := domain.GitProvider(strings.TrimSpace(providerHint))
+	if prov != "" && !domain.ValidProvider(prov) {
+		return domain.RepoSpec{}, "bad_request", "provider must be gitea, github or gitlab"
+	}
+	if ownerName != "" {
+		p := prov
+		if p == "" {
+			p = domain.ProviderGitea
+		}
+		return domain.RepoSpec{RepoKind: domain.RepoKindProvider, Provider: p, RepoOwnerName: ownerName}, "", ""
+	}
+	if strings.TrimSpace(repoURL) == "" {
+		return domain.RepoSpec{}, "bad_request", "a repo_url or provider owner_name is required"
+	}
+	spec := domain.ParseRepoURL(repoURL, nil)
+	if prov != "" && spec.RepoKind == domain.RepoKindProvider {
+		spec.Provider = prov
+	}
+	return spec, "", ""
+}
+
+// validateServiceConstraints enforces the blueprint §1 constraint that draft_pr
+// requires a provider repository (raw repos are read-only).
+func validateServiceConstraints(svc *domain.Service) (string, string) {
+	if svc.GitMode == domain.GitModeDraftPR && svc.RepoKind != domain.RepoKindProvider {
+		return "bad_request", "git_mode 'draft_pr' requires a provider repository (owner/name); raw repos are read-only"
+	}
+	return "", ""
+}
+
+type createServiceReq struct {
+	Name          string `json:"name"`
+	RepoURL       string `json:"repo_url"`
+	Provider      string `json:"provider"`
+	OwnerName     string `json:"owner_name"`
+	GitMode       string `json:"git_mode"`
+	DefaultBranch string `json:"default_branch"`
+}
+
+func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if _, err := s.st.GetProject(r.Context(), projectID); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "project not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load project")
+		return
+	}
+	var req createServiceReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	svc, code, msg := resolveService(serviceInput{
+		Name:          req.Name,
+		RepoURL:       req.RepoURL,
+		Provider:      req.Provider,
+		OwnerName:     req.OwnerName,
+		GitMode:       req.GitMode,
+		DefaultBranch: req.DefaultBranch,
+	})
+	if svc == nil {
+		writeError(w, http.StatusBadRequest, code, msg)
+		return
+	}
+	// Enforce the (project_id, name) uniqueness up-front for a friendly 409.
+	if existing, err := s.st.ListServices(r.Context(), projectID); err == nil {
+		for i := range existing {
+			if existing[i].Name == svc.Name {
+				writeError(w, http.StatusConflict, "conflict", "a service named '"+svc.Name+"' already exists in this project")
+				return
+			}
+		}
+	}
+	svc.ID = domain.NewID()
+	svc.ProjectID = projectID
+	svc.CreatedAt = time.Now().UTC()
+	if err := s.st.CreateService(r.Context(), svc); err != nil {
+		s.log.Error("create service", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not create service")
+		return
+	}
+	writeJSON(w, http.StatusCreated, svc)
+}
+
+func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if _, err := s.st.GetProject(r.Context(), projectID); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "project not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load project")
+		return
+	}
+	services, err := s.st.ListServices(r.Context(), projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not list services")
+		return
+	}
+	if services == nil {
+		services = []domain.Service{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"services": services})
+}
+
+// servicePatch carries the optional fields of a service update. An empty string
+// means "leave unchanged" (mirrors the project PATCH shim style).
+type servicePatch struct {
+	Name          string
+	RepoURL       string
+	Provider      string
+	OwnerName     string
+	GitMode       string
+	DefaultBranch string
+}
+
+// applyServicePatch mutates svc in place with any provided fields and re-checks
+// the draft_pr⇒provider constraint. Returns (code, msg) on a validation error.
+func applyServicePatch(svc *domain.Service, p servicePatch) (string, string) {
+	if v := strings.TrimSpace(p.Name); v != "" {
+		svc.Name = v
+	}
+	if v := strings.TrimSpace(p.DefaultBranch); v != "" {
+		svc.DefaultBranch = v
+	}
+	if v := domain.GitMode(strings.TrimSpace(p.GitMode)); v != "" {
+		if !domain.ValidGitMode(v) {
+			return "bad_request", "git_mode must be 'readonly' or 'draft_pr'"
+		}
+		svc.GitMode = v
+	}
+	// Repo retarget: only when a repo field is supplied.
+	if strings.TrimSpace(p.RepoURL) != "" || strings.TrimSpace(p.OwnerName) != "" {
+		spec, code, msg := classifyRepo(p.RepoURL, p.Provider, p.OwnerName)
+		if code != "" {
+			return code, msg
+		}
+		svc.RepoKind = spec.RepoKind
+		svc.Provider = spec.Provider
+		svc.RepoOwnerName = spec.RepoOwnerName
+		svc.RawRepoURL = spec.RawRepoURL
+	} else if v := domain.GitProvider(strings.TrimSpace(p.Provider)); v != "" && svc.RepoKind == domain.RepoKindProvider {
+		// Provider-only change on an existing provider service.
+		if !domain.ValidProvider(v) {
+			return "bad_request", "provider must be gitea, github or gitlab"
+		}
+		svc.Provider = v
+	}
+	return validateServiceConstraints(svc)
+}
+
+type patchServiceReq struct {
+	Name          string `json:"name"`
+	RepoURL       string `json:"repo_url"`
+	Provider      string `json:"provider"`
+	OwnerName     string `json:"owner_name"`
+	GitMode       string `json:"git_mode"`
+	DefaultBranch string `json:"default_branch"`
+}
+
+func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	svc, err := s.st.GetService(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "service not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not get service")
+		return
+	}
+	var req patchServiceReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	if code, msg := applyServicePatch(svc, servicePatch{
+		Name:          req.Name,
+		RepoURL:       req.RepoURL,
+		Provider:      req.Provider,
+		OwnerName:     req.OwnerName,
+		GitMode:       req.GitMode,
+		DefaultBranch: req.DefaultBranch,
+	}); code != "" {
+		writeError(w, http.StatusBadRequest, code, msg)
+		return
+	}
+	if err := s.st.UpdateService(r.Context(), svc); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not update service")
+		return
+	}
+	writeJSON(w, http.StatusOK, svc)
+}
+
+func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.st.GetService(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "service not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not get service")
+		return
+	}
+	// A service with runs cannot be deleted (runs.service_id has no cascade —
+	// runs are historical). Return a clean 409 rather than a raw FK error.
+	if runs, err := s.st.ListRunsByService(r.Context(), id, 1); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not check service runs")
+		return
+	} else if len(runs) > 0 {
+		writeError(w, http.StatusConflict, "conflict", "service has runs and cannot be deleted")
+		return
+	}
+	if err := s.st.DeleteService(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "service not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "could not delete service")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

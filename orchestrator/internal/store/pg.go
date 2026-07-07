@@ -39,13 +39,13 @@ func (s *PGStore) Close() { s.pool.Close() }
 
 // --- Projects ---------------------------------------------------------------
 
-const projectCols = `id, name, repo_url, default_branch, created_at,
-	git_mode, provider, provider_url, provider_repo`
+const projectCols = `id, name, created_at,
+	max_concurrent_runs, run_timeout_secs, provider_allowlist, injected_env`
 
 func scanProject(row pgx.Row) (*domain.Project, error) {
 	var p domain.Project
-	err := row.Scan(&p.ID, &p.Name, &p.RepoURL, &p.DefaultBranch, &p.CreatedAt,
-		&p.GitMode, &p.Provider, &p.ProviderURL, &p.ProviderRepo)
+	err := row.Scan(&p.ID, &p.Name, &p.CreatedAt,
+		&p.MaxConcurrentRuns, &p.RunTimeoutSecs, &p.ProviderAllowlist, &p.InjectedEnv)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -56,14 +56,15 @@ func scanProject(row pgx.Row) (*domain.Project, error) {
 }
 
 func (s *PGStore) CreateProject(ctx context.Context, p *domain.Project) error {
-	if p.GitMode == "" {
-		p.GitMode = domain.GitModeReadonly
+	env := p.InjectedEnv
+	if env == nil {
+		env = map[string]string{} // column is NOT NULL DEFAULT '{}'
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO projects (`+projectCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		p.ID, p.Name, p.RepoURL, p.DefaultBranch, p.CreatedAt,
-		string(p.GitMode), string(p.Provider), p.ProviderURL, p.ProviderRepo)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		p.ID, p.Name, p.CreatedAt,
+		p.MaxConcurrentRuns, p.RunTimeoutSecs, p.ProviderAllowlist, env)
 	if err != nil {
 		return fmt.Errorf("create project: %w", err)
 	}
@@ -94,12 +95,15 @@ func (s *PGStore) ListProjects(ctx context.Context) ([]domain.Project, error) {
 }
 
 func (s *PGStore) UpdateProject(ctx context.Context, p *domain.Project) error {
+	env := p.InjectedEnv
+	if env == nil {
+		env = map[string]string{}
+	}
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE projects SET name=$2, repo_url=$3, default_branch=$4,
-		    git_mode=$5, provider=$6, provider_url=$7, provider_repo=$8
+		`UPDATE projects SET name=$2, max_concurrent_runs=$3, run_timeout_secs=$4,
+		    provider_allowlist=$5, injected_env=$6
 		 WHERE id=$1`,
-		p.ID, p.Name, p.RepoURL, p.DefaultBranch,
-		string(p.GitMode), string(p.Provider), p.ProviderURL, p.ProviderRepo)
+		p.ID, p.Name, p.MaxConcurrentRuns, p.RunTimeoutSecs, p.ProviderAllowlist, env)
 	if err != nil {
 		return fmt.Errorf("update project: %w", err)
 	}
@@ -120,20 +124,132 @@ func (s *PGStore) DeleteProject(ctx context.Context, id string) error {
 	return nil
 }
 
+// --- Services ----------------------------------------------------------------
+
+const serviceCols = `id, project_id, name, repo_kind, provider, repo_owner_name,
+	raw_repo_url, default_branch, git_mode, created_at`
+
+// nullStr maps an empty Go string to a SQL NULL so nullable columns (provider,
+// repo_owner_name, raw_repo_url) stay NULL rather than ” — the services CHECK
+// constraint on provider only permits NULL or an enum value, not ”.
+func nullStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func scanService(row pgx.Row) (*domain.Service, error) {
+	var s domain.Service
+	var provider, ownerName, rawURL *string
+	err := row.Scan(&s.ID, &s.ProjectID, &s.Name, &s.RepoKind,
+		&provider, &ownerName, &rawURL, &s.DefaultBranch, &s.GitMode, &s.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan service: %w", err)
+	}
+	if provider != nil {
+		s.Provider = domain.GitProvider(*provider)
+	}
+	if ownerName != nil {
+		s.RepoOwnerName = *ownerName
+	}
+	if rawURL != nil {
+		s.RawRepoURL = *rawURL
+	}
+	return &s, nil
+}
+
+func (s *PGStore) CreateService(ctx context.Context, svc *domain.Service) error {
+	if svc.GitMode == "" {
+		svc.GitMode = domain.GitModeReadonly
+	}
+	if svc.DefaultBranch == "" {
+		svc.DefaultBranch = "main"
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO services (`+serviceCols+`)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		svc.ID, svc.ProjectID, svc.Name, string(svc.RepoKind),
+		nullStr(string(svc.Provider)), nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL),
+		svc.DefaultBranch, string(svc.GitMode), svc.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("create service: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetService(ctx context.Context, id string) (*domain.Service, error) {
+	return scanService(s.pool.QueryRow(ctx,
+		`SELECT `+serviceCols+` FROM services WHERE id=$1`, id))
+}
+
+func (s *PGStore) ListServices(ctx context.Context, projectID string) ([]domain.Service, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+serviceCols+` FROM services WHERE project_id=$1 ORDER BY created_at ASC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list services: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Service
+	for rows.Next() {
+		svc, err := scanService(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *svc)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) GetDefaultService(ctx context.Context, projectID string) (*domain.Service, error) {
+	return scanService(s.pool.QueryRow(ctx,
+		`SELECT `+serviceCols+` FROM services WHERE project_id=$1 AND name='default'`, projectID))
+}
+
+func (s *PGStore) UpdateService(ctx context.Context, svc *domain.Service) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE services SET name=$2, repo_kind=$3, provider=$4, repo_owner_name=$5,
+		    raw_repo_url=$6, default_branch=$7, git_mode=$8
+		 WHERE id=$1`,
+		svc.ID, svc.Name, string(svc.RepoKind), nullStr(string(svc.Provider)),
+		nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL), svc.DefaultBranch, string(svc.GitMode))
+	if err != nil {
+		return fmt.Errorf("update service: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) DeleteService(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM services WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("delete service: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // --- Runs -------------------------------------------------------------------
 
-const runCols = `id, project_id, prompt, status, phase, error, k8s_job_name,
+const runCols = `id, project_id, service_id, prompt, status, kind, phase, error, k8s_job_name,
 	retried_from, failure_reason, failure_message, attempt, token_hash,
 	created_at, started_at, finished_at, job_cleaned_at,
-	git_branch, commit_sha, pr_url, pr_number`
+	git_branch, commit_sha, pr_url, pr_number, review_output`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
-	err := row.Scan(&r.ID, &r.ProjectID, &r.Prompt, &r.Status, &r.Phase, &r.Error,
+	err := row.Scan(&r.ID, &r.ProjectID, &r.ServiceID, &r.Prompt, &r.Status, &r.Kind, &r.Phase, &r.Error,
 		&r.K8sJobName, &r.RetriedFrom, &r.FailureReason, &r.FailureMessage,
 		&r.Attempt, &r.TokenHash,
 		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt,
-		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber)
+		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -144,17 +260,42 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 }
 
 func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
+	if r.Kind == "" {
+		r.Kind = domain.RunKindAgent
+	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
-		r.ID, r.ProjectID, r.Prompt, r.Status, r.Phase, r.Error, r.K8sJobName,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
+		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
-		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber)
+		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
 	return nil
+}
+
+func (s *PGStore) ListRunsByService(ctx context.Context, serviceID string, limit int) ([]domain.Run, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+runCols+` FROM runs WHERE service_id=$1 ORDER BY created_at DESC LIMIT $2`,
+		serviceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list runs by service: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
 }
 
 func (s *PGStore) GetRun(ctx context.Context, id string) (*domain.Run, error) {

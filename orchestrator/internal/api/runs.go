@@ -16,6 +16,8 @@ type createRunReq struct {
 	Prompt string `json:"prompt"`
 }
 
+// handleCreateRun is the compatibility shim: POST /projects/{id}/runs routes to
+// the project's default service (multitenant blueprint §4).
 func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	if _, err := s.st.GetProject(r.Context(), projectID); errors.Is(err, store.ErrNotFound) {
@@ -25,7 +27,35 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load project")
 		return
 	}
+	svc, err := s.resolveDefaultService(r.Context(), projectID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusBadRequest, "bad_request", "project has no default service; create a service first")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load default service")
+		return
+	}
+	s.createRunForService(w, r, svc)
+}
 
+// handleCreateServiceRun is the primary run-creation endpoint: POST
+// /services/{id}/runs.
+func (s *Server) handleCreateServiceRun(w http.ResponseWriter, r *http.Request) {
+	svc, err := s.st.GetService(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "service not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		return
+	}
+	s.createRunForService(w, r, svc)
+}
+
+// createRunForService is the shared body of the two run-creation endpoints.
+func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc *domain.Service) {
 	var req createRunReq
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
@@ -36,8 +66,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "prompt is required")
 		return
 	}
-
-	run := newQueuedRun(projectID, req.Prompt, nil)
+	run := newQueuedRun(svc.ProjectID, svc.ID, req.Prompt, nil)
 	if err := s.st.CreateRun(r.Context(), run); err != nil {
 		s.log.Error("create run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create run")
@@ -48,13 +77,35 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, run)
 }
 
+func (s *Server) handleListServiceRuns(w http.ResponseWriter, r *http.Request) {
+	serviceID := r.PathValue("id")
+	if _, err := s.st.GetService(r.Context(), serviceID); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "service not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		return
+	}
+	runs, err := s.st.ListRunsByService(r.Context(), serviceID, queryInt(r, "limit", 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not list runs")
+		return
+	}
+	if runs == nil {
+		runs = []domain.Run{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+}
+
 // newQueuedRun constructs a fresh queued run. retriedFrom links a retry.
-func newQueuedRun(projectID, prompt string, retriedFrom *string) *domain.Run {
+func newQueuedRun(projectID, serviceID, prompt string, retriedFrom *string) *domain.Run {
 	return &domain.Run{
 		ID:          domain.NewID(),
 		ProjectID:   projectID,
+		ServiceID:   serviceID,
 		Prompt:      prompt,
 		Status:      domain.StatusQueued,
+		Kind:        domain.RunKindAgent,
 		Phase:       "Queued",
 		RetriedFrom: retriedFrom,
 		Attempt:     1,
@@ -158,7 +209,7 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	origID := orig.ID
-	retry := newQueuedRun(orig.ProjectID, orig.Prompt, &origID)
+	retry := newQueuedRun(orig.ProjectID, orig.ServiceID, orig.Prompt, &origID)
 	retry.Attempt = orig.Attempt + 1
 	if err := s.st.CreateRun(r.Context(), retry); err != nil {
 		s.log.Error("retry run", "err", err)

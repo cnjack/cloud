@@ -13,24 +13,27 @@ import (
 	"github.com/cnjack/jcloud/internal/store"
 )
 
-// seedDraftPRRun creates a draft_pr project + a succeeded run that reported a
-// pushed branch, mirroring the state the runner leaves behind for the PR pass.
-func seedDraftPRRun(t *testing.T, st *store.MemStore, branch string) (domain.Project, domain.Run) {
+// seedDraftPRRun creates a project + a draft_pr gitea-provider 'default' service
+// + a succeeded run that reported a pushed branch, mirroring the state the runner
+// leaves behind for the PR pass.
+func seedDraftPRRun(t *testing.T, st *store.MemStore, branch string) (domain.Service, domain.Run) {
 	t.Helper()
 	ctx := context.Background()
-	p := &domain.Project{
-		// repo_url shares the provider host (the real-world invariant for a
-		// draft_pr project) so the reconciler's host-match rule injects the token.
-		ID: domain.NewID(), Name: "gp", RepoURL: "http://gitea.test/jcloud/seed.git", DefaultBranch: "main",
-		GitMode: domain.GitModeDraftPR, Provider: domain.ProviderGitea,
-		ProviderURL: "http://gitea.test", ProviderRepo: "jcloud/seed",
-		CreatedAt: time.Now(),
-	}
+	p := &domain.Project{ID: domain.NewID(), Name: "gp", CreatedAt: time.Now()}
 	if err := st.CreateProject(ctx, p); err != nil {
 		t.Fatal(err)
 	}
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "jcloud/seed", DefaultBranch: "main",
+		GitMode: domain.GitModeDraftPR, CreatedAt: time.Now(),
+	}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
 	run := &domain.Run{
-		ID: domain.NewID(), ProjectID: p.ID, Prompt: "add a Hello line to README",
+		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "add a Hello line to README",
 		Status: domain.StatusSucceeded, Attempt: 1, CreatedAt: time.Now(),
 	}
 	if err := st.CreateRun(ctx, run); err != nil {
@@ -40,7 +43,7 @@ func seedDraftPRRun(t *testing.T, st *store.MemStore, branch string) (domain.Pro
 		t.Fatal(err)
 	}
 	got, _ := st.GetRun(ctx, run.ID)
-	return *p, *got
+	return *svc, *got
 }
 
 // TestReconcilePRCreation covers the happy-path PR pass: a succeeded draft_pr
@@ -181,34 +184,36 @@ func TestReconcilePRTransientErrorRetries(t *testing.T) {
 
 // TestShouldOpenPR is the exhaustive table for the pure PR-creation gate.
 func TestShouldOpenPR(t *testing.T) {
-	base := func() (domain.Run, domain.Project) {
+	base := func() (domain.Run, domain.Service) {
 		return domain.Run{
 				Status: domain.StatusSucceeded, GitBranch: "agent/run-x", PRURL: "",
-			}, domain.Project{
-				GitMode: domain.GitModeDraftPR, Provider: domain.ProviderGitea, ProviderRepo: "o/r",
+			}, domain.Service{
+				RepoKind: domain.RepoKindProvider, GitMode: domain.GitModeDraftPR,
+				Provider: domain.ProviderGitea, RepoOwnerName: "o/r",
 			}
 	}
 	cases := []struct {
 		name          string
-		mutate        func(*domain.Run, *domain.Project)
+		mutate        func(*domain.Run, *domain.Service)
 		providerReady bool
 		want          bool
 	}{
-		{"happy path", func(*domain.Run, *domain.Project) {}, true, true},
-		{"no provider ready", func(*domain.Run, *domain.Project) {}, false, false},
-		{"not succeeded", func(r *domain.Run, _ *domain.Project) { r.Status = domain.StatusRunning }, true, false},
-		{"failed run", func(r *domain.Run, _ *domain.Project) { r.Status = domain.StatusFailed }, true, false},
-		{"readonly project", func(_ *domain.Run, p *domain.Project) { p.GitMode = domain.GitModeReadonly }, true, false},
-		{"no branch reported", func(r *domain.Run, _ *domain.Project) { r.GitBranch = "" }, true, false},
-		{"pr already set", func(r *domain.Run, _ *domain.Project) { r.PRURL = "http://x/1" }, true, false},
-		{"empty repo", func(_ *domain.Run, p *domain.Project) { p.ProviderRepo = "" }, true, false},
-		{"non-gitea provider", func(_ *domain.Run, p *domain.Project) { p.Provider = "github" }, true, false},
+		{"happy path", func(*domain.Run, *domain.Service) {}, true, true},
+		{"no provider ready", func(*domain.Run, *domain.Service) {}, false, false},
+		{"not succeeded", func(r *domain.Run, _ *domain.Service) { r.Status = domain.StatusRunning }, true, false},
+		{"failed run", func(r *domain.Run, _ *domain.Service) { r.Status = domain.StatusFailed }, true, false},
+		{"readonly service", func(_ *domain.Run, s *domain.Service) { s.GitMode = domain.GitModeReadonly }, true, false},
+		{"raw repo", func(_ *domain.Run, s *domain.Service) { s.RepoKind = domain.RepoKindRaw }, true, false},
+		{"no branch reported", func(r *domain.Run, _ *domain.Service) { r.GitBranch = "" }, true, false},
+		{"pr already set", func(r *domain.Run, _ *domain.Service) { r.PRURL = "http://x/1" }, true, false},
+		{"empty repo", func(_ *domain.Run, s *domain.Service) { s.RepoOwnerName = "" }, true, false},
+		{"non-gitea provider", func(_ *domain.Run, s *domain.Service) { s.Provider = domain.ProviderGitHub }, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r, p := base()
-			tc.mutate(&r, &p)
-			if got := shouldOpenPR(r, p, tc.providerReady); got != tc.want {
+			r, svc := base()
+			tc.mutate(&r, &svc)
+			if got := shouldOpenPR(r, svc, tc.providerReady); got != tc.want {
 				t.Fatalf("shouldOpenPR = %v, want %v", got, tc.want)
 			}
 		})

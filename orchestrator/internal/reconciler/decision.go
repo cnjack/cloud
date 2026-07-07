@@ -131,26 +131,29 @@ func decide(run domain.Run, jobState k8s.JobState, hasCapacity bool) Decision {
 }
 
 // shouldOpenPR is the PURE decision for the draft-PR flow (ST-1): given a run
-// and its project, should the reconciler open a draft PR this tick? It is
+// and its service, should the reconciler open a draft PR this tick? It is
 // separated from the side-effecting provider call so it is exhaustively
 // unit-tested with no store/provider/HTTP.
 //
-// The gate: the run must be succeeded, the project must be draft_pr mode with a
-// gitea provider + a repo configured, the runner must have reported a pushed
-// branch (git_branch), and no PR may exist yet (pr_url empty). `providerReady`
-// lets the caller decline when no provider client is configured (degrade to
-// diff-only). All conditions must hold; any false is a clean skip.
-func shouldOpenPR(run domain.Run, proj domain.Project, providerReady bool) bool {
+// The gate: the run must be succeeded, the service must be draft_pr mode with a
+// gitea provider + a provider repo (owner/name) configured, the runner must have
+// reported a pushed branch (git_branch), and no PR may exist yet (pr_url empty).
+// `providerReady` lets the caller decline when no provider client is configured
+// (degrade to diff-only). All conditions must hold; any false is a clean skip.
+func shouldOpenPR(run domain.Run, svc domain.Service, providerReady bool) bool {
 	if !providerReady {
 		return false
 	}
 	if run.Status != domain.StatusSucceeded {
 		return false
 	}
-	if proj.GitMode != domain.GitModeDraftPR || proj.Provider != domain.ProviderGitea {
+	if svc.GitMode != domain.GitModeDraftPR || svc.Provider != domain.ProviderGitea {
 		return false
 	}
-	if strings.TrimSpace(proj.ProviderRepo) == "" {
+	if svc.RepoKind != domain.RepoKindProvider {
+		return false
+	}
+	if strings.TrimSpace(svc.RepoOwnerName) == "" {
 		return false
 	}
 	if strings.TrimSpace(run.GitBranch) == "" {

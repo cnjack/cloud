@@ -32,16 +32,134 @@ func pgTestStore(t *testing.T) (*PGStore, string) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	p := &domain.Project{ID: domain.NewID(), Name: "pgtest", RepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	p := &domain.Project{ID: domain.NewID(), Name: "pgtest", CreatedAt: time.Now()}
 	if err := st.CreateProject(ctx, p); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	r := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Prompt: "x", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: p.ID, Name: "default", RepoKind: domain.RepoKindRaw, RawRepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+	r := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "x", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
 	if err := st.CreateRun(ctx, r); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
 	t.Cleanup(func() { _ = st.DeleteProject(ctx, p.ID) }) // cascades runs/events
 	return st, r.ID
+}
+
+// TestPGProjectGuardrailsAndServiceRoundTrip exercises the pgx codec paths that
+// the memory store cannot: jsonb injected_env <-> map[string]string, text[]
+// provider_allowlist <-> []string, nullable int/bigint guardrails, and the
+// provider/raw service columns (nullable provider/owner/raw). It also covers
+// ListRunsByService.
+func TestPGProjectGuardrailsAndServiceRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	dsn := os.Getenv("JCLOUD_PG_DSN")
+	if dsn == "" {
+		t.Skip("JCLOUD_PG_DSN not set; skipping Postgres-backed store test")
+	}
+	st, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := Migrate(ctx, st.Pool()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	maxRuns := 7
+	timeout := int64(1234)
+	p := &domain.Project{
+		ID: domain.NewID(), Name: "guard", CreatedAt: time.Now(),
+		MaxConcurrentRuns: &maxRuns, RunTimeoutSecs: &timeout,
+		ProviderAllowlist: []string{"gitea", "github"},
+		InjectedEnv:       map[string]string{"FOO": "bar", "BAZ": "qux"},
+	}
+	if err := st.CreateProject(ctx, p); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	t.Cleanup(func() { _ = st.DeleteProject(ctx, p.ID) })
+
+	gotP, err := st.GetProject(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if gotP.MaxConcurrentRuns == nil || *gotP.MaxConcurrentRuns != 7 {
+		t.Fatalf("max_concurrent_runs = %v want 7", gotP.MaxConcurrentRuns)
+	}
+	if gotP.RunTimeoutSecs == nil || *gotP.RunTimeoutSecs != 1234 {
+		t.Fatalf("run_timeout_secs = %v want 1234", gotP.RunTimeoutSecs)
+	}
+	if len(gotP.ProviderAllowlist) != 2 || gotP.ProviderAllowlist[0] != "gitea" {
+		t.Fatalf("provider_allowlist = %v", gotP.ProviderAllowlist)
+	}
+	if gotP.InjectedEnv["FOO"] != "bar" || gotP.InjectedEnv["BAZ"] != "qux" {
+		t.Fatalf("injected_env = %v", gotP.InjectedEnv)
+	}
+
+	// A project with nil guardrails round-trips as nil/empty (inherit global).
+	p2 := &domain.Project{ID: domain.NewID(), Name: "bare", CreatedAt: time.Now()}
+	if err := st.CreateProject(ctx, p2); err != nil {
+		t.Fatalf("create bare project: %v", err)
+	}
+	t.Cleanup(func() { _ = st.DeleteProject(ctx, p2.ID) })
+	gotP2, _ := st.GetProject(ctx, p2.ID)
+	if gotP2.MaxConcurrentRuns != nil || gotP2.RunTimeoutSecs != nil || len(gotP2.ProviderAllowlist) != 0 {
+		t.Fatalf("bare guardrails not nil: %+v", gotP2)
+	}
+
+	// Provider service round-trip (nullable provider/owner set, raw NULL).
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "jcloud/seed", DefaultBranch: "main", GitMode: domain.GitModeDraftPR,
+		CreatedAt: time.Now(),
+	}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatalf("create provider service: %v", err)
+	}
+	// Raw service round-trip (provider/owner NULL, raw set).
+	rawSvc := &domain.Service{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "seed",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "git://x/seed.git",
+		DefaultBranch: "main", GitMode: domain.GitModeReadonly, CreatedAt: time.Now(),
+	}
+	if err := st.CreateService(ctx, rawSvc); err != nil {
+		t.Fatalf("create raw service: %v", err)
+	}
+
+	gotSvc, err := st.GetDefaultService(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("get default service: %v", err)
+	}
+	if gotSvc.Provider != domain.ProviderGitea || gotSvc.RepoOwnerName != "jcloud/seed" ||
+		gotSvc.RawRepoURL != "" || gotSvc.GitMode != domain.GitModeDraftPR {
+		t.Fatalf("provider service round-trip wrong: %+v", gotSvc)
+	}
+	gotRaw, _ := st.GetService(ctx, rawSvc.ID)
+	if gotRaw.RepoKind != domain.RepoKindRaw || gotRaw.RawRepoURL != "git://x/seed.git" || gotRaw.Provider != "" {
+		t.Fatalf("raw service round-trip wrong: %+v", gotRaw)
+	}
+	if svcs, _ := st.ListServices(ctx, p.ID); len(svcs) != 2 {
+		t.Fatalf("ListServices len=%d want 2", len(svcs))
+	}
+
+	// ListRunsByService returns only the service's runs.
+	r1 := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "a", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
+	r2 := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, ServiceID: rawSvc.ID, Prompt: "b", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
+	_ = st.CreateRun(ctx, r1)
+	_ = st.CreateRun(ctx, r2)
+	bySvc, err := st.ListRunsByService(ctx, svc.ID, 100)
+	if err != nil {
+		t.Fatalf("list runs by service: %v", err)
+	}
+	if len(bySvc) != 1 || bySvc[0].ID != r1.ID {
+		t.Fatalf("ListRunsByService = %+v want [%s]", bySvc, r1.ID)
+	}
+	if bySvc[0].Kind != domain.RunKindAgent {
+		t.Fatalf("run kind = %q want agent (default)", bySvc[0].Kind)
+	}
 }
 
 func TestPGRunnerSeqAllocationAndDedupe(t *testing.T) {
@@ -167,7 +285,10 @@ func TestPGConcurrentFailPreservesReason(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); _, _ = st.SetRunnerFailure(ctx, runID, domain.FailureCloneFailed, "specific") }()
-	go func() { defer wg.Done(); _, _ = st.MarkFailed(ctx, runID, "Failed", domain.FailureAgentError, "generic", time.Now()) }()
+	go func() {
+		defer wg.Done()
+		_, _ = st.MarkFailed(ctx, runID, "Failed", domain.FailureAgentError, "generic", time.Now())
+	}()
 	wg.Wait()
 
 	got, err := st.GetRun(ctx, runID)

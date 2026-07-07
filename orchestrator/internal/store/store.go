@@ -44,11 +44,24 @@ type Store interface {
 	UpdateProject(ctx context.Context, p *domain.Project) error
 	DeleteProject(ctx context.Context, id string) error
 
+	// Services. A service is a repository configuration inside a project; runs
+	// are created against a service (multitenant blueprint §1).
+	CreateService(ctx context.Context, s *domain.Service) error
+	GetService(ctx context.Context, id string) (*domain.Service, error)
+	ListServices(ctx context.Context, projectID string) ([]domain.Service, error)
+	// GetDefaultService returns the project's service named "default" (the one
+	// the compatibility shim creates and routes to). ErrNotFound if absent.
+	GetDefaultService(ctx context.Context, projectID string) (*domain.Service, error)
+	UpdateService(ctx context.Context, s *domain.Service) error
+	DeleteService(ctx context.Context, id string) error
+
 	// Runs
 	CreateRun(ctx context.Context, r *domain.Run) error
 	GetRun(ctx context.Context, id string) (*domain.Run, error)
 	GetRunByTokenHash(ctx context.Context, tokenHash string) (*domain.Run, error)
 	ListRuns(ctx context.Context, projectID string, limit int) ([]domain.Run, error)
+	// ListRunsByService lists runs for a single service, newest first.
+	ListRunsByService(ctx context.Context, serviceID string, limit int) ([]domain.Run, error)
 
 	// Run mutators. Each of these re-reads the committed row inside a
 	// transaction (SELECT ... FOR UPDATE), validates the state-machine

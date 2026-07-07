@@ -14,11 +14,15 @@ import (
 func seedRun(t *testing.T, m *MemStore) string {
 	t.Helper()
 	ctx := context.Background()
-	p := &domain.Project{ID: domain.NewID(), Name: "p", RepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
 	if err := m.CreateProject(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	r := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Prompt: "x", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: p.ID, Name: "default", RepoKind: domain.RepoKindRaw, RawRepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	if err := m.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	r := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "x", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
 	if err := m.CreateRun(ctx, r); err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +389,7 @@ func TestMemSetRunGitFirstWriterWins(t *testing.T) {
 func TestMemListRunsAwaitingPR(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemStore()
-	p := &domain.Project{ID: domain.NewID(), Name: "p", RepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
 	_ = m.CreateProject(ctx, p)
 
 	// r1: succeeded + branch + no PR -> included.
@@ -414,28 +418,40 @@ func TestMemListRunsAwaitingPR(t *testing.T) {
 	}
 }
 
-// TestMemProjectGitConfigRoundTrip proves project git config persists and
-// defaults to readonly.
-func TestMemProjectGitConfigRoundTrip(t *testing.T) {
+// TestMemServiceGitConfigRoundTrip proves service repo config persists, defaults
+// to readonly, and GetDefaultService resolves the 'default' service.
+func TestMemServiceGitConfigRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemStore()
-	// Default (no git_mode) -> readonly.
-	p1 := &domain.Project{ID: domain.NewID(), Name: "ro", RepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
-	_ = m.CreateProject(ctx, p1)
-	got1, _ := m.GetProject(ctx, p1.ID)
-	if got1.GitMode != domain.GitModeReadonly {
-		t.Fatalf("default git_mode = %q want readonly", got1.GitMode)
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
+	_ = m.CreateProject(ctx, p)
+
+	// Default (no git_mode) -> readonly; raw service round-trips.
+	s1 := &domain.Service{ID: domain.NewID(), ProjectID: p.ID, Name: "default", RepoKind: domain.RepoKindRaw, RawRepoURL: "git://x/seed.git", CreatedAt: time.Now()}
+	_ = m.CreateService(ctx, s1)
+	got1, _ := m.GetService(ctx, s1.ID)
+	if got1.GitMode != domain.GitModeReadonly || got1.DefaultBranch != "main" {
+		t.Fatalf("default git_mode/branch = %q/%q want readonly/main", got1.GitMode, got1.DefaultBranch)
 	}
-	// Explicit draft_pr config round-trips.
-	p2 := &domain.Project{
-		ID: domain.NewID(), Name: "pr", RepoURL: "u", DefaultBranch: "main",
-		GitMode: domain.GitModeDraftPR, Provider: domain.ProviderGitea,
-		ProviderURL: "http://gitea", ProviderRepo: "o/r", CreatedAt: time.Now(),
+	def, err := m.GetDefaultService(ctx, p.ID)
+	if err != nil || def.ID != s1.ID {
+		t.Fatalf("GetDefaultService = %+v err=%v want %s", def, err, s1.ID)
 	}
-	_ = m.CreateProject(ctx, p2)
-	got2, _ := m.GetProject(ctx, p2.ID)
+
+	// Explicit draft_pr provider service round-trips.
+	s2 := &domain.Service{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "web", RepoKind: domain.RepoKindProvider,
+		Provider: domain.ProviderGitea, RepoOwnerName: "o/r", DefaultBranch: "main",
+		GitMode: domain.GitModeDraftPR, CreatedAt: time.Now(),
+	}
+	_ = m.CreateService(ctx, s2)
+	got2, _ := m.GetService(ctx, s2.ID)
 	if got2.GitMode != domain.GitModeDraftPR || got2.Provider != domain.ProviderGitea ||
-		got2.ProviderURL != "http://gitea" || got2.ProviderRepo != "o/r" {
-		t.Fatalf("draft_pr config not round-tripped: %+v", got2)
+		got2.RepoKind != domain.RepoKindProvider || got2.RepoOwnerName != "o/r" {
+		t.Fatalf("draft_pr service not round-tripped: %+v", got2)
+	}
+	svcs, _ := m.ListServices(ctx, p.ID)
+	if len(svcs) != 2 {
+		t.Fatalf("ListServices len=%d want 2", len(svcs))
 	}
 }

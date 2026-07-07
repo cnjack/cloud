@@ -16,6 +16,7 @@ import (
 type MemStore struct {
 	mu        sync.Mutex
 	projects  map[string]domain.Project
+	services  map[string]domain.Service
 	runs      map[string]domain.Run
 	events    map[string][]domain.RunEvent  // keyed by runID, kept sorted by seq
 	dedupe    map[string]bool               // keyed by runID+"|"+source+"|"+client_seq
@@ -26,6 +27,7 @@ type MemStore struct {
 func NewMemStore() *MemStore {
 	return &MemStore{
 		projects:  map[string]domain.Project{},
+		services:  map[string]domain.Service{},
 		runs:      map[string]domain.Run{},
 		events:    map[string][]domain.RunEvent{},
 		dedupe:    map[string]bool{},
@@ -58,9 +60,6 @@ func (m *MemStore) Close() {}
 func (m *MemStore) CreateProject(_ context.Context, p *domain.Project) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if p.GitMode == "" {
-		p.GitMode = domain.GitModeReadonly
-	}
 	m.projects[p.ID] = *p
 	return nil
 }
@@ -104,6 +103,89 @@ func (m *MemStore) DeleteProject(_ context.Context, id string) error {
 		return ErrNotFound
 	}
 	delete(m.projects, id)
+	// Cascade: drop the project's services and runs (mirrors the FK ON DELETE
+	// CASCADE on services.project_id / runs.project_id).
+	for sid, svc := range m.services {
+		if svc.ProjectID == id {
+			delete(m.services, sid)
+		}
+	}
+	for rid, r := range m.runs {
+		if r.ProjectID == id {
+			delete(m.runs, rid)
+		}
+	}
+	return nil
+}
+
+// --- services ---
+
+func (m *MemStore) CreateService(_ context.Context, s *domain.Service) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s.GitMode == "" {
+		s.GitMode = domain.GitModeReadonly
+	}
+	if s.DefaultBranch == "" {
+		s.DefaultBranch = "main"
+	}
+	m.services[s.ID] = *s
+	return nil
+}
+
+func (m *MemStore) GetService(_ context.Context, id string) (*domain.Service, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.services[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := s
+	return &cp, nil
+}
+
+func (m *MemStore) ListServices(_ context.Context, projectID string) ([]domain.Service, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Service
+	for _, s := range m.services {
+		if s.ProjectID == projectID {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) GetDefaultService(_ context.Context, projectID string) (*domain.Service, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.services {
+		if s.ProjectID == projectID && s.Name == "default" {
+			cp := s
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MemStore) UpdateService(_ context.Context, s *domain.Service) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.services[s.ID]; !ok {
+		return ErrNotFound
+	}
+	m.services[s.ID] = *s
+	return nil
+}
+
+func (m *MemStore) DeleteService(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.services[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.services, id)
 	return nil
 }
 
@@ -112,6 +194,9 @@ func (m *MemStore) DeleteProject(_ context.Context, id string) error {
 func (m *MemStore) CreateRun(_ context.Context, r *domain.Run) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if r.Kind == "" {
+		r.Kind = domain.RunKindAgent
+	}
 	m.runs[r.ID] = *r
 	return nil
 }
@@ -148,6 +233,22 @@ func (m *MemStore) ListRuns(_ context.Context, projectID string, limit int) ([]d
 	var out []domain.Run
 	for _, r := range m.runs {
 		if projectID == "" || r.ProjectID == projectID {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *MemStore) ListRunsByService(_ context.Context, serviceID string, limit int) ([]domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Run
+	for _, r := range m.runs {
+		if r.ServiceID == serviceID {
 			out = append(out, r)
 		}
 	}

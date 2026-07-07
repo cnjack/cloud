@@ -107,24 +107,30 @@ func TestAuthRequired(t *testing.T) {
 func TestProjectCRUD(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 
-	// Create with missing fields -> 400.
-	resp := do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]string{"name": "x"})
+	// Create with missing name -> 400 (name is the only required field now).
+	resp := do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]string{"repo_url": "https://git/x.git"})
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("missing repo_url: status=%d want 400", resp.StatusCode)
+		t.Fatalf("missing name: status=%d want 400", resp.StatusCode)
 	}
 	resp.Body.Close()
 
-	// Create OK.
+	// Create OK. name + repo_url auto-creates a 'default' service (compat shim).
 	resp = do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]string{
 		"name": "demo", "repo_url": "https://git/x.git",
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create: status=%d want 201", resp.StatusCode)
 	}
-	var proj domain.Project
+	var proj projectView
 	decode(t, resp, &proj)
 	if proj.ID == "" || proj.DefaultBranch != "main" {
 		t.Fatalf("bad project: %+v", proj)
+	}
+	if len(proj.Services) != 1 || proj.Services[0].Name != "default" {
+		t.Fatalf("expected one 'default' service, got %+v", proj.Services)
+	}
+	if proj.Services[0].RepoKind != domain.RepoKindRaw {
+		t.Fatalf("repo_kind=%q want raw (single-segment url)", proj.Services[0].RepoKind)
 	}
 
 	// Get.
@@ -736,9 +742,11 @@ func TestSSEStreamClosesOnServerShutdown(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	ctx := context.Background()
-	p := &domain.Project{ID: domain.NewID(), Name: "p", RepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
 	_ = st.CreateProject(ctx, p)
-	run := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Prompt: "x", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: p.ID, Name: "default", RepoKind: domain.RepoKindRaw, RawRepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	_ = st.CreateService(ctx, svc)
+	run := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "x", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
 	_ = st.CreateRun(ctx, run)
 	// Non-terminal so the stream enters the live loop and blocks.
 	if _, err := st.ScheduleRun(ctx, run.ID, "j", "h", "PreparingWorkspace"); err != nil {
@@ -895,7 +903,7 @@ func TestCreateDraftPRProject(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create draft_pr project: status=%d want 201", resp.StatusCode)
 	}
-	var p domain.Project
+	var p projectView
 	decode(t, resp, &p)
 	if p.GitMode != domain.GitModeDraftPR || p.Provider != domain.ProviderGitea || p.ProviderRepo != "jcloud/seed" {
 		t.Fatalf("git config not persisted: %+v", p)
@@ -963,12 +971,16 @@ func TestSystemSnapshot(t *testing.T) {
 
 	// Seed some runs across statuses: 1 running, 1 scheduling, 2 queued.
 	ctx := context.Background()
-	p := &domain.Project{ID: domain.NewID(), Name: "p", RepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
 	if err := st.CreateProject(ctx, p); err != nil {
 		t.Fatal(err)
 	}
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: p.ID, Name: "default", RepoKind: domain.RepoKindRaw, RawRepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
 	mkRun := func() *domain.Run {
-		r := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Prompt: "x", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
+		r := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "x", Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now()}
 		if err := st.CreateRun(ctx, r); err != nil {
 			t.Fatal(err)
 		}

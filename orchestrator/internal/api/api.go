@@ -52,6 +52,17 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /api/v1/projects/{id}", s.console(s.handleUpdateProject))
 	mux.Handle("DELETE /api/v1/projects/{id}", s.console(s.handleDeleteProject))
 
+	// Services (multitenant blueprint §4). A service is a repo config inside a
+	// project; runs are created against a service.
+	mux.Handle("POST /api/v1/projects/{id}/services", s.console(s.handleCreateService))
+	mux.Handle("GET /api/v1/projects/{id}/services", s.console(s.handleListServices))
+	mux.Handle("PATCH /api/v1/services/{id}", s.console(s.handleUpdateService))
+	mux.Handle("DELETE /api/v1/services/{id}", s.console(s.handleDeleteService))
+	mux.Handle("POST /api/v1/services/{id}/runs", s.console(s.handleCreateServiceRun))
+	mux.Handle("GET /api/v1/services/{id}/runs", s.console(s.handleListServiceRuns))
+
+	// Compat shim: POST /projects/{id}/runs routes to the project's default
+	// service; GET stays project-scoped.
 	mux.Handle("POST /api/v1/projects/{id}/runs", s.console(s.handleCreateRun))
 	mux.Handle("GET /api/v1/projects/{id}/runs", s.console(s.handleListRuns))
 	mux.Handle("GET /api/v1/runs", s.console(s.handleListRuns))

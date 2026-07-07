@@ -29,15 +29,25 @@ func testRec(t *testing.T, maxConcurrent int) (*Reconciler, *store.MemStore, *k8
 	return New(st, fake, cfg, log, nil), st, fake
 }
 
+// seedProjectAndRun creates a project + a readonly raw 'default' service + a
+// queued run against it — the default (diff-only) shape.
 func seedProjectAndRun(t *testing.T, st *store.MemStore) domain.Run {
 	t.Helper()
 	ctx := context.Background()
-	p := &domain.Project{ID: domain.NewID(), Name: "p", RepoURL: "https://git/x.git", DefaultBranch: "main", CreatedAt: time.Now()}
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
 	if err := st.CreateProject(ctx, p); err != nil {
 		t.Fatal(err)
 	}
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "git://git/x.git",
+		DefaultBranch: "main", GitMode: domain.GitModeReadonly, CreatedAt: time.Now(),
+	}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
 	run := &domain.Run{
-		ID: domain.NewID(), ProjectID: p.ID, Prompt: "do the thing",
+		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "do the thing",
 		Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now(),
 	}
 	if err := st.CreateRun(ctx, run); err != nil {
@@ -46,11 +56,10 @@ func seedProjectAndRun(t *testing.T, st *store.MemStore) domain.Run {
 	return *run
 }
 
-// gitEnvFor seeds a project (with the given repoURL, providerURL, gitMode) and a
-// queued run, then returns the jobEnv the reconciler would inject. cfg.GiteaToken
-// / cfg.GiteaURL are set from tokenCfg/urlCfg so the host-match rule can be
-// exercised without a cluster.
-func gitEnvFor(t *testing.T, repoURL, providerURL, providerRepo string, gitMode domain.GitMode, tokenCfg, urlCfg string) map[string]string {
+// jobEnvForService seeds a project + a 'default' service with the given repo
+// config + a queued run, sets cfg.GiteaURL/GiteaToken, and returns the jobEnv
+// the reconciler would inject — the seam for the git-env token/push tests.
+func jobEnvForService(t *testing.T, svc domain.Service, tokenCfg, urlCfg string) map[string]string {
 	t.Helper()
 	ctx := context.Background()
 	st := store.NewMemStore()
@@ -66,17 +75,22 @@ func gitEnvFor(t *testing.T, repoURL, providerURL, providerRepo string, gitMode 
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rec := New(st, fake, cfg, log, nil)
-	p := &domain.Project{
-		ID: domain.NewID(), Name: "p", RepoURL: repoURL, DefaultBranch: "main",
-		GitMode: gitMode, Provider: domain.ProviderGitea,
-		ProviderURL: providerURL, ProviderRepo: providerRepo,
-		CreatedAt: time.Now(),
-	}
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
 	if err := st.CreateProject(ctx, p); err != nil {
 		t.Fatal(err)
 	}
+	svc.ID = domain.NewID()
+	svc.ProjectID = p.ID
+	svc.Name = "default"
+	if svc.DefaultBranch == "" {
+		svc.DefaultBranch = "main"
+	}
+	svc.CreatedAt = time.Now()
+	if err := st.CreateService(ctx, &svc); err != nil {
+		t.Fatal(err)
+	}
 	run := &domain.Run{
-		ID: domain.NewID(), ProjectID: p.ID, Prompt: "do the thing",
+		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "do the thing",
 		Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now(),
 	}
 	if err := st.CreateRun(ctx, run); err != nil {
@@ -85,22 +99,23 @@ func gitEnvFor(t *testing.T, repoURL, providerURL, providerRepo string, gitMode 
 	return rec.jobEnv(ctx, run, "run-token")
 }
 
-// TestJobEnvInjectsGitTokenForReadonlyMatchingHost is the F1 regression: a
-// PRIVATE repo must be cloneable to be READ, so GIT_TOKEN is injected for a
-// readonly project whose repo host matches the provider host — independent of PR
-// mode. GIT_MODE stays readonly (no push contract).
-func TestJobEnvInjectsGitTokenForReadonlyMatchingHost(t *testing.T) {
-	env := gitEnvFor(t,
-		"https://git.example.com/ai/priv.git", // repo
-		"https://git.example.com",             // provider_url (same host)
-		"ai/priv",
-		domain.GitModeReadonly,
-		"secret-pat", "https://git.example.com")
+// TestJobEnvGiteaProviderReadonlyGetsCloneToken is the F1 regression: a PRIVATE
+// gitea repo must be cloneable to be READ, so GIT_TOKEN is injected for a
+// readonly gitea-provider service — independent of PR mode. GIT_MODE stays
+// readonly (no push contract) and REPO_URL is derived from the gitea base.
+func TestJobEnvGiteaProviderReadonlyGetsCloneToken(t *testing.T) {
+	env := jobEnvForService(t, domain.Service{
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "ai/priv", GitMode: domain.GitModeReadonly,
+	}, "secret-pat", "https://git.example.com")
 	if env["GIT_TOKEN"] != "secret-pat" {
 		t.Fatalf("GIT_TOKEN=%q want secret-pat (private repo must be cloneable in readonly)", env["GIT_TOKEN"])
 	}
 	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
 		t.Fatalf("GIT_MODE=%q want readonly", env["GIT_MODE"])
+	}
+	if env["REPO_URL"] != "https://git.example.com/ai/priv.git" {
+		t.Fatalf("REPO_URL=%q want the gitea clone origin", env["REPO_URL"])
 	}
 	// readonly must NOT carry the push contract.
 	if env["GIT_PUSH_URL"] != "" || env["GIT_BRANCH"] != "" {
@@ -108,49 +123,37 @@ func TestJobEnvInjectsGitTokenForReadonlyMatchingHost(t *testing.T) {
 	}
 }
 
-// TestJobEnvUsesDefaultGiteaURLWhenProviderURLEmpty verifies a readonly project
-// with no provider_url falls back to the orchestrator-wide GITEA_URL for the
-// host match (the common single-provider deployment).
-func TestJobEnvUsesDefaultGiteaURLWhenProviderURLEmpty(t *testing.T) {
-	env := gitEnvFor(t,
-		"https://git.example.com/ai/priv.git",
-		"", // no provider_url
-		"ai/priv",
-		domain.GitModeReadonly,
-		"secret-pat", "https://git.example.com") // GITEA_URL supplies the host
-	if env["GIT_TOKEN"] != "secret-pat" {
-		t.Fatalf("GIT_TOKEN=%q want secret-pat (host match via GITEA_URL fallback)", env["GIT_TOKEN"])
-	}
-}
-
-// TestJobEnvNoTokenForMismatchedHost is the security regression: the Gitea PAT
-// must NOT leak to an unrelated git host referenced by repo_url.
-func TestJobEnvNoTokenForMismatchedHost(t *testing.T) {
-	env := gitEnvFor(t,
-		"https://github.com/someone/other.git", // DIFFERENT host
-		"https://git.example.com",              // provider host
-		"someone/other",
-		domain.GitModeReadonly,
-		"secret-pat", "https://git.example.com")
+// TestJobEnvGithubProviderGetsNoGiteaToken is the security regression: the gitea
+// PAT must NOT be injected for a github (or gitlab) provider service — those use
+// per-user OAuth tokens (M2), never the gitea PAT.
+func TestJobEnvGithubProviderGetsNoGiteaToken(t *testing.T) {
+	env := jobEnvForService(t, domain.Service{
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitHub,
+		RepoOwnerName: "someone/other", GitMode: domain.GitModeReadonly,
+	}, "secret-pat", "https://git.example.com")
 	if _, ok := env["GIT_TOKEN"]; ok {
-		t.Fatalf("GIT_TOKEN must NOT be injected for a mismatched host (leak); got %q", env["GIT_TOKEN"])
+		t.Fatalf("GIT_TOKEN must NOT be injected for a github service (leak); got %q", env["GIT_TOKEN"])
 	}
 	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
 		t.Fatalf("GIT_MODE=%q want readonly", env["GIT_MODE"])
 	}
+	if env["REPO_URL"] != "https://github.com/someone/other.git" {
+		t.Fatalf("REPO_URL=%q want the github clone origin", env["REPO_URL"])
+	}
 }
 
-// TestJobEnvNoTokenForFileRepo verifies file:// repos never receive the token
-// (no host to match; the in-cluster anonymous gitseed uses http, not file).
-func TestJobEnvNoTokenForFileRepo(t *testing.T) {
-	env := gitEnvFor(t,
-		"file:///seed/repo.git",
-		"https://git.example.com",
-		"ai/priv",
-		domain.GitModeReadonly,
-		"secret-pat", "https://git.example.com")
+// TestJobEnvRawRepoGetsNoToken verifies raw services (git://, file://, opaque
+// http) never receive the gitea PAT and clone via their raw URL as-is.
+func TestJobEnvRawRepoGetsNoToken(t *testing.T) {
+	env := jobEnvForService(t, domain.Service{
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "git://git.jcloud/seed.git",
+		GitMode: domain.GitModeReadonly,
+	}, "secret-pat", "https://git.example.com")
 	if _, ok := env["GIT_TOKEN"]; ok {
-		t.Fatalf("GIT_TOKEN must NOT be injected for a file:// repo; got %q", env["GIT_TOKEN"])
+		t.Fatalf("GIT_TOKEN must NOT be injected for a raw repo; got %q", env["GIT_TOKEN"])
+	}
+	if env["REPO_URL"] != "git://git.jcloud/seed.git" {
+		t.Fatalf("REPO_URL=%q want the raw url as-is", env["REPO_URL"])
 	}
 }
 
@@ -158,26 +161,22 @@ func TestJobEnvNoTokenForFileRepo(t *testing.T) {
 // with GITEA_TOKEN unset, nothing is injected and the runner does a bare
 // (anonymous) clone — the in-cluster gitseed behavior stays intact.
 func TestJobEnvNoTokenWhenUnconfigured(t *testing.T) {
-	env := gitEnvFor(t,
-		"https://git.example.com/ai/pub.git",
-		"https://git.example.com",
-		"ai/pub",
-		domain.GitModeReadonly,
-		"", "https://git.example.com") // no token configured
+	env := jobEnvForService(t, domain.Service{
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "ai/pub", GitMode: domain.GitModeReadonly,
+	}, "", "https://git.example.com") // no token configured
 	if _, ok := env["GIT_TOKEN"]; ok {
 		t.Fatalf("GIT_TOKEN must be absent when GITEA_TOKEN unset; got %q", env["GIT_TOKEN"])
 	}
 }
 
-// TestJobEnvDraftPRMatchingHostGetsFullContract verifies draft_pr on a matching
-// host gets both the clone token AND the push contract.
-func TestJobEnvDraftPRMatchingHostGetsFullContract(t *testing.T) {
-	env := gitEnvFor(t,
-		"https://git.example.com/ai/priv.git",
-		"https://git.example.com",
-		"ai/priv",
-		domain.GitModeDraftPR,
-		"secret-pat", "https://git.example.com")
+// TestJobEnvDraftPRGiteaGetsFullContract verifies draft_pr on a gitea-provider
+// service gets both the clone token AND the push contract.
+func TestJobEnvDraftPRGiteaGetsFullContract(t *testing.T) {
+	env := jobEnvForService(t, domain.Service{
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "ai/priv", GitMode: domain.GitModeDraftPR,
+	}, "secret-pat", "https://git.example.com")
 	if env["GIT_TOKEN"] != "secret-pat" {
 		t.Fatalf("GIT_TOKEN=%q want secret-pat", env["GIT_TOKEN"])
 	}
@@ -192,24 +191,22 @@ func TestJobEnvDraftPRMatchingHostGetsFullContract(t *testing.T) {
 	}
 }
 
-// TestJobEnvDraftPRMismatchedHostStaysDiffOnly verifies a draft_pr project whose
-// repo host does NOT match the provider degrades to diff-only (no token, no push)
-// rather than leaking the PAT.
-func TestJobEnvDraftPRMismatchedHostStaysDiffOnly(t *testing.T) {
-	env := gitEnvFor(t,
-		"https://github.com/someone/other.git", // mismatched host
-		"https://git.example.com",
-		"someone/other",
-		domain.GitModeDraftPR,
-		"secret-pat", "https://git.example.com")
+// TestJobEnvDraftPRNonGiteaStaysDiffOnly verifies a draft_pr service whose
+// provider is not gitea degrades to diff-only in M1 (no token, no push) — the
+// github/gitlab push flow lands with OAuth in M2.
+func TestJobEnvDraftPRNonGiteaStaysDiffOnly(t *testing.T) {
+	env := jobEnvForService(t, domain.Service{
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitHub,
+		RepoOwnerName: "someone/other", GitMode: domain.GitModeDraftPR,
+	}, "secret-pat", "https://git.example.com")
 	if _, ok := env["GIT_TOKEN"]; ok {
-		t.Fatalf("GIT_TOKEN must NOT be injected for mismatched host in draft_pr; got %q", env["GIT_TOKEN"])
+		t.Fatalf("GIT_TOKEN must NOT be injected for a non-gitea draft_pr service; got %q", env["GIT_TOKEN"])
 	}
 	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
-		t.Fatalf("GIT_MODE=%q want readonly (draft_pr degrades to diff-only on host mismatch)", env["GIT_MODE"])
+		t.Fatalf("GIT_MODE=%q want readonly (non-gitea draft_pr degrades to diff-only in M1)", env["GIT_MODE"])
 	}
 	if env["GIT_PUSH_URL"] != "" {
-		t.Fatalf("mismatched-host draft_pr must not carry push URL; got %q", env["GIT_PUSH_URL"])
+		t.Fatalf("non-gitea draft_pr must not carry push URL; got %q", env["GIT_PUSH_URL"])
 	}
 }
 
@@ -341,12 +338,14 @@ func TestReconcilePreservesRunnerReportedFailure(t *testing.T) {
 func TestReconcileCapacityGating(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 2) // cap = 2
-	// Seed 4 queued runs on one project.
-	p := &domain.Project{ID: domain.NewID(), Name: "p", RepoURL: "https://git/x.git", DefaultBranch: "main", CreatedAt: time.Now()}
+	// Seed 4 queued runs on one project/service.
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
 	_ = st.CreateProject(ctx, p)
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: p.ID, Name: "default", RepoKind: domain.RepoKindRaw, RawRepoURL: "git://git/x.git", DefaultBranch: "main", CreatedAt: time.Now()}
+	_ = st.CreateService(ctx, svc)
 	for i := 0; i < 4; i++ {
 		_ = st.CreateRun(ctx, &domain.Run{
-			ID: domain.NewID(), ProjectID: p.ID, Prompt: "t",
+			ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "t",
 			Status: domain.StatusQueued, Attempt: 1,
 			CreatedAt: time.Now().Add(time.Duration(i) * time.Millisecond),
 		})
@@ -377,11 +376,13 @@ func TestReconcileCapacityGating(t *testing.T) {
 func TestReconcileUnlimitedCapacity(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 0) // 0 => unlimited
-	p := &domain.Project{ID: domain.NewID(), Name: "p", RepoURL: "https://git/x.git", DefaultBranch: "main", CreatedAt: time.Now()}
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
 	_ = st.CreateProject(ctx, p)
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: p.ID, Name: "default", RepoKind: domain.RepoKindRaw, RawRepoURL: "git://git/x.git", DefaultBranch: "main", CreatedAt: time.Now()}
+	_ = st.CreateService(ctx, svc)
 	for i := 0; i < 5; i++ {
 		_ = st.CreateRun(ctx, &domain.Run{
-			ID: domain.NewID(), ProjectID: p.ID, Prompt: "t",
+			ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "t",
 			Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now(),
 		})
 	}
@@ -401,7 +402,7 @@ func TestReconcileStaleCopyDoesNotClobberRunnerReason(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 4)
 	run := seedProjectAndRun(t, st)
-	rec.Tick(ctx) // queued -> scheduling
+	rec.Tick(ctx)                                // queued -> scheduling
 	staleAtListTime, _ := st.GetRun(ctx, run.ID) // FailureReason == "" here
 	// Advance to running so MarkFailed is a legal transition.
 	fake.SetState(staleAtListTime.K8sJobName, k8s.JobRunning)

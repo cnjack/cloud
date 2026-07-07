@@ -120,41 +120,128 @@ func ValidGitMode(m GitMode) bool {
 	return false
 }
 
-// GitProvider identifies the git host the draft-PR flow targets. Gitea first
-// (D09); GitHub/GitLab are future work.
+// GitProvider identifies the git host a service's repo lives on / the draft-PR
+// flow targets. Gitea is the only provider whose push + PR flow is wired in M1
+// (decision D09); github/gitlab are accepted as classifications now (multitenant
+// blueprint §1) and their token/PR flow lands with OAuth in M2.
 type GitProvider string
 
 const (
-	// ProviderGitea is the only provider wired in the MVP (decision D09).
+	// ProviderGitea is the self-hosted provider wired end-to-end in the MVP.
 	ProviderGitea GitProvider = "gitea"
+	// ProviderGitHub classifies github.com repos (push/PR flow arrives in M2).
+	ProviderGitHub GitProvider = "github"
+	// ProviderGitLab classifies gitlab.com repos (push/PR flow arrives in M2).
+	ProviderGitLab GitProvider = "gitlab"
 )
 
-// Project is a repository configuration that runs are created against.
-type Project struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	RepoURL       string    `json:"repo_url"`
-	DefaultBranch string    `json:"default_branch"`
-	CreatedAt     time.Time `json:"created_at"`
-
-	// Git integration (ST-1). GitMode defaults to readonly (diff-only). When
-	// draft_pr, Provider/ProviderURL/ProviderRepo point at the git host the
-	// orchestrator opens the draft PR on. ProviderRepo is "owner/name".
-	GitMode      GitMode     `json:"git_mode"`
-	Provider     GitProvider `json:"provider,omitempty"`
-	ProviderURL  string      `json:"provider_url,omitempty"`
-	ProviderRepo string      `json:"provider_repo,omitempty"`
+// ValidProvider reports whether p is a recognised git provider.
+func ValidProvider(p GitProvider) bool {
+	switch p {
+	case ProviderGitea, ProviderGitHub, ProviderGitLab:
+		return true
+	}
+	return false
 }
 
-// Run is a single agent invocation against a project.
+// RepoKind classifies how a service addresses its repository.
+type RepoKind string
+
+const (
+	// RepoKindProvider: the repo lives on a known git host and is addressed as
+	// "owner/name" via that provider. Required for draft_pr (there must be a
+	// provider to open the PR on).
+	RepoKindProvider RepoKind = "provider"
+	// RepoKindRaw: an opaque clone URL (git://, file://, ssh, or an http(s) URL
+	// with no owner/name shape, e.g. the in-cluster git-seed). Read-only; never
+	// eligible for draft_pr.
+	RepoKindRaw RepoKind = "raw"
+)
+
+// ValidRepoKind reports whether k is a recognised repo kind.
+func ValidRepoKind(k RepoKind) bool {
+	switch k {
+	case RepoKindProvider, RepoKindRaw:
+		return true
+	}
+	return false
+}
+
+// RunKind distinguishes an ordinary agent run from a PR-review run.
+type RunKind string
+
+const (
+	// RunKindAgent is the default: an agent invocation that produces a diff /
+	// draft PR.
+	RunKindAgent RunKind = "agent"
+	// RunKindReview is a review run (M5): the agent reviews a PR and produces
+	// review_output. Modeled now so the schema is complete; not triggered in M1.
+	RunKindReview RunKind = "review"
+)
+
+// ValidRunKind reports whether k is a recognised run kind.
+func ValidRunKind(k RunKind) bool {
+	switch k {
+	case RunKindAgent, RunKindReview:
+		return true
+	}
+	return false
+}
+
+// Project is a tenant-owned container of services. A project's repository
+// configuration lives on its Service(s) — the simple "one repo = one project"
+// UX is a project with a single service named "default" (multitenant blueprint
+// §0/§1). Guardrail fields are nil/empty when the project inherits the global
+// defaults.
+type Project struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// Guardrails (blueprint §1). Nil pointers / empty collections mean "inherit
+	// the orchestrator-wide default".
+	MaxConcurrentRuns *int              `json:"max_concurrent_runs,omitempty"`
+	RunTimeoutSecs    *int64            `json:"run_timeout_secs,omitempty"`
+	ProviderAllowlist []string          `json:"provider_allowlist,omitempty"`
+	InjectedEnv       map[string]string `json:"injected_env,omitempty"`
+	// owner_user_id is deferred to M2 (it FKs the users table created there).
+}
+
+// Service is a single repository configuration inside a project. Runs are
+// created against a service; the service is the source of truth for the repo,
+// its default branch and its git mode (blueprint §1).
+type Service struct {
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	Name      string `json:"name"`
+
+	// RepoKind selects which of the addressing fields below is authoritative.
+	RepoKind RepoKind `json:"repo_kind"`
+	// Provider + RepoOwnerName are set when RepoKind == provider. RepoOwnerName
+	// is "owner/name".
+	Provider      GitProvider `json:"provider,omitempty"`
+	RepoOwnerName string      `json:"repo_owner_name,omitempty"`
+	// RawRepoURL is set when RepoKind == raw (an opaque, read-only clone URL).
+	RawRepoURL string `json:"raw_repo_url,omitempty"`
+
+	DefaultBranch string    `json:"default_branch"`
+	GitMode       GitMode   `json:"git_mode"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// Run is a single agent invocation against a service.
 type Run struct {
-	ID         string    `json:"id"`
-	ProjectID  string    `json:"project_id"`
-	Prompt     string    `json:"prompt"`
-	Status     RunStatus `json:"status"`
-	Phase      string    `json:"phase,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	K8sJobName string    `json:"k8s_job_name,omitempty"`
+	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id"`
+	ServiceID string    `json:"service_id"`
+	Prompt    string    `json:"prompt"`
+	Status    RunStatus `json:"status"`
+	// Kind distinguishes an ordinary agent run from a review run (M5). Defaults
+	// to agent.
+	Kind       RunKind `json:"kind,omitempty"`
+	Phase      string  `json:"phase,omitempty"`
+	Error      string  `json:"error,omitempty"`
+	K8sJobName string  `json:"k8s_job_name,omitempty"`
 	// RetriedFrom links a retry run to the original run it was created from
 	// (PRD J2-S4 / AC-10). Nil for first-attempt runs.
 	RetriedFrom *string `json:"retried_from,omitempty"`
@@ -181,6 +268,10 @@ type Run struct {
 	CommitSHA string `json:"commit_sha,omitempty"`
 	PRURL     string `json:"pr_url,omitempty"`
 	PRNumber  int    `json:"pr_number,omitempty"`
+
+	// ReviewOutput is the markdown a review run (Kind == review) produced (M5).
+	// Empty for agent runs. Modeled now so the schema/store is complete.
+	ReviewOutput string `json:"review_output,omitempty"`
 
 	// TokenHash is the SHA-256 (hex) of the per-run bearer token injected into
 	// the Job. Never serialised to API clients.
