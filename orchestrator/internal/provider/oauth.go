@@ -41,6 +41,10 @@ type OAuthProvider interface {
 	Exchange(ctx context.Context, code, redirectURI string) (*OAuthToken, error)
 	// FetchUser reads the authenticated user's profile (INTERNAL host / API).
 	FetchUser(ctx context.Context, tok *OAuthToken) (*OAuthUser, error)
+	// Refresh exchanges a refresh token for a fresh access token (INTERNAL host).
+	// Used by the M3 draft-PR / review passes when a stored identity token has
+	// expired. Returns an error if the provider issues no refresh tokens.
+	Refresh(ctx context.Context, refreshToken string) (*OAuthToken, error)
 }
 
 // OAuthToken is the result of a code exchange. RefreshToken/Expiry are empty/zero
@@ -140,6 +144,55 @@ func (c *oauthClient) Exchange(ctx context.Context, code, redirectURI string) (*
 		return nil, fmt.Errorf("%s token exchange: no access_token in response", c.id)
 	}
 	tok := &OAuthToken{AccessToken: tr.AccessToken, RefreshToken: tr.RefreshToken}
+	if tr.ExpiresIn > 0 {
+		tok.Expiry = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second).UTC()
+	}
+	return tok, nil
+}
+
+// Refresh trades a refresh token for a fresh access token via the same token
+// endpoint (grant_type=refresh_token). All three providers (gitea/github/gitlab)
+// speak this OAuth2 grant. Returns an error when refreshToken is empty.
+func (c *oauthClient) Refresh(ctx context.Context, refreshToken string) (*OAuthToken, error) {
+	if strings.TrimSpace(refreshToken) == "" {
+		return nil, fmt.Errorf("%s refresh: no refresh token available", c.id)
+	}
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("client_id", c.clientID)
+	form.Set("client_secret", c.clientSecret)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("build refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s token refresh: %w", c.id, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s token refresh: status %d: %s", c.id, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var tr tokenResp
+	if err := json.Unmarshal(body, &tr); err != nil {
+		return nil, fmt.Errorf("%s decode refresh: %w", c.id, err)
+	}
+	if tr.Error != "" {
+		return nil, fmt.Errorf("%s token refresh error: %s %s", c.id, tr.Error, tr.ErrorDesc)
+	}
+	if tr.AccessToken == "" {
+		return nil, fmt.Errorf("%s token refresh: no access_token in response", c.id)
+	}
+	tok := &OAuthToken{AccessToken: tr.AccessToken, RefreshToken: tr.RefreshToken}
+	if tok.RefreshToken == "" {
+		tok.RefreshToken = refreshToken // provider may not rotate the refresh token
+	}
 	if tr.ExpiresIn > 0 {
 		tok.Expiry = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second).UTC()
 	}

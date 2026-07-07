@@ -276,12 +276,37 @@ type Run struct {
 	PRNumber  int    `json:"pr_number,omitempty"`
 
 	// ReviewOutput is the markdown a review run (Kind == review) produced (M5).
-	// Empty for agent runs. Modeled now so the schema/store is complete.
+	// Empty for agent runs. Reported by the runner via POST /internal/.../review.
 	ReviewOutput string `json:"review_output,omitempty"`
+	// ReviewPostedAt is stamped once the orchestrator has posted a review run's
+	// output as a PR review comment on the provider (idempotency marker; M3
+	// reconcile review pass). Nil until posted / for agent runs.
+	ReviewPostedAt *time.Time `json:"review_posted_at,omitempty"`
+
+	// PRHeadBranch / PRBaseBranch associate a review run (Kind == review) with the
+	// pull request it reviews: the runner diffs PRBaseBranch...PRHeadBranch, and
+	// the reconcile review pass finds the target PR by its head branch. Empty for
+	// agent runs. Populated when a review run is created (M5); the schema/env
+	// plumbing lands in M3 (blueprint §3: review env PR_HEAD/PR_BASE).
+	PRHeadBranch string `json:"pr_head_branch,omitempty"`
+	PRBaseBranch string `json:"pr_base_branch,omitempty"`
 
 	// TokenHash is the SHA-256 (hex) of the per-run bearer token injected into
 	// the Job. Never serialised to API clients.
 	TokenHash string `json:"-"`
+}
+
+// RunBranchName is the deterministic branch the orchestrator pushes for a
+// draft_pr agent run: "jcode/run-<first 8 hex of the run id>" (blueprint §3,
+// BRANCH_NAME). It is injected into the runner env (BRANCH_NAME) and recomputed
+// server-side when the bundle is received and pushed, so runner and orchestrator
+// always agree without the runner reporting it.
+func RunBranchName(runID string) string {
+	short := runID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return "jcode/run-" + short
 }
 
 // RunEvent is one entry in a run's append-only event log. Events are ingested
@@ -318,8 +343,13 @@ const (
 type ArtifactKind string
 
 const (
-	// ArtifactDiff is the unified diff the runner produced.
+	// ArtifactDiff is the unified diff the runner produced (text).
 	ArtifactDiff ArtifactKind = "diff"
+	// ArtifactBundle is the git bundle a draft_pr agent run produced
+	// (BASE_BRANCH..BRANCH_NAME), uploaded raw and stored as bytea. The
+	// orchestrator fetches it to push the branch on the user's behalf (blueprint
+	// §1/§3). Binary — carried in RunArtifact.Bytes, not Content.
+	ArtifactBundle ArtifactKind = "bundle"
 )
 
 // FailureReason is the machine-readable classification of why a run failed.
@@ -353,10 +383,14 @@ func ValidFailureReason(r FailureReason) bool {
 	return false
 }
 
-// RunArtifact is a blob produced by a run (currently only the diff).
+// RunArtifact is a blob produced by a run. Text artifacts (diff) use Content;
+// binary artifacts (bundle) use Bytes. Exactly one is populated per kind.
 type RunArtifact struct {
-	RunID     string       `json:"run_id"`
-	Kind      ArtifactKind `json:"kind"`
-	Content   string       `json:"content"`
-	CreatedAt time.Time    `json:"created_at"`
+	RunID   string       `json:"run_id"`
+	Kind    ArtifactKind `json:"kind"`
+	Content string       `json:"content"`
+	// Bytes carries binary artifact payloads (kind=bundle). Never serialised to
+	// API clients (fetched only over the internal RUN_TOKEN path).
+	Bytes     []byte    `json:"-"`
+	CreatedAt time.Time `json:"created_at"`
 }

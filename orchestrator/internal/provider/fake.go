@@ -16,12 +16,22 @@ type FakeProvider struct {
 	prs map[string]PR
 	// Created records CreateDraftPR calls in order.
 	Created []CreateDraftPRInput
+	// Reviews records CreatePRReview call bodies keyed by owner/repo|prNumber.
+	Reviews []FakeReview
 	// nextNum assigns PR numbers.
 	nextNum int
 
-	// CreateErr / FindErr let tests inject failures.
+	// CreateErr / FindErr / ReviewErr let tests inject failures.
 	CreateErr error
 	FindErr   error
+	ReviewErr error
+}
+
+// FakeReview records one CreatePRReview call.
+type FakeReview struct {
+	Owner, Repo string
+	Number      int
+	Body        string
 }
 
 // NewFakeProvider returns a ready FakeProvider.
@@ -67,11 +77,36 @@ func (f *FakeProvider) CreateDraftPR(_ context.Context, in CreateDraftPRInput) (
 	return &pr, nil
 }
 
+// CreatePRReview records a review comment (or returns the injected error).
+func (f *FakeProvider) CreatePRReview(_ context.Context, owner, repo string, prNumber int, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ReviewErr != nil {
+		return f.ReviewErr
+	}
+	f.Reviews = append(f.Reviews, FakeReview{Owner: owner, Repo: repo, Number: prNumber, Body: body})
+	return nil
+}
+
+// PRStatus returns a synthetic open PR (or the seeded one) for tests.
+func (f *FakeProvider) PRStatus(_ context.Context, owner, repo string, prNumber int) (*PR, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return &PR{Number: prNumber, URL: fmt.Sprintf("http://gitea.test/%s/%s/pulls/%d", owner, repo, prNumber), State: "open"}, nil
+}
+
 // CreatedCount returns how many PRs were created (test helper).
 func (f *FakeProvider) CreatedCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.Created)
+}
+
+// ReviewCount returns how many review comments were posted (test helper).
+func (f *FakeProvider) ReviewCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.Reviews)
 }
 
 var _ Provider = (*FakeProvider)(nil)

@@ -11,9 +11,9 @@ import (
 
 func TestSplitRepo(t *testing.T) {
 	cases := []struct {
-		in                string
-		owner, name       string
-		ok                bool
+		in          string
+		owner, name string
+		ok          bool
 	}{
 		{"jcloud/seed", "jcloud", "seed", true},
 		{"jcloud/seed.git", "jcloud", "seed", true},

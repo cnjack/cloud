@@ -204,12 +204,31 @@ docker run --rm \
   jcode-runner:local
 ```
 
-**entrypoint.sh env:** `REPO_URL`, `TASK_PROMPT`, `MODEL_BASE_URL`,
-`MODEL_API_KEY` (required); `RUN_ID`, `REPO_BRANCH` (default: remote's default
-branch), `MODEL_NAME` (default `mock/mock-model`), `MODEL_PROVIDER`,
+**entrypoint.sh env:** `TASK_PROMPT`, `MODEL_BASE_URL`, `MODEL_API_KEY`
+(required); `MODEL_NAME` (default `mock/mock-model`), `MODEL_PROVIDER`,
 `RUN_TIMEOUT` (default `300s`), `START_MOCKLLM`, `MOCK_SCENARIO` (optional).
-When wired to an orchestrator it also reads `ORCH_BASE_URL`, `RUN_TOKEN` (with
-`RUN_ID`) to stream events and upload the diff artifact.
+
+**M3 runner contract (credential-free; blueprint §3):** the runner never holds a
+provider token — it reads and writes the repo through the orchestrator control
+plane over the per-run `RUN_TOKEN`.
+
+- `RUN_KIND` — `agent` (default) or `review`.
+- `SOURCE_MODE` — `clone` (default: `git clone $REPO_URL` for public/raw repos,
+  native protocol, no credential) or `fetch` (download a source bundle from
+  `GET /internal/v1/runs/$RUN_ID/source` and clone it locally — a PRIVATE repo is
+  read with NO token in the pod).
+- `REPO_URL` — clone origin (`SOURCE_MODE=clone` only). `BASE_BRANCH` (a.k.a.
+  legacy `REPO_BRANCH`) — the baseline branch to check out.
+- `GIT_MODE` — `readonly` (default; diff-only) or `draft_pr`. In `draft_pr` the
+  runner commits onto `BRANCH_NAME` (`jcode/run-<id>`), builds a git bundle
+  (`BASE_BRANCH..BRANCH_NAME`), and POSTs it to
+  `POST /internal/v1/runs/$RUN_ID/bundle` — the orchestrator pushes + opens the
+  draft PR. **The runner never pushes and holds no token.**
+- `PR_HEAD` / `PR_BASE` — review runs: the branches the runner diffs; the review
+  is written to `REVIEW.md` and POSTed to `POST /internal/v1/runs/$RUN_ID/review`.
+
+When wired to an orchestrator it reads `ORCH_BASE_URL`, `RUN_TOKEN` (with
+`RUN_ID`) for all of the above plus event streaming and diff-artifact upload.
 
 ---
 

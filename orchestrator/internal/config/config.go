@@ -57,13 +57,19 @@ type Config struct {
 	RunnerNetwork    string   // RUNNER_NETWORK — docker network for process launcher (optional)
 	RunnerDockerArgs []string // RUNNER_DOCKER_ARGS — extra `docker run` args, space-split (optional)
 
-	// Gitea draft-PR integration (ST-1; single-tenant MVP). GiteaURL is the Gitea
-	// root; GiteaToken is a personal access token with repo write scope. When a
-	// project is git_mode=draft_pr, the reconciler uses these to open the draft
-	// PR, and the runner receives GiteaToken (as GIT_TOKEN) to push the branch.
+	// Gitea draft-PR integration. GiteaURL is the Gitea root; GiteaToken is a PAT
+	// with repo write scope. In M3 the CONTROL PLANE (not the runner) uses these to
+	// clone the source repo, push the runner's bundle branch, and open the draft
+	// PR — as the FALLBACK credential for runs with no triggering user (an OAuth
+	// user's own token is preferred). The token is NEVER injected into the runner.
 	// Both empty => draft-PR mode degrades to diff-only (never fails a run).
 	GiteaURL   string // GITEA_URL — Gitea base URL for the PR API + push origin
-	GiteaToken string // GITEA_TOKEN — PAT injected to runner + used by orchestrator
+	GiteaToken string // GITEA_TOKEN — PAT used by the orchestrator to clone/push/PR on behalf of legacy/service-principal runs (M3; never injected into the runner)
+
+	// SourceBundleTTL is SOURCE_BUNDLE_TTL (default 10m): how long an
+	// orchestrator-generated source bundle is cached on disk before regeneration
+	// (M3 fetch path — GET /internal/v1/runs/{id}/source).
+	SourceBundleTTL time.Duration
 
 	// --- Auth / OAuth (M2; multitenant blueprint §2) ---
 	// AuthTokenKey is AUTH_TOKEN_KEY: a base64-encoded 32-byte key for the
@@ -124,6 +130,7 @@ func Load() (*Config, error) {
 		RunnerDockerArgs:  strings.Fields(os.Getenv("RUNNER_DOCKER_ARGS")),
 		GiteaURL:          os.Getenv("GITEA_URL"),
 		GiteaToken:        os.Getenv("GITEA_TOKEN"),
+		SourceBundleTTL:   getdur("SOURCE_BUNDLE_TTL", 10*time.Minute),
 		AuthTokenKey:      os.Getenv("AUTH_TOKEN_KEY"),
 		ConsoleURL:        getenv("CONSOLE_URL", "http://localhost:5173"),
 		SessionTTL:        getdur("SESSION_TTL", 30*24*time.Hour),

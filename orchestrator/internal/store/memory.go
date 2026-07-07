@@ -485,18 +485,70 @@ func (m *MemStore) MarkPRCreated(_ context.Context, id, prURL string, prNumber i
 	return &cp, nil
 }
 
-// ListRunsAwaitingPR returns succeeded runs with a pushed branch but no PR yet.
+// ListRunsAwaitingPR returns succeeded agent runs with a recorded branch but no
+// PR yet.
 func (m *MemStore) ListRunsAwaitingPR(_ context.Context) ([]domain.Run, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []domain.Run
 	for _, r := range m.runs {
-		if r.Status == domain.StatusSucceeded && r.GitBranch != "" && r.PRURL == "" {
+		if r.Status == domain.StatusSucceeded && r.Kind == domain.RunKindAgent &&
+			r.GitBranch != "" && r.PRURL == "" {
 			out = append(out, r)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil
+}
+
+// ListReviewRunsAwaitingPost returns succeeded review runs with output that has
+// not been posted to the PR yet.
+func (m *MemStore) ListReviewRunsAwaitingPost(_ context.Context) ([]domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Run
+	for _, r := range m.runs {
+		if r.Status == domain.StatusSucceeded && r.Kind == domain.RunKindReview &&
+			r.ReviewOutput != "" && r.ReviewPostedAt == nil {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+// SetReviewOutput records a review run's output first-writer-wins, no status change.
+func (m *MemStore) SetReviewOutput(_ context.Context, id, md string) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if cur.ReviewOutput == "" {
+		cur.ReviewOutput = md
+	}
+	m.runs[id] = cur
+	cp := cur
+	return &cp, nil
+}
+
+// MarkReviewPosted stamps review_posted_at idempotently, returning true only for
+// the caller that actually stamped it.
+func (m *MemStore) MarkReviewPosted(_ context.Context, id string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if cur.ReviewPostedAt != nil {
+		return false, nil
+	}
+	t := time.Now().UTC()
+	cur.ReviewPostedAt = &t
+	m.runs[id] = cur
+	return true, nil
 }
 
 // --- events ---
@@ -614,6 +666,31 @@ func (m *MemStore) GetArtifact(_ context.Context, runID string, kind domain.Arti
 	}
 	cp := a
 	return &cp, nil
+}
+
+// PutRunBundle stores a run's git bundle bytes (kind=bundle) in the artifact map.
+func (m *MemStore) PutRunBundle(_ context.Context, runID string, data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	m.artifacts[runID+"/"+string(domain.ArtifactBundle)] = domain.RunArtifact{
+		RunID: runID, Kind: domain.ArtifactBundle, Bytes: cp, CreatedAt: time.Now().UTC(),
+	}
+	return nil
+}
+
+// GetRunBundle returns a run's stored git bundle bytes (ErrNotFound if absent).
+func (m *MemStore) GetRunBundle(_ context.Context, runID string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.artifacts[runID+"/"+string(domain.ArtifactBundle)]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := make([]byte, len(a.Bytes))
+	copy(cp, a.Bytes)
+	return cp, nil
 }
 
 var _ Store = (*MemStore)(nil)

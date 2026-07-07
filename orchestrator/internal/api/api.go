@@ -17,7 +17,9 @@ import (
 
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
+	"github.com/cnjack/jcloud/internal/credentials"
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/gitcli"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/sse"
@@ -39,6 +41,13 @@ type Server struct {
 	cipher   *auth.Cipher
 	oauth    map[domain.GitProvider]provider.OAuthProvider
 	stateKey []byte
+
+	// M3 runner-contract deps: creds resolves the per-run provider token (source
+	// bundle + reconcile push/review), git builds source bundles, srcCache caches
+	// them. Built in New from cfg + cipher + oauth so no signature churn.
+	creds    *credentials.Resolver
+	git      *gitcli.Git
+	srcCache *sourceCache
 }
 
 // New builds a Server. launcher may be nil (K8s disabled). The token cipher and
@@ -69,8 +78,24 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 		_, _ = rand.Read(rk)
 		s.stateKey = rk
 	}
+
+	// M3 runner-contract stack: the credential resolver (shared with the
+	// reconciler via Credentials()), the git CLI wrapper, and the source-bundle
+	// cache. cipher/oauth may be nil/empty; the resolver then offers only the
+	// gitea PAT fallback.
+	s.creds = credentials.NewResolver(st, s.cipher, s.oauth, cfg.GiteaToken, log)
+	s.git = gitcli.New()
+	s.srcCache = newSourceCache(cfg.SourceBundleTTL)
 	return s
 }
+
+// Credentials exposes the shared credential resolver so the reconciler resolves
+// per-run tokens with the same config the API uses.
+func (s *Server) Credentials() *credentials.Resolver { return s.creds }
+
+// Git exposes the git CLI wrapper (source bundle / branch push) so the
+// reconciler pushes with the same binary the source endpoint uses.
+func (s *Server) Git() *gitcli.Git { return s.git }
 
 // buildOAuthProviders constructs the login providers from config. Unknown ids
 // are skipped defensively (config only emits gitea/github/gitlab).
@@ -156,6 +181,11 @@ func (s *Server) Handler() http.Handler {
 	// Internal endpoints — require the per-run RUN_TOKEN.
 	mux.Handle("POST /internal/v1/runs/{id}/events", s.runToken(s.handleIngestEvents))
 	mux.Handle("POST /internal/v1/runs/{id}/artifact", s.runToken(s.handleIngestArtifact))
+	// M3 runner contract: the runner fetches its source bundle, uploads the
+	// draft-PR git bundle, and posts review output — all authed by the RUN_TOKEN.
+	mux.Handle("GET /internal/v1/runs/{id}/source", s.runToken(s.handleGetSource))
+	mux.Handle("POST /internal/v1/runs/{id}/bundle", s.runToken(s.handleIngestBundle))
+	mux.Handle("POST /internal/v1/runs/{id}/review", s.runToken(s.handleIngestReview))
 
 	return s.recover(s.logRequests(mux))
 }

@@ -102,25 +102,29 @@ func run(log *slog.Logger) error {
 		launcher = client
 	}
 
-	// --- git provider (ST-1 draft PRs; optional) ---
-	// When GITEA_URL + GITEA_TOKEN are set, the reconciler opens draft PRs for
-	// draft_pr-mode projects. Absent config degrades to diff-only (never fatal).
-	var prov provider.Provider
-	if gc, err := provider.NewGiteaClient(cfg.GiteaURL, cfg.GiteaToken); err == nil {
-		prov = gc
-		log.Info("gitea draft-PR provider enabled", "url", cfg.GiteaURL)
-	} else {
-		log.Info("gitea draft-PR provider disabled (GITEA_URL/GITEA_TOKEN unset): runs stay diff-only")
-	}
+	// --- HTTP server ---
+	// Built before the reconciler so the two share one credential resolver + git
+	// wrapper (the source endpoint and the reconcile push/review passes act with
+	// the same tokens and binary).
+	srv := api.New(st, cfg, log, hub, launcher)
 
 	// --- reconciler ---
+	// The draft-PR / review passes push branches + open PRs + post reviews on the
+	// triggering user's behalf (or the fallback gitea PAT). The provider Factory
+	// builds a PR client per resolved token; gitcli pushes; the credential
+	// resolver is shared with the API. A deployment without git or a provider
+	// simply degrades to diff-only (each pass is a no-op).
 	if launcher != nil {
-		rec := reconciler.New(st, launcher, cfg, log, hub).WithProvider(prov)
+		factory := provider.NewFactory(cfg.GiteaURL)
+		rec := reconciler.New(st, launcher, cfg, log, hub).
+			WithPRStack(factory, srv.Git(), srv.Credentials())
+		if !srv.Git().Available() {
+			log.Warn("git binary not found: draft-PR push + source bundling disabled")
+		} else {
+			log.Info("draft-PR / review stack enabled", "gitea_url", cfg.GiteaURL)
+		}
 		go rec.Run(ctx)
 	}
-
-	// --- HTTP server ---
-	srv := api.New(st, cfg, log, hub, launcher)
 
 	// streamCtx is the BaseContext for every request, so an SSE handler's
 	// r.Context() derives from it. http.Server.Shutdown only closes IDLE

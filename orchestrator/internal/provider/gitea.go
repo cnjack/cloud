@@ -19,27 +19,41 @@ import (
 // is the built-in default and the one the seed deployment uses.)
 const GiteaWIPPrefix = "WIP: "
 
-// GiteaClient talks to a Gitea instance's REST API using a personal access
-// token. It implements Provider. It is intentionally tiny: two calls, stdlib
-// only, matching the orchestrator's std-lib-first posture.
+// GiteaClient talks to a Gitea instance's REST API. It implements Provider. It
+// is intentionally tiny, stdlib only, matching the orchestrator's std-lib-first
+// posture. The auth scheme is either "token" (a personal access token — the
+// fallback GITEA_TOKEN) or "Bearer" (a user's OAuth2 access token).
 type GiteaClient struct {
 	baseURL string // e.g. http://gitea.jcloud.svc.cluster.local:3000
 	token   string
+	scheme  string // "token" | "Bearer"
 	http    *http.Client
 }
 
-// NewGiteaClient builds a client. baseURL must be the Gitea root (no /api/v1
-// suffix); token is a personal access token with repo write scope. Returns
-// ErrNotConfigured if either is empty so the caller can degrade gracefully.
+// NewGiteaClient builds a client authenticating with the "token" scheme (a
+// personal access token). baseURL must be the Gitea root (no /api/v1 suffix).
+// Returns ErrNotConfigured if either is empty so the caller can degrade
+// gracefully.
 func NewGiteaClient(baseURL, token string) (*GiteaClient, error) {
+	return NewGiteaClientWithScheme(baseURL, token, "token")
+}
+
+// NewGiteaClientWithScheme builds a client with an explicit auth scheme:
+// "token" for a PAT, "Bearer" for an OAuth2 access token. An empty scheme
+// defaults to "token".
+func NewGiteaClientWithScheme(baseURL, token, scheme string) (*GiteaClient, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	token = strings.TrimSpace(token)
 	if baseURL == "" || token == "" {
 		return nil, ErrNotConfigured
 	}
+	if scheme == "" {
+		scheme = "token"
+	}
 	return &GiteaClient{
 		baseURL: baseURL,
 		token:   token,
+		scheme:  scheme,
 		http:    &http.Client{Timeout: 15 * time.Second},
 	}, nil
 }
@@ -49,6 +63,7 @@ type giteaPR struct {
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
 	State   string `json:"state"`
+	Merged  bool   `json:"merged"`
 	Head    struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
@@ -92,6 +107,39 @@ func (c *GiteaClient) CreateDraftPR(ctx context.Context, in CreateDraftPRInput) 
 	return &PR{Number: pr.Number, URL: pr.HTMLURL}, nil
 }
 
+// CreatePRReview posts a COMMENT review carrying the AI review markdown. event
+// is fixed to "COMMENT" (never APPROVE / REQUEST_CHANGES) so it can never gate a
+// merge — comment-only, honouring the never-auto-merge hard gate.
+func (c *GiteaClient) CreatePRReview(ctx context.Context, owner, repo string, prNumber int, body string) error {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews", owner, repo, prNumber)
+	return c.do(ctx, http.MethodPost, path, map[string]any{"event": "COMMENT", "body": body}, nil)
+}
+
+// PRStatus returns the current state of a PR ("open"/"closed"/"merged").
+func (c *GiteaClient) PRStatus(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, prNumber)
+	var pr giteaPR
+	if err := c.do(ctx, http.MethodGet, path, nil, &pr); err != nil {
+		return nil, err
+	}
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged)}, nil
+}
+
+// prState normalises a provider's (state, merged) pair to our vocabulary.
+func prState(state string, merged bool) string {
+	if merged {
+		return "merged"
+	}
+	switch strings.ToLower(state) {
+	case "open", "opened":
+		return "open"
+	case "closed":
+		return "closed"
+	default:
+		return strings.ToLower(state)
+	}
+}
+
 // do performs one authenticated JSON request and decodes a 2xx body into out
 // (out may be nil to discard). Non-2xx responses become an error carrying the
 // status and a truncated body for diagnosis.
@@ -108,7 +156,7 @@ func (c *GiteaClient) do(ctx context.Context, method, path string, body any, out
 	if err != nil {
 		return fmt.Errorf("build %s %s: %w", method, path, err)
 	}
-	req.Header.Set("Authorization", "token "+c.token)
+	req.Header.Set("Authorization", c.scheme+" "+c.token)
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

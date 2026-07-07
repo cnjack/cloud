@@ -7,15 +7,58 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cnjack/jcloud/internal/credentials"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
+// --- test doubles for the M3 push stack -------------------------------------
+
+// fakePusher records the branches it "pushed" and can inject an error. It stands
+// in for the git-CLI Pusher so the PR pass is tested without git/a remote.
+type fakePusher struct {
+	pushed []string
+	err    error
+}
+
+func (f *fakePusher) PushBundleBranch(_ context.Context, _ /*remoteURL*/, _ /*bundlePath*/, branch string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	f.pushed = append(f.pushed, branch)
+	return "pushedsha1234", nil
+}
+
+// fakeFactory returns a fixed Provider regardless of the resolved token.
+type fakeFactory struct {
+	p   provider.Provider
+	err error
+}
+
+func (f *fakeFactory) PRClient(_ domain.GitProvider, _ /*token*/, _ /*scheme*/ string) (provider.Provider, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.p, nil
+}
+
+// wirePRStack attaches a fake factory (over the given provider), a fresh fake
+// pusher, and a gitea-PAT credential resolver (so a user-less run resolves the
+// fallback token) to rec. Returns the pusher so a test can assert push behavior.
+func wirePRStack(rec *Reconciler, st *store.MemStore, prov provider.Provider) *fakePusher {
+	pusher := &fakePusher{}
+	rec.cfg.GiteaURL = "http://gitea.test"
+	rec.cfg.GiteaToken = "gitea-pat"
+	creds := credentials.NewResolver(st, nil, nil, "gitea-pat", nil)
+	rec.WithPRStack(&fakeFactory{p: prov}, pusher, creds)
+	return pusher
+}
+
 // seedDraftPRRun creates a project + a draft_pr gitea-provider 'default' service
-// + a succeeded run that reported a pushed branch, mirroring the state the runner
-// leaves behind for the PR pass.
+// + a succeeded agent run that has uploaded a bundle (git_branch recorded), i.e.
+// exactly the state the runner+bundle-ingest leaves behind for the PR pass.
 func seedDraftPRRun(t *testing.T, st *store.MemStore, branch string) (domain.Service, domain.Run) {
 	t.Helper()
 	ctx := context.Background()
@@ -34,38 +77,44 @@ func seedDraftPRRun(t *testing.T, st *store.MemStore, branch string) (domain.Ser
 	}
 	run := &domain.Run{
 		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "add a Hello line to README",
-		Status: domain.StatusSucceeded, Attempt: 1, CreatedAt: time.Now(),
+		Status: domain.StatusSucceeded, Kind: domain.RunKindAgent, Attempt: 1, CreatedAt: time.Now(),
 	}
 	if err := st.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SetRunGit(ctx, run.ID, branch, "deadbeef"); err != nil {
+	// The bundle-ingest handler stores the bundle AND records the branch.
+	if err := st.PutRunBundle(ctx, run.ID, []byte("PACK bundle bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetRunGit(ctx, run.ID, branch, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := st.GetRun(ctx, run.ID)
 	return *svc, *got
 }
 
-// TestReconcilePRCreation covers the happy-path PR pass: a succeeded draft_pr
-// run with a pushed branch and no PR gets exactly one draft PR opened, pr_url /
-// pr_number are persisted, and a run.status event carrying pr_url is emitted.
+// TestReconcilePRCreation covers the happy path: a succeeded draft_pr run with a
+// stored bundle gets its branch pushed and exactly one draft PR opened, pr_url /
+// pr_number persisted, and a run.status event carrying pr_url emitted.
 func TestReconcilePRCreation(t *testing.T) {
 	ctx := context.Background()
 	rec, st, _ := testRec(t, 4)
 	fake := provider.NewFakeProvider()
-	rec.WithProvider(fake)
+	pusher := wirePRStack(rec, st, fake)
 
-	_, run := seedDraftPRRun(t, st, "agent/run-abc")
+	_, run := seedDraftPRRun(t, st, "jcode/run-abc")
 
 	rec.reconcilePRs(ctx)
 
+	if len(pusher.pushed) != 1 || pusher.pushed[0] != "jcode/run-abc" {
+		t.Fatalf("pushed=%v want [jcode/run-abc]", pusher.pushed)
+	}
 	if fake.CreatedCount() != 1 {
 		t.Fatalf("created %d PRs, want 1", fake.CreatedCount())
 	}
-	// The created PR must be a draft targeting the reported branch and base.
 	in := fake.Created[0]
-	if in.Head != "agent/run-abc" {
-		t.Errorf("PR head=%q want agent/run-abc", in.Head)
+	if in.Head != "jcode/run-abc" {
+		t.Errorf("PR head=%q want jcode/run-abc", in.Head)
 	}
 	if in.Base != "main" {
 		t.Errorf("PR base=%q want main", in.Base)
@@ -81,8 +130,10 @@ func TestReconcilePRCreation(t *testing.T) {
 	if got.PRURL == "" || got.PRNumber == 0 {
 		t.Fatalf("pr_url/pr_number not persisted: url=%q num=%d", got.PRURL, got.PRNumber)
 	}
+	if got.CommitSHA != "pushedsha1234" {
+		t.Errorf("commit_sha=%q want the pushed sha", got.CommitSHA)
+	}
 
-	// A run.status event carrying pr_url must have been emitted for the console.
 	events, _ := st.ListEvents(ctx, run.ID, 0, 100)
 	var sawPRStatus bool
 	for _, e := range events {
@@ -95,17 +146,15 @@ func TestReconcilePRCreation(t *testing.T) {
 	}
 }
 
-// TestReconcilePRCreationIdempotent proves the reconcile pass never double-opens
-// a PR: a second tick finds pr_url set (run no longer in the awaiting scan) and
-// even a forced re-run against a fresh store row wouldn't re-create because
-// FindOpenPRByHead returns the existing one.
+// TestReconcilePRCreationIdempotent proves the pass never double-opens or
+// double-pushes across ticks.
 func TestReconcilePRCreationIdempotent(t *testing.T) {
 	ctx := context.Background()
 	rec, st, _ := testRec(t, 4)
 	fake := provider.NewFakeProvider()
-	rec.WithProvider(fake)
+	pusher := wirePRStack(rec, st, fake)
 
-	_, run := seedDraftPRRun(t, st, "agent/run-idem")
+	seedDraftPRRun(t, st, "jcode/run-idem")
 
 	rec.reconcilePRs(ctx)
 	rec.reconcilePRs(ctx)
@@ -114,27 +163,30 @@ func TestReconcilePRCreationIdempotent(t *testing.T) {
 	if fake.CreatedCount() != 1 {
 		t.Fatalf("created %d PRs across 3 ticks, want 1 (idempotent)", fake.CreatedCount())
 	}
-	_ = run
+	if len(pusher.pushed) != 1 {
+		t.Fatalf("pushed %d times across 3 ticks, want 1 (idempotent)", len(pusher.pushed))
+	}
 }
 
-// TestReconcilePRPreExisting covers the crash-between-create-and-persist path:
-// the provider already has an open PR for the head branch (created by a prior
-// tick that crashed before MarkPRCreated). The reconciler must ADOPT it — record
-// its url/number — and NOT create a second PR.
+// TestReconcilePRPreExisting covers the crash-between-push-and-persist path: the
+// provider already has an open PR for the head branch. The reconciler adopts it
+// (records url/number) and does NOT push or create a second PR.
 func TestReconcilePRPreExisting(t *testing.T) {
 	ctx := context.Background()
 	rec, st, _ := testRec(t, 4)
 	fake := provider.NewFakeProvider()
-	rec.WithProvider(fake)
+	pusher := wirePRStack(rec, st, fake)
 
-	_, run := seedDraftPRRun(t, st, "agent/run-adopt")
-	// Simulate a PR that already exists for this head (prior crashed tick).
-	fake.Seed("jcloud", "seed", "agent/run-adopt", provider.PR{Number: 7, URL: "http://gitea.test/jcloud/seed/pulls/7"})
+	_, run := seedDraftPRRun(t, st, "jcode/run-adopt")
+	fake.Seed("jcloud", "seed", "jcode/run-adopt", provider.PR{Number: 7, URL: "http://gitea.test/jcloud/seed/pulls/7"})
 
 	rec.reconcilePRs(ctx)
 
 	if fake.CreatedCount() != 0 {
 		t.Fatalf("created %d PRs, want 0 (must adopt the existing one)", fake.CreatedCount())
+	}
+	if len(pusher.pushed) != 0 {
+		t.Fatalf("pushed %d times, want 0 (PR already exists → skip push)", len(pusher.pushed))
 	}
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.PRNumber != 7 || got.PRURL != "http://gitea.test/jcloud/seed/pulls/7" {
@@ -142,38 +194,65 @@ func TestReconcilePRPreExisting(t *testing.T) {
 	}
 }
 
-// TestReconcilePRSkipsWhenNoProvider proves the flow degrades cleanly to
-// diff-only when no provider is configured (nil): no panic, no PR, run untouched.
-func TestReconcilePRSkipsWhenNoProvider(t *testing.T) {
+// TestReconcilePRSkipsWhenNoStack proves the flow degrades cleanly to diff-only
+// when the draft-PR stack is not configured: no panic, no PR, run untouched.
+func TestReconcilePRSkipsWhenNoStack(t *testing.T) {
 	ctx := context.Background()
-	rec, st, _ := testRec(t, 4) // no WithProvider
+	rec, st, _ := testRec(t, 4) // no WithPRStack
 
-	_, run := seedDraftPRRun(t, st, "agent/run-noprov")
+	_, run := seedDraftPRRun(t, st, "jcode/run-nostack")
 	rec.reconcilePRs(ctx) // must be a no-op
 
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.PRURL != "" {
-		t.Fatalf("pr_url set with no provider: %q", got.PRURL)
+		t.Fatalf("pr_url set with no stack: %q", got.PRURL)
 	}
 }
 
-// TestReconcilePRTransientErrorRetries proves a transient provider error leaves
-// the run in the awaiting scan (no pr_url), so the next tick retries.
-func TestReconcilePRTransientErrorRetries(t *testing.T) {
+// TestReconcilePRPushErrorRetries proves a transient push error leaves the run in
+// the awaiting scan (no pr_url, no PR), so the next tick retries.
+func TestReconcilePRPushErrorRetries(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	pusher := wirePRStack(rec, st, fake)
+	pusher.err = errors.New("git push: connection reset")
+
+	_, run := seedDraftPRRun(t, st, "jcode/run-pushfail")
+	rec.reconcilePRs(ctx)
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.PRURL != "" {
+		t.Fatalf("pr_url set despite push error: %q", got.PRURL)
+	}
+	if fake.CreatedCount() != 0 {
+		t.Fatalf("PR created despite push error: %d", fake.CreatedCount())
+	}
+	// Recover: clear the error; next tick pushes and opens the PR.
+	pusher.err = nil
+	rec.reconcilePRs(ctx)
+	got, _ = st.GetRun(ctx, run.ID)
+	if got.PRURL == "" {
+		t.Fatal("pr_url not set after push recovered")
+	}
+}
+
+// TestReconcilePRCreateErrorRetries proves a transient provider (create) error
+// leaves the run for the next tick.
+func TestReconcilePRCreateErrorRetries(t *testing.T) {
 	ctx := context.Background()
 	rec, st, _ := testRec(t, 4)
 	fake := provider.NewFakeProvider()
 	fake.CreateErr = errors.New("gitea 503")
-	rec.WithProvider(fake)
+	wirePRStack(rec, st, fake)
 
-	_, run := seedDraftPRRun(t, st, "agent/run-retry")
+	_, run := seedDraftPRRun(t, st, "jcode/run-503")
 	rec.reconcilePRs(ctx)
 
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.PRURL != "" {
 		t.Fatalf("pr_url set despite create error: %q", got.PRURL)
 	}
-	// Recover: clear the error; next tick opens the PR.
 	fake.CreateErr = nil
 	rec.reconcilePRs(ctx)
 	got, _ = st.GetRun(ctx, run.ID)
@@ -182,11 +261,108 @@ func TestReconcilePRTransientErrorRetries(t *testing.T) {
 	}
 }
 
+// --- review pass ------------------------------------------------------------
+
+// seedReviewRun creates a project + draft_pr provider service + a succeeded
+// review run whose output is set and target PR head recorded.
+func seedReviewRun(t *testing.T, st *store.MemStore, head, output string) domain.Run {
+	t.Helper()
+	ctx := context.Background()
+	p := &domain.Project{ID: domain.NewID(), Name: "rp", CreatedAt: time.Now()}
+	_ = st.CreateProject(ctx, p)
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "jcloud/seed", DefaultBranch: "main",
+		GitMode: domain.GitModeDraftPR, CreatedAt: time.Now(),
+	}
+	_ = st.CreateService(ctx, svc)
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "review the PR",
+		Status: domain.StatusSucceeded, Kind: domain.RunKindReview,
+		PRHeadBranch: head, PRBaseBranch: "main", CreatedAt: time.Now(),
+	}
+	_ = st.CreateRun(ctx, run)
+	if _, err := st.SetReviewOutput(ctx, run.ID, output); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetRun(ctx, run.ID)
+	return *got
+}
+
+// TestReconcileReviewPost covers the happy path: the review output is posted as a
+// comment on the target PR (found by head) and the run is stamped posted.
+func TestReconcileReviewPost(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	wirePRStack(rec, st, fake)
+	fake.Seed("jcloud", "seed", "jcode/run-pr1", provider.PR{Number: 12, URL: "http://gitea.test/jcloud/seed/pulls/12"})
+
+	run := seedReviewRun(t, st, "jcode/run-pr1", "## Review\nconclusion: approve")
+
+	rec.reconcileReviews(ctx)
+
+	if fake.ReviewCount() != 1 {
+		t.Fatalf("posted %d reviews, want 1", fake.ReviewCount())
+	}
+	if fake.Reviews[0].Number != 12 || !strings.Contains(fake.Reviews[0].Body, "approve") {
+		t.Fatalf("review posted to wrong PR/body: %+v", fake.Reviews[0])
+	}
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.ReviewPostedAt == nil {
+		t.Fatal("review_posted_at not stamped")
+	}
+}
+
+// TestReconcileReviewIdempotent proves the review comment is posted at most once
+// across ticks (review_posted_at gate).
+func TestReconcileReviewIdempotent(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	wirePRStack(rec, st, fake)
+	fake.Seed("jcloud", "seed", "jcode/run-pr2", provider.PR{Number: 5, URL: "http://gitea.test/jcloud/seed/pulls/5"})
+
+	seedReviewRun(t, st, "jcode/run-pr2", "needs-work: fix the tests")
+
+	rec.reconcileReviews(ctx)
+	rec.reconcileReviews(ctx)
+	rec.reconcileReviews(ctx)
+
+	if fake.ReviewCount() != 1 {
+		t.Fatalf("posted %d reviews across 3 ticks, want 1 (idempotent)", fake.ReviewCount())
+	}
+}
+
+// TestReconcileReviewNoTargetPR proves a review run whose target PR is not found
+// stays unposted (retried next tick), not crashed.
+func TestReconcileReviewNoTargetPR(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider() // no PR seeded
+	wirePRStack(rec, st, fake)
+
+	run := seedReviewRun(t, st, "jcode/run-missing", "approve")
+	rec.reconcileReviews(ctx)
+
+	if fake.ReviewCount() != 0 {
+		t.Fatalf("posted %d reviews, want 0 (no target PR)", fake.ReviewCount())
+	}
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.ReviewPostedAt != nil {
+		t.Fatal("review_posted_at stamped despite no PR")
+	}
+}
+
+// --- gates ------------------------------------------------------------------
+
 // TestShouldOpenPR is the exhaustive table for the pure PR-creation gate.
 func TestShouldOpenPR(t *testing.T) {
 	base := func() (domain.Run, domain.Service) {
 		return domain.Run{
-				Status: domain.StatusSucceeded, GitBranch: "agent/run-x", PRURL: "",
+				Status: domain.StatusSucceeded, Kind: domain.RunKindAgent,
+				GitBranch: "jcode/run-x", PRURL: "",
 			}, domain.Service{
 				RepoKind: domain.RepoKindProvider, GitMode: domain.GitModeDraftPR,
 				Provider: domain.ProviderGitea, RepoOwnerName: "o/r",
@@ -199,15 +375,16 @@ func TestShouldOpenPR(t *testing.T) {
 		want          bool
 	}{
 		{"happy path", func(*domain.Run, *domain.Service) {}, true, true},
-		{"no provider ready", func(*domain.Run, *domain.Service) {}, false, false},
+		{"github provider ok", func(_ *domain.Run, s *domain.Service) { s.Provider = domain.ProviderGitHub }, true, true},
+		{"no stack ready", func(*domain.Run, *domain.Service) {}, false, false},
 		{"not succeeded", func(r *domain.Run, _ *domain.Service) { r.Status = domain.StatusRunning }, true, false},
-		{"failed run", func(r *domain.Run, _ *domain.Service) { r.Status = domain.StatusFailed }, true, false},
+		{"review run", func(r *domain.Run, _ *domain.Service) { r.Kind = domain.RunKindReview }, true, false},
 		{"readonly service", func(_ *domain.Run, s *domain.Service) { s.GitMode = domain.GitModeReadonly }, true, false},
 		{"raw repo", func(_ *domain.Run, s *domain.Service) { s.RepoKind = domain.RepoKindRaw }, true, false},
-		{"no branch reported", func(r *domain.Run, _ *domain.Service) { r.GitBranch = "" }, true, false},
+		{"no branch recorded", func(r *domain.Run, _ *domain.Service) { r.GitBranch = "" }, true, false},
 		{"pr already set", func(r *domain.Run, _ *domain.Service) { r.PRURL = "http://x/1" }, true, false},
 		{"empty repo", func(_ *domain.Run, s *domain.Service) { s.RepoOwnerName = "" }, true, false},
-		{"non-gitea provider", func(_ *domain.Run, s *domain.Service) { s.Provider = domain.ProviderGitHub }, true, false},
+		{"invalid provider", func(_ *domain.Run, s *domain.Service) { s.Provider = "svn" }, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -232,7 +409,6 @@ func TestPRTitle(t *testing.T) {
 			t.Errorf("prTitle(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
-	// Long prompt is truncated with an ellipsis.
 	long := strings.Repeat("x", 200)
 	got := prTitle(long)
 	if !strings.HasPrefix(got, "[jcode] ") || len([]rune(got)) > 8+72 {
@@ -240,71 +416,28 @@ func TestPRTitle(t *testing.T) {
 	}
 }
 
-// TestJobEnvDraftPRInjection proves the runner env carries the push contract for
-// a draft_pr project (with a token configured) and stays diff-only otherwise.
-func TestJobEnvDraftPRInjection(t *testing.T) {
-	ctx := context.Background()
-	rec, st, _ := testRec(t, 4)
-	rec.cfg.GiteaURL = "http://gitea.test"
-	rec.cfg.GiteaToken = "tok-123"
-
-	proj, run := seedDraftPRRun(t, st, "agent/run-env")
-	// Reset run to queued-like for env building; env only needs the ids.
-	_ = proj
-
-	env := rec.jobEnv(ctx, &run, "run-token")
-	if env["GIT_MODE"] != string(domain.GitModeDraftPR) {
-		t.Fatalf("GIT_MODE=%q want draft_pr", env["GIT_MODE"])
-	}
-	if env["GIT_BRANCH"] != "agent/run-"+run.ID {
-		t.Errorf("GIT_BRANCH=%q want agent/run-%s", env["GIT_BRANCH"], run.ID)
-	}
-	if env["GIT_PUSH_URL"] != "http://gitea.test/jcloud/seed.git" {
-		t.Errorf("GIT_PUSH_URL=%q", env["GIT_PUSH_URL"])
-	}
-	if env["GIT_TOKEN"] != "tok-123" {
-		t.Errorf("GIT_TOKEN not injected")
-	}
-	if env["GIT_BASE_BRANCH"] != "main" {
-		t.Errorf("GIT_BASE_BRANCH=%q want main", env["GIT_BASE_BRANCH"])
-	}
-
-	// With no token, a draft_pr project degrades to diff-only (GIT_MODE=readonly).
-	rec.cfg.GiteaToken = ""
-	env2 := rec.jobEnv(ctx, &run, "run-token")
-	if env2["GIT_MODE"] != string(domain.GitModeReadonly) {
-		t.Fatalf("GIT_MODE=%q want readonly when token unset", env2["GIT_MODE"])
-	}
-	if env2["GIT_PUSH_URL"] != "" {
-		t.Errorf("GIT_PUSH_URL should be empty with no token")
-	}
-}
-
-// TestReadonlyProjectStaysDiffOnly proves the DEFAULT (readonly) project injects
-// no push env and the PR pass never touches it — the unchanged J1-J3 behavior.
+// TestReadonlyProjectStaysDiffOnly proves the DEFAULT (readonly) service injects
+// no push/bundle env and the PR pass never touches it.
 func TestReadonlyProjectStaysDiffOnly(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 4)
-	rec.cfg.GiteaToken = "tok"
 	prov := provider.NewFakeProvider()
-	rec.WithProvider(prov)
+	pusher := wirePRStack(rec, st, prov)
 
-	// A plain readonly run (default mode) that succeeded with a branch somehow set
-	// must NOT get a PR (mode gate) and its env must be diff-only.
-	run := seedProjectAndRun(t, st) // readonly project (no git config)
+	run := seedProjectAndRun(t, st) // readonly raw service
 	rec.Tick(ctx)
 	got, _ := st.GetRun(ctx, run.ID)
 	env := rec.jobEnv(ctx, got, "tok")
 	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
-		t.Fatalf("readonly project GIT_MODE=%q want readonly", env["GIT_MODE"])
+		t.Fatalf("readonly service GIT_MODE=%q want readonly", env["GIT_MODE"])
 	}
-	if _, ok := env["GIT_PUSH_URL"]; ok {
-		t.Error("readonly project must not get GIT_PUSH_URL")
+	if _, ok := env["BRANCH_NAME"]; ok {
+		t.Error("readonly service must not get BRANCH_NAME")
 	}
-	// Drive it to succeeded; PR pass must not create anything.
+	// Drive it to succeeded; PR pass must not push or create anything.
 	fake.SetState(got.K8sJobName, k8s.JobSucceeded)
 	rec.Tick(ctx)
-	if prov.CreatedCount() != 0 {
-		t.Fatalf("readonly project got a PR: created=%d", prov.CreatedCount())
+	if prov.CreatedCount() != 0 || len(pusher.pushed) != 0 {
+		t.Fatalf("readonly service got a PR/push: created=%d pushed=%d", prov.CreatedCount(), len(pusher.pushed))
 	}
 }

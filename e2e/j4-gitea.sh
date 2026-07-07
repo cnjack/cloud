@@ -83,31 +83,35 @@ j4_run() {
   local final; final="$(wait_terminal "$rid")"
   assert_eq J-MR "run terminal status is succeeded" "succeeded" "$final"
 
-  # --- J4-S4: event stream carries a run.git event with an agent/run-* branch
-  # The PR is opened by the reconciler AFTER success, so poll the run/events a
-  # little for pr_url to appear (bounded).
-  local ev_json branch
+  # --- J4-S4: event stream carries a run.artifact(bundle) event ------------
+  # M3 contract inversion: the runner no longer pushes and no longer emits a
+  # run.git event — it uploads a git BUNDLE, which the orchestrator pushes on the
+  # user's behalf. The bundle upload surfaces as a run.artifact event kind=bundle.
+  local ev_json
   ev_json="$(list_events "$rid")"
-  if printf '%s' "$ev_json" | jq -e 'map(select(.type=="run.git"))|length>0' >/dev/null; then
-    pass J-MR "event stream contains a run.git event"
+  if printf '%s' "$ev_json" | jq -e 'map(select(.type=="run.artifact" and .payload.kind=="bundle"))|length>0' >/dev/null; then
+    pass J-MR "event stream contains a run.artifact(bundle) event (runner uploaded a bundle)"
   else
-    fail J-MR "no run.git event in the stream"
+    fail J-MR "no run.artifact(bundle) event in the stream (runner did not upload a bundle)"
   fi
-  branch="$(printf '%s' "$ev_json" | jq -r 'map(select(.type=="run.git"))[0].payload.branch // empty')"
-  assert_contains J-MR "run.git branch is namespaced agent/run-*" "$branch" "agent/run-"
 
-  # --- J4-S5: run.pr_url becomes non-empty (draft PR opened) ---------------
-  local pr_url pr_number i
+  # --- J4-S5: run.pr_url becomes non-empty (orchestrator pushed + opened PR) -
+  # The reconciler pushes the bundle's branch and opens the draft PR AFTER
+  # success, so poll the run for pr_url + git_branch (set by the orchestrator).
+  local pr_url pr_number branch i
   pr_url=""
   for i in $(seq 1 30); do
     local rj; rj="$(get_run "$rid")"
     pr_url="$(printf '%s' "$rj" | jq -r '.pr_url // empty')"
     pr_number="$(printf '%s' "$rj" | jq -r '.pr_number // empty')"
+    branch="$(printf '%s' "$rj" | jq -r '.git_branch // empty')"
     [ -n "$pr_url" ] && break
     sleep 2
   done
-  assert_nonempty J-MR "run.pr_url is non-empty (draft PR opened)" "$pr_url"
+  assert_nonempty J-MR "run.pr_url is non-empty (orchestrator opened the draft PR)" "$pr_url"
   assert_nonempty J-MR "run.pr_number is set" "$pr_number"
+  # The orchestrator-pushed branch is namespaced jcode/run-* (blueprint §3).
+  assert_contains J-MR "run.git_branch is namespaced jcode/run-*" "$branch" "jcode/run-"
 
   # --- J4-S6: Gitea shows the PR — draft, head=branch, base=main, NOT merged
   if [ -n "$pr_number" ] && [ "$pr_number" != "null" ] && [ "$pr_number" != "0" ]; then
@@ -117,7 +121,7 @@ j4_run() {
     base_ref="$(printf '%s' "$pr_json" | jq -r '.base.ref // empty')"
     merged="$(printf '%s' "$pr_json" | jq -r '.merged // false')"
     title="$(printf '%s' "$pr_json" | jq -r '.title // empty')"
-    assert_eq J-MR "Gitea PR head == run.git branch" "$branch" "$head_ref"
+    assert_eq J-MR "Gitea PR head == orchestrator-pushed branch" "$branch" "$head_ref"
     assert_eq J-MR "Gitea PR base == main" "main" "$base_ref"
     assert_eq J-MR "Gitea PR is NOT merged (never auto-merge)" "false" "$merged"
     # Draft is signalled by Gitea's WIP title prefix.

@@ -48,6 +48,24 @@ func (m *MemStore) GetIdentity(_ context.Context, provider domain.GitProvider, p
 	return nil, ErrNotFound
 }
 
+func (m *MemStore) GetIdentityForUser(_ context.Context, userID string, provider domain.GitProvider) (*domain.UserIdentity, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best *domain.UserIdentity
+	for _, id := range m.identities {
+		if id.UserID == userID && id.Provider == provider {
+			cp := id
+			if best == nil || cp.CreatedAt.Before(best.CreatedAt) {
+				best = &cp
+			}
+		}
+	}
+	if best == nil {
+		return nil, ErrNotFound
+	}
+	return best, nil
+}
+
 func (m *MemStore) ListIdentities(_ context.Context, userID string) ([]domain.UserIdentity, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

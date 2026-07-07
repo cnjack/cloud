@@ -1,58 +1,52 @@
 #!/usr/bin/env bash
-# entrypoint.sh — run ONE headless jcode coding task inside the container and
-# emit the resulting git diff.
+# entrypoint.sh — run ONE headless jcode task (agent or review) inside the
+# container. It is CREDENTIAL-FREE: the runner never holds a provider token
+# (blueprint §0/§3). Reading and writing the repo go THROUGH the orchestrator
+# control plane over the per-run RUN_TOKEN.
 #
 # It is fully non-interactive: it drives `jcode acp` (JSON-RPC over stdio) via
-# the `acpdrive` client. There is NO TTY. jcode's TUI (bare `jcode` / `jcode -p`)
-# is never invoked.
+# the `acpdrive` client. There is NO TTY.
 #
 # Required env:
-#   REPO_URL         git URL (or file:// path) to clone into /workspace
-#   TASK_PROMPT      the coding task to give the agent
-#   MODEL_BASE_URL   OpenAI-compatible base URL, e.g. http://mockllm:8081/v1
+#   TASK_PROMPT      the coding task (agent runs) — a review prompt is built
+#                    internally for review runs.
+#   MODEL_BASE_URL   OpenAI-compatible base URL (or set START_MOCKLLM=1)
 #   MODEL_API_KEY    API key (a dummy value is fine for the mock)
-# Optional env:
-#   RUN_ID           opaque id echoed into logs/output (default: random)
-#   MODEL_NAME       "provider/model" as jcode expects (default: mock/mock-model)
-#   MODEL_PROVIDER   provider key used in config (default: derived from MODEL_NAME)
-#   RUN_TIMEOUT      hard ceiling for the agent run (default: 300s). Should be
-#                    set slightly below the Job's activeDeadlineSeconds
-#                    (RUN_TIMEOUT_SECONDS, default 1800s) so acpdrive's own
-#                    deadline fires first and this script can report a clean
-#                    reason=timeout instead of the cluster killing the pod out
-#                    from under an in-progress run.
-#   START_MOCKLLM    if "1", start the bundled mockllm on 127.0.0.1:8081 and
-#                    point MODEL_BASE_URL at it (self-contained mode)
-#   MOCK_SCENARIO    scenario name for the bundled mockllm (default: write_file)
-#   GIT_MODE         "readonly" (default; diff-only) | "draft_pr". In draft_pr
-#                    mode, after a successful non-empty diff the runner commits to
-#                    a namespaced branch and pushes it (ST-1).
-#   GIT_BRANCH       the branch to create/push in draft_pr mode
-#                    (default: agent/run-<RUN_ID>)
-#   GIT_PUSH_URL     https origin to push to, e.g.
-#                    https://gitea.host/owner/repo.git (required for draft_pr)
-#   GIT_TOKEN        provider token injected as https userinfo. Used to (a) CLONE
-#                    a PRIVATE repo (BOTH readonly and draft_pr — a private repo
-#                    must be cloneable to be READ; F1) and (b) PUSH in draft_pr.
-#                    The orchestrator injects it only when REPO_URL's host matches
-#                    the configured provider host. Passed on the CLI only, never
-#                    stored, never logged (a redacted URL is logged instead).
-#   GIT_BASE_BRANCH  the PR base branch (informational; PR base is set by the
-#                    orchestrator from the project default branch)
+#
+# Runner contract env (blueprint §3), injected by the orchestrator:
+#   RUN_KIND         "agent" (default) | "review"
+#   SOURCE_MODE      "clone" (default) | "fetch"
+#                    - clone: `git clone $REPO_URL` (public / raw repos, native
+#                      protocol, no credential).
+#                    - fetch: download a source bundle from the orchestrator
+#                      (GET /internal/v1/runs/$RUN_ID/source, RUN_TOKEN) and clone
+#                      it locally — a PRIVATE repo is read WITHOUT any token in
+#                      the pod.
+#   REPO_URL         clone origin (SOURCE_MODE=clone only)
+#   BASE_BRANCH      the baseline branch to check out (may be "")
+#   GIT_MODE         "readonly" (default; diff-only) | "draft_pr"
+#   BRANCH_NAME      the branch to create for a draft_pr bundle (jcode/run-<id>)
+#   PR_HEAD/PR_BASE  review run: the branches to diff (base...head)
+#
+# Orchestrator wiring (present under the control plane; absent standalone):
+#   RUN_ID, RUN_TOKEN, ORCH_BASE_URL
+#
+# Optional: RUN_TIMEOUT, MODEL_NAME/MODEL_PROVIDER, START_MOCKLLM, MOCK_SCENARIO,
+#   WORKSPACE, OUT_DIR.
 #
 # Output:
-#   - the git diff is printed to STDOUT (between markers) AND written to
-#     /out/diff.patch (best-effort; /out may be a mounted volume)
+#   - agent runs: the git diff on STDOUT (between markers) + /out/diff.patch, and
+#     (draft_pr) a git bundle POSTed to the orchestrator (which pushes + opens the
+#     draft PR). The runner NEVER pushes.
+#   - review runs: REVIEW.md POSTed to the orchestrator.
 #   - exit 0 on success; non-zero with a readable error otherwise.
 
 set -euo pipefail
 
 log()  { printf '[entrypoint] %s\n' "$*" >&2; }
 
-# report_failure REASON MESSAGE — best-effort POST a run.failure event to the
-# orchestrator so the console shows a precise failure reason (clone/setup/agent)
-# instead of the cluster's fallback (agent_error). No-op if the orchestrator env
-# is absent (standalone runs) or orchclient is missing. Never itself fatal.
+# report_failure REASON MESSAGE — best-effort POST a run.failure event so the
+# console shows a precise failure reason. No-op standalone. Never itself fatal.
 report_failure() {
   local reason="$1" message="$2"
   if command -v orchclient >/dev/null 2>&1; then
@@ -60,10 +54,8 @@ report_failure() {
   fi
 }
 
-# die REASON MESSAGE — report the failure (if the orchestrator is wired) then
-# exit non-zero. REASON ∈ {clone_failed, setup_failed, agent_error, timeout}
-# (see docs/11-api.md §1.4). Two-arg form is preferred; a single arg is treated
-# as an agent_error message for back-compat.
+# die REASON MESSAGE — report the failure (if wired) then exit non-zero.
+# REASON ∈ {clone_failed, setup_failed, agent_error, timeout} (docs/11-api.md §1.4).
 die() {
   local reason message
   if [ "$#" -ge 2 ]; then
@@ -80,12 +72,16 @@ RUN_ID="${RUN_ID:-run-$(date +%s)-$$}"
 WORKSPACE="${WORKSPACE:-/workspace}"
 OUT_DIR="${OUT_DIR:-/out}"
 RUN_TIMEOUT="${RUN_TIMEOUT:-300s}"
-# MODEL_NAME is "provider/model" as jcode expects; default provider "mock",
-# model "mock-model" (matches the bundled mockllm catalog).
+RUN_KIND="${RUN_KIND:-agent}"
+SOURCE_MODE="${SOURCE_MODE:-clone}"
+GIT_MODE="${GIT_MODE:-readonly}"
+# BASE_BRANCH is the new contract name; REPO_BRANCH is accepted as a back-compat
+# alias for the clone path.
+BASE_BRANCH="${BASE_BRANCH:-${REPO_BRANCH:-}}"
 MODEL_NAME="${MODEL_NAME:-mock/mock-model}"
 MODEL_API_KEY="${MODEL_API_KEY:-dummy-key}"
 
-log "run_id=$RUN_ID"
+log "run_id=$RUN_ID kind=$RUN_KIND source_mode=$SOURCE_MODE git_mode=$GIT_MODE"
 
 # --- 0. Optional self-contained model: start the bundled mock LLM ------------
 MOCK_PID=""
@@ -94,8 +90,6 @@ if [ "${START_MOCKLLM:-0}" = "1" ]; then
   MOCK_ADDR=":8081" MOCK_SCENARIO="${MOCK_SCENARIO:-write_file}" mockllm >&2 &
   MOCK_PID=$!
   MODEL_BASE_URL="http://127.0.0.1:8081/v1"
-  # Wait for the port to accept connections. Uses bash's /dev/tcp so we don't
-  # depend on curl/wget being installed in the slim base image.
   for _ in $(seq 1 50); do
     if (exec 3<>/dev/tcp/127.0.0.1/8081) 2>/dev/null; then
       exec 3>&- 3<&-
@@ -107,87 +101,104 @@ fi
 trap '[ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true' EXIT
 
 # --- 1. Validate inputs ------------------------------------------------------
-[ -n "${REPO_URL:-}" ]       || die setup_failed "REPO_URL is required"
 [ -n "${TASK_PROMPT:-}" ]    || die setup_failed "TASK_PROMPT is required"
 [ -n "${MODEL_BASE_URL:-}" ] || die setup_failed "MODEL_BASE_URL is required (or set START_MOCKLLM=1)"
 
-# Derive the provider key from MODEL_NAME ("provider/model") unless overridden.
 MODEL_PROVIDER="${MODEL_PROVIDER:-${MODEL_NAME%%/*}}"
 MODEL_ID="${MODEL_NAME#*/}"
 [ "$MODEL_PROVIDER" != "$MODEL_NAME" ] || die setup_failed "MODEL_NAME must be in 'provider/model' form (got '$MODEL_NAME')"
 
-# --- 2. Clone the repo into a clean workspace --------------------------------
+# --- 2. Prepare a clean workspace (clone URL, or fetch a source bundle) -------
 if [ -e "$WORKSPACE" ] && [ -n "$(ls -A "$WORKSPACE" 2>/dev/null || true)" ]; then
-  log "workspace $WORKSPACE not empty; cloning into a fresh subdir is unsupported in P0"
   die setup_failed "workspace must be empty"
 fi
 mkdir -p "$WORKSPACE"
 
-# --- Authenticated clone URL (F1) -------------------------------------------
-# A PRIVATE repo can only be READ if the clone carries credentials, and the clone
-# happens BEFORE any push logic — so a tokenless clone fails clone_failed in BOTH
-# readonly and draft_pr mode. When GIT_TOKEN is set AND REPO_URL is http(s), inject
-# the token as https userinfo (https://<token>@host/owner/repo.git) — the same
-# pattern used for the push URL below. The token is passed to `git clone` on the
-# command line only; it is NEVER written to disk and NEVER logged (we log a
-# redacted URL). With no token (public repos / file://) we clone the bare
-# REPO_URL, so the in-cluster anonymous gitseed keeps working unchanged.
-CLONE_URL="$REPO_URL"
-CLONE_URL_REDACTED="$REPO_URL"
-if [ -n "${GIT_TOKEN:-}" ]; then
-  case "$REPO_URL" in
-    https://*)
-      CLONE_URL="$(printf '%s' "$REPO_URL" | sed -E "s#^https://#https://${GIT_TOKEN}@#")"
-      CLONE_URL_REDACTED="$(printf '%s' "$REPO_URL" | sed -E "s#^https://#https://***@#")"
-      ;;
-    http://*)
-      CLONE_URL="$(printf '%s' "$REPO_URL" | sed -E "s#^http://#http://${GIT_TOKEN}@#")"
-      CLONE_URL_REDACTED="$(printf '%s' "$REPO_URL" | sed -E "s#^http://#http://***@#")"
-      ;;
-    *)
-      # Non-http(s) (e.g. file://) — a token is meaningless; clone bare.
-      : ;;
-  esac
-fi
-
-# redact_stream: strip the token (and any injected userinfo) from a text stream so
-# a git error tail can be surfaced (F2) without ever leaking the credential.
-redact_stream() {
-  if [ -n "${GIT_TOKEN:-}" ]; then
-    sed -E -e "s#${GIT_TOKEN}#***#g" -e 's#(https?://)[^/@[:space:]]+@#\1***@#g'
-  else
-    sed -E 's#(https?://)[^/@[:space:]]+@#\1***@#g'
-  fi
-}
-
-# REPO_BRANCH selects the baseline branch; empty => clone the remote's default.
-# (orchestrator injects REPO_BRANCH from project.default_branch, which may be "".)
-# stderr is captured to a temp file so, on failure, a REDACTED tail is surfaced in
-# the clone_failed message (F2) — a human can then tell auth vs not-found vs
-# network from the console instead of a bare "git clone ... failed".
 CLONE_ERR="$(mktemp 2>/dev/null || echo /tmp/git-clone.err)"
-if [ -n "${REPO_BRANCH:-}" ]; then
-  log "cloning $CLONE_URL_REDACTED (branch $REPO_BRANCH) -> $WORKSPACE"
-  git clone --quiet --branch "$REPO_BRANCH" "$CLONE_URL" "$WORKSPACE" 2>"$CLONE_ERR" \
-    || die clone_failed "git clone of $CLONE_URL_REDACTED (branch $REPO_BRANCH) failed: $(redact_stream < "$CLONE_ERR" | tr '\n' ' ' | tail -c 500)"
+
+if [ "$SOURCE_MODE" = "fetch" ]; then
+  # Private/provider repos: the orchestrator pre-clones and serves a git bundle.
+  # No credential ever enters the pod (blueprint §3). fetch-source is load-bearing.
+  [ -n "${ORCH_BASE_URL:-}" ] && [ -n "${RUN_TOKEN:-}" ] \
+    || die setup_failed "SOURCE_MODE=fetch requires ORCH_BASE_URL + RUN_TOKEN"
+  SRC_BUNDLE="/tmp/source-$RUN_ID.bundle"
+  log "fetching source bundle from orchestrator"
+  orchclient fetch-source --out "$SRC_BUNDLE" \
+    || die clone_failed "could not fetch the source bundle from the orchestrator"
+  log "cloning source bundle -> $WORKSPACE"
+  git clone --quiet "$SRC_BUNDLE" "$WORKSPACE" 2>"$CLONE_ERR" \
+    || die clone_failed "git clone of the source bundle failed: $(tr '\n' ' ' < "$CLONE_ERR" | tail -c 500)"
+  # Keep $SRC_BUNDLE on disk: the clone made it the `origin` remote, so review
+  # runs can `git fetch origin <PR refs>` from it. It lives in the ephemeral pod
+  # /tmp and is discarded with the pod.
 else
-  log "cloning $CLONE_URL_REDACTED (default branch) -> $WORKSPACE"
-  git clone --quiet "$CLONE_URL" "$WORKSPACE" 2>"$CLONE_ERR" \
-    || die clone_failed "git clone of $CLONE_URL_REDACTED failed: $(redact_stream < "$CLONE_ERR" | tr '\n' ' ' | tail -c 500)"
+  # Public / raw repos: clone the URL directly (native protocol, no credential).
+  [ -n "${REPO_URL:-}" ] || die setup_failed "SOURCE_MODE=clone requires REPO_URL"
+  if [ -n "$BASE_BRANCH" ]; then
+    log "cloning $REPO_URL (branch $BASE_BRANCH) -> $WORKSPACE"
+    git clone --quiet --branch "$BASE_BRANCH" "$REPO_URL" "$WORKSPACE" 2>"$CLONE_ERR" \
+      || die clone_failed "git clone of $REPO_URL (branch $BASE_BRANCH) failed: $(tr '\n' ' ' < "$CLONE_ERR" | tail -c 500)"
+  else
+    log "cloning $REPO_URL (default branch) -> $WORKSPACE"
+    git clone --quiet "$REPO_URL" "$WORKSPACE" 2>"$CLONE_ERR" \
+      || die clone_failed "git clone of $REPO_URL failed: $(tr '\n' ' ' < "$CLONE_ERR" | tail -c 500)"
+  fi
 fi
 rm -f "$CLONE_ERR" 2>/dev/null || true
 
-# Ensure a stable git identity so 'git diff' / any commits work in the container.
+# Ensure a stable git identity for diffs/commits inside the container.
 git -C "$WORKSPACE" config user.email "runner@jcode.local"
 git -C "$WORKSPACE" config user.name  "jcode runner"
-# Baseline for the final diff: HEAD at clone time.
+
+# Check out the baseline branch when it is not already HEAD (fetch clones the
+# bundle's default HEAD; a specific BASE_BRANCH may be a remote-tracking ref).
+if [ -n "$BASE_BRANCH" ]; then
+  if ! git -C "$WORKSPACE" rev-parse --verify -q "refs/heads/$BASE_BRANCH" >/dev/null 2>&1; then
+    git -C "$WORKSPACE" checkout -q -B "$BASE_BRANCH" "origin/$BASE_BRANCH" 2>/dev/null \
+      || git -C "$WORKSPACE" checkout -q "$BASE_BRANCH" 2>/dev/null || true
+  else
+    git -C "$WORKSPACE" checkout -q "$BASE_BRANCH" 2>/dev/null || true
+  fi
+fi
+
 BASE_REF="$(git -C "$WORKSPACE" rev-parse HEAD 2>/dev/null || echo '')"
-log "cloned at base commit ${BASE_REF:-<none>}"
+log "workspace ready at base commit ${BASE_REF:-<none>}"
+
+# --- 2b. Review runs: build the review prompt from the PR diff ---------------
+# The review prompt embeds `git diff PR_BASE...PR_HEAD` and asks the agent to
+# write REVIEW.md. It contains the literal marker "[review]" so the mock LLM (and
+# any prompt-routing) can identify a review turn.
+if [ "$RUN_KIND" = "review" ]; then
+  [ -n "${PR_HEAD:-}" ] && [ -n "${PR_BASE:-}" ] \
+    || die setup_failed "RUN_KIND=review requires PR_HEAD and PR_BASE"
+  log "review run: diffing $PR_BASE...$PR_HEAD"
+  # Make sure both refs are present (a bundle clone exposes them as origin/*).
+  git -C "$WORKSPACE" fetch -q origin \
+    "+refs/heads/$PR_BASE:refs/remotes/origin/$PR_BASE" \
+    "+refs/heads/$PR_HEAD:refs/remotes/origin/$PR_HEAD" 2>/dev/null || true
+  HEAD_REF="origin/$PR_HEAD"; BASE_REF_R="origin/$PR_BASE"
+  git -C "$WORKSPACE" rev-parse --verify -q "$HEAD_REF" >/dev/null 2>&1 || HEAD_REF="$PR_HEAD"
+  git -C "$WORKSPACE" rev-parse --verify -q "$BASE_REF_R" >/dev/null 2>&1 || BASE_REF_R="$PR_BASE"
+  REVIEW_DIFF="$(git -C "$WORKSPACE" --no-pager diff "$BASE_REF_R...$HEAD_REF" 2>/dev/null || true)"
+  [ -n "$REVIEW_DIFF" ] || REVIEW_DIFF="(the diff could not be computed; review from the branch names alone)"
+  TASK_PROMPT="$(cat <<EOF
+[review] You are reviewing a pull request. Base branch: $PR_BASE. Head branch: $PR_HEAD.
+
+Below is the unified diff (git diff $PR_BASE...$PR_HEAD). Review it for correctness,
+clarity, missing tests, and risk.
+
+Write your review to a file named REVIEW.md in the repository root, in markdown:
+  - Start with a conclusion line: exactly one of "approve" or "needs-work".
+  - Then a bulleted list of specific, actionable findings.
+
+=== DIFF START ===
+$REVIEW_DIFF
+=== DIFF END ===
+EOF
+)"
+fi
 
 # --- 3. Write jcode config pointing at the model -----------------------------
-# default_mode=full_access → jcode's ApprovalState runs in auto mode and never
-# calls back for tool permission (headless-safe). memory disabled to avoid any
-# background model calls.
 mkdir -p "$HOME/.jcode"
 cat > "$HOME/.jcode/config.json" <<JSON
 {
@@ -208,8 +219,6 @@ JSON
 log "wrote $HOME/.jcode/config.json (provider=$MODEL_PROVIDER model=$MODEL_ID base_url=$MODEL_BASE_URL)"
 
 # --- 4. Drive one headless jcode run -----------------------------------------
-# acpdrive spawns `jcode acp` over stdio (no TTY) and blocks until the agent
-# loop completes. stdin is closed so nothing can hang waiting for input.
 log "starting headless run (timeout=$RUN_TIMEOUT)"
 set +e
 JCODE_BIN=jcode acpdrive \
@@ -219,13 +228,6 @@ JCODE_BIN=jcode acpdrive \
   --verbose < /dev/null
 RUN_RC=$?
 set -e
-# acpdrive drives the agent loop AND streams agent.text/tool events to the
-# orchestrator as it runs. A non-zero rc means the agent errored / was refused.
-# rc=124 is acpdrive's dedicated exit code for "hit our own --timeout deadline"
-# (conventional timeout(1) status), so report reason=timeout (a real enum
-# value; see docs/11-api.md §1.4) instead of the generic agent_error — this
-# matters most under the process launcher, which has no K8s
-# activeDeadlineSeconds to fall back on for classification.
 if [ "$RUN_RC" -eq 124 ]; then
   die timeout "headless agent run exceeded RUN_TIMEOUT=$RUN_TIMEOUT"
 elif [ "$RUN_RC" -ne 0 ]; then
@@ -233,20 +235,27 @@ elif [ "$RUN_RC" -ne 0 ]; then
 fi
 log "headless run finished ok"
 
-# --- 5. Produce the diff -----------------------------------------------------
-# Baseline is HEAD at clone (BASE_REF), NOT the index: the agent may have
-# staged (`git add`) or even committed changes, and a plain `git diff` (which
-# only compares worktree-vs-index) would silently omit those, or produce an
-# empty diff (falsely failing the run at the empty-diff check below) if the
-# agent committed. Diffing against BASE_REF captures worktree + index + any
-# commits made since clone in one patch. 'git add -N .' stages intents for
-# untracked files so untracked new files show up in a `diff <ref>` too.
+# --- 5. Review runs: read + upload REVIEW.md, then done ----------------------
+if [ "$RUN_KIND" = "review" ]; then
+  REVIEW_FILE="$WORKSPACE/REVIEW.md"
+  if [ -s "$REVIEW_FILE" ]; then
+    log "review produced REVIEW.md ($(wc -c < "$REVIEW_FILE" | tr -d ' ') bytes)"
+    if command -v orchclient >/dev/null 2>&1 && [ -n "${ORCH_BASE_URL:-}" ] && [ -n "${RUN_TOKEN:-}" ]; then
+      orchclient post-review --file "$REVIEW_FILE" \
+        || log "review upload failed (non-fatal; no review comment will be posted)"
+    fi
+  else
+    die agent_error "review run produced no REVIEW.md"
+  fi
+  log "success"
+  exit 0
+fi
+
+# --- 6. Agent runs: produce the diff -----------------------------------------
 git -C "$WORKSPACE" add -N . >/dev/null 2>&1 || true
 if [ -n "$BASE_REF" ]; then
   DIFF="$(git -C "$WORKSPACE" --no-pager diff --binary "$BASE_REF")"
 else
-  # No baseline (e.g. clone produced an empty repo with no HEAD): fall back to
-  # a plain worktree-vs-index diff, the best we can do without a ref.
   log "no BASE_REF recorded; falling back to plain 'git diff' (worktree vs index)"
   DIFF="$(git -C "$WORKSPACE" --no-pager diff --binary)"
 fi
@@ -258,7 +267,6 @@ else
   log "could not write $OUT_DIR/diff.patch (continuing; diff still on stdout)"
 fi
 
-# Emit the diff to stdout between machine-parseable markers.
 printf '===JCODE_DIFF_BEGIN run_id=%s===\n' "$RUN_ID"
 printf '%s\n' "$DIFF"
 printf '===JCODE_DIFF_END run_id=%s===\n' "$RUN_ID"
@@ -267,69 +275,50 @@ if [ -z "$DIFF" ]; then
   die agent_error "run produced an empty diff (no changes)"
 fi
 
-# --- 5b. Draft-PR push (ST-1) ------------------------------------------------
-# When GIT_MODE=draft_pr, the orchestrator injected the push contract. Commit the
-# agent's changes onto a namespaced branch agent/run-<RUN_ID> and push it to the
-# provider over https with the token, then report a run.git event so the
-# orchestrator can open the draft PR. A push failure is fatal with a precise
-# reason=push_failed (a real enum value; see docs/11-api.md §1.4) rather than the
-# generic agent_error — the diff is already produced, so this isolates "the run
-# worked but we couldn't publish the branch". readonly mode skips this entirely
-# (the default), leaving today's diff-only behavior unchanged.
-if [ "${GIT_MODE:-readonly}" = "draft_pr" ]; then
-  PUSH_BRANCH="${GIT_BRANCH:-agent/run-$RUN_ID}"
-  [ -n "${GIT_PUSH_URL:-}" ] || die push_failed "GIT_MODE=draft_pr but GIT_PUSH_URL is unset"
-  [ -n "${GIT_TOKEN:-}" ]    || die push_failed "GIT_MODE=draft_pr but GIT_TOKEN is unset"
-  log "draft_pr mode: committing changes onto $PUSH_BRANCH and pushing"
+# --- 6b. Draft-PR bundle (blueprint §3) --------------------------------------
+# In draft_pr mode the runner commits the agent's change onto BRANCH_NAME and
+# builds a git bundle (BASE_BRANCH..BRANCH_NAME), then POSTs the bundle to the
+# orchestrator, which pushes the branch and opens the draft PR on the triggering
+# user's behalf. The runner NEVER pushes and holds NO token. readonly mode skips
+# this entirely (diff-only, unchanged).
+if [ "$GIT_MODE" = "draft_pr" ]; then
+  BRANCH_NAME="${BRANCH_NAME:-jcode/run-$RUN_ID}"
+  [ -n "$BASE_REF" ] || die setup_failed "draft_pr requires a base commit but none was recorded"
+  log "draft_pr: committing agent changes onto $BRANCH_NAME and bundling"
 
-  # Stage everything the agent produced (worktree + untracked) and commit it onto
-  # a fresh branch off the clone HEAD. -A includes deletions/renames the diff
-  # captured. If the agent already committed, those commits are on HEAD and are
-  # carried by the branch too; this commit just captures any remaining worktree
-  # changes (a no-op commit is avoided with --allow-empty guarded by the diff
-  # check above, so there is always something to publish).
-  git -C "$WORKSPACE" checkout -q -b "$PUSH_BRANCH" \
-    || die push_failed "could not create branch $PUSH_BRANCH"
+  git -C "$WORKSPACE" checkout -q -b "$BRANCH_NAME" \
+    || die agent_error "could not create branch $BRANCH_NAME"
   git -C "$WORKSPACE" add -A >/dev/null 2>&1 || true
   if ! git -C "$WORKSPACE" diff --cached --quiet; then
     git -C "$WORKSPACE" commit -q -m "[jcode] ${TASK_PROMPT%%$'\n'*}" \
-      || die push_failed "could not commit changes onto $PUSH_BRANCH"
+      || die agent_error "could not commit changes onto $BRANCH_NAME"
   fi
-  PUSH_SHA="$(git -C "$WORKSPACE" rev-parse HEAD 2>/dev/null || echo '')"
 
-  # Build an authenticated push URL by injecting the token as the userinfo of the
-  # https origin (https://<token>@host/owner/repo.git). This is passed on the
-  # command line to a subprocess only; it is not written to disk. Supports a
-  # token that already carries a "user:pass" form too.
-  AUTH_URL="$(printf '%s' "$GIT_PUSH_URL" | sed -E "s#^https://#https://${GIT_TOKEN}@#")"
-  if [ "$AUTH_URL" = "$GIT_PUSH_URL" ]; then
-    # Not an https:// URL (or sed no-op) — try http:// too, else fail clearly.
-    AUTH_URL="$(printf '%s' "$GIT_PUSH_URL" | sed -E "s#^http://#http://${GIT_TOKEN}@#")"
-  fi
-  PUSH_ERR="$(mktemp 2>/dev/null || echo /tmp/git-push.err)"
-  if ! git -C "$WORKSPACE" push --quiet "$AUTH_URL" "$PUSH_BRANCH:$PUSH_BRANCH" 2>"$PUSH_ERR"; then
-    # Surface a REDACTED git error tail (same redaction as the clone path, F2) so
-    # the console shows the real reason without ever leaking the token.
-    PUSH_ERR_TAIL="$(redact_stream < "$PUSH_ERR" | tr '\n' ' ' | tail -c 500)"
-    log "git push failed: $PUSH_ERR_TAIL"
-    rm -f "$PUSH_ERR" 2>/dev/null || true
-    die push_failed "could not push $PUSH_BRANCH to the provider: $PUSH_ERR_TAIL"
-  fi
-  rm -f "$PUSH_ERR" 2>/dev/null || true
-  log "pushed $PUSH_BRANCH ($PUSH_SHA)"
+  RUN_BUNDLE="/tmp/run-$RUN_ID.bundle"
+  # BASE_REF..BRANCH_NAME → the bundle names refs/heads/BRANCH_NAME with BASE_REF
+  # as the prerequisite; the orchestrator's bare clone already has BASE_REF, so
+  # `git fetch <bundle>` then `git push` reconstructs the branch.
+  git -C "$WORKSPACE" bundle create "$RUN_BUNDLE" "$BASE_REF..$BRANCH_NAME" >/dev/null 2>&1 \
+    || die agent_error "could not create the run bundle"
 
-  # Report the pushed branch so the orchestrator opens the draft PR (best-effort;
-  # a report failure does not fail the run — the branch is already published).
+  # Client-side 16MiB self-check (server enforces the same limit with a 413).
+  BUNDLE_BYTES="$(wc -c < "$RUN_BUNDLE" | tr -d ' ')"
+  if [ "$BUNDLE_BYTES" -gt 16777216 ]; then
+    rm -f "$RUN_BUNDLE" 2>/dev/null || true
+    die agent_error "run bundle is $BUNDLE_BYTES bytes (>16MiB limit)"
+  fi
+  log "built run bundle ($BUNDLE_BYTES bytes)"
+
   if command -v orchclient >/dev/null 2>&1 && [ -n "${ORCH_BASE_URL:-}" ] && [ -n "${RUN_TOKEN:-}" ]; then
-    orchclient report-git --branch "$PUSH_BRANCH" --commit "$PUSH_SHA" || true
+    orchclient upload-bundle --file "$RUN_BUNDLE" \
+      || log "bundle upload failed (non-fatal; the draft PR will not open until retried)"
+  else
+    log "no orchestrator wired; skipping bundle upload (standalone run)"
   fi
+  rm -f "$RUN_BUNDLE" 2>/dev/null || true
 fi
 
-# --- 6. Upload the diff artifact to the orchestrator (best-effort) -----------
-# On success the console fetches the diff via /api/v1/runs/{id}/artifact; the
-# upload triggers an internally-emitted run.artifact event on the SSE stream.
-# orchclient is a no-op (exit 0) when the orchestrator env is absent, so this is
-# skipped cleanly in standalone runs.
+# --- 7. Upload the diff artifact to the orchestrator (best-effort) -----------
 if command -v orchclient >/dev/null 2>&1 && [ -n "${ORCH_BASE_URL:-}" ] && [ -n "${RUN_TOKEN:-}" ]; then
   if printf '%s\n' "$DIFF" | orchclient upload-artifact --kind diff --file - ; then
     log "uploaded diff artifact to orchestrator"

@@ -245,7 +245,8 @@ func (s *PGStore) DeleteService(ctx context.Context, id string) error {
 const runCols = `id, project_id, service_id, prompt, status, kind, phase, error, k8s_job_name,
 	retried_from, failure_reason, failure_message, attempt, token_hash,
 	created_at, started_at, finished_at, job_cleaned_at,
-	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id`
+	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id,
+	review_posted_at, pr_head_branch, pr_base_branch`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
@@ -253,7 +254,8 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 		&r.K8sJobName, &r.RetriedFrom, &r.FailureReason, &r.FailureMessage,
 		&r.Attempt, &r.TokenHash,
 		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt,
-		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID)
+		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID,
+		&r.ReviewPostedAt, &r.PRHeadBranch, &r.PRBaseBranch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -269,11 +271,12 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
-		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID)
+		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID,
+		r.ReviewPostedAt, r.PRHeadBranch, r.PRBaseBranch)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
@@ -635,11 +638,13 @@ func (s *PGStore) MarkPRCreated(ctx context.Context, id, prURL string, prNumber 
 	return s.commitAndReload(ctx, tx, id)
 }
 
-// ListRunsAwaitingPR returns succeeded runs with a pushed branch but no PR yet.
+// ListRunsAwaitingPR returns succeeded agent runs with a recorded branch (set
+// when their bundle was received) but no PR yet. The mode/provider gate is
+// applied by the reconciler after joining the service.
 func (s *PGStore) ListRunsAwaitingPR(ctx context.Context) ([]domain.Run, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+runCols+` FROM runs
-		 WHERE status=$1 AND git_branch <> '' AND pr_url = ''
+		 WHERE status=$1 AND kind='agent' AND git_branch <> '' AND pr_url = ''
 		 ORDER BY created_at ASC`,
 		string(domain.StatusSucceeded))
 	if err != nil {
@@ -655,6 +660,103 @@ func (s *PGStore) ListRunsAwaitingPR(ctx context.Context) ([]domain.Run, error) 
 		out = append(out, *r)
 	}
 	return out, rows.Err()
+}
+
+// ListReviewRunsAwaitingPost returns succeeded review runs that have produced
+// review output but whose comment has not yet been posted to the PR. The reconcile
+// review pass posts them (M3/M5). Ordered oldest-first.
+func (s *PGStore) ListReviewRunsAwaitingPost(ctx context.Context) ([]domain.Run, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+runCols+` FROM runs
+		 WHERE status=$1 AND kind='review' AND review_output <> '' AND review_posted_at IS NULL
+		 ORDER BY created_at ASC`,
+		string(domain.StatusSucceeded))
+	if err != nil {
+		return nil, fmt.Errorf("list review runs awaiting post: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
+}
+
+// SetReviewOutput records a review run's markdown output (from the runner's
+// POST .../review) without changing status. First-writer-wins: it writes only
+// while review_output is empty, so a re-POST is a no-op. Returns the committed row.
+func (s *PGStore) SetReviewOutput(ctx context.Context, id, md string) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	_ = cur
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET review_output = CASE WHEN review_output='' THEN $2 ELSE review_output END
+		 WHERE id=$1`, id, md); err != nil {
+		return nil, fmt.Errorf("set review output: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// MarkReviewPosted stamps review_posted_at once the review comment has been
+// posted to the PR. Idempotent + first-writer-wins via COALESCE under a row
+// lock: returns posted=true only for the tick that actually stamped it, so two
+// ticks never double-post. A missing run is ErrNotFound.
+func (s *PGStore) MarkReviewPosted(ctx context.Context, id string) (bool, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if cur.ReviewPostedAt != nil {
+		_ = tx.Rollback(ctx)
+		return false, nil // already posted
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET review_posted_at=now() WHERE id=$1 AND review_posted_at IS NULL`, id); err != nil {
+		return false, fmt.Errorf("mark review posted: %w", err)
+	}
+	if _, err := s.commitAndReload(ctx, tx, id); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// --- Binary artifacts (bundle) ----------------------------------------------
+
+// PutRunBundle stores a run's git bundle (kind='bundle') as bytea, upserting by
+// (run_id, kind). content stays '' (the payload is in content_bytes).
+func (s *PGStore) PutRunBundle(ctx context.Context, runID string, data []byte) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO run_artifacts (run_id, kind, content, content_bytes, created_at)
+		 VALUES ($1,$2,'',$3, now())
+		 ON CONFLICT (run_id, kind) DO UPDATE SET content_bytes=EXCLUDED.content_bytes, created_at=EXCLUDED.created_at`,
+		runID, string(domain.ArtifactBundle), data)
+	if err != nil {
+		return fmt.Errorf("put run bundle: %w", err)
+	}
+	return nil
+}
+
+// GetRunBundle returns a run's stored git bundle bytes (ErrNotFound if absent).
+func (s *PGStore) GetRunBundle(ctx context.Context, runID string) ([]byte, error) {
+	var data []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT content_bytes FROM run_artifacts WHERE run_id=$1 AND kind=$2`,
+		runID, string(domain.ArtifactBundle)).Scan(&data)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get run bundle: %w", err)
+	}
+	return data, nil
 }
 
 // --- Events -----------------------------------------------------------------

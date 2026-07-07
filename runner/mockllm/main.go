@@ -135,6 +135,15 @@ var scenarios = map[string]Scenario{
 		ToolArgs:  `{"command":"printf 'written by jcode via bash\\n' > HELLO_FROM_BASH.txt","description":"create a file"}`,
 		FinalText: "Done. I created HELLO_FROM_BASH.txt using a shell command.",
 	},
+	// Review: the M3 review channel. Turn 1 writes a fixed, reasonable review to
+	// REVIEW.md (conclusion + bulleted findings, markdown); turn 2 finishes. This
+	// scenario is selected automatically when a request's messages contain the
+	// "[review]" marker (see scenarioForRequest), regardless of MOCK_SCENARIO.
+	"review": {
+		ToolName:  "write",
+		ToolArgs:  `{"file_path":"REVIEW.md","content":"needs-work\n\n- The change is missing test coverage for the new branch.\n- Consider handling the empty-input edge case explicitly.\n- Overall the diff is focused and the naming is clear.\n"}`,
+		FinalText: "Review complete. I wrote my findings to REVIEW.md.",
+	},
 }
 
 func activeScenario() (string, Scenario) {
@@ -161,6 +170,43 @@ func hasToolResult(msgs []message) bool {
 		}
 	}
 	return false
+}
+
+// reviewMarker is the literal token the entrypoint embeds in a review prompt so
+// the mock (and any real prompt routing) can identify a review turn.
+const reviewMarker = "[review]"
+
+// messageText extracts the textual content of a message. OpenAI content is
+// either a plain string or an array of {type,text} parts; we read both.
+func messageText(m message) string {
+	switch c := m.Content.(type) {
+	case string:
+		return c
+	case []any:
+		var b strings.Builder
+		for _, part := range c {
+			if pm, ok := part.(map[string]any); ok {
+				if t, ok := pm["text"].(string); ok {
+					b.WriteString(t)
+					b.WriteByte(' ')
+				}
+			}
+		}
+		return b.String()
+	default:
+		return ""
+	}
+}
+
+// scenarioForRequest chooses the scenario for a request: the "review" scenario
+// when any message carries the review marker, otherwise the env-selected default.
+func scenarioForRequest(msgs []message) (string, Scenario) {
+	for _, m := range msgs {
+		if strings.Contains(messageText(m), reviewMarker) {
+			return "review", scenarios["review"]
+		}
+	}
+	return activeScenario()
 }
 
 func main() {
@@ -200,7 +246,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	name, sc := activeScenario()
+	name, sc := scenarioForRequest(req.Messages)
 	turn2 := hasToolResult(req.Messages)
 	log.Printf("[mockllm] scenario=%s stream=%v msgs=%d turn2=%v", name, req.Stream, len(req.Messages), turn2)
 
@@ -331,6 +377,3 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }
-
-// ensure strings import is used even if a future edit removes its only use.
-var _ = strings.TrimSpace

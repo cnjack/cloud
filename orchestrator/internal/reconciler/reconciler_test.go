@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,114 +100,156 @@ func jobEnvForService(t *testing.T, svc domain.Service, tokenCfg, urlCfg string)
 	return rec.jobEnv(ctx, run, "run-token")
 }
 
-// TestJobEnvGiteaProviderReadonlyGetsCloneToken is the F1 regression: a PRIVATE
-// gitea repo must be cloneable to be READ, so GIT_TOKEN is injected for a
-// readonly gitea-provider service — independent of PR mode. GIT_MODE stays
-// readonly (no push contract) and REPO_URL is derived from the gitea base.
-func TestJobEnvGiteaProviderReadonlyGetsCloneToken(t *testing.T) {
+// assertNoToken asserts the M3 credential-free contract: NO provider token of
+// any name is ever injected into the runner env.
+func assertNoToken(t *testing.T, env map[string]string) {
+	t.Helper()
+	for _, k := range []string{"GIT_TOKEN", "GIT_PUSH_URL"} {
+		if _, ok := env[k]; ok {
+			t.Fatalf("M3: %s must never be injected into the runner (got %q)", k, env[k])
+		}
+	}
+}
+
+// TestJobEnvProviderReadonlyUsesFetch is the M3 contract for a provider service:
+// SOURCE_MODE=fetch (the orchestrator serves a source bundle over the RUN_TOKEN
+// — no credential in the pod, and public/private is not guessed), GIT_MODE stays
+// readonly, and NO token is injected. REPO_URL is omitted (the runner fetches).
+func TestJobEnvProviderReadonlyUsesFetch(t *testing.T) {
 	env := jobEnvForService(t, domain.Service{
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
 		RepoOwnerName: "ai/priv", GitMode: domain.GitModeReadonly,
 	}, "secret-pat", "https://git.example.com")
-	if env["GIT_TOKEN"] != "secret-pat" {
-		t.Fatalf("GIT_TOKEN=%q want secret-pat (private repo must be cloneable in readonly)", env["GIT_TOKEN"])
+	assertNoToken(t, env)
+	if env["SOURCE_MODE"] != "fetch" {
+		t.Fatalf("SOURCE_MODE=%q want fetch (unified provider path)", env["SOURCE_MODE"])
 	}
 	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
 		t.Fatalf("GIT_MODE=%q want readonly", env["GIT_MODE"])
 	}
-	if env["REPO_URL"] != "https://git.example.com/ai/priv.git" {
-		t.Fatalf("REPO_URL=%q want the gitea clone origin", env["REPO_URL"])
+	if env["BASE_BRANCH"] != "main" {
+		t.Fatalf("BASE_BRANCH=%q want main", env["BASE_BRANCH"])
 	}
-	// readonly must NOT carry the push contract.
-	if env["GIT_PUSH_URL"] != "" || env["GIT_BRANCH"] != "" {
-		t.Fatalf("readonly must not carry push contract: push=%q branch=%q", env["GIT_PUSH_URL"], env["GIT_BRANCH"])
+	if _, ok := env["REPO_URL"]; ok {
+		t.Fatalf("fetch mode must not set REPO_URL (runner fetches a bundle); got %q", env["REPO_URL"])
+	}
+	if _, ok := env["BRANCH_NAME"]; ok {
+		t.Fatalf("readonly must not carry a push BRANCH_NAME; got %q", env["BRANCH_NAME"])
 	}
 }
 
-// TestJobEnvGithubProviderGetsNoGiteaToken is the security regression: the gitea
-// PAT must NOT be injected for a github (or gitlab) provider service — those use
-// per-user OAuth tokens (M2), never the gitea PAT.
-func TestJobEnvGithubProviderGetsNoGiteaToken(t *testing.T) {
+// TestJobEnvGithubProviderUsesFetchNoToken verifies a github provider service
+// also takes the unified fetch path and never receives a token.
+func TestJobEnvGithubProviderUsesFetchNoToken(t *testing.T) {
 	env := jobEnvForService(t, domain.Service{
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitHub,
 		RepoOwnerName: "someone/other", GitMode: domain.GitModeReadonly,
 	}, "secret-pat", "https://git.example.com")
-	if _, ok := env["GIT_TOKEN"]; ok {
-		t.Fatalf("GIT_TOKEN must NOT be injected for a github service (leak); got %q", env["GIT_TOKEN"])
-	}
-	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
-		t.Fatalf("GIT_MODE=%q want readonly", env["GIT_MODE"])
-	}
-	if env["REPO_URL"] != "https://github.com/someone/other.git" {
-		t.Fatalf("REPO_URL=%q want the github clone origin", env["REPO_URL"])
+	assertNoToken(t, env)
+	if env["SOURCE_MODE"] != "fetch" {
+		t.Fatalf("SOURCE_MODE=%q want fetch", env["SOURCE_MODE"])
 	}
 }
 
-// TestJobEnvRawRepoGetsNoToken verifies raw services (git://, file://, opaque
-// http) never receive the gitea PAT and clone via their raw URL as-is.
-func TestJobEnvRawRepoGetsNoToken(t *testing.T) {
+// TestJobEnvRawRepoClonesDirectly verifies raw services (git://, file://, opaque
+// http) use SOURCE_MODE=clone and clone their raw URL as-is with no token.
+func TestJobEnvRawRepoClonesDirectly(t *testing.T) {
 	env := jobEnvForService(t, domain.Service{
 		RepoKind: domain.RepoKindRaw, RawRepoURL: "git://git.jcloud/seed.git",
 		GitMode: domain.GitModeReadonly,
 	}, "secret-pat", "https://git.example.com")
-	if _, ok := env["GIT_TOKEN"]; ok {
-		t.Fatalf("GIT_TOKEN must NOT be injected for a raw repo; got %q", env["GIT_TOKEN"])
+	assertNoToken(t, env)
+	if env["SOURCE_MODE"] != "clone" {
+		t.Fatalf("SOURCE_MODE=%q want clone (raw repo)", env["SOURCE_MODE"])
 	}
 	if env["REPO_URL"] != "git://git.jcloud/seed.git" {
 		t.Fatalf("REPO_URL=%q want the raw url as-is", env["REPO_URL"])
 	}
 }
 
-// TestJobEnvNoTokenWhenUnconfigured verifies the public-repo / no-token path:
-// with GITEA_TOKEN unset, nothing is injected and the runner does a bare
-// (anonymous) clone — the in-cluster gitseed behavior stays intact.
-func TestJobEnvNoTokenWhenUnconfigured(t *testing.T) {
-	env := jobEnvForService(t, domain.Service{
-		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
-		RepoOwnerName: "ai/pub", GitMode: domain.GitModeReadonly,
-	}, "", "https://git.example.com") // no token configured
-	if _, ok := env["GIT_TOKEN"]; ok {
-		t.Fatalf("GIT_TOKEN must be absent when GITEA_TOKEN unset; got %q", env["GIT_TOKEN"])
-	}
-}
-
-// TestJobEnvDraftPRGiteaGetsFullContract verifies draft_pr on a gitea-provider
-// service gets both the clone token AND the push contract.
-func TestJobEnvDraftPRGiteaGetsFullContract(t *testing.T) {
+// TestJobEnvDraftPRGiteaProducesBundle verifies draft_pr on a gitea provider
+// service tells the runner to produce a bundle: GIT_MODE=draft_pr + a
+// deterministic jcode/run-<8> BRANCH_NAME, fetch source, and NO token.
+func TestJobEnvDraftPRGiteaProducesBundle(t *testing.T) {
 	env := jobEnvForService(t, domain.Service{
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
 		RepoOwnerName: "ai/priv", GitMode: domain.GitModeDraftPR,
 	}, "secret-pat", "https://git.example.com")
-	if env["GIT_TOKEN"] != "secret-pat" {
-		t.Fatalf("GIT_TOKEN=%q want secret-pat", env["GIT_TOKEN"])
-	}
+	assertNoToken(t, env)
 	if env["GIT_MODE"] != string(domain.GitModeDraftPR) {
 		t.Fatalf("GIT_MODE=%q want draft_pr", env["GIT_MODE"])
 	}
-	if env["GIT_PUSH_URL"] != "https://git.example.com/ai/priv.git" {
-		t.Fatalf("GIT_PUSH_URL=%q want the provider push origin", env["GIT_PUSH_URL"])
+	if env["SOURCE_MODE"] != "fetch" {
+		t.Fatalf("SOURCE_MODE=%q want fetch", env["SOURCE_MODE"])
 	}
-	if env["GIT_BRANCH"] == "" || env["GIT_BASE_BRANCH"] != "main" {
-		t.Fatalf("draft_pr push contract incomplete: branch=%q base=%q", env["GIT_BRANCH"], env["GIT_BASE_BRANCH"])
+	if !strings.HasPrefix(env["BRANCH_NAME"], "jcode/run-") {
+		t.Fatalf("BRANCH_NAME=%q want jcode/run-<id> prefix", env["BRANCH_NAME"])
+	}
+	if env["BASE_BRANCH"] != "main" {
+		t.Fatalf("BASE_BRANCH=%q want main", env["BASE_BRANCH"])
 	}
 }
 
-// TestJobEnvDraftPRNonGiteaStaysDiffOnly verifies a draft_pr service whose
-// provider is not gitea degrades to diff-only in M1 (no token, no push) — the
-// github/gitlab push flow lands with OAuth in M2.
-func TestJobEnvDraftPRNonGiteaStaysDiffOnly(t *testing.T) {
+// TestJobEnvDraftPRNonGiteaAlsoProducesBundle verifies draft_pr on ANY provider
+// (github here) also asks the runner to bundle — M3 no longer restricts the
+// push flow to gitea (the orchestrator pushes with the user's OAuth token).
+func TestJobEnvDraftPRNonGiteaAlsoProducesBundle(t *testing.T) {
 	env := jobEnvForService(t, domain.Service{
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitHub,
 		RepoOwnerName: "someone/other", GitMode: domain.GitModeDraftPR,
 	}, "secret-pat", "https://git.example.com")
-	if _, ok := env["GIT_TOKEN"]; ok {
-		t.Fatalf("GIT_TOKEN must NOT be injected for a non-gitea draft_pr service; got %q", env["GIT_TOKEN"])
+	assertNoToken(t, env)
+	if env["GIT_MODE"] != string(domain.GitModeDraftPR) {
+		t.Fatalf("GIT_MODE=%q want draft_pr (any provider produces a bundle in M3)", env["GIT_MODE"])
 	}
+	if env["BRANCH_NAME"] == "" {
+		t.Fatalf("draft_pr must set BRANCH_NAME")
+	}
+}
+
+// TestJobEnvRawDraftPRStaysReadonly verifies a raw service can only be readonly
+// (draft_pr requires a provider) — it never produces a bundle.
+func TestJobEnvRawDraftPRStaysReadonly(t *testing.T) {
+	env := jobEnvForService(t, domain.Service{
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "git://git/x.git",
+		GitMode: domain.GitModeDraftPR, // draft_pr on a raw repo is not eligible
+	}, "secret-pat", "https://git.example.com")
 	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
-		t.Fatalf("GIT_MODE=%q want readonly (non-gitea draft_pr degrades to diff-only in M1)", env["GIT_MODE"])
+		t.Fatalf("GIT_MODE=%q want readonly (raw cannot draft_pr)", env["GIT_MODE"])
 	}
-	if env["GIT_PUSH_URL"] != "" {
-		t.Fatalf("non-gitea draft_pr must not carry push URL; got %q", env["GIT_PUSH_URL"])
+	if _, ok := env["BRANCH_NAME"]; ok {
+		t.Fatalf("raw readonly must not set BRANCH_NAME")
+	}
+}
+
+// TestJobEnvReviewInjectsPRRefs verifies a review run carries RUN_KIND=review and
+// the PR_HEAD/PR_BASE refs the runner diffs.
+func TestJobEnvReviewInjectsPRRefs(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	rec, _, _ := testRec(t, 4)
+	rec.st = st
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
+	_ = st.CreateProject(ctx, p)
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "o/r", DefaultBranch: "main", GitMode: domain.GitModeDraftPR,
+		CreatedAt: time.Now(),
+	}
+	_ = st.CreateService(ctx, svc)
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "review it",
+		Status: domain.StatusQueued, Kind: domain.RunKindReview,
+		PRHeadBranch: "jcode/run-abc", PRBaseBranch: "main", CreatedAt: time.Now(),
+	}
+	_ = st.CreateRun(ctx, run)
+	env := rec.jobEnv(ctx, run, "tok")
+	if env["RUN_KIND"] != string(domain.RunKindReview) {
+		t.Fatalf("RUN_KIND=%q want review", env["RUN_KIND"])
+	}
+	if env["PR_HEAD"] != "jcode/run-abc" || env["PR_BASE"] != "main" {
+		t.Fatalf("review PR refs wrong: head=%q base=%q", env["PR_HEAD"], env["PR_BASE"])
 	}
 }
 

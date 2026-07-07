@@ -93,6 +93,15 @@ func (s *PGStore) GetIdentity(ctx context.Context, provider domain.GitProvider, 
 		string(provider), providerUID))
 }
 
+// GetIdentityForUser returns a user's identity on a specific provider (the token
+// the M3 draft-PR / review passes push and review with). ErrNotFound if the user
+// has not linked that provider.
+func (s *PGStore) GetIdentityForUser(ctx context.Context, userID string, provider domain.GitProvider) (*domain.UserIdentity, error) {
+	return scanIdentity(s.pool.QueryRow(ctx,
+		`SELECT `+identityCols+` FROM user_identities WHERE user_id=$1 AND provider=$2
+		 ORDER BY created_at ASC LIMIT 1`, userID, string(provider)))
+}
+
 func (s *PGStore) ListIdentities(ctx context.Context, userID string) ([]domain.UserIdentity, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+identityCols+` FROM user_identities WHERE user_id=$1 ORDER BY created_at ASC`, userID)

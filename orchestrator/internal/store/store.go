@@ -134,11 +134,23 @@ type Store interface {
 	// are reported as 0 (every requested status is present as a key). Read-only;
 	// used by the admin system snapshot (GET /api/v1/system).
 	CountRunsByStatus(ctx context.Context, statuses ...domain.RunStatus) (map[domain.RunStatus]int, error)
-	// ListRunsAwaitingPR returns succeeded runs that have a pushed branch
-	// (git_branch <> '') but no PR yet (pr_url = ''), so the reconciler can open
-	// the draft PR (ST-1). The project-mode gate (draft_pr) is applied by the
-	// reconciler after joining the project. Ordered oldest-first.
+	// ListRunsAwaitingPR returns succeeded AGENT runs that have a recorded branch
+	// (git_branch <> '', stamped when the bundle was received) but no PR yet
+	// (pr_url = ''), so the reconciler can push the branch + open the draft PR
+	// (M3). The mode/provider gate is applied by the reconciler after joining the
+	// service. Ordered oldest-first.
 	ListRunsAwaitingPR(ctx context.Context) ([]domain.Run, error)
+	// ListReviewRunsAwaitingPost returns succeeded review runs with non-empty
+	// review_output whose comment has not been posted yet (review_posted_at IS
+	// NULL), so the reconcile review pass can post it. Ordered oldest-first.
+	ListReviewRunsAwaitingPost(ctx context.Context) ([]domain.Run, error)
+	// SetReviewOutput records a review run's markdown output (runner POST
+	// .../review) without changing status, first-writer-wins. Returns the row.
+	SetReviewOutput(ctx context.Context, id, md string) (*domain.Run, error)
+	// MarkReviewPosted stamps review_posted_at once the review comment is posted.
+	// Idempotent + first-writer-wins: returns posted=true only for the tick that
+	// stamped it, so two ticks never double-post.
+	MarkReviewPosted(ctx context.Context, id string) (bool, error)
 
 	// Events
 	// AppendEvents inserts events idempotently by (run_id, seq); duplicates are
@@ -167,6 +179,11 @@ type Store interface {
 	// Artifacts
 	PutArtifact(ctx context.Context, a *domain.RunArtifact) error
 	GetArtifact(ctx context.Context, runID string, kind domain.ArtifactKind) (*domain.RunArtifact, error)
+	// PutRunBundle / GetRunBundle store and read a run's git bundle (kind=bundle)
+	// as raw bytes (bytea) — the diff stays a text artifact, but a bundle is
+	// binary. The orchestrator fetches the bundle to push the branch (M3).
+	PutRunBundle(ctx context.Context, runID string, data []byte) error
+	GetRunBundle(ctx context.Context, runID string) ([]byte, error)
 
 	// --- Auth: users & identities (M2) ---------------------------------------
 	// CreateUserWithIdentity creates a new user together with its first identity
@@ -180,6 +197,10 @@ type Store interface {
 	// GetIdentity looks up an identity by its provider + provider_uid (the login
 	// key). ErrNotFound if no such identity.
 	GetIdentity(ctx context.Context, provider domain.GitProvider, providerUID string) (*domain.UserIdentity, error)
+	// GetIdentityForUser returns a user's identity on a specific provider (the
+	// token the M3 draft-PR / review passes act with). ErrNotFound if the user has
+	// not linked that provider.
+	GetIdentityForUser(ctx context.Context, userID string, provider domain.GitProvider) (*domain.UserIdentity, error)
 	// ListIdentities returns a user's linked identities.
 	ListIdentities(ctx context.Context, userID string) ([]domain.UserIdentity, error)
 	// UpdateIdentityToken re-encrypts an identity's stored tokens after a fresh

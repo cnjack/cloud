@@ -12,6 +12,21 @@
 //	orchclient upload-artifact --kind diff --file /out/diff.patch
 //	    → POST /internal/v1/runs/{RUN_ID}/artifact  {kind,content}
 //
+//	orchclient fetch-source --out /tmp/source.bundle
+//	    → GET  /internal/v1/runs/{RUN_ID}/source   (raw git bundle bytes → file)
+//
+//	orchclient upload-bundle --file /tmp/run.bundle
+//	    → POST /internal/v1/runs/{RUN_ID}/bundle    (application/octet-stream)
+//
+//	orchclient post-review --file /workspace/REVIEW.md
+//	    → POST /internal/v1/runs/{RUN_ID}/review    (text/plain)
+//
+// The three M3 runner-contract commands (fetch-source/upload-bundle/post-review)
+// are LOAD-BEARING: unlike the best-effort report/upload-artifact commands they
+// EXIT NON-ZERO when the control plane is absent or the request fails, so the
+// entrypoint can react (a failed source fetch is a clone failure; a failed
+// bundle/review upload means no PR/review will open).
+//
 // Config comes from the environment (same vars the orchestrator injects):
 //
 //	ORCH_BASE_URL, RUN_ID, RUN_TOKEN
@@ -38,7 +53,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: orchclient <report-failure|upload-artifact> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: orchclient <report-failure|report-git|upload-artifact|fetch-source|upload-bundle|post-review> [flags]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -48,11 +63,18 @@ func main() {
 	runID := os.Getenv("RUN_ID")
 	token := os.Getenv("RUN_TOKEN")
 	if base == "" || runID == "" || token == "" {
-		// No control plane wired: nothing to report. Not an error.
-		fmt.Fprintln(os.Stderr, "[orchclient] ORCH_BASE_URL/RUN_ID/RUN_TOKEN not all set; skipping "+cmd)
-		return
+		switch cmd {
+		case "fetch-source", "upload-bundle", "post-review":
+			// Load-bearing: without the control plane these cannot do their job.
+			fmt.Fprintln(os.Stderr, "[orchclient] "+cmd+" requires ORCH_BASE_URL/RUN_ID/RUN_TOKEN")
+			os.Exit(1)
+		default:
+			// Best-effort report/upload: no control plane wired → not an error.
+			fmt.Fprintln(os.Stderr, "[orchclient] ORCH_BASE_URL/RUN_ID/RUN_TOKEN not all set; skipping "+cmd)
+			return
+		}
 	}
-	c := &client{base: base, runID: runID, token: token, http: &http.Client{Timeout: 10 * time.Second}}
+	c := &client{base: base, runID: runID, token: token, http: &http.Client{Timeout: 60 * time.Second}}
 
 	// entrypoint-posted events (run.failure / run.git) use a HIGH, RESERVED client
 	// seq range so they never collide with the acpdrive emitter's own 1..N runner
@@ -101,6 +123,49 @@ func main() {
 			os.Exit(1)
 		}
 		c.uploadArtifact(*kind, content)
+
+	case "fetch-source":
+		fs := flag.NewFlagSet("fetch-source", flag.ExitOnError)
+		out := fs.String("out", "", "path to write the downloaded source bundle to")
+		_ = fs.Parse(args)
+		if *out == "" {
+			fmt.Fprintln(os.Stderr, "[orchclient] fetch-source: --out is required")
+			os.Exit(2)
+		}
+		if err := c.fetchToFile("/internal/v1/runs/"+c.runID+"/source", *out); err != nil {
+			fmt.Fprintf(os.Stderr, "[orchclient] fetch-source: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "upload-bundle":
+		fs := flag.NewFlagSet("upload-bundle", flag.ExitOnError)
+		file := fs.String("file", "", "path to the git bundle to upload")
+		_ = fs.Parse(args)
+		data, err := os.ReadFile(*file)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[orchclient] upload-bundle: read %s: %v\n", *file, err)
+			os.Exit(1)
+		}
+		if len(data) > 16<<20 {
+			fmt.Fprintf(os.Stderr, "[orchclient] upload-bundle: bundle is %d bytes (>16MiB limit)\n", len(data))
+			os.Exit(1)
+		}
+		if !c.uploadRaw("/internal/v1/runs/"+c.runID+"/bundle", "application/octet-stream", data, "upload-bundle") {
+			os.Exit(1)
+		}
+
+	case "post-review":
+		fs := flag.NewFlagSet("post-review", flag.ExitOnError)
+		file := fs.String("file", "", "path to the review markdown to post")
+		_ = fs.Parse(args)
+		data, err := os.ReadFile(*file)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[orchclient] post-review: read %s: %v\n", *file, err)
+			os.Exit(1)
+		}
+		if !c.uploadRaw("/internal/v1/runs/"+c.runID+"/review", "text/plain; charset=utf-8", data, "post-review") {
+			os.Exit(1)
+		}
 
 	default:
 		fmt.Fprintf(os.Stderr, "[orchclient] unknown command %q\n", cmd)
@@ -174,6 +239,113 @@ func (c *client) postJSON(path string, body any, label string) {
 			backoff *= 2
 		}
 	}
+}
+
+// uploadRaw POSTs a raw body with the given content type, with the same bounded
+// retry as postJSON. Returns ok. Unlike postJSON it is the caller's job to exit
+// non-zero on !ok (these uploads are load-bearing).
+func (c *client) uploadRaw(path, contentType string, body []byte, label string) bool {
+	url := c.base + path
+	backoff := 200 * time.Millisecond
+	const maxAttempts = 5
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		ok, retryable := c.postCT(url, contentType, body)
+		if ok {
+			fmt.Fprintf(os.Stderr, "[orchclient] %s ok (%d bytes)\n", label, len(body))
+			return true
+		}
+		if !retryable || attempt == maxAttempts {
+			fmt.Fprintf(os.Stderr, "[orchclient] %s failed after %d attempt(s)\n", label, attempt)
+			return false
+		}
+		time.Sleep(backoff)
+		if backoff < 5*time.Second {
+			backoff *= 2
+		}
+	}
+	return false
+}
+
+// postCT is post() with a caller-supplied Content-Type (used for the raw
+// octet-stream / text uploads).
+func (c *client) postCT(url, contentType string, body []byte) (ok, retryable bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.http.Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return false, false
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return false, true
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return true, false
+	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
+		return false, true
+	default:
+		fmt.Fprintf(os.Stderr, "[orchclient] non-retryable status %d for %s\n", resp.StatusCode, url)
+		return false, false
+	}
+}
+
+// fetchToFile GETs path and writes the response body to outPath, with a bounded
+// retry on network/5xx errors. A non-2xx that is not retryable is a hard error.
+func (c *client) fetchToFile(path, outPath string) error {
+	url := c.base + path
+	backoff := 200 * time.Millisecond
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		retryable, err := c.getToFile(url, outPath)
+		if err == nil {
+			fmt.Fprintf(os.Stderr, "[orchclient] fetch-source ok -> %s\n", outPath)
+			return nil
+		}
+		lastErr = err
+		if !retryable || attempt == maxAttempts {
+			return err
+		}
+		time.Sleep(backoff)
+		if backoff < 5*time.Second {
+			backoff *= 2
+		}
+	}
+	return lastErr
+}
+
+func (c *client) getToFile(url, outPath string) (retryable bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.http.Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return true, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return true, fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
+	}
+	f, err := os.Create(outPath)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return true, err
+	}
+	return false, nil
 }
 
 func (c *client) post(url string, body []byte) (ok, retryable bool) {
