@@ -119,5 +119,5 @@ j3_run() {
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   j3_run
-  print_summary 2>/dev/null || true
+  print_summary 2>/dev/null || exit 1
 fi
