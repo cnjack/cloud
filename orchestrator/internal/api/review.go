@@ -58,6 +58,11 @@ func (s *Server) handleRequestReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
 		return
 	}
+	// Guardrail: a review run is a fresh dispatch — honour the project's
+	// provider_allowlist (403 if the service's provider is no longer permitted).
+	if !s.providerDispatchAllowed(w, r, svc) {
+		return
+	}
 
 	review := newReviewRun(src, svc, principalFrom(r.Context()).userIDPtr())
 	if err := s.st.CreateRun(r.Context(), review); err != nil {

@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -11,9 +13,9 @@ import (
 	"github.com/cnjack/jcloud/internal/store"
 )
 
-// projectReq is the create/update payload. A project is a pure container (name
-// + membership + guardrails); repositories are attached afterwards as services
-// (POST /projects/{id}/services). The former repo-field compat shim that
+// projectReq is the create payload. A project is created empty (name only);
+// repositories are attached afterwards as services (POST /projects/{id}/services)
+// and guardrails are set via PATCH. The former repo-field compat shim that
 // auto-created a 'default' service was removed with the console's two-step flow.
 type projectReq struct {
 	Name string `json:"name"`
@@ -141,13 +143,12 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), id, domain.RoleOwner) {
 		return
 	}
-	var req projectReq
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+	if code, msg := applyProjectPatch(r, existing); code != "" {
+		// All guardrail validation failures are 400. A reserved injected_env key is
+		// a first-class typed code (reserved_env_key) so the console can point at the
+		// offending key (fail-visible; CLAUDE.md red line #1).
+		writeError(w, http.StatusBadRequest, code, msg)
 		return
-	}
-	if v := strings.TrimSpace(req.Name); v != "" {
-		existing.Name = v
 	}
 	if err := s.st.UpdateProject(r.Context(), existing); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not update project")
@@ -164,6 +165,228 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, pv)
+}
+
+// patchProjectKeys is the closed set of fields a project PATCH may carry. Any
+// other key (e.g. a legacy repo_url) is a loud 400 — repo config lives on
+// services, not the project.
+var patchProjectKeys = map[string]bool{
+	"name":                true,
+	"max_concurrent_runs": true,
+	"run_timeout_secs":    true,
+	"provider_allowlist":  true,
+	"injected_env":        true,
+}
+
+// applyProjectPatch mutates p in place from the PATCH body. It uses PRESENCE
+// semantics: an OMITTED field is left unchanged; a field explicitly present
+// (including JSON null) is applied — so a rename-only PATCH (`{"name":...}`)
+// never wipes the guardrails, and the console can clear a guardrail to "inherit"
+// by sending null. Returns (code, msg) on a validation error (empty code = ok).
+func applyProjectPatch(r *http.Request, p *domain.Project) (string, string) {
+	var body map[string]json.RawMessage
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&body); err != nil {
+		return "bad_request", "invalid JSON: " + err.Error()
+	}
+	// Match field names case-INSENSITIVELY (mirrors the stdlib struct decoder the
+	// old handler used, so a legacy {"Name":...} still renames), while still
+	// rejecting genuinely unknown fields. Canonicalize to lowercase keys; a later
+	// duplicate case-variant wins (same as encoding/json).
+	raw := make(map[string]json.RawMessage, len(body))
+	for k, v := range body {
+		lk := strings.ToLower(k)
+		if !patchProjectKeys[lk] {
+			return "bad_request", "unknown field: " + k
+		}
+		raw[lk] = v
+	}
+
+	if v, ok := raw["name"]; ok {
+		var name string
+		if err := json.Unmarshal(v, &name); err != nil {
+			return "bad_request", "name must be a string"
+		}
+		if t := strings.TrimSpace(name); t != "" {
+			p.Name = t // an empty/whitespace name is ignored (a project must keep a name)
+		}
+	}
+
+	if v, ok := raw["max_concurrent_runs"]; ok {
+		n, err := parseNullableInt(v)
+		if err != nil {
+			return "bad_request", "max_concurrent_runs must be a whole number or null"
+		}
+		// NULL or ≤0 means "inherit the cluster default" — stored as NULL so the
+		// project view omits it and the console shows the "cluster default"
+		// placeholder.
+		if n == nil || *n <= 0 {
+			p.MaxConcurrentRuns = nil
+		} else {
+			p.MaxConcurrentRuns = n
+		}
+	}
+
+	if v, ok := raw["run_timeout_secs"]; ok {
+		n, err := parseNullableInt64(v)
+		if err != nil {
+			return "bad_request", "run_timeout_secs must be a whole number of seconds or null"
+		}
+		if n == nil || *n <= 0 {
+			p.RunTimeoutSecs = nil
+		} else {
+			p.RunTimeoutSecs = n
+		}
+	}
+
+	if v, ok := raw["provider_allowlist"]; ok {
+		list, code, msg := parseProviderAllowlist(v)
+		if code != "" {
+			return code, msg
+		}
+		p.ProviderAllowlist = list // nil (empty) => no restriction
+	}
+
+	if v, ok := raw["injected_env"]; ok {
+		env, code, msg := parseInjectedEnv(v)
+		if code != "" {
+			return code, msg
+		}
+		p.InjectedEnv = env
+	}
+	return "", ""
+}
+
+// parseNullableInt unmarshals a JSON number or null into *int.
+func parseNullableInt(v json.RawMessage) (*int, error) {
+	if isJSONNull(v) {
+		return nil, nil
+	}
+	var n int
+	if err := json.Unmarshal(v, &n); err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+// parseNullableInt64 unmarshals a JSON number or null into *int64.
+func parseNullableInt64(v json.RawMessage) (*int64, error) {
+	if isJSONNull(v) {
+		return nil, nil
+	}
+	var n int64
+	if err := json.Unmarshal(v, &n); err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+func isJSONNull(v json.RawMessage) bool {
+	return strings.TrimSpace(string(v)) == "null"
+}
+
+// allowlistProviders is the set a provider_allowlist entry may name. Raw repos
+// carry no provider, so they are addressed by the explicit sentinel "raw".
+var allowlistProviders = map[string]bool{
+	string(domain.ProviderGitea):  true,
+	string(domain.ProviderGitHub): true,
+	string(domain.ProviderGitLab): true,
+	"raw":                         true, // opaque/raw clone URLs (no provider)
+}
+
+// parseProviderAllowlist validates + normalizes the allowlist: trims/lowercases
+// each entry, rejects unknown providers, and de-dups. An empty or null list
+// returns nil (no restriction).
+func parseProviderAllowlist(v json.RawMessage) ([]string, string, string) {
+	if isJSONNull(v) {
+		return nil, "", ""
+	}
+	var in []string
+	if err := json.Unmarshal(v, &in); err != nil {
+		return nil, "bad_request", "provider_allowlist must be an array of provider names"
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		p := strings.ToLower(strings.TrimSpace(raw))
+		if p == "" {
+			continue
+		}
+		if !allowlistProviders[p] {
+			return nil, "bad_request", "provider_allowlist entry '" + raw + "' is not a known provider (gitea, github, gitlab, raw)"
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil, "", ""
+	}
+	return out, "", ""
+}
+
+// parseInjectedEnv validates the injected_env map: every key must be a valid env
+// name AND must NOT be a reserved orchestrator↔runner variable (a first-class
+// typed 400 naming the key, so the fix is obvious — CLAUDE.md fail-visible). null
+// returns an empty map (no injection).
+func parseInjectedEnv(v json.RawMessage) (map[string]string, string, string) {
+	if isJSONNull(v) {
+		return map[string]string{}, "", ""
+	}
+	var in map[string]string
+	if err := json.Unmarshal(v, &in); err != nil {
+		return nil, "bad_request", "injected_env must be an object of string values"
+	}
+	for k := range in {
+		if !domain.ValidEnvKey(k) {
+			return nil, "bad_request", fmt.Sprintf("injected_env key %q is not a valid environment variable name", k)
+		}
+		if domain.IsReservedEnvKey(k) {
+			return nil, "reserved_env_key", fmt.Sprintf("injected_env key %q is reserved by the orchestrator and cannot be set", k)
+		}
+	}
+	if in == nil {
+		in = map[string]string{}
+	}
+	return in, "", ""
+}
+
+// providerAllowed reports whether a service whose provider is `prov` (raw repos,
+// which carry no provider, are addressed by the sentinel "raw") is permitted by a
+// project's provider_allowlist. An empty/nil allowlist imposes NO restriction.
+func providerAllowed(allowlist []string, prov domain.GitProvider) bool {
+	if len(allowlist) == 0 {
+		return true
+	}
+	p := providerLabel(prov)
+	for _, a := range allowlist {
+		if strings.EqualFold(strings.TrimSpace(a), p) {
+			return true
+		}
+	}
+	return false
+}
+
+// projectAllowsProvider loads the project and reports whether its guardrail
+// allowlist permits prov. A load error is surfaced so the caller can fail loudly
+// — an allowlist is a hard gate, so a lookup failure must NEVER be silently
+// treated as "allowed" (CLAUDE.md red line #1).
+func (s *Server) projectAllowsProvider(ctx context.Context, projectID string, prov domain.GitProvider) (bool, error) {
+	p, err := s.st.GetProject(ctx, projectID)
+	if err != nil {
+		return false, err
+	}
+	return providerAllowed(p.ProviderAllowlist, prov), nil
+}
+
+// providerLabel is the human/policy name for a service's provider (raw repos,
+// which have no provider, read as "raw").
+func providerLabel(prov domain.GitProvider) string {
+	if p := strings.TrimSpace(string(prov)); p != "" {
+		return p
+	}
+	return "raw"
 }
 
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
@@ -207,10 +430,15 @@ type projectView struct {
 	// project).
 	OwnerUserID string `json:"owner_user_id,omitempty"`
 
-	MaxConcurrentRuns *int              `json:"max_concurrent_runs,omitempty"`
-	RunTimeoutSecs    *int64            `json:"run_timeout_secs,omitempty"`
-	ProviderAllowlist []string          `json:"provider_allowlist,omitempty"`
-	InjectedEnv       map[string]string `json:"injected_env,omitempty"`
+	MaxConcurrentRuns *int     `json:"max_concurrent_runs,omitempty"`
+	RunTimeoutSecs    *int64   `json:"run_timeout_secs,omitempty"`
+	ProviderAllowlist []string `json:"provider_allowlist,omitempty"`
+	// InjectedEnv values can hold secrets (tokens, proxy creds). They are returned
+	// ONLY to an owner/cluster-admin — the same role that may edit them. For a
+	// member/viewer this is omitted entirely (not just masked): they never need the
+	// values, and leaking them via GET /projects would defeat the owner-only edit
+	// gate (fail-visible; CLAUDE.md red line #1).
+	InjectedEnv map[string]string `json:"injected_env,omitempty"`
 
 	Services []domain.Service `json:"services"`
 }
@@ -223,7 +451,7 @@ func (s *Server) projectViewOf(ctx context.Context, p *domain.Project, role doma
 	if services == nil {
 		services = []domain.Service{}
 	}
-	return &projectView{
+	pv := &projectView{
 		ID:                p.ID,
 		Name:              p.Name,
 		CreatedAt:         p.CreatedAt,
@@ -232,7 +460,12 @@ func (s *Server) projectViewOf(ctx context.Context, p *domain.Project, role doma
 		MaxConcurrentRuns: p.MaxConcurrentRuns,
 		RunTimeoutSecs:    p.RunTimeoutSecs,
 		ProviderAllowlist: p.ProviderAllowlist,
-		InjectedEnv:       p.InjectedEnv,
 		Services:          services,
-	}, nil
+	}
+	// Only an owner (cluster-admin / service principal report "owner") sees the
+	// injected_env values — they may contain secrets.
+	if role == domain.RoleOwner {
+		pv.InjectedEnv = p.InjectedEnv
+	}
+	return pv, nil
 }

@@ -215,6 +215,20 @@ func (s *Server) processMention(ctx context.Context, p *giteaIssueCommentPayload
 		return
 	}
 
+	// Guardrail: the project's provider_allowlist (when set) may forbid this
+	// repository's provider. Reply visibly on the PR rather than starting a run
+	// that policy disallows (fail-visible). A load error is reported as temporary.
+	allowed, aerr := s.projectAllowsProvider(ctx, svc.ProjectID, svc.Provider)
+	if aerr != nil {
+		s.log.Error("webhook: load project guardrails", "repo", p.Repository.FullName, "err", aerr)
+		reply("jcode hit a temporary internal problem — please try again shortly.")
+		return
+	}
+	if !allowed {
+		reply("jcode can't run here — this project's guardrails don't allow " + providerLabel(svc.Provider) + " repositories.")
+		return
+	}
+
 	// Fail-visible gate (CLAUDE.md red line #1): if no LLM is configured, reply on
 	// the PR explaining why — do NOT create a run that would fail headlessly. A
 	// transient resolve error (DB blip, key rotation mid-flight) is a DIFFERENT

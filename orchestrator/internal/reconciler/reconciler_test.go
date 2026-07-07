@@ -104,7 +104,7 @@ func jobEnvForService(t *testing.T, svc domain.Service, tokenCfg, urlCfg string)
 	if err := st.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	return rec.jobEnv(ctx, run, "run-token", envModel())
+	return rec.jobEnv(ctx, run, "run-token", envModel(), p, cfg.RunTimeoutSecs)
 }
 
 // envModel is a resolved env-source model config for the jobEnv unit tests
@@ -354,7 +354,7 @@ func TestJobEnvReviewInjectsPRRefs(t *testing.T) {
 		PRHeadBranch: "jcode/run-abc", PRBaseBranch: "main", CreatedAt: time.Now(),
 	}
 	_ = st.CreateRun(ctx, run)
-	env := rec.jobEnv(ctx, run, "tok", envModel())
+	env := rec.jobEnv(ctx, run, "tok", envModel(), p, rec.cfg.RunTimeoutSecs)
 	if env["RUN_KIND"] != string(domain.RunKindReview) {
 		t.Fatalf("RUN_KIND=%q want review", env["RUN_KIND"])
 	}
@@ -391,8 +391,13 @@ func TestReconcileFullLifecycle(t *testing.T) {
 			t.Errorf("job env missing %s", k)
 		}
 	}
-	if fake.Created[0].TimeoutSeconds != 1800 {
-		t.Errorf("timeout = %d want 1800", fake.Created[0].TimeoutSeconds)
+	// The Job's activeDeadlineSeconds is the effective RUN_TIMEOUT (1800) plus a
+	// grace margin so the runner's own timeout fires before the hard k8s kill.
+	if want := int64(1800) + timeoutGrace(1800); fake.Created[0].TimeoutSeconds != want {
+		t.Errorf("timeout = %d want %d (RUN_TIMEOUT + grace)", fake.Created[0].TimeoutSeconds, want)
+	}
+	if env["RUN_TIMEOUT"] != "1800s" {
+		t.Errorf("RUN_TIMEOUT = %q want 1800s", env["RUN_TIMEOUT"])
 	}
 
 	// Tick 2 (job still pending): no change (idempotent, no duplicate Job).
@@ -568,12 +573,13 @@ func TestReconcileStaleCopyDoesNotClobberRunnerReason(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The reconciler now applies MarkFailed using its STALE copy.
+	// The reconciler now applies MarkFailed using its STALE copy. proj is nil: a
+	// MarkFailed decision never reaches createJob, so no project is needed.
 	rec.apply(ctx, staleAtListTime, Decision{
 		Action:        ActionMarkFailed,
 		FailureReason: domain.FailureAgentError,
 		FailureMsg:    "runner Job failed",
-	})
+	}, nil)
 
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.FailureReason != domain.FailureCloneFailed {

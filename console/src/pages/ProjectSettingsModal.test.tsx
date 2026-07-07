@@ -144,6 +144,88 @@ describe('ProjectSettingsModal — General (PATCH)', () => {
   });
 });
 
+describe('ProjectSettingsModal — Guardrails', () => {
+  it('edits the numeric limits and provider allowlist and PATCHes them', async () => {
+    const project = baseProject();
+    const { client, ctl } = makeClient(project);
+    renderModal(client, project);
+
+    fireEvent.change(screen.getByTestId('settings-max-concurrent'), { target: { value: '3' } });
+    fireEvent.change(screen.getByTestId('settings-run-timeout'), { target: { value: '600' } });
+    fireEvent.click(screen.getByTestId('allowlist-gitea'));
+    fireEvent.click(screen.getByTestId('allowlist-raw'));
+    fireEvent.click(screen.getByTestId('project-settings-save'));
+
+    await waitFor(() => expect(ctl.patches).toHaveLength(1));
+    expect(ctl.patches[0]!.input).toEqual({
+      max_concurrent_runs: 3,
+      run_timeout_secs: 600,
+      provider_allowlist: ['gitea', 'raw'],
+    });
+  });
+
+  it('adds an injected env variable and sends it in the PATCH', async () => {
+    const project = baseProject();
+    const { client, ctl } = makeClient(project);
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('env-add'));
+    fireEvent.change(screen.getByTestId('env-key-0'), { target: { value: 'COMPANY_TOKEN' } });
+    fireEvent.change(screen.getByTestId('env-value-0'), { target: { value: 'abc' } });
+    fireEvent.click(screen.getByTestId('project-settings-save'));
+
+    await waitFor(() => expect(ctl.patches).toHaveLength(1));
+    expect(ctl.patches[0]!.input).toEqual({ injected_env: { COMPANY_TOKEN: 'abc' } });
+  });
+
+  it('blocks Save and shows an error for a reserved injected env key', async () => {
+    const project = baseProject();
+    const { client, ctl } = makeClient(project);
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('env-add'));
+    fireEvent.change(screen.getByTestId('env-key-0'), { target: { value: 'RUN_TOKEN' } });
+    fireEvent.change(screen.getByTestId('env-value-0'), { target: { value: 'evil' } });
+
+    expect(screen.getByTestId('env-error')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('project-settings-save'));
+
+    // Save is blocked — no PATCH is issued for a reserved key.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(ctl.patches).toHaveLength(0);
+  });
+
+  it('pre-fills existing guardrails and a rename-only save omits them', async () => {
+    const project = baseProject({
+      max_concurrent_runs: 2,
+      run_timeout_secs: 900,
+      provider_allowlist: ['gitea'],
+      injected_env: { FOO: 'bar' },
+    });
+    const { client, ctl } = makeClient(project);
+    renderModal(client, project);
+
+    expect((screen.getByTestId('settings-max-concurrent') as HTMLInputElement).value).toBe('2');
+    expect((screen.getByTestId('settings-run-timeout') as HTMLInputElement).value).toBe('900');
+    expect((screen.getByTestId('allowlist-gitea') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('env-key-0') as HTMLInputElement).value).toBe('FOO');
+
+    // Change only the name — the unchanged guardrails must NOT be in the payload.
+    fireEvent.change(screen.getByTestId('settings-name-input'), { target: { value: 'renamed' } });
+    fireEvent.click(screen.getByTestId('project-settings-save'));
+
+    await waitFor(() => expect(ctl.patches).toHaveLength(1));
+    expect(ctl.patches[0]!.input).toEqual({ name: 'renamed' });
+  });
+
+  it('hides the guardrails editor for a non-owner', () => {
+    const project = baseProject({ role: 'member' });
+    const { client } = makeClient(project);
+    renderModal(client, project);
+    expect(screen.queryByTestId('guardrails')).toBeNull();
+  });
+});
+
 describe('ProjectSettingsModal — Delete', () => {
   it('requires a confirm step, then deletes and fires onDeleted', async () => {
     const project = baseProject();

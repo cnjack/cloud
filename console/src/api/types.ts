@@ -97,6 +97,19 @@ export interface Project {
   /** The project's owner user id (empty for a service-principal-created project). */
   owner_user_id?: string;
   /**
+   * Guardrails (blueprint §1). Absent/empty means "inherit the cluster default":
+   *  - max_concurrent_runs — cap on this project's simultaneously-active runs.
+   *  - run_timeout_secs — per-run wall-clock budget (Job deadline + runner).
+   *  - provider_allowlist — which git hosts a service may target ("raw" is the
+   *    sentinel for raw/opaque repos). Empty => no restriction.
+   *  - injected_env — extra environment variables merged into every runner Job
+   *    (system/reserved keys are refused server-side).
+   */
+  max_concurrent_runs?: number | null;
+  run_timeout_secs?: number | null;
+  provider_allowlist?: string[];
+  injected_env?: Record<string, string>;
+  /**
    * All repositories of the project. A project is a pure container — repo config
    * lives ONLY here (the old flattened repo_url/git_mode fields are gone with the
    * simple-mode shim). The UI shows the service dimension only when length > 1.
@@ -377,11 +390,17 @@ export interface CreateProjectInput {
 }
 
 /**
- * PATCH /projects/{id} body. A project rename is the only project-level edit;
- * repo config changes go through the service endpoints instead.
+ * PATCH /projects/{id} body. Carries a rename and/or the project guardrails.
+ * Presence semantics mirror the server: an OMITTED field is left unchanged; a
+ * numeric guardrail sent as `null` clears it back to the cluster default. Reserved
+ * system keys in injected_env are rejected server-side (400 reserved_env_key).
  */
 export interface UpdateProjectInput {
   name?: string;
+  max_concurrent_runs?: number | null;
+  run_timeout_secs?: number | null;
+  provider_allowlist?: string[];
+  injected_env?: Record<string, string>;
 }
 
 export interface CreateRunInput {

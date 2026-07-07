@@ -141,6 +141,17 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, code, msg)
 		return
 	}
+	// Guardrail: the project's provider_allowlist (when set) restricts which git
+	// hosts a service may target. A create with a disallowed provider is a 400
+	// (input the caller can fix) — raw repos are addressed by the "raw" sentinel.
+	if allowed, err := s.projectAllowsProvider(r.Context(), projectID, svc.Provider); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load project guardrails")
+		return
+	} else if !allowed {
+		writeError(w, http.StatusBadRequest, "provider_not_allowed",
+			"this project's guardrails do not allow "+providerLabel(svc.Provider)+" repositories")
+		return
+	}
 	// Enforce the (project_id, name) uniqueness up-front for a friendly 409.
 	if existing, err := s.st.ListServices(r.Context(), projectID); err == nil {
 		for i := range existing {

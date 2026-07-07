@@ -38,6 +38,18 @@ import type {
   UserSearchResult,
 } from './types';
 import { providerForRepoUrl } from '../lib/repo';
+import { isReservedEnvKey, isValidEnvKey } from '../lib/env';
+import { ALLOWLIST_PROVIDERS } from '../lib/providers';
+
+/**
+ * providerAllowed mirrors the orchestrator guardrail: an empty/absent allowlist
+ * imposes no restriction; a raw repo (no provider) is addressed by "raw".
+ */
+function providerAllowed(allowlist: string[] | undefined, provider?: string): boolean {
+  if (!allowlist || allowlist.length === 0) return true;
+  const p = (provider ?? '').trim() || 'raw';
+  return allowlist.some((a) => a.trim().toLowerCase() === p);
+}
 
 let idCounter = 1;
 function genId(prefix: string): string {
@@ -520,10 +532,53 @@ export function createMockClient(): ApiClient {
     async updateProject(id: string, input: UpdateProjectInput) {
       const existing = projects.get(id);
       if (!existing) throw new ApiError(404, 'project not found');
-      // Match handleUpdateProject: a rename is the only project-level edit; the
-      // orchestrator ignores empty strings (can't clear a field via PATCH).
+      // Mirror handleUpdateProject's presence semantics: an omitted field is left
+      // unchanged; a numeric guardrail sent as null clears it to "inherit".
       const next: Project = { ...existing };
       if (input.name?.trim()) next.name = input.name.trim();
+      if ('max_concurrent_runs' in input) {
+        const n = input.max_concurrent_runs;
+        next.max_concurrent_runs = n != null && n > 0 ? n : undefined;
+      }
+      if ('run_timeout_secs' in input) {
+        const n = input.run_timeout_secs;
+        next.run_timeout_secs = n != null && n > 0 ? n : undefined;
+      }
+      if ('provider_allowlist' in input) {
+        const list = (input.provider_allowlist ?? [])
+          .map((p) => p.trim().toLowerCase())
+          .filter(Boolean);
+        for (const p of list) {
+          if (!(ALLOWLIST_PROVIDERS as readonly string[]).includes(p)) {
+            throw badRequest(
+              `provider_allowlist entry '${p}' is not a known provider (gitea, github, gitlab, raw)`,
+            );
+          }
+        }
+        next.provider_allowlist = list.length ? [...new Set(list)] : undefined;
+      }
+      if ('injected_env' in input) {
+        const env = input.injected_env ?? {};
+        for (const key of Object.keys(env)) {
+          if (!isValidEnvKey(key)) {
+            throw badRequest(`injected_env key "${key}" is not a valid environment variable name`);
+          }
+          if (isReservedEnvKey(key)) {
+            // Typed 400 the modal surfaces verbatim (fail-visible parity).
+            throw new ApiError(
+              400,
+              `injected_env key "${key}" is reserved by the orchestrator and cannot be set`,
+              {
+                error: {
+                  code: 'reserved_env_key',
+                  message: `injected_env key "${key}" is reserved by the orchestrator and cannot be set`,
+                },
+              },
+            );
+          }
+        }
+        next.injected_env = Object.keys(env).length ? { ...env } : undefined;
+      }
       projects.set(id, next);
       return delay(projectView(next));
     },
@@ -800,6 +855,16 @@ export function createMockClient(): ApiClient {
           "git_mode 'draft_pr' requires a provider repository (owner/name); raw repos are read-only",
         );
       }
+      // Guardrail: the project's provider_allowlist restricts which git hosts a
+      // service may target (400 provider_not_allowed; raw => the "raw" sentinel).
+      if (!providerAllowed(p.provider_allowlist, prov ?? undefined)) {
+        const label = prov ?? 'raw';
+        throw new ApiError(
+          400,
+          `this project's guardrails do not allow ${label} repositories`,
+          { error: { code: 'provider_not_allowed', message: `provider ${label} not allowed` } },
+        );
+      }
       const svc: Service = {
         id: genId('svc'),
         project_id: projectId,
@@ -836,13 +901,27 @@ export function createMockClient(): ApiClient {
 
     async createServiceRun(serviceId: string, input: CreateRunInput) {
       let projectId: string | undefined;
+      let svc: Service | undefined;
       for (const [pid, list] of services) {
-        if (list.some((s) => s.id === serviceId)) {
+        const found = list.find((s) => s.id === serviceId);
+        if (found) {
           projectId = pid;
+          svc = found;
           break;
         }
       }
-      if (!projectId) throw new ApiError(404, 'service not found');
+      if (!projectId || !svc) throw new ApiError(404, 'service not found');
+      // Guardrail: honour the project's provider_allowlist at dispatch (it may have
+      // tightened since the service was created) — 403 provider_not_allowed.
+      const proj = projects.get(projectId);
+      if (!providerAllowed(proj?.provider_allowlist, svc.provider)) {
+        const label = svc.provider ?? 'raw';
+        throw new ApiError(
+          403,
+          `this project's guardrails do not allow running on ${label} repositories`,
+          { error: { code: 'provider_not_allowed', message: `provider ${label} not allowed` } },
+        );
+      }
       return delay(publicRun(makeRun(projectId, serviceId, input.prompt)));
     },
 

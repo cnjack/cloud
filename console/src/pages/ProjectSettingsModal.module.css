@@ -37,6 +37,128 @@
   color: var(--color-text-muted);
 }
 
+/* Guardrails — a hairline-bordered block grouping the project's run limits. */
+.guardrails {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.guardrailHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.guardrailTitle {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+  color: var(--color-text);
+}
+
+.guardrailHint {
+  font-size: var(--fs-tiny);
+  color: var(--color-text-faint);
+  line-height: var(--lh-normal);
+}
+
+.guardrailGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-3);
+}
+
+.allowlist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+.allowlistLegend {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-medium);
+  color: var(--color-text);
+  padding: 0;
+}
+
+.allowlistRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.checkLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.envBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.envRows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.envRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.envInput {
+  flex: 1 1 0;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.envInvalid {
+  border-color: var(--color-danger-fg);
+}
+
+.envEq {
+  color: var(--color-text-faint);
+}
+
+.envRemove {
+  border: 0;
+  background: none;
+  color: var(--color-text-dim);
+  font-size: var(--fs-md);
+  line-height: 1;
+  cursor: pointer;
+  padding: var(--space-1);
+}
+.envRemove:hover {
+  color: var(--color-danger-fg);
+}
+
+.envError {
+  font-size: var(--fs-tiny);
+  color: var(--color-danger-fg);
+}
+
 /* Danger zone — hairline-bordered, danger-tinted footer inside the form. */
 .danger {
   display: flex;

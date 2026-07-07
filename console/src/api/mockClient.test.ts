@@ -573,3 +573,102 @@ describe('mockClient — PR review flow', () => {
     }
   });
 });
+
+describe('mockClient — project guardrails (Feature B)', () => {
+  it('persists guardrails through updateProject + projectView', async () => {
+    const client = createMockClient();
+    const cp = client.createProject({ name: 'demo' });
+    await flush(500);
+    const project = await cp;
+
+    const up = client.updateProject(project.id, {
+      max_concurrent_runs: 3,
+      run_timeout_secs: 600,
+      provider_allowlist: ['gitea', 'raw'],
+      injected_env: { COMPANY_TOKEN: 'abc' },
+    });
+    await flush(500);
+    const updated = await up;
+    expect(updated.max_concurrent_runs).toBe(3);
+    expect(updated.run_timeout_secs).toBe(600);
+    expect(updated.provider_allowlist).toEqual(['gitea', 'raw']);
+    expect(updated.injected_env).toEqual({ COMPANY_TOKEN: 'abc' });
+
+    // Clearing with null/≤0 drops back to inherit (omitted).
+    const up2 = client.updateProject(project.id, { max_concurrent_runs: null });
+    await flush(500);
+    const cleared = await up2;
+    expect(cleared.max_concurrent_runs).toBeUndefined();
+  });
+
+  it('rejects a reserved injected_env key with a typed 400', async () => {
+    const client = createMockClient();
+    const cp = client.createProject({ name: 'demo' });
+    await flush(500);
+    const project = await cp;
+
+    const p = client
+      .updateProject(project.id, { injected_env: { RUN_TOKEN: 'evil' } })
+      .then(() => ({ ok: true as const }), (e) => ({ ok: false as const, err: e }));
+    await flush(500);
+    const res = await p;
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.err).toBeInstanceOf(ApiError);
+      expect((res.err as ApiError).status).toBe(400);
+      expect(((res.err as ApiError).body as { error?: { code?: string } })?.error?.code).toBe('reserved_env_key');
+    }
+  });
+
+  it('blocks a service create whose provider is not in the allowlist (400)', async () => {
+    const client = createMockClient();
+    const cp = client.createProject({ name: 'demo' });
+    await flush(500);
+    const project = await cp;
+    await (async () => {
+      const u = client.updateProject(project.id, { provider_allowlist: ['github'] });
+      await flush(500);
+      await u;
+    })();
+
+    const p = client
+      .createService(project.id, { name: 'g', owner_name: 'acme/x', provider: 'gitea' })
+      .then(() => ({ ok: true as const }), (e) => ({ ok: false as const, err: e }));
+    await flush(500);
+    const res = await p;
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect((res.err as ApiError).status).toBe(400);
+      expect(((res.err as ApiError).body as { error?: { code?: string } })?.error?.code).toBe('provider_not_allowed');
+    }
+  });
+
+  it('blocks run dispatch when the allowlist was tightened (403)', async () => {
+    const client = createMockClient();
+    const cp = client.createProject({ name: 'demo' });
+    await flush(500);
+    const project = await cp;
+    const sp = client.createService(project.id, {
+      name: 'default',
+      owner_name: 'acme/x',
+      provider: 'gitea',
+    });
+    await flush(500);
+    const svc = await sp;
+
+    const u = client.updateProject(project.id, { provider_allowlist: ['github'] });
+    await flush(500);
+    await u;
+
+    const p = client
+      .createServiceRun(svc.id, { prompt: 'go' })
+      .then(() => ({ ok: true as const }), (e) => ({ ok: false as const, err: e }));
+    await flush(500);
+    const res = await p;
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect((res.err as ApiError).status).toBe(403);
+      expect(((res.err as ApiError).body as { error?: { code?: string } })?.error?.code).toBe('provider_not_allowed');
+    }
+  });
+});

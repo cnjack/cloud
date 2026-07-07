@@ -512,7 +512,7 @@ func TestWebhookTaskJobEnv(t *testing.T) {
 	ctx := context.Background()
 	rec, st, _ := testRec(t, 4)
 	_, run := seedWebhookUpdateRun(t, st, "feature-env")
-	env := rec.jobEnv(ctx, &run, "tok", envModel())
+	env := rec.jobEnv(ctx, &run, "tok", envModel(), nil, rec.cfg.RunTimeoutSecs)
 	if env["BASE_BRANCH"] != "feature-env" {
 		t.Errorf("BASE_BRANCH=%q want feature-env (PR head)", env["BASE_BRANCH"])
 	}
@@ -636,7 +636,7 @@ func TestReadonlyProjectStaysDiffOnly(t *testing.T) {
 	run := seedProjectAndRun(t, st) // readonly raw service
 	rec.Tick(ctx)
 	got, _ := st.GetRun(ctx, run.ID)
-	env := rec.jobEnv(ctx, got, "tok", envModel())
+	env := rec.jobEnv(ctx, got, "tok", envModel(), nil, rec.cfg.RunTimeoutSecs)
 	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
 		t.Fatalf("readonly service GIT_MODE=%q want readonly", env["GIT_MODE"])
 	}

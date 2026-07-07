@@ -84,3 +84,18 @@ Gitea 优先 → GitHub + GitLab;控制台 Run 按钮 / CLI;Git webhook @mention
 ### D14 · 未配置依赖 → fail-visible,禁止静默 mock
 任何未配置的依赖(LLM/provider/webhook)都是**一等公民状态**:API 返回带类型错误(`model_not_configured`),UI 禁用对应操作并给出去向提示,自动化路径可见地回帖原因。mock 实现只允许在测试/显式 e2e rig 中由脚手架显式接线,**永不作为产品 manifest 的默认兜底**。LLM 配置支持管理员在 Cluster 页自助填写(DB 存储,key 用 AUTH_TOKEN_KEY 加密),env 仅作显式覆盖。
 - **被否**:base configmap 默认指 mockllm(生产静默跑假 agent,用户误判 AI 已生效——真实事故);"没配就报 500"(不可操作,无去向)。
+
+---
+
+## 补充 —— Feature B 项目护栏
+
+### D15 · project 护栏落地 → 前缀保留 env + PATCH presence 语义
+让 project 级护栏(`max_concurrent_runs` / `run_timeout_secs` / `provider_allowlist` / `injected_env`)真正在 reconciler 与 API 生效时,定了两个 precedent 决策:
+
+**(a) injected_env 黑名单按 NAMESPACE 前缀保留,而非逐 key。** 保留集是前缀族(`RUN_` / `MODEL_` / `GIT_` / `PR_` / `REPO_` / `MOCK_` / `LD_` / `DYLD_`)+ 一批 exact keys(`ORCH_BASE_URL` `TASK_PROMPT` `SOURCE_MODE` `BASE_BRANCH` `BRANCH_NAME` `WORKSPACE` `OUT_DIR` `HOME`,以及执行劫持向量 `PATH` `NODE_OPTIONS` `PYTHONPATH` `PYTHONSTARTUP` `BASH_ENV` `ENV` `SHELLOPTS` `BASHOPTS` `IFS` `PERL5LIB` `RUBYOPT`)。前缀保留使未来同族系统变量自动受护,无需再迁移;两类威胁——契约覆盖(改 `RUN_TOKEN`/`MODEL_NAME` 破坏鉴权/fail-visible 模型闸)与执行劫持(runner 按名调 git/jcode/orchclient,orchclient 持 RUN_TOKEN;`PATH`/`LD_*`/`DYLD_*`/解释器 bootstrap 可换绑二进制)——都被挡在 **PATCH API 层**(400 `reserved_env_key`,指名违规 key),reconciler 注入时再防御性过滤 + log.Warn(双保险)。唯一真源在 Go(`domain/env.go` 的 `ReservedEnvPrefixes`/`ReservedEnvKeys`),console(`src/lib/env.ts`)镜像;两侧由 checked-in golden(`domain/testdata/reserved_env.txt`)+ 双侧测试钉死——改一边不改另一边测试即红。
+- **被否**:逐 key 黑名单(漏一个未来 key 即破防);注入时静默丢弃保留 key(违反 fail-visible 红线,用户不知道自己设的 key 没生效);injected_env 值对所有角色可见(泄漏 owner 存的密钥给 viewer/member——已改为**仅 owner** 在 project view 拿到 injected_env value)。
+
+**(b) PATCH /projects presence 语义:omitted=不变,显式 null/≤0=清空回落继承。** 请求体解成 `map[string]json.RawMessage` 做存在性判定——省略的字段保持不变(改名 PATCH 绝不误清护栏),显式发 `null` 或 ≤0 的数值把该护栏清回"继承集群默认"(view 里 omit,console 显示 "cluster default" 占位)。字段名匹配大小写不敏感(沿用旧 stdlib struct decoder 语义,`{"Name":...}` 仍改名),但未知字段仍 400 拒绝(repo 配置只走 service 端点)。
+- **被否**:整体覆盖语义(改名会连带清空未发送的护栏);sentinel 空串/零值区分不清 null 与"未发"。
+
+**顺带的护栏红线取舍**:`run_timeout_secs` 同时驱动 runner 内部 `RUN_TIMEOUT` 与 Job `activeDeadlineSeconds`,但两者**不相等**——Job 硬截止 = RUN_TIMEOUT + grace(`max(120, timeout/10)` 秒),因为 activeDeadlineSeconds 从 pod 启动计时(含 clone/setup)且要给 runner 自身优雅超时留窗,否则 k8s 会在 runner 内部超时前 SIGKILL,丢掉 `timeout` 失败分类与 diff.patch/REVIEW.md。`provider_allowlist` 里 raw 仓用显式 `"raw"` 标识;闸点状态码统一:建 service 用 400(可改的输入),已有 service 的 run/retry/review 派发用 403(既有状态上的策略拒绝),webhook 路径可见回帖原因。reconciler 里 project 加载失败**不静默降级**——不启动、下 tick 重试(与调度处一致)。

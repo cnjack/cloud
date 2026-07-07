@@ -134,6 +134,22 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	capacity := r.cfg.MaxConcurrentRuns - active
 	unlimited := r.cfg.MaxConcurrentRuns <= 0
 
+	// Feature B — per-project concurrency guardrail. Seed each project's active
+	// (scheduling+running) count from THIS tick's run set (its sum equals the
+	// cluster `active` above, since ListRunsByStatus returned exactly those). A
+	// run scheduled this tick then increments its project's count the same way it
+	// decrements cluster capacity, so a single tick never over-schedules a project
+	// past its max_concurrent_runs. pc memoizes GetProject to one hit per project
+	// per tick; the loaded project is carried into createJob (no second lookup).
+	projActive := map[string]int{}
+	for i := range runs {
+		switch runs[i].Status {
+		case domain.StatusScheduling, domain.StatusRunning:
+			projActive[runs[i].ProjectID]++
+		}
+	}
+	pc := newProjectCache(r.st)
+
 	for i := range runs {
 		run := runs[i]
 		var jobState k8s.JobState = k8s.JobUnknown
@@ -146,12 +162,32 @@ func (r *Reconciler) Tick(ctx context.Context) {
 		}
 
 		hasCapacity := unlimited || capacity > 0
+		// Load the run's project ONCE here for a queued run we might schedule, and
+		// carry it into createJob (guardrails: concurrency, timeout, injected env).
+		// A load failure means we do NOT schedule blind — the run stays queued and
+		// retries next tick (consistent, fail-visible; never a silent default).
+		// proj stays nil for scheduling/running runs (createJob is not reached).
+		var proj *domain.Project
+		if run.Status == domain.StatusQueued && hasCapacity {
+			p, perr := pc.get(ctx, run.ProjectID)
+			if perr != nil {
+				r.log.Warn("reconcile: load project for guardrails — leaving run queued", "run", run.ID, "project", run.ProjectID, "err", perr)
+				continue // transient; retry next tick (do not schedule blind)
+			}
+			proj = p
+			if lim := proj.MaxConcurrentRuns; lim != nil && *lim > 0 && projActive[run.ProjectID] >= *lim {
+				r.log.Info("reconcile: project at concurrency limit — leaving run queued",
+					"run", run.ID, "project", run.ProjectID, "limit", *lim, "active", projActive[run.ProjectID])
+				continue
+			}
+		}
 		d := decide(run, jobState, hasCapacity)
 		if d.Action == ActionNone {
 			continue
 		}
-		if r.apply(ctx, &run, d) && d.Action == ActionCreateJob {
-			capacity-- // consumed a slot this tick
+		if r.apply(ctx, &run, d, proj) && d.Action == ActionCreateJob {
+			capacity--                  // consumed a cluster slot this tick
+			projActive[run.ProjectID]++ // …and a per-project slot
 		}
 	}
 
@@ -470,14 +506,44 @@ func prBody(run *domain.Run) string {
 	return b.String()
 }
 
+// projectCache memoizes GetProject for the span of ONE tick so the per-project
+// guardrail lookups (concurrency limit in Tick, timeout + injected_env in
+// createJob/jobEnv) cost a single store hit per project regardless of how many of
+// its runs are in the pass. It is not shared across ticks — a fresh one is built
+// each Tick so a mid-flight PATCH is picked up on the next pass.
+type projectCache struct {
+	st    store.Store
+	cache map[string]*domain.Project
+}
+
+func newProjectCache(st store.Store) *projectCache {
+	return &projectCache{st: st, cache: map[string]*domain.Project{}}
+}
+
+// get returns the project (memoized). Errors are NOT cached so a transient DB
+// blip is retried on the next call/tick.
+func (pc *projectCache) get(ctx context.Context, id string) (*domain.Project, error) {
+	if p, ok := pc.cache[id]; ok {
+		return p, nil
+	}
+	p, err := pc.st.GetProject(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	pc.cache[id] = p
+	return p, nil
+}
+
 // apply performs the side effects for one decision. Returns true if it made a
 // scheduling change worth decrementing capacity for. Every persistence step goes
 // through a targeted store mutator that re-reads the committed row and writes
-// only its own fields, so a concurrent cancel/ingest can never be clobbered.
-func (r *Reconciler) apply(ctx context.Context, run *domain.Run, d Decision) bool {
+// only its own fields, so a concurrent cancel/ingest can never be clobbered. proj
+// is the run's project (loaded once in Tick), non-nil for the ActionCreateJob
+// path so createJob applies the guardrails without a second store hit.
+func (r *Reconciler) apply(ctx context.Context, run *domain.Run, d Decision, proj *domain.Project) bool {
 	switch d.Action {
 	case ActionCreateJob:
-		return r.createJob(ctx, run)
+		return r.createJob(ctx, run, proj)
 
 	case ActionMarkRunning:
 		if committed, err := r.st.MarkRunning(ctx, run.ID, "StreamingTurn", r.now()); err != nil {
@@ -527,7 +593,17 @@ func (r *Reconciler) apply(ctx context.Context, run *domain.Run, d Decision) boo
 // a fresh Job carrying the token we are about to persist. Deleting a
 // non-existent Job is a no-op, so this is safe on the normal first-create path.
 // See finding "token regen + idempotent CreateJob mismatch".
-func (r *Reconciler) createJob(ctx context.Context, run *domain.Run) bool {
+func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domain.Project) bool {
+	// Guardrails are a hard input: Tick loads the run's project before scheduling
+	// and passes it here. A nil project would mean scheduling blind (no timeout /
+	// injected-env / concurrency guardrail) — a silent downgrade (CLAUDE.md red
+	// line #1), so refuse and retry next tick instead. This is unreachable on the
+	// normal path (ActionCreateJob ⟹ Tick loaded the project) but guards a future
+	// caller.
+	if proj == nil {
+		r.log.Error("reconcile: createJob without a loaded project — refusing to schedule blind", "run", run.ID)
+		return false
+	}
 	// Fail-visible gate (CLAUDE.md red line #1): resolve the EFFECTIVE model
 	// config at Job-launch time. The API gate blocks creation, but a run can be
 	// queued while configured and then have its config cleared before it is
@@ -564,11 +640,30 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run) bool {
 		r.log.Warn("reconcile: delete leftover job before create", "run", run.ID, "err", err)
 	}
 
+	// Feature B — project guardrails (timeout + injected env). run_timeout_secs
+	// overrides the cluster default only when set and positive (NULL/≤0 means
+	// "inherit"). `timeout` is the runner's INTERNAL budget (RUN_TIMEOUT, which
+	// bounds `jcode acp`).
+	timeout := r.cfg.RunTimeoutSecs
+	if proj.RunTimeoutSecs != nil && *proj.RunTimeoutSecs > 0 {
+		timeout = *proj.RunTimeoutSecs
+	}
+	// The Job's activeDeadlineSeconds is a HARD backstop and counts from pod start
+	// (including clone/setup), whereas RUN_TIMEOUT only bounds the agent turn. If we
+	// set them equal, k8s would SIGKILL the pod at the same instant the runner's own
+	// graceful timeout fires — pre-empting the "timeout" failure classification and
+	// discarding the partial diff.patch / REVIEW.md. So give the Job deadline a
+	// grace margin on top of RUN_TIMEOUT (clone/setup + graceful-exit headroom).
+	jobDeadline := timeout
+	if timeout > 0 {
+		jobDeadline = timeout + timeoutGrace(timeout)
+	}
+
 	spec := k8s.JobSpec{
 		Name:           jobName,
 		RunID:          run.ID,
-		Env:            r.jobEnv(ctx, run, token, model),
-		TimeoutSeconds: r.cfg.RunTimeoutSecs,
+		Env:            r.jobEnv(ctx, run, token, model, proj, timeout),
+		TimeoutSeconds: jobDeadline,
 	}
 	if err := r.launcher.CreateJob(ctx, spec); err != nil {
 		r.log.Error("reconcile: create job", "run", run.ID, "err", err)
@@ -670,7 +765,7 @@ func (r *Reconciler) emit(ctx context.Context, runID, typ string, payload map[st
 // default. NO provider token is ever injected: the runner reads (via a source
 // bundle it fetches over the RUN_TOKEN) and writes a bundle it uploads; the
 // orchestrator pushes.
-func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, model modelcfg.Resolved) map[string]string {
+func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, model modelcfg.Resolved, proj *domain.Project, timeoutSecs int64) map[string]string {
 	kind := run.Kind
 	if kind == "" {
 		kind = domain.RunKindAgent
@@ -685,13 +780,61 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 		"RUN_TOKEN":      token,
 		"RUN_KIND":       string(kind),
 	}
+	// Feature B — set the runner's internal RUN_TIMEOUT (bounds `jcode acp`) to the
+	// effective per-run budget. The Job's activeDeadlineSeconds is set SEPARATELY to
+	// this value PLUS a grace margin (see createJob/timeoutGrace) so the runner's
+	// own graceful timeout fires first and the "timeout" failure + partial artifact
+	// survive. entrypoint.sh otherwise defaults RUN_TIMEOUT to 300s.
+	if timeoutSecs > 0 {
+		env["RUN_TIMEOUT"] = fmt.Sprintf("%ds", timeoutSecs)
+	}
 	svc, err := r.st.GetService(ctx, run.ServiceID)
 	if err != nil {
 		r.log.Error("reconcile: get service for env", "run", run.ID, "err", err)
 		return env
 	}
 	r.addGitEnv(env, run, svc)
+	// Feature B — project-scoped injected env, applied LAST (on top of the system
+	// contract). Reserved keys are refused at the PATCH API; jobEnv drops (and
+	// Warns on) any that slipped through a stale/legacy row so a system variable
+	// can never be overridden (double insurance; CLAUDE.md fail-visible).
+	r.applyInjectedEnv(env, run, proj)
 	return env
+}
+
+// timeoutGrace is the headroom added to the runner's RUN_TIMEOUT to form the
+// Job's hard activeDeadlineSeconds. The Job clock includes clone/setup (which
+// RUN_TIMEOUT does not) plus the runner's own graceful-exit window, so the
+// backstop must sit strictly later than the internal timeout. max(120s,
+// timeout/10) scales with long runs while keeping a floor for short ones.
+func timeoutGrace(timeoutSecs int64) int64 {
+	grace := timeoutSecs / 10
+	if grace < 120 {
+		grace = 120
+	}
+	return grace
+}
+
+// applyInjectedEnv merges a project's injected_env into env, skipping any
+// reserved system key (defensive — the API rejects these) and any key that would
+// collide with a system variable already set (belt-and-braces: all system keys
+// are reserved, so this is unreachable in practice). Nil proj / empty map is a
+// no-op.
+func (r *Reconciler) applyInjectedEnv(env map[string]string, run *domain.Run, proj *domain.Project) {
+	if proj == nil {
+		return
+	}
+	for k, v := range proj.InjectedEnv {
+		if domain.IsReservedEnvKey(k) {
+			r.log.Warn("reconcile: dropping reserved injected_env key", "run", run.ID, "project", proj.ID, "key", k)
+			continue
+		}
+		if _, exists := env[k]; exists {
+			r.log.Warn("reconcile: injected_env key collides with a system variable — skipping", "run", run.ID, "key", k)
+			continue
+		}
+		env[k] = v
+	}
 }
 
 // addGitEnv injects the M3 clone/produce contract (blueprint §3). It sets:
