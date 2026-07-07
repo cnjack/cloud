@@ -125,4 +125,42 @@ func (c *GitLabClient) CreateIssueComment(ctx context.Context, owner, repo strin
 	return doJSON(ctx, c.http, http.MethodPost, u, c.auth(), "application/json", map[string]any{"body": body}, nil)
 }
 
+// gitlabProject is the subset of GitLab's Project JSON the repo picker consumes.
+type gitlabProject struct {
+	ID                int64  `json:"id"`
+	PathWithNamespace string `json:"path_with_namespace"`
+	Description       string `json:"description"`
+	DefaultBranch     string `json:"default_branch"`
+	Visibility        string `json:"visibility"` // public|internal|private
+	WebURL            string `json:"web_url"`
+}
+
+// ListRepos lists projects the token's user is a member of (?membership=true),
+// most recently active first, with GitLab's own ?search filter. NOTE: the
+// minimal read_user login scope cannot list projects — the token needs
+// read_api (list) / api (MRs).
+func (c *GitLabClient) ListRepos(ctx context.Context, query string, page, limit int) ([]Repo, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 50
+	}
+	u := fmt.Sprintf("%s/projects?membership=true&per_page=%d&page=%d&order_by=last_activity_at&sort=desc&search=%s",
+		c.apiBase, limit, page, url.QueryEscape(query))
+	var raw []gitlabProject
+	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &raw); err != nil {
+		return nil, err
+	}
+	repos := make([]Repo, 0, len(raw))
+	for _, p := range raw {
+		repos = append(repos, Repo{
+			ID: p.ID, FullName: p.PathWithNamespace, Description: p.Description,
+			DefaultBranch: p.DefaultBranch, Private: p.Visibility == "private", HTMLURL: p.WebURL,
+		})
+	}
+	return repos, nil
+}
+
 var _ Provider = (*GitLabClient)(nil)
+var _ RepoLister = (*GitLabClient)(nil)

@@ -131,7 +131,7 @@ func (s *PGStore) DeleteProject(ctx context.Context, id string) error {
 // --- Services ----------------------------------------------------------------
 
 const serviceCols = `id, project_id, name, repo_kind, provider, repo_owner_name,
-	raw_repo_url, default_branch, git_mode, created_at`
+	raw_repo_url, provider_repo_id, default_branch, git_mode, created_at`
 
 // nullStr maps an empty Go string to a SQL NULL so nullable columns (provider,
 // repo_owner_name, raw_repo_url) stay NULL rather than ” — the services CHECK
@@ -147,7 +147,7 @@ func scanService(row pgx.Row) (*domain.Service, error) {
 	var s domain.Service
 	var provider, ownerName, rawURL *string
 	err := row.Scan(&s.ID, &s.ProjectID, &s.Name, &s.RepoKind,
-		&provider, &ownerName, &rawURL, &s.DefaultBranch, &s.GitMode, &s.CreatedAt)
+		&provider, &ownerName, &rawURL, &s.ProviderRepoID, &s.DefaultBranch, &s.GitMode, &s.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -175,10 +175,10 @@ func (s *PGStore) CreateService(ctx context.Context, svc *domain.Service) error 
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO services (`+serviceCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		svc.ID, svc.ProjectID, svc.Name, string(svc.RepoKind),
 		nullStr(string(svc.Provider)), nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL),
-		svc.DefaultBranch, string(svc.GitMode), svc.CreatedAt)
+		svc.ProviderRepoID, svc.DefaultBranch, string(svc.GitMode), svc.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
 	}
@@ -237,10 +237,11 @@ func (s *PGStore) ListServicesByRepo(ctx context.Context, provider domain.GitPro
 func (s *PGStore) UpdateService(ctx context.Context, svc *domain.Service) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE services SET name=$2, repo_kind=$3, provider=$4, repo_owner_name=$5,
-		    raw_repo_url=$6, default_branch=$7, git_mode=$8
+		    raw_repo_url=$6, provider_repo_id=$7, default_branch=$8, git_mode=$9
 		 WHERE id=$1`,
 		svc.ID, svc.Name, string(svc.RepoKind), nullStr(string(svc.Provider)),
-		nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL), svc.DefaultBranch, string(svc.GitMode))
+		nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL), svc.ProviderRepoID,
+		svc.DefaultBranch, string(svc.GitMode))
 	if err != nil {
 		return fmt.Errorf("update service: %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -151,6 +152,77 @@ func (c *GiteaClient) CreateIssueComment(ctx context.Context, owner, repo string
 	return c.do(ctx, http.MethodPost, path, map[string]any{"body": body}, nil)
 }
 
+// giteaRepo is the subset of Gitea's Repository JSON the repo picker consumes.
+type giteaRepo struct {
+	ID            int64  `json:"id"`
+	FullName      string `json:"full_name"`
+	Description   string `json:"description"`
+	DefaultBranch string `json:"default_branch"`
+	Private       bool   `json:"private"`
+	HTMLURL       string `json:"html_url"`
+}
+
+// ListRepos lists repositories visible to the token's user via /repos/search
+// (which scopes results to what the authenticated user may see, including their
+// private repos). Most recently updated first.
+func (c *GiteaClient) ListRepos(ctx context.Context, query string, page, limit int) ([]Repo, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 50
+	}
+	path := fmt.Sprintf("/api/v1/repos/search?q=%s&page=%d&limit=%d&sort=updated&order=desc",
+		url.QueryEscape(query), page, limit)
+	var out struct {
+		OK   bool        `json:"ok"`
+		Data []giteaRepo `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	repos := make([]Repo, 0, len(out.Data))
+	for _, r := range out.Data {
+		repos = append(repos, Repo{
+			ID: r.ID, FullName: r.FullName, Description: r.Description,
+			DefaultBranch: r.DefaultBranch, Private: r.Private, HTMLURL: r.HTMLURL,
+		})
+	}
+	return repos, nil
+}
+
+// EnsureCommentWebhook idempotently registers the @mention PR-comment webhook on
+// a repository: it lists the repo's hooks and creates one only when no hook with
+// the same target URL exists (Gitea masks hook secrets on read, so the URL is
+// the identity key — same convention as the old bootstrap Job). Events cover
+// both issue_comment and pull_request_comment: Gitea fires the LATTER for
+// comments on PRs (M7 live find).
+func (c *GiteaClient) EnsureCommentWebhook(ctx context.Context, owner, repo, hookURL, secret string) error {
+	listPath := fmt.Sprintf("/api/v1/repos/%s/%s/hooks", owner, repo)
+	var hooks []struct {
+		Config map[string]string `json:"config"`
+	}
+	if err := c.do(ctx, http.MethodGet, listPath, nil, &hooks); err != nil {
+		return err
+	}
+	for _, h := range hooks {
+		if h.Config["url"] == hookURL {
+			return nil // already registered
+		}
+	}
+	body := map[string]any{
+		"type":   "gitea",
+		"active": true,
+		"events": []string{"issue_comment", "pull_request_comment"},
+		"config": map[string]string{
+			"url":          hookURL,
+			"content_type": "json",
+			"secret":       secret,
+		},
+	}
+	return c.do(ctx, http.MethodPost, listPath, body, nil)
+}
+
 // prState normalises a provider's (state, merged) pair to our vocabulary.
 func prState(state string, merged bool) string {
 	if merged {
@@ -192,7 +264,10 @@ func (c *GiteaClient) do(ctx context.Context, method, path string, body any, out
 		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	// 4MiB cap: PR payloads are tiny, but /repos/search on a big instance (an
+	// admin PAT sees everything) easily blows a smaller cap — a truncated body
+	// fails JSON decode with a misleading "unexpected end of JSON input".
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("gitea %s %s: status %d: %s",
 			method, path, resp.StatusCode, strings.TrimSpace(string(respBody)))

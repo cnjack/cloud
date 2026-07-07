@@ -207,3 +207,98 @@ func TestFakeProviderIdempotencySeam(t *testing.T) {
 		t.Fatalf("find after create = %+v want %+v", found, pr)
 	}
 }
+
+// TestGiteaListRepos verifies the repo-picker listing hits /repos/search with
+// query/paging params and maps the response into provider.Repo values.
+func TestGiteaListRepos(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"data": []map[string]any{
+				{"id": 7, "full_name": "ai/jcode-cloud-e2e", "description": "e2e", "default_branch": "main", "private": true, "html_url": "http://g/ai/jcode-cloud-e2e"},
+				{"id": 9, "full_name": "jcloud/seed", "default_branch": "main", "private": false},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, _ := NewGiteaClient(srv.URL, "tok")
+	repos, err := c.ListRepos(context.Background(), "jcode", 1, 50)
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	if gotPath != "/api/v1/repos/search" {
+		t.Errorf("path=%q want /api/v1/repos/search", gotPath)
+	}
+	if !strings.Contains(gotQuery, "q=jcode") || !strings.Contains(gotQuery, "limit=50") {
+		t.Errorf("query=%q want q=jcode & limit=50", gotQuery)
+	}
+	if len(repos) != 2 || repos[0].ID != 7 || repos[0].FullName != "ai/jcode-cloud-e2e" || !repos[0].Private {
+		t.Fatalf("bad mapping: %+v", repos)
+	}
+	if repos[1].DefaultBranch != "main" || repos[1].Private {
+		t.Fatalf("bad second repo: %+v", repos[1])
+	}
+}
+
+// TestGiteaEnsureCommentWebhook verifies idempotent hook registration: an
+// existing hook with the same target URL means NO create; otherwise a hook is
+// POSTed with both comment events and the HMAC secret.
+func TestGiteaEnsureCommentWebhook(t *testing.T) {
+	t.Run("creates when absent", func(t *testing.T) {
+		var created map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`[{"config":{"url":"http://other/hook"}}]`))
+				return
+			}
+			_ = json.NewDecoder(r.Body).Decode(&created)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		defer srv.Close()
+
+		c, _ := NewGiteaClient(srv.URL, "tok")
+		if err := c.EnsureCommentWebhook(context.Background(), "ai", "repo", "http://orch/webhooks/gitea", "s3cret"); err != nil {
+			t.Fatalf("EnsureCommentWebhook: %v", err)
+		}
+		if created == nil {
+			t.Fatal("expected a hook create POST")
+		}
+		cfg, _ := created["config"].(map[string]any)
+		if cfg["url"] != "http://orch/webhooks/gitea" || cfg["secret"] != "s3cret" {
+			t.Fatalf("bad hook config: %+v", cfg)
+		}
+		evs, _ := json.Marshal(created["events"])
+		if !strings.Contains(string(evs), "issue_comment") || !strings.Contains(string(evs), "pull_request_comment") {
+			t.Fatalf("hook must subscribe both comment events, got %s", evs)
+		}
+	})
+
+	t.Run("no-op when the URL is already hooked", func(t *testing.T) {
+		posted := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`[{"config":{"url":"http://orch/webhooks/gitea"}}]`))
+				return
+			}
+			posted = true
+			w.WriteHeader(http.StatusCreated)
+		}))
+		defer srv.Close()
+
+		c, _ := NewGiteaClient(srv.URL, "tok")
+		if err := c.EnsureCommentWebhook(context.Background(), "ai", "repo", "http://orch/webhooks/gitea", "s3cret"); err != nil {
+			t.Fatalf("EnsureCommentWebhook: %v", err)
+		}
+		if posted {
+			t.Fatal("existing hook must not be re-created")
+		}
+	})
+}

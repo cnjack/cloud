@@ -247,6 +247,10 @@ type Service struct {
 	RepoOwnerName string      `json:"repo_owner_name,omitempty"`
 	// RawRepoURL is set when RepoKind == raw (an opaque, read-only clone URL).
 	RawRepoURL string `json:"raw_repo_url,omitempty"`
+	// ProviderRepoID is the provider's numeric repo id, captured when the service
+	// is created from the repo picker (migration 0009). It is the rename-proof
+	// identity of the repo on the provider; nil for hand-entered/legacy services.
+	ProviderRepoID *int64 `json:"provider_repo_id,omitempty"`
 
 	DefaultBranch string    `json:"default_branch"`
 	GitMode       GitMode   `json:"git_mode"`

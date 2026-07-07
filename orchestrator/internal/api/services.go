@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -104,6 +106,9 @@ type createServiceReq struct {
 	OwnerName     string `json:"owner_name"`
 	GitMode       string `json:"git_mode"`
 	DefaultBranch string `json:"default_branch"`
+	// ProviderRepoID is the provider's numeric repo id, sent by the repo picker
+	// (GET /providers/{p}/repos). Optional; rename-proof repo identity (0009).
+	ProviderRepoID *int64 `json:"provider_repo_id"`
 }
 
 func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
@@ -148,12 +153,61 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	svc.ID = domain.NewID()
 	svc.ProjectID = projectID
 	svc.CreatedAt = time.Now().UTC()
+	if req.ProviderRepoID != nil && svc.RepoKind == domain.RepoKindProvider {
+		svc.ProviderRepoID = req.ProviderRepoID
+	}
 	if err := s.st.CreateService(r.Context(), svc); err != nil {
 		s.log.Error("create service", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create service")
 		return
 	}
+	// Drone-style onboarding: best-effort auto-register the @mention comment
+	// webhook on the new repo. Never fails the create — a service without the
+	// hook still works (manual dispatch), and the console surfaces nothing.
+	s.ensureServiceWebhook(r.Context(), svc)
 	writeJSON(w, http.StatusCreated, svc)
+}
+
+// ensureServiceWebhook registers the @jcode PR-comment webhook on a freshly
+// added gitea repository, when the deployment is configured for it (both
+// WEBHOOK_URL and WEBHOOK_SECRET set). It uses the fallback admin PAT — hook
+// management needs repo-admin rights the member's OAuth token may lack. Errors
+// are logged, never surfaced: webhook wiring is an enhancement, not a gate.
+func (s *Server) ensureServiceWebhook(ctx context.Context, svc *domain.Service) {
+	if s.cfg.WebhookURL == "" || s.cfg.WebhookSecret == "" {
+		return
+	}
+	if svc.RepoKind != domain.RepoKindProvider || svc.Provider != domain.ProviderGitea {
+		return // only gitea has an inbound receiver today (M7)
+	}
+	if s.creds == nil || s.factory == nil {
+		return
+	}
+	owner, repo, ok := provider.SplitRepo(svc.RepoOwnerName)
+	if !ok {
+		return
+	}
+	tok, err := s.creds.Resolve(ctx, domain.ProviderGitea, nil) // admin PAT
+	if err != nil {
+		s.log.Warn("service webhook: no gitea PAT; skipping registration", "service", svc.ID)
+		return
+	}
+	client, err := s.factory.PRClient(domain.ProviderGitea, tok.Value, tok.Scheme)
+	if err != nil {
+		return
+	}
+	hooker, ok := client.(interface {
+		EnsureCommentWebhook(ctx context.Context, owner, repo, hookURL, secret string) error
+	})
+	if !ok {
+		return
+	}
+	if err := hooker.EnsureCommentWebhook(ctx, owner, repo, s.cfg.WebhookURL, s.cfg.WebhookSecret); err != nil {
+		s.log.Warn("service webhook: registration failed (service still usable)",
+			"service", svc.ID, "repo", svc.RepoOwnerName, "err", err)
+		return
+	}
+	s.log.Info("service webhook: @mention hook ensured", "service", svc.ID, "repo", svc.RepoOwnerName)
 }
 
 func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {

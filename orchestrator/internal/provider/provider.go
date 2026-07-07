@@ -68,6 +68,29 @@ type Provider interface {
 	CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error
 }
 
+// Repo is one entry in a provider repository listing (the Drone-style
+// service-onboarding picker). ID is the provider's numeric repo id — stored on
+// a service as its rename-proof identity (provider_repo_id).
+type Repo struct {
+	ID            int64  `json:"id"`
+	FullName      string `json:"full_name"` // "owner/name"
+	Description   string `json:"description,omitempty"`
+	DefaultBranch string `json:"default_branch"`
+	Private       bool   `json:"private"`
+	HTMLURL       string `json:"html_url,omitempty"`
+}
+
+// RepoLister lists repositories visible to the authenticated token. It is a
+// SEPARATE interface from Provider on purpose: the D08 PR seam stays as narrow
+// as ever (find/create-draft/comment only); listing is a read-only onboarding
+// concern. All three concrete clients implement it — callers type-assert the
+// Factory-built client.
+type RepoLister interface {
+	// ListRepos returns up to `limit` repos matching `query` (empty = all),
+	// page-numbered from 1, most recently active first.
+	ListRepos(ctx context.Context, query string, page, limit int) ([]Repo, error)
+}
+
 // Factory builds a Provider client for a given git host authenticated with a
 // specific token (the triggering user's OAuth token, or the fallback gitea PAT).
 // The M3 draft-PR / review passes act with the token that owns the change, so a

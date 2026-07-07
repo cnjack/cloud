@@ -75,8 +75,13 @@ type Config struct {
 	// webhook bodies with (HMAC-SHA256, hex, header X-Gitea-Signature). Empty =>
 	// the /webhooks/gitea route is NOT registered (returns 404) and the @mention
 	// trigger is off; the rest of the system runs normally (M7 / blueprint §8).
-	// Minted at runtime into the gitea-orchestrator Secret by the bootstrap Job.
 	WebhookSecret string
+	// WebhookURL is WEBHOOK_URL: the gitea-reachable URL of this orchestrator's
+	// /webhooks/gitea endpoint (e.g. an in-cluster Service DNS when gitea shares
+	// the cluster). When BOTH WebhookURL and WebhookSecret are set, creating a
+	// gitea provider service auto-registers the @mention comment webhook on that
+	// repository (Drone-style onboarding); empty => no auto-registration.
+	WebhookURL string
 
 	// --- Auth / OAuth (M2; multitenant blueprint §2) ---
 	// AuthTokenKey is AUTH_TOKEN_KEY: a base64-encoded 32-byte key for the
@@ -139,6 +144,7 @@ func Load() (*Config, error) {
 		GiteaToken:        os.Getenv("GITEA_TOKEN"),
 		SourceBundleTTL:   getdur("SOURCE_BUNDLE_TTL", 10*time.Minute),
 		WebhookSecret:     os.Getenv("WEBHOOK_SECRET"),
+		WebhookURL:        os.Getenv("WEBHOOK_URL"),
 		AuthTokenKey:      os.Getenv("AUTH_TOKEN_KEY"),
 		ConsoleURL:        getenv("CONSOLE_URL", "http://localhost:5173"),
 		SessionTTL:        getdur("SESSION_TTL", 30*24*time.Hour),
