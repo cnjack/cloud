@@ -29,8 +29,10 @@ import type { ReactNode } from 'react';
 import type { AuthProviderInfo, Me } from '../api/types';
 import { fetchAuthProviders, postLogout } from '../api/client';
 import {
+  clearSignedOut,
   clearStoredToken,
   loadConfig,
+  markSignedOut,
   resolveInitialToken,
   writeStoredToken,
 } from '../api/config';
@@ -223,6 +225,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       switch (result.kind) {
         case 'ok':
           writeStoredToken(trimmed);
+          clearSignedOut(); // an explicit sign-in lifts the sign-out suppression
           tokenRef.current = trimmed;
           setMe(result.me);
           setLanding(true); // manual sign-in → show the landing card once
@@ -245,6 +248,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // cleared regardless of the result.
     void postLogout(tok);
     clearStoredToken();
+    // Persist the intent: a reload must NOT resurrect the env dev token and
+    // silently sign the user back in as the service principal (M6 live find).
+    markSignedOut();
     tokenRef.current = undefined;
     setMe(null);
     setLanding(false);

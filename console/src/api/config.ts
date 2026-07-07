@@ -73,7 +73,45 @@ export function clearStoredToken(): void {
   }
 }
 
-/** Boot-time token: a manually saved token wins over the env default. */
+/**
+ * Explicit-sign-out marker (M6 live find): signing out reloads the page, and
+ * without this the VITE_CONSOLE_TOKEN dev default silently signed the user
+ * straight back in as the service principal. An explicit sign-out must stick —
+ * the marker suppresses the env fallback until the user signs in again.
+ */
+export const SIGNED_OUT_KEY = 'jcloud.console.signed-out';
+
+export function markSignedOut(): void {
+  try {
+    window.localStorage.setItem(SIGNED_OUT_KEY, '1');
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearSignedOut(): void {
+  try {
+    window.localStorage.removeItem(SIGNED_OUT_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function isSignedOut(): boolean {
+  try {
+    return window.localStorage.getItem(SIGNED_OUT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Boot-time token: a manually saved token wins over the env default; after an
+ * explicit sign-out the env default is suppressed entirely.
+ */
 export function resolveInitialToken(): string | undefined {
-  return readStoredToken() ?? loadConfig().consoleToken;
+  const stored = readStoredToken();
+  if (stored) return stored;
+  if (isSignedOut()) return undefined;
+  return loadConfig().consoleToken;
 }
