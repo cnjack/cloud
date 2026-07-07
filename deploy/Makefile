@@ -79,8 +79,15 @@ up: _ctx-guard ## kubectl apply -k the manifests and wait for rollouts.
 	kubectl -n $(NAMESPACE) rollout status deploy/postgres --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deploy/mockllm --timeout=60s
 	kubectl -n $(NAMESPACE) rollout status deploy/git-seed --timeout=60s
+	kubectl -n $(NAMESPACE) rollout status deploy/gitea --timeout=180s
 	kubectl -n $(NAMESPACE) rollout status deploy/orchestrator --timeout=120s
-	@echo "jcloud is up. Run 'make port-forward' then point the console dev server at localhost:8080."
+	@echo "waiting for the gitea-bootstrap Job (org/repo/token + orchestrator secret)..."
+	kubectl -n $(NAMESPACE) wait --for=condition=complete job/gitea-bootstrap --timeout=180s || \
+		{ echo "gitea-bootstrap did not complete; logs:"; kubectl -n $(NAMESPACE) logs job/gitea-bootstrap --tail=40 || true; }
+	@echo "restarting orchestrator so it picks up GITEA_URL/GITEA_TOKEN from the bootstrap Secret..."
+	kubectl -n $(NAMESPACE) rollout restart deploy/orchestrator
+	kubectl -n $(NAMESPACE) rollout status deploy/orchestrator --timeout=120s
+	@echo "jcloud is up (Gitea draft-PR enabled). Run 'make port-forward' then point the console dev server at localhost:8080."
 
 down: _ctx-guard ## Delete everything this manifest set created (namespace itself is left in place; see base/kustomization.yaml note).
 	kubectl delete -k . --ignore-not-found
@@ -102,6 +109,14 @@ seed-repo: _ctx-guard ## Verify/re-trigger the in-cluster git seed repo.
 	echo "checking clone from a throwaway debug pod..."; \
 	kubectl -n $(NAMESPACE) run gitseed-check-$$RANDOM --rm -i --restart=Never --image=alpine/git:latest --command -- \
 		sh -c "git clone --quiet git://git.$(NAMESPACE).svc.cluster.local/seed.git /tmp/check && cat /tmp/check/README.md"
+
+.PHONY: gitea-bootstrap
+gitea-bootstrap: _ctx-guard ## Re-run the Gitea bootstrap Job (org/repo/token + orchestrator secret). Idempotent.
+	kubectl -n $(NAMESPACE) delete job/gitea-bootstrap --ignore-not-found
+	kubectl -n $(NAMESPACE) apply -k base/gitea
+	kubectl -n $(NAMESPACE) wait --for=condition=complete job/gitea-bootstrap --timeout=180s
+	kubectl -n $(NAMESPACE) rollout restart deploy/orchestrator
+	@echo "gitea-bootstrap complete; orchestrator restarted to pick up GITEA_TOKEN."
 
 .PHONY: logs-orch
 logs-orch: _ctx-guard ## Tail orchestrator logs.

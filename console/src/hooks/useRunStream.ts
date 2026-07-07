@@ -73,12 +73,27 @@ export function useRunStream(runId: string, enabled = true) {
         : prev,
     );
     // On terminal status, refetch the authoritative run so late-populated fields
-    // (failure_reason / failure_message / finished_at / mr_url) land in the
+    // (failure_reason / failure_message / finished_at / pr_url) land in the
     // header — the stream's optimistic status patch doesn't carry them.
     if (isTerminal(derivedStatus)) {
       qc.invalidateQueries({ queryKey: qk.run(runId) });
     }
   }, [derivedStatus, runId, qc]);
+
+  // ST-1: the draft PR is opened AFTER the run goes terminal, so its link
+  // arrives on a later run.status frame carrying pr_url/pr_number (not the full
+  // run). Patch those onto the cached run so the "Draft PR #N" chip appears live
+  // without another refetch.
+  const prURL = wrap.state.prURL;
+  const prNumber = wrap.state.prNumber;
+  useEffect(() => {
+    if (!prURL) return;
+    qc.setQueryData<Run>(qk.run(runId), (prev) =>
+      prev && prev.pr_url !== prURL
+        ? { ...prev, pr_url: prURL, pr_number: prNumber ?? prev.pr_number ?? null }
+        : prev,
+    );
+  }, [prURL, prNumber, runId, qc]);
 
   // Close the stream once we've observed a terminal status. The server closes a
   // terminal SSE connection; if we leave the EventSource open the browser treats

@@ -178,6 +178,10 @@ func (s *Server) emitStatus(ctx context.Context, run *domain.Run) {
 		payload["failure_reason"] = string(run.FailureReason)
 		payload["failure_message"] = run.FailureMessage
 	}
+	if run.PRURL != "" {
+		payload["pr_url"] = run.PRURL
+		payload["pr_number"] = run.PRNumber
+	}
 	ev, err := s.st.AppendInternalEvent(ctx, run.ID, domain.EventRunStatus, payload)
 	if err != nil {
 		s.log.Error("emit status", "run", run.ID, "err", err)

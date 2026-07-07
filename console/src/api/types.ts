@@ -30,7 +30,10 @@ export type FailureReason =
   | 'clone_failed'
   | 'setup_failed'
   | 'agent_error'
-  | 'timeout';
+  | 'timeout'
+  // push_failed (ST-1): draft_pr mode produced a diff but could not push the
+  // agent/run-<id> branch to the provider. See 11-api.md §1.4.
+  | 'push_failed';
 
 export interface Project {
   id: string;
@@ -58,8 +61,13 @@ export interface Run {
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
-  /** Stretch (ST-1): draft MR link when Gitea export is enabled. */
-  mr_url?: string | null;
+  /**
+   * Stretch (ST-1): the draft PR the orchestrator opened on Gitea when the
+   * project is git_mode=draft_pr. Both empty/absent for readonly (diff-only)
+   * runs. pr_number is the PR index for the "#N" chip.
+   */
+  pr_url?: string | null;
+  pr_number?: number | null;
 }
 
 /** Event types emitted on the run stream. Contract with runner + orchestrator. */
@@ -69,7 +77,9 @@ export type RunEventType =
   | 'agent.tool_call'
   | 'agent.tool_result'
   | 'run.artifact'
-  | 'run.failure';
+  | 'run.failure'
+  // run.git (ST-1): runner reports the pushed branch/commit in draft_pr mode.
+  | 'run.git';
 
 export interface RunEvent {
   seq: number;
@@ -105,6 +115,12 @@ export interface RunEventPayload {
   message?: string;
   // run.artifact
   kind?: string;
+  // run.status (ST-1): the draft PR link rides on the status frame so the live
+  // header updates without a refetch. run.git carries branch/commit_sha.
+  pr_url?: string | null;
+  pr_number?: number | null;
+  branch?: string;
+  commit_sha?: string;
   [key: string]: unknown;
 }
 

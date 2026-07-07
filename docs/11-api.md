@@ -53,9 +53,28 @@
   "name": "demo",
   "repo_url": "https://gitea.internal/acme/app.git",
   "default_branch": "main",
-  "created_at": "2026-07-07T12:00:00Z"
+  "created_at": "2026-07-07T12:00:00Z",
+  "git_mode": "readonly",
+  "provider": "gitea",
+  "provider_url": "http://gitea.jcloud.svc.cluster.local:3000",
+  "provider_repo": "jcloud/seed"
 }
 ```
+
+- **`git_mode`** (ST-1; decision D08): `readonly` (default) | `draft_pr`.
+  - `readonly` — today's behavior: a successful run ends in a **diff artifact
+    only**. Nothing is pushed and no PR is opened. J1-J3 use this.
+  - `draft_pr` — after a successful run with a **non-empty diff**, the runner
+    pushes an `agent/run-<id>` branch and the orchestrator opens a **draft PR**
+    on the provider. **Never auto-merges, never triggers CI** (hard gate).
+- **`provider`** (`gitea` only in the MVP; decision D09), **`provider_url`**
+  (Gitea base URL), **`provider_repo`** (`owner/name`): required together when
+  `git_mode == draft_pr`; ignored/empty for `readonly`. If `git_mode == draft_pr`
+  and `provider` is omitted it defaults to `gitea`. `provider_repo` is
+  **required** for `draft_pr` (400 otherwise). The provider **token** is not a
+  project field — it comes from the orchestrator env `GITEA_TOKEN` (single-tenant
+  MVP), injected to the runner for the push and used by the orchestrator for the
+  PR API.
 
 ### 1.2 Run
 
@@ -75,7 +94,11 @@
   "created_at": "2026-07-07T12:00:01Z",
   "started_at": "2026-07-07T12:00:09Z",
   "finished_at": null,
-  "job_cleaned_at": null
+  "job_cleaned_at": null,
+  "git_branch": "",
+  "commit_sha": "",
+  "pr_url": "",
+  "pr_number": 0
 }
 ```
 
@@ -92,6 +115,14 @@
   从集群删除(回收孤儿 Job)后打的时间戳;`k8s_job_name` 保持不变。仅供审计/
   排障,console 无需展示或依赖。(迁移 `0003_job_cleaned_at`;新增可空字段,
   非破坏性变更。)
+- **`git_branch` / `commit_sha` / `pr_url` / `pr_number`(ST-1,迁移
+  `0004_gitea_draft_pr`;新增字段,非破坏性)**:仅 `draft_pr` 模式 run 会填充。
+  - `git_branch` / `commit_sha`:runner 推送 `agent/run-<id>` 分支后经
+    **`run.git` 事件**上报(见 §4)。`git_branch` 是 orchestrator 开 PR 时的
+    **幂等键**(先按 head 分支查已存在 PR 再创建)。
+  - `pr_url` / `pr_number`:orchestrator 开(或找到)draft PR 后写入;`pr_number`
+    为 `0` 表示尚无 PR。console 有 `pr_url` 时展示「Draft PR #N ↗」链接徽章。
+  - `readonly`(默认)模式这四个字段恒为空/`0`——**与 J1-J3 行为一致,不受影响**。
 - 服务器**从不**把 run token 序列化给 console 客户端。
 
 ### 1.3 Run 状态徽章体系(单一事实源)
@@ -118,6 +149,7 @@
 | `setup_failed` | 项目 setup 阶段失败 | runner 报 `run.failure` 事件精化 |
 | `agent_error` | agent 报错 / 通用 Job 失败(**兜底**) | 集群状态推断,或 runner 报 |
 | `timeout` | 超过 `activeDeadlineSeconds` 墙钟上限 | orchestrator 从 Job DeadlineExceeded 推断 |
+| `push_failed` | **(ST-1)** `draft_pr` 模式下已产出 diff,但推送 `agent/run-<id>` 分支到 provider 失败(token/网络/受保护分支) | runner 报 `run.failure` 事件 |
 
 **归类规则**:orchestrator 从 K8s Job 状态推断——Job 失败 → `agent_error`;
 Job DeadlineExceeded → `timeout`。仅凭集群状态**无法**区分 clone/setup,故 runner
@@ -155,13 +187,26 @@ orchestrator 的兜底分类**不覆盖**它。
 请求:
 
 ```json
-{ "name": "demo", "repo_url": "https://gitea.internal/acme/app.git", "default_branch": "main" }
+{
+  "name": "demo",
+  "repo_url": "https://gitea.internal/acme/app.git",
+  "default_branch": "main",
+  "git_mode": "draft_pr",
+  "provider": "gitea",
+  "provider_url": "http://gitea.jcloud.svc.cluster.local:3000",
+  "provider_repo": "jcloud/seed"
+}
 ```
 
 - `name`(必填)、`repo_url`(必填);`default_branch` 缺省 `main`。
+- **(ST-1)** `git_mode` 缺省 `readonly`。取 `draft_pr` 时:`provider` 缺省
+  `gitea`(只支持 `gitea`,否则 `400`),`provider_repo`(`owner/name`)**必填**
+  (否则 `400`);`provider_url` 可选(缺省用 orchestrator 的 `GITEA_URL`)。
+  `readonly` 时后三者可省略。`PATCH` 同样接受这些字段(只更新提供的字段)。
 
 响应 `201 Created`:完整 Project 对象(见 §1.1)。
-错误:`400`(缺 name/repo_url)。
+错误:`400`(缺 name/repo_url;`git_mode` 非法;`draft_pr` 缺 `provider_repo`
+或 `provider` 非 gitea)。
 
 #### `GET /api/v1/projects` — 列出 projects
 
@@ -341,12 +386,13 @@ runner 通过 `POST /internal/v1/runs/{id}/events` 上报;orchestrator 也会内
 
 | type | 方向 | payload 形状 | 说明 |
 |---|---|---|---|
-| `run.status` | orchestrator 内生 | `{ "status": "running", "phase": "StreamingTurn", "failure_reason": "", "failure_message": "" }` | 每次状态转移发一条;`failure_*` 仅 failed 时含 |
+| `run.status` | orchestrator 内生 | `{ "status": "running", "phase": "StreamingTurn", "failure_reason": "", "failure_message": "", "pr_url": "", "pr_number": 0 }` | 每次状态转移发一条;`failure_*` 仅 failed 时含;**`pr_url`/`pr_number` 仅 draft PR 开好后(ST-1)含,orchestrator 会在开 PR 后补发一条带 `pr_url` 的 `run.status`,让在连的 console 无需重取即可显示链接** |
 | `agent.text` | runner | `{ "text": "我先读一下 README" }` | agent 的自然语言输出增量 |
 | `agent.tool_call` | runner | `{ "tool": "edit", "args": { "path": "README.md" }, "call_id": "c1" }` | agent 发起一次工具调用 |
 | `agent.tool_result` | runner | `{ "call_id": "c1", "ok": true, "output": "...", "exit_code": 0 }` | 对应工具调用的结果(命令输出等) |
 | `run.artifact` | orchestrator 内生 | `{ "kind": "diff", "bytes": 214 }` | 产物已就绪的信号(内容经 §2.4 取) |
 | `run.failure` | runner(可选) | `{ "reason": "clone_failed", "message": "fatal: repository not found" }` | runner 主动精化失败原因(见 §1.4) |
+| `run.git` | runner(**ST-1**,`draft_pr` 模式) | `{ "branch": "agent/run-<id>", "commit_sha": "abcd..." }` | runner 推送 `agent/run-<id>` 分支后上报;orchestrator 据此(以 `branch` 为幂等键)开 draft PR。首个非空 `branch` 生效(first-writer-wins),重发为幂等空操作 |
 
 - `payload` 除上述约定键外可含额外键,客户端应容忍未知键。
 - `agent.tool_call` 与 `agent.tool_result` 建议以 `call_id` 关联配对渲染。
@@ -434,6 +480,15 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
 | `MODEL_NAME` | 环境 `MODEL_NAME`(默认 `mock/mock-model`) | jcode 的 `provider/model` 标识;runner 据此为未知 provider 写 `custom_models` 配置项 |
 | `ORCH_BASE_URL` | 环境 `ORCH_BASE_URL` | orchestrator 基址,runner 回传事件/产物用 |
 | `RUN_TOKEN` | 每 run 随机生成 | Bearer,仅本 run 有效;打 `/internal/v1/runs/{RUN_ID}/*` |
+| `GIT_MODE` | project.git_mode(缺 token 时降级) | **(ST-1)** `readonly`(默认,diff-only)\| `draft_pr`(推分支) |
+| `GIT_BRANCH` | `agent/run-<RUN_ID>` | **(ST-1)** `draft_pr` 时要创建/推送的命名分支 |
+| `GIT_PUSH_URL` | `provider_url`(或 `GITEA_URL`)+ `provider_repo` | **(ST-1)** https 推送 origin,如 `http://gitea.../owner/repo.git` |
+| `GIT_TOKEN` | 环境 `GITEA_TOKEN` | **(ST-1)** provider token,作为 https userinfo 推送用;仅命令行传参,不落盘 |
+| `GIT_BASE_BRANCH` | project.default_branch | **(ST-1)** PR base 分支(信息性;PR base 实际由 orchestrator 设) |
+
+> **(ST-1)** 仅当 project `git_mode=draft_pr` **且** orchestrator 配了 `GITEA_TOKEN`
+> 时才注入上面这组 `GIT_*`(且 `GIT_MODE=draft_pr`)。缺 token 或缺 provider 配置
+> 时 `GIT_MODE=readonly`,runner 退化为纯 diff——**readonly 默认路径完全不变**。
 
 **契约要点(runner agent 必读)**:
 
@@ -459,6 +514,48 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
   上传 diff(基线 = clone 时 HEAD,`git add -N .` 纳入未跟踪文件)。`orchclient`
   是一个仅依赖标准库的小工具(base 镜像无 curl/wget);当 `ORCH_BASE_URL/RUN_ID/
   RUN_TOKEN` 任一缺失时为安全空操作,保证 runner 可独立运行。
+
+---
+
+## 6a · Gitea draft-PR 闭环(ST-1)
+
+> 决策 D08(默认 draft PR / 可退只读)+ D09(Gitea 优先)。**硬把关:永不自动
+> merge、永不自动触发 CI。** 失败降级:任一步失败仍产出 diff 产物,不因缺 PR
+> 出口而回退——除**推送失败**外(见下)。
+
+**职责划分**:runner 拥有 checkout,负责**推分支**;orchestrator 拥有 provider
+适配器,负责**幂等开 PR**。
+
+1. **runner(推送)**:`git_mode=draft_pr` 时,一次成功且 diff 非空的 run,runner
+   把改动提交到分支 `agent/run-<RUN_ID>` 并用 `GIT_TOKEN` 经 https 推到 `GIT_PUSH_URL`,
+   然后上报 **`run.git` 事件** `{branch, commit_sha}`(见 §4)。
+   - **推送失败**:runner 发 `run.failure{reason:push_failed, message}` 再非 0 退出。
+     此时 run 判 `failed(push_failed)`——把「run 跑通但分支发布不了」显式暴露,而非
+     静默吞掉。
+2. **orchestrator(开 PR)**:reconciler 观察到一个 **succeeded** 且 project 为
+   `draft_pr`、已上报 `git_branch`、但尚无 `pr_url` 的 run →
+   - **幂等**:先 `GET /repos/{owner}/{repo}/pulls?state=open` 按 head 分支查已存在
+     PR(覆盖「开了 PR 但持久化前崩溃」与人工已开的情况);已存在则**采用**其
+     url/number,不再新建。
+   - 否则 `POST /repos/{owner}/{repo}/pulls`,title=`WIP: [jcode] <prompt 首行>`
+     (Gitea 无独立 draft 字段,**WIP 前缀即 draft/工作草稿**),body 关联 run id,
+     `base` = project.default_branch,`head` = `agent/run-<id>`。
+   - 用 **`MarkPRCreated`**(first-writer-wins,仅在 `pr_url` 为空时写)持久化
+     `pr_url`/`pr_number`,并补发一条带 `pr_url` 的 `run.status`,让在连 console
+     无需重取即可显示「Draft PR #N ↗」。
+   - **绝不 merge、绝不触发 CI。**
+   - provider 未配(orchestrator 无 `GITEA_URL`/`GITEA_TOKEN`)→ 该步为空操作,run
+     停在 diff-only(不失败)。provider 瞬时报错 → 本 tick 不写 `pr_url`,run 留在
+     待开 PR 扫描里,下个 tick 重试。
+
+**幂等性总结**:`run.git`(按 branch,first-writer-wins)、`FindOpenPRByHead`
+(建前先查)、`MarkPRCreated`(`pr_url` 空才写)三处叠加,保证**并发/重试/崩溃恢复**
+下每个 run 至多一个 draft PR,且 `pr_url` 一旦记录不被覆盖。
+
+**新增/变更清单**:迁移 `0004_gitea_draft_pr`(projects 加 `git_mode/provider/
+provider_url/provider_repo`;runs 加 `git_branch/commit_sha/pr_url/pr_number`);
+`failure_reason` 枚举加 `push_failed`;事件加 `run.git`;`run.status` payload 增可选
+`pr_url/pr_number`。均为非破坏性新增。
 
 ---
 

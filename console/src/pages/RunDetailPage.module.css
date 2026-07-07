@@ -149,13 +149,31 @@
   color: var(--color-text-muted);
 }
 
-.mrLink {
-  align-self: flex-start;
-  font-size: var(--fs-sm);
-  padding: var(--space-2) var(--space-4);
+/* Draft PR chip (ST-1) — bordered secondary chip in the status header, mono PR
+   number, opens the Gitea PR in a new tab. Matches the .retriedFrom chip
+   language (hairline border, pill radius) with the violet accent for the link. */
+.prChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-tiny);
+  font-weight: var(--fw-medium);
+  padding: 2px var(--space-3);
   border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-pill);
   color: var(--color-accent);
+  white-space: nowrap;
+}
+.prChip:hover {
+  color: var(--color-accent-hover);
+  border-color: var(--color-accent-dim);
+}
+.prNumber {
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+}
+.prArrow {
+  color: var(--color-text-dim);
 }
 
 /* tabs */

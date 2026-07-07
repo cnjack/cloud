@@ -82,6 +82,30 @@
 > - **若本期有余量做:** 只做 Gitea 一家;失败降级为「仍然产出 diff 产物」,不阻断 run 判成功。
 > - 对应 User Journey 里以 `(ST)` 标注的可选步骤。
 
+> **✅ ST-1 交付说明(已实现,`git_mode` 默认 readonly / draft_pr 可选)。** 契约与语义见
+> [11-api.md §1.1/§1.2/§1.4/§4/§6a](11-api.md)。落地形态:
+> - **Project 增 git 集成配置**:`git_mode`(`readonly` 默认 = 今日 diff-only 行为 |
+>   `draft_pr`)、`provider`(`gitea`)、`provider_url`、`provider_repo`(`owner/name`);
+>   token 走 orchestrator 环境 `GITEA_TOKEN`(单租户 MVP)。迁移 `0004_gitea_draft_pr`。
+> - **runner 推分支**(它拥有 checkout):`draft_pr` 且 diff 非空时提交到
+>   `agent/run-<id>` 并用注入的 token 经 https 推送,报 `run.git`{branch,commit_sha};
+>   推送失败 → `run.failure(push_failed)` 后非 0 退出(枚举新增 `push_failed`)。
+> - **orchestrator 开 draft PR**(它拥有 provider 适配器 + 可幂等重试):reconciler
+>   观察到 succeeded + draft_pr + 已报 branch + 无 PR 的 run → 先按 head 查已存在 PR
+>   再建,title `WIP: [jcode] <prompt 首行>`,base = 默认分支;`MarkPRCreated` 幂等写
+>   `pr_url`/`pr_number`。**永不 merge、永不触发 CI。**
+> - **console**:Run 增 `pr_url`/`pr_number`,详情页状态头出现「Draft PR #N ↗」链接徽章;
+>   `failure_reason` 增 `push_failed`;mock demo 含一条带假 PR 链接的 run。
+> - **deploy**:新增 `deploy/base/gitea/`(gitea/gitea:1.22 Deployment+Service+PVC,
+>   headless install;bootstrap Job 建 org `jcloud`/repo `seed`/token 并写入
+>   `gitea-orchestrator` Secret,orchestrator 以 `optional` envFrom 消费)。旧 git-daemon
+>   gitseed 保持不变(J1-J3 仍依赖)。
+> - **e2e**:新增 journey `j4-gitea.sh`(traceability `J-MR`):建 draft_pr 项目 → run →
+>   断言 succeeded、`run.git`(`agent/run-*`)、`pr_url` 非空、Gitea API 显示 PR 为 draft
+>   且 head=分支/base=main/未 merged、diff 产物仍在。`ONLY=j4` 可单跑;Gitea 缺失时整条
+>   SKIP(stretch 不阻断 J1-J3)。
+> - **对应 AC-ST**(见 §7 验收 Stretch 项)。
+
 ---
 
 ## 4 · 非目标(本期)

@@ -297,6 +297,10 @@ func (s *Server) handleIngestEvents(w http.ResponseWriter, r *http.Request, runI
 	// classification does not overwrite the more specific one.
 	s.applyRunnerFailure(r.Context(), runID, req.Events)
 
+	// Record a runner-reported pushed branch (run.git) so the reconciler can open
+	// the draft PR against it (ST-1).
+	s.applyRunGit(r.Context(), runID, req.Events)
+
 	// Fan out to live subscribers using the server-allocated seq (best-effort;
 	// durability already done).
 	if s.hub != nil {
@@ -328,6 +332,27 @@ func (s *Server) applyRunnerFailure(ctx context.Context, runID string, events []
 		}
 		if _, err := s.st.SetRunnerFailure(ctx, runID, fr, msg); err != nil {
 			s.log.Warn("ingest: record failure reason", "run", runID, "err", err)
+		}
+		return
+	}
+}
+
+// applyRunGit looks for a run.git event and, if present, records the pushed
+// branch/commit on the run (first-writer-wins in the store). This is what lets
+// the reconciler's PR pass find the run and open a draft PR against the branch
+// (ST-1). It never changes status and is a no-op when the payload is empty.
+func (s *Server) applyRunGit(ctx context.Context, runID string, events []ingestEvent) {
+	for _, e := range events {
+		if e.Type != domain.EventRunGit {
+			continue
+		}
+		branch, _ := e.Payload["branch"].(string)
+		commit, _ := e.Payload["commit_sha"].(string)
+		if branch == "" {
+			return // nothing actionable
+		}
+		if _, err := s.st.SetRunGit(ctx, runID, branch, commit); err != nil {
+			s.log.Warn("ingest: record run git", "run", runID, "err", err)
 		}
 		return
 	}

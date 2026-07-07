@@ -1,0 +1,92 @@
+# In-cluster Gitea for the ST-1 draft-PR closed loop (docs/10-prd.md §3.3,
+# decision D09 "Gitea first"). A runner Job in git_mode=draft_pr pushes its
+# agent/run-<id> branch here over https, and the orchestrator opens a DRAFT PR
+# against it via the Gitea API. Nothing is ever auto-merged and CI is never
+# auto-triggered (hard gate, D08).
+#
+# Headless install: GITEA__security__INSTALL_LOCK=true skips the web installer;
+# sqlite3 keeps it a single self-contained pod (no extra Postgres). The admin
+# user + org/repo/token are provisioned by the bootstrap Job (bootstrap-job.yaml)
+# rather than baked in here, so the token can be captured into a Secret the
+# orchestrator consumes.
+#
+# This is ADDITIVE: the old git-daemon `git-seed` server stays intact so the
+# existing e2e journeys J1-J3 (which clone git://git.../seed.git) are unaffected.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea
+  namespace: jcloud
+  labels:
+    app.kubernetes.io/name: gitea
+    app.kubernetes.io/part-of: jcloud
+spec:
+  replicas: 1
+  # Single ReadWriteOnce PVC: never run two pods mounting it at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitea
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitea
+        app.kubernetes.io/part-of: jcloud
+    spec:
+      containers:
+        - name: gitea
+          image: gitea/gitea:1.22
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: USER_UID
+              value: "1000"
+            - name: USER_GID
+              value: "1000"
+            # Headless install (no web installer).
+            - name: GITEA__security__INSTALL_LOCK
+              value: "true"
+            # Reachable in-cluster DNS name; used as the clone/push origin and
+            # the API base the orchestrator + bootstrap Job talk to.
+            - name: GITEA__server__ROOT_URL
+              value: "http://gitea.jcloud.svc.cluster.local:3000/"
+            - name: GITEA__server__HTTP_PORT
+              value: "3000"
+            - name: GITEA__server__OFFLINE_MODE
+              value: "true"
+            - name: GITEA__database__DB_TYPE
+              value: "sqlite3"
+            # Local dev: allow the runner to push over http (no TLS in-cluster).
+            - name: GITEA__repository__DEFAULT_BRANCH
+              value: "main"
+          ports:
+            - containerPort: 3000
+              name: http
+            - containerPort: 22
+              name: ssh
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /api/healthz
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: gitea-data

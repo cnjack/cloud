@@ -58,6 +58,9 @@ func (m *MemStore) Close() {}
 func (m *MemStore) CreateProject(_ context.Context, p *domain.Project) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if p.GitMode == "" {
+		p.GitMode = domain.GitModeReadonly
+	}
 	m.projects[p.ID] = *p
 	return nil
 }
@@ -310,6 +313,56 @@ func (m *MemStore) ListTerminalRunsWithJob(_ context.Context) ([]domain.Run, err
 	var out []domain.Run
 	for _, r := range m.runs {
 		if r.Status.Terminal() && r.K8sJobName != "" && r.JobCleanedAt == nil {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+// SetRunGit records branch/commit first-writer-wins, no status change.
+func (m *MemStore) SetRunGit(_ context.Context, id, branch, commitSHA string) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if cur.GitBranch == "" {
+		cur.GitBranch = branch
+	}
+	if cur.CommitSHA == "" {
+		cur.CommitSHA = commitSHA
+	}
+	m.runs[id] = cur
+	cp := cur
+	return &cp, nil
+}
+
+// MarkPRCreated stamps pr_url/pr_number idempotently, first-writer-wins.
+func (m *MemStore) MarkPRCreated(_ context.Context, id, prURL string, prNumber int) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if cur.PRURL == "" {
+		cur.PRURL = prURL
+		cur.PRNumber = prNumber
+	}
+	m.runs[id] = cur
+	cp := cur
+	return &cp, nil
+}
+
+// ListRunsAwaitingPR returns succeeded runs with a pushed branch but no PR yet.
+func (m *MemStore) ListRunsAwaitingPR(_ context.Context) ([]domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Run
+	for _, r := range m.runs {
+		if r.Status == domain.StatusSucceeded && r.GitBranch != "" && r.PRURL == "" {
 			out = append(out, r)
 		}
 	}

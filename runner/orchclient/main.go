@@ -6,6 +6,9 @@
 //	orchclient report-failure --reason clone_failed --message "fatal: ..."
 //	    → POST /internal/v1/runs/{RUN_ID}/events  {events:[{seq,type:run.failure,payload:{reason,message}}]}
 //
+//	orchclient report-git --branch agent/run-<id> --commit <sha>
+//	    → POST /internal/v1/runs/{RUN_ID}/events  {events:[{seq,type:run.git,payload:{branch,commit_sha}}]}
+//
 //	orchclient upload-artifact --kind diff --file /out/diff.patch
 //	    → POST /internal/v1/runs/{RUN_ID}/artifact  {kind,content}
 //
@@ -51,17 +54,41 @@ func main() {
 	}
 	c := &client{base: base, runID: runID, token: token, http: &http.Client{Timeout: 10 * time.Second}}
 
+	// entrypoint-posted events (run.failure / run.git) use a HIGH, RESERVED client
+	// seq range so they never collide with the acpdrive emitter's own 1..N runner
+	// stream — the orchestrator dedupes runner events by (run_id, "runner",
+	// client_seq), so reusing a seq acpdrive already sent would silently drop the
+	// event (the run row would still update, but the durable/streamed event would
+	// vanish). Distinct fixed keys keep each entrypoint report idempotent on
+	// re-send without clashing with each other or the agent stream.
+	const (
+		seqReportFailure = 1_000_001
+		seqReportGit     = 1_000_002
+	)
+
 	switch cmd {
 	case "report-failure":
 		fs := flag.NewFlagSet("report-failure", flag.ExitOnError)
-		reason := fs.String("reason", "agent_error", "failure reason (clone_failed|setup_failed|agent_error|timeout)")
+		reason := fs.String("reason", "agent_error", "failure reason (clone_failed|setup_failed|agent_error|timeout|push_failed)")
 		message := fs.String("message", "", "human-readable failure message")
-		seq := fs.Int64("seq", 1, "client seq (idempotency key; server allocates the durable seq)")
+		seq := fs.Int64("seq", seqReportFailure, "client seq (idempotency key; server allocates the durable seq)")
 		_ = fs.Parse(args)
 		if *message == "" {
 			*message = "runner reported a failure"
 		}
 		c.reportFailure(*reason, *message, *seq)
+
+	case "report-git":
+		fs := flag.NewFlagSet("report-git", flag.ExitOnError)
+		branch := fs.String("branch", "", "the pushed branch (agent/run-<id>)")
+		commit := fs.String("commit", "", "the pushed commit sha")
+		seq := fs.Int64("seq", seqReportGit, "client seq (idempotency key; server allocates the durable seq)")
+		_ = fs.Parse(args)
+		if *branch == "" {
+			fmt.Fprintln(os.Stderr, "[orchclient] report-git: --branch is required")
+			os.Exit(2)
+		}
+		c.reportGit(*branch, *commit, *seq)
 
 	case "upload-artifact":
 		fs := flag.NewFlagSet("upload-artifact", flag.ExitOnError)
@@ -104,6 +131,15 @@ func (c *client) reportFailure(reason, message string, seq int64) {
 		"payload": map[string]any{"reason": reason, "message": message},
 	}}}
 	c.postJSON("/internal/v1/runs/"+c.runID+"/events", body, "report-failure")
+}
+
+func (c *client) reportGit(branch, commit string, seq int64) {
+	body := map[string]any{"events": []map[string]any{{
+		"seq":     seq,
+		"type":    "run.git",
+		"payload": map[string]any{"branch": branch, "commit_sha": commit},
+	}}}
+	c.postJSON("/internal/v1/runs/"+c.runID+"/events", body, "report-git")
 }
 
 func (c *client) uploadArtifact(kind, content string) {

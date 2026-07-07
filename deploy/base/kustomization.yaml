@@ -12,4 +12,8 @@ resources:
   - postgres
   - mockllm
   - gitseed
+  # gitea (ST-1 draft-PR target) is ADDITIVE alongside the git-daemon gitseed
+  # server that J1-J3 still depend on. Its bootstrap Job writes the
+  # `gitea-orchestrator` Secret the orchestrator consumes (optional envFrom).
+  - gitea
   - orchestrator

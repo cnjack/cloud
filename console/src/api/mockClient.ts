@@ -193,9 +193,25 @@ export function createMockClient(): ApiClient {
         text: 'Change applied. Producing the unified diff for review.',
       });
     });
+    // ST-1 demo: showcase the Gitea draft-PR closed loop. The runner pushes the
+    // agent/run-<id> branch (run.git), then the diff artifact lands, then the run
+    // succeeds — and the draft PR link is populated on the SAME succeeded frame so
+    // the "Draft PR #N" chip is present the moment the header goes terminal. (The
+    // real orchestrator opens the PR just after success; the console likewise
+    // picks up pr_url via its terminal refetch — this keeps the demo showcase
+    // deterministic without depending on a post-terminal stream frame.)
+    const branch = `agent/run-${run.id}`;
+    schedule(run, 5800, () => {
+      emit(run, 'run.git', { branch, commit_sha: 'a1b2c3d4' });
+    });
     schedule(run, 6000, () => {
       run._diff = SAMPLE_DIFF;
       emit(run, 'run.artifact', { kind: 'diff' });
+      // Populate the draft PR BEFORE the terminal transition so the run object the
+      // terminal refetch reads (mock getRun) already carries pr_url — the chip is
+      // present the moment the header goes terminal.
+      run.pr_url = 'https://gitea.local/jcloud/seed/pulls/42';
+      run.pr_number = 42;
       setStatus(run, 'succeeded');
     });
   }
@@ -239,6 +255,8 @@ export function createMockClient(): ApiClient {
       created_at: nowISO(),
       started_at: null,
       finished_at: null,
+      pr_url: null,
+      pr_number: null,
       _events: [],
       _timers: [],
       _subs: new Set(),

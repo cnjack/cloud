@@ -817,3 +817,114 @@ func TestArtifactRoundTrip(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestIngestRunGitRecordsBranch is the ingest regression for ST-1: a run.git
+// event from the runner records the pushed branch/commit on the run so the
+// reconciler's PR pass can find it.
+func TestIngestRunGitRecordsBranch(t *testing.T) {
+	ts, st, _ := newTestServer(t)
+	p := createProject(t, ts)
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+		map[string]string{"prompt": "task"})
+	var run domain.Run
+	decode(t, resp, &run)
+	ctx := context.Background()
+
+	tok, _ := auth.GenerateRunToken()
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", auth.HashToken(tok), "PreparingWorkspace"); err != nil {
+		t.Fatalf("setup token: %v", err)
+	}
+
+	body := map[string]any{"events": []map[string]any{
+		{"seq": 5, "type": "run.git", "payload": map[string]any{"branch": "agent/run-" + run.ID, "commit_sha": "cafef00d"}},
+	}}
+	resp = do(t, "POST", ts.URL+"/internal/v1/runs/"+run.ID+"/events", tok, body)
+	resp.Body.Close()
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.GitBranch != "agent/run-"+run.ID {
+		t.Fatalf("git_branch=%q want agent/run-%s", got.GitBranch, run.ID)
+	}
+	if got.CommitSHA != "cafef00d" {
+		t.Fatalf("commit_sha=%q want cafef00d", got.CommitSHA)
+	}
+}
+
+// TestIngestPushFailedClassification proves the runner can report a push_failed
+// reason via run.failure and it is accepted as a valid classification (ST-1).
+func TestIngestPushFailedClassification(t *testing.T) {
+	ts, st, _ := newTestServer(t)
+	p := createProject(t, ts)
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+		map[string]string{"prompt": "task"})
+	var run domain.Run
+	decode(t, resp, &run)
+	ctx := context.Background()
+
+	tok, _ := auth.GenerateRunToken()
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", auth.HashToken(tok), "PreparingWorkspace"); err != nil {
+		t.Fatalf("setup token: %v", err)
+	}
+
+	body := map[string]any{"events": []map[string]any{
+		{"seq": 9, "type": "run.failure", "payload": map[string]any{"reason": "push_failed", "message": "remote rejected: protected branch"}},
+	}}
+	resp = do(t, "POST", ts.URL+"/internal/v1/runs/"+run.ID+"/events", tok, body)
+	resp.Body.Close()
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.FailureReason != domain.FailurePushFailed {
+		t.Fatalf("reason=%s want push_failed (must not be downgraded to agent_error)", got.FailureReason)
+	}
+	if got.FailureMessage == "" {
+		t.Fatal("push_failed message should be recorded")
+	}
+}
+
+// TestCreateDraftPRProject proves the project create accepts + persists git
+// integration config and validates draft_pr requirements.
+func TestCreateDraftPRProject(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+
+	// Happy path: draft_pr with gitea + provider_repo.
+	resp := do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]any{
+		"name": "gp", "repo_url": "http://git/x.git",
+		"git_mode": "draft_pr", "provider": "gitea",
+		"provider_url": "http://gitea", "provider_repo": "jcloud/seed",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create draft_pr project: status=%d want 201", resp.StatusCode)
+	}
+	var p domain.Project
+	decode(t, resp, &p)
+	if p.GitMode != domain.GitModeDraftPR || p.Provider != domain.ProviderGitea || p.ProviderRepo != "jcloud/seed" {
+		t.Fatalf("git config not persisted: %+v", p)
+	}
+
+	// draft_pr WITHOUT provider_repo -> 400.
+	resp = do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]any{
+		"name": "bad", "repo_url": "http://git/x.git", "git_mode": "draft_pr",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("draft_pr without repo: status=%d want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Unknown git_mode -> 400.
+	resp = do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]any{
+		"name": "bad2", "repo_url": "http://git/x.git", "git_mode": "merge",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad git_mode: status=%d want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Default (omit git_mode) -> readonly.
+	resp = do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]any{
+		"name": "ro", "repo_url": "http://git/x.git",
+	})
+	decode(t, resp, &p)
+	if p.GitMode != domain.GitModeReadonly {
+		t.Fatalf("default git_mode=%q want readonly", p.GitMode)
+	}
+}

@@ -55,6 +55,14 @@ type Config struct {
 	JobLauncher      string   // JOB_LAUNCHER, default "kubernetes"
 	RunnerNetwork    string   // RUNNER_NETWORK — docker network for process launcher (optional)
 	RunnerDockerArgs []string // RUNNER_DOCKER_ARGS — extra `docker run` args, space-split (optional)
+
+	// Gitea draft-PR integration (ST-1; single-tenant MVP). GiteaURL is the Gitea
+	// root; GiteaToken is a personal access token with repo write scope. When a
+	// project is git_mode=draft_pr, the reconciler uses these to open the draft
+	// PR, and the runner receives GiteaToken (as GIT_TOKEN) to push the branch.
+	// Both empty => draft-PR mode degrades to diff-only (never fails a run).
+	GiteaURL   string // GITEA_URL — Gitea base URL for the PR API + push origin
+	GiteaToken string // GITEA_TOKEN — PAT injected to runner + used by orchestrator
 }
 
 // Load resolves configuration from the environment, returning an error listing
@@ -87,6 +95,8 @@ func Load() (*Config, error) {
 		JobLauncher:       getenv("JOB_LAUNCHER", "kubernetes"),
 		RunnerNetwork:     os.Getenv("RUNNER_NETWORK"),
 		RunnerDockerArgs:  strings.Fields(os.Getenv("RUNNER_DOCKER_ARGS")),
+		GiteaURL:          os.Getenv("GITEA_URL"),
+		GiteaToken:        os.Getenv("GITEA_TOKEN"),
 	}
 
 	var missing []string

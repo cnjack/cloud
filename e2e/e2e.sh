@@ -24,8 +24,8 @@
 # kubectl. See README.md.
 #
 # Usage:
-#   ./e2e.sh                 # full suite
-#   ONLY=j1 ./e2e.sh         # a single journey (j1|j2|j3)
+#   ./e2e.sh                 # full suite (J1-J3; J4 draft-PR runs if Gitea is up)
+#   ONLY=j1 ./e2e.sh         # a single journey (j1|j2|j3|j4)
 #   LOCAL_PORT=18099 ./e2e.sh
 
 set -uo pipefail
@@ -125,13 +125,16 @@ source "$HERE/j1.sh"
 source "$HERE/j2.sh"
 # shellcheck source=j3.sh
 source "$HERE/j3.sh"
+# shellcheck source=j4-gitea.sh
+source "$HERE/j4-gitea.sh"
 
 case "$ONLY" in
   j1)  j1_run ;;
   j2)  j2_run ;;
   j3)  j3_run ;;
-  all) j1_run; j2_run; j3_run ;;
-  *)   echo "unknown ONLY=$ONLY (want j1|j2|j3|all)" >&2; exit 6 ;;
+  j4)  j4_run ;;
+  all) j1_run; j2_run; j3_run; j4_run ;;
+  *)   echo "unknown ONLY=$ONLY (want j1|j2|j3|j4|all)" >&2; exit 6 ;;
 esac
 
 # --- 5. latency spot-check (informational) ----------------------------------

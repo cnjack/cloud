@@ -109,4 +109,36 @@ describe('RunDetailPage — resilient error states', () => {
     await waitFor(() => expect(screen.getByTestId('stream-error')).toBeTruthy());
     expect(screen.getByTestId('stream-reconnect')).toBeTruthy();
   });
+
+  // ST-1: the draft PR chip renders only when pr_url is present, shows the mono
+  // "#N", and opens the Gitea PR in a new tab.
+  it('renders the draft-PR chip with the PR number and opens in a new tab', async () => {
+    const prRun = baseRun({
+      status: 'succeeded',
+      finished_at: '2026-07-07T00:05:00Z',
+      pr_url: 'https://gitea.local/jcloud/seed/pulls/42',
+      pr_number: 42,
+    });
+    const { client, ctl } = makeClient();
+    ctl.getRun.mockResolvedValue(prRun);
+    renderPage(client, prRun);
+
+    const link = (await screen.findByTestId('pr-link')) as HTMLAnchorElement;
+    expect(link.textContent).toContain('Draft PR');
+    expect(link.textContent).toContain('#42');
+    expect(link.getAttribute('href')).toBe('https://gitea.local/jcloud/seed/pulls/42');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toContain('noreferrer');
+  });
+
+  // No PR link when the run has no pr_url (readonly / diff-only run).
+  it('does not render the draft-PR chip when pr_url is absent', async () => {
+    const noPr = baseRun({ status: 'succeeded', finished_at: '2026-07-07T00:05:00Z' });
+    const { client, ctl } = makeClient();
+    ctl.getRun.mockResolvedValue(noPr);
+    renderPage(client, noPr);
+
+    await waitFor(() => expect(screen.getByTestId('run-status-header')).toBeTruthy());
+    expect(screen.queryByTestId('pr-link')).toBeNull();
+  });
 });

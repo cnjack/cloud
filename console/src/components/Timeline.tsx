@@ -179,6 +179,20 @@ function TimelineRow({ item }: { item: TimelineItem }) {
         </li>
       );
 
+    case 'git':
+      return (
+        <li className={styles.row} data-kind="git">
+          <RowGutter time={time} marker="artifact" />
+          <div className={styles.sysRow}>
+            <span className={styles.sysLabel}>pushed branch</span>
+            <code className={styles.artifactKind}>{item.branch}</code>
+            {item.commitSha && (
+              <code className={styles.artifactKind}>@ {item.commitSha}</code>
+            )}
+          </div>
+        </li>
+      );
+
     default:
       return (
         <li className={styles.row} data-kind="unknown">

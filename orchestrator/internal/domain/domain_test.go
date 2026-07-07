@@ -72,7 +72,8 @@ func TestStatusTerminalAndValid(t *testing.T) {
 }
 
 func TestValidFailureReason(t *testing.T) {
-	valid := []FailureReason{FailureCloneFailed, FailureSetupFailed, FailureAgentError, FailureTimeout}
+	// push_failed (ST-1) is a first-class reason alongside the original four.
+	valid := []FailureReason{FailureCloneFailed, FailureSetupFailed, FailureAgentError, FailureTimeout, FailurePushFailed}
 	for _, r := range valid {
 		if !ValidFailureReason(r) {
 			t.Errorf("%s should be valid", r)
@@ -80,6 +81,15 @@ func TestValidFailureReason(t *testing.T) {
 	}
 	if ValidFailureReason("nope") {
 		t.Error("nope should be invalid")
+	}
+}
+
+func TestValidGitMode(t *testing.T) {
+	if !ValidGitMode(GitModeReadonly) || !ValidGitMode(GitModeDraftPR) {
+		t.Error("readonly and draft_pr must be valid git modes")
+	}
+	if ValidGitMode("") || ValidGitMode("merge") {
+		t.Error("empty/unknown git modes must be invalid")
 	}
 }
 

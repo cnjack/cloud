@@ -251,3 +251,79 @@ func TestPGMarkJobCleanedPreservesJobName(t *testing.T) {
 		}
 	}
 }
+
+// TestPGMarkPRCreatedIdempotent is the real-DB regression for MarkPRCreated
+// (ST-1 migration 0004): first-writer-wins so a retried reconcile cannot
+// double-open, and status/other columns are untouched. Requires JCLOUD_PG_DSN.
+func TestPGMarkPRCreatedIdempotent(t *testing.T) {
+	ctx := context.Background()
+	st, runID := pgTestStore(t)
+
+	// Record a branch first (as the runner would), then open the PR.
+	if _, err := st.SetRunGit(ctx, runID, "agent/run-x", "sha1"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.MarkPRCreated(ctx, runID, "http://gitea/pulls/5", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PRURL != "http://gitea/pulls/5" || got.PRNumber != 5 {
+		t.Fatalf("first mark: url=%q num=%d", got.PRURL, got.PRNumber)
+	}
+	// A second (racing/retried) mark with different values must be ignored.
+	got, err = st.MarkPRCreated(ctx, runID, "http://gitea/pulls/9", 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PRURL != "http://gitea/pulls/5" || got.PRNumber != 5 {
+		t.Fatalf("second mark clobbered PR: url=%q num=%d", got.PRURL, got.PRNumber)
+	}
+	// Branch/commit preserved; status unchanged.
+	if got.GitBranch != "agent/run-x" || got.CommitSHA != "sha1" {
+		t.Fatalf("git fields lost: branch=%q commit=%q", got.GitBranch, got.CommitSHA)
+	}
+}
+
+// TestPGListRunsAwaitingPR proves the awaiting-PR scan filters correctly on a
+// real DB. Requires JCLOUD_PG_DSN.
+func TestPGListRunsAwaitingPR(t *testing.T) {
+	ctx := context.Background()
+	st, runID := pgTestStore(t)
+
+	// The seeded run is queued with no branch: not awaiting.
+	if runs, _ := st.ListRunsAwaitingPR(ctx); containsRun(runs, runID) {
+		t.Fatal("queued run should not be awaiting PR")
+	}
+	// Move it to succeeded with a branch.
+	if _, err := st.ScheduleRun(ctx, runID, "job", "hash", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkRunning(ctx, runID, "StreamingTurn", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkSucceeded(ctx, runID, "Succeeded", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetRunGit(ctx, runID, "agent/run-x", "sha"); err != nil {
+		t.Fatal(err)
+	}
+	if runs, _ := st.ListRunsAwaitingPR(ctx); !containsRun(runs, runID) {
+		t.Fatal("succeeded run with branch + no PR should be awaiting")
+	}
+	// Once the PR is stamped it drops out of the scan.
+	if _, err := st.MarkPRCreated(ctx, runID, "http://gitea/pulls/1", 1); err != nil {
+		t.Fatal(err)
+	}
+	if runs, _ := st.ListRunsAwaitingPR(ctx); containsRun(runs, runID) {
+		t.Fatal("run with PR should no longer be awaiting")
+	}
+}
+
+func containsRun(runs []domain.Run, id string) bool {
+	for _, r := range runs {
+		if r.ID == id {
+			return true
+		}
+	}
+	return false
+}
