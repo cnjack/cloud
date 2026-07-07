@@ -284,10 +284,20 @@ fi
 if [ "$GIT_MODE" = "draft_pr" ]; then
   BRANCH_NAME="${BRANCH_NAME:-jcode/run-$RUN_ID}"
   [ -n "$BASE_REF" ] || die setup_failed "draft_pr requires a base commit but none was recorded"
-  log "draft_pr: committing agent changes onto $BRANCH_NAME and bundling"
 
-  git -C "$WORKSPACE" checkout -q -b "$BRANCH_NAME" \
-    || die agent_error "could not create branch $BRANCH_NAME"
+  # Update mode (M7 webhook @mention task): BRANCH_NAME == BASE_BRANCH, i.e. the
+  # agent builds ON an existing PR head branch and pushes back to it. We are
+  # ALREADY on that branch after the checkout above, so do NOT create a new
+  # branch (it exists) — just commit onto it. Otherwise (ordinary draft PR) cut a
+  # fresh jcode/run-<id> branch off the base. Either way the bundle below is
+  # <start SHA>..HEAD, so the orchestrator reconstructs exactly the new commits.
+  if [ -n "$BASE_BRANCH" ] && [ "$BRANCH_NAME" = "$BASE_BRANCH" ]; then
+    log "draft_pr update mode: committing agent changes onto existing branch $BRANCH_NAME (base $BASE_REF)"
+  else
+    log "draft_pr: committing agent changes onto new branch $BRANCH_NAME and bundling"
+    git -C "$WORKSPACE" checkout -q -b "$BRANCH_NAME" \
+      || die agent_error "could not create branch $BRANCH_NAME"
+  fi
   git -C "$WORKSPACE" add -A >/dev/null 2>&1 || true
   if ! git -C "$WORKSPACE" diff --cached --quiet; then
     git -C "$WORKSPACE" commit -q -m "[jcode] ${TASK_PROMPT%%$'\n'*}" \

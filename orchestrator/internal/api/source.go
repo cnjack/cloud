@@ -175,9 +175,17 @@ func (s *Server) handleIngestBundle(w http.ResponseWriter, r *http.Request, runI
 		writeError(w, http.StatusInternalServerError, "internal", "could not store bundle")
 		return
 	}
-	// Record the deterministic push branch so the run enters the PR-open scan.
-	// git_branch is set by the orchestrator (never runner-reported now).
+	// Record the push branch so the run enters the right scan. It is the run's
+	// deterministic branch — jcode/run-<id> for a normal draft-PR run, or the
+	// existing PR head branch for a webhook @mention task (M7). git_branch is set
+	// by the orchestrator (never runner-reported now) so runner + control plane
+	// always agree without the runner reporting it.
 	branch := domain.RunBranchName(runID)
+	if run, err := s.st.GetRun(r.Context(), runID); err == nil {
+		branch = domain.RunPushBranch(run)
+	} else {
+		s.log.Warn("ingest bundle: load run for push branch", "run", runID, "err", err)
+	}
 	if _, err := s.st.SetRunGit(r.Context(), runID, branch, ""); err != nil {
 		s.log.Warn("ingest bundle: record branch", "run", runID, "err", err)
 	}

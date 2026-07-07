@@ -1,0 +1,438 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/cnjack/jcloud/internal/config"
+	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/provider"
+	"github.com/cnjack/jcloud/internal/sse"
+	"github.com/cnjack/jcloud/internal/store"
+)
+
+const webhookSecret = "s3cr3t-webhook-key"
+
+// --- pure parser (table-driven) ---------------------------------------------
+
+func TestParseMentionCommand(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		kind commandKind
+		task string
+	}{
+		{"review exact", "@jcode review", cmdReview, ""},
+		{"review case-insensitive mention + word", "@JCODE Review", cmdReview, ""},
+		{"review leading whitespace", "   \n @jcode review\n", cmdReview, ""},
+		{"task", "@jcode Add a CONTRIBUTING.md with guidelines", cmdTask, "Add a CONTRIBUTING.md with guidelines"},
+		{"task multiword starting review", "@jcode review the auth flow and refactor", cmdTask, "review the auth flow and refactor"},
+		{"task trims surrounding space", "@jcode   do the thing  ", cmdTask, "do the thing"},
+		{"no mention", "looks good to me", cmdNone, ""},
+		{"mention mid-comment (not a command)", "cc @jcode please", cmdNone, ""},
+		{"bare mention", "@jcode", cmdNone, ""},
+		{"bare mention trailing space", "@jcode   ", cmdNone, ""},
+		{"not our handle", "@jcoder do it", cmdNone, ""},
+		{"empty", "", cmdNone, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseMentionCommand(tc.body)
+			if got.kind != tc.kind || got.task != tc.task {
+				t.Fatalf("parseMentionCommand(%q) = {%d,%q} want {%d,%q}", tc.body, got.kind, got.task, tc.kind, tc.task)
+			}
+		})
+	}
+}
+
+func TestValidGiteaSignature(t *testing.T) {
+	body := []byte(`{"action":"created"}`)
+	mac := hmac.New(sha256.New, []byte(webhookSecret))
+	mac.Write(body)
+	good := hex.EncodeToString(mac.Sum(nil))
+
+	if !validGiteaSignature(webhookSecret, body, good) {
+		t.Error("valid signature rejected")
+	}
+	if validGiteaSignature(webhookSecret, body, good[:len(good)-2]+"00") {
+		t.Error("tampered signature accepted")
+	}
+	if validGiteaSignature(webhookSecret, append(body, '!'), good) {
+		t.Error("signature accepted over a tampered body")
+	}
+	if validGiteaSignature("", body, good) {
+		t.Error("empty secret accepted")
+	}
+	if validGiteaSignature(webhookSecret, body, "") {
+		t.Error("empty signature accepted")
+	}
+	if validGiteaSignature(webhookSecret, body, "not-hex-zz") {
+		t.Error("non-hex signature accepted")
+	}
+}
+
+// --- handler harness --------------------------------------------------------
+
+type webhookFixture struct {
+	ts   *httptest.Server
+	st   *store.MemStore
+	prov *provider.FakeProvider
+	svc  *domain.Service
+}
+
+// newWebhookServer builds a test server with the webhook route enabled (secret
+// set), a gitea PAT (so the user-less receipt/reply resolves a credential), and a
+// fake provider capturing PR-detail reads + issue-comment receipts.
+func newWebhookServer(t *testing.T, st *store.MemStore, secret string) (*httptest.Server, *Server, *provider.FakeProvider) {
+	t.Helper()
+	cfg := &config.Config{
+		ConsoleToken:    consoleToken,
+		ConsoleURL:      "http://console.test",
+		GiteaURL:        "http://gitea.test",
+		GiteaToken:      "gitea-pat",
+		WebhookSecret:   secret,
+		SourceBundleTTL: time.Minute,
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(st, cfg, log, sse.NewHub(), nil)
+	fake := provider.NewFakeProvider()
+	srv.factory = &fakePRFactory{prov: fake}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts, srv, fake
+}
+
+// mkGiteaUser creates a user with a gitea identity whose provider_uid is the
+// (stringified) numeric uid a webhook payload carries. The first user created
+// becomes cluster-admin (store semantics), so create the admin first.
+func mkGiteaUser(t *testing.T, st *store.MemStore, name, uid string) *domain.User {
+	t.Helper()
+	u := &domain.User{ID: domain.NewID(), DisplayName: name, CreatedAt: time.Now().UTC()}
+	id := &domain.UserIdentity{
+		ID: domain.NewID(), Provider: domain.ProviderGitea, ProviderUID: uid,
+		Username: name, AccessTokenEnc: []byte("enc"), CreatedAt: time.Now().UTC(),
+	}
+	if _, err := st.CreateUserWithIdentity(context.Background(), u, id); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetUser(context.Background(), u.ID)
+	return got
+}
+
+// seedWebhookProject makes a draft_pr gitea service tracking repoOwnerName with
+// `member` at the given role, and seeds the PR-by-number head/base for the fake.
+func seedWebhookProject(t *testing.T, st *store.MemStore, fake *provider.FakeProvider, repoOwnerName string, member *domain.User, role domain.Role) *domain.Service {
+	t.Helper()
+	ctx := context.Background()
+	p := &domain.Project{ID: domain.NewID(), Name: "wh", CreatedAt: time.Now().UTC()}
+	if err := st.CreateProject(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: repoOwnerName, DefaultBranch: "main",
+		GitMode: domain.GitModeDraftPR, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	if member != nil {
+		if err := st.UpsertMember(ctx, &domain.ProjectMember{
+			ProjectID: p.ID, UserID: member.ID, Role: role, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// PR #7 on this repo: head=feature-x, base=main.
+	owner, repo, _ := provider.SplitRepo(repoOwnerName)
+	fake.SeedByNumber(owner, repo, 7, provider.PR{
+		Number: 7, URL: "http://gitea.test/" + repoOwnerName + "/pulls/7",
+		State: "open", HeadRef: "feature-x", BaseRef: "main",
+	})
+	return svc
+}
+
+func commentPayload(action string, isPR bool, commentID, userID int64, body, fullName string, issueNum int) []byte {
+	issue := map[string]any{"number": issueNum}
+	if isPR {
+		issue["pull_request"] = map[string]any{"url": "http://gitea.test/x/pulls/" + strconv.Itoa(issueNum)}
+	}
+	m := map[string]any{
+		"action": action,
+		"comment": map[string]any{
+			"id": commentID, "body": body,
+			"html_url": "http://gitea.test/x/pulls/7#comment-" + strconv.FormatInt(commentID, 10),
+			"user":     map[string]any{"id": userID},
+		},
+		"issue":      issue,
+		"repository": map[string]any{"full_name": fullName},
+	}
+	b, _ := json.Marshal(m)
+	return b
+}
+
+// postWebhook posts body to /webhooks/gitea with a valid signature over the given
+// secret (pass a different secret to forge a bad signature).
+func postWebhook(t *testing.T, ts *httptest.Server, signWith, event string, body []byte) *http.Response {
+	t.Helper()
+	mac := hmac.New(sha256.New, []byte(signWith))
+	mac.Write(body)
+	sig := hex.EncodeToString(mac.Sum(nil))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/webhooks/gitea", bytes.NewReader(body))
+	req.Header.Set("X-Gitea-Event", event)
+	req.Header.Set("X-Gitea-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// --- handler behaviour ------------------------------------------------------
+
+func TestWebhookRouteAbsentWithoutSecret(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, _ := newWebhookServer(t, st, "") // no secret => route not registered
+	resp := postWebhook(t, ts, "anything", "issue_comment", []byte(`{}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status=%d want 404 (route must be absent without a secret)", resp.StatusCode)
+	}
+}
+
+func TestWebhookBadSignature(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, _ := newWebhookServer(t, st, webhookSecret)
+	body := commentPayload("created", true, 100, 1, "@jcode review", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, "wrong-secret", "issue_comment", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d want 401 for a bad signature", resp.StatusCode)
+	}
+}
+
+func TestWebhookNonIssueCommentEventIgnored(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, _ := newWebhookServer(t, st, webhookSecret)
+	body := []byte(`{"action":"opened"}`)
+	resp := postWebhook(t, ts, webhookSecret, "push", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200 (non issue_comment ignored)", resp.StatusCode)
+	}
+}
+
+func TestWebhookNonPRCommentIgnored(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, fake := newWebhookServer(t, st, webhookSecret)
+	body := commentPayload("created", false /*not a PR*/, 101, 1, "@jcode review", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	if fake.CommentCount() != 0 {
+		t.Fatal("a non-PR comment must not reply or create a run")
+	}
+}
+
+func TestWebhookReviewCommandCreatesReviewRun(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, fake := newWebhookServer(t, st, webhookSecret)
+	admin := mkGiteaUser(t, st, "admin", "999") // first user => cluster admin
+	_ = admin
+	member := mkGiteaUser(t, st, "dev", "1001")
+	svc := seedWebhookProject(t, st, fake, "jcloud/seed", member, domain.RoleMember)
+
+	body := commentPayload("created", true, 200, 1001, "@jcode review", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+
+	runs, _ := st.ListRunsByService(context.Background(), svc.ID, 10)
+	if len(runs) != 1 {
+		t.Fatalf("created %d runs, want 1", len(runs))
+	}
+	r := runs[0]
+	if r.Kind != domain.RunKindReview {
+		t.Errorf("kind=%q want review", r.Kind)
+	}
+	if r.Origin != domain.RunOriginWebhook || r.OriginCommentID != "200" {
+		t.Errorf("origin=%q comment=%q want webhook/200", r.Origin, r.OriginCommentID)
+	}
+	if r.PRHeadBranch != "feature-x" || r.PRBaseBranch != "main" {
+		t.Errorf("PR head/base = %q/%q want feature-x/main", r.PRHeadBranch, r.PRBaseBranch)
+	}
+	if r.TriggeredByUserID == nil || *r.TriggeredByUserID != member.ID {
+		t.Errorf("triggered_by = %v want the mapped member", r.TriggeredByUserID)
+	}
+	// A 🚀 receipt was posted on the PR.
+	if fake.CommentCount() != 1 {
+		t.Fatalf("posted %d comments, want 1 receipt", fake.CommentCount())
+	}
+	if got := fake.Comments[0]; got.Number != 7 || !bytes.Contains([]byte(got.Body), []byte("run started")) {
+		t.Errorf("receipt wrong: %+v", got)
+	}
+}
+
+func TestWebhookTaskCommandCreatesAgentRun(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, fake := newWebhookServer(t, st, webhookSecret)
+	member := mkGiteaUser(t, st, "dev", "1001") // first user => cluster admin (fine)
+	svc := seedWebhookProject(t, st, fake, "jcloud/seed", member, domain.RoleMember)
+
+	body := commentPayload("created", true, 201, 1001, "@jcode Add a CONTRIBUTING.md", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+
+	runs, _ := st.ListRunsByService(context.Background(), svc.ID, 10)
+	if len(runs) != 1 {
+		t.Fatalf("created %d runs, want 1", len(runs))
+	}
+	r := runs[0]
+	if r.Kind != domain.RunKindAgent {
+		t.Errorf("kind=%q want agent", r.Kind)
+	}
+	if r.Prompt != "Add a CONTRIBUTING.md" {
+		t.Errorf("prompt=%q want the task text", r.Prompt)
+	}
+	if r.PRHeadBranch != "feature-x" || r.PRURL == "" || r.PRNumber != 7 {
+		t.Errorf("run not associated with the PR: head=%q url=%q num=%d", r.PRHeadBranch, r.PRURL, r.PRNumber)
+	}
+	if r.Origin != domain.RunOriginWebhook {
+		t.Errorf("origin=%q want webhook", r.Origin)
+	}
+}
+
+func TestWebhookUnmappedIdentityReplies(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, fake := newWebhookServer(t, st, webhookSecret)
+	member := mkGiteaUser(t, st, "dev", "1001")
+	svc := seedWebhookProject(t, st, fake, "jcloud/seed", member, domain.RoleMember)
+
+	// Comment from a gitea uid with NO jcloud identity.
+	body := commentPayload("created", true, 202, 55555, "@jcode review", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	runs, _ := st.ListRunsByService(context.Background(), svc.ID, 10)
+	if len(runs) != 0 {
+		t.Fatalf("created %d runs, want 0 (unmapped identity)", len(runs))
+	}
+	if fake.CommentCount() != 1 || !bytes.Contains([]byte(fake.Comments[0].Body), []byte("jcloud account")) {
+		t.Fatalf("expected an explanatory reply, got %+v", fake.Comments)
+	}
+}
+
+func TestWebhookNonMemberReplies(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, fake := newWebhookServer(t, st, webhookSecret)
+	admin := mkGiteaUser(t, st, "admin", "999") // first user => cluster admin
+	_ = admin
+	// stranger has an identity but is NOT a member of the project.
+	stranger := mkGiteaUser(t, st, "stranger", "1002")
+	svc := seedWebhookProject(t, st, fake, "jcloud/seed", nil, domain.RoleViewer)
+
+	body := commentPayload("created", true, 203, 1002, "@jcode review", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	_ = stranger
+	runs, _ := st.ListRunsByService(context.Background(), svc.ID, 10)
+	if len(runs) != 0 {
+		t.Fatalf("created %d runs, want 0 (non-member)", len(runs))
+	}
+	if fake.CommentCount() != 1 || !bytes.Contains([]byte(fake.Comments[0].Body), []byte("project")) {
+		t.Fatalf("expected a no-access reply, got %+v", fake.Comments)
+	}
+}
+
+func TestWebhookViewerCannotRun(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, fake := newWebhookServer(t, st, webhookSecret)
+	admin := mkGiteaUser(t, st, "admin", "999")
+	_ = admin
+	viewer := mkGiteaUser(t, st, "viewer", "1003")
+	svc := seedWebhookProject(t, st, fake, "jcloud/seed", viewer, domain.RoleViewer)
+
+	body := commentPayload("created", true, 204, 1003, "@jcode Add tests", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	runs, _ := st.ListRunsByService(context.Background(), svc.ID, 10)
+	if len(runs) != 0 {
+		t.Fatalf("viewer created %d runs, want 0 (running needs member+)", len(runs))
+	}
+}
+
+func TestWebhookClusterAdminAllowedWithoutMembership(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, fake := newWebhookServer(t, st, webhookSecret)
+	admin := mkGiteaUser(t, st, "admin", "999") // first user => cluster admin
+	svc := seedWebhookProject(t, st, fake, "jcloud/seed", nil, domain.RoleViewer)
+
+	body := commentPayload("created", true, 205, 999, "@jcode review", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	_ = admin
+	runs, _ := st.ListRunsByService(context.Background(), svc.ID, 10)
+	if len(runs) != 1 {
+		t.Fatalf("cluster-admin created %d runs, want 1 (admin bypasses membership)", len(runs))
+	}
+}
+
+func TestWebhookDedupe(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, fake := newWebhookServer(t, st, webhookSecret)
+	member := mkGiteaUser(t, st, "dev", "1001")
+	svc := seedWebhookProject(t, st, fake, "jcloud/seed", member, domain.RoleMember)
+
+	body := commentPayload("created", true, 300, 1001, "@jcode review", "jcloud/seed", 7)
+	for i := 0; i < 3; i++ {
+		resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+		resp.Body.Close()
+	}
+	runs, _ := st.ListRunsByService(context.Background(), svc.ID, 10)
+	if len(runs) != 1 {
+		t.Fatalf("redelivered comment created %d runs, want 1 (dedup)", len(runs))
+	}
+	// Only the first delivery posts a receipt.
+	if fake.CommentCount() != 1 {
+		t.Fatalf("posted %d receipts across 3 deliveries, want 1", fake.CommentCount())
+	}
+}
+
+func TestWebhookNoCommandIgnored(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, fake := newWebhookServer(t, st, webhookSecret)
+	member := mkGiteaUser(t, st, "dev", "1001")
+	svc := seedWebhookProject(t, st, fake, "jcloud/seed", member, domain.RoleMember)
+
+	body := commentPayload("created", true, 400, 1001, "nice work, LGTM", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	runs, _ := st.ListRunsByService(context.Background(), svc.ID, 10)
+	if len(runs) != 0 || fake.CommentCount() != 0 {
+		t.Fatalf("a non-command comment must be a silent no-op (runs=%d comments=%d)", len(runs), fake.CommentCount())
+	}
+}

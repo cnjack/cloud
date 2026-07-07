@@ -20,6 +20,11 @@ type PR struct {
 	Number int
 	URL    string // human-facing HTML URL (persisted on the run as pr_url)
 	State  string // "open" | "closed" | "merged" | "" (unknown) — used by PRStatus
+	// Head/Base branch refs. Populated by PRByNumber (M7 webhook needs them to
+	// build/diff against an existing PR); empty for the list/create shapes that do
+	// not carry them.
+	HeadRef string
+	BaseRef string
 }
 
 // CreateDraftPRInput is the request to open a draft PR.
@@ -53,6 +58,14 @@ type Provider interface {
 	// PRStatus returns the current state of a PR ("open"/"closed"/"merged"), or
 	// state "" when it cannot be determined (M5 GET /pr live status).
 	PRStatus(ctx context.Context, owner, repo string, prNumber int) (*PR, error)
+	// PRByNumber returns a PR by its number/iid with its HeadRef/BaseRef/URL/State
+	// populated. The M7 webhook needs the head/base branches of the PR a comment
+	// was posted on (the webhook payload's issue does not carry them).
+	PRByNumber(ctx context.Context, owner, repo string, prNumber int) (*PR, error)
+	// CreateIssueComment posts a plain comment on an issue / PR conversation (the
+	// M7 webhook receipt "🚀 run started …" and failure replies). It is a comment
+	// only — it never approves/merges, so the never-auto-merge gate holds.
+	CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error
 }
 
 // Factory builds a Provider client for a given git host authenticated with a

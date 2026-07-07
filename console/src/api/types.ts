@@ -149,7 +149,18 @@ export interface Run {
   review_output?: string;
   /** When the review comment was posted to the PR (idempotency marker). */
   review_posted_at?: string | null;
+  /**
+   * How the run was triggered (M7 / blueprint §8): the API/console (default,
+   * absent) or a Gitea PR comment `@jcode …` webhook. A webhook run carries the
+   * triggering comment's url, surfaced as the "from PR comment ↗" header chip.
+   */
+  origin?: RunOrigin;
+  origin_comment_id?: string | null;
+  origin_comment_url?: string | null;
 }
+
+/** How a run was triggered (blueprint §8). Absent is treated as `api`. */
+export type RunOrigin = 'api' | 'webhook';
 
 /* ---- PR view (GET /runs/{id}/pr; blueprint §4/§5) ------------------------ */
 

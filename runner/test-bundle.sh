@@ -158,6 +158,42 @@ set -e
 [ ! -s "$OUT/received.bundle" ] || fail "readonly run POSTed a bundle (default must be diff-only!)"
 pass "readonly (default) run succeeded and produced NO bundle"
 
+# === 6. update mode (M7): BRANCH_NAME == BASE_BRANCH pushes back onto the PR ===
+# A webhook @mention task builds ON the PR head branch: the orchestrator sets
+# BRANCH_NAME == BASE_BRANCH, and the runner must commit onto that SAME branch
+# (not `checkout -b` a new one) and bundle <start SHA>..HEAD carrying it.
+rm -f "$OUT/received.bundle"
+UP_ID="bundle-up-$RANDOM"
+info "running runner draft_pr UPDATE mode run_id=$UP_ID (BRANCH_NAME==BASE_BRANCH==main)"
+docker rm -f "$RUN_CTR" >/dev/null 2>&1 || true
+set +e
+docker run --name "$RUN_CTR" --platform "linux/$TARGETARCH" \
+  --add-host=host.docker.internal:host-gateway \
+  -v "$SEED:/seed:ro" \
+  -e RUN_ID="$UP_ID" \
+  -e TASK_PROMPT="Create a file CONTRIBUTING.md in the repository root." \
+  -e SOURCE_MODE="clone" -e REPO_URL="file:///seed" -e BASE_BRANCH="main" \
+  -e GIT_MODE="draft_pr" -e BRANCH_NAME="main" \
+  -e START_MOCKLLM=1 -e MOCK_SCENARIO="write_file" \
+  -e MODEL_NAME="mock/mock-model" -e MODEL_API_KEY="dummy-key" \
+  -e ORCH_BASE_URL="http://host.docker.internal:$MOCK_PORT" \
+  -e RUN_TOKEN="run-token-up" \
+  "$IMAGE" >"$TMP/up.out" 2>&1
+UP_RC=$?
+set -e
+cat "$TMP/up.out"
+[ "$UP_RC" -eq 0 ] || fail "update-mode run exited $UP_RC (want 0)"
+[ -s "$OUT/received.bundle" ] || fail "update-mode run did not POST a bundle"
+git bundle verify "$OUT/received.bundle" >/dev/null 2>&1 || fail "update-mode bundle is not valid"
+if ! git bundle list-heads "$OUT/received.bundle" | grep -q "refs/heads/main"; then
+  echo "----- bundle heads -----"; git bundle list-heads "$OUT/received.bundle"
+  fail "update-mode bundle does not carry refs/heads/main (BRANCH_NAME==BASE_BRANCH)"
+fi
+if grep -qiE 'git push|pushing|GIT_PUSH_URL' "$TMP/up.out"; then
+  fail "update-mode run attempted to push (the runner must NEVER push)"
+fi
+pass "update-mode run committed onto BASE_BRANCH and bundled refs/heads/main (no push)"
+
 echo
 printf '\033[32m===========================================================\033[0m\n'
 printf '\033[32m  PROVEN (M3): draft_pr runner POSTs a valid bundle to the  \033[0m\n'

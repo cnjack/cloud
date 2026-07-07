@@ -27,7 +27,15 @@ type Publisher interface {
 // seam; gitcli.Git implements it). Injected so the push pass is unit-tested with
 // a fake and no real git/remote.
 type Pusher interface {
+	// PushBundleBranch pushes a NEW branch (draft-PR flow). Returns the tip SHA.
 	PushBundleBranch(ctx context.Context, remoteURL, bundlePath, branch string) (string, error)
+	// PushBundleBranchFFOnly fast-forward pushes a bundle's branch onto an EXISTING
+	// branch (M7 webhook update mode). It NEVER force-pushes. It returns the tip
+	// SHA and alreadyPresent=true when the remote branch already contains the
+	// bundle tip (nothing to push — treat as done); a genuine non-fast-forward
+	// divergence returns an error so the reconciler retries/skips rather than
+	// clobbering the PR head.
+	PushBundleBranchFFOnly(ctx context.Context, remoteURL, bundlePath, branch string) (sha string, alreadyPresent bool, err error)
 }
 
 // Reconciler is the control loop.
@@ -137,6 +145,10 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// uploaded a bundle but have no PR yet (M3). Idempotent: a run stays in the
 	// scan until pr_url is stamped.
 	r.reconcilePRs(ctx)
+
+	// Fast-forward push webhook @mention task bundles back onto their existing PR
+	// head branch (M7 update mode). Idempotent via commit_sha.
+	r.reconcileUpdatePushes(ctx)
 
 	// Post AI-review comments for succeeded review runs whose output has not been
 	// posted to their target PR yet (M3/M5). Idempotent via review_posted_at.
@@ -270,6 +282,94 @@ func (r *Reconciler) pushRunBundle(ctx context.Context, run *domain.Run, svc *do
 	}
 	authed := tok.AuthedURL(rawURL, svc.Provider)
 	return r.pusher.PushBundleBranch(ctx, authed, f.Name(), branch)
+}
+
+// reconcileUpdatePushes fast-forward pushes each succeeded webhook @mention task
+// bundle back onto its existing PR head branch (M7 update mode). No-op when the
+// draft-PR stack is not configured. Idempotent: a run stays in the scan until its
+// commit_sha is stamped (on a successful push, or when the remote already carries
+// the change). It NEVER opens a new PR — the existing PR auto-updates.
+func (r *Reconciler) reconcileUpdatePushes(ctx context.Context) {
+	if r.factory == nil || r.pusher == nil || r.creds == nil {
+		return
+	}
+	runs, err := r.st.ListRunsAwaitingUpdatePush(ctx)
+	if err != nil {
+		r.log.Error("reconcile: list runs awaiting update push", "err", err)
+		return
+	}
+	for i := range runs {
+		run := runs[i]
+		svc, err := r.st.GetService(ctx, run.ServiceID)
+		if err != nil {
+			r.log.Warn("reconcile update: get service", "run", run.ID, "err", err)
+			continue
+		}
+		if !shouldUpdatePush(run, *svc, true) {
+			continue
+		}
+		r.updatePushRun(ctx, &run, svc)
+	}
+}
+
+// updatePushRun ff-only pushes the run's bundle branch onto the existing PR head
+// and stamps commit_sha (which removes it from the scan). A non-fast-forward
+// divergence (someone pushed to the PR head after the run cloned) is logged Warn
+// and left for a later tick / manual resolution — it never force-pushes and never
+// spins (it stays in the scan but each tick just re-Warns until it ff-applies or
+// the remote already contains the change). NEVER opens a PR.
+func (r *Reconciler) updatePushRun(ctx context.Context, run *domain.Run, svc *domain.Service) {
+	branch := run.GitBranch // recorded when the bundle was received (= PR head branch)
+	tok, err := r.creds.Resolve(ctx, svc.Provider, run.TriggeredByUserID)
+	if err != nil {
+		r.log.Warn("reconcile update: no credential; leaving for retry", "run", run.ID, "provider", svc.Provider, "err", err)
+		return
+	}
+
+	bundle, err := r.st.GetRunBundle(ctx, run.ID)
+	if err != nil {
+		r.log.Warn("reconcile update: load bundle", "run", run.ID, "err", err)
+		return
+	}
+	f, err := os.CreateTemp("", "jcloud-update-*.bundle")
+	if err != nil {
+		r.log.Warn("reconcile update: temp bundle", "run", run.ID, "err", err)
+		return
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(bundle); err != nil {
+		f.Close()
+		r.log.Warn("reconcile update: write bundle", "run", run.ID, "err", err)
+		return
+	}
+	f.Close()
+
+	rawURL := domain.ServiceCloneURL(*svc, r.cfg.GiteaURL)
+	if rawURL == "" {
+		r.log.Warn("reconcile update: could not derive push URL", "run", run.ID)
+		return
+	}
+	authed := tok.AuthedURL(rawURL, svc.Provider)
+
+	sha, alreadyPresent, err := r.pusher.PushBundleBranchFFOnly(ctx, authed, f.Name(), branch)
+	if err != nil {
+		// Non-fast-forward (or transient): leave in the scan and retry next tick.
+		// This does NOT spin CPU — the reconciler ticks on its interval.
+		r.log.Warn("reconcile update: ff-only push failed (retry next tick)", "run", run.ID, "branch", branch, "src", tok.Source, "err", err)
+		return
+	}
+	if alreadyPresent {
+		r.log.Info("reconcile update: PR head already contains the change", "run", run.ID, "branch", branch)
+	} else {
+		r.log.Info("reconcile update: pushed onto PR head branch", "run", run.ID, "branch", branch, "src", tok.Source)
+	}
+	// Stamp commit_sha so the run drops out of the update scan (idempotency).
+	if _, err := r.st.SetRunGit(ctx, run.ID, branch, sha); err != nil {
+		r.log.Warn("reconcile update: record commit sha", "run", run.ID, "err", err)
+		return
+	}
+	run.CommitSHA = sha
+	r.emitStatus(ctx, run)
 }
 
 // reconcileReviews posts the AI-review comment for each succeeded review run
@@ -566,6 +666,11 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string) 
 // NO provider token is injected — the runner is credential-free (blueprint §0).
 func (r *Reconciler) addGitEnv(env map[string]string, run *domain.Run, svc *domain.Service) {
 	env["BASE_BRANCH"] = svc.DefaultBranch
+	// M7 webhook @mention task: the baseline IS the PR head branch, so the agent
+	// builds on the existing PR and the produced branch pushes back to it (§8).
+	if run.Kind == domain.RunKindAgent && run.PRHeadBranch != "" {
+		env["BASE_BRANCH"] = run.PRHeadBranch
+	}
 
 	if svc.RepoKind == domain.RepoKindProvider {
 		// Unified path: fetch a source bundle from the orchestrator (no token in pod).
@@ -574,15 +679,17 @@ func (r *Reconciler) addGitEnv(env map[string]string, run *domain.Run, svc *doma
 		// Raw repo: clone the opaque URL directly (anonymous / native protocol).
 		env["SOURCE_MODE"] = "clone"
 		env["REPO_URL"] = domain.ServiceCloneURL(*svc, r.cfg.GiteaURL)
-		env["REPO_BRANCH"] = svc.DefaultBranch
+		env["REPO_BRANCH"] = env["BASE_BRANCH"]
 	}
 
 	// Produce a bundle only for a draft_pr PROVIDER service (raw can only be
-	// readonly by construction). readonly stays diff-only.
+	// readonly by construction). readonly stays diff-only. For a webhook task the
+	// push branch is the PR head (BRANCH_NAME == BASE_BRANCH → the entrypoint
+	// bundles startSHA..HEAD onto that same branch); otherwise it is jcode/run-<id>.
 	env["GIT_MODE"] = string(domain.GitModeReadonly)
 	if svc.GitMode == domain.GitModeDraftPR && svc.RepoKind == domain.RepoKindProvider {
 		env["GIT_MODE"] = string(domain.GitModeDraftPR)
-		env["BRANCH_NAME"] = domain.RunBranchName(run.ID)
+		env["BRANCH_NAME"] = domain.RunPushBranch(run)
 	}
 
 	// Review runs diff PR_BASE...PR_HEAD (blueprint §3). Empty for agent runs.

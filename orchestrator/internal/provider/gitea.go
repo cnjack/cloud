@@ -67,6 +67,9 @@ type giteaPR struct {
 	Head    struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
 }
 
 // FindOpenPRByHead lists open PRs and returns the one whose head ref matches
@@ -123,6 +126,29 @@ func (c *GiteaClient) PRStatus(ctx context.Context, owner, repo string, prNumber
 		return nil, err
 	}
 	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged)}, nil
+}
+
+// PRByNumber returns the PR with its head/base branch refs populated (M7 webhook).
+func (c *GiteaClient) PRByNumber(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, prNumber)
+	var pr giteaPR
+	if err := c.do(ctx, http.MethodGet, path, nil, &pr); err != nil {
+		return nil, err
+	}
+	return &PR{
+		Number:  pr.Number,
+		URL:     pr.HTMLURL,
+		State:   prState(pr.State, pr.Merged),
+		HeadRef: pr.Head.Ref,
+		BaseRef: pr.Base.Ref,
+	}, nil
+}
+
+// CreateIssueComment posts a plain comment on a PR/issue conversation (M7
+// receipt + failure replies). Comment only — never approves or merges.
+func (c *GiteaClient) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", owner, repo, issueNumber)
+	return c.do(ctx, http.MethodPost, path, map[string]any{"body": body}, nil)
 }
 
 // prState normalises a provider's (state, merged) pair to our vocabulary.

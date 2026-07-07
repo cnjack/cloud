@@ -135,6 +135,13 @@ func (s *Server) Handler() http.Handler {
 	// Health (unauthenticated).
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
+	// Gitea @mention webhook (M7 / blueprint §8). Public path, self-authenticated
+	// by HMAC signature. Registered ONLY when WEBHOOK_SECRET is configured — with
+	// no secret the route is absent (404) and the system runs normally.
+	if s.cfg.WebhookSecret != "" {
+		mux.HandleFunc("POST /webhooks/gitea", s.handleGiteaWebhook)
+	}
+
 	// Auth endpoints (multitenant blueprint §2). Provider list + login start +
 	// callback are unauthenticated (they establish the session); link/logout/me
 	// require an existing principal.

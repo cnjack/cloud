@@ -17,9 +17,16 @@
 #   6. ensure AUTH_TOKEN_KEY (32-byte random key, base64) exists, generating it
 #      once and keeping it stable across reruns (it encrypts identity tokens
 #      at rest; rotating it would strand already-encrypted rows)
+#   6b. ensure WEBHOOK_SECRET (32-byte random hex) the same way — it signs the
+#      @mention PR-comment webhook (M7); rotating it would break in-flight hooks
 #   7. write GITEA_URL, GITEA_TOKEN, AUTH_GITEA_CLIENT_ID,
-#      AUTH_GITEA_CLIENT_SECRET, AUTH_TOKEN_KEY into the `gitea-orchestrator`
-#      Secret that the orchestrator Deployment consumes via envFrom
+#      AUTH_GITEA_CLIENT_SECRET, AUTH_TOKEN_KEY, WEBHOOK_SECRET into the
+#      `gitea-orchestrator` Secret that the orchestrator Deployment consumes
+#      via envFrom
+#   8. ensure an org-level `issue_comment` webhook on the jcloud org pointing at
+#      the orchestrator (in-cluster svc DNS), signed with WEBHOOK_SECRET.
+#      Idempotent: skipped when a hook with the same target URL already exists
+#      (Gitea masks the secret on read, so the URL is the identity key)
 #
 # The token/app/key are minted at runtime (not known when authoring
 # manifests), which is exactly why they are delivered through a Job-written
@@ -46,6 +53,8 @@ data:
     ORG="${GITEA_ORG:-jcloud}"
     REPO="${GITEA_REPO:-seed}"
     ORCH_SECRET="${GITEA_ORCH_SECRET:-gitea-orchestrator}"
+    # In-cluster target the orchestrator serves the @mention webhook on (M7).
+    ORCH_WEBHOOK_URL="${ORCH_WEBHOOK_URL:-http://orchestrator.jcloud.svc.cluster.local:8080/webhooks/gitea}"
 
     log() { echo "[gitea-bootstrap] $*"; }
     api() { # METHOD PATH [JSON]  (token auth)
@@ -143,14 +152,45 @@ data:
       log "generated new AUTH_TOKEN_KEY"
     fi
 
+    # 6b. ensure WEBHOOK_SECRET: 32 random bytes, hex-encoded, used to HMAC-sign
+    #     the @mention PR-comment webhook (M7). Same reuse-or-generate discipline
+    #     as AUTH_TOKEN_KEY — rotating it would invalidate the org hook Gitea
+    #     already holds (which we do NOT rewrite once created).
+    EXISTING_WEBHOOK_SECRET="$(kubectl get secret "$ORCH_SECRET" -n jcloud -o jsonpath='{.data.WEBHOOK_SECRET}' 2>/dev/null | base64 -d 2>/dev/null || true)"
+    if [ -n "$EXISTING_WEBHOOK_SECRET" ]; then
+      WEBHOOK_SECRET="$EXISTING_WEBHOOK_SECRET"
+      log "reusing existing WEBHOOK_SECRET from Secret/$ORCH_SECRET"
+    else
+      WEBHOOK_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+      log "generated new WEBHOOK_SECRET"
+    fi
+
     # 7. write GITEA_URL, GITEA_TOKEN, AUTH_GITEA_CLIENT_ID,
-    #    AUTH_GITEA_CLIENT_SECRET, AUTH_TOKEN_KEY into the orchestrator Secret.
+    #    AUTH_GITEA_CLIENT_SECRET, AUTH_TOKEN_KEY, WEBHOOK_SECRET into the Secret.
     kubectl create secret generic "$ORCH_SECRET" -n jcloud \
       --from-literal=GITEA_URL="$GITEA_URL" \
       --from-literal=GITEA_TOKEN="$TOKEN" \
       --from-literal=AUTH_GITEA_CLIENT_ID="$CLIENT_ID" \
       --from-literal=AUTH_GITEA_CLIENT_SECRET="$CLIENT_SECRET" \
       --from-literal=AUTH_TOKEN_KEY="$AUTH_TOKEN_KEY" \
+      --from-literal=WEBHOOK_SECRET="$WEBHOOK_SECRET" \
       --dry-run=client -o yaml | kubectl apply -f -
-    log "wrote Secret/$ORCH_SECRET (GITEA_URL, GITEA_TOKEN, AUTH_GITEA_CLIENT_ID, AUTH_GITEA_CLIENT_SECRET, AUTH_TOKEN_KEY)"
+    log "wrote Secret/$ORCH_SECRET (GITEA_URL, GITEA_TOKEN, AUTH_GITEA_CLIENT_ID, AUTH_GITEA_CLIENT_SECRET, AUTH_TOKEN_KEY, WEBHOOK_SECRET)"
+
+    # 8. ensure the org-level issue_comment webhook (M7). Idempotent: skip when a
+    #    hook with the same target URL already exists (Gitea masks the secret on
+    #    read, so the config.url is the only stable identity we can match on). A
+    #    changed WEBHOOK_SECRET is NOT re-pushed to an existing hook — delete the
+    #    org hook by hand to rotate.
+    EXISTING_HOOK="$(api GET "/orgs/$ORG/hooks" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((str(h["id"]) for h in d if h.get("config",{}).get("url")==sys.argv[1]), ""))' "$ORCH_WEBHOOK_URL" 2>/dev/null || true)"
+    if [ -n "$EXISTING_HOOK" ]; then
+      log "org webhook already present (id=$EXISTING_HOOK, url=$ORCH_WEBHOOK_URL) — skipping"
+    else
+      HOOK_BODY="$(python3 -c 'import json,sys; print(json.dumps({"type":"gitea","active":True,"events":["issue_comment"],"config":{"url":sys.argv[1],"content_type":"json","secret":sys.argv[2]}}))' "$ORCH_WEBHOOK_URL" "$WEBHOOK_SECRET")"
+      if api POST "/orgs/$ORG/hooks" "$HOOK_BODY" >/dev/null 2>&1; then
+        log "created org webhook -> $ORCH_WEBHOOK_URL (events=issue_comment)"
+      else
+        log "WARN: could not create org webhook (continuing; @mention trigger will be off until fixed)"
+      fi
+    fi
     log "bootstrap complete"

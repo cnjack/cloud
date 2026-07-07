@@ -131,3 +131,71 @@ func (g *Git) PushBundleBranch(ctx context.Context, remoteURL, bundlePath, branc
 	}
 	return strings.TrimSpace(sha), nil
 }
+
+// PushBundleBranchFFOnly fast-forward pushes a bundle's branch onto an EXISTING
+// remote branch (M7 webhook update mode). It bare-clones remoteURL, fetches the
+// bundle's branch into a scratch ref, then pushes it to origin/<branch> WITHOUT a
+// leading '+', so the remote rejects a non-fast-forward instead of clobbering the
+// PR head. It returns (tipSHA, alreadyPresent, err):
+//
+//   - alreadyPresent=true when the remote branch already contains the bundle tip
+//     (a redelivery, or a racing push landed it) — nothing was pushed; the caller
+//     treats the run as done.
+//   - err non-nil on a genuine non-fast-forward divergence or a missing bundle
+//     prerequisite (the PR head moved incompatibly) — the caller retries/skips and
+//     NEVER force-pushes.
+func (g *Git) PushBundleBranchFFOnly(ctx context.Context, remoteURL, bundlePath, branch string) (string, bool, error) {
+	work, err := os.MkdirTemp("", "jcloud-update-")
+	if err != nil {
+		return "", false, fmt.Errorf("mktemp: %w", err)
+	}
+	defer os.RemoveAll(work)
+	bare := filepath.Join(work, "repo.git")
+	if _, err := g.run(ctx, "clone", "--bare", "--quiet", remoteURL, bare); err != nil {
+		return "", false, err
+	}
+	branchRef := "refs/heads/" + branch
+	const incoming = "refs/jcloud/incoming"
+	// Fetch the bundle's branch into a scratch ref (force-local is fine; it is not
+	// the push target). The bundle's prerequisite base commit must already be in
+	// the fresh clone — it is the PR head at clone time, or an ancestor of it.
+	if _, err := g.run(ctx, "-C", bare, "fetch", "--quiet", bundlePath, "+"+branchRef+":"+incoming); err != nil {
+		return "", false, err
+	}
+	tipOut, err := g.run(ctx, "-C", bare, "rev-parse", incoming)
+	if err != nil {
+		return "", false, err
+	}
+	tip := strings.TrimSpace(tipOut)
+	// Already applied? The bare clone fetched origin's branch into branchRef; if it
+	// already contains the bundle tip there is nothing to push.
+	if anc, aerr := g.isAncestor(ctx, bare, tip, branchRef); aerr == nil && anc {
+		return tip, true, nil
+	}
+	// Fast-forward push ONLY (no leading '+') so the remote rejects a non-ff.
+	if _, err := g.run(ctx, "-C", bare, "push", "--quiet", "origin", incoming+":"+branchRef); err != nil {
+		// A racing push may have already landed this change; re-check the remote.
+		if _, ferr := g.run(ctx, "-C", bare, "fetch", "--quiet", "origin", "+"+branchRef+":refs/jcloud/remote"); ferr == nil {
+			if anc, aerr := g.isAncestor(ctx, bare, tip, "refs/jcloud/remote"); aerr == nil && anc {
+				return tip, true, nil
+			}
+		}
+		return "", false, err
+	}
+	return tip, false, nil
+}
+
+// isAncestor reports whether commit a is an ancestor of (or equal to) ref b in
+// the repo at dir. `git merge-base --is-ancestor` exits 0 (yes) / 1 (no); any
+// other exit is a real error.
+func (g *Git) isAncestor(ctx context.Context, dir, a, b string) (bool, error) {
+	cmd := exec.CommandContext(ctx, g.bin, "-C", dir, "merge-base", "--is-ancestor", a, b)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "GCM_INTERACTIVE=never")
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}

@@ -166,6 +166,40 @@ func shouldOpenPR(run domain.Run, svc domain.Service, providerReady bool) bool {
 	return true
 }
 
+// shouldUpdatePush is the PURE gate for the M7 webhook update-push flow: should
+// the reconciler ff-only push this run's bundle onto its existing PR head branch
+// this tick? Separated from the side-effecting push so it is unit-tested with no
+// store/provider.
+//
+// The gate: a succeeded webhook AGENT run on a draft_pr PROVIDER service, with a
+// recorded head branch (git_branch, stamped when the bundle was received) and a
+// pre-filled PR (pr_url), whose push has not completed yet (commit_sha empty).
+// Any false is a clean skip.
+func shouldUpdatePush(run domain.Run, svc domain.Service, providerReady bool) bool {
+	if !providerReady {
+		return false
+	}
+	if run.Status != domain.StatusSucceeded || run.Kind != domain.RunKindAgent {
+		return false
+	}
+	if run.Origin != domain.RunOriginWebhook {
+		return false
+	}
+	if svc.GitMode != domain.GitModeDraftPR || svc.RepoKind != domain.RepoKindProvider || !domain.ValidProvider(svc.Provider) {
+		return false
+	}
+	if strings.TrimSpace(svc.RepoOwnerName) == "" {
+		return false
+	}
+	if strings.TrimSpace(run.GitBranch) == "" || run.PRURL == "" {
+		return false // no bundle received, or no target PR
+	}
+	if run.CommitSHA != "" {
+		return false // already pushed
+	}
+	return true
+}
+
 // prTitle builds the draft PR title "[jcode] <prompt first line>", trimmed to a
 // sane length so an over-long prompt does not produce a giant title.
 func prTitle(prompt string) string {

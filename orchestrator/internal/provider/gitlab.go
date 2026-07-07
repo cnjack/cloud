@@ -43,6 +43,7 @@ type gitlabMR struct {
 	WebURL       string `json:"web_url"`
 	State        string `json:"state"` // opened|closed|merged|locked
 	SourceBranch string `json:"source_branch"`
+	TargetBranch string `json:"target_branch"`
 }
 
 func (c *GitLabClient) auth() string { return "Bearer " + c.token }
@@ -107,6 +108,21 @@ func (c *GitLabClient) PRStatus(ctx context.Context, owner, repo string, prNumbe
 		return nil, err
 	}
 	return &PR{Number: mr.IID, URL: mr.WebURL, State: gitlabState(mr.State)}, nil
+}
+
+func (c *GitLabClient) PRByNumber(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
+	u := fmt.Sprintf("%s/projects/%s/merge_requests/%d", c.apiBase, projectPath(owner, repo), prNumber)
+	var mr gitlabMR
+	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &mr); err != nil {
+		return nil, err
+	}
+	return &PR{Number: mr.IID, URL: mr.WebURL, State: gitlabState(mr.State),
+		HeadRef: mr.SourceBranch, BaseRef: mr.TargetBranch}, nil
+}
+
+func (c *GitLabClient) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error {
+	u := fmt.Sprintf("%s/projects/%s/merge_requests/%d/notes", c.apiBase, projectPath(owner, repo), issueNumber)
+	return doJSON(ctx, c.http, http.MethodPost, u, c.auth(), "application/json", map[string]any{"body": body}, nil)
 }
 
 var _ Provider = (*GitLabClient)(nil)

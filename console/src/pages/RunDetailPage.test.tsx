@@ -147,6 +147,36 @@ describe('RunDetailPage — resilient error states', () => {
     expect(link.getAttribute('rel')).toContain('noreferrer');
   });
 
+  // M7 (blueprint §8): a webhook-origin run links back to the triggering PR
+  // comment via a "from PR comment ↗" chip; an api-origin run does not.
+  it('renders the origin chip for a webhook-triggered run', async () => {
+    const whRun = baseRun({
+      origin: 'webhook',
+      origin_comment_url: 'https://gitea.local/jcloud/seed/pulls/7#issuecomment-42',
+    });
+    const { client, ctl } = makeClient();
+    ctl.getRun.mockResolvedValue(whRun);
+    renderPage(client, whRun);
+
+    const chip = (await screen.findByTestId('origin-chip')) as HTMLAnchorElement;
+    expect(chip.textContent).toContain('from PR comment');
+    expect(chip.getAttribute('href')).toBe(
+      'https://gitea.local/jcloud/seed/pulls/7#issuecomment-42',
+    );
+    expect(chip.getAttribute('target')).toBe('_blank');
+    expect(chip.getAttribute('rel')).toContain('noreferrer');
+  });
+
+  it('does not render the origin chip for an api-origin run', async () => {
+    const apiRun = baseRun({ origin: 'api' });
+    const { client, ctl } = makeClient();
+    ctl.getRun.mockResolvedValue(apiRun);
+    renderPage(client, apiRun);
+
+    await waitFor(() => expect(screen.getByTestId('run-status-header')).toBeTruthy());
+    expect(screen.queryByTestId('origin-chip')).toBeNull();
+  });
+
   // No PR link when the run has no pr_url (readonly / diff-only run).
   it('does not render the draft-PR chip when pr_url is absent', async () => {
     const noPr = baseRun({ status: 'succeeded', finished_at: '2026-07-07T00:05:00Z' });

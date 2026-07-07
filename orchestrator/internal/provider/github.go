@@ -41,6 +41,9 @@ type githubPR struct {
 	Head    struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
 }
 
 func (c *GitHubClient) auth() string   { return "Bearer " + c.token }
@@ -83,6 +86,21 @@ func (c *GitHubClient) PRStatus(ctx context.Context, owner, repo string, prNumbe
 		return nil, err
 	}
 	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged)}, nil
+}
+
+func (c *GitHubClient) PRByNumber(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.apiBase, owner, repo, prNumber)
+	var pr githubPR
+	if err := doJSON(ctx, c.http, http.MethodGet, url, c.auth(), c.accept(), nil, &pr); err != nil {
+		return nil, err
+	}
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged),
+		HeadRef: pr.Head.Ref, BaseRef: pr.Base.Ref}, nil
+}
+
+func (c *GitHubClient) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error {
+	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments", c.apiBase, owner, repo, issueNumber)
+	return doJSON(ctx, c.http, http.MethodPost, url, c.auth(), c.accept(), map[string]any{"body": body}, nil)
 }
 
 var _ Provider = (*GitHubClient)(nil)

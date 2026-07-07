@@ -213,6 +213,27 @@ func (s *PGStore) GetDefaultService(ctx context.Context, projectID string) (*dom
 		`SELECT `+serviceCols+` FROM services WHERE project_id=$1 AND name='default'`, projectID))
 }
 
+func (s *PGStore) ListServicesByRepo(ctx context.Context, provider domain.GitProvider, repoOwnerName string) ([]domain.Service, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+serviceCols+` FROM services
+		 WHERE repo_kind='provider' AND provider=$1 AND repo_owner_name=$2
+		 ORDER BY created_at ASC`,
+		string(provider), repoOwnerName)
+	if err != nil {
+		return nil, fmt.Errorf("list services by repo: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Service
+	for rows.Next() {
+		svc, err := scanService(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *svc)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) UpdateService(ctx context.Context, svc *domain.Service) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE services SET name=$2, repo_kind=$3, provider=$4, repo_owner_name=$5,
@@ -246,21 +267,30 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 	retried_from, failure_reason, failure_message, attempt, token_hash,
 	created_at, started_at, finished_at, job_cleaned_at,
 	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id,
-	review_posted_at, pr_head_branch, pr_base_branch`
+	review_posted_at, pr_head_branch, pr_base_branch,
+	origin, origin_comment_id, origin_comment_url`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
+	var commentID, commentURL *string
 	err := row.Scan(&r.ID, &r.ProjectID, &r.ServiceID, &r.Prompt, &r.Status, &r.Kind, &r.Phase, &r.Error,
 		&r.K8sJobName, &r.RetriedFrom, &r.FailureReason, &r.FailureMessage,
 		&r.Attempt, &r.TokenHash,
 		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt,
 		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID,
-		&r.ReviewPostedAt, &r.PRHeadBranch, &r.PRBaseBranch)
+		&r.ReviewPostedAt, &r.PRHeadBranch, &r.PRBaseBranch,
+		&r.Origin, &commentID, &commentURL)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scan run: %w", err)
+	}
+	if commentID != nil {
+		r.OriginCommentID = *commentID
+	}
+	if commentURL != nil {
+		r.OriginCommentURL = *commentURL
 	}
 	return &r, nil
 }
@@ -269,18 +299,32 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	if r.Kind == "" {
 		r.Kind = domain.RunKindAgent
 	}
+	if r.Origin == "" {
+		r.Origin = domain.RunOriginAPI
+	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
 		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID,
-		r.ReviewPostedAt, r.PRHeadBranch, r.PRBaseBranch)
+		r.ReviewPostedAt, r.PRHeadBranch, r.PRBaseBranch,
+		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL))
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
 	return nil
+}
+
+// GetRunByOriginCommentID looks up the run a webhook comment already triggered
+// (M7 de-dup). An empty id never matches (api-origin runs store NULL).
+func (s *PGStore) GetRunByOriginCommentID(ctx context.Context, commentID string) (*domain.Run, error) {
+	if commentID == "" {
+		return nil, ErrNotFound
+	}
+	return scanRun(s.pool.QueryRow(ctx,
+		`SELECT `+runCols+` FROM runs WHERE origin_comment_id=$1`, commentID))
 }
 
 func (s *PGStore) ListRunsByService(ctx context.Context, serviceID string, limit int) ([]domain.Run, error) {
@@ -686,6 +730,31 @@ func (s *PGStore) ListReviewRunsAwaitingPost(ctx context.Context) ([]domain.Run,
 	return out, rows.Err()
 }
 
+// ListRunsAwaitingUpdatePush returns succeeded webhook agent runs whose bundle
+// was received onto an existing PR head branch but whose ff-only push has not
+// completed (commit_sha unset). The reconciler pushes + stamps commit_sha (M7).
+func (s *PGStore) ListRunsAwaitingUpdatePush(ctx context.Context) ([]domain.Run, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+runCols+` FROM runs
+		 WHERE status=$1 AND origin='webhook' AND kind='agent'
+		   AND git_branch <> '' AND pr_url <> '' AND commit_sha = ''
+		 ORDER BY created_at ASC`,
+		string(domain.StatusSucceeded))
+	if err != nil {
+		return nil, fmt.Errorf("list runs awaiting update push: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
+}
+
 // SetReviewOutput records a review run's markdown output (from the runner's
 // POST .../review) without changing status. First-writer-wins: it writes only
 // while review_output is empty, so a re-POST is a no-op. Returns the committed row.
@@ -731,7 +800,7 @@ func (s *PGStore) MarkReviewPosted(ctx context.Context, id string) (bool, error)
 // --- Binary artifacts (bundle) ----------------------------------------------
 
 // PutRunBundle stores a run's git bundle (kind='bundle') as bytea, upserting by
-// (run_id, kind). content stays '' (the payload is in content_bytes).
+// (run_id, kind). content stays ” (the payload is in content_bytes).
 func (s *PGStore) PutRunBundle(ctx context.Context, runID string, data []byte) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO run_artifacts (run_id, kind, content, content_bytes, created_at)

@@ -21,6 +21,11 @@ import (
 type fakePusher struct {
 	pushed []string
 	err    error
+
+	// ff-only (M7 update mode) fakes.
+	ffPushed         []string
+	ffErr            error
+	ffAlreadyPresent bool
 }
 
 func (f *fakePusher) PushBundleBranch(_ context.Context, _ /*remoteURL*/, _ /*bundlePath*/, branch string) (string, error) {
@@ -29,6 +34,17 @@ func (f *fakePusher) PushBundleBranch(_ context.Context, _ /*remoteURL*/, _ /*bu
 	}
 	f.pushed = append(f.pushed, branch)
 	return "pushedsha1234", nil
+}
+
+func (f *fakePusher) PushBundleBranchFFOnly(_ context.Context, _ /*remoteURL*/, _ /*bundlePath*/, branch string) (string, bool, error) {
+	if f.ffErr != nil {
+		return "", false, f.ffErr
+	}
+	if f.ffAlreadyPresent {
+		return "ffsha0000", true, nil
+	}
+	f.ffPushed = append(f.ffPushed, branch)
+	return "ffsha1234", false, nil
 }
 
 // fakeFactory returns a fixed Provider regardless of the resolved token.
@@ -352,6 +368,199 @@ func TestReconcileReviewNoTargetPR(t *testing.T) {
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.ReviewPostedAt != nil {
 		t.Fatal("review_posted_at stamped despite no PR")
+	}
+}
+
+// --- M7 webhook update-push pass --------------------------------------------
+
+// seedWebhookUpdateRun creates a project + draft_pr gitea service + a succeeded
+// WEBHOOK agent run whose bundle was received onto an EXISTING PR head branch
+// (git_branch = head, pr_url pre-filled, commit_sha empty) — the state the
+// bundle-ingest leaves for the update-push pass.
+func seedWebhookUpdateRun(t *testing.T, st *store.MemStore, head string) (domain.Service, domain.Run) {
+	t.Helper()
+	ctx := context.Background()
+	p := &domain.Project{ID: domain.NewID(), Name: "wh", CreatedAt: time.Now()}
+	if err := st.CreateProject(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "jcloud/seed", DefaultBranch: "main",
+		GitMode: domain.GitModeDraftPR, CreatedAt: time.Now(),
+	}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "add a CONTRIBUTING.md",
+		Status: domain.StatusSucceeded, Kind: domain.RunKindAgent,
+		Origin: domain.RunOriginWebhook, OriginCommentID: "c-" + head,
+		PRURL: "http://gitea.test/jcloud/seed/pulls/9", PRNumber: 9,
+		PRHeadBranch: head, PRBaseBranch: "main", Attempt: 1, CreatedAt: time.Now(),
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRunBundle(ctx, run.ID, []byte("PACK update bundle")); err != nil {
+		t.Fatal(err)
+	}
+	// Bundle-ingest records git_branch = the run's push branch (= PR head branch).
+	if _, err := st.SetRunGit(ctx, run.ID, domain.RunPushBranch(run), ""); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetRun(ctx, run.ID)
+	return *svc, *got
+}
+
+// TestReconcileUpdatePush covers the happy path: a webhook task bundle is ff-only
+// pushed onto its existing PR head branch, commit_sha is stamped, and NO new PR
+// is opened.
+func TestReconcileUpdatePush(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	pusher := wirePRStack(rec, st, fake)
+
+	_, run := seedWebhookUpdateRun(t, st, "feature-x")
+	rec.reconcileUpdatePushes(ctx)
+
+	if len(pusher.ffPushed) != 1 || pusher.ffPushed[0] != "feature-x" {
+		t.Fatalf("ff-pushed=%v want [feature-x]", pusher.ffPushed)
+	}
+	if fake.CreatedCount() != 0 {
+		t.Fatalf("update mode opened %d PRs, want 0", fake.CreatedCount())
+	}
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.CommitSHA != "ffsha1234" {
+		t.Errorf("commit_sha=%q want the ff-pushed sha", got.CommitSHA)
+	}
+}
+
+// TestReconcileUpdatePushIdempotent proves the branch is pushed at most once
+// across ticks (commit_sha gate).
+func TestReconcileUpdatePushIdempotent(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	pusher := wirePRStack(rec, st, fake)
+
+	seedWebhookUpdateRun(t, st, "feature-idem")
+	rec.reconcileUpdatePushes(ctx)
+	rec.reconcileUpdatePushes(ctx)
+	rec.reconcileUpdatePushes(ctx)
+
+	if len(pusher.ffPushed) != 1 {
+		t.Fatalf("ff-pushed %d times across 3 ticks, want 1 (idempotent)", len(pusher.ffPushed))
+	}
+}
+
+// TestReconcileUpdatePushAlreadyPresent proves that when the PR head already
+// contains the change, the run is marked done (commit_sha stamped) without a push.
+func TestReconcileUpdatePushAlreadyPresent(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	pusher := wirePRStack(rec, st, fake)
+	pusher.ffAlreadyPresent = true
+
+	_, run := seedWebhookUpdateRun(t, st, "feature-present")
+	rec.reconcileUpdatePushes(ctx)
+
+	if len(pusher.ffPushed) != 0 {
+		t.Fatalf("pushed despite already-present: %v", pusher.ffPushed)
+	}
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.CommitSHA == "" {
+		t.Fatal("commit_sha not stamped for an already-present change (would re-scan forever)")
+	}
+}
+
+// TestReconcileUpdatePushNonFFRetries proves a non-fast-forward push leaves the
+// run in the scan (commit_sha empty) so the next tick retries — no force-push,
+// no infinite spin (the scan is bounded by the reconcile interval).
+func TestReconcileUpdatePushNonFFRetries(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	pusher := wirePRStack(rec, st, fake)
+	pusher.ffErr = errors.New("! [rejected] feature-x -> feature-x (non-fast-forward)")
+
+	_, run := seedWebhookUpdateRun(t, st, "feature-nff")
+	rec.reconcileUpdatePushes(ctx)
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.CommitSHA != "" {
+		t.Fatalf("commit_sha set despite non-ff push: %q", got.CommitSHA)
+	}
+	// Recover: the divergence resolves (or the change is now present) — next tick
+	// completes without opening a PR.
+	pusher.ffErr = nil
+	pusher.ffAlreadyPresent = true
+	rec.reconcileUpdatePushes(ctx)
+	got, _ = st.GetRun(ctx, run.ID)
+	if got.CommitSHA == "" {
+		t.Fatal("commit_sha not stamped after the push path recovered")
+	}
+}
+
+// TestWebhookTaskJobEnv proves a webhook @mention agent task builds ON the PR head
+// branch: BASE_BRANCH == BRANCH_NAME == the head branch (entrypoint then bundles
+// startSHA..HEAD onto that same branch).
+func TestWebhookTaskJobEnv(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	_, run := seedWebhookUpdateRun(t, st, "feature-env")
+	env := rec.jobEnv(ctx, &run, "tok")
+	if env["BASE_BRANCH"] != "feature-env" {
+		t.Errorf("BASE_BRANCH=%q want feature-env (PR head)", env["BASE_BRANCH"])
+	}
+	if env["BRANCH_NAME"] != "feature-env" {
+		t.Errorf("BRANCH_NAME=%q want feature-env (== BASE_BRANCH)", env["BRANCH_NAME"])
+	}
+	if env["GIT_MODE"] != string(domain.GitModeDraftPR) {
+		t.Errorf("GIT_MODE=%q want draft_pr", env["GIT_MODE"])
+	}
+}
+
+// TestShouldUpdatePush is the exhaustive table for the pure update-push gate.
+func TestShouldUpdatePush(t *testing.T) {
+	base := func() (domain.Run, domain.Service) {
+		return domain.Run{
+				Status: domain.StatusSucceeded, Kind: domain.RunKindAgent,
+				Origin: domain.RunOriginWebhook, GitBranch: "feature-x",
+				PRURL: "http://x/9", CommitSHA: "",
+			}, domain.Service{
+				RepoKind: domain.RepoKindProvider, GitMode: domain.GitModeDraftPR,
+				Provider: domain.ProviderGitea, RepoOwnerName: "o/r",
+			}
+	}
+	cases := []struct {
+		name          string
+		mutate        func(*domain.Run, *domain.Service)
+		providerReady bool
+		want          bool
+	}{
+		{"happy path", func(*domain.Run, *domain.Service) {}, true, true},
+		{"no stack ready", func(*domain.Run, *domain.Service) {}, false, false},
+		{"not succeeded", func(r *domain.Run, _ *domain.Service) { r.Status = domain.StatusRunning }, true, false},
+		{"review run", func(r *domain.Run, _ *domain.Service) { r.Kind = domain.RunKindReview }, true, false},
+		{"api origin", func(r *domain.Run, _ *domain.Service) { r.Origin = domain.RunOriginAPI }, true, false},
+		{"readonly service", func(_ *domain.Run, s *domain.Service) { s.GitMode = domain.GitModeReadonly }, true, false},
+		{"raw repo", func(_ *domain.Run, s *domain.Service) { s.RepoKind = domain.RepoKindRaw }, true, false},
+		{"no branch recorded", func(r *domain.Run, _ *domain.Service) { r.GitBranch = "" }, true, false},
+		{"no target PR", func(r *domain.Run, _ *domain.Service) { r.PRURL = "" }, true, false},
+		{"already pushed", func(r *domain.Run, _ *domain.Service) { r.CommitSHA = "abc" }, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, svc := base()
+			tc.mutate(&r, &svc)
+			if got := shouldUpdatePush(r, svc, tc.providerReady); got != tc.want {
+				t.Fatalf("shouldUpdatePush = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

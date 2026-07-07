@@ -143,6 +143,23 @@ export function RunDetailPage() {
                 retry of {shortId(r.retried_from)}
               </Link>
             )}
+            {/* M7 (blueprint §8): a run triggered by a Gitea PR comment shows a
+                chip linking back to that comment. */}
+            {r.origin === 'webhook' && r.origin_comment_url && (
+              <a
+                className={styles.originChip}
+                href={r.origin_comment_url}
+                target="_blank"
+                rel="noreferrer"
+                title="Open the pull-request comment that triggered this run"
+                data-testid="origin-chip"
+              >
+                from PR comment
+                <span className={styles.originArrow} aria-hidden>
+                  ↗
+                </span>
+              </a>
+            )}
             {/* Stretch (ST-1): draft PR chip — bordered secondary chip with a
                 mono PR number, opens the Gitea PR in a new tab. Only when the
                 orchestrator has opened the draft PR (git_mode=draft_pr). */}

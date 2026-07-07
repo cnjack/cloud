@@ -188,6 +188,28 @@ func ValidRunKind(k RunKind) bool {
 	return false
 }
 
+// RunOrigin records how a run was triggered: the ordinary API/console path, or a
+// Gitea PR comment `@jcode …` webhook (M7 / blueprint §8).
+type RunOrigin string
+
+const (
+	// RunOriginAPI is the default: the run was created via the REST API/console.
+	RunOriginAPI RunOrigin = "api"
+	// RunOriginWebhook: the run was triggered by a Gitea PR comment webhook. Such
+	// runs carry the triggering comment id/url and (for agent tasks) push back onto
+	// the PR head branch instead of opening a new draft PR.
+	RunOriginWebhook RunOrigin = "webhook"
+)
+
+// ValidRunOrigin reports whether o is a recognised run origin.
+func ValidRunOrigin(o RunOrigin) bool {
+	switch o {
+	case RunOriginAPI, RunOriginWebhook:
+		return true
+	}
+	return false
+}
+
 // Project is a tenant-owned container of services. A project's repository
 // configuration lives on its Service(s) — the simple "one repo = one project"
 // UX is a project with a single service named "default" (multitenant blueprint
@@ -288,12 +310,38 @@ type Run struct {
 	// the reconcile review pass finds the target PR by its head branch. Empty for
 	// agent runs. Populated when a review run is created (M5); the schema/env
 	// plumbing lands in M3 (blueprint §3: review env PR_HEAD/PR_BASE).
+	//
+	// M7: a webhook @mention AGENT task also sets PRHeadBranch — the existing PR's
+	// head branch it must build ON TOP OF and push BACK TO. A non-empty
+	// PRHeadBranch on an agent run switches jobEnv into "baseline = PR head" mode
+	// (BASE_BRANCH == BRANCH_NAME == this branch) and the reconciler into ff-only
+	// update-push mode instead of opening a new draft PR (blueprint §8).
 	PRHeadBranch string `json:"pr_head_branch,omitempty"`
 	PRBaseBranch string `json:"pr_base_branch,omitempty"`
+
+	// Origin records how the run was triggered (api|webhook; M7 / blueprint §8).
+	// Defaults to api. OriginCommentID/URL are set only for webhook runs — the
+	// triggering Gitea comment (id is the de-dup key; url backs the console chip).
+	Origin           RunOrigin `json:"origin,omitempty"`
+	OriginCommentID  string    `json:"origin_comment_id,omitempty"`
+	OriginCommentURL string    `json:"origin_comment_url,omitempty"`
 
 	// TokenHash is the SHA-256 (hex) of the per-run bearer token injected into
 	// the Job. Never serialised to API clients.
 	TokenHash string `json:"-"`
+}
+
+// RunPushBranch is the branch the orchestrator pushes for a draft_pr AGENT run.
+// For an ordinary run it is the deterministic jcode/run-<id> branch a new draft
+// PR is opened on. For a webhook @mention task (PRHeadBranch set), it is that
+// existing PR's head branch — the run builds on it and the reconciler ff-only
+// pushes back to it (blueprint §8, update mode). Runner (BRANCH_NAME) and
+// orchestrator (bundle branch + push target) both derive it identically.
+func RunPushBranch(run *Run) string {
+	if run.Kind == RunKindAgent && run.PRHeadBranch != "" {
+		return run.PRHeadBranch
+	}
+	return RunBranchName(run.ID)
 }
 
 // RunBranchName is the deterministic branch the orchestrator pushes for a

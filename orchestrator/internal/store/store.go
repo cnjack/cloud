@@ -56,6 +56,11 @@ type Store interface {
 	// GetDefaultService returns the project's service named "default" (the one
 	// the compatibility shim creates and routes to). ErrNotFound if absent.
 	GetDefaultService(ctx context.Context, projectID string) (*domain.Service, error)
+	// ListServicesByRepo returns every service (across all projects) that targets
+	// the given provider + "owner/name" repo. Used by the M7 webhook to resolve a
+	// PR comment's repository to the jcloud project(s) that track it; the handler
+	// then picks the first whose commenter is a member. Empty when none match.
+	ListServicesByRepo(ctx context.Context, provider domain.GitProvider, repoOwnerName string) ([]domain.Service, error)
 	UpdateService(ctx context.Context, s *domain.Service) error
 	DeleteService(ctx context.Context, id string) error
 
@@ -63,6 +68,10 @@ type Store interface {
 	CreateRun(ctx context.Context, r *domain.Run) error
 	GetRun(ctx context.Context, id string) (*domain.Run, error)
 	GetRunByTokenHash(ctx context.Context, tokenHash string) (*domain.Run, error)
+	// GetRunByOriginCommentID returns the run a webhook comment already triggered
+	// (the M7 de-dup key), or ErrNotFound when the comment has not been seen. An
+	// empty id returns ErrNotFound (never matches api-origin runs).
+	GetRunByOriginCommentID(ctx context.Context, commentID string) (*domain.Run, error)
 	ListRuns(ctx context.Context, projectID string, limit int) ([]domain.Run, error)
 	// ListRunsByService lists runs for a single service, newest first.
 	ListRunsByService(ctx context.Context, serviceID string, limit int) ([]domain.Run, error)
@@ -144,6 +153,13 @@ type Store interface {
 	// review_output whose comment has not been posted yet (review_posted_at IS
 	// NULL), so the reconcile review pass can post it. Ordered oldest-first.
 	ListReviewRunsAwaitingPost(ctx context.Context) ([]domain.Run, error)
+	// ListRunsAwaitingUpdatePush returns succeeded webhook AGENT runs whose bundle
+	// was received (git_branch <> '') onto an EXISTING PR (pr_url <> '') but whose
+	// ff-only push has not completed yet (commit_sha = ''). The reconciler pushes
+	// the branch back to the PR head and stamps commit_sha, removing the run from
+	// this scan (M7 update mode). The mode/provider gate is applied after joining
+	// the service. Ordered oldest-first.
+	ListRunsAwaitingUpdatePush(ctx context.Context) ([]domain.Run, error)
 	// SetReviewOutput records a review run's markdown output (runner POST
 	// .../review) without changing status, first-writer-wins. Returns the row.
 	SetReviewOutput(ctx context.Context, id, md string) (*domain.Run, error)

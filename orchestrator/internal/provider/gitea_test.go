@@ -130,6 +130,65 @@ func TestGiteaCreateErrorSurfacesStatus(t *testing.T) {
 	}
 }
 
+// TestGiteaPRByNumber verifies the PR-detail read parses head/base/url/state
+// (M7 webhook needs the branches the payload's issue omits).
+func TestGiteaPRByNumber(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"number":7,"html_url":"http://gitea.test/jcloud/seed/pulls/7","state":"open",
+			"head":{"ref":"feature-x"},"base":{"ref":"main"}
+		}`))
+	}))
+	defer srv.Close()
+
+	c, _ := NewGiteaClient(srv.URL, "tok")
+	pr, err := c.PRByNumber(context.Background(), "jcloud", "seed", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/v1/repos/jcloud/seed/pulls/7" {
+		t.Errorf("path=%q", gotPath)
+	}
+	if pr.Number != 7 || pr.HeadRef != "feature-x" || pr.BaseRef != "main" || pr.State != "open" {
+		t.Fatalf("pr=%+v want #7 feature-x/main open", pr)
+	}
+	if pr.URL != "http://gitea.test/jcloud/seed/pulls/7" {
+		t.Errorf("url=%q", pr.URL)
+	}
+}
+
+// TestGiteaCreateIssueComment verifies the receipt reply posts to the issues
+// comments endpoint with the body and token.
+func TestGiteaCreateIssueComment(t *testing.T) {
+	var gotAuth, gotPath string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+
+	c, _ := NewGiteaClient(srv.URL, "tok-xyz")
+	if err := c.CreateIssueComment(context.Background(), "jcloud", "seed", 7, "🚀 run started"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/v1/repos/jcloud/seed/issues/7/comments" {
+		t.Errorf("path=%q", gotPath)
+	}
+	if gotAuth != "token tok-xyz" {
+		t.Errorf("auth=%q", gotAuth)
+	}
+	if body["body"] != "🚀 run started" {
+		t.Errorf("body=%v", body["body"])
+	}
+}
+
 // TestFakeProviderIdempotencySeam sanity-checks the fake used by reconciler tests.
 func TestFakeProviderIdempotencySeam(t *testing.T) {
 	f := NewFakeProvider()

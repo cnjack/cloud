@@ -71,6 +71,13 @@ type Config struct {
 	// (M3 fetch path — GET /internal/v1/runs/{id}/source).
 	SourceBundleTTL time.Duration
 
+	// WebhookSecret is WEBHOOK_SECRET: the shared secret Gitea signs PR-comment
+	// webhook bodies with (HMAC-SHA256, hex, header X-Gitea-Signature). Empty =>
+	// the /webhooks/gitea route is NOT registered (returns 404) and the @mention
+	// trigger is off; the rest of the system runs normally (M7 / blueprint §8).
+	// Minted at runtime into the gitea-orchestrator Secret by the bootstrap Job.
+	WebhookSecret string
+
 	// --- Auth / OAuth (M2; multitenant blueprint §2) ---
 	// AuthTokenKey is AUTH_TOKEN_KEY: a base64-encoded 32-byte key for the
 	// AES-256-GCM encryption of provider tokens in user_identities. Required once
@@ -131,6 +138,7 @@ func Load() (*Config, error) {
 		GiteaURL:          os.Getenv("GITEA_URL"),
 		GiteaToken:        os.Getenv("GITEA_TOKEN"),
 		SourceBundleTTL:   getdur("SOURCE_BUNDLE_TTL", 10*time.Minute),
+		WebhookSecret:     os.Getenv("WEBHOOK_SECRET"),
 		AuthTokenKey:      os.Getenv("AUTH_TOKEN_KEY"),
 		ConsoleURL:        getenv("CONSOLE_URL", "http://localhost:5173"),
 		SessionTTL:        getdur("SESSION_TTL", 30*24*time.Hour),

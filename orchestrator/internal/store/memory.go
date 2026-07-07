@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"sync"
@@ -182,6 +183,19 @@ func (m *MemStore) GetDefaultService(_ context.Context, projectID string) (*doma
 	return nil, ErrNotFound
 }
 
+func (m *MemStore) ListServicesByRepo(_ context.Context, provider domain.GitProvider, repoOwnerName string) ([]domain.Service, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Service
+	for _, s := range m.services {
+		if s.RepoKind == domain.RepoKindProvider && s.Provider == provider && s.RepoOwnerName == repoOwnerName {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
 func (m *MemStore) UpdateService(_ context.Context, s *domain.Service) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -210,8 +224,35 @@ func (m *MemStore) CreateRun(_ context.Context, r *domain.Run) error {
 	if r.Kind == "" {
 		r.Kind = domain.RunKindAgent
 	}
+	if r.Origin == "" {
+		r.Origin = domain.RunOriginAPI
+	}
+	// Mirror the PG partial-unique index on origin_comment_id: a redelivered
+	// webhook comment cannot create a second run.
+	if r.OriginCommentID != "" {
+		for _, ex := range m.runs {
+			if ex.OriginCommentID == r.OriginCommentID {
+				return fmt.Errorf("origin_comment_id already used: %s", r.OriginCommentID)
+			}
+		}
+	}
 	m.runs[r.ID] = *r
 	return nil
+}
+
+func (m *MemStore) GetRunByOriginCommentID(_ context.Context, commentID string) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if commentID == "" {
+		return nil, ErrNotFound
+	}
+	for _, r := range m.runs {
+		if r.OriginCommentID == commentID {
+			cp := r
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
 }
 
 func (m *MemStore) GetRun(_ context.Context, id string) (*domain.Run, error) {
@@ -510,6 +551,20 @@ func (m *MemStore) ListReviewRunsAwaitingPost(_ context.Context) ([]domain.Run, 
 	for _, r := range m.runs {
 		if r.Status == domain.StatusSucceeded && r.Kind == domain.RunKindReview &&
 			r.ReviewOutput != "" && r.ReviewPostedAt == nil {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) ListRunsAwaitingUpdatePush(_ context.Context) ([]domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Run
+	for _, r := range m.runs {
+		if r.Status == domain.StatusSucceeded && r.Origin == domain.RunOriginWebhook &&
+			r.Kind == domain.RunKindAgent && r.GitBranch != "" && r.PRURL != "" && r.CommitSHA == "" {
 			out = append(out, r)
 		}
 	}
