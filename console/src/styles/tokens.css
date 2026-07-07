@@ -5,89 +5,108 @@
  * value comes from a custom property declared here. `npm run lint:tokens` greps
  * src/ for stray hex colors outside this file and fails the build if any leak.
  *
- * These are INTERIM tokens derived from jcode-design/design.md. A formal Claude
- * Design skin will land later; because everything routes through these vars,
- * re-skinning is a token swap in this one file. See README.md §Re-skin.
- *
- * Interim palette (jcode brand): dark engineering ground, layered panels,
- * #FF8400 orange accent, JetBrains Mono for code/identifiers, system sans body.
+ * Skin: "jcode Cloud Console" (Claude Design project e41026a3, v1).
+ * Dark engineering UI: near-black ground, hairline borders, slate text ramp,
+ * violet accent, Inter for prose, IBM Plex Mono for code/identifiers/data.
+ * Fonts load via <link> in index.html and fall back to system stacks offline.
  */
 
 :root {
   /* ---- Brand primitives (raw values; only referenced by semantic tokens) -- */
-  --jc-orange: #ff8400;
-  --jc-orange-dim: #cc6a00;
-  --jc-black: #000000;
-  --jc-ink-900: #0d0d0d;
-  --jc-ink-850: #111111;
-  --jc-ink-800: #161616;
-  --jc-ink-750: #1a1a1a;
-  --jc-ink-700: #1f1f1f;
-  --jc-ink-600: #262626;
-  --jc-ink-500: #2e2e2e;
-  --jc-ink-400: #3a3a3a;
-  --jc-gray-500: #666666;
-  --jc-gray-400: #8a8b88;
-  --jc-gray-300: #b8b9b6;
-  --jc-white: #ffffff;
+  --jc-void: #0a0a0c;      /* page ground */
+  --jc-void-900: #0c0c0e;  /* aside / inset ground */
+  --jc-void-850: #0e0e10;  /* inset fields */
+  --jc-ink-900: #111113;   /* card / panel */
+  --jc-ink-850: #141416;   /* raised panel (composer, header controls) */
+  --jc-ink-800: #161619;   /* secondary button / menu bg */
+  --jc-ink-750: #18181b;   /* code chip bg */
+  --jc-ink-650: #1c1c1f;   /* hairline on card */
+  --jc-ink-600: #1e1e21;   /* row hover / muted chip */
+  --jc-ink-550: #202023;   /* card border */
+  --jc-ink-500: #232326;   /* border mid */
+  --jc-ink-450: #262629;   /* control border */
+  --jc-ink-400: #2a2a2e;   /* strong border (menus, kbd) */
+  --jc-ink-350: #2c2c31;   /* strongest border */
+
+  --jc-slate-600: #4a4a50;
+  --jc-slate-500: #54545c;
+  --jc-slate-400: #5c5c64;
+  --jc-slate-350: #6e6e77;
+  --jc-slate-300: #7a7a83;
+  --jc-slate-250: #8a8a93;
+  --jc-slate-200: #9a9aa3;
+  --jc-slate-150: #c8c8ce;
+  --jc-slate-100: #dcdce0;
+  --jc-slate-50:  #eaeaec;
+  --jc-white:     #f4f4f6;
+
+  /* violet accent family */
+  --jc-violet-500: #6d6df0;
+  --jc-violet-400: #8b8bf5;
+  --jc-violet-300: #a9a9f2;
+  --jc-violet-200: #c2c2f7;
 
   /* status hues */
-  --jc-green: #28c840;
-  --jc-green-fg: #b6ffce;
-  --jc-green-bg: #16241a;
-  --jc-red: #ff5c33;
-  --jc-red-fg: #ff8c70;
-  --jc-red-bg: #241009;
-  --jc-amber: #ffbd2e;
-  --jc-amber-fg: #ffd98a;
-  --jc-amber-bg: #291c0f;
-  --jc-blue: #6a9cff;
+  --jc-blue: #6b93d6;      /* running / tool */
+  --jc-blue-fg: #c8c8f0;
+  --jc-blue-bg: #15151f;
+  --jc-green: #6bbf94;     /* success / git */
+  --jc-green-fg: #7fcf9f;
+  --jc-green-bg: #0f1c15;
+  --jc-red: #d97066;       /* failed / blocked */
+  --jc-red-fg: #e08b80;
+  --jc-red-bg: #1e1210;
+  --jc-amber: #c9a24a;     /* waiting / scheduling */
+  --jc-amber-fg: #d9b96a;
+  --jc-amber-bg: #1f1a10;
+  --jc-review: #9a8fd6;    /* needs-review violet */
+  --jc-neutral-dot: #71717a;
 
   /* diff hues */
-  --jc-diff-add-bg: #10240f;
-  --jc-diff-add-fg: #9ff0a3;
-  --jc-diff-del-bg: #2a0f0c;
-  --jc-diff-del-fg: #ff9d85;
-  --jc-diff-meta-fg: #7aa2ff;
+  --jc-diff-add-bg: #0f1c15;
+  --jc-diff-add-fg: #7fcf9f;
+  --jc-diff-del-bg: #1e1210;
+  --jc-diff-del-fg: #e08b80;
+  --jc-diff-meta-fg: #8f9bb3;
 
   /* ---- Semantic surface tokens ------------------------------------------- */
-  --color-bg: var(--jc-ink-850);
-  --color-bg-inset: var(--jc-ink-900);
-  --color-panel: var(--jc-ink-750);
-  --color-panel-raised: var(--jc-ink-700);
+  --color-bg: var(--jc-void);
+  --color-bg-inset: var(--jc-void-900);
+  --color-panel: var(--jc-ink-900);
+  --color-panel-raised: var(--jc-ink-800);
   --color-panel-hover: var(--jc-ink-600);
-  --color-code-bg: var(--jc-ink-900);
-  --color-overlay: rgba(0, 0, 0, 0.66);
+  --color-code-bg: var(--jc-ink-750);
+  --color-overlay: rgba(0, 0, 0, 0.55);
 
-  --color-border: var(--jc-ink-500);
+  --color-border: var(--jc-ink-550);
   --color-border-strong: var(--jc-ink-400);
-  --color-border-subtle: var(--jc-ink-600);
+  --color-border-subtle: var(--jc-ink-650);
 
   /* ---- Text -------------------------------------------------------------- */
-  --color-text: var(--jc-white);
-  --color-text-muted: var(--jc-gray-300);
-  --color-text-dim: var(--jc-gray-400);
-  --color-text-faint: var(--jc-gray-500);
+  --color-text: var(--jc-slate-50);
+  --color-text-muted: var(--jc-slate-200);
+  --color-text-dim: var(--jc-slate-300);
+  --color-text-faint: var(--jc-slate-400);
 
   /* ---- Accent ------------------------------------------------------------ */
-  --color-accent: var(--jc-orange);
-  --color-accent-hover: #ff9426;
-  --color-accent-dim: var(--jc-orange-dim);
-  --color-on-accent: var(--jc-ink-850);
-  --color-focus-ring: var(--jc-orange);
+  --color-accent: var(--jc-violet-400);
+  --color-accent-hover: var(--jc-violet-300);
+  --color-accent-dim: var(--jc-violet-500);
+  --color-on-accent: var(--jc-void);
+  --color-focus-ring: var(--jc-violet-400);
 
   /* ---- Status: badge bg / fg / dot --------------------------------------- */
   --status-queued-bg: var(--jc-ink-600);
-  --status-queued-fg: var(--jc-gray-300);
-  --status-queued-dot: var(--jc-gray-400);
+  --status-queued-fg: var(--jc-slate-200);
+  --status-queued-dot: var(--jc-neutral-dot);
 
   --status-scheduling-bg: var(--jc-amber-bg);
   --status-scheduling-fg: var(--jc-amber-fg);
   --status-scheduling-dot: var(--jc-amber);
 
-  --status-running-bg: rgba(255, 132, 0, 0.14);
-  --status-running-fg: var(--jc-orange);
-  --status-running-dot: var(--jc-orange);
+  --status-running-bg: var(--jc-blue-bg);
+  --status-running-fg: var(--jc-blue-fg);
+  --status-running-dot: var(--jc-blue);
 
   --status-succeeded-bg: var(--jc-green-bg);
   --status-succeeded-fg: var(--jc-green-fg);
@@ -98,12 +117,12 @@
   --status-failed-dot: var(--jc-red);
 
   --status-canceled-bg: var(--jc-ink-600);
-  --status-canceled-fg: var(--jc-gray-400);
-  --status-canceled-dot: var(--jc-gray-500);
+  --status-canceled-fg: var(--jc-slate-300);
+  --status-canceled-dot: var(--jc-slate-400);
 
-  --status-blocked-bg: var(--jc-amber-bg);
-  --status-blocked-fg: var(--jc-amber-fg);
-  --status-blocked-dot: var(--jc-amber);
+  --status-blocked-bg: var(--jc-red-bg);
+  --status-blocked-fg: var(--jc-red-fg);
+  --status-blocked-dot: var(--jc-red);
 
   /* ---- Semantic action colors -------------------------------------------- */
   --color-success: var(--jc-green);
@@ -112,31 +131,31 @@
   --color-warning: var(--jc-amber);
 
   /* ---- Typography -------------------------------------------------------- */
-  --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
     Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', 'Consolas',
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Menlo', 'Consolas',
     monospace;
 
-  --fs-display: 32px;
-  --fs-h1: 24px;
-  --fs-h2: 20px;
-  --fs-h3: 16px;
-  --fs-body: 14px;
-  --fs-sm: 13px;
-  --fs-caption: 12px;
-  --fs-tiny: 11px;
+  --fs-display: 27px;
+  --fs-h1: 20px;
+  --fs-h2: 16px;
+  --fs-h3: 14px;
+  --fs-body: 13px;
+  --fs-sm: 12.5px;
+  --fs-caption: 11.5px;
+  --fs-tiny: 10.5px;
 
   --fw-regular: 400;
   --fw-medium: 500;
   --fw-semibold: 600;
   --fw-bold: 700;
 
-  --lh-tight: 1.2;
+  --lh-tight: 1.25;
   --lh-normal: 1.5;
-  --lh-code: 1.55;
+  --lh-code: 1.6;
 
-  --tracking-tight: -0.5px;
-  --tracking-label: 0.5px;
+  --tracking-tight: -0.4px;
+  --tracking-label: 0.6px;
 
   /* ---- Spacing (4px base) ------------------------------------------------ */
   --space-1: 4px;
@@ -152,21 +171,21 @@
   --space-20: 80px;
 
   /* ---- Radii ------------------------------------------------------------- */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --radius-lg: 9px;
   --radius-xl: 12px;
   --radius-pill: 999px;
 
   /* ---- Elevation --------------------------------------------------------- */
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.4);
-  --shadow-3: 0 12px 40px rgba(0, 0, 0, 0.55);
+  --shadow-2: 0 8px 30px rgba(0, 0, 0, 0.35);
+  --shadow-3: 0 24px 70px rgba(0, 0, 0, 0.6);
 
   /* ---- Layout ------------------------------------------------------------ */
-  --shell-topbar-h: 56px;
+  --shell-topbar-h: 52px;
   --shell-max-w: 1280px;
-  --content-pad-x: 32px;
+  --content-pad-x: 30px;
   --content-pad-x-sm: 20px;
 
   /* ---- Motion ------------------------------------------------------------ */
