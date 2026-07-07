@@ -12,8 +12,9 @@ resources:
   - postgres
   - mockllm
   - gitseed
-  # gitea (ST-1 draft-PR target) is ADDITIVE alongside the git-daemon gitseed
-  # server that J1-J3 still depend on. Its bootstrap Job writes the
-  # `gitea-orchestrator` Secret the orchestrator consumes (optional envFrom).
-  - gitea
+  # NOTE: the in-cluster gitea Deployment + its gitea-bootstrap Job were
+  # removed. This deployment targets the REAL git.scgzyun.com for draft PRs
+  # and OAuth login; GITEA_URL/GITEA_TOKEN + AUTH_GITEA_* live directly in
+  # base/orchestrator/secret.yaml + configmap.yaml (no bootstrap Job mints
+  # them anymore). The git-daemon `gitseed` server is retained (unrelated).
   - orchestrator

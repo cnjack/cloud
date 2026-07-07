@@ -16,12 +16,15 @@
 #   base/gitseed/       tiny in-cluster git:// server + seeded bare repo, so
 #                       runner Jobs have a real clonable REPO_URL
 #
+# Git backend: this deployment targets the REAL git.scgzyun.com (draft PRs +
+# OAuth login). There is NO in-cluster gitea; GITEA_URL/GITEA_TOKEN and
+# AUTH_GITEA_* are baked into base/orchestrator/{secret,configmap}.yaml.
+#
 # Usage:
 #   make build          build all three local images
 #   make up             kubectl apply -k (waits for rollouts)
 #   make down            kubectl delete -k
-#   make port-forward   orchestrator :8080 -> localhost:8080 (foreground)
-#   make port-forward-gitea  Gitea :3000 -> localhost:3000 (foreground; OAuth login)
+#   make port-forward   orchestrator :8080 -> localhost:18080 (foreground; OAuth callback host)
 #   make seed-repo       (re)run the git-seed initContainer's job manually / verify it
 #   make smoke          scripted e2e smoke test against the live cluster
 #   make logs-orch       tail orchestrator logs
@@ -77,18 +80,19 @@ build-gitseed: ## Build jcloud/gitseed:dev (alpine + git-daemon) for the in-clus
 up: _ctx-guard ## kubectl apply -k the manifests and wait for rollouts.
 	kubectl apply -f base/namespace.yaml
 	kubectl apply -k .
+	@if [ -f secrets/orchestrator-secret.local.yaml ]; then \
+		echo "applying REAL credentials from secrets/orchestrator-secret.local.yaml (gitignored)"; \
+		kubectl apply -f secrets/orchestrator-secret.local.yaml; \
+		kubectl -n $(NAMESPACE) rollout restart deploy/orchestrator; \
+	else \
+		echo "WARNING: secrets/orchestrator-secret.local.yaml missing — the base Secret has placeholder gitea creds"; \
+	fi
 	kubectl -n $(NAMESPACE) rollout status deploy/postgres --timeout=120s
 	kubectl -n $(NAMESPACE) rollout status deploy/mockllm --timeout=60s
 	kubectl -n $(NAMESPACE) rollout status deploy/git-seed --timeout=60s
-	kubectl -n $(NAMESPACE) rollout status deploy/gitea --timeout=180s
 	kubectl -n $(NAMESPACE) rollout status deploy/orchestrator --timeout=120s
-	@echo "waiting for the gitea-bootstrap Job (org/repo/token + orchestrator secret)..."
-	kubectl -n $(NAMESPACE) wait --for=condition=complete job/gitea-bootstrap --timeout=180s || \
-		{ echo "gitea-bootstrap did not complete; logs:"; kubectl -n $(NAMESPACE) logs job/gitea-bootstrap --tail=40 || true; }
-	@echo "restarting orchestrator so it picks up GITEA_URL/GITEA_TOKEN from the bootstrap Secret..."
-	kubectl -n $(NAMESPACE) rollout restart deploy/orchestrator
-	kubectl -n $(NAMESPACE) rollout status deploy/orchestrator --timeout=120s
-	@echo "jcloud is up (Gitea draft-PR enabled). Run 'make port-forward' then point the console dev server at localhost:8080."
+	@echo "jcloud is up (draft PRs + OAuth login target the real git.scgzyun.com)."
+	@echo "Run 'make port-forward' (orchestrator -> localhost:18080), then start the console dev server (VITE_API_PROXY_TARGET=http://localhost:18080)."
 
 down: _ctx-guard ## Delete everything this manifest set created (namespace itself is left in place; see base/kustomization.yaml note).
 	kubectl delete -k . --ignore-not-found
@@ -97,12 +101,8 @@ restart: down up ## Convenience: delete then reapply.
 
 # --- dev workflow --------------------------------------------------------
 .PHONY: port-forward
-port-forward: _ctx-guard ## Foreground port-forward orchestrator :8080 -> localhost:8080.
-	kubectl -n $(NAMESPACE) port-forward svc/orchestrator 8080:8080
-
-.PHONY: port-forward-gitea
-port-forward-gitea: _ctx-guard ## Foreground port-forward Gitea :3000 -> localhost:3000 (OAuth login + browsing the repo UI). Run alongside 'make port-forward' in a separate terminal.
-	kubectl -n $(NAMESPACE) port-forward svc/gitea 3000:3000
+port-forward: _ctx-guard ## Foreground port-forward orchestrator :8080 -> localhost:18080 (the OAuth callback host the browser reaches; matches the git.scgzyun.com app redirect_uri).
+	kubectl -n $(NAMESPACE) port-forward svc/orchestrator 18080:8080
 
 .PHONY: seed-repo
 seed-repo: _ctx-guard ## Verify/re-trigger the in-cluster git seed repo.
@@ -114,14 +114,6 @@ seed-repo: _ctx-guard ## Verify/re-trigger the in-cluster git seed repo.
 	echo "checking clone from a throwaway debug pod..."; \
 	kubectl -n $(NAMESPACE) run gitseed-check-$$RANDOM --rm -i --restart=Never --image=alpine/git:latest --command -- \
 		sh -c "git clone --quiet git://git.$(NAMESPACE).svc.cluster.local/seed.git /tmp/check && cat /tmp/check/README.md"
-
-.PHONY: gitea-bootstrap
-gitea-bootstrap: _ctx-guard ## Re-run the Gitea bootstrap Job (org/repo/token + orchestrator secret). Idempotent.
-	kubectl -n $(NAMESPACE) delete job/gitea-bootstrap --ignore-not-found
-	kubectl -n $(NAMESPACE) apply -k base/gitea
-	kubectl -n $(NAMESPACE) wait --for=condition=complete job/gitea-bootstrap --timeout=180s
-	kubectl -n $(NAMESPACE) rollout restart deploy/orchestrator
-	@echo "gitea-bootstrap complete; orchestrator restarted to pick up GITEA_TOKEN."
 
 .PHONY: logs-orch
 logs-orch: _ctx-guard ## Tail orchestrator logs.

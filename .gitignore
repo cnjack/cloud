@@ -11,3 +11,6 @@ coverage/
 
 # TS incremental build cache
 *.tsbuildinfo
+
+# Real deployment credentials (applied out-of-band by make up)
+deploy/secrets/*.local.yaml
