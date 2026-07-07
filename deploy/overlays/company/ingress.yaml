@@ -1,0 +1,29 @@
+# Kong ingress for the console — mirrors the gitea ingress on this cluster
+# (class kong, TLS via the wildcard `scgzyun.com` cert secret, which must be
+# copied into the jcode namespace: Ingress TLS secrets are namespace-local).
+# *.scgzyun.com already resolves (wildcard DNS), so https://jcode.scgzyun.com
+# is live as soon as this applies.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: console
+  labels:
+    app.kubernetes.io/name: console
+    app.kubernetes.io/part-of: jcloud
+spec:
+  ingressClassName: kong
+  rules:
+    - host: jcode.scgzyun.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: console
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - jcode.scgzyun.com
+      secretName: scgzyun.com
