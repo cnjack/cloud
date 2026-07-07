@@ -66,5 +66,5 @@ patches:
         RUNNER_IMAGE: ghcr.io/cnjack/jcloud-runner:latest
         ORCH_BASE_URL: http://orchestrator.jcode.svc.cluster.local:8080
         MODEL_BASE_URL: http://mockllm.jcode.svc.cluster.local:8081/v1
-        CONSOLE_URL: https://jcode.scgzyun.com
+        CONSOLE_URL: https://cloud.j-code.net
         WEBHOOK_URL: http://orchestrator.jcode.svc.cluster.local:8080/webhooks/gitea
