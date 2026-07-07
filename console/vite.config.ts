@@ -28,6 +28,13 @@ export default defineConfig(({ mode }) => {
           target,
           changeOrigin: true,
         },
+        // The OAuth surface (login/callback/link/logout/providers) lives on the
+        // orchestrator too. Without this the SPA fallback swallowed
+        // /auth/login/gitea and the sign-in buttons dead-ended (M6 live find).
+        '/auth': {
+          target,
+          changeOrigin: true,
+        },
       },
     },
     build: {
