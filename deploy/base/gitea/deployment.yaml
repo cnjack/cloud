@@ -66,6 +66,12 @@ spec:
               value: "http://localhost:3000"
             - name: GITEA__server__HTTP_PORT
               value: "3000"
+            # Gitea refuses webhook deliveries to private/loopback hosts by
+            # default (webhook.ALLOWED_HOST_LIST=external) — the orchestrator
+            # Service resolves to a cluster IP, so the @jcode mention hook was
+            # silently dropped (M7 live find). Allow exactly that host.
+            - name: GITEA__webhook__ALLOWED_HOST_LIST
+              value: "orchestrator.jcloud.svc.cluster.local"
             - name: GITEA__server__OFFLINE_MODE
               value: "true"
             - name: GITEA__database__DB_TYPE

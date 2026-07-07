@@ -24,6 +24,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -200,13 +202,56 @@ func messageText(m message) string {
 
 // scenarioForRequest chooses the scenario for a request: the "review" scenario
 // when any message carries the review marker, otherwise the env-selected default.
+// The write_file scenario personalises the file content with the request's task
+// text so DIFFERENT prompts produce DIFFERENT diffs — without this, a second
+// run on a branch that already has HELLO_FROM_JCODE.txt is a no-op and fails
+// with empty_diff (hit live by the @jcode update-push flow, M7).
 func scenarioForRequest(msgs []message) (string, Scenario) {
 	for _, m := range msgs {
 		if strings.Contains(messageText(m), reviewMarker) {
 			return "review", scenarios["review"]
 		}
 	}
-	return activeScenario()
+	name, sc := activeScenario()
+	if name == "write_file" {
+		if fp, excerpt := lastUserFingerprint(msgs); fp != "" {
+			// A per-prompt FILENAME (not just content): jcode's write tool
+			// refuses to overwrite an existing file it hasn't read, so a fixed
+			// path silently no-ops on any branch that already carries the file
+			// (M7 live find — @jcode update runs always produced empty diffs).
+			args, _ := json.Marshal(map[string]string{
+				"file_path": "JCODE_TASK_" + fp + ".txt",
+				"content": "jcode ran headless in a container and wrote this file.\n" +
+					"Task: " + excerpt + "\n",
+			})
+			sc.ToolArgs = string(args)
+		}
+	}
+	return name, sc
+}
+
+// lastUserFingerprint hashes the ENTIRE last user message (agent prompts share
+// a fixed template preamble, so any single line can be identical across runs —
+// only the full text is guaranteed distinct) and returns a short fingerprint
+// plus a one-line excerpt for readability.
+func lastUserFingerprint(msgs []message) (fp, excerpt string) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != "user" {
+			continue
+		}
+		full := messageText(msgs[i])
+		if strings.TrimSpace(full) == "" {
+			return "", ""
+		}
+		sum := sha256.Sum256([]byte(full))
+		fp = hex.EncodeToString(sum[:])[:12]
+		excerpt = strings.Join(strings.Fields(full), " ")
+		if len(excerpt) > 100 {
+			excerpt = excerpt[:100]
+		}
+		return fp, excerpt
+	}
+	return "", ""
 }
 
 func main() {

@@ -64,3 +64,24 @@ func TestReviewScenarioTwoTurns(t *testing.T) {
 		t.Fatal("turn 2 must observe the tool result and finish")
 	}
 }
+
+// Different prompts must yield different write_file contents (M7 live find:
+// identical mock output on a branch that already had the file → empty_diff).
+func TestWriteFilePersonalisedByPrompt(t *testing.T) {
+	msgs := func(prompt string) []message {
+		return []message{{Role: "user", Content: prompt}}
+	}
+	_, a := scenarioForRequest(msgs("Add a CONTRIBUTING.md"))
+	_, b := scenarioForRequest(msgs("Fix the flaky test"))
+	if a.ToolArgs == b.ToolArgs {
+		t.Fatalf("expected distinct ToolArgs for distinct prompts, both = %s", a.ToolArgs)
+	}
+	if !strings.Contains(a.ToolArgs, "JCODE_TASK_") {
+		t.Fatalf("fingerprinted path missing from args: %s", a.ToolArgs)
+	}
+	// review marker still wins
+	name, _ := scenarioForRequest(msgs("please [review] this"))
+	if name != "review" {
+		t.Fatalf("review marker lost: got %s", name)
+	}
+}

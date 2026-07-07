@@ -224,7 +224,7 @@ repo_url 智能解析(server 端统一):`git://` 或未知 host → raw;`http(s)
 - 受理成功:PAT 回帖 `🚀 jcode run started — <CONSOLE_URL>/runs/<id>`;失败场景回帖一句原因。v1 不发完成回执(update 模式 PR 自身会更新;review 会出现 review comment)。
 
 ### 部署
-- bootstrap 追加:幂等生成 WEBHOOK_SECRET 入 gitea-orchestrator Secret;对 jcloud org 建 org 级 webhook(target `http://orchestrator.jcloud.svc.cluster.local:8080/webhooks/gitea`,secret 同步,events=issue_comment)。orchestrator env 接 WEBHOOK_SECRET(未配置 → webhook 路由 404,系统照常)。
+- bootstrap 追加:幂等生成 WEBHOOK_SECRET 入 gitea-orchestrator Secret;对 jcloud org 建 org 级 webhook(target `http://orchestrator.jcloud.svc.cluster.local:8080/webhooks/gitea`,secret 同步,events=issue_comment **加 pull_request_comment**——Gitea 对 PR 上的评论触发后者,只挂 issue_comment 会静默不投递,M7 live find)。orchestrator env 接 WEBHOOK_SECRET(未配置 → webhook 路由 404,系统照常)。
 
 ### UI(极简)
 - run 详情状态头:origin=webhook 时显示小 chip「from PR comment ↗」链接 origin_comment_url。不加新页面。

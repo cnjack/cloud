@@ -23,7 +23,8 @@
 #      AUTH_GITEA_CLIENT_SECRET, AUTH_TOKEN_KEY, WEBHOOK_SECRET into the
 #      `gitea-orchestrator` Secret that the orchestrator Deployment consumes
 #      via envFrom
-#   8. ensure an org-level `issue_comment` webhook on the jcloud org pointing at
+#   8. ensure an org-level comment webhook (issue_comment + pull_request_comment
+#      — Gitea fires the LATTER for comments on PRs; M7 live find) pointing at
 #      the orchestrator (in-cluster svc DNS), signed with WEBHOOK_SECRET.
 #      Idempotent: skipped when a hook with the same target URL already exists
 #      (Gitea masks the secret on read, so the URL is the identity key)
@@ -91,7 +92,7 @@ data:
     TOKEN_NAME="orchestrator-$(date +%s)"
     TOKEN="$(curl -sS -X POST \
       -u "$ADMIN_USER:$ADMIN_PASS" -H 'Content-Type: application/json' \
-      -d "{\"name\":\"$TOKEN_NAME\",\"scopes\":[\"write:repository\",\"write:organization\",\"write:user\"]}" \
+      -d "{\"name\":\"$TOKEN_NAME\",\"scopes\":[\"write:repository\",\"write:organization\",\"write:user\",\"write:issue\"]}" \
       "$GITEA_URL/api/v1/users/$ADMIN_USER/tokens" | sed -n 's/.*"sha1":"\([^"]*\)".*/\1/p')"
     [ -n "$TOKEN" ] || { log "failed to mint API token"; exit 1; }
     log "minted API token ($TOKEN_NAME)"
@@ -186,9 +187,9 @@ data:
     if [ -n "$EXISTING_HOOK" ]; then
       log "org webhook already present (id=$EXISTING_HOOK, url=$ORCH_WEBHOOK_URL) — skipping"
     else
-      HOOK_BODY="$(python3 -c 'import json,sys; print(json.dumps({"type":"gitea","active":True,"events":["issue_comment"],"config":{"url":sys.argv[1],"content_type":"json","secret":sys.argv[2]}}))' "$ORCH_WEBHOOK_URL" "$WEBHOOK_SECRET")"
+      HOOK_BODY="$(python3 -c 'import json,sys; print(json.dumps({"type":"gitea","active":True,"events":["issue_comment","pull_request_comment"],"config":{"url":sys.argv[1],"content_type":"json","secret":sys.argv[2]}}))' "$ORCH_WEBHOOK_URL" "$WEBHOOK_SECRET")"
       if api POST "/orgs/$ORG/hooks" "$HOOK_BODY" >/dev/null 2>&1; then
-        log "created org webhook -> $ORCH_WEBHOOK_URL (events=issue_comment)"
+        log "created org webhook -> $ORCH_WEBHOOK_URL (events=issue_comment,pull_request_comment)"
       else
         log "WARN: could not create org webhook (continuing; @mention trigger will be off until fixed)"
       fi
