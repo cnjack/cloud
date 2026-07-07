@@ -262,6 +262,45 @@ func TestRetryLinksRetriedFrom(t *testing.T) {
 	}
 }
 
+// Regression (M6 live find): retrying a REVIEW run must stay a review run with
+// its PR association intact — without copying Kind/PRHeadBranch/PRBaseBranch
+// the retry degenerated into an agent run that wrote code and opened a junk PR.
+func TestRetryPreservesReviewIdentity(t *testing.T) {
+	ts, st, _ := newTestServer(t)
+	p := createProject(t, ts)
+	ctx := context.Background()
+	svc, err := st.GetDefaultService(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("default service: %v", err)
+	}
+
+	// Seed a FAILED review run directly (same pattern as review_test.go).
+	rev := &domain.Run{
+		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID,
+		Prompt: "AI review of PR x", Status: domain.StatusQueued,
+		Kind: domain.RunKindReview, Phase: "Queued", Attempt: 1,
+		PRHeadBranch: "jcode/run-abc12345", PRBaseBranch: "main",
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateRun(ctx, rev); err != nil {
+		t.Fatalf("seed review run: %v", err)
+	}
+	_, _ = st.MarkFailed(ctx, rev.ID, "Failed", domain.FailureAgentError, "no REVIEW.md", time.Now())
+
+	resp := do(t, "POST", ts.URL+"/api/v1/runs/"+rev.ID+"/retry", consoleToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("retry: status=%d want 201", resp.StatusCode)
+	}
+	var retry domain.Run
+	decode(t, resp, &retry)
+	if retry.Kind != domain.RunKindReview {
+		t.Fatalf("retry kind=%q want review", retry.Kind)
+	}
+	if retry.PRHeadBranch != "jcode/run-abc12345" || retry.PRBaseBranch != "main" {
+		t.Fatalf("retry PR assoc = %q..%q, want preserved", retry.PRBaseBranch, retry.PRHeadBranch)
+	}
+}
+
 func TestCancelRun(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 	p := createProject(t, ts)

@@ -291,6 +291,13 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	origID := orig.ID
 	retry := newQueuedRun(orig.ProjectID, orig.ServiceID, orig.Prompt, &origID, principalFrom(r.Context()).userIDPtr())
 	retry.Attempt = orig.Attempt + 1
+	// A retry must preserve the run's IDENTITY, not just its prompt: retrying a
+	// review run without copying Kind + PR association degenerates it into an
+	// agent run that writes code and opens a junk PR (found live in M6 — the
+	// retried review played the write_file scenario and opened PR #3).
+	retry.Kind = orig.Kind
+	retry.PRHeadBranch = orig.PRHeadBranch
+	retry.PRBaseBranch = orig.PRBaseBranch
 	if err := s.st.CreateRun(r.Context(), retry); err != nil {
 		s.log.Error("retry run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create retry run")
