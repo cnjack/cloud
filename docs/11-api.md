@@ -47,34 +47,47 @@
 
 ### 1.1 Project
 
+一个 project 是**纯容器**(名字 + 成员 + 护栏);仓库配置只存在于其 services 上
+(§1.1a)。旧的"扁平化 default service 字段"(repo_url/git_mode/provider_repo…)
+已随 simple-mode shim 一并移除。
+
 ```json
 {
   "id": "9f2c...",
   "name": "demo",
-  "repo_url": "https://gitea.internal/acme/app.git",
-  "default_branch": "main",
   "created_at": "2026-07-07T12:00:00Z",
-  "git_mode": "readonly",
+  "role": "owner",
+  "owner_user_id": "u_...",
+  "services": [ { "...": "见 §1.1a Service" } ]
+}
+```
+
+### 1.1a Service(仓库)
+
+```json
+{
+  "id": "svc...",
+  "project_id": "9f2c...",
+  "name": "default",
+  "repo_kind": "provider",
   "provider": "gitea",
-  "provider_url": "http://gitea.jcloud.svc.cluster.local:3000",
-  "provider_repo": "jcloud/seed"
+  "repo_owner_name": "jcloud/seed",
+  "default_branch": "main",
+  "git_mode": "draft_pr",
+  "created_at": "2026-07-07T12:00:00Z"
 }
 ```
 
 - **`git_mode`** (ST-1; decision D08): `readonly` (default) | `draft_pr`.
-  - `readonly` — today's behavior: a successful run ends in a **diff artifact
-    only**. Nothing is pushed and no PR is opened. J1-J3 use this.
-  - `draft_pr` — after a successful run with a **non-empty diff**, the runner
-    pushes an `agent/run-<id>` branch and the orchestrator opens a **draft PR**
-    on the provider. **Never auto-merges, never triggers CI** (hard gate).
-- **`provider`** (`gitea` only in the MVP; decision D09), **`provider_url`**
-  (Gitea base URL), **`provider_repo`** (`owner/name`): required together when
-  `git_mode == draft_pr`; ignored/empty for `readonly`. If `git_mode == draft_pr`
-  and `provider` is omitted it defaults to `gitea`. `provider_repo` is
-  **required** for `draft_pr` (400 otherwise). The provider **token** is not a
-  project field — it comes from the orchestrator env `GITEA_TOKEN` (single-tenant
-  MVP), injected to the runner for the push and used by the orchestrator for the
-  PR API.
+  - `readonly` — a successful run ends in a **diff artifact only**. Nothing is
+    pushed and no PR is opened. J1-J3 use this.
+  - `draft_pr` — after a successful run with a **non-empty diff**, the
+    orchestrator pushes an `agent/run-<id>` branch (proxy-push, M3) and opens a
+    **draft PR** on the provider. **Never auto-merges, never triggers CI**.
+- **`repo_kind`**: `provider`(`repo_owner_name` = `owner/name`,配合
+  `provider`)| `raw`(`raw_repo_url`,只读,不能 `draft_pr`)。provider 基址
+  由 orchestrator 配置推导(gitea 用 `GITEA_URL`)。提供者**token** 不是
+  service 字段——draft-PR 优先用触发用户的 OAuth token,回退 `GITEA_TOKEN`。
 
 ### 1.2 Run
 
@@ -187,26 +200,37 @@ orchestrator 的兜底分类**不覆盖**它。
 请求:
 
 ```json
-{
-  "name": "demo",
-  "repo_url": "https://gitea.internal/acme/app.git",
-  "default_branch": "main",
-  "git_mode": "draft_pr",
-  "provider": "gitea",
-  "provider_url": "http://gitea.jcloud.svc.cluster.local:3000",
-  "provider_repo": "jcloud/seed"
-}
+{ "name": "demo" }
 ```
 
-- `name`(必填)、`repo_url`(必填);`default_branch` 缺省 `main`。
-- **(ST-1)** `git_mode` 缺省 `readonly`。取 `draft_pr` 时:`provider` 缺省
-  `gitea`(只支持 `gitea`,否则 `400`),`provider_repo`(`owner/name`)**必填**
-  (否则 `400`);`provider_url` 可选(缺省用 orchestrator 的 `GITEA_URL`)。
-  `readonly` 时后三者可省略。`PATCH` 同样接受这些字段(只更新提供的字段)。
+- `name` 是**唯一**字段。project 是纯容器;仓库随后通过
+  `POST /projects/{id}/services` 附加(创建流是两步)。请求体带旧的
+  repo 字段(`repo_url` 等)会被**响亮拒绝**(`400`,DisallowUnknownFields),
+  不再自动创建 default service。
 
-响应 `201 Created`:完整 Project 对象(见 §1.1)。
-错误:`400`(缺 name/repo_url;`git_mode` 非法;`draft_pr` 缺 `provider_repo`
-或 `provider` 非 gitea)。
+响应 `201 Created`:完整 Project 对象(见 §1.1,`services` 为空数组)。
+错误:`400`(缺 name / 未知字段)。
+
+#### `GET /api/v1/providers/{provider}/repos` — 仓库选择器(Drone 式 onboarding)
+
+`?q=<搜索>&page=<页码>`。列出**调用者凭据**在该 provider 上可见的仓库:登录用户
+用其绑定的 OAuth token(列表 = 该用户真实可见范围);service principal /
+未绑定时 gitea 回退全局 PAT。响应:
+
+```json
+{ "repos": [ { "id": 210003, "full_name": "ai/jcode-cloud-e2e", "default_branch": "main", "private": true, "html_url": "..." } ] }
+```
+
+- `id` 是 provider 的数字仓库 id;创建 service 时以 `provider_repo_id` 回传,
+  作为防 rename 的仓库身份(迁移 0009)。
+- 错误:`400`(未知 provider)、`403`(无该 provider 凭据——console 据此提示
+  去绑定账号,并回退手填 URL)。
+- 注意 scope:gitea 登录 token(空 scope)可列全部;github 的 `read:user` /
+  gitlab 的 `read_user` 登录 scope **列不了私有仓库**,需要升级 scope 重新
+  绑定(github `repo` / gitlab `read_api`)。
+- 若同时配置了 `WEBHOOK_URL` + `WEBHOOK_SECRET`,创建 gitea service 时会
+  **best-effort 自动注册** `@jcode` 评论 webhook(幂等,按 URL 判重;失败仅
+  记日志,不影响创建)。
 
 #### `GET /api/v1/projects` — 列出 projects
 
@@ -224,13 +248,13 @@ orchestrator 的兜底分类**不覆盖**它。
 
 #### `PATCH /api/v1/projects/{id}` — 更新 project
 
-请求(全部可选,仅提供的字段被更新):
+请求(重命名是唯一的 project 级编辑;仓库改动走 `PATCH /services/{id}`):
 
 ```json
-{ "name": "demo2", "repo_url": "https://...", "default_branch": "dev" }
+{ "name": "demo2" }
 ```
 
-响应 `200`:更新后的 Project。错误:`404`。
+响应 `200`:更新后的 Project。错误:`400`(未知字段)、`404`。
 
 #### `DELETE /api/v1/projects/{id}` — 删除 project
 
@@ -238,7 +262,10 @@ orchestrator 的兜底分类**不覆盖**它。
 
 ### 2.2 Runs
 
-#### `POST /api/v1/projects/{id}/runs` — 创建并入队 run
+#### `POST /api/v1/services/{id}/runs` — 创建并入队 run
+
+Run 一律**按 service 派发**(旧的项目级 `POST /projects/{id}/runs`——解析
+default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `405`)。
 
 请求:
 
@@ -249,7 +276,7 @@ orchestrator 的兜底分类**不覆盖**它。
 - `prompt`(必填,非空白)。
 
 响应 `201 Created`:完整 Run 对象,`status` = `queued`。
-错误:`400`(空 prompt)、`404`(project 不存在)。
+错误:`400`(空 prompt)、`404`(service 不存在)。
 
 > 创建即入队;reconciler 下一 tick(默认 3s 内)按并发上限起 K8s Job。
 
@@ -520,8 +547,8 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
 |---|---|---|
 | `RUN_ID` | run.id | 本 run 唯一 id;上报事件/产物时用于路径 `{id}` |
 | `TASK_PROMPT` | run.prompt | 任务描述,喂给 agent |
-| `REPO_URL` | project.repo_url | 要 clone 的仓库 |
-| `REPO_BRANCH` | project.default_branch | 基线分支(契约扩展项;runner 可用可忽略) |
+| `REPO_URL` | service.repo(clone url 由 service 推导) | 要 clone 的仓库 |
+| `REPO_BRANCH` | service.default_branch | 基线分支(契约扩展项;runner 可用可忽略) |
 | `MODEL_BASE_URL` | 环境 `MODEL_BASE_URL` | OpenAI 兼容 provider base URL |
 | `MODEL_API_KEY` | 环境 `MODEL_API_KEY` | 模型 key(MVP 直注入;P3 换 LLM 代理 + temp token) |
 | `MODEL_NAME` | 环境 `MODEL_NAME`(默认 `mock/mock-model`) | jcode 的 `provider/model` 标识;runner 据此为未知 provider 写 `custom_models` 配置项 |
@@ -531,7 +558,7 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
 | `GIT_BRANCH` | `agent/run-<RUN_ID>` | **(ST-1)** `draft_pr` 时要创建/推送的命名分支 |
 | `GIT_PUSH_URL` | `provider_url`(或 `GITEA_URL`)+ `provider_repo` | **(ST-1)** https 推送 origin,如 `http://gitea.../owner/repo.git` |
 | `GIT_TOKEN` | 环境 `GITEA_TOKEN` | **(F1/ST-1)** provider token,作为 https userinfo。用于 **(a) CLONE 私有仓库**(`readonly` **和** `draft_pr` 都注入——私有仓库要能被 clone 才能被 READ)**和 (b) `draft_pr` 推分支**。仅命令行传参,不落盘,**不打日志**(clone/push URL 与 git stderr 均脱敏后才输出) |
-| `GIT_BASE_BRANCH` | project.default_branch | **(ST-1)** PR base 分支(信息性;PR base 实际由 orchestrator 设) |
+| `GIT_BASE_BRANCH` | service.default_branch | **(ST-1)** PR base 分支(信息性;PR base 实际由 orchestrator 设) |
 
 > **(F1 · GIT_TOKEN 注入的 host-match 规则)** 当 orchestrator 配了 `GITEA_TOKEN`
 > **且** `REPO_URL` 是 http(s) **且**其 host(host:port,大小写不敏感)与所配
@@ -601,7 +628,7 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
      url/number,不再新建。
    - 否则 `POST /repos/{owner}/{repo}/pulls`,title=`WIP: [jcode] <prompt 首行>`
      (Gitea 无独立 draft 字段,**WIP 前缀即 draft/工作草稿**),body 关联 run id,
-     `base` = project.default_branch,`head` = `agent/run-<id>`。
+     `base` = service.default_branch,`head` = `agent/run-<id>`。
    - 用 **`MarkPRCreated`**(first-writer-wins,仅在 `pr_url` 为空时写)持久化
      `pr_url`/`pr_number`,并补发一条带 `pr_url` 的 `run.status`,让在连 console
      无需重取即可显示「Draft PR #N ↗」。

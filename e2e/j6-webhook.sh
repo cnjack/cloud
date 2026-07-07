@@ -164,18 +164,25 @@ j6_run() {
   assert_nonempty J-WH "OAuth login mapped $GITEA_ADMIN_USER to a jcloud user" "$me_uid"
   [ -n "$me_uid" ] || { fail J-WH "no jcloud user after OAuth; cannot continue"; return 1; }
 
-  # --- Set up a draft_pr project + an existing PR to comment on ------------
+  # --- Set up a project + draft_pr service + an existing PR to comment on --
   local proj_resp proj_code pid
-  proj_resp="$(api_post_code "/projects" \
-    "{\"name\":\"j6-webhook\",\"repo_url\":\"$GITEA_SEED_REPO\",\"default_branch\":\"main\",\"git_mode\":\"draft_pr\",\"provider\":\"gitea\",\"provider_url\":\"$GITEA_INCLUSTER_URL\",\"provider_repo\":\"$GITEA_ORG/$GITEA_REPO\"}")"
+  proj_resp="$(api_post_code "/projects" "{\"name\":\"j6-webhook\"}")"
   proj_code="$(http_code "$proj_resp")"
   pid="$(http_body "$proj_resp" | jq -r '.id // empty')"
-  assert_eq J-WH "POST /projects (draft_pr) returns 201" "201" "$proj_code"
+  assert_eq J-WH "POST /projects returns 201" "201" "$proj_code"
   [ -n "$pid" ] || { fail J-WH "cannot continue without a project"; return 1; }
   register_project "$pid"
 
+  local svc_resp svc_code sid
+  svc_resp="$(api_post_code "/projects/$pid/services" \
+    "{\"name\":\"default\",\"provider\":\"gitea\",\"owner_name\":\"$GITEA_ORG/$GITEA_REPO\",\"git_mode\":\"draft_pr\",\"default_branch\":\"main\"}")"
+  svc_code="$(http_code "$svc_resp")"
+  sid="$(http_body "$svc_resp" | jq -r '.id // empty')"
+  assert_eq J-WH "POST /projects/{id}/services (draft_pr) returns 201" "201" "$svc_code"
+  [ -n "$sid" ] || { fail J-WH "cannot continue without a service"; return 1; }
+
   local rc rid final
-  rc="$(create_run "$pid" "add a HELLO_WEBHOOK line to the repo")"
+  rc="$(create_run "$sid" "add a HELLO_WEBHOOK line to the repo")"
   rid="${rc%%$'\t'*}"
   assert_nonempty J-WH "seed agent run created" "$rid"
   final="$(wait_terminal "$rid")"

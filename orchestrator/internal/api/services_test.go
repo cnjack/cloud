@@ -131,87 +131,69 @@ func TestServiceDraftPRRequiresProvider(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestProjectShimFlattensDefaultService covers the compat shim: POST /projects
-// with repo_url auto-creates a default service, GET flattens it, and POST
-// /projects/{id}/runs routes to that default service.
-func TestProjectShimFlattensDefaultService(t *testing.T) {
-	ts, st, _ := newTestServer(t)
+// TestRunDispatchIsServiceScoped pins the post-shim contract: runs are created
+// ONLY via POST /services/{id}/runs; the removed project-level POST
+// /projects/{id}/runs no longer routes (405 — the path only serves GET).
+func TestRunDispatchIsServiceScoped(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	pid := newProject(t, ts, "scoped")
 
-	resp := do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]any{
-		"name": "shim", "repo_url": "git://git.jcloud.svc/seed.git", "default_branch": "main",
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+		"name": "default", "repo_url": "git://git.jcloud.svc/seed.git",
 	})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create project via shim: status=%d want 201", resp.StatusCode)
-	}
-	var pv projectView
-	decode(t, resp, &pv)
-	if pv.RepoURL != "git://git.jcloud.svc/seed.git" || pv.GitMode != domain.GitModeReadonly {
-		t.Fatalf("flatten missing repo_url/git_mode: %+v", pv)
-	}
-	if len(pv.Services) != 1 || pv.Services[0].Name != "default" {
-		t.Fatalf("expected a default service: %+v", pv.Services)
-	}
-	defaultServiceID := pv.Services[0].ID
+	var svc domain.Service
+	decode(t, resp, &svc)
 
-	// POST /projects/{id}/runs routes to the default service.
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pv.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
+	resp = do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("shim create run: status=%d want 201", resp.StatusCode)
+		t.Fatalf("service run: status=%d want 201", resp.StatusCode)
 	}
 	var run domain.Run
 	decode(t, resp, &run)
-	if run.ServiceID != defaultServiceID {
-		t.Fatalf("shim run.service_id=%q want default service %q", run.ServiceID, defaultServiceID)
+	if run.ServiceID != svc.ID || run.ProjectID != pid {
+		t.Fatalf("run scoping wrong: %+v", run)
 	}
 
-	// GET /projects/{id} flattens too.
-	resp = do(t, "GET", ts.URL+"/api/v1/projects/"+pv.ID, consoleToken, nil)
-	var got projectView
-	decode(t, resp, &got)
-	if got.RepoURL != "git://git.jcloud.svc/seed.git" || len(got.Services) != 1 {
-		t.Fatalf("GET flatten wrong: %+v", got)
-	}
-	_ = st
-
-	// A project with no default service rejects the shim run route with 400.
-	pid := newProject(t, ts, "no-svc")
 	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/runs", consoleToken, map[string]any{"prompt": "go"})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("shim run on service-less project: status=%d want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("removed project-level run POST: status=%d want 405", resp.StatusCode)
 	}
 	resp.Body.Close()
 }
 
-// TestProjectPatchRetargetsDefaultService is the e2e J2-S5 shim: PATCH the
-// project's repo_url updates the default service in place, so a retry (same
-// service_id) picks up the fix.
-func TestProjectPatchRetargetsDefaultService(t *testing.T) {
+// TestProjectPatchRejectsRepoFields pins that PATCH /projects/{id} renames only:
+// legacy repo fields are rejected loudly (DisallowUnknownFields) — that shim was
+// removed; repo edits go through PATCH /services/{id}.
+func TestProjectPatchRejectsRepoFields(t *testing.T) {
 	ts, _, _ := newTestServer(t)
+	pid := newProject(t, ts, "patch")
 
-	resp := do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]any{
-		"name": "patch", "repo_url": "git://bad/repo.git",
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+		"name": "default", "repo_url": "git://original/seed.git",
 	})
-	var pv projectView
-	decode(t, resp, &pv)
-	svcID := pv.Services[0].ID
+	var svc domain.Service
+	decode(t, resp, &svc)
 
-	resp = do(t, "PATCH", ts.URL+"/api/v1/projects/"+pv.ID, consoleToken, map[string]any{
-		"repo_url": "git://good/seed.git",
+	// Legacy repo field on a project PATCH -> 400, service untouched.
+	resp = do(t, "PATCH", ts.URL+"/api/v1/projects/"+pid, consoleToken, map[string]any{
+		"name": "renamed", "repo_url": "git://should-be-rejected/x.git",
 	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("legacy repo_url on project PATCH: status=%d want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Name-only PATCH -> 200; the service is untouched.
+	resp = do(t, "PATCH", ts.URL+"/api/v1/projects/"+pid, consoleToken, map[string]any{"name": "renamed"})
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("patch project repo_url: status=%d want 200", resp.StatusCode)
+		t.Fatalf("patch project: status=%d want 200", resp.StatusCode)
 	}
 	var got projectView
 	decode(t, resp, &got)
-	if got.RepoURL != "git://good/seed.git" {
-		t.Fatalf("flatten repo_url=%q want the fixed url", got.RepoURL)
+	if got.Name != "renamed" {
+		t.Fatalf("name=%q want renamed", got.Name)
 	}
-	// The SAME default service was retargeted (id unchanged), so a retry keeps
-	// working against the same service_id.
-	if len(got.Services) != 1 || got.Services[0].ID != svcID {
-		t.Fatalf("default service id changed on patch: %+v", got.Services)
-	}
-	if got.Services[0].RawRepoURL != "git://good/seed.git" {
-		t.Fatalf("service raw url=%q want fixed", got.Services[0].RawRepoURL)
+	if len(got.Services) != 1 || got.Services[0].RawRepoURL != "git://original/seed.git" {
+		t.Fatalf("service must be untouched by a project PATCH: %+v", got.Services)
 	}
 }

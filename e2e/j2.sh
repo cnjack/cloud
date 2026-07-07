@@ -10,15 +10,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 j2_run() {
   section "J2 · failure visibility (clone_failed + retry)"
 
-  # --- J2-S1: project with an unreachable repo → run created, queued ------
-  local pc pid pcode; pc="$(create_project "j2-bad" "$BAD_REPO")"
-  pid="${pc%%$'\t'*}"; pcode="${pc##*$'\t'}"
-  assert_eq J2-S1 "POST /projects (bad repo) returns 201" "201" "$pcode"
+  # --- J2-S1: project + service with an unreachable repo → run created ----
+  local pc pid sid pcode; pc="$(create_project "j2-bad" "$BAD_REPO")"
+  pid="$(printf '%s' "$pc" | cut -f1)"
+  sid="$(printf '%s' "$pc" | cut -f2)"
+  pcode="$(printf '%s' "$pc" | cut -f3)"
+  assert_eq J2-S1 "project + service (bad repo) create returns 201" "201" "$pcode"
   assert_nonempty J2-S1 "created project has id" "$pid"
   [ -n "$pid" ] && register_project "$pid"
-  [ -n "$pid" ] || { fail J2-S1 "cannot continue J2 without a project"; return 1; }
+  [ -n "$pid" ] && [ -n "$sid" ] || { fail J2-S1 "cannot continue J2 without a project/service"; return 1; }
 
-  local rc rid rcode; rc="$(create_run "$pid" "do something that needs the repo")"
+  local rc rid rcode; rc="$(create_run "$sid" "do something that needs the repo")"
   rid="${rc%%$'\t'*}"; rcode="${rc##*$'\t'}"
   assert_eq J2-S1 "POST /runs returns 201" "201" "$rcode"
   assert_nonempty J2-S1 "created run has id" "$rid"
@@ -76,12 +78,13 @@ j2_run() {
   wait_terminal "$new_rid" >/dev/null 2>&1 || true
 
   # --- J2-S5: (optional) fix repo then retry → succeeded ------------------
-  # PATCH the project's repo_url to the good seed repo, then retry the failed
-  # original; the corrected run should reach succeeded (PRD J2-S5).
-  local patch_code; api_get_code "/projects/$pid" >/dev/null # warm
+  # PATCH the SERVICE's repo_url to the good seed repo (repo edits are
+  # service-scoped now), then retry the failed original; the retry keeps the
+  # same service_id so the corrected run should reach succeeded (PRD J2-S5).
+  local patch_code
   curl -sS -o /dev/null -w '%{http_code}' -X PATCH \
     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-    -d "{\"repo_url\":\"$SEED_REPO\"}" "$API/projects/$pid" >/tmp/j2-patch-code 2>/dev/null
+    -d "{\"repo_url\":\"$SEED_REPO\"}" "$API/services/$sid" >/tmp/j2-patch-code 2>/dev/null
   patch_code="$(cat /tmp/j2-patch-code)"; rm -f /tmp/j2-patch-code
   if [ "$patch_code" = "200" ]; then
     local fix_resp fix_body fix_rid fix_final
@@ -90,12 +93,12 @@ j2_run() {
     fix_rid="$(printf '%s' "$fix_body" | jq -r '.id // empty')"
     if [ -n "$fix_rid" ]; then
       fix_final="$(wait_terminal "$fix_rid")"
-      assert_eq J2-S5 "retry after fixing repo_url reaches succeeded" "succeeded" "$fix_final"
+      assert_eq J2-S5 "retry after fixing the service repo_url reaches succeeded" "succeeded" "$fix_final"
     else
       fail J2-S5 "could not create corrected retry run"
     fi
   else
-    fail J2-S5 "PATCH project repo_url failed (code=$patch_code)"
+    fail J2-S5 "PATCH service repo_url failed (code=$patch_code)"
   fi
 }
 

@@ -19,18 +19,20 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 j3_run() {
   section "J3 · parallel isolation (two concurrent runs)"
 
-  local pc pid pcode; pc="$(create_project "j3-demo" "$SEED_REPO")"
-  pid="${pc%%$'\t'*}"; pcode="${pc##*$'\t'}"
-  assert_eq J3-S1 "POST /projects returns 201" "201" "$pcode"
+  local pc pid sid pcode; pc="$(create_project "j3-demo" "$SEED_REPO")"
+  pid="$(printf '%s' "$pc" | cut -f1)"
+  sid="$(printf '%s' "$pc" | cut -f2)"
+  pcode="$(printf '%s' "$pc" | cut -f3)"
+  assert_eq J3-S1 "project + service create returns 201" "201" "$pcode"
   assert_nonempty J3-S1 "created project has id" "$pid"
   [ -n "$pid" ] && register_project "$pid"
-  [ -n "$pid" ] || { fail J3-S1 "cannot continue J3 without a project"; return 1; }
+  [ -n "$pid" ] && [ -n "$sid" ] || { fail J3-S1 "cannot continue J3 without a project/service"; return 1; }
 
   # --- J3-S1 / J3-S2: fire two runs back-to-back --------------------------
   local rca rcb ridA ridB
-  rca="$(create_run "$pid" "add a line A")"; ridA="${rca%%$'\t'*}"
+  rca="$(create_run "$sid" "add a line A")"; ridA="${rca%%$'\t'*}"
   assert_nonempty J3-S1 "run A created" "$ridA"
-  rcb="$(create_run "$pid" "add a line B")"; ridB="${rcb%%$'\t'*}"
+  rcb="$(create_run "$sid" "add a line B")"; ridB="${rcb%%$'\t'*}"
   assert_nonempty J3-S2 "run B created" "$ridB"
   if [ -n "$ridA" ] && [ -n "$ridB" ] && [ "$ridA" != "$ridB" ]; then
     pass J3-S2 "run A and run B have distinct ids"

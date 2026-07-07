@@ -57,22 +57,30 @@ j4_run() {
   fi
   info "Gitea token loaded from secret/gitea-orchestrator (${#GITEA_TOKEN} chars)"
 
-  # --- J4-S1: create a draft_pr project pointing at the Gitea seed repo -----
+  # --- J4-S1: create a project + draft_pr service on the Gitea seed repo ----
   local proj_resp proj_code proj_body pid
-  proj_resp="$(api_post_code "/projects" \
-    "{\"name\":\"j4-draftpr\",\"repo_url\":\"$GITEA_SEED_REPO\",\"default_branch\":\"main\",\"git_mode\":\"draft_pr\",\"provider\":\"gitea\",\"provider_url\":\"$GITEA_INCLUSTER_URL\",\"provider_repo\":\"$GITEA_ORG/$GITEA_REPO\"}")"
+  proj_resp="$(api_post_code "/projects" "{\"name\":\"j4-draftpr\"}")"
   proj_code="$(http_code "$proj_resp")"; proj_body="$(http_body "$proj_resp")"
-  assert_eq J-MR "POST /projects (draft_pr) returns 201" "201" "$proj_code"
+  assert_eq J-MR "POST /projects returns 201" "201" "$proj_code"
   pid="$(printf '%s' "$proj_body" | jq -r '.id // empty')"
-  assert_nonempty J-MR "created draft_pr project has id" "$pid"
-  local gm; gm="$(printf '%s' "$proj_body" | jq -r '.git_mode // empty')"
-  assert_eq J-MR "project git_mode is draft_pr" "draft_pr" "$gm"
+  assert_nonempty J-MR "created project has id" "$pid"
   [ -n "$pid" ] && register_project "$pid"
   [ -n "$pid" ] || { fail J-MR "cannot continue J4 without a project"; return 1; }
 
+  local svc_resp svc_code svc_body sid
+  svc_resp="$(api_post_code "/projects/$pid/services" \
+    "{\"name\":\"default\",\"provider\":\"gitea\",\"owner_name\":\"$GITEA_ORG/$GITEA_REPO\",\"git_mode\":\"draft_pr\",\"default_branch\":\"main\"}")"
+  svc_code="$(http_code "$svc_resp")"; svc_body="$(http_body "$svc_resp")"
+  assert_eq J-MR "POST /projects/{id}/services (draft_pr) returns 201" "201" "$svc_code"
+  sid="$(printf '%s' "$svc_body" | jq -r '.id // empty')"
+  assert_nonempty J-MR "created draft_pr service has id" "$sid"
+  local gm; gm="$(printf '%s' "$svc_body" | jq -r '.git_mode // empty')"
+  assert_eq J-MR "service git_mode is draft_pr" "draft_pr" "$gm"
+  [ -n "$sid" ] || { fail J-MR "cannot continue J4 without a service"; return 1; }
+
   # --- J4-S2: trigger a run ------------------------------------------------
   local rc rid rcode
-  rc="$(create_run "$pid" "add a HELLO line to the repo")"
+  rc="$(create_run "$sid" "add a HELLO line to the repo")"
   rid="${rc%%$'\t'*}"; rcode="${rc##*$'\t'}"
   assert_eq J-MR "POST /runs returns 201" "201" "$rcode"
   assert_nonempty J-MR "created run has id" "$rid"

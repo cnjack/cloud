@@ -172,6 +172,10 @@ func (s *Server) Handler() http.Handler {
 
 	// Services (multitenant blueprint §4). A service is a repo config inside a
 	// project; runs are created against a service.
+	// Repo picker for Drone-style service onboarding (lists what the caller's
+	// provider credential can see).
+	mux.Handle("GET /api/v1/providers/{provider}/repos", s.authed(s.handleListProviderRepos))
+
 	mux.Handle("POST /api/v1/projects/{id}/services", s.authed(s.handleCreateService))
 	mux.Handle("GET /api/v1/projects/{id}/services", s.authed(s.handleListServices))
 	mux.Handle("PATCH /api/v1/services/{id}", s.authed(s.handleUpdateService))
@@ -179,9 +183,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/services/{id}/runs", s.authed(s.handleCreateServiceRun))
 	mux.Handle("GET /api/v1/services/{id}/runs", s.authed(s.handleListServiceRuns))
 
-	// Compat shim: POST /projects/{id}/runs routes to the project's default
-	// service; GET stays project-scoped.
-	mux.Handle("POST /api/v1/projects/{id}/runs", s.authed(s.handleCreateRun))
+	// Run creation is service-scoped only (above); listing stays project-scoped.
 	mux.Handle("GET /api/v1/projects/{id}/runs", s.authed(s.handleListRuns))
 	mux.Handle("GET /api/v1/runs", s.authed(s.handleListRuns))
 	mux.Handle("GET /api/v1/runs/{id}", s.authed(s.handleGetRun))

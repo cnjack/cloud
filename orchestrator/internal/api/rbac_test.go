@@ -16,6 +16,7 @@ type rbacFixture struct {
 	ts        *httptest.Server
 	st        *store.MemStore
 	projectID string
+	serviceID string
 	target    *domain.User
 	tokens    map[string]string // role name -> bearer token ("" for service uses consoleToken)
 }
@@ -41,10 +42,8 @@ func setupRBAC(t *testing.T) rbacFixture {
 		"service":  consoleToken,
 	}
 
-	// Owner creates the project (becomes owner member) with a default service.
-	resp := do(t, "POST", ts.URL+"/api/v1/projects", tokens["owner"], map[string]any{
-		"name": "rbac", "repo_url": "https://git/x.git",
-	})
+	// Owner creates the project (becomes owner member), then attaches a service.
+	resp := do(t, "POST", ts.URL+"/api/v1/projects", tokens["owner"], map[string]any{"name": "rbac"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("owner create project: status=%d want 201", resp.StatusCode)
 	}
@@ -53,6 +52,14 @@ func setupRBAC(t *testing.T) rbacFixture {
 	if pv.Role != "owner" {
 		t.Fatalf("creator role=%q want owner", pv.Role)
 	}
+	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pv.ID+"/services", tokens["owner"], map[string]any{
+		"name": "default", "repo_url": "https://git/x.git",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("owner create service: status=%d want 201", resp.StatusCode)
+	}
+	var svc domain.Service
+	decode(t, resp, &svc)
 
 	// Owner adds member + viewer.
 	for uid, role := range map[string]string{member.ID: "member", viewer.ID: "viewer"} {
@@ -64,7 +71,7 @@ func setupRBAC(t *testing.T) rbacFixture {
 		r.Body.Close()
 	}
 
-	return rbacFixture{ts: ts, st: st, projectID: pv.ID, target: target, tokens: tokens}
+	return rbacFixture{ts: ts, st: st, projectID: pv.ID, serviceID: svc.ID, target: target, tokens: tokens}
 }
 
 func TestRBACMatrix(t *testing.T) {
@@ -88,7 +95,7 @@ func TestRBACMatrix(t *testing.T) {
 			return r.StatusCode
 		}},
 		{"createRun", func(tok string) int {
-			r := do(t, "POST", f.ts.URL+"/api/v1/projects/"+pid+"/runs", tok, map[string]any{"prompt": "hi"})
+			r := do(t, "POST", f.ts.URL+"/api/v1/services/"+f.serviceID+"/runs", tok, map[string]any{"prompt": "hi"})
 			defer r.Body.Close()
 			return r.StatusCode
 		}},
@@ -180,7 +187,7 @@ func TestTriggeredByRecordedForUser(t *testing.T) {
 	ctx := context.Background()
 
 	// Member triggers a run.
-	r := do(t, "POST", f.ts.URL+"/api/v1/projects/"+f.projectID+"/runs", f.tokens["member"],
+	r := do(t, "POST", f.ts.URL+"/api/v1/services/"+f.serviceID+"/runs", f.tokens["member"],
 		map[string]any{"prompt": "task"})
 	var run domain.Run
 	decode(t, r, &run)
@@ -190,7 +197,7 @@ func TestTriggeredByRecordedForUser(t *testing.T) {
 	}
 
 	// Service principal triggers a run => null triggered_by.
-	r2 := do(t, "POST", f.ts.URL+"/api/v1/projects/"+f.projectID+"/runs", consoleToken,
+	r2 := do(t, "POST", f.ts.URL+"/api/v1/services/"+f.serviceID+"/runs", consoleToken,
 		map[string]any{"prompt": "task2"})
 	var run2 domain.Run
 	decode(t, r2, &run2)

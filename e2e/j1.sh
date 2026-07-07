@@ -27,12 +27,11 @@ j1_run() {
     fail J1-S1 "GET /projects (code=$list_code)"
   fi
 
-  # --- J1-S3: create project (name=demo, repo=REPO_OK) --------------------
+  # --- J1-S3: create project (name only), then attach the repo as a service
   # (S2 is the modal render — pure console; the machine-checkable contract is
-  #  the create call it submits, asserted here as S3.)
+  #  the two-step create the console submits, asserted here as S3.)
   local proj_resp proj_code proj_body pid
-  proj_resp="$(api_post_code "/projects" \
-    "{\"name\":\"j1-demo\",\"repo_url\":\"$SEED_REPO\",\"default_branch\":\"main\"}")"
+  proj_resp="$(api_post_code "/projects" "{\"name\":\"j1-demo\"}")"
   proj_code="$(http_code "$proj_resp")"; proj_body="$(http_body "$proj_resp")"
   assert_eq J1-S3 "POST /projects returns 201" "201" "$proj_code"
   pid="$(printf '%s' "$proj_body" | jq -r '.id // empty')"
@@ -44,12 +43,21 @@ j1_run() {
 
   [ -n "$pid" ] || { fail J1-S4 "cannot continue J1 without a project id"; return 1; }
 
-  # --- J1-S4: trigger a run, initial status queued ------------------------
+  local svc_resp svc_code svc_body sid
+  svc_resp="$(api_post_code "/projects/$pid/services" \
+    "{\"name\":\"default\",\"repo_url\":\"$SEED_REPO\",\"default_branch\":\"main\"}")"
+  svc_code="$(http_code "$svc_resp")"; svc_body="$(http_body "$svc_resp")"
+  assert_eq J1-S3 "POST /projects/{id}/services returns 201" "201" "$svc_code"
+  sid="$(printf '%s' "$svc_body" | jq -r '.id // empty')"
+  assert_nonempty J1-S3 "created service has id" "$sid"
+  [ -n "$sid" ] || { fail J1-S4 "cannot continue J1 without a service id"; return 1; }
+
+  # --- J1-S4: trigger a run (service-scoped), initial status queued --------
   local run_resp run_code run_body rid status0
-  run_resp="$(api_post_code "/projects/$pid/runs" \
+  run_resp="$(api_post_code "/services/$sid/runs" \
     "{\"prompt\":$(jq -Rn --arg p 'append a Hello line to README' '$p')}")"
   run_code="$(http_code "$run_resp")"; run_body="$(http_body "$run_resp")"
-  assert_eq J1-S4 "POST /projects/{id}/runs returns 201" "201" "$run_code"
+  assert_eq J1-S4 "POST /services/{id}/runs returns 201" "201" "$run_code"
   rid="$(printf '%s' "$run_body" | jq -r '.id // empty')"
   status0="$(printf '%s' "$run_body" | jq -r '.status')"
   assert_nonempty J1-S4 "created run has run_id" "$rid"

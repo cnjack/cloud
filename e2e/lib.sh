@@ -139,20 +139,31 @@ cleanup_projects() {
 # Domain helpers.
 # ---------------------------------------------------------------------------
 
-# create_project <name> <repo_url> -> prints "<id>\t<http_code>".
-# (id may be empty on error; the code lets the caller assert 201.)
+# create_project <name> <repo_url> -> prints "<project_id>\t<service_id>\t<http_code>".
+# Two-step now that a project is a pure container: POST /projects {name}, then
+# POST /projects/{id}/services (name 'default', branch main). The code is the
+# first failing step's (201 when both succeeded); ids may be empty on error.
 create_project() {
-  local resp; resp="$(api_post_code "/projects" \
-    "{\"name\":\"$1\",\"repo_url\":\"$2\",\"default_branch\":\"main\"}")"
-  local code body id
-  code="$(http_code "$resp")"; body="$(http_body "$resp")"
-  id="$(printf '%s' "$body" | jq -r '.id // empty')"
-  printf '%s\t%s' "$id" "$code"
+  local presp pcode pbody pid
+  presp="$(api_post_code "/projects" "{\"name\":\"$1\"}")"
+  pcode="$(http_code "$presp")"; pbody="$(http_body "$presp")"
+  pid="$(printf '%s' "$pbody" | jq -r '.id // empty')"
+  if [ "$pcode" != "201" ] || [ -z "$pid" ]; then
+    printf '%s\t%s\t%s' "$pid" "" "$pcode"
+    return
+  fi
+  local sresp scode sbody sid
+  sresp="$(api_post_code "/projects/$pid/services" \
+    "{\"name\":\"default\",\"repo_url\":\"$2\",\"default_branch\":\"main\"}")"
+  scode="$(http_code "$sresp")"; sbody="$(http_body "$sresp")"
+  sid="$(printf '%s' "$sbody" | jq -r '.id // empty')"
+  printf '%s\t%s\t%s' "$pid" "$sid" "$scode"
 }
 
-# create_run <project_id> <prompt> -> prints "<id>\t<http_code>".
+# create_run <service_id> <prompt> -> prints "<id>\t<http_code>".
+# Runs are service-scoped (the project-level POST /projects/{id}/runs is gone).
 create_run() {
-  local resp; resp="$(api_post_code "/projects/$1/runs" "{\"prompt\":$(jq -Rn --arg p "$2" '$p')}")"
+  local resp; resp="$(api_post_code "/services/$1/runs" "{\"prompt\":$(jq -Rn --arg p "$2" '$p')}")"
   local code body id
   code="$(http_code "$resp")"; body="$(http_body "$resp")"
   id="$(printf '%s' "$body" | jq -r '.id // empty')"
@@ -227,13 +238,13 @@ print_summary() {
 # A negative delta (client clock slightly behind server) is clamped to 0.
 # ---------------------------------------------------------------------------
 latency_spotcheck() {
-  local pid="$1"
+  local sid="$1"
   section "SSE latency spot-check (informational — PRD §8 p95 ≤ 2s)"
-  if [ -z "$pid" ]; then info "no project id for latency run; skipping"; return 0; fi
+  if [ -z "$sid" ]; then info "no service id for latency run; skipping"; return 0; fi
 
   # Create a dedicated run and immediately open a live stream.
   local resp body rid
-  resp="$(api_post_code "/projects/$pid/runs" "{\"prompt\":\"latency sample run\"}")"
+  resp="$(api_post_code "/services/$sid/runs" "{\"prompt\":\"latency sample run\"}")"
   body="$(http_body "$resp")"
   rid="$(printf '%s' "$body" | jq -r '.id // empty')"
   if [ -z "$rid" ]; then info "could not create latency run; skipping"; return 0; fi

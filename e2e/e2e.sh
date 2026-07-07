@@ -141,12 +141,13 @@ esac
 # Use a dedicated throwaway project pointed at the good seed repo so the sample
 # run actually streams agent events (a failing run would only stream statuses).
 LAT_PC="$(create_project "e2e-latency" "$SEED_REPO")"
-LAT_PID="${LAT_PC%%$'\t'*}"
-if [ -n "$LAT_PID" ]; then
+LAT_PID="$(printf '%s' "$LAT_PC" | cut -f1)"
+LAT_SID="$(printf '%s' "$LAT_PC" | cut -f2)"
+if [ -n "$LAT_PID" ] && [ -n "$LAT_SID" ]; then
   register_project "$LAT_PID"
-  latency_spotcheck "$LAT_PID"
+  latency_spotcheck "$LAT_SID"
 else
-  info "skipping latency spot-check (could not create latency project)"
+  info "skipping latency spot-check (could not create latency project/service)"
 fi
 
 # --- 6. summary + exit code -------------------------------------------------

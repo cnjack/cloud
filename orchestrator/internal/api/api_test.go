@@ -114,23 +114,28 @@ func TestProjectCRUD(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// Create OK. name + repo_url auto-creates a 'default' service (compat shim).
+	// Legacy repo fields are rejected loudly (DisallowUnknownFields), not
+	// silently ignored — old simple-mode clients must move to the two-step flow.
 	resp = do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]string{
 		"name": "demo", "repo_url": "https://git/x.git",
 	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("legacy repo_url field: status=%d want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Create OK: a project is a pure container — name only, no services yet.
+	resp = do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]string{"name": "demo"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create: status=%d want 201", resp.StatusCode)
 	}
 	var proj projectView
 	decode(t, resp, &proj)
-	if proj.ID == "" || proj.DefaultBranch != "main" {
+	if proj.ID == "" {
 		t.Fatalf("bad project: %+v", proj)
 	}
-	if len(proj.Services) != 1 || proj.Services[0].Name != "default" {
-		t.Fatalf("expected one 'default' service, got %+v", proj.Services)
-	}
-	if proj.Services[0].RepoKind != domain.RepoKindRaw {
-		t.Fatalf("repo_kind=%q want raw (single-segment url)", proj.Services[0].RepoKind)
+	if len(proj.Services) != 0 {
+		t.Fatalf("expected no services on a fresh project, got %+v", proj.Services)
 	}
 
 	// Get.
@@ -163,14 +168,27 @@ func TestProjectCRUD(t *testing.T) {
 	resp.Body.Close()
 }
 
-func createProject(t *testing.T, ts *httptest.Server) domain.Project {
+// projFixture is a project with one attached service — the shape most API tests
+// need now that project creation is name-only and runs dispatch per-service.
+type projFixture struct {
+	domain.Project
+	ServiceID string
+}
+
+func createProject(t *testing.T, ts *httptest.Server) projFixture {
 	t.Helper()
-	resp := do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]string{
-		"name": "demo", "repo_url": "https://git/x.git",
-	})
+	resp := do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]string{"name": "demo"})
 	var p domain.Project
 	decode(t, resp, &p)
-	return p
+	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/services", consoleToken, map[string]string{
+		"name": "default", "repo_url": "https://git/x.git",
+	})
+	var svc domain.Service
+	decode(t, resp, &svc)
+	if svc.ID == "" {
+		t.Fatalf("fixture service not created: %+v", svc)
+	}
+	return projFixture{Project: p, ServiceID: svc.ID}
 }
 
 func TestRunLifecycleAPI(t *testing.T) {
@@ -178,7 +196,7 @@ func TestRunLifecycleAPI(t *testing.T) {
 	p := createProject(t, ts)
 
 	// Create run.
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "add a line"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create run: status=%d want 201", resp.StatusCode)
@@ -193,7 +211,7 @@ func TestRunLifecycleAPI(t *testing.T) {
 	}
 
 	// Empty prompt -> 400.
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp = do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "   "})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("empty prompt: status=%d want 400", resp.StatusCode)
@@ -228,7 +246,7 @@ func TestRunLifecycleAPI(t *testing.T) {
 func TestRetryLinksRetriedFrom(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -304,7 +322,7 @@ func TestRetryPreservesReviewIdentity(t *testing.T) {
 func TestCancelRun(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -334,7 +352,7 @@ func TestCancelRun(t *testing.T) {
 func TestCancelDeletesCommittedJobAndKeepsFields(t *testing.T) {
 	ts, st, fake := newTestServerWithLauncher(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -371,7 +389,7 @@ func TestCancelDeletesCommittedJobAndKeepsFields(t *testing.T) {
 func TestEventsListAfterSeq(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -402,7 +420,7 @@ func TestEventsListAfterSeq(t *testing.T) {
 func TestIngestAuthAndIdempotency(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -450,7 +468,7 @@ func TestIngestAuthAndIdempotency(t *testing.T) {
 func TestIngestRunFailureRefinesReason(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -479,7 +497,7 @@ func TestIngestRunFailureRefinesReason(t *testing.T) {
 func TestSSEReplayThenTerminal(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -544,7 +562,7 @@ func TestSSEReplayThenTerminal(t *testing.T) {
 func TestSSEClosesWhenTerminalDuringReplay(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -597,7 +615,7 @@ func TestSSEClosesWhenTerminalDuringReplay(t *testing.T) {
 func TestSSEOutOfOrderLiveEventsRecovered(t *testing.T) {
 	ts, st, hub := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -670,7 +688,7 @@ func waitForSubscriber(t *testing.T, hub *sse.Hub, runID string) {
 func TestIngestSeqIsServerAllocated(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -713,7 +731,7 @@ func TestIngestSeqIsServerAllocated(t *testing.T) {
 func TestSSEStreamAcceptsQueryToken(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -824,7 +842,7 @@ func TestSSEStreamClosesOnServerShutdown(t *testing.T) {
 func TestArtifactRoundTrip(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -863,15 +881,13 @@ func TestArtifactRoundTrip(t *testing.T) {
 	}
 }
 
-func ptr[T any](v T) *T { return &v }
-
 // TestIngestRunGitRecordsBranch is the ingest regression for ST-1: a run.git
 // event from the runner records the pushed branch/commit on the run so the
 // reconciler's PR pass can find it.
 func TestIngestRunGitRecordsBranch(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -902,7 +918,7 @@ func TestIngestRunGitRecordsBranch(t *testing.T) {
 func TestIngestPushFailedClassification(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -928,28 +944,32 @@ func TestIngestPushFailedClassification(t *testing.T) {
 	}
 }
 
-// TestCreateDraftPRProject proves the project create accepts + persists git
-// integration config and validates draft_pr requirements.
-func TestCreateDraftPRProject(t *testing.T) {
+// TestCreateDraftPRService proves service creation accepts + persists git
+// integration config and validates draft_pr requirements (this validation moved
+// from the removed POST /projects repo shim to the services endpoint).
+func TestCreateDraftPRService(t *testing.T) {
 	ts, _, _ := newTestServer(t)
+	resp := do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]string{"name": "gp"})
+	var proj domain.Project
+	decode(t, resp, &proj)
+	svcURL := ts.URL + "/api/v1/projects/" + proj.ID + "/services"
 
-	// Happy path: draft_pr with gitea + provider_repo.
-	resp := do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]any{
+	// Happy path: draft_pr with gitea + owner_name.
+	resp = do(t, "POST", svcURL, consoleToken, map[string]any{
 		"name": "gp", "repo_url": "http://git/x.git",
-		"git_mode": "draft_pr", "provider": "gitea",
-		"provider_url": "http://gitea", "provider_repo": "jcloud/seed",
+		"git_mode": "draft_pr", "provider": "gitea", "owner_name": "jcloud/seed",
 	})
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create draft_pr project: status=%d want 201", resp.StatusCode)
+		t.Fatalf("create draft_pr service: status=%d want 201", resp.StatusCode)
 	}
-	var p projectView
-	decode(t, resp, &p)
-	if p.GitMode != domain.GitModeDraftPR || p.Provider != domain.ProviderGitea || p.ProviderRepo != "jcloud/seed" {
-		t.Fatalf("git config not persisted: %+v", p)
+	var svc domain.Service
+	decode(t, resp, &svc)
+	if svc.GitMode != domain.GitModeDraftPR || svc.Provider != domain.ProviderGitea || svc.RepoOwnerName != "jcloud/seed" {
+		t.Fatalf("git config not persisted: %+v", svc)
 	}
 
-	// draft_pr WITHOUT provider_repo -> 400.
-	resp = do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]any{
+	// draft_pr WITHOUT a provider repo (raw single-segment URL) -> 400.
+	resp = do(t, "POST", svcURL, consoleToken, map[string]any{
 		"name": "bad", "repo_url": "http://git/x.git", "git_mode": "draft_pr",
 	})
 	if resp.StatusCode != http.StatusBadRequest {
@@ -958,7 +978,7 @@ func TestCreateDraftPRProject(t *testing.T) {
 	resp.Body.Close()
 
 	// Unknown git_mode -> 400.
-	resp = do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]any{
+	resp = do(t, "POST", svcURL, consoleToken, map[string]any{
 		"name": "bad2", "repo_url": "http://git/x.git", "git_mode": "merge",
 	})
 	if resp.StatusCode != http.StatusBadRequest {
@@ -967,12 +987,12 @@ func TestCreateDraftPRProject(t *testing.T) {
 	resp.Body.Close()
 
 	// Default (omit git_mode) -> readonly.
-	resp = do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]any{
+	resp = do(t, "POST", svcURL, consoleToken, map[string]any{
 		"name": "ro", "repo_url": "http://git/x.git",
 	})
-	decode(t, resp, &p)
-	if p.GitMode != domain.GitModeReadonly {
-		t.Fatalf("default git_mode=%q want readonly", p.GitMode)
+	decode(t, resp, &svc)
+	if svc.GitMode != domain.GitModeReadonly {
+		t.Fatalf("default git_mode=%q want readonly", svc.GitMode)
 	}
 }
 

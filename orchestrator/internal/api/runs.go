@@ -17,35 +17,10 @@ type createRunReq struct {
 	Prompt string `json:"prompt"`
 }
 
-// handleCreateRun is the compatibility shim: POST /projects/{id}/runs routes to
-// the project's default service (multitenant blueprint §4).
-func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
-	projectID := r.PathValue("id")
-	if _, err := s.st.GetProject(r.Context(), projectID); errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "project not found")
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load project")
-		return
-	}
-	// Triggering a run requires member (or owner/cluster-admin).
-	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleMember) {
-		return
-	}
-	svc, err := s.resolveDefaultService(r.Context(), projectID)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusBadRequest, "bad_request", "project has no default service; create a service first")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load default service")
-		return
-	}
-	s.createRunForService(w, r, svc)
-}
-
-// handleCreateServiceRun is the primary run-creation endpoint: POST
-// /services/{id}/runs.
+// handleCreateServiceRun is the run-creation endpoint: POST /services/{id}/runs.
+// Runs are always dispatched against a specific service; the former project-level
+// POST /projects/{id}/runs (which resolved a 'default' service) was removed with
+// the simple-mode shim.
 func (s *Server) handleCreateServiceRun(w http.ResponseWriter, r *http.Request) {
 	svc, err := s.st.GetService(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
