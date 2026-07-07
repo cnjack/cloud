@@ -125,6 +125,51 @@ pass it, the ConfigMap in `base/orchestrator/configmap.yaml` and
 stdout and `/out/diff.patch`. `GET /api/v1/runs/{id}/artifact` therefore 404s
 even on a `succeeded` run today. See "What was verified" below.
 
+## OAuth login local loop (M1b)
+
+`gitea-bootstrap` (see `base/gitea/bootstrap-configmap.yaml`) provisions
+everything the console's future "Login with Gitea" flow
+(`docs/13-multitenant-blueprint.md` §2, M2) needs, alongside the existing
+ST-1 draft-PR org/repo/token:
+
+- An OAuth2 application named `jcloud-console` (confidential client,
+  `redirect_uri=http://localhost:8080/auth/callback/gitea` — the
+  orchestrator's own callback route, reached via `make port-forward`, not the
+  console dev server). Idempotent: reruns reuse the existing `client_id`/
+  `client_secret` from the Secret when present; a stale same-name app left
+  over from an interrupted prior run (Gitea never re-reveals a
+  `client_secret` after creation) is deleted and recreated instead.
+- `AUTH_TOKEN_KEY` — a 32-byte random key, base64-encoded, that will encrypt
+  provider identity tokens at rest (`users`/`user_identities` schema in the
+  blueprint). Generated once and kept stable across reruns (`head -c 32
+  /dev/urandom | base64`, since the `alpine/k8s` bootstrap image has no
+  `openssl` binary).
+
+Both land in the same `gitea-orchestrator` Secret that already carries
+`GITEA_URL`/`GITEA_TOKEN`, as `AUTH_GITEA_CLIENT_ID`,
+`AUTH_GITEA_CLIENT_SECRET`, `AUTH_TOKEN_KEY` — consumed by the orchestrator
+Deployment via the same (optional) `envFrom` secretRef, no wiring changes
+needed there. `base/orchestrator/configmap.yaml` additionally carries
+`AUTH_GITEA_EXTERNAL_URL` (`http://localhost:3000`, browser-facing — matches
+Gitea's own `ROOT_URL`), `AUTH_GITEA_INTERNAL_URL`
+(`http://gitea.jcloud.svc.cluster.local:3000`, server-to-server), and
+`CONSOLE_URL` (`http://localhost:5173`, where the callback 302s back to).
+
+**Status as of M1b:** this is deploy-side plumbing only — the orchestrator
+does not yet read any `AUTH_*` env var or serve `/auth/*` endpoints (that's
+M2). Nothing here is exercised end-to-end until M2 lands; `make up` /
+`make gitea-bootstrap` are safe to run today and simply leave the Secret
+holding credentials nothing consumes yet.
+
+To exercise the login flow once M2 ships it, run **two** port-forwards in
+separate terminals (Gitea's OAuth authorize page and the orchestrator's
+callback route are on different Services):
+
+```sh
+make port-forward         # orchestrator :8080 -> localhost:8080 (OAuth callback)
+make port-forward-gitea   # gitea :3000       -> localhost:3000  (login/authorize page)
+```
+
 ## Runner Job ServiceAccount (least privilege)
 
 Runner Job pods execute LLM-driven, per-run agent commands (arbitrary shell in

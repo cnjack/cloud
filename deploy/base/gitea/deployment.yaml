@@ -12,6 +12,19 @@
 #
 # This is ADDITIVE: the old git-daemon `git-seed` server stays intact so the
 # existing e2e journeys J1-J3 (which clone git://git.../seed.git) are unaffected.
+#
+# ROOT_URL (M1b): set to the browser-reachable http://localhost:3000, NOT the
+# in-cluster Service DNS. Users hit Gitea directly from their laptop browser
+# via `make port-forward-gitea` (svc/gitea 3000:3000) for both the git web UI
+# and, as of M1b, the OAuth2 authorize/login pages the console redirects
+# into -- Gitea uses ROOT_URL to build those absolute links/redirects, so it
+# must match what the browser actually types. This does NOT affect in-cluster
+# API/git traffic: the bootstrap Job and (later) the orchestrator are always
+# handed the explicit internal address (GITEA_URL=
+# http://gitea.jcloud.svc.cluster.local:3000, see bootstrap-job.yaml env and
+# the gitea-orchestrator Secret it writes) rather than deriving it from
+# ROOT_URL, so git clone/push and Gitea API calls made from inside the
+# cluster are unaffected by this change.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -46,10 +59,11 @@ spec:
             # Headless install (no web installer).
             - name: GITEA__security__INSTALL_LOCK
               value: "true"
-            # Reachable in-cluster DNS name; used as the clone/push origin and
-            # the API base the orchestrator + bootstrap Job talk to.
+            # Browser-reachable root (see the M1b note above this container
+            # spec) -- NOT what in-cluster callers dial; they use the explicit
+            # Service DNS address instead.
             - name: GITEA__server__ROOT_URL
-              value: "http://gitea.jcloud.svc.cluster.local:3000/"
+              value: "http://localhost:3000"
             - name: GITEA__server__HTTP_PORT
               value: "3000"
             - name: GITEA__server__OFFLINE_MODE

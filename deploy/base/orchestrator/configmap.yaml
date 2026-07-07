@@ -44,3 +44,22 @@ data:
   MODEL_NAME: "mock/mock-model"
 
   DISABLE_K8S: "0"
+
+  # --- Auth (M1b pipe-laying; docs/13-multitenant-blueprint.md §2) ---
+  # The orchestrator code does not read these yet (M2 wires up the OAuth
+  # handlers) -- they're added now so the deploy-side plumbing is in place
+  # ahead of that milestone. AUTH_GITEA_CLIENT_ID/_CLIENT_SECRET +
+  # AUTH_TOKEN_KEY live in the `gitea-orchestrator` Secret instead (minted at
+  # runtime by the gitea-bootstrap Job), matching the GITEA_URL/GITEA_TOKEN
+  # pattern already used there.
+  #
+  # Browser-reachable Gitea URL (dual-URL provider config): matches Gitea's
+  # own ROOT_URL (base/gitea/deployment.yaml) so OAuth redirects resolve
+  # correctly from the user's laptop, reached via `make port-forward-gitea`.
+  AUTH_GITEA_EXTERNAL_URL: "http://localhost:3000"
+  # Server-to-server Gitea URL (token exchange, API calls) -- in-cluster
+  # Service DNS, same address the bootstrap Job and orchestrator already use
+  # for GITEA_URL.
+  AUTH_GITEA_INTERNAL_URL: "http://gitea.jcloud.svc.cluster.local:3000"
+  # Where the OAuth callback 302s back to after a successful login.
+  CONSOLE_URL: "http://localhost:5173"

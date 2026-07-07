@@ -1,11 +1,14 @@
-# gitea-bootstrap — one-shot Job that provisions the Gitea org/repo/token and
-# writes the orchestrator's GITEA_URL/GITEA_TOKEN Secret (see
-# bootstrap-configmap.yaml for the script). It is idempotent, so a rerun (e.g.
-# `kubectl apply` after a name change, or `make gitea-bootstrap`) is safe.
+# gitea-bootstrap — one-shot Job that provisions the Gitea org/repo/token +
+# the M1b OAuth2 login app + AUTH_TOKEN_KEY, and writes them all into the
+# orchestrator's `gitea-orchestrator` Secret (see bootstrap-configmap.yaml for
+# the script). It is idempotent, so a rerun (e.g. `kubectl apply` after a name
+# change, or `make gitea-bootstrap`) is safe.
 #
-# It runs on the alpine/k8s image (bundles curl + kubectl + git + sh), which is
-# all the script needs. backoffLimit gives it a few retries while Gitea's first
-# boot finishes migrations.
+# It runs on the alpine/k8s image (bundles curl + kubectl + git + sh, plus
+# python3 + coreutils base64/head/tr used by the OAuth app + AUTH_TOKEN_KEY
+# steps — there is no openssl binary in this image), which is all the script
+# needs. backoffLimit gives it a few retries while Gitea's first boot finishes
+# migrations.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -39,6 +42,15 @@ spec:
               value: "seed"
             - name: GITEA_ORCH_SECRET
               value: "gitea-orchestrator"
+            # OAuth2 app the console's "Login with Gitea" flow authenticates
+            # against (M1b). The redirect URI is the orchestrator's own
+            # callback route, reached via `make port-forward` (localhost:8080)
+            # -- NOT the console dev server -- so it stays constant regardless
+            # of AUTH_GITEA_EXTERNAL_URL.
+            - name: GITEA_OAUTH_APP_NAME
+              value: "jcloud-console"
+            - name: GITEA_OAUTH_REDIRECT_URI
+              value: "http://localhost:8080/auth/callback/gitea"
           envFrom:
             - secretRef:
                 name: gitea-secret

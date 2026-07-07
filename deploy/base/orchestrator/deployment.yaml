@@ -45,11 +45,14 @@ spec:
                 name: orchestrator-config
             - secretRef:
                 name: orchestrator-secret
-            # GITEA_URL + GITEA_TOKEN for the ST-1 draft-PR flow. Written at
-            # runtime by the gitea-bootstrap Job, so it is OPTIONAL — the
-            # orchestrator boots and runs diff-only until the token lands, then a
-            # rollout restart (or the next pod) picks it up. Absent creds are not
-            # fatal (config.Load treats GITEA_* as optional).
+            # GITEA_URL + GITEA_TOKEN for the ST-1 draft-PR flow, plus (M1b)
+            # AUTH_GITEA_CLIENT_ID, AUTH_GITEA_CLIENT_SECRET, AUTH_TOKEN_KEY
+            # for the OAuth login flow. All five keys are written at runtime by
+            # the gitea-bootstrap Job, so this secretRef is OPTIONAL — the
+            # orchestrator boots and runs diff-only/no-auth until they land,
+            # then a rollout restart (or the next pod) picks them up. Absent
+            # creds are not fatal (config.Load treats GITEA_*/AUTH_* as
+            # optional).
             - secretRef:
                 name: gitea-orchestrator
                 optional: true

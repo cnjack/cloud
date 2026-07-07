@@ -1,6 +1,7 @@
 # Bootstrap script run by the gitea-bootstrap Job. It is idempotent (safe to
 # re-run): every step tolerates "already exists". It provisions the ST-1 draft-PR
-# target and hands the orchestrator its credentials:
+# target plus the M1b OAuth login app, and hands the orchestrator its
+# credentials:
 #
 #   1. wait for Gitea's API to be healthy
 #   2. register the admin user (the FIRST registered user becomes a Gitea admin)
@@ -8,12 +9,23 @@
 #   4. create org `jcloud` + repo `seed` (auto_init => a main branch + a commit,
 #      the same seed content shape the git-daemon gitseed uses), so draft PRs
 #      have a base branch to target
-#   5. write GITEA_URL + GITEA_TOKEN into the `gitea-orchestrator` Secret that the
-#      orchestrator Deployment consumes via envFrom
+#   5. ensure an OAuth2 application (`jcloud-console`) exists for the console's
+#      "Login with Gitea" flow, reusing client_id/secret already recorded in
+#      the orchestrator Secret when present (Gitea never re-reveals a
+#      client_secret after creation, so a stale same-name app with an unknown
+#      secret is deleted and recreated instead of reused)
+#   6. ensure AUTH_TOKEN_KEY (32-byte random key, base64) exists, generating it
+#      once and keeping it stable across reruns (it encrypts identity tokens
+#      at rest; rotating it would strand already-encrypted rows)
+#   7. write GITEA_URL, GITEA_TOKEN, AUTH_GITEA_CLIENT_ID,
+#      AUTH_GITEA_CLIENT_SECRET, AUTH_TOKEN_KEY into the `gitea-orchestrator`
+#      Secret that the orchestrator Deployment consumes via envFrom
 #
-# The token is minted at runtime (not known when authoring manifests), which is
-# exactly why it is delivered through a Job-written Secret rather than a static
-# one. kubectl is available in the alpine/k8s image the Job runs.
+# The token/app/key are minted at runtime (not known when authoring
+# manifests), which is exactly why they are delivered through a Job-written
+# Secret rather than a static one. kubectl, curl, python3 (stdlib json only)
+# and coreutils (base64/head/tr, for AUTH_TOKEN_KEY — the alpine/k8s image has
+# no openssl binary) are all available in the alpine/k8s image the Job runs.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -65,10 +77,12 @@ data:
     log "ensured admin user $ADMIN_USER"
 
     # 3. mint an API token via basic auth (idempotent by unique token name).
+    #    write:user is required for the OAuth2 application endpoints used in
+    #    step 5 below (read:user alone 403s on /user/applications/oauth2).
     TOKEN_NAME="orchestrator-$(date +%s)"
     TOKEN="$(curl -sS -X POST \
       -u "$ADMIN_USER:$ADMIN_PASS" -H 'Content-Type: application/json' \
-      -d "{\"name\":\"$TOKEN_NAME\",\"scopes\":[\"write:repository\",\"write:organization\",\"read:user\"]}" \
+      -d "{\"name\":\"$TOKEN_NAME\",\"scopes\":[\"write:repository\",\"write:organization\",\"write:user\"]}" \
       "$GITEA_URL/api/v1/users/$ADMIN_USER/tokens" | sed -n 's/.*"sha1":"\([^"]*\)".*/\1/p')"
     [ -n "$TOKEN" ] || { log "failed to mint API token"; exit 1; }
     log "minted API token ($TOKEN_NAME)"
@@ -83,10 +97,60 @@ data:
     fi
     log "org/$ORG repo/$REPO ready (auto-init main)"
 
-    # 5. write GITEA_URL + GITEA_TOKEN into the orchestrator Secret.
+    # 5. ensure the OAuth2 app the console logs in through. Idempotent: if the
+    #    orchestrator Secret already has both AUTH_GITEA_CLIENT_ID and
+    #    AUTH_GITEA_CLIENT_SECRET, reuse them verbatim (no Gitea call at all).
+    #    Otherwise, Gitea's /user/applications/oauth2 API only returns
+    #    client_secret in the CREATE response body -- a later GET/list masks it
+    #    to "" -- so a same-name app left over from a previous partial run (one
+    #    that created the app but died before writing the Secret) cannot be
+    #    reused; delete it and create a fresh one instead.
+    OAUTH_APP_NAME="${GITEA_OAUTH_APP_NAME:-jcloud-console}"
+    OAUTH_REDIRECT_URI="${GITEA_OAUTH_REDIRECT_URI:-http://localhost:8080/auth/callback/gitea}"
+
+    EXISTING_CLIENT_ID="$(kubectl get secret "$ORCH_SECRET" -n jcloud -o jsonpath='{.data.AUTH_GITEA_CLIENT_ID}' 2>/dev/null | base64 -d 2>/dev/null || true)"
+    EXISTING_CLIENT_SECRET="$(kubectl get secret "$ORCH_SECRET" -n jcloud -o jsonpath='{.data.AUTH_GITEA_CLIENT_SECRET}' 2>/dev/null | base64 -d 2>/dev/null || true)"
+
+    if [ -n "$EXISTING_CLIENT_ID" ] && [ -n "$EXISTING_CLIENT_SECRET" ]; then
+      CLIENT_ID="$EXISTING_CLIENT_ID"
+      CLIENT_SECRET="$EXISTING_CLIENT_SECRET"
+      log "reusing existing OAuth2 app credentials from Secret/$ORCH_SECRET"
+    else
+      STALE_APP_ID="$(api GET "/user/applications/oauth2" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((str(a["id"]) for a in d if a.get("name")==sys.argv[1]), ""))' "$OAUTH_APP_NAME")"
+      if [ -n "$STALE_APP_ID" ]; then
+        log "deleting stale OAuth2 app '$OAUTH_APP_NAME' (id=$STALE_APP_ID, secret unknown) before recreating"
+        curl -sS -o /dev/null -X DELETE -H "Authorization: token $TOKEN" "$GITEA_URL/api/v1/user/applications/oauth2/$STALE_APP_ID" || true
+      fi
+      CREATE_RESP="$(api POST "/user/applications/oauth2" "{\"name\":\"$OAUTH_APP_NAME\",\"redirect_uris\":[\"$OAUTH_REDIRECT_URI\"],\"confidential_client\":true}")"
+      CLIENT_ID="$(printf '%s' "$CREATE_RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("client_id",""))')"
+      CLIENT_SECRET="$(printf '%s' "$CREATE_RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("client_secret",""))')"
+      [ -n "$CLIENT_ID" ] && [ -n "$CLIENT_SECRET" ] || { log "failed to create OAuth2 app '$OAUTH_APP_NAME': $CREATE_RESP"; exit 1; }
+      log "created OAuth2 app '$OAUTH_APP_NAME' (client_id=$CLIENT_ID)"
+    fi
+
+    # 6. ensure AUTH_TOKEN_KEY: 32 random bytes, base64-encoded, used to
+    #    AES-GCM-encrypt provider identity tokens at rest (docs/13, users table
+    #    schema). Kept stable across reruns -- rotating it would make
+    #    previously-encrypted tokens undecryptable. No openssl binary in
+    #    alpine/k8s, so /dev/urandom + coreutils base64 stands in for
+    #    `openssl rand -base64 32`.
+    EXISTING_TOKEN_KEY="$(kubectl get secret "$ORCH_SECRET" -n jcloud -o jsonpath='{.data.AUTH_TOKEN_KEY}' 2>/dev/null | base64 -d 2>/dev/null || true)"
+    if [ -n "$EXISTING_TOKEN_KEY" ]; then
+      AUTH_TOKEN_KEY="$EXISTING_TOKEN_KEY"
+      log "reusing existing AUTH_TOKEN_KEY from Secret/$ORCH_SECRET"
+    else
+      AUTH_TOKEN_KEY="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+      log "generated new AUTH_TOKEN_KEY"
+    fi
+
+    # 7. write GITEA_URL, GITEA_TOKEN, AUTH_GITEA_CLIENT_ID,
+    #    AUTH_GITEA_CLIENT_SECRET, AUTH_TOKEN_KEY into the orchestrator Secret.
     kubectl create secret generic "$ORCH_SECRET" -n jcloud \
       --from-literal=GITEA_URL="$GITEA_URL" \
       --from-literal=GITEA_TOKEN="$TOKEN" \
+      --from-literal=AUTH_GITEA_CLIENT_ID="$CLIENT_ID" \
+      --from-literal=AUTH_GITEA_CLIENT_SECRET="$CLIENT_SECRET" \
+      --from-literal=AUTH_TOKEN_KEY="$AUTH_TOKEN_KEY" \
       --dry-run=client -o yaml | kubectl apply -f -
-    log "wrote Secret/$ORCH_SECRET (GITEA_URL, GITEA_TOKEN)"
+    log "wrote Secret/$ORCH_SECRET (GITEA_URL, GITEA_TOKEN, AUTH_GITEA_CLIENT_ID, AUTH_GITEA_CLIENT_SECRET, AUTH_TOKEN_KEY)"
     log "bootstrap complete"

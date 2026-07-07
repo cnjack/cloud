@@ -21,6 +21,7 @@
 #   make up             kubectl apply -k (waits for rollouts)
 #   make down            kubectl delete -k
 #   make port-forward   orchestrator :8080 -> localhost:8080 (foreground)
+#   make port-forward-gitea  Gitea :3000 -> localhost:3000 (foreground; OAuth login)
 #   make seed-repo       (re)run the git-seed initContainer's job manually / verify it
 #   make smoke          scripted e2e smoke test against the live cluster
 #   make logs-orch       tail orchestrator logs
@@ -98,6 +99,10 @@ restart: down up ## Convenience: delete then reapply.
 .PHONY: port-forward
 port-forward: _ctx-guard ## Foreground port-forward orchestrator :8080 -> localhost:8080.
 	kubectl -n $(NAMESPACE) port-forward svc/orchestrator 8080:8080
+
+.PHONY: port-forward-gitea
+port-forward-gitea: _ctx-guard ## Foreground port-forward Gitea :3000 -> localhost:3000 (OAuth login + browsing the repo UI). Run alongside 'make port-forward' in a separate terminal.
+	kubectl -n $(NAMESPACE) port-forward svc/gitea 3000:3000
 
 .PHONY: seed-repo
 seed-repo: _ctx-guard ## Verify/re-trigger the in-cluster git seed repo.
