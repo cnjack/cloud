@@ -197,6 +197,41 @@ describe('RunDetailPage — resilient error states', () => {
   });
 });
 
+describe('RunDetailPage — no_changes result (D18/D26)', () => {
+  it('shows the "No changes" badge and the diff-tab empty state, without fetching the diff', async () => {
+    const noChangesRun = baseRun({
+      status: 'succeeded',
+      finished_at: '2026-07-07T00:05:00Z',
+      result: 'no_changes',
+    });
+    const { client, ctl } = makeClient();
+    const getDiff = vi.fn().mockResolvedValue({ run_id: 'run1', kind: 'diff', content: '', created_at: '' });
+    (client as { getDiff?: unknown }).getDiff = getDiff;
+    ctl.getRun.mockResolvedValue(noChangesRun);
+    renderPage(client, noChangesRun);
+
+    expect(await screen.findByTestId('no-changes-badge')).toBeTruthy();
+
+    const diffTab = await screen.findByTestId('tab-diff');
+    act(() => diffTab.click());
+    expect(await screen.findByTestId('diff-no-changes')).toBeTruthy();
+    expect(screen.getByText('This run made no code changes.')).toBeTruthy();
+    // The diff endpoint is never hit — result: no_changes already tells us
+    // there's nothing to fetch (fail-visible / no wasted round trip).
+    expect(getDiff).not.toHaveBeenCalled();
+  });
+
+  it('does not show the "No changes" badge for an ordinary succeeded run', async () => {
+    const normalRun = baseRun({ status: 'succeeded', finished_at: '2026-07-07T00:05:00Z' });
+    const { client, ctl } = makeClient();
+    ctl.getRun.mockResolvedValue(normalRun);
+    renderPage(client, normalRun);
+
+    await waitFor(() => expect(screen.getByTestId('run-status-header')).toBeTruthy());
+    expect(screen.queryByTestId('no-changes-badge')).toBeNull();
+  });
+});
+
 describe('RunDetailPage — viewer gating (blueprint §2)', () => {
   it('hides Cancel on a running run for a viewer', async () => {
     const { client, ctl } = makeClient('viewer');

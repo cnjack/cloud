@@ -126,6 +126,14 @@ export interface Run {
   kind?: RunKind;
   prompt: string;
   status: RunStatus;
+  /**
+   * D18/D26: whether a succeeded run actually produced a diff. `no_changes`
+   * means the agent ran to completion but made no code changes (still a
+   * success, just nothing to show in the Diff tab). Absent/null otherwise.
+   * Optional so the UI tolerates the backend landing this field later
+   * (fail-visible, not silently mocked — see CLAUDE.md).
+   */
+  result?: 'no_changes' | null;
   /** Fine-grained run-phase detail (e.g. PreparingWorkspace). Optional. */
   phase?: string;
   /** Low-level error string; failure_message is the human-readable one. */
@@ -203,7 +211,10 @@ export type RunEventType =
   | 'run.artifact'
   | 'run.failure'
   // run.git (ST-1): runner reports the pushed branch/commit in draft_pr mode.
-  | 'run.git';
+  | 'run.git'
+  // run.result (D18/D26): { outcome: "no_changes" } — a successful run that
+  // produced no diff. Rendered as a one-line informational row.
+  | 'run.result';
 
 export interface RunEvent {
   seq: number;
@@ -239,6 +250,10 @@ export interface RunEventPayload {
   message?: string;
   // run.artifact
   kind?: string;
+  // run.result (D18/D26): "no_changes" is the only outcome produced today; kept
+  // as `string` too so an unrecognized future outcome degrades gracefully
+  // instead of narrowing the type and failing to compile against new payloads.
+  outcome?: 'no_changes' | string;
   // run.status (ST-1): the draft PR link rides on the status frame so the live
   // header updates without a refetch. run.git carries branch/commit_sha.
   pr_url?: string | null;

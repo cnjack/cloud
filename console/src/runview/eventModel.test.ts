@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { terminalStatusSeq, toTimelineItem } from './eventModel';
-import type { RunEvent } from './types';
+import type { RunViewEvent } from './types';
 
-function ev(seq: number, type: string, payload: Record<string, unknown> = {}): RunEvent {
+function ev(seq: number, type: string, payload: Record<string, unknown> = {}): RunViewEvent {
   return { seq, ts: new Date(seq * 1000).toISOString(), type, payload };
 }
 
@@ -65,5 +65,56 @@ describe('terminalStatusSeq (F7 — terminal end-state marker)', () => {
     const item = toTimelineItem(ev(4, 'run.status', { status: 'failed' }));
     expect(item.kind).toBe('status');
     if (item.kind === 'status') expect(item.status).toBe('failed');
+  });
+});
+
+describe('toTimelineItem — run.result (D18/D26 no_changes contract)', () => {
+  it('maps outcome "no_changes" to an informational "No code changes" row', () => {
+    const item = toTimelineItem(ev(7, 'run.result', { outcome: 'no_changes' }));
+    expect(item.kind).toBe('result');
+    if (item.kind === 'result') {
+      expect(item.outcome).toBe('no_changes');
+      expect(item.message).toBe('No code changes');
+    }
+  });
+
+  it('tolerates a missing/unknown outcome rather than throwing', () => {
+    const missing = toTimelineItem(ev(8, 'run.result', {}));
+    expect(missing.kind).toBe('result');
+    if (missing.kind === 'result') {
+      expect(missing.outcome).toBe('');
+      expect(missing.message).toBe('Result');
+    }
+
+    const other = toTimelineItem(ev(9, 'run.result', { outcome: 'something_else' }));
+    if (other.kind === 'result') expect(other.message).toBe('something_else');
+  });
+});
+
+describe('toTimelineItem — payload type tolerance', () => {
+  it('never throws on a missing/empty payload for any known event type', () => {
+    const types = [
+      'agent.text',
+      'agent.tool_call',
+      'agent.tool_result',
+      'run.status',
+      'run.failure',
+      'run.artifact',
+      'run.git',
+      'run.result',
+      'totally.unknown.type',
+    ];
+    for (const type of types) {
+      expect(() => toTimelineItem({ seq: 1, ts: '', type, payload: {} })).not.toThrow();
+    }
+  });
+
+  it('falls back to "unknown" for an unrecognized event type, preserving the raw payload', () => {
+    const item = toTimelineItem(ev(1, 'some.future.event', { a: 1, b: 'x' }));
+    expect(item.kind).toBe('unknown');
+    if (item.kind === 'unknown') {
+      expect(item.type).toBe('some.future.event');
+      expect(item.raw).toContain('"a": 1');
+    }
   });
 });

@@ -1,25 +1,26 @@
 /*
  * Timeline — the run's live event feed (PRD §6 "事件时间线").
  *
- * - agent.text        → prose block
- * - agent.tool_call   → collapsible mono block (args)
- * - agent.tool_result → collapsible mono block (output; error-tinted if is_error)
- * - run.status/failure/artifact → compact system rows
+ * Renders the groupTimeline() projection (grouping.ts), not the raw event
+ * list:
+ * - text_block  → one markdown prose block per run of agent.text chunks
+ * - tool_card   → one card per paired agent.tool_call/agent.tool_result
+ * - tool_call/tool_result → degraded standalone rows for orphans that
+ *   couldn't be paired (no call_id, or no matching counterpart)
+ * - run.status/failure/artifact/git/result → compact system rows
  *
  * Live-follow behaviour: auto-scrolls to the newest event, BUT pauses
  * auto-scroll the moment the user scrolls up (so they can read history while
  * events keep streaming). A "Jump to latest" affordance resumes it.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { RunEvent } from '../api/types';
-import {
-  toTimelineItem,
-  terminalStatusSeq,
-  type TimelineItem,
-} from '../api/eventModel';
-import { formatTime } from '../lib/format';
-import { StatusBadge } from './StatusBadge';
-import type { RunStatus } from '../api/types';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { toTimelineItem, terminalStatusSeq } from './eventModel';
+import { groupTimeline } from './grouping';
+import type { GroupedTimelineItem, RunViewEvent } from './types';
+import { Collapsible } from './Collapsible';
+import { MessageBlock } from './MessageBlock';
+import { StatusPill } from './StatusPill';
+import { ToolCard } from './ToolCard';
 import styles from './Timeline.module.css';
 
 const SCROLL_SLACK = 48; // px from bottom still counted as "at bottom"
@@ -28,7 +29,7 @@ export function Timeline({
   events,
   live,
 }: {
-  events: RunEvent[];
+  events: RunViewEvent[];
   live: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -38,6 +39,7 @@ export function Timeline({
 
   // F7: the seq of the run's terminal status frame (undefined until the run ends).
   const terminalSeq = terminalStatusSeq(events);
+  const grouped = useMemo(() => groupTimeline(events), [events]);
 
   // Track whether the user is at the bottom; pause auto-scroll if they scroll up.
   const onScroll = () => {
@@ -86,13 +88,13 @@ export function Timeline({
         data-testid="event-timeline"
       >
         <ol className={styles.list}>
-          {events.map((ev) => (
+          {grouped.map((item) => (
             <TimelineRow
-              key={ev.seq}
-              item={toTimelineItem(ev)}
+              key={item.seq}
+              item={item}
               // F7: mark the terminal run.status row as the final end state so it
               // reads unambiguously regardless of failure/status micro-ordering.
-              final={ev.seq === terminalSeq}
+              final={item.kind === 'status' && item.seq === terminalSeq}
             />
           ))}
         </ol>
@@ -117,17 +119,25 @@ function TimelineRow({
   item,
   final = false,
 }: {
-  item: TimelineItem;
+  item: GroupedTimelineItem;
   final?: boolean;
 }) {
   const time = formatTime(item.ts);
 
   switch (item.kind) {
-    case 'text':
+    case 'text_block':
       return (
-        <li className={styles.row} data-kind="text">
+        <li className={styles.row} data-kind="text_block">
           <RowGutter time={time} marker="text" />
-          <div className={styles.text}>{item.text}</div>
+          <MessageBlock text={item.text} />
+        </li>
+      );
+
+    case 'tool_card':
+      return (
+        <li className={styles.row} data-kind="tool_card">
+          <RowGutter time={time} marker={item.isError ? 'error' : 'call'} />
+          <ToolCard item={item} />
         </li>
       );
 
@@ -175,7 +185,7 @@ function TimelineRow({
           <RowGutter time={time} marker="status" />
           <div className={styles.sysRow}>
             <span className={styles.sysLabel}>{final ? 'final status' : 'status'}</span>
-            <StatusBadge status={item.status as RunStatus} size="sm" />
+            <StatusPill status={item.status} />
             {final && (
               <span className={styles.finalTag} data-testid="timeline-final">
                 end of run
@@ -221,6 +231,17 @@ function TimelineRow({
         </li>
       );
 
+    case 'result':
+      return (
+        <li className={styles.row} data-kind="result" data-testid="timeline-result">
+          <RowGutter time={time} marker="dot" />
+          <div className={styles.sysRow}>
+            <span className={styles.sysLabel}>result</span>
+            <span className={styles.resultMsg}>{item.message}</span>
+          </div>
+        </li>
+      );
+
     default:
       return (
         <li className={styles.row} data-kind="unknown">
@@ -240,38 +261,20 @@ function RowGutter({ time, marker }: { time: string; marker: string }) {
   );
 }
 
-function Collapsible({
-  title,
-  body,
-  error,
-  defaultOpen = false,
-}: {
-  title: React.ReactNode;
-  body: string;
-  error?: boolean;
-  defaultOpen?: boolean;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  const empty = !body.trim();
-  return (
-    <div className={styles.collapsible} data-error={error || undefined}>
-      <button
-        type="button"
-        className={styles.collapseHead}
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        disabled={empty}
-      >
-        <span className={styles.chevron} data-open={open || undefined} aria-hidden>
-          ▸
-        </span>
-        {title}
-      </button>
-      {open && !empty && (
-        <pre className={styles.code}>
-          <code>{body}</code>
-        </pre>
-      )}
-    </div>
-  );
+// Kept local (no formatting-lib import) to avoid a dependency on the host's
+// lib/format.ts — see README.md. Deliberately minimal: HH:MM:SS, same as the
+// host's formatTime for the common case.
+function formatTime(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
+
+// Re-exported so a host can build its own row dispatch on top of the raw
+// (ungrouped) per-event view model if it ever needs to.
+export { toTimelineItem };

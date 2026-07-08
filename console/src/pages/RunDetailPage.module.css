@@ -71,6 +71,19 @@
   border-radius: var(--radius-pill);
 }
 
+/* D18/D26: "No changes" badge — a succeeded run that produced no diff. Same
+   hairline-pill language as .retriedFrom, not a link (nothing to navigate to). */
+.noChangesChip {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--color-text-dim);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+}
+
 .prompt {
   font-size: var(--fs-body);
   color: var(--color-text);

@@ -19,7 +19,7 @@ import { isTerminal, type FailureReason } from '../api/types';
 import { Button } from '../components/Button';
 import { StatusBadge } from '../components/StatusBadge';
 import { useModelGate } from '../components/ModelGate';
-import { Timeline } from '../components/Timeline';
+import { Timeline } from '../runview';
 import { DiffView } from '../components/DiffView';
 import { Markdown } from '../components/Markdown';
 import { PrPanel } from '../components/PrPanel';
@@ -70,8 +70,13 @@ export function RunDetailPage() {
   // Retry affordance can exist (member+ on a terminal run).
   const modelGate = useModelGate(canAct && terminal);
 
+  // D18/D26: a succeeded run with no code changes has nothing to fetch — the
+  // Diff tab shows a dedicated empty state instead (see below) without ever
+  // hitting the diff endpoint.
+  const noChanges = status === 'succeeded' && run.data?.result === 'no_changes';
+
   // Diff loads once the run has succeeded (or when the diff tab is opened).
-  const diff = useDiff(runId, tab === 'diff' && status === 'succeeded');
+  const diff = useDiff(runId, tab === 'diff' && status === 'succeeded' && !noChanges);
 
   // Only dead-end when there's no cached run to show. A failed *refetch* (e.g.
   // the terminal-status invalidate hitting a network blip) keeps the previously
@@ -137,6 +142,14 @@ export function RunDetailPage() {
         <div className={styles.headerMain}>
           <div className={styles.headerTop}>
             <StatusBadge status={r.status} />
+            {/* D18/D26: a succeeded run that made no code changes is still a
+                success — this badge says so up front instead of making the
+                user open the Diff tab to discover it's empty. */}
+            {noChanges && (
+              <span className={styles.noChangesChip} data-testid="no-changes-badge">
+                No changes
+              </span>
+            )}
             {live && (
               <span className={styles.liveHint}>
                 <Spinner />
@@ -356,6 +369,15 @@ export function RunDetailPage() {
                   {failed
                     ? 'This run failed, so no diff was produced.'
                     : 'The diff will be available once the run succeeds.'}
+                </span>
+              </div>
+            ) : noChanges ? (
+              // D18/D26: contract with the backend — result: "no_changes" on an
+              // otherwise-succeeded run means there's nothing to diff. Skips the
+              // diff fetch entirely (see the useDiff `enabled` gate above).
+              <div className={styles.waiting} data-testid="diff-no-changes">
+                <span className={styles.waitingText}>
+                  This run made no code changes.
                 </span>
               </div>
             ) : diff.isLoading ? (

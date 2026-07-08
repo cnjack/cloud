@@ -1,84 +1,19 @@
 /*
- * eventModel.ts — narrows the loose RunEvent payload into typed view models the
- * Timeline renders. Keeps all the "what field is the tool name really in"
- * defensiveness in one place so components stay clean.
+ * eventModel.ts — narrows the loose RunViewEvent payload into typed view
+ * models the Timeline renders. Keeps all the "what field is the tool name
+ * really in" defensiveness in one place so components stay clean.
  */
-import type { RunEvent } from './types';
-import { isTerminal, type RunStatus } from './types';
+import type { RunViewEvent, TimelineItem } from './types';
 
-export interface TextItem {
-  seq: number;
-  ts: string;
-  kind: 'text';
-  text: string;
+// Duplicated intentionally (not imported from the host's api/types.ts): this
+// module stays decoupled from the console's Run domain so it can be lifted
+// into a standalone package later. Keep in sync with the orchestrator's
+// RunStatus lifecycle (succeeded/failed/canceled are terminal).
+const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'canceled']);
+
+function isTerminalStatus(status: string): boolean {
+  return TERMINAL_STATUSES.has(status);
 }
-
-export interface ToolCallItem {
-  seq: number;
-  ts: string;
-  kind: 'tool_call';
-  tool: string;
-  callId?: string;
-  args: string; // pretty-printed
-}
-
-export interface ToolResultItem {
-  seq: number;
-  ts: string;
-  kind: 'tool_result';
-  tool?: string;
-  callId?: string;
-  output: string;
-  isError: boolean;
-}
-
-export interface StatusItem {
-  seq: number;
-  ts: string;
-  kind: 'status';
-  status: string;
-}
-
-export interface FailureItem {
-  seq: number;
-  ts: string;
-  kind: 'failure';
-  reason?: string;
-  message: string;
-}
-
-export interface ArtifactItem {
-  seq: number;
-  ts: string;
-  kind: 'artifact';
-  artifact: string;
-}
-
-export interface GitItem {
-  seq: number;
-  ts: string;
-  kind: 'git';
-  branch: string;
-  commitSha?: string;
-}
-
-export interface UnknownItem {
-  seq: number;
-  ts: string;
-  kind: 'unknown';
-  type: string;
-  raw: string;
-}
-
-export type TimelineItem =
-  | TextItem
-  | ToolCallItem
-  | ToolResultItem
-  | StatusItem
-  | FailureItem
-  | ArtifactItem
-  | GitItem
-  | UnknownItem;
 
 function pretty(value: unknown): string {
   if (value == null) return '';
@@ -90,7 +25,7 @@ function pretty(value: unknown): string {
   }
 }
 
-export function toTimelineItem(ev: RunEvent): TimelineItem {
+export function toTimelineItem(ev: RunViewEvent): TimelineItem {
   const base = { seq: ev.seq, ts: ev.ts };
   const p = ev.payload ?? {};
 
@@ -146,6 +81,20 @@ export function toTimelineItem(ev: RunEvent): TimelineItem {
         commitSha: p.commit_sha ? String(p.commit_sha) : undefined,
       };
 
+    // D18/D26: run.result { outcome: "no_changes" } — a successful run that
+    // produced no diff. Rendered as a one-line informational row. Tolerant of
+    // an absent/unrecognized outcome (falls back to a generic label) since the
+    // backend contract may grow more outcomes later.
+    case 'run.result': {
+      const outcome = String(p.outcome ?? '');
+      return {
+        ...base,
+        kind: 'result',
+        outcome,
+        message: outcome === 'no_changes' ? 'No code changes' : outcome || 'Result',
+      };
+    }
+
     default:
       return { ...base, kind: 'unknown', type: ev.type, raw: pretty(p) };
   }
@@ -166,13 +115,13 @@ export function toTimelineItem(ev: RunEvent): TimelineItem {
  * it keys off status (not arrival), a duplicate or out-of-order status frame
  * never produces a second "final" row: only the highest-seq terminal status wins.
  */
-export function terminalStatusSeq(events: RunEvent[]): number | undefined {
+export function terminalStatusSeq(events: RunViewEvent[]): number | undefined {
   let best: number | undefined;
   for (const ev of events) {
     if (
       ev.type === 'run.status' &&
       typeof ev.payload?.status === 'string' &&
-      isTerminal(ev.payload.status as RunStatus)
+      isTerminalStatus(ev.payload.status)
     ) {
       if (best === undefined || ev.seq > best) best = ev.seq;
     }

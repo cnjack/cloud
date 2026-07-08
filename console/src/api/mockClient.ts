@@ -289,7 +289,11 @@ export function createMockClient(): ApiClient {
     schedule(run, 1200, () => {
       setStatus(run, 'running');
       emit(run, 'agent.text', {
-        text: `Cloning ${repoLabel} (branch ${svc?.default_branch ?? 'main'})…`,
+        // Trailing space: this chunk and the next agent.text emit are
+        // consecutive with nothing interleaved, so the Timeline (runview)
+        // merges them into one prose block — chunk boundaries must carry
+        // their own whitespace, same as real ACP token/sentence chunks do.
+        text: `Cloning ${repoLabel} (branch ${svc?.default_branch ?? 'main'})… `,
       });
     });
 

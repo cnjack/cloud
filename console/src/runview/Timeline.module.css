@@ -69,56 +69,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* --- text (prose) --- */
-.text {
-  font-size: var(--fs-body);
-  line-height: var(--lh-normal);
-  color: var(--color-text);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-/* --- collapsible tool blocks --- */
-.collapsible {
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--color-code-bg);
-  overflow: hidden;
-}
-.collapsible[data-error] {
-  border-color: var(--status-failed-bg);
-}
-
-.collapseHead {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  font-family: var(--font-mono);
-  font-size: var(--fs-caption);
-}
-.collapseHead:hover:not(:disabled) {
-  background: var(--color-panel-raised);
-}
-.collapseHead:disabled {
-  cursor: default;
-  opacity: 0.7;
-}
-
-.chevron {
-  color: var(--color-text-faint);
-  transition: transform var(--dur-fast) var(--ease-out);
-  display: inline-block;
-}
-.chevron[data-open] {
-  transform: rotate(90deg);
-}
-
+/* --- degraded standalone tool rows (orphans) --- */
 .toolVerb {
   color: var(--color-text-faint);
   text-transform: uppercase;
@@ -129,20 +80,6 @@
 .toolName {
   color: var(--color-accent);
   font-weight: var(--fw-medium);
-}
-
-.code {
-  margin: 0;
-  padding: var(--space-3);
-  border-top: 1px solid var(--color-border-subtle);
-  font-family: var(--font-mono);
-  font-size: var(--fs-caption);
-  line-height: var(--lh-code);
-  color: var(--color-text-muted);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 320px;
-  overflow: auto;
 }
 
 /* --- system rows --- */
@@ -164,6 +101,9 @@
   font-family: var(--font-mono);
   color: var(--color-accent);
   font-size: var(--fs-caption);
+}
+.resultMsg {
+  color: var(--color-text-muted);
 }
 
 /* F7: the terminal status row reads as the unambiguous end of the run. A subtle
