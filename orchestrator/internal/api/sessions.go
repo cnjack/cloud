@@ -195,13 +195,27 @@ func (s *Server) handleTurnComplete(w http.ResponseWriter, r *http.Request, runI
 		writeError(w, http.StatusInternalServerError, "internal", "could not record turn completion")
 		return
 	}
+	// A turn-complete PROVES the pod is up and has already run a turn. If a very
+	// fast first turn (mockllm can finish in ~1.3s) beat the reconciler's 3s tick
+	// to MarkRunning, the run may still be queued/scheduling — parking it straight
+	// to awaiting_input would hit ErrInvalidTransition and be dropped, hanging the
+	// session silently until its TTL (CLAUDE.md red line #1). Heal it forward
+	// along the real chain (queued→scheduling→running) FIRST so the park below is
+	// a legal running→awaiting_input. healRunToRunning leaves a run that is already
+	// running/awaiting_input/terminal untouched, so a duplicate turn-complete does
+	// NOT reset the idle epoch.
+	healed, _ := s.healRunToRunning(r.Context(), run)
 	committed, err := s.st.SetRunAwaitingInput(r.Context(), runID, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidTransition) {
-			// The run went terminal/canceled concurrently — nothing to park. The
-			// runner's next-prompt poll will get a 410 and exit cleanly.
-			s.log.Info("turn-complete on a non-running session run — ignoring", "run", runID)
-			writeJSON(w, http.StatusOK, map[string]any{"status": string(run.Status)})
+			// The run reached a terminal/canceled state concurrently (a legitimate
+			// outcome — a cancel or a dead pod races the turn) so there is nothing
+			// to park; the runner's next-prompt poll gets a 410 and exits cleanly.
+			// Warn (not Info): a run that is NOT terminal here would be a genuinely
+			// stuck session, and that must be visible in the logs.
+			s.log.Warn("turn-complete: run not parkable in awaiting_input (terminal/canceled concurrently?)",
+				"run", runID, "status", string(healed.Status))
+			writeJSON(w, http.StatusOK, map[string]any{"status": string(healed.Status)})
 			return
 		}
 		s.log.Error("turn-complete", "run", runID, "err", err)
@@ -210,6 +224,58 @@ func (s *Server) handleTurnComplete(w http.ResponseWriter, r *http.Request, runI
 	}
 	s.emitStatus(r.Context(), committed)
 	writeJSON(w, http.StatusOK, map[string]any{"status": string(committed.Status), "turn": req.Turn})
+}
+
+// healRunToRunning walks a session run FORWARD along the legal transition chain
+// queued→scheduling→running, healing the fast-turn race where a turn finished
+// (or a first message arrived) before the reconciler observed the pod Running
+// and called MarkRunning. It steps through the EXISTING store mutators — no
+// shortcut edges (D22 state history stays real: a run genuinely passed through
+// running), and each committed step is emitted so the heal is visible on the
+// timeline.
+//
+// It STOPS at running and never pulls a run out of a later state: a run already
+// running/awaiting_input/terminal/blocked is returned untouched (the switch's
+// default), so callers may invoke it unconditionally — in particular a duplicate
+// turn-complete on an awaiting_input run does not disturb its idle epoch.
+//
+// Concurrency: a reconciler tick may be marking the same run running at the same
+// time. That is harmless — a running→running self-transition is a no-op, and if
+// the reconciler (or a cancel) advances the run past this step first, the store
+// mutator returns ErrInvalidTransition; we re-read the committed row, return it
+// with the error, and stop. The caller's own SetRunAwaitingInput / ResumeRun is
+// the final arbiter of the resulting state.
+func (s *Server) healRunToRunning(ctx context.Context, run *domain.Run) (*domain.Run, error) {
+	cur := run
+	// queued→scheduling→running is at most two steps; the bound guards against an
+	// unexpected store that never advances.
+	for i := 0; i < 3 && (cur.Status == domain.StatusQueued || cur.Status == domain.StatusScheduling); i++ {
+		var (
+			committed *domain.Run
+			err       error
+		)
+		switch cur.Status {
+		case domain.StatusQueued:
+			// Defensive: unreachable through the RUN_TOKEN-authed callers (a queued
+			// run has no token_hash yet, so runToken 401s before we get here), but it
+			// keeps a hand-driven queued run healable instead of stuck. Pass the run's
+			// OWN job/token so ScheduleRun never clobbers a value another writer set.
+			committed, err = s.st.ScheduleRun(ctx, cur.ID, cur.K8sJobName, cur.TokenHash, cur.Phase)
+		case domain.StatusScheduling:
+			committed, err = s.st.MarkRunning(ctx, cur.ID, "StreamingTurn", time.Now().UTC())
+		}
+		if err != nil {
+			// A concurrent reconciler/cancel moved the run out from under us. Re-read
+			// so the caller acts on the truth, and surface the error.
+			if reloaded, gerr := s.st.GetRun(ctx, cur.ID); gerr == nil {
+				return reloaded, err
+			}
+			return cur, err
+		}
+		cur = committed
+		s.emitStatus(ctx, committed)
+	}
+	return cur, nil
 }
 
 // nextPromptResp is the 200 body of GET next-prompt (matches the F7a acpdrive
@@ -251,17 +317,27 @@ func (s *Server) handleNextPrompt(w http.ResponseWriter, r *http.Request, runID 
 		msg, fresh, err := s.st.OfferNextMessage(ctx, runID, time.Now().UTC())
 		if err == nil {
 			// Ensure the run is (back to) running for the turn this message starts.
-			// Idempotent for a re-delivery whose first response already resumed it
-			// (running→running is a no-op transition); also heals the crash window
-			// between a committed offer and its resume.
+			// Two races to absorb:
+			//  - the FIRST message may arrive while the run is still queued/scheduling
+			//    (the reconciler has not marked it running yet, same fast-turn window
+			//    as turn-complete) — heal it forward so the offer is not silently
+			//    delivered onto a run left stuck below running;
+			//  - the normal resume of an awaiting_input run, and the idempotent
+			//    re-delivery of an already-running turn (running→running is a no-op).
+			prev := run.Status
+			healed, herr := s.healRunToRunning(ctx, run)
+			if herr != nil {
+				s.log.Warn("next-prompt: heal run to running", "run", runID, "err", herr)
+			}
 			if committed, rerr := s.st.ResumeRun(ctx, runID, "StreamingTurn"); rerr != nil {
 				// A concurrent cancel/finalize could have moved it out of
 				// awaiting_input; the offer is durable (and re-deliverable), log it.
 				s.log.Warn("next-prompt: resume run", "run", runID, "err", rerr)
-			} else if fresh || run.Status == domain.StatusAwaitingInput {
-				// Emit only when something actually changed (a fresh offer, or a
-				// redelivery that had to heal awaiting_input→running) — a pure
-				// redelivery of an already-running turn stays silent.
+			} else if healed.Status == prev && (fresh || prev == domain.StatusAwaitingInput) {
+				// Emit only when something actually changed AND heal did not already
+				// emit it: a fresh offer, or a redelivery that had to heal
+				// awaiting_input→running. A queued/scheduling heal already emitted its
+				// own running step; a pure redelivery of a running turn stays silent.
 				s.emitStatus(ctx, committed)
 			}
 			writeJSON(w, http.StatusOK, nextPromptResp{MessageID: msg.ID, Prompt: msg.Prompt})

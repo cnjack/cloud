@@ -347,6 +347,189 @@ func TestTurnCompleteParksAwaitingInput(t *testing.T) {
 	}
 }
 
+// runStatusChain returns the run.status values in seq order (the heal timeline).
+func runStatusChain(t *testing.T, st *store.MemStore, rid string) []string {
+	t.Helper()
+	evs, _ := st.ListEvents(context.Background(), rid, 0, 1000)
+	var out []string
+	for _, e := range evs {
+		if e.Type == domain.EventRunStatus {
+			if s, ok := e.Payload["status"].(string); ok {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+// hasSubsequence reports whether want appears as an (not necessarily contiguous)
+// ordered subsequence of got — the chain may carry extra states around it.
+func hasSubsequence(got, want []string) bool {
+	i := 0
+	for _, g := range got {
+		if i < len(want) && g == want[i] {
+			i++
+		}
+	}
+	return i == len(want)
+}
+
+// TestTurnCompleteHealsFromScheduling is the F7b regression: a very fast first
+// turn can POST turn-complete while the run is still `scheduling` (the reconciler
+// has not observed the pod Running yet). Before the fix SetRunAwaitingInput hit
+// ErrInvalidTransition and was silently dropped, hanging the session until TTL.
+// Now the handler HEALS scheduling→running first, then parks — and the emitted
+// timeline shows the real running→awaiting_input chain.
+func TestTurnCompleteHealsFromScheduling(t *testing.T) {
+	_, ts, st := sessionTestServer(t)
+	ctx := context.Background()
+	rid, tok := makeSessionRun(t, st, domain.StatusScheduling)
+
+	resp := do(t, "POST", ts.URL+"/internal/v1/runs/"+rid+"/turn-complete", tok, map[string]any{"turn": 1, "stop_reason": "end_turn"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("turn-complete: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	run, _ := st.GetRun(ctx, rid)
+	if run.Status != domain.StatusAwaitingInput || run.AwaitingSince == nil {
+		t.Fatalf("after turn-complete from scheduling: status=%q awaiting_since=%v want awaiting_input", run.Status, run.AwaitingSince)
+	}
+	chain := runStatusChain(t, st, rid)
+	if !hasSubsequence(chain, []string{"running", "awaiting_input"}) {
+		t.Fatalf("status chain %v missing the healed running→awaiting_input transition", chain)
+	}
+}
+
+// TestTurnCompleteHealsFromQueued exercises the full queued→scheduling→running→
+// awaiting_input heal chain. A queued run is normally unreachable through the
+// RUN_TOKEN gate (no token_hash yet), so we hand-build a queued run WITH a token
+// hash to drive the defensive branch and confirm it still converges rather than
+// hanging.
+func TestTurnCompleteHealsFromQueued(t *testing.T) {
+	_, ts, st := sessionTestServer(t)
+	ctx := context.Background()
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
+	if err := st.CreateProject(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea, RepoOwnerName: "o/r",
+		GitMode: domain.GitModeDraftPR, DefaultBranch: "main", CreatedAt: time.Now()}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	tok, _ := auth.GenerateRunToken()
+	run := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "task",
+		Status: domain.StatusQueued, TokenHash: auth.HashToken(tok), Kind: domain.RunKindAgent,
+		Session: true, Attempt: 1, CreatedAt: time.Now()}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := do(t, "POST", ts.URL+"/internal/v1/runs/"+run.ID+"/turn-complete", tok, map[string]any{"turn": 1, "stop_reason": "end_turn"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("turn-complete: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.Status != domain.StatusAwaitingInput {
+		t.Fatalf("after turn-complete from queued: status=%q want awaiting_input", got.Status)
+	}
+	// The token hash the run authenticated with must be intact (heal must never
+	// clobber it via ScheduleRun).
+	if got.TokenHash != auth.HashToken(tok) {
+		t.Fatalf("heal clobbered token_hash: %q", got.TokenHash)
+	}
+	chain := runStatusChain(t, st, run.ID)
+	if !hasSubsequence(chain, []string{"scheduling", "running", "awaiting_input"}) {
+		t.Fatalf("status chain %v missing the full heal chain", chain)
+	}
+}
+
+// TestTurnCompleteTerminalConcurrentIsVisibleNoOp: a turn-complete that races a
+// concurrent terminal transition (cancel / dead pod) finds nothing to park. It
+// must be a tolerated 200 no-op (not a 4xx/5xx that kills the runner), and it
+// must NOT append a spurious awaiting_input — the run stays terminal.
+func TestTurnCompleteTerminalConcurrentIsVisibleNoOp(t *testing.T) {
+	_, ts, st := sessionTestServer(t)
+	ctx := context.Background()
+	rid, tok := makeSessionRun(t, st, domain.StatusSucceeded)
+
+	resp := do(t, "POST", ts.URL+"/internal/v1/runs/"+rid+"/turn-complete", tok, map[string]any{"turn": 1, "stop_reason": "end_turn"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("turn-complete on terminal run: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	run, _ := st.GetRun(ctx, rid)
+	if run.Status != domain.StatusSucceeded {
+		t.Fatalf("terminal run moved: status=%q want succeeded", run.Status)
+	}
+	for _, s := range runStatusChain(t, st, rid) {
+		if s == string(domain.StatusAwaitingInput) {
+			t.Fatalf("turn-complete parked a terminal run: chain=%v", runStatusChain(t, st, rid))
+		}
+	}
+}
+
+// TestTurnCompleteReconcilerRacedRunningFirst is the interleaving where the
+// reconciler WINS the scheduling→running race before the turn-complete arrives:
+// the handler's heal is then a clean no-op (running is already the target) and
+// the park succeeds. Either ordering of the concurrent MarkRunning converges to
+// awaiting_input (the other ordering is TestTurnCompleteHealsFromScheduling).
+func TestTurnCompleteReconcilerRacedRunningFirst(t *testing.T) {
+	_, ts, st := sessionTestServer(t)
+	ctx := context.Background()
+	rid, tok := makeSessionRun(t, st, domain.StatusScheduling)
+	// Simulate the reconciler tick landing MarkRunning first.
+	if _, err := st.MarkRunning(ctx, rid, "StreamingTurn", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := do(t, "POST", ts.URL+"/internal/v1/runs/"+rid+"/turn-complete", tok, map[string]any{"turn": 1, "stop_reason": "end_turn"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("turn-complete: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	run, _ := st.GetRun(ctx, rid)
+	if run.Status != domain.StatusAwaitingInput || run.AwaitingSince == nil {
+		t.Fatalf("status=%q awaiting_since=%v want awaiting_input", run.Status, run.AwaitingSince)
+	}
+}
+
+// TestNextPromptHealsFirstMessageFromScheduling: the SAME fast-turn race can hit
+// the first next-prompt poll — a message queued while the run is still scheduling
+// must be delivered AND heal the run to running (before the fix ResumeRun failed
+// from scheduling and the run was left stuck below running while a turn ran).
+func TestNextPromptHealsFirstMessageFromScheduling(t *testing.T) {
+	_, ts, st := sessionTestServer(t)
+	ctx := context.Background()
+	rid, tok := makeSessionRun(t, st, domain.StatusScheduling)
+	if _, err := st.AppendRunMessage(ctx, rid, "first prompt", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := do(t, "GET", ts.URL+"/internal/v1/runs/"+rid+"/next-prompt", tok, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("next-prompt: status=%d want 200", resp.StatusCode)
+	}
+	var got nextPromptResp
+	decode(t, resp, &got)
+	if got.Prompt != "first prompt" {
+		t.Fatalf("delivered %+v want 'first prompt'", got)
+	}
+	run, _ := st.GetRun(ctx, rid)
+	if run.Status != domain.StatusRunning {
+		t.Fatalf("after offer from scheduling: status=%q want running (healed)", run.Status)
+	}
+	if !hasSubsequence(runStatusChain(t, st, rid), []string{"running"}) {
+		t.Fatalf("no running status emitted for the healed first turn: %v", runStatusChain(t, st, rid))
+	}
+}
+
 // TestFinishSetsFinalize: finish sets the finalize flag (member+) so next-prompt
 // then 410s; a repeat finish is idempotent.
 func TestFinishSetsFinalize(t *testing.T) {
