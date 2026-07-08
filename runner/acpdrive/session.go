@@ -93,6 +93,20 @@ type sessionConfig struct {
 	RunID       string // RUN_ID
 	RunToken    string // RUN_TOKEN
 
+	// PermissionMode ("" or permissionModeApproval, F8a / D22 permission
+	// half): approval switches the session into jcode's approval ACP mode
+	// right after it is established (session/set_mode, below) and makes
+	// driverClient.RequestPermission forward requests for interactive
+	// approval instead of auto-allowing (permission.go). See main.go's
+	// checkPermissionModeRequiresSession for the fail-visible contract that
+	// keeps this out of the single-shot (non-session) path entirely.
+	PermissionMode string
+	// PermissionTimeout bounds how long an approval-mode RequestPermission
+	// waits for a user decision before defaulting to a reject-leaning option
+	// (env PERMISSION_TIMEOUT_SECONDS). Zero falls back to
+	// defaultPermissionTimeout (main.go).
+	PermissionTimeout time.Duration
+
 	// Overridable for tests; zero values fall back to the package defaults.
 	ControlPlaneLostAfter time.Duration
 	InitialBackoff        time.Duration
@@ -126,6 +140,13 @@ func (c *sessionConfig) maxBackoff() time.Duration {
 		return c.MaxBackoff
 	}
 	return 5 * time.Second
+}
+
+func (c *sessionConfig) permissionTimeout() time.Duration {
+	if c.PermissionTimeout > 0 {
+		return c.PermissionTimeout
+	}
+	return defaultPermissionTimeout
 }
 
 // runSession drives the multi-turn ACP session loop to completion. It returns
@@ -173,7 +194,20 @@ func runSession(ctx context.Context, cfg sessionConfig) error {
 		logf("event emitter active -> %s (run %s)", cfg.OrchBaseURL, cfg.RunID)
 	}
 
-	client := &driverClient{workspace: cfg.Workspace, emitter: emitter}
+	// cp (the F7b control-plane client) is constructed here, BEFORE the
+	// driverClient, rather than down by the turn loop where it used to live:
+	// approval-mode RequestPermission forwarding (F8a) needs it too, via
+	// driverClient.cp, for the SAME /internal/v1/runs/{id}/permissions/{...}
+	// long-poll style as turn-complete/next-prompt below.
+	cp := newControlPlaneClient(cfg)
+
+	client := &driverClient{
+		workspace:         cfg.Workspace,
+		emitter:           emitter,
+		permissionMode:    cfg.PermissionMode,
+		permissionTimeout: cfg.permissionTimeout(),
+		cp:                cp,
+	}
 	conn := acp.NewClientSideConnection(client, stdin, stdout)
 	if cfg.Verbose {
 		conn.SetLogger(slog.Default())
@@ -228,13 +262,38 @@ func runSession(ctx context.Context, cfg sessionConfig) error {
 		logf("session created: %s (session mode)", sessionID)
 	}
 	client.live.Store(true)
+
+	// Approval mode (F8a / D22 permission half): switch the session into
+	// jcode's "approval" ACP mode right after it is established — covers
+	// BOTH the resume and fresh-session paths above, since sessionID is set
+	// either way by this point — and BEFORE the first session/prompt below,
+	// so no tool call in turn 1 can slip through under the config-file
+	// default_mode=full_access jcode started with (entrypoint.sh's
+	// config.json; unchanged by this feature — full_access stays the
+	// process-wide default, approval is an explicit per-session upgrade).
+	// This SDK version's NewSession/LoadSession requests have no mode
+	// parameter (see acp-go-sdk types_gen.go), so session/set_mode is the
+	// only path — there is no "session/new with mode" alternative to prefer
+	// here. A failure is fail-visible: silently continuing in full_access
+	// would contradict the run's explicit RUN_PERMISSION_MODE=approval
+	// request (CLAUDE.md's fail-visible rule), so this is as fatal as a
+	// failed resume.
+	if cfg.PermissionMode == permissionModeApproval {
+		logf("[permission] setting session %s to approval mode (RUN_PERMISSION_MODE=approval)", sessionID)
+		if _, err := conn.SetSessionMode(ctx, acp.SetSessionModeRequest{
+			SessionId: sessionID,
+			ModeId:    acp.SessionModeId(permissionModeApproval),
+		}); err != nil {
+			return fmt.Errorf("set session mode to approval: %s", describeErr(err))
+		}
+		logf("[permission] session %s is now in approval mode; RequestPermission will be forwarded (timeout=%s)", sessionID, cfg.permissionTimeout())
+	}
+
 	// Session mode always emits run.session (both resumed=true and =false):
 	// every session-mode run is a candidate for a later warm wake, so F9b
 	// needs its id either way. (The single-shot path in main.go emits only
 	// when resuming — see the comment there.)
 	emitter.EmitSession(string(sessionID), cfg.Resume != "")
-
-	cp := newControlPlaneClient(cfg)
 
 	nextPrompt := cfg.Prompt
 	for turn := 1; ; turn++ {
@@ -436,6 +495,75 @@ func (c *controlPlaneClient) waitForNextPrompt(ctx context.Context) (done bool, 
 		logf("next-prompt poll failed (%v); retrying in %s", rerr, backoff)
 		if !sleepCtx(ctx, backoff) {
 			return false, "", ctx.Err()
+		}
+		backoff = nextBackoff(backoff, c.maxBackoff)
+	}
+}
+
+// permissionDecisionResponse is the 200 body of GET
+// .../permissions/{request_id}/decision (contract: {"option_id":"..."}).
+type permissionDecisionResponse struct {
+	OptionID string `json:"option_id"`
+}
+
+// waitForPermissionDecision long-polls
+// /internal/v1/runs/{id}/permissions/{request_id}/decision with Bearer
+// RUN_TOKEN (F8a / D22 permission half; F8b builds the server side). It
+// reuses waitForNextPrompt's exact retry/backoff/204-floor philosophy:
+//
+//	204 = not decided yet — poll again, floored at minPollInterval
+//	200 {option_id} = the user's decision -> (optionID, true)
+//	404/410 = the request expired/is invalid -> ("", false), the SAME return
+//	          as a plain timeout: the caller (forwardPermissionRequest) can't
+//	          act on the two differently and per the F8a contract doesn't
+//	          need to.
+//
+// F8b contract requirement (see permission.go's package doc): an UNKNOWN
+// request_id MUST be answered 204 (pending), never 404 — 404/410 are
+// reserved for requests that once existed and have since expired or been
+// invalidated. The caller only ever polls AFTER the agent.permission_request
+// event was synchronously acknowledged by the events endpoint
+// (EmitPermissionRequestSync), so by the time the first GET lands here the
+// server has already ingested the id.
+//
+// UNLIKE waitForNextPrompt there is no separate "control plane lost" budget
+// here: the poll is bounded ENTIRELY by ctx, which the caller wraps in
+// PERMISSION_TIMEOUT_SECONDS (see driverClient.forwardPermissionRequest) —
+// once ctx is done (network flakiness exhausted the wall clock, or the
+// timeout simply elapsed with no decision), this returns ("", false) exactly
+// like an explicit 404/410, and the caller's timeout-deny path applies
+// either way.
+func (c *controlPlaneClient) waitForPermissionDecision(ctx context.Context, requestID string) (optionID string, decided bool) {
+	url := fmt.Sprintf("%s/internal/v1/runs/%s/permissions/%s/decision", c.baseURL, c.runID, requestID)
+	backoff := c.initialBackoff
+
+	for {
+		status, body, rerr := c.getOnce(ctx, url)
+		if rerr == nil {
+			switch status {
+			case http.StatusNoContent:
+				if !sleepCtx(ctx, c.minPollInterval) {
+					return "", false
+				}
+				continue
+			case http.StatusOK:
+				var resp permissionDecisionResponse
+				if jerr := json.Unmarshal(body, &resp); jerr == nil && resp.OptionID != "" {
+					return resp.OptionID, true
+				}
+				logf("[permission] request %s: decision 200 body did not decode an option_id (%s); treating as not-yet-decided", requestID, string(body))
+			case http.StatusNotFound, http.StatusGone:
+				logf("[permission] request %s: decision endpoint returned %d (expired/invalid)", requestID, status)
+				return "", false
+			default:
+				rerr = fmt.Errorf("unexpected status %d", status)
+			}
+		}
+		if rerr != nil {
+			logf("[permission] request %s: decision poll failed (%v); retrying in %s", requestID, rerr, backoff)
+		}
+		if !sleepCtx(ctx, backoff) {
+			return "", false
 		}
 		backoff = nextBackoff(backoff, c.maxBackoff)
 	}

@@ -35,6 +35,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	acp "github.com/coder/acp-go-sdk"
 )
 
 // Event types (mirror cloud/docs/11-api.md §4). Kept as local constants so the
@@ -50,6 +52,14 @@ const (
 	// later warm-wake (D23 ①②, docs/02-decision-log.md / docs/14-cloud-v2-design.md
 	// §4) knows which id to hand back to acpdrive's --resume.
 	eventRunSession = "run.session"
+	// eventAgentPermissionRequest/eventAgentPermissionResolved (F8a, D22's
+	// permission half): the runner side of interactive approval-mode
+	// permission forwarding. See EmitPermissionRequestSync /
+	// EmitPermissionResolved below and permission.go's package doc comment
+	// for the full contract (F8b, orchestrator ingest, not yet built,
+	// consumes these).
+	eventAgentPermissionRequest  = "agent.permission_request"
+	eventAgentPermissionResolved = "agent.permission_resolved"
 )
 
 // event is one queued run event. Seq is assigned by the emitter (monotonic from
@@ -211,6 +221,106 @@ func (e *Emitter) EmitSession(acpSessionID string, resumed bool) {
 	})
 }
 
+// EmitPermissionRequestSync is F8a's runner-side half of D22's permission
+// forwarding contract: emitted once per ACP RequestPermission call forwarded
+// for interactive approval (RUN_PERMISSION_MODE=approval). Payload shape is
+// the F8b ingest contract:
+//
+//	{"request_id","tool_call_id","title","options":[{"option_id","name","kind"}]}
+//
+// UNLIKE every other emit method, this one is SYNCHRONOUS and at-least-once:
+// it bypasses the async batch queue and POSTs the event directly, retrying
+// network/5xx failures with capped backoff until it is acknowledged (2xx) or
+// ctx expires, and returns nil ONLY once the control plane has accepted it.
+// The caller (forwardPermissionRequest, permission.go) MUST NOT start polling
+// the decision endpoint before this returns nil: the decision endpoint
+// answers 404 only for requests that once existed and expired, so polling
+// for a request the server has never seen would misread "still in flight in
+// an async batch" as "expired" and instantly timeout-deny a perfectly
+// pending approval (the P1 race this method exists to close).
+//
+// Blocking here is fine: RequestPermission is the one client method that is
+// SUPPOSED to block (each inbound ACP request runs in its own goroutine, see
+// driverClient.RequestPermission in main.go), so the "never block the agent
+// loop" rule that forces every other emit through the async queue does not
+// apply on this path.
+//
+// Ordering note: because this jumps the queue, the permission_request may
+// reach the server before earlier queued events (e.g. the agent.tool_call it
+// refers to) have flushed. That is acceptable: the client Seq (still
+// allocated from the same monotonic counter, so still a valid idempotency
+// key) is not the display order — the server allocates the authoritative
+// global seq at arrival — and F8b keys the approval UI on request_id, not on
+// event adjacency.
+func (e *Emitter) EmitPermissionRequestSync(ctx context.Context, requestID, toolCallID, title string, options []acp.PermissionOption) error {
+	if e == nil {
+		// No control plane wired: there is no one to ask for approval, so the
+		// caller's timeout-deny path is the only safe answer.
+		return fmt.Errorf("no event emitter configured (ORCH_BASE_URL/RUN_ID/RUN_TOKEN absent)")
+	}
+	opts := make([]map[string]any, 0, len(options))
+	for _, o := range options {
+		opts = append(opts, map[string]any{
+			"option_id": string(o.OptionId),
+			"name":      o.Name,
+			"kind":      string(o.Kind),
+		})
+	}
+	e.mu.Lock()
+	e.seq++
+	ev := event{Seq: e.seq, Type: eventAgentPermissionRequest, Payload: map[string]any{
+		"request_id":   requestID,
+		"tool_call_id": toolCallID,
+		"title":        title,
+		"options":      opts,
+	}}
+	e.mu.Unlock()
+
+	body, err := json.Marshal(map[string]any{"events": []event{ev}})
+	if err != nil {
+		return fmt.Errorf("marshal permission_request event: %w", err)
+	}
+	url := fmt.Sprintf("%s/internal/v1/runs/%s/events", e.baseURL, e.runID)
+
+	// Same retry philosophy as the control-plane client (network/5xx retried
+	// with capped exponential backoff), but bounded by ctx rather than a
+	// fixed attempt count: the caller's ctx already carries the permission
+	// timeout, which is exactly the budget this delivery is allowed to spend.
+	backoff := 200 * time.Millisecond
+	for {
+		ok, retryable := e.postCtx(ctx, url, body)
+		if ok {
+			return nil
+		}
+		if !retryable {
+			return fmt.Errorf("permission_request event rejected by the control plane (non-retryable status)")
+		}
+		fmt.Fprintf(os.Stderr, "[emitter] permission_request sync POST failed; retrying in %s\n", backoff)
+		if !sleepCtx(ctx, backoff) {
+			return fmt.Errorf("permission_request event not delivered before the deadline: %w", ctx.Err())
+		}
+		backoff = nextBackoff(backoff, 5*time.Second)
+	}
+}
+
+// EmitPermissionResolved pairs 1:1 with a prior EmitPermissionRequest for the
+// same requestID: resolution is "user" (the orchestrator's decision endpoint
+// returned a choice) or "timeout" (PERMISSION_TIMEOUT_SECONDS elapsed, or the
+// decision endpoint reported the request expired/invalid — 404/410 — which is
+// indistinguishable to the agent, see controlPlaneClient.waitForPermissionDecision).
+// optionID is "" only in the degenerate case of a tool call offering zero
+// permission options.
+func (e *Emitter) EmitPermissionResolved(requestID, optionID, resolution string) {
+	if e == nil {
+		return
+	}
+	e.Emit(eventAgentPermissionResolved, map[string]any{
+		"request_id": requestID,
+		"option_id":  optionID,
+		"resolution": resolution,
+	})
+}
+
 // Close flushes remaining events and stops the background loop. It blocks
 // until the queue drains, the first batch fails permanently during shutdown,
 // or shutdownDeadline (default 10s) elapses — whichever comes first — so a
@@ -348,9 +458,17 @@ func (e *Emitter) send(batch []event, deadline time.Time) bool {
 // post sends one request. Returns (ok, retryable). 2xx => ok. 5xx / network =>
 // retryable. 4xx (except 429) => permanent failure (won't succeed on retry).
 func (e *Emitter) post(url string, body []byte) (ok, retryable bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), e.client.Timeout)
+	return e.postCtx(context.Background(), url, body)
+}
+
+// postCtx is post bounded by BOTH the per-request HTTP timeout and the given
+// ctx (used by EmitPermissionRequestSync so a request in flight when the
+// permission timeout fires is cut short rather than running out its full
+// HTTP timeout past the caller's deadline).
+func (e *Emitter) postCtx(ctx context.Context, url string, body []byte) (ok, retryable bool) {
+	reqCtx, cancel := context.WithTimeout(ctx, e.client.Timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return false, false
 	}

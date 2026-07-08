@@ -287,6 +287,33 @@ func TestRunResumeFailureIsFailVisible(t *testing.T) {
 	}
 }
 
+// TestPermissionModeRequiresSessionIsFailVisible pins F8a's fail-visible
+// contract at the pure-function layer main() calls into: RUN_PERMISSION_MODE
+// =approval without session mode must error (never a silent downgrade to
+// full_access), while every other combination — approval WITH session mode,
+// permission mode unset, or an unrecognized value (typo/future value) — must
+// be treated as valid (CLAUDE.md fail-visible rule: this is a startup
+// config error, not something to guess around).
+func TestPermissionModeRequiresSessionIsFailVisible(t *testing.T) {
+	if err := checkPermissionModeRequiresSession("approval", false); err == nil {
+		t.Fatal("approval + non-session: want an error, got nil")
+	} else if !strings.Contains(err.Error(), "requires session mode") {
+		t.Fatalf("error = %v, want it to mention 'requires session mode'", err)
+	}
+	if err := checkPermissionModeRequiresSession("approval", true); err != nil {
+		t.Fatalf("approval + session mode should be valid: %v", err)
+	}
+	if err := checkPermissionModeRequiresSession("", false); err != nil {
+		t.Fatalf("unset permission mode should never fail: %v", err)
+	}
+	if err := checkPermissionModeRequiresSession("", true); err != nil {
+		t.Fatalf("unset permission mode + session mode should never fail: %v", err)
+	}
+	if err := checkPermissionModeRequiresSession("weird-typo", false); err != nil {
+		t.Fatalf("an unrecognized permission mode value should never fail (treated as full_access, per the D22 decision): %v", err)
+	}
+}
+
 // waitForEvents polls cs (a captureServer) until at least n events have been
 // captured or a short deadline elapses; the emitter's default flush is async
 // (500ms ticker / batchMax), so a direct post-run() assertion can race it —

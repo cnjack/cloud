@@ -114,11 +114,43 @@ type mockOrchestrator struct {
 	// eventBatches records every batch POSTed to /internal/v1/runs/{id}/events
 	// by the emitter (F9a: used to assert the run.session event payload).
 	eventBatches [][]event
+	// eventsCalls counts events POSTs; eventsStatus, if set, scripts the
+	// response status for the Nth call (1-based, and given the decoded batch
+	// so a test can fail only batches carrying specific event types, e.g.
+	// F8a's sync permission_request delivery); default 200. Rejected
+	// (non-2xx) batches are NOT recorded in eventBatches.
+	eventsCalls  int
+	eventsStatus func(n int, batch []event) int
+
+	// permissionDecisionCalls/permissionDecisionRequestIDs (F8a) record every
+	// GET to /internal/v1/runs/{id}/permissions/{request_id}/decision — the
+	// request_id is acpdrive-generated (a uuid), so it can't be scripted
+	// ahead of time; tests read it back from permissionDecisionRequestIDs.
+	permissionDecisionCalls      int32
+	permissionDecisionRequestIDs []string
+	// permissionDecisionScript is consumed in order exactly like
+	// nextPromptScript (last entry repeats once exhausted); default (empty)
+	// is an unconditional 204 (never decided — the timeout-deny path).
+	permissionDecisionScript []permissionDecisionStep
+
+	// callOrder records one coarse label per events-POST / decision-GET in
+	// arrival order (F8a P1: used to assert the agent.permission_request
+	// event was POSTed — and ACCEPTED — before the first decision poll):
+	// "events" or "events:permission_request" (with a ":rejected" suffix
+	// when eventsStatus scripted a non-2xx), and "decision".
+	callOrder []string
 }
 
 type nextPromptStep struct {
 	status int
 	body   nextPromptResponse
+}
+
+// permissionDecisionStep scripts one response from the mock
+// .../permissions/{request_id}/decision endpoint (F8a).
+type permissionDecisionStep struct {
+	status   int
+	optionID string // only used when status == 200
 }
 
 func newMockOrchestrator() *mockOrchestrator {
@@ -130,21 +162,93 @@ func (m *mockOrchestrator) server() *httptest.Server {
 	mux.HandleFunc("/internal/v1/runs/run-test/turn-complete", m.handleTurnComplete)
 	mux.HandleFunc("/internal/v1/runs/run-test/next-prompt", m.handleNextPrompt)
 	mux.HandleFunc("/internal/v1/runs/run-test/events", m.handleEvents)
+	// F8a: request_id is a path segment acpdrive generates itself (a uuid),
+	// so this must match ANY id, not one fixed literal path like the routes
+	// above — hence the trailing-slash prefix pattern.
+	mux.HandleFunc("/internal/v1/runs/run-test/permissions/", m.handlePermissionDecision)
 	return httptest.NewServer(mux)
+}
+
+// handlePermissionDecision serves GET
+// /internal/v1/runs/run-test/permissions/{request_id}/decision per
+// permissionDecisionScript (F8a).
+func (m *mockOrchestrator) handlePermissionDecision(w http.ResponseWriter, r *http.Request) {
+	const prefix = "/internal/v1/runs/run-test/permissions/"
+	requestID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), "/decision")
+
+	m.mu.Lock()
+	m.permissionDecisionCalls++
+	n := m.permissionDecisionCalls
+	m.permissionDecisionRequestIDs = append(m.permissionDecisionRequestIDs, requestID)
+	m.callOrder = append(m.callOrder, "decision")
+	var step permissionDecisionStep
+	if len(m.permissionDecisionScript) == 0 {
+		step = permissionDecisionStep{status: http.StatusNoContent}
+	} else if int(n) <= len(m.permissionDecisionScript) {
+		step = m.permissionDecisionScript[n-1]
+	} else {
+		step = m.permissionDecisionScript[len(m.permissionDecisionScript)-1]
+	}
+	m.mu.Unlock()
+
+	if step.status == http.StatusOK {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"option_id": step.optionID})
+		return
+	}
+	w.WriteHeader(step.status)
+}
+
+// permissionDecisionRequestIDsSnapshot returns a copy of the request ids the
+// decision endpoint has been polled with so far (F8a).
+func (m *mockOrchestrator) permissionDecisionRequestIDsSnapshot() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string{}, m.permissionDecisionRequestIDs...)
+}
+
+// callOrderSnapshot returns a copy of the coarse per-request arrival log
+// (see the callOrder field's comment).
+func (m *mockOrchestrator) callOrderSnapshot() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string{}, m.callOrder...)
 }
 
 // handleEvents accepts the emitter's batched POST body ({"events":[...]})
 // exactly like a real orchestrator ingest endpoint would, recording every
-// batch so tests can assert on emitted events (e.g. run.session, F9a).
+// accepted batch so tests can assert on emitted events (e.g. run.session,
+// F9a), and every call's coarse label in callOrder (F8a P1 ordering
+// assertions). eventsStatus, if set, scripts rejections.
 func (m *mockOrchestrator) handleEvents(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Events []event `json:"events"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+
 	m.mu.Lock()
-	m.eventBatches = append(m.eventBatches, body.Events)
+	m.eventsCalls++
+	status := http.StatusOK
+	if m.eventsStatus != nil {
+		status = m.eventsStatus(m.eventsCalls, body.Events)
+	}
+	label := "events"
+	for _, ev := range body.Events {
+		if ev.Type == eventAgentPermissionRequest {
+			label = "events:permission_request"
+			break
+		}
+	}
+	if status < 200 || status >= 300 {
+		label += ":rejected"
+	} else {
+		m.eventBatches = append(m.eventBatches, body.Events)
+	}
+	m.callOrder = append(m.callOrder, label)
 	m.mu.Unlock()
-	w.WriteHeader(http.StatusOK)
+
+	w.WriteHeader(status)
 }
 
 // events flattens every recorded batch into one ordered slice.

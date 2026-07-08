@@ -58,7 +58,23 @@
 // event stream stays bit-for-bit identical to pre-F9a (it is never
 // resumable, so the control plane has no use for its session id).
 //
-// Env fallbacks: WORKSPACE, TASK_PROMPT, JCODE_BIN, RUN_SESSION, TURN_HOOK.
+// Permission approval (RUN_PERMISSION_MODE=approval, F8a, D22's permission
+// half; see docs/02-decision-log.md D22 and permission.go): session mode
+// always defaults to jcode's full_access (config.json's default_mode, written
+// by entrypoint.sh — unchanged by this feature). When RUN_PERMISSION_MODE=
+// approval, runSession additionally issues one session/set_mode(approval)
+// call right after the session is established (session/new OR session/load —
+// both paths, see session.go) and BEFORE the first session/prompt; from then
+// on jcode routes restricted tool calls through ACP RequestPermission, which
+// driverClient.RequestPermission forwards to the orchestrator for interactive
+// approval instead of the pre-F8a auto-allow fallback (see permission.go).
+// approval mode is ONLY meaningful in session mode: RUN_PERMISSION_MODE=
+// approval without RUN_SESSION=1 is a fail-visible startup error (see
+// checkPermissionModeRequiresSession below), never a silent downgrade to
+// full_access.
+//
+// Env fallbacks: WORKSPACE, TASK_PROMPT, JCODE_BIN, RUN_SESSION, TURN_HOOK,
+// RUN_PERMISSION_MODE, PERMISSION_TIMEOUT_SECONDS.
 package main
 
 import (
@@ -71,6 +87,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -78,6 +95,24 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 )
+
+// permissionModeApproval is BOTH (a) the RUN_PERMISSION_MODE env /
+// --permission-mode flag value that switches driverClient.RequestPermission
+// from auto-allow to interactive-approval forwarding, AND (b) the literal ACP
+// SessionModeId jcode advertises for that mode (jcode's
+// internal/command/acp.go: acpModeApproval = "approval", matching
+// mode.SessionMode.String()). One constant keeps that coupling visible
+// instead of two string literals that could silently drift apart.
+const permissionModeApproval = "approval"
+
+// defaultPermissionTimeout is PERMISSION_TIMEOUT_SECONDS' fallback (F8a
+// contract): how long an approval-mode RequestPermission waits for a user
+// decision before defaulting to a deny-safe outcome (a reject-kind option,
+// or Cancelled when none was offered — see permission.go's
+// timeoutDenyPermission). Keep the configured value SIGNIFICANTLY smaller
+// than RUN_TIMEOUT — see the operational note in permission.go's package
+// doc.
+const defaultPermissionTimeout = 300 * time.Second
 
 // cliOpts is acpdrive's parsed command line. Kept as a struct (rather than
 // main()-local vars) so parseFlags is testable — in particular the property
@@ -94,6 +129,12 @@ type cliOpts struct {
 	session   bool
 	turnHook  string
 	resume    string
+	// permissionMode / permissionTimeout (F8a, D22 permission half): see the
+	// package doc comment and permission.go. permissionMode == "" (or
+	// anything other than permissionModeApproval) is the pre-F8a, unchanged
+	// full_access auto-allow behavior.
+	permissionMode    string
+	permissionTimeout time.Duration
 }
 
 // parseFlags defines and parses acpdrive's flags on a private FlagSet.
@@ -113,6 +154,8 @@ func parseFlags(args []string) (*cliOpts, error) {
 	fs.BoolVar(&o.session, "session", os.Getenv("RUN_SESSION") == "1", "multi-turn session mode: loop session/prompt over long-polled follow-up messages instead of exiting after one turn (env RUN_SESSION=1); see docs/14-cloud-v2-design.md §3 (D22)")
 	fs.StringVar(&o.turnHook, "turn-hook", os.Getenv("TURN_HOOK"), "path to a script run synchronously after each turn in --session mode (env TURN_HOOK); ignored when --session is false")
 	fs.StringVar(&o.resume, "resume", "", "resume an existing ACP session via session/load instead of creating a new one with session/new; the id must already exist in the agent's local session store (typically produced by a prior run.session event for the SAME persistent workspace, D23 ①②); a failed load is fail-visible (non-zero exit), never a silent fallback to a new session; deliberately NO env fallback — entrypoint.sh passes this explicitly, and only in session mode")
+	fs.StringVar(&o.permissionMode, "permission-mode", os.Getenv("RUN_PERMISSION_MODE"), "session permission mode (env RUN_PERMISSION_MODE): \"approval\" makes driverClient.RequestPermission forward each ACP permission request to the orchestrator for interactive user approval instead of auto-allowing; any other value (default \"\") is the unchanged full_access auto-allow fallback. Only meaningful with --session/RUN_SESSION=1 (D22) — approval without session mode is a fail-visible startup error, see checkPermissionModeRequiresSession.")
+	fs.DurationVar(&o.permissionTimeout, "permission-timeout", envSecondsOr("PERMISSION_TIMEOUT_SECONDS", defaultPermissionTimeout), "how long an approval-mode RequestPermission waits for a user decision (env PERMISSION_TIMEOUT_SECONDS, in seconds) before defaulting to a deny-safe outcome (a reject-kind option, or Cancelled if none was offered) with resolution=timeout; keep it well below --timeout/RUN_TIMEOUT (see permission.go)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -136,6 +179,13 @@ func main() {
 	}
 	if prompt == "" {
 		fatal("prompt is required (--prompt or $TASK_PROMPT)")
+	}
+	// Fail-visible (F8a / D22): RUN_PERMISSION_MODE=approval only means
+	// anything in session mode. Checked here, BEFORE either the session or
+	// single-shot path starts, so a misconfigured run never gets partway
+	// through a single-shot turn under a silently-ignored approval request.
+	if err := checkPermissionModeRequiresSession(opts.permissionMode, session); err != nil {
+		fatal("%v", err)
 	}
 	abs, err := filepath.Abs(workspace)
 	if err != nil {
@@ -167,6 +217,7 @@ func main() {
 			AgentBin: agentBin, AgentArgs: agentArgs, Workspace: workspace, Prompt: prompt,
 			TurnHook: turnHook, Verbose: verbose, Resume: resume,
 			OrchBaseURL: orchBase, RunID: runID, RunToken: runToken,
+			PermissionMode: opts.permissionMode, PermissionTimeout: opts.permissionTimeout,
 		}
 		if err := runSession(sigCtx, cfg); err != nil {
 			// Same --timeout / exit-124 handling as the single-shot path below.
@@ -314,9 +365,13 @@ func run(ctx context.Context, agentBin string, agentArgs []string, workspace, pr
 	}
 }
 
-// driverClient implements acp.Client. In full_access mode jcode never calls
-// RequestPermission, and jcode uses its own LocalExecutor for file/terminal
-// ops (not the client fs methods), so these are safe fallbacks.
+// driverClient implements acp.Client. In full_access mode (the default —
+// permissionMode == "") jcode never calls RequestPermission, and jcode uses
+// its own LocalExecutor for file/terminal ops (not the client fs methods), so
+// most of these are safe fallbacks. In approval mode (permissionMode ==
+// permissionModeApproval, F8a / D22, session mode only — see main.go's
+// checkPermissionModeRequiresSession) RequestPermission instead forwards each
+// request to the orchestrator for interactive approval; see permission.go.
 type driverClient struct {
 	workspace string
 	emitter   *Emitter
@@ -327,8 +382,25 @@ type driverClient struct {
 	// notifications are dropped entirely: they are the OLD transcript being
 	// replayed per the ACP spec, and the control plane already has that
 	// history (D13) — re-emitting it would pollute the run timeline with the
-	// entire prior conversation on every warm wake.
+	// entire prior conversation on every warm wake. RequestPermission (F8a)
+	// reuses this same gate defensively: a permission request arriving while
+	// live is still false (not expected — LoadSession's transcript replay is
+	// notification-only per the ACP spec) falls back to the pre-F8a
+	// auto-allow behavior rather than forwarding a request the control plane
+	// has no live session context to show yet.
 	live atomic.Bool
+
+	// permissionMode/permissionTimeout/cp (F8a / D22 permission half, see
+	// permission.go): permissionMode == permissionModeApproval switches
+	// RequestPermission from auto-allow to forwarding via cp (the same
+	// control-plane client runSession uses for turn-complete/next-prompt).
+	// Left at their zero values by run()'s single-shot driverClient — the
+	// single-shot path never legitimately runs in approval mode (main.go
+	// rejects that combination at startup), so RequestPermission there always
+	// takes the unchanged auto-allow branch and cp is never dereferenced.
+	permissionMode    string
+	permissionTimeout time.Duration
+	cp                *controlPlaneClient
 }
 
 var _ acp.Client = (*driverClient)(nil)
@@ -355,25 +427,54 @@ func (c *driverClient) SessionUpdate(_ context.Context, params acp.SessionNotifi
 	return nil
 }
 
-// RequestPermission should never fire in full_access mode. If it somehow does,
-// auto-select the first "allow"-like option so an unattended run cannot hang.
-func (c *driverClient) RequestPermission(_ context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-	fmt.Fprintln(os.Stderr, "[warn] agent requested permission unexpectedly; auto-allowing")
-	for _, opt := range params.Options {
+// RequestPermission's default (full_access, permissionMode != approval)
+// should never fire — jcode's ApprovalState is in auto mode. If it somehow
+// does anyway, auto-select the first "allow"-like option so an unattended run
+// cannot hang. In approval mode (F8a / D22, see permission.go) this instead
+// forwards the request to the orchestrator for interactive approval — but
+// only once the session is live (see the live field's comment); a request
+// arriving before that (not expected) falls back to this same auto-allow
+// path, defensively, rather than forwarding a request with no live run
+// context.
+//
+// Per the ACP spec/SDK, each inbound request (including this one) is
+// dispatched in its own goroutine (acp-go-sdk's Connection.receive, see
+// connection.go) — so blocking here (the whole point of the approval-mode
+// long-poll below) does NOT stall the connection's read loop or any other
+// in-flight request/response, including the session/prompt call this
+// permission request was raised in service of.
+func (c *driverClient) RequestPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+	if !c.live.Load() {
+		fmt.Fprintln(os.Stderr, "[warn] agent requested permission before the session was live; auto-allowing (not forwarded)")
+		return autoAllowPermission(params.Options), nil
+	}
+	if c.permissionMode != permissionModeApproval {
+		fmt.Fprintln(os.Stderr, "[warn] agent requested permission unexpectedly; auto-allowing")
+		return autoAllowPermission(params.Options), nil
+	}
+	return c.forwardPermissionRequest(ctx, params)
+}
+
+// autoAllowPermission is the pre-F8a fallback: auto-select the first
+// "allow"-like option, else the first option, else Cancelled if there are
+// none. Used by RequestPermission whenever approval-mode forwarding does not
+// apply (permissionMode != approval, or the defensive live==false guard).
+func autoAllowPermission(options []acp.PermissionOption) acp.RequestPermissionResponse {
+	for _, opt := range options {
 		if opt.Kind == acp.PermissionOptionKindAllowOnce || opt.Kind == acp.PermissionOptionKindAllowAlways {
 			return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
 				Selected: &acp.RequestPermissionOutcomeSelected{OptionId: opt.OptionId},
-			}}, nil
+			}}
 		}
 	}
-	if len(params.Options) > 0 {
+	if len(options) > 0 {
 		return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
-			Selected: &acp.RequestPermissionOutcomeSelected{OptionId: params.Options[0].OptionId},
-		}}, nil
+			Selected: &acp.RequestPermissionOutcomeSelected{OptionId: options[0].OptionId},
+		}}
 	}
 	return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
 		Cancelled: &acp.RequestPermissionOutcomeCancelled{},
-	}}, nil
+	}}
 }
 
 func (c *driverClient) WriteTextFile(_ context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
@@ -428,6 +529,39 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// envSecondsOr reads an env var as a whole number of seconds (the
+// PERMISSION_TIMEOUT_SECONDS contract), falling back to def when unset,
+// non-numeric, or non-positive. A malformed value is not itself fail-visible
+// (it is an operational tuning knob, not a red-line dependency per
+// CLAUDE.md's fail-visible rule) — it just falls back to the documented
+// default rather than producing a zero/negative timeout.
+func envSecondsOr(k string, def time.Duration) time.Duration {
+	v := os.Getenv(k)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return time.Duration(n) * time.Second
+}
+
+// checkPermissionModeRequiresSession enforces the fail-visible contract for
+// F8a / D22's permission approval mode: RUN_PERMISSION_MODE=approval only
+// does anything in session mode (jcode's session/set_mode + the
+// RequestPermission forwarding loop both live in runSession/session.go).
+// Requesting approval mode without session mode must never silently
+// downgrade to the full_access auto-allow fallback — it is a startup
+// configuration error instead (nil is returned when the combination is
+// valid, including "approval not requested at all").
+func checkPermissionModeRequiresSession(permissionMode string, sessionMode bool) error {
+	if permissionMode == permissionModeApproval && !sessionMode {
+		return fmt.Errorf("RUN_PERMISSION_MODE=approval requires session mode (RUN_SESSION=1 / --session) — approval-mode permission forwarding only applies to multi-turn sessions (D22); refusing to silently fall back to full_access")
+	}
+	return nil
 }
 
 func describeErr(err error) string {

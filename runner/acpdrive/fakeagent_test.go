@@ -29,6 +29,28 @@ package main
 //	                              "txt:<turn>" before returning, so tests can
 //	                              assert real-turn streaming still flows after
 //	                              the replay gate opens
+//	FAKE_AGENT_SET_SESSION_MODE_ERR=msg  if set, SetSessionMode returns a
+//	                              JSON-RPC error with this message instead of
+//	                              succeeding (F8a fail-visible-on-failed-
+//	                              set_mode test)
+//	FAKE_AGENT_REQUEST_PERMISSION=1  each Prompt call issues ONE
+//	                              session/request_permission back to the
+//	                              client before returning (F8a end-to-end
+//	                              forwarding test) — see
+//	                              FAKE_AGENT_PERMISSION_* below and the
+//	                              "request_permission_result" log entry this
+//	                              produces (method/turn/outcome/option_id)
+//	FAKE_AGENT_PERMISSION_TOOL_CALL_ID=id   default "tc_perm_1"
+//	FAKE_AGENT_PERMISSION_TITLE=txt         default "Run rm -rf /tmp/x"
+//	FAKE_AGENT_PERMISSION_OPTIONS=id:kind:name,...  comma-separated options,
+//	                              each "optionId:kind:name" (colon-separated);
+//	                              default two options,
+//	                              "opt_allow:allow_once:Allow once" and
+//	                              "opt_reject:reject_once:Reject once"; the
+//	                              special value "none" means ZERO options
+//	                              (the F8a P2 degenerate case — an empty,
+//	                              non-nil list, which the ACP request
+//	                              validation accepts)
 
 import (
 	"context"
@@ -64,12 +86,17 @@ func runFakeAgentProcess() {
 		replayTexts = strings.Split(v, ",")
 	}
 	fa := &fakeAgent{
-		sessionID:      sessionID,
-		stopReasons:    stopReasons,
-		logPath:        os.Getenv("FAKE_AGENT_LOG"),
-		loadSessionErr: os.Getenv("FAKE_AGENT_LOAD_SESSION_ERR"),
-		replayTexts:    replayTexts,
-		liveText:       os.Getenv("FAKE_AGENT_LIVE_TEXT"),
+		sessionID:            sessionID,
+		stopReasons:          stopReasons,
+		logPath:              os.Getenv("FAKE_AGENT_LOG"),
+		loadSessionErr:       os.Getenv("FAKE_AGENT_LOAD_SESSION_ERR"),
+		replayTexts:          replayTexts,
+		liveText:             os.Getenv("FAKE_AGENT_LIVE_TEXT"),
+		setSessionModeErr:    os.Getenv("FAKE_AGENT_SET_SESSION_MODE_ERR"),
+		requestPermission:    os.Getenv("FAKE_AGENT_REQUEST_PERMISSION") == "1",
+		permissionToolCallID: envOr("FAKE_AGENT_PERMISSION_TOOL_CALL_ID", "tc_perm_1"),
+		permissionTitle:      envOr("FAKE_AGENT_PERMISSION_TITLE", "Run rm -rf /tmp/x"),
+		permissionOptions:    parsePermissionOptions(os.Getenv("FAKE_AGENT_PERMISSION_OPTIONS")),
 	}
 	asc := acp.NewAgentSideConnection(fa, os.Stdout, os.Stdin)
 	fa.conn = asc
@@ -96,6 +123,47 @@ type fakeAgent struct {
 	// liveText, if non-empty, makes each Prompt send one live session/update
 	// chunk "liveText:<turn>" before returning.
 	liveText string
+	// setSessionModeErr, if non-empty, makes SetSessionMode fail with this
+	// message instead of succeeding (F8a fail-visible test).
+	setSessionModeErr string
+	// requestPermission, when true, makes each Prompt call issue one
+	// session/request_permission back to the client before returning (F8a
+	// end-to-end forwarding test).
+	requestPermission    bool
+	permissionToolCallID string
+	permissionTitle      string
+	permissionOptions    []acp.PermissionOption
+}
+
+// parsePermissionOptions decodes FAKE_AGENT_PERMISSION_OPTIONS
+// ("id:kind:name,id:kind:name,...") into ACP permission options, defaulting
+// to one allow + one reject option when unset — a realistic minimal set for
+// the F8a forwarding tests. The special value "none" yields ZERO options as
+// an empty-but-non-nil slice (RequestPermissionRequest validation rejects a
+// nil Options), for the P2 degenerate-case tests.
+func parsePermissionOptions(v string) []acp.PermissionOption {
+	if v == "" {
+		return []acp.PermissionOption{
+			{OptionId: "opt_allow", Kind: acp.PermissionOptionKindAllowOnce, Name: "Allow once"},
+			{OptionId: "opt_reject", Kind: acp.PermissionOptionKindRejectOnce, Name: "Reject once"},
+		}
+	}
+	opts := []acp.PermissionOption{}
+	if v == "none" {
+		return opts
+	}
+	for _, entry := range strings.Split(v, ",") {
+		parts := strings.SplitN(entry, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		opts = append(opts, acp.PermissionOption{
+			OptionId: acp.PermissionOptionId(parts[0]),
+			Kind:     acp.PermissionOptionKind(parts[1]),
+			Name:     parts[2],
+		})
+	}
+	return opts
 }
 
 var _ acp.Agent = (*fakeAgent)(nil)
@@ -176,6 +244,37 @@ func (a *fakeAgent) Prompt(ctx context.Context, p acp.PromptRequest) (acp.Prompt
 			},
 		})
 	}
+	// F8a: mimic jcode raising session/request_permission mid-turn. This is a
+	// BLOCKING outbound (agent -> client) call from within this Prompt
+	// handler goroutine — exactly what a real jcode approval-mode tool call
+	// does — proving acpdrive's client-side handler can run the whole
+	// emit/poll/resolve round trip without deadlocking session/prompt.
+	if a.requestPermission {
+		resp, err := a.conn.RequestPermission(ctx, acp.RequestPermissionRequest{
+			SessionId: p.SessionId,
+			Options:   a.permissionOptions,
+			ToolCall: acp.ToolCallUpdate{
+				ToolCallId: acp.ToolCallId(a.permissionToolCallID),
+				Title:      acp.Ptr(a.permissionTitle),
+			},
+		})
+		outcome, optionID := "error", ""
+		switch {
+		case err != nil:
+			outcome = "error:" + err.Error()
+		case resp.Outcome.Selected != nil:
+			outcome = "selected"
+			optionID = string(resp.Outcome.Selected.OptionId)
+		case resp.Outcome.Cancelled != nil:
+			outcome = "cancelled"
+		}
+		a.logEvent(map[string]any{
+			"method":    "request_permission_result",
+			"turn":      n,
+			"outcome":   outcome,
+			"option_id": optionID,
+		})
+	}
 	reason := a.stopReasons[len(a.stopReasons)-1]
 	if n-1 < len(a.stopReasons) {
 		reason = a.stopReasons[n-1]
@@ -201,7 +300,19 @@ func (a *fakeAgent) ListSessions(context.Context, acp.ListSessionsRequest) (acp.
 func (a *fakeAgent) ResumeSession(context.Context, acp.ResumeSessionRequest) (acp.ResumeSessionResponse, error) {
 	return acp.ResumeSessionResponse{}, nil
 }
-func (a *fakeAgent) SetSessionMode(context.Context, acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
+
+// SetSessionMode (F8a): logs the call (session id + mode id) so tests can
+// assert approval mode was requested right after session establishment, and
+// fails with setSessionModeErr when the test scripts a set_mode failure.
+func (a *fakeAgent) SetSessionMode(_ context.Context, p acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
+	a.logEvent(map[string]any{
+		"method":     "session/set_mode",
+		"session_id": string(p.SessionId),
+		"mode_id":    string(p.ModeId),
+	})
+	if a.setSessionModeErr != "" {
+		return acp.SetSessionModeResponse{}, &acp.RequestError{Code: -32603, Message: a.setSessionModeErr}
+	}
 	return acp.SetSessionModeResponse{}, nil
 }
 func (a *fakeAgent) SetSessionConfigOption(context.Context, acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {

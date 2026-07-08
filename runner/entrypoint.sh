@@ -68,6 +68,35 @@
 #                         transcript corrupt) is fail-visible: the run fails
 #                         rather than silently starting a new session.
 #                         Default "" (no resume; behavior unchanged).
+#   RUN_PERMISSION_MODE   "approval" => acpdrive switches the ACP session into
+#                         jcode's approval mode right after it is established
+#                         and forwards RequestPermission requests to the
+#                         orchestrator for interactive approval instead of
+#                         auto-allowing (F8a / D22's permission half; see
+#                         runner/acpdrive/permission.go). Only meaningful with
+#                         RUN_SESSION=1 — set without it, acpdrive fails fast
+#                         at startup (fail-visible, never a silent downgrade
+#                         to full_access; see acpdrive's
+#                         checkPermissionModeRequiresSession). Passed straight
+#                         through to acpdrive via the environment (it reads
+#                         RUN_PERMISSION_MODE itself); this script does no
+#                         validation of its own. Default "" (full_access,
+#                         behavior unchanged — this is F8b's composer opt-in,
+#                         off until a run explicitly requests it).
+#   PERMISSION_TIMEOUT_SECONDS  how long acpdrive waits for a user decision on
+#                         a forwarded permission request before defaulting to
+#                         a deny-safe outcome (seconds). Only meaningful
+#                         together with RUN_PERMISSION_MODE=approval. Default
+#                         "" => acpdrive's own default (300s). MUST be kept
+#                         SIGNIFICANTLY smaller than RUN_TIMEOUT (and the
+#                         orchestrator's session idle TTL): the agent turn
+#                         blocks while an approval is pending, so a stalled
+#                         approval with a too-large timeout burns the whole
+#                         run into a hard RUN_TIMEOUT failure (reason=timeout)
+#                         instead of a clean per-request timeout-deny that
+#                         lets the run continue. F8b enforces this relation
+#                         when the orchestrator injects the env; standalone
+#                         users must respect it themselves.
 #
 # Output:
 #   - agent runs: the git diff on STDOUT (between markers) + /out/diff.patch, and
@@ -138,6 +167,18 @@ PERSISTENT_WORKSPACE="${PERSISTENT_WORKSPACE:-0}"
 # step 3 below). Only meaningful together with RUN_SESSION=1; passed to
 # acpdrive as --resume in step 4. Default "" = no resume (behavior unchanged).
 RESUME_SESSION_ID="${RESUME_SESSION_ID:-}"
+# RUN_PERMISSION_MODE / PERMISSION_TIMEOUT_SECONDS (F8a / D22's permission
+# half): passed straight through to acpdrive via the environment (it reads
+# both itself — see runner/acpdrive/main.go's parseFlags). Locally defaulted
+# + explicitly exported here for the same reason WORKSPACE/OUT_DIR/etc are
+# below (a value that only exists because of a local default is NOT
+# automatically part of a child process's environment in bash unless
+# exported). No validation here: the RUN_SESSION-required fail-visible check
+# lives in acpdrive itself (checkPermissionModeRequiresSession), so this
+# script does not need to duplicate it.
+RUN_PERMISSION_MODE="${RUN_PERMISSION_MODE:-}"
+PERMISSION_TIMEOUT_SECONDS="${PERMISSION_TIMEOUT_SECONDS:-}"
+export RUN_PERMISSION_MODE PERMISSION_TIMEOUT_SECONDS
 # BASE_BRANCH is the new contract name; REPO_BRANCH is accepted as a back-compat
 # alias for the clone path.
 BASE_BRANCH="${BASE_BRANCH:-${REPO_BRANCH:-}}"
@@ -517,7 +558,7 @@ fi
 # against that id instead (fail-visible on a bad id; see
 # runner/acpdrive/session.go). Never passed in single-shot mode: a review or
 # non-session agent run always starts a fresh session.
-log "starting headless run (timeout=$RUN_TIMEOUT session=$SESSION_MODE resume=${RESUME_SESSION_ID:-<none>})"
+log "starting headless run (timeout=$RUN_TIMEOUT session=$SESSION_MODE resume=${RESUME_SESSION_ID:-<none>} permission_mode=${RUN_PERMISSION_MODE:-full_access})"
 set +e
 if [ "$SESSION_MODE" = "1" ]; then
   if [ -n "$RESUME_SESSION_ID" ]; then
