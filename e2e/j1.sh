@@ -130,8 +130,9 @@ j1_run() {
   art_content="$(printf '%s' "$art" | jq -r '.content // empty')"
   assert_nonempty J1-S7 "artifact diff content is non-empty" "$art_content"
   assert_contains J1-S7 "artifact is a unified diff (has 'diff --git')" "$art_content" "diff --git"
-  # The mock-scripted change writes HELLO_FROM_JCODE.txt (see runner/mockllm).
-  assert_contains J1-S7 "artifact contains the mock-scripted change" "$art_content" "HELLO_FROM_JCODE.txt"
+  # The mock-scripted change writes a per-prompt JCODE_TASK_<fp>.txt (see
+  # runner/mockllm scenarioForRequest — personalised so repeat runs never no-op).
+  assert_contains J1-S7 "artifact contains the mock-scripted change" "$art_content" "JCODE_TASK_"
   # download variant returns 200 text/plain
   local dl_code; curl -sS -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer $TOKEN" "$API/runs/$rid/artifact?download=1" >/tmp/j1-dl-code 2>/dev/null
