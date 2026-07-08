@@ -32,6 +32,32 @@
 // (or --session=false), acpdrive's behavior is exactly the single-shot run()
 // path below, unchanged.
 //
+// Resume (--resume <acp-session-id>, F9a, D23 ①②): when set, BOTH the
+// single-shot run() path and session mode skip session/new and instead call
+// session/load with that id (jcode's ACP handler restores the prior
+// transcript from its local session store, internal/command/acp.go
+// LoadSession in the jcode repo). A failed load (unknown id / corrupt
+// transcript) is FAIL-VISIBLE: the run exits non-zero with a "session resume
+// failed: …" message rather than silently falling back to a new session.
+// jcode replays the loaded transcript through session/update before
+// session/load returns (per the ACP spec); those replayed notifications are
+// DROPPED, not re-emitted as run events — the control plane already holds
+// the authoritative copy of that history (D13/D23), so re-emitting would
+// duplicate the whole timeline on every wake (see driverClient.live).
+//
+// --resume deliberately has NO env fallback: RESUME_SESSION_ID is consumed by
+// entrypoint.sh, which passes --resume explicitly ONLY in session mode. An
+// env fallback here would leak a stale resume id from the pod environment
+// into single-shot runs (whose session store was just scrubbed by the
+// entrypoint's retention matrix) and hard-fail them.
+//
+// run.session emission: acpdrive emits one `run.session
+// {"acp_session_id","resumed"}` event (see emitter.go's EmitSession — the
+// contract F9b's ingest will consume) ONLY in session mode (--session, both
+// resumed and fresh) or when --resume is set; a plain single-shot run's
+// event stream stays bit-for-bit identical to pre-F9a (it is never
+// resumable, so the control plane has no use for its session id).
+//
 // Env fallbacks: WORKSPACE, TASK_PROMPT, JCODE_BIN, RUN_SESSION, TURN_HOOK.
 package main
 
@@ -46,32 +72,64 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 )
 
+// cliOpts is acpdrive's parsed command line. Kept as a struct (rather than
+// main()-local vars) so parseFlags is testable — in particular the property
+// that --resume has NO env fallback (CONFIRMED-1: a stale RESUME_SESSION_ID
+// inherited from the pod env must never turn a single-shot run into a doomed
+// session/load against a freshly scrubbed session store).
+type cliOpts struct {
+	agentBin  string
+	agentArgs multiFlag
+	workspace string
+	prompt    string
+	timeout   time.Duration
+	verbose   bool
+	session   bool
+	turnHook  string
+	resume    string
+}
+
+// parseFlags defines and parses acpdrive's flags on a private FlagSet.
+// Env-fallback policy: WORKSPACE/TASK_PROMPT/JCODE_BIN/RUN_SESSION/TURN_HOOK
+// intentionally default from the environment (the F7a contract); --resume
+// intentionally does NOT (see the package doc comment) — it must be passed
+// explicitly, which only entrypoint.sh's session-mode branch does.
+func parseFlags(args []string) (*cliOpts, error) {
+	fs := flag.NewFlagSet("acpdrive", flag.ContinueOnError)
+	o := &cliOpts{}
+	fs.StringVar(&o.agentBin, "agent", envOr("JCODE_BIN", "jcode"), "path to the jcode binary")
+	fs.Var(&o.agentArgs, "agent-arg", "extra arg passed to the agent (repeatable); defaults to [acp]")
+	fs.StringVar(&o.workspace, "workspace", os.Getenv("WORKSPACE"), "working directory the session runs against")
+	fs.StringVar(&o.prompt, "prompt", os.Getenv("TASK_PROMPT"), "task prompt to send (first turn, in --session mode)")
+	fs.DurationVar(&o.timeout, "timeout", 5*time.Minute, "hard ceiling for the whole run")
+	fs.BoolVar(&o.verbose, "verbose", false, "log ACP protocol details to stderr")
+	fs.BoolVar(&o.session, "session", os.Getenv("RUN_SESSION") == "1", "multi-turn session mode: loop session/prompt over long-polled follow-up messages instead of exiting after one turn (env RUN_SESSION=1); see docs/14-cloud-v2-design.md §3 (D22)")
+	fs.StringVar(&o.turnHook, "turn-hook", os.Getenv("TURN_HOOK"), "path to a script run synchronously after each turn in --session mode (env TURN_HOOK); ignored when --session is false")
+	fs.StringVar(&o.resume, "resume", "", "resume an existing ACP session via session/load instead of creating a new one with session/new; the id must already exist in the agent's local session store (typically produced by a prior run.session event for the SAME persistent workspace, D23 ①②); a failed load is fail-visible (non-zero exit), never a silent fallback to a new session; deliberately NO env fallback — entrypoint.sh passes this explicitly, and only in session mode")
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
 func main() {
-	var (
-		agentBin  string
-		agentArgs multiFlag
-		workspace string
-		prompt    string
-		timeout   time.Duration
-		verbose   bool
-		session   bool
-		turnHook  string
-	)
-	flag.StringVar(&agentBin, "agent", envOr("JCODE_BIN", "jcode"), "path to the jcode binary")
-	flag.Var(&agentArgs, "agent-arg", "extra arg passed to the agent (repeatable); defaults to [acp]")
-	flag.StringVar(&workspace, "workspace", os.Getenv("WORKSPACE"), "working directory the session runs against")
-	flag.StringVar(&prompt, "prompt", os.Getenv("TASK_PROMPT"), "task prompt to send (first turn, in --session mode)")
-	flag.DurationVar(&timeout, "timeout", 5*time.Minute, "hard ceiling for the whole run")
-	flag.BoolVar(&verbose, "verbose", false, "log ACP protocol details to stderr")
-	flag.BoolVar(&session, "session", os.Getenv("RUN_SESSION") == "1", "multi-turn session mode: loop session/prompt over long-polled follow-up messages instead of exiting after one turn (env RUN_SESSION=1); see docs/14-cloud-v2-design.md §3 (D22)")
-	flag.StringVar(&turnHook, "turn-hook", os.Getenv("TURN_HOOK"), "path to a script run synchronously after each turn in --session mode (env TURN_HOOK); ignored when --session is false")
-	flag.Parse()
+	opts, err := parseFlags(os.Args[1:])
+	if err != nil {
+		// fs.Parse already printed the error + usage to stderr; mirror
+		// flag.ExitOnError's exit status.
+		os.Exit(2)
+	}
+	agentBin, agentArgs := opts.agentBin, opts.agentArgs
+	workspace, prompt := opts.workspace, opts.prompt
+	timeout, verbose := opts.timeout, opts.verbose
+	session, turnHook, resume := opts.session, opts.turnHook, opts.resume
 
 	if workspace == "" {
 		fatal("workspace is required (--workspace or $WORKSPACE)")
@@ -107,7 +165,7 @@ func main() {
 		}
 		cfg := sessionConfig{
 			AgentBin: agentBin, AgentArgs: agentArgs, Workspace: workspace, Prompt: prompt,
-			TurnHook: turnHook, Verbose: verbose,
+			TurnHook: turnHook, Verbose: verbose, Resume: resume,
 			OrchBaseURL: orchBase, RunID: runID, RunToken: runToken,
 		}
 		if err := runSession(sigCtx, cfg); err != nil {
@@ -121,7 +179,7 @@ func main() {
 		return
 	}
 
-	if err := run(sigCtx, agentBin, agentArgs, workspace, prompt, verbose); err != nil {
+	if err := run(sigCtx, agentBin, agentArgs, workspace, prompt, resume, verbose); err != nil {
 		// Distinguish "hit our own --timeout deadline" from any other agent
 		// error with a dedicated exit code (124, the conventional timeout exit
 		// status used by GNU coreutils' `timeout(1)`) so entrypoint.sh can
@@ -134,7 +192,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, agentBin string, agentArgs []string, workspace, prompt string, verbose bool) error {
+func run(ctx context.Context, agentBin string, agentArgs []string, workspace, prompt, resume string, verbose bool) error {
 	cmd := exec.CommandContext(ctx, agentBin, agentArgs...)
 	cmd.Dir = workspace
 	cmd.Stderr = os.Stderr // jcode logs go to stderr; stdout is the JSON-RPC channel
@@ -185,18 +243,53 @@ func run(ctx context.Context, agentBin string, agentArgs []string, workspace, pr
 	}
 	logf("connected to agent (protocol v%v)", initResp.ProtocolVersion)
 
-	newSess, err := conn.NewSession(ctx, acp.NewSessionRequest{
-		Cwd:        workspace,
-		McpServers: []acp.McpServer{},
-	})
-	if err != nil {
-		return fmt.Errorf("session/new: %s", describeErr(err))
+	// session/new (default) or session/load (--resume, F9a / D23 ①②): see the
+	// package doc comment above for the fail-visible contract on a failed
+	// resume. client.live stays false until the session is established:
+	// session/load REPLAYS the prior transcript via session/update before it
+	// returns (ACP spec; the acp-go-sdk's notification barrier guarantees every
+	// replayed notification's handler completes BEFORE LoadSession returns, see
+	// its TestLoadSession_NotificationReplayOrdering), and those replayed
+	// events must be dropped, not re-emitted — the control plane already holds
+	// that history (D13), so re-emitting would duplicate the whole timeline on
+	// every wake. Flipping live AFTER LoadSession returns is therefore
+	// race-free. The session/new path has no replay; live flips before any
+	// session/prompt either way, so live-turn streaming is unaffected.
+	var sessionID acp.SessionId
+	if resume != "" {
+		logf("[session] resuming acp session %s", resume)
+		sessionID = acp.SessionId(resume)
+		if _, err := conn.LoadSession(ctx, acp.LoadSessionRequest{
+			Cwd:        workspace,
+			McpServers: []acp.McpServer{},
+			SessionId:  sessionID,
+		}); err != nil {
+			return fmt.Errorf("session resume failed: %s", describeErr(err))
+		}
+		logf("session resumed: %s", sessionID)
+	} else {
+		newSess, err := conn.NewSession(ctx, acp.NewSessionRequest{
+			Cwd:        workspace,
+			McpServers: []acp.McpServer{},
+		})
+		if err != nil {
+			return fmt.Errorf("session/new: %s", describeErr(err))
+		}
+		sessionID = newSess.SessionId
+		logf("session created: %s", sessionID)
 	}
-	logf("session created: %s", newSess.SessionId)
+	client.live.Store(true)
+	// run.session is emitted ONLY for resumed single-shot runs: a plain
+	// single-shot run (resume == "") keeps its event stream bit-for-bit
+	// identical to pre-F9a — it is never resumable, so the control plane has
+	// no use for its session id. Session mode (runSession) always emits.
+	if resume != "" {
+		emitter.EmitSession(string(sessionID), true)
+	}
 
 	logf("prompting: %q", truncate(prompt, 200))
 	promptResp, err := conn.Prompt(ctx, acp.PromptRequest{
-		SessionId: newSess.SessionId,
+		SessionId: sessionID,
 		Prompt:    []acp.ContentBlock{acp.TextBlock(prompt)},
 	})
 	if err != nil {
@@ -227,14 +320,28 @@ func run(ctx context.Context, agentBin string, agentArgs []string, workspace, pr
 type driverClient struct {
 	workspace string
 	emitter   *Emitter
+	// live gates SessionUpdate (F9a): false until the ACP session is
+	// established (session/new returns, or session/load returns — the SDK's
+	// notification barrier guarantees all of session/load's transcript-replay
+	// session/update handlers complete before that return). While false,
+	// notifications are dropped entirely: they are the OLD transcript being
+	// replayed per the ACP spec, and the control plane already has that
+	// history (D13) — re-emitting it would pollute the run timeline with the
+	// entire prior conversation on every warm wake.
+	live atomic.Bool
 }
 
 var _ acp.Client = (*driverClient)(nil)
 
 // SessionUpdate is on jcode's hot path. It logs to stderr for local debugging
 // and hands the notification to the mapper, which queues run events on the
-// non-blocking emitter (never blocks the agent loop).
+// non-blocking emitter (never blocks the agent loop). Replayed notifications
+// delivered during session/load (live == false) are dropped — see the live
+// field's comment.
 func (c *driverClient) SessionUpdate(_ context.Context, params acp.SessionNotification) error {
+	if !c.live.Load() {
+		return nil
+	}
 	u := params.Update
 	switch {
 	case u.AgentMessageChunk != nil && u.AgentMessageChunk.Content.Text != nil:

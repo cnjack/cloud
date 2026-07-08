@@ -44,6 +44,12 @@ const (
 	eventAgentToolCall   = "agent.tool_call"
 	eventAgentToolResult = "agent.tool_result"
 	eventRunFailure      = "run.failure"
+	// eventRunSession is emitted exactly once per ACP session establishment
+	// (session/new OR session/load), carrying the ACP session id and whether it
+	// was resumed. F9b (orchestrator ingest, not yet built) persists this so a
+	// later warm-wake (D23 ①②, docs/02-decision-log.md / docs/14-cloud-v2-design.md
+	// §4) knows which id to hand back to acpdrive's --resume.
+	eventRunSession = "run.session"
 )
 
 // event is one queued run event. Seq is assigned by the emitter (monotonic from
@@ -188,6 +194,21 @@ func (e *Emitter) EmitText(text string) {
 		return
 	}
 	e.Emit(eventAgentText, map[string]any{"text": text})
+}
+
+// EmitSession is a convenience for run.session (F9a): emitted once right after
+// an ACP session is established, whether by session/new (resumed=false) or
+// session/load (resumed=true). Payload shape is the F9b ingest contract:
+//
+//	{"acp_session_id": "<id>", "resumed": bool}
+func (e *Emitter) EmitSession(acpSessionID string, resumed bool) {
+	if e == nil {
+		return
+	}
+	e.Emit(eventRunSession, map[string]any{
+		"acp_session_id": acpSessionID,
+		"resumed":        resumed,
+	})
 }
 
 // Close flushes remaining events and stops the background loop. It blocks

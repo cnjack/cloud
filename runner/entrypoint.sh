@@ -54,6 +54,20 @@
 #                         session, never re-opening it. Ignored for RUN_KIND=review
 #                         (review runs are always single-shot). Default "0"
 #                         (single-shot; behavior is then EXACTLY as before F7a).
+#   RESUME_SESSION_ID     ACP session id to resume via session/load instead of
+#                         starting fresh with session/new (F9a / D23 ①②, see
+#                         docs/14-cloud-v2-design.md §4): set by the reconciler
+#                         when a warm/cold run wakes to answer a new message.
+#                         Consumed HERE only — acpdrive's --resume flag has NO
+#                         env fallback, so the id reaches it exclusively as an
+#                         explicit argument, and only in session mode. When
+#                         session mode is off (RUN_SESSION!=1 or
+#                         RUN_KIND=review) a set value is logged as a WARNING
+#                         and scrubbed from the child environment (see step
+#                         2's SESSION_MODE block). A failed load (id gone /
+#                         transcript corrupt) is fail-visible: the run fails
+#                         rather than silently starting a new session.
+#                         Default "" (no resume; behavior unchanged).
 #
 # Output:
 #   - agent runs: the git diff on STDOUT (between markers) + /out/diff.patch, and
@@ -117,6 +131,13 @@ RUN_SESSION="${RUN_SESSION:-0}"
 # by a per-service PVC that survives across runs, so an existing checkout is reused
 # (fetch + reset) and jcode memory persists. Default 0 = ephemeral (clone fresh).
 PERSISTENT_WORKSPACE="${PERSISTENT_WORKSPACE:-0}"
+# RESUME_SESSION_ID (F9a / D23 ①②, see docs/14-cloud-v2-design.md §4): set by
+# the reconciler when it wakes a warm/cold run to answer a new message — the
+# ACP session id (from a prior run.session event) whose transcript survived
+# under $HOME/.jcode/sessions on the persistent PVC (see the scrub matrix in
+# step 3 below). Only meaningful together with RUN_SESSION=1; passed to
+# acpdrive as --resume in step 4. Default "" = no resume (behavior unchanged).
+RESUME_SESSION_ID="${RESUME_SESSION_ID:-}"
 # BASE_BRANCH is the new contract name; REPO_BRANCH is accepted as a back-compat
 # alias for the clone path.
 BASE_BRANCH="${BASE_BRANCH:-${REPO_BRANCH:-}}"
@@ -341,6 +362,25 @@ if [ "$RUN_SESSION" = "1" ]; then
     SESSION_MODE=1
   fi
 fi
+# RESUME_SESSION_ID only makes sense once SESSION_MODE is actually active (it
+# is consumed below in step 4 as acpdrive --resume); flag the mismatch rather
+# than silently dropping it, since a caller expecting a resumed transcript
+# getting a fresh session instead is exactly the kind of silent-downgrade this
+# feature must not do (CLAUDE.md fail-visible red line). Then SCRUB the value
+# from this process's environment: acpdrive's --resume deliberately has no env
+# fallback (see runner/acpdrive/main.go parseFlags), but belt-and-braces, no
+# child process (acpdrive, jcode, turn-hook.sh) should ever see a stale resume
+# id it must not act on — a non-session run's session store is scrubbed below
+# (step 3 matrix), so any consumer that DID act on it would hard-fail the run.
+# The unset-then-reassign leaves an UNEXPORTED empty variable: this script's
+# own later references ([ -n ... ] in step 4, the resume= log field) keep
+# working under set -u, while the variable disappears from every child's
+# environment.
+if [ -n "$RESUME_SESSION_ID" ] && [ "$SESSION_MODE" != "1" ]; then
+  log "WARNING: RESUME_SESSION_ID=$RESUME_SESSION_ID set but session mode is off (RUN_SESSION!=1 or RUN_KIND=review) — ignored, this run starts a NEW session"
+  unset RESUME_SESSION_ID
+  RESUME_SESSION_ID=""
+fi
 
 # --- 2b. Review runs: build the review prompt from the PR diff ---------------
 # The review prompt embeds `git diff PR_BASE...PR_HEAD` and asks the agent to
@@ -383,19 +423,42 @@ fi
 # preserved and reused. Memory is enabled only in persistent mode — an ephemeral
 # HOME would discard it anyway, so keep the pre-Feature-C default (disabled) off.
 #
-# Session transcript hygiene (D12 known boundary): jcode's session.Recorder also
-# writes under $HOME/.jcode (sessions/{uuid}.json per docs/01-architecture.md).
-# Raw transcripts contain the full prompt (and possibly secrets/PII from the
-# repo). The same service may be triggered by users of different trust levels
-# (an internal member vs an external @jcode contributor on a shared PR). To avoid
-# a prior run's transcript leaking to the next run's operator, scrub the sessions
-# directory before each run while preserving the memory/ directory (D12 wants
-# memory persisted, NOT raw transcripts — those go to the control-plane store).
+# Session transcript hygiene / retention matrix (D12 known boundary, extended
+# by F9a / D23 ①②): jcode's session.Recorder writes under $HOME/.jcode
+# (sessions/{uuid}.json per docs/01-architecture.md). Raw transcripts contain
+# the full prompt (and possibly secrets/PII from the repo). The same service
+# may be triggered by users of different trust levels (an internal member vs
+# an external @jcode contributor on a shared PR), so D12's default is to scrub
+# the sessions directory before each run while preserving memory/ (memory
+# persisted, NOT raw transcripts — those go to the control-plane store).
+#
+# D23 ①② punches exactly one hole in that default: a SESSION_MODE run on a
+# PERSISTENT_WORKSPACE PVC needs ITS OWN transcript to survive so a later warm
+# wake can `session/load` it back (docs/14-cloud-v2-design.md §4) — that
+# transcript is the physical substrate resume reconstructs context from, not a
+# leftover from a different trust boundary (it's the SAME run's own history).
+# All three other combinations keep the D12 default. The scrub/preserve
+# DECISION below only ever fires when PERSISTENT_WORKSPACE=1 (unchanged from
+# before F9a): with PERSISTENT_WORKSPACE=0, $HOME is a fresh ephemeral
+# filesystem per run, so there is never a prior transcript to scrub in the
+# first place — the guard is a no-op there, not an active "scrub" step:
+#
+#   RUN_SESSION  PERSISTENT_WORKSPACE  $HOME/.jcode/sessions decision
+#   *            0                     no-op (ephemeral HOME — nothing to scrub, unchanged)
+#   0            1                     scrub (single-shot persistent run — D12 default)
+#   1            1                     PRESERVE (D23 ①②: this run's transcript is the resume substrate)
+#
+# Gated on SESSION_MODE (not raw RUN_SESSION) so RUN_KIND=review — which
+# forces SESSION_MODE=0 above regardless of RUN_SESSION — always scrubs on a
+# persistent workspace: reviews are always single-shot and are never resumed.
 MEMORY_ENABLED=false
 [ "$PERSISTENT_WORKSPACE" = "1" ] && MEMORY_ENABLED=true
 mkdir -p "$HOME/.jcode"
-if [ "$PERSISTENT_WORKSPACE" = "1" ] && [ -d "$HOME/.jcode/sessions" ]; then
+if [ "$PERSISTENT_WORKSPACE" = "1" ] && [ "$SESSION_MODE" = "1" ]; then
+  log "preserving \$HOME/.jcode/sessions across this run (RUN_SESSION=1 + PERSISTENT_WORKSPACE=1 — D23 ①② resume substrate)"
+elif [ "$PERSISTENT_WORKSPACE" = "1" ] && [ -d "$HOME/.jcode/sessions" ]; then
   rm -rf "$HOME/.jcode/sessions" 2>/dev/null || true
+  log "scrubbed \$HOME/.jcode/sessions (D12 hygiene; not a session-mode+persistent run)"
 fi
 # Feature D — normalize MODEL_BASE_URL so jcode always sees a /v1-terminated base.
 # jcode (OpenAI-compatible client) treats base_url as ALREADY including /v1 and
@@ -447,15 +510,32 @@ fi
 # only EXITS once the whole run/session is over, so the finalize step below
 # (§5 for review, or the diff/report step after it for agent) runs exactly
 # once regardless of how many turns happened inside.
-log "starting headless run (timeout=$RUN_TIMEOUT session=$SESSION_MODE)"
+#
+# --resume (F9a / D23 ①②): only passed when SESSION_MODE=1 AND
+# RESUME_SESSION_ID is set (a warm wake, see the WARNING log above for the
+# mismatched-flag case) — acpdrive then skips session/new for session/load
+# against that id instead (fail-visible on a bad id; see
+# runner/acpdrive/session.go). Never passed in single-shot mode: a review or
+# non-session agent run always starts a fresh session.
+log "starting headless run (timeout=$RUN_TIMEOUT session=$SESSION_MODE resume=${RESUME_SESSION_ID:-<none>})"
 set +e
 if [ "$SESSION_MODE" = "1" ]; then
-  JCODE_BIN=jcode acpdrive \
-    --workspace "$WORKSPACE" \
-    --prompt "$TASK_PROMPT" \
-    --timeout "$RUN_TIMEOUT" \
-    --session --turn-hook "$HOOK_SCRIPT" \
-    --verbose < /dev/null
+  if [ -n "$RESUME_SESSION_ID" ]; then
+    JCODE_BIN=jcode acpdrive \
+      --workspace "$WORKSPACE" \
+      --prompt "$TASK_PROMPT" \
+      --timeout "$RUN_TIMEOUT" \
+      --session --turn-hook "$HOOK_SCRIPT" \
+      --resume "$RESUME_SESSION_ID" \
+      --verbose < /dev/null
+  else
+    JCODE_BIN=jcode acpdrive \
+      --workspace "$WORKSPACE" \
+      --prompt "$TASK_PROMPT" \
+      --timeout "$RUN_TIMEOUT" \
+      --session --turn-hook "$HOOK_SCRIPT" \
+      --verbose < /dev/null
+  fi
 else
   JCODE_BIN=jcode acpdrive \
     --workspace "$WORKSPACE" \

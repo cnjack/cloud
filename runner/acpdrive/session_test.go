@@ -110,6 +110,10 @@ type mockOrchestrator struct {
 	// success" without enumerating every retry).
 	nextPromptScript []nextPromptStep
 	nextPromptAuth   []string
+
+	// eventBatches records every batch POSTed to /internal/v1/runs/{id}/events
+	// by the emitter (F9a: used to assert the run.session event payload).
+	eventBatches [][]event
 }
 
 type nextPromptStep struct {
@@ -125,7 +129,33 @@ func (m *mockOrchestrator) server() *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/internal/v1/runs/run-test/turn-complete", m.handleTurnComplete)
 	mux.HandleFunc("/internal/v1/runs/run-test/next-prompt", m.handleNextPrompt)
+	mux.HandleFunc("/internal/v1/runs/run-test/events", m.handleEvents)
 	return httptest.NewServer(mux)
+}
+
+// handleEvents accepts the emitter's batched POST body ({"events":[...]})
+// exactly like a real orchestrator ingest endpoint would, recording every
+// batch so tests can assert on emitted events (e.g. run.session, F9a).
+func (m *mockOrchestrator) handleEvents(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Events []event `json:"events"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	m.mu.Lock()
+	m.eventBatches = append(m.eventBatches, body.Events)
+	m.mu.Unlock()
+	w.WriteHeader(http.StatusOK)
+}
+
+// events flattens every recorded batch into one ordered slice.
+func (m *mockOrchestrator) events() []event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []event
+	for _, b := range m.eventBatches {
+		out = append(out, b...)
+	}
+	return out
 }
 
 func (m *mockOrchestrator) handleTurnComplete(w http.ResponseWriter, r *http.Request) {
@@ -242,6 +272,256 @@ func TestSessionLoopHappyPathMultipleTurns(t *testing.T) {
 	if prompts[0]["session_id"] != "sess_1" || prompts[1]["session_id"] != "sess_1" {
 		t.Fatalf("prompts landed on different sessions: %+v", prompts)
 	}
+}
+
+// --- F9a: session resume (--resume / RESUME_SESSION_ID, D23 ①②) ---
+
+// TestSessionLoopNewSessionEmitsRunSessionEvent pins the "new session" half of
+// the F9b ingest contract: after a plain session/new establishment, exactly
+// one run.session event is emitted with resumed=false and the id session/new
+// returned.
+func TestSessionLoopNewSessionEmitsRunSessionEvent(t *testing.T) {
+	dir := t.TempDir()
+	cfg := fakeAgentConfig(t, dir, "end_turn", "")
+
+	orch := newMockOrchestrator()
+	orch.nextPromptScript = []nextPromptStep{{status: http.StatusGone}}
+	ts := orch.server()
+	defer ts.Close()
+	cfg.OrchBaseURL = ts.URL
+	cfg.RunID = "run-test"
+	cfg.RunToken = "tok"
+	// The event EMITTER (unlike the turn-complete/next-prompt control-plane
+	// client) reads ORCH_BASE_URL/RUN_ID/RUN_TOKEN from the PROCESS environment
+	// (NewEmitterFromEnv), not from cfg — set them too so run.session actually
+	// ships to the mock server instead of being a silent no-op.
+	t.Setenv("ORCH_BASE_URL", ts.URL)
+	t.Setenv("RUN_ID", "run-test")
+	t.Setenv("RUN_TOKEN", "tok")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runSession(ctx, cfg); err != nil {
+		t.Fatalf("runSession: %v", err)
+	}
+
+	sessionEvents := filterEventType(orch.events(), eventRunSession)
+	if len(sessionEvents) != 1 {
+		t.Fatalf("run.session events = %d, want exactly 1: %+v", len(sessionEvents), sessionEvents)
+	}
+	ev := sessionEvents[0]
+	if ev.Payload["acp_session_id"] != "sess_1" {
+		t.Fatalf("run.session payload acp_session_id = %v, want sess_1", ev.Payload["acp_session_id"])
+	}
+	if resumed, _ := ev.Payload["resumed"].(bool); resumed {
+		t.Fatalf("run.session payload resumed = %v, want false (session/new path)", ev.Payload["resumed"])
+	}
+}
+
+// TestSessionLoopResumeSendsLoadSessionNotNewSession proves --resume/cfg.Resume
+// skips session/new entirely, sends session/load carrying the given id and the
+// workspace as cwd, reuses that SAME id for every session/prompt in the loop,
+// and emits a run.session event with resumed=true.
+func TestSessionLoopResumeSendsLoadSessionNotNewSession(t *testing.T) {
+	dir := t.TempDir()
+	agentLog := filepath.Join(dir, "agent.ndjson")
+	cfg := fakeAgentConfig(t, dir, "end_turn,end_turn", agentLog)
+	cfg.Resume = "sess_prior_warm_wake"
+
+	orch := newMockOrchestrator()
+	orch.nextPromptScript = []nextPromptStep{
+		{status: http.StatusOK, body: nextPromptResponse{MessageID: "m1", Prompt: "second prompt"}},
+		{status: http.StatusGone},
+	}
+	ts := orch.server()
+	defer ts.Close()
+	cfg.OrchBaseURL = ts.URL
+	cfg.RunID = "run-test"
+	cfg.RunToken = "tok"
+	// See the comment in TestSessionLoopNewSessionEmitsRunSessionEvent: the
+	// emitter needs these set as PROCESS env, separately from cfg.
+	t.Setenv("ORCH_BASE_URL", ts.URL)
+	t.Setenv("RUN_ID", "run-test")
+	t.Setenv("RUN_TOKEN", "tok")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := runSession(ctx, cfg); err != nil {
+		t.Fatalf("runSession: %v", err)
+	}
+
+	events := readNDJSON(t, agentLog)
+	var newSessionCount, loadSessionCount int
+	var loadCall map[string]any
+	var prompts []map[string]any
+	for _, e := range events {
+		switch e["method"] {
+		case "session/new":
+			newSessionCount++
+		case "session/load":
+			loadSessionCount++
+			loadCall = e
+		case "session/prompt":
+			prompts = append(prompts, e)
+		}
+	}
+	if newSessionCount != 0 {
+		t.Fatalf("session/new called %d times, want 0 (resume must skip it)", newSessionCount)
+	}
+	if loadSessionCount != 1 {
+		t.Fatalf("session/load called %d times, want 1", loadSessionCount)
+	}
+	if loadCall["session_id"] != "sess_prior_warm_wake" {
+		t.Fatalf("session/load session_id = %v, want sess_prior_warm_wake", loadCall["session_id"])
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("filepath.Abs: %v", err)
+	}
+	if loadCall["cwd"] != absDir && loadCall["cwd"] != dir {
+		t.Fatalf("session/load cwd = %v, want the workspace (%v or %v)", loadCall["cwd"], absDir, dir)
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("session/prompt called %d times, want 2", len(prompts))
+	}
+	for i, p := range prompts {
+		if p["session_id"] != "sess_prior_warm_wake" {
+			t.Fatalf("prompt %d landed on session %v, want the resumed id sess_prior_warm_wake", i, p["session_id"])
+		}
+	}
+
+	sessionEvents := filterEventType(orch.events(), eventRunSession)
+	if len(sessionEvents) != 1 {
+		t.Fatalf("run.session events = %d, want exactly 1: %+v", len(sessionEvents), sessionEvents)
+	}
+	ev := sessionEvents[0]
+	if ev.Payload["acp_session_id"] != "sess_prior_warm_wake" {
+		t.Fatalf("run.session payload acp_session_id = %v, want sess_prior_warm_wake", ev.Payload["acp_session_id"])
+	}
+	if resumed, _ := ev.Payload["resumed"].(bool); !resumed {
+		t.Fatalf("run.session payload resumed = %v, want true (session/load path)", ev.Payload["resumed"])
+	}
+}
+
+// TestSessionLoopResumeDropsReplayedTranscript is CONFIRMED-2's session-mode
+// regression: session/load replays the prior transcript via session/update
+// before it returns (ACP spec — the fake agent mimics jcode here); acpdrive
+// must DROP those replayed notifications (the control plane already holds
+// that history, D13) while still emitting the LIVE updates of every real
+// turn after the gate opens.
+func TestSessionLoopResumeDropsReplayedTranscript(t *testing.T) {
+	dir := t.TempDir()
+	cfg := fakeAgentConfig(t, dir, "end_turn,end_turn", "")
+	cfg.Resume = "sess_warm_wake"
+	t.Setenv("FAKE_AGENT_REPLAY_TEXTS", "REPLAYED-old-1,REPLAYED-old-2")
+	t.Setenv("FAKE_AGENT_LIVE_TEXT", "LIVE")
+
+	orch := newMockOrchestrator()
+	orch.nextPromptScript = []nextPromptStep{
+		{status: http.StatusOK, body: nextPromptResponse{MessageID: "m1", Prompt: "second prompt"}},
+		{status: http.StatusGone},
+	}
+	ts := orch.server()
+	defer ts.Close()
+	cfg.OrchBaseURL = ts.URL
+	cfg.RunID = "run-test"
+	cfg.RunToken = "tok"
+	// Live emitter (see TestSessionLoopNewSessionEmitsRunSessionEvent).
+	t.Setenv("ORCH_BASE_URL", ts.URL)
+	t.Setenv("RUN_ID", "run-test")
+	t.Setenv("RUN_TOKEN", "tok")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := runSession(ctx, cfg); err != nil {
+		t.Fatalf("runSession: %v", err)
+	}
+
+	evs := orch.events()
+	for _, ev := range evs {
+		if txt, _ := ev.Payload["text"].(string); strings.HasPrefix(txt, "REPLAYED") {
+			t.Fatalf("replayed transcript leaked into the run timeline: %+v", ev)
+		}
+	}
+	// Both real turns' live updates must have flowed (gate open after load).
+	texts := filterEventType(evs, eventAgentText)
+	if len(texts) != 2 || texts[0].Payload["text"] != "LIVE:1" || texts[1].Payload["text"] != "LIVE:2" {
+		t.Fatalf("live agent.text events = %+v, want exactly [LIVE:1 LIVE:2] (replay dropped, live kept)", texts)
+	}
+	sessionEvents := filterEventType(evs, eventRunSession)
+	if len(sessionEvents) != 1 {
+		t.Fatalf("run.session events = %d, want exactly 1: %+v", len(sessionEvents), sessionEvents)
+	}
+	if resumed, _ := sessionEvents[0].Payload["resumed"].(bool); !resumed {
+		t.Fatalf("resumed = %v, want true", sessionEvents[0].Payload["resumed"])
+	}
+}
+
+// TestSessionLoopResumeFailureIsFailVisible proves a failed session/load
+// (unknown id / corrupt transcript) is fail-visible per the F9a contract: the
+// loop never starts (turn-complete/next-prompt are never called), runSession
+// returns a descriptive "session resume failed: ..." error, and there is NO
+// silent fallback to a fresh session (session/new is never called either).
+func TestSessionLoopResumeFailureIsFailVisible(t *testing.T) {
+	dir := t.TempDir()
+	agentLog := filepath.Join(dir, "agent.ndjson")
+	cfg := fakeAgentConfig(t, dir, "end_turn", agentLog)
+	cfg.Resume = "sess_corrupt"
+	t.Setenv("FAKE_AGENT_LOAD_SESSION_ERR", "transcript checksum mismatch")
+
+	orch := newMockOrchestrator()
+	ts := orch.server()
+	defer ts.Close()
+	cfg.OrchBaseURL = ts.URL
+	cfg.RunID = "run-test"
+	cfg.RunToken = "tok"
+	// A LIVE emitter (see the comment above): proves the "no event on failure"
+	// assertion below isn't trivially true because the emitter was nil.
+	t.Setenv("ORCH_BASE_URL", ts.URL)
+	t.Setenv("RUN_ID", "run-test")
+	t.Setenv("RUN_TOKEN", "tok")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := runSession(ctx, cfg)
+	if err == nil {
+		t.Fatal("runSession: want an error when session/load fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "session resume failed") {
+		t.Fatalf("error = %v, want it to mention 'session resume failed'", err)
+	}
+	if !strings.Contains(err.Error(), "transcript checksum mismatch") {
+		t.Fatalf("error = %v, want it to carry the underlying agent message", err)
+	}
+
+	tcCalls, npCalls := orch.calls()
+	if len(tcCalls) != 0 || npCalls != 0 {
+		t.Fatalf("turn-complete/next-prompt must never be called after a failed resume: tc=%+v np=%d", tcCalls, npCalls)
+	}
+	if len(orch.events()) != 0 {
+		t.Fatalf("no run.session (or any) event should be emitted for a failed resume: %+v", orch.events())
+	}
+
+	events := readNDJSON(t, agentLog)
+	for _, e := range events {
+		if e["method"] == "session/new" {
+			t.Fatal("session/new was called after a failed resume — silent fallback to a new session is forbidden (fail-visible red line)")
+		}
+		if e["method"] == "session/prompt" {
+			t.Fatal("session/prompt was called after a failed resume — the loop must never start")
+		}
+	}
+}
+
+// filterEventType returns the subset of evs whose Type matches typ, in order.
+func filterEventType(evs []event, typ string) []event {
+	var out []event
+	for _, e := range evs {
+		if e.Type == typ {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // TestSessionLoopTurnCompleteRetries503ThenSucceeds proves turn-complete

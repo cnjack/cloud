@@ -16,10 +16,24 @@ package main
 //	FAKE_AGENT_STOP_REASONS=a,b,c  comma-separated stop reasons for successive
 //	                              Prompt calls; the last entry repeats once
 //	                              exhausted; default "end_turn"
+//	FAKE_AGENT_LOAD_SESSION_ERR=msg  if set, session/load returns a JSON-RPC
+//	                              error with this message instead of succeeding
+//	                              (F9a resume-failure fail-visible test)
+//	FAKE_AGENT_REPLAY_TEXTS=a,b   comma-separated agent_message_chunk texts the
+//	                              fake REPLAYS via session/update DURING
+//	                              session/load, before returning — mimicking
+//	                              jcode's ACP-spec transcript replay (F9a:
+//	                              acpdrive must DROP these, never re-emit them)
+//	FAKE_AGENT_LIVE_TEXT=txt      if set, each Prompt call sends one LIVE
+//	                              session/update agent_message_chunk
+//	                              "txt:<turn>" before returning, so tests can
+//	                              assert real-turn streaming still flows after
+//	                              the replay gate opens
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -45,10 +59,17 @@ func runFakeAgentProcess() {
 		stopReasons = strings.Split(v, ",")
 	}
 	sessionID := acp.SessionId(envOr("FAKE_AGENT_SESSION_ID", "sess_fake"))
+	var replayTexts []string
+	if v := os.Getenv("FAKE_AGENT_REPLAY_TEXTS"); v != "" {
+		replayTexts = strings.Split(v, ",")
+	}
 	fa := &fakeAgent{
-		sessionID:   sessionID,
-		stopReasons: stopReasons,
-		logPath:     os.Getenv("FAKE_AGENT_LOG"),
+		sessionID:      sessionID,
+		stopReasons:    stopReasons,
+		logPath:        os.Getenv("FAKE_AGENT_LOG"),
+		loadSessionErr: os.Getenv("FAKE_AGENT_LOAD_SESSION_ERR"),
+		replayTexts:    replayTexts,
+		liveText:       os.Getenv("FAKE_AGENT_LIVE_TEXT"),
 	}
 	asc := acp.NewAgentSideConnection(fa, os.Stdout, os.Stdin)
 	fa.conn = asc
@@ -65,9 +86,25 @@ type fakeAgent struct {
 	stopReasons []string
 	logPath     string
 	turn        int32 // atomic, incremented per Prompt call
+	// loadSessionErr, if non-empty, makes LoadSession fail with this message
+	// instead of succeeding (F9a resume-failure fail-visible test).
+	loadSessionErr string
+	// replayTexts, if non-empty, are sent as session/update
+	// agent_message_chunk notifications DURING LoadSession, before it returns
+	// — mimicking jcode's ACP-spec transcript replay.
+	replayTexts []string
+	// liveText, if non-empty, makes each Prompt send one live session/update
+	// chunk "liveText:<turn>" before returning.
+	liveText string
 }
 
 var _ acp.Agent = (*fakeAgent)(nil)
+
+// fakeAgent also implements the optional acp.AgentLoader interface (F9a):
+// acpdrive's session/load support is exercised end to end against this fake,
+// exactly like NewSession/Prompt above, rather than mocked at the JSON-RPC
+// transport level.
+var _ acp.AgentLoader = (*fakeAgent)(nil)
 
 func (a *fakeAgent) logEvent(v map[string]any) {
 	if a.logPath == "" {
@@ -92,7 +129,34 @@ func (a *fakeAgent) NewSession(_ context.Context, _ acp.NewSessionRequest) (acp.
 	return acp.NewSessionResponse{SessionId: a.sessionID}, nil
 }
 
-func (a *fakeAgent) Prompt(_ context.Context, p acp.PromptRequest) (acp.PromptResponse, error) {
+// LoadSession (F9a): logs the call (session id + cwd) so tests can assert
+// session/new was NOT also called, and fails with loadSessionErr when the
+// test scripts a resume failure (FAKE_AGENT_LOAD_SESSION_ERR). On the success
+// path it first REPLAYS replayTexts as session/update notifications — like
+// jcode, which streams the loaded transcript back through session/update
+// before answering session/load (ACP spec; the SDK's notification barrier
+// delivers each one to the client handler before LoadSession returns).
+func (a *fakeAgent) LoadSession(ctx context.Context, p acp.LoadSessionRequest) (acp.LoadSessionResponse, error) {
+	a.logEvent(map[string]any{
+		"method":     "session/load",
+		"session_id": string(p.SessionId),
+		"cwd":        p.Cwd,
+	})
+	if a.loadSessionErr != "" {
+		return acp.LoadSessionResponse{}, &acp.RequestError{Code: -32603, Message: a.loadSessionErr}
+	}
+	for _, txt := range a.replayTexts {
+		_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{
+			SessionId: p.SessionId,
+			Update: acp.SessionUpdate{
+				AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.TextBlock(txt)},
+			},
+		})
+	}
+	return acp.LoadSessionResponse{}, nil
+}
+
+func (a *fakeAgent) Prompt(ctx context.Context, p acp.PromptRequest) (acp.PromptResponse, error) {
 	n := int(atomic.AddInt32(&a.turn, 1))
 	text := ""
 	if len(p.Prompt) > 0 && p.Prompt[0].Text != nil {
@@ -104,6 +168,14 @@ func (a *fakeAgent) Prompt(_ context.Context, p acp.PromptRequest) (acp.PromptRe
 		"session_id": string(p.SessionId),
 		"prompt":     text,
 	})
+	if a.liveText != "" {
+		_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{
+			SessionId: p.SessionId,
+			Update: acp.SessionUpdate{
+				AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.TextBlock(fmt.Sprintf("%s:%d", a.liveText, n))},
+			},
+		})
+	}
 	reason := a.stopReasons[len(a.stopReasons)-1]
 	if n-1 < len(a.stopReasons) {
 		reason = a.stopReasons[n-1]

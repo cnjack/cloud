@@ -20,6 +20,12 @@ package main
 // implemented strictly against the contract in the F7a task and exercised with
 // httptest mocks (session_test.go).
 //
+// Resume (cfg.Resume / --resume / RESUME_SESSION_ID, F9a, D23 ①②): when set,
+// step 0 above (session/new) is replaced by session/load against that id —
+// see the fail-visible contract in main.go's package doc comment and in the
+// session/new-or-load block below. Everything after that (the turn loop) is
+// unchanged: a resumed session is driven exactly like a freshly created one.
+//
 // This file is deliberately independent of run() (main.go): run() is the
 // hard-backward-compat, RUN_SESSION-unset path and MUST NOT change behavior,
 // so runSession() below duplicates the small amount of agent-launch
@@ -76,6 +82,12 @@ type sessionConfig struct {
 	Prompt    string
 	TurnHook  string // path to the turn-hook script/executable; "" = no hook
 	Verbose   bool
+	// Resume, if non-empty, is an existing ACP session id (F9a / D23 ①②): the
+	// loop skips session/new and instead resumes via session/load, then
+	// continues the SAME turn loop below (never re-opening the session). "" =
+	// default, session/new (unchanged pre-F9a behavior). See main.go's package
+	// doc comment for the fail-visible contract on a failed resume.
+	Resume string
 
 	OrchBaseURL string // ORCH_BASE_URL
 	RunID       string // RUN_ID
@@ -179,19 +191,48 @@ func runSession(ctx context.Context, cfg sessionConfig) error {
 	}
 	logf("connected to agent (protocol v%v)", initResp.ProtocolVersion)
 
-	// session/new is called EXACTLY ONCE for the whole session, regardless of
-	// how many turns follow — the loop below reuses sessionID on every
-	// subsequent session/prompt so jcode's context/tool state survives turn to
-	// turn (the whole point of D22).
-	newSess, err := conn.NewSession(ctx, acp.NewSessionRequest{
-		Cwd:        cfg.Workspace,
-		McpServers: []acp.McpServer{},
-	})
-	if err != nil {
-		return fmt.Errorf("session/new: %s", describeErr(err))
+	// session/new (default) OR session/load (cfg.Resume != "", F9a / D23 ①②) is
+	// called EXACTLY ONCE for the whole session, regardless of how many turns
+	// follow — the loop below reuses sessionID on every subsequent
+	// session/prompt so jcode's context/tool state survives turn to turn (the
+	// whole point of D22). A resume failure (unknown id / corrupt transcript)
+	// is fail-visible: the loop is never entered and a descriptive error is
+	// returned instead of silently falling back to a new session.
+	//
+	// client.live stays false until the session is established: session/load
+	// replays the prior transcript via session/update before returning (ACP
+	// spec; the SDK's notification barrier makes the post-LoadSession flip
+	// race-free — see driverClient.live in main.go), and that replayed history
+	// must be dropped, not re-emitted into the run timeline.
+	var sessionID acp.SessionId
+	if cfg.Resume != "" {
+		logf("[session] resuming acp session %s", cfg.Resume)
+		sessionID = acp.SessionId(cfg.Resume)
+		if _, err := conn.LoadSession(ctx, acp.LoadSessionRequest{
+			Cwd:        cfg.Workspace,
+			McpServers: []acp.McpServer{},
+			SessionId:  sessionID,
+		}); err != nil {
+			return fmt.Errorf("session resume failed: %s", describeErr(err))
+		}
+		logf("session resumed: %s (session mode)", sessionID)
+	} else {
+		newSess, err := conn.NewSession(ctx, acp.NewSessionRequest{
+			Cwd:        cfg.Workspace,
+			McpServers: []acp.McpServer{},
+		})
+		if err != nil {
+			return fmt.Errorf("session/new: %s", describeErr(err))
+		}
+		sessionID = newSess.SessionId
+		logf("session created: %s (session mode)", sessionID)
 	}
-	sessionID := newSess.SessionId
-	logf("session created: %s (session mode)", sessionID)
+	client.live.Store(true)
+	// Session mode always emits run.session (both resumed=true and =false):
+	// every session-mode run is a candidate for a later warm wake, so F9b
+	// needs its id either way. (The single-shot path in main.go emits only
+	// when resuming — see the comment there.)
+	emitter.EmitSession(string(sessionID), cfg.Resume != "")
 
 	cp := newControlPlaneClient(cfg)
 
