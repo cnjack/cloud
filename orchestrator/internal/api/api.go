@@ -229,6 +229,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /internal/v1/runs/{id}/source", s.runToken(s.handleGetSource))
 	mux.Handle("POST /internal/v1/runs/{id}/bundle", s.runToken(s.handleIngestBundle))
 	mux.Handle("POST /internal/v1/runs/{id}/review", s.runToken(s.handleIngestReview))
+	// Feature D — LLM reverse proxy (architecture O5): the runner's LLM traffic
+	// goes through the orchestrator, which injects the real key and forwards to
+	// the real model. Method-agnostic so POST /chat/completions and GET /models
+	// both work; {rest...} is the OpenAI-style path the client appended. Authed
+	// by the same per-run RUN_TOKEN gate as the other internal endpoints.
+	mux.Handle("/internal/v1/runs/{id}/llm/{rest...}", s.runToken(s.handleLLMProxy))
 
 	return s.recover(s.logRequests(mux))
 }

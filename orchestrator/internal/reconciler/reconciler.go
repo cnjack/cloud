@@ -665,6 +665,16 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		}
 		return false
 	}
+	// Feature D — the runner reaches the LLM ONLY through the in-process reverse
+	// proxy (it never holds the real key). Building that proxy URL requires
+	// ORCH_BASE_URL; without it we cannot point the runner anywhere honest, so
+	// refuse to schedule and leave the run queued (fail-visible; never inject a
+	// bogus base). ORCH_BASE_URL is required in production (config.Load rejects
+	// an empty value when K8s is enabled); this guards dev/API-only shapes.
+	if r.cfg.OrchBaseURL == "" {
+		r.log.Warn("reconcile: ORCH_BASE_URL unset — cannot build LLM proxy URL; leaving run queued", "run", run.ID)
+		return false
+	}
 
 	// Feature C — per-service persistent workspace (D05). When enabled, ensure the
 	// service's RWO PVC exists BEFORE launching the Job (idempotent) and mount it
@@ -814,11 +824,14 @@ func (r *Reconciler) emit(ctx context.Context, runID, typ string, payload map[st
 
 // jobEnv assembles the runner container environment per the M3 runner contract
 // (blueprint §3). token is the freshly-minted plaintext RUN_TOKEN; model is the
-// EFFECTIVE model config resolved at Job-launch (Feature A) — the runner is
-// pointed at exactly what the admin set (DB) or the env fallback, never a mock
-// default. NO provider token is ever injected: the runner reads (via a source
-// bundle it fetches over the RUN_TOKEN) and writes a bundle it uploads; the
-// orchestrator pushes.
+// EFFECTIVE model config resolved at Job-launch (Feature A) — its name still
+// drives jcode's model id. Feature D: the real model.BaseURL/APIKey are NEVER
+// injected. Instead MODEL_BASE_URL points at the in-process LLM reverse proxy
+// (which injects the real key at forward time) and MODEL_API_KEY IS the
+// RUN_TOKEN — so the decrypted key never enters the pod env and cannot be
+// exfiltrated by a prompt injection. NO provider token is ever injected either:
+// the runner reads (via a source bundle it fetches over the RUN_TOKEN) and
+// writes a bundle it uploads; the orchestrator pushes.
 func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, model modelcfg.Resolved, proj *domain.Project, timeoutSecs int64) map[string]string {
 	kind := run.Kind
 	if kind == "" {
@@ -828,8 +841,8 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 		"RUN_ID":         run.ID,
 		"TASK_PROMPT":    run.Prompt,
 		"ORCH_BASE_URL":  r.cfg.OrchBaseURL,
-		"MODEL_BASE_URL": model.BaseURL,
-		"MODEL_API_KEY":  model.APIKey,
+		"MODEL_BASE_URL": r.llmProxyBaseURL(run.ID),
+		"MODEL_API_KEY":  token, // RUN_TOKEN — the proxy's runToken gate verifies it.
 		"MODEL_NAME":     model.ModelName,
 		"RUN_TOKEN":      token,
 		"RUN_KIND":       string(kind),
@@ -861,6 +874,15 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 	// can never be overridden (double insurance; CLAUDE.md fail-visible).
 	r.applyInjectedEnv(env, run, proj)
 	return env
+}
+
+// llmProxyBaseURL is the runner-facing LLM endpoint: the in-process reverse
+// proxy mounted at /internal/v1/runs/{id}/llm (Feature D). It is deliberately
+// WITHOUT a trailing /v1 — the entrypoint appends /v1 so jcode (which treats
+// base_url as already including /v1) composes the same relative path it does
+// against a real base, and the proxy re-attaches /v1 transparently.
+func (r *Reconciler) llmProxyBaseURL(runID string) string {
+	return strings.TrimRight(r.cfg.OrchBaseURL, "/") + "/internal/v1/runs/" + runID + "/llm"
 }
 
 // timeoutGrace is the headroom added to the runner's RUN_TIMEOUT to form the

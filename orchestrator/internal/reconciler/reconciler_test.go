@@ -363,6 +363,84 @@ func TestJobEnvReviewInjectsPRRefs(t *testing.T) {
 	}
 }
 
+// TestJobEnvInjectsLLMProxyURLNotRealKey is the Feature D isolation contract:
+// the runner is pointed at the in-process LLM reverse proxy (MODEL_BASE_URL =
+// ${ORCH_BASE_URL}/internal/v1/runs/<id>/llm, no /v1) and uses the RUN_TOKEN as
+// MODEL_API_KEY — the real decrypted key NEVER enters the pod env, so a prompt
+// injection cannot exfiltrate it. MODEL_NAME is still the resolved model id.
+// createJob's model gate is unaffected (still fails visibly when unconfigured).
+func TestJobEnvInjectsLLMProxyURLNotRealKey(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	rec, _, _ := testRec(t, 4)
+	rec.st = st
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
+	if err := st.CreateProject(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "git://g/x.git",
+		DefaultBranch: "main", GitMode: domain.GitModeReadonly, CreatedAt: time.Now(),
+	}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "do",
+		Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now(),
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+
+	const runToken = "the-run-token"
+	env := rec.jobEnv(ctx, run, runToken, envModel(), p, rec.cfg.RunTimeoutSecs)
+
+	// MODEL_BASE_URL is the proxy mount (no trailing /v1); the entrypoint appends /v1.
+	wantBase := "http://orch/internal/v1/runs/" + run.ID + "/llm"
+	if env["MODEL_BASE_URL"] != wantBase {
+		t.Fatalf("MODEL_BASE_URL=%q want %q (proxy URL, no /v1)", env["MODEL_BASE_URL"], wantBase)
+	}
+	// MODEL_API_KEY is the RUN_TOKEN, NOT the real decrypted key.
+	if env["MODEL_API_KEY"] != runToken {
+		t.Fatalf("MODEL_API_KEY=%q want the RUN_TOKEN %q (real key must never enter the pod)",
+			env["MODEL_API_KEY"], runToken)
+	}
+	if env["RUN_TOKEN"] != runToken {
+		t.Fatalf("RUN_TOKEN=%q want %q", env["RUN_TOKEN"], runToken)
+	}
+	// The resolved model name still drives jcode's model id.
+	if env["MODEL_NAME"] != "mock/mock-model" {
+		t.Fatalf("MODEL_NAME=%q want mock/mock-model", env["MODEL_NAME"])
+	}
+	// Belt-and-braces: the real key from the resolved model is NOWHERE in the env.
+	for k, v := range env {
+		if strings.Contains(v, "test-key") {
+			t.Fatalf("real model key leaked into env %s=%q", k, v)
+		}
+	}
+}
+
+// TestCreateJobLeavesQueuedWhenOrchBaseURLEmpty proves the fail-visible guard:
+// without ORCH_BASE_URL the reconciler cannot build the proxy URL the runner
+// must call, so it refuses to launch the Job and leaves the run queued for the
+// next tick (rather than injecting an unreachable base and letting the run fail
+// opaquely). ORCH_BASE_URL is required in production (config.Load), so this is a
+// defensive guard for dev/API-only shapes.
+func TestCreateJobLeavesQueuedWhenOrchBaseURLEmpty(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	rec.cfg.OrchBaseURL = ""
+	run := seedProjectAndRun(t, st)
+
+	rec.Tick(ctx)
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.Status != domain.StatusQueued {
+		t.Fatalf("status=%q want queued (OrchBaseURL empty → do not schedule blind)", got.Status)
+	}
+}
+
 func TestReconcileFullLifecycle(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 4)

@@ -10,9 +10,15 @@
 # Required env:
 #   TASK_PROMPT      the coding task (agent runs) — a review prompt is built
 #                    internally for review runs.
-#   MODEL_BASE_URL   OpenAI-compatible base URL (or set START_MOCKLLM=1)
+#   MODEL_BASE_URL   OpenAI-compatible base URL (or set START_MOCKLLM=1). Under
+#                    the control plane this is the orchestrator's LLM REVERSE
+#                    PROXY (.../internal/v1/runs/$RUN_ID/llm, without /v1); the
+#                    entrypoint appends /v1 below. The REAL key lives only in the
+#                    orchestrator and is injected at forward time (Feature D).
 #   MODEL_NAME       "provider/model" id (or set START_MOCKLLM=1) — NO mock default
-#   MODEL_API_KEY    API key (a dummy value is fine for the mock)
+#   MODEL_API_KEY    API key for the base. Under the control plane this IS the
+#                    RUN_TOKEN (the proxy authenticates it); a dummy value is fine
+#                    for the mock.
 #
 # Runner contract env (blueprint §3), injected by the orchestrator:
 #   RUN_KIND         "agent" (default) | "review"
@@ -322,6 +328,20 @@ mkdir -p "$HOME/.jcode"
 if [ "$PERSISTENT_WORKSPACE" = "1" ] && [ -d "$HOME/.jcode/sessions" ]; then
   rm -rf "$HOME/.jcode/sessions" 2>/dev/null || true
 fi
+# Feature D — normalize MODEL_BASE_URL so jcode always sees a /v1-terminated base.
+# jcode (OpenAI-compatible client) treats base_url as ALREADY including /v1 and
+# appends a relative path like /chat/completions. Under the control plane the
+# orchestrator injects the LLM PROXY url (.../llm, WITHOUT /v1) as MODEL_BASE_URL;
+# standalone (START_MOCKLLM or a direct base) sets it with /v1. Append /v1 unless
+# it already ends in /v1 (drop any trailing slash first), so both shapes compose
+# the same way and the proxy's transparent forwarding stays correct. The proxy
+# strips the matching /v1 from the REAL model base and re-attaches this /v1, so
+# there is never a double /v1 regardless of how the admin configured the base.
+MODEL_BASE_URL="${MODEL_BASE_URL%/}"
+case "$MODEL_BASE_URL" in
+  */v1) : ;;                           # already /v1-terminated — keep as-is
+  *)    MODEL_BASE_URL="$MODEL_BASE_URL/v1" ;;
+esac
 cat > "$HOME/.jcode/config.json" <<JSON
 {
   "providers": {

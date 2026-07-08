@@ -99,3 +99,16 @@ Gitea 优先 → GitHub + GitLab;控制台 Run 按钮 / CLI;Git webhook @mention
 - **被否**:整体覆盖语义(改名会连带清空未发送的护栏);sentinel 空串/零值区分不清 null 与"未发"。
 
 **顺带的护栏红线取舍**:`run_timeout_secs` 同时驱动 runner 内部 `RUN_TIMEOUT` 与 Job `activeDeadlineSeconds`,但两者**不相等**——Job 硬截止 = RUN_TIMEOUT + grace(`max(120, timeout/10)` 秒),因为 activeDeadlineSeconds 从 pod 启动计时(含 clone/setup)且要给 runner 自身优雅超时留窗,否则 k8s 会在 runner 内部超时前 SIGKILL,丢掉 `timeout` 失败分类与 diff.patch/REVIEW.md。`provider_allowlist` 里 raw 仓用显式 `"raw"` 标识;闸点状态码统一:建 service 用 400(可改的输入),已有 service 的 run/retry/review 派发用 403(既有状态上的策略拒绝),webhook 路径可见回帖原因。reconciler 里 project 加载失败**不静默降级**——不启动、下 tick 重试(与调度处一致)。
+
+---
+
+## 补充 —— Feature D LLM 反向代理(落地 D10 / O5 第一半)
+
+### D16 · 真实 API key → 控制面进程内反向代理,key 永不进 pod
+runner 的 `MODEL_BASE_URL` 不再指真实 LLM,改指 orchestrator 进程内的反向代理端点 `/internal/v1/runs/{id}/llm/{rest...}`(复用 `s.runToken` 中间件鉴权——path 的 `{id}` 与 token 绑定);`MODEL_API_KEY` 即 `RUN_TOKEN`。代理在转发时复用 Feature A 的 `modelcfg.Resolver` 缓存解析生效模型配置、注入真实 `Bearer <realkey>`、用 `httputil.ReverseProxy`(`FlushInterval=-1` 逐 chunk flush 透传 SSE)把请求转发给真实 LLM。**真实解密后的 key 只存在于 orchestrator 进程内存 + 加密的 `cluster_model_config` 表**,永不进 pod env——仓里的 prompt 注入无法偷走它。这是 D10 架构意图(O5)的"控制面 LLM 代理"第一半;D10 的"沙箱拿短期 temp token"路线留作后续(见下方 TODO)。
+- **始终走代理,不加 `LLM_PROXY` 开关**:严格更安全、少一个旋钮;e2e rig 也经代理打到 mockllm(多一跳内网,可忽略)。被否:加开关默认 on(多一条静默降级的退化路径,违背 fail-visible 红线)。
+- **`/v1` 归一方案(稳)**:runner 的代理 base **不含 `/v1`**(`${ORCH}/internal/v1/runs/{id}/llm`);entrypoint 统一给 `MODEL_BASE_URL` **末尾补 `/v1`**(已以 `/v1` 结尾则原样)再写进 jcode config——代理与非代理(`START_MOCKLLM` / standalone)路径同一套规则。jcode 按"base 已含 /v1"约定只追加 `/chat/completions`,于是请求落到 `.../llm/v1/chat/completions`;代理从 path 取 rest(=`v1/chat/completions`,含 `/v1`),转发目标 = `stripTrailingV1(真实 model.BaseURL) + "/" + rest`——真实 base 末尾的 `/v1` 被剥、rest 带回 `/v1`,无论 admin 把 base 配成带不带 `/v1` 都不双 `/v1`、都对。`stripTrailingV1` 对不带 `/v1` 的 base 是 no-op,完全透明。该方案由 `TestLLMProxyForwardsBaseWithV1` / `...WithoutV1` 双向钉死。
+- **fail-visible 运行期闸**:`model_not_configured` → 类型化 **503**(不假装成功);resolve err → 502;upstream 不可达 → 502。`createJob` 的 Feature A 闸门保留(排队期间配置被清→MarkFailed),代理是运行期兜底(run 已起跑后配置被清→代理 503→runner 报错退出→收敛 failed)。`ORCH_BASE_URL` 空时**不启动、留队列**(生产由 `config.Load` 强制非空;dev/API-only 防御)。
+- **安全细节**:入站 `Authorization`(RUN_TOKEN)在 `Rewrite` 里**先删后设真实 key**,绝不透传;`http.Transport` 只限 dial/header 超时,**不限响应体超时**(SSE 可流式数分钟);日志只记 method/run/status,**绝不**记 key 或 body。
+- **本期不做(留 TODO,对应 O5 temp-token 路线)**:代理不记用量/审计、不签发独立短期 temp token(`MODEL_API_KEY` 暂复用 RUN_TOKEN)、不做 per-run 速率/配额。后续做 temp-token 化时,把 `jobEnv` 的 `MODEL_API_KEY` 换成代理签发的短期凭据,代理侧凭据表加 TTL + 用量采集即可。
+- **被否(整体)**:继续直接注入真实 key(prompt 注入可偷,违背 O5);sidecar 代理(多一个进程/镜像/故障面,而进程内代理零新增部署成本)。
