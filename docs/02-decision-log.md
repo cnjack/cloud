@@ -132,3 +132,55 @@ runner 的 `MODEL_BASE_URL` 不再指真实 LLM,改指 orchestrator 进程内的
 **(e) PAT 存 env（集群级），不存 DB。** 本期一个集群一个 PAT（对 jtype 实例所有 workspace 有效）进 `orchestrator-secret`（gitignored）；多 link 共享该 PAT（每 link 自己的 workspace/board）。不做 per-link token。
 
 **被否**：jtype webhook（SSRF 挡内网 orchestrator，收不到）；board SSE（需 full-scope token，不接受 mcp PAT）；给 runs 表加 OriginDocID/OriginDocPath 列（claim 已承载，避免无谓改 schema）；失败也移列到 done（藏住失败，反 fail-visible）。
+
+---
+
+## 补充 —— Cloud v2 设计（对标 Claude Code 云端形态，D18–D26）
+
+> 落地顺序、实体模型细节、API 端点草案见 [14-cloud-v2-design.md](14-cloud-v2-design.md)。
+
+### D18 · run 结果语义与时间线渲染
+
+agent run **空 diff 不再等同失败**：runner 退出码 0 但改动为空时，上报 `run.result{outcome:"no_changes"}` 事件，runs 表新落 **result** 列，console 时间线显示"无代码变更"徽标而非报错——agent 以文本回答收尾（对话/分析类任务）本就是合法产出。真失败（agent 异常退出、超时、clone 失败）语义不变；review run 仍强制要求产出 REVIEW.md，不受此放宽。同期 console 时间线做两处渲染修正：连续的 `agent.text` chunk 合并为一个流式消息块（不再一行一气泡），`agent.tool_call`/`agent.tool_result` 按 `call_id` 配对做富渲染。
+- **被否**：维持"空 diff = agent_error"——与云端对话形态冲突，用户发一句 "hi" 就会看见一条失败 run。
+
+### D19 · Integration（git 集成）
+
+Integration 是 **project 级实体**，owner 可增删。凭据是 **org 级服务凭据**（Gitea org PAT / GitLab group token，GitHub 先用 PAT），凭据结构带 `type` 字段为将来 `github_app` 留抽象位，加密存储、不可回读。git 操作一律以 **机器人身份** 执行（PR 正文标注真实触发者，保留可追溯性）。service 创建时绑定一个 integration，该 service 的所有 run 都走这份凭据；存量 service 保持"触发者个人 OAuth"路径兼容，不强制迁移。集群级 `GITEA_TOKEN` env 迁移为一条显式 integration 后废弃。member 可基于 project 已有的 integration 直接添加 repo 建 service——建 service 的权限从 owner-only 放开到 member。
+- **已知升级面**：member 可以借 bot 凭据触达自己在 git 主机本无权限的 repo。当前公司内网信任环境下接受；多租户化时用 per-integration 开关收紧（呼应 D20 的治理闸口方向）。
+- **被否**：共享个人 OAuth token（离职即断、审计混乱）；cluster 目录 + 授权模式（不如 owner 自治贴近实际使用动线）。
+
+### D20 · 治理闸门上收 cluster（部分回退 D15）
+
+D15 定的 project 级 `provider_allowlist` 废弃——owner 自设的约束管不住 owner 自己，形同虚设。改为 **cluster 级 git host 白名单**：cluster-admin 配置允许的 host 列表，integration 创建时校验，空列表 = 不限制。
+- **被否**：继续用 project 级 `provider_allowlist`（D15）兜底——owner 既是设约束的人也是被约束的人，闸门不成立。
+
+### D21 · 模型目录 + project 授权 + 简单选择器
+
+`cluster_model_config` 单行表演进为 **多行模型目录**（cluster-admin 管理增删改）；新增 **model↔project 授权表**，被授权的 project 只读可用、不可改、不可见 key。模型选择不做"任务类型 × 模型"矩阵，就是一个 select：service 可设默认模型，composer 派 run 时可从授权列表里临时切换。迁移：存量单行配置 → 目录第一条 + 默认对所有 project 授权。D16 的反向代理架构不变（真 key 永不进 pod），仅 `modelcfg.Resolver` 改为按 **run 所属 project** 解析生效配置。
+- **被否**：按任务类型分别配置模型的矩阵式选择器（当前用量撑不起这份复杂度，simple select 够用）。
+
+### D22 · 多轮 session（Job 保活路线，实现 D05 本意，推翻 runner README 的 multi-turn non-goal）
+
+状态机加一个非终态 `awaiting_input`。`POST /api/v1/runs/{id}/messages`（member+ 权限）投递后续消息；runner 侧 `acpdrive` 用 `RUN_TOKEN` 长轮询 `GET /internal/v1/runs/{id}/next-prompt`，拿到新消息就在**同一个 ACP session** 上反复 `session/prompt`，不重开 session。每轮结束照常算 diff/推 bundle（复用既有 update-push 逻辑持续更新同一 PR 分支）；空 diff 的轮次即"纯对话轮"（D18 语义天然覆盖）。新增 project 护栏 `max_live_sessions`（计 `running`+`awaiting_input` 状态的 run 数）与 idle 超时。permission 面：只有 session 模式下把 ACP `RequestPermission` 转发成一个 run 事件，由 console 交互式审批（超时默认拒绝）；单轮 headless（webhook/kanban/schedule 触发）维持现状 `full_access`，不改。
+- **被否**：`runner/README.md` 既定的"multi-turn / resumable sessions 不做"non-goal——本决策显式推翻它，是 D05"长活 worker 连跑多轮 turn"本意时隔多轮后的落地。
+
+### D23 · 休眠/恢复三层 + 转录归属（解决 D12 张力）
+
+三层：①**保活**——pod 常驻等 follow-up（D22 的 `awaiting_input`）；②**idle 回收**——超时杀 pod、留 PVC，session 转录**不再擦除**（改掉 entrypoint 现行为），恢复时走 ACP `session/load`（jcode 已支持）重建；③**长期归档**——长时间不用则把 PVC tar 打包送对象存储（S3/MinIO）、删 PVC，恢复时还原展开。转录本身持续同步进控制面 store（D13 的 append-only log），**authoritative 副本在控制面**，PVC/对象存储只是工作副本与冷备——这维持而非推翻 D12"PVC 是运行期工作副本、不是权威副本"的原则。对象存储是一等公民依赖：未配置时归档功能整体禁用并明确提示（D14 fail-visible），不静默跳过。
+- **被否**：idle 回收时继续擦除转录（逼所有恢复退化成重新 clone，浪费 D22 刚建好的 session 保活能力）。
+
+### D24 · 触发器扩展
+
+新增 `schedules` 表（service 级 cron 表达式 + prompt 模板）+ 一个 poller tick（仿 D17 kanban poller 的轮询/幂等哲学）。新增 **project 级 scoped API key**（可撤销、hash 存储，权限限定在本 project 内派 run），替代目前 `CONSOLE_TOKEN` 被外部脚本借用、权限过粗的用法。补齐 GitHub/GitLab 的 webhook 接收端，对齐现有 Gitea 实现（§8 的验签/映射/去重模式平移）。
+- **被否**：继续用集群级 `CONSOLE_TOKEN` 顶 project 级自动化凭证（一旦泄漏波及整个集群，且不可单独撤销）。
+
+### D25 · jtype link 下放 project 级
+
+kanban link 的管理权从 cluster-admin 下放到 **project owner**；jtype 凭据从集群单一 env 改为 **per-link 加密存储**，集群级 `JTYPE_TOKEN` env 保留作兼容回退（未配置 per-link 凭据时使用）。
+- **被否**：继续 cluster-admin 独占 kanban link 管理权（每加一个看板集成都要走 admin，拖慢 project 自助节奏，与 D19 integration 下放 owner 的方向不一致）。
+
+### D26 · 聊天 UI 统一路线（分期）
+
+终局：jcode web/desktop（Vue3 + Tauri）把渲染迁到 React，与 console 共用一个聊天渲染包。当前阶段**不动 jcode**；workaround 是把 console 的时间线渲染收敛进一个自包含模块 `console/src/runview/`（禁止反向依赖页面代码），作为将来抽成独立 npm 包的清晰边界。D18 的时间线渲染修正（text chunk 合并、tool call/result 配对）就落在这个新模块里。
+- **被否**：现在就把 jcode 桌面端迁到 React（工作量大、优先级排不到当前迭代，先用模块化边界卡住技术债，终局路线留档不留代办）。
