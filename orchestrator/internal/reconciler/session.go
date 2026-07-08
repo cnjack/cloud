@@ -2,9 +2,11 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"os"
 	"time"
 
+	"github.com/cnjack/jcloud/internal/credentials"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/provider"
 )
@@ -66,6 +68,9 @@ func sessionPushEligible(svc domain.Service) bool {
 // later turns. On success it advances pushed_rev to the revision it just pushed
 // (idempotency), so a run only re-pushes when a newer bundle (bundle_rev) lands.
 func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *domain.Service) {
+	if r.integrationCredentialParked(run.ID) {
+		return // parked (P1): credential problem already surfaced once
+	}
 	rev := run.BundleRev // capture: a newer bundle after this leaves pushed_rev behind → re-push next tick
 	owner, repo, ok := provider.SplitRepo(svc.RepoOwnerName)
 	if !ok {
@@ -73,8 +78,12 @@ func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *d
 		return
 	}
 	branch := run.GitBranch
-	tok, err := r.creds.Resolve(ctx, svc.Provider, run.TriggeredByUserID)
+	tok, err := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
 	if err != nil {
+		if errors.Is(err, credentials.ErrIntegrationCredential) {
+			r.noteIntegrationCredentialFailure(ctx, run.ID, "session push", err)
+			return
+		}
 		r.log.Warn("reconcile session push: no credential; leaving for retry", "run", run.ID, "provider", svc.Provider, "err", err)
 		return
 	}
@@ -127,7 +136,7 @@ func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *d
 			sha = pushed
 			pr, err = prov.CreateDraftPR(ctx, provider.CreateDraftPRInput{
 				Owner: owner, Repo: repo, Head: branch, Base: svc.DefaultBranch,
-				Title: prTitle(run.Prompt), Body: prBody(run),
+				Title: prTitle(run.Prompt), Body: prBody(run, r.prTriggerAttribution(ctx, run, svc)),
 			})
 			if err != nil {
 				if found, ferr := prov.FindOpenPRByHead(ctx, owner, repo, branch); ferr == nil && found != nil {

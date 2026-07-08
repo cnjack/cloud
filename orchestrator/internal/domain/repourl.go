@@ -100,6 +100,44 @@ func ServiceCloneURL(svc Service, giteaURL string) string {
 	return base + "/" + strings.Trim(svc.RepoOwnerName, "/") + ".git"
 }
 
+// NormalizeGitHost reduces a host expression to a canonical, lowercased
+// "hostname[:port]" for allowlist comparison (D20). It accepts either a full URL
+// (http://gitea.jcloud.svc.cluster.local:3000/x) or a bare host[:port][/path]
+// (github.com), strips scheme and path, and — SSRF review C1② — KEEPS an
+// explicit port: "gitea.svc:3000" and "gitea.svc:9999" are DIFFERENT services
+// and must not compare equal under the allowlist. Scheme-DEFAULT ports are
+// folded away (http://h:80 → h, https://h:443 → h) so the common no-port
+// spellings still match. An ALLOWED_GIT_HOSTS entry must therefore be written
+// exactly as the integration host normalizes (include the port when the host
+// uses a non-default one). Returns "" for empty/garbage input.
+func NormalizeGitHost(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil || u.Hostname() == "" {
+			return ""
+		}
+		host, port := u.Hostname(), u.Port()
+		if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
+			port = "" // scheme-default port → canonical bare host
+		}
+		if port != "" {
+			return host + ":" + port
+		}
+		return host
+	}
+	raw = strings.TrimPrefix(raw, "//")
+	if i := strings.IndexByte(raw, '/'); i >= 0 {
+		raw = raw[:i]
+	}
+	// host[:port] form: an explicit port is KEPT (port-sensitive comparison;
+	// IPv6 literals are not a concern for git hosts here).
+	return raw
+}
+
 // ProviderBaseURL returns the base URL for a provider's repos. For gitea it is
 // the configured deployment URL (giteaURL); github/gitlab use their public
 // hosts. Returns "" when the provider is unknown or gitea has no configured URL.

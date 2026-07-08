@@ -21,6 +21,8 @@ import type {
   CreateServiceInput,
   FailureReason,
   CreateModelInput,
+  CreateIntegrationInput,
+  Integration,
   KanbanLink,
   Me,
   Member,
@@ -39,6 +41,7 @@ import type {
   RunStatus,
   Service,
   SystemInfo,
+  UpdateIntegrationInput,
   UpdateModelInput,
   UpdateProjectInput,
   UpdateServiceInput,
@@ -46,17 +49,6 @@ import type {
 } from './types';
 import { providerForRepoUrl } from '../lib/repo';
 import { isReservedEnvKey, isValidEnvKey } from '../lib/env';
-import { ALLOWLIST_PROVIDERS } from '../lib/providers';
-
-/**
- * providerAllowed mirrors the orchestrator guardrail: an empty/absent allowlist
- * imposes no restriction; a raw repo (no provider) is addressed by "raw".
- */
-function providerAllowed(allowlist: string[] | undefined, provider?: string): boolean {
-  if (!allowlist || allowlist.length === 0) return true;
-  const p = (provider ?? '').trim() || 'raw';
-  return allowlist.some((a) => a.trim().toLowerCase() === p);
-}
 
 let idCounter = 1;
 function genId(prefix: string): string {
@@ -169,6 +161,8 @@ export function createMockClient(): ApiClient {
   const members = new Map<string, Member[]>();
   // Feature E: kanban links (board→service bindings), keyed by link id.
   const kanbanLinks = new Map<string, KanbanLink>();
+  // D19 / F5: project integrations, keyed by project id.
+  const integrations = new Map<string, Integration[]>();
 
   // D21: the model catalog (keyed by model id) + project grants (model id -> set
   // of project ids). Demo seeds ONE model, granted to every seeded project, so
@@ -722,17 +716,13 @@ export function createMockClient(): ApiClient {
         next.run_timeout_secs = n != null && n > 0 ? n : undefined;
       }
       if ('provider_allowlist' in input) {
-        const list = (input.provider_allowlist ?? [])
-          .map((p) => p.trim().toLowerCase())
-          .filter(Boolean);
-        for (const p of list) {
-          if (!(ALLOWLIST_PROVIDERS as readonly string[]).includes(p)) {
-            throw badRequest(
-              `provider_allowlist entry '${p}' is not a known provider (gitea, github, gitlab, raw)`,
-            );
-          }
-        }
-        next.provider_allowlist = list.length ? [...new Set(list)] : undefined;
+        // Deprecated (D20 / F5): git-host policy is a cluster allowlist +
+        // integrations now; a PATCH carrying it is a typed 400 deprecated_key.
+        throw new ApiError(
+          400,
+          'provider_allowlist is deprecated: git-host policy is now a cluster-level allowlist enforced when creating a project integration',
+          { error: { code: 'deprecated_key', message: 'provider_allowlist is deprecated' } },
+        );
       }
       if ('injected_env' in input) {
         const env = input.injected_env ?? {};
@@ -1104,6 +1094,7 @@ export function createMockClient(): ApiClient {
         provider: {
           gitea_enabled: giteaEnabled,
           gitea_url: 'http://gitea.jcloud.svc.cluster.local:3000',
+          allowed_git_hosts: ['gitea.jcloud.svc.cluster.local', 'github.com'],
         },
         runner: { image: 'ghcr.io/jcloud/runner:demo' },
         namespace: 'jcloud',
@@ -1286,6 +1277,81 @@ export function createMockClient(): ApiClient {
       return delay(undefined);
     },
 
+    /* ---- integrations (D19 / F5) ------------------------------------------ */
+    async listIntegrations(projectId: string): Promise<Integration[]> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      return delay([...(integrations.get(projectId) ?? [])]);
+    },
+    async createIntegration(projectId: string, input: CreateIntegrationInput): Promise<Integration> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      const name = input.name?.trim() || 'default';
+      const list = integrations.get(projectId) ?? [];
+      if (list.some((i) => i.name === name)) {
+        throw new ApiError(409, `an integration named '${name}' already exists`, {
+          error: { code: 'conflict', message: 'integration name exists' },
+        });
+      }
+      if (!input.host?.trim()) throw badRequest('host is required');
+      if (!input.token?.trim()) throw badRequest('token is required');
+      const integ: Integration = {
+        id: genId('integ'),
+        project_id: projectId,
+        name,
+        provider: input.provider,
+        host: input.host.trim(),
+        cred_type: input.cred_type?.trim() || 'pat',
+        // Demo: derive a plausible bot username from the host + provider.
+        bot_username: `${input.provider}-bot`,
+        token_set: true,
+        created_at: nowISO(),
+        updated_at: nowISO(),
+      };
+      list.push(integ);
+      integrations.set(projectId, list);
+      return delay(integ);
+    },
+    async updateIntegration(integrationId: string, input: UpdateIntegrationInput): Promise<Integration> {
+      for (const [, list] of integrations) {
+        const integ = list.find((i) => i.id === integrationId);
+        if (!integ) continue;
+        if (input.name?.trim()) integ.name = input.name.trim();
+        if (input.token !== undefined) {
+          if (!input.token.trim()) throw badRequest('token cannot be empty');
+          integ.token_set = true;
+          integ.bot_username = `${integ.provider}-bot`; // refreshed on rotation
+        }
+        integ.updated_at = nowISO();
+        return delay({ ...integ });
+      }
+      throw new ApiError(404, 'integration not found');
+    },
+    async deleteIntegration(integrationId: string): Promise<void> {
+      for (const [pid, list] of integrations) {
+        const idx = list.findIndex((i) => i.id === integrationId);
+        if (idx >= 0) {
+          list.splice(idx, 1);
+          integrations.set(pid, list);
+          // Unbind any service that referenced it.
+          for (const svc of services.get(pid) ?? []) {
+            if (svc.integration_id === integrationId) svc.integration_id = null;
+          }
+          return delay(undefined);
+        }
+      }
+      throw new ApiError(404, 'integration not found');
+    },
+    async listIntegrationRepos(projectId: string, integrationId: string, q?: string) {
+      const integ = (integrations.get(projectId) ?? []).find((i) => i.id === integrationId);
+      if (!integ) throw new ApiError(404, 'integration not found');
+      const all = [
+        { id: 201, full_name: 'acme/demo', description: 'Demo web app', default_branch: 'main', private: false },
+        { id: 202, full_name: 'acme/api', description: 'Backend API', default_branch: 'main', private: true },
+        { id: 203, full_name: 'acme/infra', description: 'Infra as code', default_branch: 'main', private: true },
+      ];
+      const needle = (q ?? '').trim().toLowerCase();
+      return delay(needle ? all.filter((r) => r.full_name.toLowerCase().includes(needle)) : all);
+    },
+
     /* ---- services (blueprint §4) ------------------------------------------ */
     async listServices(projectId: string) {
       if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
@@ -1315,28 +1381,27 @@ export function createMockClient(): ApiClient {
           "git_mode 'draft_pr' requires a provider repository (owner/name); raw repos are read-only",
         );
       }
-      // Guardrail: the project's provider_allowlist restricts which git hosts a
-      // service may target (400 provider_not_allowed; raw => the "raw" sentinel).
-      if (!providerAllowed(p.provider_allowlist, prov ?? undefined)) {
-        const label = prov ?? 'raw';
-        throw new ApiError(
-          400,
-          `this project's guardrails do not allow ${label} repositories`,
-          { error: { code: 'provider_not_allowed', message: `provider ${label} not allowed` } },
-        );
+      // Integration binding (D19 / F5): the provider comes from the integration.
+      const integrationId = input.integration_id?.trim() || undefined;
+      let boundProvider = prov;
+      if (integrationId) {
+        const integ = (integrations.get(projectId) ?? []).find((i) => i.id === integrationId);
+        if (!integ) throw badRequest('integration not found in this project');
+        boundProvider = integ.provider;
       }
       const svc: Service = {
         id: genId('svc'),
         project_id: projectId,
         name,
-        repo_kind: prov ? 'provider' : 'raw',
-        provider: prov ?? undefined,
-        repo_owner_name: prov
+        repo_kind: boundProvider ? 'provider' : 'raw',
+        provider: boundProvider ?? undefined,
+        repo_owner_name: boundProvider
           ? input.owner_name?.trim() || ownerName(repoUrl)
           : undefined,
-        raw_repo_url: prov ? undefined : repoUrl,
+        raw_repo_url: boundProvider ? undefined : repoUrl,
         default_branch: input.default_branch?.trim() || 'main',
         git_mode: gitMode,
+        integration_id: integrationId ?? null,
         created_at: nowISO(),
       };
       list.push(svc);
@@ -1393,17 +1458,6 @@ export function createMockClient(): ApiClient {
         }
       }
       if (!projectId || !svc) throw new ApiError(404, 'service not found');
-      // Guardrail: honour the project's provider_allowlist at dispatch (it may have
-      // tightened since the service was created) — 403 provider_not_allowed.
-      const proj = projects.get(projectId);
-      if (!providerAllowed(proj?.provider_allowlist, svc.provider)) {
-        const label = svc.provider ?? 'raw';
-        throw new ApiError(
-          403,
-          `this project's guardrails do not allow running on ${label} repositories`,
-          { error: { code: 'provider_not_allowed', message: `provider ${label} not allowed` } },
-        );
-      }
       // D21 resolution chain (mirrors orchestrator selectModel): composer pick →
       // service default → the project's sole granted model → typed errors.
       const modelId = resolveModelForRun(projectId, svc, input.model_id);

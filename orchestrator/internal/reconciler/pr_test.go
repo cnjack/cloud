@@ -2,17 +2,30 @@ package reconciler
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/credentials"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/store"
 )
+
+// prTestCipher builds a cipher over an all-zero 32-byte key (test-only) so a test
+// can seal an integration token the resolver will open.
+func prTestCipher(t *testing.T) *auth.Cipher {
+	t.Helper()
+	c, err := auth.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
 
 // --- test doubles for the M3 push stack -------------------------------------
 
@@ -159,6 +172,77 @@ func TestReconcilePRCreation(t *testing.T) {
 	}
 	if !sawPRStatus {
 		t.Error("expected a run.status event carrying pr_url")
+	}
+}
+
+// TestPRTriggerAttribution unit-tests the "Triggered by …" line (D19 / F5): an
+// integration-bound service names the real trigger (the PR is opened as the bot,
+// not the human); an unbound legacy service adds nothing (the PR is already the
+// user's).
+func TestPRTriggerAttribution(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	uid := domain.NewID()
+	_, _ = st.CreateUserWithIdentity(ctx,
+		&domain.User{ID: uid, DisplayName: "Alice Dev", CreatedAt: time.Now()},
+		&domain.UserIdentity{ID: domain.NewID(), Provider: domain.ProviderGitea, ProviderUID: "1",
+			Username: "alice", AccessTokenEnc: []byte("x"), CreatedAt: time.Now()})
+
+	iid := "integ-1"
+	bound := &domain.Service{IntegrationID: &iid, Provider: domain.ProviderGitea}
+	unbound := &domain.Service{Provider: domain.ProviderGitea}
+
+	if got := rec.prTriggerAttribution(ctx, &domain.Run{TriggeredByUserID: &uid}, unbound); got != "" {
+		t.Fatalf("unbound attribution=%q want empty (PR is already the user's)", got)
+	}
+	if got := rec.prTriggerAttribution(ctx, &domain.Run{Origin: domain.RunOriginAPI, TriggeredByUserID: &uid}, bound); !strings.Contains(got, "Alice Dev") {
+		t.Fatalf("api attribution=%q want to name Alice Dev", got)
+	}
+	if got := rec.prTriggerAttribution(ctx, &domain.Run{Origin: domain.RunOriginWebhook}, bound); !strings.Contains(got, "@mention") {
+		t.Fatalf("webhook attribution=%q want the @mention source", got)
+	}
+	if got := rec.prTriggerAttribution(ctx, &domain.Run{Origin: domain.RunOriginKanban}, bound); !strings.Contains(strings.ToLower(got), "kanban") {
+		t.Fatalf("kanban attribution=%q want the kanban source", got)
+	}
+}
+
+// TestReconcilePRBodyCarriesAttribution drives the full PR pass for an
+// integration-bound run and asserts the created PR body carries the trigger line.
+func TestReconcilePRBodyCarriesAttribution(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+
+	cipher := prTestCipher(t)
+	sealed, _ := cipher.EncryptString("bot-pat")
+	rec.cfg.GiteaURL = "http://gitea.test"
+	creds := credentials.NewResolver(st, cipher, nil, "gitea-pat", nil)
+	rec.WithPRStack(&fakeFactory{p: fake}, &fakePusher{}, creds)
+
+	uid := domain.NewID()
+	_, _ = st.CreateUserWithIdentity(ctx,
+		&domain.User{ID: uid, DisplayName: "Alice Dev", CreatedAt: time.Now()},
+		&domain.UserIdentity{ID: domain.NewID(), Provider: domain.ProviderGitea, ProviderUID: "1",
+			Username: "alice", AccessTokenEnc: []byte("x"), CreatedAt: time.Now()})
+
+	svc, run := seedDraftPRRun(t, st, "jcode/run-attr")
+	in := &domain.Integration{
+		ID: domain.NewID(), ProjectID: svc.ProjectID, Name: "default",
+		Provider: domain.ProviderGitea, Host: "gitea.test", CredType: domain.CredTypePAT,
+		TokenEnc: sealed, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := st.CreateIntegration(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	svc.IntegrationID = &in.ID
+	run.TriggeredByUserID = &uid
+
+	rec.openDraftPR(ctx, &run, &svc)
+	if fake.CreatedCount() != 1 {
+		t.Fatalf("created %d PRs, want 1", fake.CreatedCount())
+	}
+	if body := fake.Created[0].Body; !strings.Contains(body, "Triggered by @Alice Dev") {
+		t.Fatalf("PR body missing trigger attribution; got %q", body)
 	}
 }
 
@@ -648,5 +732,130 @@ func TestReadonlyProjectStaysDiffOnly(t *testing.T) {
 	rec.Tick(ctx)
 	if prov.CreatedCount() != 0 || len(pusher.pushed) != 0 {
 		t.Fatalf("readonly service got a PR/push: created=%d pushed=%d", prov.CreatedCount(), len(pusher.pushed))
+	}
+}
+
+// TestReconcilePRParksOnIntegrationCredential (F5 review P1): a run whose
+// service is integration-bound but whose bot credential cannot be resolved is a
+// PERSISTENT config error — the PR pass must emit exactly ONE visible
+// run.failure event explaining it, then PARK the run (skip on later ticks)
+// instead of re-resolving + warning forever. No push, no PR.
+func TestReconcilePRParksOnIntegrationCredential(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+
+	// Resolver WITHOUT a cipher: the sealed integration token cannot be opened →
+	// ErrIntegrationCredential for the bound service.
+	rec.cfg.GiteaURL = "http://gitea.test"
+	creds := credentials.NewResolver(st, nil, nil, "", nil)
+	pusher := &fakePusher{}
+	rec.WithPRStack(&fakeFactory{p: fake}, pusher, creds)
+
+	svc, run := seedDraftPRRun(t, st, "jcode/run-park")
+	in := &domain.Integration{
+		ID: domain.NewID(), ProjectID: svc.ProjectID, Name: "default",
+		Provider: domain.ProviderGitea, Host: "gitea.test", CredType: domain.CredTypePAT,
+		TokenEnc: []byte("sealed"), CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := st.CreateIntegration(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	svc.IntegrationID = &in.ID
+	if err := st.UpdateService(ctx, &svc); err != nil {
+		t.Fatal(err)
+	}
+
+	countCredEvents := func() int {
+		events, _ := st.ListEvents(ctx, run.ID, 0, 100)
+		n := 0
+		for _, e := range events {
+			if e.Type == domain.EventRunFailure {
+				if msg, _ := e.Payload["message"].(string); strings.Contains(msg, "integration") {
+					n++
+				}
+			}
+		}
+		return n
+	}
+
+	// Three ticks: exactly ONE visible event, zero pushes, zero PRs.
+	rec.reconcilePRs(ctx)
+	rec.reconcilePRs(ctx)
+	rec.reconcilePRs(ctx)
+	if got := countCredEvents(); got != 1 {
+		t.Fatalf("credential events=%d want exactly 1 (once per process)", got)
+	}
+	if fake.CreatedCount() != 0 || len(pusher.pushed) != 0 {
+		t.Fatalf("created=%d pushed=%v want none (credential unavailable)", fake.CreatedCount(), pusher.pushed)
+	}
+	if !rec.integrationCredentialParked(run.ID) {
+		t.Fatal("run not parked after credential failure")
+	}
+	// The event carries an actionable, fail-visible message.
+	events, _ := st.ListEvents(ctx, run.ID, 0, 100)
+	var msg string
+	for _, e := range events {
+		if e.Type == domain.EventRunFailure {
+			msg, _ = e.Payload["message"].(string)
+		}
+	}
+	if !strings.Contains(msg, "Project Settings") {
+		t.Fatalf("event message=%q want a pointer to the fix", msg)
+	}
+}
+
+// TestReconcileReviewParksOnIntegrationCredential: the review-post pass parks the
+// same way (P1) — one event, no provider call, skipped on later ticks.
+func TestReconcileReviewParksOnIntegrationCredential(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	rec.cfg.GiteaURL = "http://gitea.test"
+	creds := credentials.NewResolver(st, nil, nil, "", nil)
+	rec.WithPRStack(&fakeFactory{p: fake}, &fakePusher{}, creds)
+
+	svc, _ := seedDraftPRRun(t, st, "jcode/run-rvpark")
+	in := &domain.Integration{
+		ID: domain.NewID(), ProjectID: svc.ProjectID, Name: "default",
+		Provider: domain.ProviderGitea, Host: "gitea.test", CredType: domain.CredTypePAT,
+		TokenEnc: []byte("sealed"), CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := st.CreateIntegration(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	svc.IntegrationID = &in.ID
+	if err := st.UpdateService(ctx, &svc); err != nil {
+		t.Fatal(err)
+	}
+
+	// A succeeded review run with output awaiting post.
+	review := &domain.Run{
+		ID: domain.NewID(), ProjectID: svc.ProjectID, ServiceID: svc.ID,
+		Prompt: "review", Status: domain.StatusSucceeded, Kind: domain.RunKindReview,
+		PRHeadBranch: "jcode/run-rvpark", PRBaseBranch: "main", Attempt: 1, CreatedAt: time.Now(),
+	}
+	if err := st.CreateRun(ctx, review); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetReviewOutput(ctx, review.ID, "## looks good"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec.reconcileReviews(ctx)
+	rec.reconcileReviews(ctx)
+
+	events, _ := st.ListEvents(ctx, review.ID, 0, 100)
+	n := 0
+	for _, e := range events {
+		if e.Type == domain.EventRunFailure {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("credential events=%d want exactly 1", n)
+	}
+	if fake.ReviewCount() != 0 {
+		t.Fatalf("reviews posted=%d want 0", fake.ReviewCount())
 	}
 }

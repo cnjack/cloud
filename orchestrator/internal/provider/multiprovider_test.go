@@ -176,3 +176,56 @@ func TestFactoryBuildsClients(t *testing.T) {
 		t.Error("unknown provider should error")
 	}
 }
+
+// TestIntegrationClientRefusesRedirects is the SSRF-hardening regression (F5
+// review C1①): a user-supplied integration host answering with a 30x must NOT
+// have the orchestrator's authenticated request bounced to the redirect target
+// (e.g. an internal address). The client built by IntegrationClient refuses to
+// follow, the probe fails visibly, and the target is never hit.
+func TestIntegrationClientRefusesRedirects(t *testing.T) {
+	// The would-be internal target: any hit means the redirect was followed.
+	targetHits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits++
+		_, _ = w.Write([]byte(`{"login":"evil"}`))
+	}))
+	defer target.Close()
+
+	// The malicious integration host: 302 every request at the target.
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusFound)
+	}))
+	defer evil.Close()
+
+	// gitea
+	c, err := IntegrationClient("gitea", evil.URL, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.(CurrentUser).CurrentUser(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("gitea CurrentUser err=%v want redirect refusal", err)
+	}
+	// github (enterprise-shaped base so the API path stays on the evil host)
+	gh, err := IntegrationClient("github", evil.URL, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gh.(CurrentUser).CurrentUser(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("github CurrentUser err=%v want redirect refusal", err)
+	}
+	// gitlab
+	gl, err := IntegrationClient("gitlab", evil.URL, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gl.(CurrentUser).CurrentUser(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("gitlab CurrentUser err=%v want redirect refusal", err)
+	}
+
+	if targetHits != 0 {
+		t.Fatalf("redirect TARGET was hit %d times — SSRF bounce not blocked", targetHits)
+	}
+}

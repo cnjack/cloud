@@ -242,12 +242,14 @@ func applyProjectPatch(r *http.Request, p *domain.Project) (string, string) {
 		}
 	}
 
-	if v, ok := raw["provider_allowlist"]; ok {
-		list, code, msg := parseProviderAllowlist(v)
-		if code != "" {
-			return code, msg
-		}
-		p.ProviderAllowlist = list // nil (empty) => no restriction
+	if _, ok := raw["provider_allowlist"]; ok {
+		// Deprecated (D20 / F5, partial reversal of D15): an owner-set provider
+		// allowlist could not constrain the owner themselves, so git-host policy moved
+		// to a CLUSTER-level allowlist (ALLOWED_GIT_HOSTS) checked at integration
+		// create, plus per-project integrations. The column is retained for historical
+		// data but is no longer editable — fail-visible rather than silently ignore it.
+		return "deprecated_key",
+			"provider_allowlist is deprecated: git-host policy is now a cluster-level allowlist (ask a cluster admin) enforced when creating a project integration; set up an integration under Project Settings instead"
 	}
 
 	if v, ok := raw["injected_env"]; ok {
@@ -324,47 +326,6 @@ func isJSONNull(v json.RawMessage) bool {
 	return strings.TrimSpace(string(v)) == "null"
 }
 
-// allowlistProviders is the set a provider_allowlist entry may name. Raw repos
-// carry no provider, so they are addressed by the explicit sentinel "raw".
-var allowlistProviders = map[string]bool{
-	string(domain.ProviderGitea):  true,
-	string(domain.ProviderGitHub): true,
-	string(domain.ProviderGitLab): true,
-	"raw":                         true, // opaque/raw clone URLs (no provider)
-}
-
-// parseProviderAllowlist validates + normalizes the allowlist: trims/lowercases
-// each entry, rejects unknown providers, and de-dups. An empty or null list
-// returns nil (no restriction).
-func parseProviderAllowlist(v json.RawMessage) ([]string, string, string) {
-	if isJSONNull(v) {
-		return nil, "", ""
-	}
-	var in []string
-	if err := json.Unmarshal(v, &in); err != nil {
-		return nil, "bad_request", "provider_allowlist must be an array of provider names"
-	}
-	seen := map[string]bool{}
-	out := make([]string, 0, len(in))
-	for _, raw := range in {
-		p := strings.ToLower(strings.TrimSpace(raw))
-		if p == "" {
-			continue
-		}
-		if !allowlistProviders[p] {
-			return nil, "bad_request", "provider_allowlist entry '" + raw + "' is not a known provider (gitea, github, gitlab, raw)"
-		}
-		if !seen[p] {
-			seen[p] = true
-			out = append(out, p)
-		}
-	}
-	if len(out) == 0 {
-		return nil, "", ""
-	}
-	return out, "", ""
-}
-
 // parseInjectedEnv validates the injected_env map: every key must be a valid env
 // name AND must NOT be a reserved orchestrator↔runner variable (a first-class
 // typed 400 naming the key, so the fix is obvious — CLAUDE.md fail-visible). null
@@ -389,43 +350,6 @@ func parseInjectedEnv(v json.RawMessage) (map[string]string, string, string) {
 		in = map[string]string{}
 	}
 	return in, "", ""
-}
-
-// providerAllowed reports whether a service whose provider is `prov` (raw repos,
-// which carry no provider, are addressed by the sentinel "raw") is permitted by a
-// project's provider_allowlist. An empty/nil allowlist imposes NO restriction.
-func providerAllowed(allowlist []string, prov domain.GitProvider) bool {
-	if len(allowlist) == 0 {
-		return true
-	}
-	p := providerLabel(prov)
-	for _, a := range allowlist {
-		if strings.EqualFold(strings.TrimSpace(a), p) {
-			return true
-		}
-	}
-	return false
-}
-
-// projectAllowsProvider loads the project and reports whether its guardrail
-// allowlist permits prov. A load error is surfaced so the caller can fail loudly
-// — an allowlist is a hard gate, so a lookup failure must NEVER be silently
-// treated as "allowed" (CLAUDE.md red line #1).
-func (s *Server) projectAllowsProvider(ctx context.Context, projectID string, prov domain.GitProvider) (bool, error) {
-	p, err := s.st.GetProject(ctx, projectID)
-	if err != nil {
-		return false, err
-	}
-	return providerAllowed(p.ProviderAllowlist, prov), nil
-}
-
-// providerLabel is the human/policy name for a service's provider (raw repos,
-// which have no provider, read as "raw").
-func providerLabel(prov domain.GitProvider) string {
-	if p := strings.TrimSpace(string(prov)); p != "" {
-		return p
-	}
-	return "raw"
 }
 
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {

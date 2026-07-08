@@ -290,6 +290,14 @@ type Service struct {
 	// identity of the repo on the provider; nil for hand-entered/legacy services.
 	ProviderRepoID *int64 `json:"provider_repo_id,omitempty"`
 
+	// IntegrationID binds the service to a project-level git Integration (D19 / F5).
+	// Non-nil => ALL git operations (clone/push/PR/review) for this service's runs
+	// act with the integration's BOT credential, regardless of who triggers them (the
+	// PR body annotates the real trigger). Nil => the legacy path: the triggering
+	// user's personal OAuth, falling back to the cluster GITEA_TOKEN. The referenced
+	// integration always belongs to this service's project (validated on write).
+	IntegrationID *string `json:"integration_id,omitempty"`
+
 	DefaultBranch string  `json:"default_branch"`
 	GitMode       GitMode `json:"git_mode"`
 	// DefaultModelID is the catalog model (D21) runs against this service use when
@@ -750,6 +758,67 @@ type Model struct {
 // APIKeySet reports whether the model carries an (encrypted) API key. Used to
 // echo api_key_set to admins without ever exposing the plaintext.
 func (m *Model) APIKeySet() bool { return len(m.APIKeyEnc) > 0 }
+
+// CredType classifies an Integration's credential shape (D19). Only PAT is
+// implemented this cycle; GithubApp is an accepted-but-inert expansion slot.
+type CredType string
+
+const (
+	// CredTypePAT is a personal/organization access token (the only kind wired
+	// today). Gitea org PAT / GitLab group token / GitHub PAT.
+	CredTypePAT CredType = "pat"
+	// CredTypeGithubApp is the future GitHub App installation credential. Accepted
+	// by the schema CHECK so the column can hold it later, but NOT implemented now.
+	CredTypeGithubApp CredType = "github_app"
+)
+
+// ValidCredType reports whether c is a recognised credential type.
+func ValidCredType(c CredType) bool {
+	switch c {
+	case CredTypePAT, CredTypeGithubApp:
+		return true
+	}
+	return false
+}
+
+// Integration is a project-level git host binding with a BOT service credential
+// (D19 / F5). A service bound to it (Service.IntegrationID) performs every git
+// operation as this bot identity — never the triggering user's personal OAuth —
+// so the credential survives an individual leaving and keeps a single audit
+// subject. The PR body annotates the real trigger for traceability (see the
+// reconciler). TokenEnc is the AES-256-GCM ciphertext of the service token
+// (nonce||ciphertext, AUTH_TOKEN_KEY); the plaintext is NEVER serialised to an API
+// client — hence json:"-" — and is decrypted only in the credentials resolver.
+type Integration struct {
+	// ID is the primary key (referenced by services.integration_id).
+	ID string `json:"id"`
+	// ProjectID is the owning project (grants cascade-delete with it).
+	ProjectID string `json:"project_id"`
+	// Name is a human label, UNIQUE within the project (default "default").
+	Name string `json:"name"`
+	// Provider is the git host kind: gitea | github | gitlab.
+	Provider GitProvider `json:"provider"`
+	// Host is the git host — a bare host (github.com) or a full base URL
+	// (http://gitea.jcloud.svc.cluster.local:3000). Validated against the cluster
+	// git-host allowlist (D20) at create time.
+	Host string `json:"host"`
+	// CredType is the credential shape (only "pat" is wired; see CredType).
+	CredType CredType `json:"cred_type"`
+	// TokenEnc is the sealed service token (never serialised — json:"-").
+	TokenEnc []byte `json:"-"`
+	// BotUsername is the token's current user, best-effort discovered from the
+	// provider at create time (empty when discovery failed / not yet done).
+	BotUsername string `json:"bot_username"`
+	// CreatedBy is the user id that created it ("" for the service principal).
+	CreatedBy string    `json:"created_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// TokenSet reports whether the integration carries a (sealed) token. Always true
+// for a stored integration (token_enc is NOT NULL) — kept for symmetry with the
+// write-only token convention used across the API views.
+func (i *Integration) TokenSet() bool { return len(i.TokenEnc) > 0 }
 
 // KanbanLink binds a jtype board column to a project/service so that a card
 // dragged into TriggerColumn dispatches an agent run, and (when DoneColumn is

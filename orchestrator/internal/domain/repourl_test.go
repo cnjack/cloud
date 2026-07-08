@@ -97,3 +97,36 @@ func TestServiceCloneURL(t *testing.T) {
 		t.Fatalf("no owner clone url = %q want empty", got)
 	}
 }
+
+// TestNormalizeGitHost pins the canonical "hostname[:port]" form the git-host
+// allowlist compares with (D20 / F5 SSRF review C1②): explicit non-default ports
+// are KEPT (different port = different service), scheme-default ports fold away,
+// scheme/path/case are stripped.
+func TestNormalizeGitHost(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"   ", ""},
+		{"github.com", "github.com"},
+		{"GitHub.COM", "github.com"},
+		{"https://github.com", "github.com"},
+		{"https://github.com:443", "github.com"}, // scheme-default port folds
+		{"http://gitea.svc:80", "gitea.svc"},     // scheme-default port folds
+		{"http://gitea.jcloud.svc.cluster.local:3000", "gitea.jcloud.svc.cluster.local:3000"},
+		{"http://gitea.jcloud.svc.cluster.local:3000/owner/repo", "gitea.jcloud.svc.cluster.local:3000"},
+		{"gitea.svc:3000", "gitea.svc:3000"},   // bare host keeps explicit port
+		{"gitea.svc:3000/path", "gitea.svc:3000"},
+		{"//gitea.svc/x", "gitea.svc"},
+		{"https://git.scgzyun.com", "git.scgzyun.com"},
+		{"://garbage", ""},
+	}
+	for _, tc := range cases {
+		if got := NormalizeGitHost(tc.in); got != tc.want {
+			t.Errorf("NormalizeGitHost(%q) = %q want %q", tc.in, got, tc.want)
+		}
+	}
+	// The port-sensitivity invariant itself: same host, different ports must NOT
+	// compare equal (an allowlist entry for :3000 must not open :9999).
+	if NormalizeGitHost("gitea.svc:3000") == NormalizeGitHost("gitea.svc:9999") {
+		t.Fatal("different ports normalized equal — allowlist port bypass")
+	}
+}

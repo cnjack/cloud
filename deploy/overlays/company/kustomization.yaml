@@ -61,6 +61,13 @@ patches:
         ORCH_BASE_URL: http://orchestrator.jcode.svc.cluster.local:8080
         CONSOLE_URL: https://cloud.j-code.net
         WEBHOOK_URL: http://orchestrator.jcode.svc.cluster.local:8080/webhooks/gitea
+        # F5 / D20 — cluster git-host allowlist for project integrations. Mirrors
+        # this deployment's real gitea (GITEA_URL in the replayed secret =
+        # https://git.scgzyun.com). Comparison is host:port-sensitive
+        # (domain.NormalizeGitHost); https default port folds away, so the bare
+        # host matches. The local rig (deploy root) keeps this EMPTY — it is a
+        # closed e2e environment (explicit mockllm wiring, no external hosts).
+        ALLOWED_GIT_HOSTS: git.scgzyun.com
         # Feature C — persistent per-service workspace (D05). Inherits the base
         # default OFF. To enable on this cluster set PERSISTENT_WORKSPACE: "1"
         # (optionally WORKSPACE_PVC_SIZE / WORKSPACE_STORAGE_CLASS). The

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cnjack/jcloud/internal/credentials"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -133,9 +134,28 @@ func (s *Server) handleGetSource(w http.ResponseWriter, r *http.Request, runID s
 		writeError(w, http.StatusInternalServerError, "internal", "could not derive repository URL")
 		return
 	}
-	// Resolve a credential; on none, tok is the zero value → an anonymous URL
-	// (public repos still clone). Any resolution error is non-fatal here.
-	tok, _ := s.creds.Resolve(r.Context(), svc.Provider, run.TriggeredByUserID)
+	// Resolve a credential (integration bot token when the service is bound, else
+	// user OAuth / gitea PAT).
+	tok, rerr := s.creds.ResolveForService(r.Context(), svc, run.TriggeredByUserID)
+	if rerr != nil && errors.Is(rerr, credentials.ErrIntegrationCredential) {
+		// Fail-visible (F5 review C2): an integration-bound service whose bot token
+		// cannot be used must fail with the REAL reason — never degrade to an
+		// anonymous clone (a private repo would 404 with a misleading error) and
+		// never a generic message. Stamp the failure classification now
+		// (first-writer-wins, status untouched) so when the runner's clone aborts on
+		// this typed error, the run's failure_message carries the credential cause.
+		s.log.Error("source: integration credential unavailable", "run", runID, "err", rerr)
+		if _, ferr := s.st.SetRunnerFailure(r.Context(), runID, domain.FailureCloneFailed,
+			"source unavailable: "+rerr.Error()); ferr != nil {
+			s.log.Warn("source: record credential failure", "run", runID, "err", ferr)
+		}
+		writeError(w, http.StatusConflict, "integration_credential_unavailable",
+			"this service's integration credential could not be used: "+rerr.Error())
+		return
+	}
+	// Any OTHER resolution miss (legacy path, no credential at all) is non-fatal:
+	// tok stays the zero value → an anonymous URL (public repos still clone; a
+	// private one fails visibly at git clone time).
 	authed := tok.AuthedURL(rawURL, svc.Provider)
 
 	data, err := s.srcCache.Get(runID, func(dst string) error {

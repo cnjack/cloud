@@ -19,9 +19,11 @@ import type { ApiClient } from '../api/client';
 import type {
   CreateRunInput,
   CreateServiceInput,
+  Integration,
   MemberRole,
   Project,
   ProjectModel,
+  ProviderRepo,
   Run,
   Service,
   UpdateServiceInput,
@@ -60,12 +62,21 @@ interface Calls {
 
 function makeClient(
   p: Project,
-  opts: { modelConfigured?: boolean; models?: ProjectModel[] } = {},
+  opts: {
+    modelConfigured?: boolean;
+    models?: ProjectModel[];
+    // D19 / F5: the project's integrations + what their bot token can list.
+    integrations?: Integration[];
+    integrationRepos?: ProviderRepo[];
+  } = {},
 ): { client: ApiClient; calls: Calls } {
   const calls: Calls = { serviceRuns: [], services: [], serviceUpdates: [] };
   const client: Partial<ApiClient> = {
     getProject: async () => p,
     listRuns: async () => [] as Run[],
+    // D19 / F5: loaded eagerly for member+ (the add-repo entry gates on it).
+    listIntegrations: async () => opts.integrations ?? [],
+    listIntegrationRepos: async () => opts.integrationRepos ?? [],
     // D21: the composer keys enable/disable off the project's models AND populates
     // its model select. Default configured via the env fallback (empty catalog).
     listProjectModels: async () => ({
@@ -465,5 +476,122 @@ describe('ProjectDetailPage — repo picker (Drone-style onboarding)', () => {
     await screen.findByTestId('repo-picker-error');
     // The manual form is still there as the fallback path.
     expect(screen.getByTestId('add-repo-url')).toBeTruthy();
+  });
+});
+
+describe('ProjectDetailPage — member builds via integration (D19 / F5)', () => {
+  const integ: Integration = {
+    id: 'integ1',
+    project_id: 'p1',
+    name: 'default',
+    provider: 'gitea',
+    host: 'gitea.example.com',
+    cred_type: 'pat',
+    bot_username: 'jcloud-bot',
+    token_set: true,
+    created_at: '',
+    updated_at: '',
+  };
+  const widgetRepo: ProviderRepo = {
+    id: 42,
+    full_name: 'acme/widget',
+    description: 'Widget service',
+    default_branch: 'main',
+    private: true,
+  };
+
+  it('member + integration: "+ Add repository" appears and a pick submits integration_id (deadlock regression)', async () => {
+    // Regression for the F5 review finding: the integrations query must load
+    // EAGERLY for a member — the old code enabled it only while the add-repo card
+    // was open, but the card's only entry button was itself gated on the loaded
+    // data, so a member could never see "+ Add repository" at all.
+    const { client, calls } = makeClient(project('member', [svc('svc_default', 'default')]), {
+      integrations: [integ],
+      integrationRepos: [widgetRepo],
+    });
+    renderPage(client);
+
+    // The entry renders once the integration list loads (never with the old gating).
+    const trigger = await screen.findByTestId('add-repo-trigger');
+    fireEvent.click(trigger);
+
+    // The picker lists the integration bot's repos; the member path has NO
+    // owner-only manual URL fallback.
+    const pick = await screen.findByTestId('repo-pick');
+    expect(pick.getAttribute('data-repo')).toBe('acme/widget');
+    expect(screen.queryByTestId('add-repo-url')).toBeNull();
+
+    fireEvent.click(pick);
+    await waitFor(() => expect(calls.services).toHaveLength(1));
+    expect(calls.services[0]!.input).toMatchObject({
+      name: 'widget',
+      owner_name: 'acme/widget',
+      integration_id: 'integ1',
+      default_branch: 'main',
+      git_mode: 'draft_pr',
+      provider_repo_id: 42,
+    });
+    // The provider is the integration's to decide server-side — never sent.
+    expect('provider' in calls.services[0]!.input).toBe(false);
+  });
+
+  it('member + no integration: no entry, a fail-visible hint instead', async () => {
+    const { client } = makeClient(project('member', [svc('svc_default', 'default')]), {
+      integrations: [],
+    });
+    renderPage(client);
+
+    await screen.findByTestId('add-repo-needs-integration');
+    expect(screen.queryByTestId('add-repo-trigger')).toBeNull();
+    expect(
+      screen.getByTestId('add-repo-needs-integration').textContent,
+    ).toMatch(/integration/i);
+  });
+
+  it('owner regression: entry shows with zero integrations and Direct source keeps the manual URL form', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      integrations: [],
+    });
+    renderPage(client);
+
+    // Owner entry never depends on integrations existing.
+    await waitFor(() => expect(screen.getByTestId('add-repo-trigger')).toBeTruthy());
+    expect(screen.queryByTestId('add-repo-needs-integration')).toBeNull();
+    fireEvent.click(screen.getByTestId('add-repo-trigger'));
+
+    // Direct (owner-credential) mode: the manual URL fallback is present and works.
+    fireEvent.change(screen.getByTestId('add-repo-name'), { target: { value: 'web' } });
+    fireEvent.change(screen.getByTestId('add-repo-url'), {
+      target: { value: 'https://github.com/acme/web' },
+    });
+    fireEvent.click(screen.getByTestId('add-repo-submit'));
+    await waitFor(() => expect(calls.services).toHaveLength(1));
+    expect('integration_id' in calls.services[0]!.input).toBe(false);
+  });
+
+  it('owner + integration: the Source select offers Direct plus the integration', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      integrations: [integ],
+    });
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByTestId('add-repo-trigger')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('add-repo-trigger'));
+
+    const source = (await screen.findByTestId('repo-source-select')) as HTMLSelectElement;
+    // Direct + the one integration; the owner defaults to Direct.
+    expect(source.options).toHaveLength(2);
+    expect(source.value).toBe('');
+    expect(source.options[1]!.textContent).toContain('jcloud-bot');
+  });
+
+  it('does not fetch integrations for a viewer (enabled gating)', async () => {
+    const { client } = makeClient(project('viewer', [svc('svc_default', 'default')]));
+    const spy = vi.fn(async () => [] as Integration[]);
+    (client as { listIntegrations?: unknown }).listIntegrations = spy;
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByTestId('runs-empty')).toBeTruthy());
+    expect(spy).not.toHaveBeenCalled();
   });
 });

@@ -52,6 +52,10 @@ type systemGuardrails struct {
 type systemProvider struct {
 	GiteaEnabled bool   `json:"gitea_enabled"`
 	GiteaURL     string `json:"gitea_url"`
+	// AllowedGitHosts mirrors the cluster ALLOWED_GIT_HOSTS allowlist (D20 / F5):
+	// the hosts a project integration may target. Empty => unrestricted. Read-only
+	// (the console Cluster page shows it); never a secret.
+	AllowedGitHosts []string `json:"allowed_git_hosts"`
 }
 
 type systemRunner struct {
@@ -111,8 +115,9 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 		Provider: systemProvider{
 			// gitea_enabled is the trust signal for draft-PR mode: the PAT is set.
 			// The token is NEVER serialized — only this boolean and the base URL.
-			GiteaEnabled: s.cfg.GiteaToken != "",
-			GiteaURL:     s.cfg.GiteaURL,
+			GiteaEnabled:    s.cfg.GiteaToken != "",
+			GiteaURL:        s.cfg.GiteaURL,
+			AllowedGitHosts: nonNilStrings(s.cfg.AllowedGitHosts),
 		},
 		Runner: systemRunner{
 			Image:               s.cfg.RunnerImage,
@@ -132,6 +137,15 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 		Launcher:  launcherKind(s.cfg.JobLauncher, s.cfg.DisableK8s),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// nonNilStrings returns a non-nil slice so the JSON encodes [] not null for an
+// unset allowlist (the console treats [] as "unrestricted").
+func nonNilStrings(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	return in
 }
 
 // configuredProviderIDs returns the sorted ids of the configured OAuth providers

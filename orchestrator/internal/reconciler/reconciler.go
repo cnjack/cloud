@@ -77,6 +77,14 @@ type Reconciler struct {
 	// jtypeNoted throttles the one-time per-link cluster-fallback deprecation +
 	// missing-credential notices so the writeback loop does not log every tick.
 	jtypeNoted sync.Map // linkID -> struct{}
+	// integCredNoted parks runs whose provider-side pass (PR open / update push /
+	// review post / session push) hit ErrIntegrationCredential — a PERSISTENT
+	// configuration problem (broken/missing integration credential), not a
+	// transient one (F5 review P1). One visible run.failure event is emitted per
+	// run per process; subsequent ticks skip the run instead of endlessly
+	// re-resolving + re-warning. In-memory by design: a restart re-checks once —
+	// if the owner fixed the integration the pass completes, else one more note.
+	integCredNoted sync.Map // runID -> struct{}
 }
 
 // KanbanWriter is the slice of *jtype.Client the writeback pass uses. Exported so
@@ -117,6 +125,40 @@ func derefStr(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+// integrationCredentialParked reports whether the run was parked by a prior
+// integration-credential failure this process lifetime (F5 review P1). Checked
+// at the top of every provider-side pass so a parked run costs one map lookup
+// per tick instead of a doomed resolve + Warn.
+func (r *Reconciler) integrationCredentialParked(runID string) bool {
+	_, seen := r.integCredNoted.Load(runID)
+	return seen
+}
+
+// noteIntegrationCredentialFailure handles credentials.ErrIntegrationCredential
+// from a provider-side pass: log it, emit ONE visible run.failure event on the
+// run's timeline explaining the cause + the fix (fail-visible, CLAUDE.md red
+// line #1), and park the run so subsequent ticks skip it. pass names the step
+// for the log/event ("draft PR", "update push", "review post", "session push").
+func (r *Reconciler) noteIntegrationCredentialFailure(ctx context.Context, runID, pass string, err error) {
+	if _, seen := r.integCredNoted.LoadOrStore(runID, struct{}{}); seen {
+		return // already noted this process lifetime
+	}
+	r.log.Warn("reconcile: integration credential unavailable; parking run (fix the integration, or restart to re-check)",
+		"run", runID, "pass", pass, "err", err)
+	ev, aerr := r.st.AppendInternalEvent(ctx, runID, domain.EventRunFailure, map[string]any{
+		"reason": string(domain.FailurePushFailed),
+		"message": pass + " skipped: " + err.Error() +
+			" — fix or rotate the integration in Project Settings, then retry",
+	})
+	if aerr != nil {
+		r.log.Error("reconcile: emit integration credential event", "run", runID, "err", aerr)
+		return
+	}
+	if r.pub != nil {
+		r.pub.Publish(runID, ev)
+	}
 }
 
 // WithModelResolver replaces the default model-config resolver with a shared
@@ -388,6 +430,9 @@ func (r *Reconciler) reconcilePRs(ctx context.Context) {
 // failing leaves the run succeeded with pr_url empty so the next tick retries.
 // NEVER merges, NEVER triggers CI (hard gate).
 func (r *Reconciler) openDraftPR(ctx context.Context, run *domain.Run, svc *domain.Service) {
+	if r.integrationCredentialParked(run.ID) {
+		return // parked (P1): credential problem already surfaced once
+	}
 	owner, repo, ok := provider.SplitRepo(svc.RepoOwnerName)
 	if !ok {
 		r.log.Warn("reconcile pr: bad repo_owner_name", "run", run.ID, "repo", svc.RepoOwnerName)
@@ -395,10 +440,16 @@ func (r *Reconciler) openDraftPR(ctx context.Context, run *domain.Run, svc *doma
 	}
 	branch := run.GitBranch // recorded when the bundle was received (jcode/run-<id>)
 
-	// Resolve the credential to act with (user OAuth, else gitea PAT). The token
-	// value is never logged — only its source label.
-	tok, err := r.creds.Resolve(ctx, svc.Provider, run.TriggeredByUserID)
+	// Resolve the credential to act with: the service's integration bot token when
+	// bound (D19 / F5), else user OAuth / gitea PAT. The token value is never
+	// logged — only its source label.
+	tok, err := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
 	if err != nil {
+		if errors.Is(err, credentials.ErrIntegrationCredential) {
+			// Persistent config error (P1): surface once + park, never spin.
+			r.noteIntegrationCredentialFailure(ctx, run.ID, "draft PR", err)
+			return
+		}
 		r.log.Warn("reconcile pr: no credential; leaving diff-only", "run", run.ID, "provider", svc.Provider, "err", err)
 		return // retry next tick (a user may bind the provider later)
 	}
@@ -430,7 +481,7 @@ func (r *Reconciler) openDraftPR(ctx context.Context, run *domain.Run, svc *doma
 		}
 		pr, err = prov.CreateDraftPR(ctx, provider.CreateDraftPRInput{
 			Owner: owner, Repo: repo, Head: branch, Base: svc.DefaultBranch,
-			Title: prTitle(run.Prompt), Body: prBody(run),
+			Title: prTitle(run.Prompt), Body: prBody(run, r.prTriggerAttribution(ctx, run, svc)),
 		})
 		if err != nil {
 			// The branch is pushed; a create failure may be a race with another
@@ -517,9 +568,16 @@ func (r *Reconciler) reconcileUpdatePushes(ctx context.Context) {
 // spins (it stays in the scan but each tick just re-Warns until it ff-applies or
 // the remote already contains the change). NEVER opens a PR.
 func (r *Reconciler) updatePushRun(ctx context.Context, run *domain.Run, svc *domain.Service) {
+	if r.integrationCredentialParked(run.ID) {
+		return // parked (P1): credential problem already surfaced once
+	}
 	branch := run.GitBranch // recorded when the bundle was received (= PR head branch)
-	tok, err := r.creds.Resolve(ctx, svc.Provider, run.TriggeredByUserID)
+	tok, err := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
 	if err != nil {
+		if errors.Is(err, credentials.ErrIntegrationCredential) {
+			r.noteIntegrationCredentialFailure(ctx, run.ID, "update push", err)
+			return
+		}
 		r.log.Warn("reconcile update: no credential; leaving for retry", "run", run.ID, "provider", svc.Provider, "err", err)
 		return
 	}
@@ -598,6 +656,9 @@ func (r *Reconciler) reconcileReviews(ctx context.Context) {
 // output as a comment, then stamps review_posted_at. A failure leaves the run in
 // the scan for the next tick.
 func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domain.Service) {
+	if r.integrationCredentialParked(run.ID) {
+		return // parked (P1): credential problem already surfaced once
+	}
 	if svc.RepoKind != domain.RepoKindProvider || strings.TrimSpace(run.PRHeadBranch) == "" {
 		return // not associated with a provider PR (misconfigured review run)
 	}
@@ -606,8 +667,12 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 		r.log.Warn("reconcile review: bad repo_owner_name", "run", run.ID)
 		return
 	}
-	tok, err := r.creds.Resolve(ctx, svc.Provider, run.TriggeredByUserID)
+	tok, err := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
 	if err != nil {
+		if errors.Is(err, credentials.ErrIntegrationCredential) {
+			r.noteIntegrationCredentialFailure(ctx, run.ID, "review post", err)
+			return
+		}
 		r.log.Warn("reconcile review: no credential", "run", run.ID, "provider", svc.Provider, "err", err)
 		return
 	}
@@ -774,18 +839,49 @@ func kanbanCommentBody(run *domain.Run, consoleURL string) string {
 	return b.String()
 }
 
-// prBody is the PR description linking the run for traceability.
-func prBody(run *domain.Run) string {
+// prBody is the PR description linking the run for traceability. attribution, when
+// non-empty, is the "Triggered by …" line the bot-identity path (integration-bound
+// service) adds so the PR — opened as the bot, not the human — stays traceable to
+// its real trigger (D19 / F5).
+func prBody(run *domain.Run, attribution string) string {
 	var b strings.Builder
 	b.WriteString("Draft PR opened by jcode Cloud Agent for run `")
 	b.WriteString(run.ID)
 	b.WriteString("`.\n\n")
+	if attribution != "" {
+		b.WriteString(attribution)
+		b.WriteString("\n\n")
+	}
 	b.WriteString("**Task**\n\n")
 	b.WriteString(strings.TrimSpace(run.Prompt))
 	b.WriteString("\n\n")
 	fmt.Fprintf(&b, "Branch `%s` @ `%s`.\n\n", run.GitBranch, run.CommitSHA)
 	b.WriteString("_Not auto-merged and CI is not auto-triggered — review and iterate._\n")
 	return b.String()
+}
+
+// prTriggerAttribution builds the "Triggered by …" line for a PR opened under a
+// service's BOT identity (integration bound; D19 / F5). For a legacy service (no
+// integration) the PR is already opened as the triggering user, so no annotation
+// is needed and this returns "". Webhook/kanban origins name their source; an
+// API/console run names the triggering jcloud user.
+func (r *Reconciler) prTriggerAttribution(ctx context.Context, run *domain.Run, svc *domain.Service) string {
+	if svc == nil || svc.IntegrationID == nil || *svc.IntegrationID == "" {
+		return ""
+	}
+	switch run.Origin {
+	case domain.RunOriginWebhook:
+		return "Triggered by a PR comment @mention."
+	case domain.RunOriginKanban:
+		return "Triggered by a jtype kanban card."
+	default:
+		if run.TriggeredByUserID != nil && *run.TriggeredByUserID != "" {
+			if u, err := r.st.GetUser(ctx, *run.TriggeredByUserID); err == nil && u.DisplayName != "" {
+				return "Triggered by @" + u.DisplayName
+			}
+		}
+		return "Triggered via jcode Cloud."
+	}
 }
 
 // projectCache memoizes GetProject for the span of ONE tick so the per-project

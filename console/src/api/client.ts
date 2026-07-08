@@ -12,10 +12,13 @@ import type {
   AuthProvidersEnvelope,
   CreateKanbanLinkInput,
   CreateProjectInput,
+  CreateIntegrationInput,
   CreateModelInput,
   CreateRunInput,
   CreateServiceInput,
   EventsEnvelope,
+  Integration,
+  IntegrationsEnvelope,
   KanbanLink,
   Me,
   Member,
@@ -36,6 +39,7 @@ import type {
   ServicesEnvelope,
   StreamFrame,
   SystemInfo,
+  UpdateIntegrationInput,
   UpdateModelInput,
   UpdateProjectInput,
   UpdateServiceInput,
@@ -180,6 +184,29 @@ export interface ApiClient {
   updateProjectKanbanLinkToken(projectId: string, linkId: string, token: string): Promise<KanbanLink>;
   /** DELETE /api/v1/projects/{id}/kanban/links/{linkId} — remove a link (owner). */
   deleteProjectKanbanLink(projectId: string, linkId: string): Promise<void>;
+
+  /* ---- integrations (D19 / F5) ------------------------------------------ */
+  /** GET /api/v1/projects/{id}/integrations — the project's integrations (member+). */
+  listIntegrations(projectId: string): Promise<Integration[]>;
+  /**
+   * POST /api/v1/projects/{id}/integrations — add a git integration (owner). The
+   * server verifies the token against the provider (400 integration_unreachable),
+   * validates the host against the cluster allowlist (400 host_not_allowed), and
+   * discovers bot_username. `token` is write-only.
+   */
+  createIntegration(projectId: string, input: CreateIntegrationInput): Promise<Integration>;
+  /**
+   * PATCH /api/v1/integrations/{id} — rename and/or rotate the token (owner). A
+   * rotation re-verifies and refreshes bot_username. token is write-only.
+   */
+  updateIntegration(integrationId: string, input: UpdateIntegrationInput): Promise<Integration>;
+  /** DELETE /api/v1/integrations/{id} — remove an integration (owner). Bound services unbind. */
+  deleteIntegration(integrationId: string): Promise<void>;
+  /**
+   * GET /api/v1/projects/{id}/integrations/{iid}/repos?q= — repos the integration's
+   * bot token can see (member+), for the service-onboarding repo picker.
+   */
+  listIntegrationRepos(projectId: string, integrationId: string, q?: string): Promise<ProviderRepo[]>;
 
   /* ---- services (blueprint §4) ------------------------------------------- */
   /** GET /api/v1/projects/{id}/services — the project's repo configurations. */
@@ -484,6 +511,32 @@ export function createHttpClient(
         `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(linkId)}`,
         { method: 'DELETE' },
       ),
+
+    // Integrations (D19 / F5).
+    listIntegrations: async (projectId) =>
+      (
+        await req<IntegrationsEnvelope>(
+          `/projects/${encodeURIComponent(projectId)}/integrations`,
+        )
+      ).integrations ?? [],
+    createIntegration: (projectId, input) =>
+      req<Integration>(`/projects/${encodeURIComponent(projectId)}/integrations`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    updateIntegration: (integrationId, input) =>
+      req<Integration>(`/integrations/${encodeURIComponent(integrationId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    deleteIntegration: (integrationId) =>
+      req<void>(`/integrations/${encodeURIComponent(integrationId)}`, { method: 'DELETE' }),
+    listIntegrationRepos: async (projectId, integrationId, q) =>
+      (
+        await req<{ repos: ProviderRepo[] }>(
+          `/projects/${encodeURIComponent(projectId)}/integrations/${encodeURIComponent(integrationId)}/repos${q ? `?q=${encodeURIComponent(q)}` : ''}`,
+        )
+      ).repos ?? [],
 
     // Services (blueprint §4).
     listServices: async (projectId) =>

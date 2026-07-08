@@ -25,18 +25,6 @@ func createGiteaService(t *testing.T, ts *httptest.Server, pid, name, ownerName 
 	return svc
 }
 
-// setAllowlist PATCHes a project's provider_allowlist (owner via console token).
-func setAllowlist(t *testing.T, ts *httptest.Server, pid string, list []string) {
-	t.Helper()
-	resp := do(t, "PATCH", ts.URL+"/api/v1/projects/"+pid, consoleToken, map[string]any{
-		"provider_allowlist": list,
-	})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("set allowlist: status=%d want 200", resp.StatusCode)
-	}
-	resp.Body.Close()
-}
-
 // TestProjectPatchGuardrails round-trips all four guardrail fields through PATCH
 // and GET.
 func TestProjectPatchGuardrails(t *testing.T) {
@@ -46,7 +34,6 @@ func TestProjectPatchGuardrails(t *testing.T) {
 	resp := do(t, "PATCH", ts.URL+"/api/v1/projects/"+pid, consoleToken, map[string]any{
 		"max_concurrent_runs": 3,
 		"run_timeout_secs":    600,
-		"provider_allowlist":  []string{"gitea", "raw"},
 		"injected_env":        map[string]string{"COMPANY_TOKEN": "abc", "HTTP_PROXY": "http://p:3128"},
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -59,9 +46,6 @@ func TestProjectPatchGuardrails(t *testing.T) {
 	}
 	if pv.RunTimeoutSecs == nil || *pv.RunTimeoutSecs != 600 {
 		t.Fatalf("run_timeout_secs=%v want 600", pv.RunTimeoutSecs)
-	}
-	if len(pv.ProviderAllowlist) != 2 {
-		t.Fatalf("provider_allowlist=%v want [gitea raw]", pv.ProviderAllowlist)
 	}
 	if pv.InjectedEnv["COMPANY_TOKEN"] != "abc" || pv.InjectedEnv["HTTP_PROXY"] != "http://p:3128" {
 		t.Fatalf("injected_env=%v not persisted", pv.InjectedEnv)
@@ -134,18 +118,23 @@ func TestProjectPatchInjectedEnvRejectsReservedKey(t *testing.T) {
 	}
 }
 
-// TestProjectPatchRejectsBadAllowlist: an unknown provider name in the allowlist
-// is a 400.
-func TestProjectPatchRejectsBadAllowlist(t *testing.T) {
+// TestProjectPatchProviderAllowlistDeprecated: provider_allowlist is a deprecated
+// key since D20/F5 — a PATCH carrying it is a typed 400 deprecated_key (git-host
+// policy moved to the cluster allowlist + integrations), NOT a silent accept.
+func TestProjectPatchProviderAllowlistDeprecated(t *testing.T) {
 	ts, _, _ := newTestServer(t)
-	pid := newProject(t, ts, "badlist")
+	pid := newProject(t, ts, "deprecated-allowlist")
 	resp := do(t, "PATCH", ts.URL+"/api/v1/projects/"+pid, consoleToken, map[string]any{
-		"provider_allowlist": []string{"gitea", "bitbucket"},
+		"provider_allowlist": []string{"gitea", "raw"},
 	})
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("bad allowlist entry: status=%d want 400", resp.StatusCode)
+		t.Fatalf("provider_allowlist PATCH: status=%d want 400", resp.StatusCode)
 	}
-	resp.Body.Close()
+	var e errorBody
+	decode(t, resp, &e)
+	if e.Error.Code != "deprecated_key" {
+		t.Fatalf("code=%q want deprecated_key", e.Error.Code)
+	}
 }
 
 // TestProjectPatchNameCaseInsensitive: a legacy {"Name":...} still renames (the
@@ -240,76 +229,26 @@ func TestProjectPatchPreservesGuardrailsOnRename(t *testing.T) {
 	}
 }
 
-// TestServiceCreateProviderNotAllowed: creating a service whose provider is not in
-// the project's allowlist is a 400 provider_not_allowed; an allowed provider (and
-// the "raw" sentinel) still work.
-func TestServiceCreateProviderNotAllowed(t *testing.T) {
-	ts, _, _ := newTestServer(t)
-	pid := newProject(t, ts, "svc-allow")
-	setAllowlist(t, ts, pid, []string{"github", "raw"}) // gitea NOT allowed
-
-	// gitea provider service -> 400.
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
-		"name": "g", "owner_name": "acme/x", "provider": "gitea",
-	})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("disallowed gitea service: status=%d want 400", resp.StatusCode)
-	}
-	var e errorBody
-	decode(t, resp, &e)
-	if e.Error.Code != "provider_not_allowed" {
-		t.Fatalf("code=%q want provider_not_allowed", e.Error.Code)
-	}
-
-	// github provider service -> 201 (in the allowlist).
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
-		"name": "gh", "repo_url": "https://github.com/acme/x.git",
-	})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("allowed github service: status=%d want 201", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	// raw repo (sentinel "raw") -> 201.
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
-		"name": "raw", "repo_url": "git://git/seed.git",
-	})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("allowed raw service: status=%d want 201", resp.StatusCode)
-	}
-	resp.Body.Close()
-}
-
-// TestRunDispatchProviderNotAllowed: an allowlist tightened AFTER a service exists
-// blocks new run dispatch with a 403.
-func TestRunDispatchProviderNotAllowed(t *testing.T) {
-	ts, _, _ := newTestServer(t)
-	pid := newProject(t, ts, "run-allow")
-	svc := createGiteaService(t, ts, pid, "default", "acme/x") // allowed at create time
-
-	// Now forbid gitea.
-	setAllowlist(t, ts, pid, []string{"github"})
-
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("dispatch on now-disallowed provider: status=%d want 403", resp.StatusCode)
-	}
-	var e errorBody
-	decode(t, resp, &e)
-	if e.Error.Code != "provider_not_allowed" {
-		t.Fatalf("code=%q want provider_not_allowed", e.Error.Code)
-	}
-}
-
-// TestRetryProviderNotAllowed: retrying a run whose provider is now disallowed is
-// a 403.
-func TestRetryProviderNotAllowed(t *testing.T) {
+// TestProviderAllowlistEnforcementRemoved: the D15 provider_allowlist enforcement
+// points (service create + run/retry/review dispatch) are GONE (D20/F5). A gitea
+// service is created and a run dispatches regardless of any prior host policy — the
+// gate no longer exists on those paths (git-host policy is now a cluster allowlist
+// enforced at integration create; see integrations_test.go).
+func TestProviderAllowlistEnforcementRemoved(t *testing.T) {
 	ts, st, _ := newTestServer(t)
-	pid := newProject(t, ts, "retry-allow")
+	pid := newProject(t, ts, "no-allowlist-gate")
+
+	// Service create is not gated by any per-project provider policy.
 	svc := createGiteaService(t, ts, pid, "default", "acme/x")
 
-	// A terminal (failed) run exists (crafted directly; a queued->failed is a legal
-	// transition, but here we just persist a failed run for the retry path).
+	// Run dispatch is not gated either (the model env-fallback lets it queue).
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("dispatch: status=%d want 201 (no provider gate)", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Retry of a terminal run is not gated.
 	ctx := context.Background()
 	run := &domain.Run{
 		ID: domain.NewID(), ProjectID: pid, ServiceID: svc.ID, Prompt: "boom",
@@ -318,44 +257,9 @@ func TestRetryProviderNotAllowed(t *testing.T) {
 	if err := st.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-
-	setAllowlist(t, ts, pid, []string{"github"}) // forbid gitea
-
-	resp := do(t, "POST", ts.URL+"/api/v1/runs/"+run.ID+"/retry", consoleToken, nil)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("retry on disallowed provider: status=%d want 403", resp.StatusCode)
+	resp = do(t, "POST", ts.URL+"/api/v1/runs/"+run.ID+"/retry", consoleToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("retry: status=%d want 201 (no provider gate)", resp.StatusCode)
 	}
 	resp.Body.Close()
-}
-
-// TestReviewProviderNotAllowed: requesting a review when the provider is now
-// disallowed is a 403.
-func TestReviewProviderNotAllowed(t *testing.T) {
-	ts, st, _ := newTestServer(t)
-	pid := newProject(t, ts, "review-allow")
-	svc := createGiteaService(t, ts, pid, "default", "acme/x")
-
-	// A succeeded agent run WITH a PR (all review preconditions satisfied).
-	ctx := context.Background()
-	run := &domain.Run{
-		ID: domain.NewID(), ProjectID: pid, ServiceID: svc.ID, Prompt: "did it",
-		Status: domain.StatusSucceeded, Kind: domain.RunKindAgent, Attempt: 1,
-		GitBranch: "jcode/run-x", PRURL: "http://gitea/acme/x/pulls/1", PRNumber: 1,
-		CreatedAt: time.Now().UTC(),
-	}
-	if err := st.CreateRun(ctx, run); err != nil {
-		t.Fatal(err)
-	}
-
-	setAllowlist(t, ts, pid, []string{"github"}) // forbid gitea
-
-	resp := do(t, "POST", ts.URL+"/api/v1/runs/"+run.ID+"/review", consoleToken, nil)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("review on disallowed provider: status=%d want 403", resp.StatusCode)
-	}
-	var e errorBody
-	decode(t, resp, &e)
-	if e.Error.Code != "provider_not_allowed" {
-		t.Fatalf("code=%q want provider_not_allowed", e.Error.Code)
-	}
 }

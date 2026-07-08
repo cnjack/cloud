@@ -162,5 +162,18 @@ func (c *GitLabClient) ListRepos(ctx context.Context, query string, page, limit 
 	return repos, nil
 }
 
+// CurrentUser returns the token account's username (GET /user; D19 / F5).
+func (c *GitLabClient) CurrentUser(ctx context.Context) (string, error) {
+	u := fmt.Sprintf("%s/user", c.apiBase)
+	var out struct {
+		Username string `json:"username"`
+	}
+	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &out); err != nil {
+		return "", err
+	}
+	return out.Username, nil
+}
+
 var _ Provider = (*GitLabClient)(nil)
 var _ RepoLister = (*GitLabClient)(nil)
+var _ CurrentUser = (*GitLabClient)(nil)

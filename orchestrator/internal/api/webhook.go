@@ -215,17 +215,17 @@ func (s *Server) processMention(ctx context.Context, p *giteaIssueCommentPayload
 		return
 	}
 
-	// Guardrail: the project's provider_allowlist (when set) may forbid this
-	// repository's provider. Reply visibly on the PR rather than starting a run
-	// that policy disallows (fail-visible). A load error is reported as temporary.
-	allowed, aerr := s.projectAllowsProvider(ctx, svc.ProjectID, svc.Provider)
-	if aerr != nil {
-		s.log.Error("webhook: load project guardrails", "repo", p.Repository.FullName, "err", aerr)
+	// Dispatch-time integration host gate (D20 / F5 adjudication A): a tightened
+	// cluster allowlist stops runs on an integration-bound service immediately.
+	// Reply visibly on the PR (fail-visible) rather than dispatching a run that
+	// quietly ignores policy; a load error is reported as temporary.
+	if allowed, host, herr := s.integrationHostStillAllowed(ctx, svc); herr != nil {
+		s.log.Error("webhook: check integration host policy", "repo", p.Repository.FullName, "err", herr)
 		reply("jcode hit a temporary internal problem — please try again shortly.")
 		return
-	}
-	if !allowed {
-		reply("jcode can't run here — this project's guardrails don't allow " + providerLabel(svc.Provider) + " repositories.")
+	} else if !allowed {
+		reply("jcode can't run here — this service's git integration targets '" + host +
+			"', which is not in the cluster's allowed git hosts.")
 		return
 	}
 

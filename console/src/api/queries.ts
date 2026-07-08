@@ -10,15 +10,18 @@ import {
 import { useApi } from './ApiProvider';
 import type {
   AddMemberInput,
+  CreateIntegrationInput,
   CreateKanbanLinkInput,
   CreateModelInput,
   CreateProjectInput,
   CreateRunInput,
   CreateServiceInput,
+  Integration,
   Member,
   Model,
   Project,
   Run,
+  UpdateIntegrationInput,
   UpdateModelInput,
   UpdateProjectInput,
   UpdateServiceInput,
@@ -38,6 +41,7 @@ export const qk = {
   projectModels: (projectId: string) => ['project-models', projectId] as const,
   kanbanLinks: ['kanban-links'] as const,
   projectKanbanLinks: (projectId: string) => ['project-kanban-links', projectId] as const,
+  integrations: (projectId: string) => ['integrations', projectId] as const,
   services: (projectId: string) => ['services', projectId] as const,
   members: (projectId: string) => ['members', projectId] as const,
   users: (q: string) => ['users', q] as const,
@@ -460,6 +464,62 @@ export function useDeleteProjectKanbanLink(projectId: string) {
   return useMutation({
     mutationFn: (linkId: string) => api.deleteProjectKanbanLink(projectId, linkId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) }),
+  });
+}
+
+/* ---- integrations (D19 / F5) --------------------------------------------- */
+
+/** A project's git integrations (member+ read). */
+export function useIntegrations(projectId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.integrations(projectId),
+    queryFn: () => api.listIntegrations(projectId),
+    enabled: enabled && !!projectId,
+  });
+}
+
+export function useCreateIntegration(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateIntegrationInput) => api.createIntegration(projectId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.integrations(projectId) }),
+  });
+}
+
+export function useUpdateIntegration(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ integrationId, input }: { integrationId: string; input: UpdateIntegrationInput }): Promise<Integration> =>
+      api.updateIntegration(integrationId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.integrations(projectId) }),
+  });
+}
+
+export function useDeleteIntegration(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (integrationId: string) => api.deleteIntegration(integrationId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.integrations(projectId) });
+      qc.invalidateQueries({ queryKey: qk.project(projectId) });
+      qc.invalidateQueries({ queryKey: qk.services(projectId) });
+    },
+  });
+}
+
+/** Repos the integration's bot token can see (for the service repo picker). */
+export function useIntegrationRepos(projectId: string, integrationId: string, q: string, enabled: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ['integration-repos', projectId, integrationId, q],
+    queryFn: () => api.listIntegrationRepos(projectId, integrationId, q),
+    enabled: enabled && !!projectId && !!integrationId,
+    staleTime: 30_000,
+    retry: false,
   });
 }
 

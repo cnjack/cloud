@@ -138,7 +138,7 @@ func (s *PGStore) DeleteProject(ctx context.Context, id string) error {
 // --- Services ----------------------------------------------------------------
 
 const serviceCols = `id, project_id, name, repo_kind, provider, repo_owner_name,
-	raw_repo_url, provider_repo_id, default_branch, git_mode, default_model_id, created_at`
+	raw_repo_url, provider_repo_id, default_branch, git_mode, default_model_id, integration_id, created_at`
 
 // nullStr maps an empty Go string to a SQL NULL so nullable columns (provider,
 // repo_owner_name, raw_repo_url) stay NULL rather than ” — the services CHECK
@@ -166,7 +166,7 @@ func scanService(row pgx.Row) (*domain.Service, error) {
 	var provider, ownerName, rawURL *string
 	err := row.Scan(&s.ID, &s.ProjectID, &s.Name, &s.RepoKind,
 		&provider, &ownerName, &rawURL, &s.ProviderRepoID, &s.DefaultBranch, &s.GitMode,
-		&s.DefaultModelID, &s.CreatedAt)
+		&s.DefaultModelID, &s.IntegrationID, &s.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -194,10 +194,10 @@ func (s *PGStore) CreateService(ctx context.Context, svc *domain.Service) error 
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO services (`+serviceCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		svc.ID, svc.ProjectID, svc.Name, string(svc.RepoKind),
 		nullStr(string(svc.Provider)), nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL),
-		svc.ProviderRepoID, svc.DefaultBranch, string(svc.GitMode), svc.DefaultModelID, svc.CreatedAt)
+		svc.ProviderRepoID, svc.DefaultBranch, string(svc.GitMode), svc.DefaultModelID, svc.IntegrationID, svc.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
 	}
@@ -257,11 +257,11 @@ func (s *PGStore) UpdateService(ctx context.Context, svc *domain.Service) error 
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE services SET name=$2, repo_kind=$3, provider=$4, repo_owner_name=$5,
 		    raw_repo_url=$6, provider_repo_id=$7, default_branch=$8, git_mode=$9,
-		    default_model_id=$10
+		    default_model_id=$10, integration_id=$11
 		 WHERE id=$1`,
 		svc.ID, svc.Name, string(svc.RepoKind), nullStr(string(svc.Provider)),
 		nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL), svc.ProviderRepoID,
-		svc.DefaultBranch, string(svc.GitMode), svc.DefaultModelID)
+		svc.DefaultBranch, string(svc.GitMode), svc.DefaultModelID, svc.IntegrationID)
 	if err != nil {
 		return fmt.Errorf("update service: %w", err)
 	}
@@ -1464,6 +1464,112 @@ func (s *PGStore) RevokeModel(ctx context.Context, modelID, projectID string) er
 		return fmt.Errorf("revoke model: %w", err)
 	}
 	return nil
+}
+
+// --- Integrations (D19 / F5) ------------------------------------------------
+
+const integrationCols = `id, project_id, name, provider, host, cred_type,
+	token_enc, bot_username, created_by, created_at, updated_at`
+
+func scanIntegration(row pgx.Row) (*domain.Integration, error) {
+	var in domain.Integration
+	var createdBy *string
+	err := row.Scan(&in.ID, &in.ProjectID, &in.Name, &in.Provider, &in.Host, &in.CredType,
+		&in.TokenEnc, &in.BotUsername, &createdBy, &in.CreatedAt, &in.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan integration: %w", err)
+	}
+	if createdBy != nil {
+		in.CreatedBy = *createdBy
+	}
+	return &in, nil
+}
+
+func (s *PGStore) CreateIntegration(ctx context.Context, in *domain.Integration) error {
+	if in.CredType == "" {
+		in.CredType = domain.CredTypePAT
+	}
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO integrations (id, project_id, name, provider, host, cred_type,
+		    token_enc, bot_username, created_by, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())`,
+		in.ID, in.ProjectID, in.Name, string(in.Provider), in.Host, string(in.CredType),
+		in.TokenEnc, in.BotUsername, nullStr(in.CreatedBy), in.CreatedAt)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("create integration: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetIntegration(ctx context.Context, id string) (*domain.Integration, error) {
+	return scanIntegration(s.pool.QueryRow(ctx,
+		`SELECT `+integrationCols+` FROM integrations WHERE id=$1`, id))
+}
+
+func (s *PGStore) ListIntegrationsByProject(ctx context.Context, projectID string) ([]domain.Integration, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+integrationCols+` FROM integrations WHERE project_id=$1 ORDER BY created_at DESC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list integrations: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Integration
+	for rows.Next() {
+		in, err := scanIntegration(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *in)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) UpdateIntegration(ctx context.Context, in *domain.Integration) error {
+	// Only name / token_enc / bot_username are mutable (host/provider/cred_type are
+	// immutable — delete + recreate to change a host).
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE integrations SET name=$2, token_enc=$3, bot_username=$4, updated_at=now()
+		 WHERE id=$1`,
+		in.ID, in.Name, in.TokenEnc, in.BotUsername)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("update integration: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) DeleteIntegration(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM integrations WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("delete integration: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) CountServicesUsingIntegration(ctx context.Context, integrationID string) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM services WHERE integration_id=$1`, integrationID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count services using integration: %w", err)
+	}
+	return n, nil
 }
 
 // --- Events -----------------------------------------------------------------

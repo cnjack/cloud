@@ -107,8 +107,14 @@ type createServiceReq struct {
 	GitMode       string `json:"git_mode"`
 	DefaultBranch string `json:"default_branch"`
 	// ProviderRepoID is the provider's numeric repo id, sent by the repo picker
-	// (GET /providers/{p}/repos). Optional; rename-proof repo identity (0009).
+	// (GET /providers/{p}/repos or .../integrations/{iid}/repos). Optional;
+	// rename-proof repo identity (0009).
 	ProviderRepoID *int64 `json:"provider_repo_id"`
+	// IntegrationID binds the new service to a project integration (D19 / F5). When
+	// present, a MEMBER (not just owner) may create the service, the repo must be
+	// reachable by the integration's bot token, and the service's provider is taken
+	// from the integration. Empty => the legacy owner-only bare create.
+	IntegrationID string `json:"integration_id"`
 }
 
 func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
@@ -120,13 +126,19 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load project")
 		return
 	}
-	// Creating/editing a service is a project-settings action: owner only.
-	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleOwner) {
-		return
-	}
 	var req createServiceReq
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	integrationID := strings.TrimSpace(req.IntegrationID)
+	// RBAC (D19): adding a repo off an EXISTING integration is a member action; a
+	// bare create (hand-entered repo, no integration) stays owner-only.
+	requiredRole := domain.RoleOwner
+	if integrationID != "" {
+		requiredRole = domain.RoleMember
+	}
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, requiredRole) {
 		return
 	}
 	svc, code, msg := resolveService(serviceInput{
@@ -141,16 +153,21 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, code, msg)
 		return
 	}
-	// Guardrail: the project's provider_allowlist (when set) restricts which git
-	// hosts a service may target. A create with a disallowed provider is a 400
-	// (input the caller can fix) — raw repos are addressed by the "raw" sentinel.
-	if allowed, err := s.projectAllowsProvider(r.Context(), projectID, svc.Provider); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load project guardrails")
-		return
-	} else if !allowed {
-		writeError(w, http.StatusBadRequest, "provider_not_allowed",
-			"this project's guardrails do not allow "+providerLabel(svc.Provider)+" repositories")
-		return
+	// The picker's numeric repo id (rename-proof identity) is populated BEFORE the
+	// integration bind (F5 review C3) so the bind's reachability match can key off
+	// the id, not just the owner/name string — a renamed repo still matches.
+	if req.ProviderRepoID != nil && svc.RepoKind == domain.RepoKindProvider {
+		svc.ProviderRepoID = req.ProviderRepoID
+	}
+	// Integration binding (D19 / F5): validate the integration belongs to this
+	// project, its host is still cluster-allowed (defence in depth — the allowlist
+	// may have tightened since it was created), and the repo is reachable by the
+	// bot token. The integration's provider is authoritative for the service.
+	if integrationID != "" {
+		if code, msg := s.bindServiceIntegration(r.Context(), projectID, integrationID, svc); code != "" {
+			writeError(w, integrationBindStatus(code), code, msg)
+			return
+		}
 	}
 	// Enforce the (project_id, name) uniqueness up-front for a friendly 409.
 	if existing, err := s.st.ListServices(r.Context(), projectID); err == nil {
@@ -164,9 +181,6 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	svc.ID = domain.NewID()
 	svc.ProjectID = projectID
 	svc.CreatedAt = time.Now().UTC()
-	if req.ProviderRepoID != nil && svc.RepoKind == domain.RepoKindProvider {
-		svc.ProviderRepoID = req.ProviderRepoID
-	}
 	if err := s.st.CreateService(r.Context(), svc); err != nil {
 		s.log.Error("create service", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create service")
@@ -177,6 +191,80 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	// hook still works (manual dispatch), and the console surfaces nothing.
 	s.ensureServiceWebhook(r.Context(), svc)
 	writeJSON(w, http.StatusCreated, svc)
+}
+
+// integrationBindStatus maps a bindServiceIntegration error code to an HTTP status.
+func integrationBindStatus(code string) int {
+	switch code {
+	case "not_found":
+		return http.StatusNotFound
+	case "internal":
+		return http.StatusInternalServerError
+	case "cipher_not_configured", "cipher_error":
+		return http.StatusConflict
+	case "provider_error":
+		return http.StatusBadGateway
+	default: // bad_request, host_not_allowed, repo_not_reachable
+		return http.StatusBadRequest
+	}
+}
+
+// bindServiceIntegration validates that svc may bind to integration integrationID
+// and mutates svc accordingly (D19 / F5): the integration must belong to the
+// project, its host must still be cluster-allowed (defence in depth), svc must be a
+// provider repo, and the repo must be REACHABLE by the integration's bot token (a
+// member must not use the bot to reach a repo the picker never surfaced). On
+// success svc gets its Provider/RepoOwnerName/ProviderRepoID canonicalised from the
+// integration + reachable repo, and IntegrationID set. Returns (code, msg); ""
+// code on success. The caller maps the code to a status via integrationBindStatus.
+func (s *Server) bindServiceIntegration(ctx context.Context, projectID, integrationID string, svc *domain.Service) (string, string) {
+	in, err := s.st.GetIntegration(ctx, integrationID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && in.ProjectID != projectID) {
+		return "not_found", "integration not found in this project"
+	}
+	if err != nil {
+		return "internal", "could not load integration"
+	}
+	if !s.gitHostAllowed(in.Host) {
+		return "host_not_allowed",
+			"the integration's git host '" + in.Host + "' is no longer in this cluster's allowed hosts"
+	}
+	if svc.RepoKind != domain.RepoKindProvider || strings.TrimSpace(svc.RepoOwnerName) == "" {
+		return "bad_request", "an integration-bound service needs a provider repository (owner/name)"
+	}
+	// The integration's provider is authoritative for the service.
+	svc.Provider = in.Provider
+	if code, msg := validateServiceConstraints(svc); code != "" {
+		return code, msg
+	}
+	// Reachability check against the bot token's visible repos.
+	client, code, msg := s.integrationClient(in)
+	if code != "" {
+		return code, msg
+	}
+	lister, ok := client.(provider.RepoLister)
+	if !ok {
+		return "internal", "provider client cannot list repositories"
+	}
+	_, name, _ := provider.SplitRepo(svc.RepoOwnerName)
+	repos, err := lister.ListRepos(ctx, name, 1, 50)
+	if err != nil {
+		return "provider_error",
+			"could not verify the repository against " + string(in.Provider) + ": " + summarizeProviderErr(err)
+	}
+	for i := range repos {
+		if strings.EqualFold(repos[i].FullName, svc.RepoOwnerName) ||
+			(svc.ProviderRepoID != nil && repos[i].ID == *svc.ProviderRepoID) {
+			svc.RepoOwnerName = repos[i].FullName // canonicalise (rename-proof id below)
+			id := repos[i].ID
+			svc.ProviderRepoID = &id
+			iid := in.ID
+			svc.IntegrationID = &iid
+			return "", ""
+		}
+	}
+	return "repo_not_reachable",
+		"the repository '" + svc.RepoOwnerName + "' is not reachable with this integration's credential"
 }
 
 // ensureServiceWebhook registers the @jcode PR-comment webhook on a freshly
@@ -198,9 +286,11 @@ func (s *Server) ensureServiceWebhook(ctx context.Context, svc *domain.Service) 
 	if !ok {
 		return
 	}
-	tok, err := s.creds.Resolve(ctx, domain.ProviderGitea, nil) // admin PAT
+	// Use the service's integration bot token when bound (D19 / F5), else the admin
+	// PAT fallback — hook management needs repo-admin rights the bot/PAT carries.
+	tok, err := s.creds.ResolveForService(ctx, svc, nil)
 	if err != nil {
-		s.log.Warn("service webhook: no gitea PAT; skipping registration", "service", svc.ID)
+		s.log.Warn("service webhook: no credential; skipping registration", "service", svc.ID, "err", err)
 		return
 	}
 	client, err := s.factory.PRClient(domain.ProviderGitea, tok.Value, tok.Scheme)
@@ -303,6 +393,11 @@ type patchServiceReq struct {
 	// empty-string="unchanged" fields above because clearing a default is a
 	// meaningful action.
 	DefaultModelID *string `json:"default_model_id"`
+	// IntegrationID binds/unbinds the service to a project integration (D19 / F5).
+	// Presence semantics (pointer): omitted = unchanged; "" = unbind (legacy
+	// credential path); an id = bind, validated to belong to this project + a still
+	// cluster-allowed host. The integration's provider becomes the service's.
+	IntegrationID *string `json:"integration_id"`
 }
 
 func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
@@ -353,6 +448,20 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			svc.DefaultModelID = &id
+		}
+	}
+	// Integration binding (D19 / F5): omitted = unchanged; "" = unbind; an id = the
+	// FULL bind validation, symmetric with create (F5 review C3): project scoping,
+	// cluster host allowlist, provider repo shape AND the reachability check — a
+	// PATCH-bind must not skip the "repo is in the bot's reachable set" gate the
+	// create path enforces.
+	if req.IntegrationID != nil {
+		id := strings.TrimSpace(*req.IntegrationID)
+		if id == "" {
+			svc.IntegrationID = nil
+		} else if code, msg := s.bindServiceIntegration(r.Context(), svc.ProjectID, id, svc); code != "" {
+			writeError(w, integrationBindStatus(code), code, msg)
+			return
 		}
 	}
 	if err := s.st.UpdateService(r.Context(), svc); err != nil {

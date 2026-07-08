@@ -30,6 +30,7 @@ type MemStore struct {
 	members      map[string]domain.ProjectMember // keyed by projectID+"|"+userID
 	models       map[string]domain.Model         // catalog, keyed by model id (D21)
 	modelGrants  map[string]bool                 // keyed by modelID+"|"+projectID
+	integrations map[string]domain.Integration   // keyed by integration id (D19 / F5)
 	kanbanLinks  map[string]domain.KanbanLink    // keyed by link id
 	kanbanClaims map[string]domain.KanbanClaim   // keyed by linkID+"|"+documentID
 	runMessages  map[string][]domain.RunMessage  // session follow-up queue, keyed by runID (D22)
@@ -51,6 +52,7 @@ func NewMemStore() *MemStore {
 		members:      map[string]domain.ProjectMember{},
 		models:       map[string]domain.Model{},
 		modelGrants:  map[string]bool{},
+		integrations: map[string]domain.Integration{},
 		kanbanLinks:  map[string]domain.KanbanLink{},
 		kanbanClaims: map[string]domain.KanbanClaim{},
 		runMessages:  map[string][]domain.RunMessage{},
@@ -1285,6 +1287,102 @@ func (m *MemStore) RevokeModel(_ context.Context, modelID, projectID string) err
 // --- kanban integration (Feature E) ---
 
 // claimKey is the kanban_claims natural key (linkID, documentID).
+// --- integrations (D19 / F5) ---
+
+func (m *MemStore) CreateIntegration(_ context.Context, in *domain.Integration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.integrations {
+		if e.ProjectID == in.ProjectID && e.Name == in.Name {
+			return fmt.Errorf("create integration: %w", ErrAlreadyExists)
+		}
+	}
+	cp := *in
+	if in.CredType == "" {
+		cp.CredType = domain.CredTypePAT
+	}
+	cp.TokenEnc = append([]byte(nil), in.TokenEnc...)
+	m.integrations[in.ID] = cp
+	return nil
+}
+
+func (m *MemStore) GetIntegration(_ context.Context, id string) (*domain.Integration, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	in, ok := m.integrations[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := in
+	cp.TokenEnc = append([]byte(nil), in.TokenEnc...)
+	return &cp, nil
+}
+
+func (m *MemStore) ListIntegrationsByProject(_ context.Context, projectID string) ([]domain.Integration, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.Integration, 0)
+	for _, in := range m.integrations {
+		if in.ProjectID == projectID {
+			cp := in
+			cp.TokenEnc = append([]byte(nil), in.TokenEnc...)
+			out = append(out, cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) UpdateIntegration(_ context.Context, in *domain.Integration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.integrations[in.ID]
+	if !ok {
+		return ErrNotFound
+	}
+	// Name uniqueness within the project (excluding this row).
+	for id, e := range m.integrations {
+		if id != in.ID && e.ProjectID == cur.ProjectID && e.Name == in.Name {
+			return fmt.Errorf("update integration: %w", ErrAlreadyExists)
+		}
+	}
+	cur.Name = in.Name
+	cur.TokenEnc = append([]byte(nil), in.TokenEnc...)
+	cur.BotUsername = in.BotUsername
+	cur.UpdatedAt = time.Now().UTC()
+	m.integrations[in.ID] = cur
+	return nil
+}
+
+func (m *MemStore) DeleteIntegration(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.integrations[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.integrations, id)
+	// Null the FK on any service that referenced it (ON DELETE SET NULL parity).
+	for sid, svc := range m.services {
+		if svc.IntegrationID != nil && *svc.IntegrationID == id {
+			svc.IntegrationID = nil
+			m.services[sid] = svc
+		}
+	}
+	return nil
+}
+
+func (m *MemStore) CountServicesUsingIntegration(_ context.Context, integrationID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, svc := range m.services {
+		if svc.IntegrationID != nil && *svc.IntegrationID == integrationID {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func claimKey(linkID, documentID string) string { return linkID + "|" + documentID }
 
 func (m *MemStore) CreateKanbanLink(_ context.Context, l *domain.KanbanLink) error {

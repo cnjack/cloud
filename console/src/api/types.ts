@@ -91,6 +91,12 @@ export interface Service {
    * is used, or the composer must choose when several are granted).
    */
   default_model_id?: string | null;
+  /**
+   * The project integration (D19 / F5) this service's runs act as. When set, all
+   * git operations use the integration's bot credential (not the triggering
+   * user's OAuth); absent/null = the legacy per-user path.
+   */
+  integration_id?: string | null;
   created_at: string;
 }
 
@@ -110,13 +116,18 @@ export interface Project {
    * Guardrails (blueprint §1). Absent/empty means "inherit the cluster default":
    *  - max_concurrent_runs — cap on this project's simultaneously-active runs.
    *  - run_timeout_secs — per-run wall-clock budget (Job deadline + runner).
-   *  - provider_allowlist — which git hosts a service may target ("raw" is the
-   *    sentinel for raw/opaque repos). Empty => no restriction.
    *  - injected_env — extra environment variables merged into every runner Job
    *    (system/reserved keys are refused server-side).
    */
   max_concurrent_runs?: number | null;
   run_timeout_secs?: number | null;
+  /**
+   * @deprecated D20 / F5 — the per-project provider allowlist is retired: the
+   * server still serializes the column for legacy projects (read-only historic
+   * data) but no console surface reads or edits it, and a PATCH carrying it is a
+   * 400 deprecated_key. Git-host policy is now the cluster ALLOWED_GIT_HOSTS
+   * allowlist enforced at integration create (see Integration).
+   */
   provider_allowlist?: string[];
   injected_env?: Record<string, string>;
   /**
@@ -432,6 +443,12 @@ export interface SystemInfo {
     /** True iff GITEA_TOKEN is set on the orchestrator; the token is never returned. */
     gitea_enabled: boolean;
     gitea_url: string;
+    /**
+     * D20 / F5: the cluster git-host allowlist an integration may target. Empty
+     * => unrestricted. Read-only (the Cluster page shows it); never a secret.
+     * Optional so lean fixtures still type-check.
+     */
+    allowed_git_hosts?: string[];
   };
   runner: {
     image: string;
@@ -512,6 +529,60 @@ export interface CreateKanbanLinkInput {
   trigger_column: string;
   done_column?: string;
   token?: string;
+}
+
+/* ---- integrations (D19 / F5) ---------------------------------------------- */
+
+/**
+ * A project-level git host binding with a BOT service credential. A service bound
+ * to it performs every git operation as this bot identity (the PR body annotates
+ * the real trigger). `token_set` reports whether a sealed token is stored — the
+ * token itself is NEVER returned. `bot_username` is the token's account, discovered
+ * from the provider at create/rotate time. Mirrors the orchestrator integrationView.
+ */
+export interface Integration {
+  id: string;
+  project_id: string;
+  name: string;
+  provider: GitProvider;
+  host: string;
+  cred_type: string;
+  bot_username: string;
+  token_set: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * POST /api/v1/projects/{id}/integrations body (owner). `token` is the write-only
+ * bot credential (never echoed). The server verifies it against the provider
+ * (discovering bot_username) and validates `host` against the cluster allowlist
+ * (400 host_not_allowed). cred_type defaults to "pat".
+ */
+export interface CreateIntegrationInput {
+  name?: string;
+  provider: GitProvider;
+  host: string;
+  cred_type?: string;
+  token: string;
+}
+
+/**
+ * PATCH /api/v1/integrations/{id} body (owner). `name` renames; `token` rotates
+ * the credential (re-verified; refreshes bot_username). host/provider are
+ * immutable. token is write-only and cannot be cleared (delete to remove).
+ */
+export interface UpdateIntegrationInput {
+  name?: string;
+  token?: string;
+}
+
+export interface IntegrationsEnvelope {
+  integrations: Integration[];
+}
+
+export interface ProviderReposEnvelope {
+  repos: ProviderRepo[];
 }
 
 /* ---- model catalog + project grants (D21) -------------------------------- */
@@ -642,12 +713,13 @@ export interface CreateProjectInput {
  * Presence semantics mirror the server: an OMITTED field is left unchanged; a
  * numeric guardrail sent as `null` clears it back to the cluster default. Reserved
  * system keys in injected_env are rejected server-side (400 reserved_env_key).
+ * NOTE: `provider_allowlist` is deliberately NOT typed here (D20 / F5) — the
+ * server rejects a PATCH carrying it with 400 deprecated_key.
  */
 export interface UpdateProjectInput {
   name?: string;
   max_concurrent_runs?: number | null;
   run_timeout_secs?: number | null;
-  provider_allowlist?: string[];
   injected_env?: Record<string, string>;
   /** Session guardrails (D22) — null clears back to the cluster default. */
   max_live_sessions?: number | null;
@@ -708,6 +780,12 @@ export interface CreateServiceInput {
   default_branch?: string;
   /** The provider's numeric repo id (from the repo picker) — rename-proof identity. */
   provider_repo_id?: number;
+  /**
+   * Bind the new service to a project integration (D19 / F5). When set, a MEMBER
+   * (not just owner) may create the service, the repo must be reachable by the
+   * integration's bot token, and the service's provider comes from the integration.
+   */
+  integration_id?: string;
 }
 
 /** One entry from GET /providers/{id}/repos — the onboarding repo picker. */

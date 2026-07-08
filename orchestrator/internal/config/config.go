@@ -84,6 +84,13 @@ type Config struct {
 	GiteaURL   string // GITEA_URL — Gitea base URL for the PR API + push origin
 	GiteaToken string // GITEA_TOKEN — PAT used by the orchestrator to clone/push/PR on behalf of legacy/service-principal runs (M3; never injected into the runner)
 
+	// AllowedGitHosts is ALLOWED_GIT_HOSTS (D20 / F5): a comma-separated cluster
+	// allowlist of git hosts an integration may target. Empty => no restriction
+	// (any host). Compared host-normalised (domain.NormalizeGitHost) so a full URL
+	// or a bare host both match. Read-only in the console (Cluster page card);
+	// integration create rejects a host not in the list with 400 host_not_allowed.
+	AllowedGitHosts []string
+
 	// SourceBundleTTL is SOURCE_BUNDLE_TTL (default 10m): how long an
 	// orchestrator-generated source bundle is cached on disk before regeneration
 	// (M3 fetch path — GET /internal/v1/runs/{id}/source).
@@ -183,6 +190,7 @@ func Load() (*Config, error) {
 		RunnerDockerArgs:       strings.Fields(os.Getenv("RUNNER_DOCKER_ARGS")),
 		GiteaURL:               os.Getenv("GITEA_URL"),
 		GiteaToken:             os.Getenv("GITEA_TOKEN"),
+		AllowedGitHosts:        splitCSV(os.Getenv("ALLOWED_GIT_HOSTS")),
 		SourceBundleTTL:        getdur("SOURCE_BUNDLE_TTL", 10*time.Minute),
 		WebhookSecret:          os.Getenv("WEBHOOK_SECRET"),
 		WebhookURL:             os.Getenv("WEBHOOK_URL"),
@@ -304,6 +312,18 @@ func getdur(k string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+// splitCSV splits a comma-separated env value into trimmed, non-empty entries.
+// An empty/whitespace input yields nil (no entries).
+func splitCSV(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func getbool(k string, def bool) bool {

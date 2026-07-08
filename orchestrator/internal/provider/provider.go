@@ -10,6 +10,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/cnjack/jcloud/internal/domain"
@@ -91,6 +92,18 @@ type RepoLister interface {
 	ListRepos(ctx context.Context, query string, page, limit int) ([]Repo, error)
 }
 
+// CurrentUser reports the username the authenticated token acts as. It backs the
+// integration connectivity check + bot_username discovery (D19 / F5): an
+// integration create/rotate calls it with the supplied token, so a bad/expired
+// token fails visibly (400 with the provider's error) and the returned username is
+// stored as the integration's bot_username. All three concrete clients implement
+// it — callers type-assert the client.
+type CurrentUser interface {
+	// CurrentUser returns the token's account username, or an error when the token
+	// is rejected / the host is unreachable.
+	CurrentUser(ctx context.Context) (string, error)
+}
+
 // Factory builds a Provider client for a given git host authenticated with a
 // specific token (the triggering user's OAuth token, or the fallback gitea PAT).
 // The M3 draft-PR / review passes act with the token that owns the change, so a
@@ -129,6 +142,81 @@ func (f *httpFactory) PRClient(prov domain.GitProvider, token, scheme string) (P
 	default:
 		return nil, ErrNotConfigured
 	}
+}
+
+// IntegrationClient builds a REST client for an integration's host + token
+// (D19 / F5). Unlike Factory.PRClient (fixed public/cluster hosts), it derives the
+// base URL from the integration host so a self-hosted gitea or an enterprise
+// github/gitlab is reachable. The returned value satisfies Provider and — for all
+// three concrete clients — RepoLister + CurrentUser (type-assert as needed). A PAT
+// authenticates with the "token" scheme on gitea; github/gitlab clients Bearer the
+// token internally. ErrNotConfigured when host/token is empty or the provider is
+// unknown.
+func IntegrationClient(prov domain.GitProvider, host, token string) (Provider, error) {
+	base := integrationBaseURL(host)
+	if base == "" || strings.TrimSpace(token) == "" {
+		return nil, ErrNotConfigured
+	}
+	switch prov {
+	case domain.ProviderGitea:
+		c, err := NewGiteaClientWithScheme(base, token, "token")
+		if err != nil {
+			return nil, err
+		}
+		disableRedirects(c.http)
+		return c, nil
+	case domain.ProviderGitHub:
+		c, err := NewGitHubClient(githubAPIBase(base), token)
+		if err != nil {
+			return nil, err
+		}
+		disableRedirects(c.http)
+		return c, nil
+	case domain.ProviderGitLab:
+		c, err := NewGitLabClient(base+"/api/v4", token)
+		if err != nil {
+			return nil, err
+		}
+		disableRedirects(c.http)
+		return c, nil
+	default:
+		return nil, ErrNotConfigured
+	}
+}
+
+// disableRedirects hardens an HTTP client against redirect-based SSRF (F5
+// security review C1①). Integration hosts are USER-SUPPLIED: a malicious host
+// could answer the connectivity probe / repo listing with a 30x aimed at an
+// internal address and bounce the orchestrator's authenticated request there.
+// Provider REST APIs never legitimately redirect, so refuse to follow ANY —
+// the 3xx surfaces as a visible error instead of a silent internal request.
+func disableRedirects(hc *http.Client) {
+	hc.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return errors.New("integration hosts must answer directly: redirects are not followed (SSRF hardening)")
+	}
+}
+
+// integrationBaseURL turns an integration host into a base URL: a value already
+// carrying a scheme is used verbatim (trailing slash trimmed); a bare host defaults
+// to https. Returns "" for empty input.
+func integrationBaseURL(host string) string {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return ""
+	}
+	if strings.Contains(h, "://") {
+		return strings.TrimRight(h, "/")
+	}
+	return "https://" + strings.TrimRight(h, "/")
+}
+
+// githubAPIBase maps a github base URL to its REST API base: public github.com →
+// api.github.com; an enterprise host → <base>/api/v3.
+func githubAPIBase(base string) string {
+	if domain.NormalizeGitHost(base) == "github.com" {
+		return "https://api.github.com"
+	}
+	return strings.TrimRight(base, "/") + "/api/v3"
 }
 
 // SplitRepo splits an "owner/name" repo identifier. Extra path segments beyond

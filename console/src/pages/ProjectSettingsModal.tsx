@@ -1,17 +1,20 @@
 /*
  * ProjectSettingsModal — owner/cluster-admin project settings (blueprint §2/§5).
- * Two tabs:
+ * Tabs:
  *   - General: project rename, the guardrails editor (owner only — concurrency
- *     cap, run timeout, provider allowlist, injected env), and a Delete-project
- *     action behind a confirm step. Repo config (branch / git mode) lives on each
- *     repository on the project page — a project is a pure container.
+ *     cap, run timeout, injected env), and a Delete-project action behind a
+ *     confirm step. Repo config (branch / git mode) lives on each repository on
+ *     the project page — a project is a pure container.
  *   - Members: roster with role management + add-by-search (MembersPanel).
+ *   - Integrations (D19 / F5): git host bindings with a bot credential (owner).
+ *   - Kanban: jtype board→service bindings (owner).
  */
 import { useState } from 'react';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
 import { MembersPanel } from './MembersPanel';
+import { IntegrationsPanel } from './IntegrationsPanel';
 import {
   useUpdateProject,
   useDeleteProject,
@@ -23,11 +26,10 @@ import {
 import { useToast } from '../components/Toast';
 import { ApiError } from '../api/client';
 import { isReservedEnvKey, isValidEnvKey } from '../lib/env';
-import { ALLOWLIST_PROVIDERS } from '../lib/providers';
 import type { KanbanLink, Project, UpdateProjectInput } from '../api/types';
 import styles from './ProjectSettingsModal.module.css';
 
-type Tab = 'general' | 'members' | 'kanban';
+type Tab = 'general' | 'members' | 'integrations' | 'kanban';
 
 interface EnvRow {
   key: string;
@@ -54,12 +56,6 @@ function rowsToEnv(rows: EnvRow[]): Record<string, string> {
 
 function envToRows(env: Record<string, string> | undefined): EnvRow[] {
   return Object.entries(env ?? {}).map(([key, value]) => ({ key, value }));
-}
-
-function sameStringSet(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  const s = new Set(a);
-  return b.every((x) => s.has(x));
 }
 
 function sameEnv(a: Record<string, string>, b: Record<string, string>): boolean {
@@ -99,7 +95,6 @@ export function ProjectSettingsModal({
   const [runTimeout, setRunTimeout] = useState(
     project.run_timeout_secs != null ? String(project.run_timeout_secs) : '',
   );
-  const [allowlist, setAllowlist] = useState<string[]>(project.provider_allowlist ?? []);
   const [envRows, setEnvRows] = useState<EnvRow[]>(envToRows(project.injected_env));
 
   const busy = update.isPending || del.isPending;
@@ -120,7 +115,6 @@ export function ProjectSettingsModal({
     setName(project.name);
     setMaxConcurrent(project.max_concurrent_runs != null ? String(project.max_concurrent_runs) : '');
     setRunTimeout(project.run_timeout_secs != null ? String(project.run_timeout_secs) : '');
-    setAllowlist(project.provider_allowlist ?? []);
     setEnvRows(envToRows(project.injected_env));
     setConfirmDelete(false);
     setTab('general');
@@ -130,10 +124,6 @@ export function ProjectSettingsModal({
     if (busy) return;
     reset();
     onClose();
-  };
-
-  const toggleProvider = (p: string) => {
-    setAllowlist((cur) => (cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p]));
   };
 
   const save = (e: React.FormEvent) => {
@@ -153,11 +143,6 @@ export function ProjectSettingsModal({
 
       const nextTimeout = parseGuardrail(runTimeout);
       if (nextTimeout !== (project.run_timeout_secs ?? null)) input.run_timeout_secs = nextTimeout;
-
-      const nextAllow = allowlist.map((p) => p.toLowerCase());
-      if (!sameStringSet(nextAllow, project.provider_allowlist ?? [])) {
-        input.provider_allowlist = nextAllow;
-      }
 
       const nextEnv = rowsToEnv(envRows);
       if (!sameEnv(nextEnv, project.injected_env ?? {})) input.injected_env = nextEnv;
@@ -255,6 +240,19 @@ export function ProjectSettingsModal({
           <button
             type="button"
             role="tab"
+            aria-selected={tab === 'integrations'}
+            className={styles.tab}
+            data-active={tab === 'integrations' || undefined}
+            onClick={() => setTab('integrations')}
+            data-testid="tab-integrations"
+          >
+            Integrations
+          </button>
+        )}
+        {canManage && (
+          <button
+            type="button"
+            role="tab"
             aria-selected={tab === 'kanban'}
             className={styles.tab}
             data-active={tab === 'kanban' || undefined}
@@ -312,26 +310,6 @@ export function ProjectSettingsModal({
                     autoComplete="off"
                   />
                 </div>
-
-                <fieldset className={styles.allowlist} data-testid="settings-allowlist">
-                  <legend className={styles.allowlistLegend}>Provider allowlist</legend>
-                  <span className={styles.guardrailHint}>
-                    Restrict which git hosts a repository may target. Select none to allow all.
-                  </span>
-                  <div className={styles.allowlistRow}>
-                    {ALLOWLIST_PROVIDERS.map((p) => (
-                      <label key={p} className={styles.checkLabel}>
-                        <input
-                          type="checkbox"
-                          checked={allowlist.includes(p)}
-                          onChange={() => toggleProvider(p)}
-                          data-testid={`allowlist-${p}`}
-                        />
-                        {p}
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
 
                 <div className={styles.envBlock} data-testid="settings-injected-env">
                   <div className={styles.guardrailHead}>
@@ -459,6 +437,8 @@ export function ProjectSettingsModal({
         </form>
       ) : tab === 'members' ? (
         <MembersPanel projectId={project.id} canManage={canManage} />
+      ) : tab === 'integrations' ? (
+        <IntegrationsPanel project={project} />
       ) : (
         <KanbanPanel project={project} />
       )}

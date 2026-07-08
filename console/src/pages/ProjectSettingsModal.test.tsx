@@ -13,13 +13,16 @@ import { ToastProvider } from '../components/Toast';
 import type { ApiClient } from '../api/client';
 import type {
   AddMemberInput,
+  CreateIntegrationInput,
   CreateKanbanLinkInput,
+  Integration,
   KanbanLink,
   Member,
   Project,
   UpdateProjectInput,
   UserSearchResult,
 } from '../api/types';
+import { ApiError } from '../api/client';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
 
 function baseProject(overrides: Partial<Project> = {}): Project {
@@ -147,22 +150,23 @@ describe('ProjectSettingsModal — General (PATCH)', () => {
 });
 
 describe('ProjectSettingsModal — Guardrails', () => {
-  it('edits the numeric limits and provider allowlist and PATCHes them', async () => {
+  it('edits the numeric limits and PATCHes them (no provider allowlist editor)', async () => {
     const project = baseProject();
     const { client, ctl } = makeClient(project);
     renderModal(client, project);
 
+    // The provider_allowlist editor was removed (D20/F5): git-host policy is now a
+    // cluster allowlist + integrations.
+    expect(screen.queryByTestId('settings-allowlist')).toBeNull();
+
     fireEvent.change(screen.getByTestId('settings-max-concurrent'), { target: { value: '3' } });
     fireEvent.change(screen.getByTestId('settings-run-timeout'), { target: { value: '600' } });
-    fireEvent.click(screen.getByTestId('allowlist-gitea'));
-    fireEvent.click(screen.getByTestId('allowlist-raw'));
     fireEvent.click(screen.getByTestId('project-settings-save'));
 
     await waitFor(() => expect(ctl.patches).toHaveLength(1));
     expect(ctl.patches[0]!.input).toEqual({
       max_concurrent_runs: 3,
       run_timeout_secs: 600,
-      provider_allowlist: ['gitea', 'raw'],
     });
   });
 
@@ -201,7 +205,6 @@ describe('ProjectSettingsModal — Guardrails', () => {
     const project = baseProject({
       max_concurrent_runs: 2,
       run_timeout_secs: 900,
-      provider_allowlist: ['gitea'],
       injected_env: { FOO: 'bar' },
     });
     const { client, ctl } = makeClient(project);
@@ -209,7 +212,6 @@ describe('ProjectSettingsModal — Guardrails', () => {
 
     expect((screen.getByTestId('settings-max-concurrent') as HTMLInputElement).value).toBe('2');
     expect((screen.getByTestId('settings-run-timeout') as HTMLInputElement).value).toBe('900');
-    expect((screen.getByTestId('allowlist-gitea') as HTMLInputElement).checked).toBe(true);
     expect((screen.getByTestId('env-key-0') as HTMLInputElement).value).toBe('FOO');
 
     // Change only the name — the unchanged guardrails must NOT be in the payload.
@@ -433,5 +435,80 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     fireEvent.click(screen.getByTestId('kanban-token-save-kl-1'));
     await waitFor(() => expect(kctl.updates).toHaveLength(2));
     expect(kctl.updates[1]).toEqual({ projectId: 'p1', linkId: 'kl-1', token: '' });
+  });
+});
+
+describe('ProjectSettingsModal — Integrations tab (D19 / F5)', () => {
+  interface IntegCtl {
+    creates: { projectId: string; input: CreateIntegrationInput }[];
+    list: Integration[];
+    createErr?: ApiError;
+  }
+
+  function integClient(project: Project, opts: { seed?: Integration[]; createErr?: ApiError } = {}) {
+    const ictl: IntegCtl = { creates: [], list: opts.seed ?? [], createErr: opts.createErr };
+    const client: Partial<ApiClient> = {
+      updateProject: async (_id, input) => ({ ...project, ...input }) as Project,
+      listIntegrations: async () => [...ictl.list],
+      createIntegration: async (projectId, input) => {
+        if (ictl.createErr) throw ictl.createErr;
+        ictl.creates.push({ projectId, input });
+        const integ: Integration = {
+          id: 'integ-new', project_id: projectId, name: input.name || 'default',
+          provider: input.provider, host: input.host, cred_type: 'pat',
+          bot_username: `${input.provider}-bot`, token_set: true,
+          created_at: '2026-01-02T00:00:00Z', updated_at: '2026-01-02T00:00:00Z',
+        };
+        ictl.list.push(integ);
+        return integ;
+      },
+    };
+    return { client: client as ApiClient, ictl };
+  }
+
+  it('owner sees the Integrations tab; a member does not', () => {
+    const { client } = integClient(baseProject());
+    renderModal(client, baseProject());
+    expect(screen.getByTestId('tab-integrations')).toBeTruthy();
+
+    const { client: c2 } = integClient(baseProject({ role: 'member' }));
+    renderModal(c2, baseProject({ role: 'member' }));
+    expect(screen.queryAllByTestId('tab-integrations').length).toBe(1); // only the owner one above
+  });
+
+  it('creates an integration with a write-only token', async () => {
+    const project = baseProject();
+    const { client, ictl } = integClient(project);
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-integrations'));
+    await waitFor(() => expect(screen.getByTestId('integrations-empty')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('integration-host'), { target: { value: 'gitea.example.com' } });
+    fireEvent.change(screen.getByTestId('integration-token'), { target: { value: 'bot-pat' } });
+    fireEvent.click(screen.getByTestId('integration-add'));
+
+    await waitFor(() => expect(ictl.creates).toHaveLength(1));
+    expect(ictl.creates[0]).toEqual({
+      projectId: 'p1',
+      input: { name: undefined, provider: 'gitea', host: 'gitea.example.com', token: 'bot-pat' },
+    });
+  });
+
+  it('surfaces a host_not_allowed error readably', async () => {
+    const project = baseProject();
+    const err = new ApiError(400, 'the git host is not allowed', {
+      error: { code: 'host_not_allowed', message: 'the git host is not allowed' },
+    });
+    const { client } = integClient(project, { createErr: err });
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-integrations'));
+    fireEvent.change(screen.getByTestId('integration-host'), { target: { value: 'evil.example.com' } });
+    fireEvent.change(screen.getByTestId('integration-token'), { target: { value: 'x' } });
+    fireEvent.click(screen.getByTestId('integration-add'));
+
+    // The typed server message reaches the toast verbatim (fail-visible).
+    await waitFor(() => expect(screen.getByText('the git host is not allowed')).toBeTruthy());
   });
 });

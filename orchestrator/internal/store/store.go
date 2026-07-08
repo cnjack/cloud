@@ -346,6 +346,31 @@ type Store interface {
 	// error) so revoke is idempotent.
 	RevokeModel(ctx context.Context, modelID, projectID string) error
 
+	// --- Integrations (D19 / F5) ---------------------------------------------
+	// A project-level git host binding with a BOT service credential. token_enc
+	// stays encrypted on every read — the plaintext is NEVER returned over the API
+	// and is decrypted only in the credentials resolver.
+
+	// CreateIntegration inserts an integration. A duplicate (project_id, name)
+	// returns ErrAlreadyExists (mapped to 409). The caller pre-fills id/created_at.
+	CreateIntegration(ctx context.Context, in *domain.Integration) error
+	// GetIntegration returns an integration by id (ErrNotFound if absent).
+	GetIntegration(ctx context.Context, id string) (*domain.Integration, error)
+	// ListIntegrationsByProject returns a project's integrations, newest first.
+	ListIntegrationsByProject(ctx context.Context, projectID string) ([]domain.Integration, error)
+	// UpdateIntegration rotates the mutable fields (name / token_enc / bot_username,
+	// stamping updated_at). Host/provider/cred_type are immutable (delete + recreate
+	// to change a host). A duplicate name returns ErrAlreadyExists; a missing row
+	// returns ErrNotFound.
+	UpdateIntegration(ctx context.Context, in *domain.Integration) error
+	// DeleteIntegration removes an integration. services.integration_id referencing
+	// it is set NULL (those services fall back to the legacy credential path).
+	// ErrNotFound if absent.
+	DeleteIntegration(ctx context.Context, id string) error
+	// CountServicesUsingIntegration returns how many services are bound to an
+	// integration (owner-facing "N services will fall back" confirmation on delete).
+	CountServicesUsingIntegration(ctx context.Context, integrationID string) (int, error)
+
 	// --- Auth: users & identities (M2) ---------------------------------------
 	// CreateUserWithIdentity creates a new user together with its first identity
 	// in one transaction. It decides is_cluster_admin atomically: the user becomes

@@ -68,6 +68,33 @@ describe('SystemPage', () => {
     expect(screen.getByTestId('provider-status').textContent).toContain('enabled');
   });
 
+  it('shows the cluster git-host allowlist read-only (D20 / F5)', async () => {
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(
+        snapshot({
+          provider: {
+            gitea_enabled: true,
+            gitea_url: 'http://gitea:3000',
+            allowed_git_hosts: ['github.com', 'gitea.example.com'],
+          },
+        }),
+      ),
+    };
+    renderPage(client, 'cluster-admin');
+
+    await waitFor(() => expect(screen.getByTestId('system-cards')).toBeTruthy());
+    expect(screen.getByText('Allowed git hosts')).toBeTruthy();
+    expect(screen.getByText('github.com, gitea.example.com')).toBeTruthy();
+    expect(screen.getByTestId('allowed-git-hosts-hint')).toBeTruthy();
+  });
+
+  it('renders "unrestricted" when the git-host allowlist is empty', async () => {
+    const client = { getSystem: vi.fn().mockResolvedValue(snapshot()) }; // no allowed_git_hosts
+    renderPage(client, 'cluster-admin');
+    await waitFor(() => expect(screen.getByTestId('system-cards')).toBeTruthy());
+    expect(screen.getByText('unrestricted (any host)')).toBeTruthy();
+  });
+
   it('reflects the persistent-workspace switch as Off when disabled (Feature C)', async () => {
     const client = {
       getSystem: vi.fn().mockResolvedValue(

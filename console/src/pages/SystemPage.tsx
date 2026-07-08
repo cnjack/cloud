@@ -166,7 +166,19 @@ function SystemCards({ data }: { data: SystemInfo }) {
             value={provider.gitea_url || '—'}
             mono
           />
+          <Row
+            label="Allowed git hosts"
+            value={
+              provider.allowed_git_hosts && provider.allowed_git_hosts.length > 0
+                ? provider.allowed_git_hosts.join(', ')
+                : 'unrestricted (any host)'
+            }
+            mono
+          />
         </dl>
+        <p className={styles.cardHint} data-testid="allowed-git-hosts-hint">
+          Project integrations may only target these hosts (ALLOWED_GIT_HOSTS). Empty = any host.
+        </p>
       </Card>
 
       {/* Runner */}

@@ -333,47 +333,6 @@ func TestWebhookTaskCommandCreatesAgentRun(t *testing.T) {
 	}
 }
 
-// TestWebhookProviderNotAllowedReplies: when the project's provider_allowlist
-// forbids this repo's provider, a valid @jcode command must NOT create a run —
-// it replies on the PR explaining the guardrail (fail-visible), same as the model
-// gate. Here gitea is excluded from the allowlist.
-func TestWebhookProviderNotAllowedReplies(t *testing.T) {
-	st := store.NewMemStore()
-	ts, _, fake := newWebhookServer(t, st, webhookSecret)
-	member := mkGiteaUser(t, st, "dev", "1001") // first user => cluster admin
-	svc := seedWebhookProject(t, st, fake, "jcloud/seed", member, domain.RoleMember)
-
-	// Tighten the project's allowlist so gitea (this service's provider) is denied.
-	ctx := context.Background()
-	proj, err := st.GetProject(ctx, svc.ProjectID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proj.ProviderAllowlist = []string{"github"}
-	if err := st.UpdateProject(ctx, proj); err != nil {
-		t.Fatal(err)
-	}
-
-	body := commentPayload("created", true, 260, 1001, "@jcode Add a CONTRIBUTING.md", "jcloud/seed", 7)
-	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status=%d want 200", resp.StatusCode)
-	}
-
-	runs, _ := st.ListRunsByService(ctx, svc.ID, 10)
-	if len(runs) != 0 {
-		t.Fatalf("created %d runs, want 0 (provider not allowed)", len(runs))
-	}
-	if fake.CommentCount() != 1 {
-		t.Fatalf("posted %d comments, want 1 explanatory reply", fake.CommentCount())
-	}
-	if got := fake.Comments[0].Body; !bytes.Contains([]byte(got), []byte("guardrails")) ||
-		!bytes.Contains([]byte(got), []byte("gitea")) {
-		t.Fatalf("reply should explain the guardrail + name the provider; got %q", got)
-	}
-}
-
 // TestWebhookModelNotConfiguredReplies is the fail-visible gate on the webhook
 // path (CLAUDE.md red line #1): when no LLM is configured, a valid @jcode
 // command must NOT create a run — instead it replies on the PR pointing the user
@@ -609,5 +568,52 @@ func TestWebhookNoCommandIgnored(t *testing.T) {
 	runs, _ := st.ListRunsByService(context.Background(), svc.ID, 10)
 	if len(runs) != 0 || fake.CommentCount() != 0 {
 		t.Fatalf("a non-command comment must be a silent no-op (runs=%d comments=%d)", len(runs), fake.CommentCount())
+	}
+}
+
+// TestWebhookIntegrationHostGateReplies (F5 adjudication A): when the cluster
+// git-host allowlist no longer permits the host of the service's bound
+// integration, a valid @jcode command must NOT create a run — it replies on the
+// PR explaining the policy (fail-visible), same as the model gate.
+func TestWebhookIntegrationHostGateReplies(t *testing.T) {
+	st := store.NewMemStore()
+	ts, srv, fake := newWebhookServer(t, st, webhookSecret)
+	member := mkGiteaUser(t, st, "dev", "1001") // first user => cluster admin
+	svc := seedWebhookProject(t, st, fake, "jcloud/seed", member, domain.RoleMember)
+
+	// Bind the service to an integration whose host has since fallen out of the
+	// (tightened) cluster allowlist.
+	ctx := context.Background()
+	integ := &domain.Integration{
+		ID: domain.NewID(), ProjectID: svc.ProjectID, Name: "default",
+		Provider: domain.ProviderGitea, Host: "http://gitea.test", CredType: domain.CredTypePAT,
+		TokenEnc: []byte("sealed"), CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateIntegration(ctx, integ); err != nil {
+		t.Fatal(err)
+	}
+	svc.IntegrationID = &integ.ID
+	if err := st.UpdateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.AllowedGitHosts = []string{"github.com"} // gitea.test now disallowed
+
+	body := commentPayload("created", true, 270, 1001, "@jcode Add a CONTRIBUTING.md", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+
+	runs, _ := st.ListRunsByService(ctx, svc.ID, 10)
+	if len(runs) != 0 {
+		t.Fatalf("created %d runs, want 0 (integration host not allowed)", len(runs))
+	}
+	if fake.CommentCount() != 1 {
+		t.Fatalf("posted %d comments, want 1 explanatory reply", fake.CommentCount())
+	}
+	if got := fake.Comments[0].Body; !bytes.Contains([]byte(got), []byte("allowed git hosts")) ||
+		!bytes.Contains([]byte(got), []byte("gitea.test")) {
+		t.Fatalf("reply should explain the host policy + name the host; got %q", got)
 	}
 }

@@ -253,6 +253,18 @@ func (s *Server) Handler() http.Handler {
 	// (never the base_url or key) plus an env_fallback flag for the ModelGate.
 	mux.Handle("GET /api/v1/projects/{id}/models", s.authed(s.handleListProjectModels))
 
+	// Integrations (D19 / F5) — project-level git host bindings with a bot
+	// credential. Listing + repo discovery are member+ (a member may add a repo off
+	// a project's existing integration); create/rotate/delete are owner-managed. The
+	// token is write-only (never echoed); create/rotate verify connectivity to the
+	// provider (discovering bot_username) and validate the host against the cluster
+	// allowlist (D20).
+	mux.Handle("GET /api/v1/projects/{id}/integrations", s.authed(s.handleListIntegrations))
+	mux.Handle("POST /api/v1/projects/{id}/integrations", s.authed(s.handleCreateIntegration))
+	mux.Handle("GET /api/v1/projects/{id}/integrations/{iid}/repos", s.authed(s.handleListIntegrationRepos))
+	mux.Handle("PATCH /api/v1/integrations/{iid}", s.authed(s.handleUpdateIntegration))
+	mux.Handle("DELETE /api/v1/integrations/{iid}", s.authed(s.handleDeleteIntegration))
+
 	// Kanban links a project owns (F6 / D25). Owner-managed: bind a jtype board
 	// column to one of the project's services, with an optional per-link jtype PAT
 	// (write-only). Board columns are validated against the live jtype board at

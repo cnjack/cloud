@@ -145,5 +145,18 @@ func (c *GitHubClient) ListRepos(ctx context.Context, query string, page, limit 
 	return repos, nil
 }
 
+// CurrentUser returns the token account's login (GET /user; D19 / F5).
+func (c *GitHubClient) CurrentUser(ctx context.Context) (string, error) {
+	url := fmt.Sprintf("%s/user", c.apiBase)
+	var u struct {
+		Login string `json:"login"`
+	}
+	if err := doJSON(ctx, c.http, http.MethodGet, url, c.auth(), c.accept(), nil, &u); err != nil {
+		return "", err
+	}
+	return u.Login, nil
+}
+
 var _ Provider = (*GitHubClient)(nil)
 var _ RepoLister = (*GitHubClient)(nil)
+var _ CurrentUser = (*GitHubClient)(nil)

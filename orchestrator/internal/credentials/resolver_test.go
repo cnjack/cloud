@@ -127,6 +127,153 @@ func TestResolveRefreshesExpired(t *testing.T) {
 	}
 }
 
+// mkIntegration seals token and stores an integration, returning it.
+func mkIntegration(t *testing.T, st *store.MemStore, cipher *auth.Cipher, projectID, name string, prov domain.GitProvider, token string) *domain.Integration {
+	t.Helper()
+	enc, err := cipher.EncryptString(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &domain.Integration{
+		ID: domain.NewID(), ProjectID: projectID, Name: name, Provider: prov,
+		Host: "git.example.com", CredType: domain.CredTypePAT, TokenEnc: enc,
+		BotUsername: "bot", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := st.CreateIntegration(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	return in
+}
+
+// TestResolveForServiceIntegrationWins: a service bound to an integration ALWAYS
+// resolves the integration bot token, ignoring the triggering user's personal
+// OAuth (D19 / F5). This is the core of the priority matrix.
+func TestResolveForServiceIntegrationWins(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	cipher := testCipher(t)
+
+	// A triggering user WITH their own stored OAuth token that must be ignored.
+	userEnc, _ := cipher.EncryptString("personal-oauth")
+	uid := domain.NewID()
+	_, _ = st.CreateUserWithIdentity(ctx, &domain.User{ID: uid, DisplayName: "u"},
+		&domain.UserIdentity{ID: domain.NewID(), Provider: domain.ProviderGitea, ProviderUID: "1",
+			Username: "alice", AccessTokenEnc: userEnc, CreatedAt: time.Now()})
+
+	in := mkIntegration(t, st, cipher, "proj1", "default", domain.ProviderGitea, "bot-pat")
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: "proj1", Provider: domain.ProviderGitea, IntegrationID: &in.ID}
+
+	r := NewResolver(st, cipher, nil, "the-pat", nil)
+	tok, err := r.ResolveForService(ctx, svc, &uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.Value != "bot-pat" {
+		t.Fatalf("value=%q want bot-pat (integration wins over personal OAuth)", tok.Value)
+	}
+	if tok.Scheme != "token" || tok.Source != "integration:default" {
+		t.Fatalf("tok=%+v want gitea token scheme + integration source", tok)
+	}
+}
+
+// TestResolveForServiceIntegrationSchemeByProvider: github/gitlab integration
+// tokens Bearer; gitea uses the token scheme.
+func TestResolveForServiceIntegrationSchemeByProvider(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	cipher := testCipher(t)
+	for _, tc := range []struct {
+		prov       domain.GitProvider
+		wantScheme string
+	}{
+		{domain.ProviderGitea, "token"},
+		{domain.ProviderGitHub, "Bearer"},
+		{domain.ProviderGitLab, "Bearer"},
+	} {
+		in := mkIntegration(t, st, cipher, "p", string(tc.prov), tc.prov, "tok-"+string(tc.prov))
+		svc := &domain.Service{ID: domain.NewID(), ProjectID: "p", Provider: tc.prov, IntegrationID: &in.ID}
+		tok, err := NewResolver(st, cipher, nil, "", nil).ResolveForService(ctx, svc, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tok.Scheme != tc.wantScheme {
+			t.Fatalf("%s scheme=%q want %q", tc.prov, tok.Scheme, tc.wantScheme)
+		}
+	}
+}
+
+// TestResolveForServiceUnboundFallsBack: a service with NO integration keeps the
+// legacy path — the triggering user's personal OAuth, then the gitea PAT.
+func TestResolveForServiceUnboundFallsBack(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	cipher := testCipher(t)
+	userEnc, _ := cipher.EncryptString("personal-oauth")
+	uid := domain.NewID()
+	_, _ = st.CreateUserWithIdentity(ctx, &domain.User{ID: uid, DisplayName: "u"},
+		&domain.UserIdentity{ID: domain.NewID(), Provider: domain.ProviderGitea, ProviderUID: "1",
+			Username: "alice", AccessTokenEnc: userEnc, CreatedAt: time.Now()})
+
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: "p", Provider: domain.ProviderGitea} // no integration
+	r := NewResolver(st, cipher, nil, "the-pat", nil)
+
+	// With a user: personal OAuth.
+	tok, err := r.ResolveForService(ctx, svc, &uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.Value != "personal-oauth" || tok.Source != "user_oauth:alice" {
+		t.Fatalf("tok=%+v want personal OAuth", tok)
+	}
+	// Without a user: gitea PAT fallback.
+	tok, err = r.ResolveForService(ctx, svc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.Value != "the-pat" || tok.Source != "gitea_pat" {
+		t.Fatalf("tok=%+v want gitea PAT fallback", tok)
+	}
+}
+
+// TestResolveForServiceDecryptFailIsFailVisible: an integration whose token cannot
+// be decrypted (no cipher) is a FAIL-VISIBLE error — NEVER a silent fall back to
+// the triggering user's personal OAuth (CLAUDE.md red line #1).
+func TestResolveForServiceDecryptFailIsFailVisible(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	cipher := testCipher(t)
+
+	// A user with a working personal token that must NOT be used as a fallback.
+	userEnc, _ := cipher.EncryptString("personal-oauth")
+	uid := domain.NewID()
+	_, _ = st.CreateUserWithIdentity(ctx, &domain.User{ID: uid, DisplayName: "u"},
+		&domain.UserIdentity{ID: domain.NewID(), Provider: domain.ProviderGitea, ProviderUID: "1",
+			Username: "alice", AccessTokenEnc: userEnc, CreatedAt: time.Now()})
+
+	in := mkIntegration(t, st, cipher, "p", "default", domain.ProviderGitea, "bot-pat")
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: "p", Provider: domain.ProviderGitea, IntegrationID: &in.ID}
+
+	// Resolver built WITHOUT a cipher: the sealed integration token cannot be opened.
+	r := NewResolver(st, nil, nil, "the-pat", nil)
+	_, err := r.ResolveForService(ctx, svc, &uid)
+	if !errors.Is(err, ErrIntegrationCredential) {
+		t.Fatalf("err=%v want ErrIntegrationCredential (no silent personal-OAuth fallback)", err)
+	}
+}
+
+// TestResolveForServiceMissingIntegrationIsFailVisible: a dangling integration id
+// (integration deleted mid-flight) is a fail-visible error, not a fallback.
+func TestResolveForServiceMissingIntegrationIsFailVisible(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	missing := "does-not-exist"
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: "p", Provider: domain.ProviderGitea, IntegrationID: &missing}
+	r := NewResolver(st, testCipher(t), nil, "the-pat", nil)
+	if _, err := r.ResolveForService(ctx, svc, nil); !errors.Is(err, ErrIntegrationCredential) {
+		t.Fatalf("err=%v want ErrIntegrationCredential", err)
+	}
+}
+
 // TestAuthedURL covers the per-provider userinfo injection + passthroughs.
 func TestAuthedURL(t *testing.T) {
 	cases := []struct {

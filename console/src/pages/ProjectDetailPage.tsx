@@ -21,6 +21,8 @@ import {
   useProviderRepos,
   useProjectModels,
   useUpdateService,
+  useIntegrations,
+  useIntegrationRepos,
 } from '../api/queries';
 import { useOptionalAuth } from '../auth/AuthProvider';
 import { useModelGate } from '../components/ModelGate';
@@ -88,7 +90,9 @@ export function ProjectDetailPage() {
   const [pickerProvider, setPickerProvider] = useState('gitea');
   const [repoQuery, setRepoQuery] = useState('');
   const deferredQuery = useDeferredValue(repoQuery);
-  const providerRepos = useProviderRepos(pickerProvider, deferredQuery, addOpen);
+  // Source of the picker: '' = Direct (owner's own credential); an id = that
+  // integration's bot. A member (no Direct option) defaults to the first integration.
+  const [pickerIntegrationId, setPickerIntegrationId] = useState('');
 
   const p = project.data;
   const services = useMemo(() => p?.services ?? [], [p]);
@@ -97,6 +101,42 @@ export function ProjectDetailPage() {
   const role = p?.role ?? 'owner';
   const canRun = role !== 'viewer';
   const canManage = role === 'owner';
+
+  // Integrations (D19 / F5): a member can add a repo off an existing integration
+  // (the integration's bot lists the repos). Loaded EAGERLY for any member+ once
+  // the project (and thus the role) is known — NOT gated on the add-repo card
+  // being open: the member's only entry button is itself gated on this data (it
+  // appears once an integration exists), so gating the query on the open card
+  // would deadlock the member path (query never enabled → button never renders).
+  const integrationsQuery = useIntegrations(projectId, !!p && canRun);
+  const availableIntegrations = useMemo(
+    () => integrationsQuery.data ?? [],
+    [integrationsQuery.data],
+  );
+
+  // Repo-add source (D19 / F5). An owner can add directly (their credential) OR via
+  // an integration; a member can only add via an integration. effectiveIntegrationId
+  // resolves the picker source: for a member, default to the first integration.
+  const effectiveIntegrationId =
+    pickerIntegrationId || (!canManage ? availableIntegrations[0]?.id ?? '' : '');
+  const integrationMode = effectiveIntegrationId !== '';
+  // The add-repo entry shows for an owner always, and for a member once the
+  // project has at least one integration to add through.
+  const canAddRepo = canManage || (canRun && availableIntegrations.length > 0);
+  // Fail-visible empty state (D19): a member with NO integration cannot add a
+  // repository — say so instead of silently hiding the affordance. Only once the
+  // list has actually loaded (no flash while fetching).
+  const memberNeedsIntegration =
+    canRun && !canManage && integrationsQuery.isSuccess && availableIntegrations.length === 0;
+  // Direct provider picker (owner-only path); integration picker uses the bot token.
+  const providerRepos = useProviderRepos(pickerProvider, deferredQuery, addOpen && !integrationMode && canManage);
+  const integrationRepos = useIntegrationRepos(
+    projectId,
+    effectiveIntegrationId,
+    deferredQuery,
+    addOpen && integrationMode,
+  );
+  const repoList = integrationMode ? integrationRepos : providerRepos;
 
   // Fail-visible (Feature A): a run cannot start without an LLM configured, so
   // the composer disables itself and explains why rather than letting the user
@@ -164,15 +204,28 @@ export function ProjectDetailPage() {
   // for), and the numeric provider_repo_id as its rename-proof identity.
   const pickRepo = (r: ProviderRepo) => {
     const name = r.full_name.split('/').pop() || r.full_name;
+    // Integration mode (D19 / F5): bind the service to the integration (its
+    // provider is authoritative; a member may do this). Direct mode is the legacy
+    // owner picker keyed by the selected provider tab.
+    const input = integrationMode
+      ? {
+          name,
+          owner_name: r.full_name,
+          integration_id: effectiveIntegrationId,
+          default_branch: r.default_branch || 'main',
+          git_mode: 'draft_pr' as GitMode,
+          provider_repo_id: r.id,
+        }
+      : {
+          name,
+          provider: pickerProvider as GitProvider,
+          owner_name: r.full_name,
+          default_branch: r.default_branch || 'main',
+          git_mode: 'draft_pr' as GitMode,
+          provider_repo_id: r.id,
+        };
     createService.mutate(
-      {
-        name,
-        provider: pickerProvider as GitProvider,
-        owner_name: r.full_name,
-        default_branch: r.default_branch || 'main',
-        git_mode: 'draft_pr',
-        provider_repo_id: r.id,
-      },
+      input,
       {
         onSuccess: () => {
           toast.push({ kind: 'success', message: `Repository “${r.full_name}” added.` });
@@ -488,15 +541,36 @@ export function ProjectDetailPage() {
         )}
 
         {/* Low-key "add another repository" affordance — turns the project into a
-            multi-repo project and reveals the composer's repository selector. */}
-        {canManage && (
+            multi-repo project and reveals the composer's repository selector. An
+            owner can add directly or via an integration; a member can add via a
+            project integration (D19 / F5). */}
+        {canAddRepo && (
           <div className={styles.addRepo}>
             {addOpen ? (
               <Card className={styles.addRepoCard}>
-                {/* Drone-style picker: search what your provider credential can
-                    see and one-click attach; manual URL entry remains below. */}
+                {/* Drone-style picker: search what your credential (or an
+                    integration's bot) can see and one-click attach. */}
                 <div className={styles.repoPicker} data-testid="repo-picker">
-                  {pickerProviders.length > 1 && (
+                  {/* Source selector (D19 / F5): Direct (owner) and/or integrations. */}
+                  {(availableIntegrations.length > 0 || canManage) && (
+                    <label className={styles.pickerHint} style={{ display: 'block' }}>
+                      Source
+                      <select
+                        value={effectiveIntegrationId}
+                        onChange={(e) => setPickerIntegrationId(e.target.value)}
+                        data-testid="repo-source-select"
+                        style={{ display: 'block', width: '100%', marginTop: 4 }}
+                      >
+                        {canManage && <option value="">Direct (your credential)</option>}
+                        {availableIntegrations.map((i) => (
+                          <option key={i.id} value={i.id}>
+                            {i.name} · {i.provider} · @{i.bot_username}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {!integrationMode && pickerProviders.length > 1 && (
                     <div className={styles.pickerTabs} role="tablist">
                       {pickerProviders.map((id) => (
                         <button
@@ -521,20 +595,20 @@ export function ProjectDetailPage() {
                     data-testid="repo-picker-search"
                     autoComplete="off"
                   />
-                  {providerRepos.isLoading ? (
+                  {repoList.isLoading ? (
                     <p className={styles.pickerHint}>Loading repositories…</p>
-                  ) : providerRepos.isError ? (
+                  ) : repoList.isError ? (
                     <p className={styles.pickerHint} data-testid="repo-picker-error">
-                      {providerRepos.error instanceof ApiError
-                        ? providerRepos.error.message
-                        : `Couldn't list ${pickerProvider} repositories.`}{' '}
-                      Add the repository by URL below instead.
+                      {repoList.error instanceof ApiError
+                        ? repoList.error.message
+                        : `Couldn't list ${integrationMode ? 'integration' : pickerProvider} repositories.`}
+                      {!integrationMode && ' Add the repository by URL below instead.'}
                     </p>
-                  ) : providerRepos.data && providerRepos.data.length === 0 ? (
+                  ) : repoList.data && repoList.data.length === 0 ? (
                     <p className={styles.pickerHint}>No repositories match.</p>
                   ) : (
                     <ul className={styles.pickerList}>
-                      {(providerRepos.data ?? []).map((r) => (
+                      {(repoList.data ?? []).map((r) => (
                         <li key={r.id}>
                           <button
                             type="button"
@@ -556,8 +630,12 @@ export function ProjectDetailPage() {
                       ))}
                     </ul>
                   )}
-                  <div className={styles.pickerDivider}>or add by URL</div>
+                  {/* Manual URL entry is the owner-only Direct fallback. */}
+                  {!integrationMode && canManage && (
+                    <div className={styles.pickerDivider}>or add by URL</div>
+                  )}
                 </div>
+                {!integrationMode && canManage && (
                 <form onSubmit={submitRepo} noValidate className={styles.addRepoForm}>
                   <TextField
                     label="Repository name"
@@ -601,6 +679,20 @@ export function ProjectDetailPage() {
                     </Button>
                   </div>
                 </form>
+                )}
+                {integrationMode && (
+                  <div className={styles.addRepoActions}>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setAddOpen(false)}
+                      disabled={createService.isPending}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                )}
               </Card>
             ) : (
               <button
@@ -612,6 +704,18 @@ export function ProjectDetailPage() {
                 + Add repository
               </button>
             )}
+          </div>
+        )}
+
+        {/* Fail-visible empty state (D19 / F5): a member with no integration has
+            no way to add a repository — explain the path instead of silently
+            hiding the affordance. */}
+        {memberNeedsIntegration && (
+          <div className={styles.addRepo}>
+            <p className={styles.pickerHint} data-testid="add-repo-needs-integration">
+              Adding a repository needs a git integration — ask a project owner to
+              connect one under Project settings → Integrations.
+            </p>
           </div>
         )}
       </section>

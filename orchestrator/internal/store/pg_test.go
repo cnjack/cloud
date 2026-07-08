@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -46,6 +47,88 @@ func pgTestStore(t *testing.T) (*PGStore, string) {
 	}
 	t.Cleanup(func() { _ = st.DeleteProject(ctx, p.ID) }) // cascades runs/events
 	return st, r.ID
+}
+
+// TestPGIntegrationRoundTrip exercises the D19/F5 integration pgx paths that the
+// memory store cannot: the bytea token blob round-trip, unique(project_id,name),
+// UpdateIntegration rotation, the services.integration_id FK, and ON DELETE SET
+// NULL unbinding a bound service. Requires JCLOUD_PG_DSN.
+func TestPGIntegrationRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	dsn := os.Getenv("JCLOUD_PG_DSN")
+	if dsn == "" {
+		t.Skip("JCLOUD_PG_DSN not set; skipping Postgres-backed store test")
+	}
+	st, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := Migrate(ctx, st.Pool()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	p := &domain.Project{ID: domain.NewID(), Name: "integ-pg", CreatedAt: time.Now()}
+	if err := st.CreateProject(ctx, p); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	t.Cleanup(func() { _ = st.DeleteProject(ctx, p.ID) })
+
+	in := &domain.Integration{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		Provider: domain.ProviderGitea, Host: "gitea.example.com", CredType: domain.CredTypePAT,
+		TokenEnc: []byte{0x01, 0x02, 0x03, 0xff}, BotUsername: "bot1",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := st.CreateIntegration(ctx, in); err != nil {
+		t.Fatalf("create integration: %v", err)
+	}
+	// unique(project_id, name).
+	dup := *in
+	dup.ID = domain.NewID()
+	if err := st.CreateIntegration(ctx, &dup); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("dup create err=%v want ErrAlreadyExists", err)
+	}
+
+	got, err := st.GetIntegration(ctx, in.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if string(got.TokenEnc) != string(in.TokenEnc) || got.BotUsername != "bot1" || got.CredType != domain.CredTypePAT {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+
+	// Rotate token + bot_username.
+	in.TokenEnc = []byte{0xaa, 0xbb}
+	in.BotUsername = "bot2"
+	if err := st.UpdateIntegration(ctx, in); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	rot, _ := st.GetIntegration(ctx, in.ID)
+	if string(rot.TokenEnc) != "\xaa\xbb" || rot.BotUsername != "bot2" {
+		t.Fatalf("rotated mismatch: %+v", rot)
+	}
+
+	// Bind a service, then delete the integration → FK SET NULL unbinds it.
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: p.ID, Name: "widget",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea, RepoOwnerName: "acme/widget",
+		DefaultBranch: "main", IntegrationID: &in.ID, CreatedAt: time.Now()}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+	if n, _ := st.CountServicesUsingIntegration(ctx, in.ID); n != 1 {
+		t.Fatalf("count services=%d want 1", n)
+	}
+	if err := st.DeleteIntegration(ctx, in.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	unbound, err := st.GetService(ctx, svc.ID)
+	if err != nil {
+		t.Fatalf("get service: %v", err)
+	}
+	if unbound.IntegrationID != nil {
+		t.Fatalf("integration_id=%v want nil after delete (FK SET NULL)", *unbound.IntegrationID)
+	}
 }
 
 // TestPGProjectGuardrailsAndServiceRoundTrip exercises the pgx codec paths that

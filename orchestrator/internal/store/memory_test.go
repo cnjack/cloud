@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +28,79 @@ func seedRun(t *testing.T, m *MemStore) string {
 		t.Fatal(err)
 	}
 	return r.ID
+}
+
+// TestIntegrationStoreCRUD covers the D19/F5 integration store contract: create +
+// unique(project,name), get returns the sealed token blob (never plaintext), update
+// rotates token/bot_username, delete unbinds services, and list is project-scoped.
+func TestIntegrationStoreCRUD(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	proj := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
+	if err := m.CreateProject(ctx, proj); err != nil {
+		t.Fatal(err)
+	}
+
+	in := &domain.Integration{
+		ID: domain.NewID(), ProjectID: proj.ID, Name: "default",
+		Provider: domain.ProviderGitea, Host: "gitea.example.com", CredType: domain.CredTypePAT,
+		TokenEnc: []byte("sealed-1"), BotUsername: "bot1", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := m.CreateIntegration(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	// Duplicate (project,name) → ErrAlreadyExists.
+	dup := *in
+	dup.ID = domain.NewID()
+	if err := m.CreateIntegration(ctx, &dup); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("dup create err=%v want ErrAlreadyExists", err)
+	}
+
+	got, err := m.GetIntegration(ctx, in.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.TokenEnc) != "sealed-1" || got.BotUsername != "bot1" {
+		t.Fatalf("get=%+v", got)
+	}
+	// Defensive copy: mutating the returned blob must not corrupt the stored one.
+	got.TokenEnc[0] = 'X'
+	again, _ := m.GetIntegration(ctx, in.ID)
+	if string(again.TokenEnc) != "sealed-1" {
+		t.Fatal("GetIntegration returned an aliased token blob (must be a copy)")
+	}
+
+	// Rotate token + bot_username via update.
+	in.TokenEnc = []byte("sealed-2")
+	in.BotUsername = "bot2"
+	if err := m.UpdateIntegration(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	rot, _ := m.GetIntegration(ctx, in.ID)
+	if string(rot.TokenEnc) != "sealed-2" || rot.BotUsername != "bot2" {
+		t.Fatalf("rotated=%+v", rot)
+	}
+
+	// Bind a service, then delete the integration → service unbinds.
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: proj.ID, Name: "s",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea, RepoOwnerName: "a/b",
+		DefaultBranch: "main", IntegrationID: &in.ID, CreatedAt: time.Now()}
+	if err := m.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := m.CountServicesUsingIntegration(ctx, in.ID); n != 1 {
+		t.Fatalf("services using integration=%d want 1", n)
+	}
+	if err := m.DeleteIntegration(ctx, in.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.GetIntegration(ctx, in.ID); err != ErrNotFound {
+		t.Fatalf("get deleted err=%v want ErrNotFound", err)
+	}
+	unbound, _ := m.GetService(ctx, svc.ID)
+	if unbound.IntegrationID != nil {
+		t.Fatalf("service integration_id=%v want nil after delete", *unbound.IntegrationID)
+	}
 }
 
 // TestRunnerSeqIsServerAllocated proves the runner's client seq is NOT used as

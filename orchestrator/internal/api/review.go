@@ -60,9 +60,9 @@ func (s *Server) handleRequestReview(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Guardrail: a review run is a fresh dispatch — honour the project's
-	// provider_allowlist (403 if the service's provider is no longer permitted).
-	if !s.providerDispatchAllowed(w, r, svc) {
+	// Dispatch-time integration host gate (D20 / F5 adjudication A): a review run
+	// is a fresh dispatch — a since-tightened cluster allowlist blocks it.
+	if !s.integrationDispatchAllowed(w, r, svc) {
 		return
 	}
 
@@ -169,7 +169,7 @@ func (s *Server) prState(ctx context.Context, run *domain.Run, svc *domain.Servi
 	if !ok {
 		return unknown
 	}
-	tok, err := s.creds.Resolve(ctx, svc.Provider, run.TriggeredByUserID)
+	tok, err := s.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
 	if err != nil {
 		return unknown
 	}

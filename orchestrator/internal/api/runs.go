@@ -92,10 +92,10 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 	if !ok {
 		return
 	}
-	// Guardrail: the project's provider_allowlist may have been tightened AFTER
-	// this service was created — re-check at dispatch so a now-disallowed provider
-	// is a visible 403 rather than a run that quietly ignores policy.
-	if !s.providerDispatchAllowed(w, r, svc) {
+	// Dispatch-time integration host gate (D20 / F5 adjudication A): a tightened
+	// cluster allowlist stops EXISTING integrations immediately — a 403, not a run
+	// that quietly ignores policy.
+	if !s.integrationDispatchAllowed(w, r, svc) {
 		return
 	}
 	// triggered_by is the current user (nil for the service principal).
@@ -337,9 +337,9 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Guardrail: re-check the project's provider_allowlist for the retry (a fresh
-	// dispatch), in case it tightened since the original run.
-	if !s.providerDispatchAllowed(w, r, svc) {
+	// Dispatch-time integration host gate (D20 / F5 adjudication A): a retry is a
+	// fresh dispatch, so a since-tightened allowlist blocks it too.
+	if !s.integrationDispatchAllowed(w, r, svc) {
 		return
 	}
 	origID := orig.ID
@@ -449,9 +449,8 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Guardrail: re-check the project's provider_allowlist for the resume dispatch
-	// in case it tightened since the original run.
-	if !s.providerDispatchAllowed(w, r, svc) {
+	// Dispatch-time integration host gate (D20 / F5 adjudication A), as on create.
+	if !s.integrationDispatchAllowed(w, r, svc) {
 		return
 	}
 	origID := orig.ID
@@ -537,26 +536,6 @@ func (s *Server) selectModelForRun(w http.ResponseWriter, r *http.Request, svc *
 		writeError(w, http.StatusConflict, "model_not_configured", modelcfg.NotConfiguredMessage(""))
 	}
 	return nil, "", false
-}
-
-// providerDispatchAllowed is the shared provider_allowlist gate for the
-// run-dispatching handlers (create / retry / review). It writes a typed 403
-// provider_not_allowed and returns false when the service's provider is not in
-// the project's allowlist; a store error is a 500. An empty allowlist always
-// passes. 403 (not 409) because this is a POLICY denial, not a state conflict —
-// the same status the whole dispatch surface uses.
-func (s *Server) providerDispatchAllowed(w http.ResponseWriter, r *http.Request, svc *domain.Service) bool {
-	allowed, err := s.projectAllowsProvider(r.Context(), svc.ProjectID, svc.Provider)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load project guardrails")
-		return false
-	}
-	if !allowed {
-		writeError(w, http.StatusForbidden, "provider_not_allowed",
-			"this project's guardrails do not allow running on "+providerLabel(svc.Provider)+" repositories")
-		return false
-	}
-	return true
 }
 
 func queryInt(r *http.Request, key string, def int) int {

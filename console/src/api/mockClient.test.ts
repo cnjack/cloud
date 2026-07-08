@@ -584,14 +584,12 @@ describe('mockClient — project guardrails (Feature B)', () => {
     const up = client.updateProject(project.id, {
       max_concurrent_runs: 3,
       run_timeout_secs: 600,
-      provider_allowlist: ['gitea', 'raw'],
       injected_env: { COMPANY_TOKEN: 'abc' },
     });
     await flush(500);
     const updated = await up;
     expect(updated.max_concurrent_runs).toBe(3);
     expect(updated.run_timeout_secs).toBe(600);
-    expect(updated.provider_allowlist).toEqual(['gitea', 'raw']);
     expect(updated.injected_env).toEqual({ COMPANY_TOKEN: 'abc' });
 
     // Clearing with null/≤0 drops back to inherit (omitted).
@@ -620,55 +618,65 @@ describe('mockClient — project guardrails (Feature B)', () => {
     }
   });
 
-  it('blocks a service create whose provider is not in the allowlist (400)', async () => {
+  it('rejects a deprecated provider_allowlist PATCH with a typed 400 (D20/F5)', async () => {
     const client = createMockClient();
     const cp = client.createProject({ name: 'demo' });
     await flush(500);
     const project = await cp;
-    await (async () => {
-      const u = client.updateProject(project.id, { provider_allowlist: ['github'] });
-      await flush(500);
-      await u;
-    })();
 
     const p = client
-      .createService(project.id, { name: 'g', owner_name: 'acme/x', provider: 'gitea' })
+      .updateProject(project.id, { provider_allowlist: ['github'] } as never)
       .then(() => ({ ok: true as const }), (e) => ({ ok: false as const, err: e }));
     await flush(500);
     const res = await p;
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expect((res.err as ApiError).status).toBe(400);
-      expect(((res.err as ApiError).body as { error?: { code?: string } })?.error?.code).toBe('provider_not_allowed');
+      expect(((res.err as ApiError).body as { error?: { code?: string } })?.error?.code).toBe('deprecated_key');
     }
   });
+});
 
-  it('blocks run dispatch when the allowlist was tightened (403)', async () => {
+describe('mockClient integrations (D19 / F5)', () => {
+  it('creates, lists, rotates and deletes integrations; token is never echoed', async () => {
     const client = createMockClient();
     const cp = client.createProject({ name: 'demo' });
     await flush(500);
     const project = await cp;
-    const sp = client.createService(project.id, {
-      name: 'default',
-      owner_name: 'acme/x',
+
+    const ci = client.createIntegration(project.id, {
       provider: 'gitea',
+      host: 'gitea.example.com',
+      token: 'secret-pat',
     });
     await flush(500);
-    const svc = await sp;
+    const integ = await ci;
+    expect(integ.token_set).toBe(true);
+    expect(integ.bot_username).toBe('gitea-bot');
+    expect(JSON.stringify(integ)).not.toContain('secret-pat');
 
-    const u = client.updateProject(project.id, { provider_allowlist: ['github'] });
+    const li = client.listIntegrations(project.id);
     await flush(500);
-    await u;
+    expect((await li).length).toBe(1);
 
-    const p = client
-      .createServiceRun(svc.id, { prompt: 'go' })
-      .then(() => ({ ok: true as const }), (e) => ({ ok: false as const, err: e }));
+    // A member can build a service off the integration (integration_id set).
+    const cs = client.createService(project.id, {
+      name: 'widget',
+      owner_name: 'acme/widget',
+      integration_id: integ.id,
+      git_mode: 'draft_pr',
+    });
     await flush(500);
-    const res = await p;
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect((res.err as ApiError).status).toBe(403);
-      expect(((res.err as ApiError).body as { error?: { code?: string } })?.error?.code).toBe('provider_not_allowed');
-    }
+    const svc = await cs;
+    expect(svc.integration_id).toBe(integ.id);
+    expect(svc.provider).toBe('gitea');
+
+    // Delete unbinds the service.
+    const di = client.deleteIntegration(integ.id);
+    await flush(500);
+    await di;
+    const ls = client.listServices(project.id);
+    await flush(500);
+    expect((await ls).find((s) => s.id === svc.id)?.integration_id ?? null).toBeNull();
   });
 });

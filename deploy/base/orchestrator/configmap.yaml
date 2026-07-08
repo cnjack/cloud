@@ -75,6 +75,20 @@ data:
   # Where the OAuth callback 302s back to after a successful login.
   CONSOLE_URL: "http://localhost:5173"
 
+  # --- git integrations (Feature F5 / D19+D20) -------------------------------
+  # ALLOWED_GIT_HOSTS is the cluster allowlist of git hosts a PROJECT integration
+  # may target (comma-separated; canonical "hostname[:port]" comparison — the
+  # PORT COUNTS, http/https default ports fold away). Empty => no restriction,
+  # which suits ONLY this closed local rig (the explicit-mockllm e2e environment);
+  # a real cluster sets it explicitly (see overlays/company: git.scgzyun.com).
+  # Enforced at integration create/rotate (400 host_not_allowed) AND at run
+  # dispatch for integration-bound services (403), so tightening stops existing
+  # integrations immediately. Read-only in the console Cluster page. NOTE: the
+  # legacy cluster-wide GITEA_TOKEN (orchestrator secret) is DEPRECATED (D19) in
+  # favour of per-project integrations; it remains a fallback only for unbound
+  # services.
+  ALLOWED_GIT_HOSTS: ""
+
   # --- jtype kanban integration (Feature E / F6) -----------------------------
   # JTYPE_BASE_URL intentionally NOT set here: the integration is OFF unless a
   # deployment explicitly turns it on (fail-visible red line #1 — no mock

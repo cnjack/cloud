@@ -223,6 +223,23 @@ func (c *GiteaClient) EnsureCommentWebhook(ctx context.Context, owner, repo, hoo
 	return c.do(ctx, http.MethodPost, listPath, body, nil)
 }
 
+// CurrentUser returns the authenticated user's login (D19 / F5 connectivity check
+// + bot_username discovery). Gitea's /api/v1/user carries both "login" and
+// "username"; login is the canonical handle.
+func (c *GiteaClient) CurrentUser(ctx context.Context) (string, error) {
+	var u struct {
+		Login    string `json:"login"`
+		Username string `json:"username"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/user", nil, &u); err != nil {
+		return "", err
+	}
+	if u.Login != "" {
+		return u.Login, nil
+	}
+	return u.Username, nil
+}
+
 // prState normalises a provider's (state, merged) pair to our vocabulary.
 func prState(state string, merged bool) string {
 	if merged {
@@ -281,3 +298,5 @@ func (c *GiteaClient) do(ctx context.Context, method, path string, body any, out
 }
 
 var _ Provider = (*GiteaClient)(nil)
+var _ RepoLister = (*GiteaClient)(nil)
+var _ CurrentUser = (*GiteaClient)(nil)
