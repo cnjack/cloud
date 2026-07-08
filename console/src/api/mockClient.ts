@@ -364,6 +364,17 @@ export function createMockClient(): ApiClient {
     schedule(run, 400, () => setStatus(run, 'scheduling'));
     schedule(run, 1200, () => {
       setStatus(run, 'running');
+      // F9b: a session run reports its ACP session once established (session/new
+      // for a fresh run; session/load — resumed=true — for a resume run whose
+      // acp_session_id was copied at creation). Drives the "Session established/
+      // resumed" system row and makes the finished run resumable in demo.
+      if (run.session) {
+        if (!run.acp_session_id) run.acp_session_id = genId('acp');
+        emit(run, 'run.session', {
+          acp_session_id: run.acp_session_id,
+          resumed: run.resumed_from != null,
+        });
+      }
       emit(run, 'agent.text', {
         // Trailing space: this chunk and the next agent.text emit are
         // consecutive with nothing interleaved, so the Timeline (runview)
@@ -563,6 +574,8 @@ export function createMockClient(): ApiClient {
     attempt = 1,
     session = false,
     permissionMode: 'approval' | '' = '',
+    resumedFrom?: string,
+    acpSessionId?: string,
   ): StoredRun {
     const run: StoredRun = {
       id: genId('run'),
@@ -573,6 +586,10 @@ export function createMockClient(): ApiClient {
       status: 'queued',
       attempt,
       retried_from: retriedFrom ?? null,
+      // F9b: a resume run links back to the original + carries the copied ACP
+      // session id so the run.session event replays resumed=true.
+      resumed_from: resumedFrom ?? null,
+      acp_session_id: acpSessionId,
       created_at: nowISO(),
       started_at: null,
       finished_at: null,
@@ -814,6 +831,50 @@ export function createMockClient(): ApiClient {
           ),
         ),
       );
+    },
+
+    // ---- session resume (F9b / D23 ①②) ------------------------------------
+    async resumeSession(runId: string, prompt: string): Promise<Run> {
+      const orig = runs.get(runId);
+      if (!orig) throw new ApiError(404, 'run not found');
+      const conflict = (code: string, message: string) =>
+        new ApiError(409, message, { error: { code, message } });
+      // Mirror the orchestrator's precondition order + typed 409 codes so the
+      // demo/e2e surface the same readable messages the console renders.
+      if (!orig.session) {
+        throw conflict(
+          'run_not_resumable',
+          'this run is not a multi-turn session, so there is no session to resume',
+        );
+      }
+      if (!['succeeded', 'failed', 'canceled'].includes(orig.status)) {
+        throw conflict(
+          'run_not_resumable',
+          'the session is still active — use the message box to continue it instead of starting a new one',
+        );
+      }
+      if (!orig.acp_session_id) {
+        throw conflict(
+          'session_not_recorded',
+          'this session never recorded an agent session id, so it cannot be resumed',
+        );
+      }
+      const trimmed = prompt.trim();
+      if (!trimmed) throw badRequest('prompt is required');
+      // The demo assumes the cluster persistent-workspace switch is ON, so the
+      // workspace_not_persistent 409 is a real-cluster-only path (not modelled).
+      const run = makeRun(
+        orig.project_id,
+        orig.service_id,
+        trimmed,
+        undefined,
+        1,
+        true,
+        orig.permission_mode === 'approval' ? 'approval' : '',
+        orig.id,
+        orig.acp_session_id,
+      );
+      return delay(publicRun(run));
     },
 
     // ---- multi-turn session (D22) ------------------------------------------

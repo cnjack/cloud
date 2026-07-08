@@ -95,6 +95,19 @@ export function toTimelineItem(ev: RunViewEvent): TimelineItem {
       };
     }
 
+    // F9b (D23 ①②): the runner established (resumed=false) or reloaded
+    // (resumed=true) its ACP session. A low-key system row so a resumed
+    // conversation reads clearly — no longer an unknown-event degradation.
+    case 'run.session': {
+      const resumed = p.resumed === true;
+      return {
+        ...base,
+        kind: 'session_info',
+        resumed,
+        message: resumed ? 'Session resumed' : 'Session established',
+      };
+    }
+
     // D22 session: a follow-up prompt the user fed to the run — rendered as a
     // user chat bubble so the timeline reads as one continuous conversation.
     case 'user.message':

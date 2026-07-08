@@ -152,6 +152,24 @@ describe('toTimelineItem — session events (D22)', () => {
   });
 });
 
+describe('toTimelineItem — run.session (F9b / D23 ①②)', () => {
+  it('maps a fresh session (resumed=false) to "Session established"', () => {
+    const item = toTimelineItem(ev(2, 'run.session', { acp_session_id: 'acp-1', resumed: false }));
+    expect(item).toMatchObject({ kind: 'session_info', resumed: false, message: 'Session established' });
+  });
+
+  it('maps a resumed session (resumed=true) to "Session resumed"', () => {
+    const item = toTimelineItem(ev(2, 'run.session', { acp_session_id: 'acp-1', resumed: true }));
+    expect(item).toMatchObject({ kind: 'session_info', resumed: true, message: 'Session resumed' });
+  });
+
+  it('treats a missing resumed flag as a fresh session (not unknown)', () => {
+    const item = toTimelineItem(ev(2, 'run.session', { acp_session_id: 'acp-1' }));
+    expect(item.kind).toBe('session_info');
+    if (item.kind === 'session_info') expect(item.message).toBe('Session established');
+  });
+});
+
 describe('toTimelineItem — permission events (F8b)', () => {
   it('narrows agent.permission_request incl. defensive option filtering', () => {
     const item = toTimelineItem(

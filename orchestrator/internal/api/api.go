@@ -255,6 +255,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/runs/{id}/artifact", s.authedStream(s.handleGetArtifact))
 	mux.Handle("POST /api/v1/runs/{id}/cancel", s.authed(s.handleCancelRun))
 	mux.Handle("POST /api/v1/runs/{id}/retry", s.authed(s.handleRetryRun))
+	// Session resume (F9b / D23 ①②): continue a FINISHED session run in a new run
+	// that reloads the same ACP session. member+ (same as dispatch/retry).
+	mux.Handle("POST /api/v1/runs/{id}/resume", s.authed(s.handleResumeRun))
 	// Multi-turn session (D22): feed a follow-up message to a session run, or wind
 	// the session down. member+ (same as run dispatch).
 	mux.Handle("POST /api/v1/runs/{id}/messages", s.authed(s.handleSendMessage))

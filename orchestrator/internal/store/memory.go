@@ -548,6 +548,24 @@ func (m *MemStore) SetRunResult(_ context.Context, id string, result domain.RunR
 	return &cp, nil
 }
 
+// SetRunACPSession records the run's ACP session id (run.session) first-writer-
+// wins, no status change. Writes only where acp_session_id is still empty (and
+// the id is non-empty), so a duplicate event / a pre-filled resume run is a no-op.
+func (m *MemStore) SetRunACPSession(_ context.Context, id, acpSessionID string) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if cur.AcpSessionID == "" && acpSessionID != "" {
+		cur.AcpSessionID = acpSessionID
+	}
+	m.runs[id] = cur
+	cp := cur
+	return &cp, nil
+}
+
 // MarkPRCreated stamps pr_url/pr_number idempotently, first-writer-wins.
 func (m *MemStore) MarkPRCreated(_ context.Context, id, prURL string, prNumber int) (*domain.Run, error) {
 	m.mu.Lock()

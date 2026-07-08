@@ -162,6 +162,17 @@ export interface Run {
   k8s_job_name?: string;
   /** Set on retries: the run id this was cloned from (PRD J2-S4 / AC-10). */
   retried_from?: string | null;
+  /**
+   * F9b (D23 ①②): set on a session-resume run — the finished session run this
+   * one continues from (a twin of retried_from). Absent/null for ordinary runs.
+   */
+  resumed_from?: string | null;
+  /**
+   * F9b: the ACP session id this run drives. Recorded from the run.session event
+   * (or pre-filled on a resume run). Non-empty on a terminal session run gates
+   * the "Continue session" affordance. Absent for non-session runs.
+   */
+  acp_session_id?: string;
   failure_reason?: FailureReason;
   failure_message?: string;
   attempt?: number;
@@ -304,6 +315,10 @@ export type RunEventType =
   // run.result (D18/D26): { outcome: "no_changes" } — a successful run that
   // produced no diff. Rendered as a one-line informational row.
   | 'run.result'
+  // run.session (F9b / D23 ①②): the runner established its ACP session
+  // ({ acp_session_id, resumed }). Rendered as a low-key system row
+  // ("Session established" / "Session resumed").
+  | 'run.session'
   // user.message (D22): a follow-up prompt posted to a session run
   // ({ prompt, by }). Rendered as a user chat bubble in the timeline.
   | 'user.message'
@@ -369,6 +384,10 @@ export interface RunEventPayload {
   // the wind-down reason ("user" | "idle_timeout").
   prompt?: string;
   by?: string;
+  // run.session (F9b): the established ACP session id and whether it was resumed
+  // (session/load) vs freshly created (session/new).
+  acp_session_id?: string;
+  resumed?: boolean;
   // agent.permission_request / agent.permission_resolved (F8b). `resolution`
   // is "user" | "timeout"; `options` is the offered PermissionOption array.
   request_id?: string;
@@ -638,6 +657,16 @@ export interface CreateRunInput {
    * with session: true (the server 400s otherwise). Omitted = full_access.
    */
   permission_mode?: 'approval';
+}
+
+/**
+ * POST /api/v1/runs/{id}/resume body (F9b / D23 ①②): continue a FINISHED session
+ * run in a new run that reloads the same ACP session. Just the first prompt of
+ * the resumed conversation — model/session/permission_mode are inherited from
+ * the original run server-side.
+ */
+export interface ResumeRunInput {
+  prompt: string;
 }
 
 /**

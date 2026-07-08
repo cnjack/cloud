@@ -1,0 +1,23 @@
+-- 0016_session_resume: continue a finished SESSION run in a NEW run that resumes
+-- the same ACP session (F9b, the orchestrator half of D23 ①②; see
+-- docs/14-cloud-v2-design.md §4). The runner half (F9a) already ships: acpdrive
+-- --resume drives ACP session/load and emits a run.session event carrying the
+-- ACP session id.
+--
+-- Two additions to runs (both additive + nullable/defaulted, so an old
+-- runner/console and a populated DB keep working unchanged):
+--
+--   acp_session_id — the ACP session id this run drives (from the run.session
+--     event, first-writer-wins in the store). Empty until the runner reports it
+--     (a fresh session) OR pre-filled at creation for a RESUME run (copied from
+--     the original run so the reconciler can inject RESUME_SESSION_ID at
+--     Job-launch, BEFORE the runner has emitted its own run.session). NOT NULL
+--     DEFAULT '' mirrors the other opaque-id columns (git_branch/commit_sha).
+--
+--   resumed_from — the original run this one continues from (semantically a twin
+--     of retried_from: a nullable self-FK, ON DELETE SET NULL so deleting the
+--     original never blocks deleting-or-keeping the continuation, and the
+--     continuation stays traceable even after the original is gone). NULL for
+--     every ordinary/first-turn run.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS acp_session_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS resumed_from   TEXT REFERENCES runs(id) ON DELETE SET NULL;

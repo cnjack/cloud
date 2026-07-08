@@ -114,6 +114,56 @@ func TestNonSessionRunNoRunSessionEnv(t *testing.T) {
 	}
 }
 
+// TestResumeSessionInjectsResumeEnv: a session run created by resume (ResumedFrom
+// set + AcpSessionID copied) is scheduled with RESUME_SESSION_ID=<acp id> and
+// RUN_SESSION=1, so entrypoint.sh drives acpdrive --resume (session/load).
+func TestResumeSessionInjectsResumeEnv(t *testing.T) {
+	ctx := context.Background()
+	rec, st, fake := testRec(t, 10)
+	pid, sid := seedSessionProject(t, st, &domain.Project{})
+
+	origID := domain.NewID()
+	run := &domain.Run{ID: domain.NewID(), ProjectID: pid, ServiceID: sid, Prompt: "again",
+		Status: domain.StatusQueued, Kind: domain.RunKindAgent, Session: true,
+		ResumedFrom: &origID, AcpSessionID: "acp-resume-me", Attempt: 1, CreatedAt: time.Now()}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	rec.Tick(ctx)
+
+	if len(fake.Created) != 1 {
+		t.Fatalf("created %d jobs want 1", len(fake.Created))
+	}
+	spec := fake.Created[0]
+	if spec.Env["RUN_SESSION"] != "1" {
+		t.Errorf("RUN_SESSION=%q want 1", spec.Env["RUN_SESSION"])
+	}
+	if spec.Env["RESUME_SESSION_ID"] != "acp-resume-me" {
+		t.Errorf("RESUME_SESSION_ID=%q want acp-resume-me", spec.Env["RESUME_SESSION_ID"])
+	}
+}
+
+// TestFreshSessionNoResumeEnv: a plain (non-resumed) session run whose ACP session
+// id is not yet recorded gets RUN_SESSION but NO RESUME_SESSION_ID.
+func TestFreshSessionNoResumeEnv(t *testing.T) {
+	ctx := context.Background()
+	rec, st, fake := testRec(t, 10)
+	pid, sid := seedSessionProject(t, st, &domain.Project{})
+
+	run := &domain.Run{ID: domain.NewID(), ProjectID: pid, ServiceID: sid, Prompt: "chat",
+		Status: domain.StatusQueued, Kind: domain.RunKindAgent, Session: true, Attempt: 1, CreatedAt: time.Now()}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	rec.Tick(ctx)
+	if len(fake.Created) != 1 {
+		t.Fatalf("created %d jobs want 1", len(fake.Created))
+	}
+	if _, ok := fake.Created[0].Env["RESUME_SESSION_ID"]; ok {
+		t.Fatal("a fresh session run must not set RESUME_SESSION_ID")
+	}
+}
+
 // TestMaxLiveSessionsGate: with the cluster live-session cap at 2 and two live
 // sessions already running, a third queued session run stays queued.
 func TestMaxLiveSessionsGate(t *testing.T) {

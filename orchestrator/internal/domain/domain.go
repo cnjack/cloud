@@ -317,6 +317,14 @@ type Run struct {
 	// RetriedFrom links a retry run to the original run it was created from
 	// (PRD J2-S4 / AC-10). Nil for first-attempt runs.
 	RetriedFrom *string `json:"retried_from,omitempty"`
+	// ResumedFrom links a SESSION-resume run to the original (terminal) session
+	// run it continues from (F9b / D23 ①②). Semantically a twin of RetriedFrom:
+	// nil for every ordinary/first-turn run; set only by POST /runs/{id}/resume,
+	// which also copies the original's AcpSessionID into this run (below) so the
+	// reconciler can inject RESUME_SESSION_ID at Job-launch. A non-nil ResumedFrom
+	// with a non-empty AcpSessionID is what switches the runner into session/load
+	// (resume) instead of session/new.
+	ResumedFrom *string `json:"resumed_from,omitempty"`
 	// TriggeredByUserID is the user who created the run (M2). Nil for a run
 	// triggered by a service principal (CONSOLE_TOKEN) or a legacy run; M3's
 	// draft-PR push falls back to the global GITEA_TOKEN when it is nil.
@@ -424,6 +432,17 @@ type Run struct {
 	// Empty for legacy runs that predate the catalog.
 	ModelName string `json:"model_name,omitempty"`
 
+	// AcpSessionID is the ACP session id this run drives (F9b / D23 ①②). It is
+	// reported by the runner via the run.session event (first-writer-wins in the
+	// store: written only while still empty), so a plain session run picks it up
+	// once the session is established. A RESUME run (ResumedFrom set) instead has
+	// it PRE-FILLED at creation — copied from the original run — so the reconciler
+	// can inject RESUME_SESSION_ID BEFORE this run has emitted its own run.session;
+	// the runner then emits the SAME id (resumed=true) and the first-writer-wins
+	// store write is a no-op. Empty for a non-session run and for a session run
+	// that has not established its session yet.
+	AcpSessionID string `json:"acp_session_id,omitempty"`
+
 	// TokenHash is the SHA-256 (hex) of the per-run bearer token injected into
 	// the Job. Never serialised to API clients.
 	TokenHash string `json:"-"`
@@ -515,6 +534,14 @@ const (
 	// drives the terminal status. Today the only outcome is "no_changes": an agent
 	// run that finished cleanly but produced an empty diff (D18).
 	EventRunResult = "run.result"
+	// EventRunSession is emitted by the runner (F9a) once an ACP session is
+	// established — by session/new (resumed=false) or session/load (resumed=true,
+	// a RESUME run). Payload {acp_session_id, resumed}. The ingest hook records
+	// acp_session_id on the run (SetRunACPSession, first-writer-wins) so a later
+	// resume can reconstruct the session; the console renders a low-key system
+	// row. Only session runs (and resumed single-shot runs) emit it. See F9b /
+	// D23 ①②.
+	EventRunSession = "run.session"
 	// EventUserMessage is appended (internal seq) when a user feeds a follow-up
 	// message to a session run via POST /runs/{id}/messages (D22). Payload
 	// {prompt, by}; rendered as a user bubble in the timeline so the run reads as

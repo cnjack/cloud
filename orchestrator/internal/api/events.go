@@ -330,6 +330,10 @@ func (s *Server) handleIngestEvents(w http.ResponseWriter, r *http.Request, runI
 	// succeeded (D18). Status is untouched; the reconcile pass drives it.
 	s.applyRunResult(r.Context(), runID, req.Events)
 
+	// Record a runner-reported ACP session id (run.session) so a later resume can
+	// reconstruct the session (F9b). First-writer-wins; never changes status.
+	s.applyRunSession(r.Context(), runID, req.Events)
+
 	// Record permission RESOLUTIONS (F8b) after the durable append, best-effort
 	// like the other post-hooks — nothing polls on a resolution.
 	s.applyPermissionResolutions(r.Context(), runID, req.Events)
@@ -411,5 +415,69 @@ func (s *Server) applyRunResult(ctx context.Context, runID string, events []inge
 			s.log.Warn("ingest: record run result", "run", runID, "err", err)
 		}
 		return
+	}
+}
+
+// applyRunSession looks for a run.session event and, if present, records its
+// acp_session_id on the run (SetRunACPSession) so a later resume can drive
+// session/load against it (F9b / D23 ①②). First-writer-wins in the store and
+// NEVER changes status. It fires for BOTH resumed=true and resumed=false: a
+// resume run's id was already pre-filled at creation (the store write is then a
+// no-op), and a fresh session run records the id the runner just established. An
+// empty acp_session_id is ignored so a malformed event never clears a recorded id.
+//
+// Defense-in-depth (F9b audit): a RESUME run (ResumedFrom set) was dispatched
+// with RESUME_SESSION_ID=<the pre-filled id>, and acpdrive --resume is
+// contractually bound to session/load exactly that id — so a run.session
+// reporting a DIFFERENT id means the runner broke that contract and the "resume"
+// silently became a different conversation. Theoretically unreachable, but it
+// must never be a silent first-writer-wins no-op: the expected id stays on the
+// row (the store write is a no-op), and the anomaly is surfaced loudly — a Warn
+// log AND a timeline-visible internal event (emitSessionMismatch).
+func (s *Server) applyRunSession(ctx context.Context, runID string, events []ingestEvent) {
+	for _, e := range events {
+		if e.Type != domain.EventRunSession {
+			continue
+		}
+		acpSessionID, _ := e.Payload["acp_session_id"].(string)
+		if acpSessionID == "" {
+			return // nothing actionable
+		}
+		committed, err := s.st.SetRunACPSession(ctx, runID, acpSessionID)
+		if err != nil {
+			s.log.Warn("ingest: record acp session", "run", runID, "err", err)
+			return
+		}
+		if committed.ResumedFrom != nil && committed.AcpSessionID != "" && committed.AcpSessionID != acpSessionID {
+			s.log.Warn("ingest: resumed run reported a DIFFERENT acp session than the one injected",
+				"run", runID, "expected", committed.AcpSessionID, "actual", acpSessionID)
+			s.emitSessionMismatch(ctx, runID, committed.AcpSessionID, acpSessionID)
+		}
+		return
+	}
+}
+
+// emitSessionMismatch appends (and publishes) an internal run.session event
+// flagging that a resume run's runner established a DIFFERENT ACP session than
+// the one it was told to load (see applyRunSession). run.session is the closest
+// existing event semantics (run.failure would be the wrong severity — the run
+// itself keeps going); the extra expected_acp_session_id/warning keys ride in
+// the payload, which clients must tolerate per the §4 taxonomy contract, and
+// keep the anomaly inspectable from the timeline/events API rather than only a
+// server log. Best-effort like the other emit helpers; a duplicate on a
+// network-retried ingest batch is accepted (same trade-off as the D17
+// writeback-comment precedent) — a conforming runner never reaches this path
+// in the first place.
+func (s *Server) emitSessionMismatch(ctx context.Context, runID, expected, actual string) {
+	payload := map[string]any{
+		"acp_session_id":          actual,
+		"expected_acp_session_id": expected,
+		"resumed":                 true,
+		"warning":                 "acp_session_id_mismatch",
+	}
+	if ev, err := s.st.AppendInternalEvent(ctx, runID, domain.EventRunSession, payload); err != nil {
+		s.log.Warn("emit session mismatch", "run", runID, "err", err)
+	} else if s.hub != nil {
+		s.hub.Publish(runID, ev)
 	}
 }

@@ -1103,6 +1103,19 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 	// whole session including idle waits.
 	if run.Session {
 		env["RUN_SESSION"] = "1"
+		// Resume (F9b / D23 ①②): a session run created by POST /runs/{id}/resume
+		// carries ResumedFrom + the original run's AcpSessionID (copied at
+		// creation). Inject it as RESUME_SESSION_ID so entrypoint.sh passes
+		// acpdrive --resume and the runner drives ACP session/load instead of
+		// session/new. Read from THIS run's own field (never a lookup of the
+		// original, which may since be deleted); a plain session run's
+		// AcpSessionID is still empty at Job-launch (it is only recorded once the
+		// runner emits run.session), so it correctly gets NO resume var. Gated on
+		// ResumedFrom too so a future in-place warm-wake path can't be conflated
+		// with a resume-into-a-new-run.
+		if run.ResumedFrom != nil && run.AcpSessionID != "" {
+			env["RESUME_SESSION_ID"] = run.AcpSessionID
+		}
 		// Permission approval (F8b): switch acpdrive's RequestPermission into
 		// forwarding mode and bound each approval wait. Only for approval-mode
 		// session runs — anything else gets NEITHER var, so the runner keeps its

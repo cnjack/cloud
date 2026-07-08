@@ -290,7 +290,8 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id,
 	review_posted_at, pr_head_branch, pr_base_branch,
 	origin, origin_comment_id, origin_comment_url, result, model_id, model_name,
-	session, awaiting_since, session_finalizing, bundle_rev, pushed_rev, permission_mode`
+	session, awaiting_since, session_finalizing, bundle_rev, pushed_rev, permission_mode,
+	acp_session_id, resumed_from`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
@@ -302,7 +303,8 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID,
 		&r.ReviewPostedAt, &r.PRHeadBranch, &r.PRBaseBranch,
 		&r.Origin, &commentID, &commentURL, &result, &r.ModelID, &r.ModelName,
-		&r.Session, &r.AwaitingSince, &r.SessionFinalizing, &r.BundleRev, &r.PushedRev, &r.PermissionMode)
+		&r.Session, &r.AwaitingSince, &r.SessionFinalizing, &r.BundleRev, &r.PushedRev, &r.PermissionMode,
+		&r.AcpSessionID, &r.ResumedFrom)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -331,14 +333,15 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
 		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID,
 		r.ReviewPostedAt, r.PRHeadBranch, r.PRBaseBranch,
 		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullRunResult(r.Result), r.ModelID, r.ModelName,
-		r.Session, r.AwaitingSince, r.SessionFinalizing, r.BundleRev, r.PushedRev, r.PermissionMode)
+		r.Session, r.AwaitingSince, r.SessionFinalizing, r.BundleRev, r.PushedRev, r.PermissionMode,
+		r.AcpSessionID, r.ResumedFrom)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
@@ -703,6 +706,28 @@ func (s *PGStore) SetRunResult(ctx context.Context, id string, result domain.Run
 		`UPDATE runs SET result = COALESCE(result, $2) WHERE id=$1`,
 		id, string(result)); err != nil {
 		return nil, fmt.Errorf("set run result: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// SetRunACPSession records the run's ACP session id (from a run.session event)
+// without changing status. First-writer-wins via CASE: written only where
+// acp_session_id is still empty, so a duplicate event — or a resume run whose id
+// was pre-filled at creation — is a no-op. An empty id is ignored (the CASE
+// leaves the column untouched, but the caller also guards against it). Locks the
+// row so the empty-check and write are atomic against a concurrent write.
+func (s *PGStore) SetRunACPSession(ctx context.Context, id, acpSessionID string) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	_ = cur
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET acp_session_id = CASE WHEN acp_session_id='' THEN $2 ELSE acp_session_id END
+		 WHERE id=$1`,
+		id, acpSessionID); err != nil {
+		return nil, fmt.Errorf("set run acp session: %w", err)
 	}
 	return s.commitAndReload(ctx, tx, id)
 }

@@ -46,6 +46,9 @@ export const RESERVED_ENV_KEYS = [
   'OUT_DIR',
   'HOME',
   'PERSISTENT_WORKSPACE',
+  // RESUME_SESSION_ID (F9b / D23 ①②): jobEnv sets it for a resume run; an owner's
+  // injected_env must not override which ACP session a run reloads.
+  'RESUME_SESSION_ID',
   // execution-hijack vectors
   'PATH',
   'NODE_OPTIONS',

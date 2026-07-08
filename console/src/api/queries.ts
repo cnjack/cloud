@@ -198,6 +198,24 @@ export function useRetryRun() {
   });
 }
 
+/**
+ * Continue a finished session run in a NEW run that reloads the same ACP session
+ * (F9b / D23 ①②). On success the caller navigates to the new run; we also seed
+ * its cache entry and refresh the project's run list.
+ */
+export function useResumeSession() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runId, prompt }: { runId: string; prompt: string }) =>
+      api.resumeSession(runId, prompt),
+    onSuccess: (run: Run) => {
+      qc.setQueryData(qk.run(run.id), run);
+      qc.invalidateQueries({ queryKey: qk.runs(run.project_id) });
+    },
+  });
+}
+
 /* ---- multi-turn session (D22) --------------------------------------------- */
 
 /**

@@ -143,6 +143,17 @@
   `"approval"` = 交互审批 session(runner 把每个 agent 权限请求转发给用户审批,
   见 §2.2 permission-response、§4 权限事件、§5.5 决议端点);缺省/`""` =
   full_access(现状,自动放行)。仅 `session=true` 的 run 可为 `"approval"`。
+- **`acp_session_id` / `resumed_from`(F9b / D23 ①②,迁移 `0016_session_resume`;
+  新增字段,非破坏性)**:
+  - `acp_session_id`:本 run 驱动的 ACP session id。runner 经 **`run.session` 事件**
+    (见 §4)上报,ingest **first-writer-wins** 落库(仅当仍为空才写)。一个续聊
+    (resume)run 在创建时就把原 run 的 `acp_session_id` **复制**进来,好让
+    reconciler 在 run 发出自己的 `run.session` 之前就能注入 `RESUME_SESSION_ID`;
+    runner 随后 emit **同一个** id(`resumed=true`),first-writer-wins 写为 no-op。
+    非 session run / 尚未建立 session 时为空。
+  - `resumed_from`:若本 run 由 `POST /runs/{id}/resume` 生成,指向被续聊的原
+    (终态)session run 的 id(语义仿 `retried_from`);否则 `null`。console 展示
+    「resumed from <短 id>」链接回原 run。
 - 服务器**从不**把 run token 序列化给 console 客户端。
 
 ### 1.3 Run 状态徽章体系(单一事实源)
@@ -367,6 +378,45 @@ default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `4
 > retry 保留 run 身份:`kind`、PR 关联、**`session`**(session run 的 retry 仍是
 > session)、**`permission_mode`**(F8b:审批 session 的 retry 仍是审批 session,
 > 绝不静默降级成 full_access)一并拷贝。
+
+#### `POST /api/v1/runs/{id}/resume` — 续聊已结束的 session run(F9b / D23 ①②)
+
+权限 member+。请求:
+
+```json
+{ "prompt": "接着上次的会话继续" }
+```
+
+**续聊 = 在一条新 run 上 `session/load` 复用原 session**(retry 是全新 session;
+resume 是同一 ACP session)。前置校验按序返回类型化 `409`(fail-visible,
+CLAUDE.md 红线①):
+
+- 原 run 必须是 **session run 且已终态**(succeeded / failed / canceled 均可),
+  否则 `409 run_not_resumable`——非 session run「没有可恢复的 session」;仍在跑的
+  session「用消息框继续,别开新 run」(同一 code,文案区分)。
+- 原 run 必须已记录 `acp_session_id`(来自 `run.session` 事件),否则
+  `409 session_not_recorded`。
+- 集群必须开了**持久化工作区**(`PERSISTENT_WORKSPACE`;转录留在 service 的 PVC 上,
+  runner `session/load` 从 `$HOME/.jcode` 读),否则 `409 workspace_not_persistent`
+  ——**持久化是集群级开关(Feature C / D05),非 per-service**,所以这里查集群配置。
+- 再过模型闸(fail-visible,同 create/retry:优先沿用原 run 的模型,不再授权则
+  `403 model_not_granted` / `409 model_not_configured`)与 provider_allowlist 闸。
+- `max_live_sessions` 护栏**不在此端点校验**——新 run 入队后由 reconciler 现有闸门
+  自然生效(F7b 逻辑),超额则新 session 停留 `queued`。
+
+成功 → **生成一条新 run**,`status = queued`、`kind = agent`、`session = true`、
+`prompt` = body 的 prompt、`resumed_from` = 原 run id、`permission_mode` 继承原 run、
+`acp_session_id` **复制**原 run 的值(供 reconciler 注入 `RESUME_SESSION_ID`)。
+响应 `201 Created`:**新** Run 对象(带 `resumed_from` / `acp_session_id`,`id` ≠ 原)。
+错误:`400`(空 prompt);`404`;`403`(viewer / provider / 模型未授权);
+`409`(`run_not_resumable` / `session_not_recorded` / `workspace_not_persistent` /
+`model_not_configured`)。
+
+> 注入路径:reconciler 在 `jobEnv` 里,当 `resumed_from` 非空且**新 run 自身的**
+> `acp_session_id` 非空时,注入 `RESUME_SESSION_ID=<acp_session_id>`(读自身字段,
+> 不查原 run,避免原 run 被删的边界);entrypoint 在 `RUN_SESSION=1` 且
+> `RESUME_SESSION_ID` 非空时给 acpdrive 传 `--resume`,走 ACP `session/load`
+> (F9a 已在 main)。普通 session run 在入队时 `acp_session_id` 仍为空,故**不**注入。
 
 #### `POST /api/v1/runs/{id}/messages` — 给 session run 投递后续消息(F7 / D22)
 
@@ -626,6 +676,7 @@ runner 通过 `POST /internal/v1/runs/{id}/events` 上报;orchestrator 也会内
 | `run.artifact` | orchestrator 内生 | `{ "kind": "diff", "bytes": 214 }` | 产物已就绪的信号(内容经 §2.4 取) |
 | `run.failure` | runner(可选) | `{ "reason": "clone_failed", "message": "fatal: repository not found" }` | runner 主动精化失败原因(见 §1.4) |
 | `run.git` | runner(**ST-1**,`draft_pr` 模式) | `{ "branch": "agent/run-<id>", "commit_sha": "abcd..." }` | runner 推送 `agent/run-<id>` 分支后上报;orchestrator 据此(以 `branch` 为幂等键)开 draft PR。首个非空 `branch` 生效(first-writer-wins),重发为幂等空操作 |
+| `run.session` | runner(**F9a/F9b**,session) | `{ "acp_session_id": "…", "resumed": false }` | ACP session 建立(`session/new`,`resumed=false`)或重载(`session/load`,`resumed=true`)后发一条。ingest 钩子把 `acp_session_id` 落到 `runs.acp_session_id`(**first-writer-wins**,仅当仍为空才写,故续聊 run 预填的 id / 重发均为幂等空操作),**不改 status**。console 渲染低调系统行「Session established / resumed」。仅 session run(及 resumed 的单发 run)会发 |
 | `user.message` | orchestrator 内生(**F7 / D22**,session) | `{ "prompt": "接着把测试补上", "by": "Ada" }` | `POST /runs/{id}/messages` 落队列的同时 append;console 渲染为用户消息气泡,时间线读起来是连续对话。`by` 为触发者 display name(service principal 为空) |
 | `session.finish` | orchestrator 内生(**F7 / D22**,session) | `{ "reason": "user", "by": "Ada" }` | session 被收尾:`reason` ∈ `user`(finish 端点)/ `idle_timeout`(reconciler 空闲回收)。紧凑系统行渲染 |
 | `agent.permission_request` | runner(**F8a/F8b**,`permission_mode=approval` session) | `{ "request_id": "…uuid…", "tool_call_id": "c2", "title": "Run \`make deploy\`", "options": [ { "option_id": "allow_once", "name": "Allow", "kind": "allow_once" } ] }` | agent 的一次权限请求被转发待审批。runner **同步直发 + at-least-once**(先于决议轮询送达;重发幂等)。ingest 钩子按 `request_id` upsert `run_permissions` 台账行(重复事件**绝不**重置已决议状态);console 渲染 PermissionCard(title + options 按钮组)。**该事件可能先于它引用的 `agent.tool_call` 到达——按 `request_id` 键控配对,勿依赖事件相邻性** |

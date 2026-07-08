@@ -115,6 +115,20 @@ export interface SessionFinishItem {
   message: string;
 }
 
+/**
+ * run.session { acp_session_id, resumed } (F9b / D23 ①②): the runner established
+ * (or reloaded) its ACP session. Rendered as a low-key system row — "Session
+ * established" (fresh) or "Session resumed" (session/load) — so a resumed
+ * conversation reads clearly, instead of the old unknown-event degradation.
+ */
+export interface SessionInfoItem {
+  seq: number;
+  ts: string;
+  kind: 'session_info';
+  resumed: boolean;
+  message: string;
+}
+
 /** One option a permission request offered (F8b), runview's own view shape. */
 export interface PermissionOptionView {
   optionId: string;
@@ -172,6 +186,7 @@ export type TimelineItem =
   | ResultItem
   | UserMessageItem
   | SessionFinishItem
+  | SessionInfoItem
   | PermissionRequestItem
   | PermissionResolvedItem
   | UnknownItem;
@@ -273,6 +288,7 @@ export type GroupedTimelineItem =
   | ResultItem
   | UserMessageItem
   | SessionFinishItem
+  | SessionInfoItem
   | PermissionCardItem
   | PermissionResolvedItem
   | UnknownItem;

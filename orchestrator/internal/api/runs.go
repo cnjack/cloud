@@ -370,6 +370,117 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, retry)
 }
 
+type resumeRunReq struct {
+	Prompt string `json:"prompt"`
+}
+
+// handleResumeRun continues a FINISHED session run in a NEW run that resumes the
+// SAME ACP session (F9b / D23 ①②; docs/14-cloud-v2-design.md §4). It is the
+// terminal-state twin of the (live-session) message box: the new run carries
+// resumed_from + the original's acp_session_id, so the reconciler injects
+// RESUME_SESSION_ID and the runner drives ACP session/load instead of
+// session/new. member+ (same as run dispatch). Every precondition is a typed,
+// fail-visible 409 (CLAUDE.md red line #1) so the console can explain exactly
+// why a session cannot be resumed rather than queuing a run that could never run.
+func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
+	orig, err := s.st.GetRun(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not get run")
+		return
+	}
+	// Resuming a run requires member on its project.
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), orig.ProjectID, domain.RoleMember) {
+		return
+	}
+	// Precondition 1: only a SESSION run that has reached a terminal state can be
+	// resumed. A non-session run has no ACP session to reload; a live session
+	// takes follow-ups through the message box, not a fresh resume run — both are
+	// the same typed code but distinct, readable messages.
+	if !orig.Session {
+		writeError(w, http.StatusConflict, "run_not_resumable",
+			"this run is not a multi-turn session, so there is no session to resume")
+		return
+	}
+	if !orig.Status.Terminal() {
+		writeError(w, http.StatusConflict, "run_not_resumable",
+			"the session is still active — use the message box to continue it instead of starting a new one")
+		return
+	}
+	// Precondition 2: the original must have recorded its ACP session id (via a
+	// run.session event). Without it there is nothing to session/load against.
+	if orig.AcpSessionID == "" {
+		writeError(w, http.StatusConflict, "session_not_recorded",
+			"this session never recorded an agent session id, so it cannot be resumed")
+		return
+	}
+	// Precondition 3: resume replays the session transcript from the persistent
+	// workspace PVC (the runner's session/load reads it from $HOME/.jcode on the
+	// PVC). Persistence is a CLUSTER switch (Feature C / D05) — with it off there
+	// is no PVC, the transcript never survived, and a resume would fail-visibly at
+	// session/load. Reject it up front with an actionable message instead.
+	if !s.cfg.PersistentWorkspace {
+		writeError(w, http.StatusConflict, "workspace_not_persistent",
+			"resuming a session needs a persistent workspace (the transcript lives on the service's PVC), which is not enabled on this cluster")
+		return
+	}
+	var req resumeRunReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	if req.Prompt == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "prompt is required")
+		return
+	}
+	svc, err := s.st.GetService(r.Context(), orig.ServiceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		return
+	}
+	// Fail-visible gate: a resume is a fresh dispatch — re-run the D21 model chain,
+	// preserving the original run's model pick when it is still granted (else it
+	// fails visibly / re-resolves via the service default), exactly like retry.
+	modelID, modelName, ok := s.selectModelForRun(w, r, svc, deref(orig.ModelID), modelcfg.NotGrantedReuseMessage())
+	if !ok {
+		return
+	}
+	// Guardrail: re-check the project's provider_allowlist for the resume dispatch
+	// in case it tightened since the original run.
+	if !s.providerDispatchAllowed(w, r, svc) {
+		return
+	}
+	origID := orig.ID
+	resume := newQueuedRun(orig.ProjectID, orig.ServiceID, req.Prompt, nil, principalFrom(r.Context()).userIDPtr())
+	resume.ResumedFrom = &origID
+	resume.ModelID = modelID
+	resume.ModelName = modelName
+	// A resume run is always a SESSION (the whole point) and inherits the
+	// original's permission mode — silently downgrading an approval session to
+	// full_access would drop the user's guardrail.
+	resume.Session = true
+	resume.PermissionMode = orig.PermissionMode
+	// Copy the original's ACP session id onto the new run NOW so the reconciler can
+	// inject RESUME_SESSION_ID at Job-launch, BEFORE this run has emitted its own
+	// run.session. The runner then re-emits the SAME id (resumed=true) and the
+	// first-writer-wins ingest is a no-op — so injection needs no lookup of the
+	// (possibly since-deleted) original run.
+	resume.AcpSessionID = orig.AcpSessionID
+	// The project's max_live_sessions cap is enforced naturally when the reconciler
+	// tries to schedule this queued session run (F7b logic) — no extra check here.
+	if err := s.st.CreateRun(r.Context(), resume); err != nil {
+		s.log.Error("resume run", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not create resume run")
+		return
+	}
+	s.emitStatus(r.Context(), resume)
+	writeJSON(w, http.StatusCreated, resume)
+}
+
 // emitStatus appends and publishes an initial/updated run.status event from the
 // API side (mirrors the reconciler's emitter for API-driven transitions). The
 // store allocates the global seq atomically so this never races runner ingest.

@@ -20,6 +20,7 @@ import {
   useDiff,
   useSendMessage,
   useFinishSession,
+  useResumeSession,
   useRespondPermission,
 } from '../api/queries';
 import { useApi } from '../api/ApiProvider';
@@ -74,6 +75,11 @@ export function RunDetailPage() {
   const sendMessage = useSendMessage();
   const finishSession = useFinishSession();
   const [followUp, setFollowUp] = useState('');
+
+  // F9b: continue a FINISHED session in a new run that reloads the same ACP
+  // session (D23 ①②). The composer only shows on a terminal session run.
+  const resumeSession = useResumeSession();
+  const [resumePrompt, setResumePrompt] = useState('');
 
   // F8b permission approval: runview's PermissionCard is app-agnostic — the
   // decide callback + optimistic state are injected from HERE. permDecided
@@ -207,6 +213,29 @@ export function RunDetailPage() {
         }),
     });
 
+  // F9b: resume the finished session in a new run, then jump to it. On a 409
+  // (run_not_resumable / session_not_recorded / workspace_not_persistent) the
+  // server's typed message IS the human explanation — surface it verbatim.
+  const doResume = (e: React.FormEvent) => {
+    e.preventDefault();
+    const prompt = resumePrompt.trim();
+    if (!prompt) return;
+    resumeSession.mutate(
+      { runId, prompt },
+      {
+        onSuccess: (newRun) => {
+          toast.push({ kind: 'success', message: 'Session resumed.' });
+          navigate(`/runs/${newRun.id}`);
+        },
+        onError: (err) =>
+          toast.push({
+            kind: 'error',
+            message: err instanceof ApiError ? err.message : 'Could not resume the session.',
+          }),
+      },
+    );
+  };
+
   const live = !terminal && stream.phase === 'live';
 
   return (
@@ -249,6 +278,18 @@ export function RunDetailPage() {
                 title="View the run this was retried from"
               >
                 retry of {shortId(r.retried_from)}
+              </Link>
+            )}
+            {/* F9b (D23 ①②): a session-resume run links back to the finished
+                session it continues from (mirrors the retried_from chip). */}
+            {r.resumed_from && (
+              <Link
+                to={`/runs/${r.resumed_from}`}
+                className={styles.retriedFrom}
+                title="View the session this run was resumed from"
+                data-testid="resumed-from"
+              >
+                resumed from {shortId(r.resumed_from)}
               </Link>
             )}
             {/* M7 (blueprint §8): a run triggered by a Gitea PR comment shows a
@@ -435,6 +476,43 @@ export function RunDetailPage() {
               </span>
             </div>
           )}
+        </div>
+      )}
+
+      {/* F9b (D23 ①②): a FINISHED session can be continued in a new run that
+          reloads the same ACP session. Shown on any terminal session run
+          (succeeded/failed/canceled); the backend replays a typed, readable 409
+          if the session can't actually be resumed (no ACP id / no persistent
+          workspace). Disabled — with the shared model-gate notice above — when
+          the project has no available model, since resume is a fresh dispatch. */}
+      {isSession && terminal && canAct && (
+        <div className={styles.sessionPanel} data-testid="resume-session-panel">
+          <form onSubmit={doResume} className={styles.sessionForm} noValidate>
+            <label className={styles.sessionBusyText} htmlFor="resume-session-input">
+              Continue this session — the agent picks up with the same context.
+            </label>
+            <textarea
+              id="resume-session-input"
+              className={styles.sessionInput}
+              placeholder="Send the next message to resume this session…"
+              value={resumePrompt}
+              onChange={(e) => setResumePrompt(e.target.value)}
+              rows={2}
+              data-testid="resume-session-input"
+            />
+            <div className={styles.sessionActions}>
+              <Button
+                type="submit"
+                variant="primary"
+                size="sm"
+                loading={resumeSession.isPending}
+                disabled={!resumePrompt.trim() || !modelGate.configured}
+                data-testid="resume-session-send"
+              >
+                Continue session
+              </Button>
+            </div>
+          </form>
         </div>
       )}
 

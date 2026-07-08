@@ -53,6 +53,12 @@ var ReservedEnvKeys = []string{
 	"ORCH_BASE_URL", "TASK_PROMPT", "TASK", "SOURCE_MODE", "BASE_BRANCH",
 	"BRANCH_NAME", "START_MOCKLLM", "WORKSPACE", "OUT_DIR", "HOME",
 	"PERSISTENT_WORKSPACE",
+	// RESUME_SESSION_ID (F9b / D23 ①②): jobEnv sets it for a resume run and
+	// entrypoint.sh passes it to acpdrive --resume (session/load). Reserved like
+	// PERSISTENT_WORKSPACE so an owner's injected_env can't override which ACP
+	// session a run reloads (a contract-override vector). Note RUN_SESSION /
+	// RUN_PERMISSION_MODE are already covered by the RUN_ prefix above.
+	"RESUME_SESSION_ID",
 	// execution-hijack vectors — the runner calls git/jcode/orchclient by name.
 	"PATH", "NODE_OPTIONS", "PYTHONPATH", "PYTHONSTARTUP",
 	"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "IFS", "PERL5LIB", "RUBYOPT",

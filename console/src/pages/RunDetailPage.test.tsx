@@ -391,6 +391,106 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
   });
 });
 
+describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
+  const terminalSession = () =>
+    baseRun({ status: 'succeeded', finished_at: '2026-07-07T00:05:00Z', session: true });
+
+  it('shows the Continue-session composer on a terminal session run and resumes', async () => {
+    const run = terminalSession();
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(run);
+    const resumeSession = vi
+      .fn()
+      .mockResolvedValue(baseRun({ id: 'run2', session: true, status: 'queued', resumed_from: 'run1' }));
+    (client as { resumeSession?: unknown }).resumeSession = resumeSession;
+    renderPage(client, run);
+
+    const input = (await screen.findByTestId('resume-session-input')) as HTMLTextAreaElement;
+    const send = (await screen.findByTestId('resume-session-send')) as HTMLButtonElement;
+    // Empty keeps Continue disabled; typing enables it and submit calls resume.
+    expect(send.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: 'pick up where we left off' } });
+    await waitFor(() => expect(send.disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() =>
+      expect(resumeSession).toHaveBeenCalledWith('run1', 'pick up where we left off'),
+    );
+  });
+
+  it('does not show the Continue-session composer on a NON-session terminal run', async () => {
+    const run = baseRun({ status: 'succeeded', finished_at: '2026-07-07T00:05:00Z' });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+    await waitFor(() => expect(screen.getByTestId('run-status-header')).toBeTruthy());
+    expect(screen.queryByTestId('resume-session-panel')).toBeNull();
+  });
+
+  it('does not show the Continue-session composer while a session is still active', async () => {
+    // A live (awaiting_input) session offers the message box, not a fresh resume.
+    const run = baseRun({ status: 'awaiting_input', session: true });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+    await screen.findByTestId('session-panel');
+    expect(screen.queryByTestId('resume-session-panel')).toBeNull();
+  });
+
+  it('hides the Continue-session composer from a viewer', async () => {
+    const run = terminalSession();
+    const { client, ctl } = makeClient('viewer');
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+    await waitFor(() => expect(screen.getByTestId('run-status-header')).toBeTruthy());
+    await waitFor(() => expect(screen.queryByTestId('resume-session-panel')).toBeNull());
+  });
+
+  it('surfaces each 409 code\'s readable message when resume is refused', async () => {
+    const cases: { code: string; message: string }[] = [
+      {
+        code: 'run_not_resumable',
+        message: 'the session is still active — use the message box to continue it instead of starting a new one',
+      },
+      {
+        code: 'session_not_recorded',
+        message: 'this session never recorded an agent session id, so it cannot be resumed',
+      },
+      {
+        code: 'workspace_not_persistent',
+        message:
+          'resuming a session needs a persistent workspace (the transcript lives on the service\'s PVC), which is not enabled on this cluster',
+      },
+    ];
+    for (const { code, message } of cases) {
+      const run = terminalSession();
+      const { client, ctl } = makeClient('member');
+      ctl.getRun.mockResolvedValue(run);
+      const resumeSession = vi
+        .fn()
+        .mockRejectedValue(new ApiError(409, message, { error: { code, message } }));
+      (client as { resumeSession?: unknown }).resumeSession = resumeSession;
+      const view = renderPage(client, run);
+
+      const input = (await screen.findByTestId('resume-session-input')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: 'go' } });
+      fireEvent.click(await screen.findByTestId('resume-session-send'));
+      // The server's typed message is shown verbatim (the readable failure reason).
+      expect(await screen.findByText(message)).toBeTruthy();
+      view.unmount();
+    }
+  });
+
+  it('renders a "resumed from" link back to the original run', async () => {
+    const run = baseRun({ status: 'running', session: true, resumed_from: 'origrun9' });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+    const link = (await screen.findByTestId('resumed-from')) as HTMLAnchorElement;
+    expect(link.textContent).toContain('resumed from');
+    expect(link.getAttribute('href')).toContain('/runs/origrun9');
+  });
+});
+
 describe('RunDetailPage — PR tab + review runs (blueprint §5)', () => {
   it('shows a PR tab for an agent run with a PR and renders the PR panel', async () => {
     const prRun = baseRun({

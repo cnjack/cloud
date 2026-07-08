@@ -84,6 +84,13 @@ export interface ApiClient {
   getRun(runId: string): Promise<Run>;
   cancelRun(runId: string): Promise<Run>;
   retryRun(runId: string): Promise<Run>;
+  /**
+   * POST /api/v1/runs/{id}/resume — continue a FINISHED session run in a new run
+   * that reloads the same ACP session (F9b / D23 ①②). 409 run_not_resumable
+   * (not a session / still active), session_not_recorded (no ACP session id), or
+   * workspace_not_persistent (no PVC to reload the transcript from).
+   */
+  resumeSession(runId: string, prompt: string): Promise<Run>;
 
   /* ---- multi-turn session (D22) ------------------------------------------ */
   /**
@@ -312,6 +319,13 @@ export function createHttpClient(
         method: 'POST',
       }),
 
+    // Session resume (F9b).
+    resumeSession: (runId, prompt) =>
+      req<Run>(`/runs/${encodeURIComponent(runId)}/resume`, {
+        method: 'POST',
+        body: JSON.stringify({ prompt }),
+      }),
+
     // Multi-turn session (D22).
     sendMessage: (runId, prompt) =>
       req<RunMessage>(`/runs/${encodeURIComponent(runId)}/messages`, {
@@ -377,6 +391,8 @@ export function createHttpClient(
         'run.failure',
         'run.git',
         'run.result',
+        // F9b: the ACP session established/resumed system row.
+        'run.session',
         // D22 session events: the user's follow-up bubbles and the wind-down row.
         'user.message',
         'session.finish',

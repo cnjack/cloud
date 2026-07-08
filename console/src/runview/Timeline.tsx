@@ -291,6 +291,18 @@ function TimelineRow({
         </li>
       );
 
+    // F9b: the ACP session established/resumed marker — a low-key system row.
+    case 'session_info':
+      return (
+        <li className={styles.row} data-kind="session_info" data-testid="timeline-session-info">
+          <RowGutter time={time} marker="dot" />
+          <div className={styles.sysRow}>
+            <span className={styles.sysLabel}>session</span>
+            <span className={styles.resultMsg}>{item.message}</span>
+          </div>
+        </li>
+      );
+
     // D22 session: the wind-down marker (user Finish / idle timeout).
     case 'session_finish':
       return (

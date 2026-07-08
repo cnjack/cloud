@@ -116,3 +116,27 @@ describe('Timeline — session events (D22)', () => {
     expect(screen.getByText('Awaiting input')).toBeTruthy();
   });
 });
+
+describe('Timeline — run.session (F9b / D23 ①②)', () => {
+  it('renders a low-key system row (not an unknown block) for a resumed session', () => {
+    const { container } = render(
+      <Timeline
+        events={[ev(1, 'run.session', { acp_session_id: 'acp-1', resumed: true })]}
+        live={false}
+      />,
+    );
+    expect(screen.getByTestId('timeline-session-info').textContent).toContain('Session resumed');
+    // Not degraded to the unknown-event fallback.
+    expect(container.querySelectorAll('[data-kind="unknown"]')).toHaveLength(0);
+  });
+
+  it('renders "Session established" for a fresh session', () => {
+    render(
+      <Timeline
+        events={[ev(1, 'run.session', { acp_session_id: 'acp-1', resumed: false })]}
+        live={false}
+      />,
+    );
+    expect(screen.getByTestId('timeline-session-info').textContent).toContain('Session established');
+  });
+});

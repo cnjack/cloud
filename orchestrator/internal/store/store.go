@@ -134,6 +134,13 @@ type Store interface {
 	// missing run. Returns the committed row (possibly unchanged). This is the
 	// ONLY writer of result.
 	SetRunResult(ctx context.Context, id string, result domain.RunResult) (*domain.Run, error)
+	// SetRunACPSession records the run's ACP session id (from a run.session event,
+	// F9b) WITHOUT changing status. First-writer-wins: it writes only where
+	// acp_session_id is still empty, so a duplicate event — or a resume run whose
+	// id was pre-filled at creation — is a no-op that keeps the existing id. An
+	// empty id is ignored (never clears a recorded id). A no-op on a missing run.
+	// Returns the committed row (possibly unchanged).
+	SetRunACPSession(ctx context.Context, id, acpSessionID string) (*domain.Run, error)
 	// MarkPRCreated stamps pr_url/pr_number once the orchestrator has opened (or
 	// found) the draft PR (ST-1). It is IDEMPOTENT and first-writer-wins: it
 	// writes only where pr_url is currently empty, so a retry that raced another
