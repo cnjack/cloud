@@ -2,7 +2,8 @@
 # (cloud/orchestrator/internal/k8s/client.go). It creates/observes/deletes
 # batch/v1 Jobs and (forward-looking, for log tailing / pod-phase inspection
 # not yet wired into the reconciler but part of the intended contract) reads
-# pods and pod logs.
+# pods and pod logs. With PERSISTENT_WORKSPACE on (Feature C / D05) it also
+# creates/gets/deletes the per-service workspace PersistentVolumeClaims.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -21,6 +22,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # Per-service persistent workspace PVCs (Feature C / D05): EnsureWorkspacePVC
+  # creates/gets them before a Job launches; DeleteWorkspacePVC removes them when
+  # a service is deleted. Only exercised when PERSISTENT_WORKSPACE is on, but the
+  # grant is harmless otherwise.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

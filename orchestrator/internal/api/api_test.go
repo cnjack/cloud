@@ -1017,16 +1017,17 @@ func TestSystemSnapshot(t *testing.T) {
 	hub := sse.NewHub()
 	// A config with real secrets set, so the no-leak assertion is meaningful.
 	cfg := &config.Config{
-		ConsoleToken:      consoleToken,
-		DatabaseURL:       "postgres://user:s3cr3t-dsn@db/jcloud",
-		MaxConcurrentRuns: 4,
-		RunTimeoutSecs:    1800,
-		JobTTLSeconds:     3600,
-		Namespace:         "jcloud",
-		RunnerImage:       "ghcr.io/acme/runner:v1",
-		JobLauncher:       "kubernetes",
-		GiteaURL:          "http://gitea.jcloud.svc.cluster.local:3000",
-		GiteaToken:        "gitea-pat-DO-NOT-LEAK",
+		ConsoleToken:        consoleToken,
+		DatabaseURL:         "postgres://user:s3cr3t-dsn@db/jcloud",
+		MaxConcurrentRuns:   4,
+		RunTimeoutSecs:      1800,
+		JobTTLSeconds:       3600,
+		Namespace:           "jcloud",
+		RunnerImage:         "ghcr.io/acme/runner:v1",
+		JobLauncher:         "kubernetes",
+		GiteaURL:            "http://gitea.jcloud.svc.cluster.local:3000",
+		GiteaToken:          "gitea-pat-DO-NOT-LEAK",
+		PersistentWorkspace: true,
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, hub, nil)
@@ -1113,6 +1114,9 @@ func TestSystemSnapshot(t *testing.T) {
 	}
 	if got.Runner.Image != cfg.RunnerImage {
 		t.Fatalf("runner.image=%q want %q", got.Runner.Image, cfg.RunnerImage)
+	}
+	if !got.Runner.PersistentWorkspace {
+		t.Fatal("runner.persistent_workspace=false want true (Feature C flag on)")
 	}
 	if got.Namespace != "jcloud" || got.Launcher != "kubernetes" {
 		t.Fatalf("namespace/launcher = %q/%q want jcloud/kubernetes", got.Namespace, got.Launcher)

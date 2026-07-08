@@ -106,6 +106,33 @@ func TestServiceCRUDAPI(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestDeleteServiceCleansWorkspacePVC: deleting a run-less service best-effort
+// deletes its persistent workspace PVC (Feature C / D05 tenant-erasure).
+func TestDeleteServiceCleansWorkspacePVC(t *testing.T) {
+	ts, _, fake := newTestServerWithLauncher(t)
+	pid := newProject(t, ts, "svc-pvc")
+
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+		"name": "web", "repo_url": "https://github.com/acme/web.git",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create service: status=%d want 201", resp.StatusCode)
+	}
+	var svc domain.Service
+	decode(t, resp, &svc)
+
+	// Delete (no runs) -> 204 and the launcher is asked to delete ws-<serviceID>.
+	resp = do(t, "DELETE", ts.URL+"/api/v1/services/"+svc.ID, consoleToken, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete service: status=%d want 204", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if len(fake.DeletedPVCs) != 1 || fake.DeletedPVCs[0] != svc.ID {
+		t.Fatalf("DeletedPVCs=%v want [%s]", fake.DeletedPVCs, svc.ID)
+	}
+}
+
 // TestServiceDraftPRRequiresProvider proves the API enforces the blueprint §1
 // constraint: draft_pr requires a provider repo (raw repos are read-only).
 func TestServiceDraftPRRequiresProvider(t *testing.T) {

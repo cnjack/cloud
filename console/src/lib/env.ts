@@ -45,6 +45,7 @@ export const RESERVED_ENV_KEYS = [
   'WORKSPACE',
   'OUT_DIR',
   'HOME',
+  'PERSISTENT_WORKSPACE',
   // execution-hijack vectors
   'PATH',
   'NODE_OPTIONS',

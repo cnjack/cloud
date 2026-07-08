@@ -55,6 +55,10 @@ type systemProvider struct {
 
 type systemRunner struct {
 	Image string `json:"image"`
+	// PersistentWorkspace mirrors the cluster PERSISTENT_WORKSPACE switch (Feature
+	// C / D05): when on, each service keeps a persistent workspace PVC (reused
+	// checkout + jcode memory) and runs serialize per service. Purely informational.
+	PersistentWorkspace bool `json:"persistent_workspace"`
 }
 
 // handleGetSystem returns the cluster-admin system snapshot. Read-only: it
@@ -98,7 +102,8 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 			GiteaURL:     s.cfg.GiteaURL,
 		},
 		Runner: systemRunner{
-			Image: s.cfg.RunnerImage,
+			Image:               s.cfg.RunnerImage,
+			PersistentWorkspace: s.cfg.PersistentWorkspace,
 		},
 		Auth: systemAuth{
 			Providers:  s.configuredProviderIDs(),

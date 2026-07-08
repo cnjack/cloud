@@ -21,7 +21,7 @@ function snapshot(overrides: Partial<SystemInfo> = {}): SystemInfo {
     capacity: { max_concurrent_runs: 4, running: 1, queued: 2, scheduling: 1 },
     guardrails: { run_timeout_seconds: 1800, job_ttl_seconds: 3600 },
     provider: { gitea_enabled: true, gitea_url: 'http://gitea:3000' },
-    runner: { image: 'ghcr.io/acme/runner:v1' },
+    runner: { image: 'ghcr.io/acme/runner:v1', persistent_workspace: true },
     namespace: 'jcloud',
     launcher: 'kubernetes',
     ...overrides,
@@ -61,8 +61,25 @@ describe('SystemPage', () => {
     expect(screen.getByText('Guardrails')).toBeTruthy();
     // Runner image surfaces.
     expect(screen.getByText('ghcr.io/acme/runner:v1')).toBeTruthy();
+    // Feature C: the persistent-workspace status surfaces in the Runner card.
+    expect(screen.getByText('Persistent workspace')).toBeTruthy();
     // Provider enabled pill.
     expect(screen.getByTestId('provider-status').textContent).toContain('enabled');
+  });
+
+  it('reflects the persistent-workspace switch as Off when disabled (Feature C)', async () => {
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(
+        snapshot({ runner: { image: 'r:1', persistent_workspace: false } }),
+      ),
+    };
+    renderPage(client, 'cluster-admin');
+
+    await waitFor(() => expect(screen.getByTestId('system-cards')).toBeTruthy());
+    expect(screen.getByText('Persistent workspace')).toBeTruthy();
+    // gitea stays enabled in the fixture (Draft PRs = On), so the only "Off" is
+    // the persistent-workspace row.
+    expect(screen.getByText('Off')).toBeTruthy();
   });
 
   it('shows the presentation-only gate notice for a project-admin (no snapshot fetch)', () => {

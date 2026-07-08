@@ -34,6 +34,10 @@
 #
 # Optional: RUN_TIMEOUT, MODEL_PROVIDER, START_MOCKLLM, MOCK_SCENARIO,
 #   WORKSPACE, OUT_DIR.
+#   PERSISTENT_WORKSPACE  "1" => /workspace + $HOME/.jcode are a per-service PVC
+#                         that survives across runs (Feature C / D05): an existing
+#                         checkout is reused (fetch + reset, not re-clone) and
+#                         jcode memory persists. Default "0" (ephemeral clone).
 #
 # Output:
 #   - agent runs: the git diff on STDOUT (between markers) + /out/diff.patch, and
@@ -76,6 +80,10 @@ RUN_TIMEOUT="${RUN_TIMEOUT:-300s}"
 RUN_KIND="${RUN_KIND:-agent}"
 SOURCE_MODE="${SOURCE_MODE:-clone}"
 GIT_MODE="${GIT_MODE:-readonly}"
+# PERSISTENT_WORKSPACE=1 (Feature C / D05): /workspace and $HOME/.jcode are backed
+# by a per-service PVC that survives across runs, so an existing checkout is reused
+# (fetch + reset) and jcode memory persists. Default 0 = ephemeral (clone fresh).
+PERSISTENT_WORKSPACE="${PERSISTENT_WORKSPACE:-0}"
 # BASE_BRANCH is the new contract name; REPO_BRANCH is accepted as a back-compat
 # alias for the clone path.
 BASE_BRANCH="${BASE_BRANCH:-${REPO_BRANCH:-}}"
@@ -86,6 +94,15 @@ MODEL_NAME="${MODEL_NAME:-}"
 MODEL_API_KEY="${MODEL_API_KEY:-dummy-key}"
 
 log "run_id=$RUN_ID kind=$RUN_KIND source_mode=$SOURCE_MODE git_mode=$GIT_MODE"
+
+# Defense in depth against cross-run hook execution (Feature C security). A
+# persistent workspace PVC can carry .git/hooks planted by a prior run's agent;
+# the next run's git checkout/fetch would then trigger that hook — executing
+# attacker-controlled code as the runner (which holds RUN_TOKEN). core.hooksPath
+# set to /dev/null makes git look for hooks in an empty directory: none can fire.
+# Set GLOBALLY (not per-call) so EVERY git invocation in this script AND the
+# agent's own git tool calls are covered.
+git config --global core.hooksPath /dev/null 2>/dev/null || true
 
 # --- 0. Optional self-contained model: start the bundled mock LLM ------------
 MOCK_PID=""
@@ -115,40 +132,118 @@ MODEL_PROVIDER="${MODEL_PROVIDER:-${MODEL_NAME%%/*}}"
 MODEL_ID="${MODEL_NAME#*/}"
 [ "$MODEL_PROVIDER" != "$MODEL_NAME" ] || die setup_failed "MODEL_NAME must be in 'provider/model' form (got '$MODEL_NAME')"
 
-# --- 2. Prepare a clean workspace (clone URL, or fetch a source bundle) -------
-if [ -e "$WORKSPACE" ] && [ -n "$(ls -A "$WORKSPACE" 2>/dev/null || true)" ]; then
-  die setup_failed "workspace must be empty"
-fi
+# reuse_persistent_workspace refreshes an EXISTING checkout on the per-service
+# persistent PVC to the latest source and hard-resets it to BASE_BRANCH, instead
+# of re-cloning (Feature C / D05). Pollution protection: it first drops any
+# leftover work from the prior run (`git reset --hard` + `git clean -fdx`) to a
+# clean baseline, and removes any hooks planted in .git/hooks by a prior run
+# (cross-run hook execution guard — see core.hooksPath above). This is scoped to
+# $WORKSPACE; the jcode memory HOME ($HOME/.jcode) is a SEPARATE mount and is
+# deliberately preserved, so memory survives across runs. Returns non-zero on any
+# failure so the caller falls back to a clean clone.
+reuse_persistent_workspace() {
+  local origin_url
+  # Security: purge any hooks a prior run's agent may have planted. Belt-and-
+  # braces with the global core.hooksPath=/dev/null above — this physically
+  # removes the files so they cannot fire even through a path that bypasses the
+  # config (e.g. a future git call without the -c flag).
+  rm -rf "$WORKSPACE/.git/hooks" 2>/dev/null || true
+  if [ "$SOURCE_MODE" = "fetch" ]; then
+    # Fresh source bundle from the orchestrator (no credential in the pod). The
+    # prior run's origin pointed at a now-gone /tmp bundle, so re-point it.
+    [ -n "${ORCH_BASE_URL:-}" ] && [ -n "${RUN_TOKEN:-}" ] || return 1
+    SRC_BUNDLE="/tmp/source-$RUN_ID.bundle"
+    orchclient fetch-source --out "$SRC_BUNDLE" || return 1
+    origin_url="$SRC_BUNDLE"
+  else
+    [ -n "${REPO_URL:-}" ] || return 1
+    origin_url="$REPO_URL"
+  fi
+
+  # Pristine baseline: discard uncommitted changes + untracked files from the
+  # previous run. $HOME/.jcode (memory) is a different mount, untouched here.
+  git -C "$WORKSPACE" reset --hard -q 2>/dev/null || true
+  git -C "$WORKSPACE" clean -fdx -q 2>/dev/null || true
+
+  # Point origin at the fresh source and fetch every head into origin/*.
+  if git -C "$WORKSPACE" remote get-url origin >/dev/null 2>&1; then
+    git -C "$WORKSPACE" remote set-url origin "$origin_url" || return 1
+  else
+    git -C "$WORKSPACE" remote add origin "$origin_url" || return 1
+  fi
+  git -C "$WORKSPACE" fetch -q origin "+refs/heads/*:refs/remotes/origin/*" 2>/dev/null || return 1
+
+  # Sync to the target base branch tip — a clean checkout of the latest state.
+  if [ -n "$BASE_BRANCH" ]; then
+    git -C "$WORKSPACE" checkout -q -B "$BASE_BRANCH" "origin/$BASE_BRANCH" 2>/dev/null \
+      || git -C "$WORKSPACE" checkout -q "$BASE_BRANCH" 2>/dev/null || return 1
+    git -C "$WORKSPACE" reset --hard -q "origin/$BASE_BRANCH" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# --- 2. Prepare the workspace (clone/fetch fresh, or reuse the persistent PVC) -
+# Two shapes:
+#   * Ephemeral (default): /workspace starts empty and we clone (or fetch+clone a
+#     source bundle) fresh — exactly the J1-J3 behaviour.
+#   * Persistent (PERSISTENT_WORKSPACE=1, Feature C / D05): /workspace is a
+#     per-service PVC that survives across runs. If it already holds a git
+#     checkout we REUSE it (fetch latest + hard-reset to base) instead of
+#     re-cloning; the jcode memory HOME ($HOME/.jcode) is a separate subPath, so
+#     it is preserved across runs.
 mkdir -p "$WORKSPACE"
 
 CLONE_ERR="$(mktemp 2>/dev/null || echo /tmp/git-clone.err)"
 
-if [ "$SOURCE_MODE" = "fetch" ]; then
-  # Private/provider repos: the orchestrator pre-clones and serves a git bundle.
-  # No credential ever enters the pod (blueprint §3). fetch-source is load-bearing.
-  [ -n "${ORCH_BASE_URL:-}" ] && [ -n "${RUN_TOKEN:-}" ] \
-    || die setup_failed "SOURCE_MODE=fetch requires ORCH_BASE_URL + RUN_TOKEN"
-  SRC_BUNDLE="/tmp/source-$RUN_ID.bundle"
-  log "fetching source bundle from orchestrator"
-  orchclient fetch-source --out "$SRC_BUNDLE" \
-    || die clone_failed "could not fetch the source bundle from the orchestrator"
-  log "cloning source bundle -> $WORKSPACE"
-  git clone --quiet "$SRC_BUNDLE" "$WORKSPACE" 2>"$CLONE_ERR" \
-    || die clone_failed "git clone of the source bundle failed: $(tr '\n' ' ' < "$CLONE_ERR" | tail -c 500)"
-  # Keep $SRC_BUNDLE on disk: the clone made it the `origin` remote, so review
-  # runs can `git fetch origin <PR refs>` from it. It lives in the ephemeral pod
-  # /tmp and is discarded with the pod.
-else
-  # Public / raw repos: clone the URL directly (native protocol, no credential).
-  [ -n "${REPO_URL:-}" ] || die setup_failed "SOURCE_MODE=clone requires REPO_URL"
-  if [ -n "$BASE_BRANCH" ]; then
-    log "cloning $REPO_URL (branch $BASE_BRANCH) -> $WORKSPACE"
-    git clone --quiet --branch "$BASE_BRANCH" "$REPO_URL" "$WORKSPACE" 2>"$CLONE_ERR" \
-      || die clone_failed "git clone of $REPO_URL (branch $BASE_BRANCH) failed: $(tr '\n' ' ' < "$CLONE_ERR" | tail -c 500)"
+WORKSPACE_REUSED=0
+if [ "$PERSISTENT_WORKSPACE" = "1" ] && git -C "$WORKSPACE" rev-parse --git-dir >/dev/null 2>&1; then
+  # An existing checkout on the persistent PVC: refresh + reset in place.
+  if reuse_persistent_workspace; then
+    WORKSPACE_REUSED=1
+    log "persistent workspace: reused existing checkout (fetched latest, no clone)"
   else
-    log "cloning $REPO_URL (default branch) -> $WORKSPACE"
-    git clone --quiet "$REPO_URL" "$WORKSPACE" 2>"$CLONE_ERR" \
-      || die clone_failed "git clone of $REPO_URL failed: $(tr '\n' ' ' < "$CLONE_ERR" | tail -c 500)"
+    log "persistent workspace: reuse failed — wiping and cloning fresh"
+  fi
+fi
+
+if [ "$WORKSPACE_REUSED" = "0" ]; then
+  if [ "$PERSISTENT_WORKSPACE" = "1" ]; then
+    # Persistent PVC but no usable checkout (first run, or a foreign/corrupt
+    # tree): wipe its contents so the clone into an empty dir succeeds. This does
+    # NOT touch $HOME/.jcode (a different mount) — memory is kept even on a reclone.
+    find "$WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+  elif [ -n "$(ls -A "$WORKSPACE" 2>/dev/null || true)" ]; then
+    # Ephemeral contract: the workspace MUST start empty (unchanged guard).
+    die setup_failed "workspace must be empty"
+  fi
+
+  if [ "$SOURCE_MODE" = "fetch" ]; then
+    # Private/provider repos: the orchestrator pre-clones and serves a git bundle.
+    # No credential ever enters the pod (blueprint §3). fetch-source is load-bearing.
+    [ -n "${ORCH_BASE_URL:-}" ] && [ -n "${RUN_TOKEN:-}" ] \
+      || die setup_failed "SOURCE_MODE=fetch requires ORCH_BASE_URL + RUN_TOKEN"
+    SRC_BUNDLE="/tmp/source-$RUN_ID.bundle"
+    log "fetching source bundle from orchestrator"
+    orchclient fetch-source --out "$SRC_BUNDLE" \
+      || die clone_failed "could not fetch the source bundle from the orchestrator"
+    log "cloning source bundle -> $WORKSPACE"
+    git clone --quiet "$SRC_BUNDLE" "$WORKSPACE" 2>"$CLONE_ERR" \
+      || die clone_failed "git clone of the source bundle failed: $(tr '\n' ' ' < "$CLONE_ERR" | tail -c 500)"
+    # Keep $SRC_BUNDLE on disk: the clone made it the `origin` remote, so review
+    # runs can `git fetch origin <PR refs>` from it. It lives in the ephemeral pod
+    # /tmp and is discarded with the pod.
+  else
+    # Public / raw repos: clone the URL directly (native protocol, no credential).
+    [ -n "${REPO_URL:-}" ] || die setup_failed "SOURCE_MODE=clone requires REPO_URL"
+    if [ -n "$BASE_BRANCH" ]; then
+      log "cloning $REPO_URL (branch $BASE_BRANCH) -> $WORKSPACE"
+      git clone --quiet --branch "$BASE_BRANCH" "$REPO_URL" "$WORKSPACE" 2>"$CLONE_ERR" \
+        || die clone_failed "git clone of $REPO_URL (branch $BASE_BRANCH) failed: $(tr '\n' ' ' < "$CLONE_ERR" | tail -c 500)"
+    else
+      log "cloning $REPO_URL (default branch) -> $WORKSPACE"
+      git clone --quiet "$REPO_URL" "$WORKSPACE" 2>"$CLONE_ERR" \
+        || die clone_failed "git clone of $REPO_URL failed: $(tr '\n' ' ' < "$CLONE_ERR" | tail -c 500)"
+    fi
   fi
 fi
 rm -f "$CLONE_ERR" 2>/dev/null || true
@@ -157,9 +252,10 @@ rm -f "$CLONE_ERR" 2>/dev/null || true
 git -C "$WORKSPACE" config user.email "runner@jcode.local"
 git -C "$WORKSPACE" config user.name  "jcode runner"
 
-# Check out the baseline branch when it is not already HEAD (fetch clones the
-# bundle's default HEAD; a specific BASE_BRANCH may be a remote-tracking ref).
-if [ -n "$BASE_BRANCH" ]; then
+# Check out the baseline branch when it is not already HEAD (fresh clone path:
+# fetch clones the bundle's default HEAD; a specific BASE_BRANCH may be a
+# remote-tracking ref). The reuse path already checked out + reset to BASE_BRANCH.
+if [ "$WORKSPACE_REUSED" = "0" ] && [ -n "$BASE_BRANCH" ]; then
   if ! git -C "$WORKSPACE" rev-parse --verify -q "refs/heads/$BASE_BRANCH" >/dev/null 2>&1; then
     git -C "$WORKSPACE" checkout -q -B "$BASE_BRANCH" "origin/$BASE_BRANCH" 2>/dev/null \
       || git -C "$WORKSPACE" checkout -q "$BASE_BRANCH" 2>/dev/null || true
@@ -169,7 +265,7 @@ if [ -n "$BASE_BRANCH" ]; then
 fi
 
 BASE_REF="$(git -C "$WORKSPACE" rev-parse HEAD 2>/dev/null || echo '')"
-log "workspace ready at base commit ${BASE_REF:-<none>}"
+log "workspace ready at base commit ${BASE_REF:-<none>} (reused=$WORKSPACE_REUSED)"
 
 # --- 2b. Review runs: build the review prompt from the PR diff ---------------
 # The review prompt embeds `git diff PR_BASE...PR_HEAD` and asks the agent to
@@ -206,7 +302,26 @@ EOF
 fi
 
 # --- 3. Write jcode config pointing at the model -----------------------------
+# config.json is REWRITTEN every run (the model config can change between runs).
+# jcode's memory files live ELSEWHERE under $HOME/.jcode and are NOT touched here,
+# so with the persistent HOME mount (Feature C) existing project/global memory is
+# preserved and reused. Memory is enabled only in persistent mode — an ephemeral
+# HOME would discard it anyway, so keep the pre-Feature-C default (disabled) off.
+#
+# Session transcript hygiene (D12 known boundary): jcode's session.Recorder also
+# writes under $HOME/.jcode (sessions/{uuid}.json per docs/01-architecture.md).
+# Raw transcripts contain the full prompt (and possibly secrets/PII from the
+# repo). The same service may be triggered by users of different trust levels
+# (an internal member vs an external @jcode contributor on a shared PR). To avoid
+# a prior run's transcript leaking to the next run's operator, scrub the sessions
+# directory before each run while preserving the memory/ directory (D12 wants
+# memory persisted, NOT raw transcripts — those go to the control-plane store).
+MEMORY_ENABLED=false
+[ "$PERSISTENT_WORKSPACE" = "1" ] && MEMORY_ENABLED=true
 mkdir -p "$HOME/.jcode"
+if [ "$PERSISTENT_WORKSPACE" = "1" ] && [ -d "$HOME/.jcode/sessions" ]; then
+  rm -rf "$HOME/.jcode/sessions" 2>/dev/null || true
+fi
 cat > "$HOME/.jcode/config.json" <<JSON
 {
   "providers": {
@@ -220,10 +335,19 @@ cat > "$HOME/.jcode/config.json" <<JSON
   },
   "model": "$MODEL_NAME",
   "default_mode": "full_access",
-  "memory": { "enabled": false }
+  "memory": { "enabled": $MEMORY_ENABLED }
 }
 JSON
-log "wrote $HOME/.jcode/config.json (provider=$MODEL_PROVIDER model=$MODEL_ID base_url=$MODEL_BASE_URL)"
+log "wrote $HOME/.jcode/config.json (provider=$MODEL_PROVIDER model=$MODEL_ID base_url=$MODEL_BASE_URL memory=$MEMORY_ENABLED)"
+
+# Test-only hook: stop right after workspace preparation + config write, BEFORE
+# the agent runs. It lets runner/test-persistent-reuse.sh exercise the REAL
+# clone-vs-reuse logic + memory flag without a model/jcode binary. It is never set
+# in production and cannot fake a success — it exits before any diff/bundle exists.
+if [ "${JCLOUD_PREP_ONLY:-0}" = "1" ]; then
+  log "JCLOUD_PREP_ONLY=1: exiting after workspace prep + config (test hook)"
+  exit 0
+fi
 
 # --- 4. Drive one headless jcode run -----------------------------------------
 log "starting headless run (timeout=$RUN_TIMEOUT)"

@@ -86,15 +86,17 @@ func run(log *slog.Logger) error {
 		})
 	default:
 		client, err := k8s.NewClient(k8s.Config{
-			Kubeconfig:     cfg.Kubeconfig,
-			Namespace:      cfg.Namespace,
-			RunnerImage:    cfg.RunnerImage,
-			ServiceAccount: cfg.ServiceAccount,
-			TTLSeconds:     cfg.JobTTLSeconds,
-			CPULimit:       cfg.CPULimit,
-			MemoryLimit:    cfg.MemoryLimit,
-			CPURequest:     cfg.CPURequest,
-			MemoryRequest:  cfg.MemoryRequest,
+			Kubeconfig:            cfg.Kubeconfig,
+			Namespace:             cfg.Namespace,
+			RunnerImage:           cfg.RunnerImage,
+			ServiceAccount:        cfg.ServiceAccount,
+			TTLSeconds:            cfg.JobTTLSeconds,
+			CPULimit:              cfg.CPULimit,
+			MemoryLimit:           cfg.MemoryLimit,
+			CPURequest:            cfg.CPURequest,
+			MemoryRequest:         cfg.MemoryRequest,
+			WorkspacePVCSize:      cfg.WorkspacePVCSize,
+			WorkspaceStorageClass: cfg.WorkspaceStorageClass,
 		})
 		if err != nil {
 			return err

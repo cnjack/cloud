@@ -91,6 +91,20 @@ func (p *ProcessLauncher) GetJobState(ctx context.Context, name string) (JobStat
 	return p.inspectState(ctx, name)
 }
 
+// EnsureWorkspacePVC is a no-op for the process launcher: PVCs are a Kubernetes
+// concept. A local `docker run` container has no persistent per-service volume,
+// so with PERSISTENT_WORKSPACE on the process path simply clones fresh each run
+// (the entrypoint falls back when /workspace is empty). Persistence is exercised
+// on the real k8s launcher.
+func (p *ProcessLauncher) EnsureWorkspacePVC(_ context.Context, _, _ string) error {
+	return nil
+}
+
+// DeleteWorkspacePVC is a no-op for the process launcher (see EnsureWorkspacePVC).
+func (p *ProcessLauncher) DeleteWorkspacePVC(_ context.Context, _ string) error {
+	return nil
+}
+
 // DeleteJob force-removes the container. Removing a missing container is not an
 // error.
 func (p *ProcessLauncher) DeleteJob(ctx context.Context, name string) error {

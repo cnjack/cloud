@@ -27,6 +27,14 @@ type FakeLauncher struct {
 	CreateErr error
 	GetErr    error
 	DeleteErr error
+
+	// EnsuredPVCs records the serviceIDs EnsureWorkspacePVC was called for, in
+	// order (Feature C). DeletedPVCs records DeleteWorkspacePVC serviceIDs.
+	EnsuredPVCs []string
+	DeletedPVCs []string
+	// EnsurePVCErr / DeletePVCErr inject failures on the PVC path.
+	EnsurePVCErr error
+	DeletePVCErr error
 }
 
 // NewFakeLauncher returns a ready FakeLauncher.
@@ -93,6 +101,29 @@ func (f *FakeLauncher) DeleteJob(_ context.Context, name string) error {
 	f.Deleted = append(f.Deleted, name)
 	delete(f.States, name)
 	delete(f.live, name)
+	return nil
+}
+
+// EnsureWorkspacePVC records the call (unless EnsurePVCErr is set) so tests can
+// assert the reconciler ensured a service's PVC before launching its Job.
+func (f *FakeLauncher) EnsureWorkspacePVC(_ context.Context, serviceID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.EnsurePVCErr != nil {
+		return f.EnsurePVCErr
+	}
+	f.EnsuredPVCs = append(f.EnsuredPVCs, serviceID)
+	return nil
+}
+
+// DeleteWorkspacePVC records the call (unless DeletePVCErr is set).
+func (f *FakeLauncher) DeleteWorkspacePVC(_ context.Context, serviceID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.DeletePVCErr != nil {
+		return f.DeletePVCErr
+	}
+	f.DeletedPVCs = append(f.DeletedPVCs, serviceID)
 	return nil
 }
 

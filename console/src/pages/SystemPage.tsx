@@ -171,6 +171,10 @@ function SystemCards({ data }: { data: SystemInfo }) {
           <Row label="Image" value={runner.image || '—'} mono />
           <Row label="Namespace" value={namespace || '—'} mono />
           <Row label="Launcher" value={launcher || '—'} mono />
+          <Row
+            label="Persistent workspace"
+            value={runner.persistent_workspace ? 'On' : 'Off'}
+          />
         </dl>
       </Card>
 

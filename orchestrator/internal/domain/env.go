@@ -52,6 +52,7 @@ var ReservedEnvKeys = []string{
 	// orchestrator↔runner contract (jobEnv + entrypoint.sh)
 	"ORCH_BASE_URL", "TASK_PROMPT", "TASK", "SOURCE_MODE", "BASE_BRANCH",
 	"BRANCH_NAME", "START_MOCKLLM", "WORKSPACE", "OUT_DIR", "HOME",
+	"PERSISTENT_WORKSPACE",
 	// execution-hijack vectors — the runner calls git/jcode/orchclient by name.
 	"PATH", "NODE_OPTIONS", "PYTHONPATH", "PYTHONSTARTUP",
 	"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "IFS", "PERL5LIB", "RUBYOPT",

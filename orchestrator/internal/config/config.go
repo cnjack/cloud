@@ -49,6 +49,18 @@ type Config struct {
 	ExtraJobLabels map[string]string // (reserved) not env-driven yet
 	DisableK8s     bool              // DISABLE_K8S=1 — run without a cluster (API-only/dev)
 
+	// Persistent workspace (Feature C; decision D05). When PersistentWorkspace is
+	// on, each service gets a long-lived RWO PVC (ws-<serviceID>) mounted at
+	// /workspace (git checkout) + $HOME/.jcode (jcode memory) so successive runs of
+	// the SAME service reuse the working copy and memory instead of re-cloning. The
+	// PVC is a run-time working copy, NOT the authoritative store (D05/D12). OFF by
+	// default: every run then clones fresh (today's behaviour), keeping the e2e rig
+	// and existing tests unchanged. On also serializes runs per service (an RWO PVC
+	// can only attach to one pod at a time), enforced in the reconciler.
+	PersistentWorkspace   bool   // PERSISTENT_WORKSPACE, default false
+	WorkspacePVCSize      string // WORKSPACE_PVC_SIZE, default "10Gi"
+	WorkspaceStorageClass string // WORKSPACE_STORAGE_CLASS, default "" (cluster default)
+
 	// Launcher selection. "kubernetes" (default) schedules K8s Jobs; "process"
 	// runs each runner as a local `docker run` container for local dev and the
 	// full-loop integration test (see runner/test-integration.sh). "process"
@@ -114,41 +126,44 @@ type OAuthProviderConfig struct {
 // every missing required value at once.
 func Load() (*Config, error) {
 	c := &Config{
-		ListenAddr:        getenv("ADDR", ":8080"),
-		ConsoleToken:      os.Getenv("CONSOLE_TOKEN"),
-		DatabaseURL:       os.Getenv("DATABASE_URL"),
-		ReconcileInterval: getdur("RECONCILE_INTERVAL", 3*time.Second),
-		MaxConcurrentRuns: getint("MAX_CONCURRENT_RUNS", 4),
-		StallTimeout:      getdur("STALL_TIMEOUT", 10*time.Minute),
-		BackoffBaseMs:     getint64("BACKOFF_BASE_MS", 10000),
-		BackoffMaxMs:      getint64("BACKOFF_MAX_MS", 300000),
-		Kubeconfig:        os.Getenv("KUBECONFIG"),
-		Namespace:         getenv("K8S_NAMESPACE", "jcloud"),
-		RunnerImage:       os.Getenv("RUNNER_IMAGE"),
-		OrchBaseURL:       os.Getenv("ORCH_BASE_URL"),
-		ModelBaseURL:      os.Getenv("MODEL_BASE_URL"),
-		ModelAPIKey:       os.Getenv("MODEL_API_KEY"),
-		ModelName:         os.Getenv("MODEL_NAME"),
-		JobTTLSeconds:     int32(getint("JOB_TTL_SECONDS", 3600)),
-		RunTimeoutSecs:    getint64("RUN_TIMEOUT_SECONDS", 1800),
-		CPULimit:          getenv("RUNNER_CPU_LIMIT", "2"),
-		MemoryLimit:       getenv("RUNNER_MEMORY_LIMIT", "4Gi"),
-		CPURequest:        getenv("RUNNER_CPU_REQUEST", "500m"),
-		MemoryRequest:     getenv("RUNNER_MEMORY_REQUEST", "1Gi"),
-		ServiceAccount:    os.Getenv("RUNNER_SERVICE_ACCOUNT"),
-		DisableK8s:        getbool("DISABLE_K8S", false),
-		JobLauncher:       getenv("JOB_LAUNCHER", "kubernetes"),
-		RunnerNetwork:     os.Getenv("RUNNER_NETWORK"),
-		RunnerDockerArgs:  strings.Fields(os.Getenv("RUNNER_DOCKER_ARGS")),
-		GiteaURL:          os.Getenv("GITEA_URL"),
-		GiteaToken:        os.Getenv("GITEA_TOKEN"),
-		SourceBundleTTL:   getdur("SOURCE_BUNDLE_TTL", 10*time.Minute),
-		WebhookSecret:     os.Getenv("WEBHOOK_SECRET"),
-		WebhookURL:        os.Getenv("WEBHOOK_URL"),
-		AuthTokenKey:      os.Getenv("AUTH_TOKEN_KEY"),
-		ConsoleURL:        getenv("CONSOLE_URL", "http://localhost:5173"),
-		SessionTTL:        getdur("SESSION_TTL", 30*24*time.Hour),
-		OAuthProviders:    loadOAuthProviders(),
+		ListenAddr:            getenv("ADDR", ":8080"),
+		ConsoleToken:          os.Getenv("CONSOLE_TOKEN"),
+		DatabaseURL:           os.Getenv("DATABASE_URL"),
+		ReconcileInterval:     getdur("RECONCILE_INTERVAL", 3*time.Second),
+		MaxConcurrentRuns:     getint("MAX_CONCURRENT_RUNS", 4),
+		StallTimeout:          getdur("STALL_TIMEOUT", 10*time.Minute),
+		BackoffBaseMs:         getint64("BACKOFF_BASE_MS", 10000),
+		BackoffMaxMs:          getint64("BACKOFF_MAX_MS", 300000),
+		Kubeconfig:            os.Getenv("KUBECONFIG"),
+		Namespace:             getenv("K8S_NAMESPACE", "jcloud"),
+		RunnerImage:           os.Getenv("RUNNER_IMAGE"),
+		OrchBaseURL:           os.Getenv("ORCH_BASE_URL"),
+		ModelBaseURL:          os.Getenv("MODEL_BASE_URL"),
+		ModelAPIKey:           os.Getenv("MODEL_API_KEY"),
+		ModelName:             os.Getenv("MODEL_NAME"),
+		JobTTLSeconds:         int32(getint("JOB_TTL_SECONDS", 3600)),
+		RunTimeoutSecs:        getint64("RUN_TIMEOUT_SECONDS", 1800),
+		CPULimit:              getenv("RUNNER_CPU_LIMIT", "2"),
+		MemoryLimit:           getenv("RUNNER_MEMORY_LIMIT", "4Gi"),
+		CPURequest:            getenv("RUNNER_CPU_REQUEST", "500m"),
+		MemoryRequest:         getenv("RUNNER_MEMORY_REQUEST", "1Gi"),
+		ServiceAccount:        os.Getenv("RUNNER_SERVICE_ACCOUNT"),
+		DisableK8s:            getbool("DISABLE_K8S", false),
+		PersistentWorkspace:   getbool("PERSISTENT_WORKSPACE", false),
+		WorkspacePVCSize:      getenv("WORKSPACE_PVC_SIZE", "10Gi"),
+		WorkspaceStorageClass: os.Getenv("WORKSPACE_STORAGE_CLASS"),
+		JobLauncher:           getenv("JOB_LAUNCHER", "kubernetes"),
+		RunnerNetwork:         os.Getenv("RUNNER_NETWORK"),
+		RunnerDockerArgs:      strings.Fields(os.Getenv("RUNNER_DOCKER_ARGS")),
+		GiteaURL:              os.Getenv("GITEA_URL"),
+		GiteaToken:            os.Getenv("GITEA_TOKEN"),
+		SourceBundleTTL:       getdur("SOURCE_BUNDLE_TTL", 10*time.Minute),
+		WebhookSecret:         os.Getenv("WEBHOOK_SECRET"),
+		WebhookURL:            os.Getenv("WEBHOOK_URL"),
+		AuthTokenKey:          os.Getenv("AUTH_TOKEN_KEY"),
+		ConsoleURL:            getenv("CONSOLE_URL", "http://localhost:5173"),
+		SessionTTL:            getdur("SESSION_TTL", 30*24*time.Hour),
+		OAuthProviders:        loadOAuthProviders(),
 	}
 
 	var missing []string

@@ -61,3 +61,8 @@ patches:
         ORCH_BASE_URL: http://orchestrator.jcode.svc.cluster.local:8080
         CONSOLE_URL: https://cloud.j-code.net
         WEBHOOK_URL: http://orchestrator.jcode.svc.cluster.local:8080/webhooks/gitea
+        # Feature C — persistent per-service workspace (D05). Inherits the base
+        # default OFF. To enable on this cluster set PERSISTENT_WORKSPACE: "1"
+        # (optionally WORKSPACE_PVC_SIZE / WORKSPACE_STORAGE_CLASS). The
+        # orchestrator SA already carries the persistentvolumeclaims RBAC via base.
+        # PERSISTENT_WORKSPACE: "1"

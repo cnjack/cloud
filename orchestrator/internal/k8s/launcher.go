@@ -11,6 +11,14 @@ func JobName(runID string) string {
 	return "jcloud-run-" + runID
 }
 
+// WorkspacePVCName is the deterministic PersistentVolumeClaim name for a
+// service's persistent workspace (Feature C / D05). Keyed by serviceID (a
+// NewID, so it never collides across services), it lets EnsureWorkspacePVC be
+// idempotent and DeleteWorkspacePVC target exactly one service's volume.
+func WorkspacePVCName(serviceID string) string {
+	return "ws-" + serviceID
+}
+
 // JobState is the reconciler-facing summary of a Job's status, decoupled from
 // batchv1 types so the reconciler never imports client-go.
 type JobState int
@@ -69,6 +77,14 @@ type JobSpec struct {
 
 	// TimeoutSeconds maps to activeDeadlineSeconds (anti-zombie guardrail).
 	TimeoutSeconds int64
+
+	// WorkspacePVC, when non-empty, is the name of the service's persistent
+	// workspace PVC (Feature C / D05). buildJob then mounts it at /workspace
+	// (subPath work/) and $HOME/.jcode (subPath home/), so the git checkout and
+	// jcode memory survive across runs of the same service. Empty => the ephemeral
+	// path (no volume; the runner clones fresh into an emptyDir-like container FS),
+	// exactly the pre-Feature-C behaviour.
+	WorkspacePVC string
 }
 
 // JobLauncher is the cluster-facing seam the reconciler depends on.
@@ -82,4 +98,16 @@ type JobLauncher interface {
 	// DeleteJob removes the named Job (and its pods via propagation). Deleting a
 	// missing Job is not an error.
 	DeleteJob(ctx context.Context, name string) error
+
+	// EnsureWorkspacePVC idempotently creates the service's persistent workspace
+	// PVC (ws-<serviceID>) before its Job is launched (Feature C / D05). It is a
+	// no-op when the PVC already exists (AlreadyExists swallowed). projectID is
+	// stamped as a label for tenant attribution / cleanup. Launchers without a
+	// cluster (process/local) implement it as a no-op — persistence is a
+	// Kubernetes-only capability there.
+	EnsureWorkspacePVC(ctx context.Context, serviceID, projectID string) error
+	// DeleteWorkspacePVC best-effort deletes a service's workspace PVC when the
+	// service is deleted (D05 tenant-erasure guardrail). Deleting a missing PVC is
+	// not an error.
+	DeleteWorkspacePVC(ctx context.Context, serviceID string) error
 }

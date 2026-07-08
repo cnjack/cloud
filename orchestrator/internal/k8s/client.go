@@ -25,10 +25,37 @@ type Config struct {
 	MemoryLimit    string
 	CPURequest     string
 	MemoryRequest  string
+
+	// Persistent workspace (Feature C / D05). WorkspacePVCSize is the requested
+	// size of a per-service PVC (e.g. "10Gi"); WorkspaceStorageClass is optional
+	// (empty => the cluster's default StorageClass).
+	WorkspacePVCSize      string
+	WorkspaceStorageClass string
 }
 
 // LabelRunID is the label the reconciler and operators use to find a run's Job.
 const LabelRunID = "jcloud.run-id"
+
+// Labels stamped on a per-service workspace PVC for tenant attribution and
+// cleanup (Feature C / D05).
+const (
+	LabelServiceID = "jcloud.service-id"
+	LabelProjectID = "jcloud.project-id"
+)
+
+// Persistent-workspace mount layout (Feature C / D05). A SINGLE RWO PVC backs
+// both the git checkout and the jcode memory HOME, split by subPath so no second
+// volume is needed:
+//   - work/  -> /workspace     (the runner's git working copy)
+//   - home/  -> $HOME/.jcode    (jcode config.json + memory; HOME=/root per the
+//     runner image, see runner/Dockerfile `ENV HOME=/root`)
+const (
+	workspaceVolumeName = "workspace"
+	workspaceMountPath  = "/workspace"
+	workspaceSubPath    = "work"
+	jcodeHomeMountPath  = "/root/.jcode"
+	jcodeHomeSubPath    = "home"
+)
 
 // Client is the client-go-backed JobLauncher.
 type Client struct {
@@ -109,6 +136,59 @@ func classify(job *batchv1.Job) JobState {
 	return JobPending
 }
 
+// EnsureWorkspacePVC idempotently creates the per-service persistent workspace
+// PVC (Feature C / D05). It is ReadWriteOnce (one pod at a time — the reconciler
+// serializes per-service runs to honour this), sized by WorkspacePVCSize, and
+// bound to WorkspaceStorageClass when set (else the cluster default). An
+// AlreadyExists is swallowed so a re-create across ticks / restarts is a no-op.
+func (c *Client) EnsureWorkspacePVC(ctx context.Context, serviceID, projectID string) error {
+	size := c.cfg.WorkspacePVCSize
+	if size == "" {
+		size = "10Gi"
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      WorkspacePVCName(serviceID),
+			Namespace: c.cfg.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "jcloud",
+				LabelServiceID:                 serviceID,
+				LabelProjectID:                 projectID,
+			},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse(size),
+				},
+			},
+		},
+	}
+	// Empty StorageClassName ("") would REQUEST a PVC with no class; leave the
+	// field nil so the cluster's default StorageClass applies. Set it only when
+	// explicitly configured.
+	if sc := c.cfg.WorkspaceStorageClass; sc != "" {
+		pvc.Spec.StorageClassName = &sc
+	}
+	_, err := c.cs.CoreV1().PersistentVolumeClaims(c.cfg.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create workspace pvc %s: %w", pvc.Name, err)
+	}
+	return nil
+}
+
+// DeleteWorkspacePVC best-effort deletes a service's workspace PVC (D05 tenant
+// erasure). A missing PVC is not an error.
+func (c *Client) DeleteWorkspacePVC(ctx context.Context, serviceID string) error {
+	name := WorkspacePVCName(serviceID)
+	err := c.cs.CoreV1().PersistentVolumeClaims(c.cfg.Namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete workspace pvc %s: %w", name, err)
+	}
+	return nil
+}
+
 // DeleteJob deletes with foreground propagation so pods are cleaned up.
 func (c *Client) DeleteJob(ctx context.Context, name string) error {
 	policy := metav1.DeletePropagationBackground
@@ -135,6 +215,28 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 		deadline = &d
 	}
 
+	// Persistent workspace (Feature C / D05): mount the service PVC at /workspace
+	// (subPath work/) and $HOME/.jcode (subPath home/) so the checkout + jcode
+	// memory survive across runs. Empty WorkspacePVC keeps the ephemeral podspec
+	// (no volumes) — the pre-Feature-C behaviour used by local/DISABLE and the
+	// existing tests.
+	var volumes []corev1.Volume
+	var mounts []corev1.VolumeMount
+	if spec.WorkspacePVC != "" {
+		volumes = []corev1.Volume{{
+			Name: workspaceVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: spec.WorkspacePVC,
+				},
+			},
+		}}
+		mounts = []corev1.VolumeMount{
+			{Name: workspaceVolumeName, MountPath: workspaceMountPath, SubPath: workspaceSubPath},
+			{Name: workspaceVolumeName, MountPath: jcodeHomeMountPath, SubPath: jcodeHomeSubPath},
+		}
+	}
+
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      spec.Name,
@@ -155,10 +257,12 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyNever,
 					ServiceAccountName: c.cfg.ServiceAccount,
+					Volumes:            volumes,
 					Containers: []corev1.Container{{
-						Name:  "runner",
-						Image: c.cfg.RunnerImage,
-						Env:   env,
+						Name:         "runner",
+						Image:        c.cfg.RunnerImage,
+						Env:          env,
+						VolumeMounts: mounts,
 						Resources: corev1.ResourceRequirements{
 							Limits: corev1.ResourceList{
 								corev1.ResourceCPU:    resource.MustParse(c.cfg.CPULimit),

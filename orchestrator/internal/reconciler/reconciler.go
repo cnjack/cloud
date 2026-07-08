@@ -142,12 +142,38 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// past its max_concurrent_runs. pc memoizes GetProject to one hit per project
 	// per tick; the loaded project is carried into createJob (no second lookup).
 	projActive := map[string]int{}
+	// Feature C — per-service serialization. When PERSISTENT_WORKSPACE is on, a
+	// service's runs share ONE ReadWriteOnce workspace PVC, which can attach to a
+	// single pod at a time — so at most ONE non-terminal run per service may hold a
+	// Job. svcActive counts each service's in-flight (scheduling+running) runs the
+	// same way projActive counts a project's, and a queued run whose service is
+	// already in-flight stays queued. The gate is OFF (svcActive unused) when
+	// PERSISTENT_WORKSPACE is off, so the ephemeral path schedules exactly as
+	// before. It composes with the per-project cap: a run must clear BOTH gates.
+	//
+	// Stale escape: a run stuck in Scheduling/Running forever (Job Pending
+	// unschedulable, orchestrator lost the Job's terminal state, etc.) would
+	// permanently block all future runs of its service — there is no other
+	// consumer of STALL_TIMEOUT in the codebase today, so without this escape the
+	// per-service gate (hard limit 1) deadlocks the service. svcLive counts only
+	// NON-stale in-flight runs: if the sole in-flight run exceeds the stall
+	// threshold the gate lets the next queued run through. The ephemeral path
+	// does NOT need this — without per-service serialization a stuck run only
+	// consumes one cluster slot, not a permanent service-wide lock.
+	svcActive := map[string]int{}
+	svcLive := map[string]int{} // non-stale in-flight count (drives the gate)
+	stallLimit := staleEscapeThreshold(r.cfg.StallTimeout)
 	for i := range runs {
 		switch runs[i].Status {
 		case domain.StatusScheduling, domain.StatusRunning:
 			projActive[runs[i].ProjectID]++
+			svcActive[runs[i].ServiceID]++
+			if !isStaleRun(&runs[i], r.now(), stallLimit) {
+				svcLive[runs[i].ServiceID]++
+			}
 		}
 	}
+	persistent := r.cfg.PersistentWorkspace
 	pc := newProjectCache(r.st)
 
 	for i := range runs {
@@ -180,6 +206,17 @@ func (r *Reconciler) Tick(ctx context.Context) {
 					"run", run.ID, "project", run.ProjectID, "limit", *lim, "active", projActive[run.ProjectID])
 				continue
 			}
+			// Feature C — per-service serialization (hard limit 1) when the
+			// persistent RWO workspace PVC is in play. A second queued run of the
+			// same service waits for the in-flight one to reach a terminal state.
+			// Uses svcLive (non-stale count): if the in-flight run has exceeded the
+			// stall threshold it is no longer counted, letting the queued run escape
+			// the permanent deadlock (see staleEscapeThreshold / isStaleRun).
+			if persistent && svcLive[run.ServiceID] >= 1 {
+				r.log.Info("reconcile: service workspace busy — leaving run queued (per-service serialization)",
+					"run", run.ID, "service", run.ServiceID)
+				continue
+			}
 		}
 		d := decide(run, jobState, hasCapacity)
 		if d.Action == ActionNone {
@@ -188,6 +225,8 @@ func (r *Reconciler) Tick(ctx context.Context) {
 		if r.apply(ctx, &run, d, proj) && d.Action == ActionCreateJob {
 			capacity--                  // consumed a cluster slot this tick
 			projActive[run.ProjectID]++ // …and a per-project slot
+			svcActive[run.ServiceID]++  // …and the service's total in-flight (Feature C)
+			svcLive[run.ServiceID]++    // …a freshly scheduled run is never stale
 		}
 	}
 
@@ -627,6 +666,20 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		return false
 	}
 
+	// Feature C — per-service persistent workspace (D05). When enabled, ensure the
+	// service's RWO PVC exists BEFORE launching the Job (idempotent) and mount it
+	// via spec.WorkspacePVC. An ensure failure is transient: leave the run queued
+	// and retry next tick rather than launch a Job that would fail to bind its
+	// volume (fail-visible; no blind schedule). OFF => empty PVC name => ephemeral.
+	var workspacePVC string
+	if r.cfg.PersistentWorkspace {
+		if err := r.launcher.EnsureWorkspacePVC(ctx, run.ServiceID, run.ProjectID); err != nil {
+			r.log.Error("reconcile: ensure workspace pvc — leaving run queued", "run", run.ID, "service", run.ServiceID, "err", err)
+			return false // transient; retry next tick
+		}
+		workspacePVC = k8s.WorkspacePVCName(run.ServiceID)
+	}
+
 	token, err := auth.GenerateRunToken()
 	if err != nil {
 		r.log.Error("reconcile: gen run token", "run", run.ID, "err", err)
@@ -664,6 +717,7 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		RunID:          run.ID,
 		Env:            r.jobEnv(ctx, run, token, model, proj, timeout),
 		TimeoutSeconds: jobDeadline,
+		WorkspacePVC:   workspacePVC,
 	}
 	if err := r.launcher.CreateJob(ctx, spec); err != nil {
 		r.log.Error("reconcile: create job", "run", run.ID, "err", err)
@@ -788,6 +842,13 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 	if timeoutSecs > 0 {
 		env["RUN_TIMEOUT"] = fmt.Sprintf("%ds", timeoutSecs)
 	}
+	// Feature C — tell the runner to reuse the persistent workspace: with the PVC
+	// mounted at /workspace + $HOME/.jcode, entrypoint.sh fetches + hard-resets an
+	// existing checkout instead of re-cloning, and enables jcode memory. Set only
+	// when the cluster switch is on (the PVC is only mounted then).
+	if r.cfg.PersistentWorkspace {
+		env["PERSISTENT_WORKSPACE"] = "1"
+	}
 	svc, err := r.st.GetService(ctx, run.ServiceID)
 	if err != nil {
 		r.log.Error("reconcile: get service for env", "run", run.ID, "err", err)
@@ -813,6 +874,40 @@ func timeoutGrace(timeoutSecs int64) int64 {
 		grace = 120
 	}
 	return grace
+}
+
+// staleEscapeThreshold is the per-service serialization deadlock escape
+// (Feature C). STALL_TIMEOUT was defined but never consumed in the codebase; the
+// per-service gate (hard limit 1) turns a run stuck in Scheduling/Running into a
+// PERMANENT block on all future runs of that service. This threshold is how long
+// a non-terminal run is trusted to still be making progress before the gate lets
+// the next queued run through. The floor is 30m so an admin cannot accidentally
+// set it dangerously low via STALL_TIMEOUT; a higher STALL_TIMEOUT (e.g. 2h) is
+// honoured for long-running agent turns. 0 (disabled) => the 30m floor.
+func staleEscapeThreshold(stall time.Duration) time.Duration {
+	const floor = 30 * time.Minute
+	if stall <= 0 || stall < floor {
+		return floor
+	}
+	return stall
+}
+
+// isStaleRun reports whether a Scheduling/Running run has been non-terminal for
+// longer than threshold — the condition under which the per-service serialization
+// gate releases its hold (Feature C stale escape). The epoch is StartedAt when
+// available (Running); for Scheduling (StartedAt nil) CreatedAt is a tight upper
+// bound because in the persistent path the gate serializes per service, so a run
+// is scheduled within a few ticks of creation once its service slot opens — there
+// is no multi-minute queue wait behind same-service runs.
+func isStaleRun(run *domain.Run, now time.Time, threshold time.Duration) bool {
+	if threshold <= 0 {
+		return false
+	}
+	epoch := run.CreatedAt
+	if run.StartedAt != nil {
+		epoch = *run.StartedAt
+	}
+	return now.Sub(epoch) > threshold
 }
 
 // applyInjectedEnv merges a project's injected_env into env, skipping any

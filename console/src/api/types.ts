@@ -282,7 +282,15 @@ export interface SystemInfo {
     gitea_enabled: boolean;
     gitea_url: string;
   };
-  runner: { image: string };
+  runner: {
+    image: string;
+    /**
+     * Feature C (D05): whether the cluster PERSISTENT_WORKSPACE switch is on —
+     * services keep a persistent workspace PVC (reused checkout + jcode memory)
+     * and runs serialize per service. Optional so lean fixtures still type-check.
+     */
+    persistent_workspace?: boolean;
+  };
   namespace: string;
   /** kubernetes | process | disabled */
   launcher: string;

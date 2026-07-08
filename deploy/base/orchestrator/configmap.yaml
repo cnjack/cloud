@@ -43,6 +43,17 @@ data:
   RUNNER_CPU_REQUEST: "500m"
   RUNNER_MEMORY_REQUEST: "1Gi"
 
+  # Persistent workspace (Feature C / D05). OFF by default: every run clones fresh
+  # and there is no per-service serialization — today's behaviour, and what the
+  # local e2e rig expects. Turn on to give each service a long-lived RWO PVC
+  # (ws-<serviceID>) mounted at /workspace + $HOME/.jcode so a later run of the
+  # SAME service reuses the checkout and jcode memory (runs then serialize per
+  # service). WORKSPACE_STORAGE_CLASS empty => the cluster's default StorageClass.
+  # Requires the persistentvolumeclaims RBAC in rbac.yaml.
+  PERSISTENT_WORKSPACE: "0"
+  WORKSPACE_PVC_SIZE: "10Gi"
+  WORKSPACE_STORAGE_CLASS: ""
+
   # MODEL_* deliberately NOT set here (see header note): configured via the
   # console (DB) in real deployments; re-added as env by the root e2e-rig patch.
 

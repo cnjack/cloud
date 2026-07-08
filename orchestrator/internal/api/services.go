@@ -366,5 +366,14 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not delete service")
 		return
 	}
+	// Feature C — best-effort delete the service's persistent workspace PVC so no
+	// stale working copy / jcode memory lingers (D05 tenant-erasure guardrail). A
+	// failure (or no launcher / no PVC) is only logged, never blocks the delete:
+	// the DB row is already gone, and a NotFound is swallowed by the launcher.
+	if s.launcher != nil {
+		if err := s.launcher.DeleteWorkspacePVC(r.Context(), id); err != nil {
+			s.log.Warn("delete service: workspace pvc cleanup failed (non-fatal)", "service", id, "err", err)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
