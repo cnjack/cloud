@@ -42,7 +42,12 @@ COPY bin/orchclient /usr/local/bin/orchclient
 COPY bin/mockllm   /usr/local/bin/mockllm
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/jcode /usr/local/bin/acpdrive /usr/local/bin/orchclient /usr/local/bin/mockllm /usr/local/bin/entrypoint.sh
+# turn-hook.sh (F7a / D22): the per-turn diff/commit/bundle logic, extracted
+# from entrypoint.sh so acpdrive can exec it directly as --turn-hook in
+# multi-turn session mode (RUN_SESSION=1). Lands alongside entrypoint.sh so
+# entrypoint.sh's SCRIPT_DIR-relative lookup finds it in the image too.
+COPY turn-hook.sh  /usr/local/bin/turn-hook.sh
+RUN chmod +x /usr/local/bin/jcode /usr/local/bin/acpdrive /usr/local/bin/orchclient /usr/local/bin/mockllm /usr/local/bin/entrypoint.sh /usr/local/bin/turn-hook.sh
 
 # jcode writes its config + logs under $HOME/.jcode. Keep it explicit.
 ENV HOME=/root

@@ -44,6 +44,16 @@
 #                         that survives across runs (Feature C / D05): an existing
 #                         checkout is reused (fetch + reset, not re-clone) and
 #                         jcode memory persists. Default "0" (ephemeral clone).
+#   RUN_SESSION           "1" => multi-turn session mode (F7a / D22, see
+#                         docs/14-cloud-v2-design.md §3): instead of driving one
+#                         session/prompt and exiting, acpdrive loops — after each
+#                         turn it runs runner/turn-hook.sh (this file's former
+#                         steps 6/6b/7, extracted so the SAME diff/commit/bundle
+#                         logic backs every turn) and long-polls the orchestrator
+#                         (RUN_TOKEN) for the next user message on the SAME ACP
+#                         session, never re-opening it. Ignored for RUN_KIND=review
+#                         (review runs are always single-shot). Default "0"
+#                         (single-shot; behavior is then EXACTLY as before F7a).
 #
 # Output:
 #   - agent runs: the git diff on STDOUT (between markers) + /out/diff.patch, and
@@ -53,6 +63,13 @@
 #   - exit 0 on success; non-zero with a readable error otherwise.
 
 set -euo pipefail
+
+# SCRIPT_DIR locates turn-hook.sh (F7a / D22) relative to this script rather
+# than a hardcoded absolute path, so entrypoint.sh keeps working both inside
+# the runner image (both files land in /usr/local/bin) and when run directly
+# from a repo checkout (e.g. local dev/testing).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOOK_SCRIPT="$SCRIPT_DIR/turn-hook.sh"
 
 log()  { printf '[entrypoint] %s\n' "$*" >&2; }
 
@@ -65,15 +82,12 @@ report_failure() {
   fi
 }
 
-# report_result OUTCOME — best-effort POST a run.result event so the control
-# plane records a first-class run outcome (e.g. no_changes, D18). No-op
-# standalone. Never itself fatal (the run has already logically succeeded).
-report_result() {
-  local outcome="$1"
-  if command -v orchclient >/dev/null 2>&1; then
-    orchclient report-result --outcome "$outcome" || true
-  fi
-}
+# Note: report_result (POST run.result{outcome}, D18) moved to turn-hook.sh
+# (F7a / D22) along with the diff/commit/bundle logic it's paired with — see
+# that file's own copy of this helper. Nothing in entrypoint.sh itself needs
+# it anymore (the finalize call at the bottom of this file execs turn-hook.sh
+# as an independent subprocess, which has no access to shell functions
+# defined here anyway).
 
 # die REASON MESSAGE — report the failure (if wired) then exit non-zero.
 # REASON ∈ {clone_failed, setup_failed, agent_error, timeout} (docs/11-api.md §1.4).
@@ -96,6 +110,9 @@ RUN_TIMEOUT="${RUN_TIMEOUT:-300s}"
 RUN_KIND="${RUN_KIND:-agent}"
 SOURCE_MODE="${SOURCE_MODE:-clone}"
 GIT_MODE="${GIT_MODE:-readonly}"
+# RUN_SESSION=1 (F7a / D22): multi-turn session mode, see the header comment
+# above. Forced off for RUN_KIND=review below (once RUN_KIND is known).
+RUN_SESSION="${RUN_SESSION:-0}"
 # PERSISTENT_WORKSPACE=1 (Feature C / D05): /workspace and $HOME/.jcode are backed
 # by a per-service PVC that survives across runs, so an existing checkout is reused
 # (fetch + reset) and jcode memory persists. Default 0 = ephemeral (clone fresh).
@@ -283,6 +300,48 @@ fi
 BASE_REF="$(git -C "$WORKSPACE" rev-parse HEAD 2>/dev/null || echo '')"
 log "workspace ready at base commit ${BASE_REF:-<none>} (reused=$WORKSPACE_REUSED)"
 
+# turn-hook.sh (F7a / D22) runs as an INDEPENDENT subprocess (execed directly
+# by acpdrive in session mode, and by this script below), so it shares no
+# shell state with entrypoint.sh — everything it needs must be in its process
+# environment. Some of these (WORKSPACE, OUT_DIR, BASE_BRANCH) may have just
+# been LOCALLY DEFAULTED above rather than injected by the orchestrator, which
+# in bash means they are NOT automatically exported; BASE_REF is always
+# locally computed. Export explicitly rather than relying on each var's
+# incidental export history.
+export WORKSPACE OUT_DIR RUN_ID RUN_KIND GIT_MODE BRANCH_NAME BASE_BRANCH BASE_REF TASK_PROMPT ORCH_BASE_URL RUN_TOKEN
+
+# turn-hook.sh's cross-turn state (per-turn dedup diff + bundle-uploaded
+# marker, see its header comment) lives under $WORKSPACE/.git/ so it survives
+# across turns WITHIN one run — but on a PERSISTENT_WORKSPACE (Feature C)
+# stale state from a PRIOR, unrelated run could otherwise leak in and cause
+# this run's first real diff to be silently skipped as a "duplicate", or its
+# legitimate no_changes report to be suppressed by another run's bundle
+# marker. Always start clean, exactly like the .git/hooks purge above.
+rm -f "$WORKSPACE/.git/jcode-turn-hook.last-diff" \
+      "$WORKSPACE/.git/jcode-bundle-uploaded" 2>/dev/null || true
+
+# The turn hook is load-bearing for every agent run (per-turn in session mode,
+# finalize in both modes): fail fast with a typed reason if it is missing or
+# not executable, rather than a bare 127 from acpdrive's hook subprocess (or
+# from this script's own set -e at the finalize call) with no precise
+# run.failure reason. Review runs never invoke it (they exit at step 5).
+if [ "$RUN_KIND" != "review" ]; then
+  [ -x "$HOOK_SCRIPT" ] || die setup_failed "turn hook missing or not executable: $HOOK_SCRIPT"
+fi
+
+# Session mode is only meaningful for agent runs (a review run's single
+# headless turn already exits at step 5, before turn-hook.sh is ever reached);
+# force it off defensively for RUN_KIND=review so a misconfigured RUN_SESSION
+# can never change review's single-shot contract.
+SESSION_MODE=0
+if [ "$RUN_SESSION" = "1" ]; then
+  if [ "$RUN_KIND" = "review" ]; then
+    log "RUN_SESSION=1 ignored for RUN_KIND=review (review runs are always single-shot)"
+  else
+    SESSION_MODE=1
+  fi
+fi
+
 # --- 2b. Review runs: build the review prompt from the PR diff ---------------
 # The review prompt embeds `git diff PR_BASE...PR_HEAD` and asks the agent to
 # write REVIEW.md. It contains the literal marker "[review]" so the mock LLM (and
@@ -379,14 +438,31 @@ if [ "${JCLOUD_PREP_ONLY:-0}" = "1" ]; then
   exit 0
 fi
 
-# --- 4. Drive one headless jcode run -----------------------------------------
-log "starting headless run (timeout=$RUN_TIMEOUT)"
+# --- 4. Drive one headless jcode run (or a multi-turn session, F7a / D22) ----
+# Single-shot (SESSION_MODE=0): acpdrive drives exactly one session/prompt and
+# exits — unchanged from before F7a. Session mode (SESSION_MODE=1): acpdrive
+# loops, running turn-hook.sh after every turn and long-polling the
+# orchestrator for follow-up messages on the same ACP session (see acpdrive
+# --session/--turn-hook in runner/acpdrive/session.go). Either way, acpdrive
+# only EXITS once the whole run/session is over, so the finalize step below
+# (§5 for review, or the diff/report step after it for agent) runs exactly
+# once regardless of how many turns happened inside.
+log "starting headless run (timeout=$RUN_TIMEOUT session=$SESSION_MODE)"
 set +e
-JCODE_BIN=jcode acpdrive \
-  --workspace "$WORKSPACE" \
-  --prompt "$TASK_PROMPT" \
-  --timeout "$RUN_TIMEOUT" \
-  --verbose < /dev/null
+if [ "$SESSION_MODE" = "1" ]; then
+  JCODE_BIN=jcode acpdrive \
+    --workspace "$WORKSPACE" \
+    --prompt "$TASK_PROMPT" \
+    --timeout "$RUN_TIMEOUT" \
+    --session --turn-hook "$HOOK_SCRIPT" \
+    --verbose < /dev/null
+else
+  JCODE_BIN=jcode acpdrive \
+    --workspace "$WORKSPACE" \
+    --prompt "$TASK_PROMPT" \
+    --timeout "$RUN_TIMEOUT" \
+    --verbose < /dev/null
+fi
 RUN_RC=$?
 set -e
 if [ "$RUN_RC" -eq 124 ]; then
@@ -412,102 +488,19 @@ if [ "$RUN_KIND" = "review" ]; then
   exit 0
 fi
 
-# --- 6. Agent runs: produce the diff -----------------------------------------
-git -C "$WORKSPACE" add -N . >/dev/null 2>&1 || true
-if [ -n "$BASE_REF" ]; then
-  DIFF="$(git -C "$WORKSPACE" --no-pager diff --binary "$BASE_REF")"
-else
-  log "no BASE_REF recorded; falling back to plain 'git diff' (worktree vs index)"
-  DIFF="$(git -C "$WORKSPACE" --no-pager diff --binary)"
-fi
-
-mkdir -p "$OUT_DIR" 2>/dev/null || true
-if printf '%s\n' "$DIFF" > "$OUT_DIR/diff.patch" 2>/dev/null; then
-  log "wrote $OUT_DIR/diff.patch ($(wc -c < "$OUT_DIR/diff.patch" | tr -d ' ') bytes)"
-else
-  log "could not write $OUT_DIR/diff.patch (continuing; diff still on stdout)"
-fi
-
-printf '===JCODE_DIFF_BEGIN run_id=%s===\n' "$RUN_ID"
-printf '%s\n' "$DIFF"
-printf '===JCODE_DIFF_END run_id=%s===\n' "$RUN_ID"
-
-# Empty diff → first-class "no changes" outcome (D18). An agent run that finishes
-# cleanly but changes nothing is a SUCCESS, not a failure: report
-# run.result{outcome:no_changes} so the control plane records it as a first-class
-# outcome, then exit 0 WITHOUT building/uploading anything. Exiting here skips the
-# draft-PR commit/bundle (§6b) AND the diff artifact upload (§7) — there is
-# nothing to push or store. This also covers the M7 update-push path (draft_pr
-# onto an existing PR head): an empty diff means no new commit, so the branch is
-# never pushed. readonly and draft_pr behave identically here.
-if [ -z "$DIFF" ]; then
-  log "agent run produced an empty diff (no changes) — reporting no_changes, exit 0"
-  report_result no_changes
-  log "success (no changes)"
-  exit 0
-fi
-
-# --- 6b. Draft-PR bundle (blueprint §3) --------------------------------------
-# In draft_pr mode the runner commits the agent's change onto BRANCH_NAME and
-# builds a git bundle (BASE_BRANCH..BRANCH_NAME), then POSTs the bundle to the
-# orchestrator, which pushes the branch and opens the draft PR on the triggering
-# user's behalf. The runner NEVER pushes and holds NO token. readonly mode skips
-# this entirely (diff-only, unchanged).
-if [ "$GIT_MODE" = "draft_pr" ]; then
-  BRANCH_NAME="${BRANCH_NAME:-jcode/run-$RUN_ID}"
-  [ -n "$BASE_REF" ] || die setup_failed "draft_pr requires a base commit but none was recorded"
-
-  # Update mode (M7 webhook @mention task): BRANCH_NAME == BASE_BRANCH, i.e. the
-  # agent builds ON an existing PR head branch and pushes back to it. We are
-  # ALREADY on that branch after the checkout above, so do NOT create a new
-  # branch (it exists) — just commit onto it. Otherwise (ordinary draft PR) cut a
-  # fresh jcode/run-<id> branch off the base. Either way the bundle below is
-  # <start SHA>..HEAD, so the orchestrator reconstructs exactly the new commits.
-  if [ -n "$BASE_BRANCH" ] && [ "$BRANCH_NAME" = "$BASE_BRANCH" ]; then
-    log "draft_pr update mode: committing agent changes onto existing branch $BRANCH_NAME (base $BASE_REF)"
-  else
-    log "draft_pr: committing agent changes onto new branch $BRANCH_NAME and bundling"
-    git -C "$WORKSPACE" checkout -q -b "$BRANCH_NAME" \
-      || die agent_error "could not create branch $BRANCH_NAME"
-  fi
-  git -C "$WORKSPACE" add -A >/dev/null 2>&1 || true
-  if ! git -C "$WORKSPACE" diff --cached --quiet; then
-    git -C "$WORKSPACE" commit -q -m "[jcode] ${TASK_PROMPT%%$'\n'*}" \
-      || die agent_error "could not commit changes onto $BRANCH_NAME"
-  fi
-
-  RUN_BUNDLE="/tmp/run-$RUN_ID.bundle"
-  # BASE_REF..BRANCH_NAME → the bundle names refs/heads/BRANCH_NAME with BASE_REF
-  # as the prerequisite; the orchestrator's bare clone already has BASE_REF, so
-  # `git fetch <bundle>` then `git push` reconstructs the branch.
-  git -C "$WORKSPACE" bundle create "$RUN_BUNDLE" "$BASE_REF..$BRANCH_NAME" >/dev/null 2>&1 \
-    || die agent_error "could not create the run bundle"
-
-  # Client-side 16MiB self-check (server enforces the same limit with a 413).
-  BUNDLE_BYTES="$(wc -c < "$RUN_BUNDLE" | tr -d ' ')"
-  if [ "$BUNDLE_BYTES" -gt 16777216 ]; then
-    rm -f "$RUN_BUNDLE" 2>/dev/null || true
-    die agent_error "run bundle is $BUNDLE_BYTES bytes (>16MiB limit)"
-  fi
-  log "built run bundle ($BUNDLE_BYTES bytes)"
-
-  if command -v orchclient >/dev/null 2>&1 && [ -n "${ORCH_BASE_URL:-}" ] && [ -n "${RUN_TOKEN:-}" ]; then
-    orchclient upload-bundle --file "$RUN_BUNDLE" \
-      || log "bundle upload failed (non-fatal; the draft PR will not open until retried)"
-  else
-    log "no orchestrator wired; skipping bundle upload (standalone run)"
-  fi
-  rm -f "$RUN_BUNDLE" 2>/dev/null || true
-fi
-
-# --- 7. Upload the diff artifact to the orchestrator (best-effort) -----------
-if command -v orchclient >/dev/null 2>&1 && [ -n "${ORCH_BASE_URL:-}" ] && [ -n "${RUN_TOKEN:-}" ]; then
-  if printf '%s\n' "$DIFF" | orchclient upload-artifact --kind diff --file - ; then
-    log "uploaded diff artifact to orchestrator"
-  else
-    log "diff artifact upload failed (non-fatal; diff still in /out and stdout)"
-  fi
-fi
+# --- 6/6b/7. Diff → (draft_pr) commit+bundle → upload, via turn-hook.sh -----
+# This used to be inlined here; it is now runner/turn-hook.sh (F7a / D22) so
+# the EXACT same logic backs both this single call and every mid-session turn
+# (acpdrive already ran it once per turn via --turn-hook, above, when
+# SESSION_MODE=1). Called here with TURN_HOOK_FINALIZE=1: this is either the
+# single-shot run's ONE turn (empty diff → report_result no_changes, matching
+# pre-F7a behavior exactly), or the session's finalization after acpdrive
+# returned 0 (410 from next-prompt) — "no changes across ANY turn" is only
+# knowable now, so no_changes is reported here rather than mid-loop (see
+# turn-hook.sh's header comment). A non-empty diff at this point in session
+# mode was already committed/uploaded by the last per-turn hook call, so the
+# turn-hook's own dedup silently no-ops the commit/upload here.
+TURN_INDEX=1 ACP_SESSION_ID="" ACP_STOP_REASON="" TURN_HOOK_FINALIZE=1 "$HOOK_SCRIPT"
 
 log "success"
 exit 0

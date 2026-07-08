@@ -23,7 +23,16 @@
 //	acpdrive --workspace /workspace --prompt "…"        # jcode from PATH
 //	acpdrive --agent /usr/local/bin/jcode --agent-arg acp --workspace … --prompt …
 //
-// Env fallbacks: WORKSPACE, TASK_PROMPT, JCODE_BIN.
+// Session mode (--session / RUN_SESSION=1, see session.go): instead of
+// exiting after one session/prompt, acpdrive runs a turn-hook after each turn
+// and long-polls the orchestrator for follow-up messages, sending each one as
+// another session/prompt on the SAME session (never re-opened). This
+// implements the runner side of D22 (docs/02-decision-log.md) /
+// docs/14-cloud-v2-design.md §3. It is OFF by default: with RUN_SESSION unset
+// (or --session=false), acpdrive's behavior is exactly the single-shot run()
+// path below, unchanged.
+//
+// Env fallbacks: WORKSPACE, TASK_PROMPT, JCODE_BIN, RUN_SESSION, TURN_HOOK.
 package main
 
 import (
@@ -51,13 +60,17 @@ func main() {
 		prompt    string
 		timeout   time.Duration
 		verbose   bool
+		session   bool
+		turnHook  string
 	)
 	flag.StringVar(&agentBin, "agent", envOr("JCODE_BIN", "jcode"), "path to the jcode binary")
 	flag.Var(&agentArgs, "agent-arg", "extra arg passed to the agent (repeatable); defaults to [acp]")
 	flag.StringVar(&workspace, "workspace", os.Getenv("WORKSPACE"), "working directory the session runs against")
-	flag.StringVar(&prompt, "prompt", os.Getenv("TASK_PROMPT"), "task prompt to send")
+	flag.StringVar(&prompt, "prompt", os.Getenv("TASK_PROMPT"), "task prompt to send (first turn, in --session mode)")
 	flag.DurationVar(&timeout, "timeout", 5*time.Minute, "hard ceiling for the whole run")
 	flag.BoolVar(&verbose, "verbose", false, "log ACP protocol details to stderr")
+	flag.BoolVar(&session, "session", os.Getenv("RUN_SESSION") == "1", "multi-turn session mode: loop session/prompt over long-polled follow-up messages instead of exiting after one turn (env RUN_SESSION=1); see docs/14-cloud-v2-design.md §3 (D22)")
+	flag.StringVar(&turnHook, "turn-hook", os.Getenv("TURN_HOOK"), "path to a script run synchronously after each turn in --session mode (env TURN_HOOK); ignored when --session is false")
 	flag.Parse()
 
 	if workspace == "" {
@@ -80,6 +93,33 @@ func main() {
 	// Cancel the run on SIGINT/SIGTERM so a killed container tears down cleanly.
 	sigCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Session mode (RUN_SESSION=1 / --session): loop session/prompt over
+	// long-polled follow-up messages instead of exiting after one turn (F7a /
+	// D22). When --session is NOT set, behavior is EXACTLY the single-shot
+	// path below, unchanged (hard backward-compat requirement).
+	if session {
+		orchBase := os.Getenv("ORCH_BASE_URL")
+		runID := os.Getenv("RUN_ID")
+		runToken := os.Getenv("RUN_TOKEN")
+		if orchBase == "" || runID == "" || runToken == "" {
+			fatal("--session requires ORCH_BASE_URL, RUN_ID, and RUN_TOKEN in the environment (there is no control plane to long-poll otherwise)")
+		}
+		cfg := sessionConfig{
+			AgentBin: agentBin, AgentArgs: agentArgs, Workspace: workspace, Prompt: prompt,
+			TurnHook: turnHook, Verbose: verbose,
+			OrchBaseURL: orchBase, RunID: runID, RunToken: runToken,
+		}
+		if err := runSession(sigCtx, cfg); err != nil {
+			// Same --timeout / exit-124 handling as the single-shot path below.
+			if ctx.Err() == context.DeadlineExceeded {
+				fmt.Fprintf(os.Stderr, "[acpdrive] error: session run exceeded --timeout=%s: %v\n", timeout, err)
+				os.Exit(124)
+			}
+			fatal("%v", err)
+		}
+		return
+	}
 
 	if err := run(sigCtx, agentBin, agentArgs, workspace, prompt, verbose); err != nil {
 		// Distinguish "hit our own --timeout deadline" from any other agent
