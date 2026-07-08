@@ -157,3 +157,82 @@ describe('groupTimeline — pass-through rows', () => {
     expect(grouped[3]).toMatchObject({ outcome: 'no_changes', message: 'No code changes' });
   });
 });
+
+describe('groupTimeline — permission request/resolved pairing (F8b)', () => {
+  const options = [
+    { option_id: 'allow', name: 'Allow', kind: 'allow_once' },
+    { option_id: 'reject', name: 'Reject', kind: 'reject_once' },
+  ];
+
+  it('renders a pending permission_card for an unresolved request', () => {
+    const grouped = groupTimeline([
+      ev(1, 'agent.permission_request', {
+        request_id: 'req-1',
+        tool_call_id: 'tc-1',
+        title: 'Run `make deploy`',
+        options,
+      }),
+    ]);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]).toMatchObject({
+      kind: 'permission_card',
+      status: 'pending',
+      requestId: 'req-1',
+      title: 'Run `make deploy`',
+    });
+    expect((grouped[0] as { options: unknown[] }).options).toHaveLength(2);
+  });
+
+  it('pairs request and resolved by request_id ACROSS interleaved events (no adjacency)', () => {
+    // The request event is delivered synchronously and may precede the
+    // tool_call it references; other events interleave freely before the
+    // resolution arrives. Pairing must key off request_id alone.
+    const grouped = groupTimeline([
+      ev(1, 'agent.permission_request', { request_id: 'req-1', title: 'Edit README', options }),
+      ev(2, 'agent.tool_call', { tool: 'edit_file', call_id: 'c9', args: {} }),
+      ev(3, 'agent.text', { text: 'thinking…' }),
+      ev(4, 'agent.tool_result', { call_id: 'c9', ok: true, output: 'done' }),
+      ev(5, 'agent.permission_resolved', { request_id: 'req-1', option_id: 'allow', resolution: 'user' }),
+    ]);
+    const card = grouped.find((g) => g.kind === 'permission_card');
+    expect(card).toMatchObject({
+      status: 'resolved',
+      resolvedOptionId: 'allow',
+      resolution: 'user',
+      resolvedSeq: 5,
+    });
+    // The resolution row itself is folded into the card, not a second row.
+    expect(grouped.filter((g) => g.kind === 'permission_resolved')).toHaveLength(0);
+  });
+
+  it('a duplicate request event (at-least-once delivery) does not spawn a second card or reset a resolved one', () => {
+    const grouped = groupTimeline([
+      ev(1, 'agent.permission_request', { request_id: 'req-1', title: 'T', options }),
+      ev(2, 'agent.permission_resolved', { request_id: 'req-1', option_id: 'reject', resolution: 'timeout' }),
+      ev(3, 'agent.permission_request', { request_id: 'req-1', title: 'T', options }),
+    ]);
+    const cards = grouped.filter((g) => g.kind === 'permission_card');
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ status: 'resolved', resolution: 'timeout' });
+  });
+
+  it('an ORPHAN resolved (request never arrived) degrades to a standalone row', () => {
+    const grouped = groupTimeline([
+      ev(1, 'agent.permission_resolved', { request_id: 'req-ghost', option_id: '', resolution: 'timeout' }),
+    ]);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]).toMatchObject({ kind: 'permission_resolved', requestId: 'req-ghost' });
+  });
+
+  it('two concurrent requests resolve independently by their own request_id', () => {
+    const grouped = groupTimeline([
+      ev(1, 'agent.permission_request', { request_id: 'req-a', title: 'A', options }),
+      ev(2, 'agent.permission_request', { request_id: 'req-b', title: 'B', options }),
+      ev(3, 'agent.permission_resolved', { request_id: 'req-b', option_id: 'reject', resolution: 'timeout' }),
+    ]);
+    const cards = grouped.filter((g) => g.kind === 'permission_card');
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toMatchObject({ requestId: 'req-a', status: 'pending' });
+    expect(cards[1]).toMatchObject({ requestId: 'req-b', status: 'resolved' });
+  });
+});

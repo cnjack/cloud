@@ -66,6 +66,9 @@ export function ProjectDetailPage() {
   const [selectedModel, setSelectedModel] = useState<string>('');
   // D22: opt this run into multi-turn session mode (default OFF — single-shot).
   const [startSession, setStartSession] = useState(false);
+  // F8b: ask before agent actions (permission_mode=approval). Only meaningful —
+  // and only rendered — with the session toggle ON; default OFF (full access).
+  const [askApproval, setAskApproval] = useState(false);
 
   // Add-repository inline form.
   const [addOpen, setAddOpen] = useState(false);
@@ -136,6 +139,10 @@ export function ProjectDetailPage() {
           // D22: session opt-in rides on the create body; omitted when off so the
           // wire shape is unchanged for single-shot runs.
           ...(startSession ? { session: true } : {}),
+          // F8b: approval mode only ever rides WITH session (the server 400s a
+          // sessionless approval); a stale askApproval left over from toggling
+          // session back off must not leak onto a single-shot run.
+          ...(startSession && askApproval ? { permission_mode: 'approval' as const } : {}),
         },
       },
       {
@@ -387,6 +394,24 @@ export function ProjectDetailPage() {
                 />
                 Start session
               </label>
+              {/* F8b: approval mode — only offered for sessions (a headless
+                  single-shot has nobody watching to answer, and the server
+                  400s the combination). Default off = full access. */}
+              {startSession && (
+                <label
+                  className={styles.sessionToggle}
+                  title="The agent pauses before actions that need permission and waits for your approval in the timeline."
+                >
+                  <input
+                    type="checkbox"
+                    checked={askApproval}
+                    onChange={(e) => setAskApproval(e.target.checked)}
+                    disabled={!modelGate.configured}
+                    data-testid="composer-approval-toggle"
+                  />
+                  Ask before actions
+                </label>
+              )}
               <Button
                 type="submit"
                 variant="primary"

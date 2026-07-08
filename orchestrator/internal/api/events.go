@@ -290,6 +290,22 @@ func (s *Server) handleIngestEvents(w http.ResponseWriter, r *http.Request, runI
 		}
 		inputs = append(inputs, store.EventInput{Seq: e.Seq, Type: e.Type, Payload: e.Payload})
 	}
+	// Record permission REQUESTS (F8b) BEFORE the durable append. The two writes
+	// are not one transaction, and this order is what closes the gap: if the
+	// append committed first and the upsert then failed (500 → runner re-send),
+	// the retry would hit the per-source seq dedupe (stored empty → nothing
+	// published) and live SSE subscribers would never see the pending card until
+	// a refresh. Upserting first means a failed batch persists nothing else, so
+	// the retried batch replays the full append+publish path. A 500 is safely
+	// retryable on both sides (seq dedupe + insert-only upsert); the 2xx below
+	// is also what tells acpdrive it may start polling the decision endpoint,
+	// so an event whose row was never written must never be acked.
+	if err := s.applyPermissionRequests(r.Context(), runID, req.Events); err != nil {
+		s.log.Error("ingest: record permission request", "run", runID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not persist permission request")
+		return
+	}
+
 	// Runner ingest: the runner's seq is a per-source idempotency key; the store
 	// allocates the authoritative global seq so runner events never collide with
 	// internally-emitted ones (see cloud/docs/11-api.md §5.1). `stored` carries
@@ -313,6 +329,10 @@ func (s *Server) handleIngestEvents(w http.ResponseWriter, r *http.Request, runI
 	// run carries a first-class result even though its Job still exits 0 →
 	// succeeded (D18). Status is untouched; the reconcile pass drives it.
 	s.applyRunResult(r.Context(), runID, req.Events)
+
+	// Record permission RESOLUTIONS (F8b) after the durable append, best-effort
+	// like the other post-hooks — nothing polls on a resolution.
+	s.applyPermissionResolutions(r.Context(), runID, req.Events)
 
 	// Fan out to live subscribers using the server-allocated seq (best-effort;
 	// durability already done).

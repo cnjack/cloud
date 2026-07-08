@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1102,6 +1103,19 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 	// whole session including idle waits.
 	if run.Session {
 		env["RUN_SESSION"] = "1"
+		// Permission approval (F8b): switch acpdrive's RequestPermission into
+		// forwarding mode and bound each approval wait. Only for approval-mode
+		// session runs — anything else gets NEITHER var, so the runner keeps its
+		// full_access default (behaviour unchanged). timeoutSecs is the session
+		// TTL here, and the F8a contract requires the per-request approval
+		// timeout to sit WELL below it (the whole turn blocks inside
+		// RequestPermission): min(300s, TTL/4), floored at 1s (see
+		// permissionTimeoutSecs) so it can never silently expand back to the
+		// runner's own 300s default via a 0.
+		if run.PermissionMode == domain.PermissionModeApproval {
+			env["RUN_PERMISSION_MODE"] = domain.PermissionModeApproval
+			env["PERMISSION_TIMEOUT_SECONDS"] = strconv.FormatInt(permissionTimeoutSecs(timeoutSecs), 10)
+		}
 	}
 	// Feature C — tell the runner to reuse the persistent workspace: with the PVC
 	// mounted at /workspace + $HOME/.jcode, entrypoint.sh fetches + hard-resets an
@@ -1131,6 +1145,31 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 // against a real base, and the proxy re-attaches /v1 transparently.
 func (r *Reconciler) llmProxyBaseURL(runID string) string {
 	return strings.TrimRight(r.cfg.OrchBaseURL, "/") + "/internal/v1/runs/" + runID + "/llm"
+}
+
+// permissionTimeoutSecs is the per-request approval budget injected as
+// PERMISSION_TIMEOUT_SECONDS for an approval-mode session (F8b):
+// min(300s, sessionTTL/4). The F8a contract requires this to sit WELL below
+// the session TTL — the whole turn blocks inside RequestPermission, so a
+// too-large value would let one stalled approval burn the run into a hard
+// RUN_TIMEOUT failure instead of a clean per-request timeout-deny. Floors:
+//   - ttl <= 0 (unbounded session) → the plain 300s default;
+//   - a degenerate tiny ttl → at least 1s, NEVER 0 (the runner treats an
+//     absent/zero value as its own 300s default, which would silently defeat
+//     the "timeout << TTL" invariant).
+func permissionTimeoutSecs(sessionTTLSecs int64) int64 {
+	const ceiling = 300
+	if sessionTTLSecs <= 0 {
+		return ceiling
+	}
+	t := sessionTTLSecs / 4
+	if t > ceiling {
+		return ceiling
+	}
+	if t < 1 {
+		return 1
+	}
+	return t
 }
 
 // timeoutGrace is the headroom added to the runner's RUN_TIMEOUT to form the

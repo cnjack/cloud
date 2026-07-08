@@ -6,6 +6,7 @@
  */
 
 export { Timeline } from './Timeline';
+export { PermissionCard } from './PermissionCard';
 export { groupTimeline } from './grouping';
 export { toTimelineItem, terminalStatusSeq } from './eventModel';
 
@@ -23,6 +24,11 @@ export type {
   ResultItem,
   UserMessageItem,
   SessionFinishItem,
+  PermissionRequestItem,
+  PermissionResolvedItem,
+  PermissionOptionView,
+  PermissionCardItem,
+  PermissionControls,
   UnknownItem,
   GroupedTimelineItem,
   TextBlockItem,

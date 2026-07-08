@@ -230,6 +230,28 @@ export function useFinishSession() {
   });
 }
 
+/**
+ * Answer a pending permission request of an approval-mode session (F8b,
+ * POST /runs/{id}/permission-response). No cache invalidation needed: the
+ * card's resolved state arrives on the event stream
+ * (agent.permission_resolved); RunDetailPage keeps the optimistic
+ * "decided, waiting" state itself.
+ */
+export function useRespondPermission() {
+  const api = useApi();
+  return useMutation({
+    mutationFn: ({
+      runId,
+      requestId,
+      optionId,
+    }: {
+      runId: string;
+      requestId: string;
+      optionId: string;
+    }) => api.respondPermission(runId, requestId, optionId),
+  });
+}
+
 export function useDiff(runId: string, enabled: boolean) {
   const api = useApi();
   return useQuery({

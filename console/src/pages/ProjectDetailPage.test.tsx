@@ -157,6 +157,65 @@ describe('ProjectDetailPage — session toggle (D22)', () => {
   });
 });
 
+describe('ProjectDetailPage — approval toggle (F8b)', () => {
+  it('is hidden while Start session is off; a session WITHOUT it omits permission_mode', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
+    // No approval toggle for a single-shot composer.
+    expect(screen.queryByTestId('composer-approval-toggle')).toBeNull();
+
+    // Session ON, approval left at its default (off) → no permission_mode.
+    fireEvent.click(screen.getByTestId('composer-session-toggle'));
+    const approval = screen.getByTestId('composer-approval-toggle') as HTMLInputElement;
+    expect(approval.checked).toBe(false);
+
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'chat' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect('permission_mode' in calls.serviceRuns[0]!.input).toBe(false);
+  });
+
+  it('sends permission_mode:"approval" with the session when checked', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('composer-session-toggle'));
+    fireEvent.click(screen.getByTestId('composer-approval-toggle'));
+
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'careful chat' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect(calls.serviceRuns[0]!.input).toMatchObject({
+      prompt: 'careful chat',
+      session: true,
+      permission_mode: 'approval',
+    });
+  });
+
+  it('a stale approval pick cannot leak onto a single-shot run after session is toggled back off', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('composer-session-toggle'));
+    fireEvent.click(screen.getByTestId('composer-approval-toggle'));
+    // Change of heart: back to a single-shot run. The approval toggle
+    // disappears and its state must NOT ride on the request (the server would
+    // 400 a sessionless approval).
+    fireEvent.click(screen.getByTestId('composer-session-toggle'));
+    expect(screen.queryByTestId('composer-approval-toggle')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'one shot' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect('permission_mode' in calls.serviceRuns[0]!.input).toBe(false);
+    expect('session' in calls.serviceRuns[0]!.input).toBe(false);
+  });
+});
+
 describe('ProjectDetailPage — model selection (D21)', () => {
   const grantedModels: ProjectModel[] = [
     { id: 'm_gpt', name: 'GPT-4o', model_name: 'openai/gpt-4o' },

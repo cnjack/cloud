@@ -1,0 +1,98 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-code-bg);
+  padding: var(--space-2) var(--space-3);
+}
+/* A pending approval is the one row on the page that WANTS the user's eye. */
+.card[data-status='pending'] {
+  border-color: var(--color-accent);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.label {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  font-size: var(--fs-tiny);
+  color: var(--color-text-faint);
+}
+
+.title {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-medium);
+  color: var(--color-text);
+  word-break: break-word;
+}
+
+.options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.optionBtn {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-inset);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--fs-caption);
+  color: var(--color-text);
+  cursor: pointer;
+}
+.optionBtn:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+.optionBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+/* The option the user picked (optimistic) / the one that took effect. */
+.optionBtn[data-chosen] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  opacity: 1;
+}
+
+.waiting {
+  font-size: var(--fs-tiny);
+  color: var(--color-text-faint);
+}
+
+.outcome {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-caption);
+  color: var(--color-text-muted);
+}
+
+.chosenName {
+  font-weight: var(--fw-medium);
+  color: var(--color-text);
+}
+
+.resolutionBadge {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  font-size: var(--fs-tiny);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  padding: 0 var(--space-2);
+  color: var(--color-text-faint);
+}
+.resolutionBadge[data-resolution='timeout'] {
+  color: var(--color-danger-fg);
+  border-color: var(--status-failed-bg);
+}

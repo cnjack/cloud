@@ -30,6 +30,7 @@ import type {
   RunArtifact,
   RunEvent,
   RunMessage,
+  RunPermission,
   RunsEnvelope,
   Service,
   ServicesEnvelope,
@@ -95,6 +96,13 @@ export interface ApiClient {
    * gracefully and the run converges to succeeded. Idempotent.
    */
   finishSession(runId: string): Promise<Run>;
+  /**
+   * POST /api/v1/runs/{id}/permission-response — answer a pending permission
+   * request of an approval-mode session (F8b). 409 permission_already_resolved
+   * when someone (or the runner's timeout) beat us to it; 400 invalid_option
+   * for an option the request never offered; 403 for viewers.
+   */
+  respondPermission(runId: string, requestId: string, optionId: string): Promise<RunPermission>;
 
   /* ---- PR review (blueprint §4/§5) --------------------------------------- */
   /** GET /api/v1/runs/{id}/pr — the run's PR, live state, and its review runs. */
@@ -316,6 +324,13 @@ export function createHttpClient(
         method: 'POST',
       }),
 
+    // Session permission approval (F8b).
+    respondPermission: (runId, requestId, optionId) =>
+      req<RunPermission>(`/runs/${encodeURIComponent(runId)}/permission-response`, {
+        method: 'POST',
+        body: JSON.stringify({ request_id: requestId, option_id: optionId }),
+      }),
+
     getPR: (runId) => req<PrInfo>(`/runs/${encodeURIComponent(runId)}/pr`),
 
     requestReview: (runId) =>
@@ -365,6 +380,9 @@ export function createHttpClient(
         // D22 session events: the user's follow-up bubbles and the wind-down row.
         'user.message',
         'session.finish',
+        // F8b permission approval: the request card and its final outcome.
+        'agent.permission_request',
+        'agent.permission_resolved',
       ]) {
         es.addEventListener(t, handle as EventListener);
       }

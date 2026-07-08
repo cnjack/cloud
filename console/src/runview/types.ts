@@ -115,6 +115,44 @@ export interface SessionFinishItem {
   message: string;
 }
 
+/** One option a permission request offered (F8b), runview's own view shape. */
+export interface PermissionOptionView {
+  optionId: string;
+  name: string;
+  /** jcode's option classification (e.g. "allow_once" / "reject_once"). */
+  kind: string;
+}
+
+/**
+ * agent.permission_request (F8b): a permission_mode=approval session hit an
+ * agent permission request { request_id, tool_call_id, title, options }. It
+ * may arrive BEFORE the tool_call event it references — pairing is by
+ * request_id only (grouping.ts), never by event adjacency.
+ */
+export interface PermissionRequestItem {
+  seq: number;
+  ts: string;
+  kind: 'permission_request';
+  requestId: string;
+  toolCallId?: string;
+  title: string;
+  options: PermissionOptionView[];
+}
+
+/**
+ * agent.permission_resolved (F8b): the request's final outcome
+ * { request_id, option_id, resolution: "user" | "timeout" }. optionId may be
+ * "" for a timeout with no reject-kind option offered.
+ */
+export interface PermissionResolvedItem {
+  seq: number;
+  ts: string;
+  kind: 'permission_resolved';
+  requestId: string;
+  optionId: string;
+  resolution: string;
+}
+
 export interface UnknownItem {
   seq: number;
   ts: string;
@@ -134,6 +172,8 @@ export type TimelineItem =
   | ResultItem
   | UserMessageItem
   | SessionFinishItem
+  | PermissionRequestItem
+  | PermissionResolvedItem
   | UnknownItem;
 
 /* ---- grouped (rendering) projection --------------------------------------
@@ -173,10 +213,53 @@ export interface ToolCardItem {
 }
 
 /**
- * The rendering projection: text_block/tool_card are new grouped shapes;
- * everything else passes through as its ungrouped TimelineItem shape
- * (including ToolCallItem/ToolResultItem for orphan events that could never
- * be paired — see grouping.ts's "graceful degradation" rule).
+ * An `agent.permission_request` paired with its `agent.permission_resolved`
+ * by request_id (F8b). status 'pending' until the resolved event lands; the
+ * user's option buttons live on the pending card, the outcome badge on the
+ * resolved one.
+ */
+export interface PermissionCardItem {
+  kind: 'permission_card';
+  /** Anchor seq = the request's seq (stable React key). */
+  seq: number;
+  /** ts of the request. */
+  ts: string;
+  requestId: string;
+  toolCallId?: string;
+  title: string;
+  options: PermissionOptionView[];
+  status: 'pending' | 'resolved';
+  /** The option that actually took effect (resolved only; '' = none/cancelled). */
+  resolvedOptionId?: string;
+  /** "user" (a person answered) or "timeout" (the runner deny-safed it). */
+  resolution?: string;
+  resolvedSeq?: number;
+}
+
+/**
+ * Host-injected controls for the pending PermissionCard's option buttons
+ * (F8b). runview never talks to an API itself — the host (RunDetailPage in
+ * the console) supplies the decide callback plus the optimistic/read-only
+ * state, keeping this module app-import-free.
+ */
+export interface PermissionControls {
+  /** Called when the user picks an option on a pending card. */
+  onDecide?: (requestId: string, optionId: string) => void;
+  /** True renders every option button disabled (read-only viewer role). */
+  disabled?: boolean;
+  /**
+   * requestId → optionId already submitted (optimistic): the card greys its
+   * buttons and marks the chosen one while the resolved event is awaited.
+   */
+  decided?: Record<string, string>;
+}
+
+/**
+ * The rendering projection: text_block/tool_card/permission_card are new
+ * grouped shapes; everything else passes through as its ungrouped
+ * TimelineItem shape (including ToolCallItem/ToolResultItem/
+ * PermissionResolvedItem for orphan events that could never be paired — see
+ * grouping.ts's "graceful degradation" rule).
  */
 export type GroupedTimelineItem =
   | TextBlockItem
@@ -190,4 +273,6 @@ export type GroupedTimelineItem =
   | ResultItem
   | UserMessageItem
   | SessionFinishItem
+  | PermissionCardItem
+  | PermissionResolvedItem
   | UnknownItem;

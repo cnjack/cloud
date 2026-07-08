@@ -185,6 +185,34 @@ type Store interface {
 	// ListRunMessages returns a run's queued messages, oldest first (tests/audit).
 	ListRunMessages(ctx context.Context, runID string) ([]domain.RunMessage, error)
 
+	// --- Session permission approval (F8b / D22) ------------------------------
+
+	// UpsertRunPermission records a forwarded permission request (from an
+	// agent.permission_request event). IDEMPOTENT and insert-only: a request_id
+	// already present is left completely untouched (at-least-once event delivery
+	// must never reset an already-decided/resolved row). ErrNotFound if the run
+	// does not exist.
+	UpsertRunPermission(ctx context.Context, p *domain.RunPermission) error
+	// GetRunPermission returns one request by (run_id, request_id). ErrNotFound
+	// when absent — the decision endpoint maps that to 204 (pending), NEVER 404
+	// (the F8a hard constraint).
+	GetRunPermission(ctx context.Context, runID, requestID string) (*domain.RunPermission, error)
+	// DecideRunPermission records the user's answer, CONDITIONALLY: only while
+	// the row is neither decided nor resolved (checked atomically in the store,
+	// so two racing answers serialise — exactly one wins). decided=true only for
+	// the call that wrote; the loser gets decided=false and the committed row
+	// (never an error). ErrNotFound if the row is absent.
+	DecideRunPermission(ctx context.Context, runID, requestID, optionID, decidedBy string, at time.Time) (*domain.RunPermission, bool, error)
+	// ResolveRunPermission stamps the runner-reported final outcome (from an
+	// agent.permission_resolved event). First-writer-wins: an already-resolved
+	// row is untouched (duplicate events are no-ops); a missing row is also a
+	// no-op, NOT an error — the resolved event rides a best-effort async pipeline
+	// and may reference a request whose request event was never delivered.
+	ResolveRunPermission(ctx context.Context, runID, requestID, optionID, resolution string, at time.Time) error
+	// ListRunPermissions returns a run's permission requests, oldest first
+	// (tests/audit).
+	ListRunPermissions(ctx context.Context, runID string) ([]domain.RunPermission, error)
+
 	// BumpBundleRev increments bundle_rev (a new bundle upload awaits a push) and
 	// returns the committed row. Session per-turn draft-PR push cursor (D22).
 	BumpBundleRev(ctx context.Context, id string) (*domain.Run, error)

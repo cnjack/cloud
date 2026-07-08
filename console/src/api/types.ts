@@ -203,8 +203,46 @@ export interface Run {
    * (POST /runs/{id}/finish). Absent/false = ordinary single-shot run.
    */
   session?: boolean;
+  /**
+   * F8b permission approval: "approval" = the runner forwards each agent
+   * permission request as an agent.permission_request event and waits for the
+   * user's answer (POST /runs/{id}/permission-response). Absent/"" =
+   * full_access (auto-approve, the default). Only ever set on session runs.
+   */
+  permission_mode?: 'approval' | '';
   /** When the run entered awaiting_input (idle-timeout epoch). */
   awaiting_since?: string | null;
+}
+
+/* ---- session permission approval (F8b / D22) ------------------------------ */
+
+/** One option a permission request offered (echoed verbatim from jcode). */
+export interface PermissionOption {
+  option_id: string;
+  name: string;
+  /** jcode's option classification, e.g. "allow_once" / "reject_once". */
+  kind: string;
+}
+
+/**
+ * POST /api/v1/runs/{id}/permission-response response — the committed ledger
+ * row. The decided_* half is the user's answer; the resolved_* half arrives
+ * later via the agent.permission_resolved event (they can differ when a
+ * decision lost the race with the runner's client-side timeout).
+ */
+export interface RunPermission {
+  request_id: string;
+  run_id: string;
+  tool_call_id?: string;
+  title: string;
+  options: PermissionOption[];
+  created_at: string;
+  decided_option_id?: string | null;
+  decided_by?: string | null;
+  decided_at?: string | null;
+  resolved_option_id?: string | null;
+  resolution?: 'user' | 'timeout' | string | null;
+  resolved_at?: string | null;
 }
 
 /**
@@ -271,7 +309,15 @@ export type RunEventType =
   | 'user.message'
   // session.finish (D22): the session was wound down ({ reason: "user" |
   // "idle_timeout", by? }). Rendered as a compact system row.
-  | 'session.finish';
+  | 'session.finish'
+  // agent.permission_request (F8b): a permission_mode=approval session hit an
+  // agent permission request ({ request_id, tool_call_id, title, options }).
+  // Rendered as a PermissionCard with option buttons. May arrive BEFORE the
+  // tool_call it references — pair by request_id, never by adjacency.
+  | 'agent.permission_request'
+  // agent.permission_resolved (F8b): the request's final outcome
+  // ({ request_id, option_id, resolution: "user" | "timeout" }).
+  | 'agent.permission_resolved';
 
 export interface RunEvent {
   seq: number;
@@ -323,6 +369,14 @@ export interface RunEventPayload {
   // the wind-down reason ("user" | "idle_timeout").
   prompt?: string;
   by?: string;
+  // agent.permission_request / agent.permission_resolved (F8b). `resolution`
+  // is "user" | "timeout"; `options` is the offered PermissionOption array.
+  request_id?: string;
+  tool_call_id?: string;
+  title?: string;
+  options?: PermissionOption[];
+  option_id?: string;
+  resolution?: 'user' | 'timeout' | string;
   [key: string]: unknown;
 }
 
@@ -578,6 +632,12 @@ export interface CreateRunInput {
    * after each turn and accepts follow-up messages. Default false (single-shot).
    */
   session?: boolean;
+  /**
+   * F8b: "approval" = ask the user before agent actions (the runner forwards
+   * every permission request for interactive approval). Only valid together
+   * with session: true (the server 400s otherwise). Omitted = full_access.
+   */
+  permission_mode?: 'approval';
 }
 
 /**

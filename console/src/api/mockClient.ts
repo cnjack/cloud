@@ -35,6 +35,7 @@ import type {
   RunEvent,
   RunEventType,
   RunMessage,
+  RunPermission,
   RunStatus,
   Service,
   SystemInfo,
@@ -86,6 +87,10 @@ interface StoredRun extends Run {
   _timers: ReturnType<typeof setTimeout>[];
   _subs: Set<(ev: RunEvent) => void>;
   _statusSubs: Set<(run: Run) => void>;
+  /** F8b: this run's permission-request ledger, keyed by request_id. */
+  _perms: Map<string, RunPermission>;
+  /** F8b: continues the paused playback once a permission is allowed. */
+  _permContinue?: (allowed: boolean) => void;
 }
 
 const DEMO_SPEED = Number(import.meta.env?.VITE_DEMO_SPEED ?? 1) || 1;
@@ -411,27 +416,9 @@ export function createMockClient(): ApiClient {
         text: 'I will append a line `Hello` to the end of README.md.',
       });
     });
-    schedule(run, 4200, () => {
-      emit(run, 'agent.tool_call', {
-        tool: 'edit_file',
-        call_id: 'c2',
-        args: {
-          path: 'README.md',
-          instruction: 'Append "Hello" as a new final line.',
-        },
-      });
-    });
-    schedule(run, 5100, () => {
-      emit(run, 'agent.tool_result', {
-        tool: 'edit_file',
-        call_id: 'c2',
-        ok: true,
-        output: 'Applied edit to README.md (+1 line).',
-      });
-      emit(run, 'agent.text', {
-        text: 'Change applied. Producing the unified diff for review.',
-      });
-    });
+    // The edit + wrap-up tail, schedulable from any point in time (the F8b
+    // approval pause below re-schedules it relative to the user's answer).
+    //
     // ST-1 demo: showcase the Gitea draft-PR closed loop. The runner pushes the
     // agent/run-<id> branch (run.git), then the diff artifact lands, then the run
     // succeeds — and the draft PR link is populated on the SAME succeeded frame so
@@ -439,21 +426,103 @@ export function createMockClient(): ApiClient {
     // real orchestrator opens the PR just after success; the console likewise
     // picks up pr_url via its terminal refetch — this keeps the demo showcase
     // deterministic without depending on a post-terminal stream frame.)
-    const branch = `agent/run-${run.id}`;
-    schedule(run, 5800, () => {
-      emit(run, 'run.git', { branch, commit_sha: 'a1b2c3d4' });
-    });
-    schedule(run, 6000, () => {
-      run._diff = SAMPLE_DIFF;
-      emit(run, 'run.artifact', { kind: 'diff' });
-      // Populate the draft PR BEFORE the terminal transition so the run object the
-      // terminal refetch reads (mock getRun) already carries pr_url — the chip is
-      // present the moment the header goes terminal.
-      run.pr_url = 'https://gitea.local/jcloud/seed/pulls/42';
-      run.pr_number = 42;
-      // D22: a session run parks in awaiting_input (waiting for the user's next
-      // message) instead of finishing — sendMessage/finishSession drive it on.
-      setStatus(run, run.session ? 'awaiting_input' : 'succeeded');
+    const editAndFinish = (base: number) => {
+      schedule(run, base, () => {
+        emit(run, 'agent.tool_call', {
+          tool: 'edit_file',
+          call_id: 'c2',
+          args: {
+            path: 'README.md',
+            instruction: 'Append "Hello" as a new final line.',
+          },
+        });
+      });
+      schedule(run, base + 900, () => {
+        emit(run, 'agent.tool_result', {
+          tool: 'edit_file',
+          call_id: 'c2',
+          ok: true,
+          output: 'Applied edit to README.md (+1 line).',
+        });
+        emit(run, 'agent.text', {
+          text: 'Change applied. Producing the unified diff for review.',
+        });
+      });
+      const branch = `agent/run-${run.id}`;
+      schedule(run, base + 1600, () => {
+        emit(run, 'run.git', { branch, commit_sha: 'a1b2c3d4' });
+      });
+      schedule(run, base + 1800, () => {
+        run._diff = SAMPLE_DIFF;
+        emit(run, 'run.artifact', { kind: 'diff' });
+        // Populate the draft PR BEFORE the terminal transition so the run object the
+        // terminal refetch reads (mock getRun) already carries pr_url — the chip is
+        // present the moment the header goes terminal.
+        run.pr_url = 'https://gitea.local/jcloud/seed/pulls/42';
+        run.pr_number = 42;
+        // D22: a session run parks in awaiting_input (waiting for the user's next
+        // message) instead of finishing — sendMessage/finishSession drive it on.
+        setStatus(run, run.session ? 'awaiting_input' : 'succeeded');
+      });
+    };
+
+    if (run.permission_mode !== 'approval') {
+      editAndFinish(4200);
+      return;
+    }
+
+    // F8b approval mode: pause BEFORE the edit and forward a permission request
+    // (mirrors acpdrive forwarding jcode's RequestPermission). Playback resumes
+    // when respondPermission answers it, or timeout-denies after a while —
+    // never silently auto-approves (the whole point of the mode).
+    schedule(run, 4200, () => {
+      const requestId = genId('permreq');
+      const row: RunPermission = {
+        request_id: requestId,
+        run_id: run.id,
+        tool_call_id: 'c2',
+        title: 'Edit README.md (append "Hello")',
+        options: [
+          { option_id: 'allow_once', name: 'Allow', kind: 'allow_once' },
+          { option_id: 'reject_once', name: 'Reject', kind: 'reject_once' },
+        ],
+        created_at: nowISO(),
+      };
+      run._perms.set(requestId, row);
+      emit(run, 'agent.permission_request', {
+        request_id: row.request_id,
+        tool_call_id: row.tool_call_id,
+        title: row.title,
+        options: row.options,
+      });
+      run._permContinue = (allowed) => {
+        if (allowed) {
+          emit(run, 'agent.text', { text: 'Permission granted — applying the edit. ' });
+          editAndFinish(600);
+        } else {
+          emit(run, 'agent.text', {
+            text: 'Understood — I will not make that change. Tell me how to proceed.',
+          });
+          schedule(run, 600, () => setStatus(run, 'awaiting_input'));
+        }
+      };
+      // Timeout-deny (mirrors the runner's PERMISSION_TIMEOUT_SECONDS): an
+      // unanswered request resolves as {resolution: "timeout"} on the
+      // reject-kind option and the session continues without the action.
+      schedule(run, 45_000, () => {
+        if (row.decided_at || row.resolved_at) return; // answered in time
+        row.resolved_option_id = 'reject_once';
+        row.resolution = 'timeout';
+        row.resolved_at = nowISO();
+        emit(run, 'agent.permission_resolved', {
+          request_id: row.request_id,
+          option_id: 'reject_once',
+          resolution: 'timeout',
+        });
+        const cont = run._permContinue;
+        run._permContinue = undefined;
+        cont?.(false);
+      });
     });
   }
 
@@ -466,6 +535,8 @@ export function createMockClient(): ApiClient {
       _timers,
       _subs,
       _statusSubs,
+      _perms,
+      _permContinue,
       ...pub
     } = run;
     void _events;
@@ -474,6 +545,8 @@ export function createMockClient(): ApiClient {
     void _timers;
     void _subs;
     void _statusSubs;
+    void _perms;
+    void _permContinue;
     return { ...pub };
   }
 
@@ -489,6 +562,7 @@ export function createMockClient(): ApiClient {
     retriedFrom?: string,
     attempt = 1,
     session = false,
+    permissionMode: 'approval' | '' = '',
   ): StoredRun {
     const run: StoredRun = {
       id: genId('run'),
@@ -506,10 +580,12 @@ export function createMockClient(): ApiClient {
       pr_number: null,
       origin: 'api',
       session,
+      permission_mode: permissionMode,
       _events: [],
       _timers: [],
       _subs: new Set(),
       _statusSubs: new Set(),
+      _perms: new Map(),
     };
     runs.set(run.id, run);
     startPlayback(run);
@@ -558,6 +634,7 @@ export function createMockClient(): ApiClient {
       _timers: [],
       _subs: new Set(),
       _statusSubs: new Set(),
+      _perms: new Map(),
     };
     runs.set(run.id, run);
     startReviewPlayback(run);
@@ -722,9 +799,19 @@ export function createMockClient(): ApiClient {
           error: { code: 'conflict', message: 'run not finished' },
         });
       }
+      // Retry preserves the run's identity (D22/F8b): session-ness and the
+      // permission mode carry over, mirroring the orchestrator.
       return delay(
         publicRun(
-          makeRun(orig.project_id, orig.service_id, orig.prompt, orig.id, (orig.attempt ?? 1) + 1),
+          makeRun(
+            orig.project_id,
+            orig.service_id,
+            orig.prompt,
+            orig.id,
+            (orig.attempt ?? 1) + 1,
+            orig.session === true,
+            orig.permission_mode === 'approval' ? 'approval' : '',
+          ),
         ),
       );
     },
@@ -757,6 +844,57 @@ export function createMockClient(): ApiClient {
         delivered_at: null,
       };
       return delay(msg);
+    },
+
+    // F8b: answer a pending permission request. Mirrors the orchestrator's
+    // validation order (404 unknown → 409 already answered/expired → 400
+    // foreign option) and resolves the request shortly after — the gap is the
+    // real system's decision-poll latency, and it exercises the console's
+    // optimistic "decided, waiting for the agent" card state.
+    async respondPermission(runId: string, requestId: string, optionId: string): Promise<RunPermission> {
+      const r = runs.get(runId);
+      if (!r) throw new ApiError(404, 'run not found');
+      const perm = r._perms.get(requestId);
+      if (!perm) {
+        throw new ApiError(404, 'permission request not found', {
+          error: { code: 'not_found', message: 'permission request not found' },
+        });
+      }
+      if (perm.decided_at || perm.resolved_at) {
+        throw new ApiError(409, 'this permission request has already been answered or has expired', {
+          error: {
+            code: 'permission_already_resolved',
+            message: 'this permission request has already been answered or has expired',
+          },
+        });
+      }
+      const opt = perm.options.find((o) => o.option_id === optionId);
+      if (!opt) {
+        throw new ApiError(400, 'option_id is not one of the options this request offered', {
+          error: {
+            code: 'invalid_option',
+            message: 'option_id is not one of the options this request offered',
+          },
+        });
+      }
+      perm.decided_option_id = optionId;
+      perm.decided_by = DEMO_ME.user.id ?? 'demo-user';
+      perm.decided_at = nowISO();
+      // The "runner" picks the decision up on its next poll and resolves.
+      schedule(r, 600, () => {
+        perm.resolved_option_id = optionId;
+        perm.resolution = 'user';
+        perm.resolved_at = nowISO();
+        emit(r, 'agent.permission_resolved', {
+          request_id: requestId,
+          option_id: optionId,
+          resolution: 'user',
+        });
+        const cont = r._permContinue;
+        r._permContinue = undefined;
+        cont?.(opt.kind.toLowerCase().includes('allow'));
+      });
+      return delay({ ...perm });
     },
 
     async finishSession(runId: string): Promise<Run> {
@@ -1176,7 +1314,19 @@ export function createMockClient(): ApiClient {
       // D21 resolution chain (mirrors orchestrator selectModel): composer pick →
       // service default → the project's sole granted model → typed errors.
       const modelId = resolveModelForRun(projectId, svc, input.model_id);
-      const run = makeRun(projectId, serviceId, input.prompt, undefined, 1, input.session === true);
+      // F8b (mirrors the orchestrator gate): "approval" only rides on a session.
+      if (input.permission_mode === 'approval' && input.session !== true) {
+        throw badRequest('permission_mode "approval" requires session mode');
+      }
+      const run = makeRun(
+        projectId,
+        serviceId,
+        input.prompt,
+        undefined,
+        1,
+        input.session === true,
+        input.permission_mode === 'approval' ? 'approval' : '',
+      );
       run.model_id = modelId ?? undefined;
       return delay(publicRun(run));
     },

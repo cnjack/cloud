@@ -23,6 +23,7 @@
 import { toTimelineItem } from './eventModel';
 import type {
   GroupedTimelineItem,
+  PermissionCardItem,
   RunViewEvent,
   TextBlockItem,
   ToolCardItem,
@@ -38,6 +39,12 @@ export function groupTimeline(events: RunViewEvent[]): GroupedTimelineItem[] {
   const out: GroupedTimelineItem[] = [];
   let openText: TextBlockItem | null = null;
   const openCalls = new Map<string, ToolCardItem>();
+  // F8b permission request/resolved pairing, keyed by request_id. Unlike
+  // openCalls this map is NEVER pruned on resolve: the request event is
+  // delivered synchronously and may sit arbitrarily far from (and even
+  // interleave oddly with) the tool_call/resolved events, so pairing must be
+  // pure request_id keying with no adjacency or lifecycle assumptions.
+  const permCards = new Map<string, PermissionCardItem>();
 
   for (const ev of sorted) {
     if (ev.type !== 'agent.text') {
@@ -110,9 +117,60 @@ export function groupTimeline(events: RunViewEvent[]): GroupedTimelineItem[] {
         break;
       }
 
+      case 'agent.permission_request': {
+        const item = toTimelineItem(ev);
+        if (item.kind !== 'permission_request') break; // unreachable; narrows TS
+        if (!item.requestId) {
+          // No request_id => can never be resolved/decided. Render nothing
+          // actionable rather than a dead card.
+          break;
+        }
+        if (permCards.has(item.requestId)) {
+          // At-least-once delivery: a duplicate request event must not spawn a
+          // second card (the first one may already be resolved).
+          break;
+        }
+        const card: PermissionCardItem = {
+          kind: 'permission_card',
+          seq: item.seq,
+          ts: item.ts,
+          requestId: item.requestId,
+          toolCallId: item.toolCallId,
+          title: item.title,
+          options: item.options,
+          status: 'pending',
+        };
+        permCards.set(item.requestId, card);
+        out.push(card);
+        break;
+      }
+
+      case 'agent.permission_resolved': {
+        const item = toTimelineItem(ev);
+        if (item.kind !== 'permission_resolved') break; // unreachable; narrows TS
+        const card = item.requestId ? permCards.get(item.requestId) : undefined;
+        if (!card) {
+          // Orphan resolution (the request event never arrived) — degrade to a
+          // standalone system row rather than dropping the outcome.
+          out.push(item);
+          break;
+        }
+        card.status = 'resolved';
+        card.resolvedOptionId = item.optionId;
+        card.resolution = item.resolution;
+        card.resolvedSeq = item.seq;
+        break;
+      }
+
       default: {
         const item = toTimelineItem(ev);
-        if (item.kind === 'text' || item.kind === 'tool_call' || item.kind === 'tool_result') {
+        if (
+          item.kind === 'text' ||
+          item.kind === 'tool_call' ||
+          item.kind === 'tool_result' ||
+          item.kind === 'permission_request' ||
+          item.kind === 'permission_resolved'
+        ) {
           break; // unreachable given the switch above; satisfies the type checker
         }
         out.push(item);

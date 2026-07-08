@@ -20,6 +20,7 @@ import {
   useDiff,
   useSendMessage,
   useFinishSession,
+  useRespondPermission,
 } from '../api/queries';
 import { useApi } from '../api/ApiProvider';
 import { useRunStream } from '../hooks/useRunStream';
@@ -27,7 +28,7 @@ import { isTerminal, type FailureReason } from '../api/types';
 import { Button } from '../components/Button';
 import { StatusBadge } from '../components/StatusBadge';
 import { useModelGate } from '../components/ModelGate';
-import { Timeline } from '../runview';
+import { Timeline, type PermissionControls } from '../runview';
 import { DiffView } from '../components/DiffView';
 import { Markdown } from '../components/Markdown';
 import { PrPanel } from '../components/PrPanel';
@@ -73,6 +74,40 @@ export function RunDetailPage() {
   const sendMessage = useSendMessage();
   const finishSession = useFinishSession();
   const [followUp, setFollowUp] = useState('');
+
+  // F8b permission approval: runview's PermissionCard is app-agnostic — the
+  // decide callback + optimistic state are injected from HERE. permDecided
+  // maps request_id → option_id the user already submitted, greying the card
+  // until the agent.permission_resolved event lands on the stream; a rejected
+  // POST rolls the optimistic entry back (the card becomes answerable again
+  // unless the stream shows it resolved anyway).
+  const respondPermission = useRespondPermission();
+  const [permDecided, setPermDecided] = useState<Record<string, string>>({});
+  const permissionControls: PermissionControls = {
+    disabled: !canAct,
+    decided: permDecided,
+    onDecide: (requestId, optionId) => {
+      if (!canAct) return;
+      setPermDecided((cur) => ({ ...cur, [requestId]: optionId }));
+      respondPermission.mutate(
+        { runId, requestId, optionId },
+        {
+          onError: (err) => {
+            setPermDecided((cur) => {
+              const next = { ...cur };
+              delete next[requestId];
+              return next;
+            });
+            toast.push({
+              kind: 'error',
+              message:
+                err instanceof ApiError ? err.message : 'Could not send the permission decision.',
+            });
+          },
+        },
+      );
+    },
+  };
 
   const status = run.data?.status;
   const terminal = status ? isTerminal(status) : false;
@@ -415,7 +450,9 @@ export function RunDetailPage() {
               <div className={styles.reviewProgressHint} data-testid="review-in-progress">
                 <Spinner label="Review in progress…" />
               </div>
-              {stream.events.length > 0 && <Timeline events={stream.events} live={live} />}
+              {stream.events.length > 0 && (
+                <Timeline events={stream.events} live={live} permissions={permissionControls} />
+              )}
             </div>
           ) : (
             <div className={styles.waiting}>
@@ -481,7 +518,7 @@ export function RunDetailPage() {
                   <Spinner label={terminal ? 'No events recorded.' : 'Waiting for events…'} />
                 </div>
               ) : (
-                <Timeline events={stream.events} live={live} />
+                <Timeline events={stream.events} live={live} permissions={permissionControls} />
               )
             ) : status !== 'succeeded' ? (
               <div className={styles.waiting}>

@@ -151,3 +151,42 @@ describe('toTimelineItem — session events (D22)', () => {
     expect(terminalStatusSeq(events)).toBeUndefined();
   });
 });
+
+describe('toTimelineItem — permission events (F8b)', () => {
+  it('narrows agent.permission_request incl. defensive option filtering', () => {
+    const item = toTimelineItem(
+      ev(9, 'agent.permission_request', {
+        request_id: 'req-1',
+        tool_call_id: 'tc-1',
+        title: 'Run `make deploy`',
+        options: [
+          { option_id: 'allow', name: 'Allow', kind: 'allow_once' },
+          { name: 'no-id: dropped' }, // an option without option_id can never be decided
+          'garbage',
+        ],
+      }),
+    );
+    expect(item).toMatchObject({
+      kind: 'permission_request',
+      requestId: 'req-1',
+      toolCallId: 'tc-1',
+      title: 'Run `make deploy`',
+    });
+    expect((item as { options: unknown[] }).options).toEqual([
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+    ]);
+  });
+
+  it('narrows agent.permission_resolved and tolerates an empty option_id (Cancelled outcome)', () => {
+    expect(
+      toTimelineItem(
+        ev(10, 'agent.permission_resolved', { request_id: 'req-1', option_id: '', resolution: 'timeout' }),
+      ),
+    ).toMatchObject({
+      kind: 'permission_resolved',
+      requestId: 'req-1',
+      optionId: '',
+      resolution: 'timeout',
+    });
+  });
+});

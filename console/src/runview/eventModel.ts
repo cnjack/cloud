@@ -105,6 +105,44 @@ export function toTimelineItem(ev: RunViewEvent): TimelineItem {
         by: p.by ? String(p.by) : '',
       };
 
+    // F8b: a forwarded permission request (approval-mode session). Options are
+    // narrowed defensively — an entry without an option_id could never be
+    // decided, so it is dropped rather than rendered as a dead button.
+    case 'agent.permission_request': {
+      const rawOptions = Array.isArray(p.options) ? (p.options as unknown[]) : [];
+      const options = rawOptions.flatMap((o) => {
+        if (o == null || typeof o !== 'object') return [];
+        const m = o as Record<string, unknown>;
+        const optionId = m.option_id ? String(m.option_id) : '';
+        if (!optionId) return [];
+        return [
+          {
+            optionId,
+            name: m.name ? String(m.name) : optionId,
+            kind: m.kind ? String(m.kind) : '',
+          },
+        ];
+      });
+      return {
+        ...base,
+        kind: 'permission_request',
+        requestId: String(p.request_id ?? ''),
+        toolCallId: p.tool_call_id ? String(p.tool_call_id) : undefined,
+        title: String(p.title ?? 'Permission required'),
+        options,
+      };
+    }
+
+    // F8b: the request's final outcome (user decision or timeout-deny).
+    case 'agent.permission_resolved':
+      return {
+        ...base,
+        kind: 'permission_resolved',
+        requestId: String(p.request_id ?? ''),
+        optionId: String(p.option_id ?? ''),
+        resolution: String(p.resolution ?? ''),
+      };
+
     // D22 session: the session was wound down (user Finish / idle timeout).
     case 'session.finish': {
       const reason = String(p.reason ?? '');

@@ -25,6 +25,11 @@ type createRunReq struct {
 	// kind=agent runs (which every composer/service run is). Default false =
 	// today's single-shot behaviour.
 	Session bool `json:"session"`
+	// PermissionMode (F8b): "" (default, full_access — the runner auto-approves)
+	// or "approval" — the runner forwards each jcode permission request for
+	// interactive user approval. Only valid together with session: true (a
+	// headless single-shot has nobody watching to answer), else 400.
+	PermissionMode string `json:"permission_mode"`
 }
 
 // handleCreateServiceRun is the run-creation endpoint: POST /services/{id}/runs.
@@ -61,6 +66,23 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 		writeError(w, http.StatusBadRequest, "bad_request", "prompt is required")
 		return
 	}
+	// Permission mode (F8b): only "" / "approval", and approval only rides on a
+	// session run — validated up front so an invalid combination never queues.
+	req.PermissionMode = strings.TrimSpace(req.PermissionMode)
+	switch req.PermissionMode {
+	case "":
+		// full_access — today's behaviour.
+	case domain.PermissionModeApproval:
+		if !req.Session {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				`permission_mode "approval" requires session mode (set "session": true) — a single-shot run has nobody watching to approve`)
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "bad_request",
+			`unknown permission_mode "`+req.PermissionMode+`" (valid: "" or "approval")`)
+		return
+	}
 	// Fail-visible gate (CLAUDE.md red line #1): resolve which model this run uses
 	// via the D21 chain (composer pick → service default → sole grant). An
 	// unconfigured/ambiguous/unauthorized state is a typed error and NO run is
@@ -83,6 +105,8 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 	// Session mode (D22) is opt-in and only meaningful for agent runs (which this
 	// path always produces). Webhook/kanban/schedule triggers never set it.
 	run.Session = req.Session
+	// Permission mode (F8b) rides only on session runs (validated above).
+	run.PermissionMode = req.PermissionMode
 	if err := s.st.CreateRun(r.Context(), run); err != nil {
 		s.log.Error("create run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create run")
@@ -333,6 +357,10 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	// Session-ness is part of that identity too (D22): retrying a session run
 	// starts a fresh session (same prompt, new ACP session), not a single-shot.
 	retry.Session = orig.Session
+	// So is the permission mode (F8b): an approval session retries as an
+	// approval session — silently degrading it to full_access would drop the
+	// user's guardrail.
+	retry.PermissionMode = orig.PermissionMode
 	if err := s.st.CreateRun(r.Context(), retry); err != nil {
 		s.log.Error("retry run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create retry run")

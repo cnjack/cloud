@@ -139,6 +139,10 @@
 - **`session` / `awaiting_since`(F7 / D22,迁移 `0014_session`;新增字段,非破坏
   性)**:`session` 恒序列化(`true` = 多轮 session run;单发 run 为 `false`)。
   `awaiting_since` 仅当前处于 `awaiting_input` 时非空(空闲回收计时起点)。
+- **`permission_mode`(F8b / D22,迁移 `0015_permission`;新增字段,非破坏性)**:
+  `"approval"` = 交互审批 session(runner 把每个 agent 权限请求转发给用户审批,
+  见 §2.2 permission-response、§4 权限事件、§5.5 决议端点);缺省/`""` =
+  full_access(现状,自动放行)。仅 `session=true` 的 run 可为 `"approval"`。
 - 服务器**从不**把 run token 序列化给 console 客户端。
 
 ### 1.3 Run 状态徽章体系(单一事实源)
@@ -302,7 +306,7 @@ default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `4
 请求:
 
 ```json
-{ "prompt": "在 README 末尾加一行 Hello", "model_id": "…可选…", "session": false }
+{ "prompt": "在 README 末尾加一行 Hello", "model_id": "…可选…", "session": false, "permission_mode": "" }
 ```
 
 - `prompt`(必填,非空白)。
@@ -310,9 +314,15 @@ default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `4
   ——runner 保持同一 ACP session,每轮结束 run 进 `awaiting_input` 等待
   `POST /runs/{id}/messages` 的后续消息。仅 `kind=agent`(本端点恒为 agent)。
   webhook/kanban 触发路径首期不发该字段。
+- `permission_mode`(可选,默认 `""`;**F8b / D22**):`"approval"` = 交互审批
+  session——runner 把每个 agent 权限请求作为 `agent.permission_request` 事件
+  转发(§4),等用户经 permission-response(下)决议。**仅与 `session: true`
+  搭配合法**(单发 headless run 无人值守可审批),否则 `400`;取值仅
+  `""`/`"approval"`,其余 `400`。缺省 = full_access(现状,自动放行)。
 
-响应 `201 Created`:完整 Run 对象,`status` = `queued`。
-错误:`400`(空 prompt)、`404`(service 不存在)。
+响应 `201 Created`:完整 Run 对象,`status` = `queued`(`permission_mode` 回显)。
+错误:`400`(空 prompt / 非法 `permission_mode` / `approval` 无 `session`)、
+`404`(service 不存在)。
 
 > 创建即入队;reconciler 下一 tick(默认 3s 内)按并发上限起 K8s Job。
 > session run 额外受 project 护栏 `max_live_sessions` 闸(见 §2.1 PATCH 字段):
@@ -355,7 +365,8 @@ default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `4
 > 更易推理。Symphony 退避公式 `min(10000·2^(n-1), 300000)ms` 已实现并随
 > `attempt` 携带,供未来**自动**重试;MVP 为**手动**重试,不强制退避。
 > retry 保留 run 身份:`kind`、PR 关联、**`session`**(session run 的 retry 仍是
-> session)一并拷贝。
+> session)、**`permission_mode`**(F8b:审批 session 的 retry 仍是审批 session,
+> 绝不静默降级成 full_access)一并拷贝。
 
 #### `POST /api/v1/runs/{id}/messages` — 给 session run 投递后续消息(F7 / D22)
 
@@ -395,6 +406,29 @@ default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `4
 > 空闲超时(project 护栏 `session_idle_timeout_secs`,默认继承集群
 > `SESSION_IDLE_TIMEOUT_SECONDS`=900s)由 reconciler 走**同一条 finalize 路径**
 > 自动触发,并 append `session.finish {reason:"idle_timeout"}` 事件。
+
+#### `POST /api/v1/runs/{id}/permission-response` — 决议权限请求(F8b / D22)
+
+权限 member+(viewer `403`——console 侧按钮同时禁用,后端是权威闸)。仅对
+`permission_mode="approval"` 的 session run 有意义。请求:
+
+```json
+{ "request_id": "…agent.permission_request 事件里的 request_id…", "option_id": "allow_once" }
+```
+
+校验顺序(全部 fail-visible,绝不静默吞掉一次点击):
+
+- `400 bad_request` — `request_id` / `option_id` 缺失;
+- `404 not_found` — 该 run 上没有这个 request(事件还没到/发错 run);
+- `409 permission_already_resolved` — 已有人决议过(decided),或 runner 已
+  自行收尾(resolved,如客户端超时 timeout-deny)——**迟到的决议被记录拒绝,
+  绝不覆盖**;并发双击/两人同时点由 store 条件写原子裁决,恰好一人成功;
+- `400 invalid_option` — `option_id` 不在该请求 offer 的 options 集合内
+  (镜像 runner 侧 acpdrive 的同名防御检查)。
+
+响应 `200`:完整 run_permission 台账行(含 `decided_option_id` / `decided_by` /
+`decided_at`)。runner 的决议轮询(§5.5)随即取走;时间线上的最终结果以
+`agent.permission_resolved` 事件(§4)回流,console 据此把卡片置为已决议态。
 
 ### 2.3 Events(拉取 + 流式)
 
@@ -594,9 +628,13 @@ runner 通过 `POST /internal/v1/runs/{id}/events` 上报;orchestrator 也会内
 | `run.git` | runner(**ST-1**,`draft_pr` 模式) | `{ "branch": "agent/run-<id>", "commit_sha": "abcd..." }` | runner 推送 `agent/run-<id>` 分支后上报;orchestrator 据此(以 `branch` 为幂等键)开 draft PR。首个非空 `branch` 生效(first-writer-wins),重发为幂等空操作 |
 | `user.message` | orchestrator 内生(**F7 / D22**,session) | `{ "prompt": "接着把测试补上", "by": "Ada" }` | `POST /runs/{id}/messages` 落队列的同时 append;console 渲染为用户消息气泡,时间线读起来是连续对话。`by` 为触发者 display name(service principal 为空) |
 | `session.finish` | orchestrator 内生(**F7 / D22**,session) | `{ "reason": "user", "by": "Ada" }` | session 被收尾:`reason` ∈ `user`(finish 端点)/ `idle_timeout`(reconciler 空闲回收)。紧凑系统行渲染 |
+| `agent.permission_request` | runner(**F8a/F8b**,`permission_mode=approval` session) | `{ "request_id": "…uuid…", "tool_call_id": "c2", "title": "Run \`make deploy\`", "options": [ { "option_id": "allow_once", "name": "Allow", "kind": "allow_once" } ] }` | agent 的一次权限请求被转发待审批。runner **同步直发 + at-least-once**(先于决议轮询送达;重发幂等)。ingest 钩子按 `request_id` upsert `run_permissions` 台账行(重复事件**绝不**重置已决议状态);console 渲染 PermissionCard(title + options 按钮组)。**该事件可能先于它引用的 `agent.tool_call` 到达——按 `request_id` 键控配对,勿依赖事件相邻性** |
+| `agent.permission_resolved` | runner(**F8a/F8b**,同上) | `{ "request_id": "…", "option_id": "allow_once", "resolution": "user" }` | 请求的最终结果:`resolution` ∈ `user`(用户决议生效)/ `timeout`(无人应答,runner 选 reject 类 option 兜底;`option_id` 可为 `""` = 无 reject option 时的 ACP Cancelled)。ingest 钩子落 `resolved_*` 字段(first-writer-wins);之后 §5.5 对该 request 回 `410` |
 
 - `payload` 除上述约定键外可含额外键,客户端应容忍未知键。
-- `agent.tool_call` 与 `agent.tool_result` 建议以 `call_id` 关联配对渲染。
+- `agent.tool_call` 与 `agent.tool_result` 建议以 `call_id` 关联配对渲染;
+  `agent.permission_request` 与 `agent.permission_resolved` 以 `request_id`
+  配对(F8b,console 折叠成一张 PermissionCard)。
 
 ---
 
@@ -710,6 +748,27 @@ runner 通过 `POST /internal/v1/runs/{id}/events` 上报;orchestrator 也会内
 - runner 对 turn-complete / next-prompt 连续失败 >5min 判定控制面丢失,以
   `agent_error` 收尾(F7a 契约)。
 
+### 5.5 `GET /internal/v1/runs/{id}/permissions/{request_id}/decision` — 权限决议轮询(F8a/F8b)
+
+`permission_mode=approval` session 的 runner(acpdrive)为每个转发的权限请求
+轮询本端点(客户端 ~250ms 下限,整体受 `PERMISSION_TIMEOUT_SECONDS` 约束;
+服务端不 hold,立答):
+
+| 状态码 | 含义 | runner 行为(acpdrive) |
+|---|---|---|
+| `200` | `{ "option_id": "…" }` — 用户已决议 | 校验 option 在本请求 options 集内后回给 jcode(`agent.permission_resolved {resolution:"user"}`) |
+| `204` | pending:尚未决议,**包括未知 `request_id`** | 继续轮询 |
+| `410` | 请求已过期:已被 resolve(如 runner 超时先落了 timeout)、或 run 已 finalize/终态 | 等同客户端超时:timeout-deny(选 reject 类 option / Cancelled),**绝不 fail-open** |
+
+> **硬约束(F8a 契约,load-bearing)**:**未知 `request_id` 必须回 `204`
+> (pending),绝不 `404`**。`404/410` 只保留给"确实存在过、现已过期/失效"的
+> 请求(run finalize/终态、或已 resolve)。acpdrive 只在其
+> `agent.permission_request` 事件被 ack(2xx)之后才开始轮询,但
+> 404-for-unknown 仍会与服务端内部的任何 ingest 异步竞态,把一个 pending
+> 审批瞬间打成 deny——所以由服务端一侧保证。同一约束的另一半:ingest 对
+> `agent.permission_request` 的 upsert 失败时**整批回 5xx**(runner 重发幂等),
+> 绝不 ack 一个没落库的请求事件。
+
 ---
 
 ## 6 · Runner Job 环境变量(runner-integration agent 对接清单)
@@ -731,6 +790,8 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
 | `ORCH_BASE_URL` | 环境 `ORCH_BASE_URL` | orchestrator 基址,runner 回传事件/产物用 |
 | `RUN_TOKEN` | 每 run 随机生成 | Bearer,仅本 run 有效;打 `/internal/v1/runs/{RUN_ID}/*` |
 | `RUN_SESSION` | `run.session`(**F7 / D22**) | `1` = 多轮 session 模式:acpdrive 每轮后跑 turn-hook(逐轮 diff/commit/bundle)→ `POST turn-complete` → 长轮询 `GET next-prompt`(§5.3/§5.4)。**单发 run 不注入,行为不变**。session run 的 `RUN_TIMEOUT` 与 Job `activeDeadlineSeconds` 改用 session TTL(project `session_ttl_secs`,缺省集群 `SESSION_TTL_SECONDS`=14400s)——`--timeout` 包住整个 session 含 idle 等待 |
+| `RUN_PERMISSION_MODE` | `run.permission_mode`(**F8b / D22**) | `approval` = acpdrive 把每个 jcode 权限请求转发审批(§4 权限事件 + §5.5 决议轮询)。**仅 `permission_mode=approval` 的 session run 注入;其余 run(含 full_access session)两个变量都不注入**——runner 缺省即 full_access,行为不变 |
+| `PERMISSION_TIMEOUT_SECONDS` | reconciler 计算(**F8b**) | 单个审批等待预算 = `min(300, session_ttl/4)`(下限 1s,TTL≤0 时取 300)。强制审批超时 **≪** session TTL(F8a 要求:整轮阻塞在 RequestPermission 里,超时过大将把一次没人理的审批烧成整 run 的硬 `RUN_TIMEOUT` 失败)。超时后 runner timeout-deny(reject 类 option / Cancelled),run 继续 |
 | `GIT_MODE` | project.git_mode(缺 token/host 不匹配时降级) | **(ST-1)** `readonly`(默认,diff-only)\| `draft_pr`(推分支) |
 | `GIT_BRANCH` | `agent/run-<RUN_ID>` | **(ST-1)** `draft_pr` 时要创建/推送的命名分支 |
 | `GIT_PUSH_URL` | `provider_url`(或 `GITEA_URL`)+ `provider_repo` | **(ST-1)** https 推送 origin,如 `http://gitea.../owner/repo.git` |

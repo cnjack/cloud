@@ -33,6 +33,7 @@ type MemStore struct {
 	kanbanLinks  map[string]domain.KanbanLink    // keyed by link id
 	kanbanClaims map[string]domain.KanbanClaim   // keyed by linkID+"|"+documentID
 	runMessages  map[string][]domain.RunMessage  // session follow-up queue, keyed by runID (D22)
+	permissions  map[string]domain.RunPermission // permission requests, keyed by request_id (F8b)
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -53,6 +54,7 @@ func NewMemStore() *MemStore {
 		kanbanLinks:  map[string]domain.KanbanLink{},
 		kanbanClaims: map[string]domain.KanbanClaim{},
 		runMessages:  map[string][]domain.RunMessage{},
+		permissions:  map[string]domain.RunPermission{},
 	}
 }
 
@@ -135,6 +137,12 @@ func (m *MemStore) DeleteProject(_ context.Context, id string) error {
 		if r.ProjectID == id {
 			delete(m.runs, rid)
 			delete(m.runMessages, rid) // cascade run_messages (FK ON DELETE CASCADE)
+			// cascade run_permissions (FK ON DELETE CASCADE)
+			for reqID, perm := range m.permissions {
+				if perm.RunID == rid {
+					delete(m.permissions, reqID)
+				}
+			}
 		}
 	}
 	for k, mem := range m.members {
@@ -715,6 +723,126 @@ func (m *MemStore) ListRunMessages(_ context.Context, runID string) ([]domain.Ru
 	out := make([]domain.RunMessage, len(m.runMessages[runID]))
 	copy(out, m.runMessages[runID])
 	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
+}
+
+// --- Session permission approval (F8b) ---------------------------------------
+
+// copyPermission deep-copies a RunPermission (Options is a slice; pointer
+// fields are re-pointed at copies) so callers can never mutate stored state.
+func copyPermission(p domain.RunPermission) domain.RunPermission {
+	cp := p
+	cp.Options = append([]domain.PermissionOption(nil), p.Options...)
+	if p.DecidedOptionID != nil {
+		v := *p.DecidedOptionID
+		cp.DecidedOptionID = &v
+	}
+	if p.DecidedBy != nil {
+		v := *p.DecidedBy
+		cp.DecidedBy = &v
+	}
+	if p.DecidedAt != nil {
+		v := *p.DecidedAt
+		cp.DecidedAt = &v
+	}
+	if p.ResolvedOptionID != nil {
+		v := *p.ResolvedOptionID
+		cp.ResolvedOptionID = &v
+	}
+	if p.Resolution != nil {
+		v := *p.Resolution
+		cp.Resolution = &v
+	}
+	if p.ResolvedAt != nil {
+		v := *p.ResolvedAt
+		cp.ResolvedAt = &v
+	}
+	return cp
+}
+
+// UpsertRunPermission — insert-only idempotency: an existing request_id is left
+// completely untouched (a duplicate request event must never reset a
+// decided/resolved row).
+func (m *MemStore) UpsertRunPermission(_ context.Context, p *domain.RunPermission) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.runs[p.RunID]; !ok {
+		return ErrNotFound
+	}
+	if _, ok := m.permissions[p.RequestID]; ok {
+		return nil // idempotent re-delivery: never reset decided/resolved state
+	}
+	m.permissions[p.RequestID] = copyPermission(*p)
+	return nil
+}
+
+func (m *MemStore) GetRunPermission(_ context.Context, runID, requestID string) (*domain.RunPermission, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.permissions[requestID]
+	if !ok || p.RunID != runID {
+		return nil, ErrNotFound
+	}
+	cp := copyPermission(p)
+	return &cp, nil
+}
+
+// DecideRunPermission — the conditional user-answer write: wins only while the
+// row is neither decided nor resolved (mirrors the PG WHERE clause).
+func (m *MemStore) DecideRunPermission(_ context.Context, runID, requestID, optionID, decidedBy string, at time.Time) (*domain.RunPermission, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.permissions[requestID]
+	if !ok || p.RunID != runID {
+		return nil, false, ErrNotFound
+	}
+	if p.DecidedOptionID != nil || p.ResolvedAt != nil {
+		cp := copyPermission(p)
+		return &cp, false, nil // already answered/resolved: the caller 409s
+	}
+	opt := optionID
+	t := at
+	p.DecidedOptionID = &opt
+	p.DecidedAt = &t
+	if decidedBy != "" {
+		by := decidedBy
+		p.DecidedBy = &by
+	}
+	m.permissions[requestID] = p
+	cp := copyPermission(p)
+	return &cp, true, nil
+}
+
+// ResolveRunPermission — first-writer-wins on the resolved_* fields; a missing
+// row or an already-resolved row is a silent no-op (duplicate/orphan events).
+func (m *MemStore) ResolveRunPermission(_ context.Context, runID, requestID, optionID, resolution string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.permissions[requestID]
+	if !ok || p.RunID != runID || p.ResolvedAt != nil {
+		return nil
+	}
+	opt := optionID
+	res := resolution
+	t := at
+	p.ResolvedOptionID = &opt
+	p.Resolution = &res
+	p.ResolvedAt = &t
+	m.permissions[requestID] = p
+	return nil
+}
+
+// ListRunPermissions returns a run's permission requests, oldest first.
+func (m *MemStore) ListRunPermissions(_ context.Context, runID string) ([]domain.RunPermission, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.RunPermission
+	for _, p := range m.permissions {
+		if p.RunID == runID {
+			out = append(out, copyPermission(p))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil
 }
 

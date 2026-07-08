@@ -386,6 +386,13 @@ type Run struct {
 	// POST /runs/{id}/messages. Only kind=agent runs may be sessions; false for
 	// every single-shot headless run (behaviour unchanged).
 	Session bool `json:"session"`
+	// PermissionMode selects how the runner answers jcode's permission requests
+	// (F8a/F8b, the D22 permission half). "" = full_access (auto-approve, today's
+	// behaviour and the default); PermissionModeApproval = the runner forwards
+	// each request to the control plane as an agent.permission_request event and
+	// long-polls the user's decision. Only valid on SESSION runs — a headless
+	// single-shot has nobody watching to ask — enforced at run creation.
+	PermissionMode string `json:"permission_mode,omitempty"`
 	// AwaitingSince is stamped when the run enters awaiting_input (a turn finished
 	// with no pending message) and cleared when a message resumes it to running.
 	// It is the idle-reclaim epoch: the reconciler finalizes a session whose
@@ -517,7 +524,88 @@ const (
 	// by the user (finish endpoint) or by the idle-timeout reconcile pass. Payload
 	// {reason: "user"|"idle_timeout", by?}. Rendered as a compact system row.
 	EventSessionFinish = "session.finish"
+	// EventPermissionRequest is emitted by the runner (F8a, SYNCHRONOUSLY —
+	// acpdrive only starts polling the decision endpoint after this event is
+	// acknowledged) when a permission_mode=approval session hits a jcode
+	// permission request. Payload {request_id, tool_call_id, title,
+	// options: [{option_id, name, kind}]}. The ingest hook upserts a
+	// run_permissions row keyed by request_id; the console renders a
+	// PermissionCard. It may arrive BEFORE the tool_call event it references —
+	// clients key off request_id, never event adjacency.
+	EventPermissionRequest = "agent.permission_request"
+	// EventPermissionResolved is emitted by the runner (async, best-effort) once
+	// a forwarded permission request reached its outcome. Payload {request_id,
+	// option_id, resolution: "user"|"timeout"} — option_id may be "" for a
+	// timeout with no reject-kind option (ACP Cancelled). The ingest hook stamps
+	// the resolved_* fields (first-writer-wins); after this the decision endpoint
+	// answers 410 for the request.
+	EventPermissionResolved = "agent.permission_resolved"
 )
+
+// PermissionModeApproval is Run.PermissionMode's only non-default value (F8b):
+// the runner forwards jcode permission requests for interactive user approval
+// instead of auto-approving (""/full_access). Session runs only.
+const PermissionModeApproval = "approval"
+
+// PermissionOption is one choice jcode offered for a permission request,
+// echoed verbatim through the agent.permission_request event and stored on the
+// run_permissions row (JSONB). Kind is jcode's option classification (e.g.
+// allow_once / reject_once) — the runner picks a reject-kind one on timeout.
+type PermissionOption struct {
+	OptionID string `json:"option_id"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+}
+
+// RunPermission is one forwarded permission request of a permission_mode=
+// approval session run (F8b) — the durable ledger row behind the approval UI
+// and the runner's decision long-poll.
+//
+// Two independent halves record the request's outcome:
+//   - Decided* — the USER's answer (POST /runs/{id}/permission-response):
+//     written once, a second answer is a 409.
+//   - Resolved* — the RUNNER's final word (agent.permission_resolved): which
+//     option actually took effect and whether it was the user's decision
+//     ("user") or a timeout-deny ("timeout"). ResolvedOptionID may be "" for a
+//     timeout with no reject-kind option offered.
+//
+// They deliberately differ when a user decision lands after the runner's
+// client-side timeout: the decision is recorded but never took effect.
+type RunPermission struct {
+	RequestID  string             `json:"request_id"`
+	RunID      string             `json:"run_id"`
+	ToolCallID string             `json:"tool_call_id,omitempty"`
+	Title      string             `json:"title"`
+	Options    []PermissionOption `json:"options"`
+	CreatedAt  time.Time          `json:"created_at"`
+
+	DecidedOptionID *string    `json:"decided_option_id,omitempty"`
+	DecidedBy       *string    `json:"decided_by,omitempty"`
+	DecidedAt       *time.Time `json:"decided_at,omitempty"`
+
+	ResolvedOptionID *string    `json:"resolved_option_id,omitempty"`
+	Resolution       *string    `json:"resolution,omitempty"`
+	ResolvedAt       *time.Time `json:"resolved_at,omitempty"`
+}
+
+// Decided reports whether the user has answered this request.
+func (p *RunPermission) Decided() bool { return p.DecidedOptionID != nil }
+
+// Resolved reports whether the runner has recorded the request's final outcome
+// (after which the decision endpoint answers 410).
+func (p *RunPermission) Resolved() bool { return p.ResolvedAt != nil }
+
+// OptionOffered reports whether optionID is one of the options this request
+// actually offered — the validation gate for permission-response (a decision
+// naming a foreign option is a 400, mirroring acpdrive's own defensive check).
+func (p *RunPermission) OptionOffered(optionID string) bool {
+	for i := range p.Options {
+		if p.Options[i].OptionID == optionID {
+			return true
+		}
+	}
+	return false
+}
 
 // ArtifactKind enumerates the kinds of artifact a run can produce.
 type ArtifactKind string

@@ -16,9 +16,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { toTimelineItem, terminalStatusSeq } from './eventModel';
 import { groupTimeline } from './grouping';
-import type { GroupedTimelineItem, RunViewEvent } from './types';
+import type { GroupedTimelineItem, PermissionControls, RunViewEvent } from './types';
 import { Collapsible } from './Collapsible';
 import { MessageBlock } from './MessageBlock';
+import { PermissionCard } from './PermissionCard';
 import { StatusPill } from './StatusPill';
 import { ToolCard } from './ToolCard';
 import styles from './Timeline.module.css';
@@ -28,9 +29,16 @@ const SCROLL_SLACK = 48; // px from bottom still counted as "at bottom"
 export function Timeline({
   events,
   live,
+  permissions,
 }: {
   events: RunViewEvent[];
   live: boolean;
+  /**
+   * F8b: host-injected controls for pending PermissionCards (decide callback +
+   * optimistic/read-only state). Optional — without it the cards render inert,
+   * keeping runview usable by hosts that have no approval surface.
+   */
+  permissions?: PermissionControls;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -95,6 +103,7 @@ export function Timeline({
               // F7: mark the terminal run.status row as the final end state so it
               // reads unambiguously regardless of failure/status micro-ordering.
               final={item.kind === 'status' && item.seq === terminalSeq}
+              permissions={permissions}
             />
           ))}
         </ol>
@@ -118,9 +127,11 @@ export function Timeline({
 function TimelineRow({
   item,
   final = false,
+  permissions,
 }: {
   item: GroupedTimelineItem;
   final?: boolean;
+  permissions?: PermissionControls;
 }) {
   const time = formatTime(item.ts);
 
@@ -251,6 +262,31 @@ function TimelineRow({
           <div className={styles.userMessage}>
             <span className={styles.userMessageBy}>{item.by || 'you'}</span>
             <span className={styles.userMessageText}>{item.prompt}</span>
+          </div>
+        </li>
+      );
+
+    // F8b: a permission request card (pending buttons / resolved outcome).
+    case 'permission_card':
+      return (
+        <li className={styles.row} data-kind="permission_card">
+          <RowGutter time={time} marker={item.status === 'pending' ? 'call' : 'status'} />
+          <PermissionCard item={item} controls={permissions} />
+        </li>
+      );
+
+    // F8b: an ORPHAN resolution (its request event never arrived) — a compact
+    // system row so the outcome is still visible.
+    case 'permission_resolved':
+      return (
+        <li className={styles.row} data-kind="permission_resolved">
+          <RowGutter time={time} marker="status" />
+          <div className={styles.sysRow}>
+            <span className={styles.sysLabel}>permission</span>
+            <span className={styles.resultMsg}>
+              {item.resolution === 'timeout' ? 'timed out' : 'resolved'}
+              {item.optionId ? ` — ${item.optionId}` : ''}
+            </span>
           </div>
         </li>
       );

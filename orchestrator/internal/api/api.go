@@ -259,6 +259,10 @@ func (s *Server) Handler() http.Handler {
 	// the session down. member+ (same as run dispatch).
 	mux.Handle("POST /api/v1/runs/{id}/messages", s.authed(s.handleSendMessage))
 	mux.Handle("POST /api/v1/runs/{id}/finish", s.authed(s.handleFinishSession))
+	// Session permission approval (F8b / D22): answer a pending permission
+	// request of a permission_mode=approval session. member+ (a decision is a
+	// mutation; viewers get read-only cards).
+	mux.Handle("POST /api/v1/runs/{id}/permission-response", s.authed(s.handlePermissionResponse))
 	// PR review (M5): request an AI review of a succeeded agent run's PR, and read
 	// the PR's live state + its review runs. review is a mutation (member+); the
 	// pr view is read-only (viewer+).
@@ -277,6 +281,10 @@ func (s *Server) Handler() http.Handler {
 	// completion and long-polls for the next user message. RUN_TOKEN authed.
 	mux.Handle("POST /internal/v1/runs/{id}/turn-complete", s.runToken(s.handleTurnComplete))
 	mux.Handle("GET /internal/v1/runs/{id}/next-prompt", s.runToken(s.handleNextPrompt))
+	// Session permission approval (F8b): acpdrive's decision poll. Hard
+	// constraint: an UNKNOWN request_id answers 204 (pending), never 404 — see
+	// handlePermissionDecision.
+	mux.Handle("GET /internal/v1/runs/{id}/permissions/{request_id}/decision", s.runToken(s.handlePermissionDecision))
 	// Feature D — LLM reverse proxy (architecture O5): the runner's LLM traffic
 	// goes through the orchestrator, which injects the real key and forwards to
 	// the real model. Method-agnostic so POST /chat/completions and GET /models

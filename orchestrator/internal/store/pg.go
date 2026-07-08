@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -289,7 +290,7 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id,
 	review_posted_at, pr_head_branch, pr_base_branch,
 	origin, origin_comment_id, origin_comment_url, result, model_id, model_name,
-	session, awaiting_since, session_finalizing, bundle_rev, pushed_rev`
+	session, awaiting_since, session_finalizing, bundle_rev, pushed_rev, permission_mode`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
@@ -301,7 +302,7 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID,
 		&r.ReviewPostedAt, &r.PRHeadBranch, &r.PRBaseBranch,
 		&r.Origin, &commentID, &commentURL, &result, &r.ModelID, &r.ModelName,
-		&r.Session, &r.AwaitingSince, &r.SessionFinalizing, &r.BundleRev, &r.PushedRev)
+		&r.Session, &r.AwaitingSince, &r.SessionFinalizing, &r.BundleRev, &r.PushedRev, &r.PermissionMode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -330,14 +331,14 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
 		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID,
 		r.ReviewPostedAt, r.PRHeadBranch, r.PRBaseBranch,
 		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullRunResult(r.Result), r.ModelID, r.ModelName,
-		r.Session, r.AwaitingSince, r.SessionFinalizing, r.BundleRev, r.PushedRev)
+		r.Session, r.AwaitingSince, r.SessionFinalizing, r.BundleRev, r.PushedRev, r.PermissionMode)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
@@ -945,6 +946,116 @@ func (s *PGStore) ListRunMessages(ctx context.Context, runID string) ([]domain.R
 			return nil, err
 		}
 		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// --- Session permission approval (F8b) ---------------------------------------
+
+// runPermissionCols are the run_permissions columns in scanRunPermission order.
+const runPermissionCols = `request_id, run_id, tool_call_id, title, options, created_at,
+	decided_option_id, decided_by, decided_at, resolved_option_id, resolution, resolved_at`
+
+// scanRunPermission scans one run_permissions row (see runPermissionCols).
+// options round-trips through JSONB as raw bytes.
+func scanRunPermission(row pgx.Row) (*domain.RunPermission, error) {
+	var p domain.RunPermission
+	var options []byte
+	err := row.Scan(&p.RequestID, &p.RunID, &p.ToolCallID, &p.Title, &options, &p.CreatedAt,
+		&p.DecidedOptionID, &p.DecidedBy, &p.DecidedAt,
+		&p.ResolvedOptionID, &p.Resolution, &p.ResolvedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan run permission: %w", err)
+	}
+	if len(options) > 0 {
+		if err := json.Unmarshal(options, &p.Options); err != nil {
+			return nil, fmt.Errorf("unmarshal permission options: %w", err)
+		}
+	}
+	return &p, nil
+}
+
+// UpsertRunPermission — insert-only idempotency: ON CONFLICT DO NOTHING, so a
+// re-delivered request event can never reset an already-decided/resolved row.
+// A missing run surfaces as ErrNotFound (FK violation) rather than a raw error
+// so ingest can tolerate a race with run deletion.
+func (s *PGStore) UpsertRunPermission(ctx context.Context, p *domain.RunPermission) error {
+	options, err := json.Marshal(p.Options)
+	if err != nil {
+		return fmt.Errorf("marshal permission options: %w", err)
+	}
+	if p.Options == nil {
+		options = []byte(`[]`)
+	}
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO run_permissions (request_id, run_id, tool_call_id, title, options, created_at)
+		 VALUES ($1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (request_id) DO NOTHING`,
+		p.RequestID, p.RunID, p.ToolCallID, p.Title, options, p.CreatedAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation: run gone
+			return ErrNotFound
+		}
+		return fmt.Errorf("upsert run permission: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetRunPermission(ctx context.Context, runID, requestID string) (*domain.RunPermission, error) {
+	return scanRunPermission(s.pool.QueryRow(ctx,
+		`SELECT `+runPermissionCols+` FROM run_permissions WHERE request_id=$1 AND run_id=$2`,
+		requestID, runID))
+}
+
+// DecideRunPermission — the user's answer, conditional in the WHERE clause so
+// two racing answers serialise on the row and exactly one wins (no TOCTOU).
+func (s *PGStore) DecideRunPermission(ctx context.Context, runID, requestID, optionID, decidedBy string, at time.Time) (*domain.RunPermission, bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE run_permissions SET decided_option_id=$3, decided_by=$4, decided_at=$5
+		 WHERE request_id=$1 AND run_id=$2 AND decided_option_id IS NULL AND resolved_at IS NULL`,
+		requestID, runID, optionID, nullStr(decidedBy), at)
+	if err != nil {
+		return nil, false, fmt.Errorf("decide run permission: %w", err)
+	}
+	p, gerr := s.GetRunPermission(ctx, runID, requestID)
+	if gerr != nil {
+		return nil, false, gerr
+	}
+	return p, tag.RowsAffected() > 0, nil
+}
+
+// ResolveRunPermission — first-writer-wins on resolved_*; a missing or already-
+// resolved row is a silent no-op (duplicate/orphan agent.permission_resolved).
+func (s *PGStore) ResolveRunPermission(ctx context.Context, runID, requestID, optionID, resolution string, at time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE run_permissions SET resolved_option_id=$3, resolution=$4, resolved_at=$5
+		 WHERE request_id=$1 AND run_id=$2 AND resolved_at IS NULL`,
+		requestID, runID, optionID, resolution, at)
+	if err != nil {
+		return fmt.Errorf("resolve run permission: %w", err)
+	}
+	return nil
+}
+
+// ListRunPermissions returns a run's permission requests, oldest first.
+func (s *PGStore) ListRunPermissions(ctx context.Context, runID string) ([]domain.RunPermission, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+runPermissionCols+` FROM run_permissions WHERE run_id=$1 ORDER BY created_at ASC, request_id ASC`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list run permissions: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.RunPermission
+	for rows.Next() {
+		p, err := scanRunPermission(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
 	}
 	return out, rows.Err()
 }
