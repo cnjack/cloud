@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,7 +28,8 @@ type MemStore struct {
 	identities   map[string]domain.UserIdentity  // keyed by identity id
 	sessions     map[string]domain.Session       // keyed by session id
 	members      map[string]domain.ProjectMember // keyed by projectID+"|"+userID
-	modelCfg     *domain.ModelConfig             // single-row cluster model config (nil = unset)
+	models       map[string]domain.Model         // catalog, keyed by model id (D21)
+	modelGrants  map[string]bool                 // keyed by modelID+"|"+projectID
 	kanbanLinks  map[string]domain.KanbanLink    // keyed by link id
 	kanbanClaims map[string]domain.KanbanClaim   // keyed by linkID+"|"+documentID
 }
@@ -45,6 +47,8 @@ func NewMemStore() *MemStore {
 		identities:   map[string]domain.UserIdentity{},
 		sessions:     map[string]domain.Session{},
 		members:      map[string]domain.ProjectMember{},
+		models:       map[string]domain.Model{},
+		modelGrants:  map[string]bool{},
 		kanbanLinks:  map[string]domain.KanbanLink{},
 		kanbanClaims: map[string]domain.KanbanClaim{},
 	}
@@ -772,39 +776,158 @@ func (m *MemStore) GetRunBundle(_ context.Context, runID string) ([]byte, error)
 	return cp, nil
 }
 
-// --- cluster model config (Feature A) ---
+// --- model catalog + project grants (D21) ---
 
-// GetModelConfig returns the single-row model config, or ErrNotFound when unset.
-func (m *MemStore) GetModelConfig(_ context.Context) (*domain.ModelConfig, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.modelCfg == nil {
-		return nil, ErrNotFound
+// cloneModel deep-copies a model so callers can't mutate the stored api_key_enc.
+func cloneModel(m domain.Model) domain.Model {
+	if m.APIKeyEnc != nil {
+		m.APIKeyEnc = append([]byte(nil), m.APIKeyEnc...)
 	}
-	cp := *m.modelCfg
-	if m.modelCfg.APIKeyEnc != nil {
-		cp.APIKeyEnc = append([]byte(nil), m.modelCfg.APIKeyEnc...)
-	}
-	return &cp, nil
+	return m
 }
 
-// SetModelConfig upserts the single row.
-func (m *MemStore) SetModelConfig(_ context.Context, c *domain.ModelConfig) error {
+func grantKey(modelID, projectID string) string { return modelID + "|" + projectID }
+
+// CreateModel inserts a catalog model. Duplicate name => ErrAlreadyExists.
+func (m *MemStore) CreateModel(_ context.Context, mod *domain.Model) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	cp := *c
-	if c.APIKeyEnc != nil {
-		cp.APIKeyEnc = append([]byte(nil), c.APIKeyEnc...)
+	for _, e := range m.models {
+		if e.Name == mod.Name {
+			return ErrAlreadyExists
+		}
 	}
-	m.modelCfg = &cp
+	m.models[mod.ID] = cloneModel(*mod)
 	return nil
 }
 
-// ClearModelConfig deletes the row (no-op when already unset).
-func (m *MemStore) ClearModelConfig(_ context.Context) error {
+// GetModel returns a catalog model by id.
+func (m *MemStore) GetModel(_ context.Context, id string) (*domain.Model, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.modelCfg = nil
+	e, ok := m.models[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := cloneModel(e)
+	return &cp, nil
+}
+
+// ListModels returns the whole catalog, newest first.
+func (m *MemStore) ListModels(_ context.Context) ([]domain.Model, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.Model, 0, len(m.models))
+	for _, e := range m.models {
+		out = append(out, cloneModel(e))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+// CountModels returns the number of catalog models.
+func (m *MemStore) CountModels(_ context.Context) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.models), nil
+}
+
+// UpdateModel updates a model's mutable fields. Duplicate name => ErrAlreadyExists.
+func (m *MemStore) UpdateModel(_ context.Context, mod *domain.Model) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.models[mod.ID]; !ok {
+		return ErrNotFound
+	}
+	for id, e := range m.models {
+		if id != mod.ID && e.Name == mod.Name {
+			return ErrAlreadyExists
+		}
+	}
+	m.models[mod.ID] = cloneModel(*mod)
+	return nil
+}
+
+// DeleteModel removes a model, cascading its grants and nulling any service
+// default / run reference (mirrors the ON DELETE SET NULL / CASCADE FKs).
+func (m *MemStore) DeleteModel(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.models[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.models, id)
+	for k := range m.modelGrants {
+		if strings.HasPrefix(k, id+"|") {
+			delete(m.modelGrants, k)
+		}
+	}
+	for sid, svc := range m.services {
+		if svc.DefaultModelID != nil && *svc.DefaultModelID == id {
+			svc.DefaultModelID = nil
+			m.services[sid] = svc
+		}
+	}
+	for rid, run := range m.runs {
+		if run.ModelID != nil && *run.ModelID == id {
+			run.ModelID = nil
+			m.runs[rid] = run
+		}
+	}
+	return nil
+}
+
+// ListModelsForProject returns the models granted to a project, newest first.
+func (m *MemStore) ListModelsForProject(_ context.Context, projectID string) ([]domain.Model, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Model
+	for id, mod := range m.models {
+		if m.modelGrants[grantKey(id, projectID)] {
+			out = append(out, cloneModel(mod))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+// ListProjectIDsForModel returns the project ids a model is granted to.
+func (m *MemStore) ListProjectIDsForModel(_ context.Context, modelID string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.models[modelID]; !ok {
+		return nil, ErrNotFound
+	}
+	var out []string
+	prefix := modelID + "|"
+	for k := range m.modelGrants {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, strings.TrimPrefix(k, prefix))
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// GrantModel authorizes a project to use a model (idempotent).
+func (m *MemStore) GrantModel(_ context.Context, modelID, projectID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.models[modelID]; !ok {
+		return ErrNotFound
+	}
+	if _, ok := m.projects[projectID]; !ok {
+		return ErrNotFound
+	}
+	m.modelGrants[grantKey(modelID, projectID)] = true
+	return nil
+}
+
+// RevokeModel removes a project's grant (idempotent no-op when absent).
+func (m *MemStore) RevokeModel(_ context.Context, modelID, projectID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.modelGrants, grantKey(modelID, projectID))
 	return nil
 }
 

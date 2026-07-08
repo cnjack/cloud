@@ -11,14 +11,17 @@ import { useApi } from './ApiProvider';
 import type {
   AddMemberInput,
   CreateKanbanLinkInput,
+  CreateModelInput,
   CreateProjectInput,
   CreateRunInput,
   CreateServiceInput,
   Member,
+  Model,
   Project,
-  PutModelConfigInput,
   Run,
+  UpdateModelInput,
   UpdateProjectInput,
+  UpdateServiceInput,
 } from './types';
 import { isTerminal } from './types';
 
@@ -31,7 +34,8 @@ export const qk = {
   diff: (runId: string) => ['diff', runId] as const,
   pr: (runId: string) => ['pr', runId] as const,
   system: ['system'] as const,
-  modelConfig: ['model-config'] as const,
+  models: ['models'] as const,
+  projectModels: (projectId: string) => ['project-models', projectId] as const,
   kanbanLinks: ['kanban-links'] as const,
   services: (projectId: string) => ['services', projectId] as const,
   members: (projectId: string) => ['members', projectId] as const,
@@ -253,44 +257,85 @@ export function useSystem(enabled = true) {
   });
 }
 
-/* ---- cluster model config (Feature A) ------------------------------------ */
+/* ---- model catalog + project grants (D21) -------------------------------- */
+
+/** The whole model catalog (cluster-admin). Powers the Cluster page ModelCard. */
+export function useModels(enabled = true) {
+  const api = useApi();
+  return useQuery({ queryKey: qk.models, queryFn: () => api.listModels(), enabled });
+}
 
 /**
- * The effective LLM config. Read by ANY logged-in principal (the composer keys
- * its enable/disable off `configured`); the Cluster page's admin form reads the
- * source/base_url/model_name/api_key_set detail. Kept fresh on a modest interval
- * so a just-saved config propagates to an open composer without a manual reload.
+ * The models granted to a project (member+). Its length + env_fallback drive the
+ * ModelGate's `configured` signal AND the composer's model select. Kept fresh on
+ * a modest interval so a just-granted model reaches an open composer.
  */
-export function useModelConfig(enabled = true) {
+export function useProjectModels(projectId: string, enabled = true) {
   const api = useApi();
   return useQuery({
-    queryKey: qk.modelConfig,
-    queryFn: () => api.getModelConfig(),
-    enabled,
+    queryKey: qk.projectModels(projectId),
+    queryFn: () => api.listProjectModels(projectId),
+    enabled: enabled && !!projectId,
     refetchInterval: 15000,
   });
 }
 
-export function useSetModelConfig() {
+export function useCreateModel() {
   const api = useApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: PutModelConfigInput) => api.setModelConfig(input),
-    onSuccess: (info) => {
-      qc.setQueryData(qk.modelConfig, info);
-      qc.invalidateQueries({ queryKey: qk.modelConfig });
+    mutationFn: (input: CreateModelInput) => api.createModel(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.models }),
+  });
+}
+
+export function useUpdateModel() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UpdateModelInput }) =>
+      api.updateModel(id, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.models }),
+  });
+}
+
+export function useDeleteModel() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteModel(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.models });
+      // Grants may have changed → any open composer's model list is now stale.
+      qc.invalidateQueries({ queryKey: ['project-models'] });
     },
   });
 }
 
-export function useClearModelConfig() {
+/** Grant or revoke a project's authorization for a model (cluster-admin). */
+export function useSetModelGrant() {
   const api = useApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.clearModelConfig(),
-    onSuccess: (info) => {
-      qc.setQueryData(qk.modelConfig, info);
-      qc.invalidateQueries({ queryKey: qk.modelConfig });
+    mutationFn: ({ modelId, projectId, granted }: { modelId: string; projectId: string; granted: boolean }) =>
+      granted ? api.grantModel(modelId, projectId) : api.revokeModel(modelId, projectId),
+    onSuccess: (_model: Model, { projectId }) => {
+      qc.invalidateQueries({ queryKey: qk.models });
+      qc.invalidateQueries({ queryKey: qk.projectModels(projectId) });
+    },
+  });
+}
+
+/** Edit a service (owner) — currently just its default model (D21). */
+export function useUpdateService(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ serviceId, input }: { serviceId: string; input: UpdateServiceInput }) =>
+      api.updateService(serviceId, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.services(projectId) });
+      qc.invalidateQueries({ queryKey: qk.project(projectId) });
     },
   });
 }

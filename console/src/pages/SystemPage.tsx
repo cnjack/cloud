@@ -14,9 +14,11 @@
 import { useState } from 'react';
 import {
   useSystem,
-  useModelConfig,
-  useSetModelConfig,
-  useClearModelConfig,
+  useModels,
+  useCreateModel,
+  useUpdateModel,
+  useDeleteModel,
+  useSetModelGrant,
   useProjects,
   useProject,
   useKanbanLinks,
@@ -31,7 +33,7 @@ import { TextField } from '../components/Field';
 import { LoadingBlock, ErrorBlock } from '../components/States';
 import { EmptyState } from '../components/EmptyState';
 import { useToast } from '../components/Toast';
-import type { ModelConfigInfo, SystemInfo } from '../api/types';
+import type { Model, Project, SystemInfo } from '../api/types';
 import styles from './SystemPage.module.css';
 
 export function SystemPage() {
@@ -229,160 +231,269 @@ function SystemCards({ data }: { data: SystemInfo }) {
 }
 
 /**
- * ModelCard — the cluster LLM configuration (Feature A). Shows the effective
- * configured/source status and, since the Cluster page is cluster-admin only,
- * an inline form to set (Base URL, Model, API key) or clear it. Save/clear
- * feedback goes through the app-wide toast (ToastProvider wraps the whole app
- * in main.tsx), matching PrPanel and the settings modals. The plaintext API key
- * is never displayed — only whether one is set.
+ * ModelCard — the cluster model catalog (D21). Lists the registered models and,
+ * since the Cluster page is cluster-admin only, exposes add / edit / delete and
+ * per-model project authorization (grants). The plaintext API key is never
+ * displayed — only whether one is set. Feedback goes through the app-wide toast.
  */
 function ModelCard() {
-  const cfg = useModelConfig(true);
-  const info = cfg.data;
-  const configured = info?.configured ?? false;
+  const models = useModels(true);
+  const projects = useProjects();
 
   return (
-    <Card className={[styles.card, styles.modelCard].join(' ')}>
+    <Card className={[styles.card, styles.modelCard].join(' ')} data-testid="model-card">
       <div className={styles.cardHead}>
-        <h2 className={styles.cardTitle}>Model</h2>
-        {info && (
-          <span
-            className={styles.pill}
-            data-on={configured || undefined}
-            data-testid="model-status"
-          >
-            {configured ? `Configured · ${info.source ?? ''}` : 'Not configured'}
+        <h2 className={styles.cardTitle}>Model catalog</h2>
+        {models.data && (
+          <span className={styles.pill} data-on={models.data.length > 0 || undefined} data-testid="model-status">
+            {models.data.length > 0
+              ? `${models.data.length} model${models.data.length === 1 ? '' : 's'}`
+              : 'No models'}
           </span>
         )}
       </div>
 
-      {cfg.isLoading ? (
-        <LoadingBlock label="Loading model configuration…" />
-      ) : cfg.isError ? (
-        <ErrorBlock
-          error={cfg.error}
-          onRetry={() => cfg.refetch()}
-          title="Couldn't load the model configuration"
-        />
-      ) : info ? (
-        <ModelForm info={info} />
-      ) : null}
+      <p className={styles.modelHint} data-testid="model-hint">
+        Register OpenAI-compatible endpoints, then authorize them per project.
+        Runs are blocked for a project until it has at least one granted model.
+      </p>
+
+      {models.isLoading ? (
+        <LoadingBlock label="Loading model catalog…" />
+      ) : models.isError ? (
+        <ErrorBlock error={models.error} onRetry={() => models.refetch()} title="Couldn't load the model catalog" />
+      ) : (
+        <div data-testid="model-list">
+          {(models.data ?? []).map((m) => (
+            <ModelRow key={m.id} model={m} projects={projects.data ?? []} />
+          ))}
+          {(models.data ?? []).length === 0 && (
+            <p className={styles.modelHint}>No models yet — add one below.</p>
+          )}
+          <ModelAddForm />
+        </div>
+      )}
     </Card>
   );
 }
 
 /**
- * ModelForm — the admin edit form. Mounted only once the CURRENT config has
- * loaded, so the plain lazy useState initializers ARE the prefill: no effect,
- * no touched-tracking, and a background refetch can never clobber in-progress
- * edits (initializers run once, on mount). The API key is never returned by the
- * server, so it always starts empty — an empty save stores a keyless config.
+ * ModelRow — one catalog model: its name/model id, key badge, an inline editor
+ * (base URL, model, rotate key), the delete action, and the per-project grants
+ * checklist. The API key input is always blank (never returned by the server).
+ * The three key states are reachable explicitly (D21 api_key semantics): leaving
+ * it blank OMITS the key (unchanged); typing a value ROTATES it; ticking "Clear
+ * key" sends api_key:"" to make the endpoint keyless.
  */
-function ModelForm({ info }: { info: ModelConfigInfo }) {
+function ModelRow({ model, projects }: { model: Model; projects: Project[] }) {
   const toast = useToast();
-  const setCfg = useSetModelConfig();
-  const clearCfg = useClearModelConfig();
-
-  const [baseUrl, setBaseUrl] = useState(info.base_url ?? '');
-  const [modelName, setModelName] = useState(info.model_name ?? '');
+  const update = useUpdateModel();
+  const del = useDeleteModel();
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(model.name);
+  const [baseUrl, setBaseUrl] = useState(model.base_url);
+  const [modelName, setModelName] = useState(model.model_name);
   const [apiKey, setApiKey] = useState('');
+  const [clearKey, setClearKey] = useState(false);
 
   const save = (e: React.FormEvent) => {
     e.preventDefault();
-    setCfg.mutate(
-      { base_url: baseUrl.trim(), model_name: modelName.trim(), api_key: apiKey },
+    const input: { name: string; base_url: string; model_name: string; api_key?: string } = {
+      name: name.trim(),
+      base_url: baseUrl.trim(),
+      model_name: modelName.trim(),
+    };
+    // Key: explicit clear (api_key:"") wins; otherwise rotate on a typed value;
+    // otherwise omit (leave unchanged).
+    if (clearKey) input.api_key = '';
+    else if (apiKey !== '') input.api_key = apiKey;
+    update.mutate(
+      { id: model.id, input },
       {
         onSuccess: () => {
           setApiKey('');
-          toast.push({ kind: 'success', message: 'Model configuration saved.' });
+          setClearKey(false);
+          setEditing(false);
+          toast.push({ kind: 'success', message: 'Model saved.' });
         },
         onError: (err) =>
-          toast.push({
-            kind: 'error',
-            message:
-              err instanceof ApiError ? err.message : 'Could not save the model configuration.',
-          }),
+          toast.push({ kind: 'error', message: err instanceof ApiError ? err.message : 'Could not save the model.' }),
       },
     );
   };
 
-  const clear = () => {
-    clearCfg.mutate(undefined, {
-      onSuccess: (next) => {
-        setApiKey('');
-        setBaseUrl(next.base_url ?? '');
-        setModelName(next.model_name ?? '');
-        toast.push({ kind: 'success', message: 'Model configuration cleared.' });
-      },
+  const remove = () => {
+    del.mutate(model.id, {
+      onSuccess: () => toast.push({ kind: 'success', message: 'Model removed.' }),
       onError: (err) =>
-        toast.push({
-          kind: 'error',
-          message:
-            err instanceof ApiError ? err.message : 'Could not clear the model configuration.',
-        }),
+        toast.push({ kind: 'error', message: err instanceof ApiError ? err.message : 'Could not remove the model.' }),
     });
   };
 
   return (
-    <>
-      <p className={styles.modelHint} data-testid="model-hint">
-        {info.configured
-          ? 'The agent uses this OpenAI-compatible endpoint. Runs are blocked when no model is configured.'
-          : 'No LLM is configured — runs are blocked until you set one below. This is required before the agent can run.'}
-      </p>
-
-      <form className={styles.modelForm} onSubmit={save} noValidate>
-        <TextField
-          label="Base URL"
-          placeholder="https://api.openai.com/v1"
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          data-testid="model-base-url"
-          autoComplete="off"
-          required
-        />
-        <TextField
-          label="Model (provider/model)"
-          placeholder="openai/gpt-4o"
-          value={modelName}
-          onChange={(e) => setModelName(e.target.value)}
-          data-testid="model-name"
-          autoComplete="off"
-          required
-        />
-        <TextField
-          label="API key"
-          type="password"
-          placeholder={info.api_key_set ? '•••••••• (set — retype to change)' : 'sk-…  (blank for keyless endpoints)'}
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          data-testid="model-api-key"
-          autoComplete="off"
-          hint="Stored encrypted. Never displayed after saving."
-        />
-        <div className={styles.modelActions}>
-          <Button
-            type="submit"
-            variant="primary"
-            loading={setCfg.isPending}
-            data-testid="model-save"
-          >
-            Save
-          </Button>
-          {info.source === 'db' && (
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={clear}
-              loading={clearCfg.isPending}
-              data-testid="model-clear"
-            >
-              Clear
-            </Button>
-          )}
+    <div className={styles.kanbanLinkRow} data-testid={`model-row-${model.id}`}>
+      <div className={styles.kanbanLinkMeta} style={{ width: '100%' }}>
+        <div className={styles.kanbanLinkTitle}>
+          {model.name}
+          <span className={styles.pill} data-on={model.api_key_set || undefined} style={{ marginLeft: 8 }}>
+            {model.api_key_set ? 'key set' : 'keyless'}
+          </span>
         </div>
-      </form>
-    </>
+        <div className={styles.kanbanLinkSub}>{model.model_name}</div>
+
+        {editing ? (
+          <form className={styles.modelForm} onSubmit={save} noValidate>
+            <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} data-testid={`model-edit-name-${model.id}`} autoComplete="off" required />
+            <TextField label="Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} data-testid={`model-edit-base-${model.id}`} autoComplete="off" required />
+            <TextField label="Model (provider/model)" value={modelName} onChange={(e) => setModelName(e.target.value)} data-testid={`model-edit-model-${model.id}`} autoComplete="off" required />
+            <TextField
+              label="API key"
+              type="password"
+              placeholder={
+                clearKey
+                  ? 'will be cleared (keyless)'
+                  : model.api_key_set
+                    ? '•••••••• (blank = unchanged; type to rotate)'
+                    : 'sk-…  (blank for keyless)'
+              }
+              value={clearKey ? '' : apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              disabled={clearKey}
+              data-testid={`model-edit-key-${model.id}`}
+              autoComplete="off"
+              hint="Stored encrypted. Never displayed after saving."
+            />
+            {model.api_key_set && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={clearKey}
+                  onChange={(e) => setClearKey(e.target.checked)}
+                  data-testid={`model-edit-clear-key-${model.id}`}
+                />
+                Clear key (make this endpoint keyless)
+              </label>
+            )}
+            <div className={styles.modelActions}>
+              <Button type="submit" variant="primary" loading={update.isPending} data-testid={`model-save-${model.id}`}>
+                Save
+              </Button>
+              <Button type="button" variant="secondary" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <GrantsEditor model={model} projects={projects} />
+        )}
+      </div>
+      {!editing && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button type="button" variant="secondary" onClick={() => setEditing(true)} data-testid={`model-edit-${model.id}`}>
+            Edit
+          </Button>
+          <Button type="button" variant="secondary" onClick={remove} disabled={del.isPending} data-testid={`model-delete-${model.id}`}>
+            Remove
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * GrantsEditor — per-model project authorization: a checkbox per project toggles
+ * the grant (PUT/DELETE). The granted set drives which projects can run on this
+ * model.
+ */
+function GrantsEditor({ model, projects }: { model: Model; projects: Project[] }) {
+  const toast = useToast();
+  const setGrant = useSetModelGrant();
+  const granted = new Set(model.granted_project_ids);
+
+  if (projects.length === 0) {
+    return <p className={styles.modelHint}>No projects to authorize yet.</p>;
+  }
+  return (
+    <div data-testid={`model-grants-${model.id}`} style={{ marginTop: 8 }}>
+      <div className={styles.fieldLabel}>Authorized projects</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 4 }}>
+        {projects.map((p) => (
+          <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={granted.has(p.id)}
+              disabled={setGrant.isPending}
+              data-testid={`model-grant-${model.id}-${p.id}`}
+              onChange={(e) =>
+                setGrant.mutate(
+                  { modelId: model.id, projectId: p.id, granted: e.target.checked },
+                  {
+                    onError: (err) =>
+                      toast.push({
+                        kind: 'error',
+                        message: err instanceof ApiError ? err.message : 'Could not update the grant.',
+                      }),
+                  },
+                )
+              }
+            />
+            {p.name}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** ModelAddForm — the inline "register a model" form (name, base URL, model, key). */
+function ModelAddForm() {
+  const toast = useToast();
+  const create = useCreateModel();
+  const [name, setName] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [modelName, setModelName] = useState('');
+  const [apiKey, setApiKey] = useState('');
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    create.mutate(
+      { name: name.trim(), base_url: baseUrl.trim(), model_name: modelName.trim(), api_key: apiKey },
+      {
+        onSuccess: () => {
+          setName('');
+          setBaseUrl('');
+          setModelName('');
+          setApiKey('');
+          toast.push({ kind: 'success', message: 'Model added.' });
+        },
+        onError: (err) =>
+          toast.push({ kind: 'error', message: err instanceof ApiError ? err.message : 'Could not add the model.' }),
+      },
+    );
+  };
+
+  return (
+    <form className={styles.modelForm} onSubmit={submit} noValidate data-testid="model-add-form">
+      <TextField label="Name" placeholder="GPT-4o" value={name} onChange={(e) => setName(e.target.value)} data-testid="model-add-name" autoComplete="off" required />
+      <TextField label="Base URL" placeholder="https://api.openai.com/v1" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} data-testid="model-add-base" autoComplete="off" required />
+      <TextField label="Model (provider/model)" placeholder="openai/gpt-4o" value={modelName} onChange={(e) => setModelName(e.target.value)} data-testid="model-add-model" autoComplete="off" required />
+      <TextField
+        label="API key"
+        type="password"
+        placeholder="sk-…  (blank for keyless endpoints)"
+        value={apiKey}
+        onChange={(e) => setApiKey(e.target.value)}
+        data-testid="model-add-key"
+        autoComplete="off"
+        hint="Stored encrypted. Never displayed after saving."
+      />
+      <div className={styles.modelActions}>
+        <Button type="submit" variant="primary" loading={create.isPending} data-testid="model-add-submit">
+          Add model
+        </Button>
+      </div>
+    </form>
   );
 }
 

@@ -12,7 +12,7 @@ import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
 import { ApiError, type ApiClient } from '../api/client';
 import type { Role } from '../api/config';
-import type { KanbanLink, ModelConfigInfo, Project, SystemInfo } from '../api/types';
+import type { KanbanLink, Model, Project, SystemInfo } from '../api/types';
 import { SystemPage } from './SystemPage';
 
 function snapshot(overrides: Partial<SystemInfo> = {}): SystemInfo {
@@ -32,10 +32,11 @@ function renderPage(client: Partial<ApiClient>, role: Role) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  // A benign default so the Model card's useModelConfig resolves; tests that
-  // exercise the Model card override these.
+  // Benign defaults so the Model catalog card (useModels + useProjects) resolves;
+  // tests that exercise the Model card override these.
   const full: Partial<ApiClient> = {
-    getModelConfig: async (): Promise<ModelConfigInfo> => ({ configured: false, source: 'none' }),
+    listModels: async (): Promise<Model[]> => [],
+    listProjects: async () => [],
     ...client,
   };
   return render(
@@ -103,57 +104,148 @@ describe('SystemPage', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
   });
 
-  it('Model card: saves a config and shows a success toast (Feature A)', async () => {
-    const setModelConfig = vi.fn().mockResolvedValue({
-      configured: true, source: 'db', base_url: 'https://api.openai.com/v1',
-      model_name: 'openai/gpt-4o', api_key_set: true,
-    } satisfies ModelConfigInfo);
+  it('Model catalog: adds a model and shows a success toast (D21)', async () => {
+    const createModel = vi.fn().mockResolvedValue({
+      id: 'm1', name: 'GPT-4o', base_url: 'https://api.openai.com/v1', model_name: 'openai/gpt-4o',
+      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: [],
+    } satisfies Model);
     const client = {
       getSystem: vi.fn().mockResolvedValue(snapshot()),
-      getModelConfig: vi.fn().mockResolvedValue({ configured: false, source: 'none' } satisfies ModelConfigInfo),
-      setModelConfig,
-      clearModelConfig: vi.fn(),
+      listModels: vi.fn().mockResolvedValue([] as Model[]),
+      listProjects: vi.fn().mockResolvedValue([]),
+      createModel,
     };
     renderPage(client, 'cluster-admin');
 
-    // Wait for the form to mount (it renders only once the config has loaded,
-    // so typing can never race the prefill).
-    const baseInput = await screen.findByTestId('model-base-url');
-    expect(screen.getByTestId('model-status').textContent).toContain('Not configured');
+    const nameInput = await screen.findByTestId('model-add-name');
+    // Empty catalog reports "No models".
+    expect(screen.getByTestId('model-status').textContent).toContain('No models');
 
-    fireEvent.change(baseInput, { target: { value: 'https://api.openai.com/v1' } });
-    fireEvent.change(screen.getByTestId('model-name'), { target: { value: 'openai/gpt-4o' } });
-    fireEvent.change(screen.getByTestId('model-api-key'), { target: { value: 'sk-secret' } });
-    fireEvent.click(screen.getByTestId('model-save'));
+    fireEvent.change(nameInput, { target: { value: 'GPT-4o' } });
+    fireEvent.change(screen.getByTestId('model-add-base'), { target: { value: 'https://api.openai.com/v1' } });
+    fireEvent.change(screen.getByTestId('model-add-model'), { target: { value: 'openai/gpt-4o' } });
+    fireEvent.change(screen.getByTestId('model-add-key'), { target: { value: 'sk-secret' } });
+    fireEvent.click(screen.getByTestId('model-add-submit'));
 
     await waitFor(() =>
-      expect(setModelConfig).toHaveBeenCalledWith({
-        base_url: 'https://api.openai.com/v1', model_name: 'openai/gpt-4o', api_key: 'sk-secret',
+      expect(createModel).toHaveBeenCalledWith({
+        name: 'GPT-4o', base_url: 'https://api.openai.com/v1', model_name: 'openai/gpt-4o', api_key: 'sk-secret',
       }),
     );
-    // Feedback rides the app-wide toast (same mechanism as PrPanel etc.).
-    await waitFor(() => expect(screen.getByText('Model configuration saved.')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Model added.')).toBeTruthy());
   });
 
-  it('Model card: surfaces a save error via toast (400 validation)', async () => {
+  it('Model catalog: surfaces a create error via toast (400 validation)', async () => {
     const client = {
       getSystem: vi.fn().mockResolvedValue(snapshot()),
-      getModelConfig: vi.fn().mockResolvedValue({ configured: false, source: 'none' } satisfies ModelConfigInfo),
-      setModelConfig: vi.fn().mockRejectedValue(new ApiError(400, "model_name must be in 'provider/model' form")),
-      clearModelConfig: vi.fn(),
+      listModels: vi.fn().mockResolvedValue([] as Model[]),
+      listProjects: vi.fn().mockResolvedValue([]),
+      createModel: vi.fn().mockRejectedValue(new ApiError(400, "model_name must be in 'provider/model' form")),
     };
     renderPage(client, 'cluster-admin');
 
-    const baseInput = await screen.findByTestId('model-base-url');
-    fireEvent.change(baseInput, { target: { value: 'http://x/v1' } });
-    fireEvent.change(screen.getByTestId('model-name'), { target: { value: 'bad' } });
-    fireEvent.click(screen.getByTestId('model-save'));
+    const nameInput = await screen.findByTestId('model-add-name');
+    fireEvent.change(nameInput, { target: { value: 'Bad' } });
+    fireEvent.change(screen.getByTestId('model-add-base'), { target: { value: 'http://x/v1' } });
+    fireEvent.change(screen.getByTestId('model-add-model'), { target: { value: 'bad' } });
+    fireEvent.click(screen.getByTestId('model-add-submit'));
 
-    // The toast carries the backend's exact message (the form label also says
-    // "provider/model", so match the full sentence).
     await waitFor(() =>
       expect(screen.getByText("model_name must be in 'provider/model' form")).toBeTruthy(),
     );
+  });
+
+  it('Model catalog: lists a model and toggles a project grant (D21)', async () => {
+    const model: Model = {
+      id: 'm1', name: 'GPT-4o', base_url: 'https://api.openai.com/v1', model_name: 'openai/gpt-4o',
+      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: [],
+    };
+    const project: Project = { id: 'p1', name: 'demo', created_at: '' };
+    const grantModel = vi.fn().mockResolvedValue({ ...model, granted_project_ids: ['p1'] });
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(snapshot()),
+      listModels: vi.fn().mockResolvedValue([model]),
+      listProjects: vi.fn().mockResolvedValue([project]),
+      grantModel,
+      revokeModel: vi.fn(),
+    };
+    renderPage(client, 'cluster-admin');
+
+    // The model row renders with its provider/model id.
+    await screen.findByTestId('model-row-m1');
+    expect(screen.getByText('openai/gpt-4o')).toBeTruthy();
+
+    // Toggling the project checkbox grants the model to that project.
+    const checkbox = screen.getByTestId('model-grant-m1-p1') as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(grantModel).toHaveBeenCalledWith('m1', 'p1'));
+  });
+
+  it('Model catalog: revokes a granted project and removes a model (D21)', async () => {
+    const model: Model = {
+      id: 'm1', name: 'GPT-4o', base_url: 'https://api.openai.com/v1', model_name: 'openai/gpt-4o',
+      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: ['p1'],
+    };
+    const project: Project = { id: 'p1', name: 'demo', created_at: '' };
+    const revokeModel = vi.fn().mockResolvedValue({ ...model, granted_project_ids: [] });
+    const deleteModel = vi.fn().mockResolvedValue(undefined);
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(snapshot()),
+      listModels: vi.fn().mockResolvedValue([model]),
+      listProjects: vi.fn().mockResolvedValue([project]),
+      grantModel: vi.fn(),
+      revokeModel,
+      deleteModel,
+    };
+    renderPage(client, 'cluster-admin');
+
+    // The grant checkbox starts checked; unchecking revokes.
+    const checkbox = (await screen.findByTestId('model-grant-m1-p1')) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(revokeModel).toHaveBeenCalledWith('m1', 'p1'));
+
+    // Removing the model calls deleteModel.
+    fireEvent.click(screen.getByTestId('model-delete-m1'));
+    await waitFor(() => expect(deleteModel).toHaveBeenCalledWith('m1'));
+  });
+
+  it('Model catalog: edit save reaches all three api_key states (omit/rotate/clear)', async () => {
+    const model: Model = {
+      id: 'm1', name: 'GPT-4o', base_url: 'https://api.openai.com/v1', model_name: 'openai/gpt-4o',
+      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: [],
+    };
+    const updateModel = vi.fn().mockResolvedValue(model);
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(snapshot()),
+      listModels: vi.fn().mockResolvedValue([model]),
+      listProjects: vi.fn().mockResolvedValue([]),
+      updateModel,
+    };
+    renderPage(client, 'cluster-admin');
+
+    // (1) OMIT — edit the name only, leave the key blank: api_key must be absent.
+    fireEvent.click(await screen.findByTestId('model-edit-m1'));
+    fireEvent.change(screen.getByTestId('model-edit-name-m1'), { target: { value: 'GPT-4o v2' } });
+    fireEvent.click(screen.getByTestId('model-save-m1'));
+    await waitFor(() => expect(updateModel).toHaveBeenCalledTimes(1));
+    expect(updateModel.mock.calls[0]![1]).not.toHaveProperty('api_key');
+    expect(updateModel.mock.calls[0]![1]).toMatchObject({ name: 'GPT-4o v2' });
+
+    // (2) ROTATE — type a new key: api_key carries the new value.
+    fireEvent.click(await screen.findByTestId('model-edit-m1'));
+    fireEvent.change(screen.getByTestId('model-edit-key-m1'), { target: { value: 'sk-new' } });
+    fireEvent.click(screen.getByTestId('model-save-m1'));
+    await waitFor(() => expect(updateModel).toHaveBeenCalledTimes(2));
+    expect(updateModel.mock.calls[1]![1]).toMatchObject({ api_key: 'sk-new' });
+
+    // (3) CLEAR — tick "Clear key": api_key is the empty string (keyless).
+    fireEvent.click(await screen.findByTestId('model-edit-m1'));
+    fireEvent.click(screen.getByTestId('model-edit-clear-key-m1'));
+    fireEvent.click(screen.getByTestId('model-save-m1'));
+    await waitFor(() => expect(updateModel).toHaveBeenCalledTimes(3));
+    expect(updateModel.mock.calls[2]![1]).toMatchObject({ api_key: '' });
   });
 
   it('shows unlimited concurrency when max_concurrent_runs is 0 (no bar)', async () => {

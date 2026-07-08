@@ -64,6 +64,33 @@ func seedProjectAndRun(t *testing.T, st *store.MemStore) domain.Run {
 	return *run
 }
 
+// seedProjectServiceRunWithModel is seedProjectAndRun but stamps the run with a
+// catalog model id (D21) so the reconciler materialises it via GetModel.
+func seedProjectServiceRunWithModel(t *testing.T, st *store.MemStore, modelID *string) domain.Run {
+	t.Helper()
+	ctx := context.Background()
+	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
+	if err := st.CreateProject(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "git://git/x.git",
+		DefaultBranch: "main", GitMode: domain.GitModeReadonly, CreatedAt: time.Now(),
+	}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "do the thing",
+		Status: domain.StatusQueued, Attempt: 1, CreatedAt: time.Now(), ModelID: modelID,
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	return *run
+}
+
 // jobEnvForService seeds a project + a 'default' service with the given repo
 // config + a queued run, sets cfg.GiteaURL/GiteaToken, and returns the jobEnv
 // the reconciler would inject — the seam for the git-env token/push tests.
@@ -151,22 +178,22 @@ func TestCreateJobFailsVisiblyWhenModelNotConfigured(t *testing.T) {
 	}
 }
 
-// erroringModelStore wraps a MemStore so GetModelConfig fails — the transient
-// (DB blip / key rotation) shape, distinct from "no row" (not configured).
+// erroringModelStore wraps a MemStore so GetModel fails — the transient (DB blip
+// / key rotation) shape, distinct from "model deleted" (not configured).
 type erroringModelStore struct {
 	*store.MemStore
 }
 
-func (e *erroringModelStore) GetModelConfig(context.Context) (*domain.ModelConfig, error) {
+func (e *erroringModelStore) GetModel(context.Context, string) (*domain.Model, error) {
 	return nil, errTransientModel
 }
 
 var errTransientModel = errors.New("transient db error")
 
-// TestCreateJobRetriesOnModelResolveError: a TRANSIENT model-config resolve
-// error must NOT permanently fail the run — the tick logs and skips (run stays
-// queued, no Job), and once the store recovers the next tick schedules it,
-// consistent with the other transient-error paths in Tick.
+// TestCreateJobRetriesOnModelResolveError: a TRANSIENT model resolve error must
+// NOT permanently fail the run — the tick logs and skips (run stays queued, no
+// Job), and once the store recovers the next tick schedules it, consistent with
+// the other transient-error paths in Tick.
 func TestCreateJobRetriesOnModelResolveError(t *testing.T) {
 	ctx := context.Background()
 	inner := store.NewMemStore()
@@ -178,13 +205,16 @@ func TestCreateJobRetriesOnModelResolveError(t *testing.T) {
 		RunTimeoutSecs:    1800,
 		OrchBaseURL:       "http://orch",
 		RunnerImage:       "runner:test",
-		ModelBaseURL:      "http://model.test/v1",
-		ModelName:         "mock/mock-model",
-		ModelAPIKey:       "test-key",
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rec := New(st, fake, cfg, log, nil)
-	run := seedProjectAndRun(t, inner)
+	// A run stamped with a catalog model id, so the reconciler materialises it
+	// through GetModel (the failing seam) rather than the env fallback.
+	mdl := &domain.Model{ID: domain.NewID(), Name: "gpt", BaseURL: "http://model/v1", ModelName: "mock/mock-model", CreatedAt: time.Now()}
+	if err := inner.CreateModel(ctx, mdl); err != nil {
+		t.Fatal(err)
+	}
+	run := seedProjectServiceRunWithModel(t, inner, &mdl.ID)
 
 	// While the store errors: no Job, and the run is NOT failed — still queued.
 	rec.Tick(ctx)
@@ -207,6 +237,30 @@ func TestCreateJobRetriesOnModelResolveError(t *testing.T) {
 	}
 	if len(fake.Created) != 1 {
 		t.Fatalf("created %d jobs, want 1 after recovery", len(fake.Created))
+	}
+}
+
+// TestCreateJobFailsVisiblyOnCipherNotConfigured is P1: a model with a stored key
+// but no AUTH_TOKEN_KEY (nil cipher) is a PERMANENT operator misconfiguration —
+// the run must be failed VISIBLY (setup_failed), not left queued to retry forever.
+func TestCreateJobFailsVisiblyOnCipherNotConfigured(t *testing.T) {
+	ctx := context.Background()
+	rec, st, fake := testRec(t, 4) // testRec builds the resolver with a NIL cipher
+	// A catalog model WITH an encrypted key, and a run stamped with it.
+	mdl := &domain.Model{ID: domain.NewID(), Name: "gpt", BaseURL: "http://m/v1", ModelName: "openai/gpt-4o", APIKeyEnc: []byte("ciphertext"), CreatedAt: time.Now()}
+	if err := st.CreateModel(ctx, mdl); err != nil {
+		t.Fatal(err)
+	}
+	run := seedProjectServiceRunWithModel(t, st, &mdl.ID)
+
+	rec.Tick(ctx)
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.Status != domain.StatusFailed || got.FailureReason != domain.FailureSetupFailed {
+		t.Fatalf("status=%q reason=%q want failed/setup_failed", got.Status, got.FailureReason)
+	}
+	if len(fake.Created) != 0 {
+		t.Fatalf("created %d jobs, want 0 (must not launch key-less)", len(fake.Created))
 	}
 }
 

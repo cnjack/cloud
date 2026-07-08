@@ -182,3 +182,101 @@ func TestPGServicesMigrationBackfill(t *testing.T) {
 		t.Fatal("projects.injected_env guardrail column should exist after 0005")
 	}
 }
+
+// TestPGModelCatalogMigrationBackfill is the D21 §6 data migration: a pre-0013
+// database with a single cluster_model_config row + N projects must, after 0013,
+// have that config as the catalog's first entry GRANTED to every project, the old
+// table dropped, and services/runs carrying the new nullable FK columns. It also
+// asserts idempotency: re-applying the raw 0013 SQL is a clean no-op.
+func TestPGModelCatalogMigrationBackfill(t *testing.T) {
+	dsn := os.Getenv("JCLOUD_PG_DSN")
+	if dsn == "" {
+		t.Skip("JCLOUD_PG_DSN not set; skipping Postgres-backed migration test")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer conn.Release()
+	c := conn.Conn()
+
+	schema := "mig_" + domain.NewID()[:16]
+	if _, err := c.Exec(ctx, `CREATE SCHEMA `+schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() { _, _ = c.Exec(context.Background(), `DROP SCHEMA `+schema+` CASCADE`) })
+	if _, err := c.Exec(ctx, `SET search_path TO `+schema); err != nil {
+		t.Fatalf("set search_path: %v", err)
+	}
+
+	// --- minimal pre-0013 schema (the subset 0013 touches) --------------------
+	if _, err := c.Exec(ctx, `
+		CREATE TABLE projects (id text PRIMARY KEY, name text NOT NULL);
+		CREATE TABLE services (id text PRIMARY KEY, project_id text NOT NULL REFERENCES projects(id));
+		CREATE TABLE runs (id text PRIMARY KEY, project_id text NOT NULL REFERENCES projects(id));
+		CREATE TABLE cluster_model_config (
+			id smallint PRIMARY KEY CHECK (id = 1),
+			base_url text NOT NULL, model_name text NOT NULL, api_key_enc bytea,
+			updated_at timestamptz NOT NULL DEFAULT now(), updated_by text NOT NULL DEFAULT ''
+		);`); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	mustExec(t, ctx, c, `INSERT INTO projects (id,name) VALUES ('pA','A'),('pB','B')`)
+	mustExec(t, ctx, c, `INSERT INTO services (id,project_id) VALUES ('sA','pA')`)
+	mustExec(t, ctx, c, `INSERT INTO runs (id,project_id) VALUES ('rA','pA')`)
+	mustExec(t, ctx, c, `INSERT INTO cluster_model_config (id,base_url,model_name,api_key_enc,updated_by)
+		VALUES (1,'https://api.openai.com/v1','openai/gpt-4o','\x00ff'::bytea,'admin')`)
+
+	sql, err := migrationsFS.ReadFile("migrations/0013_model_catalog.sql")
+	if err != nil {
+		t.Fatalf("read 0013: %v", err)
+	}
+	// Apply TWICE — the second application must be a clean no-op (idempotent).
+	for i := 0; i < 2; i++ {
+		if _, err := c.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("apply 0013 (pass %d): %v", i+1, err)
+		}
+	}
+
+	// The single config became the catalog's first entry, key bytes preserved.
+	var modelCount int
+	mustScan(t, ctx, c, `SELECT count(*) FROM model_configs`, &modelCount)
+	if modelCount != 1 {
+		t.Fatalf("model_configs count=%d want 1 (idempotent, not duplicated)", modelCount)
+	}
+	var name, base, model string
+	var enc []byte
+	mustRow(t, ctx, c, `SELECT name, base_url, model_name, api_key_enc FROM model_configs WHERE model_name=$1`,
+		"openai/gpt-4o", &name, &base, &model, &enc)
+	if name != "openai/gpt-4o" || base != "https://api.openai.com/v1" || len(enc) != 2 || enc[1] != 0xff {
+		t.Fatalf("migrated model wrong: name=%q base=%q enc=%v", name, base, enc)
+	}
+
+	// Granted to EVERY existing project.
+	var grantCount int
+	mustScan(t, ctx, c, `SELECT count(*) FROM model_grants`, &grantCount)
+	if grantCount != 2 {
+		t.Fatalf("model_grants count=%d want 2 (one per project)", grantCount)
+	}
+
+	// Old table dropped; services/runs carry the new FK columns.
+	var oldExists, svcCol, runCol bool
+	mustScan(t, ctx, c, `SELECT EXISTS (SELECT 1 FROM information_schema.tables
+		WHERE table_schema=$1 AND table_name='cluster_model_config')`, &oldExists, schema)
+	if oldExists {
+		t.Fatal("cluster_model_config should have been dropped by 0013")
+	}
+	mustScan(t, ctx, c, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		WHERE table_schema=$1 AND table_name='services' AND column_name='default_model_id')`, &svcCol, schema)
+	mustScan(t, ctx, c, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		WHERE table_schema=$1 AND table_name='runs' AND column_name='model_id')`, &runCol, schema)
+	if !svcCol || !runCol {
+		t.Fatalf("new FK columns missing: services.default_model_id=%v runs.model_id=%v", svcCol, runCol)
+	}
+}

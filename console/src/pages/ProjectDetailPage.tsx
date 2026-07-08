@@ -19,6 +19,8 @@ import {
   useCreateServiceRun,
   useCreateService,
   useProviderRepos,
+  useProjectModels,
+  useUpdateService,
 } from '../api/queries';
 import { useOptionalAuth } from '../auth/AuthProvider';
 import { useModelGate } from '../components/ModelGate';
@@ -59,6 +61,9 @@ export function ProjectDetailPage() {
   const [promptError, setPromptError] = useState<string>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<string>('');
+  // D21: the composer's per-run model pick ("" => resolve via service default /
+  // the project's sole grant).
+  const [selectedModel, setSelectedModel] = useState<string>('');
 
   // Add-repository inline form.
   const [addOpen, setAddOpen] = useState(false);
@@ -93,7 +98,13 @@ export function ProjectDetailPage() {
   // dispatch a run that would 409. The query only runs where the composer is
   // actually rendered (member+ with at least one repo) — a viewer / empty
   // project never polls (same enabled convention as useProviderRepos above).
-  const modelGate = useModelGate(canRun && services.length > 0);
+  const modelGate = useModelGate(projectId, canRun && services.length > 0);
+
+  // D21: the models this project is granted (composer pick options + the service
+  // default editor). Only fetched where the composer is actually rendered.
+  const projectModels = useProjectModels(projectId, canRun && services.length > 0);
+  const grantedModels = projectModels.data?.models ?? [];
+  const updateService = useUpdateService(projectId);
 
   // Default the composer's service selection to the 'default' (or first) service.
   const activeServiceId =
@@ -101,6 +112,7 @@ export function ProjectDetailPage() {
     services.find((s) => s.name === 'default')?.id ||
     services[0]?.id ||
     '';
+  const activeService = services.find((s) => s.id === activeServiceId);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -114,7 +126,10 @@ export function ProjectDetailPage() {
     // projects, otherwise the sole service is used implicitly.
     if (!activeServiceId) return;
     createServiceRun.mutate(
-      { serviceId: activeServiceId, input: { prompt: prompt.trim() } },
+      {
+        serviceId: activeServiceId,
+        input: { prompt: prompt.trim(), ...(selectedModel ? { model_id: selectedModel } : {}) },
+      },
       {
         onSuccess: (run: { id: string }) => {
           setPrompt('');
@@ -279,6 +294,61 @@ export function ProjectDetailPage() {
                     </option>
                   ))}
                 </select>
+              </div>
+            )}
+
+            {/* D21: per-run model pick. Only meaningful when the project has
+                granted models (empty => env fallback, nothing to pick). The
+                "Service default" option lets the resolution chain decide. */}
+            {grantedModels.length > 0 && (
+              <div className={styles.serviceRow}>
+                <label className={styles.serviceLabel} htmlFor="composer-model">
+                  Model
+                </label>
+                <select
+                  id="composer-model"
+                  className={styles.serviceSelect}
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  disabled={!modelGate.configured}
+                  data-testid="composer-model-select"
+                >
+                  <option value="">Service default</option>
+                  {grantedModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+                {canManage && activeService && (
+                  <select
+                    className={styles.serviceSelect}
+                    aria-label="Default model for this repository"
+                    value={activeService.default_model_id ?? ''}
+                    data-testid="service-default-model-select"
+                    onChange={(e) =>
+                      updateService.mutate(
+                        { serviceId: activeService.id, input: { default_model_id: e.target.value } },
+                        {
+                          onSuccess: () =>
+                            toast.push({ kind: 'success', message: 'Default model updated.' }),
+                          onError: (err) =>
+                            toast.push({
+                              kind: 'error',
+                              message: err instanceof ApiError ? err.message : 'Could not set the default model.',
+                            }),
+                        },
+                      )
+                    }
+                  >
+                    <option value="">No default</option>
+                    {grantedModels.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        Default: {m.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             )}
             <TextAreaField

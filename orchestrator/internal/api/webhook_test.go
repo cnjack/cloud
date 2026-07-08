@@ -400,19 +400,63 @@ func TestWebhookModelNotConfiguredReplies(t *testing.T) {
 		t.Fatalf("posted %d comments, want 1 explanatory reply", fake.CommentCount())
 	}
 	got := fake.Comments[0].Body
-	if !bytes.Contains([]byte(got), []byte("LLM is not configured")) ||
+	if !bytes.Contains([]byte(got), []byte("no LLM is configured")) ||
 		!bytes.Contains([]byte(got), []byte("http://console.test")) {
 		t.Fatalf("reply should explain + link the console; got %q", got)
 	}
 }
 
-// erroringModelStore wraps a MemStore so GetModelConfig fails — the transient
-// (DB blip) shape, distinct from the definitive "no row" not-configured state.
+// TestWebhookModelNotSelectedReplies is the P5 webhook counterpart: when several
+// models are granted but the service has no default, a headless mention can't pick
+// — it replies with the DISTINCT "several models / set a default" message (not the
+// not-configured notice) and creates no run.
+func TestWebhookModelNotSelectedReplies(t *testing.T) {
+	st := store.NewMemStore()
+	ts, _, fake := newWebhookServerModel(t, st, webhookSecret, false /* catalog is the only source */)
+	member := mkGiteaUser(t, st, "dev", "1001")
+	svc := seedWebhookProject(t, st, fake, "jcloud/seed", member, domain.RoleMember)
+	ctx := context.Background()
+	// Two granted models, no service default → ambiguous.
+	for _, n := range []string{"a", "b"} {
+		m := &domain.Model{ID: domain.NewID(), Name: n, BaseURL: "http://" + n + "/v1", ModelName: "p/" + n, CreatedAt: time.Now()}
+		if err := st.CreateModel(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.GrantModel(ctx, m.ID, svc.ProjectID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	body := commentPayload("created", true, 251, 1001, "@jcode Add a CONTRIBUTING.md", "jcloud/seed", 7)
+	resp := postWebhook(t, ts, webhookSecret, "issue_comment", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	runs, _ := st.ListRunsByService(ctx, svc.ID, 10)
+	if len(runs) != 0 {
+		t.Fatalf("created %d runs, want 0 (model not selected)", len(runs))
+	}
+	if fake.CommentCount() != 1 {
+		t.Fatalf("posted %d comments, want 1 reply", fake.CommentCount())
+	}
+	got := fake.Comments[0].Body
+	if !bytes.Contains([]byte(got), []byte("several models")) {
+		t.Fatalf("reply should mention several models / setting a default; got %q", got)
+	}
+	if bytes.Contains([]byte(got), []byte("no LLM is configured")) {
+		t.Fatalf("not-selected reply must NOT read as the not-configured notice; got %q", got)
+	}
+}
+
+// erroringModelStore wraps a MemStore so the D21 selection chain's grant lookup
+// fails — the transient (DB blip) shape, distinct from the definitive
+// "no grant / empty catalog" not-configured state.
 type erroringModelStore struct {
 	*store.MemStore
 }
 
-func (e *erroringModelStore) GetModelConfig(context.Context) (*domain.ModelConfig, error) {
+func (e *erroringModelStore) ListModelsForProject(context.Context, string) ([]domain.Model, error) {
 	return nil, errTransientModel
 }
 

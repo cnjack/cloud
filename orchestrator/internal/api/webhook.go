@@ -236,13 +236,21 @@ func (s *Server) processMention(ctx context.Context, p *giteaIssueCommentPayload
 	// misreport it as "not configured". Like every other reply on this path,
 	// these replies are not de-duplicated across redeliveries (consistent with
 	// the M7 reply behaviour).
-	resolved, rerr := s.models.Resolve(ctx)
+	sel, outcome, rerr := s.models.SelectModel(ctx, svc.ProjectID, deref(svc.DefaultModelID), "")
 	if rerr != nil {
 		s.log.Error("webhook: resolve model config", "repo", p.Repository.FullName, "err", rerr)
 		reply("jcode hit a temporary internal problem — please try again shortly.")
 		return
 	}
-	if !resolved.Configured() {
+	switch outcome {
+	case modelcfg.SelectOK:
+		// proceed
+	case modelcfg.SelectNotSelected:
+		// Several models are granted but the service has no default — a headless
+		// mention can't pick, so tell the project owner to set a service default.
+		reply("jcode can't run yet — " + modelcfg.NotSelectedMessage())
+		return
+	default: // SelectNotConfigured (NotGranted can't occur — no model is requested)
 		reply("jcode can't run yet — " + modelcfg.NotConfiguredMessage(s.cfg.ConsoleURL))
 		return
 	}
@@ -256,6 +264,10 @@ func (s *Server) processMention(ctx context.Context, p *giteaIssueCommentPayload
 	}
 
 	run := newWebhookRun(svc, user.ID, cmd, pr, p, commentID)
+	run.ModelName = sel.ModelName
+	if sel.ModelID != "" {
+		run.ModelID = &sel.ModelID
+	}
 	if err := s.st.CreateRun(ctx, run); err != nil {
 		// A concurrent redelivery that lost the de-dup pre-check trips the unique
 		// origin_comment_id index here — treat it as the no-op it is.

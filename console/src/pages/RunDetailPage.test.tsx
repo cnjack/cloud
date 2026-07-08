@@ -59,10 +59,11 @@ function makeClient(
     diffDownloadUrl: () => '',
     getPR: async () => SAMPLE_PR,
     requestReview: async () => baseRun({ id: 'rev_new', kind: 'review', status: 'queued' }),
-    // Feature A: Retry keys enable/disable off this. Default configured.
-    getModelConfig: async () => ({
-      configured: opts.modelConfigured ?? true,
-      source: (opts.modelConfigured ?? true) ? 'env' : 'none',
+    // D21: Retry keys enable/disable off the project's models. Default configured
+    // via the env fallback.
+    listProjectModels: async () => ({
+      models: [],
+      env_fallback: opts.modelConfigured ?? true,
     }),
     // The page reads the run's project to learn the requesting principal's role.
     ...(role

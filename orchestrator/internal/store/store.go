@@ -213,17 +213,41 @@ type Store interface {
 	PutRunBundle(ctx context.Context, runID string, data []byte) error
 	GetRunBundle(ctx context.Context, runID string) ([]byte, error)
 
-	// --- Cluster model config (Feature A) ------------------------------------
-	// GetModelConfig returns the single-row cluster LLM configuration, or
-	// ErrNotFound when no admin has set one (the caller then falls back to the
-	// MODEL_* env, or reports "not configured"). Never returns a plaintext key —
-	// api_key_enc stays encrypted.
-	GetModelConfig(ctx context.Context) (*domain.ModelConfig, error)
-	// SetModelConfig upserts the single row (id=1). APIKeyEnc may be nil (no key).
-	SetModelConfig(ctx context.Context, c *domain.ModelConfig) error
-	// ClearModelConfig deletes the row so resolution falls back to env / "not
-	// configured". A missing row is a no-op (not an error).
-	ClearModelConfig(ctx context.Context) error
+	// --- Model catalog + project grants (D21) --------------------------------
+	// The single-row cluster_model_config is superseded by a catalog of models a
+	// cluster admin registers and grants to individual projects. api_key_enc stays
+	// encrypted on every read — the plaintext is NEVER returned over the API.
+
+	// CreateModel inserts a catalog model. A duplicate name returns
+	// ErrAlreadyExists (mapped to 409). The caller pre-fills id/created_at.
+	CreateModel(ctx context.Context, m *domain.Model) error
+	// GetModel returns a catalog model by id (ErrNotFound if absent).
+	GetModel(ctx context.Context, id string) (*domain.Model, error)
+	// ListModels returns the whole catalog, newest first (cluster-admin view).
+	ListModels(ctx context.Context) ([]domain.Model, error)
+	// CountModels returns the number of catalog models. Used by the resolution
+	// chain to decide whether the MODEL_* env fallback applies (only when the
+	// catalog is EMPTY — local rig compatibility).
+	CountModels(ctx context.Context) (int, error)
+	// UpdateModel updates a catalog model's mutable fields (name/base_url/
+	// model_name/api_key_enc/updated_by). A duplicate name returns ErrAlreadyExists;
+	// a missing row returns ErrNotFound.
+	UpdateModel(ctx context.Context, m *domain.Model) error
+	// DeleteModel removes a catalog model. Its grants cascade; services.default_
+	// model_id and runs.model_id referencing it are set NULL. ErrNotFound if absent.
+	DeleteModel(ctx context.Context, id string) error
+	// ListModelsForProject returns the models GRANTED to a project (the member-
+	// visible set + the resolution chain's authorization set), newest first.
+	ListModelsForProject(ctx context.Context, projectID string) ([]domain.Model, error)
+	// ListProjectIDsForModel returns the project ids a model is granted to (admin
+	// grant-management view).
+	ListProjectIDsForModel(ctx context.Context, modelID string) ([]string, error)
+	// GrantModel authorizes a project to use a model. Idempotent (a repeat grant is
+	// a no-op). ErrNotFound if the model or project does not exist.
+	GrantModel(ctx context.Context, modelID, projectID string) error
+	// RevokeModel removes a project's grant. A missing grant is a no-op (not an
+	// error) so revoke is idempotent.
+	RevokeModel(ctx context.Context, modelID, projectID string) error
 
 	// --- Auth: users & identities (M2) ---------------------------------------
 	// CreateUserWithIdentity creates a new user together with its first identity

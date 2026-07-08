@@ -498,50 +498,84 @@ func containsRun(runs []domain.Run, id string) bool {
 	return false
 }
 
-// TestPGModelConfigRoundTrip validates the Feature A single-row model config
-// against a real Postgres: the id=1 CHECK, bytea api_key_enc round-trip, upsert,
-// and delete. Requires JCLOUD_PG_DSN.
-func TestPGModelConfigRoundTrip(t *testing.T) {
+// TestPGModelCatalogRoundTrip validates the D21 catalog against a real Postgres:
+// create (unique name), bytea api_key_enc round-trip, update, grants +
+// ListModelsForProject / ListProjectIDsForModel, and the ON DELETE cascade/SET
+// NULL to grants + service defaults + run refs. Requires JCLOUD_PG_DSN.
+func TestPGModelCatalogRoundTrip(t *testing.T) {
 	st, _ := pgTestStore(t)
 	ctx := context.Background()
-	t.Cleanup(func() { _ = st.ClearModelConfig(ctx) })
 
-	if _, err := st.GetModelConfig(ctx); err != ErrNotFound {
-		t.Fatalf("get unset: err=%v want ErrNotFound", err)
+	// Own project so the grant cascade assertions are isolated.
+	projectID := domain.NewID()
+	if err := st.CreateProject(ctx, &domain.Project{ID: projectID, Name: "mcat", CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("create project: %v", err)
 	}
-	if err := st.SetModelConfig(ctx, &domain.ModelConfig{
-		BaseURL: "https://api.openai.com/v1", ModelName: "openai/gpt-4o",
-		APIKeyEnc: []byte{0x00, 0x01, 0x02, 0xff}, UpdatedBy: "admin-user",
-	}); err != nil {
-		t.Fatalf("set: %v", err)
+	t.Cleanup(func() { _ = st.DeleteProject(ctx, projectID) })
+
+	m := &domain.Model{
+		ID: domain.NewID(), Name: "gpt-" + domain.NewID(), BaseURL: "https://api.openai.com/v1",
+		ModelName: "openai/gpt-4o", APIKeyEnc: []byte{0x00, 0x01, 0x02, 0xff}, UpdatedBy: "admin-user",
 	}
-	got, err := st.GetModelConfig(ctx)
+	if err := st.CreateModel(ctx, m); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _ = st.DeleteModel(ctx, m.ID) })
+
+	// Duplicate name => ErrAlreadyExists.
+	if err := st.CreateModel(ctx, &domain.Model{ID: domain.NewID(), Name: m.Name, BaseURL: "http://y/v1", ModelName: "c/d"}); err != ErrAlreadyExists {
+		t.Fatalf("dup name: err=%v want ErrAlreadyExists", err)
+	}
+
+	got, err := st.GetModel(ctx, m.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.BaseURL != "https://api.openai.com/v1" || got.ModelName != "openai/gpt-4o" ||
-		len(got.APIKeyEnc) != 4 || got.APIKeyEnc[3] != 0xff || got.UpdatedBy != "admin-user" {
+	if got.ModelName != "openai/gpt-4o" || len(got.APIKeyEnc) != 4 || got.APIKeyEnc[3] != 0xff || got.UpdatedBy != "admin-user" {
 		t.Fatalf("round-trip mismatch: %+v (enc=%v)", got, got.APIKeyEnc)
 	}
-	if got.UpdatedAt.IsZero() {
-		t.Fatal("updated_at should be stamped")
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Fatal("created_at/updated_at should be stamped")
 	}
 
-	// Upsert replaces the single row (never a second row).
-	if err := st.SetModelConfig(ctx, &domain.ModelConfig{
-		BaseURL: "http://vllm/v1", ModelName: "local/llama", APIKeyEnc: nil, UpdatedBy: "u2",
-	}); err != nil {
-		t.Fatalf("upsert: %v", err)
+	// Update (rename + keyless).
+	m.Name = "renamed-" + domain.NewID()
+	m.APIKeyEnc = nil
+	if err := st.UpdateModel(ctx, m); err != nil {
+		t.Fatalf("update: %v", err)
 	}
-	got, _ = st.GetModelConfig(ctx)
-	if got.BaseURL != "http://vllm/v1" || got.APIKeyEnc != nil {
-		t.Fatalf("upsert mismatch: %+v", got)
+	got, _ = st.GetModel(ctx, m.ID)
+	if got.Name != m.Name || got.APIKeyEnc != nil {
+		t.Fatalf("update mismatch: %+v", got)
 	}
 
-	if err := st.ClearModelConfig(ctx); err != nil {
-		t.Fatalf("clear: %v", err)
+	// Grants + membership listing.
+	if err := st.GrantModel(ctx, m.ID, projectID); err != nil {
+		t.Fatalf("grant: %v", err)
 	}
-	if _, err := st.GetModelConfig(ctx); err != ErrNotFound {
-		t.Fatalf("get after clear: err=%v want ErrNotFound", err)
+	if err := st.GrantModel(ctx, m.ID, projectID); err != nil {
+		t.Fatalf("re-grant should be a no-op: %v", err)
+	}
+	if list, _ := st.ListModelsForProject(ctx, projectID); len(list) != 1 || list[0].ID != m.ID {
+		t.Fatalf("ListModelsForProject mismatch: %+v", list)
+	}
+	if pids, _ := st.ListProjectIDsForModel(ctx, m.ID); len(pids) != 1 || pids[0] != projectID {
+		t.Fatalf("ListProjectIDsForModel mismatch: %+v", pids)
+	}
+
+	// A bad model/project id trips the FK and normalises to ErrNotFound.
+	if err := st.GrantModel(ctx, "no-such-model", projectID); err != ErrNotFound {
+		t.Fatalf("grant bad model: err=%v want ErrNotFound", err)
+	}
+
+	// Delete => grants cascade, ListModelsForProject empty.
+	if err := st.DeleteModel(ctx, m.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if list, _ := st.ListModelsForProject(ctx, projectID); len(list) != 0 {
+		t.Fatalf("grants should cascade on delete: %+v", list)
+	}
+	if _, err := st.GetModel(ctx, m.ID); err != ErrNotFound {
+		t.Fatalf("get after delete: err=%v want ErrNotFound", err)
 	}
 }

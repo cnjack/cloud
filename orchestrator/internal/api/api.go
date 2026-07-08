@@ -189,12 +189,16 @@ func (s *Server) Handler() http.Handler {
 	// "System / admin"). Never returns a secret.
 	mux.Handle("GET /api/v1/system", s.authed(s.handleGetSystem))
 
-	// Cluster model config (Feature A). GET is readable by any logged-in
-	// principal (non-admins get only {configured}); PUT/DELETE are cluster-admin
-	// only (enforced in the handler). The plaintext API key is never returned.
-	mux.Handle("GET /api/v1/system/model", s.authed(s.handleGetModelConfig))
-	mux.Handle("PUT /api/v1/system/model", s.authed(s.handlePutModelConfig))
-	mux.Handle("DELETE /api/v1/system/model", s.authed(s.handleDeleteModelConfig))
+	// Model catalog (D21). CRUD + per-model project grants are cluster-admin only
+	// (enforced in the handlers). The plaintext API key is never returned; the
+	// base_url is admin-only detail. Members read the models granted to a project
+	// via GET /projects/{id}/models below.
+	mux.Handle("GET /api/v1/system/models", s.authed(s.handleListModels))
+	mux.Handle("POST /api/v1/system/models", s.authed(s.handleCreateModel))
+	mux.Handle("PATCH /api/v1/system/models/{id}", s.authed(s.handleUpdateModel))
+	mux.Handle("DELETE /api/v1/system/models/{id}", s.authed(s.handleDeleteModel))
+	mux.Handle("PUT /api/v1/system/models/{id}/grants/{projectID}", s.authed(s.handleGrantModel))
+	mux.Handle("DELETE /api/v1/system/models/{id}/grants/{projectID}", s.authed(s.handleRevokeModel))
 
 	// Feature E — jtype kanban links. GET (list) is any logged-in principal;
 	// POST/DELETE are cluster-admin only (enforced in the handler). Board column
@@ -211,6 +215,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/projects/{id}", s.authed(s.handleGetProject))
 	mux.Handle("PATCH /api/v1/projects/{id}", s.authed(s.handleUpdateProject))
 	mux.Handle("DELETE /api/v1/projects/{id}", s.authed(s.handleDeleteProject))
+
+	// Models a project is granted (D21). Member+; returns only id/name/model_name
+	// (never the base_url or key) plus an env_fallback flag for the ModelGate.
+	mux.Handle("GET /api/v1/projects/{id}/models", s.authed(s.handleListProjectModels))
 
 	// Project members (owner/cluster-admin manage).
 	mux.Handle("GET /api/v1/projects/{id}/members", s.authed(s.handleListMembers))
@@ -322,8 +330,25 @@ func (s *Server) runToken(h func(http.ResponseWriter, *http.Request, string)) ht
 			writeError(w, http.StatusUnauthorized, "unauthorized", "run token invalid")
 			return
 		}
-		h(w, r, runID)
+		// Stash the already-loaded run so hot internal handlers (the LLM proxy)
+		// reuse it instead of re-reading (P4).
+		h(w, r.WithContext(withRunToken(r.Context(), run)), runID)
 	})
+}
+
+// runTokenCtxKey is the context key for the run resolved by the runToken middleware.
+type runTokenCtxKey struct{}
+
+// withRunToken stores the run the runToken middleware verified so a handler can
+// reuse it without a second GetRun.
+func withRunToken(ctx context.Context, run *domain.Run) context.Context {
+	return context.WithValue(ctx, runTokenCtxKey{}, run)
+}
+
+// runFromToken returns the run stashed by the runToken middleware, or nil.
+func runFromToken(ctx context.Context) *domain.Run {
+	run, _ := ctx.Value(runTokenCtxKey{}).(*domain.Run)
+	return run
 }
 
 // logRequests logs method, path and status.

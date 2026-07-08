@@ -54,7 +54,7 @@ func TestRigPollerDispatches(t *testing.T) {
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	poller := New(st, client, modelStub{configured: true}, log, "http://console", time.Second)
+	poller := New(st, client, stubFor(true), log, "http://console", time.Second)
 	poller.Tick(ctx)
 
 	// Assert by THIS card's claim (robust to leftover test cards on the shared

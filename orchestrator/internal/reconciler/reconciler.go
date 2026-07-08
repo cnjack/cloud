@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -101,9 +102,17 @@ func (r *Reconciler) WithPRStack(factory provider.Factory, pusher Pusher, creds 
 	return r
 }
 
+// derefStr returns the pointed-to string, or "" for a nil pointer.
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 // WithModelResolver replaces the default model-config resolver with a shared
-// instance (the API server's, in main.go) so PUT/DELETE cache invalidation is
-// visible to Job scheduling immediately (Feature A). Returns r for chaining.
+// instance (the API server's, in main.go) so catalog-write cache invalidation is
+// visible to Job scheduling immediately (D21). Returns r for chaining.
 func (r *Reconciler) WithModelResolver(m *modelcfg.Resolver) *Reconciler {
 	if m != nil {
 		r.models = m
@@ -798,8 +807,27 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 	// model. A definitively-unconfigured model fails the run visibly; a resolve
 	// ERROR is transient (DB blip, key rotation mid-flight) and is retried next
 	// tick, consistent with the other transient-error paths in Tick.
-	model, err := r.models.Resolve(ctx)
+	// Materialise the model the run was dispatched with (D21). run.ModelID was
+	// stamped by the create-time resolution chain; nil resolves to the env
+	// fallback. A model that was DELETED between queue and schedule resolves to
+	// "not configured" → fail the run visibly rather than launch key-less.
+	model, err := r.models.ResolveModel(ctx, derefStr(run.ModelID))
 	if err != nil {
+		// A cipher-not-configured error (the model has a stored key but
+		// AUTH_TOKEN_KEY is unset) is a PERMANENT operator misconfiguration, not a
+		// transient blip — retrying every tick forever would leave the run stuck in
+		// queued invisibly. Fail it visibly (P1); every other resolve error stays
+		// transient (DB blip, key rotation mid-flight).
+		if errors.Is(err, auth.ErrCipherNotConfigured) {
+			msg := "the model's API key cannot be decrypted — the orchestrator's AUTH_TOKEN_KEY is not configured"
+			if committed, merr := r.st.MarkFailed(ctx, run.ID, "Failed", domain.FailureSetupFailed, msg, r.now()); merr != nil {
+				r.log.Error("reconcile: mark failed (cipher not configured)", "run", run.ID, "err", merr)
+			} else {
+				r.log.Error("reconcile: run failed — model key cannot be decrypted (AUTH_TOKEN_KEY unset)", "run", run.ID)
+				r.emitStatus(ctx, committed)
+			}
+			return false
+		}
 		r.log.Error("reconcile: resolve model config", "run", run.ID, "err", err)
 		return false // transient; retry next tick
 	}

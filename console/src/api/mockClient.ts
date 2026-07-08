@@ -20,14 +20,15 @@ import type {
   CreateRunInput,
   CreateServiceInput,
   FailureReason,
+  CreateModelInput,
   KanbanLink,
   Me,
   Member,
   MemberRole,
-  ModelConfigInfo,
+  Model,
   PrInfo,
   Project,
-  PutModelConfigInput,
+  ProjectModels,
   ReviewRunSummary,
   Run,
   RunArtifact,
@@ -36,7 +37,9 @@ import type {
   RunStatus,
   Service,
   SystemInfo,
+  UpdateModelInput,
   UpdateProjectInput,
+  UpdateServiceInput,
   UserSearchResult,
 } from './types';
 import { providerForRepoUrl } from '../lib/repo';
@@ -161,16 +164,81 @@ export function createMockClient(): ApiClient {
   // Feature E: kanban links (board→service bindings), keyed by link id.
   const kanbanLinks = new Map<string, KanbanLink>();
 
-  // Feature A: the cluster model config. Demo starts CONFIGURED (source=env, as
-  // the local rig would) so the composer is enabled; the Cluster page's admin
-  // form mutates it via set/clear.
-  let modelConfig: ModelConfigInfo = {
-    configured: true,
-    source: 'env',
-    base_url: 'http://mockllm.jcloud.svc.cluster.local:8081/v1',
-    model_name: 'mock/mock-model',
-    api_key_set: true,
-  };
+  // D21: the model catalog (keyed by model id) + project grants (model id -> set
+  // of project ids). Demo seeds ONE model, granted to every seeded project, so
+  // the composer is enabled and a run with no explicit pick auto-selects the sole
+  // grant (mirroring the orchestrator's resolution chain). A cluster admin can add
+  // more on the Cluster page to exercise the multi-model pick.
+  const models = new Map<string, Model>();
+  const modelGrants = new Map<string, Set<string>>();
+  function seedModel(id: string, name: string, model: string): void {
+    models.set(id, {
+      id,
+      name,
+      base_url: `http://mockllm.jcloud.svc.cluster.local:8081/v1`,
+      model_name: model,
+      api_key_set: true,
+      created_at: nowISO(),
+      updated_at: nowISO(),
+      updated_by: 'demo-admin',
+      granted_project_ids: [],
+    });
+    modelGrants.set(id, new Set());
+  }
+  seedModel('mdl_gpt4o', 'GPT-4o (mock)', 'openai/gpt-4o');
+
+  /** Recompute a model's granted_project_ids from the grant set (view helper). */
+  function modelView(m: Model): Model {
+    return { ...m, granted_project_ids: [...(modelGrants.get(m.id) ?? [])].sort() };
+  }
+  function grantAllModelsTo(projectId: string): void {
+    for (const set of modelGrants.values()) set.add(projectId);
+  }
+
+  /** Ids of models granted to a project. */
+  function grantedModelIds(projectId: string): string[] {
+    return [...models.keys()].filter((id) => modelGrants.get(id)?.has(projectId));
+  }
+
+  /**
+   * resolveModelForRun mirrors the orchestrator's D21 chain: a composer pick must
+   * be granted (else 403 model_not_granted); otherwise the service default, then
+   * the sole grant; several grants + no default is 409 model_not_selected; zero
+   * grants is 409 model_not_configured. Returns the chosen id (null never occurs
+   * in the demo — the catalog is always populated).
+   */
+  function resolveModelForRun(
+    projectId: string,
+    svc: Service,
+    requested?: string,
+  ): string | null {
+    const granted = grantedModelIds(projectId);
+    const grantedSet = new Set(granted);
+    if (requested) {
+      if (!grantedSet.has(requested)) {
+        throw new ApiError(403, 'the selected model is not authorized for this project', {
+          error: { code: 'model_not_granted', message: 'model not granted' },
+        });
+      }
+      return requested;
+    }
+    if (svc.default_model_id && grantedSet.has(svc.default_model_id)) {
+      return svc.default_model_id;
+    }
+    if (granted.length === 1) return granted[0]!;
+    if (granted.length >= 2) {
+      throw new ApiError(
+        409,
+        'several models are available — pick one for this run or set a default model on the service',
+        { error: { code: 'model_not_selected', message: 'pick a model' } },
+      );
+    }
+    throw new ApiError(
+      409,
+      'no LLM is configured for this project — contact a cluster admin to grant a model',
+      { error: { code: 'model_not_configured', message: 'no model granted' } },
+    );
+  }
 
   const asMember = (u: UserSearchResult, role: MemberRole): Member => ({
     user_id: u.id,
@@ -196,6 +264,8 @@ export function createMockClient(): ApiClient {
     projects.set(p.id, p);
     services.set(p.id, svcs);
     members.set(p.id, [asMember(DEMO_USERS[0]!, 'owner')]);
+    // D21: authorize the demo catalog for every project so the composer works.
+    grantAllModelsTo(p.id);
   }
 
   /** Build a seeded service (demo fixtures only). */
@@ -800,43 +870,101 @@ export function createMockClient(): ApiClient {
       return delay(info);
     },
 
-    /* ---- cluster model config (Feature A) --------------------------------- */
-    async getModelConfig(): Promise<ModelConfigInfo> {
-      return delay({ ...modelConfig });
+    /* ---- model catalog + project grants (D21) ----------------------------- */
+    async listModels(): Promise<Model[]> {
+      return delay([...models.values()].map(modelView).reverse());
     },
 
-    async setModelConfig(input: PutModelConfigInput): Promise<ModelConfigInfo> {
-      // Mirror the orchestrator's validation so demo/e2e exercise the same
-      // paths. The AUTHORITATIVE rules live in
-      // orchestrator/internal/api/system_model.go (validateBaseURL /
-      // validateModelName) — reconcile drift there first, then copy here.
+    async createModel(input: CreateModelInput): Promise<Model> {
+      // Mirror the orchestrator's validation. AUTHORITATIVE rules live in
+      // orchestrator/internal/api/models.go (validateBaseURL / validateModelName).
+      const name = input.name?.trim() ?? '';
+      if (!name) throw badRequest('name is required');
       const base = input.base_url?.trim() ?? '';
-      if (!/^https?:\/\/.+/i.test(base)) {
-        throw badRequest('base_url must be an http(s) URL');
-      }
+      if (!/^https?:\/\/.+/i.test(base)) throw badRequest('base_url must be an http(s) URL');
       const model = input.model_name?.trim() ?? '';
       const [provider, ...rest] = model.split('/');
       if (!provider || rest.join('/') === '') {
         throw badRequest("model_name must be in 'provider/model' form");
       }
-      modelConfig = {
-        configured: true,
-        source: 'db',
-        base_url: base,
-        model_name: model,
-        api_key_set: !!input.api_key,
+      for (const m of models.values()) {
+        if (m.name === name) {
+          throw new ApiError(409, `a model named '${name}' already exists`, {
+            error: { code: 'conflict', message: `model '${name}' exists` },
+          });
+        }
+      }
+      const id = genId('mdl');
+      const m: Model = {
+        id, name, base_url: base, model_name: model, api_key_set: !!input.api_key,
+        created_at: nowISO(), updated_at: nowISO(), updated_by: 'demo-admin', granted_project_ids: [],
       };
-      return delay({ ...modelConfig });
+      models.set(id, m);
+      modelGrants.set(id, new Set());
+      return delay(modelView(m));
     },
 
-    async clearModelConfig(): Promise<ModelConfigInfo> {
-      // KNOWN divergence from the real DELETE: the orchestrator falls back to
-      // the MODEL_* env (source 'env') when it is set, while the demo always
-      // lands on 'none'. Harmless in practice — the console's Clear button is
-      // gated on source==='db', and the demo's initial 'env' state is replaced
-      // by 'db' on any save, so this branch only ever follows a db state.
-      modelConfig = { configured: false, source: 'none', api_key_set: false };
-      return delay({ ...modelConfig });
+    async updateModel(id: string, input: UpdateModelInput): Promise<Model> {
+      const m = models.get(id);
+      if (!m) throw new ApiError(404, 'model not found');
+      if (input.name !== undefined) {
+        const name = input.name.trim();
+        if (!name) throw badRequest('name cannot be empty');
+        for (const other of models.values()) {
+          if (other.id !== id && other.name === name) {
+            throw new ApiError(409, `a model named '${name}' already exists`, {
+              error: { code: 'conflict', message: `model '${name}' exists` },
+            });
+          }
+        }
+        m.name = name;
+      }
+      if (input.base_url !== undefined) {
+        if (!/^https?:\/\/.+/i.test(input.base_url.trim())) throw badRequest('base_url must be an http(s) URL');
+        m.base_url = input.base_url.trim();
+      }
+      if (input.model_name !== undefined) {
+        const model = input.model_name.trim();
+        const [provider, ...rest] = model.split('/');
+        if (!provider || rest.join('/') === '') throw badRequest("model_name must be in 'provider/model' form");
+        m.model_name = model;
+      }
+      if (input.api_key !== undefined) m.api_key_set = input.api_key !== '';
+      m.updated_at = nowISO();
+      models.set(id, m);
+      return delay(modelView(m));
+    },
+
+    async deleteModel(id: string): Promise<void> {
+      if (!models.delete(id)) throw new ApiError(404, 'model not found');
+      modelGrants.delete(id);
+      // Null any service default referencing it (mirrors ON DELETE SET NULL).
+      for (const list of services.values()) {
+        for (const s of list) if (s.default_model_id === id) s.default_model_id = null;
+      }
+      return delay(undefined);
+    },
+
+    async grantModel(modelId: string, projectId: string): Promise<Model> {
+      const m = models.get(modelId);
+      if (!m || !projects.has(projectId)) throw new ApiError(404, 'model or project not found');
+      (modelGrants.get(modelId) ?? new Set()).add(projectId);
+      return delay(modelView(m));
+    },
+
+    async revokeModel(modelId: string, projectId: string): Promise<Model> {
+      const m = models.get(modelId);
+      if (!m) throw new ApiError(404, 'model not found');
+      modelGrants.get(modelId)?.delete(projectId);
+      return delay(modelView(m));
+    },
+
+    async listProjectModels(projectId: string): Promise<ProjectModels> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      const granted = [...models.values()]
+        .filter((m) => modelGrants.get(m.id)?.has(projectId))
+        .map((m) => ({ id: m.id, name: m.name, model_name: m.model_name }));
+      return delay({ models: granted, env_fallback: false });
     },
 
     /* ---- kanban links (Feature E) ----------------------------------------- */
@@ -933,6 +1061,28 @@ export function createMockClient(): ApiClient {
       return delay(svc);
     },
 
+    async updateService(serviceId: string, input: UpdateServiceInput): Promise<Service> {
+      for (const [pid, list] of services) {
+        const svc = list.find((s) => s.id === serviceId);
+        if (!svc) continue;
+        if (input.default_model_id !== undefined) {
+          const id = input.default_model_id.trim();
+          if (id === '') {
+            svc.default_model_id = null;
+          } else {
+            if (!modelGrants.get(id)?.has(pid)) {
+              throw new ApiError(400, 'that model is not authorized for this project', {
+                error: { code: 'model_not_granted', message: 'model not granted to project' },
+              });
+            }
+            svc.default_model_id = id;
+          }
+        }
+        return delay({ ...svc });
+      }
+      throw new ApiError(404, 'service not found');
+    },
+
     async listProviderRepos(provider: string, q?: string) {
       // Demo: a small static gitea catalogue; other providers report "not
       // linked" the same way the orchestrator does (403).
@@ -971,7 +1121,12 @@ export function createMockClient(): ApiClient {
           { error: { code: 'provider_not_allowed', message: `provider ${label} not allowed` } },
         );
       }
-      return delay(publicRun(makeRun(projectId, serviceId, input.prompt)));
+      // D21 resolution chain (mirrors orchestrator selectModel): composer pick →
+      // service default → the project's sole granted model → typed errors.
+      const modelId = resolveModelForRun(projectId, svc, input.model_id);
+      const run = makeRun(projectId, serviceId, input.prompt);
+      run.model_id = modelId ?? undefined;
+      return delay(publicRun(run));
     },
 
     /* ---- members (blueprint §2) ------------------------------------------- */

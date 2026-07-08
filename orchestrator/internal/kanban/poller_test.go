@@ -69,14 +69,23 @@ func (f *fakeAPI) AddComment(ctx context.Context, ws, docID, body string) error 
 	return nil
 }
 
-// modelStub returns a fixed resolution.
-type modelStub struct{ configured bool }
+// modelStub returns a fixed selection outcome. When SelectOK it yields a fixed
+// model id + name so the poller stamps runs.model_id/model_name.
+type modelStub struct{ outcome modelcfg.SelectOutcome }
 
-func (m modelStub) Resolve(ctx context.Context) (modelcfg.Resolved, error) {
-	if !m.configured {
-		return modelcfg.Resolved{Source: modelcfg.SourceNone}, nil
+func (m modelStub) SelectModel(ctx context.Context, projectID, defaultModelID, requested string) (modelcfg.Selection, modelcfg.SelectOutcome, error) {
+	if m.outcome == modelcfg.SelectOK {
+		return modelcfg.Selection{ModelID: "model-x", ModelName: "prov/model-x"}, modelcfg.SelectOK, nil
 	}
-	return modelcfg.Resolved{Source: modelcfg.SourceDB, BaseURL: "http://x", ModelName: "p/m", APIKeySet: true}, nil
+	return modelcfg.Selection{}, m.outcome, nil
+}
+
+// configuredStub / notConfiguredStub are the two common cases the harness uses.
+func stubFor(configured bool) modelStub {
+	if configured {
+		return modelStub{outcome: modelcfg.SelectOK}
+	}
+	return modelStub{outcome: modelcfg.SelectNotConfigured}
 }
 
 func newPollerHarness(t *testing.T, configured bool) (*Poller, *store.MemStore, *fakeAPI, *domain.KanbanLink, *domain.Project, *domain.Service) {
@@ -94,7 +103,7 @@ func newPollerHarness(t *testing.T, configured bool) (*Poller, *store.MemStore, 
 	_ = m.CreateKanbanLink(ctx, link)
 
 	api := newFakeAPI()
-	poller := New(m, api, modelStub{configured: configured}, testLogger(t), "http://console", time.Second)
+	poller := New(m, api, stubFor(configured), testLogger(t), "http://console", time.Second)
 	return poller, m, api, link, p, svc
 }
 
@@ -113,6 +122,10 @@ func TestPollerDispatchesTriggerCard(t *testing.T) {
 	}
 	if runs[0].Prompt != "Add healthz\n\nput a banner in the footer" {
 		t.Fatalf("prompt = %q", runs[0].Prompt)
+	}
+	// D21: the run is stamped with the selected model id + name snapshot.
+	if runs[0].ModelID == nil || *runs[0].ModelID != "model-x" || runs[0].ModelName != "prov/model-x" {
+		t.Fatalf("run model = %v / %q, want model-x / prov/model-x", runs[0].ModelID, runs[0].ModelName)
 	}
 	// Claim now carries the run id.
 	claim, _ := m.EnsureKanbanClaim(context.Background(), link.ID, "doc1", "cards/x.md")
@@ -184,12 +197,12 @@ func TestPollerNotConfiguredNoticeOnce(t *testing.T) {
 	if claim.RunID != "" {
 		t.Fatalf("run_id should stay empty for recovery, got %q", claim.RunID)
 	}
-	if len(api.comments["doc1"]) != 1 || !contains(api.comments["doc1"][0], "not configured") {
+	if len(api.comments["doc1"]) != 1 || !contains(api.comments["doc1"][0], "no model is configured") {
 		t.Fatalf("want one not-configured comment, got %v", api.comments["doc1"])
 	}
 
 	// Now configure the model and tick again: the card auto-dispatches.
-	poller.models = modelStub{configured: true}
+	poller.models = stubFor(true)
 	// Bump clock so the cursor re-surfaces the card.
 	api.docs["doc1"] = jtype.Doc{ID: "doc1", Path: "cards/x.md", UpdatedClock: 9, Title: "T"}
 	poller.Tick(context.Background())
@@ -199,6 +212,31 @@ func TestPollerNotConfiguredNoticeOnce(t *testing.T) {
 	}
 	if len(api.comments["doc1"]) != 1 {
 		t.Fatalf("must not re-comment once configured; got %d comments", len(api.comments["doc1"]))
+	}
+}
+
+// P5: when several models are granted but the service has no default, a headless
+// card can't pick — the comment must point the SERVICE OWNER at the default-model
+// setting, DISTINCT from the "not configured / grant a model" cluster-admin notice.
+func TestPollerNotSelectedNoticeMentionsDefault(t *testing.T) {
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	poller.models = modelStub{outcome: modelcfg.SelectNotSelected}
+	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 5)
+
+	poller.Tick(context.Background())
+	runs, _ := m.ListRunsByService(context.Background(), link.ServiceID, 10)
+	if len(runs) != 0 {
+		t.Fatalf("not-selected must not create a run, got %d", len(runs))
+	}
+	if len(api.comments["doc1"]) != 1 {
+		t.Fatalf("want exactly one comment, got %v", api.comments["doc1"])
+	}
+	body := api.comments["doc1"][0]
+	if !contains(body, "default model") {
+		t.Fatalf("not-selected comment should point at the default-model setting; got %q", body)
+	}
+	if contains(body, "grant") || contains(body, "no model is configured") {
+		t.Fatalf("not-selected comment must NOT read as the not-configured/grant notice; got %q", body)
 	}
 }
 

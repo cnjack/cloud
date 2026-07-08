@@ -81,6 +81,12 @@ export interface Service {
   raw_repo_url?: string;
   default_branch: string;
   git_mode: GitMode;
+  /**
+   * The catalog model (D21) this service's runs use by default when the composer
+   * doesn't pick one. Absent/null = no default (the project's sole granted model
+   * is used, or the composer must choose when several are granted).
+   */
+  default_model_id?: string | null;
   created_at: string;
 }
 
@@ -169,6 +175,12 @@ export interface Run {
   origin?: RunOrigin;
   origin_comment_id?: string | null;
   origin_comment_url?: string | null;
+  /**
+   * The catalog model (D21) this run was dispatched with, chosen by the
+   * resolution chain at create time. Absent/null when the run resolved to the
+   * MODEL_* env fallback (empty catalog) or predates the catalog.
+   */
+  model_id?: string | null;
 }
 
 /** How a run was triggered (blueprint §8). Absent is treated as `api`. */
@@ -361,34 +373,65 @@ export interface CreateKanbanLinkInput {
   done_column?: string;
 }
 
-/* ---- cluster model config (Feature A) ------------------------------------ */
+/* ---- model catalog + project grants (D21) -------------------------------- */
 
 /**
- * GET /api/v1/system/model — the effective LLM configuration.
+ * GET /api/v1/system/models — one catalog model, the cluster-admin view.
  *
- * Any logged-in principal sees `configured`; only a cluster-admin additionally
- * sees source/base_url/model_name/api_key_set. The plaintext API key is NEVER
- * returned — only whether one is set (api_key_set). source is where the
- * effective config came from: an admin-set DB row, the MODEL_* env fallback, or
- * "none" when nothing is configured (the fail-visible state).
+ * The plaintext API key is NEVER returned — only api_key_set. granted_project_ids
+ * lists the projects authorized to use this model (managed inline on the Cluster
+ * page).
  */
-export interface ModelConfigInfo {
-  configured: boolean;
-  source?: 'db' | 'env' | 'none' | string;
-  base_url?: string;
-  model_name?: string;
-  api_key_set?: boolean;
+export interface Model {
+  id: string;
+  name: string;
+  base_url: string;
+  model_name: string;
+  api_key_set: boolean;
+  created_at: string;
+  updated_at: string;
+  updated_by: string;
+  granted_project_ids: string[];
 }
 
-/**
- * PUT /api/v1/system/model body (cluster-admin only). api_key may be empty for
- * keyless OpenAI-compatible endpoints. base_url must be http(s); model_name must
- * be "provider/model".
- */
-export interface PutModelConfigInput {
+/** POST /api/v1/system/models body. api_key may be empty (keyless endpoints). */
+export interface CreateModelInput {
+  name: string;
   base_url: string;
   model_name: string;
   api_key: string;
+}
+
+/**
+ * PATCH /api/v1/system/models/{id} body. Every field optional (omitted =
+ * unchanged). api_key: omitted = unchanged; '' = clear (keyless); a value re-
+ * encrypts.
+ */
+export interface UpdateModelInput {
+  name?: string;
+  base_url?: string;
+  model_name?: string;
+  api_key?: string;
+}
+
+/**
+ * GET /api/v1/projects/{id}/models — a member's view of the models granted to a
+ * project. Carries ONLY id/name/model_name (never the base_url or key).
+ */
+export interface ProjectModel {
+  id: string;
+  name: string;
+  model_name: string;
+}
+
+/**
+ * The project models response: the granted models plus whether the MODEL_* env
+ * fallback is active (empty catalog). configured = models non-empty OR
+ * env_fallback — the ModelGate keys off that.
+ */
+export interface ProjectModels {
+  models: ProjectModel[];
+  env_fallback: boolean;
 }
 
 /* ---- auth / identity (multitenant blueprint §2) -------------------------- */
@@ -469,6 +512,21 @@ export interface UpdateProjectInput {
 
 export interface CreateRunInput {
   prompt: string;
+  /**
+   * The composer's optional model pick (D21). Omitted => the server resolves via
+   * the service default / the project's sole granted model. Must be in the
+   * project's grant set (else 403 model_not_granted).
+   */
+  model_id?: string;
+}
+
+/**
+ * PATCH /api/v1/services/{id} body (owner). Currently the console only edits the
+ * service's default model. default_model_id presence semantics: omitted =
+ * unchanged; '' = clear the default; an id = set (server-validated to be granted).
+ */
+export interface UpdateServiceInput {
+  default_model_id?: string;
 }
 
 /**

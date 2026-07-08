@@ -49,14 +49,22 @@ export function PrStateBadge({ state }: { state: string }) {
   );
 }
 
-export function PrPanel({ runId, canReview }: { runId: string; canReview: boolean }) {
+export function PrPanel({
+  runId,
+  projectId,
+  canReview,
+}: {
+  runId: string;
+  projectId: string;
+  canReview: boolean;
+}) {
   const pr = usePR(runId, true);
   const navigate = useNavigate();
   const toast = useToast();
   const requestReview = useRequestReview();
-  // Fail-visible (Feature A): a review run invokes the LLM too, so the button
-  // gets the same disabled+notice treatment as the composer (409 backstops).
-  const modelGate = useModelGate(canReview);
+  // Fail-visible (D21): a review run invokes the LLM too, so the button gets the
+  // same disabled+notice treatment as the composer (the 409 backstops).
+  const modelGate = useModelGate(projectId, canReview);
 
   const doReview = () =>
     requestReview.mutate(runId, {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -47,15 +48,16 @@ func (s *Server) handleRequestReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "this run has no pull request to review")
 		return
 	}
-	// Fail-visible gate: a review run also invokes the LLM — refuse it if none is
-	// configured (CLAUDE.md red line #1).
-	if !s.modelConfigured(w, r) {
-		return
-	}
-
 	svc, err := s.st.GetService(r.Context(), src.ServiceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		return
+	}
+	// Fail-visible gate: a review run also invokes the LLM — resolve its model via
+	// the D21 chain (preserving the source run's model when still granted). An
+	// unconfigured/ambiguous state is a typed error and no review run is queued.
+	modelID, modelName, ok := s.selectModelForRun(w, r, svc, deref(src.ModelID), modelcfg.NotGrantedReuseMessage())
+	if !ok {
 		return
 	}
 	// Guardrail: a review run is a fresh dispatch — honour the project's
@@ -65,6 +67,8 @@ func (s *Server) handleRequestReview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	review := newReviewRun(src, svc, principalFrom(r.Context()).userIDPtr())
+	review.ModelID = modelID
+	review.ModelName = modelName
 	if err := s.st.CreateRun(r.Context(), review); err != nil {
 		s.log.Error("create review run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create review run")

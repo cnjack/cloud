@@ -12,6 +12,7 @@ import type {
   AuthProvidersEnvelope,
   CreateKanbanLinkInput,
   CreateProjectInput,
+  CreateModelInput,
   CreateRunInput,
   CreateServiceInput,
   EventsEnvelope,
@@ -19,12 +20,12 @@ import type {
   Me,
   Member,
   MembersEnvelope,
-  ModelConfigInfo,
+  Model,
   PrInfo,
   Project,
+  ProjectModels,
   ProjectsEnvelope,
   ProviderRepo,
-  PutModelConfigInput,
   Run,
   RunArtifact,
   RunEvent,
@@ -33,7 +34,9 @@ import type {
   ServicesEnvelope,
   StreamFrame,
   SystemInfo,
+  UpdateModelInput,
   UpdateProjectInput,
+  UpdateServiceInput,
   UserSearchResult,
   UsersEnvelope,
 } from './types';
@@ -108,17 +111,24 @@ export interface ApiClient {
    */
   getSystem(): Promise<SystemInfo>;
 
-  /* ---- cluster model config (Feature A) --------------------------------- */
+  /* ---- model catalog + project grants (D21) ----------------------------- */
+  /** GET /api/v1/system/models — the whole catalog (cluster-admin). */
+  listModels(): Promise<Model[]>;
+  /** POST /api/v1/system/models — add a model (cluster-admin). */
+  createModel(input: CreateModelInput): Promise<Model>;
+  /** PATCH /api/v1/system/models/{id} — edit a model (cluster-admin). */
+  updateModel(id: string, input: UpdateModelInput): Promise<Model>;
+  /** DELETE /api/v1/system/models/{id} — remove a model (cluster-admin). */
+  deleteModel(id: string): Promise<void>;
+  /** PUT /api/v1/system/models/{id}/grants/{projectId} — authorize a project. */
+  grantModel(modelId: string, projectId: string): Promise<Model>;
+  /** DELETE /api/v1/system/models/{id}/grants/{projectId} — revoke. */
+  revokeModel(modelId: string, projectId: string): Promise<Model>;
   /**
-   * GET /api/v1/system/model — the effective LLM config. Any principal sees
-   * `configured`; a cluster-admin additionally gets source/base_url/model_name/
-   * api_key_set. The plaintext key is never returned.
+   * GET /api/v1/projects/{id}/models — models granted to a project (member+).
+   * Carries only id/name/model_name plus env_fallback; never a base_url or key.
    */
-  getModelConfig(): Promise<ModelConfigInfo>;
-  /** PUT /api/v1/system/model — set the cluster model (cluster-admin only). */
-  setModelConfig(input: PutModelConfigInput): Promise<ModelConfigInfo>;
-  /** DELETE /api/v1/system/model — clear the DB row; falls back to env/none. */
-  clearModelConfig(): Promise<ModelConfigInfo>;
+  listProjectModels(projectId: string): Promise<ProjectModels>;
 
   /* ---- kanban links (Feature E) ----------------------------------------- */
   /** GET /api/v1/system/kanban/links — list board→service bindings. */
@@ -133,6 +143,8 @@ export interface ApiClient {
   listServices(projectId: string): Promise<Service[]>;
   /** POST /api/v1/projects/{id}/services — add a repository to a project. */
   createService(projectId: string, input: CreateServiceInput): Promise<Service>;
+  /** PATCH /api/v1/services/{id} — edit a service (owner); default model (D21). */
+  updateService(serviceId: string, input: UpdateServiceInput): Promise<Service>;
   /** POST /api/v1/services/{id}/runs — dispatch a run against a specific service. */
   createServiceRun(serviceId: string, input: CreateRunInput): Promise<Run>;
   /**
@@ -347,16 +359,30 @@ export function createHttpClient(
 
     getSystem: () => req<SystemInfo>('/system'),
 
-    getModelConfig: () => req<ModelConfigInfo>('/system/model'),
-
-    setModelConfig: (input) =>
-      req<ModelConfigInfo>('/system/model', {
-        method: 'PUT',
+    // Model catalog + project grants (D21).
+    listModels: async () =>
+      (await req<{ models: Model[] }>('/system/models')).models ?? [],
+    createModel: (input) =>
+      req<Model>('/system/models', { method: 'POST', body: JSON.stringify(input) }),
+    updateModel: (id, input) =>
+      req<Model>(`/system/models/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
         body: JSON.stringify(input),
       }),
-
-    clearModelConfig: () =>
-      req<ModelConfigInfo>('/system/model', { method: 'DELETE' }),
+    deleteModel: (id) =>
+      req<void>(`/system/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    grantModel: (modelId, projectId) =>
+      req<Model>(
+        `/system/models/${encodeURIComponent(modelId)}/grants/${encodeURIComponent(projectId)}`,
+        { method: 'PUT' },
+      ),
+    revokeModel: (modelId, projectId) =>
+      req<Model>(
+        `/system/models/${encodeURIComponent(modelId)}/grants/${encodeURIComponent(projectId)}`,
+        { method: 'DELETE' },
+      ),
+    listProjectModels: (projectId) =>
+      req<ProjectModels>(`/projects/${encodeURIComponent(projectId)}/models`),
 
     // Kanban links (Feature E).
     listKanbanLinks: async () =>
@@ -382,6 +408,12 @@ export function createHttpClient(
     createService: (projectId, input) =>
       req<Service>(`/projects/${encodeURIComponent(projectId)}/services`, {
         method: 'POST',
+        body: JSON.stringify(input),
+      }),
+
+    updateService: (serviceId, input) =>
+      req<Service>(`/services/${encodeURIComponent(serviceId)}`, {
+        method: 'PATCH',
         body: JSON.stringify(input),
       }),
 

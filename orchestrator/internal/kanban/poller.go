@@ -32,10 +32,11 @@ type DocumentAPI interface {
 	AddComment(ctx context.Context, workspace, docID, body string) error
 }
 
-// ModelResolver resolves the effective LLM config so the poller can fail-visible
-// (skip + comment) instead of queueing a run that could never execute.
+// ModelResolver runs the D21 resolution chain for a project/service so the poller
+// can fail-visible (skip + comment) instead of queueing a run that could never
+// execute. requested is always "" on this headless path (no composer pick).
 type ModelResolver interface {
-	Resolve(ctx context.Context) (modelcfg.Resolved, error)
+	SelectModel(ctx context.Context, projectID, defaultModelID, requested string) (modelcfg.Selection, modelcfg.SelectOutcome, error)
 }
 
 // Poller scans enabled kanban_links for cards in their trigger column and
@@ -158,13 +159,25 @@ func (p *Poller) maybeDispatch(ctx context.Context, link *domain.KanbanLink, d j
 	// retried on subsequent ticks — the moment an admin configures the model the
 	// pending card auto-dispatches. This is both fail-visible AND recoverable AND
 	// spam-free, which a permanent claim would not be.
-	resolved, err := p.models.Resolve(ctx)
+	// Resolve which model this card's run uses (D21). The service default feeds the
+	// chain; the poller never supplies a composer pick. NotSelected/NotConfigured
+	// both mean "can't dispatch" here → notify-once + retry next tick.
+	var defaultModelID string
+	if svc, serr := p.st.GetService(ctx, link.ServiceID); serr == nil {
+		defaultModelID = derefStr(svc.DefaultModelID)
+	} else {
+		p.log.Warn("kanban poll: load service for default model", "link", link.ID, "service", link.ServiceID, "err", serr)
+	}
+	sel, outcome, err := p.models.SelectModel(ctx, link.ProjectID, defaultModelID, "")
 	if err != nil {
 		p.log.Error("kanban poll: resolve model", "link", link.ID, "doc", d.ID, "err", err)
 		return // transient; retry next tick
 	}
-	if !resolved.Configured() {
-		p.notifyNotConfigured(ctx, link, d.ID)
+	if outcome != modelcfg.SelectOK {
+		// Both "can't dispatch" states are notify-once + retried on later ticks, but
+		// the card comment DIFFERS (P5): NotSelected points the service owner at the
+		// default-model setting, NotConfigured points at cluster-admin authorization.
+		p.notifyBlocked(ctx, link, d.ID, outcome)
 		return
 	}
 
@@ -179,6 +192,10 @@ func (p *Poller) maybeDispatch(ctx context.Context, link *domain.KanbanLink, d j
 		Origin:    domain.RunOriginKanban,
 		Attempt:   1,
 		CreatedAt: p.now(),
+	}
+	run.ModelName = sel.ModelName
+	if sel.ModelID != "" {
+		run.ModelID = &sel.ModelID
 	}
 	if err := p.st.CreateRun(ctx, run); err != nil {
 		p.log.Error("kanban poll: create run", "link", link.ID, "doc", d.ID, "err", err)
@@ -195,9 +212,21 @@ func (p *Poller) maybeDispatch(ctx context.Context, link *domain.KanbanLink, d j
 	p.log.Info("kanban poll: dispatched run", "link", link.ID, "doc", d.ID, "run", run.ID, "card", card.Title)
 }
 
-// notifyNotConfigured posts the one-time "LLM not configured" notice on the card
-// so the operator who dragged it sees an honest reason instead of silence.
-func (p *Poller) notifyNotConfigured(ctx context.Context, link *domain.KanbanLink, docID string) {
+// derefStr returns the pointed-to string, or "" for a nil pointer.
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// notifyBlocked posts the one-time "did not start" notice on the card so the
+// operator who dragged it sees an honest reason instead of silence. The message
+// differs by outcome (P5): NotSelected asks the SERVICE OWNER to set a default
+// model (several are granted, a headless card can't pick); NotConfigured asks a
+// CLUSTER ADMIN to grant a model to the project. Both are throttled to at most one
+// comment per card and the card auto-dispatches once the fix lands.
+func (p *Poller) notifyBlocked(ctx context.Context, link *domain.KanbanLink, docID string, outcome modelcfg.SelectOutcome) {
 	ok, err := p.st.MarkKanbanNotConfiguredNotified(ctx, link.ID, docID, p.now())
 	if err != nil {
 		p.log.Warn("kanban poll: mark notified", "link", link.ID, "doc", docID, "err", err)
@@ -206,14 +235,24 @@ func (p *Poller) notifyNotConfigured(ctx context.Context, link *domain.KanbanLin
 	if !ok {
 		return // already notified for this card — do not re-comment
 	}
-	body := "⏸️ jcode did not start: the cluster LLM is not configured. " +
-		"A cluster admin must set it (Cluster page"
-	if p.consoleURL != "" {
-		body += ": " + p.consoleURL
+	var body string
+	if outcome == modelcfg.SelectNotSelected {
+		body = "⏸️ jcode did not start: several models are available for this project, so a card-triggered run can't pick one. " +
+			"The service owner must set a default model on the service"
+		if p.consoleURL != "" {
+			body += " (" + p.consoleURL + ")"
+		}
+		body += ", after which this card dispatches automatically on the next poll."
+	} else {
+		body = "⏸️ jcode did not start: no model is configured for this project. " +
+			"A cluster admin must grant one (Cluster page"
+		if p.consoleURL != "" {
+			body += ": " + p.consoleURL
+		}
+		body += ") and this card will dispatch automatically on the next poll."
 	}
-	body += ") and this card will dispatch automatically on the next poll."
 	if err := p.api.AddComment(ctx, link.WorkspaceID, docID, body); err != nil {
-		p.log.Warn("kanban poll: post not-configured comment", "link", link.ID, "doc", docID, "err", err)
+		p.log.Warn("kanban poll: post blocked comment", "link", link.ID, "doc", docID, "err", err)
 	}
 }
 

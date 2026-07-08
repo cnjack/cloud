@@ -132,7 +132,7 @@ func (s *PGStore) DeleteProject(ctx context.Context, id string) error {
 // --- Services ----------------------------------------------------------------
 
 const serviceCols = `id, project_id, name, repo_kind, provider, repo_owner_name,
-	raw_repo_url, provider_repo_id, default_branch, git_mode, created_at`
+	raw_repo_url, provider_repo_id, default_branch, git_mode, default_model_id, created_at`
 
 // nullStr maps an empty Go string to a SQL NULL so nullable columns (provider,
 // repo_owner_name, raw_repo_url) stay NULL rather than ” — the services CHECK
@@ -159,7 +159,8 @@ func scanService(row pgx.Row) (*domain.Service, error) {
 	var s domain.Service
 	var provider, ownerName, rawURL *string
 	err := row.Scan(&s.ID, &s.ProjectID, &s.Name, &s.RepoKind,
-		&provider, &ownerName, &rawURL, &s.ProviderRepoID, &s.DefaultBranch, &s.GitMode, &s.CreatedAt)
+		&provider, &ownerName, &rawURL, &s.ProviderRepoID, &s.DefaultBranch, &s.GitMode,
+		&s.DefaultModelID, &s.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -187,10 +188,10 @@ func (s *PGStore) CreateService(ctx context.Context, svc *domain.Service) error 
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO services (`+serviceCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		svc.ID, svc.ProjectID, svc.Name, string(svc.RepoKind),
 		nullStr(string(svc.Provider)), nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL),
-		svc.ProviderRepoID, svc.DefaultBranch, string(svc.GitMode), svc.CreatedAt)
+		svc.ProviderRepoID, svc.DefaultBranch, string(svc.GitMode), svc.DefaultModelID, svc.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
 	}
@@ -249,11 +250,12 @@ func (s *PGStore) ListServicesByRepo(ctx context.Context, provider domain.GitPro
 func (s *PGStore) UpdateService(ctx context.Context, svc *domain.Service) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE services SET name=$2, repo_kind=$3, provider=$4, repo_owner_name=$5,
-		    raw_repo_url=$6, provider_repo_id=$7, default_branch=$8, git_mode=$9
+		    raw_repo_url=$6, provider_repo_id=$7, default_branch=$8, git_mode=$9,
+		    default_model_id=$10
 		 WHERE id=$1`,
 		svc.ID, svc.Name, string(svc.RepoKind), nullStr(string(svc.Provider)),
 		nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL), svc.ProviderRepoID,
-		svc.DefaultBranch, string(svc.GitMode))
+		svc.DefaultBranch, string(svc.GitMode), svc.DefaultModelID)
 	if err != nil {
 		return fmt.Errorf("update service: %w", err)
 	}
@@ -281,7 +283,7 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 	created_at, started_at, finished_at, job_cleaned_at,
 	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id,
 	review_posted_at, pr_head_branch, pr_base_branch,
-	origin, origin_comment_id, origin_comment_url, result`
+	origin, origin_comment_id, origin_comment_url, result, model_id, model_name`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
@@ -292,7 +294,7 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt,
 		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID,
 		&r.ReviewPostedAt, &r.PRHeadBranch, &r.PRBaseBranch,
-		&r.Origin, &commentID, &commentURL, &result)
+		&r.Origin, &commentID, &commentURL, &result, &r.ModelID, &r.ModelName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -321,13 +323,13 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
 		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID,
 		r.ReviewPostedAt, r.PRHeadBranch, r.PRBaseBranch,
-		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullRunResult(r.Result))
+		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullRunResult(r.Result), r.ModelID, r.ModelName)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
@@ -864,47 +866,171 @@ func (s *PGStore) GetRunBundle(ctx context.Context, runID string) ([]byte, error
 	return data, nil
 }
 
-// --- Cluster model config (Feature A) ---------------------------------------
+// --- Model catalog + project grants (D21) -----------------------------------
 
-// GetModelConfig returns the single-row cluster model config (id=1), or
-// ErrNotFound when no admin has set one. api_key_enc stays encrypted.
-func (s *PGStore) GetModelConfig(ctx context.Context) (*domain.ModelConfig, error) {
-	var c domain.ModelConfig
-	err := s.pool.QueryRow(ctx,
-		`SELECT base_url, model_name, api_key_enc, updated_at, updated_by
-		 FROM cluster_model_config WHERE id=1`).
-		Scan(&c.BaseURL, &c.ModelName, &c.APIKeyEnc, &c.UpdatedAt, &c.UpdatedBy)
+const modelCols = `id, name, base_url, model_name, api_key_enc, created_at, updated_at, updated_by`
+
+func scanModel(row pgx.Row) (*domain.Model, error) {
+	var m domain.Model
+	err := row.Scan(&m.ID, &m.Name, &m.BaseURL, &m.ModelName, &m.APIKeyEnc,
+		&m.CreatedAt, &m.UpdatedAt, &m.UpdatedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get model config: %w", err)
+		return nil, fmt.Errorf("scan model: %w", err)
 	}
-	return &c, nil
+	return &m, nil
 }
 
-// SetModelConfig upserts the single row (id=1). api_key_enc may be nil.
-func (s *PGStore) SetModelConfig(ctx context.Context, c *domain.ModelConfig) error {
+// CreateModel inserts a catalog model. Duplicate name => ErrAlreadyExists.
+func (s *PGStore) CreateModel(ctx context.Context, m *domain.Model) error {
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = time.Now().UTC()
+	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO cluster_model_config (id, base_url, model_name, api_key_enc, updated_at, updated_by)
-		 VALUES (1, $1, $2, $3, now(), $4)
-		 ON CONFLICT (id) DO UPDATE SET
-		   base_url=EXCLUDED.base_url,
-		   model_name=EXCLUDED.model_name,
-		   api_key_enc=EXCLUDED.api_key_enc,
-		   updated_at=now(),
-		   updated_by=EXCLUDED.updated_by`,
-		c.BaseURL, c.ModelName, c.APIKeyEnc, c.UpdatedBy)
+		`INSERT INTO model_configs (id, name, base_url, model_name, api_key_enc, created_at, updated_at, updated_by)
+		 VALUES ($1,$2,$3,$4,$5,$6,now(),$7)`,
+		m.ID, m.Name, m.BaseURL, m.ModelName, m.APIKeyEnc, m.CreatedAt, m.UpdatedBy)
 	if err != nil {
-		return fmt.Errorf("set model config: %w", err)
+		if isUniqueViolation(err) {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("create model: %w", err)
 	}
 	return nil
 }
 
-// ClearModelConfig deletes the row (no-op when absent).
-func (s *PGStore) ClearModelConfig(ctx context.Context) error {
-	if _, err := s.pool.Exec(ctx, `DELETE FROM cluster_model_config WHERE id=1`); err != nil {
-		return fmt.Errorf("clear model config: %w", err)
+// GetModel returns a catalog model by id.
+func (s *PGStore) GetModel(ctx context.Context, id string) (*domain.Model, error) {
+	return scanModel(s.pool.QueryRow(ctx, `SELECT `+modelCols+` FROM model_configs WHERE id=$1`, id))
+}
+
+// ListModels returns the whole catalog, newest first.
+func (s *PGStore) ListModels(ctx context.Context) ([]domain.Model, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+modelCols+` FROM model_configs ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list models: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Model
+	for rows.Next() {
+		m, err := scanModel(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// CountModels returns the number of catalog models.
+func (s *PGStore) CountModels(ctx context.Context) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM model_configs`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count models: %w", err)
+	}
+	return n, nil
+}
+
+// UpdateModel updates a model's mutable fields. Duplicate name => ErrAlreadyExists.
+func (s *PGStore) UpdateModel(ctx context.Context, m *domain.Model) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE model_configs SET name=$2, base_url=$3, model_name=$4, api_key_enc=$5,
+		    updated_at=now(), updated_by=$6 WHERE id=$1`,
+		m.ID, m.Name, m.BaseURL, m.ModelName, m.APIKeyEnc, m.UpdatedBy)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("update model: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteModel removes a catalog model (grants cascade; service/run refs SET NULL).
+func (s *PGStore) DeleteModel(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM model_configs WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("delete model: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListModelsForProject returns the models granted to a project, newest first.
+func (s *PGStore) ListModelsForProject(ctx context.Context, projectID string) ([]domain.Model, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+prefixCols("mc", modelCols)+`
+		 FROM model_configs mc
+		 JOIN model_grants g ON g.model_id = mc.id
+		 WHERE g.project_id = $1
+		 ORDER BY mc.created_at DESC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list models for project: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Model
+	for rows.Next() {
+		m, err := scanModel(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// ListProjectIDsForModel returns the project ids a model is granted to.
+func (s *PGStore) ListProjectIDsForModel(ctx context.Context, modelID string) ([]string, error) {
+	// Confirm the model exists so a bad id is a 404 rather than an empty list.
+	if _, err := s.GetModel(ctx, modelID); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT project_id FROM model_grants WHERE model_id=$1 ORDER BY project_id`, modelID)
+	if err != nil {
+		return nil, fmt.Errorf("list project ids for model: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan grant project id: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// GrantModel authorizes a project to use a model (idempotent). A bad model/
+// project id trips the FK and is normalised to ErrNotFound.
+func (s *PGStore) GrantModel(ctx context.Context, modelID, projectID string) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO model_grants (model_id, project_id) VALUES ($1,$2)
+		 ON CONFLICT (model_id, project_id) DO NOTHING`,
+		modelID, projectID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation
+			return ErrNotFound
+		}
+		return fmt.Errorf("grant model: %w", err)
+	}
+	return nil
+}
+
+// RevokeModel removes a project's grant (idempotent no-op when absent).
+func (s *PGStore) RevokeModel(ctx context.Context, modelID, projectID string) error {
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM model_grants WHERE model_id=$1 AND project_id=$2`, modelID, projectID); err != nil {
+		return fmt.Errorf("revoke model: %w", err)
 	}
 	return nil
 }

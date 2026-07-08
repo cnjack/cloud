@@ -16,6 +16,10 @@ import (
 
 type createRunReq struct {
 	Prompt string `json:"prompt"`
+	// ModelID is the composer's optional model pick (D21). Empty => resolve via
+	// the service default / the project's sole granted model. Must be in the
+	// project's grant set (else 403 model_not_granted).
+	ModelID string `json:"model_id"`
 }
 
 // handleCreateServiceRun is the run-creation endpoint: POST /services/{id}/runs.
@@ -52,9 +56,13 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 		writeError(w, http.StatusBadRequest, "bad_request", "prompt is required")
 		return
 	}
-	// Fail-visible gate: refuse to queue a run the runner could not actually
-	// execute because no LLM is configured (CLAUDE.md red line #1).
-	if !s.modelConfigured(w, r) {
+	// Fail-visible gate (CLAUDE.md red line #1): resolve which model this run uses
+	// via the D21 chain (composer pick → service default → sole grant). An
+	// unconfigured/ambiguous/unauthorized state is a typed error and NO run is
+	// queued. The chosen id + name snapshot are stamped on the run so the
+	// reconciler + proxy materialise the same model (and it stays auditable).
+	modelID, modelName, ok := s.selectModelForRun(w, r, svc, req.ModelID, modelcfg.NotGrantedMessage())
+	if !ok {
 		return
 	}
 	// Guardrail: the project's provider_allowlist may have been tightened AFTER
@@ -65,6 +73,8 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 	}
 	// triggered_by is the current user (nil for the service principal).
 	run := newQueuedRun(svc.ProjectID, svc.ID, req.Prompt, nil, principalFrom(r.Context()).userIDPtr())
+	run.ModelID = modelID
+	run.ModelName = modelName
 	if err := s.st.CreateRun(r.Context(), run); err != nil {
 		s.log.Error("create run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create run")
@@ -97,6 +107,14 @@ func (s *Server) handleListServiceRuns(w http.ResponseWriter, r *http.Request) {
 		runs = []domain.Run{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+}
+
+// deref returns the pointed-to string, or "" for a nil pointer.
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // newQueuedRun constructs a fresh queued run. retriedFrom links a retry;
@@ -275,23 +293,28 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "only a finished run can be retried")
 		return
 	}
-	// Fail-visible gate: a retry is a fresh run — refuse it if no LLM is set.
-	if !s.modelConfigured(w, r) {
-		return
-	}
-	// Guardrail: re-check the project's provider_allowlist for the retry (a fresh
-	// dispatch), in case it tightened since the original run.
+	// Fail-visible gate: a retry is a fresh dispatch — re-run the D21 resolution
+	// chain, preserving the original run's model pick when it is still granted
+	// (else it fails visibly / re-resolves via the service default).
 	svc, err := s.st.GetService(r.Context(), orig.ServiceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
 		return
 	}
+	modelID, modelName, ok := s.selectModelForRun(w, r, svc, deref(orig.ModelID), modelcfg.NotGrantedReuseMessage())
+	if !ok {
+		return
+	}
+	// Guardrail: re-check the project's provider_allowlist for the retry (a fresh
+	// dispatch), in case it tightened since the original run.
 	if !s.providerDispatchAllowed(w, r, svc) {
 		return
 	}
 	origID := orig.ID
 	retry := newQueuedRun(orig.ProjectID, orig.ServiceID, orig.Prompt, &origID, principalFrom(r.Context()).userIDPtr())
 	retry.Attempt = orig.Attempt + 1
+	retry.ModelID = modelID
+	retry.ModelName = modelName
 	// A retry must preserve the run's IDENTITY, not just its prompt: retrying a
 	// review run without copying Kind + PR association degenerates it into an
 	// agent run that writes code and opens a junk PR (found live in M6 — the
@@ -331,23 +354,39 @@ func (s *Server) emitStatus(ctx context.Context, run *domain.Run) {
 	}
 }
 
-// modelConfigured is the fail-visible gate shared by every run-creating handler
-// (create / retry / review). It resolves the effective model config and, when
-// nothing is configured, writes a typed 409 model_not_configured and returns
-// false so the caller stops WITHOUT queuing a run that could never execute
-// (CLAUDE.md red line #1). A resolve error is a 500 (also stops the caller).
-func (s *Server) modelConfigured(w http.ResponseWriter, r *http.Request) bool {
-	resolved, err := s.models.Resolve(r.Context())
+// selectModelForRun is the fail-visible model-resolution gate shared by every
+// run-creating handler (create / retry / review). It runs the D21 chain for a run
+// against svc with the supplied model id (may be ""), and returns the chosen
+// model id pointer (nil => env fallback / empty catalog) + the provider/model
+// NAME snapshot to stamp on the run. notGrantedMsg is written for the
+// SelectNotGranted outcome so the composer path ("the model you selected…") and
+// the retry/review reuse path ("the model this run used…") differ. On any
+// unconfigured/ambiguous/unauthorized outcome it writes the typed error and
+// returns ok=false so the caller stops WITHOUT queuing a run that could never
+// execute (CLAUDE.md red line #1). A resolve error is a 500.
+func (s *Server) selectModelForRun(w http.ResponseWriter, r *http.Request, svc *domain.Service, requested, notGrantedMsg string) (*string, string, bool) {
+	def := deref(svc.DefaultModelID)
+	sel, outcome, err := s.models.SelectModel(r.Context(), svc.ProjectID, def, strings.TrimSpace(requested))
 	if err != nil {
-		s.log.Error("resolve model config", "err", err)
+		s.log.Error("select model", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not resolve model configuration")
-		return false
+		return nil, "", false
 	}
-	if !resolved.Configured() {
+	switch outcome {
+	case modelcfg.SelectOK:
+		if sel.ModelID == "" {
+			return nil, sel.ModelName, true // env fallback → model_id NULL, name snapshotted
+		}
+		id := sel.ModelID
+		return &id, sel.ModelName, true
+	case modelcfg.SelectNotGranted:
+		writeError(w, http.StatusForbidden, "model_not_granted", notGrantedMsg)
+	case modelcfg.SelectNotSelected:
+		writeError(w, http.StatusConflict, "model_not_selected", modelcfg.NotSelectedMessage())
+	default: // SelectNotConfigured
 		writeError(w, http.StatusConflict, "model_not_configured", modelcfg.NotConfiguredMessage(""))
-		return false
 	}
-	return true
+	return nil, "", false
 }
 
 // providerDispatchAllowed is the shared provider_allowlist gate for the

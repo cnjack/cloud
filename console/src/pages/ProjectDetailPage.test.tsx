@@ -21,8 +21,10 @@ import type {
   CreateServiceInput,
   MemberRole,
   Project,
+  ProjectModel,
   Run,
   Service,
+  UpdateServiceInput,
 } from '../api/types';
 import { ProjectDetailPage } from './ProjectDetailPage';
 
@@ -53,20 +55,22 @@ function project(role: MemberRole, services: Service[]): Project {
 interface Calls {
   serviceRuns: { sid: string; input: CreateRunInput }[];
   services: { pid: string; input: CreateServiceInput }[];
+  serviceUpdates: { sid: string; input: UpdateServiceInput }[];
 }
 
 function makeClient(
   p: Project,
-  opts: { modelConfigured?: boolean } = {},
+  opts: { modelConfigured?: boolean; models?: ProjectModel[] } = {},
 ): { client: ApiClient; calls: Calls } {
-  const calls: Calls = { serviceRuns: [], services: [] };
+  const calls: Calls = { serviceRuns: [], services: [], serviceUpdates: [] };
   const client: Partial<ApiClient> = {
     getProject: async () => p,
     listRuns: async () => [] as Run[],
-    // Feature A: the composer keys enable/disable off this. Default configured.
-    getModelConfig: async () => ({
-      configured: opts.modelConfigured ?? true,
-      source: (opts.modelConfigured ?? true) ? 'env' : 'none',
+    // D21: the composer keys enable/disable off the project's models AND populates
+    // its model select. Default configured via the env fallback (empty catalog).
+    listProjectModels: async () => ({
+      models: opts.models ?? [],
+      env_fallback: opts.models ? false : (opts.modelConfigured ?? true),
     }),
     createServiceRun: async (sid, input) => {
       calls.serviceRuns.push({ sid, input });
@@ -75,6 +79,10 @@ function makeClient(
     createService: async (pid, input) => {
       calls.services.push({ pid, input });
       return svc('svc_new', input.name ?? 'default');
+    },
+    updateService: async (sid, input) => {
+      calls.serviceUpdates.push({ sid, input });
+      return { ...svc(sid, 'default'), default_model_id: input.default_model_id ?? null };
     },
   };
   return { client: client as ApiClient, calls };
@@ -116,6 +124,71 @@ describe('ProjectDetailPage — single-repo composer', () => {
 
     await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
     expect(calls.serviceRuns[0]).toMatchObject({ sid: 'svc_default', input: { prompt: 'do a thing' } });
+  });
+});
+
+describe('ProjectDetailPage — model selection (D21)', () => {
+  const grantedModels: ProjectModel[] = [
+    { id: 'm_gpt', name: 'GPT-4o', model_name: 'openai/gpt-4o' },
+    { id: 'm_claude', name: 'Claude', model_name: 'anthropic/claude' },
+  ];
+
+  it('renders a model select from granted models and dispatches with the picked model_id', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      models: grantedModels,
+    });
+    renderPage(client);
+
+    const select = (await screen.findByTestId('composer-model-select')) as HTMLSelectElement;
+    // "Service default" + the two granted models.
+    expect(select.options).toHaveLength(3);
+    expect(screen.getByText('GPT-4o')).toBeTruthy();
+
+    // Pick a specific model, then dispatch.
+    fireEvent.change(select, { target: { value: 'm_claude' } });
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'go' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect(calls.serviceRuns[0]!.input).toMatchObject({ prompt: 'go', model_id: 'm_claude' });
+  });
+
+  it('omits model_id when the composer keeps "Service default"', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      models: grantedModels,
+    });
+    renderPage(client);
+
+    await screen.findByTestId('composer-model-select');
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'go' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect(calls.serviceRuns[0]!.input.model_id).toBeUndefined();
+  });
+
+  it('shows the service default-model editor to an owner and PATCHes on change', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      models: grantedModels,
+    });
+    renderPage(client);
+
+    const defSelect = (await screen.findByTestId('service-default-model-select')) as HTMLSelectElement;
+    fireEvent.change(defSelect, { target: { value: 'm_gpt' } });
+    await waitFor(() => expect(calls.serviceUpdates).toHaveLength(1));
+    expect(calls.serviceUpdates[0]).toMatchObject({ sid: 'svc_default', input: { default_model_id: 'm_gpt' } });
+  });
+
+  it('hides the service default-model editor from a member (composer pick only)', async () => {
+    const { client } = makeClient(project('member', [svc('svc_default', 'default')]), {
+      models: grantedModels,
+    });
+    renderPage(client);
+
+    // The per-run model pick is available to a member…
+    await screen.findByTestId('composer-model-select');
+    // …but not the owner-only service default editor.
+    expect(screen.queryByTestId('service-default-model-select')).toBeNull();
   });
 });
 
@@ -172,7 +245,7 @@ describe('ProjectDetailPage — model not configured (Feature A)', () => {
 
   it('keeps the composer usable with a neutral warning when the status check fails', async () => {
     const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
-    (client as { getModelConfig?: unknown }).getModelConfig = async () => {
+    (client as { listProjectModels?: unknown }).listProjectModels = async () => {
       throw new Error('network down');
     };
     renderPage(client, 'cluster-admin');
@@ -189,8 +262,8 @@ describe('ProjectDetailPage — model not configured (Feature A)', () => {
 
   it('does not even fetch the model status for a viewer (enabled gating)', async () => {
     const { client } = makeClient(project('viewer', [svc('svc_default', 'default')]));
-    const spy = vi.fn(async () => ({ configured: true }));
-    (client as { getModelConfig?: unknown }).getModelConfig = spy;
+    const spy = vi.fn(async () => ({ models: [], env_fallback: true }));
+    (client as { listProjectModels?: unknown }).listProjectModels = spy;
     renderPage(client);
 
     await waitFor(() => expect(screen.getByTestId('runs-empty')).toBeTruthy());

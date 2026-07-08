@@ -259,9 +259,15 @@ type Service struct {
 	// identity of the repo on the provider; nil for hand-entered/legacy services.
 	ProviderRepoID *int64 `json:"provider_repo_id,omitempty"`
 
-	DefaultBranch string    `json:"default_branch"`
-	GitMode       GitMode   `json:"git_mode"`
-	CreatedAt     time.Time `json:"created_at"`
+	DefaultBranch string `json:"default_branch"`
+	GitMode       GitMode `json:"git_mode"`
+	// DefaultModelID is the catalog model (D21) runs against this service use when
+	// the composer does not pick one. Nil => no default: the project's sole
+	// granted model is used, or the composer must choose when several are granted.
+	// Always references a model the service's project is granted (validated on
+	// write).
+	DefaultModelID *string   `json:"default_model_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // Run is a single agent invocation against a service.
@@ -342,6 +348,19 @@ type Run struct {
 	Origin           RunOrigin `json:"origin,omitempty"`
 	OriginCommentID  string    `json:"origin_comment_id,omitempty"`
 	OriginCommentURL string    `json:"origin_comment_url,omitempty"`
+
+	// ModelID is the catalog model this run was dispatched with (D21), chosen by
+	// the resolution chain at create time (composer pick → service default →
+	// project's sole grant). Nil when the run resolved to the env MODEL_* fallback
+	// (empty catalog / local rig) or predates the catalog. Recorded for audit and
+	// so the reconciler + LLM reverse proxy materialise the SAME model the
+	// composer picked, without re-running the chain.
+	ModelID *string `json:"model_id,omitempty"`
+	// ModelName is the provider/model NAME snapshotted at dispatch (D21 audit).
+	// Unlike ModelID (an FK nulled when the model is deleted), this plain-text
+	// snapshot survives model deletion so a run stays traceable to what it ran on.
+	// Empty for legacy runs that predate the catalog.
+	ModelName string `json:"model_name,omitempty"`
 
 	// TokenHash is the SHA-256 (hex) of the per-run bearer token injected into
 	// the Job. Never serialised to API clients.
@@ -496,24 +515,36 @@ type RunArtifact struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ModelConfig is the cluster-wide LLM configuration a cluster admin sets from
-// the console (Feature A). It is the single-row cluster_model_config table and,
-// when present, takes precedence over the MODEL_* environment variables (see
-// internal/modelcfg.Resolve). APIKeyEnc is the AES-256-GCM ciphertext of the
-// API key (nil/empty when the endpoint needs no key); the plaintext is NEVER
-// serialised to API clients — hence `json:"-"` on the encrypted blob.
-type ModelConfig struct {
+// Model is one entry in the cluster model catalog (D21): an OpenAI-compatible
+// LLM endpoint a cluster admin registered and may grant to projects. It
+// supersedes the single-row cluster_model_config — the effective model for a run
+// is now resolved per project (see internal/modelcfg). Name is a unique,
+// human-facing display label. APIKeyEnc is the AES-256-GCM ciphertext of the API
+// key (nil/empty when the endpoint needs no key); the plaintext is NEVER
+// serialised to API clients — hence `json:"-"` on the encrypted blob — and the
+// base_url/api key are never exposed to non-admins (only to cluster-admins).
+type Model struct {
+	// ID is the catalog primary key (referenced by services.default_model_id,
+	// runs.model_id and model_grants).
+	ID string `json:"id"`
+	// Name is the unique display name (e.g. "GPT-4o").
+	Name string `json:"name"`
 	// BaseURL is the OpenAI-compatible base URL (http/https).
 	BaseURL string `json:"base_url"`
 	// ModelName is the "provider/model" id written into the runner's jcode config.
 	ModelName string `json:"model_name"`
 	// APIKeyEnc is the encrypted API key (nonce||ciphertext), or nil when absent.
 	APIKeyEnc []byte `json:"-"`
-	// UpdatedAt / UpdatedBy record the last write (audit; UpdatedBy is a user id
-	// or "" for the service principal).
+	// CreatedAt / UpdatedAt / UpdatedBy record audit metadata (UpdatedBy is a user
+	// id or "" for the service principal).
+	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	UpdatedBy string    `json:"updated_by"`
 }
+
+// APIKeySet reports whether the model carries an (encrypted) API key. Used to
+// echo api_key_set to admins without ever exposing the plaintext.
+func (m *Model) APIKeySet() bool { return len(m.APIKeyEnc) > 0 }
 
 // KanbanLink binds a jtype board column to a project/service so that a card
 // dragged into TriggerColumn dispatches an agent run, and (when DoneColumn is

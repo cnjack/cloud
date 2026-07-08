@@ -297,6 +297,12 @@ type patchServiceReq struct {
 	OwnerName     string `json:"owner_name"`
 	GitMode       string `json:"git_mode"`
 	DefaultBranch string `json:"default_branch"`
+	// DefaultModelID sets the service's default model (D21). Presence semantics
+	// (pointer): omitted/null = unchanged; "" = clear (no default); an id = set,
+	// validated to be granted to this service's project. Kept separate from the
+	// empty-string="unchanged" fields above because clearing a default is a
+	// meaningful action.
+	DefaultModelID *string `json:"default_model_id"`
 }
 
 func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
@@ -328,6 +334,26 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 	}); code != "" {
 		writeError(w, http.StatusBadRequest, code, msg)
 		return
+	}
+	// Default model (D21): pointer presence — omitted = unchanged; "" = clear; an
+	// id must be granted to this service's project (else 400 model_not_granted).
+	if req.DefaultModelID != nil {
+		id := strings.TrimSpace(*req.DefaultModelID)
+		if id == "" {
+			svc.DefaultModelID = nil
+		} else {
+			granted, gerr := s.projectGrantsModel(r.Context(), svc.ProjectID, id)
+			if gerr != nil {
+				writeError(w, http.StatusInternalServerError, "internal", "could not check model grant")
+				return
+			}
+			if !granted {
+				writeError(w, http.StatusBadRequest, "model_not_granted",
+					"that model is not authorized for this project — a cluster admin must grant it first")
+				return
+			}
+			svc.DefaultModelID = &id
+		}
 	}
 	if err := s.st.UpdateService(r.Context(), svc); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not update service")

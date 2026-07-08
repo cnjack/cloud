@@ -39,8 +39,9 @@ function makeClient(over: Partial<ApiClient> = {}): ApiClient {
   const pr = basePR();
   return {
     getPR: async () => pr,
-    // Feature A: the review button keys enable/disable off this. Default configured.
-    getModelConfig: async () => ({ configured: true, source: 'env' }),
+    // D21: the review button keys enable/disable off the project's models. Default
+    // configured (env fallback → no explicit grants needed).
+    listProjectModels: async () => ({ models: [], env_fallback: true }),
     requestReview: async () =>
       ({
         id: 'rev_new',
@@ -69,7 +70,7 @@ function renderPanel(client: ApiClient, canReview = true) {
           <MemoryRouter initialEntries={['/']}>
             <LocationProbe />
             <Routes>
-              <Route path="/" element={<PrPanel runId="run1" canReview={canReview} />} />
+              <Route path="/" element={<PrPanel runId="run1" projectId="proj1" canReview={canReview} />} />
               <Route path="/runs/:id" element={<div>review run page</div>} />
             </Routes>
           </MemoryRouter>
@@ -129,10 +130,10 @@ describe('PrPanel', () => {
     expect(screen.getByTestId('loc').textContent).toBe('/');
   });
 
-  it('disables Request AI review with a notice when no LLM is configured (Feature A)', async () => {
+  it('disables Request AI review with a notice when no model is available (D21)', async () => {
     renderPanel(
       makeClient({
-        getModelConfig: async () => ({ configured: false, source: 'none' }),
+        listProjectModels: async () => ({ models: [], env_fallback: false }),
       }),
     );
 

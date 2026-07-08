@@ -34,8 +34,9 @@ var llmProxyTransport = &http.Transport{
 // (the same modelcfg.Resolver cache the API/reconciler share), injects the real
 // API key, and forwards the request to the real LLM, streaming the SSE response
 // straight back. The decrypted key therefore lives ONLY in the orchestrator
-// process memory + the encrypted cluster_model_config row — it NEVER enters the
-// runner pod's env, so a prompt injection in the repo cannot exfiltrate it.
+// process memory + the encrypted model_configs.api_key_enc column — it NEVER
+// enters the runner pod's env, so a prompt injection in the repo cannot
+// exfiltrate it. The model is resolved PER RUN (by run.model_id; D21).
 //
 // Routing: POST/GET /internal/v1/runs/{id}/llm/{rest...} where {rest} is the
 // OpenAI-style path the client appended (e.g. "v1/chat/completions"). The proxy
@@ -56,8 +57,20 @@ var llmProxyTransport = &http.Transport{
 // before forwarding and replaced with the real key; nothing about the key or the
 // request body is ever logged.
 func (s *Server) handleLLMProxy(w http.ResponseWriter, r *http.Request, runID string) {
-	// s.runToken has already verified the run exists and the bearer == RUN_TOKEN.
-	model, err := s.models.Resolve(r.Context())
+	// s.runToken has already verified the run exists and the bearer == RUN_TOKEN,
+	// and stashed the loaded run in the context (P4 — no second GetRun on this hot
+	// path). Materialise the model THIS run was dispatched with (D21) from its
+	// stamped model_id (or the env fallback when NULL). Per-run resolution keeps
+	// the D16 invariant — the real key lives only here, never in the pod.
+	run := runFromToken(r.Context())
+	if run == nil {
+		// Defensive: the middleware always stashes the run; a nil here means a
+		// misconfigured route. Fail visibly rather than resolve blind.
+		s.log.Error("llm proxy: run missing from context", "run", runID)
+		writeError(w, http.StatusBadGateway, "model_resolve_failed", "could not resolve the run")
+		return
+	}
+	model, err := s.models.ResolveModel(r.Context(), deref(run.ModelID))
 	if err != nil {
 		s.log.Error("llm proxy: resolve model", "run", runID, "err", err)
 		writeError(w, http.StatusBadGateway, "model_resolve_failed", "could not resolve the model configuration")

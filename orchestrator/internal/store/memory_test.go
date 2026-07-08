@@ -496,57 +496,140 @@ func TestMemServiceGitConfigRoundTrip(t *testing.T) {
 	}
 }
 
-// TestMemStoreModelConfigRoundTrip covers the Feature A single-row model config:
-// ErrNotFound when unset, upsert, read-back, and clear (idempotent).
-func TestMemStoreModelConfigRoundTrip(t *testing.T) {
+// TestMemStoreModelCatalogRoundTrip covers the D21 catalog: create (unique name),
+// read-back, update, list newest-first, count, defensive copy, and delete.
+func TestMemStoreModelCatalogRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemStore()
 
-	// Unset => ErrNotFound.
-	if _, err := m.GetModelConfig(ctx); err != ErrNotFound {
-		t.Fatalf("get unset: err=%v want ErrNotFound", err)
+	if n, _ := m.CountModels(ctx); n != 0 {
+		t.Fatalf("empty catalog count=%d want 0", n)
+	}
+	if _, err := m.GetModel(ctx, "nope"); err != ErrNotFound {
+		t.Fatalf("get missing: err=%v want ErrNotFound", err)
 	}
 
-	// Set + read back.
-	if err := m.SetModelConfig(ctx, &domain.ModelConfig{
-		BaseURL: "http://x/v1", ModelName: "a/b", APIKeyEnc: []byte("enc"), UpdatedBy: "u1",
-	}); err != nil {
+	a := &domain.Model{ID: "m1", Name: "gpt", BaseURL: "http://x/v1", ModelName: "a/b", APIKeyEnc: []byte("enc"), CreatedAt: time.Now(), UpdatedBy: "u1"}
+	if err := m.CreateModel(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	got, err := m.GetModelConfig(ctx)
+	// Duplicate name => ErrAlreadyExists.
+	if err := m.CreateModel(ctx, &domain.Model{ID: "m2", Name: "gpt", BaseURL: "http://y/v1", ModelName: "c/d"}); err != ErrAlreadyExists {
+		t.Fatalf("dup name: err=%v want ErrAlreadyExists", err)
+	}
+
+	got, err := m.GetModel(ctx, "m1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.BaseURL != "http://x/v1" || got.ModelName != "a/b" || string(got.APIKeyEnc) != "enc" || got.UpdatedBy != "u1" {
+	if got.Name != "gpt" || got.BaseURL != "http://x/v1" || string(got.APIKeyEnc) != "enc" {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
+	// Defensive copy: mutating the returned key must not affect the store.
+	got.APIKeyEnc[0] = 'X'
+	again, _ := m.GetModel(ctx, "m1")
+	if string(again.APIKeyEnc) != "enc" {
+		t.Fatalf("store aliased its internal key: %q", again.APIKeyEnc)
+	}
 
-	// Upsert (single row): a second set replaces, not appends.
-	if err := m.SetModelConfig(ctx, &domain.ModelConfig{
-		BaseURL: "http://y/v1", ModelName: "c/d", APIKeyEnc: nil, UpdatedBy: "u2",
-	}); err != nil {
+	// Update (rename + keyless).
+	a.Name = "gpt4o"
+	a.APIKeyEnc = nil
+	if err := m.UpdateModel(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = m.GetModelConfig(ctx)
-	if got.BaseURL != "http://y/v1" || got.APIKeyEnc != nil {
-		t.Fatalf("upsert mismatch: %+v", got)
+	got, _ = m.GetModel(ctx, "m1")
+	if got.Name != "gpt4o" || got.APIKeyEnc != nil {
+		t.Fatalf("update mismatch: %+v", got)
 	}
 
-	// Mutating the returned copy must not affect the store (defensive copy).
-	got.BaseURL = "mutated"
-	again, _ := m.GetModelConfig(ctx)
-	if again.BaseURL != "http://y/v1" {
-		t.Fatalf("store aliased its internal row: %q", again.BaseURL)
-	}
-
-	// Clear => ErrNotFound again; clearing twice is a no-op.
-	if err := m.ClearModelConfig(ctx); err != nil {
+	// Second model + list newest-first + count.
+	time.Sleep(time.Millisecond)
+	b := &domain.Model{ID: "m2", Name: "claude", BaseURL: "http://z/v1", ModelName: "e/f", CreatedAt: time.Now()}
+	if err := m.CreateModel(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ClearModelConfig(ctx); err != nil {
-		t.Fatalf("clear twice should be a no-op, got %v", err)
+	list, _ := m.ListModels(ctx)
+	if len(list) != 2 || list[0].ID != "m2" {
+		t.Fatalf("list newest-first mismatch: %+v", list)
 	}
-	if _, err := m.GetModelConfig(ctx); err != ErrNotFound {
-		t.Fatalf("get after clear: err=%v want ErrNotFound", err)
+	if n, _ := m.CountModels(ctx); n != 2 {
+		t.Fatalf("count=%d want 2", n)
+	}
+
+	// Delete => gone; delete on a missing id => ErrNotFound.
+	if err := m.DeleteModel(ctx, "m1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.GetModel(ctx, "m1"); err != ErrNotFound {
+		t.Fatalf("get after delete: err=%v want ErrNotFound", err)
+	}
+	if err := m.DeleteModel(ctx, "m1"); err != ErrNotFound {
+		t.Fatalf("delete twice: err=%v want ErrNotFound", err)
 	}
 }
+
+// TestMemStoreModelGrants covers grants: idempotent grant/revoke, project<->model
+// listing, and the cascade to service defaults / run refs on model delete.
+func TestMemStoreModelGrants(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+
+	proj := &domain.Project{ID: "p1", Name: "p", CreatedAt: time.Now()}
+	if err := m.CreateProject(ctx, proj); err != nil {
+		t.Fatal(err)
+	}
+	mod := &domain.Model{ID: "m1", Name: "gpt", BaseURL: "http://x/v1", ModelName: "a/b", CreatedAt: time.Now()}
+	if err := m.CreateModel(ctx, mod); err != nil {
+		t.Fatal(err)
+	}
+	svc := &domain.Service{ID: "s1", ProjectID: "p1", Name: "default", RepoKind: domain.RepoKindRaw, RawRepoURL: "u", DefaultBranch: "main", DefaultModelID: strp("m1"), CreatedAt: time.Now()}
+	if err := m.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{ID: "r1", ProjectID: "p1", ServiceID: "s1", Prompt: "x", Status: domain.StatusQueued, ModelID: strp("m1"), CreatedAt: time.Now()}
+	if err := m.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+
+	// Grant to a missing project/model => ErrNotFound.
+	if err := m.GrantModel(ctx, "m1", "nope"); err != ErrNotFound {
+		t.Fatalf("grant missing project: err=%v want ErrNotFound", err)
+	}
+	// Grant (idempotent).
+	if err := m.GrantModel(ctx, "m1", "p1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.GrantModel(ctx, "m1", "p1"); err != nil {
+		t.Fatalf("re-grant should be a no-op: %v", err)
+	}
+	if got, _ := m.ListModelsForProject(ctx, "p1"); len(got) != 1 || got[0].ID != "m1" {
+		t.Fatalf("ListModelsForProject mismatch: %+v", got)
+	}
+	if got, _ := m.ListProjectIDsForModel(ctx, "m1"); len(got) != 1 || got[0] != "p1" {
+		t.Fatalf("ListProjectIDsForModel mismatch: %+v", got)
+	}
+
+	// Delete the model => grants cascade + service default / run ref nulled.
+	if err := m.DeleteModel(ctx, "m1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := m.ListModelsForProject(ctx, "p1"); len(got) != 0 {
+		t.Fatalf("grants should cascade on model delete: %+v", got)
+	}
+	gotSvc, _ := m.GetService(ctx, "s1")
+	if gotSvc.DefaultModelID != nil {
+		t.Fatalf("service default should be nulled on model delete: %+v", gotSvc.DefaultModelID)
+	}
+	gotRun, _ := m.GetRun(ctx, "r1")
+	if gotRun.ModelID != nil {
+		t.Fatalf("run model ref should be nulled on model delete: %+v", gotRun.ModelID)
+	}
+
+	// Revoke is idempotent (no-op when absent).
+	if err := m.RevokeModel(ctx, "m1", "p1"); err != nil {
+		t.Fatalf("revoke absent should be a no-op: %v", err)
+	}
+}
+
+func strp(s string) *string { return &s }

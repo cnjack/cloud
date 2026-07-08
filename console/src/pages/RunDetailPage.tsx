@@ -64,11 +64,11 @@ export function RunDetailPage() {
   const status = run.data?.status;
   const terminal = status ? isTerminal(status) : false;
 
-  // Fail-visible (Feature A): Retry creates a fresh run, so it gets the same
-  // treatment as the composer — disabled with a notice when no LLM is
-  // configured (the backend 409 remains the backstop). Queried only where the
-  // Retry affordance can exist (member+ on a terminal run).
-  const modelGate = useModelGate(canAct && terminal);
+  // Fail-visible (D21): Retry creates a fresh run, so it gets the same treatment
+  // as the composer — disabled with a notice when the run's project has no
+  // available model (the backend 409 remains the backstop). Queried only where
+  // the Retry affordance can exist (member+ on a terminal run).
+  const modelGate = useModelGate(run.data?.project_id ?? '', canAct && terminal);
 
   // D18/D26: a succeeded run with no code changes has nothing to fetch — the
   // Diff tab shows a dedicated empty state instead (see below) without ever
@@ -354,7 +354,7 @@ export function RunDetailPage() {
           {/* Tab panels */}
           <div className={styles.panel}>
             {tab === 'pr' ? (
-              <PrPanel runId={runId} canReview={canAct} />
+              <PrPanel runId={runId} projectId={run.data?.project_id ?? ''} canReview={canAct} />
             ) : tab === 'events' ? (
               stream.events.length === 0 ? (
                 <div className={styles.waiting}>
