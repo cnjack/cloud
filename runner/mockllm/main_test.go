@@ -66,7 +66,8 @@ func TestReviewScenarioTwoTurns(t *testing.T) {
 }
 
 // Different prompts must yield different write_file contents (M7 live find:
-// identical mock output on a branch that already had the file → empty_diff).
+// identical mock output on a branch that already had the file → empty diff →
+// no_changes with no push, so the update-push flow would never advance).
 func TestWriteFilePersonalisedByPrompt(t *testing.T) {
 	msgs := func(prompt string) []message {
 		return []message{{Role: "user", Content: prompt}}

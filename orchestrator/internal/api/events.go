@@ -309,6 +309,11 @@ func (s *Server) handleIngestEvents(w http.ResponseWriter, r *http.Request, runI
 	// the draft PR against it (ST-1).
 	s.applyRunGit(r.Context(), runID, req.Events)
 
+	// Record a runner-reported run outcome (run.result, e.g. no_changes) so the
+	// run carries a first-class result even though its Job still exits 0 →
+	// succeeded (D18). Status is untouched; the reconcile pass drives it.
+	s.applyRunResult(r.Context(), runID, req.Events)
+
 	// Fan out to live subscribers using the server-allocated seq (best-effort;
 	// durability already done).
 	if s.hub != nil {
@@ -361,6 +366,29 @@ func (s *Server) applyRunGit(ctx context.Context, runID string, events []ingestE
 		}
 		if _, err := s.st.SetRunGit(ctx, runID, branch, commit); err != nil {
 			s.log.Warn("ingest: record run git", "run", runID, "err", err)
+		}
+		return
+	}
+}
+
+// applyRunResult looks for a run.result event and, if present, records the
+// outcome on the run (runs.result) via SetRunResult. It is first-writer-wins in
+// the store and NEVER changes status: the Job's exit code still drives the
+// terminal status, so an empty-diff run (outcome no_changes) still reconciles to
+// succeeded (D18). An unrecognised/absent outcome is ignored so we never store
+// garbage.
+func (s *Server) applyRunResult(ctx context.Context, runID string, events []ingestEvent) {
+	for _, e := range events {
+		if e.Type != domain.EventRunResult {
+			continue
+		}
+		outcome, _ := e.Payload["outcome"].(string)
+		rr := domain.RunResult(outcome)
+		if !domain.ValidRunResult(rr) {
+			return // unknown/empty outcome: ignore rather than persist it
+		}
+		if _, err := s.st.SetRunResult(ctx, runID, rr); err != nil {
+			s.log.Warn("ingest: record run result", "run", runID, "err", err)
 		}
 		return
 	}

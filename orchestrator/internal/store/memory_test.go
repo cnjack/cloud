@@ -312,6 +312,46 @@ func TestConcurrentFailNeverLosesRunnerReason(t *testing.T) {
 	}
 }
 
+// TestMemSetRunResult proves SetRunResult records the outcome first-writer-wins
+// without changing status (D18): a fresh run has a nil result; the first
+// run.result stamps it; a later differing call is a no-op; and a missing run is
+// ErrNotFound.
+func TestMemSetRunResult(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	id := seedRunAt(t, m, domain.StatusRunning)
+
+	// Fresh run: no result yet.
+	if r0, _ := m.GetRun(ctx, id); r0.Result != nil {
+		t.Fatalf("fresh run already has result %v", *r0.Result)
+	}
+
+	got, err := m.SetRunResult(ctx, id, domain.RunResultNoChanges)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || *got.Result != domain.RunResultNoChanges {
+		t.Fatalf("result=%v want no_changes", got.Result)
+	}
+	if got.Status != domain.StatusRunning {
+		t.Fatalf("status changed to %s; SetRunResult must not alter status", got.Status)
+	}
+
+	// First-writer-wins: a differing later call is a no-op.
+	got2, err := m.SetRunResult(ctx, id, domain.RunResult("something_else"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.Result == nil || *got2.Result != domain.RunResultNoChanges {
+		t.Fatalf("result changed to %v; first-writer must win", got2.Result)
+	}
+
+	// Missing run.
+	if _, err := m.SetRunResult(ctx, "nope", domain.RunResultNoChanges); err != ErrNotFound {
+		t.Fatalf("missing run err=%v want ErrNotFound", err)
+	}
+}
+
 // TestMemMarkPRCreatedIdempotent is the MemStore regression for MarkPRCreated
 // (ST-1): the FIRST writer wins; a later call with different values is a no-op,
 // so a retried reconcile can never clobber an already-recorded draft PR.

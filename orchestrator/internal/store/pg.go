@@ -144,6 +144,17 @@ func nullStr(s string) *string {
 	return &s
 }
 
+// nullRunResult maps a nil *RunResult to a SQL NULL and a set one to its text,
+// so the nullable runs.result column stays NULL for ordinary (produced-a-diff)
+// runs rather than storing an empty string.
+func nullRunResult(r *domain.RunResult) *string {
+	if r == nil {
+		return nil
+	}
+	s := string(*r)
+	return &s
+}
+
 func scanService(row pgx.Row) (*domain.Service, error) {
 	var s domain.Service
 	var provider, ownerName, rawURL *string
@@ -270,18 +281,18 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 	created_at, started_at, finished_at, job_cleaned_at,
 	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id,
 	review_posted_at, pr_head_branch, pr_base_branch,
-	origin, origin_comment_id, origin_comment_url`
+	origin, origin_comment_id, origin_comment_url, result`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
-	var commentID, commentURL *string
+	var commentID, commentURL, result *string
 	err := row.Scan(&r.ID, &r.ProjectID, &r.ServiceID, &r.Prompt, &r.Status, &r.Kind, &r.Phase, &r.Error,
 		&r.K8sJobName, &r.RetriedFrom, &r.FailureReason, &r.FailureMessage,
 		&r.Attempt, &r.TokenHash,
 		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt,
 		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID,
 		&r.ReviewPostedAt, &r.PRHeadBranch, &r.PRBaseBranch,
-		&r.Origin, &commentID, &commentURL)
+		&r.Origin, &commentID, &commentURL, &result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -293,6 +304,10 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 	}
 	if commentURL != nil {
 		r.OriginCommentURL = *commentURL
+	}
+	if result != nil {
+		rr := domain.RunResult(*result)
+		r.Result = &rr
 	}
 	return &r, nil
 }
@@ -306,13 +321,13 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
 		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID,
 		r.ReviewPostedAt, r.PRHeadBranch, r.PRBaseBranch,
-		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL))
+		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullRunResult(r.Result))
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
@@ -658,6 +673,25 @@ func (s *PGStore) SetRunGit(ctx context.Context, id, branch, commitSHA string) (
 		 WHERE id=$1`,
 		id, branch, commitSHA); err != nil {
 		return nil, fmt.Errorf("set run git: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// SetRunResult records a runner-reported run outcome (from a run.result event)
+// without changing status. First-writer-wins via COALESCE, so a duplicate event
+// is a no-op — result is written only while it is still NULL. Locks the row to
+// serialise with a concurrent terminal-status reconcile.
+func (s *PGStore) SetRunResult(ctx context.Context, id string, result domain.RunResult) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	_ = cur
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET result = COALESCE(result, $2) WHERE id=$1`,
+		id, string(result)); err != nil {
+		return nil, fmt.Errorf("set run result: %w", err)
 	}
 	return s.commitAndReload(ctx, tx, id)
 }

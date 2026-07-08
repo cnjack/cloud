@@ -956,6 +956,89 @@ func TestIngestPushFailedClassification(t *testing.T) {
 	}
 }
 
+// TestIngestRunResultRecordsOutcome is the ingest regression for D18: a
+// run.result{outcome:no_changes} event records the first-class outcome on the
+// run (runs.result) WITHOUT changing status, and the run's API JSON then
+// serialises "result":"no_changes". A run that never reported a result
+// serialises "result":null.
+func TestIngestRunResultRecordsOutcome(t *testing.T) {
+	ts, st, _ := newTestServer(t)
+	p := createProject(t, ts)
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+		map[string]string{"prompt": "task"})
+	var run domain.Run
+	decode(t, resp, &run)
+	ctx := context.Background()
+
+	tok, _ := auth.GenerateRunToken()
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", auth.HashToken(tok), "PreparingWorkspace"); err != nil {
+		t.Fatalf("setup token: %v", err)
+	}
+
+	body := map[string]any{"events": []map[string]any{
+		{"seq": 7, "type": "run.result", "payload": map[string]any{"outcome": "no_changes"}},
+	}}
+	resp = do(t, "POST", ts.URL+"/internal/v1/runs/"+run.ID+"/events", tok, body)
+	resp.Body.Close()
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.Result == nil || *got.Result != domain.RunResultNoChanges {
+		t.Fatalf("run.result=%v want no_changes", got.Result)
+	}
+	// Must not have flipped status — the reconciler still drives it from the Job.
+	if got.Status == domain.StatusSucceeded || got.Status == domain.StatusFailed {
+		t.Fatalf("status=%s; run.result must not change status", got.Status)
+	}
+
+	// API serialisation carries "result":"no_changes".
+	resp = do(t, "GET", ts.URL+"/api/v1/runs/"+run.ID, consoleToken, nil)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(raw), `"result":"no_changes"`) {
+		t.Fatalf("run JSON missing result field: %s", raw)
+	}
+
+	// A run that reported no result serialises result:null (field always present).
+	resp = do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+		map[string]string{"prompt": "other"})
+	var run2 domain.Run
+	decode(t, resp, &run2)
+	resp = do(t, "GET", ts.URL+"/api/v1/runs/"+run2.ID, consoleToken, nil)
+	raw2, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(raw2), `"result":null`) {
+		t.Fatalf("run-without-result JSON should carry result:null: %s", raw2)
+	}
+}
+
+// TestIngestRunResultUnknownOutcomeIgnored proves an unrecognised outcome is not
+// persisted (we never store garbage in runs.result).
+func TestIngestRunResultUnknownOutcomeIgnored(t *testing.T) {
+	ts, st, _ := newTestServer(t)
+	p := createProject(t, ts)
+	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+		map[string]string{"prompt": "task"})
+	var run domain.Run
+	decode(t, resp, &run)
+	ctx := context.Background()
+
+	tok, _ := auth.GenerateRunToken()
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", auth.HashToken(tok), "PreparingWorkspace"); err != nil {
+		t.Fatalf("setup token: %v", err)
+	}
+
+	body := map[string]any{"events": []map[string]any{
+		{"seq": 8, "type": "run.result", "payload": map[string]any{"outcome": "bogus"}},
+	}}
+	resp = do(t, "POST", ts.URL+"/internal/v1/runs/"+run.ID+"/events", tok, body)
+	resp.Body.Close()
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.Result != nil {
+		t.Fatalf("unknown outcome persisted as %v; want nil", *got.Result)
+	}
+}
+
 // TestCreateDraftPRService proves service creation accepts + persists git
 // integration config and validates draft_pr requirements (this validation moved
 // from the removed POST /projects repo shim to the services endpoint).

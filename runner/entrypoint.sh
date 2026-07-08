@@ -65,6 +65,16 @@ report_failure() {
   fi
 }
 
+# report_result OUTCOME — best-effort POST a run.result event so the control
+# plane records a first-class run outcome (e.g. no_changes, D18). No-op
+# standalone. Never itself fatal (the run has already logically succeeded).
+report_result() {
+  local outcome="$1"
+  if command -v orchclient >/dev/null 2>&1; then
+    orchclient report-result --outcome "$outcome" || true
+  fi
+}
+
 # die REASON MESSAGE — report the failure (if wired) then exit non-zero.
 # REASON ∈ {clone_failed, setup_failed, agent_error, timeout} (docs/11-api.md §1.4).
 die() {
@@ -422,8 +432,19 @@ printf '===JCODE_DIFF_BEGIN run_id=%s===\n' "$RUN_ID"
 printf '%s\n' "$DIFF"
 printf '===JCODE_DIFF_END run_id=%s===\n' "$RUN_ID"
 
+# Empty diff → first-class "no changes" outcome (D18). An agent run that finishes
+# cleanly but changes nothing is a SUCCESS, not a failure: report
+# run.result{outcome:no_changes} so the control plane records it as a first-class
+# outcome, then exit 0 WITHOUT building/uploading anything. Exiting here skips the
+# draft-PR commit/bundle (§6b) AND the diff artifact upload (§7) — there is
+# nothing to push or store. This also covers the M7 update-push path (draft_pr
+# onto an existing PR head): an empty diff means no new commit, so the branch is
+# never pushed. readonly and draft_pr behave identically here.
 if [ -z "$DIFF" ]; then
-  die agent_error "run produced an empty diff (no changes)"
+  log "agent run produced an empty diff (no changes) — reporting no_changes, exit 0"
+  report_result no_changes
+  log "success (no changes)"
+  exit 0
 fi
 
 # --- 6b. Draft-PR bundle (blueprint §3) --------------------------------------

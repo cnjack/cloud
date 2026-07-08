@@ -126,6 +126,14 @@ type Store interface {
 	// touches status/pr_url and is a no-op on a missing run. Returns the committed
 	// row (possibly unchanged). This is the ONLY writer of git_branch/commit_sha.
 	SetRunGit(ctx context.Context, id, branch, commitSHA string) (*domain.Run, error)
+	// SetRunResult records a runner-reported run OUTCOME (from a run.result event,
+	// e.g. "no_changes") WITHOUT changing status. First-writer-wins: it writes
+	// only where result is still NULL, so a duplicate event is a no-op. It never
+	// touches status — the reconciler still drives the terminal status from the
+	// Job (an empty-diff run exits 0 → succeeded; D18) — and is a no-op on a
+	// missing run. Returns the committed row (possibly unchanged). This is the
+	// ONLY writer of result.
+	SetRunResult(ctx context.Context, id string, result domain.RunResult) (*domain.Run, error)
 	// MarkPRCreated stamps pr_url/pr_number once the orchestrator has opened (or
 	// found) the draft PR (ST-1). It is IDEMPOTENT and first-writer-wins: it
 	// writes only where pr_url is currently empty, so a retry that raced another

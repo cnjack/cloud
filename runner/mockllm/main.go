@@ -204,8 +204,9 @@ func messageText(m message) string {
 // when any message carries the review marker, otherwise the env-selected default.
 // The write_file scenario personalises the file content with the request's task
 // text so DIFFERENT prompts produce DIFFERENT diffs — without this, a second
-// run on a branch that already has HELLO_FROM_JCODE.txt is a no-op and fails
-// with empty_diff (hit live by the @jcode update-push flow, M7).
+// run on a branch that already has HELLO_FROM_JCODE.txt is a no-op producing an
+// EMPTY diff, which (post-D18) reports no_changes and pushes nothing, so the
+// @jcode update-push flow (M7) would never advance the PR head.
 func scenarioForRequest(msgs []message) (string, Scenario) {
 	for _, m := range msgs {
 		if strings.Contains(messageText(m), reviewMarker) {
@@ -218,7 +219,8 @@ func scenarioForRequest(msgs []message) (string, Scenario) {
 			// A per-prompt FILENAME (not just content): jcode's write tool
 			// refuses to overwrite an existing file it hasn't read, so a fixed
 			// path silently no-ops on any branch that already carries the file
-			// (M7 live find — @jcode update runs always produced empty diffs).
+			// (M7 live find — @jcode update runs then produced empty diffs, now
+			// surfaced as no_changes with no push).
 			args, _ := json.Marshal(map[string]string{
 				"file_path": "JCODE_TASK_" + fp + ".txt",
 				"content": "jcode ran headless in a container and wrote this file.\n" +

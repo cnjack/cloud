@@ -81,3 +81,43 @@ func TestReportFailureUsesDistinctReservedSeq(t *testing.T) {
 		t.Fatalf("report-failure and report-git share a client seq (%v) — they must be distinct", s0)
 	}
 }
+
+// TestReportResultPostsNoChanges proves report-result posts a run.result event
+// carrying the outcome, under a RESERVED high client seq (so it never collides
+// with acpdrive's 1..N stream) that is DISTINCT from report-failure/report-git
+// (a run could report both a result and, later, a failure).
+func TestReportResultPostsNoChanges(t *testing.T) {
+	var sink captured
+	srv := fakeOrch(t, &sink)
+	defer srv.Close()
+
+	c := &client{base: srv.URL, runID: "r1", token: "tok", http: &http.Client{Timeout: 5 * time.Second}}
+	c.reportResult("no_changes", 1_000_003)
+	c.reportFailure("agent_error", "boom", 1_000_001)
+	c.reportGit("agent/run-r1", "sha", 1_000_002)
+
+	if len(sink.events) != 3 {
+		t.Fatalf("posted %d events, want 3", len(sink.events))
+	}
+	ev := sink.events[0]
+	if ev["type"] != "run.result" {
+		t.Fatalf("type=%v want run.result", ev["type"])
+	}
+	seq, _ := ev["seq"].(float64)
+	if seq < 1_000_000 {
+		t.Fatalf("run.result client seq=%v collides with acpdrive's 1..N stream (must be reserved-high)", seq)
+	}
+	payload, _ := ev["payload"].(map[string]any)
+	if payload["outcome"] != "no_changes" {
+		t.Fatalf("payload = %v want outcome=no_changes", payload)
+	}
+	// All three reserved seqs must be distinct so none deduped against another.
+	seen := map[float64]bool{}
+	for _, e := range sink.events {
+		s, _ := e["seq"].(float64)
+		if seen[s] {
+			t.Fatalf("reserved client seq %v reused across entrypoint reports", s)
+		}
+		seen[s] = true
+	}
+}

@@ -269,6 +269,55 @@ func TestPGMarkFailedPreservesRunnerReason(t *testing.T) {
 	}
 }
 
+// TestPGSetRunResult proves the nullable runs.result column round-trips: a fresh
+// run has a NULL result (nil pointer), SetRunResult stamps it first-writer-wins
+// without touching status, a duplicate differing call is a no-op, and the value
+// survives a subsequent MarkSucceeded (empty-diff run exits 0 → succeeded; D18).
+// Requires JCLOUD_PG_DSN.
+func TestPGSetRunResult(t *testing.T) {
+	ctx := context.Background()
+	st, runID := pgTestStore(t)
+
+	if r0, err := st.GetRun(ctx, runID); err != nil {
+		t.Fatal(err)
+	} else if r0.Result != nil {
+		t.Fatalf("fresh run already has result %v", *r0.Result)
+	}
+
+	if _, err := st.ScheduleRun(ctx, runID, "job", "hash", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkRunning(ctx, runID, "StreamingTurn", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.SetRunResult(ctx, runID, domain.RunResultNoChanges)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || *got.Result != domain.RunResultNoChanges {
+		t.Fatalf("result=%v want no_changes", got.Result)
+	}
+	if got.Status != domain.StatusRunning {
+		t.Fatalf("status=%s; SetRunResult must not change status", got.Status)
+	}
+
+	// Duplicate differing call: first-writer-wins (no-op).
+	if got2, err := st.SetRunResult(ctx, runID, domain.RunResult("something_else")); err != nil {
+		t.Fatal(err)
+	} else if got2.Result == nil || *got2.Result != domain.RunResultNoChanges {
+		t.Fatalf("result changed to %v; first-writer must win", got2.Result)
+	}
+
+	// Survives the terminal transition.
+	done, err := st.MarkSucceeded(ctx, runID, "Succeeded", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Result == nil || *done.Result != domain.RunResultNoChanges {
+		t.Fatalf("result=%v after MarkSucceeded want no_changes preserved", done.Result)
+	}
+}
+
 // TestPGConcurrentFailPreservesReason races SetRunnerFailure against MarkFailed
 // on a real DB (row-lock serialised) and asserts the specific reason is never
 // lost. Requires JCLOUD_PG_DSN.

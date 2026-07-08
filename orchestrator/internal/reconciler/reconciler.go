@@ -635,10 +635,16 @@ func kanbanCommentBody(run *domain.Run, consoleURL string) string {
 	case domain.StatusSucceeded:
 		b.WriteString("✅ jcode finished run `")
 		b.WriteString(run.ID)
-		b.WriteString("`.")
-		if run.PRURL != "" {
-			b.WriteString("\n\nDraft PR: ")
-			b.WriteString(run.PRURL)
+		if run.NoChanges() {
+			// D18: an empty-diff run is a first-class success — say so explicitly
+			// so the card reader knows nothing changed (no PR follows).
+			b.WriteString("` — no code changes were needed.")
+		} else {
+			b.WriteString("`.")
+			if run.PRURL != "" {
+				b.WriteString("\n\nDraft PR: ")
+				b.WriteString(run.PRURL)
+			}
 		}
 	case domain.StatusFailed:
 		b.WriteString("❌ jcode run `")

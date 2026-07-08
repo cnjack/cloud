@@ -9,6 +9,9 @@
 //	orchclient report-git --branch agent/run-<id> --commit <sha>
 //	    → POST /internal/v1/runs/{RUN_ID}/events  {events:[{seq,type:run.git,payload:{branch,commit_sha}}]}
 //
+//	orchclient report-result --outcome no_changes
+//	    → POST /internal/v1/runs/{RUN_ID}/events  {events:[{seq,type:run.result,payload:{outcome}}]}
+//
 //	orchclient upload-artifact --kind diff --file /out/diff.patch
 //	    → POST /internal/v1/runs/{RUN_ID}/artifact  {kind,content}
 //
@@ -53,7 +56,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: orchclient <report-failure|report-git|upload-artifact|fetch-source|upload-bundle|post-review> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: orchclient <report-failure|report-git|report-result|upload-artifact|fetch-source|upload-bundle|post-review> [flags]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -86,6 +89,7 @@ func main() {
 	const (
 		seqReportFailure = 1_000_001
 		seqReportGit     = 1_000_002
+		seqReportResult  = 1_000_003
 	)
 
 	switch cmd {
@@ -111,6 +115,17 @@ func main() {
 			os.Exit(2)
 		}
 		c.reportGit(*branch, *commit, *seq)
+
+	case "report-result":
+		fs := flag.NewFlagSet("report-result", flag.ExitOnError)
+		outcome := fs.String("outcome", "no_changes", "run outcome (no_changes)")
+		seq := fs.Int64("seq", seqReportResult, "client seq (idempotency key; server allocates the durable seq)")
+		_ = fs.Parse(args)
+		if *outcome == "" {
+			fmt.Fprintln(os.Stderr, "[orchclient] report-result: --outcome is required")
+			os.Exit(2)
+		}
+		c.reportResult(*outcome, *seq)
 
 	case "upload-artifact":
 		fs := flag.NewFlagSet("upload-artifact", flag.ExitOnError)
@@ -205,6 +220,15 @@ func (c *client) reportGit(branch, commit string, seq int64) {
 		"payload": map[string]any{"branch": branch, "commit_sha": commit},
 	}}}
 	c.postJSON("/internal/v1/runs/"+c.runID+"/events", body, "report-git")
+}
+
+func (c *client) reportResult(outcome string, seq int64) {
+	body := map[string]any{"events": []map[string]any{{
+		"seq":     seq,
+		"type":    "run.result",
+		"payload": map[string]any{"outcome": outcome},
+	}}}
+	c.postJSON("/internal/v1/runs/"+c.runID+"/events", body, "report-result")
 }
 
 func (c *client) uploadArtifact(kind, content string) {

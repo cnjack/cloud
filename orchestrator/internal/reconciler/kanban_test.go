@@ -160,6 +160,29 @@ func TestWritebackNoDoneColumnSkipsMove(t *testing.T) {
 	}
 }
 
+// TestKanbanCommentBodyNoChanges proves a succeeded run with the no_changes
+// outcome (D18) gets a writeback comment that states no code changes were made,
+// rather than the ordinary "finished" + draft-PR line. It still links the run.
+func TestKanbanCommentBodyNoChanges(t *testing.T) {
+	nc := domain.RunResultNoChanges
+	run := &domain.Run{ID: "run-xyz", Status: domain.StatusSucceeded, Result: &nc}
+	body := kanbanCommentBody(run, "http://console")
+	if !strings.Contains(body, "no code changes") {
+		t.Fatalf("no_changes comment should state no code changes: %q", body)
+	}
+	if strings.Contains(body, "Draft PR") {
+		t.Fatalf("no_changes run has no PR; comment must not mention a draft PR: %q", body)
+	}
+	if !strings.Contains(body, "http://console/runs/run-xyz") {
+		t.Fatalf("console run link missing: %q", body)
+	}
+	// A normal succeeded run (no result) keeps the ordinary "finished." wording.
+	plain := kanbanCommentBody(&domain.Run{ID: "run-abc", Status: domain.StatusSucceeded}, "http://console")
+	if strings.Contains(plain, "no code changes") {
+		t.Fatalf("ordinary succeeded run must not claim no changes: %q", plain)
+	}
+}
+
 // A transient jtype error leaves the claim unmarked so the next tick retries
 // (and, having retried, succeeds exactly once).
 func TestWritebackRetriesOnTransientError(t *testing.T) {
@@ -187,5 +210,5 @@ func TestWritebackNilClientNoop(t *testing.T) {
 	st := store.NewMemStore()
 	seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
 	rec := newWritebackRec(st) // no WithKanban
-	rec.Tick(ctx)                // must not panic / error
+	rec.Tick(ctx)              // must not panic / error
 }

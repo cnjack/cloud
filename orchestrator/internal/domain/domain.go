@@ -289,10 +289,16 @@ type Run struct {
 	// failure (PRD J2-S3 / AC-9).
 	FailureReason  FailureReason `json:"failure_reason,omitempty"`
 	FailureMessage string        `json:"failure_message,omitempty"`
-	Attempt        int           `json:"attempt"`
-	CreatedAt      time.Time     `json:"created_at"`
-	StartedAt      *time.Time    `json:"started_at,omitempty"`
-	FinishedAt     *time.Time    `json:"finished_at,omitempty"`
+	// Result is the first-class OUTCOME of a SUCCEEDED run, beyond the bare status
+	// (D18). Its only value today is "no_changes": the agent ran to completion but
+	// produced an EMPTY diff — a success, not a failure. Nil (serialised as JSON
+	// null) for ordinary runs that produced a diff, or that have not reported a
+	// result. Set by the runner via the run.result event; never changes status.
+	Result     *RunResult `json:"result"`
+	Attempt    int        `json:"attempt"`
+	CreatedAt  time.Time  `json:"created_at"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	// JobCleanedAt is stamped when the reconciler has confirmed the run's
 	// terminal Job was deleted from the cluster. K8sJobName is NEVER cleared —
 	// it is part of the run's historical record (audit + e2e verification); this
@@ -396,6 +402,12 @@ const (
 	// branch in draft_pr mode (payload {branch, commit_sha}). The orchestrator
 	// persists it and uses branch as the idempotency key for PR creation (ST-1).
 	EventRunGit = "run.git"
+	// EventRunResult is emitted by the runner to record a first-class run OUTCOME
+	// (payload {outcome}). The orchestrator persists the outcome on runs.result
+	// (see SetRunResult) WITHOUT changing status — the Job's exit code still
+	// drives the terminal status. Today the only outcome is "no_changes": an agent
+	// run that finished cleanly but produced an empty diff (D18).
+	EventRunResult = "run.result"
 )
 
 // ArtifactKind enumerates the kinds of artifact a run can produce.
@@ -440,6 +452,36 @@ func ValidFailureReason(r FailureReason) bool {
 		return true
 	}
 	return false
+}
+
+// RunResult is the machine-readable OUTCOME of a SUCCEEDED run, recorded on
+// Run.Result (D18). It is orthogonal to Status: the Job still drives the
+// terminal status (an empty-diff run exits 0 → succeeded), while Result
+// classifies WHAT that success produced. Left an open string for
+// forward-compatible outcomes; only "no_changes" is defined today.
+type RunResult string
+
+const (
+	// RunResultNoChanges: the agent ran to completion but produced an EMPTY diff
+	// (no code changes). The run is a first-class success, not a failure — before
+	// D18 the runner exited non-zero here and the run showed failed(agent_error),
+	// which was misleading. Nothing is pushed and no diff artifact is uploaded.
+	RunResultNoChanges RunResult = "no_changes"
+)
+
+// ValidRunResult reports whether r is a recognised run result.
+func ValidRunResult(r RunResult) bool {
+	switch r {
+	case RunResultNoChanges:
+		return true
+	}
+	return false
+}
+
+// NoChanges reports whether the run finished with the first-class "no changes"
+// outcome (empty diff; D18) rather than producing a diff.
+func (r *Run) NoChanges() bool {
+	return r.Result != nil && *r.Result == RunResultNoChanges
 }
 
 // RunArtifact is a blob produced by a run. Text artifacts (diff) use Content;
