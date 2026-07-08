@@ -63,11 +63,16 @@ type Server struct {
 	// Invalidate() is immediately visible to Job scheduling. Never nil.
 	models *modelcfg.Resolver
 
-	// jtypeBoard validates a board (fetches its columns) before creating a
-	// kanban_link. It is the *jtype.Client in production; nil when the
-	// integration is off (column validation is then skipped). Typed as an
-	// interface so tests inject a fake without HTTP.
-	jtypeBoard boardValidator
+	// jtypeFactory builds per-token jtype clients (F6 / D25 — each link authorises
+	// with its own PAT). nil when the integration is off (JTYPE_BASE_URL unset).
+	// Shared with the reconciler + poller via JtypeFactory() so all three use one
+	// HTTP pool.
+	jtypeFactory *jtype.Factory
+	// jtypeBoardFor validates a board (fetches its columns) with a given token
+	// before creating a kanban_link. In production it wraps jtypeFactory; nil when
+	// the integration is off (column validation is then skipped). Typed as a
+	// token->interface func so tests inject a fake without HTTP.
+	jtypeBoardFor func(token string) boardValidator
 
 	// Session next-prompt long-poll timings (D22). Zero => the package defaults
 	// (25s hold / 500ms poll). Overridable by tests that need a fast hold.
@@ -123,12 +128,35 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Effective-model resolver (Feature A): one cached instance for every gate
 	// (run create/retry/review, webhook, and — via Models() — the reconciler).
 	s.models = modelcfg.NewResolver(st, s.cipher, cfg)
-	// Feature E — jtype kanban client (nil when the integration is off). Used by
-	// the admin link API to validate board columns at create time.
-	if cfg.JtypeBaseURL != "" && cfg.JtypeToken != "" {
-		s.jtypeBoard = jtype.NewClient(cfg.JtypeBaseURL, cfg.JtypeToken, 0)
+	// Feature E/F6 — jtype kanban client factory (nil when the integration is off,
+	// i.e. JTYPE_BASE_URL unset). Per-link tokens (D25) mean the base URL alone
+	// enables the integration; the cluster JTYPE_TOKEN is only a fallback. Used by
+	// the project link API to validate board columns at create time with the
+	// link's own (or fallback) token.
+	if f := jtype.NewFactory(cfg.JtypeBaseURL, 0); f != nil {
+		s.jtypeFactory = f
+		s.jtypeBoardFor = func(token string) boardValidator { return f.Client(token) }
 	}
 	return s
+}
+
+// Cipher exposes the token cipher (nil when AUTH_TOKEN_KEY is unset) so callers
+// that need to seal/open per-link jtype PATs share the API's instance.
+func (s *Server) Cipher() *auth.Cipher { return s.cipher }
+
+// JtypeFactory exposes the shared per-token jtype client factory (nil when the
+// integration is off) so the reconciler + poller build clients from the SAME
+// HTTP pool the API validates board columns through (F6 / D25).
+func (s *Server) JtypeFactory() *jtype.Factory { return s.jtypeFactory }
+
+// JtypeDecrypt returns the per-link token decrypt function (the cipher's
+// DecryptString), or nil when no cipher is configured — passed to the poller +
+// writeback so a link's encrypted PAT is opened the same way it was sealed.
+func (s *Server) JtypeDecrypt() func([]byte) (string, error) {
+	if s.cipher == nil {
+		return nil
+	}
+	return s.cipher.DecryptString
 }
 
 // Credentials exposes the shared credential resolver so the reconciler resolves
@@ -206,12 +234,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/v1/system/models/{id}/grants/{projectID}", s.authed(s.handleGrantModel))
 	mux.Handle("DELETE /api/v1/system/models/{id}/grants/{projectID}", s.authed(s.handleRevokeModel))
 
-	// Feature E — jtype kanban links. GET (list) is any logged-in principal;
-	// POST/DELETE are cluster-admin only (enforced in the handler). Board column
-	// validation against the live jtype workspace happens at create time.
+	// Feature E/F6 — jtype kanban links. Management (create/delete) is downshifted
+	// to the project OWNER via the project-scoped routes below (D25). The system
+	// route is retained as a cluster-admin READ-ONLY cross-project overview; the
+	// old POST/DELETE /system/kanban/links are taken down (console migrated).
 	mux.Handle("GET /api/v1/system/kanban/links", s.authed(s.handleListKanbanLinks))
-	mux.Handle("POST /api/v1/system/kanban/links", s.authed(s.handleCreateKanbanLink))
-	mux.Handle("DELETE /api/v1/system/kanban/links/{id}", s.authed(s.handleDeleteKanbanLink))
 
 	// User search (any logged-in user; for the add-member picker).
 	mux.Handle("GET /api/v1/users", s.authed(s.handleSearchUsers))
@@ -225,6 +252,16 @@ func (s *Server) Handler() http.Handler {
 	// Models a project is granted (D21). Member+; returns only id/name/model_name
 	// (never the base_url or key) plus an env_fallback flag for the ModelGate.
 	mux.Handle("GET /api/v1/projects/{id}/models", s.authed(s.handleListProjectModels))
+
+	// Kanban links a project owns (F6 / D25). Owner-managed: bind a jtype board
+	// column to one of the project's services, with an optional per-link jtype PAT
+	// (write-only). Board columns are validated against the live jtype board at
+	// create time with that token (or the cluster fallback).
+	mux.Handle("GET /api/v1/projects/{id}/kanban/links", s.authed(s.handleListProjectKanbanLinks))
+	mux.Handle("POST /api/v1/projects/{id}/kanban/links", s.authed(s.handleCreateProjectKanbanLink))
+	// PATCH rotates/clears ONLY the link's per-link token (claims retained, P2).
+	mux.Handle("PATCH /api/v1/projects/{id}/kanban/links/{linkID}", s.authed(s.handleUpdateProjectKanbanLink))
+	mux.Handle("DELETE /api/v1/projects/{id}/kanban/links/{linkID}", s.authed(s.handleDeleteProjectKanbanLink))
 
 	// Project members (owner/cluster-admin manage).
 	mux.Handle("GET /api/v1/projects/{id}/members", s.authed(s.handleListMembers))

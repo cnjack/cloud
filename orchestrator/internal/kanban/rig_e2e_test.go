@@ -54,7 +54,10 @@ func TestRigPollerDispatches(t *testing.T) {
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	poller := New(st, client, stubFor(true), log, "http://console", time.Second)
+	// The rig link has no per-link token; the poller resolves the rig PAT via the
+	// cluster fallback and the factory returns the pre-built client.
+	clientFor := func(string) DocumentAPI { return client }
+	poller := New(st, clientFor, nil, tok, stubFor(true), log, "http://console", time.Second)
 	poller.Tick(ctx)
 
 	// Assert by THIS card's claim (robust to leftover test cards on the shared

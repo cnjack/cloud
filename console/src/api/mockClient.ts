@@ -1218,15 +1218,28 @@ export function createMockClient(): ApiClient {
       return delay({ models: granted, env_fallback: false });
     },
 
-    /* ---- kanban links (Feature E) ----------------------------------------- */
+    /* ---- kanban links (Feature E / F6) ------------------------------------ */
+    // Cluster-admin READ-ONLY overview across all projects.
     async listKanbanLinks(): Promise<KanbanLink[]> {
       return delay([...kanbanLinks.values()]);
     },
-    async createKanbanLink(input: CreateKanbanLinkInput): Promise<KanbanLink> {
+    // A project's links (owner-managed).
+    async listProjectKanbanLinks(projectId: string): Promise<KanbanLink[]> {
+      return delay([...kanbanLinks.values()].filter((l) => l.project_id === projectId));
+    },
+    async createProjectKanbanLink(
+      projectId: string,
+      input: CreateKanbanLinkInput,
+    ): Promise<KanbanLink> {
       const ws = input.workspace_id?.trim();
       const board = input.board_ref?.trim();
-      if (!ws || !board || !input.project_id || !input.service_id || !input.trigger_column?.trim()) {
-        throw badRequest('workspace_id, board_ref, project_id, service_id and trigger_column are required');
+      if (!ws || !board || !input.service_id || !input.trigger_column?.trim()) {
+        throw badRequest('workspace_id, board_ref, service_id and trigger_column are required');
+      }
+      // The service must belong to this project.
+      const svcs = services.get(projectId) ?? [];
+      if (!svcs.some((s) => s.id === input.service_id)) {
+        throw badRequest('service does not belong to this project');
       }
       for (const l of kanbanLinks.values()) {
         if (l.workspace_id === ws && l.board_ref === board) {
@@ -1239,18 +1252,37 @@ export function createMockClient(): ApiClient {
         id: 'kl-' + Math.random().toString(36).slice(2, 10),
         workspace_id: ws,
         board_ref: board,
-        project_id: input.project_id,
+        project_id: projectId,
         service_id: input.service_id,
         trigger_column: input.trigger_column.trim(),
         done_column: input.done_column?.trim() || undefined,
         enabled: true,
+        token_set: !!input.token?.trim(),
+        // The demo rig has no cluster JTYPE_TOKEN, so a tokenless link is
+        // honestly "missing" (mirrors the server derivation; exercises the
+        // error badge in demo mode).
+        credential_status: input.token?.trim() ? 'per_link' : 'missing',
         created_at: new Date().toISOString(),
       };
       kanbanLinks.set(link.id, link);
       return delay(link);
     },
-    async deleteKanbanLink(id: string): Promise<void> {
-      if (!kanbanLinks.delete(id)) throw new ApiError(404, 'kanban link not found');
+    async updateProjectKanbanLinkToken(
+      projectId: string,
+      linkId: string,
+      token: string,
+    ): Promise<KanbanLink> {
+      const l = kanbanLinks.get(linkId);
+      if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
+      l.token_set = !!token.trim();
+      l.credential_status = token.trim() ? 'per_link' : 'missing';
+      kanbanLinks.set(linkId, l);
+      return delay({ ...l });
+    },
+    async deleteProjectKanbanLink(projectId: string, linkId: string): Promise<void> {
+      const l = kanbanLinks.get(linkId);
+      if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
+      kanbanLinks.delete(linkId);
       return delay(undefined);
     },
 

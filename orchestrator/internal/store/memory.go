@@ -1321,6 +1321,19 @@ func (m *MemStore) ListKanbanLinks(_ context.Context) ([]domain.KanbanLink, erro
 	return out, nil
 }
 
+func (m *MemStore) ListKanbanLinksByProject(_ context.Context, projectID string) ([]domain.KanbanLink, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.KanbanLink, 0)
+	for _, l := range m.kanbanLinks {
+		if l.ProjectID == projectID {
+			out = append(out, l)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
 func (m *MemStore) ListEnabledKanbanLinks(_ context.Context) ([]domain.KanbanLink, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1332,6 +1345,24 @@ func (m *MemStore) ListEnabledKanbanLinks(_ context.Context) ([]domain.KanbanLin
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil
+}
+
+func (m *MemStore) SetKanbanLinkToken(_ context.Context, id string, tokenEnc []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.kanbanLinks[id]
+	if !ok {
+		return ErrNotFound
+	}
+	// Copy the blob defensively (callers may reuse their buffer); nil clears.
+	if tokenEnc == nil {
+		l.TokenEnc = nil
+	} else {
+		l.TokenEnc = append([]byte(nil), tokenEnc...)
+	}
+	l.UpdatedAt = time.Now().UTC()
+	m.kanbanLinks[id] = l
+	return nil
 }
 
 func (m *MemStore) DeleteKanbanLink(_ context.Context, id string) error {

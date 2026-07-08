@@ -464,17 +464,28 @@ export interface SystemInfo {
     enabled: boolean;
     base_url?: string;
     poll_interval?: string;
+    // F6 / D25: whether the cluster JTYPE_TOKEN fallback is set. Per-link tokens
+    // authorise each link; this is only the fallback (never the token itself).
+    cluster_token_set?: boolean;
   };
 }
 
 /* ---- kanban links (Feature E) --------------------------------------------- */
 
 /**
- * GET /api/v1/system/kanban/links — one binding of a jtype board column to a
- * project/service. A card dragged into `trigger_column` dispatches an agent run;
- * a finished run is written back as a card comment and (when `done_column` is
- * set) the card is moved there. Mirrors the orchestrator kanbanLinkView.
+ * One binding of a jtype board column to a project/service. A card dragged into
+ * `trigger_column` dispatches an agent run; a finished run is written back as a
+ * card comment and (when `done_column` is set) the card is moved there. Mirrors
+ * the orchestrator kanbanLinkView.
+ *
+ * `token_set` (F6 / D25) reports whether the link carries its own encrypted jtype
+ * PAT; false means it falls back to the cluster JTYPE_TOKEN. The token itself is
+ * never returned. `credential_status` is the server-derived runtime credential
+ * state (P1): "missing" means the poller/writeback skip this link fail-visibly
+ * until a token is set — the UI must surface it as an error.
  */
+export type KanbanCredentialStatus = 'per_link' | 'cluster_fallback' | 'missing';
+
 export interface KanbanLink {
   id: string;
   workspace_id: string;
@@ -484,17 +495,23 @@ export interface KanbanLink {
   trigger_column: string;
   done_column?: string;
   enabled: boolean;
+  token_set: boolean;
+  credential_status: KanbanCredentialStatus;
   created_at: string;
 }
 
-/** POST /api/v1/system/kanban/links body (cluster-admin only). */
+/**
+ * POST /api/v1/projects/{id}/kanban/links body (owner). project_id comes from the
+ * path. `token` is the optional per-link jtype PAT — write-only (never echoed);
+ * omit it to fall back to the cluster JTYPE_TOKEN.
+ */
 export interface CreateKanbanLinkInput {
   workspace_id: string;
   board_ref: string;
-  project_id: string;
   service_id: string;
   trigger_column: string;
   done_column?: string;
+  token?: string;
 }
 
 /* ---- model catalog + project grants (D21) -------------------------------- */

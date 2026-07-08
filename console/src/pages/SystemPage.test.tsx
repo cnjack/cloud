@@ -276,66 +276,53 @@ describe('SystemPage', () => {
     renderPage(client, 'cluster-admin');
     await waitFor(() => expect(screen.getByTestId('kanban-card')).toBeTruthy());
     expect(screen.getByTestId('kanban-status').textContent).toContain('off');
-    // The add form is mounted only when enabled.
+    // The card is always read-only now (F6): management moved to Project settings.
     expect(screen.queryByTestId('kanban-link-form')).toBeNull();
   });
 
-  it('kanban card lists existing links and adds one via the form (integration on)', async () => {
-    const existing: KanbanLink = {
+  it('kanban card is a READ-ONLY overview: links with project + token badge, no management (F6)', async () => {
+    const withTok: KanbanLink = {
       id: 'kl-1', workspace_id: 'ws', board_ref: 'jcloud-dev',
       project_id: 'p1', service_id: 's1', trigger_column: 'ai', done_column: 'done',
-      enabled: true, created_at: '2026-01-01T00:00:00Z',
+      enabled: true, token_set: true, credential_status: 'per_link',
+      created_at: '2026-01-01T00:00:00Z',
     };
-    const createKanbanLink = vi.fn().mockResolvedValue({
-      id: 'kl-2', workspace_id: 'ws', board_ref: 'b2',
+    const noTok: KanbanLink = {
+      id: 'kl-2', workspace_id: 'ws2', board_ref: 'b2',
       project_id: 'p1', service_id: 's1', trigger_column: 'ai',
-      enabled: true, created_at: '2026-01-02T00:00:00Z',
-    } satisfies KanbanLink);
+      enabled: true, token_set: false, credential_status: 'cluster_fallback',
+      created_at: '2026-01-02T00:00:00Z',
+    };
+    const dead: KanbanLink = {
+      id: 'kl-3', workspace_id: 'ws3', board_ref: 'b3',
+      project_id: 'p1', service_id: 's1', trigger_column: 'ai',
+      enabled: true, token_set: false, credential_status: 'missing',
+      created_at: '2026-01-03T00:00:00Z',
+    };
     const project: Project = {
-      id: 'p1', name: 'kanban-proj', created_at: '2026-01-01T00:00:00Z',
-      services: [
-        { id: 's1', project_id: 'p1', name: 'default', repo_kind: 'raw',
-          default_branch: 'main', git_mode: 'readonly', created_at: '2026-01-01T00:00:00Z' },
-      ],
+      id: 'p1', name: 'kanban-proj', created_at: '2026-01-01T00:00:00Z', services: [],
     };
     const client = {
       getSystem: vi.fn().mockResolvedValue(
-        snapshot({ kanban: { enabled: true, base_url: 'http://jtype:13345', poll_interval: '15s' } }),
+        snapshot({ kanban: { enabled: true, base_url: 'http://jtype:13345', poll_interval: '15s', cluster_token_set: true } }),
       ),
-      listKanbanLinks: vi.fn().mockResolvedValue([existing]),
-      createKanbanLink,
-      // Project picker + service select resolution.
+      listKanbanLinks: vi.fn().mockResolvedValue([withTok, noTok, dead]),
       listProjects: vi.fn().mockResolvedValue([project]),
-      getProject: vi.fn().mockResolvedValue(project),
-      deleteKanbanLink: vi.fn().mockResolvedValue(undefined),
     };
     renderPage(client, 'cluster-admin');
 
-    // Existing link renders with the board ref.
     await screen.findByText('ws / jcloud-dev');
     expect(screen.getByTestId('kanban-status').textContent).toContain('linked');
-
-    // Wait for the project picker to populate, then choose the project.
-    const projectSelect = await screen.findByTestId('kanban-link-project');
-    await waitFor(() => screen.getByText('kanban-proj'));
-    fireEvent.change(projectSelect, { target: { value: 'p1' } });
-
-    // Wait for the service option to arrive, then choose it.
-    await waitFor(() => screen.getByText('default'));
-    fireEvent.change(screen.getByTestId('kanban-link-service'), { target: { value: 's1' } });
-
-    // Fill the board fields and submit.
-    fireEvent.change(screen.getByTestId('kanban-link-workspace'), { target: { value: 'ws' } });
-    fireEvent.change(screen.getByTestId('kanban-link-board'), { target: { value: 'b2' } });
-    fireEvent.change(screen.getByTestId('kanban-link-trigger'), { target: { value: 'ai' } });
-    fireEvent.click(screen.getByTestId('kanban-link-add'));
-
-    await waitFor(() =>
-      expect(createKanbanLink).toHaveBeenCalledWith({
-        workspace_id: 'ws', board_ref: 'b2', project_id: 'p1', service_id: 's1',
-        trigger_column: 'ai', done_column: undefined,
-      }),
-    );
-    await waitFor(() => expect(screen.getByText('Kanban link added.')).toBeTruthy());
+    // Project name resolved (shown per link) and both token badges render.
+    await waitFor(() => expect(screen.getAllByText(/kanban-proj/).length).toBeGreaterThan(0));
+    // Three-state credential badge (P1): healthy, neutral fallback, LOUD missing.
+    expect(screen.getByText('own token')).toBeTruthy();
+    expect(screen.getByText('cluster token')).toBeTruthy();
+    expect(screen.getByText('no credential')).toBeTruthy();
+    expect(screen.getByTestId('kanban-cred-kl-3').getAttribute('data-err')).toBe('true');
+    // Read-only: no add form, no add button, no per-link delete.
+    expect(screen.queryByTestId('kanban-link-form')).toBeNull();
+    expect(screen.queryByTestId('kanban-link-add')).toBeNull();
+    expect(screen.queryByTestId('kanban-link-delete-kl-1')).toBeNull();
   });
 });

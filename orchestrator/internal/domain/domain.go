@@ -782,10 +782,20 @@ type KanbanLink struct {
 	DoneColumn string `json:"done_column,omitempty"`
 	// Enabled gates the poller. A disabled link is retained (its claims persist)
 	// but never scanned.
-	Enabled   bool      `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// TokenEnc is the per-link jtype PAT, AES-256-GCM sealed (nonce||ciphertext)
+	// with AUTH_TOKEN_KEY — the same scheme the model catalog uses (D25 / F6).
+	// nil => the poller/writeback fall back to the cluster JTYPE_TOKEN env. Never
+	// serialized (write-only via the API; the view echoes only TokenSet()).
+	TokenEnc  []byte    `json:"-"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// TokenSet reports whether the link carries a per-link (encrypted) jtype PAT.
+// Used to echo token_set to owners without ever exposing the plaintext; false
+// means the link falls back to the cluster JTYPE_TOKEN env.
+func (l KanbanLink) TokenSet() bool { return len(l.TokenEnc) > 0 }
 
 // KanbanClaim is the idempotency row for kanban-triggered dispatch (Feature E).
 // UNIQUE(LinkId, DocumentID) means a given card is dispatched at most once per

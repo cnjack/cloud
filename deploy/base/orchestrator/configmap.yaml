@@ -75,10 +75,13 @@ data:
   # Where the OAuth callback 302s back to after a successful login.
   CONSOLE_URL: "http://localhost:5173"
 
-  # --- jtype kanban integration (Feature E) ---------------------------------
+  # --- jtype kanban integration (Feature E / F6) -----------------------------
   # JTYPE_BASE_URL intentionally NOT set here: the integration is OFF unless a
   # deployment explicitly turns it on (fail-visible red line #1 — no mock
-  # default). To enable, set JTYPE_BASE_URL in an overlay AND put JTYPE_TOKEN in
-  # the orchestrator-secret (gitignored). JTYPE_POLL_INTERVAL has a sane default
-  # (15s) so only the base URL + token need to be provided.
+  # default). Since F6 / D25 the base URL ALONE enables the integration: each
+  # kanban link carries its own encrypted jtype PAT (managed by the project
+  # owner in the console), and the cluster JTYPE_TOKEN in the orchestrator
+  # secret is only an optional FALLBACK for links without a per-link token.
+  # JTYPE_POLL_INTERVAL has a sane default (15s) so only the base URL needs to
+  # be provided.
   JTYPE_POLL_INTERVAL: "15s"

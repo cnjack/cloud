@@ -37,6 +37,7 @@ export const qk = {
   models: ['models'] as const,
   projectModels: (projectId: string) => ['project-models', projectId] as const,
   kanbanLinks: ['kanban-links'] as const,
+  projectKanbanLinks: (projectId: string) => ['project-kanban-links', projectId] as const,
   services: (projectId: string) => ['services', projectId] as const,
   members: (projectId: string) => ['members', projectId] as const,
   users: (q: string) => ['users', q] as const,
@@ -412,8 +413,9 @@ export function useUpdateService(projectId: string) {
   });
 }
 
-/* ---- kanban links (Feature E) -------------------------------------------- */
+/* ---- kanban links (Feature E / F6) --------------------------------------- */
 
+/** Cluster-admin READ-ONLY overview of every kanban link across all projects. */
 export function useKanbanLinks(enabled = true) {
   const api = useApi();
   return useQuery({
@@ -423,21 +425,41 @@ export function useKanbanLinks(enabled = true) {
   });
 }
 
-export function useCreateKanbanLink() {
+/** A project's kanban links (owner-managed, F6 / D25). */
+export function useProjectKanbanLinks(projectId: string, enabled = true) {
   const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: CreateKanbanLinkInput) => api.createKanbanLink(input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.kanbanLinks }),
+  return useQuery({
+    queryKey: qk.projectKanbanLinks(projectId),
+    queryFn: () => api.listProjectKanbanLinks(projectId),
+    enabled: enabled && !!projectId,
   });
 }
 
-export function useDeleteKanbanLink() {
+export function useCreateProjectKanbanLink(projectId: string) {
   const api = useApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.deleteKanbanLink(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.kanbanLinks }),
+    mutationFn: (input: CreateKanbanLinkInput) => api.createProjectKanbanLink(projectId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) }),
+  });
+}
+
+export function useUpdateProjectKanbanLinkToken(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ linkId, token }: { linkId: string; token: string }) =>
+      api.updateProjectKanbanLinkToken(projectId, linkId, token),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) }),
+  });
+}
+
+export function useDeleteProjectKanbanLink(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (linkId: string) => api.deleteProjectKanbanLink(projectId, linkId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) }),
   });
 }
 

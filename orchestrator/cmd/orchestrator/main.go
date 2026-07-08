@@ -17,7 +17,6 @@ import (
 
 	"github.com/cnjack/jcloud/internal/api"
 	"github.com/cnjack/jcloud/internal/config"
-	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/kanban"
 	"github.com/cnjack/jcloud/internal/provider"
@@ -126,24 +125,31 @@ func run(log *slog.Logger) error {
 			// the SAME cache the scheduler resolves through (Feature A).
 			WithModelResolver(srv.Models())
 
-		// Feature E — jtype kanban integration. When the jtype base URL + token
-		// are configured, wire the writeback client into the reconciler (it posts
-		// finished runs' results back as card comments) and start the poller that
-		// dispatches runs off cards in trigger columns. Either both are on or both
-		// off — there is no half-on mode (fail-visible red line: never a mock).
-		if cfg.JtypeBaseURL != "" && cfg.JtypeToken != "" {
-			jc := jtype.NewClient(cfg.JtypeBaseURL, cfg.JtypeToken, 0)
-			rec.WithKanban(jc, cfg.ConsoleURL)
+		// Feature E/F6 — jtype kanban integration. The base URL alone enables it:
+		// each link authorises with its OWN encrypted PAT (D25), and the cluster
+		// JTYPE_TOKEN is now only a fallback. Wire the writeback factory into the
+		// reconciler (posts finished runs' results back as card comments) and start
+		// the poller (dispatches runs off cards in trigger columns), both sharing the
+		// API server's jtype Factory + token cipher (fail-visible red line: never a
+		// mock; a link with no credential is skipped visibly).
+		if f := srv.JtypeFactory(); f != nil {
+			decrypt := srv.JtypeDecrypt()
+			rec.WithKanban(
+				func(tok string) reconciler.KanbanWriter { return f.Client(tok) },
+				decrypt, cfg.JtypeToken, cfg.ConsoleURL)
 			if cfg.JtypePollInterval > 0 {
-				poller := kanban.New(st, jc, srv.Models(), log, cfg.ConsoleURL, cfg.JtypePollInterval)
+				poller := kanban.New(st,
+					func(tok string) kanban.DocumentAPI { return f.Client(tok) },
+					decrypt, cfg.JtypeToken, srv.Models(), log, cfg.ConsoleURL, cfg.JtypePollInterval)
 				go poller.Run(ctx)
 				log.Info("kanban integration enabled",
-					"jtype_url", cfg.JtypeBaseURL, "poll_interval", cfg.JtypePollInterval)
+					"jtype_url", cfg.JtypeBaseURL, "poll_interval", cfg.JtypePollInterval,
+					"cluster_token_fallback", cfg.JtypeToken != "")
 			} else {
 				log.Info("kanban writeback enabled (poller disabled: JTYPE_POLL_INTERVAL<=0)", "jtype_url", cfg.JtypeBaseURL)
 			}
-		} else if cfg.JtypeBaseURL != "" || cfg.JtypeToken != "" {
-			log.Warn("kanban integration partially configured: need BOTH JTYPE_BASE_URL and JTYPE_TOKEN; staying off")
+		} else if cfg.JtypeToken != "" {
+			log.Warn("JTYPE_TOKEN is set but JTYPE_BASE_URL is empty: kanban integration stays off")
 		}
 
 		if !srv.Git().Available() {

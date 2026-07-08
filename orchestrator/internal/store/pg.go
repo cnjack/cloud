@@ -1669,17 +1669,18 @@ func (s *PGStore) GetArtifact(ctx context.Context, runID string, kind domain.Art
 
 // --- Kanban (Feature E) -----------------------------------------------------
 
-// kanbanLinkCols are the kanban_links columns in scan order. done_column may be
-// NULL; the rest are NOT NULL.
+// kanbanLinkCols are the kanban_links columns in scan order. done_column and
+// token_enc may be NULL; the rest are NOT NULL. token_enc is last so scan-order
+// edits stay localized (F6 / D25).
 const kanbanLinkCols = `id, workspace_id, board_ref, project_id, service_id,
-	trigger_column, done_column, enabled, created_at, updated_at`
+	trigger_column, done_column, enabled, created_at, updated_at, token_enc`
 
 func scanKanbanLink(row pgx.Row) (*domain.KanbanLink, error) {
 	var l domain.KanbanLink
 	var doneColumn *string
 	err := row.Scan(
 		&l.ID, &l.WorkspaceID, &l.BoardRef, &l.ProjectID, &l.ServiceID,
-		&l.TriggerColumn, &doneColumn, &l.Enabled, &l.CreatedAt, &l.UpdatedAt)
+		&l.TriggerColumn, &doneColumn, &l.Enabled, &l.CreatedAt, &l.UpdatedAt, &l.TokenEnc)
 	if err != nil {
 		return nil, err
 	}
@@ -1690,11 +1691,13 @@ func scanKanbanLink(row pgx.Row) (*domain.KanbanLink, error) {
 }
 
 func (s *PGStore) CreateKanbanLink(ctx context.Context, l *domain.KanbanLink) error {
+	// A nil TokenEnc encodes to SQL NULL (cluster-fallback link); a non-nil blob
+	// stores the sealed per-link PAT.
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO kanban_links (`+kanbanLinkCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		l.ID, l.WorkspaceID, l.BoardRef, l.ProjectID, l.ServiceID,
-		l.TriggerColumn, nullStr(l.DoneColumn), l.Enabled, l.CreatedAt, l.UpdatedAt)
+		l.TriggerColumn, nullStr(l.DoneColumn), l.Enabled, l.CreatedAt, l.UpdatedAt, l.TokenEnc)
 	if err != nil {
 		return mapKanbanLinkErr("create kanban link", err)
 	}
@@ -1731,6 +1734,24 @@ func (s *PGStore) ListKanbanLinks(ctx context.Context) ([]domain.KanbanLink, err
 	return out, rows.Err()
 }
 
+func (s *PGStore) ListKanbanLinksByProject(ctx context.Context, projectID string) ([]domain.KanbanLink, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+kanbanLinkCols+` FROM kanban_links WHERE project_id=$1 ORDER BY created_at DESC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list kanban links by project: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.KanbanLink
+	for rows.Next() {
+		l, err := scanKanbanLink(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *l)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) ListEnabledKanbanLinks(ctx context.Context) ([]domain.KanbanLink, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+kanbanLinkCols+` FROM kanban_links WHERE enabled=TRUE ORDER BY created_at`)
@@ -1747,6 +1768,20 @@ func (s *PGStore) ListEnabledKanbanLinks(ctx context.Context) ([]domain.KanbanLi
 		out = append(out, *l)
 	}
 	return out, rows.Err()
+}
+
+func (s *PGStore) SetKanbanLinkToken(ctx context.Context, id string, tokenEnc []byte) error {
+	// ONLY token_enc (+updated_at) changes; the binding and its claims are
+	// untouched (P2 — a rotation never re-dispatches already-claimed cards).
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE kanban_links SET token_enc=$2, updated_at=now() WHERE id=$1`, id, tokenEnc)
+	if err != nil {
+		return fmt.Errorf("set kanban link token: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *PGStore) DeleteKanbanLink(ctx context.Context, id string) error {
@@ -1840,7 +1875,7 @@ func (s *PGStore) ListKanbanRunsAwaitingWriteback(ctx context.Context) ([]Kanban
 			&wb.Claim.ID, &wb.Claim.LinkID, &wb.Claim.DocumentID, &wb.Claim.DocumentPath, &wb.Claim.RunID,
 			&wb.Claim.NotifiedNotConfiguredAt, &wb.Claim.WritebackAt, &wb.Claim.ClaimedAt,
 			&wb.Link.ID, &wb.Link.WorkspaceID, &wb.Link.BoardRef, &wb.Link.ProjectID, &wb.Link.ServiceID,
-			&wb.Link.TriggerColumn, &doneColumn, &wb.Link.Enabled, &wb.Link.CreatedAt, &wb.Link.UpdatedAt,
+			&wb.Link.TriggerColumn, &doneColumn, &wb.Link.Enabled, &wb.Link.CreatedAt, &wb.Link.UpdatedAt, &wb.Link.TokenEnc,
 		); err != nil {
 			return nil, fmt.Errorf("scan kanban writeback: %w", err)
 		}

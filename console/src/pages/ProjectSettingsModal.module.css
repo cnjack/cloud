@@ -203,3 +203,97 @@
   font-size: var(--fs-tiny);
   color: var(--color-text-muted);
 }
+
+/* ---- Kanban tab (F6 / D25) ------------------------------------------------ */
+.kanbanList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.kanbanRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.kanbanMeta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.kanbanTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--color-text);
+  word-break: break-all;
+}
+
+.kanbanSub {
+  font-size: var(--fs-tiny);
+  color: var(--color-text-faint);
+}
+
+.badge {
+  display: inline-block;
+  font-size: var(--fs-tiny);
+  font-weight: var(--fw-medium);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-full, 999px);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-faint);
+}
+
+/* Credential three-state (P1): per_link = healthy, cluster_fallback = neutral
+   (the .badge default above), missing = loud error — the link is dead until a
+   token is set (fail-visible, mirrors the server's credential_status). */
+.badge[data-state='per_link'] {
+  border-color: var(--status-succeeded-dot);
+  color: var(--status-succeeded-fg);
+  background: var(--status-succeeded-bg);
+}
+
+.badge[data-state='missing'] {
+  border-color: var(--status-failed-dot);
+  color: var(--status-failed-fg);
+  background: var(--status-failed-bg);
+}
+
+.tokenEditor {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.tokenEditor > :first-child {
+  flex: 1;
+}
+
+.kanbanForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.kanbanFormActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.kanbanError {
+  font-size: var(--fs-tiny);
+  color: var(--color-danger, #c62828);
+}

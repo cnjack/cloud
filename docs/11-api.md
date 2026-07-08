@@ -633,6 +633,46 @@ reconciler 的 Job-launch 闸与 LLM 反向代理都按 `run.model_id` **物化*
 (模型在入队后被删 → `503 model_not_configured` / `setup_failed`;模型有 key 但
 `AUTH_TOKEN_KEY` 未配 → **永久错误** → `setup_failed`,非无限重试;均不静默降级)。
 
+### 2.5b jtype kanban links(Feature E / F6 · D25)
+
+kanban link 把「jtype board 的某一列」绑到 project 的某个 service:卡片拖进
+`trigger_column` 派一个 agent run,run 结束把结果回写为卡片评论(`done_column`
+非空时把卡片移到该列)。**F6 / D25 起,link 管理权从 cluster-admin 下放到
+project owner**,jtype 凭据从「单一集群 env」改为 **per-link 加密存储**
+(`token_enc`,AES-256-GCM,与模型 key 同一 `AUTH_TOKEN_KEY`,**只写不读**)。
+`JTYPE_BASE_URL` 一项即启用集成;`JTYPE_TOKEN` 降级为**回退凭据**(link 没配
+自己的 token 时使用)。
+
+| 端点 | 角色 | 说明 |
+|---|---|---|
+| `GET /api/v1/system/kanban/links` | cluster-admin | **只读**跨 project 总览(每条含 `project_id` + `token_set`,绝不含 token) |
+| `GET /api/v1/projects/{id}/kanban/links` | owner | 本 project 的 links(含 `token_set`) |
+| `POST /api/v1/projects/{id}/kanban/links` | owner | `{workspace_id, board_ref, service_id, trigger_column, done_column?, token?}`;`service` 须属本 project(否则 `400`);`token` 可选、**只写**(明文进、绝不回);集成开时用该 token(或集群回退)对 live board 校验列名 |
+| `PATCH /api/v1/projects/{id}/kanban/links/{linkId}` | owner | **只轮换/清除 token**:body `{"token":"..."}`(字段必发,缺省 `400`);`""` = 清除转集群回退,非空 = 轮换;**claims 保留**(轮换绝不重派已认领卡片);link 须属本 project(否则 `404`);cipher 缺失 `409`(同 create) |
+| `DELETE /api/v1/projects/{id}/kanban/links/{linkId}` | owner | 删除;link 须属本 project(否则 `404`),claims 级联 |
+
+**创建时的 fail-visible 闸(均不静默)**:
+
+- `service` 不存在或不属本 project → `400`。
+- 集成开(`JTYPE_BASE_URL` 已配)但既没传 `token` 也没有集群回退 → `400 token_required`
+  (无可用凭据的 link 是死 link,拒建而非静默存)。
+- `trigger_column`/`done_column` 不是 live board 的真实列 → `400`;jtype 不可达 → `503 jtype_unreachable`。
+- 传了 `token` 但 `AUTH_TOKEN_KEY` 未配(无 cipher,无法加密)→ `409 cipher_not_configured`
+  (该检查在 board 网络校验**之前**——配置错误不被网络失败掩盖)。
+
+响应 `kanbanLinkView` 恒含 `token_set`(bool)与 `credential_status`
+(`"per_link" | "cluster_fallback" | "missing"`,服务端按 token_set 与集群回退
+是否配置派生;`missing` = poller/回写 fail-visible 跳过该 link,console 以醒目
+错误徽标呈现),**永不含 token**。
+
+**运行期 token 选取(poller 拉取 + reconciler 回写共用同一三态)**:
+`token_enc` 非空 → 解密用之;否则集群 `JTYPE_TOKEN` 回退(限频一次性 deprecation
+日志);两者皆空 → 该 link **fail-visible 跳过**(不以空凭据打 jtype),回写侧则把
+该卡的 writeback **挂起重试**(不丢结果),owner 补上 token 后自动恢复。
+
+`GET /api/v1/system` 的 `kanban` 字段:`enabled`(= `JTYPE_BASE_URL` 已配)、
+`base_url`、`poll_interval`、`cluster_token_set`(= 集群回退 token 是否配置,**非** token 本身)。
+
 ---
 
 ## 3 · 前端集成示例(SSE)

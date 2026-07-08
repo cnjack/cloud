@@ -8,12 +8,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/credentials"
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/provider"
@@ -63,17 +65,23 @@ type Reconciler struct {
 	// cache invalidation is immediately visible here. Never nil.
 	models *modelcfg.Resolver
 
-	// Feature E — kanban writeback. When the jtype client is wired, a terminal
-	// kanban-origin run has its result posted back as a card comment (and the
-	// card moved to the link's done column when configured). nil => the pass is
-	// a no-op (the jtype integration is off).
-	kanban     kanbanWriter
-	consoleURL string
+	// Feature E/F6 — kanban writeback. When wired, a terminal kanban-origin run has
+	// its result posted back as a card comment (and the card moved to the link's
+	// done column when configured). kanbanFor builds a writer bound to a link's PAT
+	// (per-link encrypted token, else the cluster fallback; D25). nil => the pass
+	// is a no-op (the jtype integration is off).
+	kanbanFor         func(token string) KanbanWriter
+	jtypeDecrypt      func([]byte) (string, error) // opens a link's encrypted PAT (nil => no cipher)
+	jtypeClusterToken string                       // JTYPE_TOKEN fallback
+	consoleURL        string
+	// jtypeNoted throttles the one-time per-link cluster-fallback deprecation +
+	// missing-credential notices so the writeback loop does not log every tick.
+	jtypeNoted sync.Map // linkID -> struct{}
 }
 
-// kanbanWriter is the slice of *jtype.Client the writeback pass uses. Extracted
-// as an interface so the pass is unit-tested with a fake (no HTTP).
-type kanbanWriter interface {
+// KanbanWriter is the slice of *jtype.Client the writeback pass uses. Exported so
+// main.go can build the token->writer factory; a fake implements it in tests.
+type KanbanWriter interface {
 	AddComment(ctx context.Context, workspace, docID, body string) error
 	MoveCard(ctx context.Context, workspace, docID, newStatus string) error
 }
@@ -121,12 +129,15 @@ func (r *Reconciler) WithModelResolver(m *modelcfg.Resolver) *Reconciler {
 	return r
 }
 
-// WithKanban wires the jtype writeback client (Feature E). When set, a terminal
-// kanban-origin run has its result posted back as a card comment and (when the
-// link has a done column) its card moved. nil leaves the pass as a no-op.
-// consoleURL is the console root used to build a run deep-link in the comment.
-func (r *Reconciler) WithKanban(k kanbanWriter, consoleURL string) *Reconciler {
-	r.kanban = k
+// WithKanban wires the jtype writeback factory (Feature E/F6). clientFor builds a
+// writer bound to a resolved PAT; decrypt opens a link's encrypted per-link token
+// (nil when no cipher); clusterToken is the JTYPE_TOKEN fallback (D25). A nil
+// clientFor leaves the pass a no-op. consoleURL is the console root used to build
+// a run deep-link in the comment.
+func (r *Reconciler) WithKanban(clientFor func(token string) KanbanWriter, decrypt func([]byte) (string, error), clusterToken, consoleURL string) *Reconciler {
+	r.kanbanFor = clientFor
+	r.jtypeDecrypt = decrypt
+	r.jtypeClusterToken = clusterToken
 	r.consoleURL = consoleURL
 	return r
 }
@@ -634,7 +645,7 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 // is a DB error between AddComment and the marker, which mirrors the
 // reconcileReviews pattern and is rare).
 func (r *Reconciler) reconcileKanbanWriteback(ctx context.Context) {
-	if r.kanban == nil {
+	if r.kanbanFor == nil {
 		return
 	}
 	pending, err := r.st.ListKanbanRunsAwaitingWriteback(ctx)
@@ -656,6 +667,25 @@ func (r *Reconciler) reconcileKanbanWriteback(ctx context.Context) {
 // thing that removes it from the scan): a transient jtype error therefore just
 // retries — it never loses the result silently.
 func (r *Reconciler) writebackCard(ctx context.Context, wb *store.KanbanWriteback) {
+	// Resolve this link's PAT (D25 three-state): per-link encrypted token, else the
+	// cluster fallback, else fail-visibly skip. On the missing-credential path the
+	// claim is left unmarked so the writeback resumes the moment an owner adds a
+	// token — never silently dropped. Notices are throttled to once per link.
+	token, source, err := jtype.ResolveToken(wb.Link.TokenEnc, r.jtypeDecrypt, r.jtypeClusterToken)
+	if err != nil {
+		if _, seen := r.jtypeNoted.LoadOrStore("err:"+wb.Link.ID, struct{}{}); !seen {
+			r.log.Error("reconcile kanban: no jtype credential for link; writeback deferred",
+				"link", wb.Link.ID, "run", wb.Run.ID, "err", err)
+		}
+		return // retry next tick (unmarked); resolves once a token is configured
+	}
+	if source == jtype.TokenClusterFallback {
+		if _, seen := r.jtypeNoted.LoadOrStore("dep:"+wb.Link.ID, struct{}{}); !seen {
+			r.log.Warn("reconcile kanban: link uses the deprecated cluster JTYPE_TOKEN fallback; set a per-link token",
+				"link", wb.Link.ID)
+		}
+	}
+	writer := r.kanbanFor(token)
 	body := kanbanCommentBody(&wb.Run, r.consoleURL)
 
 	// Move first, ONLY for a succeeded run with a done column: if it fails we
@@ -666,12 +696,12 @@ func (r *Reconciler) writebackCard(ctx context.Context, wb *store.KanbanWritebac
 		moveTo = wb.Link.DoneColumn
 	}
 	if moveTo != "" {
-		if err := r.kanban.MoveCard(ctx, wb.Link.WorkspaceID, wb.Claim.DocumentID, moveTo); err != nil {
+		if err := writer.MoveCard(ctx, wb.Link.WorkspaceID, wb.Claim.DocumentID, moveTo); err != nil {
 			r.log.Warn("reconcile kanban: move card", "run", wb.Run.ID, "doc", wb.Claim.DocumentID, "err", err)
 			return // retry next tick
 		}
 	}
-	if err := r.kanban.AddComment(ctx, wb.Link.WorkspaceID, wb.Claim.DocumentID, body); err != nil {
+	if err := writer.AddComment(ctx, wb.Link.WorkspaceID, wb.Claim.DocumentID, body); err != nil {
 		r.log.Warn("reconcile kanban: post result comment", "run", wb.Run.ID, "doc", wb.Claim.DocumentID, "err", err)
 		return // retry next tick
 	}

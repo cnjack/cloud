@@ -122,10 +122,11 @@ type Config struct {
 	// kanban integration is OFF (no poller, no writeback) — the system runs
 	// normally without it. NEVER defaults to a mock (fail-visible red line).
 	JtypeBaseURL string
-	// JtypeToken is JTYPE_TOKEN: a jtype mcp-scope PAT (editor rights) that
-	// authorises the poller's reads/writes across every workspace on the
-	// instance. Required when JtypeBaseURL is set; the integration stays OFF
-	// when only the base URL is configured so a misconfig is loud, not silent.
+	// JtypeToken is JTYPE_TOKEN: a jtype mcp-scope PAT (editor rights). Since F6 /
+	// D25 each kanban link carries its OWN encrypted PAT; this cluster token is now
+	// only a FALLBACK for links that have no per-link token. Optional — the
+	// integration is enabled by JtypeBaseURL alone (per-link tokens can authorise
+	// every read/write without a cluster token).
 	JtypeToken string
 	// JtypePollInterval is JTYPE_POLL_INTERVAL (default 15s): how often the
 	// poller scans enabled kanban_links for cards in their trigger column. <=0

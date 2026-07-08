@@ -183,6 +183,76 @@ func TestPGServicesMigrationBackfill(t *testing.T) {
 	}
 }
 
+// TestPGKanbanLinkTokenMigration is the F6 / D25 migration check: 0017 adds a
+// nullable token_enc column to kanban_links, and re-applying it is a clean no-op
+// (ADD COLUMN IF NOT EXISTS). Runs against a synthetic pre-0017 kanban_links in a
+// throwaway schema; needs JCLOUD_PG_DSN and is skipped otherwise.
+func TestPGKanbanLinkTokenMigration(t *testing.T) {
+	dsn := os.Getenv("JCLOUD_PG_DSN")
+	if dsn == "" {
+		t.Skip("JCLOUD_PG_DSN not set; skipping Postgres-backed migration test")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer conn.Release()
+	c := conn.Conn()
+
+	schema := "mig_" + domain.NewID()[:16]
+	if _, err := c.Exec(ctx, `CREATE SCHEMA `+schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() { _, _ = c.Exec(context.Background(), `DROP SCHEMA `+schema+` CASCADE`) })
+	if _, err := c.Exec(ctx, `SET search_path TO `+schema); err != nil {
+		t.Fatalf("set search_path: %v", err)
+	}
+
+	// Minimal pre-0017 kanban_links (the subset 0017 touches — no token_enc yet).
+	if _, err := c.Exec(ctx, `
+		CREATE TABLE kanban_links (
+			id text PRIMARY KEY, workspace_id text NOT NULL, board_ref text NOT NULL,
+			project_id text NOT NULL, service_id text NOT NULL, trigger_column text NOT NULL,
+			done_column text, enabled boolean NOT NULL DEFAULT true,
+			created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+		);`); err != nil {
+		t.Fatalf("create legacy kanban_links: %v", err)
+	}
+	mustExec(t, ctx, c, `INSERT INTO kanban_links (id,workspace_id,board_ref,project_id,service_id,trigger_column)
+		VALUES ('k1','ws','b','p','s','ai')`)
+
+	sql, err := migrationsFS.ReadFile("migrations/0017_kanban_link_token.sql")
+	if err != nil {
+		t.Fatalf("read 0017: %v", err)
+	}
+	// Apply TWICE — the second application must be a clean no-op (idempotent).
+	for i := 0; i < 2; i++ {
+		if _, err := c.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("apply 0017 (pass %d): %v", i+1, err)
+		}
+	}
+
+	// token_enc now exists, is bytea, and is nullable (the pre-existing row is NULL).
+	var dataType, nullable string
+	mustRow(t, ctx, c, `SELECT data_type, is_nullable FROM information_schema.columns
+		WHERE table_schema=$1 AND table_name='kanban_links' AND column_name='token_enc'`,
+		schema, &dataType, &nullable)
+	if dataType != "bytea" || nullable != "YES" {
+		t.Fatalf("token_enc column type=%q nullable=%q want bytea/YES", dataType, nullable)
+	}
+	var enc []byte
+	mustScan(t, ctx, c, `SELECT token_enc FROM kanban_links WHERE id='k1'`, &enc)
+	if enc != nil {
+		t.Fatalf("pre-existing link token_enc should be NULL, got %v", enc)
+	}
+}
+
 // TestPGModelCatalogMigrationBackfill is the D21 §6 data migration: a pre-0013
 // database with a single cluster_model_config row + N projects must, after 0013,
 // have that config as the catalog's first entry GRANTED to every project, the old

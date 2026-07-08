@@ -23,11 +23,12 @@ func testLogger(t *testing.T) *slog.Logger {
 // fakeAPI is an in-memory jtype stand-in for poller tests.
 type fakeAPI struct {
 	mu       sync.Mutex
-	docs     map[string]jtype.Doc        // id -> list item
-	contents map[string]string           // id -> content
-	comments map[string][]string         // docID -> bodies
-	getCalls int                         // number of GetDocument calls (cursor probe)
+	docs     map[string]jtype.Doc // id -> list item
+	contents map[string]string    // id -> content
+	comments map[string][]string  // docID -> bodies
+	getCalls int                  // number of GetDocument calls (cursor probe)
 	listErr  error
+	tokens   []string // PATs the token->client factory was asked to bind (F6)
 }
 
 func newFakeAPI() *fakeAPI {
@@ -103,7 +104,11 @@ func newPollerHarness(t *testing.T, configured bool) (*Poller, *store.MemStore, 
 	_ = m.CreateKanbanLink(ctx, link)
 
 	api := newFakeAPI()
-	poller := New(m, api, stubFor(configured), testLogger(t), "http://console", time.Second)
+	// The seeded link carries no per-link token, so it resolves via the cluster
+	// fallback "cluster-tok"; the factory records each requested PAT and returns
+	// the one fake.
+	clientFor := func(tok string) DocumentAPI { api.tokens = append(api.tokens, tok); return api }
+	poller := New(m, clientFor, nil, "cluster-tok", stubFor(configured), testLogger(t), "http://console", time.Second)
 	return poller, m, api, link, p, svc
 }
 
@@ -252,6 +257,66 @@ func TestPollerOncePerCard(t *testing.T) {
 	runs, _ := m.ListRunsByService(context.Background(), link.ServiceID, 10)
 	if len(runs) != 1 {
 		t.Fatalf("re-surfaces must not re-dispatch; got %d", len(runs))
+	}
+}
+
+// seedLinkedProject builds a project/service/link (with the given token blob) and
+// a fake API, returning the pieces for a token-selection test.
+func seedLinkedProject(t *testing.T, tokenEnc []byte) (*store.MemStore, *fakeAPI, *domain.KanbanLink) {
+	t.Helper()
+	m := store.NewMemStore()
+	ctx := context.Background()
+	p := &domain.Project{ID: domain.NewID(), Name: "kan", CreatedAt: time.Now()}
+	_ = m.CreateProject(ctx, p)
+	svc := &domain.Service{ID: domain.NewID(), ProjectID: p.ID, Name: "default",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	_ = m.CreateService(ctx, svc)
+	link := &domain.KanbanLink{ID: domain.NewID(), WorkspaceID: "ws", BoardRef: "b",
+		ProjectID: p.ID, ServiceID: svc.ID, TriggerColumn: "ai", Enabled: true,
+		TokenEnc: tokenEnc, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	_ = m.CreateKanbanLink(ctx, link)
+	api := newFakeAPI()
+	return m, api, link
+}
+
+// F6 / D25: a link with its own encrypted PAT is polled with the DECRYPTED
+// per-link token, not the cluster fallback.
+func TestPollerUsesPerLinkToken(t *testing.T) {
+	m, api, link := seedLinkedProject(t, []byte("ENCPAT"))
+	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 5)
+	clientFor := func(tok string) DocumentAPI { api.tokens = append(api.tokens, tok); return api }
+	decrypt := func(b []byte) (string, error) { return "PLAIN-" + string(b), nil }
+	poller := New(m, clientFor, decrypt, "cluster-tok", stubFor(true), testLogger(t), "http://console", time.Second)
+
+	poller.Tick(context.Background())
+
+	if len(api.tokens) == 0 || api.tokens[0] != "PLAIN-ENCPAT" {
+		t.Fatalf("poller used token %v, want decrypted per-link PLAIN-ENCPAT", api.tokens)
+	}
+	runs, _ := m.ListRunsByService(context.Background(), link.ServiceID, 10)
+	if len(runs) != 1 {
+		t.Fatalf("want 1 dispatched run, got %d", len(runs))
+	}
+}
+
+// F6 / D25: a link with neither a per-link token nor a cluster fallback is
+// fail-visible — the poller never builds a client (no empty-credential call) and
+// dispatches nothing.
+func TestPollerSkipsLinkWithoutToken(t *testing.T) {
+	m, api, link := seedLinkedProject(t, nil) // no per-link token
+	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 5)
+	clientFor := func(tok string) DocumentAPI { api.tokens = append(api.tokens, tok); return api }
+	// nil decrypt + EMPTY cluster token → ResolveToken returns ErrNoToken.
+	poller := New(m, clientFor, nil, "", stubFor(true), testLogger(t), "http://console", time.Second)
+
+	poller.Tick(context.Background())
+
+	if len(api.tokens) != 0 {
+		t.Fatalf("poller must not build a client without a token, built %v", api.tokens)
+	}
+	runs, _ := m.ListRunsByService(context.Background(), link.ServiceID, 10)
+	if len(runs) != 0 {
+		t.Fatalf("no-credential link must dispatch nothing, got %d", len(runs))
 	}
 }
 

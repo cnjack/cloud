@@ -16,11 +16,28 @@ import (
 )
 
 // fakeKanbanWriter captures MoveCard + AddComment calls (and can fail on demand).
+// tokens records every PAT the token->writer factory was asked to bind, so the
+// per-link/fallback token-selection tests can assert which credential was used.
 type fakeKanbanWriter struct {
 	comments   []commentCall
 	moves      []moveCall
 	commentErr error
 	moveErr    error
+	tokens     []string
+}
+
+// factory returns fk as a token->writer factory, recording each resolved token.
+func (fk *fakeKanbanWriter) factory() func(string) KanbanWriter {
+	return func(tok string) KanbanWriter {
+		fk.tokens = append(fk.tokens, tok)
+		return fk
+	}
+}
+
+// wire attaches fk to rec with the default cluster fallback token, so tokenless
+// seeded links resolve via TokenClusterFallback (the pre-F6 behavior).
+func wire(rec *Reconciler, fk *fakeKanbanWriter, consoleURL string) *Reconciler {
+	return rec.WithKanban(fk.factory(), nil, "cluster-tok", consoleURL)
 }
 
 type commentCall struct {
@@ -100,7 +117,7 @@ func TestWritebackSucceededPostsAndMoves(t *testing.T) {
 	st := store.NewMemStore()
 	run, link, _ := seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
 	fk := &fakeKanbanWriter{}
-	rec := newWritebackRec(st).WithKanban(fk, "http://console")
+	rec := wire(newWritebackRec(st), fk, "http://console")
 
 	rec.Tick(ctx)
 
@@ -131,7 +148,7 @@ func TestWritebackFailedPostsReasonNoMove(t *testing.T) {
 	st := store.NewMemStore()
 	run, _, _ := seedKanbanTerminal(t, st, domain.StatusFailed, "done")
 	fk := &fakeKanbanWriter{}
-	rec := newWritebackRec(st).WithKanban(fk, "http://console")
+	rec := wire(newWritebackRec(st), fk, "http://console")
 
 	rec.Tick(ctx)
 
@@ -149,7 +166,7 @@ func TestWritebackNoDoneColumnSkipsMove(t *testing.T) {
 	st := store.NewMemStore()
 	seedKanbanTerminal(t, st, domain.StatusSucceeded, "") // no done column
 	fk := &fakeKanbanWriter{}
-	rec := newWritebackRec(st).WithKanban(fk, "")
+	rec := wire(newWritebackRec(st), fk, "")
 
 	rec.Tick(ctx)
 	if len(fk.comments) != 1 {
@@ -190,7 +207,7 @@ func TestWritebackRetriesOnTransientError(t *testing.T) {
 	st := store.NewMemStore()
 	seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
 	fk := &fakeKanbanWriter{}
-	rec := newWritebackRec(st).WithKanban(fk, "")
+	rec := wire(newWritebackRec(st), fk, "")
 
 	fk.moveErr = errors.New("jtype down")
 	rec.Tick(ctx) // move fails → nothing committed
@@ -211,4 +228,70 @@ func TestWritebackNilClientNoop(t *testing.T) {
 	seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
 	rec := newWritebackRec(st) // no WithKanban
 	rec.Tick(ctx)              // must not panic / error
+}
+
+// F6 / D25: a link with its own encrypted PAT writes back with the DECRYPTED
+// per-link token, not the cluster fallback.
+func TestWritebackUsesPerLinkToken(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	run, link, _ := seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
+	// Give the link a per-link (sealed) token by re-inserting it — the mem store
+	// keyed on id lets a fresh Create with the same board conflict, so mutate via a
+	// dedicated link id. Simplest: create a second project-less link is not needed;
+	// instead delete + recreate with TokenEnc.
+	if err := st.DeleteKanbanLink(ctx, link.ID); err != nil {
+		t.Fatal(err)
+	}
+	link.TokenEnc = []byte("ENCPAT")
+	if err := st.CreateKanbanLink(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	// Re-stamp the claim's run (cascade-deleted with the link above).
+	if _, err := st.EnsureKanbanClaim(ctx, link.ID, "doc1", "cards/x.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetKanbanClaimRun(ctx, link.ID, "doc1", run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	fk := &fakeKanbanWriter{}
+	decrypt := func(b []byte) (string, error) { return "PLAIN-" + string(b), nil }
+	rec := newWritebackRec(st).WithKanban(fk.factory(), decrypt, "cluster-tok", "http://console")
+
+	rec.Tick(ctx)
+
+	if len(fk.comments) != 1 {
+		t.Fatalf("want 1 comment, got %d", len(fk.comments))
+	}
+	if len(fk.tokens) == 0 || fk.tokens[len(fk.tokens)-1] != "PLAIN-ENCPAT" {
+		t.Fatalf("writeback used token %v, want decrypted per-link PLAIN-ENCPAT", fk.tokens)
+	}
+}
+
+// F6 / D25: a link with neither a per-link token nor a cluster fallback is
+// fail-visible — no comment/move, and the claim stays PENDING so it resumes once
+// a token is configured (never silently dropped).
+func TestWritebackFailVisibleWhenNoToken(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	_, link, _ := seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
+	fk := &fakeKanbanWriter{}
+	// No decrypt, EMPTY cluster token → ResolveToken returns ErrNoToken.
+	rec := newWritebackRec(st).WithKanban(fk.factory(), nil, "", "http://console")
+
+	rec.Tick(ctx)
+
+	if len(fk.comments) != 0 || len(fk.moves) != 0 || len(fk.tokens) != 0 {
+		t.Fatalf("no-credential link must not write back: comments=%d moves=%d tokens=%v",
+			len(fk.comments), len(fk.moves), fk.tokens)
+	}
+	// The claim is still pending (writeback deferred, not dropped).
+	pending, err := st.ListKanbanRunsAwaitingWriteback(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Link.ID != link.ID {
+		t.Fatalf("writeback should remain pending for later retry, got %+v", pending)
+	}
 }

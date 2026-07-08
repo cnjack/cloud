@@ -12,15 +12,22 @@ import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
 import { MembersPanel } from './MembersPanel';
-import { useUpdateProject, useDeleteProject } from '../api/queries';
+import {
+  useUpdateProject,
+  useDeleteProject,
+  useProjectKanbanLinks,
+  useCreateProjectKanbanLink,
+  useUpdateProjectKanbanLinkToken,
+  useDeleteProjectKanbanLink,
+} from '../api/queries';
 import { useToast } from '../components/Toast';
 import { ApiError } from '../api/client';
 import { isReservedEnvKey, isValidEnvKey } from '../lib/env';
 import { ALLOWLIST_PROVIDERS } from '../lib/providers';
-import type { Project, UpdateProjectInput } from '../api/types';
+import type { KanbanLink, Project, UpdateProjectInput } from '../api/types';
 import styles from './ProjectSettingsModal.module.css';
 
-type Tab = 'general' | 'members';
+type Tab = 'general' | 'members' | 'kanban';
 
 interface EnvRow {
   key: string;
@@ -208,7 +215,7 @@ export function ProjectSettingsModal({
         </Button>
       </>
     ) : (
-      <Button variant="secondary" onClick={close} type="button" data-testid="members-done">
+      <Button variant="secondary" onClick={close} type="button" data-testid="settings-done">
         Done
       </Button>
     );
@@ -244,6 +251,19 @@ export function ProjectSettingsModal({
         >
           Members
         </button>
+        {canManage && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'kanban'}
+            className={styles.tab}
+            data-active={tab === 'kanban' || undefined}
+            onClick={() => setTab('kanban')}
+            data-testid="tab-kanban"
+          >
+            Kanban
+          </button>
+        )}
       </div>
 
       {tab === 'general' ? (
@@ -437,9 +457,299 @@ export function ProjectSettingsModal({
             </section>
           </div>
         </form>
-      ) : (
+      ) : tab === 'members' ? (
         <MembersPanel projectId={project.id} canManage={canManage} />
+      ) : (
+        <KanbanPanel project={project} />
       )}
     </Modal>
+  );
+}
+
+/**
+ * KanbanPanel — the project owner's jtype kanban links (F6 / D25). Lists the
+ * project's board→service bindings with a token badge (own vs cluster fallback),
+ * and an add form. The per-link jtype token is WRITE-ONLY: it is sent on create
+ * and never returned (the badge is the only echo). Service is chosen from the
+ * project's own services; workspace/board/columns live in jtype and are typed.
+ */
+function KanbanPanel({ project }: { project: Project }) {
+  const toast = useToast();
+  const links = useProjectKanbanLinks(project.id);
+  const create = useCreateProjectKanbanLink(project.id);
+  const del = useDeleteProjectKanbanLink(project.id);
+  const services = project.services ?? [];
+
+  const [serviceId, setServiceId] = useState('');
+  const [workspaceId, setWorkspaceId] = useState('');
+  const [boardRef, setBoardRef] = useState('');
+  const [triggerCol, setTriggerCol] = useState('');
+  const [doneCol, setDoneCol] = useState('');
+  const [token, setToken] = useState('');
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    create.mutate(
+      {
+        workspace_id: workspaceId.trim(),
+        board_ref: boardRef.trim(),
+        service_id: serviceId,
+        trigger_column: triggerCol.trim(),
+        done_column: doneCol.trim() || undefined,
+        token: token.trim() || undefined,
+      },
+      {
+        onSuccess: () => {
+          setWorkspaceId('');
+          setBoardRef('');
+          setTriggerCol('');
+          setDoneCol('');
+          setToken('');
+          toast.push({ kind: 'success', message: 'Kanban link added.' });
+        },
+        onError: (err) =>
+          toast.push({
+            kind: 'error',
+            message: err instanceof ApiError ? err.message : 'Could not add the link.',
+          }),
+      },
+    );
+  };
+
+  const remove = (id: string) => {
+    del.mutate(id, {
+      onSuccess: () => toast.push({ kind: 'success', message: 'Kanban link removed.' }),
+      onError: (err) =>
+        toast.push({
+          kind: 'error',
+          message: err instanceof ApiError ? err.message : 'Could not remove the link.',
+        }),
+    });
+  };
+
+  return (
+    <div className={styles.body} data-testid="kanban-panel">
+      <p className={styles.guardrailHint}>
+        Drag a card into a link&apos;s trigger column to dispatch an agent run; the result is
+        written back as a card comment (and the card moved to the done column when set). Each link
+        can carry its own jtype token; leave it blank to use the cluster fallback.
+      </p>
+
+      {links.data && links.data.length > 0 ? (
+        <div className={styles.kanbanList} data-testid="kanban-links">
+          {links.data.map((l) => (
+            <KanbanLinkRow
+              key={l.id}
+              projectId={project.id}
+              link={l}
+              serviceName={services.find((s) => s.id === l.service_id)?.name ?? l.service_id}
+              deleting={del.isPending}
+              onRemove={() => remove(l.id)}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className={styles.guardrailHint} data-testid="kanban-empty">
+          No kanban links yet — add one below.
+        </p>
+      )}
+
+      <form className={styles.kanbanForm} onSubmit={submit} noValidate data-testid="kanban-link-form">
+        <div>
+          <label className={styles.guardrailTitle} htmlFor="kanban-service">
+            Service
+          </label>
+          <select
+            id="kanban-service"
+            value={serviceId}
+            onChange={(e) => setServiceId(e.target.value)}
+            required
+            data-testid="kanban-link-service"
+            style={{ display: 'block', width: '100%', marginTop: 4 }}
+          >
+            <option value="">Select service…</option>
+            {services.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <TextField
+          label="jtype workspace id"
+          placeholder="f006b727-…"
+          value={workspaceId}
+          onChange={(e) => setWorkspaceId(e.target.value)}
+          required
+          data-testid="kanban-link-workspace"
+          autoComplete="off"
+        />
+        <TextField
+          label="Board ref"
+          placeholder="jcloud-dev"
+          value={boardRef}
+          onChange={(e) => setBoardRef(e.target.value)}
+          required
+          data-testid="kanban-link-board"
+          autoComplete="off"
+        />
+        <TextField
+          label="Trigger column"
+          placeholder="ai"
+          value={triggerCol}
+          onChange={(e) => setTriggerCol(e.target.value)}
+          required
+          data-testid="kanban-link-trigger"
+          autoComplete="off"
+        />
+        <TextField
+          label="Done column (optional)"
+          placeholder="done"
+          value={doneCol}
+          onChange={(e) => setDoneCol(e.target.value)}
+          data-testid="kanban-link-done"
+          autoComplete="off"
+        />
+        <TextField
+          label="jtype token (optional)"
+          type="password"
+          placeholder="blank = use cluster JTYPE_TOKEN fallback"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          data-testid="kanban-link-token"
+          autoComplete="off"
+          hint="Stored encrypted. Never displayed after saving."
+        />
+        <div className={styles.kanbanFormActions}>
+          <Button type="submit" variant="primary" loading={create.isPending} data-testid="kanban-link-add">
+            Add link
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/**
+ * KanbanLinkRow — one project kanban link: the board binding, a three-state
+ * credential badge (P1 — "missing" is a loud error: the poller skips the link
+ * until a token is set), a write-only "Update token" editor (P2 — rotate with a
+ * value, clear with an empty submit; the token is never displayed), and Remove.
+ */
+function KanbanLinkRow({
+  projectId,
+  link,
+  serviceName,
+  deleting,
+  onRemove,
+}: {
+  projectId: string;
+  link: KanbanLink;
+  serviceName: string;
+  deleting: boolean;
+  onRemove: () => void;
+}) {
+  const toast = useToast();
+  const updateToken = useUpdateProjectKanbanLinkToken(projectId);
+  const [editing, setEditing] = useState(false);
+  const [token, setToken] = useState('');
+
+  const badge = {
+    per_link: 'own token',
+    cluster_fallback: 'cluster token',
+    missing: 'no credential — set a token',
+  }[link.credential_status];
+
+  const saveToken = (e: React.FormEvent) => {
+    e.preventDefault();
+    updateToken.mutate(
+      { linkId: link.id, token: token.trim() },
+      {
+        onSuccess: (updated) => {
+          setToken('');
+          setEditing(false);
+          toast.push({
+            kind: 'success',
+            message: updated.token_set
+              ? 'Token updated.'
+              : 'Token cleared — the link now uses the cluster fallback (if configured).',
+          });
+        },
+        onError: (err) =>
+          toast.push({
+            kind: 'error',
+            message: err instanceof ApiError ? err.message : 'Could not update the token.',
+          }),
+      },
+    );
+  };
+
+  return (
+    <div className={styles.kanbanRow} data-testid={`kanban-link-${link.id}`}>
+      <div className={styles.kanbanMeta}>
+        <div className={styles.kanbanTitle}>
+          {link.workspace_id} / {link.board_ref}
+          <span
+            className={styles.badge}
+            data-state={link.credential_status}
+            data-testid={`kanban-cred-${link.id}`}
+          >
+            {badge}
+          </span>
+        </div>
+        <div className={styles.kanbanSub}>
+          {serviceName} · {link.trigger_column}
+          {link.done_column ? ` → ${link.done_column}` : ''}
+        </div>
+        {editing && (
+          <form className={styles.tokenEditor} onSubmit={saveToken} noValidate>
+            <TextField
+              label="New jtype token"
+              type="password"
+              placeholder="blank = clear (use cluster fallback)"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              data-testid={`kanban-token-input-${link.id}`}
+              autoComplete="off"
+            />
+            <Button
+              type="submit"
+              variant="primary"
+              size="sm"
+              loading={updateToken.isPending}
+              data-testid={`kanban-token-save-${link.id}`}
+            >
+              Save
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(false)}>
+              Cancel
+            </Button>
+          </form>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        {!editing && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => setEditing(true)}
+            data-testid={`kanban-token-edit-${link.id}`}
+          >
+            Update token
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          disabled={deleting}
+          onClick={onRemove}
+          data-testid={`kanban-link-delete-${link.id}`}
+        >
+          Remove
+        </Button>
+      </div>
+    </div>
   );
 }

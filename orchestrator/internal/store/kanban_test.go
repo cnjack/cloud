@@ -87,6 +87,112 @@ func TestKanbanLinkCRUD(t *testing.T) {
 	}
 }
 
+// TestKanbanLinkTokenAndByProject covers F6 / D25: the per-link token_enc blob
+// roundtrips (stored opaque, TokenSet reflects presence) and ListKanbanLinksByProject
+// scopes to one project.
+func TestKanbanLinkTokenAndByProject(t *testing.T) {
+	ctx := context.Background()
+	m, p, svc := newKanbanTestStore(t)
+	// A second project + service so ByProject has something to exclude.
+	p2 := &domain.Project{ID: domain.NewID(), Name: "other", CreatedAt: time.Now()}
+	if err := m.CreateProject(ctx, p2); err != nil {
+		t.Fatal(err)
+	}
+	svc2 := &domain.Service{ID: domain.NewID(), ProjectID: p2.ID, Name: "default",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "u", DefaultBranch: "main", CreatedAt: time.Now()}
+	if err := m.CreateService(ctx, svc2); err != nil {
+		t.Fatal(err)
+	}
+
+	withTok := &domain.KanbanLink{ID: domain.NewID(), WorkspaceID: "ws1", BoardRef: "b1",
+		ProjectID: p.ID, ServiceID: svc.ID, TriggerColumn: "ai", Enabled: true,
+		TokenEnc: []byte{0x01, 0x02, 0x03}, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	noTok := &domain.KanbanLink{ID: domain.NewID(), WorkspaceID: "ws1", BoardRef: "b2",
+		ProjectID: p.ID, ServiceID: svc.ID, TriggerColumn: "ai", Enabled: true,
+		CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	otherProj := &domain.KanbanLink{ID: domain.NewID(), WorkspaceID: "ws2", BoardRef: "b3",
+		ProjectID: p2.ID, ServiceID: svc2.ID, TriggerColumn: "ai", Enabled: true,
+		CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	for _, l := range []*domain.KanbanLink{withTok, noTok, otherProj} {
+		if err := m.CreateKanbanLink(ctx, l); err != nil {
+			t.Fatalf("create %s: %v", l.BoardRef, err)
+		}
+	}
+
+	got, err := m.GetKanbanLink(ctx, withTok.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TokenSet() || string(got.TokenEnc) != "\x01\x02\x03" {
+		t.Fatalf("token_enc did not roundtrip: set=%v enc=%v", got.TokenSet(), got.TokenEnc)
+	}
+	if none, _ := m.GetKanbanLink(ctx, noTok.ID); none.TokenSet() {
+		t.Fatal("link without token must report TokenSet()=false")
+	}
+
+	byProj, err := m.ListKanbanLinksByProject(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byProj) != 2 {
+		t.Fatalf("ByProject want 2 links for p, got %d", len(byProj))
+	}
+	for _, l := range byProj {
+		if l.ProjectID != p.ID {
+			t.Fatalf("ByProject leaked a foreign project's link: %+v", l)
+		}
+	}
+}
+
+// TestSetKanbanLinkToken pins the P2 rotation contract: only token_enc changes
+// (claims survive a rotation — no re-dispatch), nil clears back to the cluster
+// fallback, and an unknown link is ErrNotFound.
+func TestSetKanbanLinkToken(t *testing.T) {
+	ctx := context.Background()
+	m, p, svc := newKanbanTestStore(t)
+
+	link := &domain.KanbanLink{ID: domain.NewID(), WorkspaceID: "ws", BoardRef: "b",
+		ProjectID: p.ID, ServiceID: svc.ID, TriggerColumn: "ai", Enabled: true,
+		CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := m.CreateKanbanLink(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	// A dispatched claim exists BEFORE the rotation.
+	if _, err := m.EnsureKanbanClaim(ctx, link.ID, "docA", "cards/a.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetKanbanClaimRun(ctx, link.ID, "docA", "run-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rotate: token stored, claims untouched (run_id still stamped).
+	if err := m.SetKanbanLinkToken(ctx, link.ID, []byte("NEW")); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if !got.TokenSet() || string(got.TokenEnc) != "NEW" {
+		t.Fatalf("token not rotated: %v", got.TokenEnc)
+	}
+	claim, _ := m.EnsureKanbanClaim(ctx, link.ID, "docA", "cards/a.md")
+	if claim.RunID != "run-1" {
+		t.Fatalf("rotation must retain claims; run_id=%q want run-1", claim.RunID)
+	}
+
+	// Clear: nil token_enc => back to the cluster fallback.
+	if err := m.SetKanbanLinkToken(ctx, link.ID, nil); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	got, _ = m.GetKanbanLink(ctx, link.ID)
+	if got.TokenSet() {
+		t.Fatalf("clear did not remove the token: %v", got.TokenEnc)
+	}
+
+	// Unknown link => ErrNotFound.
+	if err := m.SetKanbanLinkToken(ctx, "nope", []byte("x")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown link want ErrNotFound, got %v", err)
+	}
+}
+
 // TestKanbanClaimSemantics pins the idempotency contract: EnsureKanbanClaim is
 // idempotent, SetKanbanClaimRun commits once, and a second dispatch is a no-op.
 func TestKanbanClaimSemantics(t *testing.T) {

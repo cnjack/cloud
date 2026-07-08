@@ -158,13 +158,28 @@ export interface ApiClient {
    */
   listProjectModels(projectId: string): Promise<ProjectModels>;
 
-  /* ---- kanban links (Feature E) ----------------------------------------- */
-  /** GET /api/v1/system/kanban/links — list board→service bindings. */
+  /* ---- kanban links (Feature E / F6) ------------------------------------ */
+  /**
+   * GET /api/v1/system/kanban/links — cluster-admin READ-ONLY overview of every
+   * board→service binding across all projects (each carries project_id).
+   */
   listKanbanLinks(): Promise<KanbanLink[]>;
-  /** POST /api/v1/system/kanban/links — bind a board column to a service (admin). */
-  createKanbanLink(input: CreateKanbanLinkInput): Promise<KanbanLink>;
-  /** DELETE /api/v1/system/kanban/links/{id} — remove a binding (admin). */
-  deleteKanbanLink(id: string): Promise<void>;
+  /** GET /api/v1/projects/{id}/kanban/links — a project's links (owner). */
+  listProjectKanbanLinks(projectId: string): Promise<KanbanLink[]>;
+  /**
+   * POST /api/v1/projects/{id}/kanban/links — bind a board column to one of the
+   * project's services (owner). `token` (optional, write-only) is the per-link
+   * jtype PAT; omit to fall back to the cluster JTYPE_TOKEN.
+   */
+  createProjectKanbanLink(projectId: string, input: CreateKanbanLinkInput): Promise<KanbanLink>;
+  /**
+   * PATCH /api/v1/projects/{id}/kanban/links/{linkId} — rotate or clear ONLY the
+   * link's per-link jtype token (owner; claims retained). "" clears back to the
+   * cluster fallback; any other value rotates. Write-only, as on create.
+   */
+  updateProjectKanbanLinkToken(projectId: string, linkId: string, token: string): Promise<KanbanLink>;
+  /** DELETE /api/v1/projects/{id}/kanban/links/{linkId} — remove a link (owner). */
+  deleteProjectKanbanLink(projectId: string, linkId: string): Promise<void>;
 
   /* ---- services (blueprint §4) ------------------------------------------- */
   /** GET /api/v1/projects/{id}/services — the project's repo configurations. */
@@ -447,18 +462,28 @@ export function createHttpClient(
     listProjectModels: (projectId) =>
       req<ProjectModels>(`/projects/${encodeURIComponent(projectId)}/models`),
 
-    // Kanban links (Feature E).
+    // Kanban links (Feature E / F6). Management is project-scoped (owner); the
+    // system list is a cluster-admin read-only overview.
     listKanbanLinks: async () =>
       (await req<{ links: KanbanLink[] }>('/system/kanban/links')).links ?? [],
-    createKanbanLink: (input) =>
-      req<KanbanLink>('/system/kanban/links', {
+    listProjectKanbanLinks: async (projectId) =>
+      (await req<{ links: KanbanLink[] }>(`/projects/${encodeURIComponent(projectId)}/kanban/links`))
+        .links ?? [],
+    createProjectKanbanLink: (projectId, input) =>
+      req<KanbanLink>(`/projects/${encodeURIComponent(projectId)}/kanban/links`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
-    deleteKanbanLink: (id) =>
-      req<void>(`/system/kanban/links/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      }),
+    updateProjectKanbanLinkToken: (projectId, linkId, token) =>
+      req<KanbanLink>(
+        `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(linkId)}`,
+        { method: 'PATCH', body: JSON.stringify({ token }) },
+      ),
+    deleteProjectKanbanLink: (projectId, linkId) =>
+      req<void>(
+        `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(linkId)}`,
+        { method: 'DELETE' },
+      ),
 
     // Services (blueprint §4).
     listServices: async (projectId) =>

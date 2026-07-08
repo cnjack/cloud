@@ -62,13 +62,16 @@ type systemRunner struct {
 	PersistentWorkspace bool `json:"persistent_workspace"`
 }
 
-// systemKanban is the jtype kanban integration snapshot (Feature E). Enabled is
-// true only when BOTH JTYPE_BASE_URL and JTYPE_TOKEN are configured; the base
-// URL is surfaced (never the token) so the console can show "on / off" + target.
+// systemKanban is the jtype kanban integration snapshot (Feature E/F6). Enabled
+// is true when JTYPE_BASE_URL is configured — per-link tokens (D25) mean the base
+// URL alone enables the integration; the cluster JTYPE_TOKEN is only a fallback,
+// surfaced as ClusterTokenSet (never the token itself). The base URL is shown so
+// the console can render "on / off" + target.
 type systemKanban struct {
-	Enabled      bool   `json:"enabled"`
-	BaseURL      string `json:"base_url,omitempty"`
-	PollInterval string `json:"poll_interval,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	BaseURL         string `json:"base_url,omitempty"`
+	PollInterval    string `json:"poll_interval,omitempty"`
+	ClusterTokenSet bool   `json:"cluster_token_set"`
 }
 
 // handleGetSystem returns the cluster-admin system snapshot. Read-only: it
@@ -120,9 +123,10 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 			UsersCount: usersCount,
 		},
 		Kanban: systemKanban{
-			Enabled:      s.cfg.JtypeBaseURL != "" && s.cfg.JtypeToken != "",
-			BaseURL:      s.cfg.JtypeBaseURL,
-			PollInterval: s.cfg.JtypePollInterval.String(),
+			Enabled:         s.cfg.JtypeBaseURL != "",
+			BaseURL:         s.cfg.JtypeBaseURL,
+			PollInterval:    s.cfg.JtypePollInterval.String(),
+			ClusterTokenSet: s.cfg.JtypeToken != "",
 		},
 		Namespace: s.cfg.Namespace,
 		Launcher:  launcherKind(s.cfg.JobLauncher, s.cfg.DisableK8s),

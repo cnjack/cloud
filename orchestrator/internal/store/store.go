@@ -414,8 +414,16 @@ type Store interface {
 	CreateKanbanLink(ctx context.Context, l *domain.KanbanLink) error
 	GetKanbanLink(ctx context.Context, id string) (*domain.KanbanLink, error)
 	ListKanbanLinks(ctx context.Context) ([]domain.KanbanLink, error)
+	// ListKanbanLinksByProject returns a project's links (F6 / D25 — the owner's
+	// project-scoped management view), newest first.
+	ListKanbanLinksByProject(ctx context.Context, projectID string) ([]domain.KanbanLink, error)
 	// ListEnabledKanbanLinks returns only enabled links (the poller's scan set).
 	ListEnabledKanbanLinks(ctx context.Context) ([]domain.KanbanLink, error)
+	// SetKanbanLinkToken replaces ONLY a link's per-link encrypted jtype PAT
+	// (P2 token rotation): nil clears it (back to the cluster fallback). The
+	// link's binding and its claims are untouched — a rotation never
+	// re-dispatches already-claimed cards.
+	SetKanbanLinkToken(ctx context.Context, id string, tokenEnc []byte) error
 	DeleteKanbanLink(ctx context.Context, id string) error
 
 	// EnsureKanbanClaim inserts a (link_id, document_id) claim row with run_id

@@ -144,6 +144,12 @@
   background: var(--status-succeeded-bg);
   border-color: var(--status-succeeded-dot);
 }
+/* P1: a link with NO usable credential is a loud error, not a neutral pill. */
+.pill[data-err] {
+  color: var(--status-failed-fg);
+  background: var(--status-failed-bg);
+  border-color: var(--status-failed-dot);
+}
 
 /* --- model config card (Feature A) --- */
 .modelCard {

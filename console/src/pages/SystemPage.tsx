@@ -20,10 +20,7 @@ import {
   useDeleteModel,
   useSetModelGrant,
   useProjects,
-  useProject,
   useKanbanLinks,
-  useCreateKanbanLink,
-  useDeleteKanbanLink,
 } from '../api/queries';
 import { useRole } from '../api/ApiProvider';
 import { ApiError } from '../api/client';
@@ -498,16 +495,17 @@ function ModelAddForm() {
 }
 
 /**
- * KanbanCard — the jtype kanban integration (Feature E). Shows whether the
- * integration is configured (JTYPE_BASE_URL + JTYPE_TOKEN), lists the board→
- * service links, and — since the Cluster page is cluster-admin only — exposes
- * the add/delete mutations. When the integration is OFF the card renders a
- * fail-visible "off" state with the reason (env not set), never a silent mock.
+ * KanbanCard — the jtype kanban integration (Feature E / F6). READ-ONLY on the
+ * Cluster page: link management is downshifted to the project OWNER (D25 — see a
+ * project's Settings → Kanban tab). This card shows whether the integration is
+ * configured (JTYPE_BASE_URL) and a cross-project overview of every link (which
+ * project owns it, its columns, and whether it carries its own token). When the
+ * integration is OFF it renders a fail-visible "off" state, never a silent mock.
  */
 function KanbanCard({ enabled, baseURL }: { enabled: boolean; baseURL?: string }) {
   const links = useKanbanLinks(enabled);
-  const toast = useToast();
-  const delLink = useDeleteKanbanLink();
+  const projects = useProjects();
+  const projectName = (id: string) => projects.data?.find((p) => p.id === id)?.name ?? id;
 
   return (
     <Card className={[styles.card, styles.modelCard].join(' ')} data-testid="kanban-card">
@@ -526,8 +524,8 @@ function KanbanCard({ enabled, baseURL }: { enabled: boolean; baseURL?: string }
         {enabled
           ? `Cards dragged into a link's trigger column dispatch an agent run; finished runs write back as a card comment${
               baseURL ? ` (jtype: ${baseURL})` : ''
-            }.`
-          : 'Set JTYPE_BASE_URL + JTYPE_TOKEN on the orchestrator to enable card-triggered runs. Until then no links dispatch.'}
+            }. Links are managed by each project owner in Project settings → Kanban.`
+          : 'Set JTYPE_BASE_URL on the orchestrator to enable card-triggered runs. Each link then authorises with its own jtype token (or the cluster JTYPE_TOKEN fallback).'}
       </p>
 
       {links.data && links.data.length > 0 ? (
@@ -537,169 +535,32 @@ function KanbanCard({ enabled, baseURL }: { enabled: boolean; baseURL?: string }
               <div className={styles.kanbanLinkMeta}>
                 <div className={styles.kanbanLinkTitle}>
                   {l.workspace_id} / {l.board_ref}
+                  <span
+                    className={styles.pill}
+                    data-on={l.credential_status === 'per_link' || undefined}
+                    data-err={l.credential_status === 'missing' || undefined}
+                    style={{ marginLeft: 8 }}
+                    data-testid={`kanban-cred-${l.id}`}
+                  >
+                    {{
+                      per_link: 'own token',
+                      cluster_fallback: 'cluster token',
+                      missing: 'no credential',
+                    }[l.credential_status]}
+                  </span>
                 </div>
                 <div className={styles.kanbanLinkSub}>
-                  {l.project_id}:{l.service_id} · {l.trigger_column}
+                  {projectName(l.project_id)} · {l.trigger_column}
                   {l.done_column ? ` → ${l.done_column}` : ''}
                 </div>
               </div>
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={delLink.isPending}
-                onClick={() =>
-                  delLink.mutate(l.id, {
-                    onSuccess: () =>
-                      toast.push({ kind: 'success', message: 'Kanban link removed.' }),
-                    onError: (err) =>
-                      toast.push({
-                        kind: 'error',
-                        message: err instanceof ApiError ? err.message : 'Could not remove the link.',
-                      }),
-                  })
-                }
-                data-testid={`kanban-link-delete-${l.id}`}
-              >
-                Remove
-              </Button>
             </div>
           ))}
         </div>
       ) : (
-        <p className={styles.modelHint}>No kanban links yet.</p>
+        <p className={styles.modelHint}>No kanban links yet — project owners add them in Project settings.</p>
       )}
-
-      {enabled && <KanbanLinkForm />}
     </Card>
-  );
-}
-
-/**
- * KanbanLinkForm — the add-link form. Project/service are selects (from the
- * admin-visible project list + the selected project's services); workspace,
- * board, and columns are text (they live in jtype, not this orchestrator). The
- * orchestrator validates the columns against the live board on submit.
- */
-function KanbanLinkForm() {
-  const toast = useToast();
-  const projects = useProjects();
-  const [projectId, setProjectId] = useState('');
-  // Services are embedded on the project (see ProjectDetailPage). Fetch the
-  // selected project to populate the service select.
-  const project = useProject(projectId);
-  const services = projectId ? (project.data?.services ?? []) : [];
-  const [serviceId, setServiceId] = useState('');
-  const [workspaceId, setWorkspaceId] = useState('');
-  const [boardRef, setBoardRef] = useState('');
-  const [triggerCol, setTriggerCol] = useState('');
-  const [doneCol, setDoneCol] = useState('');
-  const create = useCreateKanbanLink();
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    create.mutate(
-      {
-        workspace_id: workspaceId.trim(),
-        board_ref: boardRef.trim(),
-        project_id: projectId,
-        service_id: serviceId,
-        trigger_column: triggerCol.trim(),
-        done_column: doneCol.trim() || undefined,
-      },
-      {
-        onSuccess: () => {
-          setWorkspaceId('');
-          setBoardRef('');
-          setTriggerCol('');
-          setDoneCol('');
-          toast.push({ kind: 'success', message: 'Kanban link added.' });
-        },
-        onError: (err) =>
-          toast.push({
-            kind: 'error',
-            message: err instanceof ApiError ? err.message : 'Could not add the link.',
-          }),
-      },
-    );
-  };
-
-  return (
-    <form className={styles.kanbanForm} onSubmit={submit} noValidate data-testid="kanban-link-form">
-      <div className={styles.fieldCell}>
-        <label className={styles.fieldLabel}>Project</label>
-        <select
-          className={styles.select}
-          value={projectId}
-          onChange={(e) => {
-            setProjectId(e.target.value);
-            setServiceId('');
-          }}
-          required
-          data-testid="kanban-link-project"
-        >
-          <option value="">Select project…</option>
-          {(projects.data ?? []).map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className={styles.fieldCell}>
-        <label className={styles.fieldLabel}>Service</label>
-        <select
-          className={styles.select}
-          value={serviceId}
-          onChange={(e) => setServiceId(e.target.value)}
-          required
-          disabled={!projectId}
-          data-testid="kanban-link-service"
-        >
-          <option value="">{projectId ? 'Select service…' : 'Pick a project first'}</option>
-          {services.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      <TextField
-        label="jtype workspace id"
-        placeholder="f006b727-…"
-        value={workspaceId}
-        onChange={(e) => setWorkspaceId(e.target.value)}
-        required
-        data-testid="kanban-link-workspace"
-      />
-      <TextField
-        label="Board ref"
-        placeholder="jcloud-dev"
-        value={boardRef}
-        onChange={(e) => setBoardRef(e.target.value)}
-        required
-        data-testid="kanban-link-board"
-      />
-      <TextField
-        label="Trigger column"
-        placeholder="ai"
-        value={triggerCol}
-        onChange={(e) => setTriggerCol(e.target.value)}
-        required
-        data-testid="kanban-link-trigger"
-      />
-      <TextField
-        label="Done column (optional)"
-        placeholder="done"
-        value={doneCol}
-        onChange={(e) => setDoneCol(e.target.value)}
-        data-testid="kanban-link-done"
-      />
-      <div className={styles.kanbanFormActions}>
-        <Button type="submit" variant="primary" loading={create.isPending} data-testid="kanban-link-add">
-          Add link
-        </Button>
-      </div>
-    </form>
   );
 }
 

@@ -8,7 +8,9 @@
 // dedup), restart-safe (claims survive), and driven by updatedClock so a card
 // move surfaces on the next tick — matching the existing reconciler philosophy.
 //
-// One cluster-wide jtype PAT (env JTYPE_TOKEN) authorises every read/write.
+// Each link authorises with its OWN jtype PAT (F6 / D25): the per-link encrypted
+// token when set, else the cluster JTYPE_TOKEN env fallback; a link with neither
+// is skipped fail-visibly (never a call with an empty credential).
 package kanban
 
 import (
@@ -44,24 +46,33 @@ type ModelResolver interface {
 // (a pure optimization — claims dedup is the real idempotency, so a restart
 // re-scan from clock 0 is correct, just redundant).
 type Poller struct {
-	st         store.Store
-	api        DocumentAPI
-	models     ModelResolver
-	log        *slog.Logger
-	consoleURL string // for the "LLM not configured" card comment (where to fix it)
-	interval   time.Duration
-	now        func() time.Time
+	st store.Store
+	// clientFor builds a DocumentAPI bound to a resolved jtype PAT (F6 / D25). In
+	// production it wraps *jtype.Factory; tests inject a fake.
+	clientFor    func(token string) DocumentAPI
+	decrypt      func([]byte) (string, error) // opens a link's encrypted PAT (nil => no cipher)
+	clusterToken string                       // JTYPE_TOKEN fallback
+	models       ModelResolver
+	log          *slog.Logger
+	consoleURL   string // for the "LLM not configured" card comment (where to fix it)
+	interval     time.Duration
+	now          func() time.Time
 
 	mu      sync.Mutex
 	cursors map[string]int64 // linkID -> last seen updatedClock
+	// noted throttles the one-time per-link cluster-fallback deprecation +
+	// missing-credential notices so the scan does not log every tick.
+	noted sync.Map // key -> struct{}
 }
 
-// New builds a Poller. interval<=0 still allows a manually-driven Tick
+// New builds a Poller. clientFor builds a jtype client per resolved PAT; decrypt
+// opens a link's encrypted per-link token (nil when no cipher); clusterToken is
+// the JTYPE_TOKEN fallback (D25). interval<=0 still allows a manually-driven Tick
 // (Run() itself would busy-loop, so main.go only starts Run when interval>0).
-func New(st store.Store, api DocumentAPI, models ModelResolver, log *slog.Logger, consoleURL string, interval time.Duration) *Poller {
+func New(st store.Store, clientFor func(token string) DocumentAPI, decrypt func([]byte) (string, error), clusterToken string, models ModelResolver, log *slog.Logger, consoleURL string, interval time.Duration) *Poller {
 	return &Poller{
-		st: st, api: api, models: models, log: log,
-		consoleURL: consoleURL, interval: interval,
+		st: st, clientFor: clientFor, decrypt: decrypt, clusterToken: clusterToken,
+		models: models, log: log, consoleURL: consoleURL, interval: interval,
 		now:     func() time.Time { return time.Now().UTC() },
 		cursors: map[string]int64{},
 	}
@@ -106,9 +117,28 @@ func (p *Poller) Tick(ctx context.Context) {
 // reaching jtype are logged and retried next tick (the poller never crashes the
 // process — consistent with the reconciler's transient-error handling).
 func (p *Poller) pollLink(ctx context.Context, link *domain.KanbanLink) {
-	cursor := p.cursor(link.ID)
+	// Resolve this link's PAT (D25 three-state): per-link encrypted token, else the
+	// cluster fallback, else fail-visibly skip (never a jtype call with an empty
+	// credential). The cursor is untouched on skip so the link re-scans in full the
+	// moment a token is configured. Notices are throttled to once per link.
+	token, source, err := jtype.ResolveToken(link.TokenEnc, p.decrypt, p.clusterToken)
+	if err != nil {
+		if _, seen := p.noted.LoadOrStore("err:"+link.ID, struct{}{}); !seen {
+			p.log.Error("kanban poll: no jtype credential for link; skipping",
+				"link", link.ID, "workspace", link.WorkspaceID, "err", err)
+		}
+		return
+	}
+	if source == jtype.TokenClusterFallback {
+		if _, seen := p.noted.LoadOrStore("dep:"+link.ID, struct{}{}); !seen {
+			p.log.Warn("kanban poll: link uses the deprecated cluster JTYPE_TOKEN fallback; set a per-link token",
+				"link", link.ID)
+		}
+	}
+	api := p.clientFor(token)
 
-	docs, err := p.api.ListDocuments(ctx, link.WorkspaceID)
+	cursor := p.cursor(link.ID)
+	docs, err := api.ListDocuments(ctx, link.WorkspaceID)
 	if err != nil {
 		p.log.Warn("kanban poll: list documents", "link", link.ID, "workspace", link.WorkspaceID, "err", err)
 		return
@@ -125,15 +155,16 @@ func (p *Poller) pollLink(ctx context.Context, link *domain.KanbanLink) {
 		if !isMarkdown(d.Path) {
 			continue
 		}
-		p.maybeDispatch(ctx, link, d)
+		p.maybeDispatch(ctx, api, link, d)
 	}
 	p.setCursor(link.ID, maxClock)
 }
 
 // maybeDispatch fetches one document, decides if it is a card in the trigger
-// column, and dispatches a run (or posts the not-configured notice).
-func (p *Poller) maybeDispatch(ctx context.Context, link *domain.KanbanLink, d jtype.Doc) {
-	doc, err := p.api.GetDocument(ctx, link.WorkspaceID, d.ID)
+// column, and dispatches a run (or posts the not-configured notice). api is the
+// link's token-bound jtype client (resolved in pollLink).
+func (p *Poller) maybeDispatch(ctx context.Context, api DocumentAPI, link *domain.KanbanLink, d jtype.Doc) {
+	doc, err := api.GetDocument(ctx, link.WorkspaceID, d.ID)
 	if err != nil {
 		p.log.Warn("kanban poll: get document", "link", link.ID, "doc", d.ID, "err", err)
 		return
@@ -177,7 +208,7 @@ func (p *Poller) maybeDispatch(ctx context.Context, link *domain.KanbanLink, d j
 		// Both "can't dispatch" states are notify-once + retried on later ticks, but
 		// the card comment DIFFERS (P5): NotSelected points the service owner at the
 		// default-model setting, NotConfigured points at cluster-admin authorization.
-		p.notifyBlocked(ctx, link, d.ID, outcome)
+		p.notifyBlocked(ctx, api, link, d.ID, outcome)
 		return
 	}
 
@@ -226,7 +257,7 @@ func derefStr(p *string) string {
 // model (several are granted, a headless card can't pick); NotConfigured asks a
 // CLUSTER ADMIN to grant a model to the project. Both are throttled to at most one
 // comment per card and the card auto-dispatches once the fix lands.
-func (p *Poller) notifyBlocked(ctx context.Context, link *domain.KanbanLink, docID string, outcome modelcfg.SelectOutcome) {
+func (p *Poller) notifyBlocked(ctx context.Context, api DocumentAPI, link *domain.KanbanLink, docID string, outcome modelcfg.SelectOutcome) {
 	ok, err := p.st.MarkKanbanNotConfiguredNotified(ctx, link.ID, docID, p.now())
 	if err != nil {
 		p.log.Warn("kanban poll: mark notified", "link", link.ID, "doc", docID, "err", err)
@@ -251,7 +282,7 @@ func (p *Poller) notifyBlocked(ctx context.Context, link *domain.KanbanLink, doc
 		}
 		body += ") and this card will dispatch automatically on the next poll."
 	}
-	if err := p.api.AddComment(ctx, link.WorkspaceID, docID, body); err != nil {
+	if err := api.AddComment(ctx, link.WorkspaceID, docID, body); err != nil {
 		p.log.Warn("kanban poll: post blocked comment", "link", link.ID, "doc", docID, "err", err)
 	}
 }
