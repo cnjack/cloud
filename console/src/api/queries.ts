@@ -10,6 +10,7 @@ import {
 import { useApi } from './ApiProvider';
 import type {
   AddMemberInput,
+  CreateKanbanLinkInput,
   CreateProjectInput,
   CreateRunInput,
   CreateServiceInput,
@@ -31,6 +32,7 @@ export const qk = {
   pr: (runId: string) => ['pr', runId] as const,
   system: ['system'] as const,
   modelConfig: ['model-config'] as const,
+  kanbanLinks: ['kanban-links'] as const,
   services: (projectId: string) => ['services', projectId] as const,
   members: (projectId: string) => ['members', projectId] as const,
   users: (q: string) => ['users', q] as const,
@@ -290,6 +292,35 @@ export function useClearModelConfig() {
       qc.setQueryData(qk.modelConfig, info);
       qc.invalidateQueries({ queryKey: qk.modelConfig });
     },
+  });
+}
+
+/* ---- kanban links (Feature E) -------------------------------------------- */
+
+export function useKanbanLinks(enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.kanbanLinks,
+    queryFn: () => api.listKanbanLinks(),
+    enabled,
+  });
+}
+
+export function useCreateKanbanLink() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateKanbanLinkInput) => api.createKanbanLink(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.kanbanLinks }),
+  });
+}
+
+export function useDeleteKanbanLink() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteKanbanLink(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.kanbanLinks }),
   });
 }
 

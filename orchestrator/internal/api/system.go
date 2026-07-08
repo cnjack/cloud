@@ -19,6 +19,7 @@ type systemResponse struct {
 	Provider   systemProvider   `json:"provider"`
 	Runner     systemRunner     `json:"runner"`
 	Auth       systemAuth       `json:"auth"`
+	Kanban     systemKanban     `json:"kanban"`
 	Namespace  string           `json:"namespace"`
 	Launcher   string           `json:"launcher"`
 }
@@ -59,6 +60,15 @@ type systemRunner struct {
 	// C / D05): when on, each service keeps a persistent workspace PVC (reused
 	// checkout + jcode memory) and runs serialize per service. Purely informational.
 	PersistentWorkspace bool `json:"persistent_workspace"`
+}
+
+// systemKanban is the jtype kanban integration snapshot (Feature E). Enabled is
+// true only when BOTH JTYPE_BASE_URL and JTYPE_TOKEN are configured; the base
+// URL is surfaced (never the token) so the console can show "on / off" + target.
+type systemKanban struct {
+	Enabled      bool   `json:"enabled"`
+	BaseURL      string `json:"base_url,omitempty"`
+	PollInterval string `json:"poll_interval,omitempty"`
 }
 
 // handleGetSystem returns the cluster-admin system snapshot. Read-only: it
@@ -108,6 +118,11 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 		Auth: systemAuth{
 			Providers:  s.configuredProviderIDs(),
 			UsersCount: usersCount,
+		},
+		Kanban: systemKanban{
+			Enabled:      s.cfg.JtypeBaseURL != "" && s.cfg.JtypeToken != "",
+			BaseURL:      s.cfg.JtypeBaseURL,
+			PollInterval: s.cfg.JtypePollInterval.String(),
 		},
 		Namespace: s.cfg.Namespace,
 		Launcher:  launcherKind(s.cfg.JobLauncher, s.cfg.DisableK8s),

@@ -8,6 +8,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 	"github.com/cnjack/jcloud/internal/credentials"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/gitcli"
+	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/provider"
@@ -59,6 +61,18 @@ type Server struct {
 	// Shared with the reconciler via Models() so a console PUT/DELETE's
 	// Invalidate() is immediately visible to Job scheduling. Never nil.
 	models *modelcfg.Resolver
+
+	// jtypeBoard validates a board (fetches its columns) before creating a
+	// kanban_link. It is the *jtype.Client in production; nil when the
+	// integration is off (column validation is then skipped). Typed as an
+	// interface so tests inject a fake without HTTP.
+	jtypeBoard boardValidator
+}
+
+// boardValidator is the slice of *jtype.Client the admin link API needs to
+// validate trigger/done column names against a live board.
+type boardValidator interface {
+	GetBoard(ctx context.Context, workspace, boardRef string) (*jtype.Board, error)
 }
 
 // New builds a Server. launcher may be nil (K8s disabled). The token cipher and
@@ -103,6 +117,11 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Effective-model resolver (Feature A): one cached instance for every gate
 	// (run create/retry/review, webhook, and — via Models() — the reconciler).
 	s.models = modelcfg.NewResolver(st, s.cipher, cfg)
+	// Feature E — jtype kanban client (nil when the integration is off). Used by
+	// the admin link API to validate board columns at create time.
+	if cfg.JtypeBaseURL != "" && cfg.JtypeToken != "" {
+		s.jtypeBoard = jtype.NewClient(cfg.JtypeBaseURL, cfg.JtypeToken, 0)
+	}
 	return s
 }
 
@@ -176,6 +195,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/system/model", s.authed(s.handleGetModelConfig))
 	mux.Handle("PUT /api/v1/system/model", s.authed(s.handlePutModelConfig))
 	mux.Handle("DELETE /api/v1/system/model", s.authed(s.handleDeleteModelConfig))
+
+	// Feature E — jtype kanban links. GET (list) is any logged-in principal;
+	// POST/DELETE are cluster-admin only (enforced in the handler). Board column
+	// validation against the live jtype workspace happens at create time.
+	mux.Handle("GET /api/v1/system/kanban/links", s.authed(s.handleListKanbanLinks))
+	mux.Handle("POST /api/v1/system/kanban/links", s.authed(s.handleCreateKanbanLink))
+	mux.Handle("DELETE /api/v1/system/kanban/links/{id}", s.authed(s.handleDeleteKanbanLink))
 
 	// User search (any logged-in user; for the add-member picker).
 	mux.Handle("GET /api/v1/users", s.authed(s.handleSearchUsers))

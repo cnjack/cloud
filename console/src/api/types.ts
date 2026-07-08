@@ -303,6 +303,47 @@ export interface SystemInfo {
     providers: string[];
     users_count: number;
   };
+  /**
+   * Feature E — jtype kanban integration snapshot. `enabled` is true only when
+   * BOTH JTYPE_BASE_URL and JTYPE_TOKEN are set; base_url is shown (never the
+   * token). Optional so lean fixtures still type-check; the Cluster view renders
+   * an "off" state when absent.
+   */
+  kanban?: {
+    enabled: boolean;
+    base_url?: string;
+    poll_interval?: string;
+  };
+}
+
+/* ---- kanban links (Feature E) --------------------------------------------- */
+
+/**
+ * GET /api/v1/system/kanban/links — one binding of a jtype board column to a
+ * project/service. A card dragged into `trigger_column` dispatches an agent run;
+ * a finished run is written back as a card comment and (when `done_column` is
+ * set) the card is moved there. Mirrors the orchestrator kanbanLinkView.
+ */
+export interface KanbanLink {
+  id: string;
+  workspace_id: string;
+  board_ref: string;
+  project_id: string;
+  service_id: string;
+  trigger_column: string;
+  done_column?: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+/** POST /api/v1/system/kanban/links body (cluster-admin only). */
+export interface CreateKanbanLinkInput {
+  workspace_id: string;
+  board_ref: string;
+  project_id: string;
+  service_id: string;
+  trigger_column: string;
+  done_column?: string;
 }
 
 /* ---- cluster model config (Feature A) ------------------------------------ */

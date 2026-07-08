@@ -109,6 +109,22 @@ type Config struct {
 	// Empty => the auth endpoints report no providers and login is CONSOLE_TOKEN
 	// only (backward compatible).
 	OAuthProviders []OAuthProviderConfig
+
+	// --- jtype kanban integration (Feature E) --------------------------------
+	// JtypeBaseURL is JTYPE_BASE_URL: the jtype document API root
+	// (e.g. http://127.0.0.1:13345 or https://jtype.example.com). Empty => the
+	// kanban integration is OFF (no poller, no writeback) — the system runs
+	// normally without it. NEVER defaults to a mock (fail-visible red line).
+	JtypeBaseURL string
+	// JtypeToken is JTYPE_TOKEN: a jtype mcp-scope PAT (editor rights) that
+	// authorises the poller's reads/writes across every workspace on the
+	// instance. Required when JtypeBaseURL is set; the integration stays OFF
+	// when only the base URL is configured so a misconfig is loud, not silent.
+	JtypeToken string
+	// JtypePollInterval is JTYPE_POLL_INTERVAL (default 15s): how often the
+	// poller scans enabled kanban_links for cards in their trigger column. <=0
+	// with a configured base/token disables the poller (writeback still runs).
+	JtypePollInterval time.Duration
 }
 
 // OAuthProviderConfig is one configured OAuth provider (multitenant blueprint
@@ -164,6 +180,9 @@ func Load() (*Config, error) {
 		ConsoleURL:            getenv("CONSOLE_URL", "http://localhost:5173"),
 		SessionTTL:            getdur("SESSION_TTL", 30*24*time.Hour),
 		OAuthProviders:        loadOAuthProviders(),
+		JtypeBaseURL:          os.Getenv("JTYPE_BASE_URL"),
+		JtypeToken:            os.Getenv("JTYPE_TOKEN"),
+		JtypePollInterval:     getdur("JTYPE_POLL_INTERVAL", 15*time.Second),
 	}
 
 	var missing []string

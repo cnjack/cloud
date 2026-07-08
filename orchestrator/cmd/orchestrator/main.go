@@ -17,7 +17,9 @@ import (
 
 	"github.com/cnjack/jcloud/internal/api"
 	"github.com/cnjack/jcloud/internal/config"
+	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/k8s"
+	"github.com/cnjack/jcloud/internal/kanban"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/reconciler"
 	"github.com/cnjack/jcloud/internal/sse"
@@ -123,6 +125,27 @@ func run(log *slog.Logger) error {
 			// Share the API's model resolver so a console PUT/DELETE invalidates
 			// the SAME cache the scheduler resolves through (Feature A).
 			WithModelResolver(srv.Models())
+
+		// Feature E — jtype kanban integration. When the jtype base URL + token
+		// are configured, wire the writeback client into the reconciler (it posts
+		// finished runs' results back as card comments) and start the poller that
+		// dispatches runs off cards in trigger columns. Either both are on or both
+		// off — there is no half-on mode (fail-visible red line: never a mock).
+		if cfg.JtypeBaseURL != "" && cfg.JtypeToken != "" {
+			jc := jtype.NewClient(cfg.JtypeBaseURL, cfg.JtypeToken, 0)
+			rec.WithKanban(jc, cfg.ConsoleURL)
+			if cfg.JtypePollInterval > 0 {
+				poller := kanban.New(st, jc, srv.Models(), log, cfg.ConsoleURL, cfg.JtypePollInterval)
+				go poller.Run(ctx)
+				log.Info("kanban integration enabled",
+					"jtype_url", cfg.JtypeBaseURL, "poll_interval", cfg.JtypePollInterval)
+			} else {
+				log.Info("kanban writeback enabled (poller disabled: JTYPE_POLL_INTERVAL<=0)", "jtype_url", cfg.JtypeBaseURL)
+			}
+		} else if cfg.JtypeBaseURL != "" || cfg.JtypeToken != "" {
+			log.Warn("kanban integration partially configured: need BOTH JTYPE_BASE_URL and JTYPE_TOKEN; staying off")
+		}
+
 		if !srv.Git().Available() {
 			log.Warn("git binary not found: draft-PR push + source bundling disabled")
 		} else {

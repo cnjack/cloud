@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cnjack/jcloud/internal/domain"
@@ -1073,6 +1074,232 @@ func (s *PGStore) GetArtifact(ctx context.Context, runID string, kind domain.Art
 		return nil, fmt.Errorf("get artifact: %w", err)
 	}
 	return &a, nil
+}
+
+// --- Kanban (Feature E) -----------------------------------------------------
+
+// kanbanLinkCols are the kanban_links columns in scan order. done_column may be
+// NULL; the rest are NOT NULL.
+const kanbanLinkCols = `id, workspace_id, board_ref, project_id, service_id,
+	trigger_column, done_column, enabled, created_at, updated_at`
+
+func scanKanbanLink(row pgx.Row) (*domain.KanbanLink, error) {
+	var l domain.KanbanLink
+	var doneColumn *string
+	err := row.Scan(
+		&l.ID, &l.WorkspaceID, &l.BoardRef, &l.ProjectID, &l.ServiceID,
+		&l.TriggerColumn, &doneColumn, &l.Enabled, &l.CreatedAt, &l.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if doneColumn != nil {
+		l.DoneColumn = *doneColumn
+	}
+	return &l, nil
+}
+
+func (s *PGStore) CreateKanbanLink(ctx context.Context, l *domain.KanbanLink) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO kanban_links (`+kanbanLinkCols+`)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		l.ID, l.WorkspaceID, l.BoardRef, l.ProjectID, l.ServiceID,
+		l.TriggerColumn, nullStr(l.DoneColumn), l.Enabled, l.CreatedAt, l.UpdatedAt)
+	if err != nil {
+		return mapKanbanLinkErr("create kanban link", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetKanbanLink(ctx context.Context, id string) (*domain.KanbanLink, error) {
+	l, err := scanKanbanLink(s.pool.QueryRow(ctx,
+		`SELECT `+kanbanLinkCols+` FROM kanban_links WHERE id=$1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get kanban link: %w", err)
+	}
+	return l, nil
+}
+
+func (s *PGStore) ListKanbanLinks(ctx context.Context) ([]domain.KanbanLink, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+kanbanLinkCols+` FROM kanban_links ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list kanban links: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.KanbanLink
+	for rows.Next() {
+		l, err := scanKanbanLink(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *l)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) ListEnabledKanbanLinks(ctx context.Context) ([]domain.KanbanLink, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+kanbanLinkCols+` FROM kanban_links WHERE enabled=TRUE ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled kanban links: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.KanbanLink
+	for rows.Next() {
+		l, err := scanKanbanLink(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *l)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) DeleteKanbanLink(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM kanban_links WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("delete kanban link: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) EnsureKanbanClaim(ctx context.Context, linkID, documentID, documentPath string) (*domain.KanbanClaim, error) {
+	// INSERT … ON CONFLICT DO NOTHING keeps it idempotent; then SELECT the
+	// committed row so the caller sees the authoritative run_id (which a racing
+	// tick may have stamped between the two statements — that is fine: the caller
+	// re-checks run_id and skips).
+	var c domain.KanbanClaim
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO kanban_claims (id, link_id, document_id, document_path, claimed_at)
+		 VALUES ($1, $2, $3, $4, now())
+		 ON CONFLICT (link_id, document_id) DO NOTHING`,
+		domain.NewID(), linkID, documentID, nullStr(documentPath)); err != nil {
+		return nil, fmt.Errorf("ensure kanban claim: %w", err)
+	}
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, link_id, document_id, document_path, run_id,
+		        notified_not_configured_at, writeback_at, claimed_at
+		 FROM kanban_claims WHERE link_id=$1 AND document_id=$2`,
+		linkID, documentID).Scan(
+		&c.ID, &c.LinkID, &c.DocumentID, &c.DocumentPath, &c.RunID,
+		&c.NotifiedNotConfiguredAt, &c.WritebackAt, &c.ClaimedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load kanban claim: %w", err)
+	}
+	return &c, nil
+}
+
+func (s *PGStore) SetKanbanClaimRun(ctx context.Context, linkID, documentID, runID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE kanban_claims SET run_id=$3
+		 WHERE link_id=$1 AND document_id=$2 AND (run_id IS NULL OR run_id='')`,
+		linkID, documentID, runID)
+	if err != nil {
+		return fmt.Errorf("set kanban claim run: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) MarkKanbanNotConfiguredNotified(ctx context.Context, linkID, documentID string, at time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE kanban_claims SET notified_not_configured_at=$3
+		 WHERE link_id=$1 AND document_id=$2 AND notified_not_configured_at IS NULL`,
+		linkID, documentID, at)
+	if err != nil {
+		return false, fmt.Errorf("mark kanban not-configured notified: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (s *PGStore) ListKanbanRunsAwaitingWriteback(ctx context.Context) ([]KanbanWriteback, error) {
+	// Join claims -> links and filter to terminal runs whose writeback_at is NULL.
+	// The run is loaded via GetRun per row (the canonical scanRun already packages
+	// the runs column list; the writeback set is small and only terminal once, so
+	// the extra hit per row is not on a hot path).
+	linkSel := prefixCols("l", kanbanLinkCols)
+	rows, err := s.pool.Query(ctx,
+		`SELECT c.id, c.link_id, c.document_id, c.document_path, c.run_id,
+		        c.notified_not_configured_at, c.writeback_at, c.claimed_at,
+		        `+linkSel+`
+		 FROM kanban_claims c
+		 JOIN runs r ON r.id = c.run_id
+		 JOIN kanban_links l ON l.id = c.link_id
+		 WHERE c.run_id IS NOT NULL AND c.run_id <> ''
+		   AND c.writeback_at IS NULL
+		   AND r.status IN ('succeeded','failed','canceled')
+		 ORDER BY c.claimed_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list kanban writebacks: %w", err)
+	}
+	defer rows.Close()
+	var out []KanbanWriteback
+	for rows.Next() {
+		var wb KanbanWriteback
+		var doneColumn *string
+		if err := rows.Scan(
+			&wb.Claim.ID, &wb.Claim.LinkID, &wb.Claim.DocumentID, &wb.Claim.DocumentPath, &wb.Claim.RunID,
+			&wb.Claim.NotifiedNotConfiguredAt, &wb.Claim.WritebackAt, &wb.Claim.ClaimedAt,
+			&wb.Link.ID, &wb.Link.WorkspaceID, &wb.Link.BoardRef, &wb.Link.ProjectID, &wb.Link.ServiceID,
+			&wb.Link.TriggerColumn, &doneColumn, &wb.Link.Enabled, &wb.Link.CreatedAt, &wb.Link.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan kanban writeback: %w", err)
+		}
+		if doneColumn != nil {
+			wb.Link.DoneColumn = *doneColumn
+		}
+		run, err := s.GetRun(ctx, wb.Claim.RunID)
+		if err != nil {
+			// A run that vanished between the join and the lookup (cascade/edge)
+			// is skipped this tick rather than failing the whole pass.
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("load kanban writeback run: %w", err)
+		}
+		wb.Run = *run
+		out = append(out, wb)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) MarkKanbanWriteback(ctx context.Context, linkID, documentID string, at time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE kanban_claims SET writeback_at=$3
+		 WHERE link_id=$1 AND document_id=$2 AND writeback_at IS NULL`,
+		linkID, documentID, at)
+	if err != nil {
+		return false, fmt.Errorf("mark kanban writeback: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// mapKanbanLinkErr translates a kanban_links INSERT error into a typed store
+// error (UNIQUE(workspace_id, board_ref) -> ErrAlreadyExists) so the API can
+// return a 409 instead of a generic 500. Other errors are wrapped verbatim.
+func mapKanbanLinkErr(op string, err error) error {
+	if isUniqueViolation(err) {
+		return fmt.Errorf("%s: %w", op, ErrAlreadyExists)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
+// isUniqueViolation reports whether err is a Postgres unique-violation (SQLSTATE
+// 23505). pgx/v5 returns *pgconn.PgError for server errors.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
+	}
+	return false
 }
 
 var _ Store = (*PGStore)(nil)

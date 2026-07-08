@@ -10,10 +10,12 @@ import type {
   AddMemberInput,
   AuthProviderInfo,
   AuthProvidersEnvelope,
+  CreateKanbanLinkInput,
   CreateProjectInput,
   CreateRunInput,
   CreateServiceInput,
   EventsEnvelope,
+  KanbanLink,
   Me,
   Member,
   MembersEnvelope,
@@ -117,6 +119,14 @@ export interface ApiClient {
   setModelConfig(input: PutModelConfigInput): Promise<ModelConfigInfo>;
   /** DELETE /api/v1/system/model — clear the DB row; falls back to env/none. */
   clearModelConfig(): Promise<ModelConfigInfo>;
+
+  /* ---- kanban links (Feature E) ----------------------------------------- */
+  /** GET /api/v1/system/kanban/links — list board→service bindings. */
+  listKanbanLinks(): Promise<KanbanLink[]>;
+  /** POST /api/v1/system/kanban/links — bind a board column to a service (admin). */
+  createKanbanLink(input: CreateKanbanLinkInput): Promise<KanbanLink>;
+  /** DELETE /api/v1/system/kanban/links/{id} — remove a binding (admin). */
+  deleteKanbanLink(id: string): Promise<void>;
 
   /* ---- services (blueprint §4) ------------------------------------------- */
   /** GET /api/v1/projects/{id}/services — the project's repo configurations. */
@@ -347,6 +357,19 @@ export function createHttpClient(
 
     clearModelConfig: () =>
       req<ModelConfigInfo>('/system/model', { method: 'DELETE' }),
+
+    // Kanban links (Feature E).
+    listKanbanLinks: async () =>
+      (await req<{ links: KanbanLink[] }>('/system/kanban/links')).links ?? [],
+    createKanbanLink: (input) =>
+      req<KanbanLink>('/system/kanban/links', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    deleteKanbanLink: (id) =>
+      req<void>(`/system/kanban/links/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
 
     // Services (blueprint §4).
     listServices: async (projectId) =>

@@ -17,6 +17,10 @@ var ErrNotFound = errors.New("not found")
 // is already linked to a DIFFERENT user (the /auth/link conflict case).
 var ErrIdentityTaken = errors.New("identity already linked to another user")
 
+// ErrAlreadyExists is returned by creators (e.g. CreateKanbanLink) when a
+// uniqueness constraint rejects the insert. The API maps it to a 409.
+var ErrAlreadyExists = errors.New("already exists")
+
 // EventInput is a single event to append. For AppendEvents the Seq is the
 // authoritative global seq (caller-assigned). For AppendRunnerEvents the Seq is
 // only the runner's client-side sequence number, used as a per-source
@@ -275,8 +279,50 @@ type Store interface {
 	// first (the non-admin project list).
 	ListProjectsForUser(ctx context.Context, userID string) ([]domain.Project, error)
 
+	// --- Kanban integration (Feature E) --------------------------------------
+	// KanbanLink CRUD (admin-managed bindings of a jtype board column to a
+	// project/service). CreateKanbanLink enforces UNIQUE(workspace_id, board_ref).
+	CreateKanbanLink(ctx context.Context, l *domain.KanbanLink) error
+	GetKanbanLink(ctx context.Context, id string) (*domain.KanbanLink, error)
+	ListKanbanLinks(ctx context.Context) ([]domain.KanbanLink, error)
+	// ListEnabledKanbanLinks returns only enabled links (the poller's scan set).
+	ListEnabledKanbanLinks(ctx context.Context) ([]domain.KanbanLink, error)
+	DeleteKanbanLink(ctx context.Context, id string) error
+
+	// EnsureKanbanClaim inserts a (link_id, document_id) claim row with run_id
+	// NULL if none exists yet, and returns the committed row. The caller decides
+	// what to do from Claim.RunID: empty => the card is dispatch-eligible this
+	// tick; non-empty => already dispatched, skip. This is the idempotency +
+	// "card seen" primitive (UNIQUE(link_id, document_id)).
+	EnsureKanbanClaim(ctx context.Context, linkID, documentID, documentPath string) (*domain.KanbanClaim, error)
+	// SetKanbanClaimRun stamps run_id on a claim whose run_id is still empty —
+	// the dispatch commit. It is a no-op (not an error) if the claim already has
+	// a run_id (a racing tick), so the poller need not pre-check.
+	SetKanbanClaimRun(ctx context.Context, linkID, documentID, runID string) error
+	// MarkKanbanNotConfiguredNotified stamps notified_not_configured_at where it
+	// is still NULL, returning notified=true only for the tick that stamped it so
+	// the poller posts the "LLM not configured" card comment at most once.
+	MarkKanbanNotConfiguredNotified(ctx context.Context, linkID, documentID string, at time.Time) (bool, error)
+	// ListKanbanRunsAwaitingWriteback returns claims whose run has reached a
+	// terminal state and whose writeback_at is still NULL, each joined with its
+	// run + link so the reconciler can post the result comment / move the card in
+	// one pass without extra lookups. Ordered oldest-first.
+	ListKanbanRunsAwaitingWriteback(ctx context.Context) ([]KanbanWriteback, error)
+	// MarkKanbanWriteback stamps writeback_at, returning wrote=true only for the
+	// tick that stamped it so two ticks never double-post. First-writer-wins.
+	MarkKanbanWriteback(ctx context.Context, linkID, documentID string, at time.Time) (bool, error)
+
 	// Lifecycle
 	Close()
+}
+
+// KanbanWriteback is a claim joined with its terminal run + link, the unit the
+// reconciler's writeback pass consumes (Feature E). Populated by
+// ListKanbanRunsAwaitingWriteback.
+type KanbanWriteback struct {
+	Claim domain.KanbanClaim
+	Run   domain.Run
+	Link  domain.KanbanLink
 }
 
 // ErrInvalidTransition is returned by the run mutators when a status change is

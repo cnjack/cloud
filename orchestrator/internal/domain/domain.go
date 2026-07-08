@@ -188,8 +188,9 @@ func ValidRunKind(k RunKind) bool {
 	return false
 }
 
-// RunOrigin records how a run was triggered: the ordinary API/console path, or a
-// Gitea PR comment `@jcode …` webhook (M7 / blueprint §8).
+// RunOrigin records how a run was triggered: the ordinary API/console path, a
+// Gitea PR comment `@jcode …` webhook (M7 / blueprint §8), or a jtype kanban
+// card dragged into a link's trigger column (Feature E).
 type RunOrigin string
 
 const (
@@ -199,12 +200,18 @@ const (
 	// runs carry the triggering comment id/url and (for agent tasks) push back onto
 	// the PR head branch instead of opening a new draft PR.
 	RunOriginWebhook RunOrigin = "webhook"
+	// RunOriginKanban: the run was dispatched by the kanban poller (Feature E)
+	// after a jtype card entered a kanban_link's trigger column. The triggering
+	// document id/path live on the kanban_claims row (not the run), and the
+	// reconciler's writeback pass posts the result back as a card comment (and
+	// optionally moves the card to the done column).
+	RunOriginKanban RunOrigin = "kanban"
 )
 
 // ValidRunOrigin reports whether o is a recognised run origin.
 func ValidRunOrigin(o RunOrigin) bool {
 	switch o {
-	case RunOriginAPI, RunOriginWebhook:
+	case RunOriginAPI, RunOriginWebhook, RunOriginKanban:
 		return true
 	}
 	return false
@@ -464,4 +471,75 @@ type ModelConfig struct {
 	// or "" for the service principal).
 	UpdatedAt time.Time `json:"updated_at"`
 	UpdatedBy string    `json:"updated_by"`
+}
+
+// KanbanLink binds a jtype board column to a project/service so that a card
+// dragged into TriggerColumn dispatches an agent run, and (when DoneColumn is
+// set) a finished run's card is moved to DoneColumn after the result is written
+// back as a comment (Feature E / architecture "kanban = trigger + writeback").
+//
+// One cluster-wide jtype PAT (env JTYPE_TOKEN) authorises every link's reads &
+// writes; each link names its own WorkspaceID (jtype workspace id) and BoardRef
+// (the board's id within `.board`). UNIQUE(WorkspaceID, BoardRef) — one link per
+// board; to trigger multiple columns off one board, widen TriggerColumn later.
+type KanbanLink struct {
+	ID string `json:"id"`
+	// WorkspaceID is the jtype workspace id (a uuid) the board lives in.
+	WorkspaceID string `json:"workspace_id"`
+	// BoardRef is the board id inside the workspace (the `.board` document's
+	// board id, e.g. "jcloud-dev"); cards carry it in their frontmatter `board`.
+	BoardRef string `json:"board_ref"`
+	// ProjectID / ServiceID name the target the poller dispatches runs against.
+	// The service's repo + the project's guardrails (Feature B) apply to kanban
+	// runs exactly as they do to console/webhook runs.
+	ProjectID string `json:"project_id"`
+	ServiceID string `json:"service_id"`
+	// TriggerColumn is the frontmatter `status` value that dispatches a run
+	// (e.g. "ai"). A card already in this column when the poller starts is also
+	// dispatched (claims dedup, so restart-safe).
+	TriggerColumn string `json:"trigger_column"`
+	// DoneColumn, when non-empty, is the status the writeback pass moves a
+	// finished run's card to. Empty => the card stays put after the result
+	// comment is posted (no auto-move).
+	DoneColumn string `json:"done_column,omitempty"`
+	// Enabled gates the poller. A disabled link is retained (its claims persist)
+	// but never scanned.
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// KanbanClaim is the idempotency row for kanban-triggered dispatch (Feature E).
+// UNIQUE(LinkId, DocumentID) means a given card is dispatched at most once per
+// link: the poller Ensures a claim row the first time it sees the card in the
+// trigger column, then — only while RunID is empty — dispatches a run and stamps
+// RunID. Restart-safe: a claim with a non-empty RunID is never re-dispatched.
+//
+// RunID is NULL until dispatch succeeds. This doubles as the "card seen" marker:
+// when the LLM is not configured (fail-visible gate), the poller leaves RunID
+// NULL, posts ONE "LLM not configured" comment (NotifiedNotConfiguredAt), and
+// retries on subsequent ticks — so the moment an admin configures the model the
+// pending card auto-dispatches, with no re-spam.
+type KanbanClaim struct {
+	ID string `json:"id"`
+	// LinkID + DocumentID identify the card within a link (the jtype document id
+	// of the `.md` card).
+	LinkID     string `json:"link_id"`
+	DocumentID string `json:"document_id"`
+	// DocumentPath is the card's relative path in the workspace (e.g.
+	// "cards/add-health-banner.md"), captured at claim time for logging and to
+	// spare a list round-trip on writeback.
+	DocumentPath string `json:"document_path,omitempty"`
+	// RunID is the dispatched run's id. Empty until dispatch commits; the writeback
+	// pass joins claims→runs on it.
+	RunID string `json:"run_id,omitempty"`
+	// NotifiedNotConfiguredAt is stamped once when the poller posted an
+	// "LLM not configured" comment for this card (throttle: at most one such
+	// notice per card). Nil otherwise.
+	NotifiedNotConfiguredAt *time.Time `json:"notified_not_configured_at,omitempty"`
+	// WritebackAt is stamped once the reconciler has posted the result comment
+	// (and moved the card, if configured). Nil until then; the writeback scan
+	// reads "claim with a terminal run and WritebackAt nil".
+	WritebackAt *time.Time `json:"writeback_at,omitempty"`
+	ClaimedAt   time.Time  `json:"claimed_at"`
 }

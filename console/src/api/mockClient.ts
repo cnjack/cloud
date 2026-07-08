@@ -15,10 +15,12 @@ import type { ApiClient, StreamCallbacks, StreamHandle } from './client';
 import { ApiError } from './client';
 import type {
   AddMemberInput,
+  CreateKanbanLinkInput,
   CreateProjectInput,
   CreateRunInput,
   CreateServiceInput,
   FailureReason,
+  KanbanLink,
   Me,
   Member,
   MemberRole,
@@ -156,6 +158,8 @@ export function createMockClient(): ApiClient {
   // with a single 'default' service — the "one repo = one project" simple UX.
   const services = new Map<string, Service[]>();
   const members = new Map<string, Member[]>();
+  // Feature E: kanban links (board→service bindings), keyed by link id.
+  const kanbanLinks = new Map<string, KanbanLink>();
 
   // Feature A: the cluster model config. Demo starts CONFIGURED (source=env, as
   // the local rig would) so the composer is enabled; the Cluster page's admin
@@ -783,6 +787,11 @@ export function createMockClient(): ApiClient {
           providers: ['gitea'],
           users_count: DEMO_USERS.length,
         },
+        kanban: {
+          enabled: false,
+          base_url: '',
+          poll_interval: '15s',
+        },
       };
       return delay(info);
     },
@@ -824,6 +833,42 @@ export function createMockClient(): ApiClient {
       // by 'db' on any save, so this branch only ever follows a db state.
       modelConfig = { configured: false, source: 'none', api_key_set: false };
       return delay({ ...modelConfig });
+    },
+
+    /* ---- kanban links (Feature E) ----------------------------------------- */
+    async listKanbanLinks(): Promise<KanbanLink[]> {
+      return delay([...kanbanLinks.values()]);
+    },
+    async createKanbanLink(input: CreateKanbanLinkInput): Promise<KanbanLink> {
+      const ws = input.workspace_id?.trim();
+      const board = input.board_ref?.trim();
+      if (!ws || !board || !input.project_id || !input.service_id || !input.trigger_column?.trim()) {
+        throw badRequest('workspace_id, board_ref, project_id, service_id and trigger_column are required');
+      }
+      for (const l of kanbanLinks.values()) {
+        if (l.workspace_id === ws && l.board_ref === board) {
+          throw new ApiError(409, 'link exists', {
+            error: { code: 'already_exists', message: 'a link for this board already exists' },
+          });
+        }
+      }
+      const link: KanbanLink = {
+        id: 'kl-' + Math.random().toString(36).slice(2, 10),
+        workspace_id: ws,
+        board_ref: board,
+        project_id: input.project_id,
+        service_id: input.service_id,
+        trigger_column: input.trigger_column.trim(),
+        done_column: input.done_column?.trim() || undefined,
+        enabled: true,
+        created_at: new Date().toISOString(),
+      };
+      kanbanLinks.set(link.id, link);
+      return delay(link);
+    },
+    async deleteKanbanLink(id: string): Promise<void> {
+      if (!kanbanLinks.delete(id)) throw new ApiError(404, 'kanban link not found');
+      return delay(undefined);
     },
 
     /* ---- services (blueprint §4) ------------------------------------------ */

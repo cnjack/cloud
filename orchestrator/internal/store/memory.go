@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -25,8 +26,10 @@ type MemStore struct {
 	users      map[string]domain.User          // keyed by user id
 	identities map[string]domain.UserIdentity  // keyed by identity id
 	sessions   map[string]domain.Session       // keyed by session id
-	members    map[string]domain.ProjectMember // keyed by projectID+"|"+userID
-	modelCfg   *domain.ModelConfig             // single-row cluster model config (nil = unset)
+	members      map[string]domain.ProjectMember // keyed by projectID+"|"+userID
+	modelCfg     *domain.ModelConfig             // single-row cluster model config (nil = unset)
+	kanbanLinks  map[string]domain.KanbanLink    // keyed by link id
+	kanbanClaims map[string]domain.KanbanClaim   // keyed by linkID+"|"+documentID
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -42,6 +45,8 @@ func NewMemStore() *MemStore {
 		identities: map[string]domain.UserIdentity{},
 		sessions:   map[string]domain.Session{},
 		members:    map[string]domain.ProjectMember{},
+		kanbanLinks:  map[string]domain.KanbanLink{},
+		kanbanClaims: map[string]domain.KanbanClaim{},
 	}
 }
 
@@ -783,6 +788,179 @@ func (m *MemStore) ClearModelConfig(_ context.Context) error {
 	defer m.mu.Unlock()
 	m.modelCfg = nil
 	return nil
+}
+
+// --- kanban integration (Feature E) ---
+
+// claimKey is the kanban_claims natural key (linkID, documentID).
+func claimKey(linkID, documentID string) string { return linkID + "|" + documentID }
+
+func (m *MemStore) CreateKanbanLink(_ context.Context, l *domain.KanbanLink) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.kanbanLinks {
+		if e.WorkspaceID == l.WorkspaceID && e.BoardRef == l.BoardRef {
+			return fmt.Errorf("create kanban link: %w", ErrAlreadyExists)
+		}
+	}
+	m.kanbanLinks[l.ID] = *l
+	return nil
+}
+
+func (m *MemStore) GetKanbanLink(_ context.Context, id string) (*domain.KanbanLink, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.kanbanLinks[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := l
+	return &cp, nil
+}
+
+func (m *MemStore) ListKanbanLinks(_ context.Context) ([]domain.KanbanLink, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.KanbanLink, 0, len(m.kanbanLinks))
+	for _, l := range m.kanbanLinks {
+		out = append(out, l)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) ListEnabledKanbanLinks(_ context.Context) ([]domain.KanbanLink, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.KanbanLink
+	for _, l := range m.kanbanLinks {
+		if l.Enabled {
+			out = append(out, l)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) DeleteKanbanLink(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.kanbanLinks[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.kanbanLinks, id)
+	// Cascade: drop claims belonging to the removed link.
+	for k, c := range m.kanbanClaims {
+		if c.LinkID == id {
+			delete(m.kanbanClaims, k)
+		}
+	}
+	return nil
+}
+
+func (m *MemStore) EnsureKanbanClaim(_ context.Context, linkID, documentID, documentPath string) (*domain.KanbanClaim, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := claimKey(linkID, documentID)
+	if c, ok := m.kanbanClaims[key]; ok {
+		cp := c
+		return &cp, nil
+	}
+	c := domain.KanbanClaim{
+		ID:           domain.NewID(),
+		LinkID:       linkID,
+		DocumentID:   documentID,
+		DocumentPath: documentPath,
+		ClaimedAt:    time.Now().UTC(),
+	}
+	m.kanbanClaims[key] = c
+	cp := c
+	return &cp, nil
+}
+
+func (m *MemStore) SetKanbanClaimRun(_ context.Context, linkID, documentID, runID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := claimKey(linkID, documentID)
+	c, ok := m.kanbanClaims[key]
+	if !ok {
+		return ErrNotFound
+	}
+	if c.RunID == "" {
+		c.RunID = runID
+		m.kanbanClaims[key] = c
+	}
+	return nil
+}
+
+func (m *MemStore) MarkKanbanNotConfiguredNotified(_ context.Context, linkID, documentID string, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := claimKey(linkID, documentID)
+	c, ok := m.kanbanClaims[key]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if c.NotifiedNotConfiguredAt != nil {
+		return false, nil
+	}
+	t := at
+	c.NotifiedNotConfiguredAt = &t
+	m.kanbanClaims[key] = c
+	return true, nil
+}
+
+func (m *MemStore) ListKanbanRunsAwaitingWriteback(ctx context.Context) ([]KanbanWriteback, error) {
+	m.mu.Lock()
+	claims := make([]domain.KanbanClaim, 0)
+	for _, c := range m.kanbanClaims {
+		if c.RunID != "" && c.WritebackAt == nil {
+			claims = append(claims, c)
+		}
+	}
+	linkByID := map[string]domain.KanbanLink{}
+	for _, l := range m.kanbanLinks {
+		linkByID[l.ID] = l
+	}
+	m.mu.Unlock()
+
+	sort.Slice(claims, func(i, j int) bool { return claims[i].ClaimedAt.Before(claims[j].ClaimedAt) })
+	var out []KanbanWriteback
+	for _, c := range claims {
+		run, err := m.GetRun(ctx, c.RunID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		if !run.Status.Terminal() {
+			continue
+		}
+		link, ok := linkByID[c.LinkID]
+		if !ok {
+			continue // link removed; nothing to write back to
+		}
+		out = append(out, KanbanWriteback{Claim: c, Run: *run, Link: link})
+	}
+	return out, nil
+}
+
+func (m *MemStore) MarkKanbanWriteback(_ context.Context, linkID, documentID string, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := claimKey(linkID, documentID)
+	c, ok := m.kanbanClaims[key]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if c.WritebackAt != nil {
+		return false, nil
+	}
+	t := at
+	c.WritebackAt = &t
+	m.kanbanClaims[key] = c
+	return true, nil
 }
 
 var _ Store = (*MemStore)(nil)

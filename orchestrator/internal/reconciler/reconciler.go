@@ -60,6 +60,20 @@ type Reconciler struct {
 	// API server's shared instance (WithModelResolver) so a console PUT/DELETE's
 	// cache invalidation is immediately visible here. Never nil.
 	models *modelcfg.Resolver
+
+	// Feature E — kanban writeback. When the jtype client is wired, a terminal
+	// kanban-origin run has its result posted back as a card comment (and the
+	// card moved to the link's done column when configured). nil => the pass is
+	// a no-op (the jtype integration is off).
+	kanban     kanbanWriter
+	consoleURL string
+}
+
+// kanbanWriter is the slice of *jtype.Client the writeback pass uses. Extracted
+// as an interface so the pass is unit-tested with a fake (no HTTP).
+type kanbanWriter interface {
+	AddComment(ctx context.Context, workspace, docID, body string) error
+	MoveCard(ctx context.Context, workspace, docID, newStatus string) error
 }
 
 // New builds a Reconciler. pub may be nil. The draft-PR / review stack is set
@@ -94,6 +108,16 @@ func (r *Reconciler) WithModelResolver(m *modelcfg.Resolver) *Reconciler {
 	if m != nil {
 		r.models = m
 	}
+	return r
+}
+
+// WithKanban wires the jtype writeback client (Feature E). When set, a terminal
+// kanban-origin run has its result posted back as a card comment and (when the
+// link has a done column) its card moved. nil leaves the pass as a no-op.
+// consoleURL is the console root used to build a run deep-link in the comment.
+func (r *Reconciler) WithKanban(k kanbanWriter, consoleURL string) *Reconciler {
+	r.kanban = k
+	r.consoleURL = consoleURL
 	return r
 }
 
@@ -246,6 +270,11 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// Post AI-review comments for succeeded review runs whose output has not been
 	// posted to their target PR yet (M3/M5). Idempotent via review_posted_at.
 	r.reconcileReviews(ctx)
+
+	// Feature E — write finished kanban-origin runs back to their cards (comment
+	// + optional move to the done column). Idempotent via writeback_at. No-op
+	// when the jtype client is not wired.
+	r.reconcileKanbanWriteback(ctx)
 }
 
 // reconcilePRs pushes the branch and opens a draft PR for each succeeded
@@ -529,6 +558,119 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 		return
 	}
 	r.log.Info("reconcile review: posted review comment", "run", run.ID, "pr", pr.Number, "src", tok.Source)
+}
+
+// reconcileKanbanWriteback posts the result of each finished kanban-origin run
+// back to its jtype card as a comment, and (when the link has a done column)
+// moves the card there. It is a no-op when the jtype client is not wired
+// (integration off). Idempotent via kanban_claims.writeback_at: a run stays in
+// the scan until the marker is stamped, and MarkKanbanWriteback is
+// first-writer-wins so two ticks never double-post (the only double-comment edge
+// is a DB error between AddComment and the marker, which mirrors the
+// reconcileReviews pattern and is rare).
+func (r *Reconciler) reconcileKanbanWriteback(ctx context.Context) {
+	if r.kanban == nil {
+		return
+	}
+	pending, err := r.st.ListKanbanRunsAwaitingWriteback(ctx)
+	if err != nil {
+		r.log.Error("reconcile kanban: list pending writebacks", "err", err)
+		return
+	}
+	for i := range pending {
+		wb := pending[i]
+		r.writebackCard(ctx, &wb)
+	}
+}
+
+// writebackCard posts the result comment for one terminal run and (for a
+// SUCCEEDED run with a configured done column) moves the card there. Failed /
+// canceled runs get the comment but STAY in place — a failure needs human
+// attention and auto-advancing it to "done"/"review" would hide it. Any failure
+// leaves the claim unmarked so the next tick retries (writeback_at is the only
+// thing that removes it from the scan): a transient jtype error therefore just
+// retries — it never loses the result silently.
+func (r *Reconciler) writebackCard(ctx context.Context, wb *store.KanbanWriteback) {
+	body := kanbanCommentBody(&wb.Run, r.consoleURL)
+
+	// Move first, ONLY for a succeeded run with a done column: if it fails we
+	// retry the whole pass before commenting, so the comment never lands on a
+	// card that did not move. Failed/canceled runs skip the move (see doc comment).
+	moveTo := ""
+	if wb.Run.Status == domain.StatusSucceeded && wb.Link.DoneColumn != "" {
+		moveTo = wb.Link.DoneColumn
+	}
+	if moveTo != "" {
+		if err := r.kanban.MoveCard(ctx, wb.Link.WorkspaceID, wb.Claim.DocumentID, moveTo); err != nil {
+			r.log.Warn("reconcile kanban: move card", "run", wb.Run.ID, "doc", wb.Claim.DocumentID, "err", err)
+			return // retry next tick
+		}
+	}
+	if err := r.kanban.AddComment(ctx, wb.Link.WorkspaceID, wb.Claim.DocumentID, body); err != nil {
+		r.log.Warn("reconcile kanban: post result comment", "run", wb.Run.ID, "doc", wb.Claim.DocumentID, "err", err)
+		return // retry next tick
+	}
+	if wrote, err := r.st.MarkKanbanWriteback(ctx, wb.Claim.LinkID, wb.Claim.DocumentID, r.now()); err != nil {
+		r.log.Error("reconcile kanban: mark writeback", "run", wb.Run.ID, "err", err)
+		return // retry next tick (may double-comment; matches reconcileReviews)
+	} else if !wrote {
+		return // a racing tick already wrote this one
+	}
+	r.log.Info("reconcile kanban: wrote result back to card",
+		"run", wb.Run.ID, "doc", wb.Claim.DocumentID, "status", wb.Run.Status,
+		"moved_to", moveTo)
+}
+
+// kanbanCommentBody renders the card comment for a terminal run. Succeeded runs
+// link the draft PR (if any) + the console run view; failed/canceled runs state
+// the reason. Always includes a console deep-link when consoleURL is set so the
+// operator can jump to the run.
+func kanbanCommentBody(run *domain.Run, consoleURL string) string {
+	runLink := ""
+	if consoleURL != "" {
+		runLink = strings.TrimRight(consoleURL, "/") + "/runs/" + run.ID
+	}
+	var b strings.Builder
+	switch run.Status {
+	case domain.StatusSucceeded:
+		b.WriteString("✅ jcode finished run `")
+		b.WriteString(run.ID)
+		b.WriteString("`.")
+		if run.PRURL != "" {
+			b.WriteString("\n\nDraft PR: ")
+			b.WriteString(run.PRURL)
+		}
+	case domain.StatusFailed:
+		b.WriteString("❌ jcode run `")
+		b.WriteString(run.ID)
+		b.WriteString("` failed")
+		if run.FailureReason != "" {
+			b.WriteString(" (")
+			b.WriteString(string(run.FailureReason))
+			b.WriteString(")")
+		}
+		if run.FailureMessage != "" {
+			b.WriteString(": ")
+			b.WriteString(run.FailureMessage)
+		} else {
+			b.WriteString(".")
+		}
+	case domain.StatusCanceled:
+		b.WriteString("↩️ jcode run `")
+		b.WriteString(run.ID)
+		b.WriteString("` was canceled.")
+	default:
+		b.WriteString("jcode run `")
+		b.WriteString(run.ID)
+		b.WriteString("` reached status ")
+		b.WriteString(string(run.Status))
+		b.WriteString(".")
+	}
+	if runLink != "" {
+		b.WriteString("\n\nRun details: ")
+		b.WriteString(runLink)
+	}
+	return b.String()
 }
 
 // prBody is the PR description linking the run for traceability.

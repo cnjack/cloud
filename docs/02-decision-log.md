@@ -112,3 +112,23 @@ runner 的 `MODEL_BASE_URL` 不再指真实 LLM,改指 orchestrator 进程内的
 - **安全细节**:入站 `Authorization`(RUN_TOKEN)在 `Rewrite` 里**先删后设真实 key**,绝不透传;`http.Transport` 只限 dial/header 超时,**不限响应体超时**(SSE 可流式数分钟);日志只记 method/run/status,**绝不**记 key 或 body。
 - **本期不做(留 TODO,对应 O5 temp-token 路线)**:代理不记用量/审计、不签发独立短期 temp token(`MODEL_API_KEY` 暂复用 RUN_TOKEN)、不做 per-run 速率/配额。后续做 temp-token 化时,把 `jobEnv` 的 `MODEL_API_KEY` 换成代理签发的短期凭据,代理侧凭据表加 TTL + 用量采集即可。
 - **被否(整体)**:继续直接注入真实 key(prompt 注入可偷,违背 O5);sidecar 代理(多一个进程/镜像/故障面,而进程内代理零新增部署成本)。
+
+---
+
+## 补充 —— Feature E jtype 看板集成（落地 D11 "看板 = 触发源 + 回写 sink"）
+
+### D17 · 看板双向打通 → 轮询（非 webhook/SSE）+ claim 幂等 + claim 承载回写
+
+架构愿景（docs/01）："拖卡片到指定列 = 派一个 AI run；run 完成后回写卡片"。落地时的关键取舍：
+
+**(a) 入站用轮询，不用 webhook/SSE。** jtype 出站 webhook 有 SSRF 防护（target 强制 https 且拒内网 IP），orchestrator 在内网收不到；board SSE 事件流只放行 `full`-scope token（不接受 mcp PAT）。所以 orchestrator 主动按 `updatedClock` 增量轮询 jtype 文档列表（`GET /workspaces/{ws}/documents`）—— level-based、幂等、重启无缝恢复（claim 表 + 内存游标，游标仅为优化，重启从 0 重扫由 claim 去重兜底），契合现有 reconciler 哲学。一个 mcp-scope PAT（editor 权限）覆盖该实例所有 workspace 的全部读写。"移动到某列" = 改卡片 frontmatter `status`（`POST .../documents/save`）；列变更无独立事件，轮询天然覆盖。
+
+**(b) 幂等单元 = `kanban_claims(link_id, document_id)`，且 `run_id` 留空可重试。** UNIQUE(link_id, document_id) 保证一张卡每个 link 至多派一次 run。`run_id` 在派发成功后才 stamp，于是"LLM 未配置"时（fail-visible 闸）：claim 已建立但 `run_id` 为空 → 不派 run、只发**一次**"LLM 未配置"卡片评论（`notified_not_configured_at` 节流）→ 下个 tick 继续重试 → 管理员配上模型后**自动补派**，且不刷屏。这同时满足 fail-visible + 可恢复 + 零垃圾评论，比"永久 claim 掉"（不可恢复）或"cooldown"（重启丢、重复评论）都好。回写幂等由 `writeback_at`（first-writer-wins）保证，模式沿用 reconcileReviews（AddComment 后 stamp；DB 错误导致的极小概率重复评论被接受）。
+
+**(c) 文档 id/path 放在 claim，不给 runs 表加列。** 回写需按 run 找卡片：`ListKanbanRunsAwaitingWriteback` join claims→runs→links，claim 已持 document_id/document_path，无需改 runs schema（仅扩 origin 枚举到 `'kanban'`，origin 列早由 0008 存在）。`Run.Origin=kanban` 仅作可追溯性标记 + console 展示。
+
+**(d) 回写策略：succeeded 才自动移列，failed/canceled 只评论不动卡。** done_column 的语义是"完成、无需再看"——失败的 run 需要人介入，自动推进到 done/review 会把失败藏起来；故只有 `StatusSucceeded && done_column!=""` 才 MoveCard，failed/cazard 仅贴结果评论、卡留原地。
+
+**(e) PAT 存 env（集群级），不存 DB。** 本期一个集群一个 PAT（对 jtype 实例所有 workspace 有效）进 `orchestrator-secret`（gitignored）；多 link 共享该 PAT（每 link 自己的 workspace/board）。不做 per-link token。
+
+**被否**：jtype webhook（SSRF 挡内网 orchestrator，收不到）；board SSE（需 full-scope token，不接受 mcp PAT）；给 runs 表加 OriginDocID/OriginDocPath 列（claim 已承载，避免无谓改 schema）；失败也移列到 done（藏住失败，反 fail-visible）。
