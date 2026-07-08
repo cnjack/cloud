@@ -88,6 +88,33 @@ export interface ResultItem {
   message: string;
 }
 
+/**
+ * user.message { prompt, by } (D22): a follow-up prompt the user fed to a
+ * multi-turn session run. Rendered as a right-aligned user chat bubble so the
+ * timeline reads as a continuous conversation.
+ */
+export interface UserMessageItem {
+  seq: number;
+  ts: string;
+  kind: 'user_message';
+  prompt: string;
+  /** Display name of the author; empty for a service principal. */
+  by: string;
+}
+
+/**
+ * session.finish { reason: "user" | "idle_timeout", by? } (D22): the session
+ * was wound down. Rendered as a compact system row.
+ */
+export interface SessionFinishItem {
+  seq: number;
+  ts: string;
+  kind: 'session_finish';
+  reason: string;
+  by: string;
+  message: string;
+}
+
 export interface UnknownItem {
   seq: number;
   ts: string;
@@ -105,6 +132,8 @@ export type TimelineItem =
   | ArtifactItem
   | GitItem
   | ResultItem
+  | UserMessageItem
+  | SessionFinishItem
   | UnknownItem;
 
 /* ---- grouped (rendering) projection --------------------------------------
@@ -159,4 +188,6 @@ export type GroupedTimelineItem =
   | ArtifactItem
   | GitItem
   | ResultItem
+  | UserMessageItem
+  | SessionFinishItem
   | UnknownItem;

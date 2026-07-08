@@ -14,6 +14,8 @@ const LABELS: Record<string, string> = {
   queued: 'Queued',
   scheduling: 'Scheduling',
   running: 'Running',
+  // D22 session: turn done, waiting for the user's next message.
+  awaiting_input: 'Awaiting input',
   succeeded: 'Succeeded',
   failed: 'Failed',
   canceled: 'Canceled',

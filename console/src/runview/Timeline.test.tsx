@@ -77,3 +77,42 @@ describe('Timeline — terminal row', () => {
     expect(screen.getByTestId('timeline-final')).toBeTruthy();
   });
 });
+
+describe('Timeline — session events (D22)', () => {
+  it('renders a user.message event as a user chat bubble with author + prompt', () => {
+    const events = [
+      ev(1, 'agent.text', { text: 'First answer.' }),
+      ev(2, 'user.message', { prompt: 'Now add tests please', by: 'Ada' }),
+      ev(3, 'agent.text', { text: 'Adding tests…' }),
+    ];
+    const { container } = render(<Timeline events={events} live={false} />);
+
+    const bubble = screen.getByTestId('timeline-user-message');
+    expect(bubble.textContent).toContain('Ada');
+    expect(bubble.textContent).toContain('Now add tests please');
+    // The user message BREAKS the text merge: two separate agent prose blocks.
+    expect(container.querySelectorAll('[data-kind="text_block"]')).toHaveLength(2);
+  });
+
+  it('falls back to "you" when the author is absent (service principal)', () => {
+    render(<Timeline events={[ev(1, 'user.message', { prompt: 'hi' })]} live={false} />);
+    expect(screen.getByTestId('timeline-user-message').textContent).toContain('you');
+  });
+
+  it('renders session.finish as a compact system row with the idle-timeout reason', () => {
+    render(
+      <Timeline
+        events={[ev(1, 'session.finish', { reason: 'idle_timeout' })]}
+        live={false}
+      />,
+    );
+    expect(screen.getByTestId('timeline-session-finish').textContent).toContain(
+      'Session finished (idle timeout)',
+    );
+  });
+
+  it('renders an awaiting_input status frame with the Awaiting input pill', () => {
+    render(<Timeline events={[ev(1, 'run.status', { status: 'awaiting_input' })]} live={false} />);
+    expect(screen.getByText('Awaiting input')).toBeTruthy();
+  });
+});

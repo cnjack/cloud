@@ -85,6 +85,15 @@
   background: var(--status-blocked-dot);
 }
 
+/* awaiting_input (D22): the session is waiting for the user's next message. */
+.badge[data-status='awaiting_input'] {
+  background: var(--status-awaiting_input-bg);
+  color: var(--status-awaiting_input-fg);
+}
+.badge[data-status='awaiting_input'] .dot {
+  background: var(--status-awaiting_input-dot);
+}
+
 /* Pulsing dot for in-motion states. */
 .dot[data-animated] {
   animation: badge-pulse 1.3s var(--ease-out) infinite;

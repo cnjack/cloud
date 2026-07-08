@@ -152,7 +152,11 @@ func (r *Reconciler) Run(ctx context.Context) {
 // (and the integration test) can drive a single deterministic pass.
 func (r *Reconciler) Tick(ctx context.Context) {
 	runs, err := r.st.ListRunsByStatus(ctx,
-		domain.StatusQueued, domain.StatusScheduling, domain.StatusRunning)
+		domain.StatusQueued, domain.StatusScheduling, domain.StatusRunning,
+		// Session (D22): awaiting_input runs still own a pod, so the loop must
+		// observe their Job state (decide() treats a live Job as normal, an exited
+		// one as the session end/failure) and count them for the live-session gate.
+		domain.StatusAwaitingInput)
 	if err != nil {
 		r.log.Error("reconcile: list runs", "err", err)
 		return
@@ -196,6 +200,10 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	svcActive := map[string]int{}
 	svcLive := map[string]int{} // non-stale in-flight count (drives the gate)
 	stallLimit := staleEscapeThreshold(r.cfg.StallTimeout)
+	// Session (D22): count each project's LIVE session runs (scheduling+running+
+	// awaiting_input, kind=agent+session) so a new session over max_live_sessions
+	// stays queued — the session analogue of the max_concurrent_runs gate.
+	projLiveSessions := map[string]int{}
 	for i := range runs {
 		switch runs[i].Status {
 		case domain.StatusScheduling, domain.StatusRunning:
@@ -203,6 +211,24 @@ func (r *Reconciler) Tick(ctx context.Context) {
 			svcActive[runs[i].ServiceID]++
 			if !isStaleRun(&runs[i], r.now(), stallLimit) {
 				svcLive[runs[i].ServiceID]++
+			}
+		case domain.StatusAwaitingInput:
+			// Session (D22): an awaiting_input run still HOLDS its pod (long-polling
+			// next-prompt) and therefore the service's RWO workspace PVC — the
+			// per-service serialization gate must keep counting it, or a second run
+			// of the same service would schedule and hang Pending on the volume.
+			// Counted as unconditionally LIVE (never stale): the pod is demonstrably
+			// alive, and the idle timeout / session TTL bound how long it holds the
+			// slot. It does NOT consume cluster/project concurrency
+			// (max_concurrent_runs) — session capacity is governed by the dedicated
+			// max_live_sessions gate below.
+			svcActive[runs[i].ServiceID]++
+			svcLive[runs[i].ServiceID]++
+		}
+		if runs[i].Session {
+			switch runs[i].Status {
+			case domain.StatusScheduling, domain.StatusRunning, domain.StatusAwaitingInput:
+				projLiveSessions[runs[i].ProjectID]++
 			}
 		}
 	}
@@ -250,6 +276,22 @@ func (r *Reconciler) Tick(ctx context.Context) {
 					"run", run.ID, "service", run.ServiceID)
 				continue
 			}
+			// Session (D22): the per-project live-session cap. A session run holds a
+			// pod across turns (running + awaiting_input), so cap the number of them
+			// per project independently of max_concurrent_runs; over the cap the new
+			// session stays queued (fail-visible: it is a queued run, not a silent
+			// drop), mirroring the concurrency gate above.
+			if run.Session {
+				limit := r.cfg.MaxLiveSessions
+				if proj.MaxLiveSessions != nil && *proj.MaxLiveSessions > 0 {
+					limit = *proj.MaxLiveSessions
+				}
+				if limit > 0 && projLiveSessions[run.ProjectID] >= limit {
+					r.log.Info("reconcile: project at live-session limit — leaving session run queued",
+						"run", run.ID, "project", run.ProjectID, "limit", limit, "live", projLiveSessions[run.ProjectID])
+					continue
+				}
+			}
 		}
 		d := decide(run, jobState, hasCapacity)
 		if d.Action == ActionNone {
@@ -260,6 +302,9 @@ func (r *Reconciler) Tick(ctx context.Context) {
 			projActive[run.ProjectID]++ // …and a per-project slot
 			svcActive[run.ServiceID]++  // …and the service's total in-flight (Feature C)
 			svcLive[run.ServiceID]++    // …a freshly scheduled run is never stale
+			if run.Session {
+				projLiveSessions[run.ProjectID]++ // …and a per-project live session (D22)
+			}
 		}
 	}
 
@@ -284,6 +329,16 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// + optional move to the done column). Idempotent via writeback_at. No-op
 	// when the jtype client is not wired.
 	r.reconcileKanbanWriteback(ctx)
+
+	// Session (D22) — push each session run's per-turn bundle: open the draft PR
+	// on the first turn, ff-update the same branch on later turns. Idempotent via
+	// bundle_rev/pushed_rev. No-op when the draft-PR stack is not configured.
+	r.reconcileSessionPushes(ctx)
+
+	// Session (D22) — finalize awaiting_input runs that have sat idle past the
+	// effective session_idle_timeout (idle reclaim: sets the finalize flag so the
+	// runner exits and the run converges to succeeded).
+	r.reconcileSessionIdle(ctx)
 }
 
 // reconcilePRs pushes the branch and opens a draft PR for each succeeded
@@ -887,6 +942,16 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 	if proj.RunTimeoutSecs != nil && *proj.RunTimeoutSecs > 0 {
 		timeout = *proj.RunTimeoutSecs
 	}
+	// Session (D22): a session's budget is the whole-session TTL (idle waits
+	// included), not a single-turn timeout. acpdrive's --timeout wraps the entire
+	// session loop, so RUN_TIMEOUT and the Job deadline use session_ttl (project
+	// override, else the cluster default).
+	if run.Session {
+		timeout = r.cfg.SessionTTLSecs
+		if proj.SessionTTLSecs != nil && *proj.SessionTTLSecs > 0 {
+			timeout = *proj.SessionTTLSecs
+		}
+	}
 	// The Job's activeDeadlineSeconds is a HARD backstop and counts from pod start
 	// (including clone/setup), whereas RUN_TIMEOUT only bounds the agent turn. If we
 	// set them equal, k8s would SIGKILL the pod at the same instant the runner's own
@@ -1031,6 +1096,13 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 	if timeoutSecs > 0 {
 		env["RUN_TIMEOUT"] = fmt.Sprintf("%ds", timeoutSecs)
 	}
+	// Session (D22): switch the runner into the multi-turn acpdrive loop. Absent
+	// for a single-shot run (unchanged behaviour). timeoutSecs already carries the
+	// session TTL for these runs (see createJob), so acpdrive's --timeout wraps the
+	// whole session including idle waits.
+	if run.Session {
+		env["RUN_SESSION"] = "1"
+	}
 	// Feature C — tell the runner to reuse the persistent workspace: with the PVC
 	// mounted at /workspace + $HOME/.jcode, entrypoint.sh fetches + hard-resets an
 	// existing checkout instead of re-cloning, and enables jcode memory. Set only
@@ -1097,7 +1169,16 @@ func staleEscapeThreshold(stall time.Duration) time.Duration {
 // bound because in the persistent path the gate serializes per service, so a run
 // is scheduled within a few ticks of creation once its service slot opens — there
 // is no multi-minute queue wait behind same-service runs.
+//
+// Session runs (D22) are NEVER stale: they are long-lived BY DESIGN (a session
+// legitimately runs/parks for hours within its TTL) and their pod verifiably
+// holds the RWO workspace PVC the whole time — releasing the gate would only
+// schedule a second pod that hangs Pending on the volume. Their lifetime is
+// bounded by the session idle timeout + TTL instead.
 func isStaleRun(run *domain.Run, now time.Time, threshold time.Duration) bool {
+	if run.Session {
+		return false
+	}
 	if threshold <= 0 {
 		return false
 	}

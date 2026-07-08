@@ -95,6 +95,31 @@ export function toTimelineItem(ev: RunViewEvent): TimelineItem {
       };
     }
 
+    // D22 session: a follow-up prompt the user fed to the run — rendered as a
+    // user chat bubble so the timeline reads as one continuous conversation.
+    case 'user.message':
+      return {
+        ...base,
+        kind: 'user_message',
+        prompt: String(p.prompt ?? ''),
+        by: p.by ? String(p.by) : '',
+      };
+
+    // D22 session: the session was wound down (user Finish / idle timeout).
+    case 'session.finish': {
+      const reason = String(p.reason ?? '');
+      return {
+        ...base,
+        kind: 'session_finish',
+        reason,
+        by: p.by ? String(p.by) : '',
+        message:
+          reason === 'idle_timeout'
+            ? 'Session finished (idle timeout)'
+            : 'Session finished',
+      };
+    }
+
     default:
       return { ...base, kind: 'unknown', type: ev.type, raw: pretty(p) };
   }

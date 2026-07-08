@@ -21,6 +21,8 @@ export type {
   ArtifactItem,
   GitItem,
   ResultItem,
+  UserMessageItem,
+  SessionFinishItem,
   UnknownItem,
   GroupedTimelineItem,
   TextBlockItem,

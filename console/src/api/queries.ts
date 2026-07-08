@@ -198,6 +198,38 @@ export function useRetryRun() {
   });
 }
 
+/* ---- multi-turn session (D22) --------------------------------------------- */
+
+/**
+ * Feed a follow-up prompt to a session run. The message shows in the timeline
+ * via its user.message SSE event; the run refetch picks up the status flip
+ * (awaiting_input → running) once the runner claims the message.
+ */
+export function useSendMessage() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runId, prompt }: { runId: string; prompt: string }) =>
+      api.sendMessage(runId, prompt),
+    onSuccess: (_msg, { runId }) => {
+      qc.invalidateQueries({ queryKey: qk.run(runId) });
+    },
+  });
+}
+
+/** Wind a session down (POST /runs/{id}/finish). Idempotent server-side. */
+export function useFinishSession() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) => api.finishSession(runId),
+    onSuccess: (run: Run) => {
+      qc.setQueryData(qk.run(run.id), run);
+      qc.invalidateQueries({ queryKey: qk.runs(run.project_id) });
+    },
+  });
+}
+
 export function useDiff(runId: string, enabled: boolean) {
   const api = useApi();
   return useQuery({

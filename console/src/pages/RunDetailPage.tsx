@@ -12,7 +12,15 @@
  */
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { useRun, useProject, useCancelRun, useRetryRun, useDiff } from '../api/queries';
+import {
+  useRun,
+  useProject,
+  useCancelRun,
+  useRetryRun,
+  useDiff,
+  useSendMessage,
+  useFinishSession,
+} from '../api/queries';
 import { useApi } from '../api/ApiProvider';
 import { useRunStream } from '../hooks/useRunStream';
 import { isTerminal, type FailureReason } from '../api/types';
@@ -61,6 +69,11 @@ export function RunDetailPage() {
   const cancel = useCancelRun();
   const retry = useRetryRun();
 
+  // D22 multi-turn session: the follow-up composer + Finish button.
+  const sendMessage = useSendMessage();
+  const finishSession = useFinishSession();
+  const [followUp, setFollowUp] = useState('');
+
   const status = run.data?.status;
   const terminal = status ? isTerminal(status) : false;
 
@@ -93,6 +106,14 @@ export function RunDetailPage() {
   const canCancel = !isTerminal(r.status);
   const canRetry = isTerminal(r.status);
   const failed = r.status === 'failed';
+  // D22 session: the follow-up composer shows while the session can take a
+  // message — awaiting_input (handled immediately) AND running (queued behind
+  // the in-flight turn; the backend accepts both). queued/scheduling sessions
+  // show a neutral waiting note instead. Finish is idempotent server-side.
+  const isSession = r.session === true;
+  const sessionAwaiting = isSession && r.status === 'awaiting_input';
+  const sessionTurnRunning = isSession && r.status === 'running';
+  const sessionLive = isSession && !isTerminal(r.status);
   // A review run (blueprint §5) has no Diff/PR tabs — its body IS the review
   // output. An agent run gets a third "PR" tab once its draft PR exists.
   const isReview = r.kind === 'review';
@@ -118,6 +139,36 @@ export function RunDetailPage() {
         toast.push({
           kind: 'error',
           message: err instanceof ApiError ? err.message : 'Retry failed.',
+        }),
+    });
+
+  // D22 session actions.
+  const doSendMessage = (e: React.FormEvent) => {
+    e.preventDefault();
+    const prompt = followUp.trim();
+    if (!prompt) return;
+    sendMessage.mutate(
+      { runId, prompt },
+      {
+        // Clear ONLY if the box still holds exactly what we submitted — text the
+        // user typed while the request was in flight must never be discarded.
+        onSuccess: () => setFollowUp((cur) => (cur.trim() === prompt ? '' : cur)),
+        onError: (err) =>
+          toast.push({
+            kind: 'error',
+            message: err instanceof ApiError ? err.message : 'Could not send the message.',
+          }),
+      },
+    );
+  };
+
+  const doFinishSession = () =>
+    finishSession.mutate(runId, {
+      onSuccess: () => toast.push({ kind: 'info', message: 'Session finishing — the agent is wrapping up.' }),
+      onError: (err) =>
+        toast.push({
+          kind: 'error',
+          message: err instanceof ApiError ? err.message : 'Could not finish the session.',
         }),
     });
 
@@ -224,6 +275,12 @@ export function RunDetailPage() {
               variant="danger"
               onClick={doCancel}
               loading={cancel.isPending}
+              // D22: a session has TWO ways out — make the destructive one say so.
+              title={
+                isSession
+                  ? 'Stop immediately — the turn in progress is discarded. Use “Finish session” below to let the agent wrap up cleanly.'
+                  : undefined
+              }
               data-testid="cancel-btn"
             >
               Cancel
@@ -281,6 +338,69 @@ export function RunDetailPage() {
           the cached run to show (we don't dead-end the whole page for this). */}
       {run.isError && run.data && (
         <InlineHint>Couldn't refresh the latest run details — showing the last known state.</InlineHint>
+      )}
+
+      {/* D22 multi-turn session: while the run waits for input, offer the
+          follow-up composer + a Finish button. The message lands in the timeline
+          as a user bubble; Finish winds the session down to succeeded. */}
+      {sessionLive && canAct && (
+        <div className={styles.sessionPanel} data-testid="session-panel">
+          {sessionAwaiting || sessionTurnRunning ? (
+            <form onSubmit={doSendMessage} className={styles.sessionForm} noValidate>
+              <textarea
+                className={styles.sessionInput}
+                placeholder={
+                  sessionAwaiting
+                    ? 'Send a follow-up message to the agent…'
+                    : 'Queue a follow-up — it will be handled after the current turn finishes…'
+                }
+                value={followUp}
+                onChange={(e) => setFollowUp(e.target.value)}
+                rows={2}
+                data-testid="session-message-input"
+              />
+              <div className={styles.sessionActions}>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="sm"
+                  loading={sendMessage.isPending}
+                  disabled={!followUp.trim()}
+                  data-testid="session-message-send"
+                >
+                  Send
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={doFinishSession}
+                  loading={finishSession.isPending}
+                  title="Let the agent wrap up gracefully — the run ends as succeeded"
+                  data-testid="session-finish-btn"
+                >
+                  Finish session
+                </Button>
+              </div>
+              {/* Two ways out, very different semantics — say so where both live. */}
+              <span className={styles.sessionActionsHint} data-testid="session-actions-hint">
+                Finish lets the agent wrap up and end cleanly; Cancel (top right)
+                stops immediately and discards the turn in progress.
+              </span>
+            </form>
+          ) : (
+            // queued / scheduling: the session has not started a turn yet — show a
+            // neutral waiting note (a queued session may be held by the project's
+            // max_live_sessions gate), never "the agent is working".
+            <div className={styles.sessionBusy}>
+              <span className={styles.sessionBusyText} data-testid="session-pending-note">
+                {r.status === 'queued'
+                  ? 'Session queued — waiting for a free session slot in this project.'
+                  : 'Session starting — the runner is being scheduled.'}
+              </span>
+            </div>
+          )}
+        </div>
       )}
 
       {/* A review run's body IS its markdown output — no Diff/PR tabs. */}

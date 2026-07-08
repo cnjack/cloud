@@ -145,6 +145,33 @@
   color: var(--color-text);
 }
 
+/* --- user message bubble (D22 session follow-ups) --- */
+.userMessage {
+  justify-self: end;
+  max-width: 78%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-sm, 4px);
+  background: var(--status-awaiting_input-bg, var(--color-panel-raised));
+  border: 1px solid var(--color-border-strong);
+}
+.userMessageBy {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--color-text-faint);
+}
+.userMessageText {
+  font-size: var(--fs-sm);
+  color: var(--color-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* --- live indicator --- */
 .liveRow {
   display: flex;

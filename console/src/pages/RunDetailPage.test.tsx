@@ -8,7 +8,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
@@ -265,6 +265,129 @@ describe('RunDetailPage — model gate on Retry (Feature A)', () => {
       expect((screen.getByTestId('retry-btn') as HTMLButtonElement).disabled).toBe(true),
     );
     expect(screen.getByTestId('model-not-configured')).toBeTruthy();
+  });
+});
+
+describe('RunDetailPage — multi-turn session (D22)', () => {
+  it('shows the follow-up composer + Finish button while awaiting input, and sends a message', async () => {
+    const sessionRun = baseRun({ status: 'awaiting_input', session: true });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(sessionRun);
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValue({ id: 'm1', run_id: 'run1', seq: 1, prompt: 'more', created_at: '' });
+    (client as { sendMessage?: unknown }).sendMessage = sendMessage;
+    renderPage(client, sessionRun);
+
+    const panel = await screen.findByTestId('session-panel');
+    expect(panel).toBeTruthy();
+    const input = (await screen.findByTestId('session-message-input')) as HTMLTextAreaElement;
+    const send = (await screen.findByTestId('session-message-send')) as HTMLButtonElement;
+    expect(screen.getByTestId('session-finish-btn')).toBeTruthy();
+
+    // Empty input keeps Send disabled; typing enables it and submit calls the API.
+    expect(send.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: 'do the next step' } });
+    await waitFor(() => expect(send.disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('run1', 'do the next step'));
+    // The composer clears after a successful send.
+    await waitFor(() => expect(input.value).toBe(''));
+  });
+
+  it('Finish session calls the finish endpoint', async () => {
+    const sessionRun = baseRun({ status: 'awaiting_input', session: true });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(sessionRun);
+    const finishSession = vi.fn().mockResolvedValue(baseRun({ status: 'awaiting_input', session: true }));
+    (client as { finishSession?: unknown }).finishSession = finishSession;
+    renderPage(client, sessionRun);
+
+    const finish = await screen.findByTestId('session-finish-btn');
+    fireEvent.click(finish);
+    await waitFor(() => expect(finishSession).toHaveBeenCalledWith('run1'));
+  });
+
+  it('hides the session panel for a non-session run and for a viewer', async () => {
+    // Non-session run in awaiting-adjacent state: no panel.
+    const plain = baseRun({ status: 'running' });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(plain);
+    const first = renderPage(client, plain);
+    await waitFor(() => expect(screen.getByTestId('run-status-header')).toBeTruthy());
+    expect(screen.queryByTestId('session-panel')).toBeNull();
+    first.unmount();
+
+    // Session run but the principal is a viewer: no panel (backend 403s anyway).
+    const sessionRun = baseRun({ status: 'awaiting_input', session: true });
+    const viewer = makeClient('viewer');
+    viewer.ctl.getRun.mockResolvedValue(sessionRun);
+    renderPage(viewer.client, sessionRun);
+    await waitFor(() => expect(screen.getByTestId('run-status-header')).toBeTruthy());
+    await waitFor(() => expect(screen.queryByTestId('session-panel')).toBeNull());
+  });
+
+  it('renders the composer while a session turn is RUNNING (message queues) with the after-turn placeholder', async () => {
+    const busy = baseRun({ status: 'running', session: true });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(busy);
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValue({ id: 'm1', run_id: 'run1', seq: 1, prompt: 'q', created_at: '' });
+    (client as { sendMessage?: unknown }).sendMessage = sendMessage;
+    renderPage(client, busy);
+
+    await screen.findByTestId('session-panel');
+    // The backend queues messages while running — the composer stays available,
+    // with a placeholder saying the message is handled after this turn.
+    const input = (await screen.findByTestId('session-message-input')) as HTMLTextAreaElement;
+    expect(input.placeholder).toContain('after the current turn');
+    expect(screen.getByTestId('session-finish-btn')).toBeTruthy();
+    // The Finish-vs-Cancel semantics hint is present where both actions coexist.
+    expect(screen.getByTestId('session-actions-hint').textContent).toContain('Cancel');
+
+    fireEvent.change(input, { target: { value: 'queue me' } });
+    fireEvent.click(screen.getByTestId('session-message-send'));
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('run1', 'queue me'));
+  });
+
+  it('shows a neutral waiting note (no composer, no "agent working") for a QUEUED session', async () => {
+    const queued = baseRun({ status: 'queued', session: true, started_at: null });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(queued);
+    renderPage(client, queued);
+
+    await screen.findByTestId('session-panel');
+    expect(screen.queryByTestId('session-message-input')).toBeNull();
+    const note = screen.getByTestId('session-pending-note');
+    expect(note.textContent).toContain('waiting for a free session slot');
+    expect(note.textContent).not.toContain('working');
+  });
+
+  it('does not discard text typed while a send is in flight', async () => {
+    const sessionRun = baseRun({ status: 'awaiting_input', session: true });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(sessionRun);
+    // A send we resolve by hand, so we can type DURING the request.
+    let resolveSend: (v: unknown) => void = () => {};
+    const sendMessage = vi.fn().mockImplementation(
+      () => new Promise((res) => (resolveSend = res)),
+    );
+    (client as { sendMessage?: unknown }).sendMessage = sendMessage;
+    renderPage(client, sessionRun);
+
+    const input = (await screen.findByTestId('session-message-input')) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'first message' } });
+    fireEvent.click(screen.getByTestId('session-message-send'));
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('run1', 'first message'));
+
+    // The user keeps typing while the request is in flight…
+    fireEvent.change(input, { target: { value: 'second thought' } });
+    // …then the send succeeds: the NEW text must survive (only an unchanged
+    // box is cleared).
+    resolveSend({ id: 'm1', run_id: 'run1', seq: 1, prompt: 'first message', created_at: '' });
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+    expect(input.value).toBe('second thought');
   });
 });
 

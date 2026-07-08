@@ -29,6 +29,7 @@ import type {
   Run,
   RunArtifact,
   RunEvent,
+  RunMessage,
   RunsEnvelope,
   Service,
   ServicesEnvelope,
@@ -82,6 +83,18 @@ export interface ApiClient {
   getRun(runId: string): Promise<Run>;
   cancelRun(runId: string): Promise<Run>;
   retryRun(runId: string): Promise<Run>;
+
+  /* ---- multi-turn session (D22) ------------------------------------------ */
+  /**
+   * POST /api/v1/runs/{id}/messages — feed a follow-up prompt to a session run
+   * (status must be awaiting_input or running; otherwise 409 run_not_awaiting).
+   */
+  sendMessage(runId: string, prompt: string): Promise<RunMessage>;
+  /**
+   * POST /api/v1/runs/{id}/finish — wind the session down: the runner exits
+   * gracefully and the run converges to succeeded. Idempotent.
+   */
+  finishSession(runId: string): Promise<Run>;
 
   /* ---- PR review (blueprint §4/§5) --------------------------------------- */
   /** GET /api/v1/runs/{id}/pr — the run's PR, live state, and its review runs. */
@@ -291,6 +304,18 @@ export function createHttpClient(
         method: 'POST',
       }),
 
+    // Multi-turn session (D22).
+    sendMessage: (runId, prompt) =>
+      req<RunMessage>(`/runs/${encodeURIComponent(runId)}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ prompt }),
+      }),
+
+    finishSession: (runId) =>
+      req<Run>(`/runs/${encodeURIComponent(runId)}/finish`, {
+        method: 'POST',
+      }),
+
     getPR: (runId) => req<PrInfo>(`/runs/${encodeURIComponent(runId)}/pr`),
 
     requestReview: (runId) =>
@@ -336,6 +361,10 @@ export function createHttpClient(
         'run.artifact',
         'run.failure',
         'run.git',
+        'run.result',
+        // D22 session events: the user's follow-up bubbles and the wind-down row.
+        'user.message',
+        'session.finish',
       ]) {
         es.addEventListener(t, handle as EventListener);
       }

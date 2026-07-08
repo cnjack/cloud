@@ -20,6 +20,11 @@ type createRunReq struct {
 	// the service default / the project's sole granted model. Must be in the
 	// project's grant set (else 403 model_not_granted).
 	ModelID string `json:"model_id"`
+	// Session opts this run into multi-turn SESSION mode (D22): the run parks in
+	// awaiting_input between turns and accepts follow-up messages. Only valid for
+	// kind=agent runs (which every composer/service run is). Default false =
+	// today's single-shot behaviour.
+	Session bool `json:"session"`
 }
 
 // handleCreateServiceRun is the run-creation endpoint: POST /services/{id}/runs.
@@ -75,6 +80,9 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 	run := newQueuedRun(svc.ProjectID, svc.ID, req.Prompt, nil, principalFrom(r.Context()).userIDPtr())
 	run.ModelID = modelID
 	run.ModelName = modelName
+	// Session mode (D22) is opt-in and only meaningful for agent runs (which this
+	// path always produces). Webhook/kanban/schedule triggers never set it.
+	run.Session = req.Session
 	if err := s.st.CreateRun(r.Context(), run); err != nil {
 		s.log.Error("create run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create run")
@@ -322,6 +330,9 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	retry.Kind = orig.Kind
 	retry.PRHeadBranch = orig.PRHeadBranch
 	retry.PRBaseBranch = orig.PRBaseBranch
+	// Session-ness is part of that identity too (D22): retrying a session run
+	// starts a fresh session (same prompt, new ACP session), not a single-shot.
+	retry.Session = orig.Session
 	if err := s.st.CreateRun(r.Context(), retry); err != nil {
 		s.log.Error("retry run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create retry run")

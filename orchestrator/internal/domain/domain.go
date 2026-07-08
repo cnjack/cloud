@@ -30,6 +30,13 @@ const (
 	// StatusRunning: the Job's pod is active. Symphony analogue: claim Running /
 	// run phase StreamingTurn.
 	StatusRunning RunStatus = "running"
+	// StatusAwaitingInput: a multi-turn SESSION run (D22) finished a turn and is
+	// holding its pod, long-polling for the next user message. NON-terminal — the
+	// reconciler leaves the still-active Job alone and the SSE stream stays open.
+	// Only session runs (Run.Session) ever enter it; a single-shot headless run
+	// never does. See docs/14-cloud-v2-design.md §2/§3 and docs/02-decision-log.md
+	// D22.
+	StatusAwaitingInput RunStatus = "awaiting_input"
 	// StatusSucceeded: terminal, Job completed successfully.
 	StatusSucceeded RunStatus = "succeeded"
 	// StatusFailed: terminal, Job failed / disappeared / errored.
@@ -46,7 +53,7 @@ const (
 // Valid reports whether s is a recognised status.
 func (s RunStatus) Valid() bool {
 	switch s {
-	case StatusQueued, StatusScheduling, StatusRunning,
+	case StatusQueued, StatusScheduling, StatusRunning, StatusAwaitingInput,
 		StatusSucceeded, StatusFailed, StatusCanceled, StatusBlocked:
 		return true
 	}
@@ -79,6 +86,18 @@ var transitions = map[RunStatus]map[RunStatus]bool{
 		StatusCanceled:  true,
 	},
 	StatusRunning: {
+		StatusSucceeded: true,
+		StatusFailed:    true,
+		StatusCanceled:  true,
+		// Session (D22): a turn finished with no pending message → the run holds
+		// its pod and waits for the next user message.
+		StatusAwaitingInput: true,
+	},
+	// Session (D22): awaiting_input is a non-terminal holding state. A delivered
+	// message resumes it to running; finalize/idle-timeout lets the runner exit
+	// (Job succeeds → succeeded); a dead pod or cancel finishes it directly.
+	StatusAwaitingInput: {
+		StatusRunning:   true,
 		StatusSucceeded: true,
 		StatusFailed:    true,
 		StatusCanceled:  true,
@@ -233,6 +252,18 @@ type Project struct {
 	RunTimeoutSecs    *int64            `json:"run_timeout_secs,omitempty"`
 	ProviderAllowlist []string          `json:"provider_allowlist,omitempty"`
 	InjectedEnv       map[string]string `json:"injected_env,omitempty"`
+	// Session guardrails (D22). Nil = inherit the cluster default
+	// (MAX_LIVE_SESSIONS / SESSION_IDLE_TIMEOUT_SECONDS / SESSION_TTL_SECONDS).
+	//   MaxLiveSessions       — cap on this project's simultaneously live
+	//     (running+awaiting_input) SESSION runs; a new session over the cap stays
+	//     queued (fail-visible, mirrors max_concurrent_runs).
+	//   SessionIdleTimeoutSecs — how long an awaiting_input run may sit with no new
+	//     message before the reconciler finalizes it (idle reclaim).
+	//   SessionTTLSecs        — the whole session's wall-clock budget: drives the
+	//     runner's RUN_TIMEOUT and the Job's activeDeadlineSeconds for a session run.
+	MaxLiveSessions        *int   `json:"max_live_sessions,omitempty"`
+	SessionIdleTimeoutSecs *int64 `json:"session_idle_timeout_secs,omitempty"`
+	SessionTTLSecs         *int64 `json:"session_ttl_secs,omitempty"`
 	// OwnerUserID is the user who created/owns the project (M2). Empty for a
 	// project created by a service principal (CONSOLE_TOKEN), which has no user.
 	OwnerUserID string `json:"owner_user_id,omitempty"`
@@ -259,7 +290,7 @@ type Service struct {
 	// identity of the repo on the provider; nil for hand-entered/legacy services.
 	ProviderRepoID *int64 `json:"provider_repo_id,omitempty"`
 
-	DefaultBranch string `json:"default_branch"`
+	DefaultBranch string  `json:"default_branch"`
 	GitMode       GitMode `json:"git_mode"`
 	// DefaultModelID is the catalog model (D21) runs against this service use when
 	// the composer does not pick one. Nil => no default: the project's sole
@@ -349,6 +380,30 @@ type Run struct {
 	OriginCommentID  string    `json:"origin_comment_id,omitempty"`
 	OriginCommentURL string    `json:"origin_comment_url,omitempty"`
 
+	// Session marks a multi-turn SESSION run (D22): the runner keeps one ACP
+	// session alive across turns (RUN_SESSION=1), the run parks in awaiting_input
+	// between turns, and the user feeds it follow-up messages via
+	// POST /runs/{id}/messages. Only kind=agent runs may be sessions; false for
+	// every single-shot headless run (behaviour unchanged).
+	Session bool `json:"session"`
+	// AwaitingSince is stamped when the run enters awaiting_input (a turn finished
+	// with no pending message) and cleared when a message resumes it to running.
+	// It is the idle-reclaim epoch: the reconciler finalizes a session whose
+	// awaiting_since is older than the effective session_idle_timeout. Nil unless
+	// currently awaiting_input.
+	AwaitingSince *time.Time `json:"awaiting_since,omitempty"`
+	// SessionFinalizing is the "wind this session down" flag: set by the finish
+	// endpoint or the idle-timeout reconcile pass. Once set, next-prompt answers
+	// 410 so the runner exits gracefully (Job succeeds → succeeded). Never unset.
+	SessionFinalizing bool `json:"-"`
+	// BundleRev / PushedRev drive the per-turn draft-PR push for a session run
+	// (D22): handleIngestBundle bumps BundleRev on every bundle upload, and the
+	// session-push reconcile pass advances PushedRev to BundleRev once that
+	// revision is pushed (first turn opens the PR, later turns ff-update the same
+	// branch). BundleRev > PushedRev means "a newer bundle awaits a push".
+	BundleRev int64 `json:"-"`
+	PushedRev int64 `json:"-"`
+
 	// ModelID is the catalog model this run was dispatched with (D21), chosen by
 	// the resolution chain at create time (composer pick → service default →
 	// project's sole grant). Nil when the run resolved to the env MODEL_* fallback
@@ -405,6 +460,32 @@ type RunEvent struct {
 	Payload map[string]any `json:"payload"`
 }
 
+// RunMessage is one queued follow-up prompt for a multi-turn session run (D22).
+// It is the delivery QUEUE the runner drains via GET next-prompt — not the chat
+// transcript itself (each message is ALSO appended as a user.message run_event
+// for the timeline). Seq is monotonic per run.
+//
+// Delivery is TWO-PHASE (offer/consume) so a lost next-prompt response can
+// never strand a message:
+//   - OfferedAt is stamped when a next-prompt poll hands the message to the
+//     runner. While offered-but-not-consumed, every re-poll IDEMPOTENTLY
+//     re-delivers the SAME message (same id/prompt) — acpdrive only polls
+//     between turns, so a re-poll proves the previous response never started a
+//     turn (no double-prompt is possible).
+//   - ConsumedAt is stamped by the NEXT turn-complete: the turn this message
+//     started has finished; only then does the next queued message become
+//     offerable.
+type RunMessage struct {
+	ID         string     `json:"id"`
+	RunID      string     `json:"run_id"`
+	Seq        int64      `json:"seq"`
+	Prompt     string     `json:"prompt"`
+	CreatedBy  string     `json:"created_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	OfferedAt  *time.Time `json:"offered_at,omitempty"`
+	ConsumedAt *time.Time `json:"consumed_at,omitempty"`
+}
+
 // Event type taxonomy. These strings are the contract with the console and the
 // runner; see cloud/docs/11-api.md.
 const (
@@ -427,6 +508,15 @@ const (
 	// drives the terminal status. Today the only outcome is "no_changes": an agent
 	// run that finished cleanly but produced an empty diff (D18).
 	EventRunResult = "run.result"
+	// EventUserMessage is appended (internal seq) when a user feeds a follow-up
+	// message to a session run via POST /runs/{id}/messages (D22). Payload
+	// {prompt, by}; rendered as a user bubble in the timeline so the run reads as
+	// one continuous conversation (agent replies interleaved).
+	EventUserMessage = "user.message"
+	// EventSessionFinish is appended (internal seq) when a session is wound down:
+	// by the user (finish endpoint) or by the idle-timeout reconcile pass. Payload
+	// {reason: "user"|"idle_timeout", by?}. Rendered as a compact system row.
+	EventSessionFinish = "session.finish"
 )
 
 // ArtifactKind enumerates the kinds of artifact a run can produce.

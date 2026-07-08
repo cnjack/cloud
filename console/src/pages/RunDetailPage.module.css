@@ -146,6 +146,57 @@
   word-break: break-word;
 }
 
+/* D22 multi-turn session: the follow-up composer + Finish button. */
+.sessionPanel {
+  padding: var(--space-4) var(--space-5);
+  background: var(--color-panel);
+  border: 1px solid var(--status-awaiting_input-dot, var(--color-border-strong));
+  border-radius: var(--radius-xl);
+}
+.sessionForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.sessionInput {
+  width: 100%;
+  resize: vertical;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-panel-raised);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+}
+.sessionInput:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+.sessionActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  justify-content: flex-end;
+}
+/* Finish-vs-Cancel semantics, spelled out where both actions coexist (D22). */
+.sessionActionsHint {
+  font-size: var(--fs-tiny);
+  color: var(--color-text-faint);
+  text-align: right;
+}
+.sessionBusy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.sessionBusyText {
+  font-size: var(--fs-sm);
+  color: var(--color-text-dim);
+}
+
 /* stream-lost banner (live SSE died while the run is still active) */
 .streamError {
   display: flex;

@@ -55,6 +55,7 @@
   --jc-violet-400: #8b8bf5;
   --jc-violet-300: #a9a9f2;
   --jc-violet-200: #c2c2f7;
+  --jc-violet-bg:  #17172b; /* awaiting_input surface (dark) */
 
   /* status hues */
   --jc-blue: #6b93d6;      /* running / tool */
@@ -102,6 +103,7 @@
 
   --jc-violet-600: #5a5ae4; /* accent on light (deeper for white-bg contrast) */
   --jc-violet-700: #4a4ad6; /* accent hover on light */
+  --jc-violet-bg-l: #ecebfb; /* awaiting_input surface (light) */
 
   /* light status tints: pastel bg + darker readable fg */
   --jc-blue-bg-l: #e9eefb;
@@ -168,6 +170,12 @@
   --status-blocked-bg: var(--jc-red-bg);
   --status-blocked-fg: var(--jc-red-fg);
   --status-blocked-dot: var(--jc-red);
+
+  /* awaiting_input (D22): "your turn" — a violet accent, distinct from the
+     amber (scheduling) / blue (running) in-motion states. */
+  --status-awaiting_input-bg: var(--jc-violet-bg);
+  --status-awaiting_input-fg: var(--jc-violet-200);
+  --status-awaiting_input-dot: var(--jc-violet-400);
 
   /* ---- Semantic action colors -------------------------------------------- */
   --color-success: var(--jc-green);
@@ -306,6 +314,11 @@
   --status-blocked-bg: var(--jc-red-bg-l);
   --status-blocked-fg: var(--jc-red-fg-l);
   --status-blocked-dot: var(--jc-red);
+
+  /* awaiting_input (D22): violet "your turn" accent (light). */
+  --status-awaiting_input-bg: var(--jc-violet-bg-l);
+  --status-awaiting_input-fg: var(--jc-violet-700);
+  --status-awaiting_input-dot: var(--jc-violet-600);
 
   /* semantic action colors */
   --color-success: var(--jc-green-fg-l);

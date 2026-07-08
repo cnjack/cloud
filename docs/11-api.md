@@ -136,6 +136,9 @@
   - `pr_url` / `pr_number`:orchestrator 开(或找到)draft PR 后写入;`pr_number`
     为 `0` 表示尚无 PR。console 有 `pr_url` 时展示「Draft PR #N ↗」链接徽章。
   - `readonly`(默认)模式这四个字段恒为空/`0`——**与 J1-J3 行为一致,不受影响**。
+- **`session` / `awaiting_since`(F7 / D22,迁移 `0014_session`;新增字段,非破坏
+  性)**:`session` 恒序列化(`true` = 多轮 session run;单发 run 为 `false`)。
+  `awaiting_since` 仅当前处于 `awaiting_input` 时非空(空闲回收计时起点)。
 - 服务器**从不**把 run token 序列化给 console 客户端。
 
 ### 1.3 Run 状态徽章体系(单一事实源)
@@ -145,6 +148,7 @@
 | `queued` | 已创建,等待调度 worker | 否 | ✅ | 灰 |
 | `scheduling` | 已创建 K8s Job,尚未观察到 pod 运行 | 否 | ✅ | 蓝(脉冲) |
 | `running` | worker pod 活跃,agent 连跑中 | 否 | ✅ | 蓝(动效) |
+| `awaiting_input` | **(F7 / D22)** session run 一轮结束,pod 保活长轮询,等用户下一条消息 | 否 | ✅(仅 `session=true`) | 紫(脉冲) |
 | `succeeded` | 正常结束,diff 产物就绪 | ✅ | ✅ | 绿 |
 | `failed` | clone/setup/agent/timeout 失败,含可读原因 | ✅ | ✅ | 红 |
 | `canceled` | 操作者取消 | ✅ | ✅ | 灰 |
@@ -153,6 +157,22 @@
 > 与 PRD §6 徽章表一致。PRD 用户旅程只提 `queued→running→succeeded/failed`;
 > `scheduling` 是 `queued` 与 `running` 之间的可见细分态(调度中),UI 可与
 > `running` 同色处理,也可单独展示。`canceled` 服务于取消端点。
+
+**状态机转移表(F7 后的完整版;`from == to` 的空转移恒允许,幂等)**:
+
+| from \ to | scheduling | running | awaiting_input | succeeded | failed | canceled |
+|---|---|---|---|---|---|---|
+| `queued` | ✅ | — | — | — | ✅ | ✅ |
+| `scheduling` | — | ✅ | — | ✅(极快 Job) | ✅ | ✅ |
+| `running` | — | — | ✅(session 轮结束) | ✅ | ✅ | ✅ |
+| `awaiting_input` | — | ✅(消息投递) | — | ✅(finalize 后 runner 退出) | ✅(pod 死亡/超时) | ✅ |
+| 终态 | — | — | — | — | — | — |
+
+- `awaiting_input` **只在 `session=true` 的 run 上出现**;单发 headless run
+  (webhook/kanban 触发含在内)状态机与 F7 之前完全一致。
+- `awaiting_input` 期间 Job 持续 active 是**正常态**(pod 长轮询 next-prompt),
+  reconciler 不视为失败;Job 退出才驱动 succeeded/failed。
+- SSE 流(§2.3)只在**终态**关闭;`awaiting_input` 不断流。
 
 ### 1.4 failure_reason 枚举
 
@@ -248,11 +268,23 @@ orchestrator 的兜底分类**不覆盖**它。
 
 #### `PATCH /api/v1/projects/{id}` — 更新 project
 
-请求(重命名是唯一的 project 级编辑;仓库改动走 `PATCH /services/{id}`):
+请求(重命名 + 护栏;仓库改动走 `PATCH /services/{id}`):
 
 ```json
-{ "name": "demo2" }
+{ "name": "demo2", "max_concurrent_runs": 2, "run_timeout_secs": 900,
+  "max_live_sessions": 2, "session_idle_timeout_secs": 900, "session_ttl_secs": 14400 }
 ```
+
+- **presence 语义(D15b)**:省略的字段不变;数值护栏显式发 `null` 或 ≤0 清回
+  「继承集群默认」。
+- **session 护栏(F7 / D22)**:`max_live_sessions`(project 内 live session 数
+  上限,集群默认 `MAX_LIVE_SESSIONS`=2)、`session_idle_timeout_secs`
+  (`awaiting_input` 空闲自动收尾,集群默认 900s)、`session_ttl_secs`
+  (整个 session 墙钟预算,集群默认 14400s)。
+- **明示:live session 总量只受 per-project `max_live_sessions` 闸约束,没有
+  集群级上限**——集群级 `MAX_CONCURRENT_RUNS` 只管 scheduling/running 的调度槽,
+  `awaiting_input` 的保活 pod 不占用它;project 数量多且并发开 session 时,
+  集群总保活 pod 数 = Σ(各 project 的 live session),容量规划按此估算。
 
 响应 `200`:更新后的 Project。错误:`400`(未知字段)、`404`。
 
@@ -270,15 +302,22 @@ default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `4
 请求:
 
 ```json
-{ "prompt": "在 README 末尾加一行 Hello" }
+{ "prompt": "在 README 末尾加一行 Hello", "model_id": "…可选…", "session": false }
 ```
 
 - `prompt`(必填,非空白)。
+- `session`(可选,默认 `false`;**F7 / D22**):`true` = 以**多轮 session**模式派发
+  ——runner 保持同一 ACP session,每轮结束 run 进 `awaiting_input` 等待
+  `POST /runs/{id}/messages` 的后续消息。仅 `kind=agent`(本端点恒为 agent)。
+  webhook/kanban 触发路径首期不发该字段。
 
 响应 `201 Created`:完整 Run 对象,`status` = `queued`。
 错误:`400`(空 prompt)、`404`(service 不存在)。
 
 > 创建即入队;reconciler 下一 tick(默认 3s 内)按并发上限起 K8s Job。
+> session run 额外受 project 护栏 `max_live_sessions` 闸(见 §2.1 PATCH 字段):
+> project 内 live(scheduling/running/awaiting_input)session 数达上限时新
+> session 停留 `queued`,腾出名额后自动调度。
 
 #### `GET /api/v1/projects/{id}/runs` — 列出某 project 的 runs
 
@@ -315,6 +354,47 @@ default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `4
 > 本系统以 Job-per-run 模型 + REST 触发,retry = 新 run + `retried_from` 链接,
 > 更易推理。Symphony 退避公式 `min(10000·2^(n-1), 300000)ms` 已实现并随
 > `attempt` 携带,供未来**自动**重试;MVP 为**手动**重试,不强制退避。
+> retry 保留 run 身份:`kind`、PR 关联、**`session`**(session run 的 retry 仍是
+> session)一并拷贝。
+
+#### `POST /api/v1/runs/{id}/messages` — 给 session run 投递后续消息(F7 / D22)
+
+权限 member+。请求:
+
+```json
+{ "prompt": "接着把测试补上" }
+```
+
+- run 必须是 **session run**(`session=true`)且状态 ∈ `{awaiting_input, running}`
+  (`running` 时排队,当前轮结束后被取走);其余状态一律
+  **`409 run_not_awaiting`**(fail-visible,不静默丢弃)。
+- **正在收尾的 session(finalize 标记已置,来自 finish 端点或空闲超时)一律
+  `409 run_finalizing`**——此时 next-prompt 只会回 `410`,收下的消息永远不会被
+  处理,所以拒收而不是静默吞掉。
+- 消息落 `run_messages` 投递队列(runner 经 §5.4 next-prompt 长轮询取走,
+  **两阶段 offer/consume,详见 §5.4**),同时 append 一条 `user.message` 事件进
+  时间线(§4),console 渲染为用户消息气泡。
+
+响应 `201 Created`:
+
+```json
+{ "id": "…", "run_id": "…", "seq": 1, "prompt": "接着把测试补上", "created_at": "…", "offered_at": null, "consumed_at": null }
+```
+
+错误:`400`(空 prompt)、`404`、`403`(viewer)、`409 run_not_awaiting`、
+`409 run_finalizing`。
+
+#### `POST /api/v1/runs/{id}/finish` — 结束 session(F7 / D22)
+
+权限 member+。无请求体。置 finalize 标记后:下一次 next-prompt 长轮询立即回
+`410` → runner 优雅收尾退出(exit 0)→ Job 成功 → run 收敛 `succeeded`。
+**幂等**:重复 finish / 对已终态 run finish 均回 `200` 当前 Run。
+首次 finish 会 append 一条 `session.finish {reason:"user"}` 事件。
+非 session run:`409 run_not_awaiting`。
+
+> 空闲超时(project 护栏 `session_idle_timeout_secs`,默认继承集群
+> `SESSION_IDLE_TIMEOUT_SECONDS`=900s)由 reconciler 走**同一条 finalize 路径**
+> 自动触发,并 append `session.finish {reason:"idle_timeout"}` 事件。
 
 ### 2.3 Events(拉取 + 流式)
 
@@ -512,6 +592,8 @@ runner 通过 `POST /internal/v1/runs/{id}/events` 上报;orchestrator 也会内
 | `run.artifact` | orchestrator 内生 | `{ "kind": "diff", "bytes": 214 }` | 产物已就绪的信号(内容经 §2.4 取) |
 | `run.failure` | runner(可选) | `{ "reason": "clone_failed", "message": "fatal: repository not found" }` | runner 主动精化失败原因(见 §1.4) |
 | `run.git` | runner(**ST-1**,`draft_pr` 模式) | `{ "branch": "agent/run-<id>", "commit_sha": "abcd..." }` | runner 推送 `agent/run-<id>` 分支后上报;orchestrator 据此(以 `branch` 为幂等键)开 draft PR。首个非空 `branch` 生效(first-writer-wins),重发为幂等空操作 |
+| `user.message` | orchestrator 内生(**F7 / D22**,session) | `{ "prompt": "接着把测试补上", "by": "Ada" }` | `POST /runs/{id}/messages` 落队列的同时 append;console 渲染为用户消息气泡,时间线读起来是连续对话。`by` 为触发者 display name(service principal 为空) |
+| `session.finish` | orchestrator 内生(**F7 / D22**,session) | `{ "reason": "user", "by": "Ada" }` | session 被收尾:`reason` ∈ `user`(finish 端点)/ `idle_timeout`(reconciler 空闲回收)。紧凑系统行渲染 |
 
 - `payload` 除上述约定键外可含额外键,客户端应容忍未知键。
 - `agent.tool_call` 与 `agent.tool_result` 建议以 `call_id` 关联配对渲染。
@@ -570,6 +652,10 @@ runner 通过 `POST /internal/v1/runs/{id}/events` 上报;orchestrator 也会内
 ```
 
 - `kind` 缺省 `diff`。按 `(run_id, kind)` upsert(重复上报覆盖)。
+  **session run(F7)每轮有新变化都会重传累计 diff / bundle,upsert 语义保证
+  最新一轮覆盖旧内容**;bundle 上传(`POST .../bundle`)同为 per-run upsert,
+  且对 session run 每次上传递增 `bundle_rev`,驱动 reconciler 的逐轮 push
+  (首轮开 draft PR,后续轮 ff-only 推进同一分支,绝不新开 PR/force-push)。
 
 响应 `201 Created`:
 
@@ -578,6 +664,51 @@ runner 通过 `POST /internal/v1/runs/{id}/events` 上报;orchestrator 也会内
 ```
 
 - 上报后 orchestrator 内生一条 `run.artifact` 事件推给 SSE 订阅者。
+
+### 5.3 `POST /internal/v1/runs/{id}/turn-complete` — session 轮完成上报(F7 / D22)
+
+仅 session run 有意义(单发 run 调用为无害空操作)。请求:
+
+```json
+{ "turn": 1, "stop_reason": "end_turn" }
+```
+
+- **消费(两阶段投递的 phase 2)**:把当前 offered 未 consumed 的消息标
+  `consumed_at`——这条消息发起的轮已经跑完,投递闭环;无 offered 消息(首轮
+  `TASK_PROMPT` 场景)为无害空操作。
+- 将 run 从 `running` 置为 `awaiting_input`,首次进入时打 `awaiting_since`
+  (空闲回收计时起点);orchestrator append 一条 `run.status(awaiting_input)`。
+- **幂等**:重复上报(网络重试)无消息可再消费、不重置 `awaiting_since`,回 `200`。
+- run 已并发转终态/取消时同样回 `200`(runner 随后从 next-prompt 的 `410`
+  得知收尾),**绝不以 4xx 打死 runner**。
+
+响应 `200`:`{ "status": "awaiting_input", "turn": 1 }`。
+
+### 5.4 `GET /internal/v1/runs/{id}/next-prompt` — 长轮询取下一条消息(F7 / D22)
+
+服务端 **hold ≤ 25s**(必须显著小于 runner 侧单请求超时 35s):
+
+| 状态码 | 含义 | runner 行为(acpdrive) |
+|---|---|---|
+| `200` | `{ "message_id": "…", "prompt": "…" }` — 取到下一轮输入 | 同一 ACP session 上再发 `session/prompt` |
+| `204` | hold 期满暂无消息 | 立即(≥250ms 下限)再次轮询 |
+| `410` | session 已 finalize(用户 finish / 空闲超时)或 run 已终态 | **优雅收尾,exit 0**(Job 成功 → run `succeeded`) |
+
+**投递语义(两阶段 offer/consume,服务端单侧保证,runner 契约不变)**:
+
+- **offer(phase 1)**:取到消息即打 `offered_at` 并把 run 置回 `running`
+  (append `run.status(running)`)。
+- **幂等重发**:只要该消息还未被 consume(§5.3),**每次 re-poll 都原样重发同
+  一条**(同 `message_id`/`prompt`)——acpdrive 只在轮与轮之间轮询,re-poll 即
+  证明上一次响应在网络上丢了、并没有开出一轮,所以重发绝不会双投;"响应丢失后
+  run 卡在 running 而无活跃 turn" 的僵局由此自愈。
+- **consume(phase 2)**:下一次 turn-complete 把 offered 消息标 `consumed_at`,
+  之后的 poll 才会 offer 队列里的下一条;已 consume 的消息(含 orchestrator
+  重启后)绝不重发。
+- 消息按 `seq` 升序逐条投递;`running` 期间排队的消息在下一轮 poll 被取走;
+  finalize/终态永远优先于队列中的消息(直接 `410`)。
+- runner 对 turn-complete / next-prompt 连续失败 >5min 判定控制面丢失,以
+  `agent_error` 收尾(F7a 契约)。
 
 ---
 
@@ -599,6 +730,7 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
 | `MODEL_NAME` | 生效模型配置(DB 行优先,env 兜底)。**必填,无 mock 默认**(fail-visible 红线 D14;唯一例外:runner 独立运行时 `START_MOCKLLM=1` 显式声明 mock rig) | jcode 的 `provider/model` 标识;runner 据此为未知 provider 写 `custom_models` 配置项 |
 | `ORCH_BASE_URL` | 环境 `ORCH_BASE_URL` | orchestrator 基址,runner 回传事件/产物用 |
 | `RUN_TOKEN` | 每 run 随机生成 | Bearer,仅本 run 有效;打 `/internal/v1/runs/{RUN_ID}/*` |
+| `RUN_SESSION` | `run.session`(**F7 / D22**) | `1` = 多轮 session 模式:acpdrive 每轮后跑 turn-hook(逐轮 diff/commit/bundle)→ `POST turn-complete` → 长轮询 `GET next-prompt`(§5.3/§5.4)。**单发 run 不注入,行为不变**。session run 的 `RUN_TIMEOUT` 与 Job `activeDeadlineSeconds` 改用 session TTL(project `session_ttl_secs`,缺省集群 `SESSION_TTL_SECONDS`=14400s)——`--timeout` 包住整个 session 含 idle 等待 |
 | `GIT_MODE` | project.git_mode(缺 token/host 不匹配时降级) | **(ST-1)** `readonly`(默认,diff-only)\| `draft_pr`(推分支) |
 | `GIT_BRANCH` | `agent/run-<RUN_ID>` | **(ST-1)** `draft_pr` 时要创建/推送的命名分支 |
 | `GIT_PUSH_URL` | `provider_url`(或 `GITEA_URL`)+ `provider_repo` | **(ST-1)** https 推送 origin,如 `http://gitea.../owner/repo.git` |

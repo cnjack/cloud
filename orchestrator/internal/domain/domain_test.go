@@ -30,9 +30,20 @@ func TestCanTransition(t *testing.T) {
 		{"succeeded->failed (terminal)", StatusSucceeded, StatusFailed, false},
 		{"failed->running (terminal)", StatusFailed, StatusRunning, false},
 		{"canceled->running (terminal)", StatusCanceled, StatusRunning, false},
+		// Session (D22): running <-> awaiting_input and the finalize/fail/cancel exits.
+		{"running->awaiting_input (session turn done)", StatusRunning, StatusAwaitingInput, true},
+		{"awaiting_input->running (message delivered)", StatusAwaitingInput, StatusRunning, true},
+		{"awaiting_input->succeeded (finalized)", StatusAwaitingInput, StatusSucceeded, true},
+		{"awaiting_input->failed (pod died)", StatusAwaitingInput, StatusFailed, true},
+		{"awaiting_input->canceled (user cancel)", StatusAwaitingInput, StatusCanceled, true},
+		{"awaiting_input->scheduling (backward)", StatusAwaitingInput, StatusScheduling, false},
+		{"awaiting_input->queued (backward)", StatusAwaitingInput, StatusQueued, false},
+		{"queued->awaiting_input (skip)", StatusQueued, StatusAwaitingInput, false},
+		{"scheduling->awaiting_input (skip)", StatusScheduling, StatusAwaitingInput, false},
 		// idempotent no-op transitions are always allowed
 		{"queued->queued (noop)", StatusQueued, StatusQueued, true},
 		{"running->running (noop)", StatusRunning, StatusRunning, true},
+		{"awaiting_input->awaiting_input (noop)", StatusAwaitingInput, StatusAwaitingInput, true},
 		{"succeeded->succeeded (noop)", StatusSucceeded, StatusSucceeded, true},
 	}
 	for _, tc := range cases {
@@ -51,14 +62,14 @@ func TestStatusTerminalAndValid(t *testing.T) {
 			t.Errorf("%s should be terminal", s)
 		}
 	}
-	nonTerminal := []RunStatus{StatusQueued, StatusScheduling, StatusRunning, StatusBlocked}
+	nonTerminal := []RunStatus{StatusQueued, StatusScheduling, StatusRunning, StatusAwaitingInput, StatusBlocked}
 	for _, s := range nonTerminal {
 		if s.Terminal() {
 			t.Errorf("%s should not be terminal", s)
 		}
 	}
 	all := []RunStatus{
-		StatusQueued, StatusScheduling, StatusRunning,
+		StatusQueued, StatusScheduling, StatusRunning, StatusAwaitingInput,
 		StatusSucceeded, StatusFailed, StatusCanceled, StatusBlocked,
 	}
 	for _, s := range all {

@@ -41,13 +41,15 @@ func (s *PGStore) Close() { s.pool.Close() }
 // --- Projects ---------------------------------------------------------------
 
 const projectCols = `id, name, created_at,
-	max_concurrent_runs, run_timeout_secs, provider_allowlist, injected_env, owner_user_id`
+	max_concurrent_runs, run_timeout_secs, provider_allowlist, injected_env, owner_user_id,
+	max_live_sessions, session_idle_timeout_secs, session_ttl_secs`
 
 func scanProject(row pgx.Row) (*domain.Project, error) {
 	var p domain.Project
 	var ownerUserID *string
 	err := row.Scan(&p.ID, &p.Name, &p.CreatedAt,
-		&p.MaxConcurrentRuns, &p.RunTimeoutSecs, &p.ProviderAllowlist, &p.InjectedEnv, &ownerUserID)
+		&p.MaxConcurrentRuns, &p.RunTimeoutSecs, &p.ProviderAllowlist, &p.InjectedEnv, &ownerUserID,
+		&p.MaxLiveSessions, &p.SessionIdleTimeoutSecs, &p.SessionTTLSecs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -67,9 +69,10 @@ func (s *PGStore) CreateProject(ctx context.Context, p *domain.Project) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO projects (`+projectCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		p.ID, p.Name, p.CreatedAt,
-		p.MaxConcurrentRuns, p.RunTimeoutSecs, p.ProviderAllowlist, env, nullStr(p.OwnerUserID))
+		p.MaxConcurrentRuns, p.RunTimeoutSecs, p.ProviderAllowlist, env, nullStr(p.OwnerUserID),
+		p.MaxLiveSessions, p.SessionIdleTimeoutSecs, p.SessionTTLSecs)
 	if err != nil {
 		return fmt.Errorf("create project: %w", err)
 	}
@@ -106,9 +109,11 @@ func (s *PGStore) UpdateProject(ctx context.Context, p *domain.Project) error {
 	}
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE projects SET name=$2, max_concurrent_runs=$3, run_timeout_secs=$4,
-		    provider_allowlist=$5, injected_env=$6
+		    provider_allowlist=$5, injected_env=$6,
+		    max_live_sessions=$7, session_idle_timeout_secs=$8, session_ttl_secs=$9
 		 WHERE id=$1`,
-		p.ID, p.Name, p.MaxConcurrentRuns, p.RunTimeoutSecs, p.ProviderAllowlist, env)
+		p.ID, p.Name, p.MaxConcurrentRuns, p.RunTimeoutSecs, p.ProviderAllowlist, env,
+		p.MaxLiveSessions, p.SessionIdleTimeoutSecs, p.SessionTTLSecs)
 	if err != nil {
 		return fmt.Errorf("update project: %w", err)
 	}
@@ -283,7 +288,8 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 	created_at, started_at, finished_at, job_cleaned_at,
 	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id,
 	review_posted_at, pr_head_branch, pr_base_branch,
-	origin, origin_comment_id, origin_comment_url, result, model_id, model_name`
+	origin, origin_comment_id, origin_comment_url, result, model_id, model_name,
+	session, awaiting_since, session_finalizing, bundle_rev, pushed_rev`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
@@ -294,7 +300,8 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt,
 		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID,
 		&r.ReviewPostedAt, &r.PRHeadBranch, &r.PRBaseBranch,
-		&r.Origin, &commentID, &commentURL, &result, &r.ModelID, &r.ModelName)
+		&r.Origin, &commentID, &commentURL, &result, &r.ModelID, &r.ModelName,
+		&r.Session, &r.AwaitingSince, &r.SessionFinalizing, &r.BundleRev, &r.PushedRev)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -323,13 +330,14 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
 		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID,
 		r.ReviewPostedAt, r.PRHeadBranch, r.PRBaseBranch,
-		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullRunResult(r.Result), r.ModelID, r.ModelName)
+		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullRunResult(r.Result), r.ModelID, r.ModelName,
+		r.Session, r.AwaitingSince, r.SessionFinalizing, r.BundleRev, r.PushedRev)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
@@ -720,13 +728,300 @@ func (s *PGStore) MarkPRCreated(ctx context.Context, id, prURL string, prNumber 
 	return s.commitAndReload(ctx, tx, id)
 }
 
-// ListRunsAwaitingPR returns succeeded agent runs with a recorded branch (set
-// when their bundle was received) but no PR yet. The mode/provider gate is
-// applied by the reconciler after joining the service.
+// --- Session runs (D22) -----------------------------------------------------
+
+// SetRunAwaitingInput: running -> awaiting_input, stamping awaiting_since only
+// where it is still NULL (COALESCE) so a duplicate turn-complete does not reset
+// the idle timer. Idempotent: from==awaiting_input is a no-op transition.
+func (s *PGStore) SetRunAwaitingInput(ctx context.Context, id string, at time.Time) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if !domain.CanTransition(cur.Status, domain.StatusAwaitingInput) {
+		return nil, fmt.Errorf("%w: %s -> awaiting_input", ErrInvalidTransition, cur.Status)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET status=$2, awaiting_since=COALESCE(awaiting_since,$3) WHERE id=$1`,
+		id, domain.StatusAwaitingInput, at); err != nil {
+		return nil, fmt.Errorf("set awaiting input: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// ResumeRun: awaiting_input -> running, clearing awaiting_since. Idempotent
+// (already-running is a no-op transition).
+func (s *PGStore) ResumeRun(ctx context.Context, id, phase string) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if !domain.CanTransition(cur.Status, domain.StatusRunning) {
+		return nil, fmt.Errorf("%w: %s -> running", ErrInvalidTransition, cur.Status)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET status=$2, phase=$3, awaiting_since=NULL WHERE id=$1`,
+		id, domain.StatusRunning, phase); err != nil {
+		return nil, fmt.Errorf("resume run: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// MarkSessionFinalizing sets session_finalizing (idempotent) while the run is
+// non-terminal so next-prompt answers 410. A terminal run is left untouched (not
+// an error).
+func (s *PGStore) MarkSessionFinalizing(ctx context.Context, id string) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if cur.Status.Terminal() {
+		_ = tx.Rollback(ctx)
+		return cur, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET session_finalizing=TRUE WHERE id=$1`, id); err != nil {
+		return nil, fmt.Errorf("mark session finalizing: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// FinalizeIdleSession — the CONDITIONAL finalize for the idle-timeout pass. The
+// status/awaiting_since/flag checks live in the WHERE clause, so a run that was
+// resumed (a message arrived after the reconciler's list) or already finalized
+// between list and act is left untouched (no TOCTOU). rows==1 iff this call
+// flipped the flag.
+func (s *PGStore) FinalizeIdleSession(ctx context.Context, id string, cutoff time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE runs SET session_finalizing=TRUE
+		 WHERE id=$1 AND status=$2 AND NOT session_finalizing
+		   AND awaiting_since IS NOT NULL AND awaiting_since <= $3`,
+		id, string(domain.StatusAwaitingInput), cutoff)
+	if err != nil {
+		return false, fmt.Errorf("finalize idle session: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// AppendRunMessage enqueues a follow-up prompt, allocating the next per-run seq
+// under a transaction so concurrent posts never collide on (run_id, seq).
+func (s *PGStore) AppendRunMessage(ctx context.Context, runID, prompt, createdBy string) (*domain.RunMessage, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin append message: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	// Lock the run so the seq allocation serialises with a concurrent post.
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT true FROM runs WHERE id=$1 FOR UPDATE`, runID).Scan(&exists); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("lock run for message: %w", err)
+	}
+	var seq int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(max(seq),0)+1 FROM run_messages WHERE run_id=$1`, runID).Scan(&seq); err != nil {
+		return nil, fmt.Errorf("alloc message seq: %w", err)
+	}
+	msg := &domain.RunMessage{
+		ID: domain.NewID(), RunID: runID, Seq: seq, Prompt: prompt,
+		CreatedBy: createdBy, CreatedAt: time.Now().UTC(),
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO run_messages (id, run_id, seq, prompt, created_by, created_at)
+		 VALUES ($1,$2,$3,$4,$5,$6)`,
+		msg.ID, msg.RunID, msg.Seq, msg.Prompt, nullStr(msg.CreatedBy), msg.CreatedAt); err != nil {
+		return nil, fmt.Errorf("insert run message: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit append message: %w", err)
+	}
+	return msg, nil
+}
+
+// runMessageCols are the run_messages columns in scanRunMessage order.
+const runMessageCols = `id, run_id, seq, prompt, created_by, created_at, offered_at, consumed_at`
+
+// scanRunMessage scans one run_messages row (see runMessageCols).
+func scanRunMessage(row pgx.Row) (*domain.RunMessage, error) {
+	var m domain.RunMessage
+	var createdBy *string
+	err := row.Scan(&m.ID, &m.RunID, &m.Seq, &m.Prompt, &createdBy, &m.CreatedAt, &m.OfferedAt, &m.ConsumedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan run message: %w", err)
+	}
+	if createdBy != nil {
+		m.CreatedBy = *createdBy
+	}
+	return &m, nil
+}
+
+// OfferNextMessage — phase 1 of the two-phase delivery. The whole decision runs
+// in one transaction that first locks the RUN row, so two concurrent polls
+// serialise and can never offer two DIFFERENT messages: the loser of the lock
+// re-reads and sees the winner's offer, returning the SAME message as an
+// idempotent re-delivery (fresh=false).
+func (s *PGStore) OfferNextMessage(ctx context.Context, runID string, at time.Time) (*domain.RunMessage, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin offer message: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT true FROM runs WHERE id=$1 FOR UPDATE`, runID).Scan(&exists); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, ErrNotFound
+		}
+		return nil, false, fmt.Errorf("lock run for offer: %w", err)
+	}
+	// An offered-but-not-consumed message is re-delivered verbatim: the runner
+	// re-polling proves the previous response never started a turn.
+	m, err := scanRunMessage(tx.QueryRow(ctx,
+		`SELECT `+runMessageCols+` FROM run_messages
+		 WHERE run_id=$1 AND offered_at IS NOT NULL AND consumed_at IS NULL
+		 ORDER BY seq ASC LIMIT 1`, runID))
+	if err == nil {
+		if cerr := tx.Commit(ctx); cerr != nil {
+			return nil, false, fmt.Errorf("commit re-offer: %w", cerr)
+		}
+		return m, false, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, false, err
+	}
+	// Nothing in flight: offer the oldest unoffered message.
+	m, err = scanRunMessage(tx.QueryRow(ctx,
+		`UPDATE run_messages SET offered_at=$2
+		 WHERE id = (
+		     SELECT id FROM run_messages
+		     WHERE run_id=$1 AND offered_at IS NULL
+		     ORDER BY seq ASC LIMIT 1
+		 )
+		 RETURNING `+runMessageCols, runID, at))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, false, ErrNotFound
+		}
+		return nil, false, fmt.Errorf("offer next message: %w", err)
+	}
+	if cerr := tx.Commit(ctx); cerr != nil {
+		return nil, false, fmt.Errorf("commit offer: %w", cerr)
+	}
+	return m, true, nil
+}
+
+// ConsumeOfferedMessage — phase 2: the turn the offered message started has
+// completed (turn-complete). Idempotent: no offered message => (false, nil).
+func (s *PGStore) ConsumeOfferedMessage(ctx context.Context, runID string, at time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE run_messages SET consumed_at=$2
+		 WHERE run_id=$1 AND offered_at IS NOT NULL AND consumed_at IS NULL`,
+		runID, at)
+	if err != nil {
+		return false, fmt.Errorf("consume offered message: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ListRunMessages returns a run's queued messages, oldest first.
+func (s *PGStore) ListRunMessages(ctx context.Context, runID string) ([]domain.RunMessage, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+runMessageCols+` FROM run_messages WHERE run_id=$1 ORDER BY seq ASC`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list run messages: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.RunMessage
+	for rows.Next() {
+		m, err := scanRunMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// BumpBundleRev increments bundle_rev (a fresh bundle awaits a push).
+func (s *PGStore) BumpBundleRev(ctx context.Context, id string) (*domain.Run, error) {
+	tx, _, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `UPDATE runs SET bundle_rev=bundle_rev+1 WHERE id=$1`, id); err != nil {
+		return nil, fmt.Errorf("bump bundle rev: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// SetPushedRev advances pushed_rev to at-least rev (GREATEST, monotonic) and
+// records the pushed commit_sha (the session branch tip moves each turn). An
+// EMPTY sha preserves the stored value — the PR-already-exists recovery path
+// pushes nothing, so it must not wipe the last recorded tip. No status change.
+func (s *PGStore) SetPushedRev(ctx context.Context, id string, rev int64, commitSHA string) (*domain.Run, error) {
+	tx, _, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET pushed_rev=GREATEST(pushed_rev,$2),
+		    commit_sha = CASE WHEN $3='' THEN commit_sha ELSE $3 END
+		 WHERE id=$1`,
+		id, rev, commitSHA); err != nil {
+		return nil, fmt.Errorf("set pushed rev: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+// ListSessionRunsAwaitingPush returns session AGENT runs with a recorded branch
+// and a bundle newer than the last push (bundle_rev > pushed_rev), still in a
+// non-final state. Ordered oldest-first.
+func (s *PGStore) ListSessionRunsAwaitingPush(ctx context.Context) ([]domain.Run, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+runCols+` FROM runs
+		 WHERE session AND kind='agent' AND git_branch <> '' AND bundle_rev > pushed_rev
+		   AND status <> $1 AND status <> $2
+		 ORDER BY created_at ASC`,
+		string(domain.StatusFailed), string(domain.StatusCanceled))
+	if err != nil {
+		return nil, fmt.Errorf("list session runs awaiting push: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
+}
+
+// ListAwaitingInputRuns returns every run currently in awaiting_input, oldest
+// first (the idle-timeout reconcile pass).
+func (s *PGStore) ListAwaitingInputRuns(ctx context.Context) ([]domain.Run, error) {
+	return s.ListRunsByStatus(ctx, domain.StatusAwaitingInput)
+}
+
+// ListRunsAwaitingPR returns succeeded NON-session agent runs with a recorded
+// branch (set when their bundle was received) but no PR yet. The mode/provider
+// gate is applied by the reconciler after joining the service. Session runs are
+// EXCLUDED — their per-turn draft-PR push is handled by the dedicated
+// ListSessionRunsAwaitingPush pass so the two never double-process a run.
 func (s *PGStore) ListRunsAwaitingPR(ctx context.Context) ([]domain.Run, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+runCols+` FROM runs
-		 WHERE status=$1 AND kind='agent' AND git_branch <> '' AND pr_url = ''
+		 WHERE status=$1 AND kind='agent' AND git_branch <> '' AND pr_url = '' AND NOT session
 		 ORDER BY created_at ASC`,
 		string(domain.StatusSucceeded))
 	if err != nil {

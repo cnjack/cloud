@@ -15,6 +15,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
@@ -67,6 +68,11 @@ type Server struct {
 	// integration is off (column validation is then skipped). Typed as an
 	// interface so tests inject a fake without HTTP.
 	jtypeBoard boardValidator
+
+	// Session next-prompt long-poll timings (D22). Zero => the package defaults
+	// (25s hold / 500ms poll). Overridable by tests that need a fast hold.
+	nextPromptHold time.Duration
+	nextPromptPoll time.Duration
 }
 
 // boardValidator is the slice of *jtype.Client the admin link API needs to
@@ -249,6 +255,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/runs/{id}/artifact", s.authedStream(s.handleGetArtifact))
 	mux.Handle("POST /api/v1/runs/{id}/cancel", s.authed(s.handleCancelRun))
 	mux.Handle("POST /api/v1/runs/{id}/retry", s.authed(s.handleRetryRun))
+	// Multi-turn session (D22): feed a follow-up message to a session run, or wind
+	// the session down. member+ (same as run dispatch).
+	mux.Handle("POST /api/v1/runs/{id}/messages", s.authed(s.handleSendMessage))
+	mux.Handle("POST /api/v1/runs/{id}/finish", s.authed(s.handleFinishSession))
 	// PR review (M5): request an AI review of a succeeded agent run's PR, and read
 	// the PR's live state + its review runs. review is a mutation (member+); the
 	// pr view is read-only (viewer+).
@@ -263,6 +273,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /internal/v1/runs/{id}/source", s.runToken(s.handleGetSource))
 	mux.Handle("POST /internal/v1/runs/{id}/bundle", s.runToken(s.handleIngestBundle))
 	mux.Handle("POST /internal/v1/runs/{id}/review", s.runToken(s.handleIngestReview))
+	// Multi-turn session (D22): the runner's acpdrive reports each turn's
+	// completion and long-polls for the next user message. RUN_TOKEN authed.
+	mux.Handle("POST /internal/v1/runs/{id}/turn-complete", s.runToken(s.handleTurnComplete))
+	mux.Handle("GET /internal/v1/runs/{id}/next-prompt", s.runToken(s.handleNextPrompt))
 	// Feature D — LLM reverse proxy (architecture O5): the runner's LLM traffic
 	// goes through the orchestrator, which injects the real key and forwards to
 	// the real model. Method-agnostic so POST /chat/completions and GET /models

@@ -32,6 +32,7 @@ type MemStore struct {
 	modelGrants  map[string]bool                 // keyed by modelID+"|"+projectID
 	kanbanLinks  map[string]domain.KanbanLink    // keyed by link id
 	kanbanClaims map[string]domain.KanbanClaim   // keyed by linkID+"|"+documentID
+	runMessages  map[string][]domain.RunMessage  // session follow-up queue, keyed by runID (D22)
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -51,6 +52,7 @@ func NewMemStore() *MemStore {
 		modelGrants:  map[string]bool{},
 		kanbanLinks:  map[string]domain.KanbanLink{},
 		kanbanClaims: map[string]domain.KanbanClaim{},
+		runMessages:  map[string][]domain.RunMessage{},
 	}
 }
 
@@ -132,6 +134,7 @@ func (m *MemStore) DeleteProject(_ context.Context, id string) error {
 	for rid, r := range m.runs {
 		if r.ProjectID == id {
 			delete(m.runs, rid)
+			delete(m.runMessages, rid) // cascade run_messages (FK ON DELETE CASCADE)
 		}
 	}
 	for k, mem := range m.members {
@@ -554,20 +557,222 @@ func (m *MemStore) MarkPRCreated(_ context.Context, id, prURL string, prNumber i
 	return &cp, nil
 }
 
-// ListRunsAwaitingPR returns succeeded agent runs with a recorded branch but no
-// PR yet.
+// ListRunsAwaitingPR returns succeeded NON-session agent runs with a recorded
+// branch but no PR yet. Session runs are handled by ListSessionRunsAwaitingPush.
 func (m *MemStore) ListRunsAwaitingPR(_ context.Context) ([]domain.Run, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []domain.Run
 	for _, r := range m.runs {
 		if r.Status == domain.StatusSucceeded && r.Kind == domain.RunKindAgent &&
-			r.GitBranch != "" && r.PRURL == "" {
+			r.GitBranch != "" && r.PRURL == "" && !r.Session {
 			out = append(out, r)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil
+}
+
+// --- Session runs (D22) ---
+
+// SetRunAwaitingInput: running -> awaiting_input, stamping awaiting_since only
+// where it is still nil (first-writer-wins) so a duplicate turn-complete does
+// not reset the idle timer.
+func (m *MemStore) SetRunAwaitingInput(_ context.Context, id string, at time.Time) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.transitionLocked(id, domain.StatusAwaitingInput, func(r *domain.Run) {
+		if r.AwaitingSince == nil {
+			t := at
+			r.AwaitingSince = &t
+		}
+	})
+}
+
+// ResumeRun: awaiting_input -> running, clearing awaiting_since.
+func (m *MemStore) ResumeRun(_ context.Context, id, phase string) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.transitionLocked(id, domain.StatusRunning, func(r *domain.Run) {
+		r.Phase = phase
+		r.AwaitingSince = nil
+	})
+}
+
+// MarkSessionFinalizing sets session_finalizing while non-terminal (idempotent).
+func (m *MemStore) MarkSessionFinalizing(_ context.Context, id string) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if cur.Status.Terminal() {
+		cp := cur
+		return &cp, nil
+	}
+	cur.SessionFinalizing = true
+	m.runs[id] = cur
+	cp := cur
+	return &cp, nil
+}
+
+// FinalizeIdleSession — conditional finalize (idle-timeout pass): flips the flag
+// only while the run is STILL awaiting_input, not already finalizing, and idle
+// since at-or-before cutoff. All checks under the same lock (no TOCTOU).
+func (m *MemStore) FinalizeIdleSession(_ context.Context, id string, cutoff time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return false, nil
+	}
+	if cur.Status != domain.StatusAwaitingInput || cur.SessionFinalizing ||
+		cur.AwaitingSince == nil || cur.AwaitingSince.After(cutoff) {
+		return false, nil
+	}
+	cur.SessionFinalizing = true
+	m.runs[id] = cur
+	return true, nil
+}
+
+// AppendRunMessage enqueues a follow-up prompt, allocating the next per-run seq.
+func (m *MemStore) AppendRunMessage(_ context.Context, runID, prompt, createdBy string) (*domain.RunMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.runs[runID]; !ok {
+		return nil, ErrNotFound
+	}
+	var maxSeq int64
+	for _, msg := range m.runMessages[runID] {
+		if msg.Seq > maxSeq {
+			maxSeq = msg.Seq
+		}
+	}
+	msg := domain.RunMessage{
+		ID: domain.NewID(), RunID: runID, Seq: maxSeq + 1, Prompt: prompt,
+		CreatedBy: createdBy, CreatedAt: time.Now().UTC(),
+	}
+	m.runMessages[runID] = append(m.runMessages[runID], msg)
+	cp := msg
+	return &cp, nil
+}
+
+// OfferNextMessage — phase 1 of the two-phase delivery, all under one lock so
+// two concurrent offers converge on the SAME message (never two different ones):
+// an offered-but-not-consumed message is re-delivered verbatim (fresh=false),
+// otherwise the oldest unoffered one is stamped offered_at (fresh=true).
+func (m *MemStore) OfferNextMessage(_ context.Context, runID string, at time.Time) (*domain.RunMessage, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.runs[runID]; !ok {
+		return nil, false, ErrNotFound
+	}
+	msgs := m.runMessages[runID]
+	// msgs is kept append-ordered (ascending seq).
+	for i := range msgs {
+		if msgs[i].OfferedAt != nil && msgs[i].ConsumedAt == nil {
+			cp := msgs[i]
+			return &cp, false, nil // idempotent re-delivery
+		}
+	}
+	for i := range msgs {
+		if msgs[i].OfferedAt == nil {
+			t := at
+			msgs[i].OfferedAt = &t
+			m.runMessages[runID] = msgs
+			cp := msgs[i]
+			return &cp, true, nil
+		}
+	}
+	return nil, false, ErrNotFound
+}
+
+// ConsumeOfferedMessage — phase 2: stamps consumed_at on the offered message.
+// (false, nil) when none is offered (e.g. the first TASK_PROMPT turn).
+func (m *MemStore) ConsumeOfferedMessage(_ context.Context, runID string, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	msgs := m.runMessages[runID]
+	consumed := false
+	for i := range msgs {
+		if msgs[i].OfferedAt != nil && msgs[i].ConsumedAt == nil {
+			t := at
+			msgs[i].ConsumedAt = &t
+			consumed = true
+		}
+	}
+	if consumed {
+		m.runMessages[runID] = msgs
+	}
+	return consumed, nil
+}
+
+// ListRunMessages returns a run's queued messages, oldest first.
+func (m *MemStore) ListRunMessages(_ context.Context, runID string) ([]domain.RunMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.RunMessage, len(m.runMessages[runID]))
+	copy(out, m.runMessages[runID])
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
+}
+
+// BumpBundleRev increments bundle_rev.
+func (m *MemStore) BumpBundleRev(_ context.Context, id string) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cur.BundleRev++
+	m.runs[id] = cur
+	cp := cur
+	return &cp, nil
+}
+
+// SetPushedRev advances pushed_rev to at-least rev and records commit_sha. An
+// empty sha preserves the stored value (PR-already-exists recovery pushes
+// nothing and must not wipe the last recorded tip).
+func (m *MemStore) SetPushedRev(_ context.Context, id string, rev int64, commitSHA string) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if rev > cur.PushedRev {
+		cur.PushedRev = rev
+	}
+	if commitSHA != "" {
+		cur.CommitSHA = commitSHA
+	}
+	m.runs[id] = cur
+	cp := cur
+	return &cp, nil
+}
+
+// ListSessionRunsAwaitingPush returns session agent runs with a recorded branch
+// and a bundle newer than the last push, still non-final. Oldest-first.
+func (m *MemStore) ListSessionRunsAwaitingPush(_ context.Context) ([]domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Run
+	for _, r := range m.runs {
+		if r.Session && r.Kind == domain.RunKindAgent && r.GitBranch != "" &&
+			r.BundleRev > r.PushedRev &&
+			r.Status != domain.StatusFailed && r.Status != domain.StatusCanceled {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+// ListAwaitingInputRuns returns every run currently in awaiting_input.
+func (m *MemStore) ListAwaitingInputRuns(ctx context.Context) ([]domain.Run, error) {
+	return m.ListRunsByStatus(ctx, domain.StatusAwaitingInput)
 }
 
 // ListReviewRunsAwaitingPost returns succeeded review runs with output that has

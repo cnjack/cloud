@@ -127,6 +127,36 @@ describe('ProjectDetailPage — single-repo composer', () => {
   });
 });
 
+describe('ProjectDetailPage — session toggle (D22)', () => {
+  it('defaults OFF: the create body carries NO session field (wire unchanged)', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
+    const toggle = screen.getByTestId('composer-session-toggle') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'one shot' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect('session' in calls.serviceRuns[0]!.input).toBe(false);
+  });
+
+  it('sends session:true when checked and re-labels the submit button', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('composer-session-toggle'));
+    expect(screen.getByTestId('run-submit').textContent).toContain('Start session');
+
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'chat with me' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect(calls.serviceRuns[0]!.input).toMatchObject({ prompt: 'chat with me', session: true });
+  });
+});
+
 describe('ProjectDetailPage — model selection (D21)', () => {
   const grantedModels: ProjectModel[] = [
     { id: 'm_gpt', name: 'GPT-4o', model_name: 'openai/gpt-4o' },

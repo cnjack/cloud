@@ -64,6 +64,8 @@ export function ProjectDetailPage() {
   // D21: the composer's per-run model pick ("" => resolve via service default /
   // the project's sole grant).
   const [selectedModel, setSelectedModel] = useState<string>('');
+  // D22: opt this run into multi-turn session mode (default OFF — single-shot).
+  const [startSession, setStartSession] = useState(false);
 
   // Add-repository inline form.
   const [addOpen, setAddOpen] = useState(false);
@@ -128,12 +130,18 @@ export function ProjectDetailPage() {
     createServiceRun.mutate(
       {
         serviceId: activeServiceId,
-        input: { prompt: prompt.trim(), ...(selectedModel ? { model_id: selectedModel } : {}) },
+        input: {
+          prompt: prompt.trim(),
+          ...(selectedModel ? { model_id: selectedModel } : {}),
+          // D22: session opt-in rides on the create body; omitted when off so the
+          // wire shape is unchanged for single-shot runs.
+          ...(startSession ? { session: true } : {}),
+        },
       },
       {
         onSuccess: (run: { id: string }) => {
           setPrompt('');
-          toast.push({ kind: 'success', message: 'Run dispatched.' });
+          toast.push({ kind: 'success', message: startSession ? 'Session started.' : 'Run dispatched.' });
           navigate(`/runs/${run.id}`);
         },
         onError: (err: unknown) => {
@@ -364,8 +372,21 @@ export function ProjectDetailPage() {
             />
             <div className={styles.composerActions}>
               <span className={styles.composerHint}>
-                Runs headless in your cluster; you'll get a reviewable diff.
+                {startSession
+                  ? 'Starts a multi-turn session — you can keep messaging the agent after each turn.'
+                  : "Runs headless in your cluster; you'll get a reviewable diff."}
               </span>
+              {/* D22: opt into a multi-turn session (default off = single-shot). */}
+              <label className={styles.sessionToggle}>
+                <input
+                  type="checkbox"
+                  checked={startSession}
+                  onChange={(e) => setStartSession(e.target.checked)}
+                  disabled={!modelGate.configured}
+                  data-testid="composer-session-toggle"
+                />
+                Start session
+              </label>
               <Button
                 type="submit"
                 variant="primary"
@@ -373,7 +394,7 @@ export function ProjectDetailPage() {
                 disabled={!modelGate.configured}
                 data-testid="run-submit"
               >
-                Run
+                {startSession ? 'Start session' : 'Run'}
               </Button>
             </div>
           </form>

@@ -35,6 +35,15 @@ func TestDecide(t *testing.T) {
 		{"running+deadline -> failed(timeout)", domain.StatusRunning, k8s.JobDeadlineExceeded, true, ActionMarkFailed, domain.FailureTimeout},
 		{"running+missing -> failed(agent)", domain.StatusRunning, k8s.JobMissing, true, ActionMarkFailed, domain.FailureAgentError},
 
+		// awaiting_input (session, D22): a live Job is NORMAL (pod long-polling), an
+		// exited one ends/fails the session.
+		{"awaiting+running -> none", domain.StatusAwaitingInput, k8s.JobRunning, true, ActionNone, ""},
+		{"awaiting+pending -> none", domain.StatusAwaitingInput, k8s.JobPending, true, ActionNone, ""},
+		{"awaiting+succeeded -> succeeded", domain.StatusAwaitingInput, k8s.JobSucceeded, true, ActionMarkSucceeded, ""},
+		{"awaiting+failed -> failed(agent)", domain.StatusAwaitingInput, k8s.JobFailed, true, ActionMarkFailed, domain.FailureAgentError},
+		{"awaiting+deadline -> failed(timeout)", domain.StatusAwaitingInput, k8s.JobDeadlineExceeded, true, ActionMarkFailed, domain.FailureTimeout},
+		{"awaiting+missing -> failed(agent)", domain.StatusAwaitingInput, k8s.JobMissing, true, ActionMarkFailed, domain.FailureAgentError},
+
 		// terminal / blocked: never acted on
 		{"succeeded -> none", domain.StatusSucceeded, k8s.JobSucceeded, true, ActionNone, ""},
 		{"failed -> none", domain.StatusFailed, k8s.JobFailed, true, ActionNone, ""},

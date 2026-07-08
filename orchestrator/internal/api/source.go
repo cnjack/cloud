@@ -181,13 +181,26 @@ func (s *Server) handleIngestBundle(w http.ResponseWriter, r *http.Request, runI
 	// by the orchestrator (never runner-reported now) so runner + control plane
 	// always agree without the runner reporting it.
 	branch := domain.RunBranchName(runID)
+	var isSession bool
 	if run, err := s.st.GetRun(r.Context(), runID); err == nil {
 		branch = domain.RunPushBranch(run)
+		isSession = run.Session
 	} else {
 		s.log.Warn("ingest bundle: load run for push branch", "run", runID, "err", err)
 	}
 	if _, err := s.st.SetRunGit(r.Context(), runID, branch, ""); err != nil {
 		s.log.Warn("ingest bundle: record branch", "run", runID, "err", err)
+	}
+	// Session (D22): every turn that produces new changes re-uploads a fresh
+	// cumulative bundle. Bump bundle_rev so the session-push reconcile pass
+	// opens the draft PR on the first bundle and ff-updates the same branch on
+	// each subsequent one (bundle_rev > pushed_rev is the "a new bundle awaits a
+	// push" signal). A single-shot run never enters that pass (git_branch alone
+	// puts it in the ordinary PR scan).
+	if isSession {
+		if _, err := s.st.BumpBundleRev(r.Context(), runID); err != nil {
+			s.log.Warn("ingest bundle: bump bundle rev", "run", runID, "err", err)
+		}
 	}
 	s.emitArtifactEvent(r.Context(), runID, string(domain.ArtifactBundle), len(data))
 	writeJSON(w, http.StatusCreated, map[string]any{"kind": string(domain.ArtifactBundle), "bytes": len(data)})

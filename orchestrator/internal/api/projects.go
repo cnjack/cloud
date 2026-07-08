@@ -171,11 +171,14 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 // other key (e.g. a legacy repo_url) is a loud 400 — repo config lives on
 // services, not the project.
 var patchProjectKeys = map[string]bool{
-	"name":                true,
-	"max_concurrent_runs": true,
-	"run_timeout_secs":    true,
-	"provider_allowlist":  true,
-	"injected_env":        true,
+	"name":                      true,
+	"max_concurrent_runs":       true,
+	"run_timeout_secs":          true,
+	"provider_allowlist":        true,
+	"injected_env":              true,
+	"max_live_sessions":         true,
+	"session_idle_timeout_secs": true,
+	"session_ttl_secs":          true,
 }
 
 // applyProjectPatch mutates p in place from the PATCH body. It uses PRESENCE
@@ -253,6 +256,42 @@ func applyProjectPatch(r *http.Request, p *domain.Project) (string, string) {
 			return code, msg
 		}
 		p.InjectedEnv = env
+	}
+
+	// Session guardrails (D22): same presence + "null/≤0 = inherit cluster
+	// default" semantics as the other numeric guardrails.
+	if v, ok := raw["max_live_sessions"]; ok {
+		n, err := parseNullableInt(v)
+		if err != nil {
+			return "bad_request", "max_live_sessions must be a whole number or null"
+		}
+		if n == nil || *n <= 0 {
+			p.MaxLiveSessions = nil
+		} else {
+			p.MaxLiveSessions = n
+		}
+	}
+	if v, ok := raw["session_idle_timeout_secs"]; ok {
+		n, err := parseNullableInt64(v)
+		if err != nil {
+			return "bad_request", "session_idle_timeout_secs must be a whole number of seconds or null"
+		}
+		if n == nil || *n <= 0 {
+			p.SessionIdleTimeoutSecs = nil
+		} else {
+			p.SessionIdleTimeoutSecs = n
+		}
+	}
+	if v, ok := raw["session_ttl_secs"]; ok {
+		n, err := parseNullableInt64(v)
+		if err != nil {
+			return "bad_request", "session_ttl_secs must be a whole number of seconds or null"
+		}
+		if n == nil || *n <= 0 {
+			p.SessionTTLSecs = nil
+		} else {
+			p.SessionTTLSecs = n
+		}
 	}
 	return "", ""
 }
@@ -433,6 +472,11 @@ type projectView struct {
 	MaxConcurrentRuns *int     `json:"max_concurrent_runs,omitempty"`
 	RunTimeoutSecs    *int64   `json:"run_timeout_secs,omitempty"`
 	ProviderAllowlist []string `json:"provider_allowlist,omitempty"`
+	// Session guardrails (D22). Absent => the project inherits the cluster default
+	// (the console shows a "cluster default" placeholder).
+	MaxLiveSessions        *int   `json:"max_live_sessions,omitempty"`
+	SessionIdleTimeoutSecs *int64 `json:"session_idle_timeout_secs,omitempty"`
+	SessionTTLSecs         *int64 `json:"session_ttl_secs,omitempty"`
 	// InjectedEnv values can hold secrets (tokens, proxy creds). They are returned
 	// ONLY to an owner/cluster-admin — the same role that may edit them. For a
 	// member/viewer this is omitted entirely (not just masked): they never need the
@@ -452,15 +496,18 @@ func (s *Server) projectViewOf(ctx context.Context, p *domain.Project, role doma
 		services = []domain.Service{}
 	}
 	pv := &projectView{
-		ID:                p.ID,
-		Name:              p.Name,
-		CreatedAt:         p.CreatedAt,
-		Role:              string(role),
-		OwnerUserID:       p.OwnerUserID,
-		MaxConcurrentRuns: p.MaxConcurrentRuns,
-		RunTimeoutSecs:    p.RunTimeoutSecs,
-		ProviderAllowlist: p.ProviderAllowlist,
-		Services:          services,
+		ID:                     p.ID,
+		Name:                   p.Name,
+		CreatedAt:              p.CreatedAt,
+		Role:                   string(role),
+		OwnerUserID:            p.OwnerUserID,
+		MaxConcurrentRuns:      p.MaxConcurrentRuns,
+		RunTimeoutSecs:         p.RunTimeoutSecs,
+		ProviderAllowlist:      p.ProviderAllowlist,
+		MaxLiveSessions:        p.MaxLiveSessions,
+		SessionIdleTimeoutSecs: p.SessionIdleTimeoutSecs,
+		SessionTTLSecs:         p.SessionTTLSecs,
+		Services:               services,
 	}
 	// Only an owner (cluster-admin / service principal report "owner") sees the
 	// injected_env values — they may contain secrets.

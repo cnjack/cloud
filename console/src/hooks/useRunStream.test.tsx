@@ -145,6 +145,36 @@ describe('useRunStream — cursor + lifecycle', () => {
     expect(result.current.phase).toBe('closed');
   });
 
+  // D22: awaiting_input is NON-terminal — the stream must stay open so the next
+  // turn's events (user.message, agent.text, run.status) keep flowing without a
+  // reconnect. Only succeeded/failed/canceled close the stream.
+  it('keeps the SSE handle open on an awaiting_input status (D22 session)', async () => {
+    const backlog = [statusEvent(1, 'queued'), statusEvent(2, 'running')];
+    const { client, streamCalls } = makeFakeClient(backlog);
+    const { result } = renderHook(() => useRunStream('run1'), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(streamCalls.length).toBe(1));
+    const call = streamCalls[0]!;
+
+    act(() => {
+      call.cb.onOpen?.();
+      call.cb.onFrame({ event: 'run.status', data: statusEvent(3, 'awaiting_input') });
+    });
+
+    await waitFor(() => expect(result.current.derivedStatus).toBe('awaiting_input'));
+    expect(result.current.terminal).toBe(false);
+    expect(call.handle.closed).toBe(false); // stream stays live for the next turn
+    expect(result.current.phase).toBe('live');
+
+    // The session later finishes → NOW the stream closes.
+    act(() => {
+      call.cb.onFrame({ event: 'run.status', data: statusEvent(4, 'succeeded') });
+    });
+    await waitFor(() => expect(call.handle.closed).toBe(true));
+  });
+
   it('surfaces phase "error" on a fatal stream error and reconnect() re-subscribes', async () => {
     const backlog = [statusEvent(1, 'queued'), statusEvent(2, 'running')];
     const { client, streamCalls } = makeFakeClient(backlog);

@@ -141,6 +141,68 @@ type Store interface {
 	// change status and is a no-op on a missing run. Returns the committed row.
 	MarkPRCreated(ctx context.Context, id, prURL string, prNumber int) (*domain.Run, error)
 
+	// --- Session runs (D22) --------------------------------------------------
+
+	// SetRunAwaitingInput moves a running session run to awaiting_input, stamping
+	// awaiting_since (the idle-reclaim epoch) only where it is still NULL so a
+	// duplicate turn-complete does not reset the idle timer. Idempotent: an
+	// already-awaiting_input run is a no-op (from==to allowed). Returns the row;
+	// ErrInvalidTransition from a non-running/non-awaiting state.
+	SetRunAwaitingInput(ctx context.Context, id string, at time.Time) (*domain.Run, error)
+	// ResumeRun moves an awaiting_input session run back to running (a delivered
+	// message) and clears awaiting_since. Idempotent (already-running is a no-op).
+	ResumeRun(ctx context.Context, id, phase string) (*domain.Run, error)
+	// MarkSessionFinalizing sets session_finalizing so next-prompt answers 410 and
+	// the runner exits gracefully. Idempotent + only while non-terminal; a no-op on
+	// a terminal run is not an error. Returns the committed row.
+	MarkSessionFinalizing(ctx context.Context, id string) (*domain.Run, error)
+	// FinalizeIdleSession is the CONDITIONAL finalize the idle-timeout reconcile
+	// pass uses (no TOCTOU): it sets session_finalizing ONLY IF the run is still
+	// awaiting_input, not already finalizing, and its awaiting_since is at or
+	// before cutoff — all checked atomically in the store. Returns finalized=true
+	// only for the call that flipped the flag (so the caller emits the
+	// session.finish event exactly once); a run that was resumed/finalized/ended
+	// in between returns false, never an error.
+	FinalizeIdleSession(ctx context.Context, id string, cutoff time.Time) (bool, error)
+
+	// AppendRunMessage enqueues a follow-up prompt for a session run, allocating
+	// the next per-run seq. Returns the stored message (with its seq). ErrNotFound
+	// if the run does not exist.
+	AppendRunMessage(ctx context.Context, runID, prompt, createdBy string) (*domain.RunMessage, error)
+	// OfferNextMessage is phase 1 of the two-phase delivery. Atomically (per run):
+	// if an offered-but-not-consumed message exists it is returned AGAIN verbatim
+	// (fresh=false — idempotent re-delivery after a lost response); otherwise the
+	// OLDEST unoffered message is stamped offered_at and returned (fresh=true).
+	// Two concurrent offers can never hand out two DIFFERENT messages — they
+	// serialise per run and converge on the same row. ErrNotFound when the queue
+	// has nothing deliverable.
+	OfferNextMessage(ctx context.Context, runID string, at time.Time) (msg *domain.RunMessage, fresh bool, err error)
+	// ConsumeOfferedMessage is phase 2: stamps consumed_at on the currently
+	// offered message (the turn it started has completed). consumed=false when no
+	// message was offered (e.g. the first TASK_PROMPT turn) — a no-op, not an
+	// error. Idempotent.
+	ConsumeOfferedMessage(ctx context.Context, runID string, at time.Time) (consumed bool, err error)
+	// ListRunMessages returns a run's queued messages, oldest first (tests/audit).
+	ListRunMessages(ctx context.Context, runID string) ([]domain.RunMessage, error)
+
+	// BumpBundleRev increments bundle_rev (a new bundle upload awaits a push) and
+	// returns the committed row. Session per-turn draft-PR push cursor (D22).
+	BumpBundleRev(ctx context.Context, id string) (*domain.Run, error)
+	// SetPushedRev advances pushed_rev to at-least rev (monotonic) and records the
+	// pushed commit_sha (the session branch tip moves each turn). An EMPTY sha
+	// preserves the stored value (the PR-already-exists recovery path pushes
+	// nothing, so it must not wipe the last recorded tip). Session-only; never
+	// changes status. Returns the committed row.
+	SetPushedRev(ctx context.Context, id string, rev int64, commitSHA string) (*domain.Run, error)
+	// ListSessionRunsAwaitingPush returns session AGENT runs with a recorded branch
+	// and a bundle newer than what was pushed (bundle_rev > pushed_rev), in a
+	// non-final state, so the reconciler opens/updates the draft PR per turn.
+	// Ordered oldest-first.
+	ListSessionRunsAwaitingPush(ctx context.Context) ([]domain.Run, error)
+	// ListAwaitingInputRuns returns every run currently in awaiting_input, so the
+	// reconciler's idle-timeout pass can finalize the stale ones. Oldest-first.
+	ListAwaitingInputRuns(ctx context.Context) ([]domain.Run, error)
+
 	// Reconciler queries
 	ListRunsByStatus(ctx context.Context, statuses ...domain.RunStatus) ([]domain.Run, error)
 	// ListTerminalRunsWithJob returns terminal runs whose Job has not yet been

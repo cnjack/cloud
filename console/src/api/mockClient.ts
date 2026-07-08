@@ -34,6 +34,7 @@ import type {
   RunArtifact,
   RunEvent,
   RunEventType,
+  RunMessage,
   RunStatus,
   Service,
   SystemInfo,
@@ -450,7 +451,9 @@ export function createMockClient(): ApiClient {
       // present the moment the header goes terminal.
       run.pr_url = 'https://gitea.local/jcloud/seed/pulls/42';
       run.pr_number = 42;
-      setStatus(run, 'succeeded');
+      // D22: a session run parks in awaiting_input (waiting for the user's next
+      // message) instead of finishing — sendMessage/finishSession drive it on.
+      setStatus(run, run.session ? 'awaiting_input' : 'succeeded');
     });
   }
 
@@ -485,6 +488,7 @@ export function createMockClient(): ApiClient {
     prompt: string,
     retriedFrom?: string,
     attempt = 1,
+    session = false,
   ): StoredRun {
     const run: StoredRun = {
       id: genId('run'),
@@ -501,6 +505,7 @@ export function createMockClient(): ApiClient {
       pr_url: null,
       pr_number: null,
       origin: 'api',
+      session,
       _events: [],
       _timers: [],
       _subs: new Set(),
@@ -722,6 +727,53 @@ export function createMockClient(): ApiClient {
           makeRun(orig.project_id, orig.service_id, orig.prompt, orig.id, (orig.attempt ?? 1) + 1),
         ),
       );
+    },
+
+    // ---- multi-turn session (D22) ------------------------------------------
+    async sendMessage(runId: string, prompt: string): Promise<RunMessage> {
+      const r = runs.get(runId);
+      if (!r) throw new ApiError(404, 'run not found');
+      // Mirror the orchestrator gate: session + {awaiting_input, running} only.
+      if (!r.session || !['awaiting_input', 'running'].includes(r.status)) {
+        throw new ApiError(409, 'the session is not accepting messages', {
+          error: { code: 'run_not_awaiting', message: 'the session is not accepting messages' },
+        });
+      }
+      const trimmed = prompt.trim();
+      if (!trimmed) throw badRequest('prompt is required');
+      // Timeline bubble + a canned agent reply, then park awaiting_input again.
+      emit(r, 'user.message', { prompt: trimmed, by: DEMO_ME.user.display_name });
+      setStatus(r, 'running');
+      schedule(r, 900, () => {
+        emit(r, 'agent.text', { text: `Continuing on it: ${trimmed}` });
+      });
+      schedule(r, 1800, () => setStatus(r, 'awaiting_input'));
+      const msg: RunMessage = {
+        id: genId('msg'),
+        run_id: runId,
+        seq: 1,
+        prompt: trimmed,
+        created_at: nowISO(),
+        delivered_at: null,
+      };
+      return delay(msg);
+    },
+
+    async finishSession(runId: string): Promise<Run> {
+      const r = runs.get(runId);
+      if (!r) throw new ApiError(404, 'run not found');
+      if (!r.session) {
+        throw new ApiError(409, 'this run is not a multi-turn session', {
+          error: { code: 'run_not_awaiting', message: 'not a session' },
+        });
+      }
+      if (!['succeeded', 'failed', 'canceled'].includes(r.status)) {
+        emit(r, 'session.finish', { reason: 'user', by: DEMO_ME.user.display_name });
+        for (const t of r._timers) clearTimeout(t);
+        r._timers = [];
+        setStatus(r, 'succeeded');
+      }
+      return delay(publicRun(r));
     },
 
     async getPR(runId: string): Promise<PrInfo> {
@@ -1124,7 +1176,7 @@ export function createMockClient(): ApiClient {
       // D21 resolution chain (mirrors orchestrator selectModel): composer pick →
       // service default → the project's sole granted model → typed errors.
       const modelId = resolveModelForRun(projectId, svc, input.model_id);
-      const run = makeRun(projectId, serviceId, input.prompt);
+      const run = makeRun(projectId, serviceId, input.prompt, undefined, 1, input.session === true);
       run.model_id = modelId ?? undefined;
       return delay(publicRun(run));
     },

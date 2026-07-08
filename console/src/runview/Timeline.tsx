@@ -242,6 +242,31 @@ function TimelineRow({
         </li>
       );
 
+    // D22 session: the user's follow-up prompt — a right-aligned chat bubble so
+    // the timeline reads as a continuous conversation with the agent.
+    case 'user_message':
+      return (
+        <li className={styles.row} data-kind="user_message" data-testid="timeline-user-message">
+          <RowGutter time={time} marker="text" />
+          <div className={styles.userMessage}>
+            <span className={styles.userMessageBy}>{item.by || 'you'}</span>
+            <span className={styles.userMessageText}>{item.prompt}</span>
+          </div>
+        </li>
+      );
+
+    // D22 session: the wind-down marker (user Finish / idle timeout).
+    case 'session_finish':
+      return (
+        <li className={styles.row} data-kind="session_finish" data-testid="timeline-session-finish">
+          <RowGutter time={time} marker="status" />
+          <div className={styles.sysRow}>
+            <span className={styles.sysLabel}>session</span>
+            <span className={styles.resultMsg}>{item.message}</span>
+          </div>
+        </li>
+      );
+
     default:
       return (
         <li className={styles.row} data-kind="unknown">

@@ -9,6 +9,10 @@ export type RunStatus =
   | 'queued'
   | 'scheduling'
   | 'running'
+  // `awaiting_input` (D22): a multi-turn session run finished a turn and is
+  // waiting for the user's next message. Non-terminal — the SSE stream stays
+  // open and the run accepts POST /runs/{id}/messages.
+  | 'awaiting_input'
   | 'succeeded'
   | 'failed'
   | 'canceled'
@@ -116,6 +120,17 @@ export interface Project {
   provider_allowlist?: string[];
   injected_env?: Record<string, string>;
   /**
+   * Session guardrails (D22). Absent = inherit the cluster default:
+   *  - max_live_sessions — cap on simultaneously live (running/awaiting_input)
+   *    session runs in this project.
+   *  - session_idle_timeout_secs — idle time in awaiting_input before the
+   *    session is auto-finished.
+   *  - session_ttl_secs — whole-session wall-clock budget.
+   */
+  max_live_sessions?: number | null;
+  session_idle_timeout_secs?: number | null;
+  session_ttl_secs?: number | null;
+  /**
    * All repositories of the project. A project is a pure container — repo config
    * lives ONLY here (the old flattened repo_url/git_mode fields are gone with the
    * simple-mode shim). The UI shows the service dimension only when length > 1.
@@ -181,6 +196,30 @@ export interface Run {
    * MODEL_* env fallback (empty catalog) or predates the catalog.
    */
   model_id?: string | null;
+  /**
+   * D22 multi-turn session: true when this run keeps one agent session alive
+   * across turns — it parks in `awaiting_input` between turns and accepts
+   * follow-up messages (POST /runs/{id}/messages) + an explicit finish
+   * (POST /runs/{id}/finish). Absent/false = ordinary single-shot run.
+   */
+  session?: boolean;
+  /** When the run entered awaiting_input (idle-timeout epoch). */
+  awaiting_since?: string | null;
+}
+
+/**
+ * POST /api/v1/runs/{id}/messages response — one queued follow-up prompt on a
+ * session run's delivery queue (D22). The timeline shows the message via its
+ * user.message event; this is just the create acknowledgement.
+ */
+export interface RunMessage {
+  id: string;
+  run_id: string;
+  seq: number;
+  prompt: string;
+  created_by?: string;
+  created_at: string;
+  delivered_at?: string | null;
 }
 
 /** How a run was triggered (blueprint §8). Absent is treated as `api`. */
@@ -226,7 +265,13 @@ export type RunEventType =
   | 'run.git'
   // run.result (D18/D26): { outcome: "no_changes" } — a successful run that
   // produced no diff. Rendered as a one-line informational row.
-  | 'run.result';
+  | 'run.result'
+  // user.message (D22): a follow-up prompt posted to a session run
+  // ({ prompt, by }). Rendered as a user chat bubble in the timeline.
+  | 'user.message'
+  // session.finish (D22): the session was wound down ({ reason: "user" |
+  // "idle_timeout", by? }). Rendered as a compact system row.
+  | 'session.finish';
 
 export interface RunEvent {
   seq: number;
@@ -258,7 +303,9 @@ export interface RunEventPayload {
   exit_code?: number;
   is_error?: boolean;
   // run.failure
-  reason?: FailureReason;
+  // run.failure carries a FailureReason; session.finish (D22) reuses the key
+  // with "user" | "idle_timeout" — kept open so both type-check.
+  reason?: FailureReason | string;
   message?: string;
   // run.artifact
   kind?: string;
@@ -272,6 +319,10 @@ export interface RunEventPayload {
   pr_number?: number | null;
   branch?: string;
   commit_sha?: string;
+  // user.message / session.finish (D22): the follow-up prompt and its author /
+  // the wind-down reason ("user" | "idle_timeout").
+  prompt?: string;
+  by?: string;
   [key: string]: unknown;
 }
 
@@ -508,6 +559,10 @@ export interface UpdateProjectInput {
   run_timeout_secs?: number | null;
   provider_allowlist?: string[];
   injected_env?: Record<string, string>;
+  /** Session guardrails (D22) — null clears back to the cluster default. */
+  max_live_sessions?: number | null;
+  session_idle_timeout_secs?: number | null;
+  session_ttl_secs?: number | null;
 }
 
 export interface CreateRunInput {
@@ -518,6 +573,11 @@ export interface CreateRunInput {
    * project's grant set (else 403 model_not_granted).
    */
   model_id?: string;
+  /**
+   * D22: start this run as a multi-turn SESSION — it parks in awaiting_input
+   * after each turn and accepts follow-up messages. Default false (single-shot).
+   */
+  session?: boolean;
 }
 
 /**

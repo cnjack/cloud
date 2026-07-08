@@ -124,6 +124,32 @@ func decide(run domain.Run, jobState k8s.JobState, hasCapacity bool) Decision {
 			return Decision{Action: ActionNone}
 		}
 
+	case domain.StatusAwaitingInput:
+		// Session (D22): the pod is alive and long-polling next-prompt — a still-
+		// active Job (JobRunning) is the NORMAL, expected state and is a no-op, NOT
+		// a failure. Only a Job that actually exited moves the run: succeeded means
+		// the session wound down (finish / idle-finalize → runner exited 0), while a
+		// failed/deadline/missing Job means the pod died and the session cannot
+		// continue.
+		switch jobState {
+		case k8s.JobSucceeded:
+			return Decision{Action: ActionMarkSucceeded}
+		case k8s.JobFailed:
+			return Decision{Action: ActionMarkFailed,
+				FailureReason: domain.FailureAgentError,
+				FailureMsg:    "runner Job failed while awaiting input"}
+		case k8s.JobDeadlineExceeded:
+			return Decision{Action: ActionMarkFailed,
+				FailureReason: domain.FailureTimeout,
+				FailureMsg:    "session exceeded its time limit (activeDeadlineSeconds)"}
+		case k8s.JobMissing:
+			return Decision{Action: ActionMarkFailed,
+				FailureReason: domain.FailureAgentError,
+				FailureMsg:    "runner Job disappeared while awaiting input"}
+		default: // JobRunning, JobPending, JobUnknown — normal (pod is long-polling)
+			return Decision{Action: ActionNone}
+		}
+
 	default:
 		// Terminal (succeeded/failed/canceled) or blocked: reconciler leaves it.
 		return Decision{Action: ActionNone}

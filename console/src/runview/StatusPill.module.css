@@ -38,3 +38,7 @@
 .pill[data-status='blocked'] .dot {
   background: var(--status-failed-dot);
 }
+/* awaiting_input (D22): the session waits for the user's next message. */
+.pill[data-status='awaiting_input'] .dot {
+  background: var(--status-awaiting_input-dot, var(--color-text-faint));
+}

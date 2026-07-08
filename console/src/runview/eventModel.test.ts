@@ -118,3 +118,36 @@ describe('toTimelineItem — payload type tolerance', () => {
     }
   });
 });
+
+describe('toTimelineItem — session events (D22)', () => {
+  it('maps user.message to a user_message item carrying prompt + author', () => {
+    const item = toTimelineItem(ev(5, 'user.message', { prompt: 'next step', by: 'Ada' }));
+    expect(item).toMatchObject({ kind: 'user_message', prompt: 'next step', by: 'Ada' });
+  });
+
+  it('tolerates a user.message with no author (service principal)', () => {
+    const item = toTimelineItem(ev(5, 'user.message', { prompt: 'go' }));
+    expect(item).toMatchObject({ kind: 'user_message', prompt: 'go', by: '' });
+  });
+
+  it('maps session.finish reasons to distinct human messages', () => {
+    expect(toTimelineItem(ev(6, 'session.finish', { reason: 'user' }))).toMatchObject({
+      kind: 'session_finish',
+      reason: 'user',
+      message: 'Session finished',
+    });
+    expect(toTimelineItem(ev(7, 'session.finish', { reason: 'idle_timeout' }))).toMatchObject({
+      kind: 'session_finish',
+      reason: 'idle_timeout',
+      message: 'Session finished (idle timeout)',
+    });
+  });
+
+  it('awaiting_input is NOT a terminal status for the end-of-run marker', () => {
+    const events = [
+      ev(1, 'run.status', { status: 'running' }),
+      ev(2, 'run.status', { status: 'awaiting_input' }),
+    ];
+    expect(terminalStatusSeq(events)).toBeUndefined();
+  });
+});
