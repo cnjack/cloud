@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -24,10 +25,12 @@ const maxWebhookBytes = 1 << 20
 // mentionToken is the bot handle a PR comment must start with to trigger a run.
 const mentionToken = "@jcode"
 
-// giteaIssueCommentPayload is the subset of Gitea's issue_comment webhook we
-// consume (blueprint §8: only the fields we need). issue.pull_request is a JSON
-// object when the issue IS a pull request, absent/null otherwise.
-type giteaIssueCommentPayload struct {
+// issueCommentPayload is the subset of the GitHub-style issue_comment webhook we
+// consume (blueprint §8; F13). BOTH gitea and github emit this exact shape for a
+// comment on a PR conversation — issue.pull_request is a JSON object when the
+// issue IS a pull request, absent/null otherwise — so the two receivers share one
+// struct (their transports/signatures differ, the payload does not).
+type issueCommentPayload struct {
 	Action  string `json:"action"`
 	Comment struct {
 		ID      int64  `json:"id"`
@@ -46,11 +49,74 @@ type giteaIssueCommentPayload struct {
 	} `json:"repository"`
 }
 
-// isPullRequest reports whether the commented issue is a pull request (Gitea
-// sends a non-null pull_request object only for PRs).
-func (p *giteaIssueCommentPayload) isPullRequest() bool {
+// isPullRequest reports whether the commented issue is a pull request (gitea and
+// github both send a non-null pull_request object only for PRs).
+func (p *issueCommentPayload) isPullRequest() bool {
 	t := strings.TrimSpace(string(p.Issue.PullRequest))
 	return t != "" && t != "null"
+}
+
+// gitlabNotePayload is the subset of GitLab's "Note Hook" (a comment) we consume
+// (F13). GitLab speaks merge-request vocabulary: the comment lives under
+// object_attributes and the target MR under merge_request (iid, not number).
+// noteable_type distinguishes an MR comment from an Issue/Commit/Snippet note.
+type gitlabNotePayload struct {
+	ObjectKind string `json:"object_kind"`
+	User       struct {
+		ID int64 `json:"id"`
+	} `json:"user"`
+	Project struct {
+		PathWithNamespace string `json:"path_with_namespace"`
+	} `json:"project"`
+	ObjectAttributes struct {
+		ID           int64  `json:"id"`
+		Note         string `json:"note"`
+		NoteableType string `json:"noteable_type"`
+		URL          string `json:"url"`
+	} `json:"object_attributes"`
+	MergeRequest struct {
+		IID int `json:"iid"`
+	} `json:"merge_request"`
+}
+
+// webhookMention is the provider-neutral shape a PR/MR comment collapses to after
+// each provider's payload parser runs. It carries exactly what processMention
+// needs, so the dispatch core (de-dup → identity gate → service RBAC → host/model
+// gates → PR read → run + receipt) is IDENTICAL across gitea/github/gitlab — only
+// the transport (signature scheme, event header, payload field names) and the
+// reply-credential source differ (blueprint §8 platformed to three providers).
+type webhookMention struct {
+	provider     domain.GitProvider
+	repoFullName string // "owner/name": github full_name / gitlab path_with_namespace / gitea full_name
+	prNumber     int    // PR number (gitea/github) or MR iid (gitlab)
+	rawCommentID string // the provider's numeric comment id, unprefixed
+	commentURL   string // the triggering comment's html_url (persisted as origin_comment_url)
+	commenterUID string // the commenter's provider uid → user_identities lookup
+	body         string // the raw comment body → parseMentionCommand
+}
+
+// originCommentKey builds the run's origin_comment_id (de-dup key). Gitea keeps
+// the BARE numeric id for backward compatibility with M7 runs already stored that
+// way; github/gitlab are PREFIXED with the provider so numerically-equal comment
+// ids from different hosts (e.g. github note 42 vs gitlab note 42) never de-dup
+// against each other, or against a gitea id.
+func originCommentKey(prov domain.GitProvider, rawID string) string {
+	if prov == domain.ProviderGitea {
+		return rawID
+	}
+	return string(prov) + ":" + rawID
+}
+
+// providerDisplayName is the human name used in visible PR/MR replies.
+func providerDisplayName(prov domain.GitProvider) string {
+	switch prov {
+	case domain.ProviderGitHub:
+		return "GitHub"
+	case domain.ProviderGitLab:
+		return "GitLab"
+	default:
+		return "Gitea"
+	}
 }
 
 // commandKind classifies a parsed @jcode mention.
@@ -100,10 +166,28 @@ func parseMentionCommand(body string) mentionCommand {
 // validGiteaSignature verifies X-Gitea-Signature = hex(HMAC-SHA256(body, secret))
 // in constant time. An empty secret or signature, or a non-hex signature, fails.
 func validGiteaSignature(secret string, body []byte, sigHex string) bool {
+	return validHexHMAC(secret, body, strings.TrimSpace(sigHex))
+}
+
+// validGitHubSignature verifies X-Hub-Signature-256 = "sha256=" +
+// hex(HMAC-SHA256(body, secret)) in constant time (F13). An empty secret/header,
+// a missing "sha256=" prefix, or a non-hex digest fails.
+func validGitHubSignature(secret string, body []byte, header string) bool {
+	const prefix = "sha256="
+	header = strings.TrimSpace(header)
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	return validHexHMAC(secret, body, header[len(prefix):])
+}
+
+// validHexHMAC is the shared core of the gitea/github signature checks: it
+// compares sigHex against hex(HMAC-SHA256(body, secret)) in constant time.
+func validHexHMAC(secret string, body []byte, sigHex string) bool {
 	if secret == "" || sigHex == "" {
 		return false
 	}
-	want, err := hex.DecodeString(strings.TrimSpace(sigHex))
+	want, err := hex.DecodeString(sigHex)
 	if err != nil {
 		return false
 	}
@@ -112,94 +196,205 @@ func validGiteaSignature(secret string, body []byte, sigHex string) bool {
 	return hmac.Equal(want, mac.Sum(nil))
 }
 
+// validGitLabToken compares the X-Gitlab-Token header to the shared secret in
+// constant time (GitLab does not sign the body — it echoes the token verbatim;
+// F13). An empty secret or header fails.
+func validGitLabToken(secret, token string) bool {
+	if secret == "" || token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(secret), []byte(token)) == 1
+}
+
+// readWebhookBody reads (and 1MiB-caps) a webhook body. It writes the error
+// response itself and returns ok=false on a read error / oversize body so the
+// three receivers share one intake path.
+func readWebhookBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBytes+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "could not read webhook body")
+		return nil, false
+	}
+	if int64(len(body)) > maxWebhookBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "webhook body exceeds the 1MiB limit")
+		return nil, false
+	}
+	return body, true
+}
+
 // handleGiteaWebhook is the public Gitea webhook endpoint (POST /webhooks/gitea).
 // It is registered only when WEBHOOK_SECRET is configured (else the route 404s).
 // It authenticates the delivery by HMAC signature (401 on mismatch), then treats
 // every non-matching event / non-command comment as a 200 no-op. A matching
 // `@jcode …` PR comment creates a run on behalf of the mapped user (blueprint §8).
 func (s *Server) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBytes+1))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "could not read webhook body")
+	body, ok := readWebhookBody(w, r)
+	if !ok {
 		return
 	}
-	if int64(len(body)) > maxWebhookBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "webhook body exceeds the 1MiB limit")
-		return
-	}
-
 	// HMAC gate — the ONLY hard failure. A bad/missing signature is a 401.
 	if !validGiteaSignature(s.cfg.WebhookSecret, body, r.Header.Get("X-Gitea-Signature")) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid webhook signature")
 		return
 	}
-
 	// Everything past the signature is a 200 (no-op unless it is a real command),
 	// so a redelivery / unrelated event never errors back to Gitea.
 	if r.Header.Get("X-Gitea-Event") != "issue_comment" {
 		writeWebhookOK(w, "ignored: not an issue_comment event")
 		return
 	}
-	var p giteaIssueCommentPayload
+	m, cmd, status := parseIssueCommentMention(domain.ProviderGitea, body)
+	if m == nil {
+		writeWebhookOK(w, status)
+		return
+	}
+	s.processMention(r.Context(), m, cmd)
+	writeWebhookOK(w, "accepted")
+}
+
+// handleGitHubWebhook is the public GitHub webhook endpoint (POST /webhooks/github;
+// F13). Same shape as the gitea receiver — the payload is byte-identical — but the
+// delivery is authenticated by X-Hub-Signature-256 and the event header is
+// X-GitHub-Event. Registered only when WEBHOOK_SECRET is configured.
+func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
+	body, ok := readWebhookBody(w, r)
+	if !ok {
+		return
+	}
+	if !validGitHubSignature(s.cfg.WebhookSecret, body, r.Header.Get("X-Hub-Signature-256")) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid webhook signature")
+		return
+	}
+	if r.Header.Get("X-GitHub-Event") != "issue_comment" {
+		writeWebhookOK(w, "ignored: not an issue_comment event")
+		return
+	}
+	m, cmd, status := parseIssueCommentMention(domain.ProviderGitHub, body)
+	if m == nil {
+		writeWebhookOK(w, status)
+		return
+	}
+	s.processMention(r.Context(), m, cmd)
+	writeWebhookOK(w, "accepted")
+}
+
+// handleGitLabWebhook is the public GitLab webhook endpoint (POST /webhooks/gitlab;
+// F13). GitLab does not sign the body — it echoes the shared secret in the
+// X-Gitlab-Token header (constant-time compared). The trigger event is the "Note
+// Hook" whose noteable_type is MergeRequest. Registered only when WEBHOOK_SECRET
+// is configured.
+func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
+	body, ok := readWebhookBody(w, r)
+	if !ok {
+		return
+	}
+	if !validGitLabToken(s.cfg.WebhookSecret, r.Header.Get("X-Gitlab-Token")) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid webhook token")
+		return
+	}
+	if r.Header.Get("X-Gitlab-Event") != "Note Hook" {
+		writeWebhookOK(w, "ignored: not a Note Hook event")
+		return
+	}
+	var p gitlabNotePayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		writeWebhookOK(w, "ignored: unparseable payload")
 		return
 	}
-	if p.Action != "created" || !p.isPullRequest() {
-		writeWebhookOK(w, "ignored: not a new pull-request comment")
+	// Only comments on a merge request trigger; an Issue/Commit/Snippet note or a
+	// missing iid is a no-op.
+	if !strings.EqualFold(p.ObjectAttributes.NoteableType, "MergeRequest") || p.MergeRequest.IID == 0 {
+		writeWebhookOK(w, "ignored: not a merge-request comment")
 		return
 	}
-	cmd := parseMentionCommand(p.Comment.Body)
+	cmd := parseMentionCommand(p.ObjectAttributes.Note)
 	if cmd.kind == cmdNone {
 		writeWebhookOK(w, "ignored: no @jcode command")
 		return
 	}
-
-	// A real @jcode command: map identity, resolve the service, create the run.
-	// All internal failures reply on the PR (best-effort) and still 200.
-	s.processMention(r.Context(), &p, cmd)
+	m := &webhookMention{
+		provider:     domain.ProviderGitLab,
+		repoFullName: p.Project.PathWithNamespace,
+		prNumber:     p.MergeRequest.IID,
+		rawCommentID: strconv.FormatInt(p.ObjectAttributes.ID, 10),
+		commentURL:   p.ObjectAttributes.URL,
+		commenterUID: strconv.FormatInt(p.User.ID, 10),
+		body:         p.ObjectAttributes.Note,
+	}
+	s.processMention(r.Context(), m, cmd)
 	writeWebhookOK(w, "accepted")
 }
 
-// processMention handles a validated @jcode PR comment: de-dup, identity mapping
-// (hard gate — no service-principal fallback), service resolution + RBAC, PR
-// detail lookup, run creation, and the receipt reply. Every failure path replies
-// a one-line reason on the PR via the gitea PAT and returns; nothing here is
-// fatal to the HTTP handler.
-func (s *Server) processMention(ctx context.Context, p *giteaIssueCommentPayload, cmd mentionCommand) {
-	owner, repo, ok := provider.SplitRepo(p.Repository.FullName)
+// parseIssueCommentMention decodes a GitHub-style issue_comment body (shared by
+// gitea + github) into a webhookMention + parsed command. It returns m==nil with
+// a human-readable status when the event is a no-op (unparseable / not a new PR
+// comment / no @jcode command) so the caller can 200 with that status.
+func parseIssueCommentMention(prov domain.GitProvider, body []byte) (*webhookMention, mentionCommand, string) {
+	var p issueCommentPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return nil, mentionCommand{}, "ignored: unparseable payload"
+	}
+	if p.Action != "created" || !p.isPullRequest() {
+		return nil, mentionCommand{}, "ignored: not a new pull-request comment"
+	}
+	cmd := parseMentionCommand(p.Comment.Body)
+	if cmd.kind == cmdNone {
+		return nil, mentionCommand{}, "ignored: no @jcode command"
+	}
+	m := &webhookMention{
+		provider:     prov,
+		repoFullName: p.Repository.FullName,
+		prNumber:     p.Issue.Number,
+		rawCommentID: strconv.FormatInt(p.Comment.ID, 10),
+		commentURL:   p.Comment.HTMLURL,
+		commenterUID: strconv.FormatInt(p.Comment.User.ID, 10),
+		body:         p.Comment.Body,
+	}
+	return m, cmd, ""
+}
+
+// processMention handles a validated @jcode PR/MR comment for ANY provider: it
+// resolves a reply client, de-dups, maps identity (hard gate — no service-
+// principal fallback), resolves the service + RBAC, applies the host/model gates,
+// reads the PR detail, and creates the run + posts the receipt. Every failure
+// path either replies a one-line reason on the PR/MR (fail-visible) or logs and
+// ignores (when it cannot even reply); nothing here is fatal to the HTTP handler.
+func (s *Server) processMention(ctx context.Context, m *webhookMention, cmd mentionCommand) {
+	owner, repo, ok := provider.SplitRepo(m.repoFullName)
 	if !ok {
-		s.log.Warn("webhook: unparseable repository full_name", "repo", p.Repository.FullName)
+		s.log.Warn("webhook: unparseable repository full_name", "provider", m.provider, "repo", m.repoFullName)
 		return
 	}
 
-	// A PAT-authenticated gitea client for PR detail + replies. The webhook uses
-	// the PAT only for reads/receipts; the branch push (below) uses the triggering
-	// user's OAuth token per §3. No PAT => we cannot even reply, so log + bail.
-	patClient, ok := s.webhookGiteaClient(ctx)
+	// A client authenticated to READ the PR and POST replies. For gitea this is the
+	// global PAT (repo-independent, so it can even reply "no project"); for
+	// github/gitlab there is no cluster PAT, so it is the bot token of an
+	// integration bound to a service on this repo. No client => we cannot even
+	// reply: log + ignore (an honest degrade, never a silent fake success).
+	client, ok := s.webhookReplyClient(ctx, m.provider, m.repoFullName)
 	if !ok {
-		s.log.Warn("webhook: no gitea PAT available; cannot process mention", "repo", p.Repository.FullName)
+		s.log.Warn("webhook: no credential to reply/read; cannot process mention", "provider", m.provider, "repo", m.repoFullName)
 		return
 	}
 	reply := func(msg string) {
-		if err := patClient.CreateIssueComment(ctx, owner, repo, p.Issue.Number, msg); err != nil {
-			s.log.Warn("webhook: PR reply failed", "repo", p.Repository.FullName, "err", err)
+		if err := client.CreateIssueComment(ctx, owner, repo, m.prNumber, msg); err != nil {
+			s.log.Warn("webhook: PR reply failed", "provider", m.provider, "repo", m.repoFullName, "err", err)
 		}
 	}
 
 	// De-dup: a redelivery of the same comment is a no-op.
-	commentID := strconv.FormatInt(p.Comment.ID, 10)
+	commentID := originCommentKey(m.provider, m.rawCommentID)
 	if _, err := s.st.GetRunByOriginCommentID(ctx, commentID); err == nil {
 		s.log.Info("webhook: duplicate delivery ignored", "comment", commentID)
 		return
 	}
 
-	// Identity mapping is a HARD GATE (blueprint §8): the commenter's gitea uid
+	// Identity mapping is a HARD GATE (blueprint §8): the commenter's provider uid
 	// must resolve to a jcloud user. No service-principal fallback on this path.
-	uid := strconv.FormatInt(p.Comment.User.ID, 10)
-	id, err := s.st.GetIdentity(ctx, domain.ProviderGitea, uid)
+	id, err := s.st.GetIdentity(ctx, m.provider, m.commenterUID)
 	if err != nil {
-		reply("jcode couldn't find a jcloud account linked to this Gitea user. Sign in to the console with Gitea first.")
+		name := providerDisplayName(m.provider)
+		reply("jcode couldn't find a jcloud account linked to this " + name + " user. Sign in to the console with " + name + " first.")
 		return
 	}
 	user, err := s.st.GetUser(ctx, id.UserID)
@@ -209,7 +404,7 @@ func (s *Server) processMention(ctx context.Context, p *giteaIssueCommentPayload
 	}
 
 	// Resolve the service: the repo's services where the commenter may run (§8).
-	svc, ok := s.resolveWebhookService(ctx, user, p.Repository.FullName)
+	svc, ok := s.resolveWebhookService(ctx, m.provider, user, m.repoFullName)
 	if !ok {
 		reply("jcode couldn't find a jcloud project you can run on for this repository.")
 		return
@@ -220,7 +415,7 @@ func (s *Server) processMention(ctx context.Context, p *giteaIssueCommentPayload
 	// Reply visibly on the PR (fail-visible) rather than dispatching a run that
 	// quietly ignores policy; a load error is reported as temporary.
 	if allowed, host, herr := s.integrationHostStillAllowed(ctx, svc); herr != nil {
-		s.log.Error("webhook: check integration host policy", "repo", p.Repository.FullName, "err", herr)
+		s.log.Error("webhook: check integration host policy", "repo", m.repoFullName, "err", herr)
 		reply("jcode hit a temporary internal problem — please try again shortly.")
 		return
 	} else if !allowed {
@@ -238,7 +433,7 @@ func (s *Server) processMention(ctx context.Context, p *giteaIssueCommentPayload
 	// the M7 reply behaviour).
 	sel, outcome, rerr := s.models.SelectModel(ctx, svc.ProjectID, deref(svc.DefaultModelID), "")
 	if rerr != nil {
-		s.log.Error("webhook: resolve model config", "repo", p.Repository.FullName, "err", rerr)
+		s.log.Error("webhook: resolve model config", "repo", m.repoFullName, "err", rerr)
 		reply("jcode hit a temporary internal problem — please try again shortly.")
 		return
 	}
@@ -256,14 +451,14 @@ func (s *Server) processMention(ctx context.Context, p *giteaIssueCommentPayload
 	}
 
 	// PR detail (head/base branch + html_url) — the payload's issue omits them.
-	pr, err := patClient.PRByNumber(ctx, owner, repo, p.Issue.Number)
+	pr, err := client.PRByNumber(ctx, owner, repo, m.prNumber)
 	if err != nil || pr == nil || pr.HeadRef == "" {
-		s.log.Warn("webhook: PR detail lookup failed", "repo", p.Repository.FullName, "pr", p.Issue.Number, "err", err)
-		reply("jcode couldn't read this pull request from Gitea.")
+		s.log.Warn("webhook: PR detail lookup failed", "provider", m.provider, "repo", m.repoFullName, "pr", m.prNumber, "err", err)
+		reply("jcode couldn't read this pull request from " + providerDisplayName(m.provider) + ".")
 		return
 	}
 
-	run := newWebhookRun(svc, user.ID, cmd, pr, p, commentID)
+	run := newWebhookRun(svc, user.ID, cmd, pr, m, commentID)
 	run.ModelName = sel.ModelName
 	if sel.ModelID != "" {
 		run.ModelID = &sel.ModelID
@@ -276,35 +471,62 @@ func (s *Server) processMention(ctx context.Context, p *giteaIssueCommentPayload
 	}
 	s.emitStatus(ctx, run)
 	reply(fmt.Sprintf("🚀 jcode run started — %s/runs/%s", strings.TrimRight(s.cfg.ConsoleURL, "/"), run.ID))
-	s.log.Info("webhook: created run", "run", run.ID, "kind", run.Kind, "service", svc.ID, "user", user.ID)
+	s.log.Info("webhook: created run", "run", run.ID, "kind", run.Kind, "provider", m.provider, "service", svc.ID, "user", user.ID)
 }
 
-// webhookGiteaClient builds a gitea PR client authenticated with the fallback
-// PAT (creds.Resolve with no user → the global GITEA_TOKEN). Used for the
-// PR-detail read and the receipt reply only.
-func (s *Server) webhookGiteaClient(ctx context.Context) (provider.Provider, bool) {
+// webhookReplyClient builds a Provider able to READ the PR/MR and POST replies on
+// repo `fullName` for provider `prov`, plus whether one is available.
+//
+//   - gitea: the global admin PAT (creds.Resolve with no user → GITEA_TOKEN),
+//     repo-independent so it can reply even before a service is resolved (M7).
+//   - github/gitlab: there is no cluster-wide PAT, so the bot credential is taken
+//     from an integration bound to a service on this repo (the first service that
+//     yields a resolvable credential). No service / no integration credential ⇒
+//     ok=false, and the caller log+ignores (it cannot even reply). This mirrors
+//     the run path (review.go / prState), which also builds GH/GL clients via the
+//     Factory against the public host.
+func (s *Server) webhookReplyClient(ctx context.Context, prov domain.GitProvider, fullName string) (provider.Provider, bool) {
 	if s.factory == nil || s.creds == nil {
 		return nil, false
 	}
-	tok, err := s.creds.Resolve(ctx, domain.ProviderGitea, nil)
+	if prov == domain.ProviderGitea {
+		tok, err := s.creds.Resolve(ctx, domain.ProviderGitea, nil)
+		if err != nil {
+			return nil, false
+		}
+		p, err := s.factory.PRClient(domain.ProviderGitea, tok.Value, tok.Scheme)
+		if err != nil {
+			return nil, false
+		}
+		return p, true
+	}
+	svcs, err := s.st.ListServicesByRepo(ctx, prov, fullName)
 	if err != nil {
+		s.log.Warn("webhook: list services by repo (reply client)", "provider", prov, "repo", fullName, "err", err)
 		return nil, false
 	}
-	prov, err := s.factory.PRClient(domain.ProviderGitea, tok.Value, tok.Scheme)
-	if err != nil {
-		return nil, false
+	for i := range svcs {
+		tok, err := s.creds.ResolveForService(ctx, &svcs[i], nil)
+		if err != nil {
+			continue
+		}
+		p, err := s.factory.PRClient(prov, tok.Value, tok.Scheme)
+		if err != nil {
+			continue
+		}
+		return p, true
 	}
-	return prov, true
+	return nil, false
 }
 
-// resolveWebhookService returns the first gitea service for repo full_name that
-// the user may run on: a cluster-admin runs on any match; otherwise the user
-// must be member+ on the service's project (viewer is not enough — running is a
-// mutation). Returns ok=false when none match (blueprint §8).
-func (s *Server) resolveWebhookService(ctx context.Context, user *domain.User, fullName string) (*domain.Service, bool) {
-	svcs, err := s.st.ListServicesByRepo(ctx, domain.ProviderGitea, fullName)
+// resolveWebhookService returns the first service (for provider prov) tracking
+// repo full_name that the user may run on: a cluster-admin runs on any match;
+// otherwise the user must be member+ on the service's project (viewer is not
+// enough — running is a mutation). Returns ok=false when none match (blueprint §8).
+func (s *Server) resolveWebhookService(ctx context.Context, prov domain.GitProvider, user *domain.User, fullName string) (*domain.Service, bool) {
+	svcs, err := s.st.ListServicesByRepo(ctx, prov, fullName)
 	if err != nil {
-		s.log.Warn("webhook: list services by repo", "repo", fullName, "err", err)
+		s.log.Warn("webhook: list services by repo", "provider", prov, "repo", fullName, "err", err)
 		return nil, false
 	}
 	for i := range svcs {
@@ -325,7 +547,7 @@ func (s *Server) resolveWebhookService(ctx context.Context, user *domain.User, f
 // run whose baseline IS the PR head branch and which pushes back to it (§8). Both
 // pre-fill the existing PR (pr_url/pr_number) and the head/base refs, and carry
 // the webhook origin + triggering comment.
-func newWebhookRun(svc *domain.Service, userID string, cmd mentionCommand, pr *provider.PR, p *giteaIssueCommentPayload, commentID string) *domain.Run {
+func newWebhookRun(svc *domain.Service, userID string, cmd mentionCommand, pr *provider.PR, m *webhookMention, commentID string) *domain.Run {
 	uid := userID
 	run := &domain.Run{
 		ID:                domain.NewID(),
@@ -338,9 +560,9 @@ func newWebhookRun(svc *domain.Service, userID string, cmd mentionCommand, pr *p
 		CreatedAt:         time.Now().UTC(),
 		Origin:            domain.RunOriginWebhook,
 		OriginCommentID:   commentID,
-		OriginCommentURL:  p.Comment.HTMLURL,
+		OriginCommentURL:  m.commentURL,
 		PRURL:             pr.URL,
-		PRNumber:          p.Issue.Number,
+		PRNumber:          m.prNumber,
 		PRHeadBranch:      pr.HeadRef,
 		PRBaseBranch:      pr.BaseRef,
 	}
@@ -354,8 +576,8 @@ func newWebhookRun(svc *domain.Service, userID string, cmd mentionCommand, pr *p
 	return run
 }
 
-// writeWebhookOK returns a 200 with a short machine-readable status so Gitea's
-// delivery log shows why an event was accepted / ignored.
+// writeWebhookOK returns a 200 with a short machine-readable status so the
+// provider's delivery log shows why an event was accepted / ignored.
 func writeWebhookOK(w http.ResponseWriter, status string) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": status})
 }

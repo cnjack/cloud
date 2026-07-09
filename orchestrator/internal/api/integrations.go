@@ -45,25 +45,12 @@ func integrationViewOf(in *domain.Integration) integrationView {
 }
 
 // gitHostAllowed reports whether host is permitted by the cluster git-host
-// allowlist (D20). An empty allowlist imposes NO restriction (suitable only for
-// closed deployments); otherwise the host is compared in the canonical
-// "hostname[:port]" form (domain.NormalizeGitHost) — the comparison is
-// PORT-SENSITIVE (SSRF review C1②), so an entry for gitea.svc:3000 does not
-// open gitea.svc:9999.
+// allowlist (D20). Thin wrapper over the SHARED domain.GitHostAllowed — the
+// schedule poller's host gate delegates to the same function, so the two
+// security-sensitive checks cannot drift (semantics live there: empty allowlist
+// = no restriction; canonical, PORT-SENSITIVE comparison — SSRF review C1②).
 func (s *Server) gitHostAllowed(host string) bool {
-	if len(s.cfg.AllowedGitHosts) == 0 {
-		return true
-	}
-	h := domain.NormalizeGitHost(host)
-	if h == "" {
-		return false
-	}
-	for _, a := range s.cfg.AllowedGitHosts {
-		if domain.NormalizeGitHost(a) == h {
-			return true
-		}
-	}
-	return false
+	return domain.GitHostAllowed(s.cfg.AllowedGitHosts, host)
 }
 
 // integrationHostMatchesWiring enforces the CURRENT deployment constraint (F5

@@ -139,6 +139,12 @@ type Config struct {
 	// poller scans enabled kanban_links for cards in their trigger column. <=0
 	// with a configured base/token disables the poller (writeback still runs).
 	JtypePollInterval time.Duration
+
+	// --- schedule triggers (F11 / D24) ---------------------------------------
+	// SchedulePollInterval is SCHEDULE_POLL_INTERVAL (default 30s): how often the
+	// schedule poller scans enabled schedules for a due cron window. <=0 disables
+	// the poller entirely (no scheduled runs dispatch).
+	SchedulePollInterval time.Duration
 }
 
 // OAuthProviderConfig is one configured OAuth provider (multitenant blueprint
@@ -201,6 +207,7 @@ func Load() (*Config, error) {
 		JtypeBaseURL:           os.Getenv("JTYPE_BASE_URL"),
 		JtypeToken:             os.Getenv("JTYPE_TOKEN"),
 		JtypePollInterval:      getdur("JTYPE_POLL_INTERVAL", 15*time.Second),
+		SchedulePollInterval:   getdur("SCHEDULE_POLL_INTERVAL", 30*time.Second),
 	}
 
 	var missing []string

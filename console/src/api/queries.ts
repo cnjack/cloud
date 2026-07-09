@@ -15,6 +15,7 @@ import type {
   CreateModelInput,
   CreateProjectInput,
   CreateRunInput,
+  CreateScheduleInput,
   CreateServiceInput,
   Integration,
   Member,
@@ -24,6 +25,7 @@ import type {
   UpdateIntegrationInput,
   UpdateModelInput,
   UpdateProjectInput,
+  UpdateScheduleInput,
   UpdateServiceInput,
 } from './types';
 import { isTerminal } from './types';
@@ -41,6 +43,7 @@ export const qk = {
   projectModels: (projectId: string) => ['project-models', projectId] as const,
   kanbanLinks: ['kanban-links'] as const,
   projectKanbanLinks: (projectId: string) => ['project-kanban-links', projectId] as const,
+  serviceSchedules: (serviceId: string) => ['service-schedules', serviceId] as const,
   integrations: (projectId: string) => ['integrations', projectId] as const,
   services: (projectId: string) => ['services', projectId] as const,
   members: (projectId: string) => ['members', projectId] as const,
@@ -464,6 +467,46 @@ export function useDeleteProjectKanbanLink(projectId: string) {
   return useMutation({
     mutationFn: (linkId: string) => api.deleteProjectKanbanLink(projectId, linkId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) }),
+  });
+}
+
+/* ---- schedules (F11 / D24) ----------------------------------------------- */
+
+/** A service's cron triggers (member+ read). */
+export function useServiceSchedules(serviceId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.serviceSchedules(serviceId),
+    queryFn: () => api.listServiceSchedules(serviceId),
+    enabled: enabled && !!serviceId,
+  });
+}
+
+export function useCreateServiceSchedule(serviceId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateScheduleInput) => api.createServiceSchedule(serviceId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceSchedules(serviceId) }),
+  });
+}
+
+export function useUpdateSchedule(serviceId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ scheduleId, input }: { scheduleId: string; input: UpdateScheduleInput }) =>
+      api.updateSchedule(scheduleId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceSchedules(serviceId) }),
+  });
+}
+
+export function useDeleteSchedule(serviceId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (scheduleId: string) => api.deleteSchedule(scheduleId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceSchedules(serviceId) }),
   });
 }
 

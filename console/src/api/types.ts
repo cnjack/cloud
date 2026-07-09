@@ -282,8 +282,13 @@ export interface RunMessage {
   delivered_at?: string | null;
 }
 
-/** How a run was triggered (blueprint §8). Absent is treated as `api`. */
-export type RunOrigin = 'api' | 'webhook';
+/**
+ * How a run was triggered (blueprint §8). Absent is treated as `api`.
+ *   'webhook'  — a Gitea PR comment `@jcode …` (carries origin_comment_url).
+ *   'kanban'   — a jtype card dragged into a link's trigger column (Feature E).
+ *   'schedule' — a service-level cron trigger came due (F11 / D24).
+ */
+export type RunOrigin = 'api' | 'webhook' | 'kanban' | 'schedule';
 
 /* ---- PR view (GET /runs/{id}/pr; blueprint §4/§5) ------------------------ */
 
@@ -529,6 +534,49 @@ export interface CreateKanbanLinkInput {
   trigger_column: string;
   done_column?: string;
   token?: string;
+}
+
+/* ---- schedules (F11 / D24) ------------------------------------------------ */
+
+/**
+ * A service-level cron trigger. On each matching tick the schedule poller
+ * dispatches a headless agent run (origin=schedule) against the service, using
+ * the service's default model. Mirrors the orchestrator domain.Schedule.
+ *
+ * `cron_expr` is a standard 5-field expression (minute hour dom month dow).
+ * `last_fired_at` is when the poller last claimed a window (null = never).
+ * `last_error` (fail-visible, P1) is why the most recent due window was ABANDONED
+ * without dispatching — no/ambiguous model, or a git host no longer allowed. The
+ * UI surfaces it as a loud badge; it clears on the next successful dispatch.
+ */
+export interface Schedule {
+  id: string;
+  service_id: string;
+  cron_expr: string;
+  prompt: string;
+  enabled: boolean;
+  last_fired_at?: string | null;
+  last_error?: string;
+  created_by?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** POST /api/v1/services/{id}/schedules body (owner). enabled defaults to true. */
+export interface CreateScheduleInput {
+  cron_expr: string;
+  prompt: string;
+  enabled?: boolean;
+}
+
+/**
+ * PATCH /api/v1/schedules/{id} body (owner). Every field optional — omitted =
+ * unchanged; a supplied cron_expr is re-validated server-side.
+ */
+export interface UpdateScheduleInput {
+  cron_expr?: string;
+  prompt?: string;
+  enabled?: boolean;
 }
 
 /* ---- integrations (D19 / F5) ---------------------------------------------- */

@@ -18,6 +18,7 @@ import type {
   CreateKanbanLinkInput,
   CreateProjectInput,
   CreateRunInput,
+  CreateScheduleInput,
   CreateServiceInput,
   FailureReason,
   CreateModelInput,
@@ -39,11 +40,13 @@ import type {
   RunMessage,
   RunPermission,
   RunStatus,
+  Schedule,
   Service,
   SystemInfo,
   UpdateIntegrationInput,
   UpdateModelInput,
   UpdateProjectInput,
+  UpdateScheduleInput,
   UpdateServiceInput,
   UserSearchResult,
 } from './types';
@@ -69,6 +72,36 @@ function badRequest(message: string): ApiError {
   return new ApiError(400, message, {
     error: { code: 'bad_request', message },
   });
+}
+
+/**
+ * cronError mirrors the orchestrator's schedule cron gate (F11 / D24) closely
+ * enough for demo/e2e: it throws a typed `invalid_cron` / `cron_too_frequent`
+ * ApiError so the UI exercises the fail-visible path. It is a LIGHTWEIGHT check
+ * (5 fields, and a crude minute-cadence guard for the common every-minute and
+ * step patterns) — the authoritative validation is the Go robfig/cron parser.
+ */
+function cronError(expr: string): void {
+  const fields = expr.trim().split(/\s+/);
+  const invalid = (message: string): ApiError =>
+    new ApiError(400, message, { error: { code: 'invalid_cron', message } });
+  if (fields.length !== 5) {
+    throw invalid('cron_expr must be a valid 5-field cron expression');
+  }
+  const minute = fields[0] ?? '';
+  // Reject expressions that would fire more than once every 5 minutes (the
+  // server's min-interval guard). Only the obvious minute-field cases are caught
+  // here; the real parser is exhaustive.
+  const stepMatch = minute.match(/^\*\/(\d+)$/);
+  const tooFrequent =
+    minute === '*' ||
+    (stepMatch && Number(stepMatch[1] ?? '0') < 5) ||
+    /^(\d+,)+\d+$/.test(minute); // an explicit list like "0,1" can be sub-5-minutes
+  if (tooFrequent) {
+    const message =
+      'cron fires too frequently: the minimum interval between scheduled runs is 5 minutes';
+    throw new ApiError(400, message, { error: { code: 'cron_too_frequent', message } });
+  }
 }
 
 interface StoredRun extends Run {
@@ -161,6 +194,8 @@ export function createMockClient(): ApiClient {
   const members = new Map<string, Member[]>();
   // Feature E: kanban links (board→service bindings), keyed by link id.
   const kanbanLinks = new Map<string, KanbanLink>();
+  // F11 / D24: schedules (service cron triggers), keyed by schedule id.
+  const schedules = new Map<string, Schedule>();
   // D19 / F5: project integrations, keyed by project id.
   const integrations = new Map<string, Integration[]>();
 
@@ -1274,6 +1309,65 @@ export function createMockClient(): ApiClient {
       const l = kanbanLinks.get(linkId);
       if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
       kanbanLinks.delete(linkId);
+      return delay(undefined);
+    },
+
+    /* ---- schedules (F11 / D24) -------------------------------------------- */
+    async listServiceSchedules(serviceId: string): Promise<Schedule[]> {
+      return delay(
+        [...schedules.values()]
+          .filter((sc) => sc.service_id === serviceId)
+          .sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
+      );
+    },
+    async createServiceSchedule(
+      serviceId: string,
+      input: CreateScheduleInput,
+    ): Promise<Schedule> {
+      // The service must exist somewhere in the demo store.
+      let found = false;
+      for (const list of services.values()) if (list.some((s) => s.id === serviceId)) found = true;
+      if (!found) throw new ApiError(404, 'service not found');
+      const cron = input.cron_expr?.trim();
+      const prompt = input.prompt?.trim();
+      if (!cron || !prompt) throw badRequest('cron_expr and prompt are required');
+      cronError(cron); // throws invalid_cron / cron_too_frequent, mirroring the server
+      const now = new Date().toISOString();
+      const sc: Schedule = {
+        id: 'sc-' + Math.random().toString(36).slice(2, 10),
+        service_id: serviceId,
+        cron_expr: cron,
+        prompt,
+        enabled: input.enabled ?? true,
+        last_fired_at: null,
+        last_error: '',
+        created_at: now,
+        updated_at: now,
+      };
+      schedules.set(sc.id, sc);
+      return delay(sc);
+    },
+    async updateSchedule(scheduleId: string, input: UpdateScheduleInput): Promise<Schedule> {
+      const sc = schedules.get(scheduleId);
+      if (!sc) throw new ApiError(404, 'schedule not found');
+      if (input.cron_expr !== undefined) {
+        const cron = input.cron_expr.trim();
+        if (!cron) throw badRequest('cron_expr cannot be empty');
+        cronError(cron);
+        sc.cron_expr = cron;
+      }
+      if (input.prompt !== undefined) {
+        const prompt = input.prompt.trim();
+        if (!prompt) throw badRequest('prompt cannot be empty');
+        sc.prompt = prompt;
+      }
+      if (input.enabled !== undefined) sc.enabled = input.enabled;
+      sc.updated_at = new Date().toISOString();
+      schedules.set(scheduleId, sc);
+      return delay({ ...sc });
+    },
+    async deleteSchedule(scheduleId: string): Promise<void> {
+      if (!schedules.delete(scheduleId)) throw new ApiError(404, 'schedule not found');
       return delay(undefined);
     },
 

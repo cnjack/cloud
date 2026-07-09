@@ -21,6 +21,7 @@ import (
 	"github.com/cnjack/jcloud/internal/kanban"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/reconciler"
+	"github.com/cnjack/jcloud/internal/schedule"
 	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
 	"github.com/cnjack/jcloud/internal/version"
@@ -157,6 +158,21 @@ func run(log *slog.Logger) error {
 		} else {
 			log.Info("draft-PR / review stack enabled", "gitea_url", cfg.GiteaURL)
 		}
+
+		// F11 / D24 — schedule poller. Dispatches origin=schedule runs off due cron
+		// windows against a service's default model (the D21/F4 chain). It shares the
+		// API's model resolver (so a model-config change is immediately visible) and
+		// gates each dispatch on the same D20 host allowlist the API enforces
+		// (fail-visible: a blocked window records last_error, never a silent skip).
+		if cfg.SchedulePollInterval > 0 {
+			sp := schedule.NewPoller(st, srv.Models(),
+				schedule.NewHostGate(st, cfg.AllowedGitHosts), log, cfg.SchedulePollInterval)
+			go sp.Run(ctx)
+			log.Info("schedule poller enabled", "interval", cfg.SchedulePollInterval)
+		} else {
+			log.Info("schedule poller disabled (SCHEDULE_POLL_INTERVAL<=0)")
+		}
+
 		go rec.Run(ctx)
 	}
 

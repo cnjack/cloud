@@ -15,6 +15,7 @@ import type {
   CreateIntegrationInput,
   CreateModelInput,
   CreateRunInput,
+  CreateScheduleInput,
   CreateServiceInput,
   EventsEnvelope,
   Integration,
@@ -35,6 +36,7 @@ import type {
   RunMessage,
   RunPermission,
   RunsEnvelope,
+  Schedule,
   Service,
   ServicesEnvelope,
   StreamFrame,
@@ -42,6 +44,7 @@ import type {
   UpdateIntegrationInput,
   UpdateModelInput,
   UpdateProjectInput,
+  UpdateScheduleInput,
   UpdateServiceInput,
   UserSearchResult,
   UsersEnvelope,
@@ -184,6 +187,16 @@ export interface ApiClient {
   updateProjectKanbanLinkToken(projectId: string, linkId: string, token: string): Promise<KanbanLink>;
   /** DELETE /api/v1/projects/{id}/kanban/links/{linkId} — remove a link (owner). */
   deleteProjectKanbanLink(projectId: string, linkId: string): Promise<void>;
+
+  /* ---- schedules (F11 / D24) -------------------------------------------- */
+  /** GET /api/v1/services/{id}/schedules — a service's cron triggers (member+). */
+  listServiceSchedules(serviceId: string): Promise<Schedule[]>;
+  /** POST /api/v1/services/{id}/schedules — create a cron trigger (owner). */
+  createServiceSchedule(serviceId: string, input: CreateScheduleInput): Promise<Schedule>;
+  /** PATCH /api/v1/schedules/{id} — edit cron_expr/prompt/enabled (owner). */
+  updateSchedule(scheduleId: string, input: UpdateScheduleInput): Promise<Schedule>;
+  /** DELETE /api/v1/schedules/{id} — remove a cron trigger (owner). */
+  deleteSchedule(scheduleId: string): Promise<void>;
 
   /* ---- integrations (D19 / F5) ------------------------------------------ */
   /** GET /api/v1/projects/{id}/integrations — the project's integrations (member+). */
@@ -511,6 +524,27 @@ export function createHttpClient(
         `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(linkId)}`,
         { method: 'DELETE' },
       ),
+
+    // Schedules (F11 / D24). Listing is service-scoped (member+); management is
+    // owner-only and keyed off the bare schedule id.
+    listServiceSchedules: async (serviceId) =>
+      (
+        await req<{ schedules: Schedule[] }>(
+          `/services/${encodeURIComponent(serviceId)}/schedules`,
+        )
+      ).schedules ?? [],
+    createServiceSchedule: (serviceId, input) =>
+      req<Schedule>(`/services/${encodeURIComponent(serviceId)}/schedules`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    updateSchedule: (scheduleId, input) =>
+      req<Schedule>(`/schedules/${encodeURIComponent(scheduleId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    deleteSchedule: (scheduleId) =>
+      req<void>(`/schedules/${encodeURIComponent(scheduleId)}`, { method: 'DELETE' }),
 
     // Integrations (D19 / F5).
     listIntegrations: async (projectId) =>

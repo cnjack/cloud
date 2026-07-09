@@ -33,6 +33,7 @@ type MemStore struct {
 	integrations map[string]domain.Integration   // keyed by integration id (D19 / F5)
 	kanbanLinks  map[string]domain.KanbanLink    // keyed by link id
 	kanbanClaims map[string]domain.KanbanClaim   // keyed by linkID+"|"+documentID
+	schedules    map[string]domain.Schedule      // keyed by schedule id (F11 / D24)
 	runMessages  map[string][]domain.RunMessage  // session follow-up queue, keyed by runID (D22)
 	permissions  map[string]domain.RunPermission // permission requests, keyed by request_id (F8b)
 }
@@ -55,6 +56,7 @@ func NewMemStore() *MemStore {
 		integrations: map[string]domain.Integration{},
 		kanbanLinks:  map[string]domain.KanbanLink{},
 		kanbanClaims: map[string]domain.KanbanClaim{},
+		schedules:    map[string]domain.Schedule{},
 		runMessages:  map[string][]domain.RunMessage{},
 		permissions:  map[string]domain.RunPermission{},
 	}
@@ -1582,6 +1584,132 @@ func (m *MemStore) MarkKanbanWriteback(_ context.Context, linkID, documentID str
 	c.WritebackAt = &t
 	m.kanbanClaims[key] = c
 	return true, nil
+}
+
+// --- Schedules (F11 / D24) --------------------------------------------------
+
+func (m *MemStore) CreateSchedule(_ context.Context, sc *domain.Schedule) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.schedules[sc.ID] = *sc
+	return nil
+}
+
+func (m *MemStore) GetSchedule(_ context.Context, id string) (*domain.Schedule, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sc, ok := m.schedules[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := sc
+	return &cp, nil
+}
+
+func (m *MemStore) ListSchedulesByService(_ context.Context, serviceID string) ([]domain.Schedule, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.Schedule, 0)
+	for _, sc := range m.schedules {
+		if sc.ServiceID == serviceID {
+			out = append(out, sc)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) ListEnabledSchedules(_ context.Context) ([]domain.Schedule, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Schedule
+	for _, sc := range m.schedules {
+		if sc.Enabled {
+			out = append(out, sc)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) UpdateSchedule(_ context.Context, sc *domain.Schedule, resetWindow bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.schedules[sc.ID]
+	if !ok {
+		return ErrNotFound
+	}
+	// Only the owner-editable fields change; last_error stays poller-owned.
+	// resetWindow (cron changed / re-enabled) moves last_fired_at to NOW so the
+	// next fire is computed from the edit instant — never a backfill of a
+	// boundary that predates the edit (C1; mirrors the pg CASE expression).
+	cur.CronExpr = sc.CronExpr
+	cur.Prompt = sc.Prompt
+	cur.Enabled = sc.Enabled
+	now := time.Now().UTC()
+	if resetWindow {
+		t := now
+		cur.LastFiredAt = &t
+	}
+	cur.UpdatedAt = now
+	m.schedules[sc.ID] = cur
+	sc.LastFiredAt = cur.LastFiredAt
+	sc.UpdatedAt = cur.UpdatedAt
+	return nil
+}
+
+func (m *MemStore) DeleteSchedule(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.schedules[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.schedules, id)
+	return nil
+}
+
+func (m *MemStore) AdvanceSchedule(_ context.Context, id string, prevFired *time.Time, newFired time.Time, lastErr string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sc, ok := m.schedules[id]
+	if !ok {
+		return false, ErrNotFound
+	}
+	// Conditional claim: the row's current last_fired_at must equal prevFired
+	// (both nil, or same instant) — the SQL `IS NOT DISTINCT FROM` semantics. A
+	// racing advance that already moved it loses here (won=false).
+	if !timePtrEqual(sc.LastFiredAt, prevFired) {
+		return false, nil
+	}
+	t := newFired
+	sc.LastFiredAt = &t
+	sc.LastError = lastErr
+	sc.UpdatedAt = time.Now().UTC()
+	m.schedules[id] = sc
+	return true, nil
+}
+
+func (m *MemStore) SetScheduleLastError(_ context.Context, id, lastErr string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sc, ok := m.schedules[id]
+	if !ok {
+		return ErrNotFound
+	}
+	sc.LastError = lastErr
+	sc.UpdatedAt = time.Now().UTC()
+	m.schedules[id] = sc
+	return nil
+}
+
+// timePtrEqual reports whether two *time.Time are both nil or point to the same
+// instant — the in-memory analogue of Postgres `IS NOT DISTINCT FROM` for the
+// conditional schedule advance.
+func timePtrEqual(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
 
 var _ Store = (*MemStore)(nil)

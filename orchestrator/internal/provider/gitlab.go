@@ -162,6 +162,34 @@ func (c *GitLabClient) ListRepos(ctx context.Context, query string, page, limit 
 	return repos, nil
 }
 
+// EnsureCommentWebhook idempotently registers the @mention MR-comment webhook on
+// a project (F13). It lists the project's hooks and creates one only when no hook
+// with the same target URL exists (GitLab returns the target under url; the token
+// is never read back, so the URL is the identity key — same convention as the
+// gitea/github clients). note_events=true delivers the "Note Hook" GitLab fires
+// for MR comments; the shared secret goes in `token`, which GitLab echoes back as
+// the X-Gitlab-Token header the receiver checks.
+func (c *GitLabClient) EnsureCommentWebhook(ctx context.Context, owner, repo, hookURL, secret string) error {
+	listURL := fmt.Sprintf("%s/projects/%s/hooks", c.apiBase, projectPath(owner, repo))
+	var hooks []struct {
+		URL string `json:"url"`
+	}
+	if err := doJSON(ctx, c.http, http.MethodGet, listURL, c.auth(), "application/json", nil, &hooks); err != nil {
+		return err
+	}
+	for _, h := range hooks {
+		if h.URL == hookURL {
+			return nil // already registered
+		}
+	}
+	body := map[string]any{
+		"url":         hookURL,
+		"note_events": true,
+		"token":       secret,
+	}
+	return doJSON(ctx, c.http, http.MethodPost, listURL, c.auth(), "application/json", body, nil)
+}
+
 // CurrentUser returns the token account's username (GET /user; D19 / F5).
 func (c *GitLabClient) CurrentUser(ctx context.Context) (string, error) {
 	u := fmt.Sprintf("%s/user", c.apiBase)

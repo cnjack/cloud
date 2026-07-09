@@ -202,11 +202,15 @@ func (s *Server) Handler() http.Handler {
 	// Health (unauthenticated).
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
-	// Gitea @mention webhook (M7 / blueprint §8). Public path, self-authenticated
-	// by HMAC signature. Registered ONLY when WEBHOOK_SECRET is configured — with
-	// no secret the route is absent (404) and the system runs normally.
+	// @mention webhooks (M7 / blueprint §8 · F13). Public paths, each self-
+	// authenticated by its provider's scheme (gitea/github HMAC-sign the body;
+	// gitlab echoes the shared token). Registered ONLY when WEBHOOK_SECRET is
+	// configured — with no secret the routes are absent (404) and the system runs
+	// normally.
 	if s.cfg.WebhookSecret != "" {
 		mux.HandleFunc("POST /webhooks/gitea", s.handleGiteaWebhook)
+		mux.HandleFunc("POST /webhooks/github", s.handleGitHubWebhook)
+		mux.HandleFunc("POST /webhooks/gitlab", s.handleGitLabWebhook)
 	}
 
 	// Auth endpoints (multitenant blueprint §2). Provider list + login start +
@@ -292,6 +296,15 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/services/{id}", s.authed(s.handleDeleteService))
 	mux.Handle("POST /api/v1/services/{id}/runs", s.authed(s.handleCreateServiceRun))
 	mux.Handle("GET /api/v1/services/{id}/runs", s.authed(s.handleListServiceRuns))
+
+	// Schedules (F11 / D24) — service-level cron triggers. Listing is member+;
+	// create/update/delete are owner-managed. The schedule poller dispatches
+	// origin=schedule runs off these; an invalid/too-frequent cron is a
+	// fail-visible 400 at write time.
+	mux.Handle("GET /api/v1/services/{id}/schedules", s.authed(s.handleListServiceSchedules))
+	mux.Handle("POST /api/v1/services/{id}/schedules", s.authed(s.handleCreateServiceSchedule))
+	mux.Handle("PATCH /api/v1/schedules/{sid}", s.authed(s.handleUpdateSchedule))
+	mux.Handle("DELETE /api/v1/schedules/{sid}", s.authed(s.handleDeleteSchedule))
 
 	// Run creation is service-scoped only (above); listing stays project-scoped.
 	mux.Handle("GET /api/v1/projects/{id}/runs", s.authed(s.handleListRuns))

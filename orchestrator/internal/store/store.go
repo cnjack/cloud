@@ -474,6 +474,39 @@ type Store interface {
 	// tick that stamped it so two ticks never double-post. First-writer-wins.
 	MarkKanbanWriteback(ctx context.Context, linkID, documentID string, at time.Time) (bool, error)
 
+	// --- Schedules (F11 / D24) ------------------------------------------------
+	// Schedule CRUD (owner-managed service-level cron triggers). CreateSchedule
+	// inserts a fresh row; GetSchedule / ListSchedulesByService serve the API;
+	// ListEnabledSchedules is the poller's scan set (enabled only).
+	CreateSchedule(ctx context.Context, sc *domain.Schedule) error
+	GetSchedule(ctx context.Context, id string) (*domain.Schedule, error)
+	ListSchedulesByService(ctx context.Context, serviceID string) ([]domain.Schedule, error)
+	ListEnabledSchedules(ctx context.Context) ([]domain.Schedule, error)
+	// UpdateSchedule persists an owner's edit to cron_expr / prompt / enabled
+	// (and bumps updated_at). resetWindow=true additionally resets last_fired_at
+	// to the CURRENT time, atomically with the edit — the API sets it when the
+	// cron expression CHANGED or the schedule was re-enabled (false→true), so the
+	// next fire is computed from the edit instant and a boundary that predates
+	// the edit is never backfilled (same "no backfill" philosophy as restart).
+	// last_error stays poller-owned and untouched either way. sc's
+	// LastFiredAt/UpdatedAt are refreshed from the committed row. ErrNotFound
+	// when the row is gone.
+	UpdateSchedule(ctx context.Context, sc *domain.Schedule, resetWindow bool) error
+	DeleteSchedule(ctx context.Context, id string) error
+	// AdvanceSchedule atomically CLAIMS a due window: it sets last_fired_at=newFired
+	// and last_error=lastErr (and updated_at=now) ONLY when the row's current
+	// last_fired_at IS NOT DISTINCT FROM prevFired. It returns won=true for the
+	// single instance that matched (the loser gets won=false and must NOT dispatch)
+	// — this conditional update is the poller's anti-double-dispatch guard. lastErr
+	// is "" on a successful dispatch (clearing any prior error) or the block reason
+	// when the window is abandoned by a gate.
+	AdvanceSchedule(ctx context.Context, id string, prevFired *time.Time, newFired time.Time, lastErr string) (won bool, err error)
+	// SetScheduleLastError records a fail-visible reason on a schedule without
+	// touching last_fired_at — used only for the rare post-claim dispatch failure
+	// (the window was already advanced). Best-effort; ErrNotFound when the row is
+	// gone (a concurrent delete), which the poller ignores.
+	SetScheduleLastError(ctx context.Context, id, lastErr string) error
+
 	// Lifecycle
 	Close()
 }

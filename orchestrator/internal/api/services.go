@@ -267,23 +267,29 @@ func (s *Server) bindServiceIntegration(ctx context.Context, projectID, integrat
 		"the repository '" + svc.RepoOwnerName + "' is not reachable with this integration's credential"
 }
 
-// ensureServiceWebhook registers the @jcode PR-comment webhook on a freshly
-// added gitea repository, when the deployment is configured for it (both
-// WEBHOOK_URL and WEBHOOK_SECRET set). It uses the fallback admin PAT — hook
-// management needs repo-admin rights the member's OAuth token may lack. Errors
-// are logged, never surfaced: webhook wiring is an enhancement, not a gate.
+// ensureServiceWebhook registers the @jcode PR/MR-comment webhook on a freshly
+// added provider repository (gitea/github/gitlab; F13), when the deployment is
+// configured for it (both WEBHOOK_URL and WEBHOOK_SECRET set). It uses the
+// service's integration bot token when bound (D19 / F5), else the admin PAT
+// fallback — hook management needs repo-admin rights the member's OAuth token may
+// lack. Errors are logged, never surfaced: webhook wiring is an enhancement, not
+// a gate.
 func (s *Server) ensureServiceWebhook(ctx context.Context, svc *domain.Service) {
 	if s.cfg.WebhookURL == "" || s.cfg.WebhookSecret == "" {
 		return
 	}
-	if svc.RepoKind != domain.RepoKindProvider || svc.Provider != domain.ProviderGitea {
-		return // only gitea has an inbound receiver today (M7)
+	if svc.RepoKind != domain.RepoKindProvider || !domain.ValidProvider(svc.Provider) {
+		return
 	}
 	if s.creds == nil || s.factory == nil {
 		return
 	}
 	owner, repo, ok := provider.SplitRepo(svc.RepoOwnerName)
 	if !ok {
+		return
+	}
+	hookURL := webhookURLForProvider(s.cfg.WebhookURL, svc.Provider)
+	if hookURL == "" {
 		return
 	}
 	// Use the service's integration bot token when bound (D19 / F5), else the admin
@@ -293,7 +299,7 @@ func (s *Server) ensureServiceWebhook(ctx context.Context, svc *domain.Service) 
 		s.log.Warn("service webhook: no credential; skipping registration", "service", svc.ID, "err", err)
 		return
 	}
-	client, err := s.factory.PRClient(domain.ProviderGitea, tok.Value, tok.Scheme)
+	client, err := s.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
 	if err != nil {
 		return
 	}
@@ -303,12 +309,33 @@ func (s *Server) ensureServiceWebhook(ctx context.Context, svc *domain.Service) 
 	if !ok {
 		return
 	}
-	if err := hooker.EnsureCommentWebhook(ctx, owner, repo, s.cfg.WebhookURL, s.cfg.WebhookSecret); err != nil {
+	if err := hooker.EnsureCommentWebhook(ctx, owner, repo, hookURL, s.cfg.WebhookSecret); err != nil {
 		s.log.Warn("service webhook: registration failed (service still usable)",
 			"service", svc.ID, "repo", svc.RepoOwnerName, "err", err)
 		return
 	}
-	s.log.Info("service webhook: @mention hook ensured", "service", svc.ID, "repo", svc.RepoOwnerName)
+	s.log.Info("service webhook: @mention hook ensured", "service", svc.ID, "provider", svc.Provider, "repo", svc.RepoOwnerName)
+}
+
+// webhookURLForProvider derives the inbound webhook URL for prov from the single
+// configured WEBHOOK_URL (F13). WEBHOOK_URL points at ONE receiver
+// (…/webhooks/gitea by deployment convention); the github/gitlab receivers are
+// SIBLING paths on the same orchestrator, so a trailing "/webhooks/<known>"
+// segment is swapped for "/webhooks/<prov>". A WEBHOOK_URL without a known
+// trailing segment is treated as a base and the path is appended. This keeps the
+// single-env deploy working for all three providers with no manifest change.
+func webhookURLForProvider(base string, prov domain.GitProvider) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if base == "" {
+		return ""
+	}
+	for _, p := range []string{"gitea", "github", "gitlab"} {
+		if strings.HasSuffix(base, "/webhooks/"+p) {
+			base = strings.TrimSuffix(base, "/webhooks/"+p)
+			break
+		}
+	}
+	return base + "/webhooks/" + string(prov)
 }
 
 func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {

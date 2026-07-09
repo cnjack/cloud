@@ -225,12 +225,17 @@ const (
 	// reconciler's writeback pass posts the result back as a card comment (and
 	// optionally moves the card to the done column).
 	RunOriginKanban RunOrigin = "kanban"
+	// RunOriginSchedule: the run was dispatched by the schedule poller (F11 / D24)
+	// when a service-level cron trigger came due. The triggering schedule id is
+	// recorded on the run's initial run.status event (schedule_id) — the runs table
+	// itself is untouched (no schedule_id column).
+	RunOriginSchedule RunOrigin = "schedule"
 )
 
 // ValidRunOrigin reports whether o is a recognised run origin.
 func ValidRunOrigin(o RunOrigin) bool {
 	switch o {
-	case RunOriginAPI, RunOriginWebhook, RunOriginKanban:
+	case RunOriginAPI, RunOriginWebhook, RunOriginKanban, RunOriginSchedule:
 		return true
 	}
 	return false
@@ -899,4 +904,47 @@ type KanbanClaim struct {
 	// reads "claim with a terminal run and WritebackAt nil".
 	WritebackAt *time.Time `json:"writeback_at,omitempty"`
 	ClaimedAt   time.Time  `json:"claimed_at"`
+}
+
+// Schedule is a service-level cron trigger (F11 / D24). On each matching cron
+// tick the schedule poller dispatches a headless agent run (origin=schedule)
+// against the service, with the service's default model (the F4/D21 resolution
+// chain) and Prompt as the task. It mirrors the kanban poller's poll/idempotency
+// philosophy: level-based, restart-safe, and driven off DB state (LastFiredAt)
+// so no external cron daemon is needed.
+type Schedule struct {
+	ID string `json:"id"`
+	// ServiceID is the target service; the run inherits its repo, project
+	// guardrails and default model exactly as a console/kanban run does. The
+	// project is derived from the service at dispatch time (no denormalized
+	// project_id column — the poller loads the service anyway for its model/host
+	// gates).
+	ServiceID string `json:"service_id"`
+	// CronExpr is a standard 5-field cron expression (minute hour dom month dow;
+	// no seconds, no @descriptors). Validated at create/update; a schedule whose
+	// next two fires are closer than the min-interval guard is rejected.
+	CronExpr string `json:"cron_expr"`
+	// Prompt is the task handed to the agent on each fire (the run's prompt).
+	Prompt string `json:"prompt"`
+	// Enabled gates the poller. A disabled schedule is retained but never scanned.
+	Enabled bool `json:"enabled"`
+	// LastFiredAt is the instant the poller last CLAIMED a due window for this
+	// schedule (nil => never fired; the first Next() is computed from CreatedAt).
+	// It is advanced with a conditional UPDATE (WHERE last_fired_at IS NOT DISTINCT
+	// FROM $old) so two poller instances cannot double-dispatch a single window,
+	// and it is advanced to the CURRENT time — a restart never backfills the
+	// windows missed while the process was down.
+	LastFiredAt *time.Time `json:"last_fired_at,omitempty"`
+	// LastError, when non-empty, is why the most recent due window was ABANDONED
+	// without dispatching: the model gate failed (no/ambiguous model) or the
+	// service's integration host is no longer cluster-allowed. Fail-visible
+	// (CLAUDE.md red line #1): the window is still advanced (not retried forever)
+	// AND the owner sees the reason in the console. Cleared on the next successful
+	// dispatch.
+	LastError string `json:"last_error,omitempty"`
+	// CreatedBy is the user who created the schedule (nil for the service
+	// principal). Audit trail for the automated runs it dispatches.
+	CreatedBy *string   `json:"created_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }

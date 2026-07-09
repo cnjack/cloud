@@ -186,6 +186,21 @@ describe('RunDetailPage — resilient error states', () => {
     expect(screen.queryByTestId('origin-chip')).toBeNull();
   });
 
+  // F11 / D24: a schedule-origin run shows a static "scheduled" chip (no link).
+  it('renders a "scheduled" chip for a schedule-triggered run', async () => {
+    const schedRun = baseRun({ origin: 'schedule' });
+    const { client, ctl } = makeClient();
+    ctl.getRun.mockResolvedValue(schedRun);
+    renderPage(client, schedRun);
+
+    const chip = await screen.findByTestId('origin-chip-schedule');
+    expect(chip.textContent).toContain('scheduled');
+    // Not a link (no external target to open).
+    expect(chip.tagName).toBe('SPAN');
+    // And the webhook PR-comment chip is not shown.
+    expect(screen.queryByTestId('origin-chip')).toBeNull();
+  });
+
   // No PR link when the run has no pr_url (readonly / diff-only run).
   it('does not render the draft-PR chip when pr_url is absent', async () => {
     const noPr = baseRun({ status: 'succeeded', finished_at: '2026-07-07T00:05:00Z' });

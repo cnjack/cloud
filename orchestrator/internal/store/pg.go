@@ -2014,6 +2014,147 @@ func (s *PGStore) MarkKanbanWriteback(ctx context.Context, linkID, documentID st
 	return tag.RowsAffected() == 1, nil
 }
 
+// --- Schedules (F11 / D24) --------------------------------------------------
+
+const scheduleCols = `id, service_id, cron_expr, prompt, enabled,
+	last_fired_at, last_error, created_by, created_at, updated_at`
+
+func scanSchedule(row pgx.Row) (*domain.Schedule, error) {
+	var sc domain.Schedule
+	var lastFired *time.Time
+	var createdBy *string
+	err := row.Scan(
+		&sc.ID, &sc.ServiceID, &sc.CronExpr, &sc.Prompt, &sc.Enabled,
+		&lastFired, &sc.LastError, &createdBy, &sc.CreatedAt, &sc.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	sc.LastFiredAt = lastFired
+	sc.CreatedBy = createdBy
+	return &sc, nil
+}
+
+func (s *PGStore) CreateSchedule(ctx context.Context, sc *domain.Schedule) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO schedules (`+scheduleCols+`)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		sc.ID, sc.ServiceID, sc.CronExpr, sc.Prompt, sc.Enabled,
+		sc.LastFiredAt, sc.LastError, sc.CreatedBy, sc.CreatedAt, sc.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("create schedule: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetSchedule(ctx context.Context, id string) (*domain.Schedule, error) {
+	sc, err := scanSchedule(s.pool.QueryRow(ctx,
+		`SELECT `+scheduleCols+` FROM schedules WHERE id=$1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get schedule: %w", err)
+	}
+	return sc, nil
+}
+
+func (s *PGStore) ListSchedulesByService(ctx context.Context, serviceID string) ([]domain.Schedule, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+scheduleCols+` FROM schedules WHERE service_id=$1 ORDER BY created_at DESC`, serviceID)
+	if err != nil {
+		return nil, fmt.Errorf("list schedules by service: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Schedule
+	for rows.Next() {
+		sc, err := scanSchedule(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *sc)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) ListEnabledSchedules(ctx context.Context) ([]domain.Schedule, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+scheduleCols+` FROM schedules WHERE enabled=TRUE ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled schedules: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Schedule
+	for rows.Next() {
+		sc, err := scanSchedule(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *sc)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) UpdateSchedule(ctx context.Context, sc *domain.Schedule, resetWindow bool) error {
+	// Only the owner-editable fields change; last_error is poller-owned and
+	// intentionally excluded. resetWindow (cron changed / re-enabled) moves
+	// last_fired_at to now() ATOMICALLY with the edit — the next fire is computed
+	// from the edit instant, so a boundary that predates the edit is never
+	// backfilled (C1), and a concurrent poller advance cannot be clobbered with a
+	// stale value (the reset never rewinds: it always lands on the current time).
+	err := s.pool.QueryRow(ctx,
+		`UPDATE schedules SET cron_expr=$2, prompt=$3, enabled=$4,
+		        last_fired_at = CASE WHEN $5 THEN now() ELSE last_fired_at END,
+		        updated_at=now()
+		 WHERE id=$1
+		 RETURNING last_fired_at, updated_at`,
+		sc.ID, sc.CronExpr, sc.Prompt, sc.Enabled, resetWindow).
+		Scan(&sc.LastFiredAt, &sc.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("update schedule: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) DeleteSchedule(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM schedules WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("delete schedule: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) AdvanceSchedule(ctx context.Context, id string, prevFired *time.Time, newFired time.Time, lastErr string) (bool, error) {
+	// Conditional claim (anti-double-dispatch): only the instance whose prevFired
+	// still matches the row's last_fired_at wins. `IS NOT DISTINCT FROM` treats
+	// two NULLs (never-fired) as equal, so the first fire is claimable too.
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE schedules SET last_fired_at=$3, last_error=$4, updated_at=now()
+		 WHERE id=$1 AND last_fired_at IS NOT DISTINCT FROM $2`,
+		id, prevFired, newFired, lastErr)
+	if err != nil {
+		return false, fmt.Errorf("advance schedule: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (s *PGStore) SetScheduleLastError(ctx context.Context, id, lastErr string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE schedules SET last_error=$2, updated_at=now() WHERE id=$1`, id, lastErr)
+	if err != nil {
+		return fmt.Errorf("set schedule last error: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // mapKanbanLinkErr translates a kanban_links INSERT error into a typed store
 // error (UNIQUE(workspace_id, board_ref) -> ErrAlreadyExists) so the API can
 // return a 409 instead of a generic 500. Other errors are wrapped verbatim.

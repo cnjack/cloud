@@ -267,9 +267,12 @@ orchestrator 的兜底分类**不覆盖**它。
 - 注意 scope:gitea 登录 token(空 scope)可列全部;github 的 `read:user` /
   gitlab 的 `read_user` 登录 scope **列不了私有仓库**,需要升级 scope 重新
   绑定(github `repo` / gitlab `read_api`)。
-- 若同时配置了 `WEBHOOK_URL` + `WEBHOOK_SECRET`,创建 gitea service 时会
-  **best-effort 自动注册** `@jcode` 评论 webhook(幂等,按 URL 判重;失败仅
-  记日志,不影响创建)。
+- 若同时配置了 `WEBHOOK_URL` + `WEBHOOK_SECRET`,创建 service 时会
+  **best-effort 自动注册** `@jcode` 评论 webhook(三 provider;幂等,按 URL
+  判重;失败仅记日志,不影响创建)。
+- **运维注记**:幂等按 URL 判重意味着**轮换 `WEBHOOK_SECRET` 不会更新已注册
+  hook 的 secret**——轮换后旧 hook 的投递将全部验签失败(provider 侧投递日志
+  可见 401)。轮换后需在 git 主机侧删除旧 hook 再触发重建(或手工更新 secret)。
 
 #### `GET /api/v1/projects` — 列出 projects
 
@@ -745,6 +748,67 @@ reconciler 的 PR 开启/update push/review 回帖/session push 遇同类错误:
 `run.failure` 时间线事件说明原因与修法,然后**停摆该 run**(进程内标记,后续 tick
 跳过,不再无限重试;重启后重查一次——修好即恢复)。
 
+### 2.5d Schedules(定时触发器 · Feature F11 · D24)
+
+schedule 把「一条标准 5 段 cron 表达式 + 一个 prompt」绑到 project 的某个
+service:每当 cron 到点,schedule poller 就对该 service 派一条**无头 agent run**
+(`origin="schedule"`),模型走 service 的默认(D21/F4 解析链)。哲学仿 D17 kanban
+poller——**level-based、幂等、重启无缝**:权威状态是 `schedules.last_fired_at`,用
+**条件更新**推进(`WHERE last_fired_at IS NOT DISTINCT FROM $old`),因此既可重启恢
+复,也可多实例并发跑而不重派。迁移 `0019_schedules`。
+
+Schedule 对象(`GET`/`POST`/`PATCH` 的响应体):
+
+```json
+{
+  "id": "sc-1a2b...",
+  "service_id": "9f2c...",
+  "cron_expr": "0 9 * * 1-5",
+  "prompt": "汇总昨天合并的 PR 更新 changelog",
+  "enabled": true,
+  "last_fired_at": "2026-07-09T09:00:03Z",
+  "last_error": "",
+  "created_by": "u-abc...",
+  "created_at": "2026-07-08T00:00:00Z",
+  "updated_at": "2026-07-09T09:00:03Z"
+}
+```
+
+| 端点 | 角色 | 说明 |
+|---|---|---|
+| `GET /api/v1/services/{id}/schedules` | member+ | 该 service 的 schedules(`{schedules:[...]}`,含 `last_error`) |
+| `POST /api/v1/services/{id}/schedules` | owner | `{cron_expr, prompt, enabled?}`;`enabled` 缺省 `true`;cron 校验见下;返回 `201` + Schedule |
+| `PATCH /api/v1/schedules/{sid}` | owner | `{cron_expr?, prompt?, enabled?}`(pointer presence:缺省=不变);传 `cron_expr` 会重校验;`last_error` 由 poller 独占,PATCH 不动;**窗口重置**:`cron_expr` 实际变化、或 `enabled` 由 false→true 时,`last_fired_at` 原子重置为编辑时刻——新节奏/重开的首次触发从编辑时刻起算,**绝不补发编辑前已过去的边界**(与重启不补跑同一哲学);仅改 prompt 不重置 |
+| `DELETE /api/v1/schedules/{sid}` | owner | 删除该 schedule(`{deleted:sid}`) |
+
+**cron 校验(create/patch 均 fail-visible,写时即拒,绝不静默到派发时才忽略)**:
+
+- 非法 5 段 cron → `400 invalid_cron`(用 robfig/cron/v3 标准 5 段 parser;
+  `@hourly`/`@every`/秒字段一律不接受)。
+- **cron 表达式一律按 UTC 求值**(poller 求值前把基准时间归一到 UTC;不支持
+  `TZ=` 前缀)——`0 9 * * *` 意为 09:00 UTC,与 orchestrator 容器的本地时区无关。
+- **最小间隔护栏**:相邻两次触发间隔 `< 5 分钟` 的表达式 → `400 cron_too_frequent`
+  (防 `* * * * *` 之类自伤;取样多个连续触发点取最小间隔,能抓到 `0,1 * * * *`
+  这类不规则的高频)。
+- `prompt` 为空 → `400 bad_request`。
+
+**派发期 fail-visible 闸(写入 `last_error`,推进该窗口,不派 run)**:到点时若
+①模型闸不过(project 无授权模型 / 多个已授权但 service 未设默认)或②service 绑的
+集成 host 已不在集群 allowlist(D20)——poller **不派 run**,但仍**原子推进
+`last_fired_at`**(该窗口放弃、不无限重试),并把原因写进 `last_error`;下次成功派发
+清空。console 以红色徽标呈现 `last_error`(`SchedulesPanel`)。瞬时错误(DB/解析器
+抖动)则**不推进**窗口,下 tick 重试。
+
+派生 run 走 `origin="schedule"`(见 §1.2 origin 枚举);触发它的 schedule id **不加
+到 runs 表**,而是记在该 run 的首条 `run.status` 事件 payload 的 `schedule_id` 上
+(runs 表保持不变)。
+
+env:`SCHEDULE_POLL_INTERVAL`(默认 `30s`,`<=0` 禁用整个 schedule poller)。
+
+> **`origin` 枚举**(run 字段):`"api"`(默认/console)、`"webhook"`(Gitea PR 评论
+> `@jcode`)、`"kanban"`(卡片拖入触发列)、`"schedule"`(cron 到点)。console 在 run
+> 详情按 origin 展示对应徽标(webhook 链回评论、schedule 显示「scheduled」)。
+
 ---
 
 ## 3 · 前端集成示例(SSE)
@@ -1046,6 +1110,82 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
 provider_url/provider_repo`;runs 加 `git_branch/commit_sha/pr_url/pr_number`);
 `failure_reason` 枚举加 `push_failed`;事件加 `run.git`;`run.status` payload 增可选
 `pr_url/pr_number`。均为非破坏性新增。
+
+---
+
+## 6b · `@jcode` 评论 webhook 接收端(三 provider · F13 / D24)
+
+> 决策 D24 + 蓝图 §8(把 M7 的 gitea 验签/映射/去重/回帖语义平移到 github/gitlab)。
+> **只在配置了 `WEBHOOK_SECRET` 时注册这三条公开路由**(缺 secret → 三条路由都
+> 404,`@mention` 触发关闭,系统照常运行)。三 provider **语义完全一致**,只有传输层
+> (验签方式、事件头、payload 字段名)与"回帖凭据来源"不同。
+
+### 端点 / 事件 / 验签矩阵
+
+| provider | 端点 | 验签 | 触发事件(事件头) | PR/评论字段 |
+|---|---|---|---|---|
+| gitea  | `POST /webhooks/gitea`  | `X-Gitea-Signature` = hex(HMAC-SHA256(body, secret)) | `issue_comment`(`X-Gitea-Event`),`action=created` 且 `issue.pull_request` 非空 | `repository.full_name` / `issue.number` / `comment.id` / `comment.user.id` |
+| github | `POST /webhooks/github` | `X-Hub-Signature-256` = `sha256=`+hex(HMAC-SHA256(body, secret)) | `issue_comment`(`X-GitHub-Event`),`action=created` 且 `issue.pull_request` 非空 | 同 gitea(payload 结构一致) |
+| gitlab | `POST /webhooks/gitlab` | `X-Gitlab-Token` **恒等比较** secret(GitLab 不签 body) | `Note Hook`(`X-Gitlab-Event`),`object_attributes.noteable_type=MergeRequest` | `project.path_with_namespace` / `merge_request.iid` / `object_attributes.id` / `user.id` |
+
+- **验签失败(签名不符 / token 不符)→ `401`**,是唯一的硬失败;其余一切
+  (非目标事件、非 PR/MR 评论、无 `@jcode` 命令、重投递)一律 `200` no-op,delivery
+  日志带 `{"status":"ignored: …"}` 说明,重投递永不报错回 provider。
+- gitlab 的 `merge_request.iid` 收敛为内部统一的 PR number;`path_with_namespace`
+  收敛为 `owner/name`——各 provider 的字段差异在各自解析函数里归一到同一中间结构
+  (`webhookMention`),下游派发逻辑三 provider 共用一条代码路径。
+
+### `@jcode` 命令与派发语义(与 M7 gitea 完全一致)
+
+- `@jcode review` → 对该 PR/MR 建 **kind=review** run。
+- `@jcode <任务文本>` → **kind=agent** run,基线=PR/MR head 分支,产出推回同一分支
+  (update-push,不新开 PR);run 预填 `pr_url`/`pr_number`/`pr_head_branch`。
+- **身份映射硬门槛**:评论者 provider uid → `user_identities` → jcloud 用户;映射不上
+  → 可见回帖提示"用该 provider 登录 console",不建 run。
+- **project member 校验**:非 cluster-admin 须是命中 service 所属 project 的 member+
+  (viewer 不够);不满足 → 回帖"找不到你能跑的 project"。
+- **host gate / model gate**:与 run 创建路径同源的 fail-visible 回帖(白名单收紧 →
+  回帖点名 host;无 LLM / 未选默认模型 → 回帖并指向 console);瞬时错误回帖
+  "temporary,请重试",绝不误报为"未配置"。
+- **受理成功**:回帖 `🚀 jcode run started — <CONSOLE_URL>/runs/<id>`。
+
+### 去重键(`origin_comment_id`)
+
+- gitea 保持**裸数字** `comment.id`(向后兼容 M7 已落库的 run)。
+- github/gitlab **带 provider 前缀**:`github:<id>` / `gitlab:<id>`——避免不同 host 的
+  数字评论 id 恰好相等时跨 provider 误判为重复。
+- 重投递(同 comment 多次投递)→ 前置 `GetRunByOriginCommentID` 命中即 no-op;并发
+  漏检时 `origin_comment_id` 唯一索引在 `CreateRun` 兜底,**至多一条 run、一条回执**。
+
+### 回帖凭据来源(三 provider 的唯一实现差异)
+
+- **gitea**:回帖/读 PR 用全局 PAT(`GITEA_TOKEN`,与仓库无关),故"找不到 project /
+  身份映射不上"也能回帖。
+- **github/gitlab**:无集群级 PAT,回帖/读 PR 凭据取自**该仓库上某个 service 绑定的
+  integration bot token**(取第一个能解出凭据的 service);仓库上无 service / 无可用
+  integration 凭据 → **无法回帖 → log+忽略**(诚实降级,绝不假成功)。
+
+### 自动注册(`ensureServiceWebhook`,幂等)
+
+- 同时配置 `WEBHOOK_URL` + `WEBHOOK_SECRET` 时,创建 provider service 会 best-effort
+  自动注册评论 webhook(三 provider 都生效;失败仅记日志,不影响创建)。
+- **每 provider 的 hook URL 从单个 `WEBHOOK_URL` 推导**:`WEBHOOK_URL` 指向
+  `…/webhooks/gitea`(部署约定),github/gitlab 为同一 orchestrator 的兄弟路径,注册时
+  把结尾 `/webhooks/<known>` 段替换为 `/webhooks/<prov>`(单 env 部署三 provider 通吃,
+  无需改 manifest)。
+- **幂等**:先列仓库现有 hooks,已存在同 target URL 的 hook 则跳过(secret/token 读回
+  被 provider 掩码,URL 是身份键)。事件:gitea `[issue_comment, pull_request_comment]`;
+  github `[issue_comment]`;gitlab `note_events=true`,secret 放 `token` 字段(GitLab
+  据此回填 `X-Gitlab-Token`)。注册用 integration bot token(绑定时)或 PAT 回退。
+
+### 测试与 e2e 诚实记录
+
+- 本地 OrbStack rig **无真实 github/gitlab** 可打(只有自托管 gitea);github/gitlab 的
+  接收端与注册端以 **httptest 单测**为准(`internal/api/webhook_multiprovider_test.go`、
+  `internal/provider/webhookregister_test.go`):覆盖两 provider 各自的验签失败 `401`、
+  非 PR/MR 评论忽略、两种 kind、身份映射不上、member 校验拒绝、去重(前缀键)、model
+  gate 回帖、注册幂等、payload 字段差异(github `full_name` / gitlab `iid`)。gitea 仍走
+  e2e `j6-webhook.sh`(§8 验收)。
 
 ---
 

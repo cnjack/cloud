@@ -36,6 +36,7 @@ import { LoadingBlock, ErrorBlock } from '../components/States';
 import { useToast } from '../components/Toast';
 import { GitModeBadge } from '../components/GitModeBadge';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
+import { SchedulesPanel } from './SchedulesPanel';
 import { ApiError } from '../api/client';
 import { providerForRepoUrl } from '../lib/repo';
 import { shortId, summarize, timeAgo } from '../lib/format';
@@ -477,6 +478,12 @@ export function ProjectDetailPage() {
             </div>
           </form>
         </Card>
+      )}
+
+      {/* F11 / D24 — service cron triggers. Member+ read; owner manages. Shown for
+          the active repository (a member without an integration/repo has none). */}
+      {canRun && activeService && (
+        <SchedulesPanel service={activeService} canManage={canManage} />
       )}
 
       <section className={styles.runsSection}>

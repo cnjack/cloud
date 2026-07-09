@@ -309,6 +309,17 @@ export function RunDetailPage() {
                 </span>
               </a>
             )}
+            {/* F11 / D24: a run dispatched by a service cron trigger. No external
+                link to open, so a static (non-anchor) chip. */}
+            {r.origin === 'schedule' && (
+              <span
+                className={styles.originChip}
+                title="Dispatched by a scheduled cron trigger on this repository"
+                data-testid="origin-chip-schedule"
+              >
+                scheduled
+              </span>
+            )}
             {/* Stretch (ST-1): draft PR chip — bordered secondary chip with a
                 mono PR number, opens the Gitea PR in a new tab. Only when the
                 orchestrator has opened the draft PR (git_mode=draft_pr). */}

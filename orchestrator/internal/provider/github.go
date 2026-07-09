@@ -145,6 +145,41 @@ func (c *GitHubClient) ListRepos(ctx context.Context, query string, page, limit 
 	return repos, nil
 }
 
+// EnsureCommentWebhook idempotently registers the @mention PR-comment webhook on
+// a repository (F13). It lists the repo's hooks and creates one only when no hook
+// with the same target URL exists (GitHub returns the target under config.url;
+// the secret is never read back, so the URL is the identity key — same convention
+// as the gitea client). The event set is [issue_comment]: GitHub delivers PR
+// conversation comments as issue_comment with issue.pull_request populated (the
+// receiver filters on that), so a single event covers the @jcode trigger.
+func (c *GitHubClient) EnsureCommentWebhook(ctx context.Context, owner, repo, hookURL, secret string) error {
+	listURL := fmt.Sprintf("%s/repos/%s/%s/hooks", c.apiBase, owner, repo)
+	var hooks []struct {
+		Config struct {
+			URL string `json:"url"`
+		} `json:"config"`
+	}
+	if err := doJSON(ctx, c.http, http.MethodGet, listURL, c.auth(), c.accept(), nil, &hooks); err != nil {
+		return err
+	}
+	for _, h := range hooks {
+		if h.Config.URL == hookURL {
+			return nil // already registered
+		}
+	}
+	body := map[string]any{
+		"name":   "web",
+		"active": true,
+		"events": []string{"issue_comment"},
+		"config": map[string]any{
+			"url":          hookURL,
+			"content_type": "json",
+			"secret":       secret,
+		},
+	}
+	return doJSON(ctx, c.http, http.MethodPost, listURL, c.auth(), c.accept(), body, nil)
+}
+
 // CurrentUser returns the token account's login (GET /user; D19 / F5).
 func (c *GitHubClient) CurrentUser(ctx context.Context) (string, error) {
 	url := fmt.Sprintf("%s/user", c.apiBase)
