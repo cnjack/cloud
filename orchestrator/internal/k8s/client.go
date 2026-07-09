@@ -172,10 +172,47 @@ func (c *Client) EnsureWorkspacePVC(ctx context.Context, serviceID, projectID st
 		pvc.Spec.StorageClassName = &sc
 	}
 	_, err := c.cs.CoreV1().PersistentVolumeClaims(c.cfg.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
-	if err != nil && !apierrors.IsAlreadyExists(err) {
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create workspace pvc %s: %w", pvc.Name, err)
 	}
+	// AlreadyExists is normally the idempotent re-ensure of a live PVC. But a PVC
+	// that was JUST deleted (F10 archive finalize, or tenant erasure) can linger in
+	// Terminating state while its pvc-protection finalizer clears — Create then
+	// still returns AlreadyExists for that doomed object, and mounting a run onto a
+	// Terminating PVC hangs the pod Pending until activeDeadlineSeconds fails it.
+	// So inspect the existing object: a non-nil DeletionTimestamp means Terminating
+	// → return a TRANSIENT error. The reconciler treats an EnsureWorkspacePVC
+	// failure as transient (leaves the run queued, retries next tick), by which
+	// time the old PVC is gone and the re-create binds a fresh one. A live PVC (no
+	// DeletionTimestamp) is the normal idempotent no-op.
+	existing, gerr := c.cs.CoreV1().PersistentVolumeClaims(c.cfg.Namespace).Get(ctx, pvc.Name, metav1.GetOptions{})
+	if gerr != nil {
+		// Raced away between Create and Get (e.g. the finalizer just cleared): let
+		// the caller retry rather than proceed on an object we could not verify.
+		return fmt.Errorf("inspect existing workspace pvc %s: %w", pvc.Name, gerr)
+	}
+	if existing.DeletionTimestamp != nil {
+		return fmt.Errorf("workspace pvc %s is still terminating; deferring run until it is fully deleted", pvc.Name)
+	}
 	return nil
+}
+
+// WorkspacePVCExists reports whether the service's workspace PVC exists (F10).
+// A NotFound is a clean false; any other error is propagated so the archive
+// pass treats it as transient and retries rather than skipping the service.
+func (c *Client) WorkspacePVCExists(ctx context.Context, serviceID string) (bool, error) {
+	name := WorkspacePVCName(serviceID)
+	_, err := c.cs.CoreV1().PersistentVolumeClaims(c.cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("get workspace pvc %s: %w", name, err)
+	}
+	return true, nil
 }
 
 // DeleteWorkspacePVC best-effort deletes a service's workspace PVC (D05 tenant

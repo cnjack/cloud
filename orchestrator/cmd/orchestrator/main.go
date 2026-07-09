@@ -19,6 +19,7 @@ import (
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/kanban"
+	"github.com/cnjack/jcloud/internal/objstore"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/reconciler"
 	"github.com/cnjack/jcloud/internal/schedule"
@@ -112,6 +113,35 @@ func run(log *slog.Logger) error {
 	// the same tokens and binary).
 	srv := api.New(st, cfg, log, hub, launcher)
 
+	// --- object-storage archiver (F10 / D23 ③) ---
+	// Built only when object storage is fully configured. The REAL S3 credentials
+	// live ONLY here in the control plane — the reconciler hands each archive/
+	// restore pod a short-lived, single-object presigned URL, never the
+	// credentials (D16). A partial/absent config leaves the archiver nil; the
+	// archive pass is then a no-op and GET /api/v1/system reports the disabled
+	// reason (fail-visible, D14). A MALFORMED endpoint fails startup loudly rather
+	// than silently disabling a feature the admin plainly intended to enable.
+	var archiver reconciler.Archiver
+	if cfg.ArchiveEnabled() {
+		ac, err := objstore.New(objstore.Config{
+			Endpoint:       cfg.S3Endpoint,
+			Bucket:         cfg.S3Bucket,
+			AccessKey:      cfg.S3AccessKey,
+			SecretKey:      cfg.S3SecretKey,
+			Region:         cfg.S3Region,
+			ForcePathStyle: cfg.S3ForcePathStyle,
+		})
+		if err != nil {
+			return err
+		}
+		archiver = ac
+		log.Info("workspace archive enabled (F10)",
+			"endpoint", cfg.S3Endpoint, "bucket", cfg.S3Bucket, "idle_days", cfg.ArchiveIdleDays,
+			"persistent_workspace", cfg.PersistentWorkspace)
+	} else {
+		log.Info("workspace archive disabled (F10)", "reason", cfg.ArchiveDisabledReason())
+	}
+
 	// --- reconciler ---
 	// The draft-PR / review passes push branches + open PRs + post reviews on the
 	// triggering user's behalf (or the fallback gitea PAT). The provider Factory
@@ -124,7 +154,9 @@ func run(log *slog.Logger) error {
 			WithPRStack(factory, srv.Git(), srv.Credentials()).
 			// Share the API's model resolver so a console PUT/DELETE invalidates
 			// the SAME cache the scheduler resolves through (Feature A).
-			WithModelResolver(srv.Models())
+			WithModelResolver(srv.Models()).
+			// F10 / D23 ③ — object-storage archiver (nil => archive pass no-op).
+			WithArchive(archiver)
 
 		// Feature E/F6 — jtype kanban integration. The base URL alone enables it:
 		// each link authorises with its OWN encrypted PAT (D25), and the cluster

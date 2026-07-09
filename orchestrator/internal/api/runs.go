@@ -187,10 +187,21 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Global list. Cluster-admins see everything; a regular user sees only runs
-	// in the projects they are a member of.
+	// Global list. Cluster-admins see everything; a project-scoped API key
+	// (F12 / D24) sees only its bound project's runs (same boundary as
+	// GET /projects/{id}/runs); a regular user sees only runs in the projects
+	// they are a member of.
 	if prin.isClusterAdmin() {
 		runs, err := s.st.ListRuns(r.Context(), "", limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "could not list runs")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"runs": nonNilRuns(runs)})
+		return
+	}
+	if prin.isAPIKey() {
+		runs, err := s.st.ListRuns(r.Context(), prin.scopedProjectID, limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", "could not list runs")
 			return

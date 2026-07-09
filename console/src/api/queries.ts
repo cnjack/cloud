@@ -10,6 +10,8 @@ import {
 import { useApi } from './ApiProvider';
 import type {
   AddMemberInput,
+  CreateApiKeyInput,
+  CreateApiKeyResponse,
   CreateIntegrationInput,
   CreateKanbanLinkInput,
   CreateModelInput,
@@ -45,6 +47,7 @@ export const qk = {
   projectKanbanLinks: (projectId: string) => ['project-kanban-links', projectId] as const,
   serviceSchedules: (serviceId: string) => ['service-schedules', serviceId] as const,
   integrations: (projectId: string) => ['integrations', projectId] as const,
+  apiKeys: (projectId: string) => ['api-keys', projectId] as const,
   services: (projectId: string) => ['services', projectId] as const,
   members: (projectId: string) => ['members', projectId] as const,
   users: (q: string) => ['users', q] as const,
@@ -563,6 +566,37 @@ export function useIntegrationRepos(projectId: string, integrationId: string, q:
     enabled: enabled && !!projectId && !!integrationId,
     staleTime: 30_000,
     retry: false,
+  });
+}
+
+/* ---- project-scoped API keys (F12 / D24) --------------------------------- */
+
+/** A project's API keys (owner only — the server 403s anyone else). */
+export function useApiKeys(projectId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.apiKeys(projectId),
+    queryFn: () => api.listApiKeys(projectId),
+    enabled: enabled && !!projectId,
+  });
+}
+
+export function useCreateApiKey(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateApiKeyInput): Promise<CreateApiKeyResponse> =>
+      api.createApiKey(projectId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.apiKeys(projectId) }),
+  });
+}
+
+export function useRevokeApiKey(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (keyId: string) => api.revokeApiKey(projectId, keyId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.apiKeys(projectId) }),
   });
 }
 

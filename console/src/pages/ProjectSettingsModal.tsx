@@ -8,6 +8,8 @@
  *   - Members: roster with role management + add-by-search (MembersPanel).
  *   - Integrations (D19 / F5): git host bindings with a bot credential (owner).
  *   - Kanban: jtype board→service bindings (owner).
+ *   - API keys (F12 / D24): project-scoped, revocable automation credentials
+ *     (owner) — replaces borrowing CONSOLE_TOKEN for external/CI use.
  */
 import { useState } from 'react';
 import { Modal } from '../components/Modal';
@@ -22,14 +24,24 @@ import {
   useCreateProjectKanbanLink,
   useUpdateProjectKanbanLinkToken,
   useDeleteProjectKanbanLink,
+  useApiKeys,
+  useCreateApiKey,
+  useRevokeApiKey,
 } from '../api/queries';
 import { useToast } from '../components/Toast';
 import { ApiError } from '../api/client';
 import { isReservedEnvKey, isValidEnvKey } from '../lib/env';
-import type { KanbanLink, Project, UpdateProjectInput } from '../api/types';
+import { timeAgo } from '../lib/format';
+import type {
+  ApiKey,
+  CreateApiKeyResponse,
+  KanbanLink,
+  Project,
+  UpdateProjectInput,
+} from '../api/types';
 import styles from './ProjectSettingsModal.module.css';
 
-type Tab = 'general' | 'members' | 'integrations' | 'kanban';
+type Tab = 'general' | 'members' | 'integrations' | 'kanban' | 'apikeys';
 
 interface EnvRow {
   key: string;
@@ -262,6 +274,19 @@ export function ProjectSettingsModal({
             Kanban
           </button>
         )}
+        {canManage && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'apikeys'}
+            className={styles.tab}
+            data-active={tab === 'apikeys' || undefined}
+            onClick={() => setTab('apikeys')}
+            data-testid="tab-apikeys"
+          >
+            API keys
+          </button>
+        )}
       </div>
 
       {tab === 'general' ? (
@@ -439,8 +464,10 @@ export function ProjectSettingsModal({
         <MembersPanel projectId={project.id} canManage={canManage} />
       ) : tab === 'integrations' ? (
         <IntegrationsPanel project={project} />
-      ) : (
+      ) : tab === 'kanban' ? (
         <KanbanPanel project={project} />
+      ) : (
+        <ApiKeysPanel project={project} />
       )}
     </Modal>
   );
@@ -730,6 +757,202 @@ function KanbanLinkRow({
           Remove
         </Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * ApiKeysPanel — the project owner's API keys (F12 / D24). A key is a
+ * revocable, project-scoped automation credential (`Authorization: Bearer
+ * <key>`, capped at the Member role on THIS project only) meant to replace
+ * borrowing the cluster-wide console token for external/CI use. The plaintext
+ * is shown ONCE, right after creation — there is no read-back endpoint, so the
+ * reveal card below is the only chance to copy it.
+ */
+function ApiKeysPanel({ project }: { project: Project }) {
+  const toast = useToast();
+  const keys = useApiKeys(project.id);
+  const create = useCreateApiKey(project.id);
+  const revoke = useRevokeApiKey(project.id);
+
+  const [name, setName] = useState('');
+  const [revealed, setRevealed] = useState<CreateApiKeyResponse | null>(null);
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    create.mutate(
+      { name: name.trim() },
+      {
+        onSuccess: (created) => {
+          setName('');
+          setRevealed(created);
+          toast.push({ kind: 'success', message: `API key “${created.name}” created.` });
+        },
+        onError: (err) =>
+          toast.push({
+            kind: 'error',
+            message: err instanceof ApiError ? err.message : 'Could not create the API key.',
+          }),
+      },
+    );
+  };
+
+  const doRevoke = (id: string) => {
+    revoke.mutate(id, {
+      onSuccess: () => toast.push({ kind: 'success', message: 'API key revoked.' }),
+      onError: (err) =>
+        toast.push({
+          kind: 'error',
+          message: err instanceof ApiError ? err.message : 'Could not revoke the API key.',
+        }),
+    });
+  };
+
+  return (
+    <div className={styles.body} data-testid="apikeys-panel">
+      <p className={styles.guardrailHint}>
+        A project-scoped key authenticates as <code>Authorization: Bearer &lt;key&gt;</code> and can
+        trigger runs and read this project only — never another project, never this project&apos;s
+        settings or members, and never the cluster-admin surface. Use it for external/CI automation
+        instead of the cluster-wide console token.
+      </p>
+
+      {revealed && (
+        <ApiKeyReveal created={revealed} onDismiss={() => setRevealed(null)} />
+      )}
+
+      {keys.data && keys.data.length > 0 ? (
+        <div className={styles.kanbanList} data-testid="apikeys-list">
+          {keys.data.map((k) => (
+            <ApiKeyRow
+              key={k.id}
+              apiKey={k}
+              revoking={revoke.isPending}
+              onRevoke={() => doRevoke(k.id)}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className={styles.guardrailHint} data-testid="apikeys-empty">
+          No API keys yet — create one below.
+        </p>
+      )}
+
+      <form className={styles.kanbanForm} onSubmit={submit} noValidate data-testid="apikey-form">
+        <TextField
+          label="Name"
+          placeholder="ci-bot"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+          data-testid="apikey-name"
+          autoComplete="off"
+          hint="Helps you tell keys apart later — pick something identifying, like the CI job that will use it."
+        />
+        <div className={styles.kanbanFormActions}>
+          <Button type="submit" variant="primary" loading={create.isPending} data-testid="apikey-create">
+            Create key
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/**
+ * ApiKeyReveal — the one-time plaintext display right after creation. There is
+ * no read-back endpoint, so this card (plus its copy button) is the only
+ * chance the owner gets to grab the key; dismissing it is a UI-only action
+ * (the key keeps working — dismissing does NOT revoke it).
+ */
+function ApiKeyReveal({
+  created,
+  onDismiss,
+}: {
+  created: CreateApiKeyResponse;
+  onDismiss: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(created.key);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable — the text is still selectable */
+    }
+  };
+  return (
+    <section className={styles.apiKeyReveal} data-testid="apikey-reveal">
+      <div className={styles.guardrailHead}>
+        <span className={styles.guardrailTitle}>“{created.name}” created</span>
+        <span className={styles.guardrailHint}>
+          Shown once — copy it now. It cannot be displayed again; if you lose it, revoke this key and
+          create a new one.
+        </span>
+      </div>
+      <div className={styles.apiKeyRevealRow}>
+        <code className={styles.apiKeyRevealCode} data-testid="apikey-reveal-value">
+          {created.key}
+        </code>
+        <Button type="button" variant="secondary" size="sm" onClick={copy} data-testid="apikey-reveal-copy">
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
+      </div>
+      <div className={styles.kanbanFormActions}>
+        <Button type="button" variant="ghost" size="sm" onClick={onDismiss} data-testid="apikey-reveal-dismiss">
+          Done
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * ApiKeyRow — one API key: name, status badge (active/revoked), prefix,
+ * created/last-used, and Revoke (hidden once already revoked).
+ */
+function ApiKeyRow({
+  apiKey,
+  revoking,
+  onRevoke,
+}: {
+  apiKey: ApiKey;
+  revoking: boolean;
+  onRevoke: () => void;
+}) {
+  const revoked = !!apiKey.revoked_at;
+  return (
+    <div className={styles.kanbanRow} data-testid={`apikey-${apiKey.id}`}>
+      <div className={styles.kanbanMeta}>
+        <div className={styles.kanbanTitle}>
+          {apiKey.name}
+          <span
+            className={styles.badge}
+            data-state={revoked ? 'missing' : 'per_link'}
+            data-testid={`apikey-status-${apiKey.id}`}
+          >
+            {revoked ? 'revoked' : 'active'}
+          </span>
+          <code className={styles.repoField}>{apiKey.prefix}…</code>
+        </div>
+        <div className={styles.kanbanSub}>
+          Created {timeAgo(apiKey.created_at)}
+          {apiKey.last_used_at ? ` · last used ${timeAgo(apiKey.last_used_at)}` : ' · never used'}
+        </div>
+      </div>
+      {!revoked && (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          disabled={revoking}
+          onClick={onRevoke}
+          data-testid={`apikey-revoke-${apiKey.id}`}
+        >
+          Revoke
+        </Button>
+      )}
     </div>
   );
 }

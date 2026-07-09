@@ -13,6 +13,8 @@ import { ToastProvider } from '../components/Toast';
 import type { ApiClient } from '../api/client';
 import type {
   AddMemberInput,
+  ApiKey,
+  CreateApiKeyInput,
   CreateIntegrationInput,
   CreateKanbanLinkInput,
   Integration,
@@ -510,5 +512,154 @@ describe('ProjectSettingsModal — Integrations tab (D19 / F5)', () => {
 
     // The typed server message reaches the toast verbatim (fail-visible).
     await waitFor(() => expect(screen.getByText('the git host is not allowed')).toBeTruthy());
+  });
+});
+
+describe('ProjectSettingsModal — API keys tab (F12 / D24)', () => {
+  interface ApiKeyCtl {
+    creates: { projectId: string; input: CreateApiKeyInput }[];
+    revokes: { projectId: string; keyId: string }[];
+    keys: ApiKey[];
+  }
+
+  function apiKeyClient(
+    project: Project,
+    opts: { seed?: ApiKey[]; createErr?: ApiError } = {},
+  ): { client: ApiClient; kctl: ApiKeyCtl } {
+    const kctl: ApiKeyCtl = {
+      creates: [],
+      revokes: [],
+      keys: opts.seed ?? [],
+    };
+    const client: Partial<ApiClient> = {
+      updateProject: async (_id, input) => ({ ...project, ...input }) as Project,
+      listApiKeys: async () => [...kctl.keys],
+      createApiKey: async (projectId, input) => {
+        if (opts.createErr) throw opts.createErr;
+        kctl.creates.push({ projectId, input });
+        const k: ApiKey = {
+          id: 'ak-new',
+          project_id: projectId,
+          name: input.name,
+          prefix: 'jck_a1b2',
+          created_at: '2026-01-02T00:00:00Z',
+          last_used_at: null,
+          revoked_at: null,
+        };
+        kctl.keys.push(k);
+        return { ...k, key: 'jck_a1b2c3d4e5f6' };
+      },
+      revokeApiKey: async (projectId, keyId) => {
+        kctl.revokes.push({ projectId, keyId });
+        const k = kctl.keys.find((x) => x.id === keyId)!;
+        k.revoked_at = '2026-01-03T00:00:00Z';
+      },
+    };
+    return { client: client as ApiClient, kctl };
+  }
+
+  it('owner sees the API keys tab; a non-owner does not', () => {
+    const { client } = apiKeyClient(baseProject());
+    renderModal(client, baseProject());
+    expect(screen.getByTestId('tab-apikeys')).toBeTruthy();
+
+    const { client: c2 } = apiKeyClient(baseProject({ role: 'member' }));
+    renderModal(c2, baseProject({ role: 'member' }));
+    expect(screen.queryAllByTestId('tab-apikeys').length).toBe(1); // only the owner one above
+  });
+
+  it('lists keys with a status badge and prefix', async () => {
+    const project = baseProject();
+    const seed: ApiKey[] = [
+      {
+        id: 'ak-1', project_id: project.id, name: 'ci-bot', prefix: 'jck_a1b2',
+        created_at: '2026-01-01T00:00:00Z', last_used_at: '2026-01-02T00:00:00Z', revoked_at: null,
+      },
+      {
+        id: 'ak-2', project_id: project.id, name: 'old-key', prefix: 'jck_c3d4',
+        created_at: '2026-01-01T00:00:00Z', last_used_at: null, revoked_at: '2026-01-02T00:00:00Z',
+      },
+    ];
+    const { client } = apiKeyClient(project, { seed });
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-apikeys'));
+    await waitFor(() => expect(screen.getByTestId('apikey-ak-1')).toBeTruthy());
+
+    expect(screen.getByTestId('apikey-status-ak-1').textContent).toBe('active');
+    expect(screen.getByTestId('apikey-status-ak-1').getAttribute('data-state')).toBe('per_link');
+    expect(screen.getByTestId('apikey-status-ak-2').textContent).toBe('revoked');
+    expect(screen.getByTestId('apikey-status-ak-2').getAttribute('data-state')).toBe('missing');
+
+    // A revoked key has no Revoke button (nothing left to revoke).
+    expect(screen.getByTestId('apikey-revoke-ak-1')).toBeTruthy();
+    expect(screen.queryByTestId('apikey-revoke-ak-2')).toBeNull();
+  });
+
+  it('creates a key and reveals the plaintext exactly once, with a copy button', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    const project = baseProject();
+    const { client, kctl } = apiKeyClient(project);
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-apikeys'));
+    await waitFor(() => expect(screen.getByTestId('apikeys-empty')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('apikey-name'), { target: { value: 'ci-bot' } });
+    fireEvent.click(screen.getByTestId('apikey-create'));
+
+    await waitFor(() => expect(kctl.creates).toHaveLength(1));
+    expect(kctl.creates[0]).toEqual({ projectId: 'p1', input: { name: 'ci-bot' } });
+
+    // The plaintext appears in the one-time reveal card.
+    await waitFor(() => expect(screen.getByTestId('apikey-reveal-value')).toBeTruthy());
+    expect(screen.getByTestId('apikey-reveal-value').textContent).toBe('jck_a1b2c3d4e5f6');
+
+    fireEvent.click(screen.getByTestId('apikey-reveal-copy'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('jck_a1b2c3d4e5f6'));
+
+    // Dismissing the reveal does not revoke the key — it stays listed as active,
+    // and the plaintext is gone from the DOM (no other read-back surface).
+    fireEvent.click(screen.getByTestId('apikey-reveal-dismiss'));
+    await waitFor(() => expect(screen.queryByTestId('apikey-reveal-value')).toBeNull());
+    expect(kctl.revokes).toHaveLength(0);
+    expect(screen.getByTestId('apikey-status-ak-new').textContent).toBe('active');
+  });
+
+  it('revokes a key', async () => {
+    const project = baseProject();
+    const seed: ApiKey[] = [
+      {
+        id: 'ak-1', project_id: project.id, name: 'ci-bot', prefix: 'jck_a1b2',
+        created_at: '2026-01-01T00:00:00Z', last_used_at: null, revoked_at: null,
+      },
+    ];
+    const { client, kctl } = apiKeyClient(project, { seed });
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-apikeys'));
+    await waitFor(() => expect(screen.getByTestId('apikey-revoke-ak-1')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('apikey-revoke-ak-1'));
+
+    await waitFor(() => expect(kctl.revokes).toEqual([{ projectId: 'p1', keyId: 'ak-1' }]));
+    await waitFor(() => expect(screen.getByTestId('apikey-status-ak-1').textContent).toBe('revoked'));
+    expect(screen.queryByTestId('apikey-revoke-ak-1')).toBeNull();
+  });
+
+  it('surfaces a create error readably', async () => {
+    const project = baseProject();
+    const err = new ApiError(400, 'name is required', {
+      error: { code: 'bad_request', message: 'name is required' },
+    });
+    const { client } = apiKeyClient(project, { createErr: err });
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-apikeys'));
+    fireEvent.change(screen.getByTestId('apikey-name'), { target: { value: 'ci-bot' } });
+    fireEvent.click(screen.getByTestId('apikey-create'));
+
+    await waitFor(() => expect(screen.getByText('name is required')).toBeTruthy());
   });
 });

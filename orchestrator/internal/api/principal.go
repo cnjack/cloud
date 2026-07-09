@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/domain"
@@ -18,23 +20,43 @@ const (
 )
 
 // principal is the authenticated subject of a request. Exactly one of these is
-// true: a human `user` (OAuth login/session) or a `service` principal (the
-// CONSOLE_TOKEN, treated as a virtual cluster admin with user_id=null). A nil
+// true: a human `user` (OAuth login/session), a `service` principal (the
+// CONSOLE_TOKEN, treated as a virtual cluster admin with user_id=null), or a
+// project-scoped API key (F12 / D24 — scopedProjectID non-empty). A nil
 // principal means unauthenticated.
 type principal struct {
-	user         *domain.User // nil for the service principal
+	user         *domain.User // nil for the service principal / an API key
 	service      bool         // authenticated via CONSOLE_TOKEN
-	sessionToken string       // plaintext session token (for logout); "" for service
+	sessionToken string       // plaintext session token (for logout); "" for service/API key
+	// scopedProjectID, when non-empty, means this principal authenticated with a
+	// project-scoped API key (F12 / D24): a Bearer token with the "jck_" prefix
+	// resolved (by SHA-256) to a revocable, project-bound credential. Its
+	// authority is capped at RoleMember on EXACTLY this one project — see
+	// effectiveRole — and it can never reach a cluster-admin surface or manage
+	// API keys itself (no self-renewal privilege escalation). This is the
+	// security core of F12: a leaked project key cannot reach another project.
+	scopedProjectID string
 }
 
 // isClusterAdmin reports whether the principal has cluster-admin authority. The
 // service principal is always cluster-admin (script compatibility); a user is
-// admin iff IsClusterAdmin is set.
+// admin iff IsClusterAdmin is set. A project-scoped API key is NEVER
+// cluster-admin (isAPIKey below), regardless of who created it.
 func (p *principal) isClusterAdmin() bool {
 	if p == nil {
 		return false
 	}
 	return p.service || (p.user != nil && p.user.IsClusterAdmin)
+}
+
+// isAPIKey reports whether the principal authenticated with a project-scoped
+// API key (F12 / D24). Its authority is capped at RoleMember on exactly
+// scopedProjectID (see effectiveRole) and it is excluded from cluster-admin
+// surfaces regardless of that cap (see handleGetSystem; the model/kanban admin
+// surfaces are already gated by requireClusterAdmin, which isClusterAdmin
+// above reports false for).
+func (p *principal) isAPIKey() bool {
+	return p != nil && p.scopedProjectID != ""
 }
 
 // userID returns the human user's id, or "" for the service principal.
@@ -92,12 +114,45 @@ func (s *Server) resolvePrincipal(r *http.Request, allowQuery bool) (*principal,
 		if s.cfg.ConsoleToken != "" && auth.ConstantTimeEqual(tok, s.cfg.ConsoleToken) {
 			return &principal{service: true}, true
 		}
+		// Project-scoped API key (F12 / D24): a "jck_"-prefixed token resolves by
+		// its SHA-256 to a revocable, project-bound credential (store excludes
+		// revoked rows, so a revoked key falls straight through to "unresolved" —
+		// same 401 as an unknown token; revocation is effective on the very next
+		// lookup, no cache to invalidate). A "jck_" token is never a session
+		// token, so it does NOT fall through to the session lookup below.
+		if strings.HasPrefix(tok, auth.APIKeyTokenPrefix) {
+			if k, err := s.st.GetAPIKeyByHash(ctx, auth.HashToken(tok)); err == nil {
+				s.touchAPIKeyLastUsed(ctx, k)
+				return &principal{scopedProjectID: k.ProjectID}, true
+			}
+			return nil, false
+		}
 		// Otherwise treat it as a session token.
 		if u, err := s.st.GetUserBySessionToken(ctx, auth.HashToken(tok)); err == nil {
 			return &principal{user: u, sessionToken: tok}, true
 		}
 	}
 	return nil, false
+}
+
+// apiKeyLastUsedThrottle caps how often a scoped principal's last_used_at is
+// refreshed. A hot key firing many requests a minute must not turn into a
+// synchronous DB write on every single one — see touchAPIKeyLastUsed.
+const apiKeyLastUsedThrottle = time.Minute
+
+// touchAPIKeyLastUsed best-effort refreshes an API key's last_used_at, but
+// only when it is stale (nil, or older than apiKeyLastUsedThrottle) — the
+// throttle that keeps a hammered key's audit stamp off the hot path. Errors
+// are logged, never surfaced: a failed audit stamp must not turn an otherwise
+// valid credential into a failed request.
+func (s *Server) touchAPIKeyLastUsed(ctx context.Context, k *domain.APIKey) {
+	now := time.Now().UTC()
+	if k.LastUsedAt != nil && now.Sub(*k.LastUsedAt) < apiKeyLastUsedThrottle {
+		return
+	}
+	if err := s.st.UpdateAPIKeyLastUsed(ctx, k.ID, now); err != nil {
+		s.log.Error("update api key last_used_at", "key", k.ID, "err", err)
+	}
 }
 
 // effectiveRole returns the principal's role on a project and whether it has any
@@ -108,6 +163,19 @@ func (s *Server) resolvePrincipal(r *http.Request, allowQuery bool) (*principal,
 func (s *Server) effectiveRole(ctx context.Context, p *principal, projectID string) (domain.Role, bool, error) {
 	if p.isClusterAdmin() {
 		return domain.RoleOwner, true, nil
+	}
+	// Project-scoped API key (F12 / D24) — the security core of the
+	// scoped-principal boundary: RoleMember on EXACTLY p.scopedProjectID, no
+	// access to any other project. Because RoleMember never satisfies a
+	// RoleOwner gate (authorizeProject below), this single branch also denies
+	// every owner-level action on the key's OWN project (settings, members,
+	// integrations, kanban, schedules, service create/delete, and managing API
+	// keys itself) without needing a per-endpoint special case.
+	if p.isAPIKey() {
+		if projectID == p.scopedProjectID {
+			return domain.RoleMember, true, nil
+		}
+		return domain.RoleViewer, false, nil
 	}
 	uid := p.userID()
 	if uid == "" {

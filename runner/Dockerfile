@@ -29,8 +29,14 @@ FROM debian:bookworm-slim
 
 # git: clone the target repo and produce the diff.
 # ca-certificates: HTTPS clones.
+# curl + zstd: the persistent-workspace archive layer (F10 / D23 ③). entrypoint.sh
+#   in archive mode (RUN_ARCHIVE=1) tars the PVC and PUTs it to a presigned S3/
+#   MinIO URL with curl, compressing with zstd (gzip fallback); the restore path
+#   (RESTORE_ARCHIVE_URL) curl-downloads and untars. tar/gzip are in the base
+#   image; curl and zstd are not, so add them. (tar autodetects zstd on extract
+#   only when the zstd binary is present.)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates curl zstd \
     && rm -rf /var/lib/apt/lists/*
 
 # Prebuilt static binaries (compiled on host for the image's target arch).

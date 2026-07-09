@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -135,6 +136,34 @@ func TestEnsureWorkspacePVCIdempotent(t *testing.T) {
 	list, _ := cs.CoreV1().PersistentVolumeClaims("jcloud").List(ctx, metav1.ListOptions{})
 	if len(list.Items) != 1 {
 		t.Fatalf("have %d PVCs after two ensures, want 1", len(list.Items))
+	}
+}
+
+// TestEnsureWorkspacePVCTerminatingIsTransient guards the F10 archive→restore
+// race: after finalizeArchiveJob deletes a service's PVC, a fast follow-up run
+// may EnsureWorkspacePVC while the old same-named PVC is still Terminating (its
+// pvc-protection finalizer not yet cleared). Create returns AlreadyExists for
+// that doomed object; binding a run to it would hang the pod Pending until the
+// Job deadline fails it. EnsureWorkspacePVC must instead return a transient error
+// so the reconciler leaves the run queued and retries once the PVC is truly gone.
+func TestEnsureWorkspacePVCTerminatingIsTransient(t *testing.T) {
+	now := metav1.Now()
+	terminating := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              WorkspacePVCName("svc1"),
+			Namespace:         "jcloud",
+			DeletionTimestamp: &now,
+			Finalizers:        []string{"kubernetes.io/pvc-protection"},
+		},
+	}
+	cs := fake.NewSimpleClientset(terminating)
+	c := &Client{cs: cs, cfg: Config{Namespace: "jcloud", WorkspacePVCSize: "10Gi"}}
+	err := c.EnsureWorkspacePVC(context.Background(), "svc1", "proj1")
+	if err == nil {
+		t.Fatal("EnsureWorkspacePVC must return a transient error for a Terminating PVC (never bind a run to it)")
+	}
+	if !strings.Contains(err.Error(), "terminating") {
+		t.Fatalf("error should name the terminating PVC, got %v", err)
 	}
 }
 

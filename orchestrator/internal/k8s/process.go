@@ -105,6 +105,12 @@ func (p *ProcessLauncher) DeleteWorkspacePVC(_ context.Context, _ string) error 
 	return nil
 }
 
+// WorkspacePVCExists is always false for the process launcher: it has no PVCs,
+// so a service is never an archive candidate on the local/process path (F10).
+func (p *ProcessLauncher) WorkspacePVCExists(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
 // DeleteJob force-removes the container. Removing a missing container is not an
 // error.
 func (p *ProcessLauncher) DeleteJob(ctx context.Context, name string) error {

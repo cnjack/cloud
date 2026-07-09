@@ -140,6 +140,12 @@ func (s *PGStore) DeleteProject(ctx context.Context, id string) error {
 const serviceCols = `id, project_id, name, repo_kind, provider, repo_owner_name,
 	raw_repo_url, provider_repo_id, default_branch, git_mode, default_model_id, integration_id, created_at`
 
+// serviceSelectCols is serviceCols plus the archive columns (F10). It is used by
+// every SELECT/scan of a service; INSERT/UPDATE keep using serviceCols because
+// archived_at/archive_key are written only by MarkServiceArchived /
+// ClearServiceArchive, never by service create/update.
+const serviceSelectCols = serviceCols + `, archived_at, archive_key`
+
 // nullStr maps an empty Go string to a SQL NULL so nullable columns (provider,
 // repo_owner_name, raw_repo_url) stay NULL rather than ” — the services CHECK
 // constraint on provider only permits NULL or an enum value, not ”.
@@ -163,10 +169,10 @@ func nullRunResult(r *domain.RunResult) *string {
 
 func scanService(row pgx.Row) (*domain.Service, error) {
 	var s domain.Service
-	var provider, ownerName, rawURL *string
+	var provider, ownerName, rawURL, archiveKey *string
 	err := row.Scan(&s.ID, &s.ProjectID, &s.Name, &s.RepoKind,
 		&provider, &ownerName, &rawURL, &s.ProviderRepoID, &s.DefaultBranch, &s.GitMode,
-		&s.DefaultModelID, &s.IntegrationID, &s.CreatedAt)
+		&s.DefaultModelID, &s.IntegrationID, &s.CreatedAt, &s.ArchivedAt, &archiveKey)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -181,6 +187,9 @@ func scanService(row pgx.Row) (*domain.Service, error) {
 	}
 	if rawURL != nil {
 		s.RawRepoURL = *rawURL
+	}
+	if archiveKey != nil {
+		s.ArchiveKey = *archiveKey
 	}
 	return &s, nil
 }
@@ -206,12 +215,12 @@ func (s *PGStore) CreateService(ctx context.Context, svc *domain.Service) error 
 
 func (s *PGStore) GetService(ctx context.Context, id string) (*domain.Service, error) {
 	return scanService(s.pool.QueryRow(ctx,
-		`SELECT `+serviceCols+` FROM services WHERE id=$1`, id))
+		`SELECT `+serviceSelectCols+` FROM services WHERE id=$1`, id))
 }
 
 func (s *PGStore) ListServices(ctx context.Context, projectID string) ([]domain.Service, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+serviceCols+` FROM services WHERE project_id=$1 ORDER BY created_at ASC`, projectID)
+		`SELECT `+serviceSelectCols+` FROM services WHERE project_id=$1 ORDER BY created_at ASC`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list services: %w", err)
 	}
@@ -229,12 +238,12 @@ func (s *PGStore) ListServices(ctx context.Context, projectID string) ([]domain.
 
 func (s *PGStore) GetDefaultService(ctx context.Context, projectID string) (*domain.Service, error) {
 	return scanService(s.pool.QueryRow(ctx,
-		`SELECT `+serviceCols+` FROM services WHERE project_id=$1 AND name='default'`, projectID))
+		`SELECT `+serviceSelectCols+` FROM services WHERE project_id=$1 AND name='default'`, projectID))
 }
 
 func (s *PGStore) ListServicesByRepo(ctx context.Context, provider domain.GitProvider, repoOwnerName string) ([]domain.Service, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+serviceCols+` FROM services
+		`SELECT `+serviceSelectCols+` FROM services
 		 WHERE repo_kind='provider' AND provider=$1 AND repo_owner_name=$2
 		 ORDER BY created_at ASC`,
 		string(provider), repoOwnerName)
@@ -275,6 +284,67 @@ func (s *PGStore) DeleteService(ctx context.Context, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM services WHERE id=$1`, id)
 	if err != nil {
 		return fmt.Errorf("delete service: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListArchiveCandidates returns services eligible for cold archival (F10 /
+// D23 ③). A candidate is a service that (a) is not already archived, (b) has at
+// least one run, (c) whose most-recent run predates idleBefore, and (d) has NO
+// run currently in a non-terminal state. The GROUP BY + HAVING computes the
+// idle window and the "no live run" guard in one scan; ordering oldest-idle
+// first makes the reconciler drain the longest-idle services first.
+func (s *PGStore) ListArchiveCandidates(ctx context.Context, idleBefore time.Time) ([]ArchiveCandidate, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT s.id, s.project_id, MAX(r.created_at) AS last_activity
+		FROM services s
+		JOIN runs r ON r.service_id = s.id
+		WHERE s.archived_at IS NULL
+		GROUP BY s.id, s.project_id
+		HAVING MAX(r.created_at) < $1
+		   AND COUNT(*) FILTER (
+		       WHERE r.status IN ('queued','scheduling','running','awaiting_input')
+		   ) = 0
+		ORDER BY last_activity ASC`, idleBefore)
+	if err != nil {
+		return nil, fmt.Errorf("list archive candidates: %w", err)
+	}
+	defer rows.Close()
+	var out []ArchiveCandidate
+	for rows.Next() {
+		var c ArchiveCandidate
+		if err := rows.Scan(&c.ServiceID, &c.ProjectID, &c.LastActivity); err != nil {
+			return nil, fmt.Errorf("scan archive candidate: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// MarkServiceArchived stamps archived_at + archive_key (F10). Last-write-wins.
+func (s *PGStore) MarkServiceArchived(ctx context.Context, serviceID, archiveKey string, at time.Time) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE services SET archived_at=$2, archive_key=$3 WHERE id=$1`,
+		serviceID, at, archiveKey)
+	if err != nil {
+		return fmt.Errorf("mark service archived: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClearServiceArchive clears archived_at + archive_key when a run restores the
+// workspace (F10). Idempotent: clearing an already-clear service still succeeds.
+func (s *PGStore) ClearServiceArchive(ctx context.Context, serviceID string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE services SET archived_at=NULL, archive_key=NULL WHERE id=$1`, serviceID)
+	if err != nil {
+		return fmt.Errorf("clear service archive: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -2151,6 +2221,106 @@ func (s *PGStore) SetScheduleLastError(ctx context.Context, id, lastErr string) 
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// --- API keys (F12 / D24) ----------------------------------------------------
+
+const apiKeyCols = `id, project_id, name, key_hash, prefix, created_by,
+	created_at, last_used_at, revoked_at`
+
+func scanAPIKey(row pgx.Row) (*domain.APIKey, error) {
+	var k domain.APIKey
+	var createdBy *string
+	var lastUsed, revoked *time.Time
+	err := row.Scan(
+		&k.ID, &k.ProjectID, &k.Name, &k.KeyHash, &k.Prefix, &createdBy,
+		&k.CreatedAt, &lastUsed, &revoked)
+	if err != nil {
+		return nil, err
+	}
+	k.CreatedBy = createdBy
+	k.LastUsedAt = lastUsed
+	k.RevokedAt = revoked
+	return &k, nil
+}
+
+func (s *PGStore) CreateAPIKey(ctx context.Context, k *domain.APIKey) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO api_keys (`+apiKeyCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		k.ID, k.ProjectID, k.Name, k.KeyHash, k.Prefix, k.CreatedBy,
+		k.CreatedAt, k.LastUsedAt, k.RevokedAt)
+	if err != nil {
+		return fmt.Errorf("create api key: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetAPIKey(ctx context.Context, id string) (*domain.APIKey, error) {
+	k, err := scanAPIKey(s.pool.QueryRow(ctx,
+		`SELECT `+apiKeyCols+` FROM api_keys WHERE id=$1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get api key: %w", err)
+	}
+	return k, nil
+}
+
+// GetAPIKeyByHash excludes revoked rows — see the Store interface doc: this
+// makes ErrNotFound cover both "unknown hash" and "revoked key" uniformly, and
+// makes revocation effective on the very next lookup (no cache to bust).
+func (s *PGStore) GetAPIKeyByHash(ctx context.Context, keyHash string) (*domain.APIKey, error) {
+	k, err := scanAPIKey(s.pool.QueryRow(ctx,
+		`SELECT `+apiKeyCols+` FROM api_keys WHERE key_hash=$1 AND revoked_at IS NULL`, keyHash))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get api key by hash: %w", err)
+	}
+	return k, nil
+}
+
+func (s *PGStore) ListAPIKeysByProject(ctx context.Context, projectID string) ([]domain.APIKey, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+apiKeyCols+` FROM api_keys WHERE project_id=$1 ORDER BY created_at DESC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list api keys by project: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.APIKey
+	for rows.Next() {
+		k, err := scanAPIKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *k)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) UpdateAPIKeyLastUsed(ctx context.Context, id string, at time.Time) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE api_keys SET last_used_at=$2 WHERE id=$1`, id, at)
+	if err != nil {
+		return fmt.Errorf("update api key last used: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RevokeAPIKey is intentionally idempotent (see the Store interface doc): a
+// second revoke of the same key, or one that races a delete, is a no-op, not
+// an error — it never reports RowsAffected()==0 as ErrNotFound.
+func (s *PGStore) RevokeAPIKey(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE api_keys SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL`, id)
+	if err != nil {
+		return fmt.Errorf("revoke api key: %w", err)
 	}
 	return nil
 }

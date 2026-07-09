@@ -145,6 +145,54 @@ type Config struct {
 	// schedule poller scans enabled schedules for a due cron window. <=0 disables
 	// the poller entirely (no scheduled runs dispatch).
 	SchedulePollInterval time.Duration
+
+	// --- object-storage archive layer (F10 / D23 ③) --------------------------
+	// The persistent-workspace archive layer tars a long-idle service's PVC to
+	// object storage (S3/MinIO) and deletes the PVC, restoring it on the next run.
+	// Object storage is a FIRST-CLASS dependency (D14 fail-visible): when it is not
+	// fully configured the archive feature is DISABLED — never a silent skip — and
+	// GET /api/v1/system reports archive.enabled=false with a reason. The real
+	// credentials NEVER enter a runner pod (D16): the orchestrator signs a
+	// short-lived, single-object presigned URL and hands only that to the
+	// archive/restore Job. All four of S3_ENDPOINT/S3_BUCKET/S3_ACCESS_KEY/
+	// S3_SECRET_KEY must be set for the feature to enable (see ArchiveEnabled).
+	S3Endpoint       string // S3_ENDPOINT (e.g. http://minio.jcloud.svc:9000 or https://s3.amazonaws.com)
+	S3Bucket         string // S3_BUCKET
+	S3AccessKey      string // S3_ACCESS_KEY
+	S3SecretKey      string // S3_SECRET_KEY
+	S3Region         string // S3_REGION (default us-east-1)
+	S3ForcePathStyle bool   // S3_FORCE_PATH_STYLE — MinIO needs true
+	// ArchiveIdleDays is ARCHIVE_IDLE_DAYS (default 14): a persistent-workspace
+	// service with a PVC and no run activity for this many days is eligible for
+	// archival. <=0 disables the archive PASS (candidates are never selected) even
+	// when object storage is configured.
+	ArchiveIdleDays int
+}
+
+// ArchiveEnabled reports whether the object-storage archive layer (F10 / D23 ③)
+// is fully configured. All four addressing/credential fields are required; a
+// partial config is treated as OFF (and surfaced fail-visibly), never a
+// best-effort attempt with a missing credential.
+func (c *Config) ArchiveEnabled() bool {
+	return c.S3Endpoint != "" && c.S3Bucket != "" && c.S3AccessKey != "" && c.S3SecretKey != ""
+}
+
+// ArchiveDisabledReason returns a human-readable, non-secret explanation of why
+// the archive layer is off (empty string when it is on). It names the missing
+// piece so the console Cluster page can tell an admin exactly what to configure
+// (D14). The persistent-workspace prerequisite is reported first because
+// without it there are no PVCs to archive regardless of object storage.
+func (c *Config) ArchiveDisabledReason() string {
+	if !c.PersistentWorkspace {
+		return "persistent workspace disabled — set PERSISTENT_WORKSPACE=1 (archive is the cold tier of the persistent-workspace lifecycle)"
+	}
+	if !c.ArchiveEnabled() {
+		return "object storage not configured — set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY and S3_SECRET_KEY"
+	}
+	if c.ArchiveIdleDays <= 0 {
+		return "archive pass disabled — set ARCHIVE_IDLE_DAYS to a positive number of idle days"
+	}
+	return ""
 }
 
 // OAuthProviderConfig is one configured OAuth provider (multitenant blueprint
@@ -208,6 +256,13 @@ func Load() (*Config, error) {
 		JtypeToken:             os.Getenv("JTYPE_TOKEN"),
 		JtypePollInterval:      getdur("JTYPE_POLL_INTERVAL", 15*time.Second),
 		SchedulePollInterval:   getdur("SCHEDULE_POLL_INTERVAL", 30*time.Second),
+		S3Endpoint:             os.Getenv("S3_ENDPOINT"),
+		S3Bucket:               os.Getenv("S3_BUCKET"),
+		S3AccessKey:            os.Getenv("S3_ACCESS_KEY"),
+		S3SecretKey:            os.Getenv("S3_SECRET_KEY"),
+		S3Region:               os.Getenv("S3_REGION"),
+		S3ForcePathStyle:       getbool("S3_FORCE_PATH_STYLE", false),
+		ArchiveIdleDays:        getint("ARCHIVE_IDLE_DAYS", 14),
 	}
 
 	var missing []string

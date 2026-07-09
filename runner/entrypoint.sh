@@ -149,6 +149,51 @@ die() {
 RUN_ID="${RUN_ID:-run-$(date +%s)-$$}"
 WORKSPACE="${WORKSPACE:-/workspace}"
 OUT_DIR="${OUT_DIR:-/out}"
+
+# --- F10 / D23 ③ archive mode -----------------------------------------------
+# RUN_ARCHIVE=1 turns this container into a one-shot workspace ARCHIVER (started
+# by the orchestrator's archive pass, NOT a run): it tars the mounted
+# persistent-workspace PVC — $WORKSPACE (the checkout) + $HOME/.jcode (jcode
+# memory) — and uploads the tarball to ARCHIVE_UPLOAD_URL, a SHORT-LIVED,
+# single-object presigned S3/MinIO PUT URL signed by the control plane. The pod
+# NEVER sees the S3 credentials, only this one URL (D16). It exits BEFORE any of
+# the model/clone/agent machinery below, so it needs none of that env.
+#
+# Compression: zstd when available (smaller/faster), gzip otherwise. The object
+# key is cosmetic (.tar.zst) — restore autodetects the actual codec from the
+# stream, so a gzip fallback still restores correctly.
+if [ "${RUN_ARCHIVE:-0}" = "1" ]; then
+  [ -n "${ARCHIVE_UPLOAD_URL:-}" ] || die setup_failed "RUN_ARCHIVE=1 requires ARCHIVE_UPLOAD_URL"
+  command -v curl >/dev/null 2>&1 || die setup_failed "RUN_ARCHIVE=1 requires curl in the runner image"
+  # Tar members are RELATIVE to / so restore recreates the same absolute paths
+  # regardless of how the PVC subPaths are mounted.
+  WS_REL="${WORKSPACE#/}"
+  HOME_REL="${HOME#/}/.jcode"
+  ARCHIVE_TMP="/tmp/workspace-archive.tar"
+  ARCHIVE_MEMBERS=""
+  [ -d "/$WS_REL" ] && ARCHIVE_MEMBERS="$ARCHIVE_MEMBERS $WS_REL"
+  [ -d "/$HOME_REL" ] && ARCHIVE_MEMBERS="$ARCHIVE_MEMBERS $HOME_REL"
+  [ -n "$ARCHIVE_MEMBERS" ] || die setup_failed "archive: nothing to tar ($WORKSPACE and \$HOME/.jcode both absent)"
+  if command -v zstd >/dev/null 2>&1; then
+    log "archiving$ARCHIVE_MEMBERS -> $ARCHIVE_TMP (zstd)"
+    # shellcheck disable=SC2086
+    tar -C / -cf - $ARCHIVE_MEMBERS | zstd -q -T0 -o "$ARCHIVE_TMP" \
+      || die agent_error "archive: tar|zstd failed"
+  else
+    log "archiving$ARCHIVE_MEMBERS -> $ARCHIVE_TMP (gzip; zstd not available)"
+    # shellcheck disable=SC2086
+    tar -C / -czf "$ARCHIVE_TMP" $ARCHIVE_MEMBERS \
+      || die agent_error "archive: tar|gzip failed"
+  fi
+  log "uploading archive ($(wc -c < "$ARCHIVE_TMP" | tr -d ' ') bytes) to presigned URL"
+  # -sSf: silent but SHOW errors and fail (non-2xx => non-zero exit) so an upload
+  # failure is fail-visible (the Job fails, the reconciler leaves the service
+  # unarchived and retries — it never marks a service archived on a failed upload).
+  curl -sSf -X PUT --data-binary "@$ARCHIVE_TMP" "$ARCHIVE_UPLOAD_URL" \
+    || die agent_error "archive: upload to object storage failed"
+  log "archive upload complete"
+  exit 0
+fi
 RUN_TIMEOUT="${RUN_TIMEOUT:-300s}"
 RUN_KIND="${RUN_KIND:-agent}"
 SOURCE_MODE="${SOURCE_MODE:-clone}"
@@ -276,6 +321,30 @@ reuse_persistent_workspace() {
   fi
   return 0
 }
+
+# --- 1b. Restore an archived workspace (F10 / D23 ③) ------------------------
+# RESTORE_ARCHIVE_URL (set by the reconciler when this run wakes a service whose
+# workspace was archived to object storage) is a SHORT-LIVED, single-object
+# presigned GET URL for the workspace tarball. Download + unpack it into / —
+# recreating $WORKSPACE (the checkout) + $HOME/.jcode (jcode memory) — BEFORE the
+# clone/reuse below, so the persistent-workspace reuse path then finds the
+# restored checkout instead of re-cloning. The pod only ever sees this one URL,
+# never the S3 credentials (D16). Fail-visible: any failure dies (the run fails
+# with a clear reason) rather than silently continuing on an empty workspace.
+# tar autodetects the compression codec (zstd or gzip) on extract, so a gzip
+# fallback archive restores here without knowing which the archiver used.
+if [ -n "${RESTORE_ARCHIVE_URL:-}" ]; then
+  command -v curl >/dev/null 2>&1 || die setup_failed "RESTORE_ARCHIVE_URL set but curl is not in the runner image"
+  RESTORE_TMP="/tmp/workspace-restore.tar"
+  log "restoring archived workspace from presigned URL"
+  curl -sSf -o "$RESTORE_TMP" "$RESTORE_ARCHIVE_URL" \
+    || die setup_failed "restore: download from object storage failed"
+  mkdir -p "$WORKSPACE" "$HOME/.jcode"
+  tar -C / -xf "$RESTORE_TMP" \
+    || die setup_failed "restore: unpacking the workspace archive failed"
+  rm -f "$RESTORE_TMP" 2>/dev/null || true
+  log "archived workspace restored"
+fi
 
 # --- 2. Prepare the workspace (clone/fetch fresh, or reuse the persistent PVC) -
 # Two shapes:

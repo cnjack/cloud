@@ -68,6 +68,25 @@ type Store interface {
 	UpdateService(ctx context.Context, s *domain.Service) error
 	DeleteService(ctx context.Context, id string) error
 
+	// --- workspace archive layer (F10 / D23 ③) ------------------------------
+	// ListArchiveCandidates returns services eligible for cold archival: not
+	// already archived, and with at least one run whose most-recent activity
+	// (created_at) is strictly before idleBefore, AND no run currently in a
+	// non-terminal state (queued/scheduling/running/awaiting_input) — an in-flight
+	// run still needs the PVC. Ordered oldest-idle first. The caller (reconciler)
+	// additionally verifies the PVC physically exists before archiving; the store
+	// only knows run activity. A service with zero runs is never a candidate (no
+	// PVC was ever created).
+	ListArchiveCandidates(ctx context.Context, idleBefore time.Time) ([]ArchiveCandidate, error)
+	// MarkServiceArchived stamps archived_at + archive_key once the reconciler has
+	// confirmed the tarball is in object storage and the PVC deleted. Idempotent
+	// overwrite (last write wins); a missing service is ErrNotFound.
+	MarkServiceArchived(ctx context.Context, serviceID, archiveKey string, at time.Time) error
+	// ClearServiceArchive clears archived_at + archive_key when a new run restores
+	// the workspace. Idempotent (clearing an already-clear service is a no-op that
+	// still returns nil); a missing service is ErrNotFound.
+	ClearServiceArchive(ctx context.Context, serviceID string) error
+
 	// Runs
 	CreateRun(ctx context.Context, r *domain.Run) error
 	GetRun(ctx context.Context, id string) (*domain.Run, error)
@@ -507,6 +526,38 @@ type Store interface {
 	// gone (a concurrent delete), which the poller ignores.
 	SetScheduleLastError(ctx context.Context, id, lastErr string) error
 
+	// --- API keys (F12 / D24) --------------------------------------------------
+	// Project-scoped, revocable automation credentials. CreateAPIKey inserts a
+	// fresh row; the store never sees plaintext, only the already-computed
+	// KeyHash/Prefix (see auth.GenerateAPIKey / auth.HashToken).
+	CreateAPIKey(ctx context.Context, k *domain.APIKey) error
+	// GetAPIKey loads a key by id (the owner-management path: DELETE verifies
+	// the key belongs to the project named in the URL before revoking it).
+	// ErrNotFound when the row is gone.
+	GetAPIKey(ctx context.Context, id string) (*domain.APIKey, error)
+	// GetAPIKeyByHash resolves a presented Bearer token's SHA-256 to its owning
+	// key for principal resolution (api/principal.go). It excludes revoked rows
+	// — ErrNotFound covers BOTH an unknown hash and a revoked key, so revocation
+	// is effective on the very next lookup with no cache to invalidate, and the
+	// caller never needs to distinguish "wrong key" from "revoked key" (both are
+	// simply "unauthenticated").
+	GetAPIKeyByHash(ctx context.Context, keyHash string) (*domain.APIKey, error)
+	// ListAPIKeysByProject serves the owner's management view, newest first.
+	// Revoked keys are included (so status/history is visible); the plaintext
+	// and hash are never part of domain.APIKey's JSON encoding regardless.
+	ListAPIKeysByProject(ctx context.Context, projectID string) ([]domain.APIKey, error)
+	// UpdateAPIKeyLastUsed best-effort stamps last_used_at. Called off the
+	// principal-resolution hot path, throttled by the caller (see
+	// api/principal.go touchAPIKeyLastUsed) so a hammered key does not write on
+	// every single request. ErrNotFound (a racing revoke/delete) is not worth
+	// surfacing — callers treat it as best-effort and ignore the error.
+	UpdateAPIKeyLastUsed(ctx context.Context, id string, at time.Time) error
+	// RevokeAPIKey sets revoked_at=now() where still NULL. Idempotent: revoking
+	// an already-revoked (or, for the memory store, already-absent) key is a
+	// no-op, not an error — so DELETE .../apikeys/{id} is safely retryable and
+	// effective immediately (the next GetAPIKeyByHash for that key 404s).
+	RevokeAPIKey(ctx context.Context, id string) error
+
 	// Lifecycle
 	Close()
 }
@@ -518,6 +569,16 @@ type KanbanWriteback struct {
 	Claim domain.KanbanClaim
 	Run   domain.Run
 	Link  domain.KanbanLink
+}
+
+// ArchiveCandidate is a service eligible for cold workspace archival (F10 /
+// D23 ③): its ID/ProjectID (for the archive Job's PVC + labels) plus the
+// timestamp of its most-recent run, from which idleness was judged. Populated by
+// ListArchiveCandidates.
+type ArchiveCandidate struct {
+	ServiceID    string
+	ProjectID    string
+	LastActivity time.Time
 }
 
 // ErrInvalidTransition is returned by the run mutators when a status change is

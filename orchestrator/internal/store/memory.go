@@ -36,6 +36,7 @@ type MemStore struct {
 	schedules    map[string]domain.Schedule      // keyed by schedule id (F11 / D24)
 	runMessages  map[string][]domain.RunMessage  // session follow-up queue, keyed by runID (D22)
 	permissions  map[string]domain.RunPermission // permission requests, keyed by request_id (F8b)
+	apiKeys      map[string]domain.APIKey        // keyed by api key id (F12 / D24)
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -59,6 +60,7 @@ func NewMemStore() *MemStore {
 		schedules:    map[string]domain.Schedule{},
 		runMessages:  map[string][]domain.RunMessage{},
 		permissions:  map[string]domain.RunPermission{},
+		apiKeys:      map[string]domain.APIKey{},
 	}
 }
 
@@ -238,6 +240,81 @@ func (m *MemStore) DeleteService(_ context.Context, id string) error {
 		return ErrNotFound
 	}
 	delete(m.services, id)
+	return nil
+}
+
+// ListArchiveCandidates mirrors the PG query (F10): a service not already
+// archived, with at least one run, whose most-recent run predates idleBefore and
+// which has no run in a non-terminal state.
+func (m *MemStore) ListArchiveCandidates(_ context.Context, idleBefore time.Time) ([]ArchiveCandidate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Per-service: most-recent run time + whether any run is live (non-terminal).
+	type agg struct {
+		last    time.Time
+		anyRun  bool
+		hasLive bool
+	}
+	byService := map[string]*agg{}
+	for _, r := range m.runs {
+		a := byService[r.ServiceID]
+		if a == nil {
+			a = &agg{}
+			byService[r.ServiceID] = a
+		}
+		a.anyRun = true
+		if r.CreatedAt.After(a.last) {
+			a.last = r.CreatedAt
+		}
+		switch r.Status {
+		case domain.StatusQueued, domain.StatusScheduling, domain.StatusRunning, domain.StatusAwaitingInput:
+			a.hasLive = true
+		}
+	}
+	var out []ArchiveCandidate
+	for sid, svc := range m.services {
+		if svc.ArchivedAt != nil {
+			continue
+		}
+		a := byService[sid]
+		if a == nil || !a.anyRun || a.hasLive {
+			continue
+		}
+		if !a.last.Before(idleBefore) {
+			continue
+		}
+		out = append(out, ArchiveCandidate{ServiceID: sid, ProjectID: svc.ProjectID, LastActivity: a.last})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastActivity.Before(out[j].LastActivity) })
+	return out, nil
+}
+
+// MarkServiceArchived stamps archived_at + archive_key (F10).
+func (m *MemStore) MarkServiceArchived(_ context.Context, serviceID, archiveKey string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	svc, ok := m.services[serviceID]
+	if !ok {
+		return ErrNotFound
+	}
+	t := at
+	svc.ArchivedAt = &t
+	svc.ArchiveKey = archiveKey
+	m.services[serviceID] = svc
+	return nil
+}
+
+// ClearServiceArchive clears archived_at + archive_key (F10). Idempotent.
+func (m *MemStore) ClearServiceArchive(_ context.Context, serviceID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	svc, ok := m.services[serviceID]
+	if !ok {
+		return ErrNotFound
+	}
+	svc.ArchivedAt = nil
+	svc.ArchiveKey = ""
+	m.services[serviceID] = svc
 	return nil
 }
 
@@ -1699,6 +1776,82 @@ func (m *MemStore) SetScheduleLastError(_ context.Context, id, lastErr string) e
 	sc.LastError = lastErr
 	sc.UpdatedAt = time.Now().UTC()
 	m.schedules[id] = sc
+	return nil
+}
+
+// --- API keys (F12 / D24) ---------------------------------------------------
+
+func (m *MemStore) CreateAPIKey(_ context.Context, k *domain.APIKey) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.apiKeys[k.ID] = *k
+	return nil
+}
+
+func (m *MemStore) GetAPIKey(_ context.Context, id string) (*domain.APIKey, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k, ok := m.apiKeys[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := k
+	return &cp, nil
+}
+
+// GetAPIKeyByHash excludes revoked rows — mirrors PGStore's `revoked_at IS
+// NULL` filter so ErrNotFound uniformly covers "unknown hash" and "revoked
+// key" (see the Store interface doc).
+func (m *MemStore) GetAPIKeyByHash(_ context.Context, keyHash string) (*domain.APIKey, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, k := range m.apiKeys {
+		if k.KeyHash == keyHash && k.RevokedAt == nil {
+			cp := k
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MemStore) ListAPIKeysByProject(_ context.Context, projectID string) ([]domain.APIKey, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.APIKey, 0)
+	for _, k := range m.apiKeys {
+		if k.ProjectID == projectID {
+			out = append(out, k)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) UpdateAPIKeyLastUsed(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k, ok := m.apiKeys[id]
+	if !ok {
+		return ErrNotFound
+	}
+	t := at
+	k.LastUsedAt = &t
+	m.apiKeys[id] = k
+	return nil
+}
+
+// RevokeAPIKey is idempotent (mirrors PGStore): a missing id or an
+// already-revoked key is a silent no-op, not an error.
+func (m *MemStore) RevokeAPIKey(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k, ok := m.apiKeys[id]
+	if !ok || k.RevokedAt != nil {
+		return nil
+	}
+	t := time.Now().UTC()
+	k.RevokedAt = &t
+	m.apiKeys[id] = k
 	return nil
 }
 

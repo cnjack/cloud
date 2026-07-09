@@ -54,6 +54,22 @@ data:
   WORKSPACE_PVC_SIZE: "10Gi"
   WORKSPACE_STORAGE_CLASS: ""
 
+  # --- object-storage archive layer (F10 / D23 ③) ----------------------------
+  # Cold tier of the persistent-workspace lifecycle: a service whose RWO PVC has
+  # been idle for ARCHIVE_IDLE_DAYS is tarred to object storage and its PVC
+  # deleted; the next run restores it. These NON-secret settings point at the
+  # in-cluster MinIO (base/minio); the S3 access/secret keys are in secret.yaml.
+  # Unlike MODEL_* this is NOT a fail-visible exclusion: MinIO is real object
+  # storage, not a mock, so wiring it by default is legitimate. The archive PASS
+  # still stays inert until PERSISTENT_WORKSPACE=1 (above) — with it off,
+  # GET /api/v1/system reports archive.enabled=false, reason "persistent
+  # workspace disabled". S3_FORCE_PATH_STYLE=true is required for MinIO.
+  S3_ENDPOINT: "http://minio.jcloud.svc.cluster.local:9000"
+  S3_BUCKET: "jcloud-workspaces"
+  S3_REGION: "us-east-1"
+  S3_FORCE_PATH_STYLE: "true"
+  ARCHIVE_IDLE_DAYS: "14"
+
   # MODEL_* deliberately NOT set here (see header note): configured via the
   # console (DB) in real deployments; re-added as env by the root e2e-rig patch.
 

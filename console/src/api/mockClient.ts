@@ -15,6 +15,9 @@ import type { ApiClient, StreamCallbacks, StreamHandle } from './client';
 import { ApiError } from './client';
 import type {
   AddMemberInput,
+  ApiKey,
+  CreateApiKeyInput,
+  CreateApiKeyResponse,
   CreateKanbanLinkInput,
   CreateProjectInput,
   CreateRunInput,
@@ -198,6 +201,10 @@ export function createMockClient(): ApiClient {
   const schedules = new Map<string, Schedule>();
   // D19 / F5: project integrations, keyed by project id.
   const integrations = new Map<string, Integration[]>();
+  // F12 / D24: project-scoped API keys, keyed by project id. The plaintext is
+  // never stored here beyond the create call's return value — only the safe
+  // ApiKey fields persist, mirroring the orchestrator's hash-only storage.
+  const apiKeys = new Map<string, ApiKey[]>();
 
   // D21: the model catalog (keyed by model id) + project grants (model id -> set
   // of project ids). Demo seeds ONE model, granted to every seeded project, so
@@ -1444,6 +1451,41 @@ export function createMockClient(): ApiClient {
       ];
       const needle = (q ?? '').trim().toLowerCase();
       return delay(needle ? all.filter((r) => r.full_name.toLowerCase().includes(needle)) : all);
+    },
+
+    /* ---- project-scoped API keys (F12 / D24) ------------------------------- */
+    async listApiKeys(projectId: string): Promise<ApiKey[]> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      return delay([...(apiKeys.get(projectId) ?? [])]);
+    },
+    async createApiKey(projectId: string, input: CreateApiKeyInput): Promise<CreateApiKeyResponse> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      const name = input.name?.trim();
+      if (!name) throw badRequest('name is required');
+      // Demo-only plaintext (not cryptographically strong — the real key comes
+      // from the orchestrator's crypto/rand). Shape-compatible with "jck_"+hex
+      // so the UI's prefix/copy affordances behave identically to production.
+      const body = Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+      const key = `jck_${body}`;
+      const k: ApiKey = {
+        id: genId('ak'),
+        project_id: projectId,
+        name,
+        prefix: key.slice(0, 8),
+        created_at: nowISO(),
+        last_used_at: null,
+        revoked_at: null,
+      };
+      const list = apiKeys.get(projectId) ?? [];
+      list.unshift(k);
+      apiKeys.set(projectId, list);
+      return delay({ ...k, key });
+    },
+    async revokeApiKey(projectId: string, keyId: string): Promise<void> {
+      const k = (apiKeys.get(projectId) ?? []).find((x) => x.id === keyId);
+      if (!k) throw new ApiError(404, 'api key not found');
+      k.revoked_at = nowISO();
+      return delay(undefined);
     },
 
     /* ---- services (blueprint §4) ------------------------------------------ */

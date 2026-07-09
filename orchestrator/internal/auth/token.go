@@ -21,6 +21,41 @@ func GenerateRunToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// APIKeyTokenPrefix tags a project-scoped API key's plaintext (F12 / D24) so
+// the principal resolver can recognise one before doing a DB lookup, without
+// confusing it with an opaque session token.
+const APIKeyTokenPrefix = "jck_"
+
+// apiKeyDisplayPrefixLen is how many leading characters of the plaintext
+// (including APIKeyTokenPrefix) are retained in the clear — see
+// APIKeyDisplayPrefix.
+const apiKeyDisplayPrefixLen = 8 // "jck_" + 4 hex chars, e.g. "jck_a1b2"
+
+// GenerateAPIKey returns a fresh project-scoped API key: APIKeyTokenPrefix +
+// 32 cryptographically-random bytes, hex-encoded. Only its SHA-256 (HashToken)
+// and a short display prefix (APIKeyDisplayPrefix) are ever persisted — the
+// plaintext returned here is shown to the caller exactly once, at creation.
+// There is no read-back path afterward (CLAUDE.md fail-visible credential
+// discipline / D24).
+func GenerateAPIKey() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate api key: %w", err)
+	}
+	return APIKeyTokenPrefix + hex.EncodeToString(b), nil
+}
+
+// APIKeyDisplayPrefix returns the plaintext key's first few characters (e.g.
+// "jck_a1b2") for list-identification only. It is stored alongside the hash so
+// an owner can recognise which key is which — it is deliberately short and
+// NEVER sufficient on its own to authenticate.
+func APIKeyDisplayPrefix(plaintext string) string {
+	if len(plaintext) <= apiKeyDisplayPrefixLen {
+		return plaintext
+	}
+	return plaintext[:apiKeyDisplayPrefixLen]
+}
+
 // HashToken returns the lowercase hex SHA-256 of a token. Only the hash is
 // persisted (on Run.TokenHash); the plaintext lives only in the Job env.
 func HashToken(token string) string {

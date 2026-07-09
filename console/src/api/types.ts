@@ -633,6 +633,47 @@ export interface ProviderReposEnvelope {
   repos: ProviderRepo[];
 }
 
+/* ---- project-scoped API keys (F12 / D24) ---------------------------------- */
+
+/**
+ * A project-scoped, revocable automation credential — replaces borrowing the
+ * cluster-wide CONSOLE_TOKEN for external/CI use. Authenticates as
+ * `Authorization: Bearer <key>` and resolves to a principal capped at the
+ * Member role on THIS project only (never another project, never this
+ * project's owner-level actions, never the cluster-admin surface, never these
+ * apikeys endpoints themselves). `prefix` (e.g. "jck_a1b2") is shown in the
+ * list for identification only; the full key is NEVER returned again after
+ * creation. Mirrors the orchestrator domain.APIKey / apiKeyView.
+ */
+export interface ApiKey {
+  id: string;
+  project_id: string;
+  name: string;
+  prefix: string;
+  created_at: string;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+}
+
+/**
+ * POST /api/v1/projects/{id}/apikeys response — an ApiKey plus the ONE-TIME
+ * plaintext `key`. This is the only response that ever carries it; show it
+ * once with a copy affordance and never fetch it again (there is no read-back
+ * endpoint).
+ */
+export interface CreateApiKeyResponse extends ApiKey {
+  key: string;
+}
+
+/** POST /api/v1/projects/{id}/apikeys body (owner). name is required. */
+export interface CreateApiKeyInput {
+  name: string;
+}
+
+export interface ApiKeysEnvelope {
+  api_keys: ApiKey[];
+}
+
 /* ---- model catalog + project grants (D21) -------------------------------- */
 
 /**

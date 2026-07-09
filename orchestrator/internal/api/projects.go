@@ -69,13 +69,28 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	prin := principalFrom(r.Context())
-	// Cluster-admins (and the service principal) see every project; a regular user
+	// Cluster-admins (and the service principal) see every project; a
+	// project-scoped API key (F12 / D24) sees ONLY the one project it is bound
+	// to — never the cluster-wide list, never another project (the same
+	// boundary GET /projects/{id} enforces via effectiveRole); a regular user
 	// sees only the projects they are a member of (blueprint §2 RBAC matrix).
 	var ps []domain.Project
 	var err error
-	if prin.isClusterAdmin() {
+	switch {
+	case prin.isClusterAdmin():
 		ps, err = s.st.ListProjects(r.Context())
-	} else {
+	case prin.isAPIKey():
+		var p *domain.Project
+		p, err = s.st.GetProject(r.Context(), prin.scopedProjectID)
+		switch {
+		case err == nil:
+			ps = []domain.Project{*p}
+		case errors.Is(err, store.ErrNotFound):
+			// The bound project is gone (should not happen: the FK cascade
+			// deletes the key with its project) — fail visibly empty, not a 500.
+			ps, err = nil, nil
+		}
+	default:
 		ps, err = s.st.ListProjectsForUser(r.Context(), prin.userID())
 	}
 	if err != nil {

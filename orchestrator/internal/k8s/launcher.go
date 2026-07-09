@@ -19,6 +19,14 @@ func WorkspacePVCName(serviceID string) string {
 	return "ws-" + serviceID
 }
 
+// ArchiveJobName is the deterministic Job name for a service's one-shot
+// workspace-archive Job (F10 / D23 ③). Its distinct prefix keeps it from
+// colliding with a run's JobName ("jcloud-run-<runID>"), and the deterministic
+// name is what makes the archive pass's CreateJob idempotent across ticks.
+func ArchiveJobName(serviceID string) string {
+	return "jcloud-archive-" + serviceID
+}
+
 // JobState is the reconciler-facing summary of a Job's status, decoupled from
 // batchv1 types so the reconciler never imports client-go.
 type JobState int
@@ -110,4 +118,11 @@ type JobLauncher interface {
 	// service is deleted (D05 tenant-erasure guardrail). Deleting a missing PVC is
 	// not an error.
 	DeleteWorkspacePVC(ctx context.Context, serviceID string) error
+
+	// WorkspacePVCExists reports whether the service's workspace PVC currently
+	// exists (F10 / D23 ③). The archive pass consults it before launching an
+	// archive Job so it never tries to tar a service that has runs but no PVC
+	// (e.g. persistent workspace was toggled on only recently). Launchers without a
+	// cluster (process/local) return (false, nil): there are no PVCs to archive.
+	WorkspacePVCExists(ctx context.Context, serviceID string) (bool, error)
 }

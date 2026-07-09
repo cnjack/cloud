@@ -85,6 +85,42 @@ type Reconciler struct {
 	// re-resolving + re-warning. In-memory by design: a restart re-checks once —
 	// if the owner fixed the integration the pass completes, else one more note.
 	integCredNoted sync.Map // runID -> struct{}
+
+	// F10 / D23 ③ — workspace archive layer. archiver signs the short-lived,
+	// single-object presigned URLs the archive/restore Jobs use; it NEVER holds S3
+	// credentials in a pod (D16). nil when object storage is not configured, in
+	// which case reconcileArchive and the restore path are no-ops (the disabled
+	// state is surfaced fail-visibly at GET /api/v1/system, not here). archiveNoted
+	// throttles the one-time-per-service archive-failure warning so a repeatedly
+	// failing archive Job does not log every tick.
+	archiver     Archiver
+	archiveNoted sync.Map // serviceID -> struct{}
+}
+
+// Archiver signs short-lived, single-object presigned URLs for the workspace
+// archive layer (F10 / D23 ③). *objstore.Client implements it; a fake does in
+// tests. The reconciler hands ONLY the signed URL to a pod — never the S3
+// credentials — honoring the D16 red line.
+type Archiver interface {
+	PresignPut(key string, expiry time.Duration) (string, error)
+	PresignGet(key string, expiry time.Duration) (string, error)
+}
+
+const (
+	// archivePresignTTL bounds how long an archive PUT / restore GET URL is valid.
+	// Generous enough to tar + upload (or download + untar) a large workspace, yet
+	// well under the SigV4 7-day cap.
+	archivePresignTTL = 30 * time.Minute
+	// archiveJobDeadlineSecs is the archive Job's activeDeadlineSeconds — a hard
+	// backstop so a stuck tar/upload cannot hold the PVC forever.
+	archiveJobDeadlineSecs = 1800
+)
+
+// workspaceArchiveKey is the deterministic object key for a service's workspace
+// tarball (F10). Deterministic so a re-archive overwrites the same object and a
+// restore needs no lookup beyond the service's stored archive_key.
+func workspaceArchiveKey(serviceID string) string {
+	return "workspaces/" + serviceID + ".tar.zst"
 }
 
 // KanbanWriter is the slice of *jtype.Client the writeback pass uses. Exported so
@@ -159,6 +195,15 @@ func (r *Reconciler) noteIntegrationCredentialFailure(ctx context.Context, runID
 	if r.pub != nil {
 		r.pub.Publish(runID, ev)
 	}
+}
+
+// WithArchive wires the object-storage archiver (F10 / D23 ③). A nil archiver
+// (object storage not configured) leaves the archive pass and restore path as
+// no-ops — the disabled state is surfaced fail-visibly at GET /api/v1/system,
+// never as a silent skip. Returns r for chaining.
+func (r *Reconciler) WithArchive(a Archiver) *Reconciler {
+	r.archiver = a
+	return r
 }
 
 // WithModelResolver replaces the default model-config resolver with a shared
@@ -330,6 +375,18 @@ func (r *Reconciler) Tick(ctx context.Context) {
 					"run", run.ID, "service", run.ServiceID)
 				continue
 			}
+			// F10 / D23 ③ — a service being archived holds (or is about to delete)
+			// its RWO workspace PVC via a one-shot archive Job. Do not schedule a run
+			// onto that same PVC concurrently: leave it queued until the archive pass
+			// finishes. Once it does, the service is marked 'archived' and this run
+			// schedules as a RESTORE next tick (createJob signs a GET URL). A
+			// failed/absent archive Job does NOT block — the run then reuses the
+			// still-present PVC normally.
+			if persistent && r.archiver != nil && r.archiveJobBlocking(ctx, run.ServiceID) {
+				r.log.Info("reconcile: service workspace archiving — leaving run queued",
+					"run", run.ID, "service", run.ServiceID)
+				continue
+			}
 			// Session (D22): the per-project live-session cap. A session run holds a
 			// pod across turns (running + awaiting_input), so cap the number of them
 			// per project independently of max_concurrent_runs; over the cap the new
@@ -393,6 +450,11 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// effective session_idle_timeout (idle reclaim: sets the finalize flag so the
 	// runner exits and the run converges to succeeded).
 	r.reconcileSessionIdle(ctx)
+
+	// F10 / D23 ③ — cold archive: tar a long-idle service's workspace PVC to
+	// object storage and delete the PVC. No-op unless object storage is configured
+	// AND persistent workspace is on AND ARCHIVE_IDLE_DAYS>0.
+	r.reconcileArchive(ctx)
 }
 
 // reconcilePRs pushes the branch and opens a draft PR for each succeeded
@@ -1040,12 +1102,51 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 	// and retry next tick rather than launch a Job that would fail to bind its
 	// volume (fail-visible; no blind schedule). OFF => empty PVC name => ephemeral.
 	var workspacePVC string
+	// F10 / D23 ③ — restore URL, set when the service is archived (its PVC must be
+	// re-populated from object storage before the run starts). Injected into the
+	// Job env below and, on successful dispatch, the service's archive marker is
+	// cleared.
+	var restoreURL string
 	if r.cfg.PersistentWorkspace {
 		if err := r.launcher.EnsureWorkspacePVC(ctx, run.ServiceID, run.ProjectID); err != nil {
 			r.log.Error("reconcile: ensure workspace pvc — leaving run queued", "run", run.ID, "service", run.ServiceID, "err", err)
 			return false // transient; retry next tick
 		}
 		workspacePVC = k8s.WorkspacePVCName(run.ServiceID)
+
+		// If the service was archived (D23 ③), EnsureWorkspacePVC just re-created an
+		// EMPTY PVC. Sign a short-lived, single-object GET URL so the runner restores
+		// the tarball into it before the run proper (see entrypoint.sh
+		// RESTORE_ARCHIVE_URL). Fail-visible: an archived service with no object
+		// storage configured is UNRESTORABLE — fail the run rather than silently run
+		// on an empty workspace.
+		svc, serr := r.st.GetService(ctx, run.ServiceID)
+		if serr != nil {
+			r.log.Error("reconcile: get service for archive check — leaving run queued", "run", run.ID, "service", run.ServiceID, "err", serr)
+			return false // transient; retry next tick
+		}
+		if svc.ArchivedAt != nil {
+			if r.archiver == nil {
+				msg := "the service workspace is archived but object storage is not configured — cannot restore it"
+				if committed, merr := r.st.MarkFailed(ctx, run.ID, "Failed", domain.FailureSetupFailed, msg, r.now()); merr != nil {
+					r.log.Error("reconcile: mark failed (archive unrestorable)", "run", run.ID, "err", merr)
+				} else {
+					r.log.Error("reconcile: run failed — archived workspace not restorable (object storage unconfigured)", "run", run.ID, "service", run.ServiceID)
+					r.emitStatus(ctx, committed)
+				}
+				return false
+			}
+			key := svc.ArchiveKey
+			if key == "" {
+				key = workspaceArchiveKey(run.ServiceID)
+			}
+			url, perr := r.archiver.PresignGet(key, archivePresignTTL)
+			if perr != nil {
+				r.log.Error("reconcile: presign restore url — leaving run queued", "run", run.ID, "service", run.ServiceID, "err", perr)
+				return false // transient; retry next tick
+			}
+			restoreURL = url
+		}
 	}
 
 	token, err := auth.GenerateRunToken()
@@ -1090,10 +1191,17 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		jobDeadline = timeout + timeoutGrace(timeout)
 	}
 
+	env := r.jobEnv(ctx, run, token, model, proj, timeout)
+	// F10 / D23 ③ — restore: the runner downloads + unpacks the archived tarball
+	// from this presigned GET URL into the freshly re-created PVC before the run
+	// proper. Only the single-object URL enters the pod, never S3 credentials (D16).
+	if restoreURL != "" {
+		env["RESTORE_ARCHIVE_URL"] = restoreURL
+	}
 	spec := k8s.JobSpec{
 		Name:           jobName,
 		RunID:          run.ID,
-		Env:            r.jobEnv(ctx, run, token, model, proj, timeout),
+		Env:            env,
 		TimeoutSeconds: jobDeadline,
 		WorkspacePVC:   workspacePVC,
 	}
@@ -1113,8 +1221,181 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		}
 		return false
 	}
+	// F10 / D23 ③ — the run has committed to restoring the archived workspace, so
+	// the service is no longer archived. Clear the marker. A restore that later
+	// fails inside the runner fails THAT run visibly (entrypoint die); the next run
+	// then re-clones into the (now empty) PVC — data-safe because the authoritative
+	// transcript is in the control-plane store (D12), never only in the PVC.
+	if restoreURL != "" {
+		if err := r.st.ClearServiceArchive(ctx, run.ServiceID); err != nil {
+			r.log.Error("reconcile: clear service archive after restore dispatch", "run", run.ID, "service", run.ServiceID, "err", err)
+		} else {
+			r.log.Info("reconcile: restoring archived workspace", "run", run.ID, "service", run.ServiceID)
+		}
+	}
 	r.emitStatus(ctx, committed)
 	return true
+}
+
+// archiveJobBlocking reports whether a service's archive Job must delay
+// scheduling a run onto its RWO workspace PVC (F10), and DRIVES a terminal
+// archive Job to resolution so a waiting run never deadlocks:
+//
+//   - Pending/Running: the archive holds the volume — block.
+//   - Succeeded: FINALIZE it here (delete PVC + mark archived + delete Job) and
+//     block ONE tick so the archive pod fully releases the RWO volume; next tick
+//     the service is 'archived' and the run schedules as a restore. Finalizing
+//     HERE (not only in reconcileArchive) is essential: the moment this run was
+//     queued the service left the idle-candidate set, so reconcileArchive would
+//     never finalize it — the run would block forever. This path is also
+//     restart-safe (it reconstructs from the durable Job state, no memory).
+//   - Failed/deadline: the archive did NOT happen; note it and DON'T block — the
+//     run proceeds and reuses the still-present PVC.
+//   - Missing: no archive — don't block.
+//   - transient GetJobState error: block conservatively (retried next tick).
+//
+// Only called when persistent workspace + object storage are on.
+func (r *Reconciler) archiveJobBlocking(ctx context.Context, serviceID string) bool {
+	state, err := r.launcher.GetJobState(ctx, k8s.ArchiveJobName(serviceID))
+	if err != nil {
+		r.log.Warn("reconcile: get archive job state", "service", serviceID, "err", err)
+		return true
+	}
+	switch state {
+	case k8s.JobPending, k8s.JobRunning:
+		return true
+	case k8s.JobSucceeded:
+		r.finalizeArchiveJob(ctx, serviceID)
+		return true
+	case k8s.JobFailed, k8s.JobDeadlineExceeded:
+		r.noteArchiveFailure(serviceID, "archive job", fmt.Errorf("job state %s", state))
+		return false
+	default: // Missing / Unknown
+		return false
+	}
+}
+
+// finalizeArchiveJob completes a SUCCEEDED archive Job: delete the PVC, stamp
+// archived_at/archive_key, delete the Job. Delete the PVC FIRST so a mid-way
+// failure never marks a service archived while its volume still exists (the
+// operation is idempotent and retried). Shared by reconcileArchive (idle path)
+// and archiveJobBlocking (a run is already waiting).
+func (r *Reconciler) finalizeArchiveJob(ctx context.Context, serviceID string) {
+	jobName := k8s.ArchiveJobName(serviceID)
+	key := workspaceArchiveKey(serviceID)
+	if err := r.launcher.DeleteWorkspacePVC(ctx, serviceID); err != nil {
+		r.log.Warn("reconcile archive: delete pvc", "service", serviceID, "err", err)
+		return
+	}
+	if err := r.st.MarkServiceArchived(ctx, serviceID, key, r.now()); err != nil {
+		r.log.Error("reconcile archive: mark archived", "service", serviceID, "err", err)
+		return // retry: PVC delete is idempotent, mark is retried next tick
+	}
+	if err := r.launcher.DeleteJob(ctx, jobName); err != nil {
+		r.log.Warn("reconcile archive: delete archive job", "service", serviceID, "err", err)
+		// Non-fatal: the Job's TTL reaps it; the service is already archived.
+	}
+	r.archiveNoted.Delete(serviceID) // reset the failure throttle
+	r.log.Info("reconcile archive: service workspace archived", "service", serviceID, "key", key)
+}
+
+// reconcileArchive is the cold-archive pass (F10 / D23 ③): it tars a long-idle
+// service's persistent workspace PVC to object storage and deletes the PVC, so a
+// dormant service stops consuming a volume. No-op unless object storage is
+// configured (archiver != nil), persistent workspace is on, and
+// ARCHIVE_IDLE_DAYS>0 — the disabled state is surfaced fail-visibly at
+// GET /api/v1/system, never a silent skip here.
+func (r *Reconciler) reconcileArchive(ctx context.Context) {
+	if r.archiver == nil || !r.cfg.PersistentWorkspace || r.cfg.ArchiveIdleDays <= 0 {
+		return
+	}
+	idleBefore := r.now().Add(-time.Duration(r.cfg.ArchiveIdleDays) * 24 * time.Hour)
+	cands, err := r.st.ListArchiveCandidates(ctx, idleBefore)
+	if err != nil {
+		r.log.Error("reconcile: list archive candidates", "err", err)
+		return
+	}
+	for i := range cands {
+		r.archiveService(ctx, cands[i])
+	}
+}
+
+// archiveService drives one service through the archive state machine, keyed by
+// the deterministic archive Job name (so the pass is idempotent across ticks and
+// crashes):
+//
+//   - Job MISSING: verify the PVC exists (a service with runs but no PVC — e.g.
+//     persistent workspace toggled on recently — is skipped), sign a scoped PUT
+//     URL, and launch the one-shot archive Job (runner image, RUN_ARCHIVE=1).
+//   - Job SUCCEEDED: the tarball is uploaded — delete the PVC, stamp
+//     archived_at/archive_key, delete the archive Job.
+//   - Job FAILED / deadline: fail-visible — warn once (throttled) and LEAVE the
+//     failed Job so its TTL reaps it (~JOB_TTL_SECONDS), giving a natural backoff
+//     before the next idle window retries. Never marks the service archived on a
+//     failed upload.
+//   - Pending/Running/Unknown: wait.
+func (r *Reconciler) archiveService(ctx context.Context, c store.ArchiveCandidate) {
+	jobName := k8s.ArchiveJobName(c.ServiceID)
+	state, err := r.launcher.GetJobState(ctx, jobName)
+	if err != nil {
+		r.log.Warn("reconcile archive: get job state", "service", c.ServiceID, "err", err)
+		return // transient; retry next tick
+	}
+	switch state {
+	case k8s.JobMissing:
+		exists, err := r.launcher.WorkspacePVCExists(ctx, c.ServiceID)
+		if err != nil {
+			r.log.Warn("reconcile archive: check pvc exists", "service", c.ServiceID, "err", err)
+			return // transient
+		}
+		if !exists {
+			return // nothing to archive (no PVC yet) — skip until one is created
+		}
+		key := workspaceArchiveKey(c.ServiceID)
+		url, err := r.archiver.PresignPut(key, archivePresignTTL)
+		if err != nil {
+			r.noteArchiveFailure(c.ServiceID, "sign upload url", err)
+			return
+		}
+		spec := k8s.JobSpec{
+			Name: jobName,
+			// No RunID: this is a maintenance Job, not a run. The label is left empty.
+			Env: map[string]string{
+				"RUN_ARCHIVE":        "1",
+				"ARCHIVE_UPLOAD_URL": url,
+				"WORKSPACE":          "/workspace",
+			},
+			TimeoutSeconds: archiveJobDeadlineSecs,
+			WorkspacePVC:   k8s.WorkspacePVCName(c.ServiceID),
+		}
+		if err := r.launcher.CreateJob(ctx, spec); err != nil {
+			r.log.Error("reconcile archive: create archive job", "service", c.ServiceID, "err", err)
+			return
+		}
+		r.log.Info("reconcile archive: launched workspace archive job",
+			"service", c.ServiceID, "key", key, "idle_since", c.LastActivity)
+	case k8s.JobSucceeded:
+		r.finalizeArchiveJob(ctx, c.ServiceID)
+	case k8s.JobFailed, k8s.JobDeadlineExceeded:
+		// Fail-visible (operator-facing: the failed Job is visible in the cluster and
+		// warned here once). Leave the Job so its TTL reaps it, then the next idle
+		// window retries — this gives a natural ~JOB_TTL backoff instead of a tight
+		// recreate loop. The service is deliberately NOT marked archived.
+		r.noteArchiveFailure(c.ServiceID, "archive job", fmt.Errorf("job state %s", state))
+	default:
+		// Pending / Running / Unknown — the upload is in flight; wait.
+	}
+}
+
+// noteArchiveFailure logs an archive failure at most once per service per
+// process lifetime (fail-visible without spamming the log every tick). The
+// throttle is reset on a later successful archive (archiveNoted.Delete).
+func (r *Reconciler) noteArchiveFailure(serviceID, step string, err error) {
+	if _, seen := r.archiveNoted.LoadOrStore(serviceID, struct{}{}); seen {
+		return
+	}
+	r.log.Warn("reconcile archive: FAILED (service left unarchived; will retry after backoff)",
+		"service", serviceID, "step", step, "err", err)
 }
 
 // cleanupTerminalJobs deletes Jobs still attached to terminal runs (e.g. a

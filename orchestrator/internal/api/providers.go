@@ -18,6 +18,17 @@ import (
 // identity. The listing is read-only; adding a repo still goes through the
 // normal POST /projects/{id}/services authorization.
 func (s *Server) handleListProviderRepos(w http.ResponseWriter, r *http.Request) {
+	// Project-scoped API key (F12 / D24): forbidden. Repo enumeration is an
+	// onboarding / service-creation surface, not a member run action. Critically,
+	// a scoped principal has no linked identity (userID=="" below), so it would
+	// fall through to the cluster GITEA_TOKEN bot fallback and enumerate every
+	// org repository that bot can see — a cross-tenant credential leak. Deny it
+	// up front, same isAPIKey()→403 guard as the /system + /users surfaces.
+	if principalFrom(r.Context()).isAPIKey() {
+		writeError(w, http.StatusForbidden, "forbidden",
+			"project-scoped API keys cannot enumerate provider repositories")
+		return
+	}
 	prov := domain.GitProvider(r.PathValue("provider"))
 	if !domain.ValidProvider(prov) {
 		writeError(w, http.StatusBadRequest, "bad_request", "provider must be gitea, github or gitlab")

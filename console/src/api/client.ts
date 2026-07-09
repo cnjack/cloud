@@ -8,8 +8,12 @@
  */
 import type {
   AddMemberInput,
+  ApiKey,
+  ApiKeysEnvelope,
   AuthProviderInfo,
   AuthProvidersEnvelope,
+  CreateApiKeyInput,
+  CreateApiKeyResponse,
   CreateKanbanLinkInput,
   CreateProjectInput,
   CreateIntegrationInput,
@@ -220,6 +224,17 @@ export interface ApiClient {
    * bot token can see (member+), for the service-onboarding repo picker.
    */
   listIntegrationRepos(projectId: string, integrationId: string, q?: string): Promise<ProviderRepo[]>;
+
+  /* ---- project-scoped API keys (F12 / D24) ------------------------------- */
+  /** GET /api/v1/projects/{id}/apikeys — the project's keys, owner only. */
+  listApiKeys(projectId: string): Promise<ApiKey[]>;
+  /**
+   * POST /api/v1/projects/{id}/apikeys — mint a key (owner only). The response
+   * carries the plaintext `key` exactly once — there is no read-back endpoint.
+   */
+  createApiKey(projectId: string, input: CreateApiKeyInput): Promise<CreateApiKeyResponse>;
+  /** DELETE /api/v1/projects/{id}/apikeys/{keyId} — revoke, effective immediately (owner only). */
+  revokeApiKey(projectId: string, keyId: string): Promise<void>;
 
   /* ---- services (blueprint §4) ------------------------------------------- */
   /** GET /api/v1/projects/{id}/services — the project's repo configurations. */
@@ -571,6 +586,23 @@ export function createHttpClient(
           `/projects/${encodeURIComponent(projectId)}/integrations/${encodeURIComponent(integrationId)}/repos${q ? `?q=${encodeURIComponent(q)}` : ''}`,
         )
       ).repos ?? [],
+
+    // Project-scoped API keys (F12 / D24).
+    listApiKeys: async (projectId) =>
+      (
+        await req<ApiKeysEnvelope>(`/projects/${encodeURIComponent(projectId)}/apikeys`)
+      ).api_keys ?? [],
+    createApiKey: (projectId, input) =>
+      req<CreateApiKeyResponse>(`/projects/${encodeURIComponent(projectId)}/apikeys`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    revokeApiKey: async (projectId, keyId) => {
+      await req<void>(
+        `/projects/${encodeURIComponent(projectId)}/apikeys/${encodeURIComponent(keyId)}`,
+        { method: 'DELETE' },
+      );
+    },
 
     // Services (blueprint §4).
     listServices: async (projectId) =>

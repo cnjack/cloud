@@ -312,6 +312,17 @@ type Service struct {
 	// write).
 	DefaultModelID *string   `json:"default_model_id,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
+
+	// Workspace archive state (F10 / D23 ③). When the persistent-workspace PVC
+	// (Feature C / D05) has been idle long enough, the reconciler's archive pass
+	// tars it to object storage and deletes the PVC: ArchivedAt records when, and
+	// ArchiveKey is the object key of the tarball. Both nil/empty for a live
+	// (unarchived) service. The next run for an archived service restores the
+	// tarball into a fresh PVC and clears both fields. The authoritative transcript
+	// is always in the control-plane store (D12) — the archive is only a cold
+	// working-copy backup.
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
+	ArchiveKey string     `json:"archive_key,omitempty"`
 }
 
 // Run is a single agent invocation against a service.
@@ -947,4 +958,42 @@ type Schedule struct {
 	CreatedBy *string   `json:"created_by,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// APIKey is a project-scoped, revocable automation credential (F12 / D24). It
+// authenticates a Bearer token of the form "jck_"+32 random bytes
+// (auth.GenerateAPIKey); only its SHA-256 (auth.HashToken, KeyHash) and a short
+// display Prefix are ever persisted — the same one-way hashing discipline as
+// Session.TokenHash / Run.TokenHash. The plaintext is returned to the caller
+// exactly once, in the create response; there is no read-back path afterward
+// (CLAUDE.md fail-visible / credential discipline).
+//
+// A key resolves (api/principal.go resolvePrincipal) to a project-scoped
+// principal capped at RoleMember on ProjectID ONLY (see effectiveRole) — this
+// is the D24 replacement for borrowing the cluster-wide CONSOLE_TOKEN for
+// external/CI automation: a leaked project key cannot reach another project,
+// a cluster-admin surface, or manage API keys itself (no self-renewal
+// privilege escalation).
+type APIKey struct {
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	Name      string `json:"name"`
+	// KeyHash is the sha256 hex of the plaintext key. Never serialized.
+	KeyHash string `json:"-"`
+	// Prefix is the plaintext's first few characters (e.g. "jck_a1b2"), kept in
+	// the clear ONLY so the owner's list view can tell keys apart — never
+	// sufficient on its own to authenticate.
+	Prefix string `json:"prefix"`
+	// CreatedBy is the user who created the key (nil for the service
+	// principal). Audit trail; distinct from who the key later authenticates AS
+	// (a scoped principal has no user — see api/principal.go).
+	CreatedBy *string   `json:"created_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	// LastUsedAt is refreshed (best-effort, throttled) on principal resolution
+	// — see api/principal.go touchAPIKeyLastUsed. Nil until first use.
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	// RevokedAt, once set, makes the key unresolvable on the VERY NEXT lookup
+	// (store.GetAPIKeyByHash excludes revoked rows) — revocation is effective
+	// immediately, no cache to invalidate.
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 }

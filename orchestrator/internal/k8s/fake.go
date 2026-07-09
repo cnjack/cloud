@@ -35,6 +35,13 @@ type FakeLauncher struct {
 	// EnsurePVCErr / DeletePVCErr inject failures on the PVC path.
 	EnsurePVCErr error
 	DeletePVCErr error
+
+	// PVCs is the set of serviceIDs whose workspace PVC currently exists, driving
+	// WorkspacePVCExists (F10). EnsureWorkspacePVC adds to it and DeleteWorkspacePVC
+	// removes from it, so tests can also just call SetPVCExists to seed one.
+	// PVCExistsErr injects a failure on the existence check.
+	PVCs         map[string]bool
+	PVCExistsErr error
 }
 
 // NewFakeLauncher returns a ready FakeLauncher.
@@ -113,6 +120,10 @@ func (f *FakeLauncher) EnsureWorkspacePVC(_ context.Context, serviceID, _ string
 		return f.EnsurePVCErr
 	}
 	f.EnsuredPVCs = append(f.EnsuredPVCs, serviceID)
+	if f.PVCs == nil {
+		f.PVCs = map[string]bool{}
+	}
+	f.PVCs[serviceID] = true
 	return nil
 }
 
@@ -124,7 +135,33 @@ func (f *FakeLauncher) DeleteWorkspacePVC(_ context.Context, serviceID string) e
 		return f.DeletePVCErr
 	}
 	f.DeletedPVCs = append(f.DeletedPVCs, serviceID)
+	delete(f.PVCs, serviceID)
 	return nil
+}
+
+// WorkspacePVCExists reports whether the serviceID's PVC is in the tracked set
+// (F10). SetPVCExists / EnsureWorkspacePVC seed it; PVCExistsErr injects a fault.
+func (f *FakeLauncher) WorkspacePVCExists(_ context.Context, serviceID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.PVCExistsErr != nil {
+		return false, f.PVCExistsErr
+	}
+	return f.PVCs[serviceID], nil
+}
+
+// SetPVCExists is a test helper to seed a service's PVC existence.
+func (f *FakeLauncher) SetPVCExists(serviceID string, exists bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.PVCs == nil {
+		f.PVCs = map[string]bool{}
+	}
+	if exists {
+		f.PVCs[serviceID] = true
+	} else {
+		delete(f.PVCs, serviceID)
+	}
 }
 
 // SetState is a test helper to drive an observed Job transition.

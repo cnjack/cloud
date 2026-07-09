@@ -10,6 +10,11 @@ namespace: jcloud
 # the namespace would be surprised by that).
 resources:
   - postgres
+  # minio backs the persistent-workspace archive layer (F10 / D23 ③). It is
+  # wired by default in the rig so GET /api/v1/system reports archive object
+  # storage as configured; the archive PASS still stays inert until
+  # PERSISTENT_WORKSPACE=1 (base default is 0), so this is safe to ship on.
+  - minio
   - mockllm
   - gitseed
   # NOTE: the in-cluster gitea Deployment + its gitea-bootstrap Job were

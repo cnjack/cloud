@@ -20,6 +20,7 @@ type systemResponse struct {
 	Runner     systemRunner     `json:"runner"`
 	Auth       systemAuth       `json:"auth"`
 	Kanban     systemKanban     `json:"kanban"`
+	Archive    systemArchive    `json:"archive"`
 	Namespace  string           `json:"namespace"`
 	Launcher   string           `json:"launcher"`
 }
@@ -78,10 +79,35 @@ type systemKanban struct {
 	ClusterTokenSet bool   `json:"cluster_token_set"`
 }
 
+// systemArchive is the persistent-workspace object-storage archive snapshot
+// (F10 / D23 ③). Object storage is a FIRST-CLASS dependency (D14): when it is
+// not fully configured Enabled is false and Reason explains exactly what to set,
+// so the console Cluster page shows an honest "long-term archive not enabled"
+// state rather than a silent no-op. Endpoint/Bucket are non-secret addressing
+// (shown only when enabled); the S3 access/secret keys are NEVER serialized.
+type systemArchive struct {
+	Enabled  bool   `json:"enabled"`
+	Reason   string `json:"reason,omitempty"`    // why disabled (empty when enabled)
+	Endpoint string `json:"endpoint,omitempty"`  // S3_ENDPOINT (non-secret), only when enabled
+	Bucket   string `json:"bucket,omitempty"`    // S3_BUCKET, only when enabled
+	IdleDays int    `json:"idle_days,omitempty"` // ARCHIVE_IDLE_DAYS, only when enabled
+}
+
 // handleGetSystem returns the cluster-admin system snapshot. Read-only: it
 // queries the store for live run counts and reflects config/build metadata.
 // Requires the console bearer token (registered via s.console).
 func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
+	// A project-scoped API key (F12 / D24) never reaches a cluster-admin
+	// surface, even a read-only one — its authority is capped at RoleMember on
+	// exactly its own project (principal.go effectiveRole). The other
+	// /system/* routes (models, kanban links) are already gated by
+	// requireClusterAdmin, which reports false for a scoped principal; this
+	// route has no such per-handler check today (any authenticated user may
+	// read it), so the scoped-principal exclusion is made explicit here.
+	if principalFrom(r.Context()).isAPIKey() {
+		writeError(w, http.StatusForbidden, "forbidden", "project-scoped API keys cannot access cluster-admin endpoints")
+		return
+	}
 	counts, err := s.st.CountRunsByStatus(r.Context(),
 		domain.StatusRunning, domain.StatusQueued, domain.StatusScheduling)
 	if err != nil {
@@ -133,10 +159,28 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 			PollInterval:    s.cfg.JtypePollInterval.String(),
 			ClusterTokenSet: s.cfg.JtypeToken != "",
 		},
+		Archive:   s.archiveStatus(),
 		Namespace: s.cfg.Namespace,
 		Launcher:  launcherKind(s.cfg.JobLauncher, s.cfg.DisableK8s),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// archiveStatus builds the fail-visible archive snapshot (F10 / D23 ③). Enabled
+// requires BOTH object storage configured AND persistent workspace on AND a
+// positive idle window; otherwise Reason names the missing piece (D14). Non-
+// secret addressing (endpoint/bucket/idle days) is exposed only when enabled;
+// the S3 keys are never serialized.
+func (s *Server) archiveStatus() systemArchive {
+	if reason := s.cfg.ArchiveDisabledReason(); reason != "" {
+		return systemArchive{Enabled: false, Reason: reason}
+	}
+	return systemArchive{
+		Enabled:  true,
+		Endpoint: s.cfg.S3Endpoint,
+		Bucket:   s.cfg.S3Bucket,
+		IdleDays: s.cfg.ArchiveIdleDays,
+	}
 }
 
 // nonNilStrings returns a non-nil slice so the JSON encodes [] not null for an

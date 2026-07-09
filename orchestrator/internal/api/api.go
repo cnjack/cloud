@@ -279,6 +279,16 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /api/v1/projects/{id}/kanban/links/{linkID}", s.authed(s.handleUpdateProjectKanbanLink))
 	mux.Handle("DELETE /api/v1/projects/{id}/kanban/links/{linkID}", s.authed(s.handleDeleteProjectKanbanLink))
 
+	// Project-scoped API keys (F12 / D24) — a revocable automation credential
+	// bound to exactly one project, replacing the CONSOLE_TOKEN borrow-pattern
+	// for external/CI use. Management is owner-only; a principal authenticated
+	// BY a key can never call these routes itself (see api/apikeys.go / D24 "no
+	// self-renewal privilege escalation"). The plaintext is returned once, at
+	// creation, and never again.
+	mux.Handle("GET /api/v1/projects/{id}/apikeys", s.authed(s.handleListAPIKeys))
+	mux.Handle("POST /api/v1/projects/{id}/apikeys", s.authed(s.handleCreateAPIKey))
+	mux.Handle("DELETE /api/v1/projects/{id}/apikeys/{keyID}", s.authed(s.handleRevokeAPIKey))
+
 	// Project members (owner/cluster-admin manage).
 	mux.Handle("GET /api/v1/projects/{id}/members", s.authed(s.handleListMembers))
 	mux.Handle("POST /api/v1/projects/{id}/members", s.authed(s.handleAddMember))
