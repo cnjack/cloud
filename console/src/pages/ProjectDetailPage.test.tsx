@@ -138,28 +138,15 @@ describe('ProjectDetailPage — single-repo composer', () => {
   });
 });
 
-describe('ProjectDetailPage — session toggle (D22)', () => {
-  it('defaults OFF: the create body carries NO session field (wire unchanged)', async () => {
+describe('ProjectDetailPage — session-only composer (D22)', () => {
+  it('always sends session:true and labels the submit button "Send"', async () => {
     const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
     renderPage(client);
 
     await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
-    const toggle = screen.getByTestId('composer-session-toggle') as HTMLInputElement;
-    expect(toggle.checked).toBe(false);
-
-    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'one shot' } });
-    fireEvent.click(screen.getByTestId('run-submit'));
-    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
-    expect('session' in calls.serviceRuns[0]!.input).toBe(false);
-  });
-
-  it('sends session:true when checked and re-labels the submit button', async () => {
-    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
-    renderPage(client);
-
-    await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('composer-session-toggle'));
-    expect(screen.getByTestId('run-submit').textContent).toContain('Start session');
+    // The headless opt-in is gone — this composer only ever starts sessions.
+    expect(screen.queryByTestId('composer-session-toggle')).toBeNull();
+    expect(screen.getByTestId('run-submit').textContent).toContain('Send');
 
     fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'chat with me' } });
     fireEvent.click(screen.getByTestId('run-submit'));
@@ -168,33 +155,32 @@ describe('ProjectDetailPage — session toggle (D22)', () => {
   });
 });
 
-describe('ProjectDetailPage — approval toggle (F8b)', () => {
-  it('is hidden while Start session is off; a session WITHOUT it omits permission_mode', async () => {
+describe('ProjectDetailPage — permission mode (F8b)', () => {
+  it('defaults to Full access: a session omits permission_mode', async () => {
     const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
     renderPage(client);
 
     await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
-    // No approval toggle for a single-shot composer.
-    expect(screen.queryByTestId('composer-approval-toggle')).toBeNull();
-
-    // Session ON, approval left at its default (off) → no permission_mode.
-    fireEvent.click(screen.getByTestId('composer-session-toggle'));
-    const approval = screen.getByTestId('composer-approval-toggle') as HTMLInputElement;
-    expect(approval.checked).toBe(false);
+    // The permission pill is always shown (every run is a session) and defaults
+    // to Full access.
+    const perm = screen.getByTestId('composer-approval-toggle') as HTMLSelectElement;
+    expect(perm.value).toBe('');
 
     fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'chat' } });
     fireEvent.click(screen.getByTestId('run-submit'));
     await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect(calls.serviceRuns[0]!.input).toMatchObject({ session: true });
     expect('permission_mode' in calls.serviceRuns[0]!.input).toBe(false);
   });
 
-  it('sends permission_mode:"approval" with the session when checked', async () => {
+  it('sends permission_mode:"approval" when "Ask before actions" is picked', async () => {
     const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
     renderPage(client);
 
     await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('composer-session-toggle'));
-    fireEvent.click(screen.getByTestId('composer-approval-toggle'));
+    fireEvent.change(screen.getByTestId('composer-approval-toggle'), {
+      target: { value: 'approval' },
+    });
 
     fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'careful chat' } });
     fireEvent.click(screen.getByTestId('run-submit'));
@@ -206,24 +192,22 @@ describe('ProjectDetailPage — approval toggle (F8b)', () => {
     });
   });
 
-  it('a stale approval pick cannot leak onto a single-shot run after session is toggled back off', async () => {
+  it('switching back to Full access drops permission_mode from the request', async () => {
     const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
     renderPage(client);
 
     await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('composer-session-toggle'));
-    fireEvent.click(screen.getByTestId('composer-approval-toggle'));
-    // Change of heart: back to a single-shot run. The approval toggle
-    // disappears and its state must NOT ride on the request (the server would
-    // 400 a sessionless approval).
-    fireEvent.click(screen.getByTestId('composer-session-toggle'));
-    expect(screen.queryByTestId('composer-approval-toggle')).toBeNull();
+    const perm = screen.getByTestId('composer-approval-toggle');
+    fireEvent.change(perm, { target: { value: 'approval' } });
+    // Change of heart: back to Full access — approval must NOT ride on the request.
+    fireEvent.change(perm, { target: { value: '' } });
 
-    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'one shot' } });
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'go' } });
     fireEvent.click(screen.getByTestId('run-submit'));
     await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
     expect('permission_mode' in calls.serviceRuns[0]!.input).toBe(false);
-    expect('session' in calls.serviceRuns[0]!.input).toBe(false);
+    // …but it is still a session.
+    expect(calls.serviceRuns[0]!.input).toMatchObject({ session: true });
   });
 });
 

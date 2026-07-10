@@ -28,7 +28,7 @@ import { useOptionalAuth } from '../auth/AuthProvider';
 import { useModelGate } from '../components/ModelGate';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
-import { TextField, TextAreaField } from '../components/Field';
+import { TextField } from '../components/Field';
 import { GitModeToggle } from '../components/GitModeToggle';
 import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
@@ -67,10 +67,9 @@ export function ProjectDetailPage() {
   // D21: the composer's per-run model pick ("" => resolve via service default /
   // the project's sole grant).
   const [selectedModel, setSelectedModel] = useState<string>('');
-  // D22: opt this run into multi-turn session mode (default OFF — single-shot).
-  const [startSession, setStartSession] = useState(false);
-  // F8b: ask before agent actions (permission_mode=approval). Only meaningful —
-  // and only rendered — with the session toggle ON; default OFF (full access).
+  // F8b: ask before agent actions (permission_mode=approval). This interactive
+  // composer is session-only (every run is multi-turn), so the choice is always
+  // offered; default OFF (full access).
   const [askApproval, setAskApproval] = useState(false);
 
   // Add-repository inline form.
@@ -177,19 +176,18 @@ export function ProjectDetailPage() {
         input: {
           prompt: prompt.trim(),
           ...(selectedModel ? { model_id: selectedModel } : {}),
-          // D22: session opt-in rides on the create body; omitted when off so the
-          // wire shape is unchanged for single-shot runs.
-          ...(startSession ? { session: true } : {}),
-          // F8b: approval mode only ever rides WITH session (the server 400s a
-          // sessionless approval); a stale askApproval left over from toggling
-          // session back off must not leak onto a single-shot run.
-          ...(startSession && askApproval ? { permission_mode: 'approval' as const } : {}),
+          // The interactive composer is session-only: every run started here is a
+          // multi-turn session (headless single-shot lives on the cron/webhook
+          // automation paths, not this UI).
+          session: true,
+          // F8b: approval mode rides WITH the session (full access = omitted).
+          ...(askApproval ? { permission_mode: 'approval' as const } : {}),
         },
       },
       {
         onSuccess: (run: { id: string }) => {
           setPrompt('');
-          toast.push({ kind: 'success', message: startSession ? 'Session started.' : 'Run dispatched.' });
+          toast.push({ kind: 'success', message: 'Session started.' });
           navigate(`/runs/${run.id}`);
         },
         onError: (err: unknown) => {
@@ -366,115 +364,110 @@ export function ProjectDetailPage() {
               </div>
             )}
 
-            {/* D21: per-run model pick. Only meaningful when the project has
-                granted models (empty => env fallback, nothing to pick). The
-                "Service default" option lets the resolution chain decide. */}
-            {grantedModels.length > 0 && (
+            {/* D21: the owner-only "repository default model" editor. The per-run
+                model pick lives on the composer bar below; this sets the fallback
+                the resolution chain uses when a run omits its own pick. Only
+                meaningful when the project has granted models. */}
+            {grantedModels.length > 0 && canManage && activeService && (
               <div className={styles.serviceRow}>
-                <label className={styles.serviceLabel} htmlFor="composer-model">
-                  Model
+                <label className={styles.serviceLabel} htmlFor="composer-default-model">
+                  Default model
                 </label>
                 <select
-                  id="composer-model"
+                  id="composer-default-model"
                   className={styles.serviceSelect}
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  disabled={!modelGate.configured}
-                  data-testid="composer-model-select"
+                  aria-label="Default model for this repository"
+                  value={activeService.default_model_id ?? ''}
+                  data-testid="service-default-model-select"
+                  onChange={(e) =>
+                    updateService.mutate(
+                      { serviceId: activeService.id, input: { default_model_id: e.target.value } },
+                      {
+                        onSuccess: () =>
+                          toast.push({ kind: 'success', message: 'Default model updated.' }),
+                        onError: (err) =>
+                          toast.push({
+                            kind: 'error',
+                            message: err instanceof ApiError ? err.message : 'Could not set the default model.',
+                          }),
+                      },
+                    )
+                  }
                 >
-                  <option value="">Service default</option>
+                  <option value="">No default</option>
                   {grantedModels.map((m) => (
                     <option key={m.id} value={m.id}>
-                      {m.name}
+                      Default: {m.name}
                     </option>
                   ))}
                 </select>
-                {canManage && activeService && (
+              </div>
+            )}
+
+            {/* Chat-style composer: a message box up top, a bar of pills and the
+                Send action below. Every run started here is a session (D22). */}
+            <div className={styles.composerBox}>
+              <textarea
+                className={styles.composerInput}
+                aria-label="Message"
+                aria-invalid={!!promptError}
+                required
+                placeholder="Send a message to start a session…"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                data-testid="run-input"
+                rows={3}
+                disabled={!modelGate.configured}
+              />
+              {/* Validation error sits directly under the message, inside the box. */}
+              {promptError && <p className={styles.composerError}>{promptError}</p>}
+              <div className={styles.composerBar}>
+                {/* D21: per-run model pick. Only shown when the project has granted
+                    models (empty => env fallback, nothing to pick). "Service
+                    default" lets the resolution chain decide. */}
+                {grantedModels.length > 0 && (
                   <select
-                    className={styles.serviceSelect}
-                    aria-label="Default model for this repository"
-                    value={activeService.default_model_id ?? ''}
-                    data-testid="service-default-model-select"
-                    onChange={(e) =>
-                      updateService.mutate(
-                        { serviceId: activeService.id, input: { default_model_id: e.target.value } },
-                        {
-                          onSuccess: () =>
-                            toast.push({ kind: 'success', message: 'Default model updated.' }),
-                          onError: (err) =>
-                            toast.push({
-                              kind: 'error',
-                              message: err instanceof ApiError ? err.message : 'Could not set the default model.',
-                            }),
-                        },
-                      )
-                    }
+                    className={styles.composerPill}
+                    aria-label="Model"
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    disabled={!modelGate.configured}
+                    data-testid="composer-model-select"
                   >
-                    <option value="">No default</option>
+                    <option value="">Service default</option>
                     {grantedModels.map((m) => (
                       <option key={m.id} value={m.id}>
-                        Default: {m.name}
+                        {m.name}
                       </option>
                     ))}
                   </select>
                 )}
-              </div>
-            )}
-            <TextAreaField
-              label="New run"
-              required
-              placeholder="Describe the task, e.g. Add a line 'Hello' to the end of README."
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              error={promptError}
-              data-testid="run-input"
-              rows={3}
-              disabled={!modelGate.configured}
-            />
-            <div className={styles.composerActions}>
-              <span className={styles.composerHint}>
-                {startSession
-                  ? 'Starts a multi-turn session — you can keep messaging the agent after each turn.'
-                  : "Runs headless in your cluster; you'll get a reviewable diff."}
-              </span>
-              {/* D22: opt into a multi-turn session (default off = single-shot). */}
-              <label className={styles.sessionToggle}>
-                <input
-                  type="checkbox"
-                  checked={startSession}
-                  onChange={(e) => setStartSession(e.target.checked)}
+                {/* F8b: permission mode for the session. Full access auto-approves;
+                    approval pauses the agent before actions that need permission. */}
+                <select
+                  className={styles.composerPill}
+                  aria-label="Permission mode"
+                  title="Full access auto-approves the agent; Ask before actions pauses it for your approval in the timeline."
+                  value={askApproval ? 'approval' : ''}
+                  onChange={(e) => setAskApproval(e.target.value === 'approval')}
                   disabled={!modelGate.configured}
-                  data-testid="composer-session-toggle"
-                />
-                Start session
-              </label>
-              {/* F8b: approval mode — only offered for sessions (a headless
-                  single-shot has nobody watching to answer, and the server
-                  400s the combination). Default off = full access. */}
-              {startSession && (
-                <label
-                  className={styles.sessionToggle}
-                  title="The agent pauses before actions that need permission and waits for your approval in the timeline."
+                  data-testid="composer-approval-toggle"
                 >
-                  <input
-                    type="checkbox"
-                    checked={askApproval}
-                    onChange={(e) => setAskApproval(e.target.checked)}
-                    disabled={!modelGate.configured}
-                    data-testid="composer-approval-toggle"
-                  />
-                  Ask before actions
-                </label>
-              )}
-              <Button
-                type="submit"
-                variant="primary"
-                loading={runBusy}
-                disabled={!modelGate.configured}
-                data-testid="run-submit"
-              >
-                {startSession ? 'Start session' : 'Run'}
-              </Button>
+                  <option value="">Full access</option>
+                  <option value="approval">Ask before actions</option>
+                </select>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="sm"
+                  className={styles.composerSend}
+                  loading={runBusy}
+                  disabled={!modelGate.configured}
+                  data-testid="run-submit"
+                >
+                  Send
+                </Button>
+              </div>
             </div>
           </form>
         </Card>
