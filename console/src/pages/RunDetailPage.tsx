@@ -10,8 +10,10 @@
  * replays history then follows live, so the timeline is identical to before the
  * refresh (AC-7).
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { ChatInput, RuntimeProvider, ToolRegistryProvider } from 'jcode-ui';
+import type { ChatRuntime, RuntimeActions, RuntimeState } from 'jcode-ui-core/runtime';
 import {
   useRun,
   useProject,
@@ -29,7 +31,7 @@ import { isTerminal, type FailureReason } from '../api/types';
 import { Button } from '../components/Button';
 import { StatusBadge } from '../components/StatusBadge';
 import { useModelGate } from '../components/ModelGate';
-import { Timeline, type PermissionControls } from '../runview';
+import { Timeline, toThreadItems, type PermissionControls } from '../runview';
 import { DiffView } from '../components/DiffView';
 import { Markdown } from '../components/Markdown';
 import { PrPanel } from '../components/PrPanel';
@@ -49,6 +51,11 @@ const FAILURE_LABELS: Record<FailureReason, string> = {
 };
 
 type Tab = 'events' | 'diff' | 'pr';
+type FailedSubmission = {
+  runId: string;
+  kind: 'follow_up' | 'resume';
+  text: string;
+};
 
 export function RunDetailPage() {
   const { runId = '' } = useParams();
@@ -57,6 +64,11 @@ export function RunDetailPage() {
   const api = useApi();
 
   const [tab, setTab] = useState<Tab>('events');
+  const [failedSubmission, setFailedSubmission] = useState<FailedSubmission | null>(null);
+
+  // React Router reuses this page instance for /runs/:runId param changes.
+  // Never carry an unsent draft from one run into another run's composer.
+  useEffect(() => setFailedSubmission(null), [runId]);
 
   // Live event stream (replay-then-live). Keep it open until terminal.
   // When the stream dies fatally, fall back to polling the run so status still
@@ -74,12 +86,10 @@ export function RunDetailPage() {
   // D22 multi-turn session: the follow-up composer + Finish button.
   const sendMessage = useSendMessage();
   const finishSession = useFinishSession();
-  const [followUp, setFollowUp] = useState('');
 
   // F9b: continue a FINISHED session in a new run that reloads the same ACP
   // session (D23 ①②). The composer only shows on a terminal session run.
   const resumeSession = useResumeSession();
-  const [resumePrompt, setResumePrompt] = useState('');
 
   // F8b permission approval: runview's PermissionCard is app-agnostic — the
   // decide callback + optimistic state are injected from HERE. permDecided
@@ -132,6 +142,88 @@ export function RunDetailPage() {
   // Diff loads once the run has succeeded (or when the diff tab is opened).
   const diff = useDiff(runId, tab === 'diff' && status === 'succeeded' && !noChanges);
 
+  const runtime = useMemo<ChatRuntime>(() => {
+    const state: RuntimeState = {
+      items: toThreadItems(stream.events),
+      isRunning: status === 'running',
+      tokenSnapshot: null,
+      goal: null,
+      todos: [],
+      // Cloud durably queues a running-session message and immediately emits its
+      // user.message event. It has no separate client-side removable queue.
+      queued: [],
+    };
+
+    const sendFollowUp = (text: string) => {
+      setFailedSubmission(null);
+      sendMessage.mutate(
+        { runId, prompt: text },
+        {
+          onError: (err) => {
+            setFailedSubmission({ runId, kind: 'follow_up', text });
+            toast.push({
+              kind: 'error',
+              message:
+                err instanceof ApiError ? err.message : 'Could not send the message.',
+            });
+          },
+        },
+      );
+    };
+
+    const continueSession = (text: string) => {
+      setFailedSubmission(null);
+      resumeSession.mutate(
+        { runId, prompt: text },
+        {
+          onSuccess: (newRun) => {
+            setFailedSubmission(null);
+            toast.push({ kind: 'success', message: 'Session resumed.' });
+            navigate(`/runs/${newRun.id}`);
+          },
+          onError: (err) => {
+            setFailedSubmission({ runId, kind: 'resume', text });
+            toast.push({
+              kind: 'error',
+              message:
+                err instanceof ApiError ? err.message : 'Could not resume the session.',
+            });
+          },
+        },
+      );
+    };
+
+    const submit = status && isTerminal(status) ? continueSession : sendFollowUp;
+    const actions: RuntimeActions = {
+      sendMessage: submit,
+      enqueueMessage: sendFollowUp,
+      removeQueuedMessage: () => {},
+      // During a running turn ChatInput's Stop means Cloud's immediate Cancel.
+      // The nearby Finish action remains the graceful/succeeded path.
+      stop: () =>
+        cancel.mutate(runId, {
+          onSuccess: () => toast.push({ kind: 'info', message: 'Run canceled.' }),
+          onError: (err) =>
+            toast.push({
+              kind: 'error',
+              message: err instanceof ApiError ? err.message : 'Cancel failed.',
+            }),
+        }),
+      // Cloud permission cards dispatch their exact option IDs through the
+      // host-injected controls below; these package actions are intentionally
+      // unreachable for the current Cloud event contract.
+      resolveApproval: () => {},
+      submitAskUser: () => {},
+      editMessage: () => {},
+    };
+
+    return {
+      getState: () => state,
+      subscribe: () => () => {},
+      actions,
+    };
+  }, [cancel, navigate, resumeSession, runId, sendMessage, status, stream.events, toast]);
+
   // Only dead-end when there's no cached run to show. A failed *refetch* (e.g.
   // the terminal-status invalidate hitting a network blip) keeps the previously
   // fetched data in TanStack Query v5 — don't discard the fully-rendered page.
@@ -183,26 +275,6 @@ export function RunDetailPage() {
         }),
     });
 
-  // D22 session actions.
-  const doSendMessage = (e: React.FormEvent) => {
-    e.preventDefault();
-    const prompt = followUp.trim();
-    if (!prompt) return;
-    sendMessage.mutate(
-      { runId, prompt },
-      {
-        // Clear ONLY if the box still holds exactly what we submitted — text the
-        // user typed while the request was in flight must never be discarded.
-        onSuccess: () => setFollowUp((cur) => (cur.trim() === prompt ? '' : cur)),
-        onError: (err) =>
-          toast.push({
-            kind: 'error',
-            message: err instanceof ApiError ? err.message : 'Could not send the message.',
-          }),
-      },
-    );
-  };
-
   const doFinishSession = () =>
     finishSession.mutate(runId, {
       onSuccess: () => toast.push({ kind: 'info', message: 'Session finishing — the agent is wrapping up.' }),
@@ -213,33 +285,12 @@ export function RunDetailPage() {
         }),
     });
 
-  // F9b: resume the finished session in a new run, then jump to it. On a 409
-  // (run_not_resumable / session_not_recorded / workspace_not_persistent) the
-  // server's typed message IS the human explanation — surface it verbatim.
-  const doResume = (e: React.FormEvent) => {
-    e.preventDefault();
-    const prompt = resumePrompt.trim();
-    if (!prompt) return;
-    resumeSession.mutate(
-      { runId, prompt },
-      {
-        onSuccess: (newRun) => {
-          toast.push({ kind: 'success', message: 'Session resumed.' });
-          navigate(`/runs/${newRun.id}`);
-        },
-        onError: (err) =>
-          toast.push({
-            kind: 'error',
-            message: err instanceof ApiError ? err.message : 'Could not resume the session.',
-          }),
-      },
-    );
-  };
-
   const live = !terminal && stream.phase === 'live';
 
   return (
-    <div className={styles.page}>
+    <RuntimeProvider runtime={runtime}>
+      <ToolRegistryProvider>
+        <div className={styles.page}>
       <nav className={styles.crumbs}>
         <Link to="/" className={styles.crumbLink}>
           Projects
@@ -433,30 +484,28 @@ export function RunDetailPage() {
       {sessionLive && canAct && (
         <div className={styles.sessionPanel} data-testid="session-panel">
           {sessionAwaiting || sessionTurnRunning ? (
-            <form onSubmit={doSendMessage} className={styles.sessionForm} noValidate>
-              <textarea
-                className={styles.sessionInput}
-                placeholder={
-                  sessionAwaiting
-                    ? 'Send a follow-up message to the agent…'
-                    : 'Queue a follow-up — it will be handled after the current turn finishes…'
-                }
-                value={followUp}
-                onChange={(e) => setFollowUp(e.target.value)}
-                rows={2}
-                data-testid="session-message-input"
-              />
+            <div className={styles.sessionForm}>
+              <fieldset
+                className={styles.chatInputFieldset}
+                disabled={sendMessage.isPending || cancel.isPending}
+              >
+                <ChatInput
+                  placeholder={
+                    sessionAwaiting
+                      ? 'Send a follow-up message to the agent…'
+                      : 'Queue a follow-up — it will be handled after the current turn finishes…'
+                  }
+                  showContextBar={false}
+                />
+              </fieldset>
+              {failedSubmission?.runId === runId &&
+                failedSubmission.kind === 'follow_up' && (
+                <FailedSubmissionNotice
+                  submission={failedSubmission}
+                  onRetry={() => runtime.actions.sendMessage(failedSubmission.text)}
+                />
+              )}
               <div className={styles.sessionActions}>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="sm"
-                  loading={sendMessage.isPending}
-                  disabled={!followUp.trim()}
-                  data-testid="session-message-send"
-                >
-                  Send
-                </Button>
                 <Button
                   type="button"
                   variant="secondary"
@@ -474,7 +523,7 @@ export function RunDetailPage() {
                 Finish lets the agent wrap up and end cleanly; Cancel (top right)
                 stops immediately and discards the turn in progress.
               </span>
-            </form>
+            </div>
           ) : (
             // queued / scheduling: the session has not started a turn yet — show a
             // neutral waiting note (a queued session may be held by the project's
@@ -498,32 +547,26 @@ export function RunDetailPage() {
           the project has no available model, since resume is a fresh dispatch. */}
       {isSession && terminal && canAct && (
         <div className={styles.sessionPanel} data-testid="resume-session-panel">
-          <form onSubmit={doResume} className={styles.sessionForm} noValidate>
-            <label className={styles.sessionBusyText} htmlFor="resume-session-input">
+          <div className={styles.sessionForm}>
+            <div className={styles.sessionBusyText}>
               Continue this session — the agent picks up with the same context.
-            </label>
-            <textarea
-              id="resume-session-input"
-              className={styles.sessionInput}
-              placeholder="Send the next message to resume this session…"
-              value={resumePrompt}
-              onChange={(e) => setResumePrompt(e.target.value)}
-              rows={2}
-              data-testid="resume-session-input"
-            />
-            <div className={styles.sessionActions}>
-              <Button
-                type="submit"
-                variant="primary"
-                size="sm"
-                loading={resumeSession.isPending}
-                disabled={!resumePrompt.trim() || !modelGate.configured}
-                data-testid="resume-session-send"
-              >
-                Continue session
-              </Button>
             </div>
-          </form>
+            <fieldset
+              className={styles.chatInputFieldset}
+              disabled={!modelGate.configured || resumeSession.isPending}
+            >
+              <ChatInput
+                placeholder="Send the next message to resume this session…"
+                showContextBar={false}
+              />
+            </fieldset>
+            {failedSubmission?.runId === runId && failedSubmission.kind === 'resume' && (
+              <FailedSubmissionNotice
+                submission={failedSubmission}
+                onRetry={() => runtime.actions.sendMessage(failedSubmission.text)}
+              />
+            )}
+          </div>
         </div>
       )}
 
@@ -540,7 +583,7 @@ export function RunDetailPage() {
                 <Spinner label="Review in progress…" />
               </div>
               {stream.events.length > 0 && (
-                <Timeline events={stream.events} live={live} permissions={permissionControls} />
+                <Timeline permissions={permissionControls} />
               )}
             </div>
           ) : (
@@ -607,7 +650,7 @@ export function RunDetailPage() {
                   <Spinner label={terminal ? 'No events recorded.' : 'Waiting for events…'} />
                 </div>
               ) : (
-                <Timeline events={stream.events} live={live} permissions={permissionControls} />
+                <Timeline permissions={permissionControls} />
               )
             ) : status !== 'succeeded' ? (
               <div className={styles.waiting}>
@@ -640,7 +683,9 @@ export function RunDetailPage() {
           </div>
         </>
       )}
-    </div>
+        </div>
+      </ToolRegistryProvider>
+    </RuntimeProvider>
   );
 }
 
@@ -650,6 +695,26 @@ function Timing({ label, value }: { label: string; value: string }) {
     <div className={styles.timingItem}>
       <dt className={styles.timingLabel}>{label}</dt>
       <dd className={styles.timingValue}>{value}</dd>
+    </div>
+  );
+}
+
+function FailedSubmissionNotice({
+  submission,
+  onRetry,
+}: {
+  submission: FailedSubmission;
+  onRetry: () => void;
+}) {
+  return (
+    <div className={styles.failedSubmission} role="alert" data-testid="failed-submission">
+      <div>
+        <strong>Message not sent.</strong> Your draft is preserved below.
+      </div>
+      <pre>{submission.text}</pre>
+      <Button type="button" variant="secondary" size="sm" onClick={onRetry}>
+        Retry unsent message
+      </Button>
     </div>
   );
 }

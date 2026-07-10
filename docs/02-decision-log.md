@@ -180,7 +180,10 @@ D15 定的 project 级 `provider_allowlist` 废弃——owner 自设的约束管
 kanban link 的管理权从 cluster-admin 下放到 **project owner**；jtype 凭据从集群单一 env 改为 **per-link 加密存储**，集群级 `JTYPE_TOKEN` env 保留作兼容回退（未配置 per-link 凭据时使用）。
 - **被否**：继续 cluster-admin 独占 kanban link 管理权（每加一个看板集成都要走 admin，拖慢 project 自助节奏，与 D19 integration 下放 owner 的方向不一致）。
 
-### D26 · 聊天 UI 统一路线（分期）
+### D26 · 聊天 UI 统一路线 → console 消费已发布的 jcode-ui 包
 
-终局：jcode web/desktop（Vue3 + Tauri）把渲染迁到 React，与 console 共用一个聊天渲染包。当前阶段**不动 jcode**；workaround 是把 console 的时间线渲染收敛进一个自包含模块 `console/src/runview/`（禁止反向依赖页面代码），作为将来抽成独立 npm 包的清晰边界。D18 的时间线渲染修正（text chunk 合并、tool call/result 配对）就落在这个新模块里。
-- **被否**：现在就把 jcode 桌面端迁到 React（工作量大、优先级排不到当前迭代，先用模块化边界卡住技术债，终局路线留档不留代办）。
+`jcode-ui` / `jcode-ui-core` 已作为 npm 包发布后，console 不再维护第二套消息、工具卡片、markdown 与 composer 实现：`runview` 只保留 Cloud SSE → `ThreadItem` 的纯适配层，渲染使用 package 的 headless `Thread` + styled `Message` / `ToolCallCard`，多轮 live follow-up 与终态 Continue 都使用 package `ChatInput`。运行中的 Enter 映射为 Cloud durable queue，package Stop 映射为立即 Cancel；`Finish session` 仍是 host action，因为它是“优雅收尾并 succeeded”的 Cloud 产品语义，不等同于 Stop。
+
+**暂留两个显式 host renderer seam**：ACP 请求带任意 `option_id/name/kind`，而 `jcode-ui@0.1.1` 的 `ApprovalBanner` 只有固定布尔 allow/deny；多用户 `user.message.by` 也不能交给 package `Message`（其 generic user 标题固定写成 “You”）。console 通过 headless Thread 扩展点继续渲染 lossless options 并原样回传 option_id，同时用 package markdown/style class 渲染带真实作者名的 user row；待 package 暴露 arbitrary approval options + general author label 后再移除这两个 seam。package 全局 CSS 先于 console tokens 引入，并在 Run 页容器做 scoped token bridge，避免 npm 包重绘整个 Cloud shell。
+
+- **被否**：继续维护 console 自有 Message/ToolCard/ChatInput（重复实现持续漂移）；为追求“100% package 组件”把 ACP option_id 强转成 allow/deny（破坏 wire contract，违反 fail-visible）；把 package 默认橙色 token 直接覆盖到整个 console（污染现有主题）。

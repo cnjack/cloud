@@ -296,8 +296,9 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
 
     const panel = await screen.findByTestId('session-panel');
     expect(panel).toBeTruthy();
-    const input = (await screen.findByTestId('session-message-input')) as HTMLTextAreaElement;
-    const send = (await screen.findByTestId('session-message-send')) as HTMLButtonElement;
+    expect(panel.querySelector('.jcode-chat-input')).toBeTruthy();
+    const input = (await screen.findByLabelText('Message input')) as HTMLTextAreaElement;
+    const send = (await screen.findByLabelText('Send message')) as HTMLButtonElement;
     expect(screen.getByTestId('session-finish-btn')).toBeTruthy();
 
     // Empty input keeps Send disabled; typing enables it and submit calls the API.
@@ -349,21 +350,32 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     const sendMessage = vi
       .fn()
       .mockResolvedValue({ id: 'm1', run_id: 'run1', seq: 1, prompt: 'q', created_at: '' });
+    const cancelRun = vi.fn().mockResolvedValue(baseRun({ status: 'canceled', session: true }));
     (client as { sendMessage?: unknown }).sendMessage = sendMessage;
+    (client as { cancelRun?: unknown }).cancelRun = cancelRun;
     renderPage(client, busy);
 
     await screen.findByTestId('session-panel');
     // The backend queues messages while running — the composer stays available,
     // with a placeholder saying the message is handled after this turn.
-    const input = (await screen.findByTestId('session-message-input')) as HTMLTextAreaElement;
+    const input = (await screen.findByLabelText('Message input')) as HTMLTextAreaElement;
     expect(input.placeholder).toContain('after the current turn');
+    const stop = (await screen.findByLabelText('Stop')) as HTMLButtonElement;
+    expect(stop).toBeTruthy();
     expect(screen.getByTestId('session-finish-btn')).toBeTruthy();
     // The Finish-vs-Cancel semantics hint is present where both actions coexist.
     expect(screen.getByTestId('session-actions-hint').textContent).toContain('Cancel');
 
     fireEvent.change(input, { target: { value: 'queue me' } });
-    fireEvent.click(screen.getByTestId('session-message-send'));
+    // While the package shows Stop as the button, Enter still dispatches
+    // enqueueMessage, which Cloud maps to its durable follow-up queue.
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('run1', 'queue me'));
+
+    // Package Stop is the immediate/discard path; graceful completion remains
+    // the explicit Finish session button beside the composer.
+    fireEvent.click(stop);
+    await waitFor(() => expect(cancelRun).toHaveBeenCalledWith('run1'));
   });
 
   it('shows a neutral waiting note (no composer, no "agent working") for a QUEUED session', async () => {
@@ -373,7 +385,7 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     renderPage(client, queued);
 
     await screen.findByTestId('session-panel');
-    expect(screen.queryByTestId('session-message-input')).toBeNull();
+    expect(screen.queryByLabelText('Message input')).toBeNull();
     const note = screen.getByTestId('session-pending-note');
     expect(note.textContent).toContain('waiting for a free session slot');
     expect(note.textContent).not.toContain('working');
@@ -391,9 +403,9 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     (client as { sendMessage?: unknown }).sendMessage = sendMessage;
     renderPage(client, sessionRun);
 
-    const input = (await screen.findByTestId('session-message-input')) as HTMLTextAreaElement;
+    const input = (await screen.findByLabelText('Message input')) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: 'first message' } });
-    fireEvent.click(screen.getByTestId('session-message-send'));
+    fireEvent.click(screen.getByLabelText('Send message'));
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('run1', 'first message'));
 
     // The user keeps typing while the request is in flight…
@@ -403,6 +415,26 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     resolveSend({ id: 'm1', run_id: 'run1', seq: 1, prompt: 'first message', created_at: '' });
     await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
     expect(input.value).toBe('second thought');
+  });
+
+  it('preserves a failed package submission as an explicit retryable draft', async () => {
+    const sessionRun = baseRun({ status: 'awaiting_input', session: true });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(sessionRun);
+    const sendMessage = vi
+      .fn()
+      .mockRejectedValue(new ApiError(500, 'message queue unavailable'));
+    (client as { sendMessage?: unknown }).sendMessage = sendMessage;
+    renderPage(client, sessionRun);
+
+    const input = (await screen.findByLabelText('Message input')) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'do not lose this draft' } });
+    fireEvent.click(screen.getByLabelText('Send message'));
+
+    const failed = await screen.findByTestId('failed-submission');
+    expect(failed.textContent).toContain('do not lose this draft');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry unsent message' }));
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2));
   });
 });
 
@@ -420,8 +452,11 @@ describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
     (client as { resumeSession?: unknown }).resumeSession = resumeSession;
     renderPage(client, run);
 
-    const input = (await screen.findByTestId('resume-session-input')) as HTMLTextAreaElement;
-    const send = (await screen.findByTestId('resume-session-send')) as HTMLButtonElement;
+    const panel = await screen.findByTestId('resume-session-panel');
+    expect(panel.querySelector('.jcode-chat-input')).toBeTruthy();
+    const input = panel.querySelector('textarea[aria-label="Message input"]') as HTMLTextAreaElement;
+    expect(input).toBeTruthy();
+    const send = (await screen.findByLabelText('Send message')) as HTMLButtonElement;
     // Empty keeps Continue disabled; typing enables it and submit calls resume.
     expect(send.disabled).toBe(true);
     fireEvent.change(input, { target: { value: 'pick up where we left off' } });
@@ -486,11 +521,14 @@ describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
       (client as { resumeSession?: unknown }).resumeSession = resumeSession;
       const view = renderPage(client, run);
 
-      const input = (await screen.findByTestId('resume-session-input')) as HTMLTextAreaElement;
+      const panel = await screen.findByTestId('resume-session-panel');
+      const input = panel.querySelector('textarea[aria-label="Message input"]') as HTMLTextAreaElement;
+      expect(input).toBeTruthy();
       fireEvent.change(input, { target: { value: 'go' } });
-      fireEvent.click(await screen.findByTestId('resume-session-send'));
+      fireEvent.click(await screen.findByLabelText('Send message'));
       // The server's typed message is shown verbatim (the readable failure reason).
       expect(await screen.findByText(message)).toBeTruthy();
+      expect((await screen.findByTestId('failed-submission')).textContent).toContain('go');
       view.unmount();
     }
   });

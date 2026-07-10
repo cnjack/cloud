@@ -6,6 +6,7 @@ import { App } from './App';
 import { ApiProvider } from './api/ApiProvider';
 import { AuthProvider } from './auth/AuthProvider';
 import { ToastProvider } from './components/Toast';
+import 'jcode-ui/styles.css';
 import './styles/global.css';
 
 const queryClient = new QueryClient({

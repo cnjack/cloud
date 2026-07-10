@@ -4,6 +4,79 @@
   gap: var(--space-4);
   min-height: 0;
   flex: 1;
+
+  /* jcode-ui uses its published token vocabulary. Scope the bridge to this
+     page so importing the package never re-skins the rest of Cloud Console. */
+  --jcode-col-max: 100%;
+  --jcode-col-pad-x: 0;
+  --color-background: var(--color-bg);
+  --color-surface: var(--color-panel);
+  --color-foreground: var(--color-text);
+  --color-muted-foreground: var(--color-text-dim);
+  --color-primary: var(--color-accent);
+  --color-on-primary: var(--color-on-accent);
+  --color-muted: var(--color-panel-raised);
+  --color-secondary: var(--color-panel-hover);
+  --color-secondary-foreground: var(--color-text);
+  --color-error-bg: var(--status-failed-bg);
+  --color-error-fg: var(--color-danger-fg);
+  --color-destructive: var(--color-danger);
+  --color-warning-bg: var(--status-scheduling-bg);
+  --color-warning-fg: var(--status-scheduling-fg);
+  --color-success-bg: var(--status-succeeded-bg);
+  --color-success-fg: var(--status-succeeded-fg);
+  --color-info-bg: var(--status-running-bg);
+  --color-info-fg: var(--status-running-fg);
+  --color-accent-neutral: var(--color-text);
+  --accent-wash-soft: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  --accent-wash: color-mix(in srgb, var(--color-accent) 11%, transparent);
+  --accent-wash-strong: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  --accent-border: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  --neutral-wash-soft: color-mix(in srgb, var(--color-text) 8%, transparent);
+  --neutral-wash: color-mix(in srgb, var(--color-text) 11%, transparent);
+  --neutral-wash-strong: color-mix(in srgb, var(--color-text) 16%, transparent);
+  --neutral-border: color-mix(in srgb, var(--color-text) 30%, transparent);
+
+  /* Package code/tool renderers also read their own derived palettes. Keep
+     those scoped and theme-reactive instead of inheriting jcode-ui's light
+     :root values while Cloud is dark. */
+  --code-bg: var(--color-code-bg);
+  --code-inline-bg: var(--color-code-bg);
+  --code-border: var(--color-border-strong);
+  --code-fg: var(--color-text);
+  --term-bg: var(--color-bg-inset);
+  --term-fg: var(--color-text);
+  --term-cursor: var(--color-accent);
+  --term-selection: var(--accent-wash-strong);
+  --term-black: var(--color-bg);
+  --term-red: var(--color-danger);
+  --term-green: var(--color-success);
+  --term-yellow: var(--color-warning);
+  --term-blue: var(--status-running-fg);
+  --term-magenta: var(--color-accent);
+  --term-cyan: var(--status-running-dot);
+  --term-white: var(--color-text-muted);
+  --term-bright-black: var(--color-text-faint);
+  --term-bright-red: var(--color-danger-fg);
+  --term-bright-green: var(--status-succeeded-fg);
+  --term-bright-yellow: var(--status-scheduling-fg);
+  --term-bright-blue: var(--status-running-fg);
+  --term-bright-magenta: var(--color-accent-hover);
+  --term-bright-cyan: var(--status-running-fg);
+  --term-bright-white: var(--color-text);
+  --hljs-fg: var(--color-text);
+  --hljs-keyword: var(--color-accent);
+  --hljs-string: var(--color-success);
+  --hljs-comment: var(--color-text-faint);
+  --hljs-number: var(--color-warning);
+  --hljs-title: var(--color-accent-hover);
+  --hljs-type: var(--color-danger);
+  --hljs-params: var(--color-accent);
+  --hljs-variable: var(--color-warning);
+  --hljs-function: var(--color-accent-hover);
+  --hljs-meta: var(--color-text-dim);
+  --hljs-property: var(--status-running-fg);
+  --hljs-punctuation: var(--color-text-faint);
 }
 
 .crumbs {
@@ -158,21 +231,39 @@
   flex-direction: column;
   gap: var(--space-3);
 }
-.sessionInput {
-  width: 100%;
-  resize: vertical;
-  min-height: 44px;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-strong);
-  background: var(--color-panel-raised);
-  color: var(--color-text);
-  font-family: var(--font-sans);
-  font-size: var(--fs-sm);
+.chatInputFieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
-.sessionInput:focus-visible {
-  outline: 2px solid var(--color-focus-ring);
-  outline-offset: 1px;
+.chatInputFieldset:disabled {
+  opacity: 0.62;
+}
+.failedSubmission {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  color: var(--color-danger-fg);
+  background: var(--status-failed-bg);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-caption);
+}
+.failedSubmission pre {
+  width: 100%;
+  max-height: 10rem;
+  margin: 0;
+  padding: var(--space-2);
+  overflow: auto;
+  color: var(--color-text);
+  background: var(--color-code-bg);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .sessionActions {
   display: flex;

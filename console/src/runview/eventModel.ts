@@ -37,7 +37,7 @@ export function toTimelineItem(ev: RunViewEvent): TimelineItem {
       return {
         ...base,
         kind: 'tool_call',
-        tool: String(p.tool ?? p.tool_name ?? 'tool'),
+        tool: String(p.name ?? p.tool ?? p.tool_name ?? 'tool'),
         callId: p.call_id ? String(p.call_id) : undefined,
         args: pretty(p.args ?? p.input ?? {}),
       };
@@ -52,7 +52,13 @@ export function toTimelineItem(ev: RunViewEvent): TimelineItem {
       return {
         ...base,
         kind: 'tool_result',
-        tool: p.tool ? String(p.tool) : p.tool_name ? String(p.tool_name) : undefined,
+        tool: p.name
+          ? String(p.name)
+          : p.tool
+            ? String(p.tool)
+            : p.tool_name
+              ? String(p.tool_name)
+              : undefined,
         callId: p.call_id ? String(p.call_id) : undefined,
         output: pretty(p.output ?? p.result ?? ''),
         isError,

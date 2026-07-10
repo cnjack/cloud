@@ -112,7 +112,11 @@ export function groupTimeline(events: RunViewEvent[]): GroupedTimelineItem[] {
         call.status = item.isError ? 'failed' : 'succeeded';
         call.resultSeq = item.seq;
         call.resultTs = item.ts;
-        if (item.tool) call.tool = item.tool;
+        // The initial runner event carries a stable ACP kind in `name`
+        // (read/edit/execute), while terminal updates may carry the human title
+        // instead. Keep the call's machine name for jcode-ui registry dispatch;
+        // only let the result fill a genuinely unknown legacy call name.
+        if (item.tool && (!call.tool || call.tool === 'tool')) call.tool = item.tool;
         openCalls.delete(item.callId!);
         break;
       }

@@ -9,6 +9,8 @@ export { Timeline } from './Timeline';
 export { PermissionCard } from './PermissionCard';
 export { groupTimeline } from './grouping';
 export { toTimelineItem, terminalStatusSeq } from './eventModel';
+export { toThreadItems } from './threadModel';
+export type { CloudApproval, CloudMessage } from './threadModel';
 
 export type {
   RunViewEvent,
