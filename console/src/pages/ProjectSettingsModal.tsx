@@ -14,7 +14,7 @@
 import { useState } from 'react';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
-import { TextField } from '../components/Field';
+import { SelectField, TextField } from '../components/Field';
 import { MembersPanel } from './MembersPanel';
 import { IntegrationsPanel } from './IntegrationsPanel';
 import {
@@ -578,27 +578,21 @@ function KanbanPanel({ project }: { project: Project }) {
       )}
 
       <form className={styles.kanbanForm} onSubmit={submit} noValidate data-testid="kanban-link-form">
-        <div>
-          <label className={styles.guardrailTitle} htmlFor="kanban-service">
-            Service
-          </label>
-          <select
-            id="kanban-service"
-            value={serviceId}
-            onChange={(e) => setServiceId(e.target.value)}
-            required
-            disabled={kanbanOff}
-            data-testid="kanban-link-service"
-            style={{ display: 'block', width: '100%', marginTop: 4 }}
-          >
-            <option value="">Select service…</option>
-            {services.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        <SelectField
+          label="Service"
+          required
+          value={serviceId}
+          onChange={(e) => setServiceId(e.target.value)}
+          disabled={kanbanOff}
+          data-testid="kanban-link-service"
+        >
+          <option value="">Select service…</option>
+          {services.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </SelectField>
         <TextField
           label="jtype workspace id"
           placeholder="f006b727-…"
