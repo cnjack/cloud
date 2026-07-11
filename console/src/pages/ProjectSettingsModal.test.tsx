@@ -27,6 +27,7 @@ import type {
 } from '../api/types';
 import { ApiError } from '../api/client';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
+import { pickOption } from '../test/select';
 
 function baseProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -274,7 +275,7 @@ describe('ProjectSettingsModal — Members tab', () => {
     fireEvent.click(screen.getByTestId('tab-members'));
     await waitFor(() => expect(screen.getByTestId('member-role-select')).toBeTruthy());
 
-    fireEvent.change(screen.getByTestId('member-role-select'), { target: { value: 'viewer' } });
+    await pickOption('member-role-select', 'viewer');
     await waitFor(() => expect(ctl.added).toHaveLength(1));
     expect(ctl.added[0]).toMatchObject({ user_id: 'u_ada', role: 'viewer' });
 
@@ -379,7 +380,7 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
 
     // Fill and submit the add form (service select is populated from the project's
     // own services).
-    fireEvent.change(screen.getByTestId('kanban-link-service'), { target: { value: 'svc_default' } });
+    await pickOption('kanban-link-service', 'default');
     fireEvent.change(screen.getByTestId('kanban-link-workspace'), { target: { value: 'ws2' } });
     fireEvent.change(screen.getByTestId('kanban-link-board'), { target: { value: 'b2' } });
     fireEvent.change(screen.getByTestId('kanban-link-trigger'), { target: { value: 'ai' } });
@@ -475,7 +476,7 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     // be created here.
     expect((screen.getByTestId('kanban-link-add') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('kanban-link-workspace') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByTestId('kanban-link-service') as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByTestId('kanban-link-service') as HTMLButtonElement).disabled).toBe(true);
   });
 
   // ---- D28: per-link "Connect with jtype" device flow ----------------------

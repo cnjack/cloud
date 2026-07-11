@@ -14,6 +14,7 @@ import {
 } from '../api/queries';
 import { LoadingBlock, ErrorBlock } from '../components/States';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { useToast } from '../components/Toast';
 import { ApiError } from '../api/client';
 import type { MemberRole, UserSearchResult } from '../api/types';
@@ -138,19 +139,14 @@ export function MembersPanel({
               </div>
             )}
           </div>
-          <select
+          <Select
             className={styles.roleSelect}
             value={role}
-            onChange={(e) => setRole(e.target.value as MemberRole)}
+            onChange={(value) => setRole(value as MemberRole)}
             data-testid="member-add-role"
             aria-label="Role for the added member"
-          >
-            {ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
+            options={ROLES.map((r) => ({ value: r, label: r }))}
+          />
         </div>
       )}
 
@@ -173,19 +169,14 @@ export function MembersPanel({
               </div>
               {canManage ? (
                 <>
-                  <select
+                  <Select
                     className={styles.roleSelect}
                     value={m.role}
-                    onChange={(e) => changeRole(m.user_id, e.target.value as MemberRole)}
+                    onChange={(value) => changeRole(m.user_id, value as MemberRole)}
                     data-testid="member-role-select"
                     aria-label={`Role for ${m.display_name}`}
-                  >
-                    {ROLES.map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
-                    ))}
-                  </select>
+                    options={ROLES.map((r) => ({ value: r, label: r }))}
+                  />
                   <Button
                     type="button"
                     variant="ghost"

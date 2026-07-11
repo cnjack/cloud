@@ -88,11 +88,7 @@
 .serviceSelect {
   flex: 1;
   min-width: 0;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-inset);
-  color: var(--color-text);
+  border-color: var(--color-border-strong);
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
 }
@@ -178,33 +174,22 @@
   margin-left: auto;
 }
 
-/* A composer control styled as a pill (model pick, permission mode). */
+/* A composer control styled as a pill (model pick, permission mode). The
+   Select trigger brings the input skin + caret; this reshapes it into a pill. */
 .composerPill {
   height: 28px;
   max-width: 100%;
   padding: 0 calc(var(--space-3) + 14px) 0 var(--space-3);
-  border: 1px solid var(--color-border-strong);
+  border-color: var(--color-border-strong);
   border-radius: var(--radius-pill);
   background-color: var(--color-panel-raised);
-  /* Custom caret (native arrow removed via appearance:none) so the select reads
-     as a pill; a neutral gray stroke sits legibly on both light and dark. */
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a8a8a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
   background-position: right var(--space-2) center;
-  background-size: 10px 6px;
   color: var(--color-text-muted);
   font-size: var(--fs-caption);
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
 }
 .composerPill:focus {
   outline: none;
   border-color: var(--color-focus-ring);
-}
-.composerPill:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
 }
 
 /* Inline prompt-required error, shown under the message inside the composer box. */

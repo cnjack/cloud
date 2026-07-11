@@ -29,6 +29,7 @@ import { useModelGate } from '../components/ModelGate';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
+import { Select } from '../components/Select';
 import { GitModeToggle } from '../components/GitModeToggle';
 import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
@@ -348,19 +349,14 @@ export function ProjectDetailPage() {
                 <label className={styles.serviceLabel} htmlFor="composer-service">
                   Repository
                 </label>
-                <select
+                <Select
                   id="composer-service"
                   className={styles.serviceSelect}
                   value={activeServiceId}
-                  onChange={(e) => setSelectedService(e.target.value)}
+                  onChange={setSelectedService}
+                  options={services.map((s) => ({ value: s.id, label: serviceLabel(s) }))}
                   data-testid="composer-service-select"
-                >
-                  {services.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {serviceLabel(s)}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
             )}
 
@@ -373,15 +369,15 @@ export function ProjectDetailPage() {
                 <label className={styles.serviceLabel} htmlFor="composer-default-model">
                   Default model
                 </label>
-                <select
+                <Select
                   id="composer-default-model"
                   className={styles.serviceSelect}
                   aria-label="Default model for this repository"
                   value={activeService.default_model_id ?? ''}
                   data-testid="service-default-model-select"
-                  onChange={(e) =>
+                  onChange={(value) =>
                     updateService.mutate(
-                      { serviceId: activeService.id, input: { default_model_id: e.target.value } },
+                      { serviceId: activeService.id, input: { default_model_id: value } },
                       {
                         onSuccess: () =>
                           toast.push({ kind: 'success', message: 'Default model updated.' }),
@@ -393,14 +389,11 @@ export function ProjectDetailPage() {
                       },
                     )
                   }
-                >
-                  <option value="">No default</option>
-                  {grantedModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      Default: {m.name}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    { value: '', label: 'No default' },
+                    ...grantedModels.map((m) => ({ value: m.id, label: `Default: ${m.name}` })),
+                  ]}
+                />
               </div>
             )}
 
@@ -426,36 +419,34 @@ export function ProjectDetailPage() {
                     models (empty => env fallback, nothing to pick). "Service
                     default" lets the resolution chain decide. */}
                 {grantedModels.length > 0 && (
-                  <select
+                  <Select
                     className={styles.composerPill}
                     aria-label="Model"
                     value={selectedModel}
-                    onChange={(e) => setSelectedModel(e.target.value)}
+                    onChange={setSelectedModel}
                     disabled={!modelGate.configured}
                     data-testid="composer-model-select"
-                  >
-                    <option value="">Service default</option>
-                    {grantedModels.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: '', label: 'Service default' },
+                      ...grantedModels.map((m) => ({ value: m.id, label: m.name })),
+                    ]}
+                  />
                 )}
                 {/* F8b: permission mode for the session. Full access auto-approves;
                     approval pauses the agent before actions that need permission. */}
-                <select
+                <Select
                   className={styles.composerPill}
                   aria-label="Permission mode"
                   title="Full access auto-approves the agent; Ask before actions pauses it for your approval in the timeline."
                   value={askApproval ? 'approval' : ''}
-                  onChange={(e) => setAskApproval(e.target.value === 'approval')}
+                  onChange={(value) => setAskApproval(value === 'approval')}
                   disabled={!modelGate.configured}
                   data-testid="composer-approval-toggle"
-                >
-                  <option value="">Full access</option>
-                  <option value="approval">Ask before actions</option>
-                </select>
+                  options={[
+                    { value: '', label: 'Full access' },
+                    { value: 'approval', label: 'Ask before actions' },
+                  ]}
+                />
                 <Button
                   type="submit"
                   variant="primary"
@@ -555,19 +546,19 @@ export function ProjectDetailPage() {
                   {(availableIntegrations.length > 0 || canManage) && (
                     <label className={styles.pickerHint} style={{ display: 'block' }}>
                       Source
-                      <select
+                      <Select
                         value={effectiveIntegrationId}
-                        onChange={(e) => setPickerIntegrationId(e.target.value)}
+                        onChange={setPickerIntegrationId}
                         data-testid="repo-source-select"
-                        style={{ display: 'block', width: '100%', marginTop: 4 }}
-                      >
-                        {canManage && <option value="">Direct (your credential)</option>}
-                        {availableIntegrations.map((i) => (
-                          <option key={i.id} value={i.id}>
-                            {i.name} · {i.provider} · @{i.bot_username}
-                          </option>
-                        ))}
-                      </select>
+                        style={{ display: 'flex', width: '100%', marginTop: 4 }}
+                        options={[
+                          ...(canManage ? [{ value: '', label: 'Direct (your credential)' }] : []),
+                          ...availableIntegrations.map((i) => ({
+                            value: i.id,
+                            label: `${i.name} · ${i.provider} · @${i.bot_username}`,
+                          })),
+                        ]}
+                      />
                     </label>
                   )}
                   {!integrationMode && pickerProviders.length > 1 && (

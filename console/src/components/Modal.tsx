@@ -35,11 +35,13 @@ export function Modal({
     document.addEventListener('keydown', onKey);
     // Focus a form field first so keyboard users land in the body; fall back to
     // any focusable control. Querying plain document order would grab the
-    // header's close button, which precedes the body in the DOM.
+    // header's close button, which precedes the body in the DOM. Selects render
+    // as Headless UI listbox trigger buttons, so match those alongside inputs.
     const panel = panelRef.current;
     const target =
-      panel?.querySelector<HTMLElement>('input, textarea, select') ??
-      panel?.querySelector<HTMLElement>('button, [tabindex]');
+      panel?.querySelector<HTMLElement>(
+        'input, textarea, select, button[aria-haspopup="listbox"]',
+      ) ?? panel?.querySelector<HTMLElement>('button, [tabindex]');
     target?.focus();
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';

@@ -300,7 +300,7 @@
 
 .kanbanError {
   font-size: var(--fs-tiny);
-  color: var(--color-danger, #c62828);
+  color: var(--color-danger);
 }
 
 /* ---- API keys tab (F12 / D24) --------------------------------------------- */

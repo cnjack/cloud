@@ -1,10 +1,11 @@
 import type {
   InputHTMLAttributes,
   ReactNode,
-  SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from 'react';
 import { useId } from 'react';
+import { Select } from './Select';
+import type { SelectProps } from './Select';
 import styles from './Field.module.css';
 
 interface BaseProps {
@@ -53,9 +54,8 @@ export function SelectField({
   error,
   required,
   className,
-  children,
   ...rest
-}: BaseProps & SelectHTMLAttributes<HTMLSelectElement>) {
+}: BaseProps & Omit<SelectProps, 'id' | 'aria-invalid' | 'aria-required'>) {
   const id = useId();
   return (
     <div className={styles.field}>
@@ -63,17 +63,13 @@ export function SelectField({
         {label}
         {required && <span className={styles.req} aria-hidden> *</span>}
       </label>
-      <select
+      <Select
         id={id}
-        className={[styles.input, styles.select, error && styles.invalid, className]
-          .filter(Boolean)
-          .join(' ')}
+        className={[styles.select, className].filter(Boolean).join(' ')}
         aria-invalid={!!error}
         aria-required={required}
         {...rest}
-      >
-        {children}
-      </select>
+      />
       {error ? (
         <span className={styles.error}>{error}</span>
       ) : (

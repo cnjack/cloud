@@ -1,0 +1,91 @@
+/*
+ * Select trigger + options panel. The trigger reads like a Field input; the
+ * options panel follows the ProjectSwitcher menu look. Per-site classes passed
+ * via the component's className land after this file in the bundle, so their
+ * declarations win ties — same override model the native selects used.
+ */
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  text-align: left;
+  background-color: var(--color-bg-inset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) calc(var(--space-3) + 18px) var(--space-2) var(--space-3);
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: var(--fs-body);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out);
+  /* Theme-neutral caret — the same asset the native selects used. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a8a8a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-3) center;
+  background-size: 10px 6px;
+}
+.trigger:hover {
+  border-color: var(--color-border-strong);
+}
+.trigger:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+.trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.trigger[aria-invalid='true'] {
+  border-color: var(--color-danger);
+}
+
+.value,
+.placeholder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.placeholder {
+  color: var(--color-text-faint);
+}
+
+.options {
+  min-width: var(--button-width);
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--color-panel-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  padding: var(--space-1);
+  z-index: var(--z-modal);
+  animation: select-menu-in var(--dur-fast) var(--ease-out);
+}
+.options:focus {
+  outline: none;
+}
+
+.option {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  color: var(--color-text);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.option[data-focus] {
+  background: var(--color-panel-hover);
+}
+.option[data-selected] {
+  background: var(--status-running-bg);
+}
+
+@keyframes select-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}

@@ -586,17 +586,12 @@ function KanbanPanel({ project }: { project: Project }) {
           label="Service"
           required
           value={serviceId}
-          onChange={(e) => setServiceId(e.target.value)}
+          onChange={setServiceId}
           disabled={kanbanOff}
           data-testid="kanban-link-service"
-        >
-          <option value="">Select service…</option>
-          {services.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </SelectField>
+          placeholder="Select service…"
+          options={services.map((s) => ({ value: s.id, label: s.name }))}
+        />
         <TextField
           label="jtype workspace id"
           placeholder="f006b727-…"

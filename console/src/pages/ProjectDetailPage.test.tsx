@@ -29,6 +29,7 @@ import type {
   UpdateServiceInput,
 } from '../api/types';
 import { ProjectDetailPage } from './ProjectDetailPage';
+import { pickOption } from '../test/select';
 
 function svc(id: string, name: string): Service {
   return {
@@ -163,8 +164,8 @@ describe('ProjectDetailPage — permission mode (F8b)', () => {
     await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
     // The permission pill is always shown (every run is a session) and defaults
     // to Full access.
-    const perm = screen.getByTestId('composer-approval-toggle') as HTMLSelectElement;
-    expect(perm.value).toBe('');
+    const perm = screen.getByTestId('composer-approval-toggle');
+    expect(perm.textContent).toBe('Full access');
 
     fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'chat' } });
     fireEvent.click(screen.getByTestId('run-submit'));
@@ -178,9 +179,7 @@ describe('ProjectDetailPage — permission mode (F8b)', () => {
     renderPage(client);
 
     await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
-    fireEvent.change(screen.getByTestId('composer-approval-toggle'), {
-      target: { value: 'approval' },
-    });
+    await pickOption('composer-approval-toggle', 'Ask before actions');
 
     fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'careful chat' } });
     fireEvent.click(screen.getByTestId('run-submit'));
@@ -197,10 +196,9 @@ describe('ProjectDetailPage — permission mode (F8b)', () => {
     renderPage(client);
 
     await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
-    const perm = screen.getByTestId('composer-approval-toggle');
-    fireEvent.change(perm, { target: { value: 'approval' } });
+    await pickOption('composer-approval-toggle', 'Ask before actions');
     // Change of heart: back to Full access — approval must NOT ride on the request.
-    fireEvent.change(perm, { target: { value: '' } });
+    await pickOption('composer-approval-toggle', 'Full access');
 
     fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'go' } });
     fireEvent.click(screen.getByTestId('run-submit'));
@@ -223,13 +221,15 @@ describe('ProjectDetailPage — model selection (D21)', () => {
     });
     renderPage(client);
 
-    const select = (await screen.findByTestId('composer-model-select')) as HTMLSelectElement;
+    const select = await screen.findByTestId('composer-model-select');
     // "Service default" + the two granted models.
-    expect(select.options).toHaveLength(3);
-    expect(screen.getByText('GPT-4o')).toBeTruthy();
+    fireEvent.click(select);
+    const options = await screen.findAllByRole('option');
+    expect(options).toHaveLength(3);
+    expect(screen.getByRole('option', { name: 'GPT-4o' })).toBeTruthy();
 
     // Pick a specific model, then dispatch.
-    fireEvent.change(select, { target: { value: 'm_claude' } });
+    fireEvent.click(screen.getByRole('option', { name: 'Claude' }));
     fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'go' } });
     fireEvent.click(screen.getByTestId('run-submit'));
 
@@ -257,8 +257,8 @@ describe('ProjectDetailPage — model selection (D21)', () => {
     });
     renderPage(client);
 
-    const defSelect = (await screen.findByTestId('service-default-model-select')) as HTMLSelectElement;
-    fireEvent.change(defSelect, { target: { value: 'm_gpt' } });
+    await screen.findByTestId('service-default-model-select');
+    await pickOption('service-default-model-select', 'Default: GPT-4o');
     await waitFor(() => expect(calls.serviceUpdates).toHaveLength(1));
     expect(calls.serviceUpdates[0]).toMatchObject({ sid: 'svc_default', input: { default_model_id: 'm_gpt' } });
   });
@@ -562,11 +562,13 @@ describe('ProjectDetailPage — member builds via integration (D19 / F5)', () =>
     await waitFor(() => expect(screen.getByTestId('add-repo-trigger')).toBeTruthy());
     fireEvent.click(screen.getByTestId('add-repo-trigger'));
 
-    const source = (await screen.findByTestId('repo-source-select')) as HTMLSelectElement;
+    const source = await screen.findByTestId('repo-source-select');
     // Direct + the one integration; the owner defaults to Direct.
-    expect(source.options).toHaveLength(2);
-    expect(source.value).toBe('');
-    expect(source.options[1]!.textContent).toContain('jcloud-bot');
+    expect(source.textContent).toBe('Direct (your credential)');
+    fireEvent.click(source);
+    const options = await screen.findAllByRole('option');
+    expect(options).toHaveLength(2);
+    expect(options[1]!.textContent).toContain('jcloud-bot');
   });
 
   it('does not fetch integrations for a viewer (enabled gating)', async () => {

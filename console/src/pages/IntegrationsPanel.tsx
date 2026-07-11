@@ -10,6 +10,7 @@
 import { useState } from 'react';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
+import { Select } from '../components/Select';
 import { useToast } from '../components/Toast';
 import { ApiError } from '../api/client';
 import {
@@ -108,19 +109,14 @@ export function IntegrationsPanel({ project }: { project: Project }) {
           <label className={styles.guardrailTitle} htmlFor="integration-provider">
             Provider
           </label>
-          <select
+          <Select
             id="integration-provider"
             value={provider}
-            onChange={(e) => setProvider(e.target.value as GitProvider)}
+            onChange={(value) => setProvider(value as GitProvider)}
             data-testid="integration-provider"
-            style={{ display: 'block', width: '100%', marginTop: 4 }}
-          >
-            {PROVIDERS.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
+            style={{ display: 'flex', width: '100%', marginTop: 4 }}
+            options={PROVIDERS.map((p) => ({ value: p, label: p }))}
+          />
         </div>
         <TextField
           label="Host"

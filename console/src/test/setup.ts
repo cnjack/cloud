@@ -10,3 +10,18 @@ if (!HTMLElement.prototype.scrollTo) {
     }
   };
 }
+
+// jsdom lacks the observers @headlessui/react's anchored panels (floating-ui)
+// need to track the trigger's size/position. No-op stubs are enough — tests
+// assert on options/selection, never on popup geometry.
+class ObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+}
+globalThis.ResizeObserver ??= ObserverStub as unknown as typeof ResizeObserver;
+globalThis.IntersectionObserver ??=
+  ObserverStub as unknown as typeof IntersectionObserver;
