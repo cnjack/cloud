@@ -303,16 +303,21 @@ type Workspace struct {
 // owner-only discovery endpoint that backs the console's workspace picker. 4xx/5xx
 // return a typed *Error (fail-visible; never an empty list masking an auth error).
 func (c *Client) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
-	var raw []struct {
-		ID    string `json:"id"`
-		Name  string `json:"name"`
-		Title string `json:"title"`
+	// jtype wraps this endpoint: {"workspaces":[{id,name,slug,role,…}]} — unlike
+	// /documents, which is a bare array. Decode the wrapper (a bare-array decode
+	// fails with "cannot unmarshal object into []struct").
+	var raw struct {
+		Workspaces []struct {
+			ID    string `json:"id"`
+			Name  string `json:"name"`
+			Title string `json:"title"`
+		} `json:"workspaces"`
 	}
 	if err := c.getJSON(ctx, c.baseURL+"/api/v1/workspaces", &raw); err != nil {
 		return nil, err
 	}
-	out := make([]Workspace, 0, len(raw))
-	for _, w := range raw {
+	out := make([]Workspace, 0, len(raw.Workspaces))
+	for _, w := range raw.Workspaces {
 		name := w.Name
 		if name == "" {
 			name = w.Title

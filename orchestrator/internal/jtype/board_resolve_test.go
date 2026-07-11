@@ -124,15 +124,16 @@ func TestGetBoard_ReturnsConfigID(t *testing.T) {
 	}
 }
 
-// C4 client-level: ListWorkspaces hits GET /api/v1/workspaces and tolerates either
-// a name or title label.
+// C4 client-level: ListWorkspaces hits GET /api/v1/workspaces (which jtype wraps
+// as {"workspaces":[…]}, NOT a bare array) and tolerates either a name or title
+// label.
 func TestListWorkspaces(t *testing.T) {
 	f := newFakeJtype()
 	f.mux.HandleFunc("/api/v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, []map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{"workspaces": []map[string]any{
 			{"id": "ws-1", "name": "My Team"},
 			{"id": "ws-2", "title": "Other"}, // title fallback
-		})
+		}})
 	})
 	srv := httptest.NewServer(f.mux)
 	defer srv.Close()
