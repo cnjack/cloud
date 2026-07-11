@@ -24,6 +24,7 @@ import type {
   EventsEnvelope,
   Integration,
   IntegrationsEnvelope,
+  KanbanClusterConfig,
   KanbanLink,
   Me,
   Member,
@@ -46,6 +47,7 @@ import type {
   StreamFrame,
   SystemInfo,
   UpdateIntegrationInput,
+  UpdateKanbanConfigInput,
   UpdateModelInput,
   UpdateProjectInput,
   UpdateScheduleInput,
@@ -191,6 +193,25 @@ export interface ApiClient {
   updateProjectKanbanLinkToken(projectId: string, linkId: string, token: string): Promise<KanbanLink>;
   /** DELETE /api/v1/projects/{id}/kanban/links/{linkId} — remove a link (owner). */
   deleteProjectKanbanLink(projectId: string, linkId: string): Promise<void>;
+
+  /* ---- cluster kanban config (D27) -------------------------------------- */
+  /**
+   * GET /api/v1/system/kanban — the cluster jtype config resolved DB › env › off
+   * (cluster-admin). Never carries the token — only token_set / cluster_token_set.
+   */
+  getKanbanConfig(): Promise<KanbanClusterConfig>;
+  /**
+   * PUT /api/v1/system/kanban — set the DB override's base_url (required) and,
+   * with three-state presence, its optional cluster fallback token (cluster-admin).
+   * 400 for an invalid base_url; 409 cipher_not_configured for a token write with
+   * no AUTH_TOKEN_KEY. Returns the resolved config (the GET shape).
+   */
+  updateKanbanConfig(input: UpdateKanbanConfigInput): Promise<KanbanClusterConfig>;
+  /**
+   * DELETE /api/v1/system/kanban — drop the DB override, falling back to env/off
+   * (cluster-admin). Returns the new resolved config (the GET shape).
+   */
+  deleteKanbanConfig(): Promise<KanbanClusterConfig>;
 
   /* ---- schedules (F11 / D24) -------------------------------------------- */
   /** GET /api/v1/services/{id}/schedules — a service's cron triggers (member+). */
@@ -539,6 +560,17 @@ export function createHttpClient(
         `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(linkId)}`,
         { method: 'DELETE' },
       ),
+
+    // Cluster kanban config (D27). Cluster-admin — set/clear the DB override that
+    // supersedes the JTYPE_BASE_URL env fallback. The token is write-only.
+    getKanbanConfig: () => req<KanbanClusterConfig>('/system/kanban'),
+    updateKanbanConfig: (input) =>
+      req<KanbanClusterConfig>('/system/kanban', {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    deleteKanbanConfig: () =>
+      req<KanbanClusterConfig>('/system/kanban', { method: 'DELETE' }),
 
     // Schedules (F11 / D24). Listing is service-scoped (member+); management is
     // owner-only and keyed off the bare schedule id.

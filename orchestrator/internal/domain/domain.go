@@ -775,6 +775,31 @@ type Model struct {
 // echo api_key_set to admins without ever exposing the plaintext.
 func (m *Model) APIKeySet() bool { return len(m.APIKeyEnc) > 0 }
 
+// KanbanConfig is the single-row cluster-level jtype kanban configuration a
+// cluster admin sets from the console (D27): the jtype document API base URL
+// plus an OPTIONAL cluster fallback token. It takes precedence over the
+// JTYPE_BASE_URL/JTYPE_TOKEN env fallback (resolved by internal/kanbancfg).
+// TokenEnc is the AES-256-GCM ciphertext of the fallback token (nonce||ciphertext,
+// AUTH_TOKEN_KEY), or nil when no fallback token is set; the plaintext is NEVER
+// serialised to API clients — hence `json:"-"` — and is decrypted only in the
+// resolver. The cluster fallback token is SOURCE-COUPLED to this base URL: a DB
+// config never borrows the env JTYPE_TOKEN and vice versa (D27), so a PAT minted
+// for one jtype instance cannot silently authenticate against another.
+type KanbanConfig struct {
+	// BaseURL is the jtype document API root (http/https).
+	BaseURL string `json:"base_url"`
+	// TokenEnc is the encrypted cluster fallback token (nonce||ciphertext), or nil.
+	TokenEnc []byte `json:"-"`
+	// UpdatedAt / UpdatedBy record audit metadata (UpdatedBy is a user id or "" for
+	// the service principal).
+	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedBy string    `json:"updated_by"`
+}
+
+// TokenSet reports whether the config carries an (encrypted) cluster fallback
+// token. Used to echo token_set to admins without ever exposing the plaintext.
+func (c *KanbanConfig) TokenSet() bool { return len(c.TokenEnc) > 0 }
+
 // CredType classifies an Integration's credential shape (D19). Only PAT is
 // implemented this cycle; GithubApp is an accepted-but-inert expansion slot.
 type CredType string

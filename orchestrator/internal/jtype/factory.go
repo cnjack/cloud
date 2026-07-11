@@ -43,6 +43,11 @@ func (f *Factory) Client(token string) *Client {
 	return &Client{baseURL: f.baseURL, token: token, http: f.http}
 }
 
+// BaseURL returns the factory's fixed (trailing-slash-trimmed) base URL. Used by
+// the kanbancfg resolver to key its factory pool + by logs; a factory is rebuilt
+// only when the resolved base URL changes (D27).
+func (f *Factory) BaseURL() string { return f.baseURL }
+
 // TokenSource records which credential ResolveToken selected for a link, so the
 // caller can emit the one-time cluster-fallback deprecation notice (D25).
 type TokenSource int

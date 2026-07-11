@@ -477,10 +477,10 @@ export interface SystemInfo {
     users_count: number;
   };
   /**
-   * Feature E — jtype kanban integration snapshot. `enabled` is true only when
-   * BOTH JTYPE_BASE_URL and JTYPE_TOKEN are set; base_url is shown (never the
-   * token). Optional so lean fixtures still type-check; the Cluster view renders
-   * an "off" state when absent.
+   * Feature E — jtype kanban integration snapshot. `enabled` reflects the
+   * EFFECTIVE config (D27 resolver: DB override › JTYPE_BASE_URL env › off);
+   * base_url is the effective base URL (never the token). Optional so lean
+   * fixtures still type-check; the Cluster view renders an "off" state when absent.
    */
   kanban?: {
     enabled: boolean;
@@ -489,6 +489,18 @@ export interface SystemInfo {
     // F6 / D25: whether the cluster JTYPE_TOKEN fallback is set. Per-link tokens
     // authorise each link; this is only the fallback (never the token itself).
     cluster_token_set?: boolean;
+    /**
+     * D27: which layer supplies the effective config — the DB override set from
+     * the console, the JTYPE_BASE_URL env fallback, or none (off). Optional so
+     * lean fixtures still type-check.
+     */
+    source?: 'db' | 'env' | 'none';
+    /**
+     * D27: set (with source=none / enabled=false) when the resolver could not
+     * produce an effective config — e.g. a DB token is present but AUTH_TOKEN_KEY
+     * isn't. Fail-visible (mirrors systemArchive's reason).
+     */
+    reason?: string;
   };
 }
 
@@ -520,6 +532,51 @@ export interface KanbanLink {
   token_set: boolean;
   credential_status: KanbanCredentialStatus;
   created_at: string;
+}
+
+/* ---- cluster kanban config (D27) ------------------------------------------ */
+
+/**
+ * GET /api/v1/system/kanban — the cluster-admin view of the cluster jtype config
+ * (base_url + optional cluster fallback token), resolved DB-override › env › off.
+ *
+ * `base_url` / `token_set` describe the DB OVERRIDE row (base_url is "" and
+ * token_set false when there is no DB row); `source` names which layer is
+ * effective; the `effective_*` / `cluster_token_set` fields describe the RESOLVED
+ * config the poller/writeback actually use (source-coupled — a DB config never
+ * borrows the env token, and vice versa). The token itself is NEVER returned.
+ * Mirrors the orchestrator kanbanConfigView.
+ */
+export interface KanbanClusterConfig {
+  /** The DB override's base URL ("" when there is no DB row). */
+  base_url: string;
+  /** Whether the DB override carries an encrypted cluster fallback token. */
+  token_set: boolean;
+  source: 'db' | 'env' | 'none';
+  effective_enabled: boolean;
+  effective_base_url: string;
+  /** Whether the EFFECTIVE source (per `source`) carries a cluster fallback token. */
+  cluster_token_set: boolean;
+  poll_interval: string;
+  /**
+   * D27, fail-visible: set (omitempty) only when the config is BROKEN — e.g. the
+   * DB row carries a token but AUTH_TOKEN_KEY is unset, so the resolver refuses
+   * to produce an effective config (source=none). The UI must surface it loudly,
+   * never render a bare "off" for a misconfiguration.
+   */
+  reason?: string;
+}
+
+/**
+ * PUT /api/v1/system/kanban body (cluster-admin). `base_url` is required
+ * (validated http(s); 400 otherwise). `token` is write-only with three-state
+ * presence semantics: OMITTED = leave the stored token unchanged; "" = clear it
+ * (links rely on their own tokens); a value = set/rotate it. A token write with
+ * no cipher configured is a 409 cipher_not_configured.
+ */
+export interface UpdateKanbanConfigInput {
+  base_url: string;
+  token?: string;
 }
 
 /**

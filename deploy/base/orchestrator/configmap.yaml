@@ -105,13 +105,20 @@ data:
   # services.
   ALLOWED_GIT_HOSTS: ""
 
-  # --- jtype kanban integration (Feature E / F6) -----------------------------
-  # JTYPE_BASE_URL intentionally NOT set here: the integration is OFF unless a
-  # deployment explicitly turns it on (fail-visible red line #1 — no mock
-  # default). Since F6 / D25 the base URL ALONE enables the integration: each
-  # kanban link carries its own encrypted jtype PAT (managed by the project
-  # owner in the console), and the cluster JTYPE_TOKEN in the orchestrator
-  # secret is only an optional FALLBACK for links without a per-link token.
-  # JTYPE_POLL_INTERVAL has a sane default (15s) so only the base URL needs to
-  # be provided.
+  # --- jtype kanban integration (Feature E / F6 / D27) -----------------------
+  # Since D27 the effective cluster jtype config is resolved DB > env: a
+  # cluster-admin can set base_url (+ an optional encrypted fallback token) from
+  # the console Cluster page, stored in the single-row cluster_kanban_config
+  # table, and it takes PRECEDENCE over these env vars — activating WITHOUT a
+  # restart (the poller/writeback resolve the effective config per tick). These
+  # JTYPE_* env vars are retained only as a compatibility FALLBACK for when no DB
+  # override is set (delivered in the orchestrator secret, not here).
+  #
+  # JTYPE_BASE_URL intentionally NOT set here: with no DB override AND no env base
+  # URL the integration is OFF (fail-visible red line #1 — no mock default). The
+  # base URL ALONE enables the integration (F6 / D25): each kanban link carries
+  # its own encrypted jtype PAT (managed by the project owner), and the cluster
+  # fallback token (DB or JTYPE_TOKEN, source-coupled to the base URL) is only an
+  # optional fallback for links without a per-link token. JTYPE_POLL_INTERVAL
+  # (env-only) has a sane default (15s).
   JTYPE_POLL_INTERVAL: "15s"

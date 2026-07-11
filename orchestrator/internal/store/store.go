@@ -365,6 +365,24 @@ type Store interface {
 	// error) so revoke is idempotent.
 	RevokeModel(ctx context.Context, modelID, projectID string) error
 
+	// --- Cluster kanban config (D27) -----------------------------------------
+	// The single-row cluster_kanban_config holds the cluster-level jtype base URL
+	// + optional encrypted fallback token a cluster admin sets from the console. It
+	// takes precedence over the JTYPE_* env fallback (see internal/kanbancfg). The
+	// token stays encrypted on every read — the plaintext is NEVER returned over
+	// the API and is decrypted only in the resolver.
+
+	// GetClusterKanbanConfig returns the single-row config, or ErrNotFound when no
+	// row is present (the resolver then falls back to the JTYPE_* env).
+	GetClusterKanbanConfig(ctx context.Context) (*domain.KanbanConfig, error)
+	// UpsertClusterKanbanConfig writes the single-row config (INSERT … ON CONFLICT
+	// (id) DO UPDATE), stamping updated_at=now(). base_url/token_enc/updated_by come
+	// from cfg; token_enc nil clears the fallback token.
+	UpsertClusterKanbanConfig(ctx context.Context, cfg *domain.KanbanConfig) error
+	// DeleteClusterKanbanConfig removes the single-row config so the resolver falls
+	// back to the JTYPE_* env. Idempotent: a missing row is not an error.
+	DeleteClusterKanbanConfig(ctx context.Context) error
+
 	// --- Integrations (D19 / F5) ---------------------------------------------
 	// A project-level git host binding with a BOT service credential. token_enc
 	// stays encrypted on every read — the plaintext is NEVER returned over the API

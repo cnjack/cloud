@@ -253,6 +253,48 @@ func TestPGKanbanLinkTokenMigration(t *testing.T) {
 	}
 }
 
+// TestPGKanbanConfigMigration is the D27 migration check: 0022 creates the
+// single-row cluster_kanban_config table (id pinned to 1, nullable token_enc) and
+// re-applying the full set is a clean no-op. Runs against real Postgres; needs
+// JCLOUD_PG_DSN and is skipped otherwise.
+func TestPGKanbanConfigMigration(t *testing.T) {
+	dsn := os.Getenv("JCLOUD_PG_DSN")
+	if dsn == "" {
+		t.Skip("JCLOUD_PG_DSN not set; skipping Postgres-backed migration test")
+	}
+	ctx := context.Background()
+	st, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := Migrate(ctx, st.Pool()); err != nil {
+		t.Fatalf("first migrate: %v", err)
+	}
+	// Re-apply: a clean no-op (schema_migrations gate + CREATE TABLE IF NOT EXISTS).
+	if err := Migrate(ctx, st.Pool()); err != nil {
+		t.Fatalf("second migrate should be a no-op, got: %v", err)
+	}
+
+	// token_enc is bytea + nullable; id is a smallint pinned to 1 by a CHECK.
+	var dataType, nullable string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT data_type, is_nullable FROM information_schema.columns
+		 WHERE table_name='cluster_kanban_config' AND column_name='token_enc'`).
+		Scan(&dataType, &nullable); err != nil {
+		t.Fatal(err)
+	}
+	if dataType != "bytea" || nullable != "YES" {
+		t.Fatalf("token_enc type=%q nullable=%q want bytea/YES", dataType, nullable)
+	}
+	// The id CHECK (id = 1) rejects any other id.
+	if _, err := st.Pool().Exec(ctx,
+		`INSERT INTO cluster_kanban_config (id, base_url) VALUES (2, 'http://x')`); err == nil {
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM cluster_kanban_config WHERE id=2`)
+		t.Fatal("id=2 should violate the CHECK (id = 1)")
+	}
+}
+
 // TestPGModelCatalogMigrationBackfill is the D21 §6 data migration: a pre-0013
 // database with a single cluster_model_config row + N projects must, after 0013,
 // have that config as the catalog's first entry GRANTED to every project, the old

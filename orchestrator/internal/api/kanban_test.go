@@ -46,11 +46,13 @@ func setupKanban(t *testing.T, board fakeBoardValidator) kanbanFixture {
 	cfg := withTestModel(&config.Config{ConsoleToken: consoleToken, AuthTokenKey: key})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, sse.NewHub(), nil)
-	// When a board (or error) is supplied, wire it as the token->validator seam so
+	// When a board (or error) is supplied, ENABLE the integration (env base URL, so
+	// the resolver reports it on) and wire the fake as the board-validator seam so
 	// column validation runs (mirrors an ON integration); otherwise validation is
-	// off (mirrors JTYPE_BASE_URL unset).
+	// off (mirrors an unconfigured cluster). The fake ignores the resolved factory.
 	if board.board != nil || board.err != nil {
-		srv.jtypeBoardFor = func(string) boardValidator { return board }
+		cfg.JtypeBaseURL = "http://jtype.test"
+		srv.boardValidatorFor = func(_ *jtype.Factory, _ string) boardValidator { return board }
 	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -96,6 +98,14 @@ func setupKanban(t *testing.T, board fakeBoardValidator) kanbanFixture {
 
 func (f kanbanFixture) linksURL() string {
 	return f.ts.URL + "/api/v1/projects/" + f.projectID + "/kanban/links"
+}
+
+// setClusterToken sets the env JTYPE_TOKEN fallback and invalidates the shared
+// resolver so the effective cluster-token change is visible on the next request
+// (the resolver caches for a few seconds; D27).
+func (f kanbanFixture) setClusterToken(tok string) {
+	f.srv.cfg.JtypeToken = tok
+	f.srv.Kanban().Invalidate()
 }
 
 // Owner CRUD on the project-scoped links, and the token is never echoed back.
@@ -312,7 +322,7 @@ func TestProjectKanbanLinkColumnValidation(t *testing.T) {
 	bad.Body.Close()
 
 	// Good columns via the CLUSTER FALLBACK token (no per-link token supplied).
-	f.srv.cfg.JtypeToken = "cluster-pat"
+	f.setClusterToken("cluster-pat")
 	good := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "b", "service_id": f.serviceID,
 		"trigger_column": "ai", "done_column": "done",
@@ -328,7 +338,7 @@ func TestProjectKanbanLinkColumnValidation(t *testing.T) {
 
 	// jtype unreachable → 503 fail-visible.
 	f2 := setupKanban(t, fakeBoardValidator{err: errFakeJtype})
-	f2.srv.cfg.JtypeToken = "cluster-pat"
+	f2.setClusterToken("cluster-pat")
 	down := do(t, http.MethodPost, f2.linksURL(), f2.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "b", "service_id": f2.serviceID, "trigger_column": "ai",
 	})
@@ -389,7 +399,7 @@ func TestProjectKanbanLinkCredentialStatus(t *testing.T) {
 	}
 
 	// Without a per-link token, cluster fallback SET -> "cluster_fallback".
-	f.srv.cfg.JtypeToken = "cluster-pat"
+	f.setClusterToken("cluster-pat")
 	resp = do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws2", "board_ref": "b2", "service_id": f.serviceID,
 		"trigger_column": "ai",
@@ -401,7 +411,7 @@ func TestProjectKanbanLinkCredentialStatus(t *testing.T) {
 	}
 
 	// Cluster fallback UNSET -> the same tokenless link lists as "missing".
-	f.srv.cfg.JtypeToken = ""
+	f.setClusterToken("")
 	resp = do(t, http.MethodGet, f.linksURL(), f.tokens["owner"], nil)
 	var list struct {
 		Links []kanbanLinkView `json:"links"`

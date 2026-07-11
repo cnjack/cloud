@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -50,14 +51,22 @@ func credentialStatus(l domain.KanbanLink, clusterTokenSet bool) string {
 }
 
 // linkView renders a link for the API. A Server method (not a free function)
-// because credential_status depends on the cluster fallback config.
-func (s *Server) linkView(l domain.KanbanLink) kanbanLinkView {
+// because credential_status depends on the EFFECTIVE cluster fallback config
+// (D27: the console-managed DB row or the JTYPE_* env, resolved per request —
+// never the raw env alone). A resolver error (e.g. a DB token with no cipher)
+// resolves clusterTokenSet=false, so a link relying on that now-unusable fallback
+// honestly lists as "missing".
+func (s *Server) linkView(ctx context.Context, l domain.KanbanLink) kanbanLinkView {
+	clusterTokenSet := false
+	if eff, err := s.kanban.Effective(ctx); err == nil {
+		clusterTokenSet = eff.ClusterTokenSet
+	}
 	return kanbanLinkView{
 		ID: l.ID, WorkspaceID: l.WorkspaceID, BoardRef: l.BoardRef,
 		ProjectID: l.ProjectID, ServiceID: l.ServiceID,
 		TriggerColumn: l.TriggerColumn, DoneColumn: l.DoneColumn,
 		Enabled: l.Enabled, TokenSet: l.TokenSet(),
-		CredentialStatus: credentialStatus(l, s.cfg.JtypeToken != ""),
+		CredentialStatus: credentialStatus(l, clusterTokenSet),
 		CreatedAt:        l.CreatedAt.UTC().Format(time.RFC3339),
 	}
 }
@@ -91,7 +100,7 @@ func (s *Server) handleListKanbanLinks(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]kanbanLinkView, 0, len(links))
 	for _, l := range links {
-		out = append(out, s.linkView(l))
+		out = append(out, s.linkView(r.Context(), l))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"links": out})
 }
@@ -111,7 +120,7 @@ func (s *Server) handleListProjectKanbanLinks(w http.ResponseWriter, r *http.Req
 	}
 	out := make([]kanbanLinkView, 0, len(links))
 	for _, l := range links {
-		out = append(out, s.linkView(l))
+		out = append(out, s.linkView(r.Context(), l))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"links": out})
 }
@@ -175,21 +184,24 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Column validation against the live board (only when jtype is configured).
-	// The token used is the link's own (when supplied) else the cluster fallback;
-	// with neither, there is nothing to authenticate with and the link would be
-	// useless — reject fail-visibly rather than storing a dead link.
-	if s.jtypeBoardFor != nil {
+	// Column validation against the live board (only when jtype is configured —
+	// D27: the EFFECTIVE config from the console-managed DB row or the JTYPE_* env,
+	// resolved per request so a base URL just set in the console validates without
+	// a restart). !ok => the integration is off; skip validation as before. The
+	// token used is the link's own (when supplied) else the effective cluster
+	// fallback (source-coupled); with neither, there is nothing to authenticate
+	// with and the link would be useless — reject fail-visibly.
+	if f, clusterToken, ok := s.kanban.Factory(r.Context()); ok {
 		validationToken := token
 		if validationToken == "" {
-			validationToken = s.cfg.JtypeToken
+			validationToken = clusterToken
 		}
 		if validationToken == "" {
 			writeError(w, http.StatusBadRequest, "token_required",
-				"a jtype token is required for this link: no cluster JTYPE_TOKEN fallback is configured")
+				"a jtype token is required for this link: no cluster fallback token is configured")
 			return
 		}
-		board, err := s.jtypeBoardFor(validationToken).GetBoard(r.Context(), req.WorkspaceID, req.BoardRef)
+		board, err := s.boardValidatorFor(f, validationToken).GetBoard(r.Context(), req.WorkspaceID, req.BoardRef)
 		if err != nil {
 			s.log.Warn("create kanban link: board validation", "workspace", req.WorkspaceID, "board", req.BoardRef, "err", err)
 			writeError(w, http.StatusServiceUnavailable, "jtype_unreachable",
@@ -238,7 +250,7 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "internal", "could not create kanban link")
 		return
 	}
-	writeJSON(w, http.StatusCreated, s.linkView(*link))
+	writeJSON(w, http.StatusCreated, s.linkView(r.Context(), *link))
 }
 
 // updateKanbanLinkReq is the PATCH /api/v1/projects/{id}/kanban/links/{linkID}
@@ -311,7 +323,7 @@ func (s *Server) handleUpdateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		return
 	}
 	link.TokenEnc = tokenEnc
-	writeJSON(w, http.StatusOK, s.linkView(*link))
+	writeJSON(w, http.StatusOK, s.linkView(r.Context(), *link))
 }
 
 // handleDeleteProjectKanbanLink deletes a project's kanban link (owner only,

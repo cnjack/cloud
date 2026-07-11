@@ -21,6 +21,9 @@ import {
   useSetModelGrant,
   useProjects,
   useKanbanLinks,
+  useKanbanConfig,
+  useUpdateKanbanConfig,
+  useDeleteKanbanConfig,
 } from '../api/queries';
 import { useRole } from '../api/ApiProvider';
 import { ApiError } from '../api/client';
@@ -30,7 +33,13 @@ import { TextField } from '../components/Field';
 import { LoadingBlock, ErrorBlock } from '../components/States';
 import { EmptyState } from '../components/EmptyState';
 import { useToast } from '../components/Toast';
-import type { Model, Project, SystemInfo } from '../api/types';
+import type {
+  KanbanClusterConfig,
+  Model,
+  Project,
+  SystemInfo,
+  UpdateKanbanConfigInput,
+} from '../api/types';
 import styles from './SystemPage.module.css';
 
 export function SystemPage() {
@@ -100,8 +109,8 @@ function SystemCards({ data }: { data: SystemInfo }) {
       {/* Model (Feature A) — configured status + admin form. */}
       <ModelCard />
 
-      {/* Kanban (Feature E) — jtype integration status + link wiring. */}
-      <KanbanCard enabled={data.kanban?.enabled ?? false} baseURL={data.kanban?.base_url} />
+      {/* Kanban (Feature E / D27) — editable cluster jtype config + link wiring. */}
+      <KanbanCard systemReason={data.kanban?.reason} />
 
       {/* Capacity */}
       <Card className={styles.card}>
@@ -507,39 +516,222 @@ function ModelAddForm() {
 }
 
 /**
- * KanbanCard — the jtype kanban integration (Feature E / F6). READ-ONLY on the
- * Cluster page: link management is downshifted to the project OWNER (D25 — see a
- * project's Settings → Kanban tab). This card shows whether the integration is
- * configured (JTYPE_BASE_URL) and a cross-project overview of every link (which
- * project owns it, its columns, and whether it carries its own token). When the
- * integration is OFF it renders a fail-visible "off" state, never a silent mock.
+ * KanbanCard — the jtype kanban integration (Feature E / D27). The cluster jtype
+ * config (base_url + optional cluster fallback token) is now SETTABLE here by a
+ * cluster admin, not only via orchestrator env: the card shows the effective
+ * config + its SOURCE (DB override / JTYPE_BASE_URL env / off) as a badge, an
+ * editable form (mirroring the Model card's write-only-secret UX), and a
+ * "Clear cluster config" action that drops the DB override back to env/off. The
+ * cross-project link overview below stays READ-ONLY — link management is the
+ * project owner's (D25, Project settings → Kanban). The token is write-only
+ * (never returned) and an unconfigured integration renders a fail-visible "off"
+ * state, never a silent mock.
+ *
+ * `systemReason` is the /system snapshot's kanban.reason (same resolver, same
+ * failure); the config view's own `reason` wins when both are present. Either
+ * way a BROKEN config (e.g. DB token without AUTH_TOKEN_KEY) renders a loud
+ * error notice next to the badge — never a bare, unexplained "off".
  */
-function KanbanCard({ enabled, baseURL }: { enabled: boolean; baseURL?: string }) {
-  const links = useKanbanLinks(enabled);
-  const projects = useProjects();
-  const projectName = (id: string) => projects.data?.find((p) => p.id === id)?.name ?? id;
+function KanbanCard({ systemReason }: { systemReason?: string }) {
+  const config = useKanbanConfig();
+  // Fail-visible (D27): why the resolver refused to produce an effective config.
+  const reason = config.data?.reason || systemReason;
 
   return (
     <Card className={[styles.card, styles.modelCard].join(' ')} data-testid="kanban-card">
       <div className={styles.cardHead}>
         <h2 className={styles.cardTitle}>Kanban</h2>
-        <span
-          className={styles.pill}
-          data-on={enabled || undefined}
-          data-testid="kanban-status"
-        >
-          {enabled ? 'jtype linked' : 'jtype off'}
-        </span>
+        {config.data && (
+          <span
+            className={styles.pill}
+            data-on={config.data.effective_enabled || undefined}
+            data-err={(!config.data.effective_enabled && !!reason) || undefined}
+            data-testid="kanban-status"
+          >
+            {config.data.source === 'db'
+              ? 'DB (console)'
+              : config.data.source === 'env'
+                ? 'env (JTYPE_BASE_URL)'
+                : 'off'}
+          </span>
+        )}
       </div>
 
+      {reason && (
+        <p className={styles.errorNotice} role="alert" data-testid="kanban-config-reason">
+          {reason}
+        </p>
+      )}
+
+      {config.isLoading ? (
+        <LoadingBlock label="Loading kanban config…" />
+      ) : config.isError ? (
+        <ErrorBlock
+          error={config.error}
+          onRetry={() => config.refetch()}
+          title="Couldn't load the kanban config"
+        />
+      ) : config.data ? (
+        // Re-key on the resolved config's identity so a Save (env→db) or a Clear
+        // (db→env/off) re-seeds the form fields from the fresh server state.
+        <KanbanConfigEditor
+          key={`${config.data.source}:${config.data.base_url}:${config.data.token_set}`}
+          config={config.data}
+        />
+      ) : null}
+    </Card>
+  );
+}
+
+/**
+ * KanbanConfigEditor — the editable cluster jtype config + the read-only link
+ * overview. The token field is write-only with three explicit states (D27 /
+ * mirrors ModelRow): blank OMITS it (unchanged), a value ROTATES it, ticking
+ * "Clear cluster token" sends token:"" (links then rely on their own tokens).
+ * "Clear cluster config" DELETEs the whole DB override behind a confirm step
+ * (only offered when a DB override exists — there is nothing to clear otherwise).
+ */
+function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
+  const toast = useToast();
+  const update = useUpdateKanbanConfig();
+  const del = useDeleteKanbanConfig();
+  const links = useKanbanLinks(config.effective_enabled);
+  const projects = useProjects();
+  const projectName = (id: string) => projects.data?.find((p) => p.id === id)?.name ?? id;
+
+  const [baseUrl, setBaseUrl] = useState(config.base_url);
+  const [token, setToken] = useState('');
+  const [clearToken, setClearToken] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const save = (e: React.FormEvent) => {
+    e.preventDefault();
+    const input: UpdateKanbanConfigInput = { base_url: baseUrl.trim() };
+    // Token: explicit clear (token:"") wins; otherwise rotate on a typed value;
+    // otherwise omit (leave the stored token unchanged). Trimmed BEFORE the
+    // decision — a whitespace-only entry is a keep, never an accidental clear.
+    const typedToken = token.trim();
+    if (clearToken) input.token = '';
+    else if (typedToken !== '') input.token = typedToken;
+    update.mutate(input, {
+      onSuccess: () => {
+        setToken('');
+        setClearToken(false);
+        toast.push({ kind: 'success', message: 'Kanban config saved.' });
+      },
+      onError: (err) =>
+        toast.push({
+          kind: 'error',
+          message: err instanceof ApiError ? err.message : 'Could not save the kanban config.',
+        }),
+    });
+  };
+
+  const clearConfig = () => {
+    del.mutate(undefined, {
+      onSuccess: () => {
+        setConfirmClear(false);
+        toast.push({ kind: 'success', message: 'Cluster kanban config cleared.' });
+      },
+      onError: (err) =>
+        toast.push({
+          kind: 'error',
+          message: err instanceof ApiError ? err.message : 'Could not clear the kanban config.',
+        }),
+    });
+  };
+
+  return (
+    <>
       <p className={styles.modelHint} data-testid="kanban-hint">
-        {enabled
-          ? `Cards dragged into a link's trigger column dispatch an agent run; finished runs write back as a card comment${
-              baseURL ? ` (jtype: ${baseURL})` : ''
-            }. Links are managed by each project owner in Project settings → Kanban.`
-          : 'Set JTYPE_BASE_URL on the orchestrator to enable card-triggered runs. Each link then authorises with its own jtype token (or the cluster JTYPE_TOKEN fallback).'}
+        {config.effective_enabled
+          ? `Cards dragged into a link's trigger column dispatch an agent run; finished runs write back as a card comment (effective jtype: ${
+              config.effective_base_url || '—'
+            }, source: ${config.source}). Links are managed by each project owner in Project settings → Kanban.`
+          : 'Set the cluster jtype base URL below to enable card-triggered runs. Each link then authorises with its own jtype token (or the cluster fallback token set here).'}
       </p>
 
+      <form className={styles.modelForm} onSubmit={save} noValidate data-testid="kanban-config-form">
+        <TextField
+          label="jtype base URL"
+          placeholder="http://jtype.jcloud.svc.cluster.local:13345"
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+          data-testid="kanban-config-base"
+          autoComplete="off"
+          required
+        />
+        <TextField
+          label="Cluster jtype token (fallback)"
+          type="password"
+          placeholder={
+            clearToken
+              ? 'will be cleared (links rely on their own tokens)'
+              : config.token_set
+                ? '•••••••• (blank = unchanged; type to rotate)'
+                : 'blank = rely on each link’s own token'
+          }
+          value={clearToken ? '' : token}
+          onChange={(e) => setToken(e.target.value)}
+          disabled={clearToken}
+          data-testid="kanban-config-token"
+          autoComplete="off"
+          hint="Stored encrypted. Never displayed after saving. A per-link token always takes precedence; this is only the fallback."
+        />
+        {config.token_set && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={clearToken}
+              onChange={(e) => setClearToken(e.target.checked)}
+              data-testid="kanban-config-clear-token"
+            />
+            Clear cluster token (links rely on their own tokens)
+          </label>
+        )}
+        <div className={styles.modelActions}>
+          <Button type="submit" variant="primary" loading={update.isPending} data-testid="kanban-config-save">
+            Save
+          </Button>
+          {/* Offered whenever a DB ROW exists — not gated on source: a broken row
+              (e.g. token without AUTH_TOKEN_KEY) resolves to source "none", and
+              deleting it is exactly the way out. */}
+          {(config.base_url !== '' || config.token_set) &&
+            (confirmClear ? (
+              <>
+                <span className={styles.cardHint}>Clear the DB config?</span>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setConfirmClear(false)}
+                  disabled={del.isPending}
+                >
+                  Keep
+                </Button>
+                <Button
+                  type="button"
+                  variant="danger"
+                  onClick={clearConfig}
+                  loading={del.isPending}
+                  data-testid="kanban-config-clear-confirm"
+                >
+                  Clear cluster config
+                </Button>
+              </>
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setConfirmClear(true)}
+                data-testid="kanban-config-clear"
+              >
+                Clear cluster config
+              </Button>
+            ))}
+        </div>
+      </form>
+
+      {/* Read-only cross-project link overview (management stays with owners). */}
       {links.data && links.data.length > 0 ? (
         <div data-testid="kanban-links">
           {links.data.map((l) => (
@@ -572,7 +764,7 @@ function KanbanCard({ enabled, baseURL }: { enabled: boolean; baseURL?: string }
       ) : (
         <p className={styles.modelHint}>No kanban links yet — project owners add them in Project settings.</p>
       )}
-    </Card>
+    </>
   );
 }
 

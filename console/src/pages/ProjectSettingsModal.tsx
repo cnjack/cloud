@@ -20,6 +20,7 @@ import { IntegrationsPanel } from './IntegrationsPanel';
 import {
   useUpdateProject,
   useDeleteProject,
+  useSystem,
   useProjectKanbanLinks,
   useCreateProjectKanbanLink,
   useUpdateProjectKanbanLinkToken,
@@ -479,13 +480,21 @@ export function ProjectSettingsModal({
  * and an add form. The per-link jtype token is WRITE-ONLY: it is sent on create
  * and never returned (the badge is the only echo). Service is chosen from the
  * project's own services; workspace/board/columns live in jtype and are typed.
+ *
+ * D27: links can't function until the cluster jtype config is set. When the
+ * cluster integration is OFF (system.kanban.enabled === false) the add form is
+ * disabled and a fail-visible notice points the owner at a cluster admin — rather
+ * than letting them create a link that silently never fires.
  */
 function KanbanPanel({ project }: { project: Project }) {
   const toast = useToast();
+  const system = useSystem();
   const links = useProjectKanbanLinks(project.id);
   const create = useCreateProjectKanbanLink(project.id);
   const del = useDeleteProjectKanbanLink(project.id);
   const services = project.services ?? [];
+  // Strictly false (an absent kanban block ⇒ don't block, we can't tell).
+  const kanbanOff = system.data?.kanban?.enabled === false;
 
   const [serviceId, setServiceId] = useState('');
   const [workspaceId, setWorkspaceId] = useState('');
@@ -542,6 +551,13 @@ function KanbanPanel({ project }: { project: Project }) {
         can carry its own jtype token; leave it blank to use the cluster fallback.
       </p>
 
+      {kanbanOff && (
+        <p className={styles.kanbanError} data-testid="kanban-disabled">
+          jtype kanban isn’t enabled for this cluster yet — ask a cluster admin to configure it on
+          the Cluster page.
+        </p>
+      )}
+
       {links.data && links.data.length > 0 ? (
         <div className={styles.kanbanList} data-testid="kanban-links">
           {links.data.map((l) => (
@@ -571,6 +587,7 @@ function KanbanPanel({ project }: { project: Project }) {
             value={serviceId}
             onChange={(e) => setServiceId(e.target.value)}
             required
+            disabled={kanbanOff}
             data-testid="kanban-link-service"
             style={{ display: 'block', width: '100%', marginTop: 4 }}
           >
@@ -588,6 +605,7 @@ function KanbanPanel({ project }: { project: Project }) {
           value={workspaceId}
           onChange={(e) => setWorkspaceId(e.target.value)}
           required
+          disabled={kanbanOff}
           data-testid="kanban-link-workspace"
           autoComplete="off"
         />
@@ -597,6 +615,7 @@ function KanbanPanel({ project }: { project: Project }) {
           value={boardRef}
           onChange={(e) => setBoardRef(e.target.value)}
           required
+          disabled={kanbanOff}
           data-testid="kanban-link-board"
           autoComplete="off"
         />
@@ -606,6 +625,7 @@ function KanbanPanel({ project }: { project: Project }) {
           value={triggerCol}
           onChange={(e) => setTriggerCol(e.target.value)}
           required
+          disabled={kanbanOff}
           data-testid="kanban-link-trigger"
           autoComplete="off"
         />
@@ -614,21 +634,29 @@ function KanbanPanel({ project }: { project: Project }) {
           placeholder="done"
           value={doneCol}
           onChange={(e) => setDoneCol(e.target.value)}
+          disabled={kanbanOff}
           data-testid="kanban-link-done"
           autoComplete="off"
         />
         <TextField
           label="jtype token (optional)"
           type="password"
-          placeholder="blank = use cluster JTYPE_TOKEN fallback"
+          placeholder="blank = use cluster fallback token"
           value={token}
           onChange={(e) => setToken(e.target.value)}
+          disabled={kanbanOff}
           data-testid="kanban-link-token"
           autoComplete="off"
           hint="Stored encrypted. Never displayed after saving."
         />
         <div className={styles.kanbanFormActions}>
-          <Button type="submit" variant="primary" loading={create.isPending} data-testid="kanban-link-add">
+          <Button
+            type="submit"
+            variant="primary"
+            loading={create.isPending}
+            disabled={kanbanOff}
+            data-testid="kanban-link-add"
+          >
             Add link
           </Button>
         </div>

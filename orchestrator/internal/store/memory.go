@@ -37,6 +37,7 @@ type MemStore struct {
 	runMessages  map[string][]domain.RunMessage  // session follow-up queue, keyed by runID (D22)
 	permissions  map[string]domain.RunPermission // permission requests, keyed by request_id (F8b)
 	apiKeys      map[string]domain.APIKey        // keyed by api key id (F12 / D24)
+	kanbanConfig *domain.KanbanConfig            // single-row cluster kanban config, nil = absent (D27)
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -1360,6 +1361,40 @@ func (m *MemStore) RevokeModel(_ context.Context, modelID, projectID string) err
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.modelGrants, grantKey(modelID, projectID))
+	return nil
+}
+
+// --- cluster kanban config (D27) ---
+
+func (m *MemStore) GetClusterKanbanConfig(_ context.Context) (*domain.KanbanConfig, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.kanbanConfig == nil {
+		return nil, ErrNotFound
+	}
+	// Clone (incl. the token blob) so a caller can't mutate the stored row.
+	cp := *m.kanbanConfig
+	if m.kanbanConfig.TokenEnc != nil {
+		cp.TokenEnc = append([]byte(nil), m.kanbanConfig.TokenEnc...)
+	}
+	return &cp, nil
+}
+
+func (m *MemStore) UpsertClusterKanbanConfig(_ context.Context, cfg *domain.KanbanConfig) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stored := domain.KanbanConfig{BaseURL: cfg.BaseURL, UpdatedBy: cfg.UpdatedBy, UpdatedAt: time.Now().UTC()}
+	if cfg.TokenEnc != nil {
+		stored.TokenEnc = append([]byte(nil), cfg.TokenEnc...)
+	}
+	m.kanbanConfig = &stored
+	return nil
+}
+
+func (m *MemStore) DeleteClusterKanbanConfig(_ context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.kanbanConfig = nil // idempotent: absent => still nil
 	return nil
 }
 

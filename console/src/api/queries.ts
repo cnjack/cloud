@@ -25,6 +25,7 @@ import type {
   Project,
   Run,
   UpdateIntegrationInput,
+  UpdateKanbanConfigInput,
   UpdateModelInput,
   UpdateProjectInput,
   UpdateScheduleInput,
@@ -44,6 +45,7 @@ export const qk = {
   models: ['models'] as const,
   projectModels: (projectId: string) => ['project-models', projectId] as const,
   kanbanLinks: ['kanban-links'] as const,
+  kanbanConfig: ['kanban-config'] as const,
   projectKanbanLinks: (projectId: string) => ['project-kanban-links', projectId] as const,
   serviceSchedules: (serviceId: string) => ['service-schedules', serviceId] as const,
   integrations: (projectId: string) => ['integrations', projectId] as const,
@@ -470,6 +472,60 @@ export function useDeleteProjectKanbanLink(projectId: string) {
   return useMutation({
     mutationFn: (linkId: string) => api.deleteProjectKanbanLink(projectId, linkId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) }),
+  });
+}
+
+/* ---- cluster kanban config (D27) ----------------------------------------- */
+
+/**
+ * The cluster jtype config (cluster-admin). Powers the Cluster page KanbanCard's
+ * editable form + source badge. `enabled` gates the fetch (the whole Cluster page
+ * is cluster-admin only, so the default suffices there).
+ */
+export function useKanbanConfig(enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.kanbanConfig,
+    queryFn: () => api.getKanbanConfig(),
+    enabled,
+  });
+}
+
+/**
+ * Set the cluster jtype config (base_url + optional token). Runtime-effective —
+ * the resolver-backed poller/writeback pick it up without a restart (D27) — so we
+ * invalidate the /system snapshot AND the link overview alongside the config:
+ * flipping the integration on/off changes every link's effective credential state.
+ */
+export function useUpdateKanbanConfig() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateKanbanConfigInput) => api.updateKanbanConfig(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.system });
+      qc.invalidateQueries({ queryKey: qk.kanbanConfig });
+      qc.invalidateQueries({ queryKey: qk.kanbanLinks });
+      // Every project's link list is now stale too: per-link credential_status
+      // depends on the effective cluster token (prefix match — all project ids).
+      qc.invalidateQueries({ queryKey: ['project-kanban-links'] });
+    },
+  });
+}
+
+/** Clear the cluster jtype DB override, falling back to env/off (D27). */
+export function useDeleteKanbanConfig() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteKanbanConfig(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.system });
+      qc.invalidateQueries({ queryKey: qk.kanbanConfig });
+      qc.invalidateQueries({ queryKey: qk.kanbanLinks });
+      // See useUpdateKanbanConfig: credential_status is cluster-config-derived.
+      qc.invalidateQueries({ queryKey: ['project-kanban-links'] });
+    },
   });
 }
 

@@ -21,6 +21,7 @@ import type {
   KanbanLink,
   Member,
   Project,
+  SystemInfo,
   UpdateProjectInput,
   UserSearchResult,
 } from '../api/types';
@@ -290,9 +291,25 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     links: KanbanLink[];
   }
 
+  // A minimal /system snapshot whose only relevant field is kanban.enabled (D27):
+  // the KanbanPanel gates its add form on it.
+  function sysInfo(kanbanEnabled: boolean): SystemInfo {
+    return {
+      version: { version: '', commit: '' },
+      capacity: { max_concurrent_runs: 0, running: 0, queued: 0, scheduling: 0 },
+      guardrails: { run_timeout_seconds: 0, job_ttl_seconds: 0 },
+      provider: { gitea_enabled: false, gitea_url: '' },
+      runner: { image: '' },
+      namespace: '',
+      launcher: '',
+      kanban: { enabled: kanbanEnabled },
+    };
+  }
+
   function kanbanClient(
     project: Project,
     seed?: KanbanLink[],
+    kanbanEnabled = true,
   ): { client: ApiClient; kctl: KanbanCtl } {
     const kctl: KanbanCtl = {
       creates: [],
@@ -309,6 +326,7 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     };
     const client: Partial<ApiClient> = {
       updateProject: async (_id, input) => ({ ...project, ...input }) as Project,
+      getSystem: async () => sysInfo(kanbanEnabled),
       listProjectKanbanLinks: async () => [...kctl.links],
       createProjectKanbanLink: async (projectId, input) => {
         kctl.creates.push({ projectId, input });
@@ -437,6 +455,27 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     fireEvent.click(screen.getByTestId('kanban-token-save-kl-1'));
     await waitFor(() => expect(kctl.updates).toHaveLength(2));
     expect(kctl.updates[1]).toEqual({ projectId: 'p1', linkId: 'kl-1', token: '' });
+  });
+
+  it('disables the add form and shows a notice when the cluster integration is off (D27)', async () => {
+    const project = baseProject();
+    // kanbanEnabled=false ⇒ system.kanban.enabled === false ⇒ add form disabled.
+    const { client } = kanbanClient(project, [], false);
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-kanban'));
+
+    // The fail-visible notice points the owner at a cluster admin.
+    await waitFor(() => expect(screen.getByTestId('kanban-disabled')).toBeTruthy());
+    expect(
+      screen.getByText(/ask a cluster admin to configure it on the Cluster page/),
+    ).toBeTruthy();
+
+    // The add form's controls are disabled — a link that could never fire can't
+    // be created here.
+    expect((screen.getByTestId('kanban-link-add') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('kanban-link-workspace') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByTestId('kanban-link-service') as HTMLSelectElement).disabled).toBe(true);
   });
 });
 

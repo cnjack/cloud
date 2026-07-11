@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"log/slog"
@@ -9,11 +10,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/k8s"
+	"github.com/cnjack/jcloud/internal/kanbancfg"
 	"github.com/cnjack/jcloud/internal/store"
 )
+
+// testKanbanResolver builds a kanbancfg.Resolver over st. A non-empty baseURL
+// enables the integration via the env source (the DB-source tests seed a row and
+// pass an empty baseURL so the DB row wins).
+func testKanbanResolver(st store.Store, cipher *auth.Cipher, baseURL, clusterToken string) *kanbancfg.Resolver {
+	return kanbancfg.NewResolver(st, cipher, &config.Config{JtypeBaseURL: baseURL, JtypeToken: clusterToken})
+}
+
+// testCipher builds a live AES-256-GCM cipher (all-zero 32-byte key) for the
+// DB-source token tests.
+func testCipher(t *testing.T) *auth.Cipher {
+	t.Helper()
+	c, err := auth.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	return c
+}
 
 // fakeKanbanWriter captures MoveCard + AddComment calls (and can fail on demand).
 // tokens records every PAT the token->writer factory was asked to bind, so the
@@ -26,18 +48,20 @@ type fakeKanbanWriter struct {
 	tokens     []string
 }
 
-// factory returns fk as a token->writer factory, recording each resolved token.
-func (fk *fakeKanbanWriter) factory() func(string) KanbanWriter {
-	return func(tok string) KanbanWriter {
+// writerFor returns fk as a (factory,token)->writer builder, recording each
+// resolved token (and ignoring the resolved jtype factory).
+func (fk *fakeKanbanWriter) writerFor() func(*jtype.Factory, string) KanbanWriter {
+	return func(_ *jtype.Factory, tok string) KanbanWriter {
 		fk.tokens = append(fk.tokens, tok)
 		return fk
 	}
 }
 
-// wire attaches fk to rec with the default cluster fallback token, so tokenless
-// seeded links resolve via TokenClusterFallback (the pre-F6 behavior).
-func wire(rec *Reconciler, fk *fakeKanbanWriter, consoleURL string) *Reconciler {
-	return rec.WithKanban(fk.factory(), nil, "cluster-tok", consoleURL)
+// wire attaches fk to rec with an enabled env-source resolver carrying the default
+// cluster fallback token, so tokenless seeded links resolve via
+// TokenClusterFallback (the pre-F6 behavior).
+func wire(st store.Store, rec *Reconciler, fk *fakeKanbanWriter, consoleURL string) *Reconciler {
+	return rec.WithKanban(testKanbanResolver(st, nil, "http://jtype.test", "cluster-tok"), fk.writerFor(), nil, consoleURL)
 }
 
 type commentCall struct {
@@ -117,7 +141,7 @@ func TestWritebackSucceededPostsAndMoves(t *testing.T) {
 	st := store.NewMemStore()
 	run, link, _ := seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
 	fk := &fakeKanbanWriter{}
-	rec := wire(newWritebackRec(st), fk, "http://console")
+	rec := wire(st, newWritebackRec(st), fk, "http://console")
 
 	rec.Tick(ctx)
 
@@ -148,7 +172,7 @@ func TestWritebackFailedPostsReasonNoMove(t *testing.T) {
 	st := store.NewMemStore()
 	run, _, _ := seedKanbanTerminal(t, st, domain.StatusFailed, "done")
 	fk := &fakeKanbanWriter{}
-	rec := wire(newWritebackRec(st), fk, "http://console")
+	rec := wire(st, newWritebackRec(st), fk, "http://console")
 
 	rec.Tick(ctx)
 
@@ -166,7 +190,7 @@ func TestWritebackNoDoneColumnSkipsMove(t *testing.T) {
 	st := store.NewMemStore()
 	seedKanbanTerminal(t, st, domain.StatusSucceeded, "") // no done column
 	fk := &fakeKanbanWriter{}
-	rec := wire(newWritebackRec(st), fk, "")
+	rec := wire(st, newWritebackRec(st), fk, "")
 
 	rec.Tick(ctx)
 	if len(fk.comments) != 1 {
@@ -207,7 +231,7 @@ func TestWritebackRetriesOnTransientError(t *testing.T) {
 	st := store.NewMemStore()
 	seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
 	fk := &fakeKanbanWriter{}
-	rec := wire(newWritebackRec(st), fk, "")
+	rec := wire(st, newWritebackRec(st), fk, "")
 
 	fk.moveErr = errors.New("jtype down")
 	rec.Tick(ctx) // move fails → nothing committed
@@ -257,7 +281,7 @@ func TestWritebackUsesPerLinkToken(t *testing.T) {
 
 	fk := &fakeKanbanWriter{}
 	decrypt := func(b []byte) (string, error) { return "PLAIN-" + string(b), nil }
-	rec := newWritebackRec(st).WithKanban(fk.factory(), decrypt, "cluster-tok", "http://console")
+	rec := newWritebackRec(st).WithKanban(testKanbanResolver(st, nil, "http://jtype.test", "cluster-tok"), fk.writerFor(), decrypt, "http://console")
 
 	rec.Tick(ctx)
 
@@ -277,8 +301,9 @@ func TestWritebackFailVisibleWhenNoToken(t *testing.T) {
 	st := store.NewMemStore()
 	_, link, _ := seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
 	fk := &fakeKanbanWriter{}
-	// No decrypt, EMPTY cluster token → ResolveToken returns ErrNoToken.
-	rec := newWritebackRec(st).WithKanban(fk.factory(), nil, "", "http://console")
+	// Integration ENABLED (base URL set) but NO effective cluster token + no decrypt
+	// → ResolveToken returns ErrNoToken for the tokenless link.
+	rec := newWritebackRec(st).WithKanban(testKanbanResolver(st, nil, "http://jtype.test", ""), fk.writerFor(), nil, "http://console")
 
 	rec.Tick(ctx)
 
@@ -293,5 +318,47 @@ func TestWritebackFailVisibleWhenNoToken(t *testing.T) {
 	}
 	if len(pending) != 1 || pending[0].Link.ID != link.ID {
 		t.Fatalf("writeback should remain pending for later retry, got %+v", pending)
+	}
+}
+
+// D27: the writeback pass activates at RUNTIME. With no cluster config it's a
+// clean no-op and the claim stays pending; once a base URL + encrypted cluster
+// token are stored in the DB and the resolver is invalidated, the next tick
+// resolves the DB cluster token (source-coupled) and writes back — no restart.
+func TestWritebackRuntimeActivationDBToken(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	seedKanbanTerminal(t, st, domain.StatusSucceeded, "done") // tokenless link
+	fk := &fakeKanbanWriter{}
+	cipher := testCipher(t)
+	// Resolver starts OFF (no DB row, no env base URL).
+	resolver := kanbancfg.NewResolver(st, cipher, &config.Config{})
+	rec := newWritebackRec(st).WithKanban(resolver, fk.writerFor(), cipher.DecryptString, "http://console")
+
+	rec.Tick(ctx)
+	if len(fk.comments) != 0 || len(fk.moves) != 0 || len(fk.tokens) != 0 {
+		t.Fatalf("off: writeback must be a no-op, got comments=%d moves=%d tokens=%v",
+			len(fk.comments), len(fk.moves), fk.tokens)
+	}
+	if pending, _ := st.ListKanbanRunsAwaitingWriteback(ctx); len(pending) != 1 {
+		t.Fatalf("off: claim must stay pending, got %d", len(pending))
+	}
+
+	// Flip on: DB row with base URL + encrypted cluster token, invalidate.
+	enc, err := cipher.EncryptString("db-cluster-tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertClusterKanbanConfig(ctx, &domain.KanbanConfig{BaseURL: "http://jtype.db", TokenEnc: enc, UpdatedBy: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	resolver.Invalidate()
+
+	rec.Tick(ctx)
+	if len(fk.comments) != 1 || len(fk.moves) != 1 {
+		t.Fatalf("after activation want 1 comment + 1 move, got comments=%d moves=%d", len(fk.comments), len(fk.moves))
+	}
+	if len(fk.tokens) == 0 || fk.tokens[len(fk.tokens)-1] != "db-cluster-tok" {
+		t.Fatalf("writeback used token %v, want the DB cluster token db-cluster-tok", fk.tokens)
 	}
 }

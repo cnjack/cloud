@@ -17,6 +17,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/api"
 	"github.com/cnjack/jcloud/internal/config"
+	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/kanban"
 	"github.com/cnjack/jcloud/internal/objstore"
@@ -158,31 +159,30 @@ func run(log *slog.Logger) error {
 			// F10 / D23 ③ — object-storage archiver (nil => archive pass no-op).
 			WithArchive(archiver)
 
-		// Feature E/F6 — jtype kanban integration. The base URL alone enables it:
-		// each link authorises with its OWN encrypted PAT (D25), and the cluster
-		// JTYPE_TOKEN is now only a fallback. Wire the writeback factory into the
-		// reconciler (posts finished runs' results back as card comments) and start
-		// the poller (dispatches runs off cards in trigger columns), both sharing the
-		// API server's jtype Factory + token cipher (fail-visible red line: never a
-		// mock; a link with no credential is skipped visibly).
-		if f := srv.JtypeFactory(); f != nil {
-			decrypt := srv.JtypeDecrypt()
-			rec.WithKanban(
-				func(tok string) reconciler.KanbanWriter { return f.Client(tok) },
-				decrypt, cfg.JtypeToken, cfg.ConsoleURL)
-			if cfg.JtypePollInterval > 0 {
-				poller := kanban.New(st,
-					func(tok string) kanban.DocumentAPI { return f.Client(tok) },
-					decrypt, cfg.JtypeToken, srv.Models(), log, cfg.ConsoleURL, cfg.JtypePollInterval)
-				go poller.Run(ctx)
-				log.Info("kanban integration enabled",
-					"jtype_url", cfg.JtypeBaseURL, "poll_interval", cfg.JtypePollInterval,
-					"cluster_token_fallback", cfg.JtypeToken != "")
-			} else {
-				log.Info("kanban writeback enabled (poller disabled: JTYPE_POLL_INTERVAL<=0)", "jtype_url", cfg.JtypeBaseURL)
-			}
-		} else if cfg.JtypeToken != "" {
-			log.Warn("JTYPE_TOKEN is set but JTYPE_BASE_URL is empty: kanban integration stays off")
+		// D27 — jtype kanban integration. The EFFECTIVE config (console-managed
+		// cluster_kanban_config DB row > JTYPE_* env) is resolved AT RUNTIME by the
+		// shared kanbancfg.Resolver, so a cluster admin can turn the integration on
+		// from the console WITHOUT a restart — the poller/writeback resolve per tick
+		// and a stored base URL takes effect on the next tick (fail-visible red line:
+		// never a silent no-op). So we ALWAYS wire the writeback resolver into the
+		// reconciler and start the poller; both are a clean visible no-op until a
+		// base URL is configured (each link with no credential is still skipped
+		// visibly). All three (API validation, poller, writeback) share ONE resolver
+		// + HTTP pool + token cipher.
+		resolver := srv.Kanban()
+		decrypt := srv.JtypeDecrypt()
+		rec.WithKanban(resolver,
+			func(f *jtype.Factory, tok string) reconciler.KanbanWriter { return f.Client(tok) },
+			decrypt, cfg.ConsoleURL)
+		if cfg.JtypePollInterval > 0 {
+			poller := kanban.New(st, resolver,
+				func(f *jtype.Factory, tok string) kanban.DocumentAPI { return f.Client(tok) },
+				decrypt, srv.Models(), log, cfg.ConsoleURL, cfg.JtypePollInterval)
+			go poller.Run(ctx)
+			log.Info("kanban integration wired (poller on; resolves console/env config per tick)",
+				"poll_interval", cfg.JtypePollInterval)
+		} else {
+			log.Info("kanban integration wired (writeback on; poller off: JTYPE_POLL_INTERVAL<=0)")
 		}
 
 		if !srv.Git().Available() {

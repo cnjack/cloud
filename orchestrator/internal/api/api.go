@@ -24,6 +24,7 @@ import (
 	"github.com/cnjack/jcloud/internal/gitcli"
 	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/k8s"
+	"github.com/cnjack/jcloud/internal/kanbancfg"
 	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/sse"
@@ -63,16 +64,17 @@ type Server struct {
 	// Invalidate() is immediately visible to Job scheduling. Never nil.
 	models *modelcfg.Resolver
 
-	// jtypeFactory builds per-token jtype clients (F6 / D25 — each link authorises
-	// with its own PAT). nil when the integration is off (JTYPE_BASE_URL unset).
-	// Shared with the reconciler + poller via JtypeFactory() so all three use one
-	// HTTP pool.
-	jtypeFactory *jtype.Factory
-	// jtypeBoardFor validates a board (fetches its columns) with a given token
-	// before creating a kanban_link. In production it wraps jtypeFactory; nil when
-	// the integration is off (column validation is then skipped). Typed as a
-	// token->interface func so tests inject a fake without HTTP.
-	jtypeBoardFor func(token string) boardValidator
+	// kanban resolves the EFFECTIVE cluster jtype kanban config (base URL +
+	// optional cluster fallback token) at REQUEST time from the console-managed DB
+	// row, falling back to the JTYPE_* env (D27). Shared with the reconciler +
+	// poller via Kanban() so a console PUT/DELETE's Invalidate() takes effect
+	// WITHOUT a restart and all three build clients from one HTTP pool. Never nil.
+	kanban *kanbancfg.Resolver
+	// boardValidatorFor builds a board validator (column fetch) from a resolved
+	// jtype Factory + token, used to validate a kanban_link's trigger/done columns
+	// at create time. Production wraps *jtype.Factory.Client; a test injects a fake
+	// (ignoring the factory) so column validation is exercised without HTTP.
+	boardValidatorFor func(f *jtype.Factory, token string) boardValidator
 
 	// Session next-prompt long-poll timings (D22). Zero => the package defaults
 	// (25s hold / 500ms poll). Overridable by tests that need a fast hold.
@@ -128,15 +130,14 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Effective-model resolver (Feature A): one cached instance for every gate
 	// (run create/retry/review, webhook, and — via Models() — the reconciler).
 	s.models = modelcfg.NewResolver(st, s.cipher, cfg)
-	// Feature E/F6 — jtype kanban client factory (nil when the integration is off,
-	// i.e. JTYPE_BASE_URL unset). Per-link tokens (D25) mean the base URL alone
-	// enables the integration; the cluster JTYPE_TOKEN is only a fallback. Used by
-	// the project link API to validate board columns at create time with the
-	// link's own (or fallback) token.
-	if f := jtype.NewFactory(cfg.JtypeBaseURL, 0); f != nil {
-		s.jtypeFactory = f
-		s.jtypeBoardFor = func(token string) boardValidator { return f.Client(token) }
-	}
+	// D27 — effective cluster jtype kanban config resolver (DB row set from the
+	// console > JTYPE_* env). One cached instance shared with the poller +
+	// reconciler via Kanban(); a console write Invalidate()s it so a stored base
+	// URL takes effect without a restart (fail-visible: never a silent no-op).
+	s.kanban = kanbancfg.NewResolver(st, s.cipher, cfg)
+	// Default board validator: build a token-bound jtype client off the resolved
+	// factory. Overridden by tests with a fake that ignores the factory.
+	s.boardValidatorFor = func(f *jtype.Factory, token string) boardValidator { return f.Client(token) }
 	return s
 }
 
@@ -144,10 +145,10 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 // that need to seal/open per-link jtype PATs share the API's instance.
 func (s *Server) Cipher() *auth.Cipher { return s.cipher }
 
-// JtypeFactory exposes the shared per-token jtype client factory (nil when the
-// integration is off) so the reconciler + poller build clients from the SAME
-// HTTP pool the API validates board columns through (F6 / D25).
-func (s *Server) JtypeFactory() *jtype.Factory { return s.jtypeFactory }
+// Kanban exposes the shared cluster-kanban-config resolver so the poller +
+// reconciler resolve the effective jtype config (base URL + fallback token)
+// through the SAME cache the API invalidates on a console PUT/DELETE (D27).
+func (s *Server) Kanban() *kanbancfg.Resolver { return s.kanban }
 
 // JtypeDecrypt returns the per-link token decrypt function (the cipher's
 // DecryptString), or nil when no cipher is configured — passed to the poller +
@@ -237,6 +238,15 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/system/models/{id}", s.authed(s.handleDeleteModel))
 	mux.Handle("PUT /api/v1/system/models/{id}/grants/{projectID}", s.authed(s.handleGrantModel))
 	mux.Handle("DELETE /api/v1/system/models/{id}/grants/{projectID}", s.authed(s.handleRevokeModel))
+
+	// D27 — cluster jtype kanban config (base URL + optional cluster fallback
+	// token) a cluster admin sets from the console. Precedence DB > env (see
+	// internal/kanbancfg). Cluster-admin only (enforced in the handlers); the
+	// fallback token is write-only (never echoed). A PUT/DELETE Invalidate()s the
+	// shared resolver so the change takes effect WITHOUT a restart.
+	mux.Handle("GET /api/v1/system/kanban", s.authed(s.handleGetKanbanConfig))
+	mux.Handle("PUT /api/v1/system/kanban", s.authed(s.handlePutKanbanConfig))
+	mux.Handle("DELETE /api/v1/system/kanban", s.authed(s.handleDeleteKanbanConfig))
 
 	// Feature E/F6 — jtype kanban links. Management (create/delete) is downshifted
 	// to the project OWNER via the project-scoped routes below (D25). The system

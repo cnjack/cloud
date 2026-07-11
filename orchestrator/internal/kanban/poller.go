@@ -22,6 +22,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/jtype"
+	"github.com/cnjack/jcloud/internal/kanbancfg"
 	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -47,31 +48,38 @@ type ModelResolver interface {
 // re-scan from clock 0 is correct, just redundant).
 type Poller struct {
 	st store.Store
-	// clientFor builds a DocumentAPI bound to a resolved jtype PAT (F6 / D25). In
-	// production it wraps *jtype.Factory; tests inject a fake.
-	clientFor    func(token string) DocumentAPI
-	decrypt      func([]byte) (string, error) // opens a link's encrypted PAT (nil => no cipher)
-	clusterToken string                       // JTYPE_TOKEN fallback
-	models       ModelResolver
-	log          *slog.Logger
-	consoleURL   string // for the "LLM not configured" card comment (where to fix it)
-	interval     time.Duration
-	now          func() time.Time
+	// resolver resolves the EFFECTIVE cluster jtype config (base URL + cluster
+	// fallback token) once per tick (D27): the console-managed DB row or the
+	// JTYPE_* env. An unconfigured cluster is a clean visible no-op, and a config
+	// set in the console takes effect on the next tick — no restart, no silent
+	// no-op (fail-visible red line).
+	resolver *kanbancfg.Resolver
+	// clientFor builds a DocumentAPI bound to a resolved PAT off the tick's jtype
+	// Factory (F6 / D25). Production wraps *jtype.Factory.Client; tests inject a
+	// fake (ignoring the factory).
+	clientFor  func(f *jtype.Factory, token string) DocumentAPI
+	decrypt    func([]byte) (string, error) // opens a link's encrypted PAT (nil => no cipher)
+	models     ModelResolver
+	log        *slog.Logger
+	consoleURL string // for the "LLM not configured" card comment (where to fix it)
+	interval   time.Duration
+	now        func() time.Time
 
 	mu      sync.Mutex
 	cursors map[string]int64 // linkID -> last seen updatedClock
-	// noted throttles the one-time per-link cluster-fallback deprecation +
-	// missing-credential notices so the scan does not log every tick.
+	// noted throttles the one-time notices (integration-off, per-link cluster-
+	// fallback deprecation, missing-credential) so the scan does not log every tick.
 	noted sync.Map // key -> struct{}
 }
 
-// New builds a Poller. clientFor builds a jtype client per resolved PAT; decrypt
-// opens a link's encrypted per-link token (nil when no cipher); clusterToken is
-// the JTYPE_TOKEN fallback (D25). interval<=0 still allows a manually-driven Tick
-// (Run() itself would busy-loop, so main.go only starts Run when interval>0).
-func New(st store.Store, clientFor func(token string) DocumentAPI, decrypt func([]byte) (string, error), clusterToken string, models ModelResolver, log *slog.Logger, consoleURL string, interval time.Duration) *Poller {
+// New builds a Poller. resolver resolves the effective cluster jtype config per
+// tick (D27); clientFor builds a jtype client from the resolved factory + PAT;
+// decrypt opens a link's encrypted per-link token (nil when no cipher).
+// interval<=0 still allows a manually-driven Tick (Run() itself would busy-loop,
+// so main.go only starts Run when interval>0).
+func New(st store.Store, resolver *kanbancfg.Resolver, clientFor func(f *jtype.Factory, token string) DocumentAPI, decrypt func([]byte) (string, error), models ModelResolver, log *slog.Logger, consoleURL string, interval time.Duration) *Poller {
 	return &Poller{
-		st: st, clientFor: clientFor, decrypt: decrypt, clusterToken: clusterToken,
+		st: st, resolver: resolver, clientFor: clientFor, decrypt: decrypt,
 		models: models, log: log, consoleURL: consoleURL, interval: interval,
 		now:     func() time.Time { return time.Now().UTC() },
 		cursors: map[string]int64{},
@@ -101,27 +109,44 @@ func (p *Poller) Run(ctx context.Context) {
 }
 
 // Tick performs one scan over every enabled link. Exported so tests (and a
-// manual trigger) can drive a single deterministic pass.
+// manual trigger) can drive a single deterministic pass. The effective cluster
+// jtype config is resolved ONCE per tick (D27): when the integration is not
+// configured the whole tick is a clean visible no-op (logged once), so a config
+// set in the console activates on the next tick without a restart.
 func (p *Poller) Tick(ctx context.Context) {
+	f, clusterToken, ok := p.resolver.Factory(ctx)
+	if !ok {
+		// Unconfigured (or a broken config, e.g. a DB fallback token with no cipher).
+		// Log once so the idle state is visible without spamming every tick; reset
+		// on the next configured tick below so a later disable logs again.
+		if _, seen := p.noted.LoadOrStore("off", struct{}{}); !seen {
+			p.log.Info("kanban poll: jtype integration not configured; poller idle (set it on the Cluster page)")
+		}
+		return
+	}
+	p.noted.Delete("off")
+
 	links, err := p.st.ListEnabledKanbanLinks(ctx)
 	if err != nil {
 		p.log.Error("kanban poll: list links", "err", err)
 		return
 	}
 	for i := range links {
-		p.pollLink(ctx, &links[i])
+		p.pollLink(ctx, f, clusterToken, &links[i])
 	}
 }
 
 // pollLink scans one link's workspace for cards in the trigger column. Errors
 // reaching jtype are logged and retried next tick (the poller never crashes the
-// process — consistent with the reconciler's transient-error handling).
-func (p *Poller) pollLink(ctx context.Context, link *domain.KanbanLink) {
+// process — consistent with the reconciler's transient-error handling). f +
+// clusterToken are the tick's resolved jtype Factory + effective cluster fallback
+// token (source-coupled; D27).
+func (p *Poller) pollLink(ctx context.Context, f *jtype.Factory, clusterToken string, link *domain.KanbanLink) {
 	// Resolve this link's PAT (D25 three-state): per-link encrypted token, else the
 	// cluster fallback, else fail-visibly skip (never a jtype call with an empty
 	// credential). The cursor is untouched on skip so the link re-scans in full the
 	// moment a token is configured. Notices are throttled to once per link.
-	token, source, err := jtype.ResolveToken(link.TokenEnc, p.decrypt, p.clusterToken)
+	token, source, err := jtype.ResolveToken(link.TokenEnc, p.decrypt, clusterToken)
 	if err != nil {
 		if _, seen := p.noted.LoadOrStore("err:"+link.ID, struct{}{}); !seen {
 			p.log.Error("kanban poll: no jtype credential for link; skipping",
@@ -135,7 +160,7 @@ func (p *Poller) pollLink(ctx context.Context, link *domain.KanbanLink) {
 				"link", link.ID)
 		}
 	}
-	api := p.clientFor(token)
+	api := p.clientFor(f, token)
 
 	cursor := p.cursor(link.ID)
 	docs, err := api.ListDocuments(ctx, link.WorkspaceID)

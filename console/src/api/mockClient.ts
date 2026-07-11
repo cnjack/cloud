@@ -27,6 +27,7 @@ import type {
   CreateModelInput,
   CreateIntegrationInput,
   Integration,
+  KanbanClusterConfig,
   KanbanLink,
   Me,
   Member,
@@ -47,6 +48,7 @@ import type {
   Service,
   SystemInfo,
   UpdateIntegrationInput,
+  UpdateKanbanConfigInput,
   UpdateModelInput,
   UpdateProjectInput,
   UpdateScheduleInput,
@@ -197,6 +199,34 @@ export function createMockClient(): ApiClient {
   const members = new Map<string, Member[]>();
   // Feature E: kanban links (board→service bindings), keyed by link id.
   const kanbanLinks = new Map<string, KanbanLink>();
+  // D27: the cluster jtype config, a single mutable DB-override "row" (null = no
+  // override). The demo rig has no JTYPE_* env fallback, so an absent row resolves
+  // to source=none / off — set one here and it becomes source=db / on (no restart),
+  // mirroring the resolver so the console edit flow roundtrips.
+  let kanbanCfg: { base_url: string; token_set: boolean } | null = null;
+  function kanbanConfigView(): KanbanClusterConfig {
+    if (kanbanCfg) {
+      return {
+        base_url: kanbanCfg.base_url,
+        token_set: kanbanCfg.token_set,
+        source: 'db',
+        effective_enabled: true,
+        effective_base_url: kanbanCfg.base_url,
+        cluster_token_set: kanbanCfg.token_set,
+        poll_interval: '15s',
+      };
+    }
+    // No DB row and no env fallback in the demo rig ⇒ off.
+    return {
+      base_url: '',
+      token_set: false,
+      source: 'none',
+      effective_enabled: false,
+      effective_base_url: '',
+      cluster_token_set: false,
+      poll_interval: '15s',
+    };
+  }
   // F11 / D24: schedules (service cron triggers), keyed by schedule id.
   const schedules = new Map<string, Schedule>();
   // D19 / F5: project integrations, keyed by project id.
@@ -1145,11 +1175,17 @@ export function createMockClient(): ApiClient {
           providers: ['gitea'],
           users_count: DEMO_USERS.length,
         },
-        kanban: {
-          enabled: false,
-          base_url: '',
-          poll_interval: '15s',
-        },
+        kanban: (() => {
+          // D27: reflect the mutable cluster config + its source so the demo edit
+          // flow roundtrips (set base_url on the Cluster page → snapshot flips on).
+          const kc = kanbanConfigView();
+          return {
+            enabled: kc.effective_enabled,
+            base_url: kc.effective_base_url,
+            poll_interval: kc.poll_interval,
+            source: kc.source,
+          };
+        })(),
       };
       return delay(info);
     },
@@ -1317,6 +1353,27 @@ export function createMockClient(): ApiClient {
       if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
       kanbanLinks.delete(linkId);
       return delay(undefined);
+    },
+
+    /* ---- cluster kanban config (D27) -------------------------------------- */
+    async getKanbanConfig(): Promise<KanbanClusterConfig> {
+      return delay(kanbanConfigView());
+    },
+    async updateKanbanConfig(input: UpdateKanbanConfigInput): Promise<KanbanClusterConfig> {
+      // Mirror the orchestrator's validateBaseURL gate (400 on a non-http(s) URL).
+      const base = input.base_url?.trim() ?? '';
+      if (!/^https?:\/\/.+/i.test(base)) throw badRequest('base_url must be an http(s) URL');
+      // Three-state token: omitted keeps the stored token_set; "" clears; a value
+      // sets/rotates. The demo assumes AUTH_TOKEN_KEY is configured (so a token
+      // write never 409s here — that path is a real-cluster-only concern).
+      const prevTokenSet = kanbanCfg?.token_set ?? false;
+      const tokenSet = input.token !== undefined ? input.token !== '' : prevTokenSet;
+      kanbanCfg = { base_url: base, token_set: tokenSet };
+      return delay(kanbanConfigView());
+    },
+    async deleteKanbanConfig(): Promise<KanbanClusterConfig> {
+      kanbanCfg = null;
+      return delay(kanbanConfigView());
     },
 
     /* ---- schedules (F11 / D24) -------------------------------------------- */

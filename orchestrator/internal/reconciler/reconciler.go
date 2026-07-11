@@ -17,6 +17,7 @@ import (
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/k8s"
+	"github.com/cnjack/jcloud/internal/kanbancfg"
 	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/store"
@@ -67,13 +68,15 @@ type Reconciler struct {
 
 	// Feature E/F6 — kanban writeback. When wired, a terminal kanban-origin run has
 	// its result posted back as a card comment (and the card moved to the link's
-	// done column when configured). kanbanFor builds a writer bound to a link's PAT
-	// (per-link encrypted token, else the cluster fallback; D25). nil => the pass
-	// is a no-op (the jtype integration is off).
-	kanbanFor         func(token string) KanbanWriter
-	jtypeDecrypt      func([]byte) (string, error) // opens a link's encrypted PAT (nil => no cipher)
-	jtypeClusterToken string                       // JTYPE_TOKEN fallback
-	consoleURL        string
+	// done column when configured). kanbanResolver resolves the EFFECTIVE cluster
+	// jtype config (base URL + fallback token) per pass (D27); a nil resolver OR an
+	// unconfigured cluster leaves the pass a clean no-op (the integration is off).
+	// kanbanFor builds a writer bound to a link's PAT (per-link encrypted token,
+	// else the effective cluster fallback; D25) off the pass's resolved factory.
+	kanbanResolver *kanbancfg.Resolver
+	kanbanFor      func(f *jtype.Factory, token string) KanbanWriter
+	jtypeDecrypt   func([]byte) (string, error) // opens a link's encrypted PAT (nil => no cipher)
+	consoleURL     string
 	// jtypeNoted throttles the one-time per-link cluster-fallback deprecation +
 	// missing-credential notices so the writeback loop does not log every tick.
 	jtypeNoted sync.Map // linkID -> struct{}
@@ -216,15 +219,17 @@ func (r *Reconciler) WithModelResolver(m *modelcfg.Resolver) *Reconciler {
 	return r
 }
 
-// WithKanban wires the jtype writeback factory (Feature E/F6). clientFor builds a
-// writer bound to a resolved PAT; decrypt opens a link's encrypted per-link token
-// (nil when no cipher); clusterToken is the JTYPE_TOKEN fallback (D25). A nil
-// clientFor leaves the pass a no-op. consoleURL is the console root used to build
-// a run deep-link in the comment.
-func (r *Reconciler) WithKanban(clientFor func(token string) KanbanWriter, decrypt func([]byte) (string, error), clusterToken, consoleURL string) *Reconciler {
-	r.kanbanFor = clientFor
+// WithKanban wires the jtype writeback stack (Feature E/F6; D27). resolver
+// resolves the effective cluster jtype config (base URL + fallback token) per
+// pass so a console change activates without a restart; writerFor builds a writer
+// bound to a resolved PAT off the pass's factory; decrypt opens a link's encrypted
+// per-link token (nil when no cipher). A nil resolver (or an unconfigured cluster)
+// leaves the pass a no-op. consoleURL is the console root used to build a run
+// deep-link in the comment.
+func (r *Reconciler) WithKanban(resolver *kanbancfg.Resolver, writerFor func(f *jtype.Factory, token string) KanbanWriter, decrypt func([]byte) (string, error), consoleURL string) *Reconciler {
+	r.kanbanResolver = resolver
+	r.kanbanFor = writerFor
 	r.jtypeDecrypt = decrypt
-	r.jtypeClusterToken = clusterToken
 	r.consoleURL = consoleURL
 	return r
 }
@@ -772,9 +777,22 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 // is a DB error between AddComment and the marker, which mirrors the
 // reconcileReviews pattern and is rare).
 func (r *Reconciler) reconcileKanbanWriteback(ctx context.Context) {
-	if r.kanbanFor == nil {
+	if r.kanbanResolver == nil || r.kanbanFor == nil {
 		return
 	}
+	// Resolve the effective cluster jtype config ONCE per pass (D27). !ok => the
+	// integration is not configured (or a broken config) => clean no-op, logged
+	// once so a console change that turns it on is obvious. A DB-set base URL thus
+	// activates the writeback without a restart.
+	f, clusterToken, ok := r.kanbanResolver.Factory(ctx)
+	if !ok {
+		if _, seen := r.jtypeNoted.LoadOrStore("off", struct{}{}); !seen {
+			r.log.Info("reconcile kanban: jtype integration not configured; writeback idle")
+		}
+		return
+	}
+	r.jtypeNoted.Delete("off")
+
 	pending, err := r.st.ListKanbanRunsAwaitingWriteback(ctx)
 	if err != nil {
 		r.log.Error("reconcile kanban: list pending writebacks", "err", err)
@@ -782,7 +800,7 @@ func (r *Reconciler) reconcileKanbanWriteback(ctx context.Context) {
 	}
 	for i := range pending {
 		wb := pending[i]
-		r.writebackCard(ctx, &wb)
+		r.writebackCard(ctx, f, clusterToken, &wb)
 	}
 }
 
@@ -793,12 +811,13 @@ func (r *Reconciler) reconcileKanbanWriteback(ctx context.Context) {
 // leaves the claim unmarked so the next tick retries (writeback_at is the only
 // thing that removes it from the scan): a transient jtype error therefore just
 // retries — it never loses the result silently.
-func (r *Reconciler) writebackCard(ctx context.Context, wb *store.KanbanWriteback) {
+func (r *Reconciler) writebackCard(ctx context.Context, f *jtype.Factory, clusterToken string, wb *store.KanbanWriteback) {
 	// Resolve this link's PAT (D25 three-state): per-link encrypted token, else the
-	// cluster fallback, else fail-visibly skip. On the missing-credential path the
-	// claim is left unmarked so the writeback resumes the moment an owner adds a
-	// token — never silently dropped. Notices are throttled to once per link.
-	token, source, err := jtype.ResolveToken(wb.Link.TokenEnc, r.jtypeDecrypt, r.jtypeClusterToken)
+	// effective cluster fallback (source-coupled; D27), else fail-visibly skip. On
+	// the missing-credential path the claim is left unmarked so the writeback
+	// resumes the moment an owner adds a token — never silently dropped. Notices are
+	// throttled to once per link.
+	token, source, err := jtype.ResolveToken(wb.Link.TokenEnc, r.jtypeDecrypt, clusterToken)
 	if err != nil {
 		if _, seen := r.jtypeNoted.LoadOrStore("err:"+wb.Link.ID, struct{}{}); !seen {
 			r.log.Error("reconcile kanban: no jtype credential for link; writeback deferred",
@@ -812,7 +831,7 @@ func (r *Reconciler) writebackCard(ctx context.Context, wb *store.KanbanWritebac
 				"link", wb.Link.ID)
 		}
 	}
-	writer := r.kanbanFor(token)
+	writer := r.kanbanFor(f, token)
 	body := kanbanCommentBody(&wb.Run, r.consoleURL)
 
 	// Move first, ONLY for a succeeded run with a done column: if it fails we

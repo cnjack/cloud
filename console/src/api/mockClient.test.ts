@@ -637,6 +637,78 @@ describe('mockClient — project guardrails (Feature B)', () => {
   });
 });
 
+describe('mockClient — cluster kanban config (D27)', () => {
+  it('roundtrips GET/PUT/DELETE and reflects the effective config into getSystem', async () => {
+    const client = createMockClient();
+
+    // Initially off: no DB row and no env fallback in the demo rig ⇒ source none.
+    const g0 = client.getKanbanConfig();
+    await flush(200);
+    const c0 = await g0;
+    expect(c0.source).toBe('none');
+    expect(c0.effective_enabled).toBe(false);
+    expect(c0.base_url).toBe('');
+
+    // getSystem agrees the integration is off.
+    const s0 = client.getSystem();
+    await flush(200);
+    expect((await s0).kanban?.enabled).toBe(false);
+
+    // PUT base_url + token ⇒ source flips to db, effective on.
+    const u1 = client.updateKanbanConfig({ base_url: 'http://jtype:13345', token: 'jt-pat' });
+    await flush(200);
+    const c1 = await u1;
+    expect(c1.source).toBe('db');
+    expect(c1.base_url).toBe('http://jtype:13345');
+    expect(c1.token_set).toBe(true);
+    expect(c1.effective_enabled).toBe(true);
+    // The token is never echoed back in the view.
+    expect(JSON.stringify(c1)).not.toContain('jt-pat');
+
+    // getSystem now reflects the mutable config + its source (runtime activation).
+    const s1 = client.getSystem();
+    await flush(200);
+    const sys1 = await s1;
+    expect(sys1.kanban?.enabled).toBe(true);
+    expect(sys1.kanban?.source).toBe('db');
+    expect(sys1.kanban?.base_url).toBe('http://jtype:13345');
+
+    // Token OMITTED keeps token_set; base_url still updates.
+    const u2 = client.updateKanbanConfig({ base_url: 'http://jtype2:13345' });
+    await flush(200);
+    const c2 = await u2;
+    expect(c2.base_url).toBe('http://jtype2:13345');
+    expect(c2.token_set).toBe(true); // unchanged
+
+    // Explicit clear (token:"") drops the fallback token.
+    const u3 = client.updateKanbanConfig({ base_url: 'http://jtype2:13345', token: '' });
+    await flush(200);
+    expect((await u3).token_set).toBe(false);
+
+    // An invalid base_url is a typed 400 and leaves state untouched.
+    const bad = client
+      .updateKanbanConfig({ base_url: 'not-a-url' })
+      .then(() => ({ ok: true as const }), (e) => ({ ok: false as const, err: e }));
+    await flush(200);
+    const badRes = await bad;
+    expect(badRes.ok).toBe(false);
+    if (!badRes.ok) {
+      expect(badRes.err).toBeInstanceOf(ApiError);
+      expect((badRes.err as ApiError).status).toBe(400);
+    }
+
+    // DELETE drops the override ⇒ back to source none / off.
+    const d = client.deleteKanbanConfig();
+    await flush(200);
+    const c4 = await d;
+    expect(c4.source).toBe('none');
+    expect(c4.effective_enabled).toBe(false);
+    const s2 = client.getSystem();
+    await flush(200);
+    expect((await s2).kanban?.enabled).toBe(false);
+  });
+});
+
 describe('mockClient integrations (D19 / F5)', () => {
   it('creates, lists, rotates and deletes integrations; token is never echoed', async () => {
     const client = createMockClient();
