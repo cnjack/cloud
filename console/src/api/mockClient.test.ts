@@ -709,6 +709,127 @@ describe('mockClient — cluster kanban config (D27)', () => {
   });
 });
 
+describe('mockClient — kanban "Connect with jtype" device flow (D28)', () => {
+  it('cluster: requires a base_url, then roundtrips pending→complete sealing a 90d token', async () => {
+    const client = createMockClient();
+
+    // With no DB base_url the flow can't start — fail-visible 409, mirroring the
+    // orchestrator's base_url_not_configured (D27 same-source binding).
+    const noBase = client
+      .startKanbanConnect()
+      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
+    await flush(200);
+    const nb = await noBase;
+    expect(nb.ok).toBe(false);
+    if (!nb.ok) {
+      expect(nb.err).toBeInstanceOf(ApiError);
+      expect((nb.err as ApiError).status).toBe(409);
+    }
+
+    // Save a base URL, then start: a 6-digit user_code + a deep link carrying it,
+    // and NO device_code (the mint secret is withheld from the browser).
+    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
+    await flush(200);
+    await u;
+    const s = client.startKanbanConnect();
+    await flush(200);
+    const start = await s;
+    expect(start.user_code).toMatch(/^\d{6}$/);
+    expect(start.verification_uri_complete).toContain(start.user_code);
+    expect(JSON.stringify(start)).not.toContain('device_code');
+
+    // First poll is pending; the second flips to complete and seals the token.
+    const p1 = client.pollKanbanConnect(start.connect_id);
+    await flush(200);
+    expect((await p1).status).toBe('pending');
+    const p2 = client.pollKanbanConnect(start.connect_id);
+    await flush(200);
+    const done = await p2;
+    expect(done.status).toBe('complete');
+    expect(done.token_set).toBe(true);
+    expect(done.token_expires_at).toBeTruthy();
+    // ~90 days out (MCP_TOKEN_TTL_SECS), never a plaintext token in the body.
+    const days = Math.round((new Date(done.token_expires_at!).getTime() - Date.now()) / 86_400_000);
+    expect(days).toBe(90);
+
+    // getKanbanConfig now reflects the sealed fallback token + its expiry.
+    const g = client.getKanbanConfig();
+    await flush(200);
+    const cfg = await g;
+    expect(cfg.token_set).toBe(true);
+    expect(cfg.token_expires_at).toBe(done.token_expires_at);
+
+    // An unknown connect_id is 404 connect_expired (dropped/expired flow).
+    const unk = client
+      .pollKanbanConnect('kc_nope')
+      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
+    await flush(200);
+    const u2 = await unk;
+    expect(u2.ok).toBe(false);
+    if (!u2.ok) expect((u2.err as ApiError).status).toBe(404);
+  });
+
+  it('per-link: connect seals a token and flips credential_status to per_link', async () => {
+    const client = createMockClient();
+    // Cluster integration must be effective for a per-link connect.
+    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
+    await flush(200);
+    await u;
+
+    const cp = client.createProject({ name: 'demo' });
+    await flush(500);
+    const project = await cp;
+    const cs = client.createService(project.id, {
+      name: 'default',
+      repo_url: 'https://gitea.local/acme/demo.git',
+      default_branch: 'main',
+    });
+    await flush(500);
+    const svc = await cs;
+
+    // Create the link with a BLANK token (create-then-connect) ⇒ missing.
+    const cl = client.createProjectKanbanLink(project.id, {
+      workspace_id: 'ws',
+      board_ref: 'b',
+      service_id: svc.id,
+      trigger_column: 'ai',
+    });
+    await flush(200);
+    const link = await cl;
+    expect(link.credential_status).toBe('missing');
+
+    // Connect and poll to completion.
+    const s = client.startLinkConnect(project.id, link.id);
+    await flush(200);
+    const start = await s;
+    expect(start.user_code).toMatch(/^\d{6}$/);
+    const first = client.pollLinkConnect(project.id, link.id, start.connect_id);
+    await flush(200);
+    expect((await first).status).toBe('pending');
+    const second = client.pollLinkConnect(project.id, link.id, start.connect_id);
+    await flush(200);
+    const done = await second;
+    expect(done.status).toBe('complete');
+
+    // The link now owns its token, with the device-flow expiry.
+    const ll = client.listProjectKanbanLinks(project.id);
+    await flush(200);
+    const links = await ll;
+    expect(links[0]!.credential_status).toBe('per_link');
+    expect(links[0]!.token_set).toBe(true);
+    expect(links[0]!.token_expires_at).toBe(done.token_expires_at);
+
+    // A link that isn't this project's ⇒ 404.
+    const foreign = client
+      .startLinkConnect('other-project', link.id)
+      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
+    await flush(200);
+    const f = await foreign;
+    expect(f.ok).toBe(false);
+    if (!f.ok) expect((f.err as ApiError).status).toBe(404);
+  });
+});
+
 describe('mockClient integrations (D19 / F5)', () => {
   it('creates, lists, rotates and deletes integrations; token is never echoed', async () => {
     const client = createMockClient();

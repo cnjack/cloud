@@ -25,6 +25,8 @@ import type {
   Integration,
   IntegrationsEnvelope,
   KanbanClusterConfig,
+  KanbanConnectStart,
+  KanbanConnectStatus,
   KanbanLink,
   Me,
   Member,
@@ -65,6 +67,20 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+/**
+ * The typed error `code` from the repo-standard `{ "error": { code, message } }`
+ * envelope (11-api.md §0), or undefined for a non-ApiError / bodyless error. Used
+ * to branch on codes the UI must treat specially (e.g. `jtype_oauth_unsupported`,
+ * `connect_expired`) rather than string-matching the human message.
+ */
+export function apiErrorCode(err: unknown): string | undefined {
+  if (err instanceof ApiError && err.body && typeof err.body === 'object') {
+    const e = (err.body as { error?: { code?: string } }).error;
+    if (e && typeof e === 'object' && typeof e.code === 'string') return e.code;
+  }
+  return undefined;
 }
 
 /** Handle returned by streamRun; call close() to stop following. */
@@ -212,6 +228,36 @@ export interface ApiClient {
    * (cluster-admin). Returns the new resolved config (the GET shape).
    */
   deleteKanbanConfig(): Promise<KanbanClusterConfig>;
+
+  /* ---- kanban "Connect with jtype" device flow (D28) -------------------- */
+  /**
+   * POST /api/v1/system/kanban/connect — start a device flow for the CLUSTER
+   * fallback token (cluster-admin). Requires a saved DB base_url (else 409
+   * base_url_not_configured) and a configured cipher (else 409
+   * cipher_not_configured); an old jtype without the OAuth routes yields 409
+   * jtype_oauth_unsupported (fall back to pasting a token). The device_code is
+   * withheld — poll with the returned connect_id.
+   */
+  startKanbanConnect(): Promise<KanbanConnectStart>;
+  /**
+   * GET /api/v1/system/kanban/connect/{connectID} — poll a cluster device flow.
+   * On `complete` the token is already sealed into the cluster config and the
+   * resolver invalidated. An unknown/expired connect_id is 404 connect_expired.
+   */
+  pollKanbanConnect(connectId: string): Promise<KanbanConnectStatus>;
+  /**
+   * POST /api/v1/projects/{id}/kanban/links/{linkID}/connect — start a device
+   * flow for a PER-LINK token (owner). The link must already exist (create it
+   * with a blank token first). 409 kanban_not_configured when the cluster
+   * integration is off; 404 for a link that isn't this project's.
+   */
+  startLinkConnect(projectId: string, linkId: string): Promise<KanbanConnectStart>;
+  /**
+   * GET /api/v1/projects/{id}/kanban/links/{linkID}/connect/{connectID} — poll a
+   * per-link device flow. On `complete` the token is sealed into the link's row
+   * (credential_status flips to per_link). Unknown connect_id → 404 connect_expired.
+   */
+  pollLinkConnect(projectId: string, linkId: string, connectId: string): Promise<KanbanConnectStatus>;
 
   /* ---- schedules (F11 / D24) -------------------------------------------- */
   /** GET /api/v1/services/{id}/schedules — a service's cron triggers (member+). */
@@ -571,6 +617,25 @@ export function createHttpClient(
       }),
     deleteKanbanConfig: () =>
       req<KanbanClusterConfig>('/system/kanban', { method: 'DELETE' }),
+
+    // Kanban "Connect with jtype" device flow (D28). Start = POST (device_code
+    // withheld); the console then polls the GET with the opaque connect_id while
+    // the user authorises in jtype's browser page.
+    startKanbanConnect: () =>
+      req<KanbanConnectStart>('/system/kanban/connect', { method: 'POST' }),
+    pollKanbanConnect: (connectId) =>
+      req<KanbanConnectStatus>(`/system/kanban/connect/${encodeURIComponent(connectId)}`),
+    startLinkConnect: (projectId, linkId) =>
+      req<KanbanConnectStart>(
+        `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(linkId)}/connect`,
+        { method: 'POST' },
+      ),
+    pollLinkConnect: (projectId, linkId, connectId) =>
+      req<KanbanConnectStatus>(
+        `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(
+          linkId,
+        )}/connect/${encodeURIComponent(connectId)}`,
+      ),
 
     // Schedules (F11 / D24). Listing is service-scoped (member+); management is
     // owner-only and keyed off the bare schedule id.

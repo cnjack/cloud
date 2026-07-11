@@ -558,4 +558,181 @@ describe('SystemPage', () => {
     await waitFor(() => expect(deleteKanbanConfig).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByText('Cluster kanban config cleared.')).toBeTruthy());
   });
+
+  // ---- D28: "Connect with jtype" device flow (cluster fallback token) -------
+
+  const dbConfig = (overrides: Partial<KanbanClusterConfig> = {}) =>
+    kanbanConfig({
+      source: 'db',
+      base_url: 'http://jtype:13345',
+      effective_enabled: true,
+      effective_base_url: 'http://jtype:13345',
+      ...overrides,
+    });
+
+  const startPayload = (userCode: string) => ({
+    connect_id: 'kc_1',
+    user_code: userCode,
+    verification_uri: 'http://jtype:13345/oauth/device',
+    verification_uri_complete: `http://jtype:13345/oauth/device?code=${userCode}`,
+    expires_in: 600,
+    interval: 2,
+  });
+
+  const in90Days = () => new Date(Date.now() + 90 * 86_400_000).toISOString();
+
+  it('kanban connect: the button is disabled with a hint until a base URL is saved', async () => {
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(snapshot()),
+      // source=none ⇒ base_url is "" ⇒ connect can't target a DB row yet.
+      getKanbanConfig: vi.fn().mockResolvedValue(kanbanConfig({ source: 'none' })),
+      listKanbanLinks: vi.fn().mockResolvedValue([]),
+    };
+    renderPage(client, 'cluster-admin');
+
+    const btn = (await screen.findByTestId('kanban-connect-start')) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(screen.getByTestId('kanban-connect-hint').textContent).toBe('Save the jtype base URL first');
+  });
+
+  it('kanban connect: clicking Connect shows the user_code + an external authorize link', async () => {
+    const startKanbanConnect = vi.fn().mockResolvedValue(startPayload('482913'));
+    // Stays pending so the code panel persists for the assertions.
+    const pollKanbanConnect = vi.fn().mockResolvedValue({ status: 'pending', token_set: false });
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(snapshot()),
+      getKanbanConfig: vi.fn().mockResolvedValue(dbConfig()),
+      listKanbanLinks: vi.fn().mockResolvedValue([]),
+      startKanbanConnect,
+      pollKanbanConnect,
+    };
+    renderPage(client, 'cluster-admin');
+
+    fireEvent.click(await screen.findByTestId('kanban-connect-start'));
+
+    // The prominent 6-digit user_code + a deep link into jtype's approve page.
+    await waitFor(() => expect(screen.getByTestId('kanban-connect-code').textContent).toBe('482913'));
+    const link = screen.getByTestId('kanban-connect-link') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('http://jtype:13345/oauth/device?code=482913');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toContain('noopener');
+    // A live status while polling.
+    expect(screen.getByTestId('kanban-connect-status')).toBeTruthy();
+  });
+
+  it('kanban connect: pending→complete flips the connected badge + shows expiry; no token plaintext', async () => {
+    const expiry = in90Days();
+    const startKanbanConnect = vi.fn().mockResolvedValue(startPayload('112233'));
+    // The start seeds a pending status; the first real poll returns complete,
+    // carrying only status + expiry (never a token) — a fast pending→complete.
+    const pollKanbanConnect = vi
+      .fn()
+      .mockResolvedValue({ status: 'complete', token_set: true, token_expires_at: expiry });
+    // As on the real backend: the complete-edge invalidation REFETCHES the
+    // config, which now reports token_set:true (+ the expiry). The editor must
+    // NOT remount on that flip (its key excludes token_set) — the completion
+    // panel has to survive the refetch tick.
+    const getKanbanConfig = vi
+      .fn()
+      .mockResolvedValueOnce(dbConfig({ token_set: false }))
+      .mockResolvedValue(dbConfig({ token_set: true, token_expires_at: expiry }));
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(snapshot()),
+      getKanbanConfig,
+      listKanbanLinks: vi.fn().mockResolvedValue([]),
+      startKanbanConnect,
+      pollKanbanConnect,
+    };
+    renderPage(client, 'cluster-admin');
+
+    fireEvent.click(await screen.findByTestId('kanban-connect-start'));
+
+    // The completion badge + a human expiry, both derived from the poll payload.
+    await waitFor(() => expect(screen.getByTestId('kanban-connect-complete')).toBeTruthy());
+    expect(screen.getByText('Connected — token set')).toBeTruthy();
+    expect(screen.getByTestId('kanban-connect-complete').textContent).toMatch(/expires in 90 days/);
+
+    // The invalidation-triggered refetch lands token_set:true — the persistent
+    // expiry badge appears AND the completion panel PERSISTS (no key-change
+    // remount wiping the in-flight connect state).
+    await waitFor(() => expect(getKanbanConfig.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-connect-expiry').textContent).toMatch(/expires in 90 days/),
+    );
+    expect(screen.getByTestId('kanban-connect-complete')).toBeTruthy();
+    // The write-only paste field is never populated with a token value.
+    expect((screen.getByTestId('kanban-config-token') as HTMLInputElement).value).toBe('');
+  });
+
+  it('kanban connect: a non-unsupported start failure is fail-visible next to the button', async () => {
+    // e.g. jtype unreachable at start — NOT the unsupported case; the flow must
+    // not fail silently (button spins, then… nothing).
+    const err = new ApiError(503, 'jtype is unreachable at http://jtype:13345', {
+      error: { code: 'jtype_unreachable', message: 'jtype is unreachable at http://jtype:13345' },
+    });
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(snapshot()),
+      getKanbanConfig: vi.fn().mockResolvedValue(dbConfig()),
+      listKanbanLinks: vi.fn().mockResolvedValue([]),
+      startKanbanConnect: vi.fn().mockRejectedValue(err),
+    };
+    renderPage(client, 'cluster-admin');
+
+    fireEvent.click(await screen.findByTestId('kanban-connect-start'));
+
+    // The server's message verbatim, as a loud alert next to the idle button.
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-connect-start-error').textContent).toBe(
+        'jtype is unreachable at http://jtype:13345',
+      ),
+    );
+    // The button stays available for a retry.
+    expect(screen.getByTestId('kanban-connect-start')).toBeTruthy();
+  });
+
+  it('kanban connect: a non-404 poll failure shows "failed — reconnect", never a stuck Waiting…', async () => {
+    const startKanbanConnect = vi.fn().mockResolvedValue(startPayload('998877'));
+    // e.g. a 403 mid-flow (session/role changed): terminal for this flow.
+    const pollKanbanConnect = vi.fn().mockRejectedValue(
+      new ApiError(403, 'forbidden', { error: { code: 'forbidden', message: 'forbidden' } }),
+    );
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(snapshot()),
+      getKanbanConfig: vi.fn().mockResolvedValue(dbConfig()),
+      listKanbanLinks: vi.fn().mockResolvedValue([]),
+      startKanbanConnect,
+      pollKanbanConnect,
+    };
+    renderPage(client, 'cluster-admin');
+
+    fireEvent.click(await screen.findByTestId('kanban-connect-start'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-connect-failed').textContent).toBe(
+        'Connection failed — click Connect again.',
+      ),
+    );
+    // No lingering pending panel.
+    expect(screen.queryByTestId('kanban-connect-status')).toBeNull();
+  });
+
+  it('kanban connect: an old jtype (jtype_oauth_unsupported) shows a notice and keeps the paste field', async () => {
+    const err = new ApiError(409, 'this jtype does not support Connect', {
+      error: { code: 'jtype_oauth_unsupported', message: 'paste a token instead' },
+    });
+    const client = {
+      getSystem: vi.fn().mockResolvedValue(snapshot()),
+      getKanbanConfig: vi.fn().mockResolvedValue(dbConfig()),
+      listKanbanLinks: vi.fn().mockResolvedValue([]),
+      startKanbanConnect: vi.fn().mockRejectedValue(err),
+    };
+    renderPage(client, 'cluster-admin');
+
+    fireEvent.click(await screen.findByTestId('kanban-connect-start'));
+
+    // Fail-visible inline notice — never a silent failure.
+    await waitFor(() => expect(screen.getByTestId('kanban-connect-unsupported')).toBeTruthy());
+    // The manual paste field remains available as the fallback.
+    expect(screen.getByTestId('kanban-config-token')).toBeTruthy();
+  });
 });

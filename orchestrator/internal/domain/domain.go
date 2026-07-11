@@ -790,6 +790,12 @@ type KanbanConfig struct {
 	BaseURL string `json:"base_url"`
 	// TokenEnc is the encrypted cluster fallback token (nonce||ciphertext), or nil.
 	TokenEnc []byte `json:"-"`
+	// TokenExpiresAt is the wall-clock expiry of the fallback token when it was
+	// minted by the "Connect with jtype" OAuth device flow (D28: a 90-day scoped
+	// session, no refresh). Nil = unknown expiry — a hand-pasted PAT / env token /
+	// no token. Populated only by a successful device connect; the console renders
+	// "expires in N days / expired — reconnect" from it. Never the token itself.
+	TokenExpiresAt *time.Time `json:"token_expires_at,omitempty"`
 	// UpdatedAt / UpdatedBy record audit metadata (UpdatedBy is a user id or "" for
 	// the service principal).
 	UpdatedAt time.Time `json:"updated_at"`
@@ -897,9 +903,15 @@ type KanbanLink struct {
 	// with AUTH_TOKEN_KEY — the same scheme the model catalog uses (D25 / F6).
 	// nil => the poller/writeback fall back to the cluster JTYPE_TOKEN env. Never
 	// serialized (write-only via the API; the view echoes only TokenSet()).
-	TokenEnc  []byte    `json:"-"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	TokenEnc []byte `json:"-"`
+	// TokenExpiresAt is the wall-clock expiry of the per-link token when it was
+	// minted by the "Connect with jtype" OAuth device flow (D28: a 90-day scoped
+	// session, no refresh). Nil = unknown expiry — a hand-pasted PAT (D25) or no
+	// per-link token. Populated only by a successful device connect; the view
+	// echoes it so an owner sees "expires in N days / expired". Never the token.
+	TokenExpiresAt *time.Time `json:"token_expires_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 // TokenSet reports whether the link carries a per-link (encrypted) jtype PAT.

@@ -477,6 +477,101 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     expect((screen.getByTestId('kanban-link-workspace') as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByTestId('kanban-link-service') as HTMLSelectElement).disabled).toBe(true);
   });
+
+  // ---- D28: per-link "Connect with jtype" device flow ----------------------
+
+  it('per-link Connect is disabled with a hint when the cluster integration is off', async () => {
+    const project = baseProject();
+    const { client } = kanbanClient(project, undefined, false); // kanbanOff
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-kanban'));
+
+    const btn = (await screen.findByTestId(
+      'kanban-link-connect-kl-1-start',
+    )) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(screen.getByTestId('kanban-link-connect-kl-1-hint').textContent).toBe(
+      'Enable jtype on the Cluster page first',
+    );
+  });
+
+  it('per-link Connect completes and flips the credential badge to per_link', async () => {
+    const project = baseProject();
+    const in90Days = new Date(Date.now() + 90 * 86_400_000).toISOString();
+    // A tokenless link (create-then-connect) starts as a loud "missing".
+    let links: KanbanLink[] = [
+      {
+        id: 'kl-1', workspace_id: 'ws', board_ref: 'jcloud-dev',
+        project_id: project.id, service_id: 'svc_default', trigger_column: 'ai',
+        enabled: true, token_set: false, credential_status: 'missing',
+        created_at: '2026-01-01T00:00:00Z',
+      },
+    ];
+    const client: Partial<ApiClient> = {
+      getSystem: async () => sysInfo(true),
+      listProjectKanbanLinks: async () => links.map((l) => ({ ...l })),
+      startLinkConnect: async () => ({
+        connect_id: 'c1', user_code: '246810',
+        verification_uri: 'http://jtype:13345/oauth/device',
+        verification_uri_complete: 'http://jtype:13345/oauth/device?code=246810',
+        expires_in: 600, interval: 2,
+      }),
+      pollLinkConnect: async () => {
+        // Completing the flow seals a per-link token server-side.
+        links = links.map((l) =>
+          l.id === 'kl-1'
+            ? { ...l, token_set: true, credential_status: 'per_link', token_expires_at: in90Days }
+            : l,
+        );
+        return { status: 'complete', token_set: true, token_expires_at: in90Days };
+      },
+    };
+    renderModal(client as ApiClient, project);
+
+    fireEvent.click(screen.getByTestId('tab-kanban'));
+    // Initially the dead link screams "no credential".
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-cred-kl-1').textContent).toBe('no credential — set a token'),
+    );
+
+    // Connect → poll completes → the credential badge flips to the per-link state.
+    fireEvent.click(screen.getByTestId('kanban-link-connect-kl-1-start'));
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-cred-kl-1').textContent).toBe('own token'),
+    );
+    // And the row now carries a device-flow expiry badge.
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-link-expiry-kl-1').textContent).toMatch(/expires in 90 days/),
+    );
+  });
+
+  it('per-link Connect surfaces a non-unsupported start failure inline (fail-visible)', async () => {
+    const project = baseProject();
+    const { client } = kanbanClient(project);
+    // e.g. the cipher is missing — the start 409s with a typed error whose
+    // message must land next to the button, not vanish into a silent no-op.
+    (client as Partial<ApiClient>).startLinkConnect = async () => {
+      throw new ApiError(409, 'the token cipher (AUTH_TOKEN_KEY) is not configured', {
+        error: {
+          code: 'cipher_not_configured',
+          message: 'the token cipher (AUTH_TOKEN_KEY) is not configured',
+        },
+      });
+    };
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-kanban'));
+    fireEvent.click(await screen.findByTestId('kanban-link-connect-kl-1-start'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-link-connect-kl-1-start-error').textContent).toBe(
+        'the token cipher (AUTH_TOKEN_KEY) is not configured',
+      ),
+    );
+    // Still idle: the button remains for a retry once the cipher is configured.
+    expect(screen.getByTestId('kanban-link-connect-kl-1-start')).toBeTruthy();
+  });
 });
 
 describe('ProjectSettingsModal — Integrations tab (D19 / F5)', () => {

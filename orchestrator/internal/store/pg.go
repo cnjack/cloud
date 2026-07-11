@@ -1544,8 +1544,8 @@ func (s *PGStore) RevokeModel(ctx context.Context, modelID, projectID string) er
 func (s *PGStore) GetClusterKanbanConfig(ctx context.Context) (*domain.KanbanConfig, error) {
 	var c domain.KanbanConfig
 	err := s.pool.QueryRow(ctx,
-		`SELECT base_url, token_enc, updated_at, updated_by FROM cluster_kanban_config WHERE id=1`).
-		Scan(&c.BaseURL, &c.TokenEnc, &c.UpdatedAt, &c.UpdatedBy)
+		`SELECT base_url, token_enc, token_expires_at, updated_at, updated_by FROM cluster_kanban_config WHERE id=1`).
+		Scan(&c.BaseURL, &c.TokenEnc, &c.TokenExpiresAt, &c.UpdatedAt, &c.UpdatedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1556,17 +1556,40 @@ func (s *PGStore) GetClusterKanbanConfig(ctx context.Context) (*domain.KanbanCon
 }
 
 // UpsertClusterKanbanConfig writes the single-row config, stamping updated_at.
-// A nil TokenEnc encodes to SQL NULL (no cluster fallback token).
+// A nil TokenEnc encodes to SQL NULL (no cluster fallback token); a nil
+// TokenExpiresAt encodes to SQL NULL (unknown / manual-paste expiry, D28).
 func (s *PGStore) UpsertClusterKanbanConfig(ctx context.Context, cfg *domain.KanbanConfig) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO cluster_kanban_config (id, base_url, token_enc, updated_at, updated_by)
-		 VALUES (1, $1, $2, now(), $3)
+		`INSERT INTO cluster_kanban_config (id, base_url, token_enc, token_expires_at, updated_at, updated_by)
+		 VALUES (1, $1, $2, $3, now(), $4)
 		 ON CONFLICT (id) DO UPDATE
 		   SET base_url=EXCLUDED.base_url, token_enc=EXCLUDED.token_enc,
+		       token_expires_at=EXCLUDED.token_expires_at,
 		       updated_at=now(), updated_by=EXCLUDED.updated_by`,
-		cfg.BaseURL, cfg.TokenEnc, cfg.UpdatedBy)
+		cfg.BaseURL, cfg.TokenEnc, nullTime(cfg.TokenExpiresAt), cfg.UpdatedBy)
 	if err != nil {
 		return fmt.Errorf("upsert cluster kanban config: %w", err)
+	}
+	return nil
+}
+
+// SetClusterKanbanToken conditionally seals a device-flow token onto the
+// single-row config (D28): ONLY token_enc/token_expires_at/updated_by change,
+// and ONLY where the row still carries baseURL — never base_url itself, so an
+// admin PUT racing the completing poll wins. rows==0 (missing row OR changed
+// base_url) is ErrNotFound; the caller expires the flow instead of storing a
+// token minted against a stale instance.
+func (s *PGStore) SetClusterKanbanToken(ctx context.Context, baseURL string, tokenEnc []byte, expiresAt *time.Time, updatedBy string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE cluster_kanban_config
+		    SET token_enc=$2, token_expires_at=$3, updated_at=now(), updated_by=$4
+		  WHERE id=1 AND base_url=$1`,
+		baseURL, tokenEnc, nullTime(expiresAt), updatedBy)
+	if err != nil {
+		return fmt.Errorf("set cluster kanban token: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -1890,17 +1913,17 @@ func (s *PGStore) GetArtifact(ctx context.Context, runID string, kind domain.Art
 // --- Kanban (Feature E) -----------------------------------------------------
 
 // kanbanLinkCols are the kanban_links columns in scan order. done_column and
-// token_enc may be NULL; the rest are NOT NULL. token_enc is last so scan-order
-// edits stay localized (F6 / D25).
+// token_enc / token_expires_at may be NULL; the rest are NOT NULL. The nullable
+// blobs trail so scan-order edits stay localized (F6 / D25; token_expires_at D28).
 const kanbanLinkCols = `id, workspace_id, board_ref, project_id, service_id,
-	trigger_column, done_column, enabled, created_at, updated_at, token_enc`
+	trigger_column, done_column, enabled, created_at, updated_at, token_enc, token_expires_at`
 
 func scanKanbanLink(row pgx.Row) (*domain.KanbanLink, error) {
 	var l domain.KanbanLink
 	var doneColumn *string
 	err := row.Scan(
 		&l.ID, &l.WorkspaceID, &l.BoardRef, &l.ProjectID, &l.ServiceID,
-		&l.TriggerColumn, &doneColumn, &l.Enabled, &l.CreatedAt, &l.UpdatedAt, &l.TokenEnc)
+		&l.TriggerColumn, &doneColumn, &l.Enabled, &l.CreatedAt, &l.UpdatedAt, &l.TokenEnc, &l.TokenExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1915,9 +1938,10 @@ func (s *PGStore) CreateKanbanLink(ctx context.Context, l *domain.KanbanLink) er
 	// stores the sealed per-link PAT.
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO kanban_links (`+kanbanLinkCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		l.ID, l.WorkspaceID, l.BoardRef, l.ProjectID, l.ServiceID,
-		l.TriggerColumn, nullStr(l.DoneColumn), l.Enabled, l.CreatedAt, l.UpdatedAt, l.TokenEnc)
+		l.TriggerColumn, nullStr(l.DoneColumn), l.Enabled, l.CreatedAt, l.UpdatedAt,
+		l.TokenEnc, nullTime(l.TokenExpiresAt))
 	if err != nil {
 		return mapKanbanLinkErr("create kanban link", err)
 	}
@@ -1990,11 +2014,13 @@ func (s *PGStore) ListEnabledKanbanLinks(ctx context.Context) ([]domain.KanbanLi
 	return out, rows.Err()
 }
 
-func (s *PGStore) SetKanbanLinkToken(ctx context.Context, id string, tokenEnc []byte) error {
-	// ONLY token_enc (+updated_at) changes; the binding and its claims are
-	// untouched (P2 — a rotation never re-dispatches already-claimed cards).
+func (s *PGStore) SetKanbanLinkToken(ctx context.Context, id string, tokenEnc []byte, expiresAt *time.Time) error {
+	// ONLY token_enc/token_expires_at (+updated_at) change; the binding and its
+	// claims are untouched (P2 — a rotation never re-dispatches already-claimed
+	// cards). expiresAt nil => token_expires_at NULL (manual paste/clear, D28).
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE kanban_links SET token_enc=$2, updated_at=now() WHERE id=$1`, id, tokenEnc)
+		`UPDATE kanban_links SET token_enc=$2, token_expires_at=$3, updated_at=now() WHERE id=$1`,
+		id, tokenEnc, nullTime(expiresAt))
 	if err != nil {
 		return fmt.Errorf("set kanban link token: %w", err)
 	}

@@ -165,30 +165,48 @@ func TestSetKanbanLinkToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Rotate: token stored, claims untouched (run_id still stamped).
-	if err := m.SetKanbanLinkToken(ctx, link.ID, []byte("NEW")); err != nil {
+	// Rotate WITH a device-flow expiry (D28): token stored, expiry roundtrips,
+	// claims untouched (run_id still stamped).
+	exp := time.Now().Add(90 * 24 * time.Hour).UTC().Truncate(time.Second)
+	if err := m.SetKanbanLinkToken(ctx, link.ID, []byte("NEW"), &exp); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 	got, _ := m.GetKanbanLink(ctx, link.ID)
 	if !got.TokenSet() || string(got.TokenEnc) != "NEW" {
 		t.Fatalf("token not rotated: %v", got.TokenEnc)
 	}
+	if got.TokenExpiresAt == nil || !got.TokenExpiresAt.Equal(exp) {
+		t.Fatalf("token_expires_at did not roundtrip: %v want %v", got.TokenExpiresAt, exp)
+	}
 	claim, _ := m.EnsureKanbanClaim(ctx, link.ID, "docA", "cards/a.md")
 	if claim.RunID != "run-1" {
 		t.Fatalf("rotation must retain claims; run_id=%q want run-1", claim.RunID)
 	}
 
-	// Clear: nil token_enc => back to the cluster fallback.
-	if err := m.SetKanbanLinkToken(ctx, link.ID, nil); err != nil {
+	// Non-aliasing: mutating the returned copy's blob/expiry must NOT reach the
+	// stored row (GetKanbanLink deep-copies, matching GetClusterKanbanConfig).
+	alias, _ := m.GetKanbanLink(ctx, link.ID)
+	alias.TokenEnc[0] = 'X'
+	*alias.TokenExpiresAt = alias.TokenExpiresAt.Add(time.Hour)
+	fresh, _ := m.GetKanbanLink(ctx, link.ID)
+	if string(fresh.TokenEnc) != "NEW" || !fresh.TokenExpiresAt.Equal(exp) {
+		t.Fatalf("GetKanbanLink must deep-copy: enc=%q exp=%v", fresh.TokenEnc, fresh.TokenExpiresAt)
+	}
+
+	// Clear: nil token_enc + nil expiry => back to the cluster fallback, expiry NULL.
+	if err := m.SetKanbanLinkToken(ctx, link.ID, nil, nil); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	got, _ = m.GetKanbanLink(ctx, link.ID)
 	if got.TokenSet() {
 		t.Fatalf("clear did not remove the token: %v", got.TokenEnc)
 	}
+	if got.TokenExpiresAt != nil {
+		t.Fatalf("clear must null token_expires_at, got %v", got.TokenExpiresAt)
+	}
 
 	// Unknown link => ErrNotFound.
-	if err := m.SetKanbanLinkToken(ctx, "nope", []byte("x")); !errors.Is(err, ErrNotFound) {
+	if err := m.SetKanbanLinkToken(ctx, "nope", []byte("x"), nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown link want ErrNotFound, got %v", err)
 	}
 }

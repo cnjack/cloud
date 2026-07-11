@@ -2,6 +2,7 @@
  * queries.ts — TanStack Query hooks over the ApiClient. Query keys are
  * centralised so SSE/status changes can invalidate precisely.
  */
+import { useEffect } from 'react';
 import {
   useMutation,
   useQuery,
@@ -20,6 +21,7 @@ import type {
   CreateScheduleInput,
   CreateServiceInput,
   Integration,
+  KanbanConnectStatus,
   Member,
   Model,
   Project,
@@ -47,6 +49,11 @@ export const qk = {
   kanbanLinks: ['kanban-links'] as const,
   kanbanConfig: ['kanban-config'] as const,
   projectKanbanLinks: (projectId: string) => ['project-kanban-links', projectId] as const,
+  // D28: an in-flight "Connect with jtype" device flow, keyed by its opaque
+  // connect_id (cluster) or by (project, link, connect) for a per-link flow.
+  kanbanConnect: (connectId: string) => ['kanban-connect', connectId] as const,
+  linkConnect: (projectId: string, linkId: string, connectId: string) =>
+    ['link-connect', projectId, linkId, connectId] as const,
   serviceSchedules: (serviceId: string) => ['service-schedules', serviceId] as const,
   integrations: (projectId: string) => ['integrations', projectId] as const,
   apiKeys: (projectId: string) => ['api-keys', projectId] as const,
@@ -525,6 +532,109 @@ export function useDeleteKanbanConfig() {
       qc.invalidateQueries({ queryKey: qk.kanbanLinks });
       // See useUpdateKanbanConfig: credential_status is cluster-config-derived.
       qc.invalidateQueries({ queryKey: ['project-kanban-links'] });
+    },
+  });
+}
+
+/* ---- kanban "Connect with jtype" device flow (D28) ----------------------- */
+
+/**
+ * The two credential views a completed device flow makes stale: the cluster
+ * config (token_set + token_expires_at flip) and every kanban-link list (a
+ * per-link connect flips credential_status → per_link). Both connect hooks
+ * invalidate this set once, on the pending→complete edge.
+ */
+function invalidateKanbanCredentials(qc: ReturnType<typeof useQueryClient>): void {
+  qc.invalidateQueries({ queryKey: qk.kanbanConfig });
+  qc.invalidateQueries({ queryKey: qk.kanbanLinks });
+  // Prefix match — every project's link list (reuses D27's set).
+  qc.invalidateQueries({ queryKey: ['project-kanban-links'] });
+}
+
+/** Should a device-flow poll keep going? Only while the last result was pending. */
+function connectRefetchInterval(status: 'error' | 'pending' | 'success', data: unknown): number | false {
+  // A 404 connect_expired (or any poll error) is terminal — stop, the UI treats
+  // it as "expired, reconnect". `retry:false` keeps that a single request.
+  if (status === 'error') return false;
+  return (data as KanbanConnectStatus | undefined)?.status === 'pending' ? 2500 : false;
+}
+
+/**
+ * Poll a CLUSTER "Connect with jtype" flow while it is pending (every 2.5s),
+ * stopping on any terminal state (complete/expired/denied/unsupported) or a 404
+ * connect_expired. On the complete edge, refresh the credential views so the
+ * token_set badge + expiry flip without a manual reload.
+ */
+export function useKanbanConnectStatus(connectId: string | undefined, enabled: boolean) {
+  const api = useApi();
+  const qc = useQueryClient();
+  const query = useQuery({
+    queryKey: qk.kanbanConnect(connectId ?? ''),
+    queryFn: () => api.pollKanbanConnect(connectId!),
+    enabled: enabled && !!connectId,
+    retry: false,
+    refetchInterval: (q) => connectRefetchInterval(q.state.status, q.state.data),
+  });
+  const complete = query.data?.status === 'complete';
+  useEffect(() => {
+    if (complete) invalidateKanbanCredentials(qc);
+  }, [complete, qc]);
+  return query;
+}
+
+/** Per-link equivalent of {@link useKanbanConnectStatus}. */
+export function useLinkConnectStatus(
+  projectId: string,
+  linkId: string,
+  connectId: string | undefined,
+  enabled: boolean,
+) {
+  const api = useApi();
+  const qc = useQueryClient();
+  const query = useQuery({
+    queryKey: qk.linkConnect(projectId, linkId, connectId ?? ''),
+    queryFn: () => api.pollLinkConnect(projectId, linkId, connectId!),
+    enabled: enabled && !!connectId,
+    retry: false,
+    refetchInterval: (q) => connectRefetchInterval(q.state.status, q.state.data),
+  });
+  const complete = query.data?.status === 'complete';
+  useEffect(() => {
+    if (complete) invalidateKanbanCredentials(qc);
+  }, [complete, qc]);
+  return query;
+}
+
+/**
+ * Start a cluster device flow. On success we seed the poll cache with a pending
+ * status keyed by the new connect_id, so the flow panel shows the user_code +
+ * live status the instant the caller flips on {@link useKanbanConnectStatus}.
+ */
+export function useStartKanbanConnect() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.startKanbanConnect(),
+    onSuccess: (start) => {
+      qc.setQueryData<KanbanConnectStatus>(qk.kanbanConnect(start.connect_id), {
+        status: 'pending',
+        token_set: false,
+      });
+    },
+  });
+}
+
+/** Start a per-link device flow (seeds the per-link poll cache; see above). */
+export function useStartLinkConnect(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (linkId: string) => api.startLinkConnect(projectId, linkId),
+    onSuccess: (start, linkId) => {
+      qc.setQueryData<KanbanConnectStatus>(qk.linkConnect(projectId, linkId, start.connect_id), {
+        status: 'pending',
+        token_set: false,
+      });
     },
   });
 }

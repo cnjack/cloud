@@ -28,6 +28,8 @@ import type {
   CreateIntegrationInput,
   Integration,
   KanbanClusterConfig,
+  KanbanConnectStart,
+  KanbanConnectStatus,
   KanbanLink,
   Me,
   Member,
@@ -203,7 +205,7 @@ export function createMockClient(): ApiClient {
   // override). The demo rig has no JTYPE_* env fallback, so an absent row resolves
   // to source=none / off — set one here and it becomes source=db / on (no restart),
   // mirroring the resolver so the console edit flow roundtrips.
-  let kanbanCfg: { base_url: string; token_set: boolean } | null = null;
+  let kanbanCfg: { base_url: string; token_set: boolean; token_expires_at?: string } | null = null;
   function kanbanConfigView(): KanbanClusterConfig {
     if (kanbanCfg) {
       return {
@@ -214,6 +216,8 @@ export function createMockClient(): ApiClient {
         effective_base_url: kanbanCfg.base_url,
         cluster_token_set: kanbanCfg.token_set,
         poll_interval: '15s',
+        // D28: present only when the fallback token was minted by the device flow.
+        ...(kanbanCfg.token_expires_at ? { token_expires_at: kanbanCfg.token_expires_at } : {}),
       };
     }
     // No DB row and no env fallback in the demo rig ⇒ off.
@@ -227,6 +231,68 @@ export function createMockClient(): ApiClient {
       poll_interval: '15s',
     };
   }
+
+  // D28: the "Connect with jtype" device-flow registry, keyed by opaque
+  // connect_id. Each record remembers its target surface (cluster fallback token,
+  // or a specific link) and a poll counter: the demo/e2e roundtrip auto-approves
+  // on the SECOND poll (the first is `pending`), mirroring a user tapping Approve
+  // in jtype's browser page. On completion we seal a fake 90-day token into the
+  // target (token_set + token_expires_at) so the credential badge + expiry flip
+  // exactly as they would against a real orchestrator — no plaintext ever crosses.
+  type ConnectTarget = { kind: 'cluster' } | { kind: 'link'; projectId: string; linkId: string };
+  interface ConnectRecord {
+    target: ConnectTarget;
+    polls: number;
+    tokenExpiresAt?: string;
+  }
+  const connects = new Map<string, ConnectRecord>();
+  const DEVICE_TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000; // MCP_TOKEN_TTL_SECS = 90d
+  function sixDigitCode(): string {
+    return String(Math.floor(100000 + Math.random() * 900000));
+  }
+  function startConnect(target: ConnectTarget, baseUrl: string): KanbanConnectStart {
+    const connectId = genId('kc');
+    const userCode = sixDigitCode();
+    connects.set(connectId, { target, polls: 0 });
+    return {
+      connect_id: connectId,
+      user_code: userCode,
+      verification_uri: `${baseUrl}/oauth/device`,
+      verification_uri_complete: `${baseUrl}/oauth/device?code=${userCode}`,
+      expires_in: 600,
+      interval: 2,
+    };
+  }
+  function pollConnect(connectId: string): KanbanConnectStatus {
+    const rec = connects.get(connectId);
+    if (!rec) {
+      throw new ApiError(404, 'connect flow expired', {
+        error: { code: 'connect_expired', message: 'connect flow expired or unknown' },
+      });
+    }
+    rec.polls += 1;
+    // Still waiting for the user to approve in jtype's browser page.
+    if (rec.polls < 2) return { status: 'pending', token_set: false };
+    // Approved: seal a fresh 90-day token into the target (idempotent across
+    // repeat polls — the expiry is fixed on first completion).
+    if (!rec.tokenExpiresAt) rec.tokenExpiresAt = nowISO(DEVICE_TOKEN_TTL_MS);
+    if (rec.target.kind === 'cluster') {
+      if (kanbanCfg) {
+        kanbanCfg.token_set = true;
+        kanbanCfg.token_expires_at = rec.tokenExpiresAt;
+      }
+    } else {
+      const l = kanbanLinks.get(rec.target.linkId);
+      if (l) {
+        l.token_set = true;
+        l.credential_status = 'per_link';
+        l.token_expires_at = rec.tokenExpiresAt;
+        kanbanLinks.set(l.id, l);
+      }
+    }
+    return { status: 'complete', token_set: true, token_expires_at: rec.tokenExpiresAt };
+  }
+
   // F11 / D24: schedules (service cron triggers), keyed by schedule id.
   const schedules = new Map<string, Schedule>();
   // D19 / F5: project integrations, keyed by project id.
@@ -1345,6 +1411,8 @@ export function createMockClient(): ApiClient {
       if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
       l.token_set = !!token.trim();
       l.credential_status = token.trim() ? 'per_link' : 'missing';
+      // A manual PAT (or a clear) has unknown expiry — drop any device-flow expiry.
+      l.token_expires_at = undefined;
       kanbanLinks.set(linkId, l);
       return delay({ ...l });
     },
@@ -1374,6 +1442,49 @@ export function createMockClient(): ApiClient {
     async deleteKanbanConfig(): Promise<KanbanClusterConfig> {
       kanbanCfg = null;
       return delay(kanbanConfigView());
+    },
+
+    /* ---- kanban "Connect with jtype" device flow (D28) -------------------- */
+    async startKanbanConnect(): Promise<KanbanConnectStart> {
+      // Cluster connect requires a saved DB base_url (D27 same-source binding) —
+      // fail-visible, mirroring the orchestrator's 409 base_url_not_configured.
+      if (!kanbanCfg || !kanbanCfg.base_url) {
+        throw new ApiError(409, 'save the jtype base URL before connecting', {
+          error: {
+            code: 'base_url_not_configured',
+            message: 'Save the jtype base URL before connecting.',
+          },
+        });
+      }
+      return delay(startConnect({ kind: 'cluster' }, kanbanCfg.base_url));
+    },
+    async pollKanbanConnect(connectId: string): Promise<KanbanConnectStatus> {
+      return delay(pollConnect(connectId));
+    },
+    async startLinkConnect(projectId: string, linkId: string): Promise<KanbanConnectStart> {
+      const l = kanbanLinks.get(linkId);
+      if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
+      // Per-link connect needs the cluster integration effective (else the minted
+      // token has no jtype to talk to) — 409 kanban_not_configured, fail-visible.
+      const eff = kanbanConfigView();
+      if (!eff.effective_enabled) {
+        throw new ApiError(409, 'the cluster jtype integration is not configured', {
+          error: {
+            code: 'kanban_not_configured',
+            message: 'Ask a cluster admin to configure jtype on the Cluster page first.',
+          },
+        });
+      }
+      return delay(startConnect({ kind: 'link', projectId, linkId }, eff.effective_base_url));
+    },
+    async pollLinkConnect(
+      projectId: string,
+      linkId: string,
+      connectId: string,
+    ): Promise<KanbanConnectStatus> {
+      const l = kanbanLinks.get(linkId);
+      if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
+      return delay(pollConnect(connectId));
     },
 
     /* ---- schedules (F11 / D24) -------------------------------------------- */

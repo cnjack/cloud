@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/domain"
@@ -85,6 +86,10 @@ type systemKanban struct {
 	BaseURL         string `json:"base_url,omitempty"`
 	PollInterval    string `json:"poll_interval,omitempty"`
 	ClusterTokenSet bool   `json:"cluster_token_set"`
+	// TokenExpiresAt is the effective cluster fallback token's expiry (RFC3339)
+	// when it was minted by the "Connect with jtype" device flow (D28); omitted for
+	// a hand-pasted / env token (unknown expiry). Never the token itself.
+	TokenExpiresAt string `json:"token_expires_at,omitempty"`
 }
 
 // systemArchive is the persistent-workspace object-storage archive snapshot
@@ -208,13 +213,17 @@ func (s *Server) kanbanStatus(ctx context.Context) systemKanban {
 		s.log.Warn("system: kanban config resolve failed", "err", err)
 		return systemKanban{Enabled: false, Source: "none", Reason: reason, PollInterval: pollInterval}
 	}
-	return systemKanban{
+	k := systemKanban{
 		Enabled:         eff.Enabled(),
 		Source:          string(eff.Source),
 		BaseURL:         eff.BaseURL,
 		PollInterval:    pollInterval,
 		ClusterTokenSet: eff.ClusterTokenSet,
 	}
+	if eff.ClusterTokenExpiresAt != nil {
+		k.TokenExpiresAt = eff.ClusterTokenExpiresAt.UTC().Format(time.RFC3339)
+	}
+	return k
 }
 
 // nonNilStrings returns a non-nil slice so the JSON encodes [] not null for an

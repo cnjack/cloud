@@ -376,9 +376,19 @@ type Store interface {
 	// row is present (the resolver then falls back to the JTYPE_* env).
 	GetClusterKanbanConfig(ctx context.Context) (*domain.KanbanConfig, error)
 	// UpsertClusterKanbanConfig writes the single-row config (INSERT … ON CONFLICT
-	// (id) DO UPDATE), stamping updated_at=now(). base_url/token_enc/updated_by come
-	// from cfg; token_enc nil clears the fallback token.
+	// (id) DO UPDATE), stamping updated_at=now(). base_url/token_enc/token_expires_at/
+	// updated_by come from cfg; token_enc nil clears the fallback token and a nil
+	// TokenExpiresAt writes SQL NULL (unknown / manual-paste expiry, D28).
 	UpsertClusterKanbanConfig(ctx context.Context, cfg *domain.KanbanConfig) error
+	// SetClusterKanbanToken CONDITIONALLY seals a device-flow token onto the
+	// single-row config (D28): it updates ONLY token_enc/token_expires_at/
+	// updated_by (+updated_at) and ONLY where the row still carries the given
+	// base_url — never base_url itself. This closes the check-then-write window
+	// on the completing poll: an admin PUT that re-pointed the config mid-flow
+	// wins, and a token minted against the stale instance is never stored. A
+	// missing row or a changed base_url returns ErrNotFound (the caller expires
+	// the flow).
+	SetClusterKanbanToken(ctx context.Context, baseURL string, tokenEnc []byte, expiresAt *time.Time, updatedBy string) error
 	// DeleteClusterKanbanConfig removes the single-row config so the resolver falls
 	// back to the JTYPE_* env. Idempotent: a missing row is not an error.
 	DeleteClusterKanbanConfig(ctx context.Context) error
@@ -484,8 +494,10 @@ type Store interface {
 	// SetKanbanLinkToken replaces ONLY a link's per-link encrypted jtype PAT
 	// (P2 token rotation): nil clears it (back to the cluster fallback). The
 	// link's binding and its claims are untouched — a rotation never
-	// re-dispatches already-claimed cards.
-	SetKanbanLinkToken(ctx context.Context, id string, tokenEnc []byte) error
+	// re-dispatches already-claimed cards. expiresAt records the token's wall-clock
+	// expiry when it was minted by the device flow (D28); nil sets token_expires_at
+	// to NULL — the manual paste/clear path passes nil ("unknown / no expiry").
+	SetKanbanLinkToken(ctx context.Context, id string, tokenEnc []byte, expiresAt *time.Time) error
 	DeleteKanbanLink(ctx context.Context, id string) error
 
 	// EnsureKanbanClaim inserts a (link_id, document_id) claim row with run_id

@@ -56,6 +56,18 @@ export function formatDuration(
   return `${hrs}h ${mins % 60}m`;
 }
 
+/**
+ * Whole days from now until `iso` (rounded up; negative once past). Returns null
+ * for an empty/invalid timestamp — used to render a token-expiry badge ("expires
+ * in N days" / "expired") only when the expiry is actually known (D28).
+ */
+export function daysUntil(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.ceil((t - Date.now()) / 86_400_000);
+}
+
 /** Short run id for display, e.g. "run_0001ab3f" -> "0001ab3f". */
 export function shortId(id: string): string {
   const parts = id.split('_');

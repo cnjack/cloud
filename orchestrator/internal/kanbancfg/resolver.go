@@ -66,6 +66,12 @@ type Effective struct {
 	BaseURL         string
 	ClusterToken    string
 	ClusterTokenSet bool
+	// ClusterTokenExpiresAt is the wall-clock expiry of the effective cluster
+	// fallback token when it was minted by the "Connect with jtype" device flow
+	// (D28). Nil = unknown expiry (a DB/env manual-paste token, or no token). Set
+	// only for the DB source (the env fallback token is opaque). Surfaced as
+	// token_expires_at on the /system snapshot — never the token itself.
+	ClusterTokenExpiresAt *time.Time
 }
 
 // Enabled reports whether a usable base URL was resolved (the integration is on).
@@ -148,6 +154,7 @@ func (r *Resolver) resolve(ctx context.Context) (Effective, error) {
 			}
 			eff.ClusterToken = tok
 			eff.ClusterTokenSet = true
+			eff.ClusterTokenExpiresAt = row.TokenExpiresAt
 		}
 		return eff, nil
 	case errors.Is(err, store.ErrNotFound):

@@ -531,6 +531,13 @@ export interface KanbanLink {
   enabled: boolean;
   token_set: boolean;
   credential_status: KanbanCredentialStatus;
+  /**
+   * D28: when this link's token was minted by the "Connect with jtype" device
+   * flow, its 90-day expiry (device-flow tokens carry no refresh). NULL/omitted
+   * for a manual PAT / cluster-fallback / no credential (unknown expiry) — the
+   * UI shows an expiry badge only when this is set.
+   */
+  token_expires_at?: string;
   created_at: string;
 }
 
@@ -565,6 +572,13 @@ export interface KanbanClusterConfig {
    * never render a bare "off" for a misconfiguration.
    */
   reason?: string;
+  /**
+   * D28: when the cluster fallback token was minted by the "Connect with jtype"
+   * device flow, its 90-day expiry. NULL/omitted for a manual PAT / env token /
+   * no token (unknown expiry). The token itself is NEVER returned — only whether
+   * it is set (token_set) and, if known, when it expires.
+   */
+  token_expires_at?: string;
 }
 
 /**
@@ -591,6 +605,50 @@ export interface CreateKanbanLinkInput {
   trigger_column: string;
   done_column?: string;
   token?: string;
+}
+
+/* ---- kanban "Connect with jtype" OAuth device flow (D28) ------------------ */
+
+/**
+ * The start of a "Connect with jtype" device flow (RFC 8628). Returned by
+ * POST …/kanban/connect (cluster) or …/kanban/links/{id}/connect (per-link).
+ *
+ * `user_code` is the short 6-digit code the user confirms in jtype's browser
+ * page; `verification_uri_complete` deep-links there with the code prefilled.
+ * The `device_code` (the SECRET that can mint the token) is DELIBERATELY WITHHELD
+ * — the orchestrator holds it in-memory keyed by the opaque `connect_id`, and the
+ * console only ever polls with `connect_id`. `expires_in` / `interval` are the
+ * jtype-advertised flow lifetime and minimum poll cadence (seconds).
+ */
+export interface KanbanConnectStart {
+  connect_id: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string;
+  expires_in: number;
+  interval: number;
+}
+
+/**
+ * The state of an in-flight (or just-finished) device flow, returned by
+ * GET …/kanban/connect/{connectID}. The console polls this while `pending` and
+ * stops on any terminal state:
+ *   - `complete`   — the token was minted, sealed server-side into the target
+ *                    row, and `token_set` is now true (`token_expires_at` gives
+ *                    its 90-day expiry). The plaintext token is NEVER returned.
+ *   - `expired`    — the flow lapsed (also how a user *denial* eventually reads,
+ *                    since jtype's device page has no explicit Deny) — reconnect.
+ *   - `denied`     — defensive: jtype never emits access_denied today, but the
+ *                    contract carries it so the console can surface it if it does.
+ *   - `unsupported`— this jtype deployment lacks the OAuth device routes; the
+ *                    user must paste a token instead (fail-visible fallback).
+ * A 404 `connect_expired` on poll (e.g. after an orchestrator restart dropped the
+ * in-memory flow) is treated by the UI exactly like `expired`.
+ */
+export interface KanbanConnectStatus {
+  status: 'pending' | 'complete' | 'expired' | 'denied' | 'unsupported';
+  token_set: boolean;
+  token_expires_at?: string;
 }
 
 /* ---- schedules (F11 / D24) ------------------------------------------------ */

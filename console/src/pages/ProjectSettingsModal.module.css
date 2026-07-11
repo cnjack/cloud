@@ -268,6 +268,11 @@
   background: var(--status-failed-bg);
 }
 
+/* D28: the per-link "Connect with jtype" device-flow panel. */
+.kanbanConnect {
+  margin-top: var(--space-2);
+}
+
 .tokenEditor {
   display: flex;
   align-items: flex-end;

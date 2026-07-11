@@ -26,6 +26,10 @@ type kanbanLinkView struct {
 	// TokenSet is true when the link carries its own encrypted jtype PAT; false
 	// means it falls back to the cluster JTYPE_TOKEN env. The token is never echoed.
 	TokenSet bool `json:"token_set"`
+	// TokenExpiresAt is the per-link token's expiry (RFC3339) when it was minted by
+	// the "Connect with jtype" device flow (D28); omitted for a hand-pasted token /
+	// no token (unknown expiry). Never the token itself.
+	TokenExpiresAt string `json:"token_expires_at,omitempty"`
 	// CredentialStatus is the DERIVED runtime credential state (P1 — an owner must
 	// see a dead link in the console, not in orchestrator logs):
 	//   "per_link"         — the link has its own token (token_set).
@@ -61,7 +65,7 @@ func (s *Server) linkView(ctx context.Context, l domain.KanbanLink) kanbanLinkVi
 	if eff, err := s.kanban.Effective(ctx); err == nil {
 		clusterTokenSet = eff.ClusterTokenSet
 	}
-	return kanbanLinkView{
+	v := kanbanLinkView{
 		ID: l.ID, WorkspaceID: l.WorkspaceID, BoardRef: l.BoardRef,
 		ProjectID: l.ProjectID, ServiceID: l.ServiceID,
 		TriggerColumn: l.TriggerColumn, DoneColumn: l.DoneColumn,
@@ -69,6 +73,10 @@ func (s *Server) linkView(ctx context.Context, l domain.KanbanLink) kanbanLinkVi
 		CredentialStatus: credentialStatus(l, clusterTokenSet),
 		CreatedAt:        l.CreatedAt.UTC().Format(time.RFC3339),
 	}
+	if l.TokenExpiresAt != nil {
+		v.TokenExpiresAt = l.TokenExpiresAt.UTC().Format(time.RFC3339)
+	}
+	return v
 }
 
 // createKanbanLinkReq is the POST /api/v1/projects/{id}/kanban/links body.
@@ -313,7 +321,9 @@ func (s *Server) handleUpdateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		tokenEnc = enc
 	}
 
-	if err := s.st.SetKanbanLinkToken(r.Context(), linkID, tokenEnc); err != nil {
+	// Manual paste/clear: token_expires_at is set to NULL (unknown expiry — only
+	// the device connect flow populates it, D28).
+	if err := s.st.SetKanbanLinkToken(r.Context(), linkID, tokenEnc, nil); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "kanban link not found")
 			return
@@ -323,6 +333,7 @@ func (s *Server) handleUpdateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		return
 	}
 	link.TokenEnc = tokenEnc
+	link.TokenExpiresAt = nil // manual rotate/clear leaves the expiry unknown (D28)
 	writeJSON(w, http.StatusOK, s.linkView(r.Context(), *link))
 }
 

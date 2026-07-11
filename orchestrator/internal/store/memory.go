@@ -1372,10 +1372,14 @@ func (m *MemStore) GetClusterKanbanConfig(_ context.Context) (*domain.KanbanConf
 	if m.kanbanConfig == nil {
 		return nil, ErrNotFound
 	}
-	// Clone (incl. the token blob) so a caller can't mutate the stored row.
+	// Clone (incl. the token blob + expiry) so a caller can't mutate the stored row.
 	cp := *m.kanbanConfig
 	if m.kanbanConfig.TokenEnc != nil {
 		cp.TokenEnc = append([]byte(nil), m.kanbanConfig.TokenEnc...)
+	}
+	if m.kanbanConfig.TokenExpiresAt != nil {
+		t := *m.kanbanConfig.TokenExpiresAt
+		cp.TokenExpiresAt = &t
 	}
 	return &cp, nil
 }
@@ -1387,7 +1391,37 @@ func (m *MemStore) UpsertClusterKanbanConfig(_ context.Context, cfg *domain.Kanb
 	if cfg.TokenEnc != nil {
 		stored.TokenEnc = append([]byte(nil), cfg.TokenEnc...)
 	}
+	if cfg.TokenExpiresAt != nil {
+		t := *cfg.TokenExpiresAt
+		stored.TokenExpiresAt = &t
+	}
 	m.kanbanConfig = &stored
+	return nil
+}
+
+// SetClusterKanbanToken conditionally seals a device-flow token (D28): the
+// check (row present + same base_url) and the write happen atomically under the
+// store mutex — mirroring the pg conditional UPDATE. A missing row or a changed
+// base_url is ErrNotFound; base_url is never written.
+func (m *MemStore) SetClusterKanbanToken(_ context.Context, baseURL string, tokenEnc []byte, expiresAt *time.Time, updatedBy string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.kanbanConfig == nil || m.kanbanConfig.BaseURL != baseURL {
+		return ErrNotFound
+	}
+	if tokenEnc == nil {
+		m.kanbanConfig.TokenEnc = nil
+	} else {
+		m.kanbanConfig.TokenEnc = append([]byte(nil), tokenEnc...)
+	}
+	if expiresAt == nil {
+		m.kanbanConfig.TokenExpiresAt = nil
+	} else {
+		t := *expiresAt
+		m.kanbanConfig.TokenExpiresAt = &t
+	}
+	m.kanbanConfig.UpdatedBy = updatedBy
+	m.kanbanConfig.UpdatedAt = time.Now().UTC()
 	return nil
 }
 
@@ -1518,7 +1552,16 @@ func (m *MemStore) GetKanbanLink(_ context.Context, id string) (*domain.KanbanLi
 	if !ok {
 		return nil, ErrNotFound
 	}
+	// Deep-copy the token blob + expiry pointer so a caller can't mutate the
+	// stored row through the returned copy (matches GetClusterKanbanConfig).
 	cp := l
+	if l.TokenEnc != nil {
+		cp.TokenEnc = append([]byte(nil), l.TokenEnc...)
+	}
+	if l.TokenExpiresAt != nil {
+		t := *l.TokenExpiresAt
+		cp.TokenExpiresAt = &t
+	}
 	return &cp, nil
 }
 
@@ -1559,7 +1602,7 @@ func (m *MemStore) ListEnabledKanbanLinks(_ context.Context) ([]domain.KanbanLin
 	return out, nil
 }
 
-func (m *MemStore) SetKanbanLinkToken(_ context.Context, id string, tokenEnc []byte) error {
+func (m *MemStore) SetKanbanLinkToken(_ context.Context, id string, tokenEnc []byte, expiresAt *time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	l, ok := m.kanbanLinks[id]
@@ -1571,6 +1614,14 @@ func (m *MemStore) SetKanbanLinkToken(_ context.Context, id string, tokenEnc []b
 		l.TokenEnc = nil
 	} else {
 		l.TokenEnc = append([]byte(nil), tokenEnc...)
+	}
+	// token_expires_at follows the token: nil (manual paste/clear) => NULL; a
+	// device-flow expiry copies the value (D28).
+	if expiresAt == nil {
+		l.TokenExpiresAt = nil
+	} else {
+		t := *expiresAt
+		l.TokenExpiresAt = &t
 	}
 	l.UpdatedAt = time.Now().UTC()
 	m.kanbanLinks[id] = l

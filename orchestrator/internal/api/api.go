@@ -23,6 +23,7 @@ import (
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/gitcli"
 	"github.com/cnjack/jcloud/internal/jtype"
+	"github.com/cnjack/jcloud/internal/jtypeoauth"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/kanbancfg"
 	"github.com/cnjack/jcloud/internal/modelcfg"
@@ -75,6 +76,13 @@ type Server struct {
 	// at create time. Production wraps *jtype.Factory.Client; a test injects a fake
 	// (ignoring the factory) so column validation is exercised without HTTP.
 	boardValidatorFor func(f *jtype.Factory, token string) boardValidator
+
+	// connects is the in-memory registry of pending "Connect with jtype" OAuth
+	// device flows (D28); no DB persistence — a restart drops in-flight flows.
+	connects *connectRegistry
+	// oauthClientFor builds a jtype OAuth device-flow client for a base URL.
+	// Production wires jtypeoauth.NewClient; a test injects a fake with a poll spy.
+	oauthClientFor func(baseURL string) oauthClient
 
 	// Session next-prompt long-poll timings (D22). Zero => the package defaults
 	// (25s hold / 500ms poll). Overridable by tests that need a fast hold.
@@ -138,6 +146,10 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Default board validator: build a token-bound jtype client off the resolved
 	// factory. Overridden by tests with a fake that ignores the factory.
 	s.boardValidatorFor = func(f *jtype.Factory, token string) boardValidator { return f.Client(token) }
+	// D28 — "Connect with jtype" OAuth device flow: an in-memory registry of
+	// pending flows + the jtype OAuth device-flow client seam (overridden by tests).
+	s.connects = newConnectRegistry()
+	s.oauthClientFor = func(baseURL string) oauthClient { return jtypeoauth.NewClient(baseURL, nil) }
 	return s
 }
 
@@ -248,6 +260,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/v1/system/kanban", s.authed(s.handlePutKanbanConfig))
 	mux.Handle("DELETE /api/v1/system/kanban", s.authed(s.handleDeleteKanbanConfig))
 
+	// D28 — "Connect with jtype" device flow for the CLUSTER fallback token. POST
+	// starts a flow (device_code held server-side; user_code returned); GET polls
+	// it, sealing the minted token into cluster_kanban_config on complete.
+	// Cluster-admin only (enforced in the handlers).
+	mux.Handle("POST /api/v1/system/kanban/connect", s.authed(s.handleStartKanbanConnect))
+	mux.Handle("GET /api/v1/system/kanban/connect/{connectID}", s.authed(s.handlePollKanbanConnect))
+
 	// Feature E/F6 — jtype kanban links. Management (create/delete) is downshifted
 	// to the project OWNER via the project-scoped routes below (D25). The system
 	// route is retained as a cluster-admin READ-ONLY cross-project overview; the
@@ -288,6 +307,11 @@ func (s *Server) Handler() http.Handler {
 	// PATCH rotates/clears ONLY the link's per-link token (claims retained, P2).
 	mux.Handle("PATCH /api/v1/projects/{id}/kanban/links/{linkID}", s.authed(s.handleUpdateProjectKanbanLink))
 	mux.Handle("DELETE /api/v1/projects/{id}/kanban/links/{linkID}", s.authed(s.handleDeleteProjectKanbanLink))
+	// D28 — "Connect with jtype" device flow for a link's per-link token (create
+	// the link blank first, then connect). Owner only; POST starts, GET polls and
+	// seals the minted token into kanban_links.token_enc on complete.
+	mux.Handle("POST /api/v1/projects/{id}/kanban/links/{linkID}/connect", s.authed(s.handleStartLinkConnect))
+	mux.Handle("GET /api/v1/projects/{id}/kanban/links/{linkID}/connect/{connectID}", s.authed(s.handlePollLinkConnect))
 
 	// Project-scoped API keys (F12 / D24) — a revocable automation credential
 	// bound to exactly one project, replacing the CONSOLE_TOKEN borrow-pattern

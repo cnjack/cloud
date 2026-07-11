@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/store"
@@ -19,14 +20,15 @@ import (
 // when the config is broken (e.g. a DB fallback token stored but AUTH_TOKEN_KEY is
 // unset) — surfaced rather than silently falling back to env (D14 fail-visible).
 type kanbanConfigView struct {
-	BaseURL          string `json:"base_url"`           // the DB override's base_url ("" when no DB row)
-	TokenSet         bool   `json:"token_set"`          // the DB override carries a fallback token
-	Source           string `json:"source"`             // effective source: "db" | "env" | "none"
-	Reason           string `json:"reason,omitempty"`   // why broken/disabled (empty when healthy)
-	EffectiveEnabled bool   `json:"effective_enabled"`  // the integration is effectively on
-	EffectiveBaseURL string `json:"effective_base_url"` // the base URL clients actually use
-	ClusterTokenSet  bool   `json:"cluster_token_set"`  // effective fallback token flag (per source)
-	PollInterval     string `json:"poll_interval"`      // JTYPE_POLL_INTERVAL (env-only, informational)
+	BaseURL          string `json:"base_url"`                   // the DB override's base_url ("" when no DB row)
+	TokenSet         bool   `json:"token_set"`                  // the DB override carries a fallback token
+	TokenExpiresAt   string `json:"token_expires_at,omitempty"` // the DB token's expiry (D28); omitted when unknown
+	Source           string `json:"source"`                     // effective source: "db" | "env" | "none"
+	Reason           string `json:"reason,omitempty"`           // why broken/disabled (empty when healthy)
+	EffectiveEnabled bool   `json:"effective_enabled"`          // the integration is effectively on
+	EffectiveBaseURL string `json:"effective_base_url"`         // the base URL clients actually use
+	ClusterTokenSet  bool   `json:"cluster_token_set"`          // effective fallback token flag (per source)
+	PollInterval     string `json:"poll_interval"`              // JTYPE_POLL_INTERVAL (env-only, informational)
 }
 
 // kanbanConfigView builds the response from the DB override row + the effective
@@ -42,6 +44,9 @@ func (s *Server) buildKanbanConfigView(ctx context.Context) (kanbanConfigView, e
 	case err == nil:
 		v.BaseURL = row.BaseURL
 		v.TokenSet = row.TokenSet()
+		if row.TokenExpiresAt != nil {
+			v.TokenExpiresAt = row.TokenExpiresAt.UTC().Format(time.RFC3339)
+		}
 	case errors.Is(err, store.ErrNotFound):
 		// no override — effective resolution falls back to env/none
 	default:
@@ -106,14 +111,19 @@ func (s *Server) handlePutKanbanConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve the token blob. Absent => keep the current DB token; a value => seal
-	// it (409 without a cipher, checked before the store write); "" => clear.
+	// Resolve the token blob + its expiry. Absent => keep the current DB token AND
+	// its expiry (a base-url-only edit must not drop a device-flow expiry); a value
+	// => seal it (409 without a cipher, checked before the store write) with expiry
+	// NULL (a hand-pasted token has unknown expiry — only Connect populates it,
+	// D28); "" => clear both.
 	var tokenEnc []byte
+	var tokenExpiresAt *time.Time
 	if req.Token == nil {
 		cur, err := s.st.GetClusterKanbanConfig(r.Context())
 		switch {
 		case err == nil:
 			tokenEnc = cur.TokenEnc
+			tokenExpiresAt = cur.TokenExpiresAt
 		case errors.Is(err, store.ErrNotFound):
 			// no existing row => nothing to keep
 		default:
@@ -130,9 +140,10 @@ func (s *Server) handlePutKanbanConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := &domain.KanbanConfig{
-		BaseURL:   base,
-		TokenEnc:  tokenEnc,
-		UpdatedBy: principalFrom(r.Context()).userID(),
+		BaseURL:        base,
+		TokenEnc:       tokenEnc,
+		TokenExpiresAt: tokenExpiresAt,
+		UpdatedBy:      principalFrom(r.Context()).userID(),
 	}
 	if err := s.st.UpsertClusterKanbanConfig(r.Context(), cfg); err != nil {
 		s.log.Error("upsert kanban config", "err", err)

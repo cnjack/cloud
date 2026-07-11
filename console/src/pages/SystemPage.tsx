@@ -24,11 +24,14 @@ import {
   useKanbanConfig,
   useUpdateKanbanConfig,
   useDeleteKanbanConfig,
+  useStartKanbanConnect,
+  useKanbanConnectStatus,
 } from '../api/queries';
 import { useRole } from '../api/ApiProvider';
 import { ApiError } from '../api/client';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
+import { KanbanConnectFlow, expiryLabel } from '../components/KanbanConnect';
 import { TextField } from '../components/Field';
 import { LoadingBlock, ErrorBlock } from '../components/States';
 import { EmptyState } from '../components/EmptyState';
@@ -574,8 +577,14 @@ function KanbanCard({ systemReason }: { systemReason?: string }) {
       ) : config.data ? (
         // Re-key on the resolved config's identity so a Save (env→db) or a Clear
         // (db→env/off) re-seeds the form fields from the fresh server state.
+        // token_set is deliberately NOT part of the key (D28): a completed
+        // device flow flips it false→true via invalidation, and a remount here
+        // would tear down the in-flight connect panel one refetch tick after it
+        // shows "Connected". token_set-driven UI (the token field's placeholder,
+        // the clear-token checkbox) reads it reactively as a prop, and the save
+        // handler already clears the typed token itself on success.
         <KanbanConfigEditor
-          key={`${config.data.source}:${config.data.base_url}:${config.data.token_set}`}
+          key={`${config.data.source}:${config.data.base_url}`}
           config={config.data}
         />
       ) : null}
@@ -603,6 +612,22 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
   const [token, setToken] = useState('');
   const [clearToken, setClearToken] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+
+  // D28: "Connect with jtype" device flow for the cluster fallback token. The
+  // flow requires a SAVED DB base_url (config.base_url, not the unsaved input —
+  // the orchestrator binds to the persisted row); until then the button is
+  // disabled with a visible reason. connectId drives the poll once launched.
+  const startConnect = useStartKanbanConnect();
+  const [connectId, setConnectId] = useState<string | undefined>();
+  const connectStatus = useKanbanConnectStatus(connectId, !!connectId);
+  const launchConnect = () =>
+    startConnect.mutate(undefined, { onSuccess: (s) => setConnectId(s.connect_id) });
+  const resetConnect = () => {
+    setConnectId(undefined);
+    startConnect.reset();
+  };
+  // The current fallback token's expiry, when known (device-flow tokens only).
+  const clusterExpiry = config.token_set ? expiryLabel(config.token_expires_at) : null;
 
   const save = (e: React.FormEvent) => {
     e.preventDefault();
@@ -730,6 +755,37 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
             ))}
         </div>
       </form>
+
+      {/* D28: one-click device flow for the cluster fallback token. Sits next to
+          the config form; the paste field above stays as the manual fallback. */}
+      <div className={styles.connectSection}>
+        <div className={styles.connectHead}>
+          <span className={styles.connectLabel}>Cluster fallback token</span>
+          {clusterExpiry && (
+            <span
+              className={styles.pill}
+              data-on={!clusterExpiry.startsWith('expired') || undefined}
+              data-err={clusterExpiry.startsWith('expired') || undefined}
+              data-testid="kanban-connect-expiry"
+            >
+              {clusterExpiry}
+            </span>
+          )}
+        </div>
+        <KanbanConnectFlow
+          idPrefix="kanban-connect"
+          disabled={config.base_url === ''}
+          disabledHint="Save the jtype base URL first"
+          active={!!connectId}
+          starting={startConnect.isPending}
+          startError={startConnect.error}
+          connectStart={startConnect.data}
+          status={connectStatus.data}
+          statusError={connectStatus.error}
+          onStart={launchConnect}
+          onReset={resetConnect}
+        />
+      </div>
 
       {/* Read-only cross-project link overview (management stays with owners). */}
       {links.data && links.data.length > 0 ? (

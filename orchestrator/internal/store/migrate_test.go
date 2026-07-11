@@ -295,6 +295,44 @@ func TestPGKanbanConfigMigration(t *testing.T) {
 	}
 }
 
+// TestPGKanbanTokenExpiryMigration is the D28 migration check: 0023 adds a
+// nullable token_expires_at TIMESTAMPTZ to BOTH cluster_kanban_config and
+// kanban_links, and re-applying the full set is a clean no-op. Runs against real
+// Postgres; needs JCLOUD_PG_DSN and is skipped otherwise.
+func TestPGKanbanTokenExpiryMigration(t *testing.T) {
+	dsn := os.Getenv("JCLOUD_PG_DSN")
+	if dsn == "" {
+		t.Skip("JCLOUD_PG_DSN not set; skipping Postgres-backed migration test")
+	}
+	ctx := context.Background()
+	st, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := Migrate(ctx, st.Pool()); err != nil {
+		t.Fatalf("first migrate: %v", err)
+	}
+	// Re-apply: a clean no-op (schema_migrations gate + ADD COLUMN IF NOT EXISTS).
+	if err := Migrate(ctx, st.Pool()); err != nil {
+		t.Fatalf("second migrate should be a no-op, got: %v", err)
+	}
+
+	// Both columns are timestamptz + nullable.
+	for _, table := range []string{"cluster_kanban_config", "kanban_links"} {
+		var dataType, nullable string
+		if err := st.Pool().QueryRow(ctx,
+			`SELECT data_type, is_nullable FROM information_schema.columns
+			 WHERE table_name=$1 AND column_name='token_expires_at'`, table).
+			Scan(&dataType, &nullable); err != nil {
+			t.Fatalf("%s.token_expires_at: %v", table, err)
+		}
+		if dataType != "timestamp with time zone" || nullable != "YES" {
+			t.Fatalf("%s.token_expires_at type=%q nullable=%q want timestamptz/YES", table, dataType, nullable)
+		}
+	}
+}
+
 // TestPGModelCatalogMigrationBackfill is the D21 §6 data migration: a pre-0013
 // database with a single cluster_model_config row + N projects must, after 0013,
 // have that config as the catalog's first entry GRANTED to every project, the old

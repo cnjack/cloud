@@ -25,11 +25,14 @@ import {
   useCreateProjectKanbanLink,
   useUpdateProjectKanbanLinkToken,
   useDeleteProjectKanbanLink,
+  useStartLinkConnect,
+  useLinkConnectStatus,
   useApiKeys,
   useCreateApiKey,
   useRevokeApiKey,
 } from '../api/queries';
 import { useToast } from '../components/Toast';
+import { KanbanConnectFlow, expiryLabel } from '../components/KanbanConnect';
 import { ApiError } from '../api/client';
 import { isReservedEnvKey, isValidEnvKey } from '../lib/env';
 import { timeAgo } from '../lib/format';
@@ -567,6 +570,7 @@ function KanbanPanel({ project }: { project: Project }) {
               link={l}
               serviceName={services.find((s) => s.id === l.service_id)?.name ?? l.service_id}
               deleting={del.isPending}
+              kanbanOff={kanbanOff}
               onRemove={() => remove(l.id)}
             />
           ))}
@@ -670,12 +674,14 @@ function KanbanLinkRow({
   link,
   serviceName,
   deleting,
+  kanbanOff,
   onRemove,
 }: {
   projectId: string;
   link: KanbanLink;
   serviceName: string;
   deleting: boolean;
+  kanbanOff: boolean;
   onRemove: () => void;
 }) {
   const toast = useToast();
@@ -683,11 +689,27 @@ function KanbanLinkRow({
   const [editing, setEditing] = useState(false);
   const [token, setToken] = useState('');
 
+  // D28: per-link "Connect with jtype" device flow. The link already exists
+  // (create-then-connect), so we start a flow against it and poll to completion,
+  // which seals a per-link token server-side (credential_status → per_link).
+  const startConnect = useStartLinkConnect(projectId);
+  const [connectId, setConnectId] = useState<string | undefined>();
+  const connectStatus = useLinkConnectStatus(projectId, link.id, connectId, !!connectId);
+  const launchConnect = () =>
+    startConnect.mutate(link.id, { onSuccess: (s) => setConnectId(s.connect_id) });
+  const resetConnect = () => {
+    setConnectId(undefined);
+    startConnect.reset();
+  };
+
   const badge = {
     per_link: 'own token',
     cluster_fallback: 'cluster token',
     missing: 'no credential — set a token',
   }[link.credential_status];
+
+  // Expiry badge for a device-flow token (unknown for manual/fallback ⇒ no badge).
+  const linkExpiry = expiryLabel(link.token_expires_at, 'expired — reconnect');
 
   const saveToken = (e: React.FormEvent) => {
     e.preventDefault();
@@ -725,10 +747,36 @@ function KanbanLinkRow({
           >
             {badge}
           </span>
+          {linkExpiry && (
+            <span
+              className={styles.badge}
+              data-state={linkExpiry.startsWith('expired') ? 'missing' : 'per_link'}
+              data-testid={`kanban-link-expiry-${link.id}`}
+            >
+              {linkExpiry}
+            </span>
+          )}
         </div>
         <div className={styles.kanbanSub}>
           {serviceName} · {link.trigger_column}
           {link.done_column ? ` → ${link.done_column}` : ''}
+        </div>
+        {/* D28: one-click connect for this link's own token. Disabled while the
+            cluster integration is off (same gate as the add form). */}
+        <div className={styles.kanbanConnect}>
+          <KanbanConnectFlow
+            idPrefix={`kanban-link-connect-${link.id}`}
+            disabled={kanbanOff}
+            disabledHint="Enable jtype on the Cluster page first"
+            active={!!connectId}
+            starting={startConnect.isPending}
+            startError={startConnect.error}
+            connectStart={startConnect.data}
+            status={connectStatus.data}
+            statusError={connectStatus.error}
+            onStart={launchConnect}
+            onReset={resetConnect}
+          />
         </div>
         {editing && (
           <form className={styles.tokenEditor} onSubmit={saveToken} noValidate>
