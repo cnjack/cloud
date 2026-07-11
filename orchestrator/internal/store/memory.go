@@ -1541,7 +1541,11 @@ func (m *MemStore) CreateKanbanLink(_ context.Context, l *domain.KanbanLink) err
 			return fmt.Errorf("create kanban link: %w", ErrAlreadyExists)
 		}
 	}
-	m.kanbanLinks[l.ID] = *l
+	cp := *l
+	if cp.BoardStatus == "" {
+		cp.BoardStatus = domain.KanbanBoardOK // mirror the pg DEFAULT
+	}
+	m.kanbanLinks[l.ID] = cp
 	return nil
 }
 
@@ -1622,6 +1626,25 @@ func (m *MemStore) SetKanbanLinkToken(_ context.Context, id string, tokenEnc []b
 	} else {
 		t := *expiresAt
 		l.TokenExpiresAt = &t
+	}
+	l.UpdatedAt = time.Now().UTC()
+	m.kanbanLinks[id] = l
+	return nil
+}
+
+func (m *MemStore) SetKanbanLinkBoardStatus(_ context.Context, id, status, canonicalRef, title string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.kanbanLinks[id]
+	if !ok {
+		return ErrNotFound
+	}
+	l.BoardStatus = status
+	if canonicalRef != "" {
+		l.BoardRef = canonicalRef
+	}
+	if title != "" {
+		l.BoardTitle = title
 	}
 	l.UpdatedAt = time.Now().UTC()
 	m.kanbanLinks[id] = l

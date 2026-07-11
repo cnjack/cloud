@@ -1912,36 +1912,46 @@ func (s *PGStore) GetArtifact(ctx context.Context, runID string, kind domain.Art
 
 // --- Kanban (Feature E) -----------------------------------------------------
 
-// kanbanLinkCols are the kanban_links columns in scan order. done_column and
-// token_enc / token_expires_at may be NULL; the rest are NOT NULL. The nullable
-// blobs trail so scan-order edits stay localized (F6 / D25; token_expires_at D28).
+// kanbanLinkCols are the kanban_links columns in scan order. done_column,
+// board_title and token_enc / token_expires_at may be NULL; the rest are NOT NULL
+// (board_status defaults 'ok'). The nullable blobs trail so scan-order edits stay
+// localized (F6 / D25; token_expires_at D28; board_title/board_status D30).
 const kanbanLinkCols = `id, workspace_id, board_ref, project_id, service_id,
-	trigger_column, done_column, enabled, created_at, updated_at, token_enc, token_expires_at`
+	trigger_column, done_column, enabled, created_at, updated_at, board_status,
+	board_title, token_enc, token_expires_at`
 
 func scanKanbanLink(row pgx.Row) (*domain.KanbanLink, error) {
 	var l domain.KanbanLink
-	var doneColumn *string
+	var doneColumn, boardTitle *string
 	err := row.Scan(
 		&l.ID, &l.WorkspaceID, &l.BoardRef, &l.ProjectID, &l.ServiceID,
-		&l.TriggerColumn, &doneColumn, &l.Enabled, &l.CreatedAt, &l.UpdatedAt, &l.TokenEnc, &l.TokenExpiresAt)
+		&l.TriggerColumn, &doneColumn, &l.Enabled, &l.CreatedAt, &l.UpdatedAt,
+		&l.BoardStatus, &boardTitle, &l.TokenEnc, &l.TokenExpiresAt)
 	if err != nil {
 		return nil, err
 	}
 	if doneColumn != nil {
 		l.DoneColumn = *doneColumn
 	}
+	if boardTitle != nil {
+		l.BoardTitle = *boardTitle
+	}
 	return &l, nil
 }
 
 func (s *PGStore) CreateKanbanLink(ctx context.Context, l *domain.KanbanLink) error {
 	// A nil TokenEnc encodes to SQL NULL (cluster-fallback link); a non-nil blob
-	// stores the sealed per-link PAT.
+	// stores the sealed per-link PAT. An empty BoardStatus defaults to OK.
+	status := l.BoardStatus
+	if status == "" {
+		status = domain.KanbanBoardOK
+	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO kanban_links (`+kanbanLinkCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		l.ID, l.WorkspaceID, l.BoardRef, l.ProjectID, l.ServiceID,
 		l.TriggerColumn, nullStr(l.DoneColumn), l.Enabled, l.CreatedAt, l.UpdatedAt,
-		l.TokenEnc, nullTime(l.TokenExpiresAt))
+		status, nullStr(l.BoardTitle), l.TokenEnc, nullTime(l.TokenExpiresAt))
 	if err != nil {
 		return mapKanbanLinkErr("create kanban link", err)
 	}
@@ -2023,6 +2033,28 @@ func (s *PGStore) SetKanbanLinkToken(ctx context.Context, id string, tokenEnc []
 		id, tokenEnc, nullTime(expiresAt))
 	if err != nil {
 		return fmt.Errorf("set kanban link token: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) SetKanbanLinkBoardStatus(ctx context.Context, id, status, canonicalRef, title string) error {
+	// The poller's runtime fail-visible check (D30): on a successful re-validation
+	// it canonicalizes board_ref to the board's config id and stores its title;
+	// board_ref/board_title are only overwritten when a non-empty value is passed
+	// (COALESCE(NULLIF(...))) so an "invalid" transition keeps the last-known ref.
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE kanban_links
+		    SET board_status=$2,
+		        board_ref=COALESCE(NULLIF($3,''), board_ref),
+		        board_title=COALESCE(NULLIF($4,''), board_title),
+		        updated_at=now()
+		  WHERE id=$1`,
+		id, status, canonicalRef, title)
+	if err != nil {
+		return mapKanbanLinkErr("set kanban link board status", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

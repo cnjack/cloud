@@ -49,6 +49,11 @@ export const qk = {
   kanbanLinks: ['kanban-links'] as const,
   kanbanConfig: ['kanban-config'] as const,
   projectKanbanLinks: (projectId: string) => ['project-kanban-links', projectId] as const,
+  // D29: kanban discovery pickers — the caller's jtype workspaces, and a
+  // workspace's boards (with columns), scoped to the project.
+  jtypeWorkspaces: (projectId: string) => ['jtype-workspaces', projectId] as const,
+  jtypeBoards: (projectId: string, workspaceId: string) =>
+    ['jtype-boards', projectId, workspaceId] as const,
   // D28: an in-flight "Connect with jtype" device flow, keyed by its opaque
   // connect_id (cluster) or by (project, link, connect) for a per-link flow.
   kanbanConnect: (connectId: string) => ['kanban-connect', connectId] as const,
@@ -479,6 +484,42 @@ export function useDeleteProjectKanbanLink(projectId: string) {
   return useMutation({
     mutationFn: (linkId: string) => api.deleteProjectKanbanLink(projectId, linkId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) }),
+  });
+}
+
+/* ---- kanban discovery pickers (D29) -------------------------------------- */
+
+/**
+ * The caller's jtype workspaces for the create-link workspace picker. `retry:
+ * false` so a typed 409/503/400 (integration off / unreachable / bad token)
+ * surfaces at once as isError — the form auto-falls-back to manual entry and
+ * shows the server message (fail-visible), never a spinner that never resolves.
+ */
+export function useJtypeWorkspaces(projectId: string, enabled: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.jtypeWorkspaces(projectId),
+    queryFn: () => api.listJtypeWorkspaces(projectId),
+    enabled: enabled && !!projectId,
+    retry: false,
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * A workspace's boards (with columns) for the board + column pickers. Only fires
+ * once a workspace is chosen; same fail-visible retry:false as the workspaces
+ * query. Each board carries its `columns`, so the column selects read from this
+ * cache without a further request.
+ */
+export function useJtypeBoards(projectId: string, workspaceId: string, enabled: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.jtypeBoards(projectId, workspaceId),
+    queryFn: () => api.listJtypeBoards(projectId, workspaceId),
+    enabled: enabled && !!projectId && !!workspaceId,
+    retry: false,
+    staleTime: 30_000,
   });
 }
 

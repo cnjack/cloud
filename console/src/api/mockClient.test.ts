@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockClient } from './mockClient';
-import { ApiError, type ApiClient } from './client';
+import { ApiError, apiErrorCode, type ApiClient } from './client';
 import { initialEventState, reduceEvents } from './eventReducer';
 import type { RunEvent } from './types';
 
@@ -827,6 +827,112 @@ describe('mockClient — kanban "Connect with jtype" device flow (D28)', () => {
     const f = await foreign;
     expect(f.ok).toBe(false);
     if (!f.ok) expect((f.err as ApiError).status).toBe(404);
+  });
+});
+
+describe('mockClient — kanban discovery pickers (D29)', () => {
+  it('lists workspaces + boards-with-columns once the integration is effective', async () => {
+    const client = createMockClient();
+    const cp = client.createProject({ name: 'demo' });
+    await flush(500);
+    const project = await cp;
+
+    // Integration off ⇒ discovery is fail-visible (typed 409), never an empty 200.
+    const off = client
+      .listJtypeWorkspaces(project.id)
+      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
+    await flush(200);
+    const offR = await off;
+    expect(offR.ok).toBe(false);
+    if (!offR.ok) {
+      expect((offR.err as ApiError).status).toBe(409);
+      expect(apiErrorCode(offR.err)).toBe('kanban_not_configured');
+    }
+
+    // Turn the cluster integration on.
+    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
+    await flush(200);
+    await u;
+
+    const ws = client.listJtypeWorkspaces(project.id);
+    await flush(200);
+    const workspaces = await ws;
+    expect(workspaces.length).toBeGreaterThan(0);
+    expect(workspaces[0]).toHaveProperty('id');
+    expect(workspaces[0]).toHaveProperty('name');
+
+    const bs = client.listJtypeBoards(project.id, workspaces[0]!.id);
+    await flush(200);
+    const boards = await bs;
+    expect(boards.length).toBeGreaterThan(0);
+    const board = boards[0]!;
+    // A board carries its config id, submittable ref, title, and columns.
+    expect(board.id).toMatch(/^b_/);
+    expect(board.ref).toMatch(/\.board$/);
+    expect(board.columns.length).toBeGreaterThan(0);
+    expect(board.columns[0]).toHaveProperty('key');
+    expect(board.columns[0]).toHaveProperty('name');
+
+    // No token ever crosses the wire in a discovery response.
+    expect(JSON.stringify(workspaces)).not.toContain('token');
+    expect(JSON.stringify(boards)).not.toContain('token');
+  });
+
+  it('an unknown workspace id is a typed workspace_not_found (not a silent empty list)', async () => {
+    const client = createMockClient();
+    const cp = client.createProject({ name: 'demo' });
+    await flush(500);
+    const project = await cp;
+    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
+    await flush(200);
+    await u;
+
+    const r = client
+      .listJtypeBoards(project.id, 'ws_does_not_exist')
+      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
+    await flush(200);
+    const res = await r;
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect((res.err as ApiError).status).toBe(400);
+      expect(apiErrorCode(res.err)).toBe('workspace_not_found');
+    }
+  });
+
+  it('a soft-created (tokenless) link is board_status "unvalidated"; a tokened link is "ok"', async () => {
+    const client = createMockClient();
+    const cp = client.createProject({ name: 'demo' });
+    await flush(500);
+    const project = await cp;
+    const cs = client.createService(project.id, {
+      name: 'default',
+      repo_url: 'https://gitea.local/acme/demo.git',
+      default_branch: 'main',
+    });
+    await flush(500);
+    const svc = await cs;
+
+    const soft = client.createProjectKanbanLink(project.id, {
+      workspace_id: 'ws_team',
+      board_ref: 'jtype.board',
+      service_id: svc.id,
+      trigger_column: 'ai',
+    });
+    await flush(200);
+    expect((await soft).board_status).toBe('unvalidated');
+
+    const hard = client.createProjectKanbanLink(project.id, {
+      workspace_id: 'ws_team',
+      board_ref: 'Jcode.board',
+      service_id: svc.id,
+      trigger_column: 'agent',
+      token: 'jtype-pat',
+    });
+    await flush(200);
+    const link = await hard;
+    expect(link.board_status).toBe('ok');
+    // The discoverable board's title is captured for a friendly row label.
+    expect(link.board_title).toBe('Jcode');
   });
 });
 

@@ -44,13 +44,16 @@ func testLogger(t *testing.T) *slog.Logger {
 
 // fakeAPI is an in-memory jtype stand-in for poller tests.
 type fakeAPI struct {
-	mu       sync.Mutex
-	docs     map[string]jtype.Doc // id -> list item
-	contents map[string]string    // id -> content
-	comments map[string][]string  // docID -> bodies
-	getCalls int                  // number of GetDocument calls (cursor probe)
-	listErr  error
-	tokens   []string // PATs the token->client factory was asked to bind (F6)
+	mu         sync.Mutex
+	docs       map[string]jtype.Doc    // id -> list item
+	contents   map[string]string       // id -> content
+	comments   map[string][]string     // docID -> bodies
+	boards     map[string]*jtype.Board // ref -> resolved board (D30 runtime check)
+	boardErr   error                   // when set, GetBoard returns it (transient/definitive)
+	getCalls   int                     // number of GetDocument calls (cursor probe)
+	boardCalls int                     // number of GetBoard calls (revalidation probe)
+	listErr    error
+	tokens     []string // PATs the token->client factory was asked to bind (F6)
 }
 
 func newFakeAPI() *fakeAPI {
@@ -58,7 +61,24 @@ func newFakeAPI() *fakeAPI {
 		docs:     map[string]jtype.Doc{},
 		contents: map[string]string{},
 		comments: map[string][]string{},
+		boards:   map[string]*jtype.Board{},
 	}
+}
+
+// GetBoard resolves a board by ref for the D30 runtime revalidation check.
+// boardErr (when set) simulates a transient/definitive jtype failure; otherwise a
+// ref present in boards resolves, and a missing one is jtype.ErrDocNotFound.
+func (f *fakeAPI) GetBoard(ctx context.Context, ws, ref string) (*jtype.Board, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.boardCalls++
+	if f.boardErr != nil {
+		return nil, f.boardErr
+	}
+	if b, ok := f.boards[ref]; ok {
+		return b, nil
+	}
+	return nil, jtype.ErrDocNotFound
 }
 
 func (f *fakeAPI) addCard(id, path, board, status, title, body string, clock int64) {
@@ -444,6 +464,139 @@ func TestPollerBaseURLChangeBetweenTicks(t *testing.T) {
 	}
 	if bases[len(bases)-1] != "http://jtype.two" {
 		t.Fatalf("tick2 base = %q want http://jtype.two (factory rebuilt on URL change)", bases[len(bases)-1])
+	}
+}
+
+// D30 C3 — the poller's runtime fail-visible board check.
+
+// A soft-created ("unvalidated") link whose board_ref is a NAME is resolved at
+// runtime: board_ref is canonicalized to the board's config id, board_status
+// flips to "ok", and the card (carrying that config id) dispatches in the same
+// tick. This is the load-bearing self-heal that makes a bootstrap link live.
+func TestPollerUnvalidatedLinkCanonicalizes(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	// Re-create the link as unvalidated with a NAME ref (the harness link is "ok").
+	_ = m.DeleteKanbanLink(ctx, link.ID)
+	link.BoardRef = "jtype"
+	link.BoardStatus = domain.KanbanBoardUnvalidated
+	if err := m.CreateKanbanLink(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	api.boards["jtype"] = &jtype.Board{ID: "b_ab12cd34", Title: "jtype",
+		Columns: []jtype.BoardColumn{{Key: "ai", Name: "AI"}}}
+	// The card carries the CONFIG ID (b_…), not the name — matches only post-canon.
+	api.addCard("doc1", "cards/x.md", "b_ab12cd34", "ai", "T", "body", 5)
+
+	poller.Tick(ctx)
+
+	got, err := m.GetKanbanLink(ctx, link.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BoardRef != "b_ab12cd34" {
+		t.Fatalf("board_ref not canonicalized: %q want b_ab12cd34", got.BoardRef)
+	}
+	if got.BoardStatus != domain.KanbanBoardOK {
+		t.Fatalf("board_status = %q want ok", got.BoardStatus)
+	}
+	if got.BoardTitle != "jtype" {
+		t.Fatalf("board_title = %q want jtype", got.BoardTitle)
+	}
+	runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10)
+	if len(runs) != 1 {
+		t.Fatalf("want the card dispatched in the same tick, got %d runs", len(runs))
+	}
+}
+
+// An unvalidated link whose board cannot be resolved becomes "invalid" (persisted,
+// logged once), dispatches nothing, and does not advance — fail-visible, never a
+// silent no-op.
+func TestPollerUnvalidatedLinkBoardGoneInvalid(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	_ = m.DeleteKanbanLink(ctx, link.ID)
+	link.BoardRef = "ghost"
+	link.BoardStatus = domain.KanbanBoardUnvalidated
+	if err := m.CreateKanbanLink(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	// No board named "ghost" in api.boards => GetBoard returns ErrDocNotFound.
+	api.addCard("doc1", "cards/x.md", "b_whatever", "ai", "T", "body", 5)
+
+	poller.Tick(ctx)
+
+	got, err := m.GetKanbanLink(ctx, link.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BoardStatus != domain.KanbanBoardInvalid {
+		t.Fatalf("board_status = %q want invalid", got.BoardStatus)
+	}
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 0 {
+		t.Fatalf("invalid link must dispatch nothing, got %d", len(runs))
+	}
+}
+
+// A column mismatch (board resolves but the trigger column no longer exists) is a
+// definitive "invalid", not a transient skip.
+func TestPollerUnvalidatedLinkColumnMismatchInvalid(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	_ = m.DeleteKanbanLink(ctx, link.ID)
+	link.BoardRef = "jtype"
+	link.BoardStatus = domain.KanbanBoardUnvalidated
+	if err := m.CreateKanbanLink(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	// Board resolves but has no "ai" column (link.TriggerColumn is "ai").
+	api.boards["jtype"] = &jtype.Board{ID: "b_x", Title: "jtype",
+		Columns: []jtype.BoardColumn{{Key: "todo"}}}
+
+	poller.Tick(ctx)
+
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if got.BoardStatus != domain.KanbanBoardInvalid {
+		t.Fatalf("column mismatch board_status = %q want invalid", got.BoardStatus)
+	}
+}
+
+// A transient GetBoard error (jtype 5xx) leaves the status UNCHANGED (still
+// unvalidated) so the link retries next tick — not flipped to invalid.
+func TestPollerUnvalidatedLinkTransientRetries(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	_ = m.DeleteKanbanLink(ctx, link.ID)
+	link.BoardRef = "jtype"
+	link.BoardStatus = domain.KanbanBoardUnvalidated
+	if err := m.CreateKanbanLink(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	api.boardErr = &jtype.Error{StatusCode: 503, Code: "unavailable", Message: "down"}
+
+	poller.Tick(ctx)
+
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if got.BoardStatus != domain.KanbanBoardUnvalidated {
+		t.Fatalf("transient error must not flip status; got %q want unvalidated", got.BoardStatus)
+	}
+}
+
+// An "ok" link is never revalidated at runtime (the check is one-time) — the
+// poller stays cheap and never calls GetBoard on the hot path.
+func TestPollerOkLinkNoRevalidate(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	// The harness link defaults to board_status "ok"; keep board_ref "b".
+	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 5)
+
+	poller.Tick(ctx)
+
+	if api.boardCalls != 0 {
+		t.Fatalf("ok link must not call GetBoard, got %d calls", api.boardCalls)
+	}
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 1 {
+		t.Fatalf("ok link should dispatch normally, got %d runs", len(runs))
 	}
 }
 

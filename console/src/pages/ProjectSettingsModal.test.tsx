@@ -18,6 +18,8 @@ import type {
   CreateIntegrationInput,
   CreateKanbanLinkInput,
   Integration,
+  JtypeBoard,
+  JtypeWorkspace,
   KanbanLink,
   Member,
   Project,
@@ -307,10 +309,35 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     };
   }
 
+  // D29: fake jtype discovery data for the cascading pickers.
+  const WORKSPACES: JtypeWorkspace[] = [
+    { id: 'ws_team', name: 'My Team' },
+    { id: 'ws_solo', name: 'Personal' },
+  ];
+  const BOARDS: Record<string, JtypeBoard[]> = {
+    ws_team: [
+      {
+        id: 'b_ab12cd34', ref: 'jtype.board', title: 'jtype',
+        columns: [
+          { key: 'todo', name: 'To do' },
+          { key: 'ai', name: 'AI' },
+          { key: 'done', name: 'Done' },
+        ],
+      },
+    ],
+    ws_solo: [
+      {
+        id: 'b_solo0001', ref: 'personal.board', title: 'Personal',
+        columns: [{ key: 'inbox', name: 'Inbox' }, { key: 'run', name: 'Run' }],
+      },
+    ],
+  };
+
   function kanbanClient(
     project: Project,
     seed?: KanbanLink[],
     kanbanEnabled = true,
+    opts: { discoveryErr?: ApiError; boardsErr?: ApiError } = {},
   ): { client: ApiClient; kctl: KanbanCtl } {
     const kctl: KanbanCtl = {
       creates: [],
@@ -329,6 +356,15 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
       updateProject: async (_id, input) => ({ ...project, ...input }) as Project,
       getSystem: async () => sysInfo(kanbanEnabled),
       listProjectKanbanLinks: async () => [...kctl.links],
+      listJtypeWorkspaces: async () => {
+        if (opts.discoveryErr) throw opts.discoveryErr;
+        return WORKSPACES.map((w) => ({ ...w }));
+      },
+      listJtypeBoards: async (_projectId, workspaceId) => {
+        const err = opts.discoveryErr ?? opts.boardsErr;
+        if (err) throw err;
+        return (BOARDS[workspaceId] ?? []).map((b) => ({ ...b, columns: b.columns.map((c) => ({ ...c })) }));
+      },
       createProjectKanbanLink: async (projectId, input) => {
         kctl.creates.push({ projectId, input });
         const link: KanbanLink = {
@@ -336,6 +372,7 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
           project_id: projectId, service_id: input.service_id, trigger_column: input.trigger_column,
           done_column: input.done_column, enabled: true, token_set: !!input.token,
           credential_status: input.token ? 'per_link' : 'missing',
+          board_status: input.token ? 'ok' : 'unvalidated',
           created_at: '2026-01-02T00:00:00Z',
         };
         kctl.links.push(link);
@@ -368,7 +405,7 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     expect(screen.queryByTestId('tab-kanban')).toBeNull();
   });
 
-  it('lists a project link with its token badge and creates one with a write-only token', async () => {
+  it('lists a project link with its token badge and creates one via the cascading pickers', async () => {
     const project = baseProject();
     const { client, kctl } = kanbanClient(project);
     renderModal(client, project);
@@ -378,23 +415,142 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     await waitFor(() => expect(screen.getByText('ws / jcloud-dev')).toBeTruthy());
     expect(screen.getByTestId('kanban-cred-kl-1').textContent).toBe('own token');
 
-    // Fill and submit the add form (service select is populated from the project's
-    // own services).
+    // Service comes from the project's own services.
     await pickOption('kanban-link-service', 'default');
-    fireEvent.change(screen.getByTestId('kanban-link-workspace'), { target: { value: 'ws2' } });
-    fireEvent.change(screen.getByTestId('kanban-link-board'), { target: { value: 'b2' } });
-    fireEvent.change(screen.getByTestId('kanban-link-trigger'), { target: { value: 'ai' } });
+
+    // Workspace → board → trigger/done cascade. The board select is disabled
+    // until a workspace is picked; the column selects until a board is picked.
+    expect((screen.getByTestId('kanban-link-board-select') as HTMLButtonElement).disabled).toBe(true);
+    await pickOption('kanban-link-workspace-select', 'My Team');
+
+    // Board options populate from the chosen workspace.
+    await waitFor(() =>
+      expect((screen.getByTestId('kanban-link-board-select') as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect((screen.getByTestId('kanban-link-trigger-select') as HTMLButtonElement).disabled).toBe(true);
+    await pickOption('kanban-link-board-select', 'jtype');
+
+    // Column selects now list the chosen board's columns (by human name).
+    await waitFor(() =>
+      expect((screen.getByTestId('kanban-link-trigger-select') as HTMLButtonElement).disabled).toBe(false),
+    );
+    await pickOption('kanban-link-trigger-select', 'AI');
+    await pickOption('kanban-link-done-select', 'Done');
     fireEvent.change(screen.getByTestId('kanban-link-token'), { target: { value: 'jtype-pat' } });
+    fireEvent.click(screen.getByTestId('kanban-link-add'));
+
+    await waitFor(() => expect(kctl.creates).toHaveLength(1));
+    // The picker submits the board's relativePath ref (server canonicalizes it),
+    // and the column KEYS (not their display names).
+    expect(kctl.creates[0]).toEqual({
+      projectId: 'p1',
+      input: {
+        workspace_id: 'ws_team', board_ref: 'jtype.board', service_id: 'svc_default',
+        trigger_column: 'ai', done_column: 'done', token: 'jtype-pat',
+      },
+    });
+  });
+
+  it('auto-falls-back to manual entry (with the server message) when discovery errors', async () => {
+    const project = baseProject();
+    const err = new ApiError(409, 'the cluster jtype integration is not configured', {
+      error: { code: 'kanban_not_configured', message: 'the cluster jtype integration is not configured' },
+    });
+    const { client, kctl } = kanbanClient(project, undefined, true, { discoveryErr: err });
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-kanban'));
+
+    // The typed discovery error surfaces (fail-visible) and the free-text fields
+    // appear so the owner can still enter values by hand.
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-link-discovery-error').textContent).toBe(
+        'the cluster jtype integration is not configured',
+      ),
+    );
+    await waitFor(() => expect(screen.getByTestId('kanban-link-workspace')).toBeTruthy());
+
+    // A manually entered board name/path is submitted verbatim (server resolves it).
+    await pickOption('kanban-link-service', 'default');
+    fireEvent.change(screen.getByTestId('kanban-link-workspace'), { target: { value: 'ws_team' } });
+    fireEvent.change(screen.getByTestId('kanban-link-board'), { target: { value: 'jtype' } });
+    fireEvent.change(screen.getByTestId('kanban-link-trigger'), { target: { value: 'ai' } });
     fireEvent.click(screen.getByTestId('kanban-link-add'));
 
     await waitFor(() => expect(kctl.creates).toHaveLength(1));
     expect(kctl.creates[0]).toEqual({
       projectId: 'p1',
       input: {
-        workspace_id: 'ws2', board_ref: 'b2', service_id: 'svc_default',
-        trigger_column: 'ai', done_column: undefined, token: 'jtype-pat',
+        workspace_id: 'ws_team', board_ref: 'jtype', service_id: 'svc_default',
+        trigger_column: 'ai', done_column: undefined, token: undefined,
       },
     });
+  });
+
+  it('surfaces a BOARD-list discovery error (not just workspaces) and falls back to manual', async () => {
+    const project = baseProject();
+    const err = new ApiError(400, 'jtype workspace was not found', {
+      error: { code: 'workspace_not_found', message: 'jtype workspace was not found' },
+    });
+    // Workspaces list fine; only the board fetch errors — the previously-silent path.
+    const { client } = kanbanClient(project, undefined, true, { boardsErr: err });
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-kanban'));
+    // Wait for the workspace options to load (select enabled) — workspaces list fine.
+    await waitFor(() =>
+      expect((screen.getByTestId('kanban-link-workspace-select') as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect(screen.queryByTestId('kanban-link-discovery-error')).toBeNull();
+
+    // Picking a workspace fires the board fetch, which errors → fail-visible fallback
+    // to manual entry (the bug was a silent empty board dropdown reading as "no boards").
+    await pickOption('kanban-link-workspace-select', 'My Team');
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-link-discovery-error').textContent).toBe(
+        'jtype workspace was not found',
+      ),
+    );
+    await waitFor(() => expect(screen.getByTestId('kanban-link-board')).toBeTruthy());
+  });
+
+  it('surfaces board_status fail-visibly: unvalidated (amber) and invalid (loud) with board_title', async () => {
+    const project = baseProject();
+    const mk = (
+      id: string,
+      board_status: KanbanLink['board_status'],
+      extra: Partial<KanbanLink> = {},
+    ): KanbanLink => ({
+      id, workspace_id: 'ws-' + id, board_ref: 'b_' + id,
+      project_id: project.id, service_id: 'svc_default', trigger_column: 'ai',
+      enabled: true, token_set: true, credential_status: 'per_link',
+      board_status, created_at: '2026-01-01T00:00:00Z', ...extra,
+    });
+    const { client } = kanbanClient(project, [
+      mk('ok', 'ok', { board_title: 'jtype' }),
+      mk('unv', 'unvalidated'),
+      mk('inv', 'invalid', { board_title: 'renamed-board' }),
+    ]);
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-kanban'));
+    await waitFor(() => expect(screen.getByTestId('kanban-cred-ok')).toBeTruthy());
+
+    // ok: a validated link shows no board-status badge/notice.
+    expect(screen.queryByTestId('kanban-board-status-ok')).toBeNull();
+    expect(screen.queryByTestId('kanban-board-notice-ok')).toBeNull();
+    // A captured board_title is shown as the row label instead of the raw b_… ref.
+    expect(screen.getByText('jtype')).toBeTruthy();
+
+    // unvalidated: amber badge + a connect-a-token hint.
+    expect(screen.getByTestId('kanban-board-status-unv').textContent).toBe('columns not validated');
+    expect(screen.getByTestId('kanban-board-status-unv').getAttribute('data-state')).toBe('unvalidated');
+    expect(screen.getByTestId('kanban-board-notice-unv').textContent).toMatch(/haven’t been checked/);
+
+    // invalid: loud badge + a "poller is skipping this link" alert.
+    expect(screen.getByTestId('kanban-board-status-inv').textContent).toBe('board/columns invalid');
+    expect(screen.getByTestId('kanban-board-status-inv').getAttribute('data-state')).toBe('invalid');
+    expect(screen.getByTestId('kanban-board-notice-inv').textContent).toMatch(/skipping this link/);
   });
 
   it('deletes a project link', async () => {
@@ -475,8 +631,11 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     // The add form's controls are disabled — a link that could never fire can't
     // be created here.
     expect((screen.getByTestId('kanban-link-add') as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTestId('kanban-link-workspace') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByTestId('kanban-link-workspace-select') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('kanban-link-service') as HTMLButtonElement).disabled).toBe(true);
+    // The "Enter manually" toggle is hidden while the integration is off (there
+    // is nothing to reach even by hand until a cluster admin configures jtype).
+    expect(screen.queryByTestId('kanban-link-manual-toggle')).toBeNull();
   });
 
   // ---- D28: per-link "Connect with jtype" device flow ----------------------

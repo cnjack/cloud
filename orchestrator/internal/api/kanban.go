@@ -37,7 +37,14 @@ type kanbanLinkView struct {
 	//   "missing"          — neither: the poller/writeback skip this link
 	//                        fail-visibly until a token is set.
 	CredentialStatus string `json:"credential_status"`
-	CreatedAt        string `json:"created_at"`
+	// BoardStatus is the fail-visible board validation state (D30), independent of
+	// CredentialStatus (a link can be per_link yet invalid — token fine, board
+	// renamed): "ok" | "unvalidated" | "invalid". BoardTitle is the board's friendly
+	// name (when resolved) so the console shows it instead of the opaque "b_…"
+	// board_ref; omitted until a validation resolves the board.
+	BoardStatus string `json:"board_status"`
+	BoardTitle  string `json:"board_title,omitempty"`
+	CreatedAt   string `json:"created_at"`
 }
 
 // credentialStatus derives the three-state credential label for a link given
@@ -71,6 +78,8 @@ func (s *Server) linkView(ctx context.Context, l domain.KanbanLink) kanbanLinkVi
 		TriggerColumn: l.TriggerColumn, DoneColumn: l.DoneColumn,
 		Enabled: l.Enabled, TokenSet: l.TokenSet(),
 		CredentialStatus: credentialStatus(l, clusterTokenSet),
+		BoardStatus:      boardStatusOrDefault(l.BoardStatus),
+		BoardTitle:       l.BoardTitle,
 		CreatedAt:        l.CreatedAt.UTC().Format(time.RFC3339),
 	}
 	if l.TokenExpiresAt != nil {
@@ -192,39 +201,54 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Column validation against the live board (only when jtype is configured —
-	// D27: the EFFECTIVE config from the console-managed DB row or the JTYPE_* env,
-	// resolved per request so a base URL just set in the console validates without
-	// a restart). !ok => the integration is off; skip validation as before. The
-	// token used is the link's own (when supplied) else the effective cluster
-	// fallback (source-coupled); with neither, there is nothing to authenticate
-	// with and the link would be useless — reject fail-visibly.
+	// Board validation + canonicalization (D30). The predicate (using the EFFECTIVE
+	// jtype config — D27: DB row or JTYPE_* env, resolved per request so a base URL
+	// just set in the console validates without a restart):
+	//
+	//   ok && validationToken != "" -> HARD validate: resolve the board by NAME at
+	//     any path, canonicalize board_ref to its config id (a "b_…" — the value the
+	//     poller matches on), and validate the trigger/done columns. A bad ref/column
+	//     is a typed 400 (board_not_found / board_ambiguous / jtype_unauthorized /
+	//     bad_request), a genuine 5xx/transport error stays 503. board_status = "ok".
+	//
+	//   otherwise (integration off, or on but NO per-link and NO cluster token) ->
+	//     SOFT create: store the raw ref, board_status = "unvalidated". This is the
+	//     bootstrap path (RC4 deadlock): the link must exist before the "Connect with
+	//     jtype" device flow (D28) can attach a per-link token, after which the poller
+	//     re-validates + canonicalizes at runtime. Fail-visible: never a silent
+	//     success — the console shows "columns not validated" until a live check runs.
+	boardRef := req.BoardRef
+	boardTitle := ""
+	boardStatus := domain.KanbanBoardUnvalidated
 	if f, clusterToken, ok := s.kanban.Factory(r.Context()); ok {
 		validationToken := token
 		if validationToken == "" {
 			validationToken = clusterToken
 		}
-		if validationToken == "" {
-			writeError(w, http.StatusBadRequest, "token_required",
-				"a jtype token is required for this link: no cluster fallback token is configured")
-			return
-		}
-		board, err := s.boardValidatorFor(f, validationToken).GetBoard(r.Context(), req.WorkspaceID, req.BoardRef)
-		if err != nil {
-			s.log.Warn("create kanban link: board validation", "workspace", req.WorkspaceID, "board", req.BoardRef, "err", err)
-			writeError(w, http.StatusServiceUnavailable, "jtype_unreachable",
-				"could not fetch board "+req.BoardRef+" from jtype to validate columns: "+err.Error())
-			return
-		}
-		if !boardHasColumn(board, req.TriggerColumn) {
-			writeError(w, http.StatusBadRequest, "bad_request",
-				"trigger_column '"+req.TriggerColumn+"' is not a column on board "+req.BoardRef)
-			return
-		}
-		if req.DoneColumn != "" && !boardHasColumn(board, req.DoneColumn) {
-			writeError(w, http.StatusBadRequest, "bad_request",
-				"done_column '"+req.DoneColumn+"' is not a column on board "+req.BoardRef)
-			return
+		if validationToken != "" {
+			board, err := s.boardValidatorFor(f, validationToken).GetBoard(r.Context(), req.WorkspaceID, req.BoardRef)
+			if err != nil {
+				s.writeBoardValidationError(w, req.WorkspaceID, req.BoardRef, err)
+				return
+			}
+			if !boardHasColumn(board, req.TriggerColumn) {
+				writeError(w, http.StatusBadRequest, "bad_request",
+					"trigger_column '"+req.TriggerColumn+"' is not a column on board "+req.BoardRef)
+				return
+			}
+			if req.DoneColumn != "" && !boardHasColumn(board, req.DoneColumn) {
+				writeError(w, http.StatusBadRequest, "bad_request",
+					"done_column '"+req.DoneColumn+"' is not a column on board "+req.BoardRef)
+				return
+			}
+			// Canonicalize: persist the board's config id (what cards' frontmatter
+			// carries), not the user-typed name, so the poller matches (RC2). A board
+			// with no id (defensive) keeps the submitted ref.
+			if board.ID != "" {
+				boardRef = board.ID
+			}
+			boardTitle = board.Title
+			boardStatus = domain.KanbanBoardOK
 		}
 	}
 
@@ -243,7 +267,8 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 
 	now := time.Now().UTC()
 	link := &domain.KanbanLink{
-		ID: domain.NewID(), WorkspaceID: req.WorkspaceID, BoardRef: req.BoardRef,
+		ID: domain.NewID(), WorkspaceID: req.WorkspaceID, BoardRef: boardRef,
+		BoardTitle: boardTitle, BoardStatus: boardStatus,
 		ProjectID: projectID, ServiceID: req.ServiceID,
 		TriggerColumn: req.TriggerColumn, DoneColumn: req.DoneColumn,
 		Enabled: true, TokenEnc: tokenEnc, CreatedAt: now, UpdatedAt: now,
@@ -251,7 +276,7 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 	if err := s.st.CreateKanbanLink(r.Context(), link); err != nil {
 		if errors.Is(err, store.ErrAlreadyExists) {
 			writeError(w, http.StatusConflict, "already_exists",
-				"a link for workspace/board "+req.WorkspaceID+"/"+req.BoardRef+" already exists")
+				"a link for workspace/board "+req.WorkspaceID+"/"+boardRef+" already exists")
 			return
 		}
 		s.log.Error("create kanban link", "err", err)
@@ -366,6 +391,52 @@ func (s *Server) handleDeleteProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": linkID})
+}
+
+// boardStatusOrDefault returns a link's board_status, defaulting a zero value to
+// "ok" (pre-0024 rows loaded through a store that predates the column, or any
+// path that left it empty; the pg DEFAULT + MemStore already backfill 'ok').
+func boardStatusOrDefault(s string) string {
+	if s == "" {
+		return domain.KanbanBoardOK
+	}
+	return s
+}
+
+// writeBoardValidationError maps a GetBoard failure to an ACTIONABLE typed status
+// (D30 / RC3): a board-not-found or column-ref problem is a 400 the owner can fix,
+// NOT a 503 that sends them to debug the network. Only a genuine 5xx/transport
+// failure keeps 503 jtype_unreachable. Fail-visible: every message names the
+// offending ref/workspace (and, for ambiguous, the candidate paths).
+func (s *Server) writeBoardValidationError(w http.ResponseWriter, workspace, boardRef string, err error) {
+	s.log.Warn("create kanban link: board validation", "workspace", workspace, "board", boardRef, "err", err)
+	var ambig *jtype.ErrBoardAmbiguousError
+	switch {
+	case errors.Is(err, jtype.ErrDocNotFound):
+		writeError(w, http.StatusBadRequest, "board_not_found",
+			"no board named '"+boardRef+"' in this workspace — pick one from the board list or pass its full path")
+		return
+	case errors.As(err, &ambig):
+		writeError(w, http.StatusBadRequest, "board_ambiguous",
+			"board '"+boardRef+"' is ambiguous ("+strings.Join(ambig.Candidates, ", ")+") — pass the full path")
+		return
+	}
+	var je *jtype.Error
+	if errors.As(err, &je) {
+		switch je.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			writeError(w, http.StatusBadRequest, "jtype_unauthorized",
+				"the jtype token is invalid or lacks access to workspace "+workspace)
+			return
+		case http.StatusNotFound:
+			writeError(w, http.StatusBadRequest, "workspace_not_found",
+				"jtype workspace '"+workspace+"' was not found")
+			return
+		}
+	}
+	// Genuine network / instance-down: keep 503 so the owner knows it is transient.
+	writeError(w, http.StatusServiceUnavailable, "jtype_unreachable",
+		"could not fetch board "+boardRef+" from jtype to validate columns: "+err.Error())
 }
 
 // boardHasColumn reports whether the board has a column with the given key.

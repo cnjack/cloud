@@ -24,6 +24,8 @@ import type {
   EventsEnvelope,
   Integration,
   IntegrationsEnvelope,
+  JtypeBoard,
+  JtypeWorkspace,
   KanbanClusterConfig,
   KanbanConnectStart,
   KanbanConnectStatus,
@@ -209,6 +211,22 @@ export interface ApiClient {
   updateProjectKanbanLinkToken(projectId: string, linkId: string, token: string): Promise<KanbanLink>;
   /** DELETE /api/v1/projects/{id}/kanban/links/{linkId} — remove a link (owner). */
   deleteProjectKanbanLink(projectId: string, linkId: string): Promise<void>;
+
+  /* ---- kanban discovery pickers (D29) ----------------------------------- */
+  /**
+   * GET /api/v1/projects/{id}/kanban/jtype/workspaces — the caller's jtype
+   * workspaces for the create-link workspace picker (owner). Uses the effective
+   * token server-side (never serialized). 409 kanban_not_configured / 503
+   * jtype_unreachable when the integration is off / unreachable (fail-visible —
+   * the form falls back to manual entry); 400 jtype_unauthorized for a bad token.
+   */
+  listJtypeWorkspaces(projectId: string): Promise<JtypeWorkspace[]>;
+  /**
+   * GET /api/v1/projects/{id}/kanban/jtype/boards?workspace=<id> — the boards
+   * (with columns) in a workspace for the board + column pickers (owner). Typed
+   * errors mirror listJtypeWorkspaces.
+   */
+  listJtypeBoards(projectId: string, workspaceId: string): Promise<JtypeBoard[]>;
 
   /* ---- cluster kanban config (D27) -------------------------------------- */
   /**
@@ -606,6 +624,21 @@ export function createHttpClient(
         `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(linkId)}`,
         { method: 'DELETE' },
       ),
+
+    // Kanban discovery pickers (D29). The effective token is used server-side and
+    // never crosses the wire — the responses carry only workspace/board metadata.
+    listJtypeWorkspaces: async (projectId) =>
+      (
+        await req<{ workspaces: JtypeWorkspace[] }>(
+          `/projects/${encodeURIComponent(projectId)}/kanban/jtype/workspaces`,
+        )
+      ).workspaces ?? [],
+    listJtypeBoards: async (projectId, workspaceId) =>
+      (
+        await req<{ boards: JtypeBoard[] }>(
+          `/projects/${encodeURIComponent(projectId)}/kanban/jtype/boards?workspace=${encodeURIComponent(workspaceId)}`,
+        )
+      ).boards ?? [],
 
     // Cluster kanban config (D27). Cluster-admin — set/clear the DB override that
     // supersedes the JTYPE_BASE_URL env fallback. The token is write-only.

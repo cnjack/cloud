@@ -1,0 +1,28 @@
+-- 0024_kanban_link_board: canonical board id + human title + validation state (D30).
+--
+-- A kanban link's board_ref is canonicalized to the board's config id (a random
+-- "b_xxxxxxxx") so the poller's card.board == link.board_ref match succeeds. That
+-- id is opaque, so board_title stores the board's friendly name for the console.
+--
+-- board_status is the fail-visible validation state of the link's board:
+--   'ok'          — board resolved + columns validated (create-time or the
+--                   poller's runtime check).
+--   'unvalidated' — soft-created without any jtype credential; never yet checked
+--                   against a live board (the bootstrap path — an owner can then
+--                   attach a per-link token via the device flow, D28).
+--   'invalid'     — a runtime check ran and FAILED (board gone/renamed / columns
+--                   changed). The poller skips it and the console shows it loudly.
+--
+-- DEFAULT 'unvalidated' backfills EXISTING links as not-yet-checked so the poller
+-- revalidates them: a pre-D30 link stored a user-typed NAME as board_ref (never a
+-- canonical b_ id — the old hard-validate path could only ever succeed under the
+-- rig's boards/<ref>.board layout), so the poller's card.board == board_ref match
+-- is dead until it is canonicalized. Marking them 'unvalidated' (not 'ok') makes
+-- the poller's runtime check pick them up, canonicalize board_ref to the b_ id and
+-- flip to 'ok', or flip to 'invalid' if the board is gone — honest, never silent
+-- (leaving them 'ok' would skip revalidation forever, a silent dead loop). New
+-- links set board_status explicitly at create, so this default only affects the
+-- backfill. Additive + idempotent (ADD COLUMN IF NOT EXISTS), so re-applying the
+-- full migration set is a clean no-op.
+ALTER TABLE kanban_links ADD COLUMN IF NOT EXISTS board_title  TEXT;
+ALTER TABLE kanban_links ADD COLUMN IF NOT EXISTS board_status TEXT NOT NULL DEFAULT 'unvalidated';

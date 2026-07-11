@@ -268,6 +268,26 @@
   background: var(--status-failed-bg);
 }
 
+/* D29 board-validation states: unvalidated = amber (soft-created, never checked),
+   invalid = loud red (a runtime check failed — the poller is skipping the link). */
+.badge[data-state='unvalidated'] {
+  border-color: var(--status-scheduling-dot);
+  color: var(--status-scheduling-fg);
+  background: var(--status-scheduling-bg);
+}
+
+.badge[data-state='invalid'] {
+  border-color: var(--status-failed-dot);
+  color: var(--status-failed-fg);
+  background: var(--status-failed-bg);
+}
+
+/* The amber "columns not validated" explanation under a soft-created link. */
+.kanbanBoardNotice {
+  font-size: var(--fs-tiny);
+  color: var(--status-scheduling-fg);
+}
+
 /* D28: the per-link "Connect with jtype" device-flow panel. */
 .kanbanConnect {
   margin-top: var(--space-2);
@@ -296,6 +316,14 @@
 .kanbanFormActions {
   display: flex;
   justify-content: flex-end;
+}
+
+/* D29: the "Enter manually / Use pickers" toggle row sits right-aligned above
+   the workspace/board selects. */
+.kanbanModeRow {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: calc(-1 * var(--space-2));
 }
 
 .kanbanError {

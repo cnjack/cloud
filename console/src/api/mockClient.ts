@@ -27,6 +27,8 @@ import type {
   CreateModelInput,
   CreateIntegrationInput,
   Integration,
+  JtypeBoard,
+  JtypeWorkspace,
   KanbanClusterConfig,
   KanbanConnectStart,
   KanbanConnectStatus,
@@ -201,6 +203,49 @@ export function createMockClient(): ApiClient {
   const members = new Map<string, Member[]>();
   // Feature E: kanban links (board→service bindings), keyed by link id.
   const kanbanLinks = new Map<string, KanbanLink>();
+  // D29: fake jtype discovery data for the cascading pickers — a couple of
+  // workspaces, each with a board or two carrying columns. This is test-only
+  // scaffolding (red line #1 allows a mock here) so the picker flow is demoable
+  // and e2e-testable offline; a real orchestrator lists these from live jtype.
+  const JTYPE_WORKSPACES: JtypeWorkspace[] = [
+    { id: 'ws_team', name: 'My Team' },
+    { id: 'ws_solo', name: 'Personal' },
+  ];
+  const JTYPE_BOARDS: Record<string, JtypeBoard[]> = {
+    ws_team: [
+      {
+        id: 'b_ab12cd34',
+        ref: 'jtype.board',
+        title: 'jtype',
+        columns: [
+          { key: 'todo', name: 'To do' },
+          { key: 'ai', name: 'AI' },
+          { key: 'done', name: 'Done' },
+        ],
+      },
+      {
+        id: 'b_ef56gh78',
+        ref: 'Jcode.board',
+        title: 'Jcode',
+        columns: [
+          { key: 'backlog', name: 'Backlog' },
+          { key: 'agent', name: 'Agent' },
+          { key: 'shipped', name: 'Shipped' },
+        ],
+      },
+    ],
+    ws_solo: [
+      {
+        id: 'b_solo0001',
+        ref: 'personal.board',
+        title: 'Personal',
+        columns: [
+          { key: 'inbox', name: 'Inbox' },
+          { key: 'run', name: 'Run' },
+        ],
+      },
+    ],
+  };
   // D27: the cluster jtype config, a single mutable DB-override "row" (null = no
   // override). The demo rig has no JTYPE_* env fallback, so an absent row resolves
   // to source=none / off — set one here and it becomes source=db / on (no restart),
@@ -1383,6 +1428,10 @@ export function createMockClient(): ApiClient {
           });
         }
       }
+      const hasToken = !!input.token?.trim();
+      // D29: when a board with this ref is discoverable, capture its title so the
+      // row shows a friendly name instead of the raw ref.
+      const knownBoard = (JTYPE_BOARDS[ws] ?? []).find((b) => b.ref === board);
       const link: KanbanLink = {
         id: 'kl-' + Math.random().toString(36).slice(2, 10),
         workspace_id: ws,
@@ -1392,11 +1441,15 @@ export function createMockClient(): ApiClient {
         trigger_column: input.trigger_column.trim(),
         done_column: input.done_column?.trim() || undefined,
         enabled: true,
-        token_set: !!input.token?.trim(),
+        token_set: hasToken,
         // The demo rig has no cluster JTYPE_TOKEN, so a tokenless link is
         // honestly "missing" (mirrors the server derivation; exercises the
         // error badge in demo mode).
-        credential_status: input.token?.trim() ? 'per_link' : 'missing',
+        credential_status: hasToken ? 'per_link' : 'missing',
+        // D29: with a credential we "hard validate" (ok); without one this is the
+        // soft-create bootstrap path — a fail-visible "unvalidated" state.
+        board_status: hasToken ? 'ok' : 'unvalidated',
+        ...(hasToken && knownBoard ? { board_title: knownBoard.title } : {}),
         created_at: new Date().toISOString(),
       };
       kanbanLinks.set(link.id, link);
@@ -1421,6 +1474,43 @@ export function createMockClient(): ApiClient {
       if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
       kanbanLinks.delete(linkId);
       return delay(undefined);
+    },
+
+    /* ---- kanban discovery pickers (D29) ----------------------------------- */
+    async listJtypeWorkspaces(projectId: string): Promise<JtypeWorkspace[]> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      // Fail-visible: the integration must be effective to reach jtype (else the
+      // token/base URL to enumerate workspaces doesn't exist). Mirrors the
+      // orchestrator's typed 409 so the picker falls back to manual entry.
+      if (!kanbanConfigView().effective_enabled) {
+        throw new ApiError(409, 'the cluster jtype integration is not configured', {
+          error: {
+            code: 'kanban_not_configured',
+            message: 'Ask a cluster admin to configure jtype on the Cluster page first.',
+          },
+        });
+      }
+      return delay(JTYPE_WORKSPACES.map((w) => ({ ...w })));
+    },
+    async listJtypeBoards(projectId: string, workspaceId: string): Promise<JtypeBoard[]> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      if (!kanbanConfigView().effective_enabled) {
+        throw new ApiError(409, 'the cluster jtype integration is not configured', {
+          error: {
+            code: 'kanban_not_configured',
+            message: 'Ask a cluster admin to configure jtype on the Cluster page first.',
+          },
+        });
+      }
+      const boards = JTYPE_BOARDS[workspaceId];
+      if (!boards) {
+        // An unknown workspace id is a fail-visible typed error (mirrors the
+        // orchestrator's workspace_not_found), not a silent empty list.
+        throw new ApiError(400, `no jtype workspace '${workspaceId}'`, {
+          error: { code: 'workspace_not_found', message: `no jtype workspace '${workspaceId}'` },
+        });
+      }
+      return delay(boards.map((b) => ({ ...b, columns: b.columns.map((c) => ({ ...c })) })));
     },
 
     /* ---- cluster kanban config (D27) -------------------------------------- */

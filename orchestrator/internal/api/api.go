@@ -76,6 +76,11 @@ type Server struct {
 	// at create time. Production wraps *jtype.Factory.Client; a test injects a fake
 	// (ignoring the factory) so column validation is exercised without HTTP.
 	boardValidatorFor func(f *jtype.Factory, token string) boardValidator
+	// jtypeDiscoveryFor builds a jtype discovery client (workspace + board pickers,
+	// D29) from a resolved Factory + token. Production wraps *jtype.Factory.Client;
+	// a test injects a fake so the owner-only discovery endpoints are exercised
+	// without HTTP. The effective token is used but NEVER serialized to the caller.
+	jtypeDiscoveryFor func(f *jtype.Factory, token string) jtypeDiscovery
 
 	// connects is the in-memory registry of pending "Connect with jtype" OAuth
 	// device flows (D28); no DB persistence — a restart drops in-flight flows.
@@ -94,6 +99,15 @@ type Server struct {
 // validate trigger/done column names against a live board.
 type boardValidator interface {
 	GetBoard(ctx context.Context, workspace, boardRef string) (*jtype.Board, error)
+}
+
+// jtypeDiscovery is the slice of *jtype.Client the owner-only discovery endpoints
+// use to populate the console's workspace + board pickers (D29).
+type jtypeDiscovery interface {
+	ListWorkspaces(ctx context.Context) ([]jtype.Workspace, error)
+	ListDocuments(ctx context.Context, workspace string) ([]jtype.Doc, error)
+	GetBoard(ctx context.Context, workspace, boardRef string) (*jtype.Board, error)
+	GetBoardByDoc(ctx context.Context, workspace, docID string) (*jtype.Board, error)
 }
 
 // New builds a Server. launcher may be nil (K8s disabled). The token cipher and
@@ -146,6 +160,9 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Default board validator: build a token-bound jtype client off the resolved
 	// factory. Overridden by tests with a fake that ignores the factory.
 	s.boardValidatorFor = func(f *jtype.Factory, token string) boardValidator { return f.Client(token) }
+	// Default jtype discovery client (D29 pickers): same token-bound client; tests
+	// override with a fake.
+	s.jtypeDiscoveryFor = func(f *jtype.Factory, token string) jtypeDiscovery { return f.Client(token) }
 	// D28 — "Connect with jtype" OAuth device flow: an in-memory registry of
 	// pending flows + the jtype OAuth device-flow client seam (overridden by tests).
 	s.connects = newConnectRegistry()
@@ -312,6 +329,10 @@ func (s *Server) Handler() http.Handler {
 	// seals the minted token into kanban_links.token_enc on complete.
 	mux.Handle("POST /api/v1/projects/{id}/kanban/links/{linkID}/connect", s.authed(s.handleStartLinkConnect))
 	mux.Handle("GET /api/v1/projects/{id}/kanban/links/{linkID}/connect/{connectID}", s.authed(s.handlePollLinkConnect))
+	// D29 — jtype discovery for the console's cascading pickers (owner only). Both
+	// use the EFFECTIVE cluster factory + token; the token is NEVER serialized.
+	mux.Handle("GET /api/v1/projects/{id}/kanban/jtype/workspaces", s.authed(s.handleListJtypeWorkspaces))
+	mux.Handle("GET /api/v1/projects/{id}/kanban/jtype/boards", s.authed(s.handleListJtypeBoards))
 
 	// Project-scoped API keys (F12 / D24) — a revocable automation credential
 	// bound to exactly one project, replacing the CONSOLE_TOKEN borrow-pattern

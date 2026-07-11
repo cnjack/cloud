@@ -15,6 +15,7 @@ package kanban
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -33,6 +34,10 @@ type DocumentAPI interface {
 	ListDocuments(ctx context.Context, workspace string) ([]jtype.Doc, error)
 	GetDocument(ctx context.Context, workspace, id string) (*jtype.Document, error)
 	AddComment(ctx context.Context, workspace, docID, body string) error
+	// GetBoard resolves a board by name/ref and returns its config id + columns.
+	// Used by the runtime fail-visible re-validation of an unvalidated/invalid link
+	// (D30); the normal card scan does NOT call it (it matches by frontmatter).
+	GetBoard(ctx context.Context, workspace, boardRef string) (*jtype.Board, error)
 }
 
 // ModelResolver runs the D21 resolution chain for a project/service so the poller
@@ -162,6 +167,19 @@ func (p *Poller) pollLink(ctx context.Context, f *jtype.Factory, clusterToken st
 	}
 	api := p.clientFor(f, token)
 
+	// D30 runtime fail-visible check: a link not yet validated against a live board
+	// (soft-created without a credential, or previously found invalid) gets one
+	// GetBoard now that a token has resolved. Success canonicalizes board_ref to the
+	// board's config id + flips board_status to "ok"; a definitive failure flips to
+	// "invalid" and skips this tick's scan (an unresolved ref would match no card);
+	// a transient/transport error leaves the status and retries next tick. Never a
+	// silent no-op — a wrong soft-created link becomes loudly "invalid".
+	if boardStatusOrOK(link.BoardStatus) != domain.KanbanBoardOK {
+		if !p.revalidateBoard(ctx, api, link) {
+			return
+		}
+	}
+
 	cursor := p.cursor(link.ID)
 	docs, err := api.ListDocuments(ctx, link.WorkspaceID)
 	if err != nil {
@@ -184,6 +202,109 @@ func (p *Poller) pollLink(ctx context.Context, f *jtype.Factory, clusterToken st
 	}
 	p.setCursor(link.ID, maxClock)
 }
+
+// revalidateBoard runs the D30 runtime board check for a link whose board_status
+// is not "ok" (each tick until it resolves; the DB write in markBoardInvalid is
+// idempotent so an already-invalid link doesn't churn the row). It returns true
+// only when the board resolved and its
+// columns validated — in which case link.BoardRef is canonicalized IN PLACE (to
+// the board's config id) and board_status is persisted as "ok" so the same tick's
+// scan matches cards by that id. A definitive failure (board gone/renamed or a
+// column mismatch) persists board_status="invalid", logs once (fail-visible), and
+// returns false. A transient error leaves the status untouched and returns false
+// (retry next tick). Errors here never crash the tick.
+func (p *Poller) revalidateBoard(ctx context.Context, api DocumentAPI, link *domain.KanbanLink) bool {
+	board, err := api.GetBoard(ctx, link.WorkspaceID, link.BoardRef)
+	if err != nil {
+		var ambig *jtype.ErrBoardAmbiguousError
+		definitive := errors.Is(err, jtype.ErrDocNotFound) || errors.As(err, &ambig)
+		if !definitive {
+			// A jtype 4xx that is a config/auth problem (401/403/404) is also definitive
+			// (the ref won't resolve until fixed); a 5xx/transport error is transient.
+			var je *jtype.Error
+			if errors.As(err, &je) && je.StatusCode >= 400 && je.StatusCode < 500 {
+				definitive = true
+			}
+		}
+		if !definitive {
+			p.log.Warn("kanban poll: board revalidation transient error; retry next tick",
+				"link", link.ID, "workspace", link.WorkspaceID, "board", link.BoardRef, "err", err)
+			return false
+		}
+		p.markBoardInvalid(ctx, link, err)
+		return false
+	}
+	if !boardHasColumn(board, link.TriggerColumn) ||
+		(link.DoneColumn != "" && !boardHasColumn(board, link.DoneColumn)) {
+		p.markBoardInvalid(ctx, link, errColumnMismatch)
+		return false
+	}
+	// Resolved + columns valid: canonicalize the ref to the board's config id (what
+	// cards carry in frontmatter) so the scan below matches (RC2), and persist "ok".
+	canonical := link.BoardRef
+	if board.ID != "" {
+		canonical = board.ID
+	}
+	if err := p.st.SetKanbanLinkBoardStatus(ctx, link.ID, domain.KanbanBoardOK, canonical, board.Title); err != nil {
+		p.log.Error("kanban poll: persist board_status=ok", "link", link.ID, "err", err)
+		return false // don't scan with an unpersisted canonical ref; retry next tick
+	}
+	link.BoardRef = canonical
+	link.BoardTitle = board.Title
+	link.BoardStatus = domain.KanbanBoardOK
+	p.noted.Delete("board_invalid:" + link.ID) // a later re-break logs again
+	p.log.Info("kanban poll: link board validated", "link", link.ID, "workspace", link.WorkspaceID, "board", canonical)
+	return true
+}
+
+// markBoardInvalid persists board_status="invalid" (keeping the last-known ref)
+// and logs once per link so a broken soft-created link is loud, not silent. The
+// DB write is idempotent: an already-invalid link is re-checked each tick (so it
+// self-heals if the board returns) but must NOT re-write the row / bump updated_at
+// every tick — `link` is loaded fresh per tick, so BoardStatus reflects the
+// persisted value and gates the write to the transition INTO invalid.
+func (p *Poller) markBoardInvalid(ctx context.Context, link *domain.KanbanLink, cause error) {
+	if boardStatusOrOK(link.BoardStatus) != domain.KanbanBoardInvalid {
+		if err := p.st.SetKanbanLinkBoardStatus(ctx, link.ID, domain.KanbanBoardInvalid, "", ""); err != nil {
+			p.log.Error("kanban poll: persist board_status=invalid", "link", link.ID, "err", err)
+		}
+		link.BoardStatus = domain.KanbanBoardInvalid
+	}
+	if _, seen := p.noted.LoadOrStore("board_invalid:"+link.ID, struct{}{}); !seen {
+		p.log.Warn("kanban poll: link board is invalid; skipping (board gone/renamed or columns changed)",
+			"link", link.ID, "workspace", link.WorkspaceID, "board", link.BoardRef, "err", cause)
+	}
+}
+
+// boardStatusOrOK treats an empty board_status as "ok" (defensive: a store/row
+// that predates the 0024 column). Matches api.boardStatusOrDefault.
+func boardStatusOrOK(s string) string {
+	if s == "" {
+		return domain.KanbanBoardOK
+	}
+	return s
+}
+
+// boardHasColumn reports whether the board has a column with the given key.
+func boardHasColumn(b *jtype.Board, key string) bool {
+	if b == nil {
+		return false
+	}
+	for _, c := range b.Columns {
+		if c.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// errColumnMismatch is the sentinel cause logged when a board resolves but its
+// trigger/done columns no longer exist (a definitive "invalid").
+var errColumnMismatch = errStr("trigger/done column not found on the resolved board")
+
+type errStr string
+
+func (e errStr) Error() string { return string(e) }
 
 // maybeDispatch fetches one document, decides if it is a card in the trigger
 // column, and dispatches a run (or posts the not-configured notice). api is the

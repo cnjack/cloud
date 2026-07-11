@@ -520,6 +520,21 @@ export interface SystemInfo {
  */
 export type KanbanCredentialStatus = 'per_link' | 'cluster_fallback' | 'missing';
 
+/**
+ * D29 board-validation state (independent of credential_status): whether the
+ * link's board_ref/columns have been checked against a live jtype board.
+ *  - `ok`          — resolved + columns validated (at create, or by the poller's
+ *                    first runtime check). No board is dead-linked.
+ *  - `unvalidated` — created without a credential (the bootstrap "soft create"),
+ *                    so it has never been checked. The console shows a loud
+ *                    "columns not validated" state prompting a token connect.
+ *  - `invalid`     — a runtime check RAN and FAILED (board gone/renamed, columns
+ *                    changed). The poller is skipping the link — surfaced loudly.
+ * Optional so pre-D29 fixtures/rows (which backfill to `ok`) still type-check;
+ * the UI treats an absent value as `ok`.
+ */
+export type KanbanBoardStatus = 'ok' | 'unvalidated' | 'invalid';
+
 export interface KanbanLink {
   id: string;
   workspace_id: string;
@@ -532,6 +547,20 @@ export interface KanbanLink {
   token_set: boolean;
   credential_status: KanbanCredentialStatus;
   /**
+   * D29: the board-validation state (see KanbanBoardStatus). Absent = `ok` (a
+   * pre-D29 row backfilled by the 0024 migration). Independent of
+   * credential_status: a link can be `per_link` yet `invalid` (token fine, board
+   * renamed), or `unvalidated` with no credential at all.
+   */
+  board_status?: KanbanBoardStatus;
+  /**
+   * D29: the board's human title, captured server-side at validation (the stored
+   * board_ref is the opaque `b_…` config id after canonicalization, so the row
+   * shows this instead). Absent for a soft-created/unvalidated link whose board
+   * hasn't been resolved yet.
+   */
+  board_title?: string;
+  /**
    * D28: when this link's token was minted by the "Connect with jtype" device
    * flow, its 90-day expiry (device-flow tokens carry no refresh). NULL/omitted
    * for a manual PAT / cluster-fallback / no credential (unknown expiry) — the
@@ -539,6 +568,41 @@ export interface KanbanLink {
    */
   token_expires_at?: string;
   created_at: string;
+}
+
+/* ---- kanban discovery pickers (D29) --------------------------------------- */
+
+/**
+ * GET /api/v1/projects/{id}/kanban/jtype/workspaces — one of the caller's jtype
+ * workspaces, for the create-link workspace picker. The effective token is used
+ * server-side and NEVER serialized here.
+ */
+export interface JtypeWorkspace {
+  id: string;
+  name: string;
+}
+
+/** One column of a jtype board (its stable key + human name). */
+export interface JtypeBoardColumn {
+  key: string;
+  name: string;
+}
+
+/**
+ * GET /api/v1/projects/{id}/kanban/jtype/boards?workspace=<id> — one `.board`
+ * document in a workspace, for the board picker.
+ *  - `id`   — the board's `config.id` (`b_…`), the value the server persists as
+ *             board_ref after canonicalization (the console never submits it).
+ *  - `ref`  — the board document's relativePath (e.g. `jtype.board`) — what the
+ *             create request submits; the server resolves + canonicalizes it.
+ *  - `title`— the friendly board name shown in the picker.
+ *  - `columns` — the board's columns, powering the trigger/done column selects.
+ */
+export interface JtypeBoard {
+  id: string;
+  ref: string;
+  title: string;
+  columns: JtypeBoardColumn[];
 }
 
 /* ---- cluster kanban config (D27) ------------------------------------------ */

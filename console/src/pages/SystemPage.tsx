@@ -794,7 +794,9 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
             <div className={styles.kanbanLinkRow} key={l.id}>
               <div className={styles.kanbanLinkMeta}>
                 <div className={styles.kanbanLinkTitle}>
-                  {l.workspace_id} / {l.board_ref}
+                  <span title={`${l.workspace_id} / ${l.board_ref}`}>
+                    {l.board_title || `${l.workspace_id} / ${l.board_ref}`}
+                  </span>
                   <span
                     className={styles.pill}
                     data-on={l.credential_status === 'per_link' || undefined}
@@ -808,6 +810,18 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
                       missing: 'no credential',
                     }[l.credential_status]}
                   </span>
+                  {/* D29: a fail-visible board-validation pill (absent board_status
+                      is a pre-D29 row, treated as validated). */}
+                  {(l.board_status ?? 'ok') !== 'ok' && (
+                    <span
+                      className={styles.pill}
+                      data-err={l.board_status === 'invalid' || undefined}
+                      style={{ marginLeft: 8 }}
+                      data-testid={`kanban-board-status-${l.id}`}
+                    >
+                      {l.board_status === 'invalid' ? 'board/columns invalid' : 'not validated'}
+                    </span>
+                  )}
                 </div>
                 <div className={styles.kanbanLinkSub}>
                   {projectName(l.project_id)} · {l.trigger_column}

@@ -11,7 +11,7 @@
  *   - API keys (F12 / D24): project-scoped, revocable automation credentials
  *     (owner) — replaces borrowing CONSOLE_TOKEN for external/CI use.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
 import { SelectField, TextField } from '../components/Field';
@@ -25,6 +25,8 @@ import {
   useCreateProjectKanbanLink,
   useUpdateProjectKanbanLinkToken,
   useDeleteProjectKanbanLink,
+  useJtypeWorkspaces,
+  useJtypeBoards,
   useStartLinkConnect,
   useLinkConnectStatus,
   useApiKeys,
@@ -505,6 +507,67 @@ function KanbanPanel({ project }: { project: Project }) {
   const [triggerCol, setTriggerCol] = useState('');
   const [doneCol, setDoneCol] = useState('');
   const [token, setToken] = useState('');
+  // D29: default to the cascading discovery pickers; "Enter manually" (or an
+  // auto-fallback when discovery errors) swaps them for free-text fields. Manual
+  // entry is NOT a second create path — the server resolves + canonicalizes a
+  // typed board ref exactly like a picked one.
+  const [manual, setManual] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState('');
+
+  // Discovery queries fire only in picker mode with the integration on. retry is
+  // off (in the hooks), so a typed 409/503/400 surfaces at once → auto-fallback.
+  const pickerActive = !kanbanOff && !manual;
+  const workspaces = useJtypeWorkspaces(project.id, pickerActive);
+  const boards = useJtypeBoards(project.id, workspaceId, pickerActive && !!workspaceId);
+  const boardList = boards.data ?? [];
+  const selectedBoard = boardList.find((b) => b.ref === boardRef);
+  const columnOptions = (selectedBoard?.columns ?? []).map((c) => ({ value: c.key, label: c.name }));
+
+  // Fail-visible auto-fallback: if EITHER discovery call errors (integration
+  // off/unreachable, bad token, or a workspace whose boards won't list), drop to
+  // manual entry and show the server's typed message — never a blank, spinning, or
+  // silently-empty picker. The `!isFetching` guard means a refetch in flight (e.g.
+  // right after the user switches back to the pickers) doesn't bounce to manual.
+  useEffect(() => {
+    if (manual) return;
+    const wsErr = workspaces.isError && !workspaces.isFetching;
+    const boardErr = boards.isError && !boards.isFetching;
+    if (!wsErr && !boardErr) return;
+    const err = wsErr ? workspaces.error : boards.error;
+    setManual(true);
+    setDiscoveryError(
+      err instanceof ApiError
+        ? err.message
+        : 'Could not reach jtype to list workspaces/boards — enter the details manually.',
+    );
+  }, [
+    manual,
+    workspaces.isError,
+    workspaces.isFetching,
+    workspaces.error,
+    boards.isError,
+    boards.isFetching,
+    boards.error,
+  ]);
+
+  const pickWorkspace = (id: string) => {
+    setWorkspaceId(id);
+    // A new workspace invalidates the board + its columns.
+    setBoardRef('');
+    setTriggerCol('');
+    setDoneCol('');
+  };
+  const pickBoard = (ref: string) => {
+    setBoardRef(ref);
+    // A new board invalidates the column picks.
+    setTriggerCol('');
+    setDoneCol('');
+  };
+
+  // Required-field gate (a link that can't function shouldn't be creatable). The
+  // values are the same in either mode, so this covers pickers and manual entry.
+  const incomplete =
+    !serviceId || !workspaceId.trim() || !boardRef.trim() || !triggerCol.trim();
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -592,45 +655,134 @@ function KanbanPanel({ project }: { project: Project }) {
           placeholder="Select service…"
           options={services.map((s) => ({ value: s.id, label: s.name }))}
         />
-        <TextField
-          label="jtype workspace id"
-          placeholder="f006b727-…"
-          value={workspaceId}
-          onChange={(e) => setWorkspaceId(e.target.value)}
-          required
-          disabled={kanbanOff}
-          data-testid="kanban-link-workspace"
-          autoComplete="off"
-        />
-        <TextField
-          label="Board ref"
-          placeholder="jcloud-dev"
-          value={boardRef}
-          onChange={(e) => setBoardRef(e.target.value)}
-          required
-          disabled={kanbanOff}
-          data-testid="kanban-link-board"
-          autoComplete="off"
-        />
-        <TextField
-          label="Trigger column"
-          placeholder="ai"
-          value={triggerCol}
-          onChange={(e) => setTriggerCol(e.target.value)}
-          required
-          disabled={kanbanOff}
-          data-testid="kanban-link-trigger"
-          autoComplete="off"
-        />
-        <TextField
-          label="Done column (optional)"
-          placeholder="done"
-          value={doneCol}
-          onChange={(e) => setDoneCol(e.target.value)}
-          disabled={kanbanOff}
-          data-testid="kanban-link-done"
-          autoComplete="off"
-        />
+
+        {/* Manual-entry fallback (an un-enumerable board, or jtype unreachable):
+            the server resolves a typed ref the same way it resolves a picked one. */}
+        {!kanbanOff && (
+          <div className={styles.kanbanModeRow}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setManual((m) => {
+                  const next = !m;
+                  if (!next) {
+                    // Returning to the pickers: refetch so a stale discovery error
+                    // clears (the auto-fallback's !isFetching guard prevents a
+                    // bounce), letting the owner retry once jtype recovers.
+                    void workspaces.refetch();
+                    if (workspaceId) void boards.refetch();
+                  }
+                  return next;
+                });
+                setDiscoveryError('');
+              }}
+              data-testid="kanban-link-manual-toggle"
+            >
+              {manual ? 'Use pickers' : 'Enter manually'}
+            </Button>
+          </div>
+        )}
+        {discoveryError && (
+          <p className={styles.kanbanError} data-testid="kanban-link-discovery-error">
+            {discoveryError}
+          </p>
+        )}
+
+        {manual ? (
+          <>
+            <TextField
+              label="jtype workspace id"
+              placeholder="f006b727-…"
+              value={workspaceId}
+              onChange={(e) => setWorkspaceId(e.target.value)}
+              required
+              disabled={kanbanOff}
+              data-testid="kanban-link-workspace"
+              autoComplete="off"
+            />
+            <TextField
+              label="Board ref"
+              placeholder="jtype.board"
+              value={boardRef}
+              onChange={(e) => setBoardRef(e.target.value)}
+              required
+              disabled={kanbanOff}
+              data-testid="kanban-link-board"
+              autoComplete="off"
+              hint="A board name or path (e.g. jtype.board). The server resolves it to the board’s id."
+            />
+            <TextField
+              label="Trigger column"
+              placeholder="ai"
+              value={triggerCol}
+              onChange={(e) => setTriggerCol(e.target.value)}
+              required
+              disabled={kanbanOff}
+              data-testid="kanban-link-trigger"
+              autoComplete="off"
+            />
+            <TextField
+              label="Done column (optional)"
+              placeholder="done"
+              value={doneCol}
+              onChange={(e) => setDoneCol(e.target.value)}
+              disabled={kanbanOff}
+              data-testid="kanban-link-done"
+              autoComplete="off"
+            />
+          </>
+        ) : (
+          <>
+            <SelectField
+              label="jtype workspace"
+              required
+              value={workspaceId}
+              onChange={pickWorkspace}
+              disabled={kanbanOff || workspaces.isLoading}
+              data-testid="kanban-link-workspace-select"
+              placeholder={workspaces.isLoading ? 'Loading workspaces…' : 'Select workspace…'}
+              options={(workspaces.data ?? []).map((w) => ({ value: w.id, label: w.name }))}
+            />
+            <SelectField
+              label="Board"
+              required
+              value={boardRef}
+              onChange={pickBoard}
+              disabled={kanbanOff || !workspaceId || boards.isLoading}
+              data-testid="kanban-link-board-select"
+              placeholder={
+                !workspaceId
+                  ? 'Pick a workspace first'
+                  : boards.isLoading
+                    ? 'Loading boards…'
+                    : 'Select board…'
+              }
+              options={boardList.map((b) => ({ value: b.ref, label: b.title }))}
+            />
+            <SelectField
+              label="Trigger column"
+              required
+              value={triggerCol}
+              onChange={setTriggerCol}
+              disabled={kanbanOff || !boardRef}
+              data-testid="kanban-link-trigger-select"
+              placeholder={boardRef ? 'Select column…' : 'Pick a board first'}
+              options={columnOptions}
+            />
+            <SelectField
+              label="Done column (optional)"
+              value={doneCol}
+              onChange={setDoneCol}
+              disabled={kanbanOff || !boardRef}
+              data-testid="kanban-link-done-select"
+              placeholder={boardRef ? '— none —' : 'Pick a board first'}
+              options={[{ value: '', label: '— none —' }, ...columnOptions]}
+            />
+          </>
+        )}
+
         <TextField
           label="jtype token (optional)"
           type="password"
@@ -647,7 +799,7 @@ function KanbanPanel({ project }: { project: Project }) {
             type="submit"
             variant="primary"
             loading={create.isPending}
-            disabled={kanbanOff}
+            disabled={kanbanOff || incomplete}
             data-testid="kanban-link-add"
           >
             Add link
@@ -703,6 +855,12 @@ function KanbanLinkRow({
     missing: 'no credential — set a token',
   }[link.credential_status];
 
+  // D29: an absent board_status is a pre-D29 row backfilled to "ok" (validated).
+  const boardStatus = link.board_status ?? 'ok';
+  // The stored board_ref becomes the opaque b_… id after canonicalization, so
+  // prefer the captured title; keep the raw workspace/ref pair as a tooltip.
+  const boardLabel = link.board_title || `${link.workspace_id} / ${link.board_ref}`;
+
   // Expiry badge for a device-flow token (unknown for manual/fallback ⇒ no badge).
   const linkExpiry = expiryLabel(link.token_expires_at, 'expired — reconnect');
 
@@ -734,7 +892,7 @@ function KanbanLinkRow({
     <div className={styles.kanbanRow} data-testid={`kanban-link-${link.id}`}>
       <div className={styles.kanbanMeta}>
         <div className={styles.kanbanTitle}>
-          {link.workspace_id} / {link.board_ref}
+          <span title={`${link.workspace_id} / ${link.board_ref}`}>{boardLabel}</span>
           <span
             className={styles.badge}
             data-state={link.credential_status}
@@ -742,6 +900,15 @@ function KanbanLinkRow({
           >
             {badge}
           </span>
+          {boardStatus !== 'ok' && (
+            <span
+              className={styles.badge}
+              data-state={boardStatus === 'invalid' ? 'invalid' : 'unvalidated'}
+              data-testid={`kanban-board-status-${link.id}`}
+            >
+              {boardStatus === 'invalid' ? 'board/columns invalid' : 'columns not validated'}
+            </span>
+          )}
           {linkExpiry && (
             <span
               className={styles.badge}
@@ -756,6 +923,22 @@ function KanbanLinkRow({
           {serviceName} · {link.trigger_column}
           {link.done_column ? ` → ${link.done_column}` : ''}
         </div>
+        {boardStatus === 'unvalidated' && (
+          <p className={styles.kanbanBoardNotice} data-testid={`kanban-board-notice-${link.id}`}>
+            This link was created without a token — its board and columns haven’t been checked yet.
+            Connect a jtype token below (or check the board ref).
+          </p>
+        )}
+        {boardStatus === 'invalid' && (
+          <p
+            className={styles.kanbanError}
+            role="alert"
+            data-testid={`kanban-board-notice-${link.id}`}
+          >
+            Board not found or its columns changed — the poller is skipping this link. Fix the board
+            (delete and re-add via the pickers) or reconnect a token.
+          </p>
+        )}
         {/* D28: one-click connect for this link's own token. Disabled while the
             cluster integration is off (same gate as the add form). */}
         <div className={styles.kanbanConnect}>

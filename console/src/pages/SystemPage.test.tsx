@@ -354,15 +354,19 @@ describe('SystemPage', () => {
       created_at: '2026-01-01T00:00:00Z',
     };
     const noTok: KanbanLink = {
-      id: 'kl-2', workspace_id: 'ws2', board_ref: 'b2',
+      id: 'kl-2', workspace_id: 'ws2', board_ref: 'b_ef56gh78',
       project_id: 'p1', service_id: 's1', trigger_column: 'ai',
       enabled: true, token_set: false, credential_status: 'cluster_fallback',
+      // D29: a canonicalized link shows its captured board_title, not the b_… ref.
+      board_status: 'ok', board_title: 'My Board',
       created_at: '2026-01-02T00:00:00Z',
     };
     const dead: KanbanLink = {
       id: 'kl-3', workspace_id: 'ws3', board_ref: 'b3',
       project_id: 'p1', service_id: 's1', trigger_column: 'ai',
       enabled: true, token_set: false, credential_status: 'missing',
+      // D29: a runtime check failed — the poller is skipping it (fail-visible).
+      board_status: 'invalid',
       created_at: '2026-01-03T00:00:00Z',
     };
     const project: Project = {
@@ -391,6 +395,12 @@ describe('SystemPage', () => {
     expect(screen.getByText('cluster token')).toBeTruthy();
     expect(screen.getByText('no credential')).toBeTruthy();
     expect(screen.getByTestId('kanban-cred-kl-3').getAttribute('data-err')).toBe('true');
+    // D29: board_title replaces the raw b_… ref, and a failed link shows a loud
+    // "board/columns invalid" pill; a validated link shows no board-status pill.
+    expect(screen.getByText('My Board')).toBeTruthy();
+    expect(screen.queryByTestId('kanban-board-status-kl-2')).toBeNull();
+    expect(screen.getByTestId('kanban-board-status-kl-3').textContent).toBe('board/columns invalid');
+    expect(screen.getByTestId('kanban-board-status-kl-3').getAttribute('data-err')).toBe('true');
     // Read-only link overview: no per-link add/delete management here.
     expect(screen.queryByTestId('kanban-link-form')).toBeNull();
     expect(screen.queryByTestId('kanban-link-add')).toBeNull();

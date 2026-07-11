@@ -880,9 +880,24 @@ type KanbanLink struct {
 	ID string `json:"id"`
 	// WorkspaceID is the jtype workspace id (a uuid) the board lives in.
 	WorkspaceID string `json:"workspace_id"`
-	// BoardRef is the board id inside the workspace (the `.board` document's
-	// board id, e.g. "jcloud-dev"); cards carry it in their frontmatter `board`.
+	// BoardRef is the board's canonical config id inside the workspace (the
+	// `.board` document JSON `id`, a random "b_xxxxxxxx"); cards carry it in their
+	// frontmatter `board`, so the poller matches on it. On a hard-validated create
+	// the API canonicalizes a user-typed name/path to this id (D30); a soft-created
+	// link (no credential) stores the raw ref until the poller's runtime check
+	// resolves and rewrites it.
 	BoardRef string `json:"board_ref"`
+	// BoardTitle is the board's human title (from the parsed `.board`), stored so
+	// the console shows a friendly label instead of the opaque "b_…" BoardRef.
+	// Empty until a validation (create-time or the poller's runtime check) resolves
+	// the board. Not sensitive.
+	BoardTitle string `json:"board_title,omitempty"`
+	// BoardStatus is the fail-visible validation state of this link's board ref
+	// (D30): KanbanBoardOK (resolved + columns validated), KanbanBoardUnvalidated
+	// (soft-created without a credential — never yet checked against a live board),
+	// or KanbanBoardInvalid (a runtime check ran and failed: board gone/renamed or
+	// the columns changed). The console surfaces unvalidated/invalid loudly.
+	BoardStatus string `json:"board_status"`
 	// ProjectID / ServiceID name the target the poller dispatches runs against.
 	// The service's repo + the project's guardrails (Feature B) apply to kanban
 	// runs exactly as they do to console/webhook runs.
@@ -918,6 +933,22 @@ type KanbanLink struct {
 // Used to echo token_set to owners without ever exposing the plaintext; false
 // means the link falls back to the cluster JTYPE_TOKEN env.
 func (l KanbanLink) TokenSet() bool { return len(l.TokenEnc) > 0 }
+
+// KanbanLink.BoardStatus enum (D30). Persisted in kanban_links.board_status
+// (NOT NULL DEFAULT KanbanBoardOK; existing rows backfill as OK).
+const (
+	// KanbanBoardOK — the board resolved and its trigger/done columns validated
+	// (at create with a credential, or at the poller's runtime check).
+	KanbanBoardOK = "ok"
+	// KanbanBoardUnvalidated — the link was soft-created without any credential, so
+	// it was never checked against a live board. Fail-visible: the console shows a
+	// "columns not validated" state; the poller re-checks once a token resolves.
+	KanbanBoardUnvalidated = "unvalidated"
+	// KanbanBoardInvalid — a runtime check ran and FAILED (board gone/renamed or a
+	// column no longer exists). The poller skips the link and the console shows it
+	// loudly, never a silent no-op.
+	KanbanBoardInvalid = "invalid"
+)
 
 // KanbanClaim is the idempotency row for kanban-triggered dispatch (Feature E).
 // UNIQUE(LinkId, DocumentID) means a given card is dispatched at most once per

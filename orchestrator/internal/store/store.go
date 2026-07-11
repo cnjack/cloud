@@ -498,6 +498,13 @@ type Store interface {
 	// expiry when it was minted by the device flow (D28); nil sets token_expires_at
 	// to NULL — the manual paste/clear path passes nil ("unknown / no expiry").
 	SetKanbanLinkToken(ctx context.Context, id string, tokenEnc []byte, expiresAt *time.Time) error
+	// SetKanbanLinkBoardStatus updates a link's fail-visible board validation state
+	// (D30). The poller's runtime check calls it: on success it flips board_status
+	// to KanbanBoardOK and canonicalizes board_ref to the board's config id plus its
+	// title; on failure it flips to KanbanBoardInvalid. A non-empty canonicalRef or
+	// title overwrites the stored value; an empty one leaves it unchanged (so an
+	// "invalid" transition keeps the last-known ref). The claims are untouched.
+	SetKanbanLinkBoardStatus(ctx context.Context, id, status, canonicalRef, title string) error
 	DeleteKanbanLink(ctx context.Context, id string) error
 
 	// EnsureKanbanClaim inserts a (link_id, document_id) claim row with run_id

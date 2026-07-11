@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cnjack/jcloud/internal/config"
@@ -16,13 +17,19 @@ import (
 	"github.com/cnjack/jcloud/internal/store"
 )
 
-// fakeBoardValidator is a test stand-in for the jtype board fetch.
+// fakeBoardValidator is a test stand-in for the jtype board fetch. calls, when
+// non-nil, counts GetBoard invocations so a soft-create test can assert the
+// validator was NEVER consulted (D30 deadlock break).
 type fakeBoardValidator struct {
 	board *jtype.Board
 	err   error
+	calls *int32
 }
 
 func (f fakeBoardValidator) GetBoard(ctx context.Context, ws, ref string) (*jtype.Board, error) {
+	if f.calls != nil {
+		atomic.AddInt32(f.calls, 1)
+	}
 	return f.board, f.err
 }
 
@@ -302,14 +309,23 @@ func TestProjectKanbanLinkColumnValidation(t *testing.T) {
 	board := &jtype.Board{Columns: []jtype.BoardColumn{{Key: "ai"}, {Key: "done"}}}
 	f := setupKanban(t, fakeBoardValidator{board: board})
 
-	// No token supplied AND no cluster fallback → token_required (fail-visible).
+	// No token supplied AND no cluster fallback → SOFT create (D30 deadlock break):
+	// the link is created board_status="unvalidated" (the bootstrap path), NOT
+	// rejected — an owner can then attach a per-link token via the device flow.
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "b", "service_id": f.serviceID, "trigger_column": "ai",
 	})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("no token & no fallback want 400 token_required, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("no token & no fallback should soft-create (201), got %d", resp.StatusCode)
 	}
-	resp.Body.Close()
+	var soft kanbanLinkView
+	decode(t, resp, &soft)
+	if soft.BoardStatus != domain.KanbanBoardUnvalidated {
+		t.Fatalf("soft create board_status = %q want unvalidated", soft.BoardStatus)
+	}
+	// Clean it up so the ws/board unique constraint doesn't collide with the good
+	// create below.
+	do(t, http.MethodDelete, f.linksURL()+"/"+soft.ID, f.tokens["owner"], nil).Body.Close()
 
 	// With a supplied token, a bad trigger column → 400.
 	bad := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
@@ -562,3 +578,157 @@ var errFakeJtype = errString("jtype offline")
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// --- D30 C2: create-link error typing + canonicalization + soft-create ---------
+
+// A board-not-found is an ACTIONABLE 400 board_not_found (RC3 regression: it must
+// NOT be a 503 that sends the owner to debug the network).
+func TestCreateLink_BoardNotFound_400(t *testing.T) {
+	f := setupKanban(t, fakeBoardValidator{err: jtype.ErrDocNotFound})
+	f.setClusterToken("cluster-pat") // a credential exists => HARD validate
+	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws", "board_ref": "ghost", "service_id": f.serviceID, "trigger_column": "ai",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("board not found want 400, got %d", resp.StatusCode)
+	}
+	if code := errorCode(t, resp); code != "board_not_found" {
+		t.Fatalf("error code = %q want board_not_found", code)
+	}
+}
+
+// An ambiguous bare name is a 400 board_ambiguous listing the candidates.
+func TestCreateLink_BoardAmbiguous_400(t *testing.T) {
+	amb := &jtype.ErrBoardAmbiguousError{Ref: "jtype", Candidates: []string{"a/jtype.board", "b/jtype.board"}}
+	f := setupKanban(t, fakeBoardValidator{err: amb})
+	f.setClusterToken("cluster-pat")
+	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws", "board_ref": "jtype", "service_id": f.serviceID, "trigger_column": "ai",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("ambiguous want 400, got %d", resp.StatusCode)
+	}
+	if code := errorCode(t, resp); code != "board_ambiguous" {
+		t.Fatalf("error code = %q want board_ambiguous", code)
+	}
+}
+
+// An auth failure (jtype 401) is a CONFIG error → 400 jtype_unauthorized, not 503.
+func TestCreateLink_JtypeUnauthorized_400(t *testing.T) {
+	f := setupKanban(t, fakeBoardValidator{err: &jtype.Error{StatusCode: 401, Code: "unauthorized", Message: "bad token"}})
+	f.setClusterToken("cluster-pat")
+	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws", "board_ref": "b", "service_id": f.serviceID, "trigger_column": "ai",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unauthorized want 400, got %d", resp.StatusCode)
+	}
+	if code := errorCode(t, resp); code != "jtype_unauthorized" {
+		t.Fatalf("error code = %q want jtype_unauthorized", code)
+	}
+}
+
+// A genuine 5xx keeps 503 jtype_unreachable (real network/instance-down).
+func TestCreateLink_JtypeDown_503(t *testing.T) {
+	f := setupKanban(t, fakeBoardValidator{err: &jtype.Error{StatusCode: 503, Code: "unavailable", Message: "down"}})
+	f.setClusterToken("cluster-pat")
+	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws", "board_ref": "b", "service_id": f.serviceID, "trigger_column": "ai",
+	})
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("jtype 5xx want 503, got %d", resp.StatusCode)
+	}
+	if code := errorCode(t, resp); code != "jtype_unreachable" {
+		t.Fatalf("error code = %q want jtype_unreachable", code)
+	}
+}
+
+// RC2 load-bearing: a submitted NAME is canonicalized to the board's config id
+// (b_…) and the friendly title is stored, so the poller can match cards.
+func TestCreateLink_CanonicalizesBoardRef(t *testing.T) {
+	board := &jtype.Board{ID: "b_ab12cd34", Title: "jtype", Columns: []jtype.BoardColumn{{Key: "ai"}, {Key: "done"}}}
+	f := setupKanban(t, fakeBoardValidator{board: board})
+	f.setClusterToken("cluster-pat")
+	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws", "board_ref": "jtype.board", "service_id": f.serviceID,
+		"trigger_column": "ai", "done_column": "done",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("canonical create want 201, got %d", resp.StatusCode)
+	}
+	var view kanbanLinkView
+	decode(t, resp, &view)
+	if view.BoardStatus != domain.KanbanBoardOK {
+		t.Fatalf("board_status = %q want ok", view.BoardStatus)
+	}
+	if view.BoardRef != "b_ab12cd34" {
+		t.Fatalf("view board_ref = %q want canonical b_ab12cd34", view.BoardRef)
+	}
+	if view.BoardTitle != "jtype" {
+		t.Fatalf("view board_title = %q want jtype", view.BoardTitle)
+	}
+	// The STORED link carries the canonical id (what the poller matches on).
+	link, err := f.st.GetKanbanLink(context.Background(), view.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.BoardRef != "b_ab12cd34" || link.BoardTitle != "jtype" {
+		t.Fatalf("stored link ref=%q title=%q want b_ab12cd34/jtype", link.BoardRef, link.BoardTitle)
+	}
+}
+
+// RC4 deadlock break: integration ON but NO per-link and NO cluster token → the
+// link is SOFT-created (201, board_status=unvalidated) and the validator is NEVER
+// called (no network round-trip with an empty credential).
+func TestCreateLink_SoftCreate_NoCredential(t *testing.T) {
+	var calls int32
+	board := &jtype.Board{ID: "b_x", Columns: []jtype.BoardColumn{{Key: "ai"}}}
+	f := setupKanban(t, fakeBoardValidator{board: board, calls: &calls}) // base URL set => Factory ok, but no cluster token
+	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws", "board_ref": "jtype", "service_id": f.serviceID, "trigger_column": "ai",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("soft create want 201, got %d", resp.StatusCode)
+	}
+	var view kanbanLinkView
+	decode(t, resp, &view)
+	if view.BoardStatus != domain.KanbanBoardUnvalidated {
+		t.Fatalf("board_status = %q want unvalidated", view.BoardStatus)
+	}
+	if view.BoardRef != "jtype" {
+		t.Fatalf("soft create must persist the raw ref, got %q", view.BoardRef)
+	}
+	if n := atomic.LoadInt32(&calls); n != 0 {
+		t.Fatalf("validator was called %d times on the soft path; want 0", n)
+	}
+}
+
+// Integration OFF (Factory !ok) also soft-creates with a visible unvalidated
+// status (matches the pre-existing "off" skip, now fail-visible).
+func TestCreateLink_SoftCreate_IntegrationOff(t *testing.T) {
+	f := setupKanban(t, fakeBoardValidator{}) // validation off => Factory !ok
+	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws", "board_ref": "b", "service_id": f.serviceID, "trigger_column": "ai",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("integration-off create want 201, got %d", resp.StatusCode)
+	}
+	var view kanbanLinkView
+	decode(t, resp, &view)
+	if view.BoardStatus != domain.KanbanBoardUnvalidated {
+		t.Fatalf("board_status = %q want unvalidated", view.BoardStatus)
+	}
+}
+
+// The predicate only SOFTENS when there is truly no credential: with a cluster
+// token, a not-found is a HARD 400 (not a soft create).
+func TestCreateLink_HardValidate_WithClusterToken(t *testing.T) {
+	f := setupKanban(t, fakeBoardValidator{err: jtype.ErrDocNotFound})
+	f.setClusterToken("cluster-pat")
+	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws", "board_ref": "ghost", "service_id": f.serviceID, "trigger_column": "ai",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("with a cluster token a bad ref must HARD-fail 400, got %d", resp.StatusCode)
+	}
+}

@@ -160,8 +160,8 @@ func (c *Client) MoveCard(ctx context.Context, workspace, docID, newStatus strin
 }
 
 // ResolveDocIDByPath lists the workspace and returns the document id whose
-// relative path matches path, or ErrDocNotFound. Used by the admin API to
-// validate a board ref (boards/<ref>.board) against the live workspace.
+// relative path matches path, or ErrDocNotFound. Kept for the rig smoke tests;
+// GetBoard resolves by name (resolveBoardDoc) rather than by an exact path.
 func (c *Client) ResolveDocIDByPath(ctx context.Context, workspace, path string) (string, error) {
 	docs, err := c.ListDocuments(ctx, workspace)
 	if err != nil {
@@ -175,15 +175,101 @@ func (c *Client) ResolveDocIDByPath(ctx context.Context, workspace, path string)
 	return "", ErrDocNotFound
 }
 
-// GetBoard fetches and parses a board (`.board` JSON document) by its ref. The
-// board document lives at relative path "boards/<ref>.board". Used by the admin
-// API to validate trigger/done column names against the board's actual columns.
+// resolveBoardDoc resolves a host-supplied boardRef to a workspace `.board`
+// document. It mirrors jtype-board-react's resolveBoard.ts exactly so the console
+// (which only knows a friendly name or a relative path) and the board embed agree
+// on which document a name selects. Resolution order:
+//
+//  1. normalize ref: trim, strip a leading "./" or "/"; empty => ErrDocNotFound.
+//  2. wanted = ref (+ ".board" if absent), compared case-insensitively.
+//  3. candidate set = docs whose relativePath ends ".board" (case-insensitive).
+//  4. exact wins: a doc whose lowercased relativePath == ref or == wanted.
+//  5. unique basename: docs whose lowercased relativePath ends "/wanted", or (for
+//     a root board with no slash) equals wanted. Exactly one => use it.
+//  6. >1 basename matches => *ErrBoardAmbiguousError (candidate paths listed).
+//  7. zero => ErrDocNotFound.
+//
+// Pure (no HTTP) so it is unit-tested directly, matching board-react's split.
+func resolveBoardDoc(docs []Doc, boardRef string) (Doc, error) {
+	ref := strings.TrimSpace(boardRef)
+	ref = strings.TrimPrefix(ref, "./")
+	ref = strings.TrimPrefix(ref, "/")
+	if ref == "" {
+		return Doc{}, ErrDocNotFound
+	}
+	refLower := strings.ToLower(ref)
+	wanted := refLower
+	if !strings.HasSuffix(wanted, ".board") {
+		wanted += ".board"
+	}
+
+	boards := make([]Doc, 0, len(docs))
+	for _, d := range docs {
+		if strings.HasSuffix(strings.ToLower(d.Path), ".board") {
+			boards = append(boards, d)
+		}
+	}
+
+	for _, d := range boards {
+		p := strings.ToLower(d.Path)
+		if p == refLower || p == wanted {
+			return d, nil
+		}
+	}
+
+	var byName []Doc
+	for _, d := range boards {
+		p := strings.ToLower(d.Path)
+		// Basename match in any folder ("/wanted"), or a root-level board whose whole
+		// path IS the basename (no slash — same effect as board-react's `/${wanted}`
+		// once you account for a top-level board).
+		if strings.HasSuffix(p, "/"+wanted) || (!strings.Contains(p, "/") && p == wanted) {
+			byName = append(byName, d)
+		}
+	}
+	if len(byName) == 1 {
+		return byName[0], nil
+	}
+	if len(byName) > 1 {
+		cands := make([]string, len(byName))
+		for i, d := range byName {
+			cands[i] = d.Path
+		}
+		return Doc{}, &ErrBoardAmbiguousError{Ref: boardRef, Candidates: cands}
+	}
+	return Doc{}, ErrDocNotFound
+}
+
+// GetBoard fetches and parses a board (`.board` JSON document) by NAME at any
+// path in the workspace. A real jtype board lives at the workspace root (or any
+// folder) as `<name>.board`; cards carry the board's config `id` (a random
+// `b_xxxxxxxx`) in their frontmatter `board`. GetBoard returns that id in
+// Board.ID — the canonical value a kanban link stores as its BoardRef so the
+// poller's `card.Board == link.BoardRef` match succeeds. Used by the admin API to
+// validate trigger/done column names against the board's actual columns.
+//
+// Errors: no matching `.board` => ErrDocNotFound; a bare name matching more than
+// one board => *ErrBoardAmbiguousError (candidates listed); a jtype 4xx/5xx =>
+// *Error (so callers distinguish an auth/workspace error from a missing board).
 func (c *Client) GetBoard(ctx context.Context, workspace, boardRef string) (*Board, error) {
-	id, err := c.ResolveDocIDByPath(ctx, workspace, "boards/"+boardRef+".board")
+	docs, err := c.ListDocuments(ctx, workspace)
 	if err != nil {
 		return nil, err
 	}
-	doc, err := c.GetDocument(ctx, workspace, id)
+	doc, err := resolveBoardDoc(docs, boardRef)
+	if err != nil {
+		return nil, err
+	}
+	return c.GetBoardByDoc(ctx, workspace, doc.ID)
+}
+
+// GetBoardByDoc fetches and parses a `.board` document by its KNOWN document id,
+// skipping the workspace re-listing that GetBoard does to resolve a ref. The
+// discovery endpoint uses this: it already has every board doc's id from a single
+// ListDocuments, so listing N boards costs 1 + N GetDocument round-trips, not the
+// 1 + N*(ListDocuments+GetDocument) an N-way GetBoard fan-out would.
+func (c *Client) GetBoardByDoc(ctx context.Context, workspace, docID string) (*Board, error) {
+	full, err := c.GetDocument(ctx, workspace, docID)
 	if err != nil {
 		return nil, err
 	}
@@ -195,14 +281,45 @@ func (c *Client) GetBoard(ctx context.Context, workspace, boardRef string) (*Boa
 			Name string `json:"name"`
 		} `json:"columns"`
 	}
-	if err := json.Unmarshal([]byte(doc.Content), &raw); err != nil {
-		return nil, fmt.Errorf("parse board %s: %w", boardRef, err)
+	if err := json.Unmarshal([]byte(full.Content), &raw); err != nil {
+		return nil, fmt.Errorf("parse board %s: %w", docID, err)
 	}
 	b := &Board{ID: raw.ID, Title: raw.Title}
 	for _, col := range raw.Columns {
 		b.Columns = append(b.Columns, BoardColumn{Key: col.Key, Name: col.Name})
 	}
 	return b, nil
+}
+
+// Workspace is a caller-visible jtype workspace (the fields the console picker
+// needs). The token is never part of this shape.
+type Workspace struct {
+	ID   string
+	Name string
+}
+
+// ListWorkspaces returns the caller's workspaces (GET /api/v1/workspaces). jtype
+// returns [{id, name|title}]; either label field is tolerated. Used by the
+// owner-only discovery endpoint that backs the console's workspace picker. 4xx/5xx
+// return a typed *Error (fail-visible; never an empty list masking an auth error).
+func (c *Client) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
+	var raw []struct {
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Title string `json:"title"`
+	}
+	if err := c.getJSON(ctx, c.baseURL+"/api/v1/workspaces", &raw); err != nil {
+		return nil, err
+	}
+	out := make([]Workspace, 0, len(raw))
+	for _, w := range raw {
+		name := w.Name
+		if name == "" {
+			name = w.Title
+		}
+		out = append(out, Workspace{ID: w.ID, Name: name})
+	}
+	return out, nil
 }
 
 // --- errors -----------------------------------------------------------------
@@ -221,8 +338,23 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("jtype: %d %s: %s", e.StatusCode, e.Code, e.Message)
 }
 
-// ErrDocNotFound is returned by ResolveDocIDByPath when no document matches.
+// ErrDocNotFound is returned when no document matches (ResolveDocIDByPath, or
+// GetBoard when no `.board` document resolves the ref).
 var ErrDocNotFound = fmt.Errorf("jtype: document not found")
+
+// ErrBoardAmbiguousError is returned by GetBoard when a bare board name matches
+// more than one `.board` document (the same basename in different folders).
+// Candidates lists the matching relativePaths so the caller can tell the user to
+// pass a full path. Callers use errors.As(err, *ErrBoardAmbiguousError).
+type ErrBoardAmbiguousError struct {
+	Ref        string
+	Candidates []string
+}
+
+func (e *ErrBoardAmbiguousError) Error() string {
+	return fmt.Sprintf("jtype: board %q is ambiguous (%d matches: %s)",
+		e.Ref, len(e.Candidates), strings.Join(e.Candidates, ", "))
+}
 
 // readError turns a >=400 response body into a typed *Error. jtype's error
 // envelope is {"error":"<code>","message":"…"} (or {"error":{"code","message"}});
