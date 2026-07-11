@@ -7,11 +7,18 @@
  * 11-api.md drifts from the fallback route spec, reconcile it here.
  */
 import type {
+  JTypeCloudDocument,
+  JTypeDocumentListItem,
+  JTypeSaveDocumentRequest,
+  JTypeSaveDocumentResponse,
+} from 'jtype-board-react';
+import type {
   AddMemberInput,
   ApiKey,
   ApiKeysEnvelope,
   AuthProviderInfo,
   AuthProvidersEnvelope,
+  BoardEmbedLink,
   CreateApiKeyInput,
   CreateApiKeyResponse,
   CreateKanbanLinkInput,
@@ -227,6 +234,43 @@ export interface ApiClient {
    * errors mirror listJtypeWorkspaces.
    */
   listJtypeBoards(projectId: string, workspaceId: string): Promise<JtypeBoard[]>;
+
+  /* ---- kanban board embed (D31) ----------------------------------------- */
+  /**
+   * GET /api/v1/projects/{id}/kanban/board/links — the reduced, member+ list of
+   * the project's kanban links (no credential fields). Gates the "Kanban" header
+   * button and feeds the board-embed modal's link selector. 403 for a viewer /
+   * non-member (→ empty list → no button); this is NOT the owner-only
+   * `listProjectKanbanLinks`.
+   */
+  listProjectBoardLinks(projectId: string): Promise<BoardEmbedLink[]>;
+  /**
+   * GET /api/v1/projects/{id}/kanban/board/documents?workspace=<ws> — proxies
+   * jtype's `listDocuments` for a workspace linked to this project (member+). The
+   * effective jtype token is applied server-side and never crosses the wire;
+   * the response is jtype's native `JTypeDocumentListItem[]` passed through
+   * verbatim.
+   */
+  boardListDocuments(projectId: string, workspaceId: string): Promise<JTypeDocumentListItem[]>;
+  /**
+   * GET /api/v1/projects/{id}/kanban/board/documents/{docId}?workspace=<ws> —
+   * proxies jtype's `getDocument` (member+; verbatim `JTypeCloudDocument`).
+   */
+  boardGetDocument(
+    projectId: string,
+    workspaceId: string,
+    docId: string,
+  ): Promise<JTypeCloudDocument>;
+  /**
+   * POST /api/v1/projects/{id}/kanban/board/documents/save?workspace=<ws> —
+   * proxies jtype's `saveDocument` for card create/edit/move (member+; matches
+   * run-dispatch authority). Returns jtype's native `JTypeSaveDocumentResponse`.
+   */
+  boardSaveDocument(
+    projectId: string,
+    workspaceId: string,
+    req: JTypeSaveDocumentRequest,
+  ): Promise<JTypeSaveDocumentResponse>;
 
   /* ---- cluster kanban config (D27) -------------------------------------- */
   /**
@@ -639,6 +683,31 @@ export function createHttpClient(
           `/projects/${encodeURIComponent(projectId)}/kanban/jtype/boards?workspace=${encodeURIComponent(workspaceId)}`,
         )
       ).boards ?? [],
+
+    // Kanban board embed (D31). The member+ board proxy: `board/links` gates the
+    // header button + selector (reduced view, no credential fields); the
+    // documents/* routes proxy jtype's document API with the effective token
+    // resolved and applied server-side (never on the wire). The document
+    // responses are jtype's native wire shapes, passed through verbatim.
+    listProjectBoardLinks: async (projectId) =>
+      (
+        await req<{ links: BoardEmbedLink[] }>(
+          `/projects/${encodeURIComponent(projectId)}/kanban/board/links`,
+        )
+      ).links ?? [],
+    boardListDocuments: (projectId, workspaceId) =>
+      req<JTypeDocumentListItem[]>(
+        `/projects/${encodeURIComponent(projectId)}/kanban/board/documents?workspace=${encodeURIComponent(workspaceId)}`,
+      ),
+    boardGetDocument: (projectId, workspaceId, docId) =>
+      req<JTypeCloudDocument>(
+        `/projects/${encodeURIComponent(projectId)}/kanban/board/documents/${encodeURIComponent(docId)}?workspace=${encodeURIComponent(workspaceId)}`,
+      ),
+    boardSaveDocument: (projectId, workspaceId, body) =>
+      req<JTypeSaveDocumentResponse>(
+        `/projects/${encodeURIComponent(projectId)}/kanban/board/documents/save?workspace=${encodeURIComponent(workspaceId)}`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
 
     // Cluster kanban config (D27). Cluster-admin — set/clear the DB override that
     // supersedes the JTYPE_BASE_URL env fallback. The token is write-only.

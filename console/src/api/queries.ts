@@ -49,6 +49,10 @@ export const qk = {
   kanbanLinks: ['kanban-links'] as const,
   kanbanConfig: ['kanban-config'] as const,
   projectKanbanLinks: (projectId: string) => ['project-kanban-links', projectId] as const,
+  // D31: the member+ reduced board-link list that gates the "Kanban" header
+  // button + feeds the embed modal's selector (distinct from the owner-only
+  // projectKanbanLinks above).
+  projectBoardLinks: (projectId: string) => ['project-board-links', projectId] as const,
   // D29: kanban discovery pickers — the caller's jtype workspaces, and a
   // workspace's boards (with columns), scoped to the project.
   jtypeWorkspaces: (projectId: string) => ['jtype-workspaces', projectId] as const,
@@ -456,6 +460,26 @@ export function useProjectKanbanLinks(projectId: string, enabled = true) {
     queryKey: qk.projectKanbanLinks(projectId),
     queryFn: () => api.listProjectKanbanLinks(projectId),
     enabled: enabled && !!projectId,
+  });
+}
+
+/**
+ * D31: the member+ board-embed link list — gates the project header's "Kanban"
+ * button and populates the modal's link selector. Distinct from
+ * {@link useProjectKanbanLinks} (owner-only, leaks credential posture): this
+ * endpoint is member+ and returns no credential fields, so a viewer / non-member
+ * gets a 403 → empty data → no button.
+ *
+ * `retry: false` so a 403/409/503 surfaces at once (no button) instead of
+ * spinning through retries — fail-visible, and the button simply stays hidden.
+ */
+export function useProjectBoardLinks(projectId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.projectBoardLinks(projectId),
+    queryFn: () => api.listProjectBoardLinks(projectId),
+    enabled: enabled && !!projectId,
+    retry: false,
   });
 }
 

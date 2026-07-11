@@ -936,6 +936,84 @@ describe('mockClient — kanban discovery pickers (D29)', () => {
   });
 });
 
+describe('mockClient — kanban board embed (D31)', () => {
+  async function projectWithTokenedLink() {
+    const client = createMockClient();
+    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
+    await flush(200);
+    await u;
+    const cp = client.createProject({ name: 'demo' });
+    await flush(500);
+    const project = await cp;
+    const cs = client.createService(project.id, {
+      name: 'default',
+      repo_url: 'https://gitea.local/acme/demo.git',
+      default_branch: 'main',
+    });
+    await flush(500);
+    const svc = await cs;
+    // A tokened link over the discoverable 'jtype.board' (config id b_ab12cd34).
+    const cl = client.createProjectKanbanLink(project.id, {
+      workspace_id: 'ws_team',
+      board_ref: 'jtype.board',
+      service_id: svc.id,
+      trigger_column: 'ai',
+      token: 'jtype-pat',
+    });
+    await flush(200);
+    await cl;
+    return { client, project };
+  }
+
+  it('listProjectBoardLinks returns the reduced view (config-id board_ref, no credential fields)', async () => {
+    const { client, project } = await projectWithTokenedLink();
+    const p = client.listProjectBoardLinks(project.id);
+    await flush(200);
+    const links = await p;
+    expect(links).toHaveLength(1);
+    const link = links[0]!;
+    // The reduced view surfaces the board's config id (b_…), mirroring the server.
+    expect(link.board_ref).toBe('b_ab12cd34');
+    expect(link.workspace_id).toBe('ws_team');
+    expect(link.enabled).toBe(true);
+    // No credential posture leaks into the member+ view.
+    const json = JSON.stringify(links);
+    expect(json).not.toContain('token_set');
+    expect(json).not.toContain('credential_status');
+    expect(json).not.toContain('token_expires_at');
+    expect(json).not.toContain('token');
+  });
+
+  it('board document proxy round-trips: the .board doc content carries the config id', async () => {
+    const { client, project } = await projectWithTokenedLink();
+    const dl = client.boardListDocuments(project.id, 'ws_team');
+    await flush(200);
+    const docs = await dl;
+    const boardDoc = docs.find((d) => d.relativePath.toLowerCase().endsWith('.board'));
+    expect(boardDoc).toBeTruthy();
+    expect(boardDoc!.isPublished).toBe(true);
+    expect(boardDoc!.versionId).toBeTruthy();
+
+    const gd = client.boardGetDocument(project.id, 'ws_team', boardDoc!.id);
+    await flush(200);
+    const doc = await gd;
+    const parsed = JSON.parse(doc.content) as { id: string };
+    expect(parsed.id).toBe('b_ab12cd34');
+  });
+
+  it('boardSaveDocument acknowledges with a merge status', async () => {
+    const { client, project } = await projectWithTokenedLink();
+    const sd = client.boardSaveDocument(project.id, 'ws_team', {
+      relativePath: 'cards/x.md',
+      content: '---\nstatus: done\n---\n',
+    });
+    await flush(200);
+    const res = await sd;
+    expect(res.relativePath).toBe('cards/x.md');
+    expect(res.mergeStatus).toBe('accepted');
+  });
+});
+
 describe('mockClient integrations (D19 / F5)', () => {
   it('creates, lists, rotates and deletes integrations; token is never echoed', async () => {
     const client = createMockClient();

@@ -14,8 +14,15 @@
 import type { ApiClient, StreamCallbacks, StreamHandle } from './client';
 import { ApiError } from './client';
 import type {
+  JTypeCloudDocument,
+  JTypeDocumentListItem,
+  JTypeSaveDocumentRequest,
+  JTypeSaveDocumentResponse,
+} from 'jtype-board-react';
+import type {
   AddMemberInput,
   ApiKey,
+  BoardEmbedLink,
   CreateApiKeyInput,
   CreateApiKeyResponse,
   CreateKanbanLinkInput,
@@ -1511,6 +1518,95 @@ export function createMockClient(): ApiClient {
         });
       }
       return delay(boards.map((b) => ({ ...b, columns: b.columns.map((c) => ({ ...c })) })));
+    },
+
+    /* ---- kanban board embed (D31) ----------------------------------------- */
+    // The member+ reduced link list (no credential fields) that gates the header
+    // button + feeds the modal selector. The stored board_ref is the ref in this
+    // mock; the real server stores the canonical config id, so we surface the
+    // discoverable board's config id here to keep the embed flow self-consistent
+    // (resolveBoardPathById matches on config.id).
+    async listProjectBoardLinks(projectId: string): Promise<BoardEmbedLink[]> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      return delay(
+        [...kanbanLinks.values()]
+          .filter((l) => l.project_id === projectId)
+          .map((l) => {
+            const board = (JTYPE_BOARDS[l.workspace_id] ?? []).find(
+              (b) => b.ref === l.board_ref,
+            );
+            return {
+              id: l.id,
+              workspace_id: l.workspace_id,
+              board_ref: board?.id ?? l.board_ref,
+              board_title: l.board_title,
+              board_status: l.board_status,
+              service_id: l.service_id,
+              trigger_column: l.trigger_column,
+              done_column: l.done_column,
+              enabled: l.enabled,
+            } satisfies BoardEmbedLink;
+          }),
+      );
+    },
+    async boardListDocuments(
+      projectId: string,
+      workspaceId: string,
+    ): Promise<JTypeDocumentListItem[]> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      const boards = JTYPE_BOARDS[workspaceId] ?? [];
+      return delay(
+        boards.map((b) => ({
+          id: `doc_${b.id}`,
+          relativePath: b.ref,
+          title: b.title,
+          isPublished: true,
+          contentHash: `h_${b.id}`,
+          updatedClock: 1,
+          versionId: 'v1',
+        })),
+      );
+    },
+    async boardGetDocument(
+      projectId: string,
+      workspaceId: string,
+      docId: string,
+    ): Promise<JTypeCloudDocument> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      const board = (JTYPE_BOARDS[workspaceId] ?? []).find(
+        (b) => `doc_${b.id}` === docId,
+      );
+      if (!board) {
+        throw new ApiError(404, `no document '${docId}'`, {
+          error: { code: 'document_not_found', message: `no document '${docId}'` },
+        });
+      }
+      return delay({
+        relativePath: board.ref,
+        title: board.title,
+        isPublished: true,
+        content: JSON.stringify({
+          id: board.id,
+          title: board.title,
+          columns: board.columns.map((c) => ({ key: c.key, name: c.name })),
+        }),
+        contentHash: `h_${board.id}`,
+        versionId: 'v1',
+        updatedClock: 1,
+      });
+    },
+    async boardSaveDocument(
+      projectId: string,
+      _workspaceId: string,
+      req: JTypeSaveDocumentRequest,
+    ): Promise<JTypeSaveDocumentResponse> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      return delay({
+        relativePath: req.relativePath,
+        contentHash: `h_${Math.random().toString(36).slice(2, 8)}`,
+        updatedClock: 2,
+        mergeStatus: 'accepted',
+      });
     },
 
     /* ---- cluster kanban config (D27) -------------------------------------- */

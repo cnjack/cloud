@@ -81,6 +81,12 @@ type Server struct {
 	// a test injects a fake so the owner-only discovery endpoints are exercised
 	// without HTTP. The effective token is used but NEVER serialized to the caller.
 	jtypeDiscoveryFor func(f *jtype.Factory, token string) jtypeDiscovery
+	// boardProxyFor builds a raw jtype document-API proxy (the member+ board embed,
+	// D31) from a resolved Factory + token. Production wraps *jtype.Factory.Client;
+	// a test injects a fake so the proxy endpoints are exercised without HTTP. The
+	// effective token is applied as a Bearer header inside ProxyDocumentAPI but is
+	// NEVER serialized to the caller.
+	boardProxyFor func(f *jtype.Factory, token string) jtypeBoardProxy
 
 	// connects is the in-memory registry of pending "Connect with jtype" OAuth
 	// device flows (D28); no DB persistence — a restart drops in-flight flows.
@@ -163,6 +169,9 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Default jtype discovery client (D29 pickers): same token-bound client; tests
 	// override with a fake.
 	s.jtypeDiscoveryFor = func(f *jtype.Factory, token string) jtypeDiscovery { return f.Client(token) }
+	// Default board embed proxy (D31): the same token-bound client, which carries
+	// ProxyDocumentAPI; tests override with a fake.
+	s.boardProxyFor = func(f *jtype.Factory, token string) jtypeBoardProxy { return f.Client(token) }
 	// D28 — "Connect with jtype" OAuth device flow: an in-memory registry of
 	// pending flows + the jtype OAuth device-flow client seam (overridden by tests).
 	s.connects = newConnectRegistry()
@@ -333,6 +342,16 @@ func (s *Server) Handler() http.Handler {
 	// use the EFFECTIVE cluster factory + token; the token is NEVER serialized.
 	mux.Handle("GET /api/v1/projects/{id}/kanban/jtype/workspaces", s.authed(s.handleListJtypeWorkspaces))
 	mux.Handle("GET /api/v1/projects/{id}/kanban/jtype/boards", s.authed(s.handleListJtypeBoards))
+	// D31 — member+ board embed proxy: gate the console's Kanban button (board/links)
+	// and render the real jtype board through a server-side proxy so the effective
+	// jtype token never reaches the browser. Every documents/* handler enforces the
+	// confused-deputy guard (the ?workspace= must be one of THIS project's links).
+	// Reads and writes are BOTH member+ (write matches run-dispatch authority; a
+	// board move is what the poller turns into a run). The token is NEVER serialized.
+	mux.Handle("GET /api/v1/projects/{id}/kanban/board/links", s.authed(s.handleListBoardEmbedLinks))
+	mux.Handle("GET /api/v1/projects/{id}/kanban/board/documents", s.authed(s.handleBoardListDocuments))
+	mux.Handle("GET /api/v1/projects/{id}/kanban/board/documents/{docID}", s.authed(s.handleBoardGetDocument))
+	mux.Handle("POST /api/v1/projects/{id}/kanban/board/documents/save", s.authed(s.handleBoardSaveDocument))
 
 	// Project-scoped API keys (F12 / D24) — a revocable automation credential
 	// bound to exactly one project, replacing the CONSOLE_TOKEN borrow-pattern

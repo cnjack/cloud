@@ -20,6 +20,9 @@ importers:
       jcode-ui-core:
         specifier: 0.1.0
         version: 0.1.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      jtype-board-react:
+        specifier: 0.1.0
+        version: 0.1.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -1085,6 +1088,12 @@ packages:
     resolution: {integrity: sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg==}
     engines: {node: '>=6'}
     hasBin: true
+
+  jtype-board-react@0.1.0:
+    resolution: {integrity: sha512-wbwYNo1gWdWCjSRQLgpdSmxEYCKLtOWSdQmKYXuXNMnSolap9835l6Ow8FMNLj1UNToe5kQx2G1OD68hbBRMUg==}
+    peerDependencies:
+      react: ^18.2.0 || ^19.0.0
+      react-dom: ^18.2.0 || ^19.0.0
 
   loose-envify@1.4.0:
     resolution: {integrity: sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q==}
@@ -2379,6 +2388,11 @@ snapshots:
   jsesc@3.1.0: {}
 
   json5@2.2.3: {}
+
+  jtype-board-react@0.1.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
+    dependencies:
+      react: 18.3.1
+      react-dom: 18.3.1(react@18.3.1)
 
   loose-envify@1.4.0:
     dependencies:

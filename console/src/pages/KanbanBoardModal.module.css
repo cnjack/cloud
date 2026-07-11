@@ -1,0 +1,55 @@
+/* KanbanBoardModal — the embedded jtype board surface (D31). */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  /* The board wants room; the Modal panel caps width, so let the board fill it. */
+  min-width: min(72vw, 900px);
+}
+
+.selectorRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.selector {
+  min-width: 16rem;
+}
+
+/* The board host — a bounded, scrollable region so a tall board doesn't blow
+   out the modal. `.jtb-scope` (the package's own class) keeps board chrome from
+   bleeding into the console shell. */
+.board {
+  min-height: 24rem;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+/* Fail-visible panel: the board could not be opened (deleted / renamed / access
+   lost). Never a blank modal (red line #1). */
+.failPanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  background: var(--color-panel-raised);
+}
+
+.failTitle {
+  font-weight: var(--fw-semibold);
+  color: var(--color-danger);
+}
+
+.failMsg {
+  font-size: var(--fs-body);
+  color: var(--color-text);
+}
+
+.failDetail {
+  font-size: var(--fs-caption);
+  color: var(--color-text-dim);
+}

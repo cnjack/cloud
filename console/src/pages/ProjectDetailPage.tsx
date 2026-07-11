@@ -23,6 +23,7 @@ import {
   useUpdateService,
   useIntegrations,
   useIntegrationRepos,
+  useProjectBoardLinks,
 } from '../api/queries';
 import { useOptionalAuth } from '../auth/AuthProvider';
 import { useModelGate } from '../components/ModelGate';
@@ -37,6 +38,7 @@ import { LoadingBlock, ErrorBlock } from '../components/States';
 import { useToast } from '../components/Toast';
 import { GitModeBadge } from '../components/GitModeBadge';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
+import { KanbanBoardModal } from './KanbanBoardModal';
 import { SchedulesPanel } from './SchedulesPanel';
 import { ApiError } from '../api/client';
 import { providerForRepoUrl } from '../lib/repo';
@@ -64,6 +66,8 @@ export function ProjectDetailPage() {
   const [prompt, setPrompt] = useState('');
   const [promptError, setPromptError] = useState<string>();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // D31: the embedded kanban board modal.
+  const [kanbanOpen, setKanbanOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<string>('');
   // D21: the composer's per-run model pick ("" => resolve via service default /
   // the project's sole grant).
@@ -102,6 +106,13 @@ export function ProjectDetailPage() {
   const role = p?.role ?? 'owner';
   const canRun = role !== 'viewer';
   const canManage = role === 'owner';
+
+  // D31: the reduced, member+ board-link list gates the "Kanban" header button.
+  // Loaded once the project (and role) is known, for member+ only — a viewer's
+  // 403 yields an empty list → no button (owner-only useProjectKanbanLinks would
+  // both 403 members and leak credential posture, so it can't gate this).
+  const boardLinks = useProjectBoardLinks(projectId, !!p && canRun);
+  const hasBoardLinks = (boardLinks.data?.length ?? 0) > 0;
 
   // Integrations (D19 / F5): a member can add a repo off an existing integration
   // (the integration's bot lists the repos). Loaded EAGERLY for any member+ once
@@ -314,16 +325,28 @@ export function ProjectDetailPage() {
             )}
           </div>
         </div>
-        {canManage && (
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setSettingsOpen(true)}
-            data-testid="project-settings-btn"
-          >
-            Settings
-          </Button>
-        )}
+        <div className={styles.headerActions}>
+          {hasBoardLinks && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setKanbanOpen(true)}
+              data-testid="project-kanban-btn"
+            >
+              Kanban
+            </Button>
+          )}
+          {canManage && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setSettingsOpen(true)}
+              data-testid="project-settings-btn"
+            >
+              Settings
+            </Button>
+          )}
+        </div>
       </header>
 
       {canRun && services.length === 0 && (
@@ -720,6 +743,14 @@ export function ProjectDetailPage() {
           navigate('/');
         }}
       />
+
+      {kanbanOpen && hasBoardLinks && (
+        <KanbanBoardModal
+          projectId={projectId}
+          links={boardLinks.data!}
+          onClose={() => setKanbanOpen(false)}
+        />
+      )}
     </div>
   );
 }

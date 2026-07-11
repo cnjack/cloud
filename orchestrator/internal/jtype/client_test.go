@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,8 +64,8 @@ func (f *fakeJtype) handle(w http.ResponseWriter, r *http.Request) {
 
 	case suffix == "save" && r.Method == http.MethodPost: // save
 		var req struct {
-			RelativePath   string `json:"relativePath"`
-			Content        string `json:"content"`
+			RelativePath    string `json:"relativePath"`
+			Content         string `json:"content"`
 			BaseContentHash string `json:"baseContentHash"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -85,7 +86,9 @@ func (f *fakeJtype) handle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"contentHash": h})
 
 	case strings.Contains(suffix, "/comments") && r.Method == http.MethodPost: // comment
-		var req struct{ Body string `json:"body"` }
+		var req struct {
+			Body string `json:"body"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		f.lastBody = req.Body
 		writeJSON(w, http.StatusOK, map[string]any{"id": "cmt-1"})
@@ -282,5 +285,117 @@ func TestResolveDocIDByPath(t *testing.T) {
 	}
 	if len(b.Columns) != 1 || b.Columns[0].Key != "ai" {
 		t.Fatalf("board columns = %+v", b.Columns)
+	}
+}
+
+// --- D31: ProxyDocumentAPI (raw verbatim passthrough for the board embed) -----
+
+// ProxyDocumentAPI builds {base}{path}, sets Bearer + Accept, and returns the raw
+// response (status + body) UNMODIFIED — including fields the typed Doc/Document
+// structs drop (isPublished, versionId), which is exactly why it bypasses them.
+func TestProxyDocumentAPI_ForwardsAndReturnsRaw(t *testing.T) {
+	var gotAuth, gotAccept, gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotAccept = r.Header.Get("Accept")
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Fields the typed structs drop — must survive verbatim.
+		_, _ = io.WriteString(w, `[{"id":"d1","relativePath":"a.board","isPublished":true,"versionId":"v9","updatedClock":7}]`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok-123", 0)
+	resp, err := c.ProxyDocumentAPI(context.Background(), http.MethodGet, "/api/v1/workspaces/ws-1/documents", nil)
+	if err != nil {
+		t.Fatalf("ProxyDocumentAPI: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d want 200", resp.StatusCode)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/api/v1/workspaces/ws-1/documents" {
+		t.Fatalf("upstream got %s %s", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer tok-123" {
+		t.Fatalf("Authorization = %q want Bearer tok-123", gotAuth)
+	}
+	if gotAccept != "application/json" {
+		t.Fatalf("Accept = %q", gotAccept)
+	}
+	if !strings.Contains(string(body), `"isPublished":true`) || !strings.Contains(string(body), `"versionId":"v9"`) {
+		t.Fatalf("raw passthrough lost fields: %s", body)
+	}
+}
+
+// A >=400 upstream status is returned as a normal response (not an error) for
+// verbatim passthrough — the caller copies it through.
+func TestProxyDocumentAPI_PassesThroughErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"error":"conflict","message":"stale"}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok", 0)
+	resp, err := c.ProxyDocumentAPI(context.Background(), http.MethodPost, "/api/v1/workspaces/ws/documents/save", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("a 409 must be a response, not an error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d want 409", resp.StatusCode)
+	}
+}
+
+// The save path streams the request body through and sets Content-Type.
+func TestProxyDocumentAPI_StreamsBody(t *testing.T) {
+	var gotBody, gotCT string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		gotCT = r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"mergeStatus":"clean","contentHash":"h1"}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok", 0)
+	resp, err := c.ProxyDocumentAPI(context.Background(), http.MethodPost,
+		"/api/v1/workspaces/ws/documents/save", strings.NewReader(`{"relativePath":"a.md","content":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if gotBody != `{"relativePath":"a.md","content":"x"}` {
+		t.Fatalf("upstream body = %q", gotBody)
+	}
+	if gotCT != "application/json" {
+		t.Fatalf("Content-Type = %q", gotCT)
+	}
+}
+
+// An empty token sends NO Authorization header (matches `do`) — the fail-visible
+// path where the caller failed to resolve a credential; jtype then 401s.
+func TestProxyDocumentAPI_EmptyTokenNoAuthHeader(t *testing.T) {
+	var hadAuth bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, hadAuth = r.Header["Authorization"]
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "", 0)
+	resp, err := c.ProxyDocumentAPI(context.Background(), http.MethodGet, "/api/v1/workspaces/ws/documents", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if hadAuth {
+		t.Fatal("empty token must not set an Authorization header")
 	}
 }

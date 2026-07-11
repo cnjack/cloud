@@ -327,6 +327,37 @@ func (c *Client) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
 	return out, nil
 }
 
+// ProxyDocumentAPI issues an authenticated request to a jtype document-API path
+// and returns the RAW http.Response for the caller to copy through unmodified.
+// The board embed proxy (D31) needs jtype's EXACT wire shapes — including fields
+// the typed Doc/Document structs deliberately drop (isPublished, versionId, a
+// save's mergeStatus) — so re-serializing through those structs would be a
+// silent field-dropping degradation (CLAUDE.md red line #1). This bypasses them.
+//
+// `path` MUST be built by the caller from validated components only (never a raw
+// client-controlled string); it is appended to baseURL as-is. The bound token is
+// applied as the Authorization Bearer header exactly as `do` does (empty token =>
+// no header) and is therefore NEVER part of the returned body. `body`, when
+// non-nil, is streamed as the request body (Content-Type: application/json).
+//
+// The caller owns resp.Body (must Close it). A >=400 status is returned as a
+// normal response for verbatim passthrough — only a transport/build failure is an
+// error here.
+func (c *Client) ProxyDocumentAPI(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("jtype: request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	return c.http.Do(req)
+}
+
 // --- errors -----------------------------------------------------------------
 
 // Error is a typed jtype API error carrying the HTTP status and a short code,

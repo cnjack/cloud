@@ -605,6 +605,37 @@ export interface JtypeBoard {
   columns: JtypeBoardColumn[];
 }
 
+/* ---- kanban board embed (D31) --------------------------------------------- */
+
+/**
+ * GET /api/v1/projects/{id}/kanban/board/links — the reduced, **member+** view
+ * of a project's kanban links that gates the "Kanban" header button and feeds
+ * the board-embed modal's link selector.
+ *
+ * Deliberately NOT the owner-only `KanbanLink` (which serializes credential
+ * posture — `token_set`, `credential_status`, `token_expires_at`): a
+ * member-visible button must not 403 for members nor leak credential state to
+ * non-owners. This view therefore carries NO token/credential fields — only the
+ * metadata the embed needs to open a board.
+ */
+export interface BoardEmbedLink {
+  id: string;
+  workspace_id: string;
+  /**
+   * The board's `config.id` (`b_…`), as stored on the link after
+   * canonicalization — NOT a relativePath. The modal resolves this to the
+   * board's `.board` relativePath (via the member+ document proxy) before
+   * handing it to `<JTypeBoard boardRef>` (which resolves by name/path).
+   */
+  board_ref: string;
+  board_title?: string;
+  board_status?: KanbanBoardStatus;
+  service_id: string;
+  trigger_column: string;
+  done_column?: string;
+  enabled: boolean;
+}
+
 /* ---- cluster kanban config (D27) ------------------------------------------ */
 
 /**
