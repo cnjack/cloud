@@ -39,24 +39,24 @@ function renderTimeline(
   };
   return render(
     <RuntimeProvider runtime={runtime}>
-      <Timeline permissions={opts.permissions} />
+      <Timeline events={events} isRunning={opts.isRunning} permissions={opts.permissions} />
     </RuntimeProvider>,
   );
 }
 
-describe('Timeline — published jcode-ui rendering', () => {
-  it('renders merged assistant markdown through the package Message component', () => {
+describe('Timeline — task conversation rendering', () => {
+  it('renders merged assistant markdown as one jcode conversation message', () => {
     const { container } = renderTimeline([
       ev(1, 'agent.text', { text: 'Hello ' }),
       ev(2, 'agent.text', { text: '**world**' }),
     ]);
 
-    expect(container.querySelectorAll('.jcode-message')).toHaveLength(1);
-    expect(container.querySelector('.jcode-message strong')?.textContent).toBe('world');
-    expect(screen.getByText('JCODE')).toBeTruthy();
+    expect(screen.getAllByTestId('thread-message-assistant')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="thread-message-assistant"] strong')?.textContent).toBe('world');
+    expect(screen.getByText('jcode')).toBeTruthy();
   });
 
-  it('renders paired tools through the package ToolCallCard component', () => {
+  it('groups paired tools into the compact progress rail from the design', () => {
     const { container } = renderTimeline([
       ev(1, 'agent.tool_call', {
         name: 'execute',
@@ -71,18 +71,20 @@ describe('Timeline — published jcode-ui rendering', () => {
       }),
     ]);
 
-    expect(container.querySelectorAll('.jcode-toolcall')).toHaveLength(1);
+    expect(screen.getByTestId('thread-progress')).toBeTruthy();
+    expect(container.querySelectorAll('[data-testid="thread-tool"]')).toHaveLength(1);
     expect(container.textContent).toContain('execute');
   });
 
-  it('renders lifecycle information as visible package system messages', () => {
+  it('renders lifecycle information as compact run events instead of chat messages', () => {
     const { container } = renderTimeline([
       ev(1, 'run.session', { resumed: true }),
       ev(2, 'session.finish', { reason: 'idle_timeout' }),
       ev(3, 'run.status', { status: 'succeeded' }),
     ]);
 
-    expect(container.querySelectorAll('.jcode-message[data-role="system"]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-testid="thread-event"]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-testid="thread-message-system"]')).toHaveLength(0);
     expect(container.textContent).toContain('Session resumed');
     expect(container.textContent).toContain('Session finished (idle timeout)');
     expect(container.textContent).toContain('Final status: Succeeded');
@@ -96,6 +98,7 @@ describe('Timeline — published jcode-ui rendering', () => {
     expect(container.textContent).toContain('Ada Lovelace');
     expect(container.textContent).toContain('Please continue');
     expect(screen.queryByText('You')).toBeNull();
+    expect(screen.getByTestId('thread-message-user')).toBeTruthy();
   });
 
   it('keeps an unknown event payload visibly inspectable', () => {
@@ -127,7 +130,7 @@ describe('Timeline — published jcode-ui rendering', () => {
     expect(onDecide).toHaveBeenCalledWith('req-1', 'custom-allow');
   });
 
-  it('shows the package pending indicator while a turn is running', () => {
+  it('shows a compact pending indicator while a turn is running', () => {
     renderTimeline([], { isRunning: true });
     expect(screen.getByLabelText('Thinking…')).toBeTruthy();
   });

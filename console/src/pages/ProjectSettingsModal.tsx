@@ -13,7 +13,7 @@
  *   - API keys (F12 / D24): project-scoped, revocable automation credentials
  *     (owner) — replaces borrowing CONSOLE_TOKEN for external/CI use.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
 import { SelectField, TextField } from '../components/Field';
@@ -34,6 +34,7 @@ import {
   useApiKeys,
   useCreateApiKey,
   useRevokeApiKey,
+  useProjectModels,
 } from '../api/queries';
 import { useToast } from '../components/Toast';
 import { KanbanConnectFlow, expiryLabel } from '../components/KanbanConnect';
@@ -83,6 +84,297 @@ function sameEnv(a: Record<string, string>, b: Record<string, string>): boolean 
   const bk = Object.keys(b);
   if (ak.length !== bk.length) return false;
   return ak.every((k) => b[k] === a[k]);
+}
+
+type SettingsSectionId = 'general' | 'members' | 'integrations' | 'kanban' | 'models' | 'apikeys';
+
+const SETTINGS_NAV: ReadonlyArray<{ id: SettingsSectionId; label: string }> = [
+  { id: 'general', label: 'General' },
+  { id: 'members', label: 'Members' },
+  { id: 'integrations', label: 'Git integrations' },
+  { id: 'kanban', label: 'Kanban' },
+  { id: 'models', label: 'Model access' },
+  { id: 'apikeys', label: 'API keys' },
+];
+
+/**
+ * Route-owned Project administration. All project-level controls are visible in
+ * one document; repository/service controls intentionally remain in the
+ * Service settings tab of the workspace.
+ */
+export function ProjectSettingsPage({
+  project,
+  onClose,
+  onDeleted,
+}: {
+  project: Project;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const update = useUpdateProject();
+  const del = useDeleteProject();
+  const toast = useToast();
+  const canManage = (project.role ?? 'owner') === 'owner';
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>('general');
+  const [name, setName] = useState(project.name);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [maxConcurrent, setMaxConcurrent] = useState(
+    project.max_concurrent_runs != null ? String(project.max_concurrent_runs) : '',
+  );
+  const [runTimeout, setRunTimeout] = useState(
+    project.run_timeout_secs != null ? String(project.run_timeout_secs) : '',
+  );
+  const [envRows, setEnvRows] = useState<EnvRow[]>(envToRows(project.injected_env));
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const busy = update.isPending || del.isPending;
+
+  const envError = (() => {
+    for (const row of envRows) {
+      const key = row.key.trim();
+      if (!key) continue;
+      if (!isValidEnvKey(key)) return `“${key}” is not a valid environment variable name.`;
+      if (isReservedEnvKey(key)) return `“${key}” is reserved by the orchestrator and can’t be set.`;
+    }
+    return '';
+  })();
+
+  const jumpTo = (id: SettingsSectionId) => {
+    setActiveSection(id);
+    const target = bodyRef.current?.querySelector<HTMLElement>(`#project-settings-${id}`);
+    if (typeof target?.scrollIntoView === 'function') {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  const save = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (envError) return;
+    const input: UpdateProjectInput = {};
+    const nextName = name.trim();
+    if (nextName && nextName !== project.name) input.name = nextName;
+    if (canManage) {
+      const nextMax = parseGuardrail(maxConcurrent);
+      const nextTimeout = parseGuardrail(runTimeout);
+      const nextEnv = rowsToEnv(envRows);
+      if (nextMax !== (project.max_concurrent_runs ?? null)) input.max_concurrent_runs = nextMax;
+      if (nextTimeout !== (project.run_timeout_secs ?? null)) input.run_timeout_secs = nextTimeout;
+      if (!sameEnv(nextEnv, project.injected_env ?? {})) input.injected_env = nextEnv;
+    }
+    if (Object.keys(input).length === 0) return;
+    update.mutate(
+      { id: project.id, input },
+      {
+        onSuccess: (updated) =>
+          toast.push({ kind: 'success', message: `Project “${updated.name}” updated.` }),
+        onError: (error) =>
+          toast.push({
+            kind: 'error',
+            message: error instanceof ApiError ? error.message : 'Failed to update project.',
+          }),
+      },
+    );
+  };
+
+  const remove = () => {
+    del.mutate(project.id, {
+      onSuccess: () => {
+        toast.push({ kind: 'success', message: `Project “${project.name}” deleted.` });
+        onDeleted();
+      },
+      onError: (error) =>
+        toast.push({
+          kind: 'error',
+          message: error instanceof ApiError ? error.message : 'Failed to delete project.',
+        }),
+    });
+  };
+
+  const visibleNav = SETTINGS_NAV.filter(
+    ({ id }) => canManage || (id !== 'integrations' && id !== 'kanban' && id !== 'apikeys'),
+  );
+
+  return (
+    <div className={styles.settingsPage} data-testid="project-settings-page">
+      <div className={styles.settingsPageHead}>
+        <button type="button" className={styles.settingsBack} onClick={onClose} data-testid="project-settings-back">
+          <span aria-hidden>←</span> Project workspace
+        </button>
+        <div>
+          <span className={styles.settingsEyebrow}>Project administration</span>
+          <h1>Settings</h1>
+          <p>Manage the project container. Repository behavior remains scoped to each service.</p>
+        </div>
+      </div>
+
+      <div className={styles.settingsLayout} ref={bodyRef}>
+        <nav className={styles.settingsNav} aria-label="Project settings sections">
+          {visibleNav.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              data-testid={`tab-${id}`}
+              aria-current={activeSection === id ? 'location' : undefined}
+              data-active={activeSection === id || undefined}
+              onClick={() => jumpTo(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+
+        <div className={styles.settingsDocument}>
+          <form id="project-settings-form" onSubmit={save} noValidate>
+            <SettingsSection id="general" title="General" description="Project identity and execution guardrails.">
+            <div className={styles.body}>
+              <TextField
+                label="Project name"
+                placeholder="demo"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                hint="Repository branch and git mode are configured per service."
+                data-testid="settings-name-input"
+                autoComplete="off"
+              />
+              {canManage && (
+                <section className={styles.guardrails} data-testid="guardrails">
+                  <div className={styles.guardrailHead}>
+                    <span className={styles.guardrailTitle}>Execution guardrails</span>
+                    <span className={styles.guardrailHint}>Leave a limit blank to inherit the cluster default.</span>
+                  </div>
+                  <div className={styles.guardrailGrid}>
+                    <TextField label="Max concurrent runs" type="number" min={1} inputMode="numeric" placeholder="cluster default" value={maxConcurrent} onChange={(event) => setMaxConcurrent(event.target.value)} data-testid="settings-max-concurrent" autoComplete="off" />
+                    <TextField label="Run timeout (seconds)" type="number" min={1} inputMode="numeric" placeholder="cluster default" value={runTimeout} onChange={(event) => setRunTimeout(event.target.value)} data-testid="settings-run-timeout" autoComplete="off" />
+                  </div>
+                  <div className={styles.envBlock} data-testid="settings-injected-env">
+                    <div className={styles.guardrailHead}>
+                      <span className={styles.guardrailTitle}>Injected environment</span>
+                      <span className={styles.guardrailHint}>Merged into every run. System variables are reserved.</span>
+                    </div>
+                    {envRows.length > 0 && (
+                      <div className={styles.envRows}>
+                        {envRows.map((row, index) => {
+                          const key = row.key.trim();
+                          const invalid = key !== '' && (!isValidEnvKey(key) || isReservedEnvKey(key));
+                          return (
+                            <div key={index} className={styles.envRow} data-testid="env-row">
+                              <input className={[styles.envInput, invalid && styles.envInvalid].filter(Boolean).join(' ')} placeholder="KEY" value={row.key} aria-invalid={invalid || undefined} onChange={(event) => setEnvRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} data-testid={`env-key-${index}`} autoComplete="off" />
+                              <span className={styles.envEq}>=</span>
+                              <input className={styles.envInput} placeholder="value" value={row.value} onChange={(event) => setEnvRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} data-testid={`env-value-${index}`} autoComplete="off" />
+                              <button type="button" className={styles.envRemove} onClick={() => setEnvRows((rows) => rows.filter((_, itemIndex) => itemIndex !== index))} data-testid={`env-remove-${index}`} aria-label="Remove variable">×</button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setEnvRows((rows) => [...rows, { key: '', value: '' }])} data-testid="env-add">+ Add variable</Button>
+                    {envError && <span className={styles.envError} data-testid="env-error">{envError}</span>}
+                  </div>
+                </section>
+              )}
+            </div>
+            </SettingsSection>
+          </form>
+
+          <SettingsSection id="members" title="Members and permissions" description="Choose who can view, run, and administer this project.">
+            <MembersPanel projectId={project.id} canManage={canManage} />
+          </SettingsSection>
+
+          {canManage && (
+            <SettingsSection id="integrations" title="Git integrations" description="Credentials for unattended repository operations. Webhook OAuth setup remains per service.">
+              <IntegrationsPanel project={project} />
+            </SettingsSection>
+          )}
+
+          {canManage && (
+            <SettingsSection id="kanban" title="Kanban links" description="Route jtype board transitions to a specific service.">
+              <KanbanPanel project={project} />
+            </SettingsSection>
+          )}
+
+          <SettingsSection id="models" title="Model access" description="Models currently available to sessions in this project.">
+            <ModelAccessPanel projectId={project.id} />
+          </SettingsSection>
+
+          {canManage && (
+            <SettingsSection id="apikeys" title="Project API keys" description="Revocable credentials for API-triggered automation.">
+              <ApiKeysPanel project={project} />
+            </SettingsSection>
+          )}
+
+          {canManage && (
+            <SettingsSection id="danger" title="Danger zone" description="Permanent, destructive project actions.">
+              <section className={styles.danger} data-testid="danger-zone">
+                <div className={styles.dangerText}>
+                  <span className={styles.dangerTitle}>Delete project</span>
+                  <span className={styles.dangerHint}>Permanently removes this project and all of its runs, events, and artifacts.</span>
+                </div>
+                {confirmDelete ? (
+                  <div className={styles.confirmRow} data-testid="delete-confirm">
+                    <span className={styles.confirmLabel}>Delete for good?</span>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setConfirmDelete(false)} disabled={del.isPending}>Keep</Button>
+                    <Button type="button" variant="danger" size="sm" loading={del.isPending} onClick={remove} data-testid="project-delete-confirm">Delete project</Button>
+                  </div>
+                ) : (
+                  <Button type="button" variant="danger" size="sm" onClick={() => setConfirmDelete(true)} disabled={busy} data-testid="project-delete">Delete project</Button>
+                )}
+              </section>
+            </SettingsSection>
+          )}
+
+          <div className={styles.settingsSavebar}>
+            <span>{envError || 'Project settings are saved independently from service settings.'}</span>
+            <div>
+              <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Back</Button>
+              <Button variant="primary" type="submit" form="project-settings-form" loading={update.isPending} disabled={!!envError} data-testid="project-settings-save">Save changes</Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsSection({
+  id,
+  title,
+  description,
+  children,
+}: {
+  id: string;
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <section id={`project-settings-${id}`} className={styles.settingsSection}>
+      <header>
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </header>
+      <div className={styles.settingsSectionBody}>{children}</div>
+    </section>
+  );
+}
+
+function ModelAccessPanel({ projectId }: { projectId: string }) {
+  const models = useProjectModels(projectId);
+  if (models.isLoading) return <p className={styles.settingsState}>Loading model access…</p>;
+  if (models.isError) return <p className={styles.settingsState} role="alert">Model access could not be loaded. Retry from the project workspace.</p>;
+  if (!models.data || (models.data.models.length === 0 && !models.data.env_fallback)) {
+    return <p className={styles.settingsState}>No model is configured for this project. Ask a cluster administrator to grant one.</p>;
+  }
+  return (
+    <div className={styles.modelList}>
+      {models.data.models.map((model) => (
+        <div key={model.id} className={styles.modelRow}>
+          <span className={styles.modelMark} aria-hidden>AI</span>
+          <span><strong>{model.name}</strong><code>{model.model_name}</code></span>
+          <small>Granted</small>
+        </div>
+      ))}
+      {models.data.env_fallback && <p className={styles.settingsState}>Cluster environment model fallback is active.</p>}
+    </div>
+  );
 }
 
 export function ProjectSettingsModal({

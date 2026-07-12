@@ -46,7 +46,7 @@ import { TaskComposer } from '../project-workspace/TaskComposer';
 import { WebhookSetupCard } from '../project-workspace/WebhookSetupCard';
 import { serviceMark, serviceProviderLabel, serviceSource } from '../project-workspace/presentation';
 import { KanbanBoardModal } from './KanbanBoardModal';
-import { ProjectSettingsModal } from './ProjectSettingsModal';
+import { ProjectSettingsPage } from './ProjectSettingsModal';
 import { SchedulesPanel } from './SchedulesPanel';
 import styles from './ProjectDetailPage.module.css';
 
@@ -70,7 +70,6 @@ export function ProjectDetailPage() {
   const [selectedModel, setSelectedModel] = useState('');
   const [askApproval, setAskApproval] = useState(false);
   const [runFilter, setRunFilter] = useState<RunFilter>('all');
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [kanbanOpen, setKanbanOpen] = useState(false);
 
   const [addOpen, setAddOpen] = useState(false);
@@ -96,6 +95,7 @@ export function ProjectDetailPage() {
   const activeServiceId = workspaceLocation.serviceId;
   const activeService = services.find((service) => service.id === activeServiceId);
   const workspaceTab = workspaceLocation.tab;
+  const projectSettingsOpen = canManage && searchParams.get('view') === 'project-settings';
   const webhookReturnTo = (() => {
     const params = new URLSearchParams();
     if (activeServiceId) params.set('service', activeServiceId);
@@ -187,13 +187,22 @@ export function ProjectDetailPage() {
 
   const setWorkspaceTab = (tab: WorkspaceTab) => {
     const next = new URLSearchParams(searchParams);
+    next.delete('view');
     if (activeServiceId) next.set('service', activeServiceId);
     next.set('tab', tab);
     setSearchParams(next);
   };
 
+  const setProjectSettingsOpen = (open: boolean) => {
+    const next = new URLSearchParams(searchParams);
+    if (open) next.set('view', 'project-settings');
+    else next.delete('view');
+    setSearchParams(next);
+  };
+
   const selectService = (serviceId: string) => {
     const next = new URLSearchParams(searchParams);
+    next.delete('view');
     next.set('service', serviceId);
     next.set('tab', workspaceTab);
     setSearchParams(next);
@@ -332,6 +341,7 @@ export function ProjectDetailPage() {
   return (
     <>
       <ProjectWorkspaceShell
+        mode={projectSettingsOpen ? 'detail' : 'workspace'}
         projectName={p.name}
         services={services}
         activeServiceId={activeServiceId}
@@ -392,13 +402,19 @@ export function ProjectDetailPage() {
               <Link to="/">Projects</Link>
               <span aria-hidden>/</span>
               <span>{p.name}</span>
+              {projectSettingsOpen && (
+                <>
+                  <span aria-hidden>/</span>
+                  <span>Project settings</span>
+                </>
+              )}
             </nav>
             <div className={styles.workspaceUtilityActions}>
-              {canManage && (
+              {canManage && !projectSettingsOpen && (
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => setSettingsOpen(true)}
+                  onClick={() => setProjectSettingsOpen(true)}
                   data-testid="project-settings-trigger"
                 >
                   Project settings
@@ -473,7 +489,13 @@ export function ProjectDetailPage() {
           </div>
         }
       >
-        {workspaceTab === 'tasks' && (
+        {projectSettingsOpen ? (
+          <ProjectSettingsPage
+            project={p}
+            onClose={() => setProjectSettingsOpen(false)}
+            onDeleted={() => navigate('/')}
+          />
+        ) : workspaceTab === 'tasks' && (
           <>
             {canRun && services.length === 0 && (
               <EmptyState
@@ -669,7 +691,7 @@ export function ProjectDetailPage() {
           </>
         )}
 
-        {workspaceTab === 'automations' && (
+        {!projectSettingsOpen && workspaceTab === 'automations' && (
           <section className={styles.automationWorkspace}>
             <div className={styles.automationHead}>
               <span className={styles.eyebrow}>Service automation</span>
@@ -702,7 +724,7 @@ export function ProjectDetailPage() {
           </section>
         )}
 
-        {workspaceTab === 'settings' && canManage && (
+        {!projectSettingsOpen && workspaceTab === 'settings' && canManage && (
           <SettingsPanel
             service={activeService}
             models={grantedModels}
@@ -713,16 +735,6 @@ export function ProjectDetailPage() {
           />
         )}
       </ProjectWorkspaceShell>
-
-      <ProjectSettingsModal
-        open={settingsOpen}
-        project={p}
-        onClose={() => setSettingsOpen(false)}
-        onDeleted={() => {
-          setSettingsOpen(false);
-          navigate('/');
-        }}
-      />
 
       {kanbanOpen && hasBoardLinks && (
         <KanbanBoardModal

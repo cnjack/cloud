@@ -205,14 +205,18 @@ describe('ProjectDetailPage — single-repo composer', () => {
 });
 
 describe('ProjectDetailPage — project and service settings stay separate', () => {
-  it('opens project settings from the project utility area, never from service settings', async () => {
+  it('opens Project settings as a full workspace page, never as a modal inside Service settings', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
     renderPage(client);
 
     const projectSettings = await screen.findByTestId('project-settings-trigger');
     fireEvent.click(projectSettings);
-    expect(await screen.findByTestId('project-settings-modal')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByTestId('project-settings-page')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByTestId('workspace-location').textContent).toContain('view=project-settings');
+    expect(screen.queryByRole('tab', { name: 'Service settings' })).toBeNull();
+
+    fireEvent.click(screen.getByTestId('project-settings-back'));
 
     fireEvent.click(screen.getByRole('tab', { name: 'Service settings' }));
     expect(await screen.findByText('Service default model')).toBeTruthy();

@@ -49,6 +49,25 @@ function makeClient(
   opts: { modelConfigured?: boolean } = {},
 ): { client: ApiClient; ctl: Ctl } {
   const ctl: Ctl = { streamCalls: [], getRun: vi.fn() };
+  const project: Project = {
+    id: 'proj1',
+    name: 'demo',
+    created_at: '',
+    role: role ?? 'owner',
+    services: [
+      {
+        id: 'svc-1',
+        project_id: 'proj1',
+        name: 'orchestrator',
+        repo_kind: 'provider',
+        provider: 'gitea',
+        repo_owner_name: 'jcloud/orchestrator',
+        default_branch: 'main',
+        git_mode: 'draft_pr',
+        created_at: '',
+      },
+    ],
+  };
   const client: Partial<ApiClient> = {
     getRun: ctl.getRun as ApiClient['getRun'],
     listEvents: async () => [],
@@ -66,12 +85,7 @@ function makeClient(
       env_fallback: opts.modelConfigured ?? true,
     }),
     // The page reads the run's project to learn the requesting principal's role.
-    ...(role
-      ? {
-          getProject: async () =>
-            ({ id: 'proj1', name: 'demo', created_at: '', role, services: [] }) as Project,
-        }
-      : {}),
+    getProject: async () => project,
   };
   return { client: client as ApiClient, ctl };
 }
@@ -98,16 +112,22 @@ function renderPage(client: ApiClient, seed?: Run) {
 }
 
 describe('RunDetailPage — resilient error states', () => {
-  it('uses the route-owned task workspace with a separate run inspector', async () => {
+  it('uses the shared Project shell and the design task-detail hierarchy', async () => {
     const { client, ctl } = makeClient('member');
     const run = baseRun({ service_id: 'svc-1' });
     ctl.getRun.mockResolvedValue(run);
     renderPage(client, run);
 
     expect(await screen.findByTestId('run-workspace')).toBeTruthy();
+    expect(screen.getByTestId('project-workspace-shell')).toBeTruthy();
+    expect(screen.getByTestId('service-rail-svc-1')).toBeTruthy();
     expect(screen.getByTestId('run-status-header')).toBeTruthy();
-    expect(screen.getByTestId('run-inspector').textContent).toContain('Run details');
+    expect(screen.getByTestId('run-initial-prompt').textContent).toContain('Add a line Hello');
+    expect(screen.getByTestId('run-inspector').textContent).toContain('Run overview');
+    expect(screen.getByTestId('run-inspector').textContent).toContain('Changes');
+    expect(screen.getByTestId('run-inspector').textContent).toContain('Execution');
     expect(screen.getByTestId('run-back-to-project').getAttribute('href')).toBe('/projects/proj1');
+    expect(screen.queryByTestId('tab-events')).toBeNull();
   });
 
   it('keeps the cached run rendered when a refetch fails (no whole-page dead-end)', async () => {

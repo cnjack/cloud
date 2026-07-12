@@ -1,107 +1,196 @@
-import { Thread as HeadlessThread } from 'jcode-ui-core/primitives';
-import { isApprovalItem, isMessageItem, isToolItem } from 'jcode-ui-core';
-import type { ThreadItem } from 'jcode-ui-core';
-import { Message, ToolCallCard, renderMarkdown } from 'jcode-ui';
+import { renderMarkdown } from 'jcode-ui';
+import { groupTimeline } from './grouping';
+import { terminalStatusSeq } from './eventModel';
 import { PermissionCard } from './PermissionCard';
-import type { PermissionControls } from './types';
-import type { CloudApproval, CloudMessage } from './threadModel';
+import type {
+  GroupedTimelineItem,
+  PermissionControls,
+  RunViewEvent,
+  ToolCardItem,
+} from './types';
 import styles from './Timeline.module.css';
 
-/**
- * Cloud's host renderer for the published jcode-ui conversation primitives.
- * Messages and tools use the package verbatim. Permission requests retain the
- * Cloud renderer because ACP offers arbitrary option IDs, while jcode-ui 0.1.1's
- * ApprovalBanner only exposes a fixed allow/deny boolean contract.
- */
-export function Timeline({ permissions }: { permissions?: PermissionControls }) {
-  return (
-    <div className={styles.wrap} data-testid="event-timeline">
-      <HeadlessThread
-        virtualize={false}
-        className={`${styles.thread} jcode-thread messages-feather`}
-        overscanBottom={24}
-        renderItem={(item) => <ThreadRow item={item} permissions={permissions} />}
-        renderPending={() => (
-          <div className="jcode-pending jcode-chat-col" role="status" aria-label="Thinking…">
-            <div className="jcode-pending__inner jcode-gutter">
-              <span className="jcode-pending__dots" aria-hidden="true">
-                <span className="jcode-pending-dot" />
-                <span className="jcode-pending-dot" />
-                <span className="jcode-pending-dot" />
-              </span>
-              <span className="jcode-pending__label">Thinking</span>
-            </div>
-          </div>
-        )}
-      />
-    </div>
-  );
-}
-
-function ThreadRow({
-  item,
+/** Semantic conversation renderer for the Cloud task-detail surface. */
+export function Timeline({
+  events,
+  isRunning = false,
   permissions,
 }: {
-  item: ThreadItem;
+  events: RunViewEvent[];
+  isRunning?: boolean;
   permissions?: PermissionControls;
 }) {
-  if (isMessageItem(item)) {
-    const message = item.data as CloudMessage;
-    if (message.role === 'user' && message.author) {
-      return <AttributedUserMessage message={message} />;
-    }
-    // Cloud has no edit-and-replay endpoint. Never expose the package's edit
-    // affordance with a no-op action (fail-visible product rule).
-    return <Message message={item.data} canEdit={false} />;
-  }
-  if (isToolItem(item)) {
-    return (
-      <div className="jcode-chat-col">
-        <ToolCallCard tool={item.data} className="jcode-gutter" />
-      </div>
-    );
-  }
-  if (isApprovalItem(item)) {
-    const approval = item.data as CloudApproval;
-    return (
-      <div className="jcode-chat-col">
-        <div className="jcode-gutter">
-          <PermissionCard item={approval.permission} controls={permissions} />
-        </div>
-      </div>
-    );
-  }
-  return null;
-}
+  const items = groupTimeline(events);
+  const finalStatus = terminalStatusSeq(events);
+  const rows: React.ReactNode[] = [];
 
-/**
- * jcode-ui@0.1.1 hard-codes every generic user heading to "You". Cloud sessions
- * are multi-user, so keep this narrow host row until the package exposes a
- * general author label. Markdown still uses the package's sanitized pipeline
- * and the row uses its published layout/style classes.
- */
-function AttributedUserMessage({ message }: { message: CloudMessage }) {
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]!;
+    if (isTool(item)) {
+      const tools: ToolCardItem[] = [item];
+      while (index + 1 < items.length && isTool(items[index + 1]!)) {
+        tools.push(items[index + 1] as ToolCardItem);
+        index += 1;
+      }
+      rows.push(<ToolProgress key={`tools-${tools[0]!.seq}`} tools={tools} />);
+      continue;
+    }
+    rows.push(
+      <TimelineRow
+        key={`${item.kind}-${item.seq}`}
+        item={item}
+        finalStatus={finalStatus}
+        permissions={permissions}
+      />,
+    );
+  }
+
   return (
-    <div className="jcode-message jcode-chat-col py-3" data-role="user" data-source={message.source}>
-      <div className="mb-2 flex items-center gap-2.5">
-        <div
-          className="jcode-msg-avatar flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold"
-          style={{ background: 'var(--color-foreground)', color: 'var(--color-surface)' }}
-          aria-hidden="true"
-        >
-          U
+    <div className={styles.wrap} data-testid="event-timeline">
+      <div className={styles.thread}>{rows}</div>
+      {isRunning && (
+        <div className={styles.pending} role="status" aria-label="Thinking…">
+          <span className={styles.avatar} aria-hidden>JC</span>
+          <span className={styles.dots} aria-hidden><i /><i /><i /></span>
+          <span>Thinking</span>
         </div>
-        <span
-          className="text-[11px] font-semibold tracking-wide"
-          style={{ color: 'var(--color-foreground)' }}
-        >
-          {message.author}
-        </span>
-      </div>
-      <div
-        className="jcode-prose jcode-selectable jcode-gutter max-w-none break-words"
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
-      />
+      )}
     </div>
   );
+}
+
+function isTool(item: GroupedTimelineItem): item is ToolCardItem {
+  return item.kind === 'tool_card';
+}
+
+function TimelineRow({
+  item,
+  finalStatus,
+  permissions,
+}: {
+  item: GroupedTimelineItem;
+  finalStatus?: number;
+  permissions?: PermissionControls;
+}) {
+  if (item.kind === 'text_block') {
+    return (
+      <article className={styles.message} data-testid="thread-message-assistant">
+        <div className={styles.messageHead}>
+          <span className={styles.avatar} aria-hidden>JC</span>
+          <span className={styles.author}>jcode</span>
+          <time>{timeLabel(item.ts)}</time>
+        </div>
+        <div className={styles.prose} dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }} />
+      </article>
+    );
+  }
+
+  if (item.kind === 'user_message') {
+    return (
+      <article className={`${styles.message} ${styles.userMessage}`} data-testid="thread-message-user">
+        <div className={styles.messageHead}>
+          <span className={`${styles.avatar} ${styles.userAvatar}`} aria-hidden>U</span>
+          <strong>{item.by || 'Project member'}</strong>
+          <time>{timeLabel(item.ts)}</time>
+        </div>
+        <div className={styles.userBubble}>{item.prompt}</div>
+      </article>
+    );
+  }
+
+  if (item.kind === 'permission_card') {
+    return <div className={styles.permission}><PermissionCard item={item} controls={permissions} /></div>;
+  }
+
+  return (
+    <div
+      className={styles.event}
+      data-kind={item.kind}
+      data-final={item.kind === 'status' && item.seq === finalStatus || undefined}
+      data-testid="thread-event"
+    >
+      <span className={styles.eventRule} aria-hidden />
+      <span className={styles.eventIcon} aria-hidden>{eventIcon(item)}</span>
+      <div>
+        <span>{eventLabel(item, finalStatus)}</span>
+        {item.kind === 'unknown' && <pre>{item.raw}</pre>}
+      </div>
+      <time>{timeLabel(item.ts)}</time>
+    </div>
+  );
+}
+
+function ToolProgress({ tools }: { tools: ToolCardItem[] }) {
+  return (
+    <div className={styles.progress} data-testid="thread-progress">
+      {tools.map((tool, index) => (
+        <details className={styles.tool} key={tool.callId} data-status={tool.status} data-testid="thread-tool" open={tool.status === 'failed'}>
+          <summary>
+            <span className={styles.toolRail} aria-hidden>{index === tools.length - 1 ? '└' : '├'}</span>
+            <span className={styles.toolIcon} aria-hidden>{tool.status === 'running' ? '›' : tool.status === 'failed' ? '!' : '✓'}</span>
+            <strong>{toolTitle(tool)} <small>· {tool.tool}</small></strong>
+            <span className={styles.toolStatus}>{tool.status === 'succeeded' ? 'Done' : tool.status}</span>
+          </summary>
+          <div className={styles.toolDetails}>
+            {tool.args && tool.args !== '{}' && <pre>{tool.args}</pre>}
+            {tool.output && <pre data-error={tool.isError || undefined}>{tool.output}</pre>}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
+}
+
+function toolTitle(tool: ToolCardItem): string {
+  const labels: Record<string, string> = {
+    read: 'Read project context',
+    edit: 'Edit files',
+    execute: 'Run command',
+    search: 'Search workspace',
+  };
+  return labels[tool.tool] ?? tool.tool.replaceAll('_', ' ');
+}
+
+function eventIcon(item: GroupedTimelineItem): string {
+  if (item.kind === 'failure') return '!';
+  if (item.kind === 'git') return '↗';
+  if (item.kind === 'artifact') return '□';
+  if (item.kind === 'status') return item.status === 'succeeded' ? '✓' : '•';
+  return '•';
+}
+
+function eventLabel(item: GroupedTimelineItem, finalStatus?: number): string {
+  switch (item.kind) {
+    case 'status': {
+      const status = sentence(item.status);
+      return item.seq === finalStatus ? `Final status: ${status}` : `Status: ${status}`;
+    }
+    case 'failure': return item.reason ? `${item.message} · ${item.reason}` : item.message;
+    case 'artifact': return `Artifact ready: ${item.artifact}`;
+    case 'git': return item.commitSha ? `Pushed ${item.branch} at ${item.commitSha}` : `Pushed ${item.branch}`;
+    case 'result': return item.message;
+    case 'session_info':
+    case 'session_finish': return item.message;
+    case 'permission_resolved': return `Permission ${item.resolution === 'timeout' ? 'timed out' : 'resolved'}${item.optionId ? ` · ${item.optionId}` : ''}`;
+    case 'unknown': return `Unknown event: ${item.type}`;
+    case 'tool_call': return `${toolName(item.tool)} started`;
+    case 'tool_result': return item.isError ? `${toolName(item.tool ?? 'tool')} failed` : `${toolName(item.tool ?? 'tool')} completed`;
+    default: return '';
+  }
+}
+
+function toolName(value: string): string {
+  return value.replaceAll('_', ' ');
+}
+
+function sentence(value: string): string {
+  const normalized = value.replaceAll('_', ' ');
+  return normalized ? normalized[0]!.toUpperCase() + normalized.slice(1) : 'Unknown';
+}
+
+function timeLabel(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? ''
+    : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }

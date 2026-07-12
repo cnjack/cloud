@@ -1985,6 +1985,7 @@ export function createMockClient(): ApiClient {
         input.permission_mode === 'approval' ? 'approval' : '',
       );
       run.model_id = modelId ?? undefined;
+      run.model_name = modelId ? models.get(modelId)?.model_name : undefined;
       return delay(publicRun(run));
     },
 

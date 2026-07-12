@@ -5,6 +5,7 @@ import { serviceMark, serviceProviderLabel } from './presentation';
 import styles from './ProjectWorkspaceShell.module.css';
 
 export function ProjectWorkspaceShell({
+  mode = 'workspace',
   projectName,
   services,
   activeServiceId,
@@ -20,6 +21,7 @@ export function ProjectWorkspaceShell({
   header,
   children,
 }: {
+  mode?: 'workspace' | 'detail';
   projectName: string;
   services: readonly Service[];
   activeServiceId: string;
@@ -32,7 +34,7 @@ export function ProjectWorkspaceShell({
   railAction?: ReactNode;
   utility?: ReactNode;
   mobileActions?: ReactNode;
-  header: ReactNode;
+  header?: ReactNode;
   children: ReactNode;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -118,31 +120,39 @@ export function ProjectWorkspaceShell({
           <div className={styles.utilityContent}>{utility}</div>
           {mobileActions && <div className={styles.mobileActions}>{mobileActions}</div>}
         </div>
-        <header className={styles.header}>{header}</header>
-        <div className={styles.tabs} role="tablist" aria-label="Project workspace sections" onKeyDown={onTabsKeyDown}>
-          {tabs.map((tab) => (
-            <button
-              key={tab}
-              id={`workspace-tab-${tab}`}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab}
-              aria-controls={`workspace-panel-${tab}`}
-              tabIndex={activeTab === tab ? 0 : -1}
-              className={styles.tab}
-              data-active={activeTab === tab || undefined}
-              onClick={() => selectTab(tab)}
-            >
-              {tab === 'tasks' ? 'Tasks' : tab === 'automations' ? 'Automations' : 'Service settings'}
-            </button>
-          ))}
-        </div>
+        {mode === 'workspace' && (
+          <>
+            <header className={styles.header}>{header}</header>
+            <div className={styles.tabs} role="tablist" aria-label="Project workspace sections" onKeyDown={onTabsKeyDown}>
+              {tabs.map((tab) => (
+                <button
+                  key={tab}
+                  id={`workspace-tab-${tab}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === tab}
+                  aria-controls={`workspace-panel-${tab}`}
+                  tabIndex={activeTab === tab ? 0 : -1}
+                  className={styles.tab}
+                  data-active={activeTab === tab || undefined}
+                  onClick={() => selectTab(tab)}
+                >
+                  {tab === 'tasks' ? 'Tasks' : tab === 'automations' ? 'Automations' : 'Service settings'}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
         <div ref={scrollRef} className={styles.scroll} data-testid="project-workspace-scroll">
           <div
-            id={`workspace-panel-${activeTab}`}
-            role="tabpanel"
-            aria-labelledby={`workspace-tab-${activeTab}`}
-            className={styles.panel}
+            {...(mode === 'workspace'
+              ? {
+                  id: `workspace-panel-${activeTab}`,
+                  role: 'tabpanel',
+                  'aria-labelledby': `workspace-tab-${activeTab}`,
+                }
+              : {})}
+            className={`${styles.panel} ${mode === 'detail' ? styles.detailPanel : ''}`}
           >
             {children}
           </div>

@@ -227,6 +227,10 @@ export interface Run {
    * MODEL_* env fallback (empty catalog) or predates the catalog.
    */
   model_id?: string | null;
+  /** Immutable dispatch-time model identifier shown in Run audit details. */
+  model_name?: string;
+  /** Branch recorded by run.git once the agent has published its changes. */
+  git_branch?: string;
   /**
    * D22 multi-turn session: true when this run keeps one agent session alive
    * across turns — it parks in `awaiting_input` between turns and accepts

@@ -28,7 +28,7 @@ import type {
   UserSearchResult,
 } from '../api/types';
 import { ApiError } from '../api/client';
-import { ProjectSettingsModal } from './ProjectSettingsModal';
+import { ProjectSettingsPage } from './ProjectSettingsModal';
 import { pickOption } from '../test/select';
 
 function baseProject(overrides: Partial<Project> = {}): Project {
@@ -105,11 +105,31 @@ function makeClient(project: Project): { client: ApiClient; ctl: Ctl } {
 
 function renderModal(client: ApiClient, project: Project, onDeleted = vi.fn(), onClose = vi.fn()) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const settingsClient = Object.assign({
+    listMembers: async () => [],
+    searchUsers: async () => [],
+    listIntegrations: async () => [],
+    listProjectKanbanLinks: async () => [],
+    listJtypeWorkspaces: async () => [],
+    listJtypeBoards: async () => [],
+    listApiKeys: async () => [],
+    listProjectModels: async () => ({ models: [], env_fallback: false }),
+    getSystem: async () => ({
+      version: { version: '', commit: '' },
+      capacity: { max_concurrent_runs: 0, running: 0, queued: 0, scheduling: 0 },
+      guardrails: { run_timeout_seconds: 0, job_ttl_seconds: 0 },
+      provider: { gitea_enabled: false, gitea_url: '' },
+      runner: { image: '' },
+      namespace: '',
+      launcher: '',
+      kanban: { enabled: true },
+    }),
+  }, client) as ApiClient;
   render(
     <QueryClientProvider client={qc}>
-      <ApiProvider client={client}>
+      <ApiProvider client={settingsClient}>
         <ToastProvider>
-          <ProjectSettingsModal open project={project} onClose={onClose} onDeleted={onDeleted} />
+          <ProjectSettingsPage project={project} onClose={onClose} onDeleted={onDeleted} />
         </ToastProvider>
       </ApiProvider>
     </QueryClientProvider>,
@@ -117,7 +137,19 @@ function renderModal(client: ApiClient, project: Project, onDeleted = vi.fn(), o
   return { onDeleted, onClose };
 }
 
-describe('ProjectSettingsModal — General (PATCH)', () => {
+describe('ProjectSettingsPage — full-page layout and General PATCH', () => {
+  it('renders every Project settings section together without dialog chrome', () => {
+    const project = baseProject();
+    const { client } = makeClient(project);
+    renderModal(client, project);
+
+    expect(screen.getByTestId('project-settings-page')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    for (const heading of ['General', 'Members and permissions', 'Git integrations', 'Kanban links', 'Model access', 'Project API keys']) {
+      expect(screen.getByRole('heading', { name: heading })).toBeTruthy();
+    }
+  });
+
   it('sends only the changed name (a rename is the only project-level edit)', async () => {
     const project = baseProject();
     const { client, ctl } = makeClient(project);
@@ -129,7 +161,7 @@ describe('ProjectSettingsModal — General (PATCH)', () => {
     await waitFor(() => expect(ctl.patches).toHaveLength(1));
     expect(ctl.patches[0]!.id).toBe('p1');
     expect(ctl.patches[0]!.input).toEqual({ name: 'renamed' });
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('does not PATCH at all when the name is unchanged', async () => {
@@ -139,8 +171,9 @@ describe('ProjectSettingsModal — General (PATCH)', () => {
 
     fireEvent.click(screen.getByTestId('project-settings-save'));
 
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('project-settings-save')).toBeTruthy());
     expect(ctl.patches).toHaveLength(0);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('pre-fills the name and carries no repo config fields', () => {
