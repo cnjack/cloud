@@ -26,6 +26,7 @@ import type {
   Model,
   Project,
   Run,
+  ServiceWebhookSetup,
   UpdateIntegrationInput,
   UpdateKanbanConfigInput,
   UpdateModelInput,
@@ -438,6 +439,15 @@ export function useUpdateService(projectId: string) {
       qc.invalidateQueries({ queryKey: qk.services(projectId) });
       qc.invalidateQueries({ queryKey: qk.project(projectId) });
     },
+  });
+}
+
+/** Explicit provider webhook synchronization for one service's Automation page. */
+export function useEnsureServiceWebhook() {
+  const api = useApi();
+  return useMutation({
+    mutationFn: (serviceId: string): Promise<ServiceWebhookSetup> =>
+      api.ensureServiceWebhook(serviceId),
   });
 }
 

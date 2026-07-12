@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cnjack/jcloud/internal/credentials"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/store"
@@ -186,10 +187,6 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not create service")
 		return
 	}
-	// Drone-style onboarding: best-effort auto-register the @mention comment
-	// webhook on the new repo. Never fails the create — a service without the
-	// hook still works (manual dispatch), and the console surfaces nothing.
-	s.ensureServiceWebhook(r.Context(), svc)
 	writeJSON(w, http.StatusCreated, svc)
 }
 
@@ -267,54 +264,104 @@ func (s *Server) bindServiceIntegration(ctx context.Context, projectID, integrat
 		"the repository '" + svc.RepoOwnerName + "' is not reachable with this integration's credential"
 }
 
-// ensureServiceWebhook registers the @jcode PR/MR-comment webhook on a freshly
-// added provider repository (gitea/github/gitlab; F13), when the deployment is
-// configured for it (both WEBHOOK_URL and WEBHOOK_SECRET set). It uses the
-// service's integration bot token when bound (D19 / F5), else the admin PAT
-// fallback — hook management needs repo-admin rights the member's OAuth token may
-// lack. Errors are logged, never surfaced: webhook wiring is an enhancement, not
-// a gate.
-func (s *Server) ensureServiceWebhook(ctx context.Context, svc *domain.Service) {
-	if s.cfg.WebhookURL == "" || s.cfg.WebhookSecret == "" {
+// commentWebhookRegistrar is intentionally narrower than provider.Provider:
+// only concrete provider clients that can manage repository webhooks implement
+// it. The explicit type assertion lets an unsupported deployment fail visibly.
+type commentWebhookRegistrar interface {
+	EnsureCommentWebhook(ctx context.Context, owner, repo, hookURL, secret string) error
+}
+
+type webhookSetupView struct {
+	Provider domain.GitProvider `json:"provider"`
+	Endpoint string             `json:"endpoint"`
+	Status   string             `json:"status"`
+}
+
+// handleEnsureServiceWebhook registers (or idempotently re-synchronizes) the
+// @jcode PR/MR-comment webhook for one provider-backed service. This is an
+// explicit member action: it uses ONLY the requesting user's OAuth grant, never
+// a project integration token or the legacy cluster PAT. A service creation must
+// remain side-effect free with respect to an external repository so every
+// unavailable dependency and permission failure can be shown in the Console.
+func (s *Server) handleEnsureServiceWebhook(w http.ResponseWriter, r *http.Request) {
+	svc, err := s.st.GetService(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "service not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		return
+	}
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), svc.ProjectID, domain.RoleMember) {
 		return
 	}
 	if svc.RepoKind != domain.RepoKindProvider || !domain.ValidProvider(svc.Provider) {
+		writeError(w, http.StatusConflict, "provider_webhook_unavailable",
+			"This service is not a provider-backed repository, so it cannot receive PR review webhooks.")
 		return
 	}
-	if s.creds == nil || s.factory == nil {
+	if strings.TrimSpace(s.cfg.WebhookURL) == "" || strings.TrimSpace(s.cfg.WebhookSecret) == "" {
+		writeError(w, http.StatusConflict, "webhook_not_configured",
+			"This cluster has not configured a webhook receiver. Contact a cluster administrator.")
+		return
+	}
+	if _, configured := s.oauth[svc.Provider]; !configured {
+		writeError(w, http.StatusConflict, "oauth_not_configured",
+			"OAuth is not configured for this provider. Contact a cluster administrator.")
+		return
+	}
+	userID := principalFrom(r.Context()).userID()
+	if userID == "" || s.creds == nil {
+		writeError(w, http.StatusConflict, "oauth_not_connected",
+			"Connect your provider account with OAuth before enabling this webhook.")
+		return
+	}
+	token, err := s.creds.ResolveUserOAuth(r.Context(), svc.Provider, userID)
+	if err != nil {
+		if errors.Is(err, credentials.ErrNoCredential) {
+			writeError(w, http.StatusConflict, "oauth_not_connected",
+				"Connect your provider account with OAuth before enabling this webhook.")
+			return
+		}
+		s.log.Warn("resolve webhook OAuth credential", "service", svc.ID, "provider", svc.Provider, "err", err)
+		writeError(w, http.StatusBadGateway, "oauth_unavailable",
+			"Could not use your provider OAuth connection. Reconnect it and try again.")
 		return
 	}
 	owner, repo, ok := provider.SplitRepo(svc.RepoOwnerName)
 	if !ok {
+		writeError(w, http.StatusConflict, "provider_webhook_unavailable",
+			"This service does not have a valid provider repository name for webhook setup.")
 		return
 	}
 	hookURL := webhookURLForProvider(s.cfg.WebhookURL, svc.Provider)
-	if hookURL == "" {
+	if hookURL == "" || s.factory == nil {
+		writeError(w, http.StatusConflict, "provider_webhook_unavailable",
+			"This provider webhook cannot be configured in the current cluster.")
 		return
 	}
-	// Use the service's integration bot token when bound (D19 / F5), else the admin
-	// PAT fallback — hook management needs repo-admin rights the bot/PAT carries.
-	tok, err := s.creds.ResolveForService(ctx, svc, nil)
+	client, err := s.factory.PRClient(svc.Provider, token.Value, token.Scheme)
 	if err != nil {
-		s.log.Warn("service webhook: no credential; skipping registration", "service", svc.ID, "err", err)
+		s.log.Warn("build webhook provider client", "service", svc.ID, "provider", svc.Provider, "err", err)
+		writeError(w, http.StatusConflict, "provider_webhook_unavailable",
+			"This provider webhook cannot be configured in the current cluster.")
 		return
 	}
-	client, err := s.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
-	if err != nil {
-		return
-	}
-	hooker, ok := client.(interface {
-		EnsureCommentWebhook(ctx context.Context, owner, repo, hookURL, secret string) error
-	})
+	hooker, ok := client.(commentWebhookRegistrar)
 	if !ok {
+		writeError(w, http.StatusConflict, "provider_webhook_unavailable",
+			"This provider client does not support repository webhook setup.")
 		return
 	}
-	if err := hooker.EnsureCommentWebhook(ctx, owner, repo, hookURL, s.cfg.WebhookSecret); err != nil {
-		s.log.Warn("service webhook: registration failed (service still usable)",
-			"service", svc.ID, "repo", svc.RepoOwnerName, "err", err)
+	if err := hooker.EnsureCommentWebhook(r.Context(), owner, repo, hookURL, s.cfg.WebhookSecret); err != nil {
+		s.log.Warn("service webhook registration failed", "service", svc.ID, "provider", svc.Provider, "repo", svc.RepoOwnerName, "err", err)
+		writeError(w, http.StatusBadGateway, "webhook_registration_failed",
+			"The provider rejected or could not reach webhook registration. Reconnect OAuth with repository-hook access and confirm you are a repository administrator.")
 		return
 	}
-	s.log.Info("service webhook: @mention hook ensured", "service", svc.ID, "provider", svc.Provider, "repo", svc.RepoOwnerName)
+	s.log.Info("service webhook synchronized", "service", svc.ID, "provider", svc.Provider, "repo", svc.RepoOwnerName, "actor", userID)
+	writeJSON(w, http.StatusOK, webhookSetupView{Provider: svc.Provider, Endpoint: hookURL, Status: "synced"})
 }
 
 // webhookURLForProvider derives the inbound webhook URL for prov from the single

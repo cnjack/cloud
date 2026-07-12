@@ -6,7 +6,9 @@
  *     confirm step. Repo config (branch / git mode) lives on each repository on
  *     the project page — a project is a pure container.
  *   - Members: roster with role management + add-by-search (MembersPanel).
- *   - Integrations (D19 / F5): git host bindings with a bot credential (owner).
+ *   - Bot integrations (D19 / F5): git host bindings for unattended service
+ *     execution. They are intentionally distinct from a member's OAuth-based
+ *     provider webhook setup in the Service Automation area.
  *   - Kanban: jtype board→service bindings (owner).
  *   - API keys (F12 / D24): project-scoped, revocable automation credentials
  *     (owner) — replaces borrowing CONSOLE_TOKEN for external/CI use.
@@ -264,7 +266,7 @@ export function ProjectSettingsModal({
             onClick={() => setTab('integrations')}
             data-testid="tab-integrations"
           >
-            Integrations
+            Bot integrations
           </button>
         )}
         {canManage && (

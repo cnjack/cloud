@@ -11,7 +11,6 @@ export function SettingsPanel({
   updating,
   onDefaultModelChange,
   onRetryModels,
-  onOpenProjectSettings,
 }: {
   service: Service | undefined;
   models: readonly ProjectModel[];
@@ -19,16 +18,12 @@ export function SettingsPanel({
   updating: boolean;
   onDefaultModelChange: (modelId: string) => void;
   onRetryModels: () => void;
-  onOpenProjectSettings: () => void;
 }) {
   if (!service) {
     return (
       <section className={styles.empty}>
         <h2>Settings need a service</h2>
         <p>Connect a repository before configuring its model policy.</p>
-        <Button type="button" variant="secondary" size="sm" onClick={onOpenProjectSettings} data-testid="project-settings-btn">
-          Project administration
-        </Button>
       </section>
     );
   }
@@ -41,9 +36,6 @@ export function SettingsPanel({
           <h2 id="service-settings-heading">{service.name}</h2>
           <p>Execution policy for this service. Project membership and integrations are managed separately.</p>
         </div>
-        <Button type="button" variant="secondary" size="sm" onClick={onOpenProjectSettings} data-testid="project-settings-btn">
-          Project administration
-        </Button>
       </div>
 
       <div className={styles.grid}>

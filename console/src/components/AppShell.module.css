@@ -83,7 +83,7 @@
 /* A Project is a persistent workspace rather than a document page. It owns a
    rail plus exactly one internal scroll region, so remove the marketing-page
    max-width/padding only for the project route. */
-.projectContent {
+.workspaceContent {
   max-width: none;
   height: 100dvh;
   min-height: 0;
@@ -100,7 +100,7 @@
   .content {
     padding: var(--space-6) var(--content-pad-x-sm) var(--space-12);
   }
-  .projectContent {
+  .workspaceContent {
     padding: 0;
   }
   .docsLink {
@@ -109,12 +109,13 @@
 }
 
 @media (max-width: 860px) {
-  .shell[data-project-workspace] {
+  .shell[data-project-workspace],
+  .shell[data-run-workspace] {
     height: auto;
     min-height: 100dvh;
   }
 
-  .projectContent {
+  .workspaceContent {
     height: auto;
     min-height: 100dvh;
     overflow: visible;

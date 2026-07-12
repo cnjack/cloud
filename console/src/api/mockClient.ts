@@ -1921,6 +1921,26 @@ export function createMockClient(): ApiClient {
       throw new ApiError(404, 'service not found');
     },
 
+    async ensureServiceWebhook(serviceId: string) {
+      for (const list of services.values()) {
+        const svc = list.find((entry) => entry.id === serviceId);
+        if (!svc) continue;
+        if (svc.repo_kind !== 'provider' || !svc.provider) {
+          throw new ApiError(409, 'This service is not a provider-backed repository, so it cannot receive PR review webhooks.', {
+            error: { code: 'provider_webhook_unavailable', message: 'provider-backed repository required' },
+          });
+        }
+        // This client is the explicitly-labelled demo rig; production performs
+        // the real OAuth-only provider call in the orchestrator.
+        return delay({
+          provider: svc.provider,
+          endpoint: `https://demo.j-code.net/webhooks/${svc.provider}`,
+          status: 'synced' as const,
+        });
+      }
+      throw new ApiError(404, 'service not found');
+    },
+
     async listProviderRepos(provider: string, q?: string) {
       // Demo: a small static gitea catalogue; other providers report "not
       // linked" the same way the orchestrator does (403).

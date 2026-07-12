@@ -133,7 +133,7 @@ export function ProjectWorkspaceShell({
               data-active={activeTab === tab || undefined}
               onClick={() => selectTab(tab)}
             >
-              {tab === 'tasks' ? 'Tasks' : tab === 'automations' ? 'Automations' : 'Settings'}
+              {tab === 'tasks' ? 'Tasks' : tab === 'automations' ? 'Automations' : 'Service settings'}
             </button>
           ))}
         </div>

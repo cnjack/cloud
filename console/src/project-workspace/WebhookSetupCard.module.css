@@ -1,0 +1,120 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-panel);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--color-text-faint);
+  font-size: var(--fs-tiny);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.head h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+}
+
+.card p {
+  max-width: 78ch;
+  margin: 0;
+  color: var(--color-text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+
+.card code {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.94em;
+}
+
+.scope {
+  flex: none;
+  padding: 3px var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  color: var(--color-text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  text-transform: uppercase;
+}
+
+.primaryLink {
+  align-self: flex-start;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+}
+
+.primaryLink:hover {
+  background: var(--color-accent-hover);
+  color: var(--color-on-accent);
+  text-decoration: none;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.reconnect {
+  color: var(--color-text-dim);
+  font-size: var(--fs-caption);
+}
+
+.reconnect:hover {
+  color: var(--color-text);
+}
+
+.returned,
+.success,
+.error {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+}
+
+.returned {
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-panel-raised);
+}
+
+.success {
+  border: 1px solid color-mix(in srgb, var(--color-success) 42%, var(--color-border));
+  background: var(--status-succeeded-bg);
+  color: var(--status-succeeded-fg) !important;
+}
+
+.error {
+  border: 1px solid var(--color-danger);
+  background: var(--status-failed-bg);
+  color: var(--color-danger-fg) !important;
+}
+
+@media (max-width: 640px) {
+  .head {
+    flex-direction: column;
+  }
+}

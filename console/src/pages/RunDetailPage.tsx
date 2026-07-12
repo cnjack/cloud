@@ -10,7 +10,7 @@
  * replays history then follows live, so the timeline is identical to before the
  * refresh (AC-7).
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ChatInput, RuntimeProvider, ToolRegistryProvider } from 'jcode-ui';
 import type { ChatRuntime, RuntimeActions, RuntimeState } from 'jcode-ui-core/runtime';
@@ -236,6 +236,8 @@ export function RunDetailPage() {
     );
 
   const r = run.data;
+  const service = project.data?.services?.find((entry) => entry.id === r.service_id);
+  const projectName = project.data?.name ?? `Project ${shortId(r.project_id)}`;
   const canCancel = !isTerminal(r.status);
   const canRetry = isTerminal(r.status);
   const failed = r.status === 'failed';
@@ -290,23 +292,55 @@ export function RunDetailPage() {
   return (
     <RuntimeProvider runtime={runtime}>
       <ToolRegistryProvider>
-        <div className={styles.page}>
-      <nav className={styles.crumbs}>
-        <Link to="/" className={styles.crumbLink}>
-          Projects
-        </Link>
-        <span className={styles.crumbSep}>/</span>
-        <Link to={`/projects/${r.project_id}`} className={styles.crumbLink}>
-          {shortId(r.project_id)}
-        </Link>
-        <span className={styles.crumbSep}>/</span>
-        <span className={styles.crumbCurrent}>run {shortId(r.id)}</span>
-      </nav>
+        <div className={styles.page} data-testid="run-workspace">
+          <header className={styles.workspaceHeader}>
+            <Link
+              to={`/projects/${r.project_id}`}
+              className={styles.backToProject}
+              data-testid="run-back-to-project"
+            >
+              <span aria-hidden>←</span>
+              <span>{projectName}</span>
+            </Link>
+            <div className={styles.workspaceActions}>
+              {canCancel && canAct && (
+                <Button
+                  variant="danger"
+                  onClick={doCancel}
+                  loading={cancel.isPending}
+                  title={
+                    isSession
+                      ? 'Stop immediately — the turn in progress is discarded. Use “Finish session” below to let the agent wrap up cleanly.'
+                      : undefined
+                  }
+                  data-testid="cancel-btn"
+                >
+                  Cancel
+                </Button>
+              )}
+              {canRetry && canAct && (
+                <Button
+                  variant="primary"
+                  onClick={doRetry}
+                  loading={retry.isPending}
+                  disabled={!modelGate.configured}
+                  data-testid="retry-btn"
+                >
+                  Retry
+                </Button>
+              )}
+            </div>
+          </header>
 
-      {/* Status header */}
-      <header className={styles.header} data-testid="run-status-header" data-status={r.status}>
-        <div className={styles.headerMain}>
-          <div className={styles.headerTop}>
+          <div className={styles.workspaceLayout}>
+            <main className={styles.threadColumn}>
+              {/* Status header */}
+              <header className={styles.taskHeader} data-testid="run-status-header" data-status={r.status}>
+                <div className={styles.taskEyebrow}>
+                  {isReview ? 'Code review' : isSession ? 'Session' : 'Task'}
+                </div>
+                <h1 className={styles.taskTitle}>{r.prompt}</h1>
+                <div className={styles.headerTop}>
             <StatusBadge status={r.status} />
             {/* D18/D26: a succeeded run that made no code changes is still a
                 success — this badge says so up front instead of making the
@@ -392,51 +426,8 @@ export function RunDetailPage() {
                 </span>
               </a>
             )}
-          </div>
-          <p className={styles.prompt}>{r.prompt}</p>
-          <dl className={styles.timing}>
-            <Timing label="Created" value={formatDateTime(r.created_at)} />
-            {r.started_at && <Timing label="Started" value={formatDateTime(r.started_at)} />}
-            {r.finished_at && <Timing label="Finished" value={formatDateTime(r.finished_at)} />}
-            {r.started_at && (
-              <Timing
-                label="Duration"
-                value={formatDuration(r.started_at, r.finished_at)}
-              />
-            )}
-          </dl>
-        </div>
-
-        <div className={styles.headerActions}>
-          {canCancel && canAct && (
-            <Button
-              variant="danger"
-              onClick={doCancel}
-              loading={cancel.isPending}
-              // D22: a session has TWO ways out — make the destructive one say so.
-              title={
-                isSession
-                  ? 'Stop immediately — the turn in progress is discarded. Use “Finish session” below to let the agent wrap up cleanly.'
-                  : undefined
-              }
-              data-testid="cancel-btn"
-            >
-              Cancel
-            </Button>
-          )}
-          {canRetry && canAct && (
-            <Button
-              variant="primary"
-              onClick={doRetry}
-              loading={retry.isPending}
-              disabled={!modelGate.configured}
-              data-testid="retry-btn"
-            >
-              Retry
-            </Button>
-          )}
-        </div>
-      </header>
+                </div>
+              </header>
 
       {/* Model gate notice (Feature A): explains a disabled Retry. */}
       {canRetry && canAct && modelGate.notice}
@@ -683,18 +674,55 @@ export function RunDetailPage() {
           </div>
         </>
       )}
+            </main>
+
+            <aside className={styles.inspector} data-testid="run-inspector" aria-label="Run details">
+              <div className={styles.inspectorHead}>
+                <span className={styles.inspectorEyebrow}>Inspector</span>
+                <h2>Run details</h2>
+              </div>
+              <dl className={styles.inspectorFacts}>
+                <InspectorFact label="Status">
+                  <StatusBadge status={r.status} />
+                </InspectorFact>
+                <InspectorFact label="Service">
+                  {service ? (
+                    <Link
+                      to={`/projects/${r.project_id}?service=${encodeURIComponent(service.id)}&tab=tasks`}
+                      className={styles.inspectorLink}
+                    >
+                      {service.name}
+                    </Link>
+                  ) : (
+                    <span>{r.service_id ? shortId(r.service_id) : 'Unavailable'}</span>
+                  )}
+                </InspectorFact>
+                <InspectorFact label="Run ID">
+                  <code>{r.id}</code>
+                </InspectorFact>
+                <InspectorFact label="Created">
+                  {formatDateTime(r.created_at)}
+                </InspectorFact>
+                <InspectorFact label="Duration">
+                  {r.started_at ? formatDuration(r.started_at, r.finished_at) : 'Not started'}
+                </InspectorFact>
+                <InspectorFact label="Origin">
+                  {r.origin ?? 'api'}
+                </InspectorFact>
+              </dl>
+            </aside>
+          </div>
         </div>
       </ToolRegistryProvider>
     </RuntimeProvider>
   );
 }
 
-function Timing({ label, value }: { label: string; value: string }) {
-  if (!value) return null;
+function InspectorFact({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className={styles.timingItem}>
-      <dt className={styles.timingLabel}>{label}</dt>
-      <dd className={styles.timingValue}>{value}</dd>
+    <div className={styles.inspectorFact}>
+      <dt>{label}</dt>
+      <dd>{children}</dd>
     </div>
   );
 }

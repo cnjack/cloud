@@ -1,9 +1,12 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: 0;
   min-height: 0;
+  height: 100%;
   flex: 1;
+  overflow-y: auto;
+  background: var(--color-bg);
 
   /* jcode-ui uses its published token vocabulary. Scope the bridge to this
      page so importing the package never re-skins the rest of Cloud Console. */
@@ -77,6 +80,164 @@
   --hljs-meta: var(--color-text-dim);
   --hljs-property: var(--status-running-fg);
   --hljs-punctuation: var(--color-text-faint);
+}
+
+/* A run is a route-owned task workspace: the single page scrolls, the task
+   conversation stays deliberately narrow, and secondary operational metadata
+   lives in a quiet sticky inspector rather than competing with the transcript. */
+.workspaceHeader {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-height: 52px;
+  padding: 0 var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg) 94%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.backToProject {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--color-text-dim);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-medium);
+}
+
+.backToProject:hover {
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.backToProject span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspaceActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.workspaceLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 46rem) minmax(13rem, 15.5rem);
+  align-items: start;
+  justify-content: center;
+  gap: clamp(var(--space-6), 5vw, var(--space-12));
+  width: min(100%, 74rem);
+  margin: 0 auto;
+  padding: clamp(var(--space-6), 5vw, var(--space-10)) var(--space-6) var(--space-16);
+}
+
+.threadColumn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.taskHeader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.taskEyebrow,
+.inspectorEyebrow {
+  color: var(--color-text-faint);
+  font-size: var(--fs-tiny);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.taskTitle {
+  max-width: 35ch;
+  margin: 0;
+  color: var(--color-text);
+  font-size: clamp(1.4rem, 2.4vw, 2rem);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+  line-height: 1.18;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.inspector {
+  position: sticky;
+  top: calc(52px + var(--space-6));
+  padding-left: var(--space-5);
+  border-left: 1px solid var(--color-border);
+}
+
+.inspectorHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-5);
+}
+
+.inspectorHead h2 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+}
+
+.inspectorFacts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0;
+}
+
+.inspectorFact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.inspectorFact dt {
+  color: var(--color-text-faint);
+  font-size: var(--fs-tiny);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.inspectorFact dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-normal);
+  overflow-wrap: anywhere;
+}
+
+.inspectorFact code {
+  color: var(--color-text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+}
+
+.inspectorLink {
+  color: var(--color-accent);
+}
+
+.inspectorLink:hover {
+  color: var(--color-accent-hover);
 }
 
 .crumbs {
@@ -221,10 +382,15 @@
 
 /* D22 multi-turn session: the follow-up composer + Finish button. */
 .sessionPanel {
+  order: 20;
+  position: sticky;
+  bottom: var(--space-4);
+  z-index: 2;
   padding: var(--space-4) var(--space-5);
-  background: var(--color-panel);
+  background: color-mix(in srgb, var(--color-panel) 96%, var(--color-bg));
   border: 1px solid var(--status-awaiting_input-dot, var(--color-border-strong));
   border-radius: var(--radius-xl);
+  box-shadow: 0 14px 34px color-mix(in srgb, var(--color-text) 10%, transparent);
 }
 .sessionForm {
   display: flex;
@@ -357,6 +523,7 @@
 .tabs {
   display: flex;
   gap: var(--space-1);
+  margin-top: var(--space-2);
   border-bottom: 1px solid var(--color-border);
 }
 .tab {
@@ -393,20 +560,19 @@
 .panel {
   display: flex;
   flex-direction: column;
-  min-height: 360px;
-  flex: 1;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-xl);
-  background: var(--color-bg-inset);
-  overflow: hidden;
+  min-height: 0;
+  background: transparent;
+  overflow: visible;
 }
 
 /* review run body (blueprint §5) */
 .reviewOutput {
-  flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: visible;
   padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-panel);
 }
 .reviewProgress {
   display: flex;
@@ -432,13 +598,27 @@
 }
 
 @media (max-width: 768px) {
-  .header {
-    flex-direction: column;
+  .workspaceHeader {
+    padding: 0 var(--space-4);
   }
-  .headerActions {
-    width: 100%;
+  .workspaceLayout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-8);
+    padding: var(--space-5) var(--space-4) var(--space-12);
   }
-  .headerActions > * {
-    flex: 1;
+  .inspector {
+    position: static;
+    padding: var(--space-5) 0 0;
+    border-top: 1px solid var(--color-border);
+    border-left: 0;
+  }
+  .inspectorFacts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-4);
+  }
+  .sessionPanel {
+    bottom: var(--space-2);
+    padding: var(--space-3);
   }
 }

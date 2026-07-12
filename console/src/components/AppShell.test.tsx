@@ -45,6 +45,22 @@ function renderProjectShell(role: Role) {
   );
 }
 
+function renderRunShell(role: Role) {
+  const qc = new QueryClient();
+  const client = { listProjects: async () => [] } as unknown as ApiClient;
+  return render(
+    <QueryClientProvider client={qc}>
+      <ApiProvider client={client} role={role}>
+        <MemoryRouter initialEntries={['/runs/run-1']}>
+          <AppShell>
+            <div>run content</div>
+          </AppShell>
+        </MemoryRouter>
+      </ApiProvider>
+    </QueryClientProvider>,
+  );
+}
+
 describe('AppShell — identity + role gating', () => {
   it('shows the Cluster nav and a cluster-admin identity chip for a cluster-admin', () => {
     renderShell('cluster-admin');
@@ -67,5 +83,12 @@ describe('AppShell — identity + role gating', () => {
     expect(screen.queryByTestId('cluster-nav')).toBeNull();
     expect(screen.queryByTestId('identity-chip')).toBeNull();
     expect(container.querySelector('[data-project-workspace="true"]')).toBeTruthy();
+  });
+
+  it('removes the global topbar for a run workspace route', () => {
+    const { container } = renderRunShell('cluster-admin');
+    expect(screen.queryByTestId('cluster-nav')).toBeNull();
+    expect(screen.queryByTestId('identity-chip')).toBeNull();
+    expect(container.querySelector('[data-run-workspace="true"]')).toBeTruthy();
   });
 });

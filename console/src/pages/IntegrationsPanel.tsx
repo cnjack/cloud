@@ -81,9 +81,11 @@ export function IntegrationsPanel({ project }: { project: Project }) {
   return (
     <div className={styles.body} data-testid="integrations-panel">
       <p className={styles.guardrailHint}>
-        An integration is a git host + a robot credential. Services bound to it run as the bot
-        (the PR body notes who triggered the run), and any member can add a repository from an
-        existing integration. The token is stored encrypted and never shown again.
+        An integration is a git host + a robot credential for unattended service runs. Services
+        bound to it run as the bot (the PR body notes who triggered the run), and any member can
+        add a repository from an existing integration. This is not used to create PR review
+        webhooks: members connect their own provider OAuth account in a service’s Automation tab.
+        The bot token is stored encrypted and never shown again.
       </p>
 
       {integrations.data && integrations.data.length > 0 ? (
@@ -137,7 +139,7 @@ export function IntegrationsPanel({ project }: { project: Project }) {
           autoComplete="off"
         />
         <TextField
-          label="Bot token"
+          label="Bot token (advanced)"
           type="password"
           placeholder="org PAT / group token with repo write scope"
           value={token}

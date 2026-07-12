@@ -98,6 +98,18 @@ function renderPage(client: ApiClient, seed?: Run) {
 }
 
 describe('RunDetailPage — resilient error states', () => {
+  it('uses the route-owned task workspace with a separate run inspector', async () => {
+    const { client, ctl } = makeClient('member');
+    const run = baseRun({ service_id: 'svc-1' });
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+
+    expect(await screen.findByTestId('run-workspace')).toBeTruthy();
+    expect(screen.getByTestId('run-status-header')).toBeTruthy();
+    expect(screen.getByTestId('run-inspector').textContent).toContain('Run details');
+    expect(screen.getByTestId('run-back-to-project').getAttribute('href')).toBe('/projects/proj1');
+  });
+
   it('keeps the cached run rendered when a refetch fails (no whole-page dead-end)', async () => {
     const { client, ctl } = makeClient();
     // First read (initial mount) succeeds; a later refetch rejects.

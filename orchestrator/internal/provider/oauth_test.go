@@ -55,6 +55,47 @@ func TestOAuthAuthorizeURL(t *testing.T) {
 	}
 }
 
+// Webhook registration is performed with the signed-in person's OAuth token,
+// not a project PAT. Keep the authorization scopes that create repository hooks
+// explicit here: reducing these back to profile-only scopes would make the UI
+// offer a setup action that can never succeed.
+func TestOAuthAuthorizeURLRequestsRepositoryWebhookScopes(t *testing.T) {
+
+	tests := []struct {
+		name      string
+		provider  OAuthProvider
+		wantScope string
+	}{
+		{
+			name:      "gitea",
+			provider:  NewGiteaOAuth(OAuthConfig{ClientID: "cid", ClientSecret: "sec", ExternalURL: "https://gitea.example", InternalURL: "https://gitea.example"}),
+			wantScope: "read:user write:repository",
+		},
+		{
+			name:      "github",
+			provider:  NewGitHubOAuth(OAuthConfig{ClientID: "cid", ClientSecret: "sec", ExternalURL: "https://github.example", InternalURL: "https://github.example"}),
+			wantScope: "read:user repo",
+		},
+		{
+			name:      "gitlab",
+			provider:  NewGitLabOAuth(OAuthConfig{ClientID: "cid", ClientSecret: "sec", ExternalURL: "https://gitlab.example", InternalURL: "https://gitlab.example"}),
+			wantScope: "read_user api",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := url.Parse(tt.provider.AuthorizeURL("state", "https://cloud.example/auth/callback"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := u.Query().Get("scope"); got != tt.wantScope {
+				t.Fatalf("scope=%q want %q", got, tt.wantScope)
+			}
+		})
+	}
+}
+
 func TestGiteaOAuthExchangeAndUser(t *testing.T) {
 	stub := &oauthStub{
 		tokenPath: "/login/oauth/access_token",

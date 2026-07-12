@@ -270,6 +270,7 @@ func NewGiteaOAuth(cfg OAuthConfig) OAuthProvider {
 		authorizeURL: ext + "/login/oauth/authorize",
 		tokenURL:     in + "/login/oauth/access_token",
 		userURL:      in + "/api/v1/user",
+		scope:        "read:user write:repository",
 		http:         &http.Client{Timeout: 15 * time.Second},
 		parseUser: func(m map[string]any) *OAuthUser {
 			return &OAuthUser{
@@ -300,7 +301,7 @@ func NewGitHubOAuth(cfg OAuthConfig) OAuthProvider {
 		authorizeURL: ext + "/login/oauth/authorize",
 		tokenURL:     in + "/login/oauth/access_token",
 		userURL:      apiBase + "/user",
-		scope:        "read:user",
+		scope:        "read:user repo",
 		http:         &http.Client{Timeout: 15 * time.Second},
 		parseUser: func(m map[string]any) *OAuthUser {
 			return &OAuthUser{
@@ -325,7 +326,7 @@ func NewGitLabOAuth(cfg OAuthConfig) OAuthProvider {
 		authorizeURL: ext + "/oauth/authorize",
 		tokenURL:     in + "/oauth/token",
 		userURL:      in + "/api/v4/user",
-		scope:        "read_user",
+		scope:        "read_user api",
 		http:         &http.Client{Timeout: 15 * time.Second},
 		parseUser: func(m map[string]any) *OAuthUser {
 			return &OAuthUser{

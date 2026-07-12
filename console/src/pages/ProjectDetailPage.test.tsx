@@ -190,7 +190,7 @@ describe('ProjectDetailPage — single-repo composer', () => {
 
     await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
     expect(screen.queryByTestId('composer-service-select')).toBeNull();
-    expect(screen.getByRole('tab', { name: 'Settings' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Service settings' })).toBeTruthy();
     expect(screen.queryByTestId('project-settings-btn')).toBeNull();
     // The header shows the sole repo's identity (label + git-mode badge).
     expect(screen.getByText('acme/default')).toBeTruthy();
@@ -201,6 +201,22 @@ describe('ProjectDetailPage — single-repo composer', () => {
 
     await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
     expect(calls.serviceRuns[0]).toMatchObject({ sid: 'svc_default', input: { prompt: 'do a thing' } });
+  });
+});
+
+describe('ProjectDetailPage — project and service settings stay separate', () => {
+  it('opens project settings from the project utility area, never from service settings', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(client);
+
+    const projectSettings = await screen.findByTestId('project-settings-trigger');
+    fireEvent.click(projectSettings);
+    expect(await screen.findByTestId('project-settings-modal')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Service settings' }));
+    expect(await screen.findByText('Service default model')).toBeTruthy();
+    expect(screen.queryByTestId('project-settings-btn')).toBeNull();
   });
 });
 
@@ -324,7 +340,7 @@ describe('ProjectDetailPage — model selection (D21)', () => {
 
     await screen.findByTestId('run-input');
     expect(screen.queryByTestId('service-default-model-select')).toBeNull();
-    fireEvent.click(screen.getByRole('tab', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Service settings' }));
     await screen.findByTestId('service-default-model-select');
     await pickOption('service-default-model-select', 'GPT-4o');
     await waitFor(() => expect(calls.serviceUpdates).toHaveLength(1));
@@ -351,7 +367,7 @@ describe('ProjectDetailPage — model selection (D21)', () => {
     renderPage(client);
 
     await screen.findByTestId('model-unverified');
-    fireEvent.click(screen.getByRole('tab', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Service settings' }));
 
     expect(await screen.findByTestId('service-model-policy-unverified')).toBeTruthy();
     expect(screen.queryByTestId('service-model-policy-unavailable')).toBeNull();
@@ -440,7 +456,7 @@ describe('ProjectDetailPage — multi-repo workspace', () => {
 });
 
 describe('ProjectDetailPage — workspace sections', () => {
-  it('moves schedules into the active service automation section without inventing webhook controls', async () => {
+  it('keeps schedules beside a fail-visible OAuth webhook setup state', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
     const schedules = vi.fn(async () => []);
     (client as { listServiceSchedules?: unknown }).listServiceSchedules = schedules;
@@ -450,11 +466,11 @@ describe('ProjectDetailPage — workspace sections', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
 
     expect(await screen.findByTestId('schedules-panel')).toBeTruthy();
-    expect(screen.getByText(/webhook registration or delivery health/i)).toBeTruthy();
+    expect(screen.getByTestId('webhook-setup-unavailable').textContent).toContain('OAuth is not configured');
     await waitFor(() => expect(schedules).toHaveBeenCalledWith('svc_default'));
   });
 
-  it('shows GitHub provider review health as unavailable instead of claiming a healthy webhook', async () => {
+  it('shows GitHub OAuth configuration as unavailable instead of claiming a healthy webhook', async () => {
     const github = { ...svc('svc_github', 'web'), provider: 'github' };
     const { client } = makeClient(project('owner', [github]));
     renderPage(client);
@@ -462,7 +478,7 @@ describe('ProjectDetailPage — workspace sections', () => {
     await screen.findByTestId('run-input');
     fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
 
-    expect(await screen.findByText(/GitHub review webhook cannot be verified here/i)).toBeTruthy();
+    expect((await screen.findByTestId('webhook-setup-unavailable')).textContent).toContain('GitHub OAuth is not configured');
     expect(screen.queryByText(/Webhook healthy/i)).toBeNull();
   });
 

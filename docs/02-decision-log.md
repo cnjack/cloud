@@ -266,6 +266,8 @@ project 页头新增 **Kanban 按钮**（仅当本 project 有 ≥1 个 kanban l
 
 `/projects/:projectId` 采用 route-scoped `ProjectWorkspaceShell`：Project rail 是唯一的 Service 选择器，active `service` 与 `tab` (`tasks` / `automations` / `settings`) 写入 URL query，避免同一执行目标在 rail 和 composer 两处各有一份 local state。Project route 隐藏 `AppShell` 的全局 topbar，并把必要的身份/会话 chrome 收入 workspace utility bar，不再让两层 chrome 争夺视觉层级。
 
-Task composer 只派发一次 run 的 prompt、per-run model 与 permission mode；Service default model 属于 Settings。Recent tasks 用 activity row 而非管理型 table，仍链接到既有 Run detail。Automation / provider health 只能基于现有 API 展示：Schedule 与既有 provider `@jcode review` webhook 路径保持可用；没有 webhook health / delivery contract 时必须显示 `status unavailable`，绝不套设计原型里的绿色成功状态。Kanban 保持 D31 的真实服务端代理，不降级成假按钮。
+Task composer 只派发一次 run 的 prompt、per-run model 与 permission mode；Service default model 属于 Service settings。Project-wide settings（members、bot integrations、Kanban、API keys）只从 Project utility bar 打开，不能混进 selected Service 的 Settings surface。Recent tasks 用 activity row 而非管理型 table，仍链接到 route-owned Run task workspace。
+
+Automation 的 webhook setup 采用显式 `POST /services/{id}/webhook`：member 用自己已连接的同 provider OAuth 授权同步，绝不借 integration bot credential 或 cluster PAT。raw repo、OAuth/receiver 缺失、provider 拒绝都以 typed visible state 呈现；成功只表示 provider 接受了注册，不伪造 delivery health。OAuth callback 可以安全回到原来的 Service Automation URL，并自动执行一次幂等同步；手动 Sync 仍可用于重新配置。Kanban 保持 D31 的真实服务端代理，不降级成假按钮。
 
 完整 component、capability、scroll 和测试约束见 [15-project-workspace-architecture.md](15-project-workspace-architecture.md)。

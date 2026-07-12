@@ -291,6 +291,46 @@ func TestOAuthLinkAndConflict(t *testing.T) {
 	}
 }
 
+// A webhook setup CTA may send a linked user through OAuth again to grant the
+// repository-hook scope. The callback must refresh that same identity and land
+// back on the exact in-app Automation location, never an arbitrary URL.
+func TestOAuthLinkReauthorizationReturnsToSafeProjectLocation(t *testing.T) {
+	ts, _, stub := newAuthServer(t)
+
+	stub.setUser("alice", map[string]any{"id": 1, "login": "alice"})
+	login := doOAuthFlow(t, ts, "/auth/login/gitea", "alice", "")
+	login.Body.Close()
+	session := findCookie(login, sessionCookieName)
+	if session == nil {
+		t.Fatal("missing session cookie")
+	}
+
+	returnTo := "/projects/project-1?service=service-1&tab=automations&webhook=oauth"
+	stub.setUser("alice-refresh", map[string]any{"id": 1, "login": "alice"})
+	linked := doOAuthFlow(t, ts, "/auth/link/gitea?return_to="+url.QueryEscape(returnTo), "alice-refresh", session.Value)
+	linked.Body.Close()
+	location, err := url.Parse(linked.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if location.Host != "console.test" || location.Path != "/projects/project-1" {
+		t.Fatalf("redirect=%q want console project route", linked.Header.Get("Location"))
+	}
+	if q := location.Query(); q.Get("service") != "service-1" || q.Get("tab") != "automations" || q.Get("webhook") != "oauth" || q.Get("linked") != "gitea" {
+		t.Fatalf("redirect query=%v", q)
+	}
+
+	unsafe := doOAuthFlow(t, ts, "/auth/link/gitea?return_to="+url.QueryEscape("https://evil.example/steal"), "alice-refresh", session.Value)
+	unsafe.Body.Close()
+	unsafeLocation, err := url.Parse(unsafe.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsafeLocation.Host != "console.test" || unsafeLocation.Path != "" {
+		t.Fatalf("unsafe return_to escaped console origin: %q", unsafe.Header.Get("Location"))
+	}
+}
+
 // TestCallbackRejectsBadState proves CSRF protection: a callback with a
 // mismatched/absent state cookie is a 400.
 func TestCallbackRejectsBadState(t *testing.T) {

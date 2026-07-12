@@ -90,6 +90,40 @@ func TestResolveUserToken(t *testing.T) {
 	}
 }
 
+// Webhook setup must never borrow a project integration or the legacy cluster
+// PAT. It is an explicit action performed under the member's own OAuth grant.
+func TestResolveUserOAuthNeverFallsBackToPAT(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	cipher := testCipher(t)
+	userID := domain.NewID()
+	_, _ = st.CreateUserWithIdentity(ctx, &domain.User{ID: userID, DisplayName: "github-only"},
+		&domain.UserIdentity{ID: domain.NewID(), Provider: domain.ProviderGitHub, ProviderUID: "42",
+			Username: "octo", AccessTokenEnc: mustEncrypt(t, cipher, "github-oauth"), CreatedAt: time.Now()})
+
+	r := NewResolver(st, cipher, nil, "legacy-gitea-pat", nil)
+	if _, err := r.ResolveUserOAuth(ctx, domain.ProviderGitea, userID); !errors.Is(err, ErrNoCredential) {
+		t.Fatalf("err=%v want ErrNoCredential (no PAT fallback)", err)
+	}
+
+	tok, err := r.ResolveUserOAuth(ctx, domain.ProviderGitHub, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.Value != "github-oauth" || tok.Scheme != "Bearer" || tok.Source != "user_oauth:octo" {
+		t.Fatalf("tok=%+v want the user's GitHub OAuth token", tok)
+	}
+}
+
+func mustEncrypt(t *testing.T, cipher *auth.Cipher, value string) []byte {
+	t.Helper()
+	encoded, err := cipher.EncryptString(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
 // TestResolveRefreshesExpired: an expired identity token is refreshed and the
 // fresh token is returned and persisted.
 func TestResolveRefreshesExpired(t *testing.T) {

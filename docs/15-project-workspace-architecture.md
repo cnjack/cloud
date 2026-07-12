@@ -21,7 +21,7 @@ reference:
 | Tasks, Automations, and Settings are peer workspace modes. | Tasks and Automations are local state; Settings is a modal action. | Make all three modes addressable workspace tabs. Keep the advanced project-admin dialog as a nested action, not the primary information architecture. |
 | The composer is a single focused task surface. | An owner-only service-default editor appears above the input. | Keep per-run model and permission controls in the composer; move service default-model editing to Settings. |
 | Recent work is a readable activity feed. | Runs are rendered as a four-column generic table. | Use semantic activity rows with task, context, state, and time, while preserving run links and filters. |
-| Provider/event status is trustworthy. | The visual reference contains illustrative webhook health. | Preserve the existing provider `@jcode review` paths, but render webhook registration and delivery health as explicitly unavailable when the API cannot verify them. |
+| Provider/event status is trustworthy. | The visual reference contains illustrative webhook health. | Add an explicit OAuth-backed webhook synchronization action. Report only the returned registration result; keep delivery health unavailable because the API does not yet observe deliveries. |
 
 This is an information-architecture problem first. Token tuning alone cannot
 repair it.
@@ -38,9 +38,10 @@ repair it.
 
 ### What this change does not invent
 
-- Webhook registration or delivery health. The current API exposes neither.
-- Automatic PR-event review beyond the existing provider `@jcode review`
-  webhook paths.
+- Webhook delivery health. The API can synchronize a provider webhook but does
+  not observe a delivery stream, so it must not claim that events are healthy.
+- A hidden provider-side mutation on service creation. Repository setup remains
+  explicit and attributable to the member who authorizes it.
 - Attachments, voice input, or arbitrary file context controls.
 - A client-side fallback model or a simulated successful integration.
 
@@ -70,14 +71,14 @@ makes a pasted Project URL describe one unambiguous surface.
 ## 3. Component boundaries
 
 ```
-AppShell (non-Project app chrome)
-└─ ProjectWorkspaceShell (only on /projects/:projectId)
+AppShell (non-workspace app chrome)
+├─ ProjectWorkspaceShell (only on /projects/:projectId)
    ├─ ProjectRail
    │  ├─ ProjectSummary
    │  ├─ ServiceNavigation
    │  └─ ClusterFooter
    ├─ WorkspaceUtilityBar
-   │  └─ KanbanEntry / visible unavailable state / identity
+   │  └─ ProjectSettingsEntry / KanbanEntry / identity
    └─ ServiceWorkspace
       ├─ ServiceHeader
       ├─ WorkspaceTabs
@@ -86,9 +87,14 @@ AppShell (non-Project app chrome)
          │  ├─ TaskComposer
          │  └─ RunActivityList
          ├─ AutomationsPanel
+         │  ├─ WebhookSetupCard
+         │  └─ SchedulesPanel
          └─ SettingsPanel
-            ├─ ServiceModelPolicy
-            └─ ProjectAdministrationEntry → ProjectSettingsModal
+            └─ ServiceModelPolicy
+└─ RunTaskWorkspace (only on /runs/:runId)
+   ├─ TaskHeader + task transcript
+   ├─ Sticky follow-up composer
+   └─ RunInspector
 ```
 
 `ProjectDetailPage` is the data/controller boundary: it loads the Project,
@@ -106,9 +112,10 @@ interface TaskDraft {
 }
 ```
 
-`SettingsPanel` owns the service default-model editor. The existing
-`ProjectSettingsModal` retains advanced project administration (members,
-integrations, Kanban configuration, and API keys) behind an explicit entry.
+`SettingsPanel` owns only the service default-model editor. The project utility
+bar owns the explicit `Project settings` entry; its modal retains project-wide
+membership, bot integrations, Kanban configuration, and API keys. A service
+surface never contains a project-administration control.
 
 ## 4. Capability model
 
@@ -121,7 +128,7 @@ service provider name:
 | Choose a per-run model | `listProjectModels` | Show only granted models; no model list means environment fallback, not a made-up model. |
 | Change a service default model | owner + granted models + `updateService` | Expose in Settings only. |
 | Schedule work | `listServiceSchedules` and schedule mutations | Render in Automations. |
-| Provider review event health | no API contract | Keep existing provider review paths visible, but render health as "status unavailable"; do not claim a hook is healthy. |
+| Provider review webhook setup | `POST /services/{id}/webhook` + current member identity | Member connects the matching provider with OAuth; the callback returns to the same Automation view and synchronizes the idempotent hook once. Raw services, missing OAuth, missing receiver config, and provider rejection are typed visible states. A successful response means registration was accepted, not that future deliveries are healthy. |
 | Kanban | `listProjectBoardLinks` | Show the real board entry when links load; show a retryable unavailable state if the query fails. |
 
 ## 5. Layout and scroll contract
@@ -137,6 +144,10 @@ service provider name:
 - The visual language is restrained jcode desktop UI: warm off-white surface,
   hairline borders, compact monospace metadata, a single orange action accent,
   and no decorative status that does not come from real data.
+- `/runs/:runId` follows the same route-owned principle: no global topbar, one
+  transcript scroll owner, a narrow task thread, and a sticky metadata
+  inspector. Tool/event rendering remains the real run stream; no transcript is
+  synthesized from a visual fixture.
 
 ## 6. Implementation sequence
 
@@ -148,8 +159,8 @@ service provider name:
    default-model control and repository select from the composer.
 4. Replace the run table with activity rows without changing run navigation,
    filters, role gating, or API mutations.
-5. Make Automations and Kanban capability states explicit, then run the Console
-   test, typecheck, and visual QA pass.
+5. Add the OAuth-only webhook synchronization endpoint and its Automation card;
+   then run the Console test, typecheck, and visual QA pass.
 
 ## 7. Test design
 
@@ -160,11 +171,11 @@ step:
 | --- | --- |
 | URL state | An invalid tab/service normalizes to a valid service and `tasks`; a valid selected service survives refresh. |
 | Service context | Choosing a rail item changes the URL and dispatches the composer against that service; the composer never has a second repository picker. |
-| Tab behavior | Tasks, Automations, and Settings are ARIA tabs; tab changes reset only the content scroll; service changes preserve the active tab. |
+| Tab behavior | Tasks, Automations, and Service settings are ARIA tabs; tab changes reset only the content scroll; service changes preserve the active tab. |
 | Model scope | Per-run model selection stays in the composer; only an owner sees the service default-model control in Settings. |
-| Fail-visible gates | Missing model disables dispatch with the existing remediation; failed Kanban lookup stays visible; no test fixture renders a positive webhook health state. |
+| Webhook setup | The endpoint uses only the requesting user's OAuth token, never a bot credential or cluster PAT; missing OAuth/configuration and provider failure are visible, while a success is rendered only after the endpoint returns. |
 | Activity | A run row links to the existing run detail route and still exposes kind, status, retry provenance, and timestamp. |
-| Role gates | Viewer cannot compose or administer; member can run and see only allowed actions; owner can open project administration. |
+| Role gates | Viewer cannot compose or synchronize webhooks; member can run and synchronize a service webhook; owner can additionally open project settings. |
 | Scroll | The workspace scroll surface resets on a tab change and all internal desktop flex/grid parents can shrink. |
 
 ## 8. Acceptance criteria
@@ -172,9 +183,9 @@ step:
 - The rendered Project route has one coherent workspace chrome, not a global
   dashboard above a second workspace.
 - The rail is the only active-service selector.
-- Settings is a first-class workspace mode; service model policy no longer
-  displaces the task input.
+- Service settings is a first-class workspace mode; project settings lives in
+  the project utility bar rather than inside a service surface.
 - Recent tasks read as activity rows rather than an administrative table.
-- Kanban remains the real server-proxied board and all unavailable integrations
-  remain visibly unavailable.
+- Kanban remains the real server-proxied board; webhook setup uses explicit,
+  OAuth-backed registration and never pretends to know delivery health.
 - The implementation has no dependency on static data in `design/` at runtime.

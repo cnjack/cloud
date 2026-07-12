@@ -264,15 +264,12 @@ orchestrator 的兜底分类**不覆盖**它。
   作为防 rename 的仓库身份(迁移 0009)。
 - 错误:`400`(未知 provider)、`403`(无该 provider 凭据——console 据此提示
   去绑定账号,并回退手填 URL)。
-- 注意 scope:gitea 登录 token(空 scope)可列全部;github 的 `read:user` /
-  gitlab 的 `read_user` 登录 scope **列不了私有仓库**,需要升级 scope 重新
-  绑定(github `repo` / gitlab `read_api`)。
-- 若同时配置了 `WEBHOOK_URL` + `WEBHOOK_SECRET`,创建 service 时会
-  **best-effort 自动注册** `@jcode` 评论 webhook(三 provider;幂等,按 URL
-  判重;失败仅记日志,不影响创建)。
-- **运维注记**:幂等按 URL 判重意味着**轮换 `WEBHOOK_SECRET` 不会更新已注册
-  hook 的 secret**——轮换后旧 hook 的投递将全部验签失败(provider 侧投递日志
-  可见 401)。轮换后需在 git 主机侧删除旧 hook 再触发重建(或手工更新 secret)。
+- OAuth 登录 scope 同时覆盖仓库列表与评论 webhook 管理:gitea
+  `read:user write:repository`,github `read:user repo`,gitlab `read_user api`。
+  已按旧 profile-only scope 登录的用户需要从 Automation 页重新连接该 provider。
+- 创建 service 不再触发任何外部仓库写操作。评论 webhook 由项目 member 在
+  Service Automation 页连接 OAuth 后自动同步一次（也可手动重试），使用该 member
+  的 OAuth token；不使用 integration bot token 或集群 PAT。
 
 #### `GET /api/v1/projects` — 列出 projects
 
@@ -1253,10 +1250,22 @@ provider_url/provider_repo`;runs 加 `git_branch/commit_sha/pr_url/pr_number`);
   integration bot token**(取第一个能解出凭据的 service);仓库上无 service / 无可用
   integration 凭据 → **无法回帖 → log+忽略**(诚实降级,绝不假成功)。
 
-### 自动注册(`ensureServiceWebhook`,幂等)
+### OAuth webhook 同步(`POST /api/v1/services/{id}/webhook`,幂等)
 
-- 同时配置 `WEBHOOK_URL` + `WEBHOOK_SECRET` 时,创建 provider service 会 best-effort
-  自动注册评论 webhook(三 provider 都生效;失败仅记日志,不影响创建)。
+- 角色:目标 project 的 `member+`;service principal / API key 没有可用的人类 OAuth
+  身份,得到 `409 oauth_not_connected`。
+- 此操作只接受当前 member 已连接的**同 provider OAuth**。它绝不回退到 service
+  integration bot token 或 `GITEA_TOKEN`,所以 provider 侧的管理员行为可追溯到
+  发起同步的用户。
+- Console 把 OAuth callback 安全地带回原来的 Service Automation URL；callback
+  回来后自动调用一次本端点，失败仍显示为该卡片中的可操作错误，用户可以随时手动
+  再次 Sync。
+- 前置失败均是可操作的类型化错误:`409 provider_webhook_unavailable`(raw repo 或
+  provider client 不支持)、`409 webhook_not_configured`(receiver 未配置)、
+  `409 oauth_not_configured`(cluster 未配置该 provider OAuth)、
+  `409 oauth_not_connected`(用户未连接同 provider OAuth),以及
+  `502 webhook_registration_failed`(provider 拒绝/不可达)。成功仅表示 provider
+  接受了注册,并不表示 delivery health 已被观察到。
 - **每 provider 的 hook URL 从单个 `WEBHOOK_URL` 推导**:`WEBHOOK_URL` 指向
   `…/webhooks/gitea`(部署约定),github/gitlab 为同一 orchestrator 的兄弟路径,注册时
   把结尾 `/webhooks/<known>` 段替换为 `/webhooks/<prov>`(单 env 部署三 provider 通吃,
@@ -1264,7 +1273,9 @@ provider_url/provider_repo`;runs 加 `git_branch/commit_sha/pr_url/pr_number`);
 - **幂等**:先列仓库现有 hooks,已存在同 target URL 的 hook 则跳过(secret/token 读回
   被 provider 掩码,URL 是身份键)。事件:gitea `[issue_comment, pull_request_comment]`;
   github `[issue_comment]`;gitlab `note_events=true`,secret 放 `token` 字段(GitLab
-  据此回填 `X-Gitlab-Token`)。注册用 integration bot token(绑定时)或 PAT 回退。
+  据此回填 `X-Gitlab-Token`)。provider 会掩码回读 secret,因此 URL 是身份键；receiver
+  secret 轮换后应在 provider 中删除旧 hook 后再次 Sync。Console 不会伪造
+  delivery-health 成功。
 
 ### 测试与 e2e 诚实记录
 

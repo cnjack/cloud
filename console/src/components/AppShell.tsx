@@ -26,12 +26,21 @@ export function AppShell({ children }: { children: ReactNode }) {
   // regardless of where in the tree it's called — so the switcher reflects the
   // project you're viewing instead of being stuck on "All projects".
   const projectMatch = useMatch('/projects/:projectId');
+  const runMatch = useMatch('/runs/:runId');
   const activeProjectId = projectMatch?.params.projectId;
   const isProjectWorkspace = !!activeProjectId;
+  // A run is a task workspace too, not a generic document under the global
+  // console chrome. It owns its header, scroll model, and right-side inspector.
+  const isRunWorkspace = !!runMatch;
+  const isRouteWorkspace = isProjectWorkspace || isRunWorkspace;
 
   return (
-    <div className={styles.shell} data-project-workspace={isProjectWorkspace || undefined}>
-      {!isProjectWorkspace && (
+    <div
+      className={styles.shell}
+      data-project-workspace={isProjectWorkspace || undefined}
+      data-run-workspace={isRunWorkspace || undefined}
+    >
+      {!isRouteWorkspace && (
         <header className={styles.topbar}>
           <div className={styles.left}>
             <Wordmark />
@@ -69,7 +78,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </header>
       )}
       <main
-        className={[styles.content, activeProjectId && styles.projectContent]
+        className={[styles.content, isRouteWorkspace && styles.workspaceContent]
           .filter(Boolean)
           .join(' ')}
       >

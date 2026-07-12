@@ -175,6 +175,20 @@ func (r *Resolver) Resolve(ctx context.Context, prov domain.GitProvider, userID 
 	return Token{}, fmt.Errorf("%w: %s (user=%v)", ErrNoCredential, prov, userID != nil)
 }
 
+// ResolveUserOAuth resolves only a named human user's OAuth grant. It is used by
+// repository-administration actions such as webhook registration, where using a
+// service integration or the legacy cluster PAT would blur who authorized the
+// provider-side mutation. Unlike Resolve, it has no fallback path.
+func (r *Resolver) ResolveUserOAuth(ctx context.Context, prov domain.GitProvider, userID string) (Token, error) {
+	if r == nil || r.cipher == nil || userID == "" || !domain.ValidProvider(prov) {
+		return Token{}, fmt.Errorf("%w: %s (user OAuth is not connected)", ErrNoCredential, prov)
+	}
+	if tok, ok := r.userToken(ctx, prov, userID); ok {
+		return tok, nil
+	}
+	return Token{}, fmt.Errorf("%w: %s (user OAuth is not connected)", ErrNoCredential, prov)
+}
+
 // userToken tries to resolve the triggering user's stored token for prov,
 // refreshing it when expired. Returns ok=false (and logs at debug) when the user
 // has no identity on prov or the token cannot be decrypted, so the caller can

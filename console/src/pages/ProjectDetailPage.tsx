@@ -43,6 +43,7 @@ import { ProjectWorkspaceShell } from '../project-workspace/ProjectWorkspaceShel
 import { RunActivityList, type RunFilter } from '../project-workspace/RunActivityList';
 import { SettingsPanel } from '../project-workspace/SettingsPanel';
 import { TaskComposer } from '../project-workspace/TaskComposer';
+import { WebhookSetupCard } from '../project-workspace/WebhookSetupCard';
 import { serviceMark, serviceProviderLabel, serviceSource } from '../project-workspace/presentation';
 import { KanbanBoardModal } from './KanbanBoardModal';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
@@ -95,6 +96,13 @@ export function ProjectDetailPage() {
   const activeServiceId = workspaceLocation.serviceId;
   const activeService = services.find((service) => service.id === activeServiceId);
   const workspaceTab = workspaceLocation.tab;
+  const webhookReturnTo = (() => {
+    const params = new URLSearchParams();
+    if (activeServiceId) params.set('service', activeServiceId);
+    params.set('tab', 'automations');
+    params.set('webhook', 'oauth');
+    return `/projects/${encodeURIComponent(projectId)}?${params.toString()}`;
+  })();
 
   // A project switch must not retain a previous project's draft/model/form state.
   useEffect(() => {
@@ -386,6 +394,16 @@ export function ProjectDetailPage() {
               <span>{p.name}</span>
             </nav>
             <div className={styles.workspaceUtilityActions}>
+              {canManage && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setSettingsOpen(true)}
+                  data-testid="project-settings-trigger"
+                >
+                  Project settings
+                </Button>
+              )}
               {hasBoardLinks && (
                 <Button
                   variant="secondary"
@@ -440,9 +458,6 @@ export function ProjectDetailPage() {
                         gitMode={activeService.git_mode}
                         providerRepo={activeService.repo_owner_name}
                       />
-                      {activeService.repo_kind === 'provider' && (
-                        <span className={styles.workspaceCapability}>Webhook status unavailable</span>
-                      )}
                     </>
                   ) : (
                     <span>No repositories yet</span>
@@ -648,7 +663,7 @@ export function ProjectDetailPage() {
 
             {memberNeedsIntegration && (
               <p className={styles.addRepoNeedsIntegration} data-testid="add-repo-needs-integration">
-                Adding a repository needs a git integration — ask a project owner to connect one under Project administration.
+                Adding a repository needs a git integration — ask a project owner to connect one under Project settings.
               </p>
             )}
           </>
@@ -663,19 +678,14 @@ export function ProjectDetailPage() {
             </div>
             {activeService && canRun ? (
               <>
-                <section className={styles.automationCapability} aria-label="Provider webhook capability">
-                  <span className={styles.capabilityLabel}>Provider event reviews · status unavailable</span>
-                  <h3>
-                    {activeService.repo_kind === 'provider'
-                      ? `${serviceProviderLabel(activeService)} review webhook cannot be verified here`
-                      : 'Provider events need a provider-backed service'}
-                  </h3>
-                  <p>
-                    {activeService.repo_kind === 'provider'
-                      ? 'A provider-backed service is eligible for @jcode review events, but this API does not expose webhook registration or delivery health. Do not assume the webhook is active; verify deployment credentials and provider setup with a cluster administrator.'
-                      : 'This service is addressed by a path or URL, so it cannot receive PR review webhooks.'}
-                  </p>
-                </section>
+                <WebhookSetupCard
+                  service={activeService}
+                  me={auth?.me ?? null}
+                  providers={auth?.providers ?? []}
+                  canConfigure={canRun}
+                  returnTo={webhookReturnTo}
+                  oauthReturned={searchParams.get('webhook') === 'oauth'}
+                />
                 <SchedulesPanel service={activeService} canManage={canManage} />
               </>
             ) : activeService ? (
@@ -700,7 +710,6 @@ export function ProjectDetailPage() {
             updating={updateService.isPending}
             onDefaultModelChange={updateDefaultModel}
             onRetryModels={() => void projectModels.refetch()}
-            onOpenProjectSettings={() => setSettingsOpen(true)}
           />
         )}
       </ProjectWorkspaceShell>

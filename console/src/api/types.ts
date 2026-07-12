@@ -100,6 +100,15 @@ export interface Service {
   created_at: string;
 }
 
+/** Result of an explicit OAuth-backed provider webhook synchronization. The
+ * endpoint is returned for operator visibility; no credential or secret is ever
+ * exposed to the browser. */
+export interface ServiceWebhookSetup {
+  provider: string;
+  endpoint: string;
+  status: 'synced';
+}
+
 export interface Project {
   id: string;
   name: string;

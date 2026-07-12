@@ -378,6 +378,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/projects/{id}/services", s.authed(s.handleListServices))
 	mux.Handle("PATCH /api/v1/services/{id}", s.authed(s.handleUpdateService))
 	mux.Handle("DELETE /api/v1/services/{id}", s.authed(s.handleDeleteService))
+	// Explicit, OAuth-only provider webhook setup. This never falls back to a
+	// project bot credential or cluster PAT: the member who requests it is the
+	// provider-side actor, and a missing grant is a visible 409.
+	mux.Handle("POST /api/v1/services/{id}/webhook", s.authed(s.handleEnsureServiceWebhook))
 	mux.Handle("POST /api/v1/services/{id}/runs", s.authed(s.handleCreateServiceRun))
 	mux.Handle("GET /api/v1/services/{id}/runs", s.authed(s.handleListServiceRuns))
 

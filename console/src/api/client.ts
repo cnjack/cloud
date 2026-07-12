@@ -54,6 +54,7 @@ import type {
   RunsEnvelope,
   Schedule,
   Service,
+	ServiceWebhookSetup,
   ServicesEnvelope,
   StreamFrame,
   SystemInfo,
@@ -372,6 +373,13 @@ export interface ApiClient {
   createService(projectId: string, input: CreateServiceInput): Promise<Service>;
   /** PATCH /api/v1/services/{id} — edit a service (owner); default model (D21). */
   updateService(serviceId: string, input: UpdateServiceInput): Promise<Service>;
+  /**
+   * POST /api/v1/services/{id}/webhook — explicitly sync the provider's
+   * @jcode comment webhook with the calling member's OAuth account. The API
+   * never accepts or returns a provider token; typed 409/502 errors stay
+   * visible to the Automation page.
+   */
+  ensureServiceWebhook(serviceId: string): Promise<ServiceWebhookSetup>;
   /** POST /api/v1/services/{id}/runs — dispatch a run against a specific service. */
   createServiceRun(serviceId: string, input: CreateRunInput): Promise<Run>;
   /**
@@ -821,6 +829,11 @@ export function createHttpClient(
       req<Service>(`/services/${encodeURIComponent(serviceId)}`, {
         method: 'PATCH',
         body: JSON.stringify(input),
+      }),
+
+    ensureServiceWebhook: (serviceId) =>
+      req<ServiceWebhookSetup>(`/services/${encodeURIComponent(serviceId)}/webhook`, {
+        method: 'POST',
       }),
 
     createServiceRun: (serviceId, input) =>

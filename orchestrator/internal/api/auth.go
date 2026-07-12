@@ -61,6 +61,9 @@ type oauthState struct {
 	Provider string `json:"p"`
 	Mode     string `json:"m"` // "login" | "link"
 	UserID   string `json:"u"` // set for link mode
+	// ReturnTo is a verified same-console relative path. It is signed together
+	// with the rest of state so a post-OAuth redirect cannot be forged.
+	ReturnTo string `json:"r,omitempty"`
 }
 
 const (
@@ -135,7 +138,10 @@ func (s *Server) startOAuth(w http.ResponseWriter, r *http.Request, mode, userID
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   600, // 10 minutes to complete the round trip
 	})
-	state := s.signState(oauthState{Nonce: nonce, Provider: providerID, Mode: mode, UserID: userID})
+	state := s.signState(oauthState{
+		Nonce: nonce, Provider: providerID, Mode: mode, UserID: userID,
+		ReturnTo: safeOAuthReturnTo(r.URL.Query().Get("return_to")),
+	})
 	redirectURI := s.callbackRedirectURI(r, providerID)
 	http.Redirect(w, r, prov.AuthorizeURL(state, redirectURI), http.StatusFound)
 }
@@ -204,15 +210,17 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if st.Mode == oauthModeLink {
-		s.completeLink(w, r, prov.ID(), ou, accessEnc, refreshEnc, expiresAt, st.UserID)
+		s.completeLink(w, r, prov.ID(), ou, accessEnc, refreshEnc, expiresAt, st.UserID, st.ReturnTo)
 		return
 	}
 	s.completeLogin(w, r, prov.ID(), ou, accessEnc, refreshEnc, expiresAt)
 }
 
-// completeLink attaches the freshly-authorized identity to the current user, or
-// redirects with ?link_error=taken when it already belongs to someone else.
-func (s *Server) completeLink(w http.ResponseWriter, r *http.Request, providerID domain.GitProvider, ou *provider.OAuthUser, accessEnc, refreshEnc []byte, expiresAt *time.Time, userID string) {
+// completeLink attaches or refreshes the freshly-authorized identity on the
+// current user, or redirects with ?link_error=taken when it belongs to someone
+// else. Reauthorization of an already-linked account is therefore the normal
+// way to grant a newly requested scope.
+func (s *Server) completeLink(w http.ResponseWriter, r *http.Request, providerID domain.GitProvider, ou *provider.OAuthUser, accessEnc, refreshEnc []byte, expiresAt *time.Time, userID, returnTo string) {
 	id := &domain.UserIdentity{
 		ID:              domain.NewID(),
 		Provider:        providerID,
@@ -225,15 +233,15 @@ func (s *Server) completeLink(w http.ResponseWriter, r *http.Request, providerID
 	}
 	err := s.st.AttachIdentity(r.Context(), userID, id)
 	if errors.Is(err, store.ErrIdentityTaken) {
-		s.redirectConsole(w, r, map[string]string{"link_error": "taken"})
+		s.redirectConsoleTo(w, r, returnTo, map[string]string{"link_error": "taken"})
 		return
 	}
 	if err != nil {
 		s.log.Error("attach identity", "err", err)
-		s.redirectConsole(w, r, map[string]string{"link_error": "server_error"})
+		s.redirectConsoleTo(w, r, returnTo, map[string]string{"link_error": "server_error"})
 		return
 	}
-	s.redirectConsole(w, r, map[string]string{"linked": string(providerID)})
+	s.redirectConsoleTo(w, r, returnTo, map[string]string{"linked": string(providerID)})
 }
 
 // completeLogin upserts the user/identity, mints a session, sets the cookie and
@@ -401,6 +409,14 @@ func (s *Server) clearStateCookie(w http.ResponseWriter, r *http.Request) {
 
 // redirectConsole 302s to CONSOLE_URL, merging the given query params onto it.
 func (s *Server) redirectConsole(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	s.redirectConsoleTo(w, r, "", params)
+}
+
+// redirectConsoleTo redirects to the configured Console origin. returnTo may
+// choose only a verified relative path within that origin; it never controls the
+// host, scheme, or port. This preserves a Service Automation location across an
+// OAuth round trip without introducing an open redirect.
+func (s *Server) redirectConsoleTo(w http.ResponseWriter, r *http.Request, returnTo string, params map[string]string) {
 	base := s.cfg.ConsoleURL
 	if base == "" {
 		base = "http://localhost:5173"
@@ -410,12 +426,35 @@ func (s *Server) redirectConsole(w http.ResponseWriter, r *http.Request, params 
 		http.Redirect(w, r, base, http.StatusFound)
 		return
 	}
+	if target := safeOAuthReturnTo(returnTo); target != "" {
+		if targetURL, err := url.Parse(target); err == nil {
+			u.Path = targetURL.Path
+			u.RawPath = targetURL.RawPath
+			u.RawQuery = targetURL.RawQuery
+			u.Fragment = "" // OAuth state needs no fragment and fragments are never sent to servers.
+		}
+	}
 	q := u.Query()
 	for k, v := range params {
 		q.Set(k, v)
 	}
 	u.RawQuery = q.Encode()
 	http.Redirect(w, r, u.String(), http.StatusFound)
+}
+
+// safeOAuthReturnTo accepts a browser-local path only. Rejecting slash-slash,
+// backslashes, and an absolute URL closes the common URL-parser differences that
+// otherwise turn an apparently-relative value into a cross-origin redirect.
+func safeOAuthReturnTo(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || strings.Contains(raw, "\\") {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(u.Path, "/") {
+		return ""
+	}
+	return raw
 }
 
 func requestScheme(r *http.Request) string {
