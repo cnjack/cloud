@@ -85,11 +85,12 @@
    max-width/padding only for the project route. */
 .projectContent {
   max-width: none;
-  height: calc(100dvh - var(--shell-topbar-h));
+  height: 100dvh;
   min-height: 0;
   margin: 0;
   padding: 0;
   overflow: hidden;
+  background: var(--color-bg);
 }
 
 @media (max-width: 768px) {
@@ -104,5 +105,18 @@
   }
   .docsLink {
     display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .shell[data-project-workspace] {
+    height: auto;
+    min-height: 100dvh;
+  }
+
+  .projectContent {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
   }
 }

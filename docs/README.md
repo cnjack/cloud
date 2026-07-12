@@ -18,6 +18,7 @@
 | [04-byok-and-isolation.md](04-byok-and-isolation.md) | BYOK 的控制面 LLM 代理模型、沙箱/网络/PVC 隔离与护栏 |
 | [05-symphony-and-references.md](05-symphony-and-references.md) | Symphony SPEC 深读、Copilot/Codex 参考、Go+K8s ≈ Elixir+BEAM 映射 |
 | [06-reuse-roadmap-risks.md](06-reuse-roadmap-risks.md) | 复用记分卡、落地路线图 P0–P4 + 横切 CI/CD、风险与护栏 |
+| [15-project-workspace-architecture.md](15-project-workspace-architecture.md) | Project workspace route, component, capability, and scroll architecture |
 
 可视化蓝图(v1,早于存储/BYOK 细化):<https://claude.ai/code/artifact/68743dc8-aa5c-48f1-b712-fb8d974a2902>
 

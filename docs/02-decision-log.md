@@ -261,3 +261,11 @@ project 页头新增 **Kanban 按钮**（仅当本 project 有 ≥1 个 kanban l
 - **被否**：把 token 或 baseUrl 下发浏览器让 board-react 直连 jtype（明文过浏览器，违背基线）;类型化逐字段重序列化代理（丢字段=静默降级，红线 #1）;不做 workspace 收口（集群 token 越权读任意 workspace）;代理 SSE（只会转发 403）;用 owner-only 的 links/discovery 端点撑 member+ 的按钮与解析（403 或泄露凭据态）。
 
 - **对抗审查后的收口（同批实现）**：① 只有 **enabled** 的 link 才授予 board 访问（禁用 link = 断嵌入,对齐 poller 只扫 enabled;board/links 也只列 enabled → viewer/禁用态无按钮）。② save 代理**限定 `.md` 卡片路径**（buffer 请求体、校验 relativePath 以 `.md` 结尾且无 `..`）——挡住 member 借代理改 `.board` 配置或覆写工作区任意非卡片文档;残留:member 仍可写该已链接 workspace 内任意 `.md`,与其"能派 run"的信任面相当,可接受;更紧的 board-folder 收口留作后续。③ 删掉未用的 DELETE 代理端点(console client 本就不实现,减攻击面)。④ 传输失败 503 只回**通用文案**,不回显 jtype 内部 host/IP。⑤ 软建(unvalidated)link 的 `board_ref` 是名字而非 `b_` id → console 直接透传给 `<JTypeBoard>`(它按名解析),不再因 id 不匹配而打不开健康的板。
+
+### D32 · Project 路由是完整 workspace，不是全局页壳里的内容卡
+
+`/projects/:projectId` 采用 route-scoped `ProjectWorkspaceShell`：Project rail 是唯一的 Service 选择器，active `service` 与 `tab` (`tasks` / `automations` / `settings`) 写入 URL query，避免同一执行目标在 rail 和 composer 两处各有一份 local state。Project route 隐藏 `AppShell` 的全局 topbar，并把必要的身份/会话 chrome 收入 workspace utility bar，不再让两层 chrome 争夺视觉层级。
+
+Task composer 只派发一次 run 的 prompt、per-run model 与 permission mode；Service default model 属于 Settings。Recent tasks 用 activity row 而非管理型 table，仍链接到既有 Run detail。Automation / provider health 只能基于现有 API 展示：Schedule 与既有 provider `@jcode review` webhook 路径保持可用；没有 webhook health / delivery contract 时必须显示 `status unavailable`，绝不套设计原型里的绿色成功状态。Kanban 保持 D31 的真实服务端代理，不降级成假按钮。
+
+完整 component、capability、scroll 和测试约束见 [15-project-workspace-architecture.md](15-project-workspace-architecture.md)。

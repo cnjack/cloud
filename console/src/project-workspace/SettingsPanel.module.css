@@ -1,0 +1,136 @@
+.panel,
+.empty {
+  display: grid;
+  gap: var(--space-6);
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--color-text-faint);
+  font-size: var(--fs-tiny);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.head h2,
+.empty h2 {
+  color: var(--color-text);
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+}
+
+.head p,
+.empty p {
+  max-width: 620px;
+  margin-top: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--fs-sm);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.9fr);
+  gap: var(--space-5);
+}
+
+.facts,
+.policy {
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-panel-raised);
+}
+
+.facts {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.facts div {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.facts dt {
+  color: var(--color-text-faint);
+  font-size: var(--fs-caption);
+}
+
+.facts dd {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+}
+
+.facts code {
+  color: var(--color-text-muted);
+}
+
+.policy {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+}
+
+.policy h3 {
+  color: var(--color-text);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+}
+
+.policy p {
+  color: var(--color-text-muted);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-normal);
+}
+
+.policy :global(button[aria-haspopup='listbox']) {
+  margin-top: var(--space-3);
+}
+
+.unavailable {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+}
+
+.unverified {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+}
+
+.empty {
+  justify-items: start;
+}
+
+@media (max-width: 720px) {
+  .head,
+  .grid {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+}

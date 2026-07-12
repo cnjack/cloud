@@ -87,6 +87,24 @@ export function SchedulesPanel({
 
       {schedulesQ.isLoading ? (
         <p className={styles.hint}>Loading…</p>
+      ) : schedulesQ.isError ? (
+        <div className={styles.loadError} role="alert" data-testid="schedules-load-error">
+          <p>
+            {schedulesQ.error instanceof ApiError
+              ? schedulesQ.error.message
+              : 'Couldn’t load schedules for this service.'}
+          </p>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => void schedulesQ.refetch()}
+            disabled={schedulesQ.isFetching}
+            data-testid="schedules-retry"
+          >
+            {schedulesQ.isFetching ? 'Retrying…' : 'Retry'}
+          </Button>
+        </div>
       ) : schedules.length === 0 ? (
         <p className={styles.empty} data-testid="schedules-empty">
           No schedules yet{canManage ? ' — add one to run this repo on a cron.' : '.'}

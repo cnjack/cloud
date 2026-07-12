@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
 import { ApiError } from '../api/client';
@@ -169,5 +169,21 @@ describe('SchedulesPanel', () => {
     const { client } = makeClient([]);
     renderPanel(client, true);
     await waitFor(() => expect(screen.getByTestId('schedules-empty')).toBeTruthy());
+  });
+
+  it('keeps a failed schedule lookup visible instead of showing an empty list', async () => {
+    const { client } = makeClient();
+    const listSchedules = vi.fn(async () => {
+      throw new ApiError(503, 'Schedules are unavailable', {
+        error: { code: 'schedules_unreachable', message: 'Schedules are unavailable' },
+      });
+    });
+    (client as { listServiceSchedules?: unknown }).listServiceSchedules = listSchedules;
+    renderPanel(client, true);
+
+    expect(await screen.findByTestId('schedules-load-error')).toBeTruthy();
+    expect(screen.queryByTestId('schedules-empty')).toBeNull();
+    fireEvent.click(screen.getByTestId('schedules-retry'));
+    await waitFor(() => expect(listSchedules).toHaveBeenCalledTimes(2));
   });
 });

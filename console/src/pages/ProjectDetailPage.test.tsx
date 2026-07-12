@@ -11,7 +11,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
@@ -116,7 +116,9 @@ function makeClient(
     },
     createService: async (pid, input) => {
       calls.services.push({ pid, input });
-      return svc('svc_new', input.name ?? 'default');
+      const created = svc('svc_new', input.name ?? 'default');
+      p.services = [...(p.services ?? []), created];
+      return created;
     },
     updateService: async (sid, input) => {
       calls.serviceUpdates.push({ sid, input });
@@ -133,6 +135,7 @@ function renderPage(client: ApiClient, role?: 'cluster-admin' | 'project-admin')
       <ApiProvider client={client} role={role}>
         <ToastProvider>
           <MemoryRouter initialEntries={['/projects/p1']}>
+            <LocationProbe />
             <Routes>
               <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
               <Route path="/runs/:id" element={<div data-testid="run-page" />} />
@@ -143,6 +146,11 @@ function renderPage(client: ApiClient, role?: 'cluster-admin' | 'project-admin')
       </ApiProvider>
     </QueryClientProvider>,
   );
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="workspace-location">{location.search}</output>;
 }
 
 function ProjectRouteSwitchHarness() {
@@ -182,7 +190,8 @@ describe('ProjectDetailPage — single-repo composer', () => {
 
     await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
     expect(screen.queryByTestId('composer-service-select')).toBeNull();
-    expect(screen.getByTestId('project-settings-btn')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Settings' })).toBeTruthy();
+    expect(screen.queryByTestId('project-settings-btn')).toBeNull();
     // The header shows the sole repo's identity (label + git-mode badge).
     expect(screen.getByText('acme/default')).toBeTruthy();
     expect(screen.getByTestId('git-mode-badge')).toBeTruthy();
@@ -307,14 +316,17 @@ describe('ProjectDetailPage — model selection (D21)', () => {
     expect(calls.serviceRuns[0]!.input.model_id).toBeUndefined();
   });
 
-  it('shows the service default-model editor to an owner and PATCHes on change', async () => {
+  it('keeps the service default-model editor in Settings and PATCHes on change', async () => {
     const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
       models: grantedModels,
     });
     renderPage(client);
 
+    await screen.findByTestId('run-input');
+    expect(screen.queryByTestId('service-default-model-select')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'Settings' }));
     await screen.findByTestId('service-default-model-select');
-    await pickOption('service-default-model-select', 'Default: GPT-4o');
+    await pickOption('service-default-model-select', 'GPT-4o');
     await waitFor(() => expect(calls.serviceUpdates).toHaveLength(1));
     expect(calls.serviceUpdates[0]).toMatchObject({ sid: 'svc_default', input: { default_model_id: 'm_gpt' } });
   });
@@ -330,24 +342,39 @@ describe('ProjectDetailPage — model selection (D21)', () => {
     // …but not the owner-only service default editor.
     expect(screen.queryByTestId('service-default-model-select')).toBeNull();
   });
+
+  it('keeps model policy unverified when the model-grant lookup fails', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    (client as { listProjectModels?: unknown }).listProjectModels = async () => {
+      throw new Error('network down');
+    };
+    renderPage(client);
+
+    await screen.findByTestId('model-unverified');
+    fireEvent.click(screen.getByRole('tab', { name: 'Settings' }));
+
+    expect(await screen.findByTestId('service-model-policy-unverified')).toBeTruthy();
+    expect(screen.queryByTestId('service-model-policy-unavailable')).toBeNull();
+  });
 });
 
-describe('ProjectDetailPage — multi-repo composer', () => {
-  it('shows a repository selector and dispatches against the selected service', async () => {
+describe('ProjectDetailPage — multi-repo workspace', () => {
+  it('uses the service rail as the only selector and dispatches against its active service', async () => {
     const services = [svc('svc_default', 'default'), svc('svc_web', 'web')];
     const { client, calls } = makeClient(project('owner', services));
     renderPage(client);
 
-    await waitFor(() => expect(screen.getByTestId('composer-service-select')).toBeTruthy());
-    // The header collapses to a repo count once there is more than one repo.
+    await screen.findByTestId('run-input');
+    expect(screen.queryByTestId('composer-service-select')).toBeNull();
     expect(screen.getByTestId('repo-count').textContent).toContain('2 repositories');
+
+    fireEvent.click(screen.getByTestId('service-rail-svc_web'));
 
     fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'ship it' } });
     fireEvent.click(screen.getByTestId('run-submit'));
 
     await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
-    // Defaults to the 'default' service.
-    expect(calls.serviceRuns[0]).toMatchObject({ sid: 'svc_default', input: { prompt: 'ship it' } });
+    expect(calls.serviceRuns[0]).toMatchObject({ sid: 'svc_web', input: { prompt: 'ship it' } });
   });
 
   it('uses the service rail as the active execution target', async () => {
@@ -360,6 +387,20 @@ describe('ProjectDetailPage — multi-repo composer', () => {
 
     expect(railTarget.getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('heading', { name: 'web' })).toBeTruthy();
+  });
+
+  it('makes the active service and workspace tab deep-linkable', async () => {
+    const services = [svc('svc_default', 'default'), svc('svc_web', 'web')];
+    const { client } = makeClient(project('owner', services));
+    renderPage(client);
+
+    await screen.findByTestId('run-input');
+    await waitFor(() => expect(screen.getByTestId('workspace-location').textContent).toContain('service=svc_default'));
+    fireEvent.click(screen.getByTestId('service-rail-svc_web'));
+    await waitFor(() => expect(screen.getByTestId('workspace-location').textContent).toContain('service=svc_web'));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+    await waitFor(() => expect(screen.getByTestId('workspace-location').textContent).toContain('tab=automations'));
   });
 
   it('never carries a selected service into another project route', async () => {
@@ -411,6 +452,18 @@ describe('ProjectDetailPage — workspace sections', () => {
     expect(await screen.findByTestId('schedules-panel')).toBeTruthy();
     expect(screen.getByText(/webhook registration or delivery health/i)).toBeTruthy();
     await waitFor(() => expect(schedules).toHaveBeenCalledWith('svc_default'));
+  });
+
+  it('shows GitHub provider review health as unavailable instead of claiming a healthy webhook', async () => {
+    const github = { ...svc('svc_github', 'web'), provider: 'github' };
+    const { client } = makeClient(project('owner', [github]));
+    renderPage(client);
+
+    await screen.findByTestId('run-input');
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+
+    expect(await screen.findByText(/GitHub review webhook cannot be verified here/i)).toBeTruthy();
+    expect(screen.queryByText(/Webhook healthy/i)).toBeNull();
   });
 
   it('resets the workspace scroll when moving between Tasks and Automations', async () => {
@@ -532,6 +585,20 @@ describe('ProjectDetailPage — zero-repo empty state', () => {
     // The owner can still attach the first repository.
     expect(screen.getByTestId('add-repo-trigger')).toBeTruthy();
   });
+
+  it('activates a newly attached first service instead of remaining in the empty workspace', async () => {
+    const { client } = makeClient(project('owner', []));
+    (client as { listProviderRepos?: unknown }).listProviderRepos = async () => [
+      { id: 77, full_name: 'acme/frontend', description: 'SPA', default_branch: 'main', private: false },
+    ];
+    renderPage(client);
+
+    fireEvent.click(await screen.findByTestId('add-repo-trigger'));
+    fireEvent.click(await screen.findByTestId('repo-pick'));
+
+    await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
+    expect(screen.getByRole('heading', { name: 'frontend' })).toBeTruthy();
+  });
 });
 
 describe('ProjectDetailPage — viewer gating', () => {
@@ -544,6 +611,19 @@ describe('ProjectDetailPage — viewer gating', () => {
     expect(screen.queryByTestId('run-input')).toBeNull();
     expect(screen.queryByTestId('project-settings-btn')).toBeNull();
     expect(screen.queryByTestId('add-repo-trigger')).toBeNull();
+  });
+
+  it('does not query or misrepresent service automations for a viewer', async () => {
+    const { client } = makeClient(project('viewer', [svc('svc_default', 'default')]));
+    const schedules = vi.fn(async () => []);
+    (client as { listServiceSchedules?: unknown }).listServiceSchedules = schedules;
+    renderPage(client);
+
+    await screen.findByTestId('runs-empty');
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+
+    expect(await screen.findByText(/Automations are available to project members/i)).toBeTruthy();
+    expect(schedules).not.toHaveBeenCalled();
   });
 });
 
