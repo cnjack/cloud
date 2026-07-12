@@ -1,128 +1,149 @@
-# jcode Cloud
+<div align="center">
 
-jcode Cloud is a shared workspace for asking an AI coding agent to work on the
-repositories your team already uses. Start a task in a Project, follow the
-agent in a chat-like timeline, inspect its changes, and continue the session
-when you need another turn.
+<h1 align="center">
+  <span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 32px; font-weight: 700;">
+    [<span style="color: #FF8400;">J</span>CLOUD]
+  </span>
+</h1>
 
-> This guide is for people using an already deployed jcode Cloud workspace. It
-> explains the product, not how to install or operate the platform.
+### **Give your codebase a job.**
 
-## What you can do
+**The shared cloud workspace for jcode coding agents.**
 
-- Start an interactive coding session for a repository or local-path service.
-- Watch the agent's work, respond to permission requests, and send follow-up
-  instructions in the same task.
-- Inspect a diff, open the related pull request or merge request, and request
-  an AI review when one is available.
-- Schedule recurring work for a service, such as a daily check or release-note
-  update.
-- Open a linked Kanban board when your Project uses jtype.
+Describe the outcome in plain language. jcode Cloud works in the services your
+team connects, shows its progress as a conversation, and gives you a diff or
+pull request to review when it is ready.
 
-## Before you start
+[Get started](#get-started) · [How it works](#how-it-works) · [Automations](#automations-and-kanban) · [Need help](#need-help)
 
-You need:
+</div>
 
-1. The URL for your organization's jcode Cloud workspace.
-2. A signed-in account with access to a Project.
-3. At least one service in that Project. A service is usually a Gitea, GitHub,
-   or GitLab repository; it can also be a path or remote URL.
-4. A model made available to the Project by a cluster administrator.
+---
 
-If any of these are missing, the console says so explicitly. For example, a
-disabled **Send** button with a “No model is available” message means a model
-must be granted before a task can start.
+## Why jcode Cloud?
 
-## Start your first task
+| | |
+| --- | --- |
+| **Projects, not loose prompts** | Group related repositories, paths, people, models, and task history in one workspace. |
+| **See the work happen** | Follow the agent in a chat-like task timeline, including messages, tool activity, approvals, and results. |
+| **Keep people in control** | Choose full access or request approval before actions; inspect the diff and pull request before you merge. |
+| **Work where your team works** | Connect provider repositories—Gitea first, plus GitHub and GitLab—or use a path or remote URL. |
+| **Automate repeatable work** | Run scheduled tasks for a service and use linked Kanban boards when your Project is configured for them. |
+| **Honest status** | Missing models, unavailable boards, failed schedules, and unverified provider events are shown clearly instead of being silently simulated. |
 
-1. Open **Projects** and select a Project. If you are an owner and do not have
-   one yet, choose **New project**.
-2. Choose a service from the left rail. If the Project has no services, ask an
-   owner to connect a repository or add one from the Project workspace.
-3. On the **Tasks** tab, describe the outcome you want in the **New task**
-   composer. Include useful context: the affected area, expected behavior, and
-   any constraints.
-4. Pick a model or leave **Service default** selected when your Project offers
-   more than one model. Choose **Full access** or **Ask before actions** as
-   appropriate for the task.
-5. Select **Send**. jcode Cloud opens the task detail page and begins showing
-   progress.
+> jcode Cloud is for people using an already deployed workspace. Your
+> organization controls the available repositories, models, and integrations.
 
-### Write a useful request
+## Get started
 
-Good requests are specific about the result, not just the implementation.
+1. **Sign in** to the jcode Cloud URL provided by your organization.
+2. Open **Projects**, then choose an existing Project or create one if you are
+   a Project owner.
+3. Select a service from the left rail. A service is usually a repository, but
+   it can also be a path or remote URL.
+4. On the **Tasks** tab, describe the result you want in the **New task**
+   composer.
+5. Select a model when your Project offers a choice, choose the appropriate
+   permission mode, and select **Send**.
+6. Follow the task until it is ready to review, then inspect the diff or open
+   the related pull request or merge request.
+
+If a Project has no service or no available model, the console tells you what
+is missing and who can resolve it.
+
+### A good first request
+
+Be clear about the outcome, constraints, and definition of done.
 
 ```text
-Add CSV export to the analytics dashboard. Include the currently filtered rows,
-use the existing date formatting, add a test for an empty result, and open a
-draft PR when the change is ready.
+Add CSV export to the analytics dashboard. Export the currently filtered rows,
+keep the existing date format, add a test for an empty result, and open a draft
+pull request when the change is ready.
 ```
 
-You can keep the conversation going from the task detail page. Ask for a
-revision, provide extra context, or finish the session once the work is done.
+You can continue the same task afterward: ask for a revision, provide missing
+context, answer an approval request, or finish the session when the work is
+complete.
 
-## Work inside a Project
+## How it works
 
-A Project is a home for related repositories and their tasks.
+```text
+Project
+  └─ Service (repository, path, or remote URL)
+       ├─ Task session → timeline → diff / pull request / AI review
+       ├─ Scheduled task
+       └─ Linked Kanban workflow
+```
 
-### Services
+### Projects and services
 
-The service rail on the left lists the repositories and paths available in the
-current Project. Selecting one changes the task composer, recent-task list,
-and automation view to that service.
+A Project is the shared home for a stream of work. It can contain several
+services, so each repository keeps the right task history, default model,
+automations, and source context.
 
-Use a separate service when work belongs to a different repository. This keeps
-the agent's workspace, branch, schedules, and history tied to the right code
-base.
+Switch services from the left rail. The selected service controls the task
+composer, **Recent tasks**, and **Automations** view.
 
-### Recent tasks
+### Tasks and reviews
 
-The **Tasks** tab shows recent work for the selected service. Use **All**,
-**Sessions**, and **Reviews** to narrow the list.
+Open a task to see the live conversation and its current status. Depending on
+the task and your role, you can:
 
-Open any task to see its live timeline. Depending on the task, you can:
-
-- send a follow-up message;
+- send a follow-up message or continue a finished session;
 - answer a permission request;
-- cancel or retry the task;
-- inspect the diff;
-- open its pull request or merge request; and
+- cancel or retry a task;
+- inspect its diff;
+- open the related pull request or merge request; and
 - request an AI review.
 
-The available actions depend on the task state and your Project role.
+Use **All**, **Sessions**, and **Reviews** in the Project workspace to find
+recent work for the selected service.
 
-## Automate recurring work
+### Models and permissions
 
-Open **Automations** for the selected service to manage schedules. Project
-owners can add a cron expression and the prompt that should run at that time.
-For example, a weekday schedule can ask the agent to check a dependency report
-or summarize recently merged changes.
+When several models are available, choose one for the task or leave **Service
+default** selected. If no model is available, starting a task is disabled and
+the console explains how to get help.
 
-Provider-event reviews require an administrator to configure the provider and
-webhook delivery. If the console says that this status cannot be verified, do
-not assume automatic reviews are active—ask your administrator to confirm the
-integration.
+Choose **Ask before actions** when you want to review consequential steps as
+they arise. Choose **Full access** only when the task can proceed without those
+interruptions.
 
-## Use Kanban when it is linked
+## Automations and Kanban
 
-If a Project has a jtype board link, a **Kanban** button appears in its header.
-Open it to view the board without leaving jcode Cloud. When several boards are
-linked, choose the one you need from the board selector.
+### Schedules
 
-The console makes board-link problems visible. An unavailable board can be
-retried; an invalid or unvalidated automation link is clearly marked so it is
-not mistaken for a healthy card-triggered workflow.
+Open **Automations** for the selected service to see its recurring tasks.
+Project owners can add a cron schedule and the prompt it should run. Schedules
+surface their last dispatch error, so a skipped run is never mistaken for a
+successful one.
 
-## Roles at a glance
+### Provider events
+
+Provider-event reviews depend on an administrator-configured provider and
+webhook. If the console says that delivery cannot be verified, do not assume an
+automatic review is active—ask an administrator to confirm the integration.
+
+### Kanban
+
+When a jtype board is linked to a Project, use **Kanban** in the Project header
+to open it without leaving jcode Cloud. If several boards are linked, choose
+the one you need from the board selector.
+
+An unavailable board can be retried. Invalid, unvalidated, or disabled board
+automation links are called out explicitly so they are not confused with a
+working card-triggered workflow.
+
+## Roles
 
 | Role | Typical access |
 | --- | --- |
-| Viewer | View Projects and task history. |
-| Member | Start and follow tasks, continue sessions, and request reviews when permitted. |
-| Owner | Manage Project settings, services, members, integrations, schedules, and Kanban links. |
+| **Viewer** | View Projects and task history. |
+| **Member** | Start and follow tasks, continue sessions, and request reviews when permitted. |
+| **Owner** | Manage Project settings, services, members, integrations, schedules, and Kanban links. |
 
-Your organization may apply additional permissions. If a control is missing or
-disabled, ask the Project owner rather than trying to work around it.
+Your organization may add further restrictions. If an action is unavailable,
+ask the Project owner instead of trying to work around it.
 
 ## When something needs attention
 
@@ -130,27 +151,16 @@ disabled, ask the Project owner rather than trying to work around it.
 | --- | --- |
 | **No model is available for this project** | Ask a cluster administrator to grant a model to the Project. |
 | **No service connected yet** | Ask a Project owner to add or connect the repository or path. |
-| A task fails | Open the task to read the failure reason, then retry after fixing the reported issue or ask the owner for help. |
-| A schedule shows **did not dispatch** | Read the visible error on the schedule; it commonly identifies an unavailable model or repository/integration problem. |
-| Kanban is unavailable or a link is invalid | Use **Retry** if offered, then ask a Project owner or administrator to repair the board connection or mapping. |
-| Provider event status is unavailable | Ask an administrator to verify the provider webhook; the console cannot infer that it is working. |
-
-## A few practical tips
-
-- Use one task for one coherent outcome. Start a new task when the work moves to
-  another repository or a separate goal.
-- State what “done” means: tests to run, files to avoid, acceptance criteria,
-  or whether a draft pull request is expected.
-- Review the diff and pull request before merging. The agent can propose and
-  prepare changes; your team remains responsible for approving them.
-- Choose **Ask before actions** for work that needs your decision before the
-  agent performs sensitive or consequential steps.
+| A task fails | Open the task, read the failure reason, then retry after addressing it or ask the owner for help. |
+| A schedule shows **did not dispatch** | Read the visible error; it commonly identifies a model or repository/integration problem. |
+| Kanban is unavailable or a link is invalid | Use **Retry** if offered, then ask a Project owner or administrator to repair the connection or mapping. |
+| Provider event status is unavailable | Ask an administrator to verify the provider webhook. |
 
 ## Need help?
 
-Start with the Project owner when you need repository access, a service,
-automation changes, or Kanban setup. Contact a cluster administrator for model
-availability, sign-in, or provider/webhook problems.
+Start with the Project owner for repository access, services, schedules, and
+Kanban setup. Contact a cluster administrator for models, sign-in, or provider
+and webhook issues.
 
-For platform installation, deployment, and API documentation, use the
-repository's administrator and developer documentation rather than this guide.
+This README intentionally focuses on the everyday product experience. Your
+organization maintains operational and contributor documentation separately.

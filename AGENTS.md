@@ -1,0 +1,58 @@
+# jcode Cloud Agent Instructions
+
+`AGENTS.md` is the canonical source of durable project instructions for every
+coding agent. Read it before making changes.
+
+If a project instruction needs to be added or changed, update this file in the
+same change. Do not duplicate long-lived rules in tool-specific instruction
+files.
+
+## Product non-negotiables
+
+### Fail visibly
+
+An unavailable dependency must be a first-class, visible state. Never silently
+substitute a mock, fake implementation, or fallback that looks successful.
+
+- APIs return typed, actionable errors—for example, `409` with
+  `model_not_configured`—rather than fabricated success data.
+- The UI disables an action when its required dependency is unavailable and
+  explains the next step, such as configuring a model or contacting an
+  administrator.
+- Webhook and automation paths record or report why work could not run. They
+  must never claim a result that was not produced.
+- Product manifests and default configuration must not point to `mockllm`,
+  `FakeProvider`, or similar test doubles. Mocks belong only in tests and
+  explicitly labelled end-to-end rigs.
+
+### Credential discipline
+
+- Keep real credentials only in gitignored `deploy/secrets/*.local.yaml`
+  files. Never commit them.
+- Do not change Gitea OAuth `redirect_uris` through an API `PATCH`: it rotates
+  the client secret. Change it through the provider UI instead.
+
+## Engineering workflow
+
+For each feature or bug fix:
+
+1. **Design the tests first.** List the cases before implementation. Mock
+   dependencies only where needed, or run a real local dependency when that is
+   practical.
+2. **Implement in small, reviewable steps.** Follow nearby naming and comment
+   conventions. Preserve unrelated changes in a dirty worktree.
+3. **Review the diff independently.** Resolve confirmed defects before
+   delivery.
+4. **Run proportionate verification.**
+   - Orchestrator changes: `cd orchestrator && go test ./...`
+   - Console changes: `cd console && pnpm test && pnpm typecheck`
+   - Manifest changes: render each affected Kustomize target before delivery.
+5. **Commit cleanly.** Use Conventional Commits and keep one coherent feature
+   in each commit.
+
+## Instruction maintenance
+
+- Keep this file in English and focused on durable, cross-agent rules.
+- Put temporary task context in the task or pull request, not here.
+- `CLAUDE.md` is intentionally only a pointer to this file. If a rule needs to
+  change, update `AGENTS.md` rather than expanding `CLAUDE.md`.
