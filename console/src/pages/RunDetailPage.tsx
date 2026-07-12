@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ArrowClockwise, ArrowLeft, ArrowSquareOut, Stop } from '@phosphor-icons/react';
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { ArrowClockwise, ArrowLeft, ArrowSquareOut, PaperPlaneTilt, Stop } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ChatInput, RuntimeProvider, ToolRegistryProvider } from 'jcode-ui';
+import { RuntimeProvider, ToolRegistryProvider } from 'jcode-ui';
 import type { ChatRuntime, RuntimeActions, RuntimeState } from 'jcode-ui-core/runtime';
 import {
   useCancelRun,
@@ -294,8 +294,9 @@ export function RunDetailPage() {
                         cancelPending={cancel.isPending}
                         finishPending={finishSession.isPending}
                         failedSubmission={failedSubmission?.runId === runId ? failedSubmission : null}
-                        onRetryFailed={(text) => runtime.actions.sendMessage(text)}
+                        onSend={(text) => runtime.actions.sendMessage(text)}
                         onFinish={doFinishSession}
+                        onCancel={doCancel}
                       />
                     </>
                   )}
@@ -333,8 +334,9 @@ function SessionComposer({
   cancelPending,
   finishPending,
   failedSubmission,
-  onRetryFailed,
+  onSend,
   onFinish,
+  onCancel,
 }: {
   current: Run;
   canAct: boolean;
@@ -347,8 +349,9 @@ function SessionComposer({
   cancelPending: boolean;
   finishPending: boolean;
   failedSubmission: FailedSubmission | null;
-  onRetryFailed: (text: string) => void;
+  onSend: (text: string) => void;
   onFinish: () => void;
+  onCancel: () => void;
 }) {
   if (!current.session || !canAct) return null;
   if (sessionLive && !sessionAwaiting && !sessionTurnRunning) {
@@ -357,13 +360,19 @@ function SessionComposer({
   if (sessionLive) {
     return (
       <div className={styles.sessionPanel} data-testid="session-panel">
-        <fieldset disabled={sendPending || cancelPending}>
-          <ChatInput placeholder={sessionAwaiting ? 'Continue this task…' : 'Queue a follow-up — it will run after the current turn…'} showContextBar={false} />
-        </fieldset>
-        {failedSubmission?.kind === 'follow_up' && <FailedSubmissionNotice submission={failedSubmission} onRetry={() => onRetryFailed(failedSubmission.text)} />}
+        <ConversationComposer
+          disabled={sendPending || cancelPending}
+          mode="follow-up"
+          placeholder={sessionAwaiting ? 'Continue this task…' : 'Queue a follow-up — it will run after the current turn…'}
+          onSend={onSend}
+        />
+        {failedSubmission?.kind === 'follow_up' && <FailedSubmissionNotice submission={failedSubmission} onRetry={() => onSend(failedSubmission.text)} />}
         <div className={styles.sessionActions}>
           <span data-testid="session-actions-hint">Finish lets the agent wrap up; Cancel stops immediately.</span>
-          <Button type="button" variant="ghost" size="sm" onClick={onFinish} loading={finishPending} data-testid="session-finish-btn">Finish session</Button>
+          <div className={styles.sessionActionButtons}>
+            <Button type="button" variant="ghost" size="sm" onClick={onFinish} loading={finishPending} data-testid="session-finish-btn">Finish session</Button>
+            <Button type="button" variant="secondary" size="sm" onClick={onCancel} loading={cancelPending} aria-label="Stop"><Stop size={14} weight="regular" aria-hidden="true" /><span>Stop</span></Button>
+          </div>
         </div>
       </div>
     );
@@ -371,9 +380,60 @@ function SessionComposer({
   return (
     <div className={styles.sessionPanel} data-testid="resume-session-panel">
       <span>Continue this session — the agent keeps the same context.</span>
-      <fieldset disabled={!modelConfigured || resumePending}><ChatInput placeholder="Continue this task…" showContextBar={false} /></fieldset>
-      {failedSubmission?.kind === 'resume' && <FailedSubmissionNotice submission={failedSubmission} onRetry={() => onRetryFailed(failedSubmission.text)} />}
+      <ConversationComposer disabled={!modelConfigured || resumePending} mode="resume" placeholder="Continue this task…" onSend={onSend} />
+      {failedSubmission?.kind === 'resume' && <FailedSubmissionNotice submission={failedSubmission} onRetry={() => onSend(failedSubmission.text)} />}
     </div>
+  );
+}
+
+function ConversationComposer({
+  disabled,
+  mode,
+  placeholder,
+  onSend,
+}: {
+  disabled: boolean;
+  mode: 'follow-up' | 'resume';
+  placeholder: string;
+  onSend: (text: string) => void;
+}) {
+  const [text, setText] = useState('');
+  const send = () => {
+    const prompt = text.trim();
+    if (!prompt || disabled) return;
+    onSend(prompt);
+    setText('');
+  };
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    send();
+  };
+
+  return (
+    <form className={styles.conversationComposer} data-testid="conversation-composer" onSubmit={submit}>
+      <textarea
+        className={styles.conversationInput}
+        aria-label="Message input"
+        placeholder={placeholder}
+        value={text}
+        rows={2}
+        disabled={disabled}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            send();
+          }
+        }}
+      />
+      <div className={styles.conversationControls}>
+        <span>{mode === 'resume' ? 'Resume the same session' : 'Delivered to this session'}</span>
+        <Button type="submit" variant="primary" size="sm" disabled={disabled || !text.trim()} aria-label="Send message">
+          <PaperPlaneTilt size={15} weight="regular" aria-hidden="true" />
+          <span>{mode === 'resume' ? 'Continue' : 'Send'}</span>
+        </Button>
+      </div>
+    </form>
   );
 }
 

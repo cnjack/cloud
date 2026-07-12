@@ -343,7 +343,8 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
 
     const panel = await screen.findByTestId('session-panel');
     expect(panel).toBeTruthy();
-    expect(panel.querySelector('.jcode-chat-input')).toBeTruthy();
+    expect(panel.querySelector('.jcode-chat-input')).toBeNull();
+    expect(panel.querySelector('[data-testid="conversation-composer"]')).toBeTruthy();
     const input = (await screen.findByLabelText('Message input')) as HTMLTextAreaElement;
     const send = (await screen.findByLabelText('Send message')) as HTMLButtonElement;
     expect(screen.getByTestId('session-finish-btn')).toBeTruthy();
@@ -414,8 +415,8 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     expect(screen.getByTestId('session-actions-hint').textContent).toContain('Cancel');
 
     fireEvent.change(input, { target: { value: 'queue me' } });
-    // While the package shows Stop as the button, Enter still dispatches
-    // enqueueMessage, which Cloud maps to its durable follow-up queue.
+    // Enter sends the native Console composer and Cloud maps it to its durable
+    // follow-up queue.
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('run1', 'queue me'));
 
@@ -500,7 +501,8 @@ describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
     renderPage(client, run);
 
     const panel = await screen.findByTestId('resume-session-panel');
-    expect(panel.querySelector('.jcode-chat-input')).toBeTruthy();
+    expect(panel.querySelector('.jcode-chat-input')).toBeNull();
+    expect(panel.querySelector('[data-testid="conversation-composer"]')).toBeTruthy();
     const input = panel.querySelector('textarea[aria-label="Message input"]') as HTMLTextAreaElement;
     expect(input).toBeTruthy();
     const send = (await screen.findByLabelText('Send message')) as HTMLButtonElement;

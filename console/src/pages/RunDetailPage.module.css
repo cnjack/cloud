@@ -76,10 +76,16 @@
 .failBanner, .streamError { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); color: var(--color-text-muted); font-size: var(--fs-caption); }
 .failBanner { align-items: flex-start; flex-direction: column; border-color: var(--color-danger); background: var(--status-failed-bg); color: var(--color-danger-fg); }
 
-.sessionPanel { position: sticky; bottom: var(--space-4); z-index: 3; display: grid; gap: var(--space-3); margin-top: var(--space-6); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-xl); background: var(--color-bg-inset); box-shadow: var(--shadow-1); color: var(--color-text-faint); font-size: var(--fs-tiny); }
-.sessionPanel fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
-.sessionPanel :global(.jcode-chat-input) { border-color: transparent; background: transparent; box-shadow: none; }
+.sessionPanel { display: grid; gap: var(--space-3); margin-top: var(--space-6); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-xl); background: var(--color-bg-inset); box-shadow: var(--shadow-1); color: var(--color-text-faint); font-size: var(--fs-tiny); }
+.conversationComposer { overflow: hidden; border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-panel); transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out); }
+.conversationComposer:focus-within { border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent); }
+.conversationInput { display: block; width: 100%; min-height: 76px; padding: var(--space-3) var(--space-4); border: 0; resize: vertical; background: var(--color-panel); color: var(--color-text); font-family: var(--font-sans); font-size: var(--fs-sm); line-height: var(--lh-normal); }
+.conversationInput:focus { outline: 0; }
+.conversationInput::placeholder { color: var(--color-text-faint); }
+.conversationInput:disabled { cursor: not-allowed; opacity: 0.62; }
+.conversationControls { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--color-border); background: var(--color-panel-raised); color: var(--color-text-faint); font-size: var(--fs-tiny); }
 .sessionActions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.sessionActionButtons { display: flex; align-items: center; gap: var(--space-1); }
 .sessionPending { padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); color: var(--color-text-faint); font-size: var(--fs-caption); }
 .failedSubmission { display: grid; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--color-danger); border-radius: var(--radius-lg); background: var(--status-failed-bg); color: var(--color-danger-fg); font-size: var(--fs-tiny); }
 .failedSubmission pre { margin: 0; color: var(--color-text); white-space: pre-wrap; }
@@ -103,6 +109,7 @@
   .inspector { grid-template-columns: minmax(0, 1fr); }
   .inspectorSection + .inspectorSection { padding-left: 0; border-left: 0; border-top: 1px solid var(--color-border); }
   .sessionActions { align-items: flex-start; flex-direction: column; }
+  .conversationControls { align-items: flex-start; }
 }
 
 @media (max-width: 860px) {
