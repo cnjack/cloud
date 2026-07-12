@@ -139,6 +139,7 @@ describe('RunDetailPage — resilient error states', () => {
     await screen.findByTestId('run-workspace');
     const projectSettings = screen.getByTestId('project-settings-trigger');
     expect(projectSettings.closest('[data-testid="project-administration"]')).toBeTruthy();
+    expect(projectSettings.closest('[data-testid="project-summary"]')).toBeTruthy();
     expect(projectSettings.getAttribute('href')).toBe(
       '/projects/proj1?service=svc-1&tab=tasks&view=project-settings',
     );

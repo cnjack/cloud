@@ -76,9 +76,12 @@ export function ProjectWorkspaceShell({
             <strong title={projectName}>{projectName}</strong>
             <small>{services.length === 1 ? '1 service' : `${services.length} services`}</small>
           </div>
+          {projectAction && (
+            <div className={styles.projectAction} data-testid="project-administration">
+              {projectAction}
+            </div>
+          )}
         </div>
-
-        {projectAction && <div className={styles.projectAction} data-testid="project-administration">{projectAction}</div>}
 
         <div className={styles.serviceArea}>
           <div className={styles.sectionHead}>

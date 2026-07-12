@@ -44,8 +44,8 @@
 
 .projectAction {
   display: flex;
-  align-items: stretch;
-  padding: 0 7px var(--space-4);
+  flex: none;
+  align-items: center;
 }
 
 .eyebrow,
