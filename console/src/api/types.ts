@@ -1062,11 +1062,18 @@ export interface CreateRunInput {
 
 /**
  * POST /api/v1/runs/{id}/resume body (F9b / D23 ①②): continue a FINISHED session
- * run in a new run that reloads the same ACP session. Just the first prompt of
- * the resumed conversation — model/session/permission_mode are inherited from
- * the original run server-side.
+ * run in a new run that reloads the same ACP session. The composer may choose a
+ * new granted model and permission mode for this newly scheduled run; omitted
+ * fields preserve the original run's settings.
  */
-export interface ResumeRunInput {
+export interface ResumeSessionOptions {
+  /** Explicitly empty means resolve from the service default / sole grant. */
+  model_id?: string;
+  /** `full_access` is explicit so an approval-mode original can be relaxed. */
+  permission_mode?: 'approval' | 'full_access';
+}
+
+export interface ResumeRunInput extends ResumeSessionOptions {
   prompt: string;
 }
 

@@ -383,6 +383,14 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 
 type resumeRunReq struct {
 	Prompt string `json:"prompt"`
+	// Nil preserves the original run's model. An explicit empty string re-runs
+	// normal service-default resolution, while a model id is validated against
+	// this project's grants.
+	ModelID *string `json:"model_id"`
+	// Nil preserves the original session guardrail. full_access is explicit so a
+	// caller can relax an approval-mode run for this new, separately scheduled
+	// resume run.
+	PermissionMode *string `json:"permission_mode"`
 }
 
 // handleResumeRun continues a FINISHED session run in a NEW run that resumes the
@@ -448,15 +456,33 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "prompt is required")
 		return
 	}
+	permissionMode := orig.PermissionMode
+	if req.PermissionMode != nil {
+		switch strings.TrimSpace(*req.PermissionMode) {
+		case "", "full_access":
+			permissionMode = ""
+		case domain.PermissionModeApproval:
+			permissionMode = domain.PermissionModeApproval
+		default:
+			writeError(w, http.StatusBadRequest, "bad_request",
+				`unknown permission_mode "`+strings.TrimSpace(*req.PermissionMode)+`" (valid: "full_access" or "approval")`)
+			return
+		}
+	}
 	svc, err := s.st.GetService(r.Context(), orig.ServiceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
 		return
 	}
-	// Fail-visible gate: a resume is a fresh dispatch — re-run the D21 model chain,
-	// preserving the original run's model pick when it is still granted (else it
-	// fails visibly / re-resolves via the service default), exactly like retry.
-	modelID, modelName, ok := s.selectModelForRun(w, r, svc, deref(orig.ModelID), modelcfg.NotGrantedReuseMessage())
+	// A resume is a fresh dispatch. Preserve the original model by default, or
+	// validate the composer's explicit pick against the project grant set.
+	requestedModel := deref(orig.ModelID)
+	notGrantedMsg := modelcfg.NotGrantedReuseMessage()
+	if req.ModelID != nil {
+		requestedModel = strings.TrimSpace(*req.ModelID)
+		notGrantedMsg = modelcfg.NotGrantedMessage()
+	}
+	modelID, modelName, ok := s.selectModelForRun(w, r, svc, requestedModel, notGrantedMsg)
 	if !ok {
 		return
 	}
@@ -469,11 +495,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	resume.ResumedFrom = &origID
 	resume.ModelID = modelID
 	resume.ModelName = modelName
-	// A resume run is always a SESSION (the whole point) and inherits the
-	// original's permission mode — silently downgrading an approval session to
-	// full_access would drop the user's guardrail.
+	// A resume run is always a SESSION and carries the explicit new guardrail,
+	// or preserves the original one when the composer left it unchanged.
 	resume.Session = true
-	resume.PermissionMode = orig.PermissionMode
+	resume.PermissionMode = permissionMode
 	// Copy the original's ACP session id onto the new run NOW so the reconciler can
 	// inject RESUME_SESSION_ID at Job-launch, BEFORE this run has emitted its own
 	// run.session. The runner then re-emits the SAME id (resumed=true) and the

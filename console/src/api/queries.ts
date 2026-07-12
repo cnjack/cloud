@@ -25,6 +25,7 @@ import type {
   Member,
   Model,
   Project,
+  ResumeSessionOptions,
   Run,
   ServiceWebhookSetup,
   UpdateIntegrationInput,
@@ -237,8 +238,8 @@ export function useResumeSession() {
   const api = useApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ runId, prompt }: { runId: string; prompt: string }) =>
-      api.resumeSession(runId, prompt),
+    mutationFn: ({ runId, prompt, options }: { runId: string; prompt: string; options?: ResumeSessionOptions }) =>
+      api.resumeSession(runId, prompt, options),
     onSuccess: (run: Run) => {
       qc.setQueryData(qk.run(run.id), run);
       qc.invalidateQueries({ queryKey: qk.runs(run.project_id) });

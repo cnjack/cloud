@@ -391,7 +391,6 @@ export function ProjectDetailPage() {
             <ProjectSettingsAction
               onClick={() => setProjectSettingsOpen(true)}
               active={projectSettingsOpen}
-              label="Project settings"
             />
           ) : undefined
         }

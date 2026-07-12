@@ -14,8 +14,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
 import { ApiError, type ApiClient, type StreamCallbacks, type StreamHandle } from '../api/client';
-import type { MemberRole, PrInfo, Project, Run } from '../api/types';
+import type { MemberRole, PrInfo, Project, ProjectModel, Run } from '../api/types';
 import { qk } from '../api/queries';
+import { pickOption } from '../test/select';
 import { RunDetailPage } from './RunDetailPage';
 
 function baseRun(overrides: Partial<Run> = {}): Run {
@@ -46,7 +47,7 @@ const SAMPLE_PR: PrInfo = {
 
 function makeClient(
   role?: MemberRole,
-  opts: { modelConfigured?: boolean } = {},
+  opts: { modelConfigured?: boolean; models?: ProjectModel[] } = {},
 ): { client: ApiClient; ctl: Ctl } {
   const ctl: Ctl = { streamCalls: [], getRun: vi.fn() };
   const project: Project = {
@@ -81,8 +82,8 @@ function makeClient(
     // D21: Retry keys enable/disable off the project's models. Default configured
     // via the env fallback.
     listProjectModels: async () => ({
-      models: [],
-      env_fallback: opts.modelConfigured ?? true,
+      models: opts.models ?? [],
+      env_fallback: opts.models ? false : opts.modelConfigured ?? true,
     }),
     // The page reads the run's project to learn the requesting principal's role.
     getProject: async () => project,
@@ -348,6 +349,9 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     const input = (await screen.findByLabelText('Message input')) as HTMLTextAreaElement;
     const send = (await screen.findByLabelText('Send message')) as HTMLButtonElement;
     expect(screen.getByTestId('session-finish-btn')).toBeTruthy();
+    expect((screen.getByTestId('conversation-model-select') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('conversation-permission-select') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Model and access apply when you resume.')).toBeTruthy();
 
     // Empty input keeps Send disabled; typing enables it and submit calls the API.
     expect(send.disabled).toBe(true);
@@ -487,12 +491,17 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
 });
 
 describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
-  const terminalSession = () =>
-    baseRun({ status: 'succeeded', finished_at: '2026-07-07T00:05:00Z', session: true });
+  const terminalSession = (overrides: Partial<Run> = {}) =>
+    baseRun({ status: 'succeeded', finished_at: '2026-07-07T00:05:00Z', session: true, ...overrides });
 
   it('shows the Continue-session composer on a terminal session run and resumes', async () => {
-    const run = terminalSession();
-    const { client, ctl } = makeClient('member');
+    const run = terminalSession({ model_id: 'm_gpt', model_name: 'GPT-4o', permission_mode: 'approval' });
+    const { client, ctl } = makeClient('member', {
+      models: [
+        { id: 'm_gpt', name: 'GPT-4o', model_name: 'openai/gpt-4o' },
+        { id: 'm_claude', name: 'Claude', model_name: 'anthropic/claude' },
+      ],
+    });
     ctl.getRun.mockResolvedValue(run);
     const resumeSession = vi
       .fn()
@@ -508,11 +517,16 @@ describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
     const send = (await screen.findByLabelText('Send message')) as HTMLButtonElement;
     // Empty keeps Continue disabled; typing enables it and submit calls resume.
     expect(send.disabled).toBe(true);
+    await pickOption('conversation-model-select', 'Claude');
+    await pickOption('conversation-permission-select', 'Ask before actions');
     fireEvent.change(input, { target: { value: 'pick up where we left off' } });
     await waitFor(() => expect(send.disabled).toBe(false));
     fireEvent.click(send);
     await waitFor(() =>
-      expect(resumeSession).toHaveBeenCalledWith('run1', 'pick up where we left off'),
+      expect(resumeSession).toHaveBeenCalledWith('run1', 'pick up where we left off', {
+        model_id: 'm_claude',
+        permission_mode: 'approval',
+      }),
     );
   });
 

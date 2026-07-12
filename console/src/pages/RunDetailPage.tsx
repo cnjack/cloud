@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowClockwise, ArrowLeft, ArrowSquareOut, PaperPlaneTilt, Stop } from '@phosphor-icons/react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { ArrowClockwise, ArrowLeft, ArrowSquareOut, LockSimple, PaperPlaneTilt, ShieldCheck, Stop } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { RuntimeProvider, ToolRegistryProvider } from 'jcode-ui';
 import type { ChatRuntime, RuntimeActions, RuntimeState } from 'jcode-ui-core/runtime';
@@ -13,10 +13,11 @@ import {
   useRetryRun,
   useRun,
   useSendMessage,
+  useProjectModels,
 } from '../api/queries';
 import { useApi } from '../api/ApiProvider';
 import { ApiError } from '../api/client';
-import { isTerminal, type FailureReason, type Run } from '../api/types';
+import { isTerminal, type FailureReason, type ProjectModel, type ResumeSessionOptions, type Run } from '../api/types';
 import { Button } from '../components/Button';
 import { DiffView } from '../components/DiffView';
 import { Markdown } from '../components/Markdown';
@@ -25,6 +26,7 @@ import { PrPanel } from '../components/PrPanel';
 import { LoadingBlock, ErrorBlock, InlineHint } from '../components/States';
 import { Spinner } from '../components/Spinner';
 import { StatusBadge } from '../components/StatusBadge';
+import { Select } from '../components/Select';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { useToast } from '../components/Toast';
 import { Wordmark } from '../components/Wordmark';
@@ -44,7 +46,7 @@ const FAILURE_LABELS: Record<FailureReason, string> = {
 };
 
 type View = 'conversation' | 'diff' | 'pr';
-type FailedSubmission = { runId: string; kind: 'follow_up' | 'resume'; text: string };
+type FailedSubmission = { runId: string; kind: 'follow_up' | 'resume'; text: string; options?: ResumeSessionOptions };
 
 export function RunDetailPage() {
   const { runId = '' } = useParams();
@@ -76,6 +78,7 @@ export function RunDetailPage() {
   const terminal = status ? isTerminal(status) : false;
   const noChanges = status === 'succeeded' && run.data?.result === 'no_changes';
   const modelGate = useModelGate(run.data?.project_id ?? '', canAct && terminal);
+  const projectModels = useProjectModels(run.data?.project_id ?? '', canAct);
   const artifactReady = stream.events.some(
     (event) => event.type === 'run.artifact' && event.payload?.kind === 'diff',
   );
@@ -103,6 +106,36 @@ export function RunDetailPage() {
     },
   };
 
+  const sendFollowUp = useCallback((text: string) => {
+    setFailedSubmission(null);
+    sendMessage.mutate(
+      { runId, prompt: text },
+      {
+        onError: (error) => {
+          setFailedSubmission({ runId, kind: 'follow_up', text });
+          toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : 'Could not send the message.' });
+        },
+      },
+    );
+  }, [runId, sendMessage, toast]);
+
+  const continueSession = useCallback((text: string, options?: ResumeSessionOptions) => {
+    setFailedSubmission(null);
+    resumeSession.mutate(
+      { runId, prompt: text, options },
+      {
+        onSuccess: (nextRun) => {
+          toast.push({ kind: 'success', message: 'Session resumed.' });
+          navigate(`/runs/${nextRun.id}`);
+        },
+        onError: (error) => {
+          setFailedSubmission({ runId, kind: 'resume', text, options });
+          toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : 'Could not resume the session.' });
+        },
+      },
+    );
+  }, [navigate, resumeSession, runId, toast]);
+
   const runtime = useMemo<ChatRuntime>(() => {
     const state: RuntimeState = {
       items: [],
@@ -112,36 +145,8 @@ export function RunDetailPage() {
       todos: [],
       queued: [],
     };
-    const sendFollowUp = (text: string) => {
-      setFailedSubmission(null);
-      sendMessage.mutate(
-        { runId, prompt: text },
-        {
-          onError: (error) => {
-            setFailedSubmission({ runId, kind: 'follow_up', text });
-            toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : 'Could not send the message.' });
-          },
-        },
-      );
-    };
-    const continueSession = (text: string) => {
-      setFailedSubmission(null);
-      resumeSession.mutate(
-        { runId, prompt: text },
-        {
-          onSuccess: (nextRun) => {
-            toast.push({ kind: 'success', message: 'Session resumed.' });
-            navigate(`/runs/${nextRun.id}`);
-          },
-          onError: (error) => {
-            setFailedSubmission({ runId, kind: 'resume', text });
-            toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : 'Could not resume the session.' });
-          },
-        },
-      );
-    };
     const actions: RuntimeActions = {
-      sendMessage: terminal ? continueSession : sendFollowUp,
+      sendMessage: (text) => terminal ? continueSession(text) : sendFollowUp(text),
       enqueueMessage: sendFollowUp,
       removeQueuedMessage: () => {},
       stop: () => cancel.mutate(runId, {
@@ -153,7 +158,7 @@ export function RunDetailPage() {
       editMessage: () => {},
     };
     return { getState: () => state, subscribe: () => () => {}, actions };
-  }, [cancel, navigate, resumeSession, runId, sendMessage, status, terminal, toast]);
+  }, [cancel, continueSession, runId, sendFollowUp, status, terminal, toast]);
 
   if (run.isLoading) return <LoadingBlock label="Loading run…" />;
   if (!run.data) return <ErrorBlock error={run.error} onRetry={() => run.refetch()} title="Couldn't load run" />;
@@ -208,10 +213,7 @@ export function RunDetailPage() {
             railTop={<><Wordmark /><Link to="/" className={styles.projectsLink}>Projects</Link></>}
             railFooter={<div className={styles.railFooter}><span>Project workspace</span><ThemeToggle /></div>}
             projectAction={(project.data?.role ?? 'owner') === 'owner' ? (
-              <ProjectSettingsAction
-                to={`/projects/${current.project_id}?service=${encodeURIComponent(activeServiceId)}&tab=tasks&view=project-settings`}
-                label="Project settings"
-              />
+              <ProjectSettingsAction to={`/projects/${current.project_id}?service=${encodeURIComponent(activeServiceId)}&tab=tasks&view=project-settings`} />
             ) : undefined}
             utility={
               <>
@@ -294,7 +296,8 @@ export function RunDetailPage() {
                         cancelPending={cancel.isPending}
                         finishPending={finishSession.isPending}
                         failedSubmission={failedSubmission?.runId === runId ? failedSubmission : null}
-                        onSend={(text) => runtime.actions.sendMessage(text)}
+                        models={projectModels.data?.models ?? []}
+                        onSend={(text, options) => terminalRun ? continueSession(text, options) : sendFollowUp(text)}
                         onFinish={doFinishSession}
                         onCancel={doCancel}
                       />
@@ -334,6 +337,7 @@ function SessionComposer({
   cancelPending,
   finishPending,
   failedSubmission,
+  models,
   onSend,
   onFinish,
   onCancel,
@@ -349,7 +353,8 @@ function SessionComposer({
   cancelPending: boolean;
   finishPending: boolean;
   failedSubmission: FailedSubmission | null;
-  onSend: (text: string) => void;
+  models: readonly ProjectModel[];
+  onSend: (text: string, options?: ResumeSessionOptions) => void;
   onFinish: () => void;
   onCancel: () => void;
 }) {
@@ -364,6 +369,10 @@ function SessionComposer({
           disabled={sendPending || cancelPending}
           mode="follow-up"
           placeholder={sessionAwaiting ? 'Continue this task…' : 'Queue a follow-up — it will run after the current turn…'}
+          currentModelId={current.model_id ?? ''}
+          currentModelName={current.model_name}
+          currentPermissionMode={current.permission_mode === 'approval' ? 'approval' : 'full_access'}
+          models={models}
           onSend={onSend}
         />
         {failedSubmission?.kind === 'follow_up' && <FailedSubmissionNotice submission={failedSubmission} onRetry={() => onSend(failedSubmission.text)} />}
@@ -380,8 +389,17 @@ function SessionComposer({
   return (
     <div className={styles.sessionPanel} data-testid="resume-session-panel">
       <span>Continue this session — the agent keeps the same context.</span>
-      <ConversationComposer disabled={!modelConfigured || resumePending} mode="resume" placeholder="Continue this task…" onSend={onSend} />
-      {failedSubmission?.kind === 'resume' && <FailedSubmissionNotice submission={failedSubmission} onRetry={() => onSend(failedSubmission.text)} />}
+      <ConversationComposer
+        disabled={!modelConfigured || resumePending}
+        mode="resume"
+        placeholder="Continue this task…"
+        currentModelId={current.model_id ?? ''}
+        currentModelName={current.model_name}
+        currentPermissionMode={current.permission_mode === 'approval' ? 'approval' : 'full_access'}
+        models={models}
+        onSend={onSend}
+      />
+      {failedSubmission?.kind === 'resume' && <FailedSubmissionNotice submission={failedSubmission} onRetry={() => onSend(failedSubmission.text, failedSubmission.options)} />}
     </div>
   );
 }
@@ -390,18 +408,42 @@ function ConversationComposer({
   disabled,
   mode,
   placeholder,
+  currentModelId,
+  currentModelName,
+  currentPermissionMode,
+  models,
   onSend,
 }: {
   disabled: boolean;
   mode: 'follow-up' | 'resume';
   placeholder: string;
-  onSend: (text: string) => void;
+  currentModelId: string;
+  currentModelName?: string;
+  currentPermissionMode: 'approval' | 'full_access';
+  models: readonly ProjectModel[];
+  onSend: (text: string, options?: ResumeSessionOptions) => void;
 }) {
   const [text, setText] = useState('');
+  const [modelId, setModelId] = useState(currentModelId);
+  const [permissionMode, setPermissionMode] = useState(currentPermissionMode);
+  const configurable = mode === 'resume';
+  const modelOptions = useMemo(() => {
+    const options = [{ value: '', label: configurable ? 'Service default' : currentModelName || 'Service default' }];
+    if (currentModelId && !models.some((model) => model.id === currentModelId)) {
+      options.unshift({ value: currentModelId, label: currentModelName || currentModelId });
+    }
+    return [...options, ...models.map((model) => ({ value: model.id, label: model.name }))];
+  }, [configurable, currentModelId, currentModelName, models]);
+
+  useEffect(() => {
+    setModelId(currentModelId);
+    setPermissionMode(currentPermissionMode);
+  }, [currentModelId, currentPermissionMode, mode]);
+
   const send = () => {
     const prompt = text.trim();
     if (!prompt || disabled) return;
-    onSend(prompt);
+    onSend(prompt, configurable ? { model_id: modelId, permission_mode: permissionMode } : undefined);
     setText('');
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -427,11 +469,39 @@ function ConversationComposer({
         }}
       />
       <div className={styles.conversationControls}>
-        <span>{mode === 'resume' ? 'Resume the same session' : 'Delivered to this session'}</span>
-        <Button type="submit" variant="primary" size="sm" disabled={disabled || !text.trim()} aria-label="Send message">
-          <PaperPlaneTilt size={15} weight="regular" aria-hidden="true" />
-          <span>{mode === 'resume' ? 'Continue' : 'Send'}</span>
-        </Button>
+        <div className={styles.composerSettings}>
+          <Select
+            className={styles.composerPill}
+            aria-label="Model"
+            title={configurable ? 'Choose the model for the resumed session.' : 'The active agent session keeps its existing model.'}
+            value={modelId}
+            onChange={setModelId}
+            options={modelOptions}
+            disabled={disabled || !configurable}
+            data-testid="conversation-model-select"
+          />
+          <Select
+            className={styles.composerPill}
+            aria-label="Permission mode"
+            title={configurable ? 'Choose how the resumed agent asks for permission.' : 'The active agent session keeps its existing permission mode.'}
+            value={permissionMode}
+            onChange={(value) => setPermissionMode(value === 'approval' ? 'approval' : 'full_access')}
+            options={[
+              { value: 'full_access', label: 'Full access' },
+              { value: 'approval', label: 'Ask before actions' },
+            ]}
+            disabled={disabled || !configurable}
+            data-testid="conversation-permission-select"
+          />
+          {!configurable && <span className={styles.composerLocked}><LockSimple size={13} weight="regular" aria-hidden="true" />Model and access apply when you resume.</span>}
+        </div>
+        <div className={styles.conversationSubmit}>
+          <span>{mode === 'resume' ? 'Resume the same session' : 'Delivered to this session'}</span>
+          <Button type="submit" variant="primary" size="sm" disabled={disabled || !text.trim()} aria-label="Send message">
+            {mode === 'resume' ? <ShieldCheck size={15} weight="regular" aria-hidden="true" /> : <PaperPlaneTilt size={15} weight="regular" aria-hidden="true" />}
+            <span>{mode === 'resume' ? 'Continue' : 'Send'}</span>
+          </Button>
+        </div>
       </div>
     </form>
   );

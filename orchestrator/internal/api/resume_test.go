@@ -160,6 +160,51 @@ func TestResumeInheritsPermissionMode(t *testing.T) {
 	}
 }
 
+func TestResumeAllowsPermissionAndModelOverrides(t *testing.T) {
+	ts, st := newTestServerPersistent(t)
+	p := createProject(t, ts)
+	ctx := context.Background()
+	orig := &domain.Run{
+		ID: domain.NewID(), ProjectID: p.Project.ID, ServiceID: p.ServiceID, Prompt: "chat",
+		Status: domain.StatusQueued, Kind: domain.RunKindAgent, Session: true,
+		PermissionMode: domain.PermissionModeApproval, AcpSessionID: "acp-override", Attempt: 1, CreatedAt: time.Now(),
+	}
+	if err := st.CreateRun(ctx, orig); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ScheduleRun(ctx, orig.ID, "j", "h", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkSucceeded(ctx, orig.ID, "Succeeded", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := do(t, "POST", ts.URL+"/api/v1/runs/"+orig.ID+"/resume", consoleToken,
+		map[string]string{"prompt": "again", "model_id": "", "permission_mode": "full_access"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("resume override: status=%d want 201", resp.StatusCode)
+	}
+	var resume domain.Run
+	decode(t, resp, &resume)
+	if resume.PermissionMode != "" {
+		t.Fatalf("permission_mode=%q want full_access default", resume.PermissionMode)
+	}
+}
+
+func TestResumeRejectsModelThatIsNotGranted(t *testing.T) {
+	ts, st := newTestServerPersistent(t)
+	p := createProject(t, ts)
+	origID := seedSessionRun(t, st, p.Project.ID, p.ServiceID, "acp-model", true, true)
+	resp := do(t, "POST", ts.URL+"/api/v1/runs/"+origID+"/resume", consoleToken,
+		map[string]string{"prompt": "again", "model_id": "not-granted"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("resume model override: status=%d want 403", resp.StatusCode)
+	}
+	if code := errorCode(t, resp); code != "model_not_granted" {
+		t.Fatalf("code=%q want model_not_granted", code)
+	}
+}
+
 // TestResumeNotSession: a non-session terminal run cannot be resumed.
 func TestResumeNotSession(t *testing.T) {
 	ts, st := newTestServerPersistent(t)

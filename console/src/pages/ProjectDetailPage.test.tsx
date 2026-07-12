@@ -211,7 +211,7 @@ describe('ProjectDetailPage — project and service settings stay separate', () 
 
     const projectSettings = await screen.findByTestId('project-settings-trigger');
     expect(projectSettings.closest('[data-testid="project-administration"]')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Project settings' }).textContent).toContain('Project settings');
+    expect(screen.getByRole('button', { name: 'Project settings' }).textContent).toBe('');
     fireEvent.click(projectSettings);
     expect(await screen.findByTestId('project-settings-page')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();

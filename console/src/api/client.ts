@@ -51,6 +51,7 @@ import type {
   RunEvent,
   RunMessage,
   RunPermission,
+  ResumeSessionOptions,
   RunsEnvelope,
   Schedule,
   Service,
@@ -129,7 +130,7 @@ export interface ApiClient {
    * (not a session / still active), session_not_recorded (no ACP session id), or
    * workspace_not_persistent (no PVC to reload the transcript from).
    */
-  resumeSession(runId: string, prompt: string): Promise<Run>;
+  resumeSession(runId: string, prompt: string, options?: ResumeSessionOptions): Promise<Run>;
 
   /* ---- multi-turn session (D22) ------------------------------------------ */
   /**
@@ -527,10 +528,10 @@ export function createHttpClient(
       }),
 
     // Session resume (F9b).
-    resumeSession: (runId, prompt) =>
+    resumeSession: (runId, prompt, options) =>
       req<Run>(`/runs/${encodeURIComponent(runId)}/resume`, {
         method: 'POST',
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, ...options }),
       }),
 
     // Multi-turn session (D22).

@@ -54,6 +54,7 @@ import type {
   RunEventType,
   RunMessage,
   RunPermission,
+  ResumeSessionOptions,
   RunStatus,
   Schedule,
   Service,
@@ -1014,7 +1015,7 @@ export function createMockClient(): ApiClient {
     },
 
     // ---- session resume (F9b / D23 ①②) ------------------------------------
-    async resumeSession(runId: string, prompt: string): Promise<Run> {
+    async resumeSession(runId: string, prompt: string, options?: ResumeSessionOptions): Promise<Run> {
       const orig = runs.get(runId);
       if (!orig) throw new ApiError(404, 'run not found');
       const conflict = (code: string, message: string) =>
@@ -1043,6 +1044,16 @@ export function createMockClient(): ApiClient {
       if (!trimmed) throw badRequest('prompt is required');
       // The demo assumes the cluster persistent-workspace switch is ON, so the
       // workspace_not_persistent 409 is a real-cluster-only path (not modelled).
+      const permissionMode = options?.permission_mode === undefined
+        ? (orig.permission_mode === 'approval' ? 'approval' : '')
+        : options.permission_mode === 'approval' ? 'approval' : '';
+      const svc = services.get(orig.project_id)?.find((service) => service.id === orig.service_id);
+      if (!svc) throw new ApiError(409, 'the service for this session is unavailable');
+      const modelId = resolveModelForRun(
+        orig.project_id,
+        svc,
+        options?.model_id === undefined ? orig.model_id ?? undefined : options.model_id,
+      );
       const run = makeRun(
         orig.project_id,
         orig.service_id,
@@ -1050,10 +1061,12 @@ export function createMockClient(): ApiClient {
         undefined,
         1,
         true,
-        orig.permission_mode === 'approval' ? 'approval' : '',
+        permissionMode,
         orig.id,
         orig.acp_session_id,
       );
+      run.model_id = modelId ?? undefined;
+      run.model_name = modelId ? models.get(modelId)?.model_name : undefined;
       return delay(publicRun(run));
     },
 
