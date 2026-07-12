@@ -210,10 +210,13 @@ describe('ProjectDetailPage — project and service settings stay separate', () 
     renderPage(client);
 
     const projectSettings = await screen.findByTestId('project-settings-trigger');
+    expect(projectSettings.closest('[data-testid="project-summary"]')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Project settings' })?.textContent).toBe('');
     fireEvent.click(projectSettings);
     expect(await screen.findByTestId('project-settings-page')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByTestId('workspace-location').textContent).toContain('view=project-settings');
+    expect(screen.getByTestId('project-settings-trigger').getAttribute('data-active')).not.toBeNull();
     expect(screen.queryByRole('tab', { name: 'Service settings' })).toBeNull();
 
     fireEvent.click(screen.getByTestId('project-settings-back'));

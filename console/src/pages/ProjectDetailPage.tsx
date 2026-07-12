@@ -40,6 +40,7 @@ import { providerForRepoUrl } from '../lib/repo';
 import type { GitMode, GitProvider, ProviderRepo } from '../api/types';
 import { resolveWorkspaceLocation, type WorkspaceTab } from '../project-workspace/location';
 import { ProjectWorkspaceShell } from '../project-workspace/ProjectWorkspaceShell';
+import { ProjectSettingsAction } from '../project-workspace/ProjectSettingsAction';
 import { RunActivityList, type RunFilter } from '../project-workspace/RunActivityList';
 import { SettingsPanel } from '../project-workspace/SettingsPanel';
 import { TaskComposer } from '../project-workspace/TaskComposer';
@@ -381,6 +382,14 @@ export function ProjectDetailPage() {
             </button>
           ) : undefined
         }
+        projectAction={
+          canManage ? (
+            <ProjectSettingsAction
+              onClick={() => setProjectSettingsOpen(true)}
+              active={projectSettingsOpen}
+            />
+          ) : undefined
+        }
         mobileActions={
           <>
             {canAddRepo && (
@@ -410,16 +419,6 @@ export function ProjectDetailPage() {
               )}
             </nav>
             <div className={styles.workspaceUtilityActions}>
-              {canManage && !projectSettingsOpen && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setProjectSettingsOpen(true)}
-                  data-testid="project-settings-trigger"
-                >
-                  Project settings
-                </Button>
-              )}
               {hasBoardLinks && (
                 <Button
                   variant="secondary"

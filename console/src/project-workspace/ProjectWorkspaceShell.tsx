@@ -16,6 +16,7 @@ export function ProjectWorkspaceShell({
   railTop,
   railFooter,
   railAction,
+  projectAction,
   utility,
   mobileActions,
   header,
@@ -32,6 +33,7 @@ export function ProjectWorkspaceShell({
   railTop: ReactNode;
   railFooter?: ReactNode;
   railAction?: ReactNode;
+  projectAction?: ReactNode;
   utility?: ReactNode;
   mobileActions?: ReactNode;
   header?: ReactNode;
@@ -68,10 +70,13 @@ export function ProjectWorkspaceShell({
     <div className={styles.shell} data-testid="project-workspace-shell">
       <aside className={styles.rail} aria-label="Project services">
         <div className={styles.railTop}>{railTop}</div>
-        <div className={styles.projectSummary}>
-          <span className={styles.eyebrow}>Project</span>
-          <strong title={projectName}>{projectName}</strong>
-          <small>{services.length === 1 ? '1 service' : `${services.length} services`}</small>
+        <div className={styles.projectSummary} data-testid="project-summary">
+          <div className={styles.projectSummaryCopy}>
+            <span className={styles.eyebrow}>Project</span>
+            <strong title={projectName}>{projectName}</strong>
+            <small>{services.length === 1 ? '1 service' : `${services.length} services`}</small>
+          </div>
+          {projectAction && <div className={styles.projectAction}>{projectAction}</div>}
         </div>
 
         <div className={styles.serviceArea}>
@@ -143,7 +148,12 @@ export function ProjectWorkspaceShell({
             </div>
           </>
         )}
-        <div ref={scrollRef} className={styles.scroll} data-testid="project-workspace-scroll">
+        <div
+          ref={scrollRef}
+          className={`${styles.scroll} ${mode === 'detail' ? styles.detailScroll : ''}`}
+          data-testid="project-workspace-scroll"
+          data-scroll-owner={mode === 'detail' ? 'detail' : 'workspace'}
+        >
           <div
             {...(mode === 'workspace'
               ? {

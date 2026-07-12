@@ -30,6 +30,7 @@ import { Wordmark } from '../components/Wordmark';
 import { useRunStream } from '../hooks/useRunStream';
 import { formatDateTime, formatDuration, shortId } from '../lib/format';
 import { ProjectWorkspaceShell } from '../project-workspace/ProjectWorkspaceShell';
+import { ProjectSettingsAction } from '../project-workspace/ProjectSettingsAction';
 import { Timeline, type PermissionControls } from '../runview';
 import styles from './RunDetailPage.module.css';
 
@@ -205,6 +206,11 @@ export function RunDetailPage() {
             onSelectTab={() => navigate(`/projects/${current.project_id}`)}
             railTop={<><Wordmark /><Link to="/" className={styles.projectsLink}>Projects</Link></>}
             railFooter={<div className={styles.railFooter}><span>Project workspace</span><ThemeToggle /></div>}
+            projectAction={(project.data?.role ?? 'owner') === 'owner' ? (
+              <ProjectSettingsAction
+                to={`/projects/${current.project_id}?service=${encodeURIComponent(activeServiceId)}&tab=tasks&view=project-settings`}
+              />
+            ) : undefined}
             utility={
               <>
                 <nav className={styles.breadcrumbs} aria-label="Breadcrumb">

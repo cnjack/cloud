@@ -130,6 +130,21 @@ describe('RunDetailPage — resilient error states', () => {
     expect(screen.queryByTestId('tab-events')).toBeNull();
   });
 
+  it('keeps Project navigation in the fixed rail on a run route', async () => {
+    const { client, ctl } = makeClient('owner');
+    const run = baseRun({ service_id: 'svc-1' });
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+
+    await screen.findByTestId('run-workspace');
+    const projectSettings = screen.getByTestId('project-settings-trigger');
+    expect(projectSettings.closest('[data-testid="project-summary"]')).toBeTruthy();
+    expect(projectSettings.getAttribute('href')).toBe(
+      '/projects/proj1?service=svc-1&tab=tasks&view=project-settings',
+    );
+    expect(screen.getByTestId('project-workspace-scroll').getAttribute('data-scroll-owner')).toBe('detail');
+  });
+
   it('keeps the cached run rendered when a refetch fails (no whole-page dead-end)', async () => {
     const { client, ctl } = makeClient();
     // First read (initial mount) succeeds; a later refetch rejects.

@@ -29,9 +29,23 @@
 }
 
 .projectSummary {
-  display: grid;
-  gap: var(--space-1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
   padding: 22px 7px 16px;
+}
+
+.projectSummaryCopy {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+}
+
+.projectAction {
+  display: flex;
+  flex: none;
+  align-items: center;
 }
 
 .eyebrow,
@@ -43,7 +57,7 @@
   text-transform: uppercase;
 }
 
-.projectSummary strong {
+.projectSummaryCopy strong {
   overflow: hidden;
   color: var(--color-text);
   font-size: var(--fs-h1);
@@ -53,7 +67,7 @@
   white-space: nowrap;
 }
 
-.projectSummary small,
+.projectSummaryCopy small,
 .railEmpty {
   color: var(--color-text-faint);
   font-size: var(--fs-caption);
@@ -262,6 +276,10 @@
   overflow: auto;
 }
 
+.detailScroll {
+  overflow: hidden;
+}
+
 .panel {
   width: min(100%, 1040px);
   min-height: 100%;
@@ -271,6 +289,7 @@
 
 .detailPanel {
   width: 100%;
+  height: 100%;
   max-width: none;
   min-height: 100%;
   margin: 0;
