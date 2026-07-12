@@ -12,6 +12,16 @@
   gap: var(--space-3);
 }
 
+.eyebrow {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--color-text-faint);
+  font-size: var(--fs-tiny);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
 .title {
   font-size: var(--fs-h3);
   font-weight: var(--fw-semibold);

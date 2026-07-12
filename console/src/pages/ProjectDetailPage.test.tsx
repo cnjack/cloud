@@ -210,12 +210,13 @@ describe('ProjectDetailPage — project and service settings stay separate', () 
     renderPage(client);
 
     const projectSettings = await screen.findByTestId('project-settings-trigger');
-    expect(projectSettings.closest('[data-testid="project-summary"]')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Project settings' })?.textContent).toBe('');
+    expect(projectSettings.closest('[data-testid="project-administration"]')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Project settings' }).textContent).toContain('Project settings');
     fireEvent.click(projectSettings);
     expect(await screen.findByTestId('project-settings-page')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByTestId('workspace-location').textContent).toContain('view=project-settings');
+    expect(screen.getByTestId('project-workspace-scroll').getAttribute('data-scroll-owner')).toBe('settings');
     expect(screen.getByTestId('project-settings-trigger').getAttribute('data-active')).not.toBeNull();
     expect(screen.queryByRole('tab', { name: 'Service settings' })).toBeNull();
 
@@ -475,6 +476,18 @@ describe('ProjectDetailPage — workspace sections', () => {
     expect(await screen.findByTestId('schedules-panel')).toBeTruthy();
     expect(screen.getByTestId('webhook-setup-unavailable').textContent).toContain('OAuth is not configured');
     await waitFor(() => expect(schedules).toHaveBeenCalledWith('svc_default'));
+  });
+
+  it('opens the schedule editor from the Automation primary action', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    (client as { listServiceSchedules?: unknown }).listServiceSchedules = async () => [];
+    renderPage(client);
+
+    await screen.findByTestId('run-input');
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+    fireEvent.click(await screen.findByTestId('automation-new-schedule'));
+
+    expect(await screen.findByTestId('schedule-form')).toBeTruthy();
   });
 
   it('shows GitHub OAuth configuration as unavailable instead of claiming a healthy webhook', async () => {

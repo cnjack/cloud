@@ -44,8 +44,8 @@
 
 .projectAction {
   display: flex;
-  flex: none;
-  align-items: center;
+  align-items: stretch;
+  padding: 0 7px var(--space-4);
 }
 
 .eyebrow,
@@ -280,6 +280,11 @@
   overflow: hidden;
 }
 
+.settingsScroll {
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
 .panel {
   width: min(100%, 1040px);
   min-height: 100%;
@@ -290,6 +295,14 @@
 .detailPanel {
   width: 100%;
   height: 100%;
+  max-width: none;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.settingsPanel {
+  width: 100%;
   max-width: none;
   min-height: 100%;
   margin: 0;

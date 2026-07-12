@@ -22,7 +22,7 @@ export function ProjectWorkspaceShell({
   header,
   children,
 }: {
-  mode?: 'workspace' | 'detail';
+  mode?: 'workspace' | 'detail' | 'settings';
   projectName: string;
   services: readonly Service[];
   activeServiceId: string;
@@ -76,8 +76,9 @@ export function ProjectWorkspaceShell({
             <strong title={projectName}>{projectName}</strong>
             <small>{services.length === 1 ? '1 service' : `${services.length} services`}</small>
           </div>
-          {projectAction && <div className={styles.projectAction}>{projectAction}</div>}
         </div>
+
+        {projectAction && <div className={styles.projectAction} data-testid="project-administration">{projectAction}</div>}
 
         <div className={styles.serviceArea}>
           <div className={styles.sectionHead}>
@@ -150,9 +151,9 @@ export function ProjectWorkspaceShell({
         )}
         <div
           ref={scrollRef}
-          className={`${styles.scroll} ${mode === 'detail' ? styles.detailScroll : ''}`}
+          className={`${styles.scroll} ${mode === 'detail' ? styles.detailScroll : mode === 'settings' ? styles.settingsScroll : ''}`}
           data-testid="project-workspace-scroll"
-          data-scroll-owner={mode === 'detail' ? 'detail' : 'workspace'}
+          data-scroll-owner={mode}
         >
           <div
             {...(mode === 'workspace'
@@ -162,7 +163,7 @@ export function ProjectWorkspaceShell({
                   'aria-labelledby': `workspace-tab-${activeTab}`,
                 }
               : {})}
-            className={`${styles.panel} ${mode === 'detail' ? styles.detailPanel : ''}`}
+            className={`${styles.panel} ${mode === 'detail' ? styles.detailPanel : mode === 'settings' ? styles.settingsPanel : ''}`}
           >
             {children}
           </div>

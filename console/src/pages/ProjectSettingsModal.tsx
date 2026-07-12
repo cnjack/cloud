@@ -14,7 +14,7 @@
  *     (owner) — replaces borrowing CONSOLE_TOKEN for external/CI use.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, Plus, Trash } from '@phosphor-icons/react';
+import { Plus, Trash } from '@phosphor-icons/react';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
 import { SelectField, TextField } from '../components/Field';
@@ -105,11 +105,9 @@ const SETTINGS_NAV: ReadonlyArray<{ id: SettingsSectionId; label: string }> = [
  */
 export function ProjectSettingsPage({
   project,
-  onClose,
   onDeleted,
 }: {
   project: Project;
-  onClose: () => void;
   onDeleted: () => void;
 }) {
   const update = useUpdateProject();
@@ -197,10 +195,6 @@ export function ProjectSettingsPage({
   return (
     <div className={styles.settingsPage} data-testid="project-settings-page">
       <div className={styles.settingsPageHead}>
-        <button type="button" className={styles.settingsBack} onClick={onClose} data-testid="project-settings-back">
-          <ArrowLeft size={16} weight="regular" aria-hidden="true" />
-          <span>Project workspace</span>
-        </button>
         <div>
           <span className={styles.settingsEyebrow}>Project administration</span>
           <h1>Settings</h1>
@@ -326,7 +320,6 @@ export function ProjectSettingsPage({
           <div className={styles.settingsSavebar}>
             <span>{envError || 'Project settings are saved independently from service settings.'}</span>
             <div>
-              <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Back</Button>
               <Button variant="primary" type="submit" form="project-settings-form" loading={update.isPending} disabled={!!envError} data-testid="project-settings-save">Save changes</Button>
             </div>
           </div>

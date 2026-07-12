@@ -210,6 +210,7 @@ export function RunDetailPage() {
             projectAction={(project.data?.role ?? 'owner') === 'owner' ? (
               <ProjectSettingsAction
                 to={`/projects/${current.project_id}?service=${encodeURIComponent(activeServiceId)}&tab=tasks&view=project-settings`}
+                label="Project settings"
               />
             ) : undefined}
             utility={

@@ -131,8 +131,8 @@ export function WebhookSetupCard({
       <section className={styles.card} data-testid="webhook-setup-oauth" aria-labelledby="webhook-heading">
         <div className={styles.head}>
           <div>
-            <span className={styles.eyebrow}>PR review webhook</span>
-            <h3 id="webhook-heading">Connect {providerName} to enable @jcode reviews</h3>
+            <span className={styles.eyebrow}>Provider webhook</span>
+            <h3 id="webhook-heading">Connect {providerName} for PR review commands</h3>
           </div>
           <span className={styles.scope}>{providerName}</span>
         </div>
@@ -150,13 +150,13 @@ export function WebhookSetupCard({
     <section className={styles.card} data-testid="webhook-setup-ready" aria-labelledby="webhook-heading">
       <div className={styles.head}>
         <div>
-          <span className={styles.eyebrow}>PR review webhook</span>
-          <h3 id="webhook-heading">Enable @jcode reviews for {service.name}</h3>
+          <span className={styles.eyebrow}>Provider webhook</span>
+          <h3 id="webhook-heading">{providerName} PR review commands</h3>
         </div>
         <span className={styles.scope}>{providerName}</span>
       </div>
       <p>
-        Sync registers the provider’s comment webhook for <code>{service.repo_owner_name}</code> using your {providerName} OAuth account. It is safe to run again when the repository changes.
+        Sync registers the provider’s comment webhook for <code>{service.repo_owner_name}</code> using your {providerName} OAuth account. A collaborator can then start a review with <code>@jcode review</code>. It is safe to run again when the repository changes.
       </p>
       {oauthReturned && (
         <p className={styles.returned} data-testid="webhook-oauth-returned">

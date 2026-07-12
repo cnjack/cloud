@@ -6,14 +6,16 @@ export function ProjectSettingsAction({
   to,
   active = false,
   onClick,
+  label,
 }: {
   to?: string;
   active?: boolean;
   onClick?: () => void;
+  label?: string;
 }) {
-  const content = <Gear size={16} weight="regular" aria-hidden="true" />;
+  const content = <><Gear size={16} weight="regular" aria-hidden="true" />{label && <span>{label}</span>}</>;
   const shared = {
-    className: styles.trigger,
+    className: [styles.trigger, label && styles.labeled].filter(Boolean).join(' '),
     'aria-label': 'Project settings',
     title: 'Project settings',
     'data-testid': 'project-settings-trigger',

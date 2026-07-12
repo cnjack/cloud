@@ -103,7 +103,7 @@ function makeClient(project: Project): { client: ApiClient; ctl: Ctl } {
   return { client: client as ApiClient, ctl };
 }
 
-function renderModal(client: ApiClient, project: Project, onDeleted = vi.fn(), onClose = vi.fn()) {
+function renderModal(client: ApiClient, project: Project, onDeleted = vi.fn()) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const settingsClient = Object.assign({
     listMembers: async () => [],
@@ -129,12 +129,12 @@ function renderModal(client: ApiClient, project: Project, onDeleted = vi.fn(), o
     <QueryClientProvider client={qc}>
       <ApiProvider client={settingsClient}>
         <ToastProvider>
-          <ProjectSettingsPage project={project} onClose={onClose} onDeleted={onDeleted} />
+          <ProjectSettingsPage project={project} onDeleted={onDeleted} />
         </ToastProvider>
       </ApiProvider>
     </QueryClientProvider>,
   );
-  return { onDeleted, onClose };
+  return { onDeleted };
 }
 
 describe('ProjectSettingsPage — full-page layout and General PATCH', () => {
@@ -153,7 +153,7 @@ describe('ProjectSettingsPage — full-page layout and General PATCH', () => {
   it('sends only the changed name (a rename is the only project-level edit)', async () => {
     const project = baseProject();
     const { client, ctl } = makeClient(project);
-    const { onClose } = renderModal(client, project);
+    renderModal(client, project);
 
     fireEvent.change(screen.getByTestId('settings-name-input'), { target: { value: 'renamed' } });
     fireEvent.click(screen.getByTestId('project-settings-save'));
@@ -161,19 +161,17 @@ describe('ProjectSettingsPage — full-page layout and General PATCH', () => {
     await waitFor(() => expect(ctl.patches).toHaveLength(1));
     expect(ctl.patches[0]!.id).toBe('p1');
     expect(ctl.patches[0]!.input).toEqual({ name: 'renamed' });
-    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('does not PATCH at all when the name is unchanged', async () => {
     const project = baseProject();
     const { client, ctl } = makeClient(project);
-    const { onClose } = renderModal(client, project);
+    renderModal(client, project);
 
     fireEvent.click(screen.getByTestId('project-settings-save'));
 
     await waitFor(() => expect(screen.getByTestId('project-settings-save')).toBeTruthy());
     expect(ctl.patches).toHaveLength(0);
-    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('pre-fills the name and carries no repo config fields', () => {

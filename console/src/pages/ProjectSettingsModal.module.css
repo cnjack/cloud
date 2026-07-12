@@ -27,21 +27,6 @@
   line-height: var(--lh-normal);
 }
 
-.settingsBack {
-  display: inline-flex;
-  width: max-content;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-dim);
-  cursor: pointer;
-  font-size: var(--fs-caption);
-}
-
-.settingsBack:hover { color: var(--color-text); }
-
 .settingsEyebrow {
   color: var(--color-text-faint);
   font-size: var(--fs-tiny);

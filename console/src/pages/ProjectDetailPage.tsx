@@ -7,7 +7,7 @@
  * unrelated generic page primitives.
  */
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
-import { Plus } from '@phosphor-icons/react';
+import { ArrowLeft, Lightning, Plus } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   useCreateService,
@@ -73,6 +73,7 @@ export function ProjectDetailPage() {
   const [askApproval, setAskApproval] = useState(false);
   const [runFilter, setRunFilter] = useState<RunFilter>('all');
   const [kanbanOpen, setKanbanOpen] = useState(false);
+  const [scheduleCreateOpen, setScheduleCreateOpen] = useState(false);
 
   const [addOpen, setAddOpen] = useState(false);
   const [repoName, setRepoName] = useState('');
@@ -113,6 +114,7 @@ export function ProjectDetailPage() {
     setSelectedModel('');
     setAskApproval(false);
     setRunFilter('all');
+    setScheduleCreateOpen(false);
     setAddOpen(false);
     setRepoName('');
     setRepoUrl('');
@@ -343,7 +345,7 @@ export function ProjectDetailPage() {
   return (
     <>
       <ProjectWorkspaceShell
-        mode={projectSettingsOpen ? 'detail' : 'workspace'}
+        mode={projectSettingsOpen ? 'settings' : 'workspace'}
         projectName={p.name}
         services={services}
         activeServiceId={activeServiceId}
@@ -389,6 +391,7 @@ export function ProjectDetailPage() {
             <ProjectSettingsAction
               onClick={() => setProjectSettingsOpen(true)}
               active={projectSettingsOpen}
+              label="Project settings"
             />
           ) : undefined
         }
@@ -413,7 +416,18 @@ export function ProjectDetailPage() {
             <nav className={styles.workspaceBreadcrumbs} aria-label="Breadcrumb">
               <Link to="/">Projects</Link>
               <span aria-hidden>/</span>
-              <span>{p.name}</span>
+              {projectSettingsOpen ? (
+                <button
+                  type="button"
+                  className={styles.workspaceBreadcrumbBack}
+                  onClick={() => setProjectSettingsOpen(false)}
+                  data-testid="project-settings-back"
+                  aria-label="Back to project workspace"
+                >
+                  <ArrowLeft size={15} weight="regular" aria-hidden="true" />
+                  <span>{p.name}</span>
+                </button>
+              ) : <span>{p.name}</span>}
               {projectSettingsOpen && (
                 <>
                   <span aria-hidden>/</span>
@@ -494,7 +508,6 @@ export function ProjectDetailPage() {
         {projectSettingsOpen ? (
           <ProjectSettingsPage
             project={p}
-            onClose={() => setProjectSettingsOpen(false)}
             onDeleted={() => navigate('/')}
           />
         ) : workspaceTab === 'tasks' && (
@@ -695,22 +708,36 @@ export function ProjectDetailPage() {
 
         {!projectSettingsOpen && workspaceTab === 'automations' && (
           <section className={styles.automationWorkspace}>
-            <div className={styles.automationHead}>
-              <span className={styles.eyebrow}>Service automation</span>
-              <h2>Schedules and provider events</h2>
-              <p>Automations always run against the selected service.</p>
-            </div>
             {activeService && canRun ? (
               <>
-                <WebhookSetupCard
-                  service={activeService}
-                  me={auth?.me ?? null}
-                  providers={auth?.providers ?? []}
-                  canConfigure={canRun}
-                  returnTo={webhookReturnTo}
-                  oauthReturned={searchParams.get('webhook') === 'oauth'}
-                />
-                <SchedulesPanel service={activeService} canManage={canManage} />
+                <div className={styles.automationHead}>
+                  <div>
+                    <span className={styles.eyebrow}>Service automation</span>
+                    <h2>Automations</h2>
+                    <p>Bind work to <strong>{activeService.name}</strong> and let a schedule or provider event start it.</p>
+                  </div>
+                  {canManage && (
+                    <Button type="button" variant="primary" size="sm" onClick={() => setScheduleCreateOpen(true)} data-testid="automation-new-schedule">
+                      <Plus size={16} weight="regular" aria-hidden="true" />
+                      <span>New schedule</span>
+                    </Button>
+                  )}
+                </div>
+                <div className={styles.automationScope}>
+                  <Lightning size={16} weight="regular" aria-hidden="true" />
+                  <span><strong>Available today:</strong> scheduled tasks and provider-backed <code>@jcode review</code> commands. Automatic PR-open and commit-review triggers need a dedicated Automation contract, so they are not shown as enabled controls.</span>
+                </div>
+                <div className={styles.automationList}>
+                  <WebhookSetupCard
+                    service={activeService}
+                    me={auth?.me ?? null}
+                    providers={auth?.providers ?? []}
+                    canConfigure={canRun}
+                    returnTo={webhookReturnTo}
+                    oauthReturned={searchParams.get('webhook') === 'oauth'}
+                  />
+                  <SchedulesPanel service={activeService} canManage={canManage} createOpen={scheduleCreateOpen} onCreateOpenChange={setScheduleCreateOpen} />
+                </div>
               </>
             ) : activeService ? (
               <EmptyState

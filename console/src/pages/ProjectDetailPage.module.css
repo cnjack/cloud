@@ -792,6 +792,10 @@ li:last-child > .pickerItem {
 }
 
 .automationHead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-5);
   padding-bottom: var(--space-2);
 }
 
@@ -799,6 +803,34 @@ li:last-child > .pickerItem {
   margin-top: var(--space-2);
   color: var(--color-text-dim);
   font-size: var(--fs-sm);
+}
+
+.automationScope {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-left: 2px solid var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 7%, var(--color-panel));
+  color: var(--color-text-dim);
+  font-size: var(--fs-caption);
+  line-height: 1.55;
+}
+
+.automationScope svg { flex: none; margin-top: 1px; color: var(--color-accent-dim); }
+.automationScope strong { color: var(--color-text); }
+.automationScope code { color: var(--color-text-muted); font-family: var(--font-mono); font-size: 0.95em; }
+
+.automationList {
+  display: grid;
+  gap: var(--space-6);
+}
+
+@media (max-width: 640px) {
+  .automationHead {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 .automationCapability {
@@ -1014,6 +1046,20 @@ li:last-child > .pickerItem {
   font-size: var(--fs-caption);
   white-space: nowrap;
 }
+
+.workspaceBreadcrumbBack {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.workspaceBreadcrumbBack:hover { color: var(--color-text); }
 
 .workspaceBreadcrumbs a {
   color: var(--color-text-dim);

@@ -28,9 +28,14 @@ import styles from './SchedulesPanel.module.css';
 export function SchedulesPanel({
   service,
   canManage,
+  createOpen,
+  onCreateOpenChange,
 }: {
   service: Service;
   canManage: boolean;
+  /** Lets the Automation workspace own the primary creation affordance. */
+  createOpen?: boolean;
+  onCreateOpenChange?: (open: boolean) => void;
 }) {
   const toast = useToast();
   const schedulesQ = useServiceSchedules(service.id);
@@ -38,9 +43,14 @@ export function SchedulesPanel({
   const update = useUpdateSchedule(service.id);
   const del = useDeleteSchedule(service.id);
 
-  const [showForm, setShowForm] = useState(false);
+  const [localShowForm, setLocalShowForm] = useState(false);
   const [cron, setCron] = useState('');
   const [prompt, setPrompt] = useState('');
+  const showForm = createOpen ?? localShowForm;
+  const setShowForm = (open: boolean) => {
+    onCreateOpenChange?.(open);
+    if (createOpen === undefined) setLocalShowForm(open);
+  };
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,7 +77,10 @@ export function SchedulesPanel({
   return (
     <section className={styles.panel} data-testid="schedules-panel">
       <div className={styles.head}>
-        <h2 className={styles.title}>Schedules</h2>
+          <div>
+            <span className={styles.eyebrow}>Schedule</span>
+            <h2 className={styles.title}>Scheduled tasks</h2>
+          </div>
         {canManage && !showForm && (
           <Button
             type="button"
@@ -81,8 +94,7 @@ export function SchedulesPanel({
         )}
       </div>
       <p className={styles.hint}>
-        Cron triggers that dispatch a run against <strong>{service.name}</strong> on a schedule,
-        using its default model.
+        Cron triggers dispatch a headless task against <strong>{service.name}</strong> using its default model.
       </p>
 
       {schedulesQ.isLoading ? (
