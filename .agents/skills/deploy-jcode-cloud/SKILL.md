@@ -1,5 +1,5 @@
 ---
-name: deploy-company-cluster
+name: deploy-jcode-cloud
 description: Deploy or redeploy jcode Cloud (orchestrator + console) to the company Kubernetes cluster (namespace jcode, context wangwenhui@local). Use whenever asked to "deploy", "redeploy", "ship to the cluster/pod", or "push to prod" for this repo.
 ---
 
