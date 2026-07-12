@@ -813,6 +813,7 @@ describe('ProjectSettingsModal — Integrations tab (D19 / F5)', () => {
     fireEvent.click(screen.getByTestId('tab-integrations'));
     await waitFor(() => expect(screen.getByTestId('integrations-empty')).toBeTruthy());
 
+    fireEvent.click(screen.getByTestId('integration-mode-token'));
     fireEvent.change(screen.getByTestId('integration-host'), { target: { value: 'gitea.example.com' } });
     fireEvent.change(screen.getByTestId('integration-token'), { target: { value: 'bot-pat' } });
     fireEvent.click(screen.getByTestId('integration-add'));
@@ -824,6 +825,43 @@ describe('ProjectSettingsModal — Integrations tab (D19 / F5)', () => {
     });
   });
 
+  it('offers OAuth client authorization first and keeps the token path optional', async () => {
+    const project = baseProject();
+    const { client } = integClient(project);
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-integrations'));
+    await screen.findByTestId('integration-client-id');
+
+    const form = screen.getByTestId('integration-form');
+    expect(form.getAttribute('method')).toBe('post');
+    expect(form.getAttribute('action')).toBe('/auth/integrations/gitea');
+    expect(screen.getByTestId('integration-client-secret')).toBeTruthy();
+    expect(screen.queryByTestId('integration-token')).toBeNull();
+    expect((screen.getByTestId('integration-add') as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByTestId('integration-host'), { target: { value: 'https://gitea.example.com' } });
+    fireEvent.change(screen.getByTestId('integration-client-id'), { target: { value: 'client' } });
+    fireEvent.change(screen.getByTestId('integration-client-secret'), { target: { value: 'secret' } });
+    expect((screen.getByTestId('integration-add') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('labels OAuth integrations without offering token rotation', async () => {
+    const project = baseProject();
+    const { client } = integClient(project, {
+      seed: [{
+        id: 'oauth-1', project_id: project.id, name: 'automation-bot', provider: 'gitea',
+        host: 'https://gitea.example.com', cred_type: 'oauth', bot_username: 'jcode-bot',
+        token_set: true, created_at: '2026-01-02T00:00:00Z', updated_at: '2026-01-02T00:00:00Z',
+      }],
+    });
+    renderModal(client, project);
+
+    fireEvent.click(screen.getByTestId('tab-integrations'));
+    expect((await screen.findByTestId('integration-credential-oauth-1')).textContent).toBe('OAuth');
+    expect(screen.queryByTestId('integration-rotate-oauth-1')).toBeNull();
+  });
+
   it('surfaces a host_not_allowed error readably', async () => {
     const project = baseProject();
     const err = new ApiError(400, 'the git host is not allowed', {
@@ -833,6 +871,7 @@ describe('ProjectSettingsModal — Integrations tab (D19 / F5)', () => {
     renderModal(client, project);
 
     fireEvent.click(screen.getByTestId('tab-integrations'));
+    fireEvent.click(screen.getByTestId('integration-mode-token'));
     fireEvent.change(screen.getByTestId('integration-host'), { target: { value: 'evil.example.com' } });
     fireEvent.change(screen.getByTestId('integration-token'), { target: { value: 'x' } });
     fireEvent.click(screen.getByTestId('integration-add'));

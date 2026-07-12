@@ -67,9 +67,23 @@ type oauthState struct {
 }
 
 const (
-	oauthModeLogin = "login"
-	oauthModeLink  = "link"
+	oauthModeLogin       = "login"
+	oauthModeLink        = "link"
+	oauthModeIntegration = "integration"
+
+	integrationOAuthCookieName = "jcloud_integration_oauth"
 )
+
+type pendingIntegrationOAuth struct {
+	Nonce        string `json:"nonce"`
+	Provider     string `json:"provider"`
+	ProjectID    string `json:"project_id"`
+	Name         string `json:"name"`
+	Host         string `json:"host"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	UserID       string `json:"user_id"`
+}
 
 func (s *Server) signState(st oauthState) string {
 	payload, _ := json.Marshal(st)
@@ -119,6 +133,77 @@ func (s *Server) handleAuthLink(w http.ResponseWriter, r *http.Request) {
 	s.startOAuth(w, r, oauthModeLink, p.userID())
 }
 
+// handleStartIntegrationOAuth starts an owner-managed OAuth round trip that
+// creates a project integration. Client credentials are carried only in an
+// encrypted, HttpOnly, ten-minute cookie; neither the authorize URL nor the
+// integration record contains the client secret.
+func (s *Server) handleStartIntegrationOAuth(w http.ResponseWriter, r *http.Request) {
+	p := principalFrom(r.Context())
+	if p.userID() == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "a user session is required to authorize a project integration")
+		return
+	}
+	projectID := strings.TrimSpace(r.FormValue("project_id"))
+	if !s.authorizeProject(r.Context(), w, p, projectID, domain.RoleOwner) {
+		return
+	}
+	providerID := strings.ToLower(strings.TrimSpace(r.PathValue("provider")))
+	provID := domain.GitProvider(providerID)
+	if !domain.ValidProvider(provID) {
+		writeError(w, http.StatusBadRequest, "bad_request", "provider must be gitea, github or gitlab")
+		return
+	}
+	host := strings.TrimSpace(r.FormValue("host"))
+	clientID := strings.TrimSpace(r.FormValue("client_id"))
+	clientSecret := strings.TrimSpace(r.FormValue("client_secret"))
+	if host == "" || clientID == "" || clientSecret == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "host, client_id and client_secret are required")
+		return
+	}
+	if !s.gitHostAllowed(host) {
+		writeError(w, http.StatusBadRequest, "host_not_allowed", "the git host '"+host+"' is not in this cluster's allowed hosts — ask a cluster admin to add it")
+		return
+	}
+	if msg, ok := s.integrationHostMatchesWiring(provID, host); !ok {
+		writeError(w, http.StatusBadRequest, "host_mismatch", msg)
+		return
+	}
+	if s.cipher == nil {
+		writeError(w, http.StatusConflict, "cipher_not_configured", "set AUTH_TOKEN_KEY on the orchestrator before authorizing an integration")
+		return
+	}
+	nonce := randToken()
+	pending := pendingIntegrationOAuth{
+		Nonce: nonce, Provider: providerID, ProjectID: projectID,
+		Name: strings.TrimSpace(r.FormValue("name")), Host: host,
+		ClientID: clientID, ClientSecret: clientSecret, UserID: p.userID(),
+	}
+	if pending.Name == "" {
+		pending.Name = "default"
+	}
+	raw, _ := json.Marshal(pending)
+	sealed, err := s.cipher.Encrypt(raw)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not protect the OAuth client configuration")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: integrationOAuthCookieName, Value: base64.RawURLEncoding.EncodeToString(sealed),
+		Path: "/auth", HttpOnly: true, Secure: requestScheme(r) == "https",
+		SameSite: http.SameSiteLaxMode, MaxAge: 600,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name: stateCookieName, Value: nonce, Path: "/auth", HttpOnly: true,
+		Secure: requestScheme(r) == "https", SameSite: http.SameSiteLaxMode, MaxAge: 600,
+	})
+	state := s.signState(oauthState{
+		Nonce: nonce, Provider: providerID, Mode: oauthModeIntegration,
+		UserID: p.userID(), ReturnTo: safeOAuthReturnTo(r.FormValue("return_to")),
+	})
+	prov := integrationOAuthProvider(provID, host, clientID, clientSecret)
+	http.Redirect(w, r, prov.AuthorizeURL(state, s.callbackRedirectURI(r, providerID)), http.StatusFound)
+}
+
 // startOAuth issues the CSRF nonce cookie + signed state and 302s to the
 // provider authorize URL (built from the EXTERNAL host).
 func (s *Server) startOAuth(w http.ResponseWriter, r *http.Request, mode, userID string) {
@@ -150,21 +235,12 @@ func (s *Server) startOAuth(w http.ResponseWriter, r *http.Request, mode, userID
 
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	providerID := r.PathValue("provider")
-	prov, ok := s.oauth[domain.GitProvider(providerID)]
-	if !ok {
-		writeError(w, http.StatusNotFound, "not_found", "unknown or unconfigured provider")
-		return
-	}
 	// Always clear the state cookie: the round trip is over either way.
 	s.clearStateCookie(w, r)
+	s.clearIntegrationOAuthCookie(w, r)
 
 	if s.cipher == nil {
 		s.redirectConsole(w, r, map[string]string{"login_error": "server_misconfigured"})
-		return
-	}
-	if errParam := r.URL.Query().Get("error"); errParam != "" {
-		s.log.Warn("oauth callback provider error", "provider", providerID, "error", errParam)
-		s.redirectConsole(w, r, map[string]string{"login_error": "provider_denied"})
 		return
 	}
 
@@ -174,6 +250,32 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if !valid || st.Provider != providerID || cerr != nil ||
 		subtle.ConstantTimeCompare([]byte(st.Nonce), []byte(cookie.Value)) != 1 {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid or expired oauth state")
+		return
+	}
+
+	prov, ok := s.oauth[domain.GitProvider(providerID)]
+	var pending *pendingIntegrationOAuth
+	if st.Mode == oauthModeIntegration {
+		decoded, err := s.readPendingIntegrationOAuth(r)
+		if err != nil || decoded.Nonce != st.Nonce || decoded.Provider != providerID || decoded.UserID != st.UserID {
+			writeError(w, http.StatusBadRequest, "bad_request", "invalid or expired integration oauth state")
+			return
+		}
+		pending = decoded
+		prov = integrationOAuthProvider(domain.GitProvider(providerID), decoded.Host, decoded.ClientID, decoded.ClientSecret)
+		ok = true
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "unknown or unconfigured provider")
+		return
+	}
+	if errParam := r.URL.Query().Get("error"); errParam != "" {
+		s.log.Warn("oauth callback provider error", "provider", providerID, "error", errParam)
+		if pending != nil {
+			s.redirectConsoleTo(w, r, st.ReturnTo, map[string]string{"integration_error": "provider_denied"})
+		} else {
+			s.redirectConsole(w, r, map[string]string{"login_error": "provider_denied"})
+		}
 		return
 	}
 
@@ -187,13 +289,25 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	tok, err := prov.Exchange(ctx, code, redirectURI)
 	if err != nil {
 		s.log.Error("oauth token exchange", "provider", providerID, "err", err)
-		s.redirectConsole(w, r, map[string]string{"login_error": "exchange_failed"})
+		if pending != nil {
+			s.redirectConsoleTo(w, r, st.ReturnTo, map[string]string{"integration_error": "exchange_failed"})
+		} else {
+			s.redirectConsole(w, r, map[string]string{"login_error": "exchange_failed"})
+		}
 		return
 	}
 	ou, err := prov.FetchUser(ctx, tok)
 	if err != nil {
 		s.log.Error("oauth fetch user", "provider", providerID, "err", err)
-		s.redirectConsole(w, r, map[string]string{"login_error": "profile_failed"})
+		if pending != nil {
+			s.redirectConsoleTo(w, r, st.ReturnTo, map[string]string{"integration_error": "profile_failed"})
+		} else {
+			s.redirectConsole(w, r, map[string]string{"login_error": "profile_failed"})
+		}
+		return
+	}
+	if pending != nil {
+		s.completeIntegrationOAuth(w, r, pending, tok, ou, st.ReturnTo)
 		return
 	}
 
@@ -214,6 +328,89 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.completeLogin(w, r, prov.ID(), ou, accessEnc, refreshEnc, expiresAt)
+}
+
+func integrationOAuthProvider(id domain.GitProvider, host, clientID, clientSecret string) provider.OAuthProvider {
+	base := strings.TrimRight(strings.TrimSpace(host), "/")
+	if !strings.Contains(base, "://") {
+		base = "https://" + base
+	}
+	cfg := provider.OAuthConfig{
+		ClientID: clientID, ClientSecret: clientSecret,
+		ExternalURL: base, InternalURL: base,
+	}
+	switch id {
+	case domain.ProviderGitHub:
+		return provider.NewGitHubOAuth(cfg)
+	case domain.ProviderGitLab:
+		return provider.NewGitLabOAuth(cfg)
+	default:
+		return provider.NewGiteaOAuth(cfg)
+	}
+}
+
+func (s *Server) readPendingIntegrationOAuth(r *http.Request) (*pendingIntegrationOAuth, error) {
+	cookie, err := r.Cookie(integrationOAuthCookieName)
+	if err != nil {
+		return nil, err
+	}
+	sealed, err := base64.RawURLEncoding.DecodeString(cookie.Value)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.cipher.Decrypt(sealed)
+	if err != nil {
+		return nil, err
+	}
+	var pending pendingIntegrationOAuth
+	if err := json.Unmarshal(raw, &pending); err != nil {
+		return nil, err
+	}
+	return &pending, nil
+}
+
+func (s *Server) completeIntegrationOAuth(w http.ResponseWriter, r *http.Request, pending *pendingIntegrationOAuth, tok *provider.OAuthToken, ou *provider.OAuthUser, returnTo string) {
+	user, err := s.st.GetUser(r.Context(), pending.UserID)
+	if err != nil {
+		s.redirectConsoleTo(w, r, returnTo, map[string]string{"integration_error": "forbidden"})
+		return
+	}
+	role, access, err := s.effectiveRole(r.Context(), &principal{user: user}, pending.ProjectID)
+	if err != nil || !access || !role.AtLeast(domain.RoleOwner) {
+		s.redirectConsoleTo(w, r, returnTo, map[string]string{"integration_error": "forbidden"})
+		return
+	}
+	if tok.AccessToken == "" {
+		s.redirectConsoleTo(w, r, returnTo, map[string]string{"integration_error": "missing_token"})
+		return
+	}
+	// Integration rows currently store one durable credential. Do not present a
+	// short-lived access token as a successful unattended connection.
+	if !tok.Expiry.IsZero() {
+		s.redirectConsoleTo(w, r, returnTo, map[string]string{"integration_error": "expiring_token_unsupported"})
+		return
+	}
+	enc, err := s.cipher.EncryptString(tok.AccessToken)
+	if err != nil {
+		s.redirectConsoleTo(w, r, returnTo, map[string]string{"integration_error": "server_error"})
+		return
+	}
+	now := time.Now().UTC()
+	in := &domain.Integration{
+		ID: domain.NewID(), ProjectID: pending.ProjectID, Name: pending.Name,
+		Provider: domain.GitProvider(pending.Provider), Host: pending.Host,
+		CredType: domain.CredTypeOAuth, TokenEnc: enc, BotUsername: ou.Username,
+		CreatedBy: pending.UserID, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.st.CreateIntegration(r.Context(), in); err != nil {
+		code := "server_error"
+		if errors.Is(err, store.ErrAlreadyExists) {
+			code = "conflict"
+		}
+		s.redirectConsoleTo(w, r, returnTo, map[string]string{"integration_error": code})
+		return
+	}
+	s.redirectConsoleTo(w, r, returnTo, map[string]string{"integration_connected": pending.Provider})
 }
 
 // completeLink attaches or refreshes the freshly-authorized identity on the
@@ -398,6 +595,18 @@ func (s *Server) callbackRedirectURI(r *http.Request, providerID string) string 
 func (s *Server) clearStateCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     stateCookieName,
+		Value:    "",
+		Path:     "/auth",
+		HttpOnly: true,
+		Secure:   requestScheme(r) == "https",
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+func (s *Server) clearIntegrationOAuthCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     integrationOAuthCookieName,
 		Value:    "",
 		Path:     "/auth",
 		HttpOnly: true,

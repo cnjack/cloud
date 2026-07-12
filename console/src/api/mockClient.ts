@@ -1754,7 +1754,7 @@ export function createMockClient(): ApiClient {
         name,
         provider: input.provider,
         host: input.host.trim(),
-        cred_type: input.cred_type?.trim() || 'pat',
+        cred_type: input.cred_type || 'pat',
         // Demo: derive a plausible bot username from the host + provider.
         bot_username: `${input.provider}-bot`,
         token_set: true,

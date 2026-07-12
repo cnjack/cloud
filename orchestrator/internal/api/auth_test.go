@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -35,8 +36,9 @@ func validTokenKey(t *testing.T) string {
 // registered under that access token, so a test drives a specific identity by
 // choosing the callback `code`.
 type providerStub struct {
-	mu    sync.Mutex
-	users map[string]map[string]any // keyed by access token
+	mu      sync.Mutex
+	users   map[string]map[string]any // keyed by access token
+	baseURL string
 }
 
 func newProviderStub() *providerStub { return &providerStub{users: map[string]map[string]any{}} }
@@ -79,6 +81,7 @@ func newAuthServer(t *testing.T) (*httptest.Server, *store.MemStore, *providerSt
 	t.Helper()
 	stub := newProviderStub()
 	psrv := httptest.NewServer(stub.handler())
+	stub.baseURL = psrv.URL
 	t.Cleanup(psrv.Close)
 
 	st := store.NewMemStore()
@@ -87,6 +90,7 @@ func newAuthServer(t *testing.T) (*httptest.Server, *store.MemStore, *providerSt
 		ConsoleURL:   "http://console.test",
 		AuthTokenKey: validTokenKey(t),
 		SessionTTL:   24 * time.Hour,
+		GiteaURL:     psrv.URL,
 		OAuthProviders: []config.OAuthProviderConfig{{
 			ID: "gitea", ClientID: "cid", ClientSecret: "sec",
 			ExternalURL: psrv.URL, InternalURL: psrv.URL,
@@ -97,6 +101,78 @@ func newAuthServer(t *testing.T) (*httptest.Server, *store.MemStore, *providerSt
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, st, stub
+}
+
+// TestProjectIntegrationOAuthFlow covers the owner-managed alternative to a
+// pasted bot token: the owner supplies an OAuth app client, authorizes it at the
+// git host, and the callback stores the resulting access token as the project's
+// unattended integration credential. The client secret and token never appear
+// in the redirect or integration API view.
+func TestProjectIntegrationOAuthFlow(t *testing.T) {
+	ts, _, stub := newAuthServer(t)
+	stub.setUser("owner", map[string]any{"id": 1, "login": "owner", "full_name": "Project owner"})
+	stub.setUser("bot", map[string]any{"id": 42, "login": "jcode-bot", "full_name": "jcode bot"})
+
+	login := doOAuthFlow(t, ts, "/auth/login/gitea", "owner", "")
+	login.Body.Close()
+	session := findCookie(login, sessionCookieName)
+	if session == nil {
+		t.Fatal("login did not set a session cookie")
+	}
+
+	created := do(t, "POST", ts.URL+"/api/v1/projects", session.Value, map[string]any{"name": "oauth-project"})
+	var project projectView
+	decode(t, created, &project)
+
+	form := url.Values{
+		"project_id":    {project.ID},
+		"name":          {"automation-bot"},
+		"host":          {stub.baseURL},
+		"client_id":     {"project-client"},
+		"client_secret": {"project-secret"},
+		"return_to":     {"/projects/" + project.ID + "?view=project-settings"},
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/integrations/gitea", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(session)
+	start, err := noRedirectClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start.Body.Close()
+	if start.StatusCode != http.StatusFound {
+		t.Fatalf("start status=%d want 302", start.StatusCode)
+	}
+	state := redirectQuery(t, start).Get("state")
+	if state == "" || strings.Contains(start.Header.Get("Location"), "project-secret") {
+		t.Fatalf("unsafe authorize redirect: %s", start.Header.Get("Location"))
+	}
+	stateCookie := findCookie(start, stateCookieName)
+	pendingCookie := findCookie(start, integrationOAuthCookieName)
+	if stateCookie == nil || pendingCookie == nil || strings.Contains(pendingCookie.Value, "project-secret") {
+		t.Fatal("OAuth start did not set opaque state and integration cookies")
+	}
+
+	callback, _ := http.NewRequest(http.MethodGet, ts.URL+"/auth/callback/gitea?code=bot&state="+url.QueryEscape(state), nil)
+	callback.AddCookie(stateCookie)
+	callback.AddCookie(pendingCookie)
+	cb, err := noRedirectClient().Do(callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb.Body.Close()
+	if cb.StatusCode != http.StatusFound || redirectQuery(t, cb).Get("integration_connected") != "gitea" {
+		t.Fatalf("callback status=%d location=%s", cb.StatusCode, cb.Header.Get("Location"))
+	}
+
+	listed := do(t, "GET", ts.URL+"/api/v1/projects/"+project.ID+"/integrations", session.Value, nil)
+	var envelope struct {
+		Integrations []integrationView `json:"integrations"`
+	}
+	decode(t, listed, &envelope)
+	if len(envelope.Integrations) != 1 || envelope.Integrations[0].CredType != "oauth" || envelope.Integrations[0].BotUsername != "jcode-bot" {
+		t.Fatalf("integrations=%+v", envelope.Integrations)
+	}
 }
 
 func noRedirectClient() *http.Client {

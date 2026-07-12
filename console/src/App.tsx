@@ -24,6 +24,8 @@ function useLinkFlash() {
     fired.current = true;
     const linked = readQueryParam('linked');
     const linkError = readQueryParam('link_error');
+    const integrationConnected = readQueryParam('integration_connected');
+    const integrationError = readQueryParam('integration_error');
     if (linked) {
       toast.push({ kind: 'success', message: `Linked your ${linked} account.` });
     } else if (linkError === 'taken') {
@@ -33,8 +35,19 @@ function useLinkFlash() {
       });
     } else if (linkError) {
       toast.push({ kind: 'error', message: 'Could not link that account.' });
+    } else if (integrationConnected) {
+      toast.push({ kind: 'success', message: `${integrationConnected} integration connected.` });
+    } else if (integrationError) {
+      const message = integrationError === 'conflict'
+        ? 'An integration with that name already exists.'
+        : integrationError === 'expiring_token_unsupported'
+          ? 'This provider issued a short-lived token. Use the bot token option for unattended access.'
+          : 'Could not authorize the git integration.';
+      toast.push({ kind: 'error', message });
     }
-    if (linked || linkError) stripQueryParams(['linked', 'link_error']);
+    if (linked || linkError || integrationConnected || integrationError) {
+      stripQueryParams(['linked', 'link_error', 'integration_connected', 'integration_error']);
+    }
   }, [toast]);
 }
 

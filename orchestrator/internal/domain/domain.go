@@ -806,14 +806,15 @@ type KanbanConfig struct {
 // token. Used to echo token_set to admins without ever exposing the plaintext.
 func (c *KanbanConfig) TokenSet() bool { return len(c.TokenEnc) > 0 }
 
-// CredType classifies an Integration's credential shape (D19). Only PAT is
-// implemented this cycle; GithubApp is an accepted-but-inert expansion slot.
+// CredType classifies an Integration's credential shape (D19). PAT and durable
+// OAuth access tokens are wired; GithubApp remains an inert expansion slot.
 type CredType string
 
 const (
-	// CredTypePAT is a personal/organization access token (the only kind wired
-	// today). Gitea org PAT / GitLab group token / GitHub PAT.
+	// CredTypePAT is a personal/organization access token.
 	CredTypePAT CredType = "pat"
+	// CredTypeOAuth is an access token minted through an owner-supplied OAuth app.
+	CredTypeOAuth CredType = "oauth"
 	// CredTypeGithubApp is the future GitHub App installation credential. Accepted
 	// by the schema CHECK so the column can hold it later, but NOT implemented now.
 	CredTypeGithubApp CredType = "github_app"
@@ -822,7 +823,7 @@ const (
 // ValidCredType reports whether c is a recognised credential type.
 func ValidCredType(c CredType) bool {
 	switch c {
-	case CredTypePAT, CredTypeGithubApp:
+	case CredTypePAT, CredTypeOAuth, CredTypeGithubApp:
 		return true
 	}
 	return false
@@ -849,7 +850,7 @@ type Integration struct {
 	// (http://gitea.jcloud.svc.cluster.local:3000). Validated against the cluster
 	// git-host allowlist (D20) at create time.
 	Host string `json:"host"`
-	// CredType is the credential shape (only "pat" is wired; see CredType).
+	// CredType is the credential shape ("pat" or "oauth"; see CredType).
 	CredType CredType `json:"cred_type"`
 	// TokenEnc is the sealed service token (never serialised — json:"-").
 	TokenEnc []byte `json:"-"`

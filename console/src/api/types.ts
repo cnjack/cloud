@@ -817,7 +817,7 @@ export interface Integration {
   name: string;
   provider: GitProvider;
   host: string;
-  cred_type: string;
+  cred_type: 'pat' | 'oauth' | 'github_app';
   bot_username: string;
   token_set: boolean;
   created_at: string;
@@ -834,7 +834,7 @@ export interface CreateIntegrationInput {
   name?: string;
   provider: GitProvider;
   host: string;
-  cred_type?: string;
+  cred_type?: Integration['cred_type'];
   token: string;
 }
 

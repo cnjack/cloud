@@ -259,6 +259,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /auth/login/{provider}", s.handleAuthLogin)
 	mux.HandleFunc("GET /auth/callback/{provider}", s.handleAuthCallback)
 	mux.Handle("GET /auth/link/{provider}", s.authed(s.handleAuthLink))
+	mux.Handle("POST /auth/integrations/{provider}", s.authed(s.handleStartIntegrationOAuth))
 	mux.Handle("POST /auth/logout", s.authed(s.handleAuthLogout))
 	mux.Handle("GET /api/v1/me", s.authed(s.handleMe))
 
