@@ -1050,7 +1050,6 @@ li:last-child > .pickerItem {
 .workspaceBreadcrumbBack {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
   padding: 0;
   border: 0;
   background: transparent;

@@ -7,7 +7,7 @@
  * unrelated generic page primitives.
  */
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Lightning, Plus } from '@phosphor-icons/react';
+import { Lightning, Plus } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   useCreateService,
@@ -423,7 +423,6 @@ export function ProjectDetailPage() {
                   data-testid="project-settings-back"
                   aria-label="Back to project workspace"
                 >
-                  <ArrowLeft size={15} weight="regular" aria-hidden="true" />
                   <span>{p.name}</span>
                 </button>
               ) : <span>{p.name}</span>}

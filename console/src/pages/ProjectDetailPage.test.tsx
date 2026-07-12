@@ -221,7 +221,10 @@ describe('ProjectDetailPage — project and service settings stay separate', () 
     expect(screen.getByTestId('project-settings-trigger').getAttribute('data-active')).not.toBeNull();
     expect(screen.queryByRole('tab', { name: 'Service settings' })).toBeNull();
 
-    fireEvent.click(screen.getByTestId('project-settings-back'));
+    const projectCrumb = screen.getByTestId('project-settings-back');
+    expect(projectCrumb.textContent).toBe('demo');
+    expect(projectCrumb.querySelector('svg')).toBeNull();
+    fireEvent.click(projectCrumb);
 
     fireEvent.click(screen.getByRole('tab', { name: 'Service settings' }));
     expect(await screen.findByText('Service default model')).toBeTruthy();
