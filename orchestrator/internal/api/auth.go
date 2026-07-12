@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cnjack/jcloud/internal/auth"
+	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/store"
@@ -173,9 +174,10 @@ func (s *Server) handleStartIntegrationOAuth(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	nonce := randToken()
+	externalHost, _ := integrationOAuthBaseURLs(s.cfg, provID, host)
 	pending := pendingIntegrationOAuth{
 		Nonce: nonce, Provider: providerID, ProjectID: projectID,
-		Name: strings.TrimSpace(r.FormValue("name")), Host: host,
+		Name: strings.TrimSpace(r.FormValue("name")), Host: externalHost,
 		ClientID: clientID, ClientSecret: clientSecret, UserID: p.userID(),
 	}
 	if pending.Name == "" {
@@ -200,7 +202,7 @@ func (s *Server) handleStartIntegrationOAuth(w http.ResponseWriter, r *http.Requ
 		Nonce: nonce, Provider: providerID, Mode: oauthModeIntegration,
 		UserID: p.userID(), ReturnTo: safeOAuthReturnTo(r.FormValue("return_to")),
 	})
-	prov := integrationOAuthProvider(provID, host, clientID, clientSecret)
+	prov := s.integrationOAuthProvider(provID, pending.Host, clientID, clientSecret)
 	http.Redirect(w, r, prov.AuthorizeURL(state, s.callbackRedirectURI(r, providerID)), http.StatusFound)
 }
 
@@ -262,7 +264,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pending = decoded
-		prov = integrationOAuthProvider(domain.GitProvider(providerID), decoded.Host, decoded.ClientID, decoded.ClientSecret)
+		prov = s.integrationOAuthProvider(domain.GitProvider(providerID), decoded.Host, decoded.ClientID, decoded.ClientSecret)
 		ok = true
 	}
 	if !ok {
@@ -330,14 +332,11 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	s.completeLogin(w, r, prov.ID(), ou, accessEnc, refreshEnc, expiresAt)
 }
 
-func integrationOAuthProvider(id domain.GitProvider, host, clientID, clientSecret string) provider.OAuthProvider {
-	base := strings.TrimRight(strings.TrimSpace(host), "/")
-	if !strings.Contains(base, "://") {
-		base = "https://" + base
-	}
+func (s *Server) integrationOAuthProvider(id domain.GitProvider, host, clientID, clientSecret string) provider.OAuthProvider {
+	external, internal := integrationOAuthBaseURLs(s.cfg, id, host)
 	cfg := provider.OAuthConfig{
 		ClientID: clientID, ClientSecret: clientSecret,
-		ExternalURL: base, InternalURL: base,
+		ExternalURL: external, InternalURL: internal,
 	}
 	switch id {
 	case domain.ProviderGitHub:
@@ -347,6 +346,53 @@ func integrationOAuthProvider(id domain.GitProvider, host, clientID, clientSecre
 	default:
 		return provider.NewGiteaOAuth(cfg)
 	}
+}
+
+// integrationOAuthBaseURLs resolves provider endpoints from the cluster's
+// existing wiring instead of trusting the presentation scheme typed into the
+// project form. The host has already passed the allowlist and
+// integrationHostMatchesWiring checks before this runs. Reusing the configured
+// external/internal bases prevents an http form value from being redirected to
+// https during token exchange (302 changes POST to GET and Gitea answers 405),
+// and preserves private server-to-server endpoints when a cluster has one.
+func integrationOAuthBaseURLs(cfg *config.Config, id domain.GitProvider, host string) (external, internal string) {
+	base := strings.TrimRight(strings.TrimSpace(host), "/")
+	if !strings.Contains(base, "://") {
+		base = "https://" + base
+	}
+	external, internal = base, base
+	if cfg == nil {
+		return external, internal
+	}
+
+	wantedHost := domain.NormalizeGitHost(host)
+	for _, wired := range cfg.OAuthProviders {
+		if domain.GitProvider(wired.ID) != id || domain.NormalizeGitHost(wired.ExternalURL) != wantedHost {
+			continue
+		}
+		if value := strings.TrimRight(strings.TrimSpace(wired.ExternalURL), "/"); value != "" {
+			external = value
+		}
+		if value := strings.TrimRight(strings.TrimSpace(wired.InternalURL), "/"); value != "" {
+			internal = value
+		} else {
+			internal = external
+		}
+		return external, internal
+	}
+
+	if id == domain.ProviderGitea && domain.NormalizeGitHost(cfg.GiteaURL) == wantedHost {
+		if wired := strings.TrimRight(strings.TrimSpace(cfg.GiteaURL), "/"); wired != "" {
+			return wired, wired
+		}
+	}
+	if id == domain.ProviderGitHub && wantedHost == "github.com" {
+		return "https://github.com", "https://github.com"
+	}
+	if id == domain.ProviderGitLab && wantedHost == "gitlab.com" {
+		return "https://gitlab.com", "https://gitlab.com"
+	}
+	return external, internal
 }
 
 func (s *Server) readPendingIntegrationOAuth(r *http.Request) (*pendingIntegrationOAuth, error) {

@@ -175,6 +175,28 @@ func TestProjectIntegrationOAuthFlow(t *testing.T) {
 	}
 }
 
+func TestIntegrationOAuthBaseURLsUseClusterWiring(t *testing.T) {
+	cfg := &config.Config{
+		GiteaURL: "https://git.scgzyun.com",
+		OAuthProviders: []config.OAuthProviderConfig{{
+			ID:          "gitea",
+			ExternalURL: "https://git.scgzyun.com",
+			InternalURL: "http://gitea.jcode.svc.cluster.local:3000",
+		}},
+	}
+
+	external, internal := integrationOAuthBaseURLs(cfg, domain.ProviderGitea, "http://git.scgzyun.com")
+	if external != "https://git.scgzyun.com" || internal != "http://gitea.jcode.svc.cluster.local:3000" {
+		t.Fatalf("bases=(%q,%q), want configured external/internal wiring", external, internal)
+	}
+
+	cfg.OAuthProviders = nil
+	external, internal = integrationOAuthBaseURLs(cfg, domain.ProviderGitea, "http://git.scgzyun.com")
+	if external != cfg.GiteaURL || internal != cfg.GiteaURL {
+		t.Fatalf("bases=(%q,%q), want GITEA_URL %q", external, internal, cfg.GiteaURL)
+	}
+}
+
 func noRedirectClient() *http.Client {
 	return &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
