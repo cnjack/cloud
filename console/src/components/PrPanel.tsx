@@ -7,6 +7,7 @@
  * Kept deliberately simple: one link row, one primary action, one list.
  */
 import { useState } from 'react';
+import { ArrowSquareOut } from '@phosphor-icons/react';
 import { useNavigate } from 'react-router-dom';
 import { usePR, useRequestReview } from '../api/queries';
 import { ApiError } from '../api/client';
@@ -103,9 +104,7 @@ export function PrPanel({
             data-testid="pr-external-link"
           >
             {info.url}
-            <span className={styles.arrow} aria-hidden>
-              ↗
-            </span>
+            <ArrowSquareOut className={styles.arrow} size={14} weight="regular" aria-hidden="true" />
           </a>
         ) : (
           <span className={styles.noPr}>No pull request opened yet.</span>

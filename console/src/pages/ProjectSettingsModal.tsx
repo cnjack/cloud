@@ -14,6 +14,7 @@
  *     (owner) — replaces borrowing CONSOLE_TOKEN for external/CI use.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { ArrowLeft, Plus, Trash } from '@phosphor-icons/react';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
 import { SelectField, TextField } from '../components/Field';
@@ -197,7 +198,8 @@ export function ProjectSettingsPage({
     <div className={styles.settingsPage} data-testid="project-settings-page">
       <div className={styles.settingsPageHead}>
         <button type="button" className={styles.settingsBack} onClick={onClose} data-testid="project-settings-back">
-          <span aria-hidden>←</span> Project workspace
+          <ArrowLeft size={16} weight="regular" aria-hidden="true" />
+          <span>Project workspace</span>
         </button>
         <div>
           <span className={styles.settingsEyebrow}>Project administration</span>
@@ -260,13 +262,13 @@ export function ProjectSettingsPage({
                               <input className={[styles.envInput, invalid && styles.envInvalid].filter(Boolean).join(' ')} placeholder="KEY" value={row.key} aria-invalid={invalid || undefined} onChange={(event) => setEnvRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} data-testid={`env-key-${index}`} autoComplete="off" />
                               <span className={styles.envEq}>=</span>
                               <input className={styles.envInput} placeholder="value" value={row.value} onChange={(event) => setEnvRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} data-testid={`env-value-${index}`} autoComplete="off" />
-                              <button type="button" className={styles.envRemove} onClick={() => setEnvRows((rows) => rows.filter((_, itemIndex) => itemIndex !== index))} data-testid={`env-remove-${index}`} aria-label="Remove variable">×</button>
+                              <button type="button" className={styles.envRemove} onClick={() => setEnvRows((rows) => rows.filter((_, itemIndex) => itemIndex !== index))} data-testid={`env-remove-${index}`} aria-label="Remove variable"><Trash size={15} weight="regular" aria-hidden="true" /></button>
                             </div>
                           );
                         })}
                       </div>
                     )}
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setEnvRows((rows) => [...rows, { key: '', value: '' }])} data-testid="env-add">+ Add variable</Button>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setEnvRows((rows) => [...rows, { key: '', value: '' }])} data-testid="env-add"><Plus size={15} weight="regular" aria-hidden="true" /><span>Add variable</span></Button>
                     {envError && <span className={styles.envError} data-testid="env-error">{envError}</span>}
                   </div>
                 </section>
@@ -689,7 +691,7 @@ export function ProjectSettingsModal({
                               data-testid={`env-remove-${i}`}
                               aria-label="Remove variable"
                             >
-                              ×
+                              <Trash size={15} weight="regular" aria-hidden="true" />
                             </button>
                           </div>
                         );
@@ -703,7 +705,8 @@ export function ProjectSettingsModal({
                     onClick={() => setEnvRows((rows) => [...rows, { key: '', value: '' }])}
                     data-testid="env-add"
                   >
-                    + Add variable
+                    <Plus size={15} weight="regular" aria-hidden="true" />
+                    <span>Add variable</span>
                   </Button>
                   {envError && (
                     <span className={styles.envError} data-testid="env-error">

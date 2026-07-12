@@ -16,6 +16,7 @@
  */
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
+import { ArrowRight } from '@phosphor-icons/react';
 import { useProjectModels } from '../api/queries';
 import { useRole } from '../api/ApiProvider';
 import styles from './ModelGate.module.css';
@@ -71,7 +72,8 @@ export function useModelGate(projectId: string, enabled = true): ModelGate {
         <span className={styles.text}>No model is available for this project, so runs can’t start.</span>
         {isClusterAdmin ? (
           <Link to="/system" className={styles.link} data-testid="model-config-link">
-            Grant a model on the Cluster page →
+            <span>Grant a model on the Cluster page</span>
+            <ArrowRight size={15} weight="regular" aria-hidden="true" />
           </Link>
         ) : (
           <span className={styles.text}>

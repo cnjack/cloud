@@ -1,4 +1,5 @@
 import { renderMarkdown } from 'jcode-ui';
+import { ArrowSquareOut, CaretRight, Check, Circle, File, Warning } from '@phosphor-icons/react';
 import { groupTimeline } from './grouping';
 import { terminalStatusSeq } from './eventModel';
 import { PermissionCard } from './PermissionCard';
@@ -127,7 +128,7 @@ function ToolProgress({ tools }: { tools: ToolCardItem[] }) {
         <details className={styles.tool} key={tool.callId} data-status={tool.status} data-testid="thread-tool" open={tool.status === 'failed'}>
           <summary>
             <span className={styles.toolRail} aria-hidden>{index === tools.length - 1 ? '└' : '├'}</span>
-            <span className={styles.toolIcon} aria-hidden>{tool.status === 'running' ? '›' : tool.status === 'failed' ? '!' : '✓'}</span>
+            <span className={styles.toolIcon} aria-hidden>{tool.status === 'running' ? <CaretRight size={13} weight="bold" /> : tool.status === 'failed' ? <Warning size={13} weight="bold" /> : <Check size={13} weight="bold" />}</span>
             <strong>{toolTitle(tool)} <small>· {tool.tool}</small></strong>
             <span className={styles.toolStatus}>{tool.status === 'succeeded' ? 'Done' : tool.status}</span>
           </summary>
@@ -151,12 +152,12 @@ function toolTitle(tool: ToolCardItem): string {
   return labels[tool.tool] ?? tool.tool.replaceAll('_', ' ');
 }
 
-function eventIcon(item: GroupedTimelineItem): string {
-  if (item.kind === 'failure') return '!';
-  if (item.kind === 'git') return '↗';
-  if (item.kind === 'artifact') return '□';
-  if (item.kind === 'status') return item.status === 'succeeded' ? '✓' : '•';
-  return '•';
+function eventIcon(item: GroupedTimelineItem): React.ReactNode {
+  if (item.kind === 'failure') return <Warning size={15} weight="fill" />;
+  if (item.kind === 'git') return <ArrowSquareOut size={15} weight="regular" />;
+  if (item.kind === 'artifact') return <File size={15} weight="regular" />;
+  if (item.kind === 'status') return item.status === 'succeeded' ? <Check size={15} weight="bold" /> : <Circle size={9} weight="fill" />;
+  return <Circle size={9} weight="fill" />;
 }
 
 function eventLabel(item: GroupedTimelineItem, finalStatus?: number): string {

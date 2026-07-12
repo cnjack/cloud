@@ -1,4 +1,5 @@
 import type { FormEvent, ReactNode } from 'react';
+import { PaperPlaneTilt } from '@phosphor-icons/react';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
 import type { ProjectModel, Service } from '../api/types';
@@ -100,7 +101,8 @@ export function TaskComposer({
               disabled={!configured}
               data-testid="run-submit"
             >
-              Send
+              <PaperPlaneTilt size={16} weight="regular" aria-hidden="true" />
+              <span>Send</span>
             </Button>
           </div>
         </div>

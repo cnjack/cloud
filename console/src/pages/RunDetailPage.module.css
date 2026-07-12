@@ -36,7 +36,7 @@
 
 .taskDetail { display: flex; height: 100%; min-height: 0; flex-direction: column; background: var(--color-panel); }
 .taskHeader { z-index: 4; display: grid; flex: none; gap: 10px; padding: 13px 22px 14px; border-bottom: 1px solid var(--color-border); background: var(--color-panel); }
-.backToProject { width: max-content; color: var(--color-text-dim); font-size: var(--fs-caption); }
+.backToProject { display: inline-flex; align-items: center; gap: var(--space-1); width: max-content; color: var(--color-text-dim); font-size: var(--fs-caption); }
 .taskTitleRow { display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); }
 .taskTitleRow h1 { max-width: 54rem; margin: 0 0 var(--space-2); color: var(--color-text); font-size: 15px; font-weight: var(--fw-semibold); letter-spacing: var(--tracking-tight); line-height: 1.25; }
 .taskTitleRow p { margin: 0; color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); }
@@ -69,9 +69,9 @@
 .changeList span { grid-column: 2; grid-row: 1 / span 3; white-space: nowrap; }
 .changeList b { color: var(--status-succeeded-fg); font-weight: var(--fw-medium); }
 .changeList i { color: var(--color-danger-fg); font-style: normal; }
-.inspectorAction, .originRef { width: max-content; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: var(--fs-tiny); text-align: left; }
+.inspectorAction, .originRef { display: inline-flex; align-items: center; gap: var(--space-1); width: max-content; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: var(--fs-tiny); text-align: left; }
 .inspectorAction:hover { color: var(--color-accent); }
-.originRef { display: inline-block; color: var(--color-text-faint); }
+.originRef { color: var(--color-text-faint); }
 
 .failBanner, .streamError { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); color: var(--color-text-muted); font-size: var(--fs-caption); }
 .failBanner { align-items: flex-start; flex-direction: column; border-color: var(--color-danger); background: var(--status-failed-bg); color: var(--color-danger-fg); }
@@ -85,7 +85,7 @@
 .failedSubmission pre { margin: 0; color: var(--color-text); white-space: pre-wrap; }
 
 .subview { display: grid; gap: var(--space-4); }
-.subview > button { width: max-content; padding: 0; border: 0; background: transparent; color: var(--color-text-dim); cursor: pointer; font-size: var(--fs-caption); }
+.subview > button { display: inline-flex; align-items: center; gap: var(--space-1); width: max-content; padding: 0; border: 0; background: transparent; color: var(--color-text-dim); cursor: pointer; font-size: var(--fs-caption); }
 .empty { margin: 0; padding: var(--space-8); border: 1px solid var(--color-border); border-radius: var(--radius-lg); color: var(--color-text-faint); font-size: var(--fs-sm); text-align: center; }
 .reviewOutput { padding: var(--space-5); border: 1px solid var(--color-border); border-radius: var(--radius-xl); }
 .reviewProgress { display: grid; gap: var(--space-5); }

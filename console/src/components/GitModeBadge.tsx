@@ -7,6 +7,7 @@
  * Absent git_mode is treated as readonly (older projects / diff-only default).
  */
 import type { GitMode } from '../api/types';
+import { ArrowRight } from '@phosphor-icons/react';
 import styles from './GitModeBadge.module.css';
 
 export function GitModeBadge({
@@ -30,9 +31,7 @@ export function GitModeBadge({
         Draft PR
         {providerRepo && (
           <>
-            <span className={styles.arrow} aria-hidden>
-              →
-            </span>
+            <ArrowRight className={styles.arrow} size={14} weight="regular" aria-hidden="true" />
             <code className={styles.repo}>{providerRepo}</code>
           </>
         )}

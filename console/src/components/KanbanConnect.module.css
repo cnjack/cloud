@@ -49,6 +49,9 @@
 }
 
 .link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
   color: var(--color-accent);

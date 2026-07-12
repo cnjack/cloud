@@ -7,6 +7,7 @@
  * unrelated generic page primitives.
  */
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { Plus } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   useCreateService,
@@ -378,7 +379,8 @@ export function ProjectDetailPage() {
               onClick={openAddService}
               data-testid="add-repo-trigger"
             >
-              + Add service
+              <Plus size={16} weight="regular" aria-hidden="true" />
+              <span>Add service</span>
             </button>
           ) : undefined
         }
@@ -394,7 +396,8 @@ export function ProjectDetailPage() {
           <>
             {canAddRepo && (
               <button type="button" className={styles.mobileAddService} onClick={openAddService}>
-                + Add
+                <Plus size={16} weight="regular" aria-hidden="true" />
+                <span>Add</span>
               </button>
             )}
             {appRole === 'cluster-admin' && (

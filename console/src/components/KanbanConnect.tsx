@@ -21,6 +21,7 @@
  *                 by the parent), never a silent failure.
  */
 import { ApiError, apiErrorCode } from '../api/client';
+import { ArrowSquareOut } from '@phosphor-icons/react';
 import { daysUntil } from '../lib/format';
 import type { KanbanConnectStart, KanbanConnectStatus } from '../api/types';
 import { Button } from './Button';
@@ -150,7 +151,8 @@ export function KanbanConnectFlow({
             rel="noopener noreferrer"
             data-testid={`${idPrefix}-link`}
           >
-            Open jtype to authorize ↗
+            <span>Open jtype to authorize</span>
+            <ArrowSquareOut size={15} weight="regular" aria-hidden="true" />
           </a>
           <p className={styles.status} data-testid={`${idPrefix}-status`}>
             Waiting for you to authorize in jtype…

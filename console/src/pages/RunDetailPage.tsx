@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { ArrowClockwise, ArrowLeft, ArrowSquareOut, Stop } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ChatInput, RuntimeProvider, ToolRegistryProvider } from 'jcode-ui';
 import type { ChatRuntime, RuntimeActions, RuntimeState } from 'jcode-ui-core/runtime';
@@ -224,7 +225,7 @@ export function RunDetailPage() {
           >
             <div className={styles.taskDetail}>
               <header className={styles.taskHeader} data-testid="run-status-header" data-status={current.status}>
-                <Link to={`/projects/${current.project_id}`} className={styles.backToProject} data-testid="run-back-to-project">← Recent tasks</Link>
+                <Link to={`/projects/${current.project_id}`} className={styles.backToProject} data-testid="run-back-to-project"><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>Recent tasks</span></Link>
                 <div className={styles.taskTitleRow}>
                   <div>
                     <h1>{current.prompt}</h1>
@@ -233,8 +234,8 @@ export function RunDetailPage() {
                   <div className={styles.headerActions}>
                     <StatusBadge status={current.status} />
                     {noChanges && <span className={styles.noChangesBadge} data-testid="no-changes-badge">No changes</span>}
-                    {!terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doCancel} loading={cancel.isPending} data-testid="cancel-btn">Stop</Button>}
-                    {terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doRetry} loading={retry.isPending} disabled={!modelGate.configured} data-testid="retry-btn">Retry</Button>}
+                    {!terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doCancel} loading={cancel.isPending} data-testid="cancel-btn"><Stop size={15} weight="regular" aria-hidden="true" /><span>Stop</span></Button>}
+                    {terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doRetry} loading={retry.isPending} disabled={!modelGate.configured} data-testid="retry-btn"><ArrowClockwise size={15} weight="regular" aria-hidden="true" /><span>Retry</span></Button>}
                   </div>
                 </div>
               </header>
@@ -259,7 +260,7 @@ export function RunDetailPage() {
                   {view === 'diff' ? (
                     <RunDiff run={current} noChanges={noChanges} diff={diff} downloadUrl={api.diffDownloadUrl(runId)} onBack={() => setView('conversation')} />
                   ) : view === 'pr' ? (
-                    <div className={styles.subview}><button type="button" onClick={() => setView('conversation')}>← Conversation</button><PrPanel runId={runId} projectId={current.project_id} canReview={canAct} /></div>
+                    <div className={styles.subview}><button type="button" onClick={() => setView('conversation')}><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>Conversation</span></button><PrPanel runId={runId} projectId={current.project_id} canReview={canAct} /></div>
                   ) : (
                     <>
                       <div className={styles.dateDivider}><span>{new Date(current.created_at).toLocaleDateString()}</span></div>
@@ -411,9 +412,9 @@ function RunInspector({
         <InspectorSection title="Changes">
           <p className={styles.inspectorHint}>{noChanges ? 'No code changes' : diffState === 'ready' ? 'Review the complete patch' : diffState === 'loading' ? 'Loading change summary…' : diffState === 'error' ? 'Diff unavailable' : 'Available after the agent produces a diff'}</p>
           {diffContent && <DiffSummary patch={diffContent} />}
-          <button type="button" className={styles.inspectorAction} onClick={onDiff} data-testid="tab-diff">↗ View complete diff</button>
-          {showPr && <button type="button" className={styles.inspectorAction} onClick={onPr} data-testid="tab-pr">↗ Open pull request details</button>}
-          {run.pr_url && <a className={styles.inspectorAction} href={run.pr_url} target="_blank" rel="noreferrer" data-testid="pr-link">Draft PR {run.pr_number ? `#${run.pr_number}` : ''} ↗</a>}
+          <button type="button" className={styles.inspectorAction} onClick={onDiff} data-testid="tab-diff"><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /><span>View complete diff</span></button>
+          {showPr && <button type="button" className={styles.inspectorAction} onClick={onPr} data-testid="tab-pr"><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /><span>Open pull request details</span></button>}
+          {run.pr_url && <a className={styles.inspectorAction} href={run.pr_url} target="_blank" rel="noreferrer" data-testid="pr-link"><span>Draft PR {run.pr_number ? `#${run.pr_number}` : ''}</span><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /></a>}
         </InspectorSection>
       ) : null}
       <InspectorSection title="Execution">
@@ -455,7 +456,7 @@ function InspectorFact({ label, children }: { label: string; children: ReactNode
 
 function OriginReference({ run }: { run: Run }) {
   if (run.origin === 'webhook' && run.origin_comment_url) {
-    return <a className={styles.originRef} href={run.origin_comment_url} target="_blank" rel="noreferrer" data-testid="origin-chip">from PR comment ↗</a>;
+    return <a className={styles.originRef} href={run.origin_comment_url} target="_blank" rel="noreferrer" data-testid="origin-chip"><span>from PR comment</span><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /></a>;
   }
   if (run.origin === 'schedule') return <span className={styles.originRef} data-testid="origin-chip-schedule">scheduled</span>;
   return null;
@@ -476,7 +477,7 @@ function RunDiff({
 }) {
   return (
     <div className={styles.subview}>
-      <button type="button" onClick={onBack}>← Conversation</button>
+      <button type="button" onClick={onBack}><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>Conversation</span></button>
       {run.status !== 'succeeded' && !diff.data ? <p className={styles.empty}>{run.status === 'failed' ? 'This run failed, so no diff was produced.' : 'The diff will be available after the agent produces an artifact.'}</p>
         : noChanges ? <p className={styles.empty} data-testid="diff-no-changes">This run made no code changes.</p>
           : diff.isLoading ? <LoadingBlock label="Loading diff…" />

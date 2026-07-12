@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Portal } from '@headlessui/react';
+import { X } from '@phosphor-icons/react';
 import styles from './Modal.module.css';
 
 interface ModalProps {
@@ -213,7 +214,7 @@ export function Modal({
               aria-label="Close dialog"
               type="button"
             >
-              ✕
+              <X size={18} weight="regular" aria-hidden="true" />
             </button>
           </header>
           <div className={styles.body}>{children}</div>
