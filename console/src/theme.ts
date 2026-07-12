@@ -19,9 +19,9 @@ function root(): HTMLElement | null {
   return typeof document === 'undefined' ? null : document.documentElement;
 }
 
-/** The theme currently applied to the document (falls back to dark). */
+/** The theme currently applied to the document (falls back to the light workspace). */
 export function getTheme(): Theme {
-  return root()?.dataset.theme === 'light' ? 'light' : 'dark';
+  return root()?.dataset.theme === 'dark' ? 'dark' : 'light';
 }
 
 export function setTheme(theme: Theme): void {

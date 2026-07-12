@@ -11,11 +11,11 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
-import type { ApiClient } from '../api/client';
+import { ApiError, type ApiClient } from '../api/client';
 import type {
   BoardEmbedLink,
   CreateRunInput,
@@ -138,6 +138,36 @@ function renderPage(client: ApiClient, role?: 'cluster-admin' | 'project-admin')
               <Route path="/runs/:id" element={<div data-testid="run-page" />} />
               <Route path="/" element={<div data-testid="home" />} />
             </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </ApiProvider>
+    </QueryClientProvider>,
+  );
+}
+
+function ProjectRouteSwitchHarness() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" data-testid="switch-project" onClick={() => navigate('/projects/p2')}>
+        Switch project
+      </button>
+      <Routes>
+        <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
+        <Route path="/runs/:runId" element={<div data-testid="switched-run" />} />
+      </Routes>
+    </>
+  );
+}
+
+function renderSwitchablePage(client: ApiClient) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={qc}>
+      <ApiProvider client={client}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/projects/p1']}>
+            <ProjectRouteSwitchHarness />
           </MemoryRouter>
         </ToastProvider>
       </ApiProvider>
@@ -318,6 +348,116 @@ describe('ProjectDetailPage — multi-repo composer', () => {
     await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
     // Defaults to the 'default' service.
     expect(calls.serviceRuns[0]).toMatchObject({ sid: 'svc_default', input: { prompt: 'ship it' } });
+  });
+
+  it('uses the service rail as the active execution target', async () => {
+    const services = [svc('svc_default', 'default'), svc('svc_web', 'web')];
+    const { client } = makeClient(project('owner', services));
+    renderPage(client);
+
+    const railTarget = await screen.findByTestId('service-rail-svc_web');
+    fireEvent.click(railTarget);
+
+    expect(railTarget.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('heading', { name: 'web' })).toBeTruthy();
+  });
+
+  it('never carries a selected service into another project route', async () => {
+    const p1Services = [svc('svc_p1_default', 'default'), svc('svc_p1_web', 'web')];
+    const p1 = project('owner', p1Services);
+    const p2Service = { ...svc('svc_p2_default', 'default'), id: 'svc_p2_default', project_id: 'p2' };
+    const p2 = { ...project('owner', [p2Service]), id: 'p2', name: 'second project' };
+    const { client, calls } = makeClient(p1);
+    const models = vi.fn(async (id: string) => ({
+      models:
+        id === 'p2'
+          ? [{ id: 'm_p2', name: 'P2 model', model_name: 'provider/p2' }]
+          : [{ id: 'm_p1', name: 'P1 model', model_name: 'provider/p1' }],
+      env_fallback: false,
+    }));
+    (client as { getProject?: unknown }).getProject = async (id: string) => (id === 'p2' ? p2 : p1);
+    (client as { listRuns?: unknown }).listRuns = async () => [];
+    (client as { listProjectModels?: unknown }).listProjectModels = models;
+    renderSwitchablePage(client);
+
+    const firstProjectTarget = await screen.findByTestId('service-rail-svc_p1_web');
+    fireEvent.click(firstProjectTarget);
+    expect(firstProjectTarget.getAttribute('aria-pressed')).toBe('true');
+    await screen.findByTestId('composer-model-select');
+    await pickOption('composer-model-select', 'P1 model');
+
+    fireEvent.click(screen.getByTestId('switch-project'));
+    await screen.findByTestId('service-rail-svc_p2_default');
+    await waitFor(() => expect(models).toHaveBeenCalledWith('p2'));
+
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'work in p2' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect(calls.serviceRuns[0]?.sid).toBe('svc_p2_default');
+    expect(calls.serviceRuns[0]?.input.model_id).toBeUndefined();
+  });
+});
+
+describe('ProjectDetailPage — workspace sections', () => {
+  it('moves schedules into the active service automation section without inventing webhook controls', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    const schedules = vi.fn(async () => []);
+    (client as { listServiceSchedules?: unknown }).listServiceSchedules = schedules;
+    renderPage(client);
+
+    await screen.findByTestId('run-input');
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+
+    expect(await screen.findByTestId('schedules-panel')).toBeTruthy();
+    expect(screen.getByText(/webhook registration or delivery health/i)).toBeTruthy();
+    await waitFor(() => expect(schedules).toHaveBeenCalledWith('svc_default'));
+  });
+
+  it('resets the workspace scroll when moving between Tasks and Automations', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(client);
+
+    await screen.findByTestId('run-input');
+    const scrollSurface = screen.getByTestId('project-workspace-scroll');
+    Object.defineProperty(scrollSurface, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: 240,
+    });
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+
+    expect(scrollSurface.scrollTop).toBe(0);
+  });
+
+  it('keeps Automations active while changing the selected service', async () => {
+    const services = [svc('svc_default', 'default'), svc('svc_web', 'web')];
+    const { client } = makeClient(project('owner', services));
+    const schedules = vi.fn(async () => []);
+    (client as { listServiceSchedules?: unknown }).listServiceSchedules = schedules;
+    renderPage(client);
+
+    await screen.findByTestId('run-input');
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+    await screen.findByTestId('schedules-panel');
+    fireEvent.click(screen.getByTestId('service-rail-svc_web'));
+
+    expect(screen.getByRole('tab', { name: 'Automations' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('heading', { name: 'web' })).toBeTruthy();
+    await waitFor(() => expect(schedules).toHaveBeenCalledWith('svc_web'));
+  });
+
+  it('keeps a failed Kanban-link lookup visible instead of pretending there are no boards', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    (client as { listProjectBoardLinks?: unknown }).listProjectBoardLinks = async () => {
+      throw new ApiError(503, 'Kanban links are unavailable', {
+        error: { code: 'jtype_unreachable', message: 'Kanban links are unavailable' },
+      });
+    };
+    renderPage(client);
+
+    const retry = await screen.findByTestId('project-kanban-retry');
+    expect(retry.textContent).toContain('Kanban unavailable');
+    expect(screen.queryByTestId('project-kanban-btn')).toBeNull();
   });
 });
 

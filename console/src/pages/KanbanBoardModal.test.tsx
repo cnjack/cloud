@@ -5,10 +5,10 @@
  * is a light typed Error (the proxy client + resolver depend on it).
  */
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
-import type { ApiClient } from '../api/client';
+import { ApiError, type ApiClient } from '../api/client';
 import type {
   BoardEmbedLink,
   JtypeBoardColumn,
@@ -114,6 +114,9 @@ describe('KanbanBoardModal', () => {
     const api = makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] });
     renderModal(api, [link()]);
 
+    // The board is a working surface, not a form: it opts into Modal's bounded
+    // wide layout so horizontal board scrolling stays inside the dialog.
+    expect(screen.getByTestId('kanban-board-modal').getAttribute('data-size')).toBe('wide');
     const board = await screen.findByTestId('jtype-board');
     expect(board.getAttribute('data-workspace')).toBe('ws_team');
     // No SSE proxy → the board is handed live=false (visible polling).
@@ -160,6 +163,35 @@ describe('KanbanBoardModal', () => {
     });
   });
 
+  it('keeps Tab from the opened board selector inside the Kanban dialog', async () => {
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getClientRects')
+      .mockReturnValue([{ width: 1, height: 1 }] as unknown as DOMRectList);
+    try {
+      const api = makeApi({
+        ws_team: [{ path: 'jtype.board', configId: 'b_123' }],
+        ws_solo: [{ path: 'personal.board', configId: 'b_solo' }],
+      });
+      renderModal(api, [
+        link({ id: 'kl_1', workspace_id: 'ws_team', board_ref: 'b_123' }),
+        link({ id: 'kl_2', workspace_id: 'ws_solo', board_ref: 'b_solo' }),
+      ]);
+
+      await screen.findByTestId('jtype-board');
+      fireEvent.click(screen.getByTestId('kanban-board-select'));
+      const listbox = await screen.findByRole('listbox');
+      listbox.focus();
+      fireEvent.keyDown(listbox, { key: 'Tab' });
+
+      await waitFor(() => {
+        const modal = screen.getByTestId('kanban-board-modal');
+        expect(modal.contains(document.activeElement)).toBe(true);
+      });
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
   it('unresolvable board: shows the fail-visible panel, not a blank modal', async () => {
     // The workspace has a .board doc but none whose config id matches the link.
     const api = makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_OTHER' }] });
@@ -169,5 +201,28 @@ describe('KanbanBoardModal', () => {
     expect(within(panel).getByText('This board could not be opened')).toBeTruthy();
     // No board rendered.
     expect(screen.queryByTestId('jtype-board')).toBeNull();
+  });
+
+  it('maps an unavailable jtype service to an actionable retry state', async () => {
+    const api = makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] });
+    (api as { boardListDocuments?: unknown }).boardListDocuments = async () => {
+      throw new ApiError(503, 'jtype is unreachable', {
+        error: { code: 'jtype_unreachable', message: 'jtype is unreachable' },
+      });
+    };
+    renderModal(api, [link()]);
+
+    const panel = await screen.findByTestId('kanban-board-fail');
+    expect(within(panel).getByText('Kanban is unavailable')).toBeTruthy();
+    expect(within(panel).getByTestId('kanban-board-retry')).toBeTruthy();
+  });
+
+  it('keeps an invalid automation link visibly marked while its board remains viewable', async () => {
+    const api = makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] });
+    renderModal(api, [link({ board_status: 'invalid' })]);
+
+    const notice = await screen.findByTestId('kanban-board-link-invalid');
+    expect(notice.textContent).toMatch(/Card-triggered runs and writeback are stopped/);
+    expect(await screen.findByTestId('jtype-board')).toBeTruthy();
   });
 });

@@ -5,14 +5,15 @@
  * value comes from a custom property declared here. `npm run lint:tokens` greps
  * src/ for stray hex colors outside this file and fails the build if any leak.
  *
- * Skin: "jcode Cloud Console" (Claude Design project e41026a3, v1).
- * Dark engineering UI: near-black ground, hairline borders, slate text ramp,
- * violet accent, Inter for prose, IBM Plex Mono for code/identifiers/data.
+ * Skin: "jcode Cloud Console".
+ * A calm jcode-adjacent workspace: warm paper ground, white working surfaces,
+ * hairline neutral borders, and a deliberately sparing orange accent. The dark
+ * theme follows the same orange vocabulary instead of becoming a separate UI.
  * Fonts load via <link> in index.html and fall back to system stacks offline.
  *
- * THEMING: `:root` holds the DARK palette (default). The LIGHT palette lives in
- * the `:root[data-theme='light']` block at the bottom and re-points the SAME
- * semantic tokens at a light primitive family. index.html stamps a concrete
+ * THEMING: `:root` holds the LIGHT palette (default). The DARK palette lives in
+ * the `:root[data-theme='dark']` block at the bottom and re-points the SAME
+ * semantic tokens at a night primitive family. index.html stamps a concrete
  * `data-theme` on <html> before first paint (localStorage > OS preference), so
  * there is no theme flash and no bare `@media` duplication. The header
  * ThemeToggle flips `data-theme` and persists the choice. Components never see
@@ -20,65 +21,65 @@
  */
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
   /* ---- Brand primitives (raw values; only referenced by semantic tokens) -- */
-  --jc-void: #0a0a0c;      /* page ground */
-  --jc-void-900: #0c0c0e;  /* aside / inset ground */
-  --jc-void-850: #0e0e10;  /* inset fields */
-  --jc-ink-900: #111113;   /* card / panel */
-  --jc-ink-850: #141416;   /* raised panel (composer, header controls) */
-  --jc-ink-800: #161619;   /* secondary button / menu bg */
-  --jc-ink-750: #18181b;   /* code chip bg */
-  --jc-ink-650: #1c1c1f;   /* hairline on card */
-  --jc-ink-600: #1e1e21;   /* row hover / muted chip */
-  --jc-ink-550: #202023;   /* card border */
-  --jc-ink-500: #232326;   /* border mid */
-  --jc-ink-450: #262629;   /* control border */
-  --jc-ink-400: #2a2a2e;   /* strong border (menus, kbd) */
-  --jc-ink-350: #2c2c31;   /* strongest border */
+  --jc-void: #f2f3f0;      /* page ground */
+  --jc-void-900: #fafaf8;  /* rail / inset ground */
+  --jc-void-850: #f7f8f5;  /* inset fields */
+  --jc-ink-900: #ffffff;   /* card / panel */
+  --jc-ink-850: #fbfbf9;   /* raised panel (composer, header controls) */
+  --jc-ink-800: #e7e8e5;   /* secondary button / menu bg */
+  --jc-ink-750: #e8ebe6;   /* code chip bg */
+  --jc-ink-650: #e4e5e2;   /* hairline on card */
+  --jc-ink-600: #eeefec;   /* row hover / muted chip */
+  --jc-ink-550: #dfe0dd;   /* card border */
+  --jc-ink-500: #d7d8d5;   /* border mid */
+  --jc-ink-450: #cbccc9;   /* control border */
+  --jc-ink-400: #b7b9b4;   /* strong border (menus, kbd) */
+  --jc-ink-350: #a5a7a2;   /* strongest border */
 
-  --jc-slate-600: #4a4a50;
-  --jc-slate-500: #54545c;
-  --jc-slate-400: #5c5c64;
-  --jc-slate-350: #6e6e77;
-  --jc-slate-300: #7a7a83;
-  --jc-slate-250: #8a8a93;
-  --jc-slate-200: #9a9aa3;
-  --jc-slate-150: #c8c8ce;
-  --jc-slate-100: #dcdce0;
-  --jc-slate-50:  #eaeaec;
-  --jc-white:     #f4f4f6;
+  --jc-slate-600: #545650;
+  --jc-slate-500: #656761;
+  --jc-slate-400: #777973;
+  --jc-slate-350: #8a8c88;
+  --jc-slate-300: #6a6c67;
+  --jc-slate-250: #7b7d78;
+  --jc-slate-200: #565853;
+  --jc-slate-150: #3e403c;
+  --jc-slate-100: #252622;
+  --jc-slate-50:  #171814;
+  --jc-white:     #ffffff;
 
-  /* violet accent family */
-  --jc-violet-500: #6d6df0;
-  --jc-violet-400: #8b8bf5;
-  --jc-violet-300: #a9a9f2;
-  --jc-violet-200: #c2c2f7;
-  --jc-violet-bg:  #17172b; /* awaiting_input surface (dark) */
+  /* jcode orange accent family (legacy variable names kept to avoid a token API break). */
+  --jc-violet-500: #f07800;
+  --jc-violet-400: #ff8400;
+  --jc-violet-300: #ff9d33;
+  --jc-violet-200: #ffe0bd;
+  --jc-violet-bg:  #fff0df; /* awaiting_input surface */
 
   /* status hues */
-  --jc-blue: #6b93d6;      /* running / tool */
-  --jc-blue-fg: #c8c8f0;
-  --jc-blue-bg: #15151f;
-  --jc-green: #6bbf94;     /* success / git */
-  --jc-green-fg: #7fcf9f;
-  --jc-green-bg: #0f1c15;
-  --jc-red: #d97066;       /* failed / blocked */
-  --jc-red-fg: #e08b80;
-  --jc-red-bg: #1e1210;
-  --jc-amber: #c9a24a;     /* waiting / scheduling */
-  --jc-amber-fg: #d9b96a;
-  --jc-amber-bg: #1f1a10;
-  --jc-review: #9a8fd6;    /* needs-review violet */
-  --jc-neutral-dot: #71717a;
+  --jc-blue: #2563eb;      /* running / tool */
+  --jc-blue-fg: #1e4d9b;
+  --jc-blue-bg: #e8efff;
+  --jc-green: #16a34a;     /* success / git */
+  --jc-green-fg: #146b38;
+  --jc-green-bg: #dfeee3;
+  --jc-red: #d93c15;       /* failed / blocked */
+  --jc-red-fg: #9c260b;
+  --jc-red-bg: #f6e2dc;
+  --jc-amber: #b86f00;     /* waiting / scheduling */
+  --jc-amber-fg: #804200;
+  --jc-amber-bg: #f2eadc;
+  --jc-review: #7a5bba;    /* needs-review */
+  --jc-neutral-dot: #8a8c88;
 
   /* diff hues */
-  --jc-diff-add-bg: #0f1c15;
-  --jc-diff-add-fg: #7fcf9f;
-  --jc-diff-del-bg: #1e1210;
-  --jc-diff-del-fg: #e08b80;
-  --jc-diff-meta-fg: #8f9bb3;
+  --jc-diff-add-bg: #dfeee3;
+  --jc-diff-add-fg: #146b38;
+  --jc-diff-del-bg: #f6e2dc;
+  --jc-diff-del-fg: #9c260b;
+  --jc-diff-meta-fg: #5d687f;
 
   /* ---- LIGHT primitives -------------------------------------------------- */
   /* Referenced only by the :root[data-theme='light'] semantic block below.
@@ -86,8 +87,8 @@
      values live with the other primitives, semantic mapping lives per-theme.
      A warm off-white paper ground, white cards, ink-slate text, a deeper
      violet that keeps AA contrast on white, and soft pastel status tints. */
-  --jc-paper: #f5f5f7;      /* page ground */
-  --jc-paper-inset: #ececef; /* inset fields / code chips */
+  --jc-paper: #f2f3f0;      /* page ground */
+  --jc-paper-inset: #e7e8e5; /* inset fields / code chips */
   --jc-paper-card: #ffffff; /* card / panel */
   --jc-paper-raised: #fbfbfc; /* raised panel (header controls, menus) */
   --jc-paper-hover: #eeeef1; /* row / control hover */
@@ -96,25 +97,38 @@
   --jc-line-200: #d6d6dd;   /* control / strong border */
   --jc-line-050: #eeeef2;   /* subtle hairline */
 
-  --jc-slate-ink-900: #1a1a1f; /* primary text (near-black) */
-  --jc-slate-ink-600: #52525b; /* muted text */
-  --jc-slate-ink-500: #6a6a74; /* dim text */
-  --jc-slate-ink-400: #8a8a94; /* faint text */
+  --jc-slate-ink-900: #111111; /* primary text (near-black) */
+  --jc-slate-ink-600: #666666; /* muted text */
+  --jc-slate-ink-500: #777973; /* dim text */
+  --jc-slate-ink-400: #8a8c88; /* faint text */
 
-  --jc-violet-600: #5a5ae4; /* accent on light (deeper for white-bg contrast) */
-  --jc-violet-700: #4a4ad6; /* accent hover on light */
-  --jc-violet-bg-l: #ecebfb; /* awaiting_input surface (light) */
+  --jc-violet-600: #e97800; /* accent on light (deeper for white-bg contrast) */
+  --jc-violet-700: #cc6500; /* accent hover on light */
+  --jc-violet-bg-l: #fff0df; /* awaiting_input surface (light) */
 
   /* light status tints: pastel bg + darker readable fg */
-  --jc-blue-bg-l: #e9eefb;
-  --jc-blue-fg-l: #3a5aa6;
-  --jc-green-bg-l: #e3f3ea;
-  --jc-green-fg-l: #2c8659;
-  --jc-red-bg-l: #fbe8e5;
-  --jc-red-fg-l: #bf4438;
-  --jc-amber-bg-l: #f7efdc;
-  --jc-amber-fg-l: #8a6a1c;
-  --jc-diff-meta-fg-l: #5c6a84;
+  --jc-blue-bg-l: #e8efff;
+  --jc-blue-fg-l: #1e4d9b;
+  --jc-green-bg-l: #dfeee3;
+  --jc-green-fg-l: #146b38;
+  --jc-red-bg-l: #f6e2dc;
+  --jc-red-fg-l: #9c260b;
+  --jc-amber-bg-l: #f2eadc;
+  --jc-amber-fg-l: #804200;
+  --jc-diff-meta-fg-l: #5d687f;
+
+  /* dark primitives stay separate so the light default never leaks into dark mode. */
+  --jc-night: #111111;
+  --jc-night-inset: #151515;
+  --jc-night-panel: #1a1a1a;
+  --jc-night-raised: #2e2e2e;
+  --jc-night-hover: #252525;
+  --jc-night-border: #2e2e2e;
+  --jc-night-border-strong: #454545;
+  --jc-night-text: #ffffff;
+  --jc-night-muted: #b8b9b6;
+  --jc-night-dim: #92938f;
+  --jc-night-faint: #6f706d;
 
   /* ---- Semantic surface tokens ------------------------------------------- */
   --color-bg: var(--jc-void);
@@ -184,9 +198,9 @@
   --color-warning: var(--jc-amber);
 
   /* ---- Typography -------------------------------------------------------- */
-  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
-    Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Menlo', 'Consolas',
+  --font-sans: 'Geist', 'Noto Sans SC', ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Menlo', 'Consolas',
     monospace;
 
   --fs-display: 27px;
@@ -224,16 +238,17 @@
   --space-20: 80px;
 
   /* ---- Radii ------------------------------------------------------------- */
-  --radius-sm: 5px;
-  --radius-md: 7px;
-  --radius-lg: 9px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
   --radius-xl: 12px;
+  --radius-2xl: 16px;
   --radius-pill: 999px;
 
   /* ---- Elevation --------------------------------------------------------- */
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow-2: 0 8px 30px rgba(0, 0, 0, 0.35);
-  --shadow-3: 0 24px 70px rgba(0, 0, 0, 0.6);
+  --shadow-1: 0 1px 2px rgba(24, 20, 16, 0.05), 0 1px 1px rgba(24, 20, 16, 0.03);
+  --shadow-2: 0 2px 4px rgba(24, 20, 16, 0.04), 0 8px 24px -8px rgba(24, 20, 16, 0.14);
+  --shadow-3: 0 4px 8px rgba(24, 20, 16, 0.04), 0 18px 40px -14px rgba(24, 20, 16, 0.22);
 
   /* ---- Layout ------------------------------------------------------------ */
   --shell-topbar-h: 52px;
@@ -279,7 +294,7 @@
   --color-text-dim: var(--jc-slate-ink-500);
   --color-text-faint: var(--jc-slate-ink-400);
 
-  /* accent — deeper violet on light; white sits on top of a filled button */
+  /* Accent — a deeper orange keeps white button labels readable. */
   --color-accent: var(--jc-violet-600);
   --color-accent-hover: var(--jc-violet-700);
   --color-accent-dim: var(--jc-violet-500);
@@ -315,7 +330,7 @@
   --status-blocked-fg: var(--jc-red-fg-l);
   --status-blocked-dot: var(--jc-red);
 
-  /* awaiting_input (D22): violet "your turn" accent (light). */
+  /* awaiting_input (D22): warm "your turn" accent. */
   --status-awaiting_input-bg: var(--jc-violet-bg-l);
   --status-awaiting_input-fg: var(--jc-violet-700);
   --status-awaiting_input-dot: var(--jc-violet-600);
@@ -333,8 +348,77 @@
   --jc-diff-del-fg: var(--jc-red-fg-l);
   --jc-diff-meta-fg: var(--jc-diff-meta-fg-l);
 
-  /* elevation — softer, lower-opacity shadows read better on a light ground */
-  --shadow-1: 0 1px 2px rgba(24, 24, 27, 0.08);
-  --shadow-2: 0 8px 30px rgba(24, 24, 27, 0.12);
-  --shadow-3: 0 24px 70px rgba(24, 24, 27, 0.18);
+  /* elevation — warm, intentionally shallow on a paper ground */
+  --shadow-1: 0 1px 2px rgba(24, 20, 16, 0.05), 0 1px 1px rgba(24, 20, 16, 0.03);
+  --shadow-2: 0 2px 4px rgba(24, 20, 16, 0.04), 0 8px 24px -8px rgba(24, 20, 16, 0.14);
+  --shadow-3: 0 4px 8px rgba(24, 20, 16, 0.04), 0 18px 40px -14px rgba(24, 20, 16, 0.22);
+}
+
+/* Dark follows the same warm/orange product language. This mapping is explicit
+   because the default token set is intentionally light-first. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --color-bg: var(--jc-night);
+  --color-bg-inset: var(--jc-night-inset);
+  --color-panel: var(--jc-night-panel);
+  --color-panel-raised: var(--jc-night-raised);
+  --color-panel-hover: var(--jc-night-hover);
+  --color-code-bg: var(--jc-night-raised);
+  --color-overlay: rgba(20, 18, 16, 0.58);
+
+  --color-border: var(--jc-night-border);
+  --color-border-strong: var(--jc-night-border-strong);
+  --color-border-subtle: color-mix(in srgb, var(--jc-night-border) 72%, transparent);
+
+  --color-text: var(--jc-night-text);
+  --color-text-muted: var(--jc-night-muted);
+  --color-text-dim: var(--jc-night-dim);
+  --color-text-faint: var(--jc-night-faint);
+
+  --color-accent: var(--jc-violet-400);
+  --color-accent-hover: var(--jc-violet-300);
+  --color-accent-dim: var(--jc-violet-500);
+  --color-on-accent: var(--jc-white);
+  --color-focus-ring: var(--jc-violet-400);
+
+  --status-queued-bg: var(--jc-night-hover);
+  --status-queued-fg: var(--jc-night-muted);
+  --status-queued-dot: var(--jc-night-dim);
+  --status-scheduling-bg: #291c0f;
+  --status-scheduling-fg: #ffb25c;
+  --status-scheduling-dot: var(--jc-violet-400);
+  --status-running-bg: #18233b;
+  --status-running-fg: #bcd3ff;
+  --status-running-dot: #5c8dff;
+  --status-succeeded-bg: #1c2a20;
+  --status-succeeded-fg: #b6ffce;
+  --status-succeeded-dot: #22c55e;
+  --status-failed-bg: #2b1711;
+  --status-failed-fg: #ffb4a0;
+  --status-failed-dot: #ff714d;
+  --status-canceled-bg: var(--jc-night-hover);
+  --status-canceled-fg: var(--jc-night-dim);
+  --status-canceled-dot: var(--jc-night-faint);
+  --status-blocked-bg: #2b1711;
+  --status-blocked-fg: #ffb4a0;
+  --status-blocked-dot: #ff714d;
+  --status-awaiting_input-bg: #322113;
+  --status-awaiting_input-fg: #ffc27d;
+  --status-awaiting_input-dot: var(--jc-violet-400);
+
+  --color-success: #22c55e;
+  --color-danger: #ff714d;
+  --color-danger-fg: #ffb4a0;
+  --color-warning: #ffb25c;
+
+  --jc-diff-add-bg: #1c2a20;
+  --jc-diff-add-fg: #b6ffce;
+  --jc-diff-del-bg: #2b1711;
+  --jc-diff-del-fg: #ffb4a0;
+  --jc-diff-meta-fg: #a7b0c5;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --shadow-3: 0 12px 36px -12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.05);
 }

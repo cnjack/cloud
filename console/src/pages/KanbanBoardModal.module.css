@@ -3,9 +3,10 @@
 .wrap {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
   gap: var(--space-3);
-  /* The board wants room; the Modal panel caps width, so let the board fill it. */
-  min-width: min(72vw, 900px);
 }
 
 .selectorRow {
@@ -22,8 +23,8 @@
    out the modal. `.jtb-scope` (the package's own class) keeps board chrome from
    bleeding into the console shell. */
 .board {
-  min-height: 24rem;
-  max-height: 70vh;
+  min-height: 0;
+  flex: 1;
   overflow: auto;
 }
 
@@ -39,6 +40,13 @@
   background: var(--color-panel-raised);
 }
 
+@media (max-width: 700px) {
+  .selector {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
 .failTitle {
   font-weight: var(--fw-semibold);
   color: var(--color-danger);
@@ -52,4 +60,32 @@
 .failDetail {
   font-size: var(--fs-caption);
   color: var(--color-text-dim);
+}
+
+.failActions {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: var(--space-1);
+}
+
+/* Board-link validation is independent from whether the board can currently
+   render. Keep the underlying board view usable, but make the stopped or
+   unverified automation path impossible to mistake for a healthy integration. */
+.linkNotice {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-panel-raised);
+  color: var(--color-text-muted);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-normal);
+}
+
+.linkNotice[data-state='invalid'] {
+  border-color: var(--color-danger);
+  color: var(--color-danger-fg);
+}
+
+.linkNotice[data-state='unvalidated'] {
+  border-color: var(--color-warning);
 }

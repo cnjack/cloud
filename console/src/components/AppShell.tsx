@@ -65,7 +65,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           <IdentityChip me={me} providers={providers} role={role} onSignOut={onSignOut} />
         </div>
       </header>
-      <main className={styles.content}>{children}</main>
+      <main
+        className={[styles.content, activeProjectId && styles.projectContent]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        {children}
+      </main>
     </div>
   );
 }

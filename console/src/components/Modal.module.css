@@ -6,12 +6,13 @@
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: var(--space-16) var(--space-4);
-  overflow-y: auto;
+  padding: var(--space-8) var(--space-4);
+  overflow: auto;
   animation: overlay-in var(--dur-med) var(--ease-out);
 }
 
 .panel {
+  position: relative;
   width: 100%;
   max-width: 480px;
   background: var(--color-panel);
@@ -19,6 +20,45 @@
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-3);
   animation: panel-in var(--dur-med) var(--ease-out);
+}
+
+/* jtype-board-react ships a bundled Headless UI copy whose global portal root
+   is adopted here by Modal. The host must not block normal dialog clicks; only
+   an actual portalled menu opts back into pointer events. */
+.foreignPortalHost {
+  /* Keep the same viewport-origin coordinate system as Headless UI's normal
+     body portal. A board menu is initially positioned before our observer
+     adopts its root, so an absolute panel-relative host would shift it by the
+     dialog's offset until Floating UI recalculated. */
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.foreignPortalHost > * {
+  pointer-events: auto;
+}
+
+/* A real board needs a bounded working area rather than a narrow form panel.
+   Height is capped against the dynamic viewport so the board owns the only
+   internal scroll surface, even in a wide-but-short desktop window. */
+.panel[data-size='wide'] {
+  width: min(94vw, 1180px);
+  max-width: calc(100vw - var(--space-4) - var(--space-4));
+  height: min(86dvh, 790px);
+  max-height: calc(100dvh - var(--space-8) - var(--space-8));
+  display: flex;
+  flex-direction: column;
+  /* The embedded board may open a body-coordinate menu immediately after the
+     modal appears. Avoid a transient transform containing block so the fixed
+     portal host remains viewport-relative for the whole transition. */
+  animation: wide-panel-in var(--dur-med) var(--ease-out);
+  /* Anchored Listbox menus portal into this dialog via Portal.Group. The body
+     still clips the board itself; the dialog shell must remain unclipped so a
+     selector near the bottom can flip or extend within the viewport. */
+  overflow: visible;
+  border-radius: var(--radius-2xl);
 }
 
 .header {
@@ -55,6 +95,12 @@
   padding: var(--space-5);
 }
 
+.panel[data-size='wide'] .body {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
 .footer {
   display: flex;
   justify-content: flex-end;
@@ -73,5 +119,27 @@
   from {
     opacity: 0;
     transform: translateY(-8px) scale(0.98);
+  }
+}
+
+@keyframes wide-panel-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (max-width: 700px) {
+  .overlay {
+    padding: var(--space-2);
+  }
+  .panel[data-size='wide'] {
+    width: 100%;
+    max-width: none;
+    height: calc(100dvh - var(--space-2) - var(--space-2));
+    max-height: calc(100dvh - var(--space-2) - var(--space-2));
+    border-radius: var(--radius-xl);
+  }
+  .panel[data-size='wide'] .body {
+    padding: var(--space-3);
   }
 }

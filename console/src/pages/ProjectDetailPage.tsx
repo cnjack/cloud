@@ -11,7 +11,7 @@
  * is UX): a viewer sees no composer and no Settings; only an owner (or
  * cluster-admin) can change settings / add a repository / manage members.
  */
-import { useDeferredValue, useMemo, useState } from 'react';
+import { useDeferredValue, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   useProject,
@@ -43,7 +43,7 @@ import { SchedulesPanel } from './SchedulesPanel';
 import { ApiError } from '../api/client';
 import { providerForRepoUrl } from '../lib/repo';
 import { shortId, summarize, timeAgo } from '../lib/format';
-import type { GitMode, GitProvider, ProviderRepo, Service } from '../api/types';
+import type { GitMode, GitProvider, ProviderRepo, Run, Service } from '../api/types';
 import styles from './ProjectDetailPage.module.css';
 
 /** A human label for a service in the repository selector. */
@@ -51,6 +51,47 @@ function serviceLabel(svc: Service): string {
   const repo =
     svc.repo_kind === 'provider' ? svc.repo_owner_name : svc.raw_repo_url;
   return svc.name === 'default' ? repo || svc.name : `${svc.name} · ${repo ?? ''}`;
+}
+
+type WorkspaceTab = 'tasks' | 'automations';
+type RunFilter = 'all' | 'sessions' | 'reviews';
+const WORKSPACE_TABS: readonly WorkspaceTab[] = ['tasks', 'automations'];
+
+function serviceMark(service: Service): string {
+  if (service.repo_kind === 'raw') return 'PATH';
+  switch (service.provider?.toLowerCase()) {
+    case 'gitea':
+      return 'GT';
+    case 'github':
+      return 'GH';
+    case 'gitlab':
+      return 'GL';
+    default:
+      return 'GIT';
+  }
+}
+
+function serviceSource(service: Service): string {
+  return service.repo_kind === 'provider'
+    ? service.repo_owner_name || service.name
+    : service.raw_repo_url || service.name;
+}
+
+function serviceProviderLabel(service: Service): string {
+  if (service.repo_kind === 'raw') return 'Path / remote URL';
+  const provider = service.provider?.toLowerCase();
+  if (provider === 'gitea') return 'Gitea';
+  if (provider === 'github') return 'GitHub';
+  if (provider === 'gitlab') return 'GitLab';
+  return 'Git repository';
+}
+
+function runKindLabel(run: Run): string {
+  if (run.kind === 'review') return 'Review';
+  if (run.origin === 'schedule') return 'Schedule';
+  if (run.origin === 'kanban') return 'Kanban';
+  if (run.origin === 'webhook') return 'Webhook';
+  return run.session ? 'Session' : 'Task';
 }
 
 export function ProjectDetailPage() {
@@ -68,6 +109,9 @@ export function ProjectDetailPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // D31: the embedded kanban board modal.
   const [kanbanOpen, setKanbanOpen] = useState(false);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('tasks');
+  const [runFilter, setRunFilter] = useState<RunFilter>('all');
+  const workspaceScrollRef = useRef<HTMLDivElement>(null);
   const [selectedService, setSelectedService] = useState<string>('');
   // D21: the composer's per-run model pick ("" => resolve via service default /
   // the project's sole grant).
@@ -102,7 +146,6 @@ export function ProjectDetailPage() {
   const p = project.data;
   const services = useMemo(() => p?.services ?? [], [p]);
   const multiService = services.length > 1;
-  const soleService = services.length === 1 ? services[0] : undefined;
   const role = p?.role ?? 'owner';
   const canRun = role !== 'viewer';
   const canManage = role === 'owner';
@@ -113,6 +156,10 @@ export function ProjectDetailPage() {
   // both 403 members and leak credential posture, so it can't gate this).
   const boardLinks = useProjectBoardLinks(projectId, !!p && canRun);
   const hasBoardLinks = (boardLinks.data?.length ?? 0) > 0;
+  // A member+ board-link query failing must not look identical to "this project
+  // has no boards". The retry action exposes the real unavailable state without
+  // leaking owner-only token/configuration information.
+  const boardLinksUnavailable = canRun && boardLinks.isError;
 
   // Integrations (D19 / F5): a member can add a repo off an existing integration
   // (the integration's bot lists the repos). Loaded EAGERLY for any member+ once
@@ -161,15 +208,36 @@ export function ProjectDetailPage() {
   // default editor). Only fetched where the composer is actually rendered.
   const projectModels = useProjectModels(projectId, canRun && services.length > 0);
   const grantedModels = projectModels.data?.models ?? [];
+  // A Project route change reuses this component. Just like services, never
+  // carry a model choice into a Project that has not granted that model.
+  const effectiveSelectedModel = grantedModels.some((model) => model.id === selectedModel)
+    ? selectedModel
+    : '';
   const updateService = useUpdateService(projectId);
 
   // Default the composer's service selection to the 'default' (or first) service.
+  // React Router reuses this page instance when the Project URL changes. A
+  // service selected in the previous Project is never a valid execution target
+  // here — ignore stale state until it belongs to the current service list.
+  const selectedServiceIsCurrent = services.some((service) => service.id === selectedService);
   const activeServiceId =
-    selectedService ||
+    (selectedServiceIsCurrent ? selectedService : '') ||
     services.find((s) => s.name === 'default')?.id ||
     services[0]?.id ||
     '';
   const activeService = services.find((s) => s.id === activeServiceId);
+  const scopedRuns = useMemo(() => {
+    const allRuns = runs.data ?? [];
+    // Older API rows can lack service_id. Keep them visible rather than silently
+    // discarding project history when a project gains a second service.
+    if (!activeServiceId) return allRuns;
+    return allRuns.filter((run) => !run.service_id || run.service_id === activeServiceId);
+  }, [activeServiceId, runs.data]);
+  const visibleRuns = useMemo(() => {
+    if (runFilter === 'sessions') return scopedRuns.filter((run) => run.session);
+    if (runFilter === 'reviews') return scopedRuns.filter((run) => run.kind === 'review');
+    return scopedRuns;
+  }, [runFilter, scopedRuns]);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -187,7 +255,7 @@ export function ProjectDetailPage() {
         serviceId: activeServiceId,
         input: {
           prompt: prompt.trim(),
-          ...(selectedModel ? { model_id: selectedModel } : {}),
+          ...(effectiveSelectedModel ? { model_id: effectiveSelectedModel } : {}),
           // The interactive composer is session-only: every run started here is a
           // multi-turn session (headless single-shot lives on the cron/webhook
           // automation paths, not this UI).
@@ -292,10 +360,84 @@ export function ProjectDetailPage() {
     );
 
   const runBusy = createServiceRun.isPending;
+  const selectWorkspaceTab = (next: WorkspaceTab) => {
+    if (next !== workspaceTab && workspaceScrollRef.current) {
+      // The surface has one intentional internal scrollbar. Reset it when the
+      // section changes so Automations never opens halfway down a prior task list.
+      workspaceScrollRef.current.scrollTop = 0;
+    }
+    setWorkspaceTab(next);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`workspace-tab-${next}`)?.focus();
+    });
+  };
+  const onWorkspaceTabsKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const index = WORKSPACE_TABS.indexOf(workspaceTab);
+    const nextIndex =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? WORKSPACE_TABS.length - 1
+          : (index + (event.key === 'ArrowRight' ? 1 : -1) + WORKSPACE_TABS.length) %
+            WORKSPACE_TABS.length;
+    const next = WORKSPACE_TABS[nextIndex];
+    if (next) selectWorkspaceTab(next);
+  };
 
   return (
     <div className={styles.page}>
-      <nav className={styles.crumbs}>
+      <aside className={styles.serviceRail} aria-label="Project services">
+        <div className={styles.railProject}>
+          <span className={styles.eyebrow}>Project</span>
+          <strong>{p!.name}</strong>
+          <small>
+            {services.length === 1 ? '1 repository' : `${services.length} repositories`}
+          </small>
+        </div>
+        <div className={styles.railSectionHead}>
+          <span>Services</span>
+          <span>{services.length}</span>
+        </div>
+        {services.length > 0 ? (
+          <div className={styles.serviceList} role="group" aria-label="Services">
+            {services.map((service) => {
+              const selected = service.id === activeServiceId;
+              return (
+                <button
+                  key={service.id}
+                  type="button"
+                  className={styles.serviceRailItem}
+                  data-active={selected || undefined}
+                  aria-pressed={selected}
+                  data-testid={`service-rail-${service.id}`}
+                  onClick={() => {
+                    setSelectedService(service.id);
+                    // Changing a service should not pull someone out of
+                    // Automations: schedules and provider-event posture are
+                    // precisely what they are comparing across services.
+                    if (workspaceTab === 'tasks') setRunFilter('all');
+                  }}
+                >
+                  <span className={styles.serviceMark} aria-hidden>
+                    {serviceMark(service)}
+                  </span>
+                  <span className={styles.serviceRailCopy}>
+                    <strong>{service.name}</strong>
+                    <small>{serviceProviderLabel(service)} · {service.default_branch}</small>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <p className={styles.railEmpty}>No service connected yet.</p>
+        )}
+      </aside>
+
+      <section className={styles.workspaceSurface} aria-label={`${p!.name} workspace`}>
+      <nav className={styles.crumbs} aria-label="Breadcrumb">
         <Link to="/" className={styles.crumbLink}>
           Projects
         </Link>
@@ -304,25 +446,36 @@ export function ProjectDetailPage() {
       </nav>
 
       <header className={styles.header}>
-        <div>
-          <h1 className={styles.title}>{p!.name}</h1>
+        <div className={styles.serviceHeading}>
+          {activeService && (
+            <span className={styles.serviceHeaderMark} aria-hidden>
+              {serviceMark(activeService)}
+            </span>
+          )}
+          <div>
+          <span className={styles.eyebrow}>
+            {activeService ? serviceProviderLabel(activeService) : 'Project workspace'}
+          </span>
+          <h1 className={styles.title}>{activeService?.name ?? p!.name}</h1>
           <div className={styles.repoRow}>
-            {soleService ? (
+            {activeService ? (
               <>
-                <code className={styles.repo}>{serviceLabel(soleService)}</code>
-                <span className={styles.branch}>{soleService.default_branch}</span>
+                <code className={styles.repo}>{serviceSource(activeService)}</code>
+                <span className={styles.branch}>{activeService.default_branch}</span>
                 <GitModeBadge
-                  gitMode={soleService.git_mode}
-                  providerRepo={soleService.repo_owner_name}
+                  gitMode={activeService.git_mode}
+                  providerRepo={activeService.repo_owner_name}
                 />
               </>
-            ) : multiService ? (
-              <span className={styles.repoCount} data-testid="repo-count">
-                {services.length} repositories
-              </span>
             ) : (
               <span className={styles.branch}>No repositories yet</span>
             )}
+            {multiService && (
+              <span className={styles.repoCount} data-testid="repo-count">
+                {services.length} repositories
+              </span>
+            )}
+          </div>
           </div>
         </div>
         <div className={styles.headerActions}>
@@ -334,6 +487,18 @@ export function ProjectDetailPage() {
               data-testid="project-kanban-btn"
             >
               Kanban
+            </Button>
+          )}
+          {boardLinksUnavailable && !hasBoardLinks && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void boardLinks.refetch()}
+              disabled={boardLinks.isFetching}
+            title="Kanban links could not be loaded. Retry."
+              data-testid="project-kanban-retry"
+            >
+              {boardLinks.isFetching ? 'Loading Kanban…' : 'Kanban unavailable · Retry'}
             </Button>
           )}
           {canManage && (
@@ -349,6 +514,55 @@ export function ProjectDetailPage() {
         </div>
       </header>
 
+      <div
+        className={styles.workspaceTabs}
+        role="tablist"
+        aria-label="Project workspace sections"
+        onKeyDown={onWorkspaceTabsKeyDown}
+      >
+        <button
+          id="workspace-tab-tasks"
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === 'tasks'}
+          aria-controls="workspace-panel-tasks"
+          tabIndex={workspaceTab === 'tasks' ? 0 : -1}
+          className={styles.workspaceTab}
+          data-active={workspaceTab === 'tasks' || undefined}
+          onClick={() => selectWorkspaceTab('tasks')}
+        >
+          Tasks
+        </button>
+        <button
+          id="workspace-tab-automations"
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === 'automations'}
+          aria-controls="workspace-panel-automations"
+          tabIndex={workspaceTab === 'automations' ? 0 : -1}
+          className={styles.workspaceTab}
+          data-active={workspaceTab === 'automations' || undefined}
+          onClick={() => selectWorkspaceTab('automations')}
+        >
+          Automations
+        </button>
+      </div>
+
+      <div
+        ref={workspaceScrollRef}
+        className={styles.workspaceScroll}
+        data-testid="project-workspace-scroll"
+      >
+        <div
+          id="workspace-panel-tasks"
+          role="tabpanel"
+          aria-labelledby="workspace-tab-tasks"
+          hidden={workspaceTab !== 'tasks'}
+          className={styles.workspacePanel}
+        >
+        {workspaceTab === 'tasks' && (
+          <>
+
       {canRun && services.length === 0 && (
         <EmptyState
           data-testid="no-repo-empty"
@@ -363,6 +577,13 @@ export function ProjectDetailPage() {
 
       {canRun && services.length > 0 && (
         <Card className={styles.composer}>
+          <div className={styles.composerIntro}>
+            <div>
+              <span className={styles.eyebrow}>New task</span>
+              <h2>Start a session in {activeService?.name}</h2>
+            </div>
+            <span className={styles.composerHint}>Runs in an isolated workspace.</span>
+          </div>
           {modelGate.notice && (
             <div className={styles.composerNotice}>{modelGate.notice}</div>
           )}
@@ -445,7 +666,7 @@ export function ProjectDetailPage() {
                   <Select
                     className={styles.composerPill}
                     aria-label="Model"
-                    value={selectedModel}
+                    value={effectiveSelectedModel}
                     onChange={setSelectedModel}
                     disabled={!modelGate.configured}
                     data-testid="composer-model-select"
@@ -487,26 +708,44 @@ export function ProjectDetailPage() {
         </Card>
       )}
 
-      {/* F11 / D24 — service cron triggers. Member+ read; owner manages. Shown for
-          the active repository (a member without an integration/repo has none). */}
-      {canRun && activeService && (
-        <SchedulesPanel service={activeService} canManage={canManage} />
-      )}
-
       <section className={styles.runsSection}>
-        <h2 className={styles.sectionTitle}>Runs</h2>
+        <div className={styles.runsHead}>
+          <div>
+            <span className={styles.eyebrow}>Activity</span>
+            <h2 className={styles.sectionTitle}>Recent tasks</h2>
+          </div>
+          <div className={styles.runFilters} aria-label="Filter recent tasks">
+            {([
+              ['all', 'All'],
+              ['sessions', 'Sessions'],
+              ['reviews', 'Reviews'],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={styles.runFilter}
+                aria-pressed={runFilter === value}
+                onClick={() => setRunFilter(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
         {runs.isLoading ? (
-          <LoadingBlock label="Loading runs…" />
+          <LoadingBlock label="Loading tasks…" />
         ) : runs.isError ? (
-          <ErrorBlock error={runs.error} onRetry={() => runs.refetch()} title="Couldn't load runs" />
-        ) : runs.data && runs.data.length === 0 ? (
+          <ErrorBlock error={runs.error} onRetry={() => runs.refetch()} title="Couldn't load tasks" />
+        ) : visibleRuns.length === 0 ? (
           <EmptyState
             data-testid="runs-empty"
-            title="No runs yet"
+            title={runFilter === 'all' ? 'No tasks yet' : `No ${runFilter} for this service`}
             description={
-              canRun
-                ? 'Dispatch your first run using the box above.'
-                : 'No runs have been dispatched in this project yet.'
+              runFilter === 'all'
+                ? canRun
+                  ? 'Dispatch your first task using the composer above.'
+                  : 'No tasks have been dispatched in this project yet.'
+                : 'Try another filter or choose a different service.'
             }
           />
         ) : (
@@ -520,7 +759,7 @@ export function ProjectDetailPage() {
               </div>
             </div>
             <ul className={styles.rows} role="rowgroup">
-              {runs.data!.map((run) => (
+              {visibleRuns.map((run) => (
                 <li key={run.id} role="presentation">
                   <Link
                     to={`/runs/${run.id}`}
@@ -534,6 +773,7 @@ export function ProjectDetailPage() {
                       {shortId(run.id)}
                     </code>
                     <span className={styles.prompt} role="cell">
+                      <span className={styles.runKind}>{runKindLabel(run)}</span>
                       {summarize(run.prompt)}
                       {run.retried_from && (
                         <span className={styles.retryTag} title="Retry of an earlier run">
@@ -732,6 +972,55 @@ export function ProjectDetailPage() {
             </p>
           </div>
         )}
+      </section>
+
+          </>
+        )}
+        </div>
+
+        <section
+          id="workspace-panel-automations"
+          role="tabpanel"
+          aria-labelledby="workspace-tab-automations"
+          hidden={workspaceTab !== 'automations'}
+          className={styles.workspacePanel}
+        >
+        {workspaceTab === 'automations' && (
+          <>
+          <div className={styles.automationHead}>
+            <span className={styles.eyebrow}>Service automation</span>
+            <h2>Schedules and provider events</h2>
+            <p>Automations always run against the selected service.</p>
+          </div>
+
+          {canRun && activeService ? (
+            <>
+              <section className={styles.automationCapability} aria-label="Provider webhook capability">
+                <span className={styles.capabilityLabel}>Provider event reviews · status unavailable</span>
+                <h3>
+                  {activeService.repo_kind === 'provider'
+                    ? `${serviceProviderLabel(activeService)} review webhook cannot be verified here`
+                    : 'Provider events need a provider-backed service'}
+                </h3>
+                <p>
+                  {activeService.repo_kind === 'provider'
+                    ? 'A provider-backed service is eligible for @jcode review events, but this API does not expose webhook registration or delivery health. Do not assume the webhook is active; verify deployment credentials and provider setup with a cluster administrator.'
+                    : 'This service is addressed by a path or URL, so it cannot receive PR review webhooks.'}
+                </p>
+              </section>
+              <SchedulesPanel service={activeService} canManage={canManage} />
+            </>
+          ) : (
+            <EmptyState
+              title="Automations need a service"
+              description="Connect a repository first; schedules and provider events are scoped to a service."
+            />
+          )}
+          </>
+        )}
+        </section>
+      </div>
+
       </section>
 
       <ProjectSettingsModal

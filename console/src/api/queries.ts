@@ -488,7 +488,14 @@ export function useCreateProjectKanbanLink(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateKanbanLinkInput) => api.createProjectKanbanLink(projectId, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) }),
+    onSuccess: () => {
+      // Owner management and the member+ embed list are deliberately separate
+      // endpoints. Refresh both so the Project header never keeps a stale
+      // Kanban button after a link is added.
+      qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) });
+      qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) });
+      qc.invalidateQueries({ queryKey: qk.kanbanLinks });
+    },
   });
 }
 
@@ -498,7 +505,11 @@ export function useUpdateProjectKanbanLinkToken(projectId: string) {
   return useMutation({
     mutationFn: ({ linkId, token }: { linkId: string; token: string }) =>
       api.updateProjectKanbanLinkToken(projectId, linkId, token),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) });
+      qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) });
+      qc.invalidateQueries({ queryKey: qk.kanbanLinks });
+    },
   });
 }
 
@@ -507,7 +518,13 @@ export function useDeleteProjectKanbanLink(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (linkId: string) => api.deleteProjectKanbanLink(projectId, linkId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) }),
+    onSuccess: () => {
+      // Deleting the final enabled link must hide the member+ embed affordance
+      // immediately rather than leaving a button that opens an empty modal.
+      qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) });
+      qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) });
+      qc.invalidateQueries({ queryKey: qk.kanbanLinks });
+    },
   });
 }
 
