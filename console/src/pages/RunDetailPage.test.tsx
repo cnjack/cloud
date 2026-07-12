@@ -16,7 +16,6 @@ import { ToastProvider } from '../components/Toast';
 import { ApiError, type ApiClient, type StreamCallbacks, type StreamHandle } from '../api/client';
 import type { MemberRole, PrInfo, Project, ProjectModel, Run } from '../api/types';
 import { qk } from '../api/queries';
-import { pickOption } from '../test/select';
 import { RunDetailPage } from './RunDetailPage';
 
 function baseRun(overrides: Partial<Run> = {}): Run {
@@ -344,6 +343,9 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
 
     const panel = await screen.findByTestId('session-panel');
     expect(panel).toBeTruthy();
+    const conversationScroll = screen.getByTestId('conversation-scroll');
+    expect(conversationScroll.contains(panel)).toBe(false);
+    expect(screen.getByTestId('conversation-column').contains(panel)).toBe(true);
     expect(panel.querySelector('.jcode-chat-input')).toBeNull();
     expect(panel.querySelector('[data-testid="conversation-composer"]')).toBeTruthy();
     const input = (await screen.findByLabelText('Message input')) as HTMLTextAreaElement;
@@ -510,6 +512,9 @@ describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
     renderPage(client, run);
 
     const panel = await screen.findByTestId('resume-session-panel');
+    const conversationScroll = screen.getByTestId('conversation-scroll');
+    expect(conversationScroll.contains(panel)).toBe(false);
+    expect(screen.getByTestId('conversation-column').contains(panel)).toBe(true);
     expect(panel.querySelector('.jcode-chat-input')).toBeNull();
     expect(panel.querySelector('[data-testid="conversation-composer"]')).toBeTruthy();
     const input = panel.querySelector('textarea[aria-label="Message input"]') as HTMLTextAreaElement;
@@ -517,8 +522,14 @@ describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
     const send = (await screen.findByLabelText('Send message')) as HTMLButtonElement;
     // Empty keeps Continue disabled; typing enables it and submit calls resume.
     expect(send.disabled).toBe(true);
-    await pickOption('conversation-model-select', 'Claude');
-    await pickOption('conversation-permission-select', 'Ask before actions');
+    fireEvent.click(screen.getByTestId('conversation-model-select'));
+    expect(await screen.findByLabelText('Filter models')).toBeTruthy();
+    expect(screen.getByRole('option', { name: /Claude.*anthropic\/claude/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('option', { name: /Claude.*anthropic\/claude/ }));
+    fireEvent.click(screen.getByTestId('conversation-permission-select'));
+    const planMode = screen.getByRole('option', { name: /Plan.*not available/i }) as HTMLButtonElement;
+    expect(planMode.disabled).toBe(true);
+    fireEvent.click(screen.getByRole('option', { name: 'Ask for approval' }));
     fireEvent.change(input, { target: { value: 'pick up where we left off' } });
     await waitFor(() => expect(send.disabled).toBe(false));
     fireEvent.click(send);

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowClockwise, ArrowLeft, ArrowSquareOut, LockSimple, PaperPlaneTilt, ShieldCheck, Stop } from '@phosphor-icons/react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
+import { ArrowClockwise, ArrowLeft, ArrowSquareOut, CaretDown, Check, ClipboardText, Cpu, HandPalm, LockSimple, MagnifyingGlass, PaperPlaneTilt, Plus, ShieldWarning, Stop } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { RuntimeProvider, ToolRegistryProvider } from 'jcode-ui';
 import type { ChatRuntime, RuntimeActions, RuntimeState } from 'jcode-ui-core/runtime';
@@ -26,7 +26,6 @@ import { PrPanel } from '../components/PrPanel';
 import { LoadingBlock, ErrorBlock, InlineHint } from '../components/States';
 import { Spinner } from '../components/Spinner';
 import { StatusBadge } from '../components/StatusBadge';
-import { Select } from '../components/Select';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { useToast } from '../components/Toast';
 import { Wordmark } from '../components/Wordmark';
@@ -55,6 +54,8 @@ export function RunDetailPage() {
   const api = useApi();
   const [view, setView] = useState<View>('conversation');
   const [failedSubmission, setFailedSubmission] = useState<FailedSubmission | null>(null);
+  const conversationRef = useRef<HTMLElement>(null);
+  const followConversationRef = useRef(true);
 
   useEffect(() => {
     setFailedSubmission(null);
@@ -83,6 +84,16 @@ export function RunDetailPage() {
     (event) => event.type === 'run.artifact' && event.payload?.kind === 'diff',
   );
   const diff = useDiff(runId, !noChanges && (status === 'succeeded' || artifactReady));
+
+  useEffect(() => {
+    followConversationRef.current = true;
+  }, [runId]);
+
+  useEffect(() => {
+    if (view !== 'conversation' || !followConversationRef.current) return;
+    const conversation = conversationRef.current;
+    if (conversation) conversation.scrollTop = conversation.scrollHeight;
+  }, [runId, status, stream.events.length, view]);
 
   const permissionControls: PermissionControls = {
     disabled: !canAct,
@@ -244,66 +255,80 @@ export function RunDetailPage() {
               </header>
 
               <div className={styles.taskLayout}>
-                <main className={styles.conversation}>
-                  {terminalRun && canAct && modelGate.notice}
-                  {failed && (
-                    <div className={styles.failBanner} role="alert" data-testid="failure-banner">
-                      <strong>{current.failure_reason ? FAILURE_LABELS[current.failure_reason] : 'Run failed'}</strong>
-                      <span>{current.failure_message || current.error || 'The run failed without a message.'}</span>
-                    </div>
-                  )}
-                  {streamFailed && (
-                    <div className={styles.streamError} role="alert" data-testid="stream-error">
-                      <span>Live updates disconnected. Showing periodic refreshes.</span>
-                      <Button variant="secondary" size="sm" onClick={stream.reconnect} data-testid="stream-reconnect">Reconnect</Button>
-                    </div>
-                  )}
-                  {run.isError && run.data && <InlineHint>Couldn't refresh the latest run details — showing the last known state.</InlineHint>}
-
-                  {view === 'diff' ? (
-                    <RunDiff run={current} noChanges={noChanges} diff={diff} downloadUrl={api.diffDownloadUrl(runId)} onBack={() => setView('conversation')} />
-                  ) : view === 'pr' ? (
-                    <div className={styles.subview}><button type="button" onClick={() => setView('conversation')}><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>Conversation</span></button><PrPanel runId={runId} projectId={current.project_id} canReview={canAct} /></div>
-                  ) : (
-                    <>
-                      <div className={styles.dateDivider}><span>{new Date(current.created_at).toLocaleDateString()}</span></div>
-                      <article className={styles.initialPrompt} data-testid="run-initial-prompt">
-                        <div className={styles.userAvatar}>U</div>
-                        <div><div className={styles.messageMeta}><strong>You</strong><time>{formatDateTime(current.created_at)}</time></div><p>{current.prompt}</p></div>
-                      </article>
-
-                      {isReview && current.review_output ? (
-                        <div className={styles.reviewOutput} data-testid="review-output"><Markdown source={current.review_output} /></div>
-                      ) : isReview && !terminalRun ? (
-                        <div className={styles.reviewProgress} data-testid="review-in-progress"><Spinner label="Review in progress…" /><Timeline events={stream.events} isRunning={live} permissions={permissionControls} /></div>
-                      ) : isReview ? (
-                        <p className={styles.empty}>{failed ? 'This review failed, so no output was produced.' : 'No review output was produced.'}</p>
-                      ) : stream.events.length > 0 || live ? (
-                        <Timeline events={stream.events} isRunning={live} permissions={permissionControls} />
-                      ) : (
-                        <p className={styles.empty}>{terminalRun ? 'No conversation events were recorded.' : 'Waiting for the agent…'}</p>
+                <div className={styles.conversationColumn} data-testid="conversation-column">
+                  <main
+                    ref={conversationRef}
+                    className={styles.conversation}
+                    data-testid="conversation-scroll"
+                    onScroll={(event) => {
+                      const target = event.currentTarget;
+                      followConversationRef.current = target.scrollHeight - target.scrollTop - target.clientHeight < 80;
+                    }}
+                  >
+                    <div className={styles.conversationContent}>
+                      {terminalRun && canAct && modelGate.notice}
+                      {failed && (
+                        <div className={styles.failBanner} role="alert" data-testid="failure-banner">
+                          <strong>{current.failure_reason ? FAILURE_LABELS[current.failure_reason] : 'Run failed'}</strong>
+                          <span>{current.failure_message || current.error || 'The run failed without a message.'}</span>
+                        </div>
                       )}
+                      {streamFailed && (
+                        <div className={styles.streamError} role="alert" data-testid="stream-error">
+                          <span>Live updates disconnected. Showing periodic refreshes.</span>
+                          <Button variant="secondary" size="sm" onClick={stream.reconnect} data-testid="stream-reconnect">Reconnect</Button>
+                        </div>
+                      )}
+                      {run.isError && run.data && <InlineHint>Couldn't refresh the latest run details — showing the last known state.</InlineHint>}
 
-                      <SessionComposer
-                        current={current}
-                        canAct={canAct}
-                        sessionLive={sessionLive}
-                        sessionAwaiting={sessionAwaiting}
-                        sessionTurnRunning={sessionTurnRunning}
-                        modelConfigured={modelGate.configured}
-                        sendPending={sendMessage.isPending}
-                        resumePending={resumeSession.isPending}
-                        cancelPending={cancel.isPending}
-                        finishPending={finishSession.isPending}
-                        failedSubmission={failedSubmission?.runId === runId ? failedSubmission : null}
-                        models={projectModels.data?.models ?? []}
-                        onSend={(text, options) => terminalRun ? continueSession(text, options) : sendFollowUp(text)}
-                        onFinish={doFinishSession}
-                        onCancel={doCancel}
-                      />
-                    </>
+                      {view === 'diff' ? (
+                        <RunDiff run={current} noChanges={noChanges} diff={diff} downloadUrl={api.diffDownloadUrl(runId)} onBack={() => setView('conversation')} />
+                      ) : view === 'pr' ? (
+                        <div className={styles.subview}><button type="button" onClick={() => setView('conversation')}><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>Conversation</span></button><PrPanel runId={runId} projectId={current.project_id} canReview={canAct} /></div>
+                      ) : (
+                        <>
+                          <div className={styles.dateDivider}><span>{new Date(current.created_at).toLocaleDateString()}</span></div>
+                          <article className={styles.initialPrompt} data-testid="run-initial-prompt">
+                            <div className={styles.userAvatar}>U</div>
+                            <div><div className={styles.messageMeta}><strong>You</strong><time>{formatDateTime(current.created_at)}</time></div><p>{current.prompt}</p></div>
+                          </article>
+
+                          {isReview && current.review_output ? (
+                            <div className={styles.reviewOutput} data-testid="review-output"><Markdown source={current.review_output} /></div>
+                          ) : isReview && !terminalRun ? (
+                            <div className={styles.reviewProgress} data-testid="review-in-progress"><Spinner label="Review in progress…" /><Timeline events={stream.events} isRunning={live} permissions={permissionControls} /></div>
+                          ) : isReview ? (
+                            <p className={styles.empty}>{failed ? 'This review failed, so no output was produced.' : 'No review output was produced.'}</p>
+                          ) : stream.events.length > 0 || live ? (
+                            <Timeline events={stream.events} isRunning={live} permissions={permissionControls} />
+                          ) : (
+                            <p className={styles.empty}>{terminalRun ? 'No conversation events were recorded.' : 'Waiting for the agent…'}</p>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </main>
+
+                  {view === 'conversation' && (
+                    <SessionComposer
+                      current={current}
+                      canAct={canAct}
+                      sessionLive={sessionLive}
+                      sessionAwaiting={sessionAwaiting}
+                      sessionTurnRunning={sessionTurnRunning}
+                      modelConfigured={modelGate.configured}
+                      sendPending={sendMessage.isPending}
+                      resumePending={resumeSession.isPending}
+                      cancelPending={cancel.isPending}
+                      finishPending={finishSession.isPending}
+                      failedSubmission={failedSubmission?.runId === runId ? failedSubmission : null}
+                      models={projectModels.data?.models ?? []}
+                      onSend={(text, options) => terminalRun ? continueSession(text, options) : sendFollowUp(text)}
+                      onFinish={doFinishSession}
+                      onCancel={doCancel}
+                    />
                   )}
-                </main>
+                </div>
 
                 <RunInspector
                   run={current}
@@ -360,38 +385,40 @@ function SessionComposer({
 }) {
   if (!current.session || !canAct) return null;
   if (sessionLive && !sessionAwaiting && !sessionTurnRunning) {
-    return <div className={styles.sessionPending} data-testid="session-panel"><span data-testid="session-pending-note">{current.status === 'queued' ? 'Session queued — waiting for a free session slot in this project.' : 'Session starting — the workspace is being scheduled.'}</span></div>;
+    return <div className={styles.sessionDock} data-testid="session-panel"><div className={styles.sessionPending}><span data-testid="session-pending-note">{current.status === 'queued' ? 'Session queued — waiting for a free session slot in this project.' : 'Session starting — the workspace is being scheduled.'}</span></div></div>;
   }
   if (sessionLive) {
     return (
-      <div className={styles.sessionPanel} data-testid="session-panel">
+      <div className={styles.sessionDock} data-testid="session-panel">
         <ConversationComposer
           disabled={sendPending || cancelPending}
           mode="follow-up"
+          running={sessionTurnRunning}
           placeholder={sessionAwaiting ? 'Continue this task…' : 'Queue a follow-up — it will run after the current turn…'}
           currentModelId={current.model_id ?? ''}
           currentModelName={current.model_name}
           currentPermissionMode={current.permission_mode === 'approval' ? 'approval' : 'full_access'}
           models={models}
           onSend={onSend}
+          onStop={onCancel}
         />
         {failedSubmission?.kind === 'follow_up' && <FailedSubmissionNotice submission={failedSubmission} onRetry={() => onSend(failedSubmission.text)} />}
         <div className={styles.sessionActions}>
-          <span data-testid="session-actions-hint">Finish lets the agent wrap up; Cancel stops immediately.</span>
+          <span data-testid="session-actions-hint">Finish lets the agent wrap up after the current turn; Cancel stops immediately.</span>
           <div className={styles.sessionActionButtons}>
             <Button type="button" variant="ghost" size="sm" onClick={onFinish} loading={finishPending} data-testid="session-finish-btn">Finish session</Button>
-            <Button type="button" variant="secondary" size="sm" onClick={onCancel} loading={cancelPending} aria-label="Stop"><Stop size={14} weight="regular" aria-hidden="true" /><span>Stop</span></Button>
           </div>
         </div>
       </div>
     );
   }
   return (
-    <div className={styles.sessionPanel} data-testid="resume-session-panel">
-      <span>Continue this session — the agent keeps the same context.</span>
+    <div className={styles.sessionDock} data-testid="resume-session-panel">
+      <span className={styles.resumeHint}>Continue this session — the agent keeps the same context.</span>
       <ConversationComposer
         disabled={!modelConfigured || resumePending}
         mode="resume"
+        running={false}
         placeholder="Continue this task…"
         currentModelId={current.model_id ?? ''}
         currentModelName={current.model_name}
@@ -407,38 +434,54 @@ function SessionComposer({
 function ConversationComposer({
   disabled,
   mode,
+  running,
   placeholder,
   currentModelId,
   currentModelName,
   currentPermissionMode,
   models,
   onSend,
+  onStop,
 }: {
   disabled: boolean;
   mode: 'follow-up' | 'resume';
+  running: boolean;
   placeholder: string;
   currentModelId: string;
   currentModelName?: string;
   currentPermissionMode: 'approval' | 'full_access';
   models: readonly ProjectModel[];
   onSend: (text: string, options?: ResumeSessionOptions) => void;
+  onStop?: () => void;
 }) {
   const [text, setText] = useState('');
   const [modelId, setModelId] = useState(currentModelId);
   const [permissionMode, setPermissionMode] = useState(currentPermissionMode);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const configurable = mode === 'resume';
   const modelOptions = useMemo(() => {
-    const options = [{ value: '', label: configurable ? 'Service default' : currentModelName || 'Service default' }];
+    const options: ComposerModelOption[] = [{
+      value: '',
+      label: configurable ? 'Service default' : currentModelName || 'Service default',
+      subline: configurable ? 'Use the service configured model' : 'Model is fixed for this active session',
+    }];
     if (currentModelId && !models.some((model) => model.id === currentModelId)) {
-      options.unshift({ value: currentModelId, label: currentModelName || currentModelId });
+      options.unshift({ value: currentModelId, label: currentModelName || currentModelId, subline: currentModelId });
     }
-    return [...options, ...models.map((model) => ({ value: model.id, label: model.name }))];
+    return [...options, ...models.map((model) => ({ value: model.id, label: model.name, subline: model.model_name }))];
   }, [configurable, currentModelId, currentModelName, models]);
 
   useEffect(() => {
     setModelId(currentModelId);
     setPermissionMode(currentPermissionMode);
   }, [currentModelId, currentPermissionMode, mode]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.max(28, Math.min(textarea.scrollHeight, 200))}px`;
+  }, [text]);
 
   const send = () => {
     const prompt = text.trim();
@@ -453,58 +496,203 @@ function ConversationComposer({
 
   return (
     <form className={styles.conversationComposer} data-testid="conversation-composer" onSubmit={submit}>
-      <textarea
-        className={styles.conversationInput}
-        aria-label="Message input"
-        placeholder={placeholder}
-        value={text}
-        rows={2}
-        disabled={disabled}
-        onChange={(event) => setText(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            send();
-          }
-        }}
-      />
-      <div className={styles.conversationControls}>
-        <div className={styles.composerSettings}>
-          <Select
-            className={styles.composerPill}
-            aria-label="Model"
-            title={configurable ? 'Choose the model for the resumed session.' : 'The active agent session keeps its existing model.'}
-            value={modelId}
-            onChange={setModelId}
-            options={modelOptions}
-            disabled={disabled || !configurable}
-            data-testid="conversation-model-select"
-          />
-          <Select
-            className={styles.composerPill}
-            aria-label="Permission mode"
-            title={configurable ? 'Choose how the resumed agent asks for permission.' : 'The active agent session keeps its existing permission mode.'}
-            value={permissionMode}
-            onChange={(value) => setPermissionMode(value === 'approval' ? 'approval' : 'full_access')}
-            options={[
-              { value: 'full_access', label: 'Full access' },
-              { value: 'approval', label: 'Ask before actions' },
-            ]}
-            disabled={disabled || !configurable}
-            data-testid="conversation-permission-select"
-          />
-          {!configurable && <span className={styles.composerLocked}><LockSimple size={13} weight="regular" aria-hidden="true" />Model and access apply when you resume.</span>}
-        </div>
-        <div className={styles.conversationSubmit}>
-          <span>{mode === 'resume' ? 'Resume the same session' : 'Delivered to this session'}</span>
-          <Button type="submit" variant="primary" size="sm" disabled={disabled || !text.trim()} aria-label="Send message">
-            {mode === 'resume' ? <ShieldCheck size={15} weight="regular" aria-hidden="true" /> : <PaperPlaneTilt size={15} weight="regular" aria-hidden="true" />}
-            <span>{mode === 'resume' ? 'Continue' : 'Send'}</span>
-          </Button>
+      <div className={styles.composerField}>
+        <textarea
+          ref={textareaRef}
+          className={styles.conversationInput}
+          aria-label="Message input"
+          placeholder={placeholder}
+          value={text}
+          rows={1}
+          disabled={disabled}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              send();
+            }
+          }}
+        />
+        <div className={styles.conversationControls}>
+          <div className={styles.composerSettings}>
+            <button className={styles.composerAdd} type="button" disabled title="Attachments are not available in Cloud sessions yet." aria-label="Attachments unavailable">
+              <Plus size={16} weight="regular" aria-hidden="true" />
+            </button>
+            <PermissionPicker
+              value={permissionMode}
+              onChange={setPermissionMode}
+              disabled={disabled || !configurable}
+            />
+            {!configurable && <span className={styles.composerLocked}><LockSimple size={13} weight="regular" aria-hidden="true" />Model and access apply when you resume.</span>}
+          </div>
+          <div className={styles.conversationSubmit}>
+            <ModelPicker
+              value={modelId}
+              onChange={setModelId}
+              options={modelOptions}
+              disabled={disabled || !configurable}
+            />
+            {running && onStop && (
+              <button className={styles.composerStop} type="button" onClick={onStop} disabled={disabled} aria-label="Stop">
+                <Stop size={14} weight="fill" aria-hidden="true" /><span>Stop</span>
+              </button>
+            )}
+            {(!running || text.trim()) && (
+              <button className={styles.composerSend} type="submit" disabled={disabled || !text.trim()} aria-label="Send message">
+                <PaperPlaneTilt size={14} weight="regular" aria-hidden="true" />
+                <span>{running ? 'Queue' : 'Send'}</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </form>
   );
+}
+
+interface ComposerModelOption {
+  value: string;
+  label: string;
+  subline: string;
+}
+
+function ModelPicker({ value, onChange, options, disabled }: {
+  value: string;
+  onChange: (value: string) => void;
+  options: readonly ComposerModelOption[];
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
+  useDismissablePicker(rootRef, open, setOpen);
+  const selected = options.find((option) => option.value === value) ?? options[0];
+  const visible = options.filter((option) => `${option.label} ${option.subline}`.toLowerCase().includes(filter.trim().toLowerCase()));
+
+  return (
+    <div className={styles.composerPicker} ref={rootRef}>
+      <button
+        className={styles.composerTrigger}
+        type="button"
+        aria-label="Model"
+        aria-expanded={open}
+        title={disabled ? 'The active agent session keeps its existing model.' : 'Choose the model for the resumed session.'}
+        disabled={disabled}
+        data-testid="conversation-model-select"
+        onClick={(event) => { event.stopPropagation(); setOpen((current) => !current); }}
+      >
+        <Cpu size={16} weight="regular" aria-hidden="true" />
+        <span>{selected?.label ?? 'Model'}</span>
+        <CaretDown size={12} weight="bold" aria-hidden="true" />
+      </button>
+      {open && (
+        <div className={`${styles.composerMenu} ${styles.modelMenu}`} role="listbox" aria-label="Model">
+          <label className={styles.modelSearch}>
+            <MagnifyingGlass size={14} weight="regular" aria-hidden="true" />
+            <input aria-label="Filter models" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter models…" autoFocus />
+          </label>
+          <div className={styles.composerMenuLabel}>Models</div>
+          <div className={styles.modelOptions}>
+            {visible.map((option) => (
+              <button
+                key={option.value || 'service-default'}
+                className={styles.modelOption}
+                type="button"
+                role="option"
+                aria-selected={option.value === value}
+                onClick={() => { onChange(option.value); setOpen(false); setFilter(''); }}
+              >
+                <Cpu size={20} weight="regular" aria-hidden="true" />
+                <span><strong>{option.label}</strong><small>{option.subline}</small></span>
+                {option.value === value && <Check size={14} weight="bold" aria-hidden="true" />}
+              </button>
+            ))}
+            {visible.length === 0 && <span className={styles.noModelResults}>No matching models</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PermissionPicker({ value, onChange, disabled }: {
+  value: 'approval' | 'full_access';
+  onChange: (value: 'approval' | 'full_access') => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useDismissablePicker(rootRef, open, setOpen);
+  const modes = [
+    { value: 'approval' as const, label: 'Ask for approval', subline: 'Agent asks before running tools', disabled: false, Icon: HandPalm },
+    { value: 'plan' as const, label: 'Plan', subline: 'Not available in Cloud sessions yet', disabled: true, Icon: ClipboardText },
+    { value: 'full_access' as const, label: 'Full access', subline: 'Agent can act without asking', disabled: false, Icon: ShieldWarning },
+  ];
+  const selected = modes.find((mode) => mode.value === value) ?? modes[0]!;
+
+  return (
+    <div className={styles.composerPicker} ref={rootRef}>
+      <button
+        className={`${styles.composerTrigger} ${value === 'full_access' ? styles.fullAccess : ''}`}
+        type="button"
+        aria-label="Permission mode"
+        aria-expanded={open}
+        title={disabled ? 'The active agent session keeps its existing permission mode.' : 'Choose how the resumed agent asks for permission.'}
+        disabled={disabled}
+        data-testid="conversation-permission-select"
+        onClick={(event) => { event.stopPropagation(); setOpen((current) => !current); }}
+      >
+        <selected.Icon size={16} weight="regular" aria-hidden="true" />
+        <span>{selected.label}</span>
+        <CaretDown size={12} weight="bold" aria-hidden="true" />
+      </button>
+      {open && (
+        <div className={`${styles.composerMenu} ${styles.permissionMenu}`} role="listbox" aria-label="Permission mode">
+          {modes.map((mode) => (
+            <button
+              key={mode.value}
+              className={`${styles.permissionOption} ${mode.value === 'full_access' ? styles.permissionDanger : ''}`}
+              type="button"
+              role="option"
+              aria-label={mode.disabled ? `${mode.label} — ${mode.subline}` : mode.label}
+              aria-selected={mode.value === value}
+              disabled={mode.disabled}
+              onClick={() => {
+                if (mode.value === 'approval' || mode.value === 'full_access') onChange(mode.value);
+                setOpen(false);
+              }}
+            >
+              <mode.Icon size={18} weight="regular" aria-hidden="true" />
+              <span><strong>{mode.label}</strong><small>{mode.subline}</small></span>
+              {mode.value === value && <Check size={14} weight="bold" aria-hidden="true" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function useDismissablePicker(
+  rootRef: RefObject<HTMLElement>,
+  open: boolean,
+  setOpen: (open: boolean) => void,
+) {
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open, rootRef, setOpen]);
 }
 
 function RunInspector({
