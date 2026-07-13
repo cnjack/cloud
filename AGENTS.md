@@ -9,6 +9,22 @@ files.
 
 ## Product non-negotiables
 
+### Treat approved designs as product requirements
+
+When the user provides or approves a design, treat the behavior and information
+architecture in that design as the desired product contract, not as optional
+visual inspiration.
+
+- Do not silently omit, downgrade, or replace designed behavior just because the
+  current API or domain model cannot support it.
+- If implementation requires a new API, persistence model, provider capability,
+  or other architectural work, report that gap explicitly before narrowing the
+  scope. Explain what is missing and what must change.
+- Extend the underlying contracts needed to implement the design unless the user
+  explicitly agrees to a staged or reduced scope.
+- The fail-visibly rule applies to product behavior as well as runtime failures:
+  an unsupported design requirement must be surfaced, never quietly hidden.
+
 ### Fail visibly
 
 An unavailable dependency must be a first-class, visible state. Never silently

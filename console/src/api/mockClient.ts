@@ -21,10 +21,13 @@ import type {
 } from 'jtype-board-react';
 import type {
   AddMemberInput,
+  Automation,
+  AutomationList,
   ApiKey,
   BoardEmbedLink,
   CreateApiKeyInput,
   CreateApiKeyResponse,
+  CreateAutomationInput,
   CreateKanbanLinkInput,
   CreateProjectInput,
   CreateRunInput,
@@ -60,6 +63,7 @@ import type {
   Service,
   SystemInfo,
   UpdateIntegrationInput,
+  UpdateAutomationInput,
   UpdateKanbanConfigInput,
   UpdateModelInput,
   UpdateProjectInput,
@@ -200,6 +204,27 @@ function ownerName(raw: string): string {
   } catch {
     return '';
   }
+}
+
+/** Browser-safe repository URL projection used by the demo client. */
+function mockRepoHTMLURL(provider: Service['provider'], ownerNamePath: string, rawRepoURL = ''): string | undefined {
+  if (rawRepoURL) {
+    try {
+      const url = new URL(rawRepoURL);
+      if (url.protocol === 'http:' || url.protocol === 'https:') {
+        url.pathname = url.pathname.replace(/\.git$/, '');
+        return url.toString().replace(/\/$/, '');
+      }
+    } catch {
+      // Fall through to the provider demo host. Production URLs are derived by
+      // the orchestrator from server-owned integration and OAuth settings.
+    }
+  }
+  if (!ownerNamePath) return undefined;
+  if (provider === 'github') return `https://github.com/${ownerNamePath}`;
+  if (provider === 'gitlab') return `https://gitlab.com/${ownerNamePath}`;
+  if (provider === 'gitea') return `https://gitea.example/${ownerNamePath}`;
+  return undefined;
 }
 
 export function createMockClient(): ApiClient {
@@ -348,6 +373,7 @@ export function createMockClient(): ApiClient {
 
   // F11 / D24: schedules (service cron triggers), keyed by schedule id.
   const schedules = new Map<string, Schedule>();
+  const automations = new Map<string, Automation>();
   // D19 / F5: project integrations, keyed by project id.
   const integrations = new Map<string, Integration[]>();
   // F12 / D24: project-scoped API keys, keyed by project id. The plaintext is
@@ -473,6 +499,7 @@ export function createMockClient(): ApiClient {
       repo_kind: 'provider',
       provider: 'gitea',
       repo_owner_name: ownerNamePath,
+      repo_html_url: mockRepoHTMLURL('gitea', ownerNamePath),
       default_branch: 'main',
       git_mode: gitMode,
       created_at: createdAt,
@@ -1745,6 +1772,39 @@ export function createMockClient(): ApiClient {
       return delay(undefined);
     },
 
+    async listServiceAutomations(serviceId: string): Promise<AutomationList> {
+      return delay({
+        automations: [...automations.values()]
+          .filter((automation) => automation.service_id === serviceId)
+          .sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
+        webhook_binding: null,
+      });
+    },
+    async createServiceAutomation(serviceId: string, input: CreateAutomationInput): Promise<Automation> {
+      const now = nowISO();
+      const automation: Automation = {
+        id: genId('auto'),
+        service_id: serviceId,
+        ...input,
+        enabled: input.enabled ?? true,
+        created_at: now,
+        updated_at: now,
+      };
+      automations.set(automation.id, automation);
+      return delay({ ...automation });
+    },
+    async updateAutomation(automationId: string, input: UpdateAutomationInput): Promise<Automation> {
+      const automation = automations.get(automationId);
+      if (!automation) throw new ApiError(404, 'automation not found');
+      const updated = { ...automation, ...input, updated_at: nowISO() };
+      automations.set(automationId, updated);
+      return delay({ ...updated });
+    },
+    async deleteAutomation(automationId: string): Promise<void> {
+      if (!automations.delete(automationId)) throw new ApiError(404, 'automation not found');
+      return delay(undefined);
+    },
+
     /* ---- integrations (D19 / F5) ------------------------------------------ */
     async listIntegrations(projectId: string): Promise<Integration[]> {
       if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
@@ -1900,6 +1960,13 @@ export function createMockClient(): ApiClient {
         provider: boundProvider ?? undefined,
         repo_owner_name: boundProvider
           ? input.owner_name?.trim() || ownerName(repoUrl)
+          : undefined,
+        repo_html_url: boundProvider
+          ? mockRepoHTMLURL(
+              boundProvider,
+              input.owner_name?.trim() || ownerName(repoUrl),
+              repoUrl,
+            )
           : undefined,
         raw_repo_url: boundProvider ? undefined : repoUrl,
         default_branch: input.default_branch?.trim() || 'main',

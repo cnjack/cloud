@@ -7,7 +7,7 @@
  * unrelated generic page primitives.
  */
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
-import { Lightning, Plus } from '@phosphor-icons/react';
+import { ArrowSquareOut, Plus } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   useCreateService,
@@ -45,11 +45,10 @@ import { ProjectSettingsAction } from '../project-workspace/ProjectSettingsActio
 import { RunActivityList, type RunFilter } from '../project-workspace/RunActivityList';
 import { SettingsPanel } from '../project-workspace/SettingsPanel';
 import { TaskComposer } from '../project-workspace/TaskComposer';
-import { WebhookSetupCard } from '../project-workspace/WebhookSetupCard';
+import { AutomationsPanel } from '../project-workspace/AutomationsPanel';
 import { serviceMark, serviceProviderLabel, serviceSource } from '../project-workspace/presentation';
 import { KanbanBoardModal } from './KanbanBoardModal';
 import { ProjectSettingsPage } from './ProjectSettingsModal';
-import { SchedulesPanel } from './SchedulesPanel';
 import styles from './ProjectDetailPage.module.css';
 
 export function ProjectDetailPage() {
@@ -99,11 +98,11 @@ export function ProjectDetailPage() {
   const activeService = services.find((service) => service.id === activeServiceId);
   const workspaceTab = workspaceLocation.tab;
   const projectSettingsOpen = canManage && searchParams.get('view') === 'project-settings';
-  const webhookReturnTo = (() => {
+  const automationOAuthReturnTo = (() => {
     const params = new URLSearchParams();
     if (activeServiceId) params.set('service', activeServiceId);
     params.set('tab', 'automations');
-    params.set('webhook', 'oauth');
+    params.set('automation', 'review-new');
     return `/projects/${encodeURIComponent(projectId)}?${params.toString()}`;
   })();
 
@@ -500,6 +499,27 @@ export function ProjectDetailPage() {
                 </div>
               </div>
             </div>
+            {activeService && activeService.repo_kind === 'provider' && (
+              activeService.repo_html_url ? (
+                <a
+                  className={styles.workspaceRepoAction}
+                  href={activeService.repo_html_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Open ${serviceProviderLabel(activeService)}`}
+                >
+                  <ArrowSquareOut size={16} aria-hidden="true" />
+                  <span>Open {serviceProviderLabel(activeService)}</span>
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  className={styles.workspaceRepoAction}
+                  disabled
+                  title="The server could not resolve this provider repository's browser URL."
+                >Repository unavailable</button>
+              )
+            )}
           </div>
         }
       >
@@ -707,36 +727,17 @@ export function ProjectDetailPage() {
         {!projectSettingsOpen && workspaceTab === 'automations' && (
           <section className={styles.automationWorkspace}>
             {activeService && canRun ? (
-              <>
-                <div className={styles.automationHead}>
-                  <div>
-                    <span className={styles.eyebrow}>Service automation</span>
-                    <h2>Automations</h2>
-                    <p>Bind work to <strong>{activeService.name}</strong> and let a schedule or provider event start it.</p>
-                  </div>
-                  {canManage && (
-                    <Button type="button" variant="primary" size="sm" onClick={() => setScheduleCreateOpen(true)} data-testid="automation-new-schedule">
-                      <Plus size={16} weight="regular" aria-hidden="true" />
-                      <span>New schedule</span>
-                    </Button>
-                  )}
-                </div>
-                <div className={styles.automationScope}>
-                  <Lightning size={16} weight="regular" aria-hidden="true" />
-                  <span><strong>Available today:</strong> scheduled tasks and provider-backed <code>@jcode review</code> commands. Automatic PR-open and commit-review triggers need a dedicated Automation contract, so they are not shown as enabled controls.</span>
-                </div>
-                <div className={styles.automationList}>
-                  <WebhookSetupCard
-                    service={activeService}
-                    me={auth?.me ?? null}
-                    providers={auth?.providers ?? []}
-                    canConfigure={canRun}
-                    returnTo={webhookReturnTo}
-                    oauthReturned={searchParams.get('webhook') === 'oauth'}
-                  />
-                  <SchedulesPanel service={activeService} canManage={canManage} createOpen={scheduleCreateOpen} onCreateOpenChange={setScheduleCreateOpen} />
-                </div>
-              </>
+              <AutomationsPanel
+                service={activeService}
+                canManage={canManage}
+                models={grantedModels}
+                scheduleCreateOpen={scheduleCreateOpen}
+                onScheduleCreateOpenChange={setScheduleCreateOpen}
+                me={auth?.me ?? null}
+                providers={auth?.providers ?? []}
+                oauthReturnTo={automationOAuthReturnTo}
+                initialEditorOpen={searchParams.get('automation') === 'review-new'}
+              />
             ) : activeService ? (
               <EmptyState
                 title="Automations are available to project members"

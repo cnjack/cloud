@@ -17,6 +17,8 @@ import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
 import { ApiError, type ApiClient } from '../api/client';
 import type {
+  Automation,
+  AutomationList,
   BoardEmbedLink,
   CreateRunInput,
   CreateServiceInput,
@@ -27,7 +29,9 @@ import type {
   ProviderRepo,
   Run,
   Service,
+  CreateAutomationInput,
   UpdateServiceInput,
+  UpdateAutomationInput,
 } from '../api/types';
 import { pickOption } from '../test/select';
 
@@ -60,6 +64,7 @@ function svc(id: string, name: string): Service {
     repo_kind: 'provider',
     provider: 'gitea',
     repo_owner_name: `acme/${name}`,
+    repo_html_url: `https://git.example.test/acme/${name}`,
     default_branch: 'main',
     git_mode: 'readonly',
     created_at: '',
@@ -80,6 +85,8 @@ interface Calls {
   serviceRuns: { sid: string; input: CreateRunInput }[];
   services: { pid: string; input: CreateServiceInput }[];
   serviceUpdates: { sid: string; input: UpdateServiceInput }[];
+  automations: { sid: string; input: CreateAutomationInput }[];
+  automationUpdates: { id: string; input: UpdateAutomationInput }[];
 }
 
 function makeClient(
@@ -93,9 +100,10 @@ function makeClient(
     // D31: the member+ board-embed links that gate the "Kanban" header button.
     // Absent = the endpoint is treated as returning [] (no button).
     boardLinks?: BoardEmbedLink[];
+    automationList?: AutomationList;
   } = {},
 ): { client: ApiClient; calls: Calls } {
-  const calls: Calls = { serviceRuns: [], services: [], serviceUpdates: [] };
+  const calls: Calls = { serviceRuns: [], services: [], serviceUpdates: [], automations: [], automationUpdates: [] };
   const client: Partial<ApiClient> = {
     getProject: async () => p,
     listRuns: async () => [] as Run[],
@@ -110,6 +118,19 @@ function makeClient(
       models: opts.models ?? [],
       env_fallback: opts.models ? false : (opts.modelConfigured ?? true),
     }),
+    listServiceAutomations: async () => opts.automationList ?? { automations: [], webhook_binding: null },
+    createServiceAutomation: async (sid, input) => {
+      calls.automations.push({ sid, input });
+      return {
+        id: 'auto-new', service_id: sid, created_at: '', updated_at: '',
+        last_error: '', last_run_id: '', ...input,
+      } as Automation;
+    },
+    updateAutomation: async (id, input) => {
+      calls.automationUpdates.push({ id, input });
+      return { id, service_id: 'svc_default', created_at: '', updated_at: '', name: 'PR review', instructions: 'Review', trigger_type: 'pr_review', model_id: 'm1', events: ['opened'], base_branch: 'main', include_drafts: false, enabled: true, ...input } as Automation;
+    },
+    deleteAutomation: async () => undefined,
     createServiceRun: async (sid, input) => {
       calls.serviceRuns.push({ sid, input });
       return { id: 'r2', project_id: 'p1', service_id: sid, prompt: input.prompt, status: 'queued', created_at: '' } as Run;
@@ -184,6 +205,17 @@ function renderSwitchablePage(client: ApiClient) {
 }
 
 describe('ProjectDetailPage — single-repo composer', () => {
+  it('opens the server-derived provider repository URL from the Service header', async () => {
+    const service = svc('svc_default', 'default');
+    const { client } = makeClient(project('owner', [service]));
+    renderPage(client);
+
+    const link = await screen.findByRole('link', { name: 'Open Gitea' });
+    expect(link.getAttribute('href')).toBe(service.repo_html_url);
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toContain('noopener');
+  });
+
   it('has no repository selector and dispatches against the sole service', async () => {
     const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
     renderPage(client);
@@ -468,8 +500,22 @@ describe('ProjectDetailPage — multi-repo workspace', () => {
 });
 
 describe('ProjectDetailPage — workspace sections', () => {
-  it('keeps schedules beside a fail-visible OAuth webhook setup state', async () => {
-    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+  it('renders persisted PR review Automations beside schedules instead of an @jcode setup card', async () => {
+    const review: Automation = {
+      id: 'auto-1', service_id: 'svc_default', name: 'Gitea PR automatic review',
+      instructions: 'Review security and regressions.', trigger_type: 'pr_review', model_id: 'm1',
+      events: ['opened', 'synchronize'], base_branch: 'main', include_drafts: false, enabled: true,
+      created_at: '', updated_at: '',
+    };
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      automationList: {
+        automations: [review],
+        webhook_binding: {
+          service_id: 'svc_default', provider: 'gitea', endpoint: '/webhooks/gitea', status: 'active',
+          last_delivery_status: 'accepted', last_delivery_at: '2026-07-13T02:00:00Z', updated_at: '',
+        },
+      },
+    });
     const schedules = vi.fn(async () => []);
     (client as { listServiceSchedules?: unknown }).listServiceSchedules = schedules;
     renderPage(client);
@@ -478,7 +524,9 @@ describe('ProjectDetailPage — workspace sections', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
 
     expect(await screen.findByTestId('schedules-panel')).toBeTruthy();
-    expect(screen.getByTestId('webhook-setup-unavailable').textContent).toContain('OAuth is not configured');
+    expect(await screen.findByText('Gitea PR automatic review')).toBeTruthy();
+    expect(screen.getByText('Review security and regressions.')).toBeTruthy();
+    expect(screen.queryByText(/@jcode review/i)).toBeNull();
     await waitFor(() => expect(schedules).toHaveBeenCalledWith('svc_default'));
   });
 
@@ -494,7 +542,7 @@ describe('ProjectDetailPage — workspace sections', () => {
     expect(await screen.findByTestId('schedule-form')).toBeTruthy();
   });
 
-  it('shows GitHub OAuth configuration as unavailable instead of claiming a healthy webhook', async () => {
+  it('shows GitHub automatic review as explicitly unsupported instead of claiming a healthy webhook', async () => {
     const github = { ...svc('svc_github', 'web'), provider: 'github' };
     const { client } = makeClient(project('owner', [github]));
     renderPage(client);
@@ -502,8 +550,57 @@ describe('ProjectDetailPage — workspace sections', () => {
     await screen.findByTestId('run-input');
     fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
 
-    expect((await screen.findByTestId('webhook-setup-unavailable')).textContent).toContain('GitHub OAuth is not configured');
+    expect((await screen.findByTestId('automation-provider-unavailable')).textContent).toContain('Gitea-first');
     expect(screen.queryByText(/Webhook healthy/i)).toBeNull();
+  });
+
+  it('creates a PR review Automation from the inline editor with an explicit model', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      models: [{ id: 'm1', name: 'Review model', model_name: 'provider/review' }],
+    });
+    (client as { listServiceSchedules?: unknown }).listServiceSchedules = async () => [];
+    renderPage(client);
+
+    await screen.findByTestId('run-input');
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+    fireEvent.click(await screen.findByTestId('automation-new-review'));
+    expect(await screen.findByTestId('automation-editor')).toBeTruthy();
+    fireEvent.change(screen.getByTestId('automation-name'), { target: { value: 'PR guard' } });
+    fireEvent.change(screen.getByTestId('automation-instructions'), { target: { value: 'Review security.' } });
+    fireEvent.change(screen.getByTestId('automation-model'), { target: { value: 'm1' } });
+    fireEvent.click(screen.getByTestId('automation-submit'));
+
+    await waitFor(() => expect(calls.automations).toHaveLength(1));
+    expect(calls.automations[0]).toMatchObject({
+      sid: 'svc_default',
+      input: { name: 'PR guard', instructions: 'Review security.', model_id: 'm1', trigger_type: 'pr_review' },
+    });
+  });
+
+  it('edits a persisted PR review Automation from its row actions', async () => {
+    const review: Automation = {
+      id: 'auto-1', service_id: 'svc_default', name: 'Existing guard', instructions: 'Review regressions.',
+      trigger_type: 'pr_review', model_id: 'm1', events: ['opened'], base_branch: 'main',
+      include_drafts: false, enabled: true, last_error: '', created_at: '', updated_at: '',
+    };
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      models: [{ id: 'm1', name: 'Review model', model_name: 'provider/review' }],
+      automationList: { automations: [review], webhook_binding: null },
+    });
+    (client as { listServiceSchedules?: unknown }).listServiceSchedules = async () => [];
+    renderPage(client);
+
+    await screen.findByTestId('run-input');
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Automation actions for Existing guard' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit Automation' }));
+    fireEvent.change(screen.getByTestId('automation-instructions'), { target: { value: 'Review security too.' } });
+    fireEvent.click(screen.getByTestId('automation-submit'));
+
+    await waitFor(() => expect(calls.automationUpdates).toHaveLength(1));
+    expect(calls.automationUpdates[0]).toMatchObject({
+      id: 'auto-1', input: { instructions: 'Review security too.', model_id: 'm1' },
+    });
   });
 
   it('resets the workspace scroll when moving between Tasks and Automations', async () => {

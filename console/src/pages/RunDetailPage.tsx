@@ -778,6 +778,7 @@ function OriginReference({ run }: { run: Run }) {
     return <a className={styles.originRef} href={run.origin_comment_url} target="_blank" rel="noreferrer" data-testid="origin-chip"><span>from PR comment</span><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /></a>;
   }
   if (run.origin === 'schedule') return <span className={styles.originRef} data-testid="origin-chip-schedule">scheduled</span>;
+  if (run.origin === 'automation') return <span className={styles.originRef} data-testid="origin-chip-automation">PR event Automation</span>;
   return null;
 }
 
@@ -823,5 +824,6 @@ function runKindLabel(run: Run): string {
 function runOriginLabel(run: Run): string {
   if (run.origin === 'webhook') return 'Provider webhook';
   if (run.origin === 'schedule') return 'Schedule';
+  if (run.origin === 'automation') return 'PR event';
   return 'Manual';
 }

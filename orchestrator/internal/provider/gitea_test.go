@@ -302,3 +302,73 @@ func TestGiteaEnsureCommentWebhook(t *testing.T) {
 		}
 	})
 }
+
+// TestGiteaEnsureReviewWebhook pins the event-driven review registration
+// contract. A missing hook is created with both the legacy comment events and
+// PR lifecycle events; an existing URL with an incomplete event set is PATCHed
+// in place so repositories configured before Automations are upgraded.
+func TestGiteaEnsureReviewWebhook(t *testing.T) {
+	t.Run("creates the complete event set", func(t *testing.T) {
+		var created map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				_, _ = w.Write([]byte(`[]`))
+			case http.MethodPost:
+				_ = json.NewDecoder(r.Body).Decode(&created)
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"id":7}`))
+			default:
+				t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+			}
+		}))
+		defer srv.Close()
+
+		c, _ := NewGiteaClient(srv.URL, "tok")
+		if err := c.EnsureReviewWebhook(context.Background(), "ai", "repo", "http://orch/webhooks/gitea", "secret"); err != nil {
+			t.Fatalf("EnsureReviewWebhook: %v", err)
+		}
+		events := map[string]bool{}
+		for _, event := range created["events"].([]any) {
+			events[event.(string)] = true
+		}
+		for _, want := range []string{"issue_comment", "pull_request_comment", "pull_request", "pull_request_sync"} {
+			if !events[want] {
+				t.Fatalf("created events=%v missing %q", created["events"], want)
+			}
+		}
+	})
+
+	t.Run("patches an existing incomplete hook", func(t *testing.T) {
+		var patched map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet:
+				_, _ = w.Write([]byte(`[{"id":19,"active":true,"events":["issue_comment"],"config":{"url":"http://orch/webhooks/gitea"}}]`))
+			case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/repos/ai/repo/hooks/19":
+				_ = json.NewDecoder(r.Body).Decode(&patched)
+				_, _ = w.Write([]byte(`{"id":19}`))
+			default:
+				t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+			}
+		}))
+		defer srv.Close()
+
+		c, _ := NewGiteaClient(srv.URL, "tok")
+		if err := c.EnsureReviewWebhook(context.Background(), "ai", "repo", "http://orch/webhooks/gitea", "secret"); err != nil {
+			t.Fatalf("EnsureReviewWebhook: %v", err)
+		}
+		if patched == nil {
+			t.Fatal("expected the existing hook to be patched")
+		}
+		events := map[string]bool{}
+		for _, event := range patched["events"].([]any) {
+			events[event.(string)] = true
+		}
+		for _, want := range []string{"issue_comment", "pull_request_comment", "pull_request", "pull_request_sync"} {
+			if !events[want] {
+				t.Fatalf("patched events=%v missing %q", patched["events"], want)
+			}
+		}
+	})
+}

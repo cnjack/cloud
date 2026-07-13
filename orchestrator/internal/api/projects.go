@@ -434,6 +434,9 @@ func (s *Server) projectViewOf(ctx context.Context, p *domain.Project, role doma
 	if services == nil {
 		services = []domain.Service{}
 	}
+	for i := range services {
+		services[i].RepoHTMLURL = s.serviceRepoHTMLURL(ctx, &services[i])
+	}
 	pv := &projectView{
 		ID:                     p.ID,
 		Name:                   p.Name,

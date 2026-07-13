@@ -36,6 +36,7 @@ export function serviceProviderLabel(service: Service): string {
 
 export function runKindLabel(run: Run): string {
   if (run.kind === 'review') return 'Review';
+  if (run.origin === 'automation') return 'PR event';
   if (run.origin === 'schedule') return 'Schedule';
   if (run.origin === 'kanban') return 'Kanban';
   if (run.origin === 'webhook') return 'Webhook';

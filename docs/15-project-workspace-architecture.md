@@ -18,10 +18,10 @@ reference:
 | --- | --- | --- |
 | A Project is the complete working surface. | `AppShell` owns a global top bar and `ProjectDetailPage` adds a second rail below it. | Give project routes a route-scoped `ProjectWorkspaceShell`; hide the global top bar for that route instead of competing with the workspace. |
 | A selected Service is the execution context. | The composer also exposes a repository select, duplicating the rail's selection. | The rail is the only service selector. Its selection is URL-addressable. |
-| Tasks, Automations, and Settings are peer workspace modes. | Tasks and Automations are local state; Settings is a modal action. | Make all three modes addressable workspace tabs. Keep the advanced project-admin dialog as a nested action, not the primary information architecture. |
+| Tasks, Automations, and Settings are peer workspace modes. | Tasks and Automations are local state; Settings is a modal action. | Make all three service modes addressable workspace tabs. Keep Project settings as a separate route entered from the Project rail. |
 | The composer is a single focused task surface. | An owner-only service-default editor appears above the input. | Keep per-run model and permission controls in the composer; move service default-model editing to Settings. |
 | Recent work is a readable activity feed. | Runs are rendered as a four-column generic table. | Use semantic activity rows with task, context, state, and time, while preserving run links and filters. |
-| Provider/event status is trustworthy. | The visual reference contains illustrative webhook health. | Add an explicit OAuth-backed webhook synchronization action. Report only the returned registration result; keep delivery health unavailable because the API does not yet observe deliveries. |
+| Provider/event status is trustworthy. | The visual reference contains illustrative webhook health. | Persist PR review Automations and a Service-level WebhookBinding. Report only saved synchronization and observed delivery state. |
 
 This is an information-architecture problem first. Token tuning alone cannot
 repair it.
@@ -38,8 +38,9 @@ repair it.
 
 ### What this change does not invent
 
-- Webhook delivery health. The API can synchronize a provider webhook but does
-  not observe a delivery stream, so it must not claim that events are healthy.
+- Provider health beyond what the orchestrator observes. The API persists hook
+  synchronization and the last received delivery, but does not claim continuous
+  reachability or provider uptime.
 - A hidden provider-side mutation on service creation. Repository setup remains
   explicit and attributable to the member who authorizes it.
 - Attachments, voice input, or arbitrary file context controls.
@@ -78,7 +79,8 @@ AppShell (non-workspace app chrome)
    │  ├─ ServiceNavigation
    │  └─ ClusterFooter
    ├─ WorkspaceUtilityBar
-   │  └─ ProjectSettingsEntry / KanbanEntry / identity
+   │  └─ KanbanEntry / identity
+   ├─ ProjectSettingsEntry (Project rail, separate route)
    └─ ServiceWorkspace
       ├─ ServiceHeader
       ├─ WorkspaceTabs
@@ -87,7 +89,8 @@ AppShell (non-workspace app chrome)
          │  ├─ TaskComposer
          │  └─ RunActivityList
          ├─ AutomationsPanel
-         │  ├─ WebhookSetupCard
+         │  ├─ PRReviewAutomationList
+         │  ├─ InlineAutomationEditor
          │  └─ SchedulesPanel
          └─ SettingsPanel
             └─ ServiceModelPolicy
@@ -112,10 +115,10 @@ interface TaskDraft {
 }
 ```
 
-`SettingsPanel` owns only the service default-model editor. The project utility
-bar owns the explicit `Project settings` entry; its modal retains project-wide
-membership, bot integrations, Kanban configuration, and API keys. A service
-surface never contains a project-administration control.
+`SettingsPanel` owns only the service default-model editor. The Project rail
+owns the icon-only `Project settings` entry; that separate route retains
+project-wide membership, bot integrations, Kanban configuration, and API keys.
+A service surface never contains a project-administration control.
 
 ## 4. Capability model
 
@@ -128,7 +131,7 @@ service provider name:
 | Choose a per-run model | `listProjectModels` | Show only granted models; no model list means environment fallback, not a made-up model. |
 | Change a service default model | owner + granted models + `updateService` | Expose in Settings only. |
 | Schedule work | `listServiceSchedules` and schedule mutations | Render in Automations. |
-| Provider review webhook setup | `POST /services/{id}/webhook` + current member identity | Member connects the matching provider with OAuth; the callback returns to the same Automation view and synchronizes the idempotent hook once. Raw services, missing OAuth, missing receiver config, and provider rejection are typed visible states. A successful response means registration was accepted, not that future deliveries are healthy. |
+| Provider review Automation | Automation CRUD + `WebhookBinding` + current owner OAuth identity | Owner saves explicit instructions, model, event/base/draft policy and enabled state. Gitea hook reconciliation is part of create/enable. Raw services, missing OAuth/model/receiver, and unsupported providers are typed visible states. Last delivery appears only after the server observes it. |
 | Kanban | `listProjectBoardLinks` | Show the real board entry when links load; show a retryable unavailable state if the query fails. |
 
 ## 5. Layout and scroll contract
@@ -159,8 +162,10 @@ service provider name:
    default-model control and repository select from the composer.
 4. Replace the run table with activity rows without changing run navigation,
    filters, role gating, or API mutations.
-5. Add the OAuth-only webhook synchronization endpoint and its Automation card;
-   then run the Console test, typecheck, and visual QA pass.
+5. Add persistent PR review Automation and WebhookBinding contracts, reconcile
+   Gitea hooks through the owner's OAuth identity, dispatch idempotent review
+   Runs from PR events, and expose the approved list/editor UI. See
+   `16-repository-navigation-and-pr-automation.md` for the low-level design.
 
 ## 7. Test design
 
@@ -173,7 +178,7 @@ step:
 | Service context | Choosing a rail item changes the URL and dispatches the composer against that service; the composer never has a second repository picker. |
 | Tab behavior | Tasks, Automations, and Service settings are ARIA tabs; tab changes reset only the content scroll; service changes preserve the active tab. |
 | Model scope | Per-run model selection stays in the composer; only an owner sees the service default-model control in Settings. |
-| Webhook setup | The endpoint uses only the requesting user's OAuth token, never a bot credential or cluster PAT; missing OAuth/configuration and provider failure are visible, while a success is rendered only after the endpoint returns. |
+| PR review Automation | Create/enable uses only the requesting owner's OAuth token, never a bot credential or cluster PAT; missing OAuth/configuration/model and provider failure remain visible; duplicate PR events create one Run. |
 | Activity | A run row links to the existing run detail route and still exposes kind, status, retry provenance, and timestamp. |
 | Role gates | Viewer cannot compose or synchronize webhooks; member can run and synchronize a service webhook; owner can additionally open project settings. |
 | Scroll | The workspace scroll surface resets on a tab change and all internal desktop flex/grid parents can shrink. |
@@ -183,9 +188,11 @@ step:
 - The rendered Project route has one coherent workspace chrome, not a global
   dashboard above a second workspace.
 - The rail is the only active-service selector.
-- Service settings is a first-class workspace mode; project settings lives in
-  the project utility bar rather than inside a service surface.
+- Service settings is a first-class workspace mode; Project settings lives in
+  the Project rail and opens a separate route rather than appearing inside a
+  service surface.
 - Recent tasks read as activity rows rather than an administrative table.
-- Kanban remains the real server-proxied board; webhook setup uses explicit,
-  OAuth-backed registration and never pretends to know delivery health.
+- Kanban remains the real server-proxied board; PR review Automations use
+  OAuth-backed registration, persist event policies and report only observed
+  binding/delivery state.
 - The implementation has no dependency on static data in `design/` at runtime.

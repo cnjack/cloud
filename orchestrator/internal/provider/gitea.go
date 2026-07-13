@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -198,8 +199,25 @@ func (c *GiteaClient) ListRepos(ctx context.Context, query string, page, limit i
 // both issue_comment and pull_request_comment: Gitea fires the LATTER for
 // comments on PRs (M7 live find).
 func (c *GiteaClient) EnsureCommentWebhook(ctx context.Context, owner, repo, hookURL, secret string) error {
+	return c.ensureWebhook(ctx, owner, repo, hookURL, secret,
+		[]string{"issue_comment", "pull_request_comment"}, false)
+}
+
+// EnsureReviewWebhook reconciles the same repository hook used by comment
+// commands with the PR lifecycle events event-driven review Automations need.
+// Existing hooks are PATCHed in place instead of being treated as complete just
+// because their target URL matches.
+func (c *GiteaClient) EnsureReviewWebhook(ctx context.Context, owner, repo, hookURL, secret string) error {
+	return c.ensureWebhook(ctx, owner, repo, hookURL, secret,
+		[]string{"issue_comment", "pull_request_comment", "pull_request", "pull_request_sync"}, true)
+}
+
+func (c *GiteaClient) ensureWebhook(ctx context.Context, owner, repo, hookURL, secret string, required []string, reconcileEvents bool) error {
 	listPath := fmt.Sprintf("/api/v1/repos/%s/%s/hooks", owner, repo)
 	var hooks []struct {
+		ID     int64             `json:"id"`
+		Active bool              `json:"active"`
+		Events []string          `json:"events"`
 		Config map[string]string `json:"config"`
 	}
 	if err := c.do(ctx, http.MethodGet, listPath, nil, &hooks); err != nil {
@@ -207,20 +225,50 @@ func (c *GiteaClient) EnsureCommentWebhook(ctx context.Context, owner, repo, hoo
 	}
 	for _, h := range hooks {
 		if h.Config["url"] == hookURL {
-			return nil // already registered
+			if !reconcileEvents {
+				return nil
+			}
+			events := unionWebhookEvents(h.Events, required)
+			if h.Active && len(events) == len(h.Events) {
+				return nil
+			}
+			if h.ID == 0 {
+				return fmt.Errorf("existing webhook at target URL has no provider id")
+			}
+			body := webhookBody(hookURL, secret, events)
+			return c.do(ctx, http.MethodPatch, fmt.Sprintf("%s/%d", listPath, h.ID), body, nil)
 		}
 	}
-	body := map[string]any{
+	return c.do(ctx, http.MethodPost, listPath, webhookBody(hookURL, secret, required), nil)
+}
+
+func webhookBody(hookURL, secret string, events []string) map[string]any {
+	return map[string]any{
 		"type":   "gitea",
 		"active": true,
-		"events": []string{"issue_comment", "pull_request_comment"},
+		"events": events,
 		"config": map[string]string{
 			"url":          hookURL,
 			"content_type": "json",
 			"secret":       secret,
 		},
 	}
-	return c.do(ctx, http.MethodPost, listPath, body, nil)
+}
+
+func unionWebhookEvents(existing, required []string) []string {
+	set := make(map[string]bool, len(existing)+len(required))
+	for _, event := range existing {
+		set[event] = true
+	}
+	for _, event := range required {
+		set[event] = true
+	}
+	out := make([]string, 0, len(set))
+	for event := range set {
+		out = append(out, event)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // CurrentUser returns the authenticated user's login (D19 / F5 connectivity check

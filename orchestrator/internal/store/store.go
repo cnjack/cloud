@@ -95,6 +95,8 @@ type Store interface {
 	// (the M7 de-dup key), or ErrNotFound when the comment has not been seen. An
 	// empty id returns ErrNotFound (never matches api-origin runs).
 	GetRunByOriginCommentID(ctx context.Context, commentID string) (*domain.Run, error)
+	// GetRunByOriginEventKey is the provider-event Automation de-dup lookup.
+	GetRunByOriginEventKey(ctx context.Context, eventKey string) (*domain.Run, error)
 	ListRuns(ctx context.Context, projectID string, limit int) ([]domain.Run, error)
 	// ListRunsByService lists runs for a single service, newest first.
 	ListRunsByService(ctx context.Context, serviceID string, limit int) ([]domain.Run, error)
@@ -562,6 +564,22 @@ type Store interface {
 	// (the window was already advanced). Best-effort; ErrNotFound when the row is
 	// gone (a concurrent delete), which the poller ignores.
 	SetScheduleLastError(ctx context.Context, id, lastErr string) error
+
+	// --- PR review Automations -------------------------------------------------
+	CreateAutomation(ctx context.Context, a *domain.Automation) error
+	GetAutomation(ctx context.Context, id string) (*domain.Automation, error)
+	ListAutomationsByService(ctx context.Context, serviceID string) ([]domain.Automation, error)
+	UpdateAutomation(ctx context.Context, a *domain.Automation) error
+	DeleteAutomation(ctx context.Context, id string) error
+	// RecordAutomationDispatch exposes the latest accepted run or a fail-visible
+	// pre-dispatch error without rewriting the Automation's saved policy.
+	RecordAutomationDispatch(ctx context.Context, id string, at time.Time, runID, lastErr string) error
+
+	// One provider hook is shared by comment commands and every Automation on a
+	// Service. The binding stores only inspectable state, never the hook secret.
+	UpsertWebhookBinding(ctx context.Context, b *domain.WebhookBinding) error
+	GetWebhookBinding(ctx context.Context, serviceID string) (*domain.WebhookBinding, error)
+	RecordWebhookDelivery(ctx context.Context, serviceID string, at time.Time, status, lastErr string) error
 
 	// --- API keys (F12 / D24) --------------------------------------------------
 	// Project-scoped, revocable automation credentials. CreateAPIKey inserts a

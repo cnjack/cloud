@@ -14,6 +14,8 @@ import type {
 } from 'jtype-board-react';
 import type {
   AddMemberInput,
+  Automation,
+  AutomationList,
   ApiKey,
   ApiKeysEnvelope,
   AuthProviderInfo,
@@ -21,6 +23,7 @@ import type {
   BoardEmbedLink,
   CreateApiKeyInput,
   CreateApiKeyResponse,
+  CreateAutomationInput,
   CreateKanbanLinkInput,
   CreateProjectInput,
   CreateIntegrationInput,
@@ -55,10 +58,11 @@ import type {
   RunsEnvelope,
   Schedule,
   Service,
-	ServiceWebhookSetup,
+  ServiceWebhookSetup,
   ServicesEnvelope,
   StreamFrame,
   SystemInfo,
+  UpdateAutomationInput,
   UpdateIntegrationInput,
   UpdateKanbanConfigInput,
   UpdateModelInput,
@@ -381,6 +385,10 @@ export interface ApiClient {
    * visible to the Automation page.
    */
   ensureServiceWebhook(serviceId: string): Promise<ServiceWebhookSetup>;
+  listServiceAutomations(serviceId: string): Promise<AutomationList>;
+  createServiceAutomation(serviceId: string, input: CreateAutomationInput): Promise<Automation>;
+  updateAutomation(automationId: string, input: UpdateAutomationInput): Promise<Automation>;
+  deleteAutomation(automationId: string): Promise<void>;
   /** POST /api/v1/services/{id}/runs — dispatch a run against a specific service. */
   createServiceRun(serviceId: string, input: CreateRunInput): Promise<Run>;
   /**
@@ -836,6 +844,21 @@ export function createHttpClient(
       req<ServiceWebhookSetup>(`/services/${encodeURIComponent(serviceId)}/webhook`, {
         method: 'POST',
       }),
+
+    listServiceAutomations: (serviceId) =>
+      req<AutomationList>(`/services/${encodeURIComponent(serviceId)}/automations`),
+    createServiceAutomation: (serviceId, input) =>
+      req<Automation>(`/services/${encodeURIComponent(serviceId)}/automations`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    updateAutomation: (automationId, input) =>
+      req<Automation>(`/automations/${encodeURIComponent(automationId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    deleteAutomation: (automationId) =>
+      req<void>(`/automations/${encodeURIComponent(automationId)}`, { method: 'DELETE' }),
 
     createServiceRun: (serviceId, input) =>
       req<Run>(`/services/${encodeURIComponent(serviceId)}/runs`, {

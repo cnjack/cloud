@@ -79,6 +79,45 @@ type gitlabNotePayload struct {
 	} `json:"merge_request"`
 }
 
+// giteaPullRequestPayload is the provider subset used by event-driven review
+// Automations. Gitea sends lifecycle changes in pull_request and new commits in
+// pull_request_sync; both carry the same PR shape.
+type giteaPullRequestPayload struct {
+	Action  string `json:"action"`
+	Number  int    `json:"number"`
+	Changes struct {
+		Draft *struct {
+			From bool `json:"from"`
+		} `json:"draft,omitempty"`
+	} `json:"changes,omitempty"`
+	PullRequest struct {
+		HTMLURL string `json:"html_url"`
+		Draft   bool   `json:"draft"`
+		Head    struct {
+			Ref string `json:"ref"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+	} `json:"pull_request"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+}
+
+type webhookReviewEvent struct {
+	provider     domain.GitProvider
+	repoFullName string
+	event        domain.AutomationEvent
+	prNumber     int
+	prURL        string
+	headRef      string
+	headSHA      string
+	baseRef      string
+	draft        bool
+}
+
 // webhookMention is the provider-neutral shape a PR/MR comment collapses to after
 // each provider's payload parser runs. It carries exactly what processMention
 // needs, so the dispatch core (de-dup → identity gate → service RBAC → host/model
@@ -237,10 +276,21 @@ func (s *Server) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid webhook signature")
 		return
 	}
-	// Everything past the signature is a 200 (no-op unless it is a real command),
-	// so a redelivery / unrelated event never errors back to Gitea.
-	if r.Header.Get("X-Gitea-Event") != "issue_comment" {
-		writeWebhookOK(w, "ignored: not an issue_comment event")
+	// Everything past the signature is a 200. Comment commands and persisted PR
+	// review Automations share the receiver but retain independent authorization
+	// and idempotency contracts.
+	eventHeader := r.Header.Get("X-Gitea-Event")
+	if eventHeader == "pull_request" || eventHeader == "pull_request_sync" {
+		event, status := parseGiteaReviewEvent(eventHeader, body)
+		if event == nil {
+			writeWebhookOK(w, status)
+			return
+		}
+		writeWebhookOK(w, s.processReviewEvent(r.Context(), event))
+		return
+	}
+	if eventHeader != "issue_comment" && eventHeader != "pull_request_comment" {
+		writeWebhookOK(w, "ignored: unsupported Gitea event")
 		return
 	}
 	m, cmd, status := parseIssueCommentMention(domain.ProviderGitea, body)
@@ -250,6 +300,149 @@ func (s *Server) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	s.processMention(r.Context(), m, cmd)
 	writeWebhookOK(w, "accepted")
+}
+
+// parseGiteaReviewEvent normalizes documented Gitea PR event headers/actions.
+// An edited PR is "ready" only with an explicit draft=true previous value; a
+// title/body edit must never accidentally dispatch a review.
+func parseGiteaReviewEvent(header string, body []byte) (*webhookReviewEvent, string) {
+	var p giteaPullRequestPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return nil, "ignored: unparseable pull-request payload"
+	}
+	var event domain.AutomationEvent
+	switch {
+	case header == "pull_request_sync" && p.Action == "synchronized":
+		event = domain.AutomationEventSynchronize
+	case header == "pull_request" && p.Action == "opened":
+		event = domain.AutomationEventOpened
+	case header == "pull_request" && p.Action == "reopened":
+		event = domain.AutomationEventReopened
+	case header == "pull_request" && p.Action == "edited" && !p.PullRequest.Draft && p.Changes.Draft != nil && p.Changes.Draft.From:
+		event = domain.AutomationEventReady
+	default:
+		return nil, "ignored: PR action is not an Automation event"
+	}
+	if p.Repository.FullName == "" || p.Number == 0 || p.PullRequest.Head.Ref == "" ||
+		p.PullRequest.Head.SHA == "" || p.PullRequest.Base.Ref == "" {
+		return nil, "ignored: incomplete pull-request payload"
+	}
+	return &webhookReviewEvent{
+		provider: domain.ProviderGitea, repoFullName: p.Repository.FullName, event: event,
+		prNumber: p.Number, prURL: p.PullRequest.HTMLURL, headRef: p.PullRequest.Head.Ref,
+		headSHA: p.PullRequest.Head.SHA, baseRef: p.PullRequest.Base.Ref, draft: p.PullRequest.Draft,
+	}, ""
+}
+
+func automationAcceptsEvent(a *domain.Automation, event *webhookReviewEvent) bool {
+	if !a.Enabled || a.TriggerType != domain.AutomationTriggerPRReview ||
+		!strings.EqualFold(a.BaseBranch, event.baseRef) || (event.draft && !a.IncludeDrafts) {
+		return false
+	}
+	for _, allowed := range a.Events {
+		if allowed == event.event {
+			return true
+		}
+	}
+	return false
+}
+
+func automationEventKey(a *domain.Automation, event *webhookReviewEvent) string {
+	raw := strings.Join([]string{a.ID, string(event.provider), event.repoFullName,
+		strconv.Itoa(event.prNumber), event.headSHA}, "\x00")
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+// processReviewEvent matches one validated provider event against every
+// Service/Automation tracking the repository. It never borrows the event actor
+// as authorization: the saved Automation owner is the audit principal and the
+// normal credential resolver prefers the Service's bound integration.
+func (s *Server) processReviewEvent(ctx context.Context, event *webhookReviewEvent) string {
+	services, err := s.st.ListServicesByRepo(ctx, event.provider, event.repoFullName)
+	if err != nil {
+		s.log.Error("automation webhook: list services", "repo", event.repoFullName, "err", err)
+		return "accepted: state recording failed"
+	}
+	now := time.Now().UTC()
+	matched := false
+	dispatched := false
+	duplicate := false
+	duplicateServices := map[string]bool{}
+	for i := range services {
+		svc := &services[i]
+		automations, err := s.st.ListAutomationsByService(ctx, svc.ID)
+		if err != nil {
+			_ = s.st.RecordWebhookDelivery(ctx, svc.ID, now, "error", "Could not load Automations for this delivery.")
+			continue
+		}
+		serviceMatched := false
+		for i := range automations {
+			a := &automations[i]
+			if !automationAcceptsEvent(a, event) {
+				continue
+			}
+			matched = true
+			serviceMatched = true
+			key := automationEventKey(a, event)
+			if _, err := s.st.GetRunByOriginEventKey(ctx, key); err == nil {
+				duplicate = true
+				duplicateServices[svc.ID] = true
+				continue
+			}
+			sel, outcome, modelErr := s.models.SelectModel(ctx, svc.ProjectID, deref(svc.DefaultModelID), a.ModelID)
+			if modelErr != nil || outcome != modelcfg.SelectOK {
+				message := "Automation model is unavailable. Re-save the Automation after fixing model access."
+				_ = s.st.RecordAutomationDispatch(ctx, a.ID, now, "", message)
+				_ = s.st.RecordWebhookDelivery(ctx, svc.ID, now, "error", message)
+				continue
+			}
+			run := &domain.Run{
+				ID: domain.NewID(), ProjectID: svc.ProjectID, ServiceID: svc.ID,
+				Prompt: a.Instructions, Status: domain.StatusQueued, Kind: domain.RunKindReview,
+				Phase: "Queued", TriggeredByUserID: a.CreatedBy, Attempt: 1, CreatedAt: now,
+				PRURL: event.prURL, PRNumber: event.prNumber, PRHeadBranch: event.headRef,
+				PRBaseBranch: event.baseRef, Origin: domain.RunOriginAutomation,
+				OriginAutomationID: a.ID, OriginEventKey: key, ModelName: sel.ModelName,
+			}
+			if sel.ModelID != "" {
+				modelID := sel.ModelID
+				run.ModelID = &modelID
+			}
+			if err := s.st.CreateRun(ctx, run); err != nil {
+				if _, duplicateErr := s.st.GetRunByOriginEventKey(ctx, key); duplicateErr == nil {
+					duplicate = true
+					duplicateServices[svc.ID] = true
+					continue
+				}
+				message := "The PR event was received, but the review Run could not be created."
+				_ = s.st.RecordAutomationDispatch(ctx, a.ID, now, "", message)
+				_ = s.st.RecordWebhookDelivery(ctx, svc.ID, now, "error", message)
+				continue
+			}
+			s.emitStatus(ctx, run)
+			_ = s.st.RecordAutomationDispatch(ctx, a.ID, now, run.ID, "")
+			_ = s.st.RecordWebhookDelivery(ctx, svc.ID, now, "accepted", "")
+			dispatched = true
+			s.log.Info("automation webhook: created review run", "run", run.ID, "automation", a.ID, "repo", event.repoFullName, "pr", event.prNumber)
+		}
+		if !serviceMatched {
+			_ = s.st.RecordWebhookDelivery(ctx, svc.ID, now, "ignored", "")
+		}
+	}
+	if dispatched {
+		return "accepted"
+	}
+	if duplicate {
+		for serviceID := range duplicateServices {
+			_ = s.st.RecordWebhookDelivery(ctx, serviceID, now, "duplicate", "")
+		}
+		return "accepted: duplicate"
+	}
+	if matched {
+		return "accepted: dispatch failed"
+	}
+	return "ignored: no matching Automation"
 }
 
 // handleGitHubWebhook is the public GitHub webhook endpoint (POST /webhooks/github;

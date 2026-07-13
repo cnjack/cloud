@@ -23,8 +23,9 @@ import (
 // FakeProvider. It deliberately lives only in the test rig.
 type webhookSetupProvider struct {
 	*provider.FakeProvider
-	calls []webhookSetupCall
-	err   error
+	calls       []webhookSetupCall
+	reviewCalls []webhookSetupCall
+	err         error
 }
 
 type webhookSetupCall struct {
@@ -39,6 +40,16 @@ func (p *webhookSetupProvider) EnsureCommentWebhook(
 	owner, repo, hookURL, secret string,
 ) error {
 	p.calls = append(p.calls, webhookSetupCall{
+		owner: owner, repo: repo, hookURL: hookURL, secret: secret,
+	})
+	return p.err
+}
+
+func (p *webhookSetupProvider) EnsureReviewWebhook(
+	_ context.Context,
+	owner, repo, hookURL, secret string,
+) error {
+	p.reviewCalls = append(p.reviewCalls, webhookSetupCall{
 		owner: owner, repo: repo, hookURL: hookURL, secret: secret,
 	})
 	return p.err
@@ -79,6 +90,7 @@ type webhookSetupFixture struct {
 	st       *store.MemStore
 	server   *Server
 	service  *domain.Service
+	user     *domain.User
 	token    string
 	provider *webhookSetupProvider
 	factory  *webhookSetupFactory
@@ -190,7 +202,7 @@ func newWebhookSetupFixture(t *testing.T, opts webhookSetupFixtureOptions) webho
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return webhookSetupFixture{
-		ts: ts, st: st, server: srv, service: service, token: mkSession(t, st, user.ID),
+		ts: ts, st: st, server: srv, service: service, user: user, token: mkSession(t, st, user.ID),
 		provider: hooker, factory: factory,
 	}
 }

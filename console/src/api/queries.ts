@@ -11,6 +11,7 @@ import {
 import { useApi } from './ApiProvider';
 import type {
   AddMemberInput,
+  CreateAutomationInput,
   CreateApiKeyInput,
   CreateApiKeyResponse,
   CreateIntegrationInput,
@@ -29,6 +30,7 @@ import type {
   Run,
   ServiceWebhookSetup,
   UpdateIntegrationInput,
+  UpdateAutomationInput,
   UpdateKanbanConfigInput,
   UpdateModelInput,
   UpdateProjectInput,
@@ -66,6 +68,7 @@ export const qk = {
   linkConnect: (projectId: string, linkId: string, connectId: string) =>
     ['link-connect', projectId, linkId, connectId] as const,
   serviceSchedules: (serviceId: string) => ['service-schedules', serviceId] as const,
+  serviceAutomations: (serviceId: string) => ['service-automations', serviceId] as const,
   integrations: (projectId: string) => ['integrations', projectId] as const,
   apiKeys: (projectId: string) => ['api-keys', projectId] as const,
   services: (projectId: string) => ['services', projectId] as const,
@@ -769,6 +772,45 @@ export function useDeleteSchedule(serviceId: string) {
   return useMutation({
     mutationFn: (scheduleId: string) => api.deleteSchedule(scheduleId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceSchedules(serviceId) }),
+  });
+}
+
+/* ---- provider-event Automations ----------------------------------------- */
+
+export function useServiceAutomations(serviceId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.serviceAutomations(serviceId),
+    queryFn: () => api.listServiceAutomations(serviceId),
+    enabled: enabled && !!serviceId,
+  });
+}
+
+export function useCreateServiceAutomation(serviceId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateAutomationInput) => api.createServiceAutomation(serviceId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceAutomations(serviceId) }),
+  });
+}
+
+export function useUpdateAutomation(serviceId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ automationId, input }: { automationId: string; input: UpdateAutomationInput }) =>
+      api.updateAutomation(automationId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceAutomations(serviceId) }),
+  });
+}
+
+export function useDeleteAutomation(serviceId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (automationId: string) => api.deleteAutomation(automationId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceAutomations(serviceId) }),
   });
 }
 

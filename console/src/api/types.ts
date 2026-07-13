@@ -82,6 +82,8 @@ export interface Service {
   repo_kind: RepoKind;
   provider?: GitProvider | string;
   repo_owner_name?: string;
+  /** Server-derived, browser-safe provider repository URL. */
+  repo_html_url?: string;
   raw_repo_url?: string;
   default_branch: string;
   git_mode: GitMode;
@@ -107,6 +109,66 @@ export interface ServiceWebhookSetup {
   provider: string;
   endpoint: string;
   status: 'synced';
+}
+
+export type AutomationEvent = 'opened' | 'ready' | 'synchronize' | 'reopened';
+
+/** A persisted, service-scoped provider-event PR review policy. */
+export interface Automation {
+  id: string;
+  service_id: string;
+  name: string;
+  instructions: string;
+  trigger_type: 'pr_review';
+  model_id: string;
+  events: AutomationEvent[];
+  base_branch: string;
+  include_drafts: boolean;
+  enabled: boolean;
+  last_triggered_at?: string;
+  last_run_id?: string;
+  last_error?: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WebhookBinding {
+  service_id: string;
+  provider: GitProvider;
+  endpoint: string;
+  status: 'pending' | 'active' | 'error';
+  last_synced_at?: string;
+  last_delivery_at?: string;
+  last_delivery_status?: 'accepted' | 'duplicate' | 'ignored' | 'error' | string;
+  last_error?: string;
+  updated_at: string;
+}
+
+export interface AutomationList {
+  automations: Automation[];
+  webhook_binding: WebhookBinding | null;
+}
+
+export interface CreateAutomationInput {
+  name: string;
+  instructions: string;
+  trigger_type: 'pr_review';
+  model_id: string;
+  events: AutomationEvent[];
+  base_branch: string;
+  include_drafts: boolean;
+  enabled?: boolean;
+}
+
+export interface UpdateAutomationInput {
+  name?: string;
+  instructions?: string;
+  model_id?: string;
+  events?: AutomationEvent[];
+  base_branch?: string;
+  include_drafts?: boolean;
+  enabled?: boolean;
 }
 
 export interface Project {
@@ -221,6 +283,8 @@ export interface Run {
   origin?: RunOrigin;
   origin_comment_id?: string | null;
   origin_comment_url?: string | null;
+  origin_automation_id?: string | null;
+  origin_event_key?: string | null;
   /**
    * The catalog model (D21) this run was dispatched with, chosen by the
    * resolution chain at create time. Absent/null when the run resolved to the
@@ -300,8 +364,9 @@ export interface RunMessage {
  *   'webhook'  — a Gitea PR comment `@jcode …` (carries origin_comment_url).
  *   'kanban'   — a jtype card dragged into a link's trigger column (Feature E).
  *   'schedule' — a service-level cron trigger came due (F11 / D24).
+ *   'automation' — a saved provider PR-event policy dispatched a review Run.
  */
-export type RunOrigin = 'api' | 'webhook' | 'kanban' | 'schedule';
+export type RunOrigin = 'api' | 'webhook' | 'kanban' | 'schedule' | 'automation';
 
 /* ---- PR view (GET /runs/{id}/pr; blueprint §4/§5) ------------------------ */
 

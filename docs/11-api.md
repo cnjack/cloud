@@ -72,6 +72,7 @@
   "repo_kind": "provider",
   "provider": "gitea",
   "repo_owner_name": "jcloud/seed",
+  "repo_html_url": "https://git.example.test/jcloud/seed",
   "default_branch": "main",
   "git_mode": "draft_pr",
   "integration_id": "integ...",
@@ -92,6 +93,9 @@
   `provider`)| `raw`(`raw_repo_url`,只读,不能 `draft_pr`)。provider 基址
   由 orchestrator 配置推导(gitea 用 `GITEA_URL`)。提供者**token** 不是
   service 字段——draft-PR 优先用触发用户的 OAuth token,回退 `GITEA_TOKEN`。
+- **`repo_html_url`**:只读响应字段。orchestrator 从绑定 integration host、OAuth
+  external URL 或 provider 公共基址推导；不落库也不接受 client 输入。无法安全推导
+  时省略，Console 显示不可用状态而不是构造死链接。
 
 ### 1.2 Run
 
@@ -826,9 +830,30 @@ Schedule 对象(`GET`/`POST`/`PATCH` 的响应体):
 
 env:`SCHEDULE_POLL_INTERVAL`(默认 `30s`,`<=0` 禁用整个 schedule poller)。
 
-> **`origin` 枚举**(run 字段):`"api"`(默认/console)、`"webhook"`(Gitea PR 评论
-> `@jcode`)、`"kanban"`(卡片拖入触发列)、`"schedule"`(cron 到点)。console 在 run
-> 详情按 origin 展示对应徽标(webhook 链回评论、schedule 显示「scheduled」)。
+#### 2.5d.1 PR review Automations(Gitea-first · migration 0026)
+
+PR review Automation 把 instructions、显式 model、PR event/base/draft policy 持久化
+到 Service。它与 `@jcode review` 是两条并存的触发路径：前者由 PR 生命周期事件自动
+触发，后者仍由评论者主动触发。详细状态机与 payload 见
+`16-repository-navigation-and-pr-automation.md`。
+
+| 端点 | 角色 | 说明 |
+|---|---|---|
+| `GET /api/v1/services/{id}/automations` | member+ | 返回 `{automations, webhook_binding}`；binding 仅反映已保存的同步和最近一次已观察 delivery |
+| `POST /api/v1/services/{id}/automations` | owner | 创建 `trigger_type=pr_review` policy；要求显式 `model_id`；用当前 owner 的 Gitea OAuth reconcile hook；返回 `201` |
+| `PATCH /api/v1/automations/{aid}` | owner | 编辑/启停 policy；enable 或 runtime policy 变化时重新验证 model，enabled 时 reconcile hook |
+| `DELETE /api/v1/automations/{aid}` | owner | 删除 policy；共享 hook 保留给其它 Automation 与 `@jcode` 评论 |
+
+Gitea `pull_request` opened/reopened/ready 与 `pull_request_sync` synchronized 事件经过
+base/draft/event filter 后创建 `kind=review, origin=automation` Run。`origin_event_key`
+由 Automation/provider/repo/PR/head SHA 生成并有唯一索引，因此 opened 与随后同一 head
+的重复/同步 delivery 至多创建一个 Run。GitHub/GitLab 自动 PR event 尚未实现，API
+返回 `409 automatic_review_unsupported`，Console 必须显式显示 Gitea-first 状态。
+
+> **`origin` 枚举**(run 字段):`"api"`(默认/console)、`"webhook"`(PR 评论
+> `@jcode`)、`"kanban"`(卡片拖入触发列)、`"schedule"`(cron 到点)、
+> `"automation"`(持久化 PR event policy)。Automation Run 另带
+> `origin_automation_id` 与唯一 `origin_event_key`；Console 按 origin 展示对应徽标。
 
 ---
 

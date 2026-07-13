@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -187,7 +188,62 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not create service")
 		return
 	}
+	svc.RepoHTMLURL = s.serviceRepoHTMLURL(r.Context(), svc)
 	writeJSON(w, http.StatusCreated, svc)
+}
+
+// serviceRepoHTMLURL derives the browser destination from server-owned
+// integration/OAuth configuration. It never accepts a client-supplied URL.
+func (s *Server) serviceRepoHTMLURL(ctx context.Context, svc *domain.Service) string {
+	if svc == nil || svc.RepoKind != domain.RepoKindProvider || !domain.ValidProvider(svc.Provider) {
+		return ""
+	}
+	if _, _, ok := provider.SplitRepo(svc.RepoOwnerName); !ok {
+		return ""
+	}
+	base := ""
+	if svc.IntegrationID != nil && *svc.IntegrationID != "" {
+		if integration, err := s.st.GetIntegration(ctx, *svc.IntegrationID); err == nil {
+			base = integration.Host
+		}
+	}
+	if base == "" {
+		for _, configured := range s.cfg.OAuthProviders {
+			if domain.GitProvider(configured.ID) == svc.Provider && strings.TrimSpace(configured.ExternalURL) != "" {
+				base = configured.ExternalURL
+				break
+			}
+		}
+	}
+	if base == "" {
+		switch svc.Provider {
+		case domain.ProviderGitHub:
+			base = "https://github.com"
+		case domain.ProviderGitLab:
+			base = "https://gitlab.com"
+		case domain.ProviderGitea:
+			base = s.cfg.GiteaURL
+		}
+	}
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return ""
+	}
+	if !strings.Contains(base, "://") {
+		base = "https://" + base
+	}
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return ""
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	parts := strings.Split(strings.Trim(svc.RepoOwnerName, "/"), "/")
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/" + strings.Join(parts, "/")
+	return u.String()
 }
 
 // integrationBindStatus maps a bindServiceIntegration error code to an HTTP status.
@@ -405,6 +461,9 @@ func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
 	if services == nil {
 		services = []domain.Service{}
 	}
+	for i := range services {
+		services[i].RepoHTMLURL = s.serviceRepoHTMLURL(r.Context(), &services[i])
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"services": services})
 }
 
@@ -542,6 +601,7 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not update service")
 		return
 	}
+	svc.RepoHTMLURL = s.serviceRepoHTMLURL(r.Context(), svc)
 	writeJSON(w, http.StatusOK, svc)
 }
 

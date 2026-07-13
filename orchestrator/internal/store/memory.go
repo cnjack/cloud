@@ -17,51 +17,55 @@ import (
 // and idempotency semantics as PGStore so tests exercise real behaviour without
 // a database. It is safe for concurrent use.
 type MemStore struct {
-	mu           sync.Mutex
-	projects     map[string]domain.Project
-	services     map[string]domain.Service
-	runs         map[string]domain.Run
-	events       map[string][]domain.RunEvent    // keyed by runID, kept sorted by seq
-	dedupe       map[string]bool                 // keyed by runID+"|"+source+"|"+client_seq
-	artifacts    map[string]domain.RunArtifact   // keyed by runID+"/"+kind
-	users        map[string]domain.User          // keyed by user id
-	identities   map[string]domain.UserIdentity  // keyed by identity id
-	sessions     map[string]domain.Session       // keyed by session id
-	members      map[string]domain.ProjectMember // keyed by projectID+"|"+userID
-	models       map[string]domain.Model         // catalog, keyed by model id (D21)
-	modelGrants  map[string]bool                 // keyed by modelID+"|"+projectID
-	integrations map[string]domain.Integration   // keyed by integration id (D19 / F5)
-	kanbanLinks  map[string]domain.KanbanLink    // keyed by link id
-	kanbanClaims map[string]domain.KanbanClaim   // keyed by linkID+"|"+documentID
-	schedules    map[string]domain.Schedule      // keyed by schedule id (F11 / D24)
-	runMessages  map[string][]domain.RunMessage  // session follow-up queue, keyed by runID (D22)
-	permissions  map[string]domain.RunPermission // permission requests, keyed by request_id (F8b)
-	apiKeys      map[string]domain.APIKey        // keyed by api key id (F12 / D24)
-	kanbanConfig *domain.KanbanConfig            // single-row cluster kanban config, nil = absent (D27)
+	mu              sync.Mutex
+	projects        map[string]domain.Project
+	services        map[string]domain.Service
+	runs            map[string]domain.Run
+	events          map[string][]domain.RunEvent     // keyed by runID, kept sorted by seq
+	dedupe          map[string]bool                  // keyed by runID+"|"+source+"|"+client_seq
+	artifacts       map[string]domain.RunArtifact    // keyed by runID+"/"+kind
+	users           map[string]domain.User           // keyed by user id
+	identities      map[string]domain.UserIdentity   // keyed by identity id
+	sessions        map[string]domain.Session        // keyed by session id
+	members         map[string]domain.ProjectMember  // keyed by projectID+"|"+userID
+	models          map[string]domain.Model          // catalog, keyed by model id (D21)
+	modelGrants     map[string]bool                  // keyed by modelID+"|"+projectID
+	integrations    map[string]domain.Integration    // keyed by integration id (D19 / F5)
+	kanbanLinks     map[string]domain.KanbanLink     // keyed by link id
+	kanbanClaims    map[string]domain.KanbanClaim    // keyed by linkID+"|"+documentID
+	schedules       map[string]domain.Schedule       // keyed by schedule id (F11 / D24)
+	automations     map[string]domain.Automation     // keyed by automation id
+	webhookBindings map[string]domain.WebhookBinding // keyed by service id
+	runMessages     map[string][]domain.RunMessage   // session follow-up queue, keyed by runID (D22)
+	permissions     map[string]domain.RunPermission  // permission requests, keyed by request_id (F8b)
+	apiKeys         map[string]domain.APIKey         // keyed by api key id (F12 / D24)
+	kanbanConfig    *domain.KanbanConfig             // single-row cluster kanban config, nil = absent (D27)
 }
 
 // NewMemStore returns an empty in-memory store.
 func NewMemStore() *MemStore {
 	return &MemStore{
-		projects:     map[string]domain.Project{},
-		services:     map[string]domain.Service{},
-		runs:         map[string]domain.Run{},
-		events:       map[string][]domain.RunEvent{},
-		dedupe:       map[string]bool{},
-		artifacts:    map[string]domain.RunArtifact{},
-		users:        map[string]domain.User{},
-		identities:   map[string]domain.UserIdentity{},
-		sessions:     map[string]domain.Session{},
-		members:      map[string]domain.ProjectMember{},
-		models:       map[string]domain.Model{},
-		modelGrants:  map[string]bool{},
-		integrations: map[string]domain.Integration{},
-		kanbanLinks:  map[string]domain.KanbanLink{},
-		kanbanClaims: map[string]domain.KanbanClaim{},
-		schedules:    map[string]domain.Schedule{},
-		runMessages:  map[string][]domain.RunMessage{},
-		permissions:  map[string]domain.RunPermission{},
-		apiKeys:      map[string]domain.APIKey{},
+		projects:        map[string]domain.Project{},
+		services:        map[string]domain.Service{},
+		runs:            map[string]domain.Run{},
+		events:          map[string][]domain.RunEvent{},
+		dedupe:          map[string]bool{},
+		artifacts:       map[string]domain.RunArtifact{},
+		users:           map[string]domain.User{},
+		identities:      map[string]domain.UserIdentity{},
+		sessions:        map[string]domain.Session{},
+		members:         map[string]domain.ProjectMember{},
+		models:          map[string]domain.Model{},
+		modelGrants:     map[string]bool{},
+		integrations:    map[string]domain.Integration{},
+		kanbanLinks:     map[string]domain.KanbanLink{},
+		kanbanClaims:    map[string]domain.KanbanClaim{},
+		schedules:       map[string]domain.Schedule{},
+		automations:     map[string]domain.Automation{},
+		webhookBindings: map[string]domain.WebhookBinding{},
+		runMessages:     map[string][]domain.RunMessage{},
+		permissions:     map[string]domain.RunPermission{},
+		apiKeys:         map[string]domain.APIKey{},
 	}
 }
 
@@ -339,6 +343,13 @@ func (m *MemStore) CreateRun(_ context.Context, r *domain.Run) error {
 			}
 		}
 	}
+	if r.OriginEventKey != "" {
+		for _, ex := range m.runs {
+			if ex.OriginEventKey == r.OriginEventKey {
+				return fmt.Errorf("origin_event_key already used: %s", r.OriginEventKey)
+			}
+		}
+	}
 	m.runs[r.ID] = *r
 	return nil
 }
@@ -351,6 +362,21 @@ func (m *MemStore) GetRunByOriginCommentID(_ context.Context, commentID string) 
 	}
 	for _, r := range m.runs {
 		if r.OriginCommentID == commentID {
+			cp := r
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MemStore) GetRunByOriginEventKey(_ context.Context, eventKey string) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if eventKey == "" {
+		return nil, ErrNotFound
+	}
+	for _, r := range m.runs {
+		if r.OriginEventKey == eventKey {
 			cp := r
 			return &cp, nil
 		}
@@ -1885,6 +1911,121 @@ func (m *MemStore) SetScheduleLastError(_ context.Context, id, lastErr string) e
 	sc.LastError = lastErr
 	sc.UpdatedAt = time.Now().UTC()
 	m.schedules[id] = sc
+	return nil
+}
+
+// --- PR review Automations --------------------------------------------------
+
+func cloneAutomation(a domain.Automation) domain.Automation {
+	a.Events = append([]domain.AutomationEvent(nil), a.Events...)
+	return a
+}
+
+func (m *MemStore) CreateAutomation(_ context.Context, a *domain.Automation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.automations[a.ID]; exists {
+		return ErrAlreadyExists
+	}
+	m.automations[a.ID] = cloneAutomation(*a)
+	return nil
+}
+
+func (m *MemStore) GetAutomation(_ context.Context, id string) (*domain.Automation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.automations[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := cloneAutomation(a)
+	return &cp, nil
+}
+
+func (m *MemStore) ListAutomationsByService(_ context.Context, serviceID string) ([]domain.Automation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.Automation, 0)
+	for _, a := range m.automations {
+		if a.ServiceID == serviceID {
+			out = append(out, cloneAutomation(a))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) UpdateAutomation(_ context.Context, a *domain.Automation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.automations[a.ID]; !ok {
+		return ErrNotFound
+	}
+	m.automations[a.ID] = cloneAutomation(*a)
+	return nil
+}
+
+func (m *MemStore) DeleteAutomation(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.automations[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.automations, id)
+	return nil
+}
+
+func (m *MemStore) RecordAutomationDispatch(_ context.Context, id string, at time.Time, runID, lastErr string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.automations[id]
+	if !ok {
+		return ErrNotFound
+	}
+	a.LastTriggeredAt = &at
+	a.LastRunID = runID
+	a.LastError = lastErr
+	a.UpdatedAt = time.Now().UTC()
+	m.automations[id] = a
+	return nil
+}
+
+func (m *MemStore) UpsertWebhookBinding(_ context.Context, b *domain.WebhookBinding) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	next := *b
+	if current, ok := m.webhookBindings[b.ServiceID]; ok {
+		// Match the Postgres upsert: reconciling the provider hook updates sync
+		// state without erasing the last delivery observation.
+		next.LastDeliveryAt = current.LastDeliveryAt
+		next.LastDeliveryStatus = current.LastDeliveryStatus
+	}
+	m.webhookBindings[b.ServiceID] = next
+	return nil
+}
+
+func (m *MemStore) GetWebhookBinding(_ context.Context, serviceID string) (*domain.WebhookBinding, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.webhookBindings[serviceID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return &b, nil
+}
+
+func (m *MemStore) RecordWebhookDelivery(_ context.Context, serviceID string, at time.Time, status, lastErr string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.webhookBindings[serviceID]
+	if !ok {
+		return ErrNotFound
+	}
+	b.LastDeliveryAt = &at
+	b.LastDeliveryStatus = status
+	b.LastError = lastErr
+	b.UpdatedAt = time.Now().UTC()
+	m.webhookBindings[serviceID] = b
 	return nil
 }
 

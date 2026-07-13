@@ -359,20 +359,21 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 	created_at, started_at, finished_at, job_cleaned_at,
 	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id,
 	review_posted_at, pr_head_branch, pr_base_branch,
-	origin, origin_comment_id, origin_comment_url, result, model_id, model_name,
+	origin, origin_comment_id, origin_comment_url, origin_automation_id, origin_event_key,
+	result, model_id, model_name,
 	session, awaiting_since, session_finalizing, bundle_rev, pushed_rev, permission_mode,
 	acp_session_id, resumed_from`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
-	var commentID, commentURL, result *string
+	var commentID, commentURL, automationID, eventKey, result *string
 	err := row.Scan(&r.ID, &r.ProjectID, &r.ServiceID, &r.Prompt, &r.Status, &r.Kind, &r.Phase, &r.Error,
 		&r.K8sJobName, &r.RetriedFrom, &r.FailureReason, &r.FailureMessage,
 		&r.Attempt, &r.TokenHash,
 		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt,
 		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID,
 		&r.ReviewPostedAt, &r.PRHeadBranch, &r.PRBaseBranch,
-		&r.Origin, &commentID, &commentURL, &result, &r.ModelID, &r.ModelName,
+		&r.Origin, &commentID, &commentURL, &automationID, &eventKey, &result, &r.ModelID, &r.ModelName,
 		&r.Session, &r.AwaitingSince, &r.SessionFinalizing, &r.BundleRev, &r.PushedRev, &r.PermissionMode,
 		&r.AcpSessionID, &r.ResumedFrom)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -386,6 +387,12 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 	}
 	if commentURL != nil {
 		r.OriginCommentURL = *commentURL
+	}
+	if automationID != nil {
+		r.OriginAutomationID = *automationID
+	}
+	if eventKey != nil {
+		r.OriginEventKey = *eventKey
 	}
 	if result != nil {
 		rr := domain.RunResult(*result)
@@ -403,13 +410,14 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
 		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID,
 		r.ReviewPostedAt, r.PRHeadBranch, r.PRBaseBranch,
-		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullRunResult(r.Result), r.ModelID, r.ModelName,
+		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullStr(r.OriginAutomationID), nullStr(r.OriginEventKey),
+		nullRunResult(r.Result), r.ModelID, r.ModelName,
 		r.Session, r.AwaitingSince, r.SessionFinalizing, r.BundleRev, r.PushedRev, r.PermissionMode,
 		r.AcpSessionID, r.ResumedFrom)
 	if err != nil {
@@ -426,6 +434,14 @@ func (s *PGStore) GetRunByOriginCommentID(ctx context.Context, commentID string)
 	}
 	return scanRun(s.pool.QueryRow(ctx,
 		`SELECT `+runCols+` FROM runs WHERE origin_comment_id=$1`, commentID))
+}
+
+func (s *PGStore) GetRunByOriginEventKey(ctx context.Context, eventKey string) (*domain.Run, error) {
+	if eventKey == "" {
+		return nil, ErrNotFound
+	}
+	return scanRun(s.pool.QueryRow(ctx,
+		`SELECT `+runCols+` FROM runs WHERE origin_event_key=$1`, eventKey))
 }
 
 func (s *PGStore) ListRunsByService(ctx context.Context, serviceID string, limit int) ([]domain.Run, error) {
@@ -2320,6 +2336,170 @@ func (s *PGStore) SetScheduleLastError(ctx context.Context, id, lastErr string) 
 		`UPDATE schedules SET last_error=$2, updated_at=now() WHERE id=$1`, id, lastErr)
 	if err != nil {
 		return fmt.Errorf("set schedule last error: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// --- PR review Automations --------------------------------------------------
+
+const automationCols = `id, service_id, name, instructions, trigger_type, model_id,
+	events, base_branch, include_drafts, enabled, last_triggered_at, last_run_id,
+	last_error, created_by, created_at, updated_at`
+
+func scanAutomation(row pgx.Row) (*domain.Automation, error) {
+	var a domain.Automation
+	var events []string
+	var createdBy, lastRunID *string
+	err := row.Scan(&a.ID, &a.ServiceID, &a.Name, &a.Instructions, &a.TriggerType, &a.ModelID,
+		&events, &a.BaseBranch, &a.IncludeDrafts, &a.Enabled, &a.LastTriggeredAt, &lastRunID,
+		&a.LastError, &createdBy, &a.CreatedAt, &a.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan automation: %w", err)
+	}
+	a.Events = make([]domain.AutomationEvent, 0, len(events))
+	for _, event := range events {
+		a.Events = append(a.Events, domain.AutomationEvent(event))
+	}
+	if lastRunID != nil {
+		a.LastRunID = *lastRunID
+	}
+	a.CreatedBy = createdBy
+	return &a, nil
+}
+
+func automationEvents(events []domain.AutomationEvent) []string {
+	out := make([]string, 0, len(events))
+	for _, event := range events {
+		out = append(out, string(event))
+	}
+	return out
+}
+
+func (s *PGStore) CreateAutomation(ctx context.Context, a *domain.Automation) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO automations (`+automationCols+`)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		a.ID, a.ServiceID, a.Name, a.Instructions, string(a.TriggerType), a.ModelID,
+		automationEvents(a.Events), a.BaseBranch, a.IncludeDrafts, a.Enabled,
+		a.LastTriggeredAt, nullStr(a.LastRunID), a.LastError, a.CreatedBy, a.CreatedAt, a.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("create automation: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetAutomation(ctx context.Context, id string) (*domain.Automation, error) {
+	return scanAutomation(s.pool.QueryRow(ctx, `SELECT `+automationCols+` FROM automations WHERE id=$1`, id))
+}
+
+func (s *PGStore) ListAutomationsByService(ctx context.Context, serviceID string) ([]domain.Automation, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+automationCols+` FROM automations WHERE service_id=$1 ORDER BY created_at DESC`, serviceID)
+	if err != nil {
+		return nil, fmt.Errorf("list automations: %w", err)
+	}
+	defer rows.Close()
+	out := make([]domain.Automation, 0)
+	for rows.Next() {
+		a, err := scanAutomation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) UpdateAutomation(ctx context.Context, a *domain.Automation) error {
+	err := s.pool.QueryRow(ctx,
+		`UPDATE automations SET name=$2, instructions=$3, model_id=$4, events=$5,
+		        base_branch=$6, include_drafts=$7, enabled=$8, updated_at=now()
+		 WHERE id=$1 RETURNING updated_at`,
+		a.ID, a.Name, a.Instructions, a.ModelID, automationEvents(a.Events),
+		a.BaseBranch, a.IncludeDrafts, a.Enabled).Scan(&a.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("update automation: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) DeleteAutomation(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM automations WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("delete automation: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) RecordAutomationDispatch(ctx context.Context, id string, at time.Time, runID, lastErr string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE automations SET last_triggered_at=$2, last_run_id=$3, last_error=$4, updated_at=now() WHERE id=$1`,
+		id, at, nullStr(runID), lastErr)
+	if err != nil {
+		return fmt.Errorf("record automation dispatch: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const webhookBindingCols = `service_id, provider, endpoint, status, last_synced_at,
+	last_delivery_at, last_delivery_status, last_error, updated_at`
+
+func scanWebhookBinding(row pgx.Row) (*domain.WebhookBinding, error) {
+	var b domain.WebhookBinding
+	err := row.Scan(&b.ServiceID, &b.Provider, &b.Endpoint, &b.Status, &b.LastSyncedAt,
+		&b.LastDeliveryAt, &b.LastDeliveryStatus, &b.LastError, &b.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan webhook binding: %w", err)
+	}
+	return &b, nil
+}
+
+func (s *PGStore) UpsertWebhookBinding(ctx context.Context, b *domain.WebhookBinding) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO webhook_bindings (`+webhookBindingCols+`)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		 ON CONFLICT (service_id) DO UPDATE SET
+		   provider=EXCLUDED.provider, endpoint=EXCLUDED.endpoint, status=EXCLUDED.status,
+		   last_synced_at=EXCLUDED.last_synced_at, last_error=EXCLUDED.last_error,
+		   updated_at=EXCLUDED.updated_at`,
+		b.ServiceID, string(b.Provider), b.Endpoint, string(b.Status), b.LastSyncedAt,
+		b.LastDeliveryAt, b.LastDeliveryStatus, b.LastError, b.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("upsert webhook binding: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetWebhookBinding(ctx context.Context, serviceID string) (*domain.WebhookBinding, error) {
+	return scanWebhookBinding(s.pool.QueryRow(ctx,
+		`SELECT `+webhookBindingCols+` FROM webhook_bindings WHERE service_id=$1`, serviceID))
+}
+
+func (s *PGStore) RecordWebhookDelivery(ctx context.Context, serviceID string, at time.Time, status, lastErr string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE webhook_bindings SET last_delivery_at=$2, last_delivery_status=$3,
+		        last_error=$4, updated_at=now() WHERE service_id=$1`,
+		serviceID, at, status, lastErr)
+	if err != nil {
+		return fmt.Errorf("record webhook delivery: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

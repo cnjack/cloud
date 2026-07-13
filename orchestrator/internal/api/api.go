@@ -395,6 +395,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /api/v1/schedules/{sid}", s.authed(s.handleUpdateSchedule))
 	mux.Handle("DELETE /api/v1/schedules/{sid}", s.authed(s.handleDeleteSchedule))
 
+	// Provider-event PR review Automations. Listing is member+; the handlers gate
+	// create/update/delete to owners and synchronize Gitea with the caller's OAuth
+	// grant before persisting an enabled policy.
+	mux.Handle("GET /api/v1/services/{id}/automations", s.authed(s.handleListServiceAutomations))
+	mux.Handle("POST /api/v1/services/{id}/automations", s.authed(s.handleCreateServiceAutomation))
+	mux.Handle("PATCH /api/v1/automations/{aid}", s.authed(s.handleUpdateAutomation))
+	mux.Handle("DELETE /api/v1/automations/{aid}", s.authed(s.handleDeleteAutomation))
+
 	// Run creation is service-scoped only (above); listing stays project-scoped.
 	mux.Handle("GET /api/v1/projects/{id}/runs", s.authed(s.handleListRuns))
 	mux.Handle("GET /api/v1/runs", s.authed(s.handleListRuns))

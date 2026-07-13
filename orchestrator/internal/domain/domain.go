@@ -230,12 +230,15 @@ const (
 	// recorded on the run's initial run.status event (schedule_id) — the runs table
 	// itself is untouched (no schedule_id column).
 	RunOriginSchedule RunOrigin = "schedule"
+	// RunOriginAutomation is a provider-event Automation run. It carries an
+	// Automation id and a deterministic event key for delivery de-duplication.
+	RunOriginAutomation RunOrigin = "automation"
 )
 
 // ValidRunOrigin reports whether o is a recognised run origin.
 func ValidRunOrigin(o RunOrigin) bool {
 	switch o {
-	case RunOriginAPI, RunOriginWebhook, RunOriginKanban, RunOriginSchedule:
+	case RunOriginAPI, RunOriginWebhook, RunOriginKanban, RunOriginSchedule, RunOriginAutomation:
 		return true
 	}
 	return false
@@ -288,6 +291,10 @@ type Service struct {
 	// is "owner/name".
 	Provider      GitProvider `json:"provider,omitempty"`
 	RepoOwnerName string      `json:"repo_owner_name,omitempty"`
+	// RepoHTMLURL is a response-only, server-derived browser URL. It is not
+	// persisted, so a host rotation is reflected on the next API read and a client
+	// can never choose the external destination rendered by the Console.
+	RepoHTMLURL string `json:"repo_html_url,omitempty"`
 	// RawRepoURL is set when RepoKind == raw (an opaque, read-only clone URL).
 	RawRepoURL string `json:"raw_repo_url,omitempty"`
 	// ProviderRepoID is the provider's numeric repo id, captured when the service
@@ -408,9 +415,11 @@ type Run struct {
 	// Origin records how the run was triggered (api|webhook; M7 / blueprint §8).
 	// Defaults to api. OriginCommentID/URL are set only for webhook runs — the
 	// triggering Gitea comment (id is the de-dup key; url backs the console chip).
-	Origin           RunOrigin `json:"origin,omitempty"`
-	OriginCommentID  string    `json:"origin_comment_id,omitempty"`
-	OriginCommentURL string    `json:"origin_comment_url,omitempty"`
+	Origin             RunOrigin `json:"origin,omitempty"`
+	OriginCommentID    string    `json:"origin_comment_id,omitempty"`
+	OriginCommentURL   string    `json:"origin_comment_url,omitempty"`
+	OriginAutomationID string    `json:"origin_automation_id,omitempty"`
+	OriginEventKey     string    `json:"origin_event_key,omitempty"`
 
 	// Session marks a multi-turn SESSION run (D22): the runner keeps one ACP
 	// session alive across turns (RUN_SESSION=1), the run parks in awaiting_input
@@ -1027,6 +1036,79 @@ type Schedule struct {
 	CreatedBy *string   `json:"created_by,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// AutomationTrigger identifies the durable trigger family. Schedule remains a
+// separate proven aggregate; this first Automation contract adds provider PR
+// review events and is intentionally extensible without pretending other
+// trigger types already exist.
+type AutomationTrigger string
+
+const AutomationTriggerPRReview AutomationTrigger = "pr_review"
+
+func ValidAutomationTrigger(t AutomationTrigger) bool { return t == AutomationTriggerPRReview }
+
+// AutomationEvent is a provider-neutral PR lifecycle event. Provider adapters
+// normalize their headers/payload actions into this vocabulary before matching.
+type AutomationEvent string
+
+const (
+	AutomationEventOpened      AutomationEvent = "opened"
+	AutomationEventReady       AutomationEvent = "ready"
+	AutomationEventSynchronize AutomationEvent = "synchronize"
+	AutomationEventReopened    AutomationEvent = "reopened"
+)
+
+func ValidAutomationEvent(e AutomationEvent) bool {
+	switch e {
+	case AutomationEventOpened, AutomationEventReady, AutomationEventSynchronize, AutomationEventReopened:
+		return true
+	}
+	return false
+}
+
+// Automation is a service-scoped, headless PR review policy. The instructions
+// and model are stamped onto every dispatched review Run; provider delivery
+// state lives on the service-level WebhookBinding shared by all Automations.
+type Automation struct {
+	ID              string            `json:"id"`
+	ServiceID       string            `json:"service_id"`
+	Name            string            `json:"name"`
+	Instructions    string            `json:"instructions"`
+	TriggerType     AutomationTrigger `json:"trigger_type"`
+	ModelID         string            `json:"model_id"`
+	Events          []AutomationEvent `json:"events"`
+	BaseBranch      string            `json:"base_branch"`
+	IncludeDrafts   bool              `json:"include_drafts"`
+	Enabled         bool              `json:"enabled"`
+	LastTriggeredAt *time.Time        `json:"last_triggered_at,omitempty"`
+	LastRunID       string            `json:"last_run_id,omitempty"`
+	LastError       string            `json:"last_error,omitempty"`
+	CreatedBy       *string           `json:"created_by,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+}
+
+type WebhookBindingStatus string
+
+const (
+	WebhookBindingPending WebhookBindingStatus = "pending"
+	WebhookBindingActive  WebhookBindingStatus = "active"
+	WebhookBindingError   WebhookBindingStatus = "error"
+)
+
+// WebhookBinding is the inspectable service-level connection to a provider
+// webhook. It stores no secret: only synchronization and last-delivery state.
+type WebhookBinding struct {
+	ServiceID          string               `json:"service_id"`
+	Provider           GitProvider          `json:"provider"`
+	Endpoint           string               `json:"endpoint"`
+	Status             WebhookBindingStatus `json:"status"`
+	LastSyncedAt       *time.Time           `json:"last_synced_at,omitempty"`
+	LastDeliveryAt     *time.Time           `json:"last_delivery_at,omitempty"`
+	LastDeliveryStatus string               `json:"last_delivery_status,omitempty"`
+	LastError          string               `json:"last_error,omitempty"`
+	UpdatedAt          time.Time            `json:"updated_at"`
 }
 
 // APIKey is a project-scoped, revocable automation credential (F12 / D24). It
