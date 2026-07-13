@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -10,6 +11,20 @@ import (
 
 	"github.com/cnjack/jcloud/internal/domain"
 )
+
+func TestPRReviewAutomationMigrationUsesModelCatalog(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0026_pr_review_automations.sql")
+	if err != nil {
+		t.Fatalf("read 0026: %v", err)
+	}
+	migration := string(sql)
+	if strings.Contains(migration, "REFERENCES models(") {
+		t.Fatal("0026 references the nonexistent models table; use model_configs")
+	}
+	if !strings.Contains(migration, "REFERENCES model_configs(id)") {
+		t.Fatal("0026 must reference the model_configs catalog")
+	}
+}
 
 func mustExec(t *testing.T, ctx context.Context, c *pgx.Conn, sql string, args ...any) {
 	t.Helper()

@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS automations (
     name              TEXT NOT NULL,
     instructions      TEXT NOT NULL,
     trigger_type      TEXT NOT NULL CHECK (trigger_type IN ('pr_review')),
-    model_id          TEXT NOT NULL REFERENCES models(id) ON DELETE RESTRICT,
+    model_id          TEXT NOT NULL REFERENCES model_configs(id) ON DELETE RESTRICT,
     events            TEXT[] NOT NULL,
     base_branch       TEXT NOT NULL,
     include_drafts    BOOLEAN NOT NULL DEFAULT FALSE,
