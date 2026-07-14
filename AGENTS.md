@@ -50,6 +50,16 @@ substitute a mock, fake implementation, or fallback that looks successful.
 
 ## Engineering workflow
 
+### Keep design prototypes page-scoped
+
+- Put each product page or major routed state in its own HTML document under
+  `design/`. Do not combine unrelated screens into one monolithic HTML file.
+- Reuse shared styles, icons, and prototype-only interactions from
+  `design/assets/` so separate page files still express one design system.
+- For concepts shared with the sibling `jcode` product—especially models and
+  providers—use `../jcode` as the interaction and visual reference. Reuse its
+  canonical application and provider icons instead of inventing letter tiles.
+
 For each feature or bug fix:
 
 1. **Design the tests first.** List the cases before implementation. Mock

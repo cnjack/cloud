@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud orchestrator setup state layout prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Connect orchestrator — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to setup</a>
+  <div class="auth-shell">
+    <aside class="auth-rail" aria-label="jcode Cloud setup introduction">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><img class="wordmark-icon" src="./assets/app-icon.svg" alt="" /><span class="wordmark-name">JCODE</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="auth-story"><span class="eyebrow">Local setup</span><h1>Bring the runtime into reach.</h1><span class="auth-story-line" aria-hidden="true"></span><p>The Console is ready. The orchestrator has not answered yet, so no authenticated workflow can begin.</p></div>
+      <footer class="auth-rail-footer"><span>localhost:8080</span><span>waiting</span></footer>
+    </aside>
+
+    <main class="auth-surface" id="mainContent">
+      <header class="auth-utility"><span class="auth-utility-copy">Connection setup</span><div class="utility-actions"><span class="status-label" data-tone="warning">unreachable</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <div class="auth-stage">
+        <div class="auth-content setup-content">
+          <section class="setup-main" aria-labelledby="setupTitle">
+            <header class="auth-heading"><span class="eyebrow">Orchestrator unavailable</span><h2 id="setupTitle">Start the local stack.</h2><p>The Console proxies <code>/api</code> to <code>localhost:8080</code>, but nothing answered. Run these commands from the repository.</p></header>
+            <ol class="command-list">
+              <li class="command-row"><span class="command-number">01</span><span class="command-copy"><code>cd cloud/deploy &amp;&amp; make build</code><small>Build the four local images</small></span><button class="button button-ghost" type="button" data-copy="cd cloud/deploy && make build">Copy</button></li>
+              <li class="command-row"><span class="command-number">02</span><span class="command-copy"><code>make up</code><small>Deploy to the OrbStack cluster and wait for rollouts</small></span><button class="button button-ghost" type="button" data-copy="make up">Copy</button></li>
+              <li class="command-row"><span class="command-number">03</span><span class="command-copy"><code>make port-forward</code><small>Forward the orchestrator API to localhost:8080</small></span><button class="button button-ghost" type="button" data-copy="make port-forward">Copy</button></li>
+            </ol>
+            <div class="probe-status"><span class="probe-status-copy"><span class="pulse" aria-hidden="true"></span><span>Re-checking every 3 seconds — no refresh needed</span></span><button class="button" type="button" data-prototype-action="Prototype check — the orchestrator was not contacted.">Check now</button></div>
+          </section>
+
+          <aside class="auth-aside"><span class="eyebrow">Current probe</span><h3>What the Console knows</h3><p>This state reports only a failed reachability check. It does not infer whether Kubernetes, images, or credentials are healthy.</p><dl class="auth-facts"><div class="auth-fact"><dt>Target</dt><dd>localhost:8080</dd></div><div class="auth-fact"><dt>Response</dt><dd>unreachable</dd></div><div class="auth-fact"><dt>Next probe</dt><dd>in 3s</dd></div></dl></aside>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

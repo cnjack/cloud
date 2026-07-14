@@ -1,11 +1,11 @@
 .wordmark {
   display: inline-flex;
-  align-items: baseline;
-  gap: 1px;
+  align-items: center;
+  gap: var(--space-2);
   font-family: var(--font-mono);
-  font-weight: var(--fw-bold);
-  font-size: 14px;
-  letter-spacing: 0;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-h3);
+  letter-spacing: 0.2px;
   color: var(--color-text);
   text-decoration: none;
   user-select: none;
@@ -14,25 +14,22 @@
   text-decoration: none;
 }
 
-.bracket {
-  color: var(--color-text-muted);
-}
-
-.j {
-  color: var(--color-accent);
-}
-
-.rest {
-  color: var(--color-text);
+.icon {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  object-fit: contain;
 }
 
 .cloud {
-  margin-left: 7px;
-  align-self: baseline;
-  padding: 0;
-  border: 0;
+  margin-left: -2px;
   font-size: 9px;
   font-weight: var(--fw-semibold);
-  letter-spacing: var(--tracking-label);
-  color: var(--color-text-muted);
+  letter-spacing: 0.9px;
+  color: var(--color-text-faint);
+  text-transform: uppercase;
+}
+
+@media (max-width: 608px) {
+  .cloud { display: none; }
 }

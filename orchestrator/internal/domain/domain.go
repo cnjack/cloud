@@ -753,24 +753,75 @@ type RunArtifact struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Model is one entry in the cluster model catalog (D21): an OpenAI-compatible
-// LLM endpoint a cluster admin registered and may grant to projects. It
-// supersedes the single-row cluster_model_config — the effective model for a run
-// is now resolved per project (see internal/modelcfg). Name is a unique,
-// human-facing display label. APIKeyEnc is the AES-256-GCM ciphertext of the API
-// key (nil/empty when the endpoint needs no key); the plaintext is NEVER
-// serialised to API clients — hence `json:"-"` on the encrypted blob — and the
-// base_url/api key are never exposed to non-admins (only to cluster-admins).
+type ModelProviderAuthType string
+
+const (
+	ModelProviderAuthAPIKey          ModelProviderAuthType = "api_key"
+	ModelProviderAuthServiceIdentity ModelProviderAuthType = "service_identity"
+	ModelProviderAuthNone            ModelProviderAuthType = "none"
+)
+
+type ModelProviderCatalogMode string
+
+const (
+	ModelProviderCatalogAuto     ModelProviderCatalogMode = "auto"
+	ModelProviderCatalogDisabled ModelProviderCatalogMode = "disabled"
+)
+
+// ModelProvider owns an OpenAI-compatible endpoint and its write-only
+// credential. Models reference it; Project grants continue to reference models.
+// CatalogAvailable is nil until the endpoint has been tested, false when a live
+// probe proves /models unavailable, and true after a successful catalog request.
+type ModelProvider struct {
+	ID                    string                   `json:"id"`
+	Name                  string                   `json:"name"`
+	Kind                  string                   `json:"kind"`
+	BaseURL               string                   `json:"base_url"`
+	AuthType              ModelProviderAuthType    `json:"auth_type"`
+	APIKeyEnc             []byte                   `json:"-"`
+	CatalogMode           ModelProviderCatalogMode `json:"catalog_mode"`
+	CatalogAvailable      *bool                    `json:"catalog_available,omitempty"`
+	LastVerifiedAt        *time.Time               `json:"last_verified_at,omitempty"`
+	LastVerificationError string                   `json:"last_verification_error,omitempty"`
+	CreatedAt             time.Time                `json:"created_at"`
+	UpdatedAt             time.Time                `json:"updated_at"`
+	UpdatedBy             string                   `json:"updated_by"`
+}
+
+func (p *ModelProvider) APIKeySet() bool { return len(p.APIKeyEnc) > 0 }
+
+// ModelCapabilities are explicit authored/catalog metadata. False means the
+// capability is not advertised; the product never invents support from a model
+// name.
+type ModelCapabilities struct {
+	Reasoning bool `json:"reasoning"`
+	Tools     bool `json:"tools"`
+	Image     bool `json:"image"`
+}
+
+// Model is one entry in the cluster model catalog (D21): a model owned by an
+// OpenAI-compatible ModelProvider and grantable to projects. BaseURL/APIKeyEnc
+// remain on the runtime projection so the existing resolver stays isolated from
+// provider persistence; provider writes keep those fields synchronized.
 type Model struct {
 	// ID is the catalog primary key (referenced by services.default_model_id,
 	// runs.model_id and model_grants).
 	ID string `json:"id"`
+	// ProviderID owns endpoint identity and credentials.
+	ProviderID string `json:"provider_id"`
 	// Name is the unique display name (e.g. "GPT-4o").
 	Name string `json:"name"`
 	// BaseURL is the OpenAI-compatible base URL (http/https).
 	BaseURL string `json:"base_url"`
 	// ModelName is the "provider/model" id written into the runner's jcode config.
 	ModelName string `json:"model_name"`
+	// ModelID is the provider-native id shown in catalog/custom-model UI.
+	ModelID string `json:"model_id"`
+	// ContextWindow is zero when the endpoint/author did not advertise a value.
+	ContextWindow int               `json:"context_window"`
+	Capabilities  ModelCapabilities `json:"capabilities"`
+	// Source is catalog or custom.
+	Source string `json:"source"`
 	// APIKeyEnc is the encrypted API key (nonce||ciphertext), or nil when absent.
 	APIKeyEnc []byte `json:"-"`
 	// CreatedAt / UpdatedAt / UpdatedBy record audit metadata (UpdatedBy is a user

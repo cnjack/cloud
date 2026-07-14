@@ -64,6 +64,9 @@ type Server struct {
 	// Shared with the reconciler via Models() so a console PUT/DELETE's
 	// Invalidate() is immediately visible to Job scheduling. Never nil.
 	models *modelcfg.Resolver
+	// modelProviderHTTP performs cluster-admin provider verification/catalog
+	// requests. It has a short timeout and is replaceable in package tests.
+	modelProviderHTTP *http.Client
 
 	// kanban resolves the EFFECTIVE cluster jtype kanban config (base URL +
 	// optional cluster fallback token) at REQUEST time from the console-managed DB
@@ -158,6 +161,7 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Effective-model resolver (Feature A): one cached instance for every gate
 	// (run create/retry/review, webhook, and — via Models() — the reconciler).
 	s.models = modelcfg.NewResolver(st, s.cipher, cfg)
+	s.modelProviderHTTP = &http.Client{Timeout: 8 * time.Second}
 	// D27 — effective cluster jtype kanban config resolver (DB row set from the
 	// console > JTYPE_* env). One cached instance shared with the poller +
 	// reconciler via Kanban(); a console write Invalidate()s it so a stored base
@@ -277,6 +281,15 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/system/models/{id}", s.authed(s.handleDeleteModel))
 	mux.Handle("PUT /api/v1/system/models/{id}/grants/{projectID}", s.authed(s.handleGrantModel))
 	mux.Handle("DELETE /api/v1/system/models/{id}/grants/{projectID}", s.authed(s.handleRevokeModel))
+	// Provider-owned model catalog. Credentials are write-only; verification and
+	// catalog errors are typed and never replaced with synthetic model data.
+	mux.Handle("GET /api/v1/system/model-providers", s.authed(s.handleListModelProviders))
+	mux.Handle("POST /api/v1/system/model-providers", s.authed(s.handleCreateModelProvider))
+	mux.Handle("PATCH /api/v1/system/model-providers/{id}", s.authed(s.handleUpdateModelProvider))
+	mux.Handle("DELETE /api/v1/system/model-providers/{id}", s.authed(s.handleDeleteModelProvider))
+	mux.Handle("POST /api/v1/system/model-providers/{id}/verify", s.authed(s.handleVerifyModelProvider))
+	mux.Handle("GET /api/v1/system/model-providers/{id}/catalog", s.authed(s.handleModelProviderCatalog))
+	mux.Handle("POST /api/v1/system/model-providers/{id}/models", s.authed(s.handleCreateProviderModel))
 
 	// D27 — cluster jtype kanban config (base URL + optional cluster fallback
 	// token) a cluster admin sets from the console. Precedence DB > env (see

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Projects page layout prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Projects — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row">
+        <a class="wordmark" href="./index.html" aria-label="jcode Cloud design index">
+          <img class="wordmark-icon" src="./assets/app-icon.svg" alt="" /><span class="wordmark-name">JCODE</span><span class="cloud-label">Cloud</span>
+        </a>
+      </div>
+      <div class="rail-context">
+        <span class="eyebrow">Workspace</span>
+        <strong>jcode Cloud</strong>
+        <small>Self-hosted coding workspace</small>
+      </div>
+      <nav class="rail-nav" aria-label="Primary">
+        <a class="nav-item" href="./projects.html" aria-current="page">
+          <svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">3</span>
+        </a>
+        <a class="nav-item" href="./cluster-overview.html">
+          <svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg><span>Cluster</span><span class="nav-count">admin</span>
+        </a>
+      </nav>
+      <section class="rail-section" aria-labelledby="recentProjectsLabel">
+        <div class="rail-section-head"><span id="recentProjectsLabel">Recent projects</span><span>3</span></div>
+        <nav class="recent-projects" aria-label="Recent projects">
+          <a class="recent-item" href="./project-workspace.html"><span class="project-mark">JC</span><span class="recent-item-copy"><strong>jcode Cloud</strong><small>3 services</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a>
+          <a class="recent-item" href="./project-workspace.html"><span class="project-mark">JD</span><span class="recent-item-copy"><strong>jcode Docs</strong><small>1 service</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a>
+          <a class="recent-item" href="./project-workspace.html"><span class="project-mark">RI</span><span class="recent-item-copy"><strong>Runner images</strong><small>2 services</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a>
+        </nav>
+      </section>
+      <footer class="rail-footer">
+        <div class="rail-environment"><span>wangwenhui@local</span><span>v0.1.0</span></div>
+        <div class="identity-row">
+          <span class="identity-mark">J</span><span class="identity-copy"><strong>Jack</strong><small>cluster admin</small></span>
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button>
+        </div>
+      </footer>
+    </aside>
+
+    <section class="work-surface" aria-label="Projects workspace">
+      <header class="utility-bar">
+        <div class="breadcrumbs"><span>Workspace</span><span class="breadcrumb-separator">/</span><strong>Projects</strong></div>
+        <div class="utility-actions"><span class="prototype-chip">sample data</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div>
+      </header>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <header class="page-header">
+            <div class="page-heading"><span class="eyebrow">Your workspace</span><h1>Projects</h1><p>A Project groups the people, Services, model access, and automation policy that ship one product.</p></div>
+            <div class="header-actions"><a class="button button-primary" href="./new-project.html"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>New Project</a></div>
+          </header>
+
+          <div class="projects-layout">
+            <section aria-labelledby="projectListTitle">
+              <div class="section-heading"><div><h2 id="projectListTitle">All Projects</h2><p><span data-project-count>3</span> visible</p></div></div>
+              <div class="list-toolbar">
+                <label class="search-field"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-search" /></svg><span class="sr-only">Search projects</span><input type="search" placeholder="Search name or Service…" data-project-search /></label>
+                <span class="list-count">updated just now</span>
+              </div>
+              <ul class="project-list">
+                <li data-project-row><a class="project-row" href="./project-workspace.html"><span class="project-mark">JC</span><span class="project-row-main"><span class="project-row-title"><strong>jcode Cloud</strong><span class="tag">3 services</span></span><span class="project-row-meta"><span class="mono">orchestrator · console · site</span><span class="meta-dot">Created 18 days ago</span></span></span><span class="project-row-side"><span>Open workspace</span><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></span></a></li>
+                <li data-project-row><a class="project-row" href="./project-workspace.html"><span class="project-mark">JD</span><span class="project-row-main"><span class="project-row-title"><strong>jcode Docs</strong><span class="tag">1 service</span></span><span class="project-row-meta"><span class="mono">documentation</span><span class="meta-dot">Created 11 days ago</span></span></span><span class="project-row-side"><span>Open workspace</span><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></span></a></li>
+                <li data-project-row><a class="project-row" href="./project-workspace.html"><span class="project-mark">RI</span><span class="project-row-main"><span class="project-row-title"><strong>Runner images</strong><span class="tag">2 services</span></span><span class="project-row-meta"><span class="mono">base-images · release</span><span class="meta-dot">Created 6 days ago</span></span></span><span class="project-row-side"><span>Open workspace</span><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></span></a></li>
+              </ul>
+              <div class="search-empty" data-search-empty hidden><strong>No matching Project</strong><p>Try a Project name or one of its Service names.</p></div>
+            </section>
+
+            <aside class="guide-panel" aria-labelledby="projectGuideTitle">
+              <span class="eyebrow">Working model</span><h2 id="projectGuideTitle">A Project is a boundary.</h2><p>Create the container first. Connect repositories as Services inside it, then start Tasks from the selected Service.</p>
+              <ol class="guide-steps">
+                <li><span class="guide-step-copy"><strong>Create the Project</strong><small>Name the product or ownership boundary.</small></span></li>
+                <li><span class="guide-step-copy"><strong>Connect Services</strong><small>Add only repositories the current identity can access.</small></span></li>
+                <li><span class="guide-step-copy"><strong>Start a Task</strong><small>Model and automation gates stay visible when unavailable.</small></span></li>
+              </ol>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

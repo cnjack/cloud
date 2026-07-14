@@ -17,6 +17,8 @@ import type {
   CreateIntegrationInput,
   CreateKanbanLinkInput,
   CreateModelInput,
+  CreateModelProviderInput,
+  CreateProviderModelInput,
   CreateProjectInput,
   CreateRunInput,
   CreateScheduleInput,
@@ -33,6 +35,7 @@ import type {
   UpdateAutomationInput,
   UpdateKanbanConfigInput,
   UpdateModelInput,
+  UpdateModelProviderInput,
   UpdateProjectInput,
   UpdateScheduleInput,
   UpdateServiceInput,
@@ -49,6 +52,8 @@ export const qk = {
   pr: (runId: string) => ['pr', runId] as const,
   system: ['system'] as const,
   models: ['models'] as const,
+  modelProviders: ['model-providers'] as const,
+  modelProviderCatalog: (id: string) => ['model-provider-catalog', id] as const,
   projectModels: (projectId: string) => ['project-models', projectId] as const,
   kanbanLinks: ['kanban-links'] as const,
   kanbanConfig: ['kanban-config'] as const,
@@ -76,9 +81,9 @@ export const qk = {
   users: (q: string) => ['users', q] as const,
 };
 
-export function useProjects() {
+export function useProjects(enabled = true) {
   const api = useApi();
-  return useQuery({ queryKey: qk.projects, queryFn: () => api.listProjects() });
+  return useQuery({ queryKey: qk.projects, queryFn: () => api.listProjects(), enabled });
 }
 
 export function useProject(id: string) {
@@ -371,6 +376,87 @@ export function useModels(enabled = true) {
   return useQuery({ queryKey: qk.models, queryFn: () => api.listModels(), enabled });
 }
 
+export function useModelProviders(enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.modelProviders,
+    queryFn: () => api.listModelProviders(),
+    enabled,
+  });
+}
+
+export function useCreateModelProvider() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateModelProviderInput) => api.createModelProvider(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.modelProviders }),
+  });
+}
+
+export function useUpdateModelProvider() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UpdateModelProviderInput }) =>
+      api.updateModelProvider(id, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.modelProviders });
+      qc.invalidateQueries({ queryKey: qk.models });
+      qc.invalidateQueries({ queryKey: ['project-models'] });
+    },
+  });
+}
+
+export function useDeleteModelProvider() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteModelProvider(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.modelProviders });
+      qc.invalidateQueries({ queryKey: qk.models });
+      qc.invalidateQueries({ queryKey: ['project-models'] });
+    },
+  });
+}
+
+export function useVerifyModelProvider() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.verifyModelProvider(id),
+    // The backend persists both successful probes and visible failure details.
+    // Refresh after either outcome so a failed test appears on the provider card
+    // immediately instead of only after a manual page reload.
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.modelProviders }),
+  });
+}
+
+export function useModelProviderCatalog(providerId: string, enabled: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.modelProviderCatalog(providerId),
+    queryFn: () => api.getModelProviderCatalog(providerId),
+    enabled: enabled && !!providerId,
+    retry: false,
+  });
+}
+
+export function useCreateProviderModel() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ providerId, input }: { providerId: string; input: CreateProviderModelInput }) =>
+      api.createProviderModel(providerId, input),
+    onSuccess: (_model, { providerId }) => {
+      qc.invalidateQueries({ queryKey: qk.modelProviders });
+      qc.invalidateQueries({ queryKey: qk.modelProviderCatalog(providerId) });
+      qc.invalidateQueries({ queryKey: qk.models });
+    },
+  });
+}
+
 /**
  * The models granted to a project (member+). Its length + env_fallback drive the
  * ModelGate's `configured` signal AND the composer's model select. Kept fresh on
@@ -427,6 +513,7 @@ export function useSetModelGrant() {
       granted ? api.grantModel(modelId, projectId) : api.revokeModel(modelId, projectId),
     onSuccess: (_model: Model, { projectId }) => {
       qc.invalidateQueries({ queryKey: qk.models });
+      qc.invalidateQueries({ queryKey: qk.modelProviders });
       qc.invalidateQueries({ queryKey: qk.projectModels(projectId) });
     },
   });

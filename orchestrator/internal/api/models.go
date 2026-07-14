@@ -187,6 +187,7 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		m.ModelName = model
+		_, m.ModelID, _ = strings.Cut(model, "/")
 	}
 	if req.APIKey != nil {
 		if *req.APIKey == "" {

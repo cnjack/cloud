@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud empty Projects layout prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>No Projects — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><img class="wordmark-icon" src="./assets/app-icon.svg" alt="" /><span class="wordmark-name">JCODE</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="rail-context"><span class="eyebrow">Workspace</span><strong>jcode Cloud</strong><small>Self-hosted coding workspace</small></div>
+      <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./projects-empty.html" aria-current="page"><svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">0</span></a><a class="nav-item" href="./cluster-overview.html"><svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg><span>Cluster</span><span class="nav-count">admin</span></a></nav>
+      <section class="rail-section" aria-labelledby="recentProjectsLabel"><div class="rail-section-head"><span id="recentProjectsLabel">Recent projects</span><span>0</span></div><p class="rail-empty-note">Your recent Project shortcuts will appear here after the first Project is created.</p></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>wangwenhui@local</span><span>v0.1.0</span></div><div class="identity-row"><span class="identity-mark">J</span><span class="identity-copy"><strong>Jack</strong><small>cluster admin</small></span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface" aria-label="Projects workspace">
+      <header class="utility-bar"><div class="breadcrumbs"><span>Workspace</span><span class="breadcrumb-separator">/</span><strong>Projects</strong></div><div class="utility-actions"><span class="prototype-chip">empty state</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <header class="page-header"><div class="page-heading"><span class="eyebrow">Your workspace</span><h1>Projects</h1><p>A Project groups the people, Services, model access, and automation policy that ship one product.</p></div></header>
+          <section class="empty-stage" aria-labelledby="emptyProjectsTitle">
+            <div class="empty-copy"><span class="eyebrow">Start with the boundary</span><h2 id="emptyProjectsTitle">No Projects yet.</h2><p>Create the first Project as an empty container. The next screen will ask you to authorize repositories as Services, without pretending unavailable providers are connected.</p><div class="empty-actions"><a class="button button-primary" href="./new-project.html"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>Create first Project</a></div></div>
+            <div class="empty-blueprint" aria-hidden="true"></div>
+          </section>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>
