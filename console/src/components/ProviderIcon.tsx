@@ -1,7 +1,9 @@
-import openAIIcon from '../../../design/assets/provider-openai.svg';
-import qwenIcon from '../../../design/assets/provider-qwen.svg';
-import zhipuIcon from '../../../design/assets/provider-zhipu.svg';
 import styles from './ProviderIcon.module.css';
+
+const assetUrl = (name: string) => `${import.meta.env.BASE_URL}${name}`;
+const openAIIcon = assetUrl('provider-openai.svg');
+const qwenIcon = assetUrl('provider-qwen.svg');
+const zhipuIcon = assetUrl('provider-zhipu.svg');
 
 function iconFor(kind: string, name: string): { key: 'openai' | 'qwen' | 'zhipu'; src: string } {
   const identity = `${kind} ${name}`.toLowerCase();

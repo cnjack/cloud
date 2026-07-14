@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
-import appIcon from '../../../design/assets/app-icon.svg';
 import styles from './Wordmark.module.css';
+
+const appIcon = `${import.meta.env.BASE_URL}app-icon.svg`;
 
 /*
  * Wordmark — the canonical jcode application icon and Cloud product lockup.
