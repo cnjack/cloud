@@ -7,6 +7,7 @@
  * unrelated generic page primitives.
  */
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ArrowSquareOut, Plus } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
@@ -34,6 +35,7 @@ import { IdentityChip } from '../components/IdentityChip';
 import { useModelGate } from '../components/ModelGate';
 import { Select } from '../components/Select';
 import { ErrorBlock, LoadingBlock } from '../components/States';
+import { LanguageToggle } from '../components/LanguageToggle';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { useToast } from '../components/Toast';
 import { Wordmark } from '../components/Wordmark';
@@ -52,6 +54,7 @@ import { ProjectSettingsPage } from './ProjectSettingsModal';
 import styles from './ProjectDetailPage.module.css';
 
 export function ProjectDetailPage() {
+  const { t } = useTranslation();
   const { projectId = '' } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -221,7 +224,7 @@ export function ProjectDetailPage() {
     event.preventDefault();
     if (!modelGate.configured || !activeServiceId) return;
     if (!prompt.trim()) {
-      setPromptError('Describe the task for the agent.');
+      setPromptError(t('projectDetail.promptRequired'));
       return;
     }
     setPromptError(undefined);
@@ -238,13 +241,13 @@ export function ProjectDetailPage() {
       {
         onSuccess: (run) => {
           setPrompt('');
-          toast.push({ kind: 'success', message: 'Session started.' });
+          toast.push({ kind: 'success', message: t('projectDetail.sessionStarted') });
           navigate(`/runs/${run.id}`);
         },
         onError: (error) => {
           toast.push({
             kind: 'error',
-            message: error instanceof ApiError ? error.message : 'Failed to start run.',
+            message: error instanceof ApiError ? error.message : t('projectDetail.startRunFailed'),
           });
         },
       },
@@ -256,11 +259,11 @@ export function ProjectDetailPage() {
     updateService.mutate(
       { serviceId: activeService.id, input: { default_model_id: modelId } },
       {
-        onSuccess: () => toast.push({ kind: 'success', message: 'Default model updated.' }),
+        onSuccess: () => toast.push({ kind: 'success', message: t('projectDetail.defaultModelUpdated') }),
         onError: (error) =>
           toast.push({
             kind: 'error',
-            message: error instanceof ApiError ? error.message : 'Could not set the default model.',
+            message: error instanceof ApiError ? error.message : t('projectDetail.defaultModelFailed'),
           }),
       },
     );
@@ -287,14 +290,14 @@ export function ProjectDetailPage() {
         };
     createService.mutate(input, {
       onSuccess: () => {
-        toast.push({ kind: 'success', message: `Repository “${repo.full_name}” added.` });
+        toast.push({ kind: 'success', message: t('projectDetail.repoAdded', { name: repo.full_name }) });
         setAddOpen(false);
         setRepoQuery('');
       },
       onError: (error) =>
         toast.push({
           kind: 'error',
-          message: error instanceof ApiError ? error.message : 'Failed to add repository.',
+          message: error instanceof ApiError ? error.message : t('projectDetail.addRepoFailed'),
         }),
     });
   };
@@ -302,10 +305,10 @@ export function ProjectDetailPage() {
   const submitRepo = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const errors: { name?: string; url?: string } = {};
-    if (!repoName.trim()) errors.name = 'Name is required.';
-    if (!repoUrl.trim()) errors.url = 'Repository URL is required.';
+    if (!repoName.trim()) errors.name = t('projectDetail.nameRequired');
+    if (!repoUrl.trim()) errors.url = t('projectDetail.repoUrlRequired');
     else if (repoMode === 'draft_pr' && providerForRepoUrl(repoUrl) === null) {
-      errors.url = 'Draft PR needs a provider repository URL.';
+      errors.url = t('projectDetail.draftPrNeedsProviderUrl');
     }
     setRepoErr(errors);
     if (Object.keys(errors).length > 0) return;
@@ -314,7 +317,7 @@ export function ProjectDetailPage() {
       { name: repoName.trim(), repo_url: repoUrl.trim(), git_mode: repoMode },
       {
         onSuccess: () => {
-          toast.push({ kind: 'success', message: `Repository “${repoName.trim()}” added.` });
+          toast.push({ kind: 'success', message: t('projectDetail.repoAdded', { name: repoName.trim() }) });
           setAddOpen(false);
           setRepoName('');
           setRepoUrl('');
@@ -324,19 +327,19 @@ export function ProjectDetailPage() {
         onError: (error) =>
           toast.push({
             kind: 'error',
-            message: error instanceof ApiError ? error.message : 'Failed to add repository.',
+            message: error instanceof ApiError ? error.message : t('projectDetail.addRepoFailed'),
           }),
       },
     );
   };
 
-  if (project.isLoading) return <LoadingBlock label="Loading project…" />;
+  if (project.isLoading) return <LoadingBlock label={t('projectDetail.loadingProject')} />;
   if (project.isError || !p) {
     return (
       <ErrorBlock
         error={project.error}
         onRetry={() => project.refetch()}
-        title="Couldn't load project"
+        title={t('projectDetail.loadFailedTitle')}
       />
     );
   }
@@ -356,7 +359,7 @@ export function ProjectDetailPage() {
           <>
             <Wordmark />
             <Link to="/" className={styles.workspaceProjectsLink}>
-              Projects
+              {t('projectDetail.projects')}
             </Link>
           </>
         }
@@ -364,10 +367,10 @@ export function ProjectDetailPage() {
           <div className={styles.workspaceFooterRow}>
             {appRole === 'cluster-admin' ? (
               <Link to="/system" className={styles.workspaceClusterLink}>
-                Cluster
+                {t('projectDetail.cluster')}
               </Link>
             ) : (
-              <span className={styles.workspaceFooterLabel}>Project workspace</span>
+              <span className={styles.workspaceFooterLabel}>{t('projectDetail.projectWorkspace')}</span>
             )}
             <ThemeToggle />
           </div>
@@ -381,7 +384,7 @@ export function ProjectDetailPage() {
               data-testid="add-repo-trigger"
             >
               <Plus size={16} weight="regular" aria-hidden="true" />
-              <span>Add service</span>
+              <span>{t('projectDetail.addService')}</span>
             </button>
           ) : undefined
         }
@@ -398,12 +401,12 @@ export function ProjectDetailPage() {
             {canAddRepo && (
               <button type="button" className={styles.mobileAddService} onClick={openAddService}>
                 <Plus size={16} weight="regular" aria-hidden="true" />
-                <span>Add</span>
+                <span>{t('common.add')}</span>
               </button>
             )}
             {appRole === 'cluster-admin' && (
               <Link to="/system" className={styles.mobileClusterLink}>
-                Cluster
+                {t('projectDetail.cluster')}
               </Link>
             )}
             <ThemeToggle />
@@ -411,8 +414,8 @@ export function ProjectDetailPage() {
         }
         utility={
           <>
-            <nav className={styles.workspaceBreadcrumbs} aria-label="Breadcrumb">
-              <Link to="/">Projects</Link>
+            <nav className={styles.workspaceBreadcrumbs} aria-label={t('projectDetail.breadcrumb')}>
+              <Link to="/">{t('projectDetail.projects')}</Link>
               <span aria-hidden>/</span>
               {projectSettingsOpen ? (
                 <button
@@ -420,7 +423,7 @@ export function ProjectDetailPage() {
                   className={styles.workspaceBreadcrumbBack}
                   onClick={() => setProjectSettingsOpen(false)}
                   data-testid="project-settings-back"
-                  aria-label="Back to project workspace"
+                  aria-label={t('projectDetail.backToWorkspace')}
                 >
                   <span>{p.name}</span>
                 </button>
@@ -428,7 +431,7 @@ export function ProjectDetailPage() {
               {projectSettingsOpen && (
                 <>
                   <span aria-hidden>/</span>
-                  <span>Project settings</span>
+                  <span>{t('projectDetail.projectSettings')}</span>
                 </>
               )}
             </nav>
@@ -440,7 +443,7 @@ export function ProjectDetailPage() {
                   onClick={() => setKanbanOpen(true)}
                   data-testid="project-kanban-btn"
                 >
-                  Kanban
+                  {t('projectDetail.kanban')}
                 </Button>
               )}
               {boardLinksUnavailable && !hasBoardLinks && (
@@ -449,13 +452,14 @@ export function ProjectDetailPage() {
                   size="sm"
                   onClick={() => void boardLinks.refetch()}
                   disabled={boardLinks.isFetching}
-                  title="Kanban links could not be loaded. Retry."
+                  title={t('projectDetail.kanbanRetryTitle')}
                   data-testid="project-kanban-retry"
                 >
-                  {boardLinks.isFetching ? 'Loading Kanban…' : 'Kanban unavailable · Retry'}
+                  {boardLinks.isFetching ? t('projectDetail.loadingKanban') : t('projectDetail.kanbanUnavailableRetry')}
                 </Button>
               )}
-              {demo && <span className={styles.workspaceDemoTag}>DEMO</span>}
+              {demo && <span className={styles.workspaceDemoTag}>{t('projectDetail.demoTag')}</span>}
+              <LanguageToggle />
               <IdentityChip
                 me={auth?.me ?? null}
                 providers={auth?.providers ?? []}
@@ -475,7 +479,7 @@ export function ProjectDetailPage() {
               )}
               <div className={styles.workspaceServiceCopy}>
                 <span className={styles.workspaceServiceEyebrow}>
-                  {activeService ? serviceProviderLabel(activeService) : 'Project workspace'}
+                  {activeService ? serviceProviderLabel(activeService) : t('projectDetail.projectWorkspace')}
                 </span>
                 <h1>{activeService?.name ?? p.name}</h1>
                 <div className={styles.workspaceRepoMeta}>
@@ -489,11 +493,11 @@ export function ProjectDetailPage() {
                       />
                     </>
                   ) : (
-                    <span>No repositories yet</span>
+                    <span>{t('projectDetail.noRepositoriesYet')}</span>
                   )}
                   {multiService && (
                     <span className={styles.workspaceRepoCount} data-testid="repo-count">
-                      {services.length} repositories
+                      {t('projectDetail.repositoriesCount', { count: services.length })}
                     </span>
                   )}
                 </div>
@@ -506,18 +510,18 @@ export function ProjectDetailPage() {
                   href={activeService.repo_html_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  aria-label={`Open ${serviceProviderLabel(activeService)}`}
+                  aria-label={t('projectDetail.openProvider', { provider: serviceProviderLabel(activeService) })}
                 >
                   <ArrowSquareOut size={16} aria-hidden="true" />
-                  <span>Open {serviceProviderLabel(activeService)}</span>
+                  <span>{t('projectDetail.openProvider', { provider: serviceProviderLabel(activeService) })}</span>
                 </a>
               ) : (
                 <button
                   type="button"
                   className={styles.workspaceRepoAction}
                   disabled
-                  title="The server could not resolve this provider repository's browser URL."
-                >Repository unavailable</button>
+                  title={t('projectDetail.repoUrlUnresolved')}
+                >{t('projectDetail.repositoryUnavailable')}</button>
               )
             )}
           </div>
@@ -533,11 +537,11 @@ export function ProjectDetailPage() {
             {canRun && services.length === 0 && (
               <EmptyState
                 data-testid="no-repo-empty"
-                title="Add a repository to get started"
+                title={t('projectDetail.addRepoEmptyTitle')}
                 description={
                   canManage
-                    ? 'Attach a git repository below — runs are dispatched against a repository.'
-                    : 'A project owner needs to attach a repository before runs can be dispatched.'
+                    ? t('projectDetail.addRepoEmptyManage')
+                    : t('projectDetail.addRepoEmptyMember')
                 }
               />
             )}
@@ -571,19 +575,19 @@ export function ProjectDetailPage() {
             />
 
             {canAddRepo && addOpen && (
-              <section className={styles.addRepo} aria-label="Add service">
+              <section className={styles.addRepo} aria-label={t('projectDetail.addService')}>
                 <Card className={styles.addRepoCard}>
                   <div className={styles.repoPicker} data-testid="repo-picker">
                     {(availableIntegrations.length > 0 || canManage) && (
                       <label className={styles.pickerHint}>
-                        Source
+                        {t('projectDetail.source')}
                         <Select
                           value={effectiveIntegrationId}
                           onChange={setPickerIntegrationId}
                           data-testid="repo-source-select"
                           className={styles.repoSourceSelect}
                           options={[
-                            ...(canManage ? [{ value: '', label: 'Direct (your credential)' }] : []),
+                            ...(canManage ? [{ value: '', label: t('projectDetail.directCredential') }] : []),
                             ...availableIntegrations.map((integration) => ({
                               value: integration.id,
                               label: `${integration.name} · ${integration.provider} · @${integration.bot_username}`,
@@ -593,7 +597,7 @@ export function ProjectDetailPage() {
                       </label>
                     )}
                     {!integrationMode && pickerProviders.length > 1 && (
-                      <div className={styles.pickerTabs} role="tablist" aria-label="Git provider">
+                      <div className={styles.pickerTabs} role="tablist" aria-label={t('projectDetail.gitProvider')}>
                         {pickerProviders.map((provider) => (
                           <button
                             key={provider}
@@ -610,24 +614,24 @@ export function ProjectDetailPage() {
                       </div>
                     )}
                     <TextField
-                      label="Pick a repository"
-                      placeholder="Search repositories…"
+                      label={t('projectDetail.pickRepository')}
+                      placeholder={t('projectDetail.searchRepositories')}
                       value={repoQuery}
                       onChange={(event) => setRepoQuery(event.target.value)}
                       data-testid="repo-picker-search"
                       autoComplete="off"
                     />
                     {repoList.isLoading ? (
-                      <p className={styles.pickerHint}>Loading repositories…</p>
+                      <p className={styles.pickerHint}>{t('projectDetail.loadingRepositories')}</p>
                     ) : repoList.isError ? (
                       <p className={styles.pickerHint} data-testid="repo-picker-error">
                         {repoList.error instanceof ApiError
                           ? repoList.error.message
-                          : `Couldn't list ${integrationMode ? 'integration' : pickerProvider} repositories.`}
-                        {!integrationMode && ' Add the repository by URL below instead.'}
+                          : t('projectDetail.listReposFailed', { source: integrationMode ? t('projectDetail.integrationSource') : pickerProvider })}
+                        {!integrationMode && t('projectDetail.addRepoByUrlInstead')}
                       </p>
                     ) : repoList.data && repoList.data.length === 0 ? (
-                      <p className={styles.pickerHint}>No repositories match.</p>
+                      <p className={styles.pickerHint}>{t('projectDetail.noRepositoriesMatch')}</p>
                     ) : (
                       <ul className={styles.pickerList}>
                         {(repoList.data ?? []).map((repo) => (
@@ -642,7 +646,7 @@ export function ProjectDetailPage() {
                             >
                               <span className={styles.pickerRepoName}>
                                 {repo.full_name}
-                                {repo.private && <span className={styles.pickerPrivate}>private</span>}
+                                {repo.private && <span className={styles.pickerPrivate}>{t('projectDetail.private')}</span>}
                               </span>
                               {repo.description && <span className={styles.pickerRepoDesc}>{repo.description}</span>}
                             </button>
@@ -650,13 +654,13 @@ export function ProjectDetailPage() {
                         ))}
                       </ul>
                     )}
-                    {!integrationMode && canManage && <div className={styles.pickerDivider}>or add by URL</div>}
+                    {!integrationMode && canManage && <div className={styles.pickerDivider}>{t('projectDetail.orAddByUrl')}</div>}
                   </div>
 
                   {!integrationMode && canManage && (
                     <form onSubmit={submitRepo} noValidate className={styles.addRepoForm}>
                       <TextField
-                        label="Repository name"
+                        label={t('projectDetail.repositoryName')}
                         required
                         placeholder="frontend"
                         value={repoName}
@@ -666,7 +670,7 @@ export function ProjectDetailPage() {
                         autoComplete="off"
                       />
                       <TextField
-                        label="Repository URL"
+                        label={t('projectDetail.repositoryUrl')}
                         required
                         placeholder="https://github.com/acme/frontend"
                         value={repoUrl}
@@ -684,7 +688,7 @@ export function ProjectDetailPage() {
                           onClick={() => setAddOpen(false)}
                           disabled={createService.isPending}
                         >
-                          Cancel
+                          {t('common.cancel')}
                         </Button>
                         <Button
                           type="submit"
@@ -693,7 +697,7 @@ export function ProjectDetailPage() {
                           loading={createService.isPending}
                           data-testid="add-repo-submit"
                         >
-                          Add repository
+                          {t('projectDetail.addRepository')}
                         </Button>
                       </div>
                     </form>
@@ -708,7 +712,7 @@ export function ProjectDetailPage() {
                         onClick={() => setAddOpen(false)}
                         disabled={createService.isPending}
                       >
-                        Cancel
+                        {t('common.cancel')}
                       </Button>
                     </div>
                   )}
@@ -718,7 +722,7 @@ export function ProjectDetailPage() {
 
             {memberNeedsIntegration && (
               <p className={styles.addRepoNeedsIntegration} data-testid="add-repo-needs-integration">
-                Adding a repository needs a git integration — ask a project owner to connect one under Project settings.
+                {t('projectDetail.memberNeedsIntegration')}
               </p>
             )}
           </>
@@ -740,13 +744,13 @@ export function ProjectDetailPage() {
               />
             ) : activeService ? (
               <EmptyState
-                title="Automations are available to project members"
-                description="You can view task history, but a project member must manage schedules and provider events."
+                title={t('projectDetail.automationsMembersTitle')}
+                description={t('projectDetail.automationsMembersDesc')}
               />
             ) : (
               <EmptyState
-                title="Automations need a service"
-                description="Connect a repository first; schedules and provider events are scoped to a service."
+                title={t('projectDetail.automationsNeedServiceTitle')}
+                description={t('projectDetail.automationsNeedServiceDesc')}
               />
             )}
           </section>

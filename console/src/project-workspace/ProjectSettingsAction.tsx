@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Gear } from '@phosphor-icons/react';
 import styles from './ProjectSettingsAction.module.css';
 
@@ -13,11 +14,12 @@ export function ProjectSettingsAction({
   onClick?: () => void;
   label?: string;
 }) {
+  const { t } = useTranslation();
   const content = <><Gear size={16} weight="regular" aria-hidden="true" />{label && <span>{label}</span>}</>;
   const shared = {
     className: [styles.trigger, label && styles.labeled].filter(Boolean).join(' '),
-    'aria-label': 'Project settings',
-    title: 'Project settings',
+    'aria-label': t('projectSettingsAction.label'),
+    title: t('projectSettingsAction.label'),
     'data-testid': 'project-settings-trigger',
     'data-active': active || undefined,
   } as const;

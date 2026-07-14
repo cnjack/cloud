@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ApiError } from '../api/client';
 import { useEnsureServiceWebhook } from '../api/queries';
 import type { AuthProviderInfo, Me, Service } from '../api/types';
@@ -30,6 +31,7 @@ export function WebhookSetupCard({
   /** OAuth returned to this service after a successful provider authorization. */
   oauthReturned?: boolean;
 }) {
+  const { t } = useTranslation();
   const sync = useEnsureServiceWebhook();
   const autoSyncedService = useRef<string | null>(null);
   const [success, setSuccess] = useState<{ provider: string; endpoint: string } | null>(null);
@@ -53,10 +55,10 @@ export function WebhookSetupCard({
         setError(
           reason instanceof ApiError
             ? reason.message
-            : 'Could not synchronize the provider webhook. Try again or contact a cluster administrator.',
+            : t('webhook.errSync'),
         ),
     });
-  }, [service.id, sync]);
+  }, [service.id, sync, t]);
 
   // The caller has just completed a provider-controlled OAuth consent flow for
   // this exact service. Register the webhook once on return so onboarding does
@@ -80,11 +82,11 @@ export function WebhookSetupCard({
     return (
       <section className={styles.card} data-testid="webhook-setup-unavailable" aria-labelledby="webhook-heading">
         <div className={styles.head}>
-          <span className={styles.eyebrow}>PR review webhook</span>
-          <h3 id="webhook-heading">Provider events need a provider-backed repository</h3>
+          <span className={styles.eyebrow}>{t('webhook.eyebrowReview')}</span>
+          <h3 id="webhook-heading">{t('webhook.unavailableTitle')}</h3>
         </div>
         <p>
-          <code>{serviceSource(service)}</code> is a path or raw URL, so it cannot receive pull-request or merge-request comment events.
+          <code>{serviceSource(service)}</code> {t('webhook.pathOrUrlNote')}
         </p>
       </section>
     );
@@ -94,10 +96,10 @@ export function WebhookSetupCard({
     return (
       <section className={styles.card} data-testid="webhook-setup-unavailable" aria-labelledby="webhook-heading">
         <div className={styles.head}>
-          <span className={styles.eyebrow}>PR review webhook</span>
-          <h3 id="webhook-heading">Automation is read-only for viewers</h3>
+          <span className={styles.eyebrow}>{t('webhook.eyebrowReview')}</span>
+          <h3 id="webhook-heading">{t('webhook.readonlyTitle')}</h3>
         </div>
-        <p>A project member can connect {providerName} and synchronize this repository’s review webhook.</p>
+        <p>{t('webhook.readonlyBody', { provider: providerName })}</p>
       </section>
     );
   }
@@ -106,10 +108,10 @@ export function WebhookSetupCard({
     return (
       <section className={styles.card} data-testid="webhook-setup-unavailable" aria-labelledby="webhook-heading">
         <div className={styles.head}>
-          <span className={styles.eyebrow}>PR review webhook</span>
-          <h3 id="webhook-heading">{providerName} OAuth is not configured in this cluster</h3>
+          <span className={styles.eyebrow}>{t('webhook.eyebrowReview')}</span>
+          <h3 id="webhook-heading">{t('webhook.oauthNotConfiguredTitle', { provider: providerName })}</h3>
         </div>
-        <p>Ask a cluster administrator to configure {providerName} OAuth and the webhook receiver. No fallback credential will be used.</p>
+        <p>{t('webhook.oauthNotConfiguredBody', { provider: providerName })}</p>
       </section>
     );
   }
@@ -118,10 +120,10 @@ export function WebhookSetupCard({
     return (
       <section className={styles.card} data-testid="webhook-setup-unavailable" aria-labelledby="webhook-heading">
         <div className={styles.head}>
-          <span className={styles.eyebrow}>PR review webhook</span>
-          <h3 id="webhook-heading">A signed-in project member must authorize {providerName}</h3>
+          <span className={styles.eyebrow}>{t('webhook.eyebrowReview')}</span>
+          <h3 id="webhook-heading">{t('webhook.serviceTitle', { provider: providerName })}</h3>
         </div>
-        <p>The console-token session has no personal OAuth identity. Sign in with a project member account to synchronize this webhook.</p>
+        <p>{t('webhook.serviceBody')}</p>
       </section>
     );
   }
@@ -131,16 +133,16 @@ export function WebhookSetupCard({
       <section className={styles.card} data-testid="webhook-setup-oauth" aria-labelledby="webhook-heading">
         <div className={styles.head}>
           <div>
-            <span className={styles.eyebrow}>Provider webhook</span>
-            <h3 id="webhook-heading">Connect {providerName} for PR review commands</h3>
+            <span className={styles.eyebrow}>{t('webhook.eyebrowProvider')}</span>
+            <h3 id="webhook-heading">{t('webhook.connectTitle', { provider: providerName })}</h3>
           </div>
           <span className={styles.scope}>{providerName}</span>
         </div>
         <p>
-          Connect the account that administers <code>{service.repo_owner_name}</code>. jcode will request OAuth permission for this repository; it never asks you to paste a personal access token here.
+          {t('webhook.connectBodyPre')} <code>{service.repo_owner_name}</code>{t('webhook.connectBodyPost')}
         </p>
         <a className={styles.primaryLink} href={connectURL} data-testid="webhook-oauth-connect">
-          Connect {providerName} with OAuth
+          {t('webhook.connectCta', { provider: providerName })}
         </a>
       </section>
     );
@@ -150,22 +152,22 @@ export function WebhookSetupCard({
     <section className={styles.card} data-testid="webhook-setup-ready" aria-labelledby="webhook-heading">
       <div className={styles.head}>
         <div>
-          <span className={styles.eyebrow}>Provider webhook</span>
-          <h3 id="webhook-heading">{providerName} PR review commands</h3>
+          <span className={styles.eyebrow}>{t('webhook.eyebrowProvider')}</span>
+          <h3 id="webhook-heading">{t('webhook.readyTitle', { provider: providerName })}</h3>
         </div>
         <span className={styles.scope}>{providerName}</span>
       </div>
       <p>
-        Sync registers the provider’s comment webhook for <code>{service.repo_owner_name}</code> using your {providerName} OAuth account. A collaborator can then start a review with <code>@jcode review</code>. It is safe to run again when the repository changes.
+        {t('webhook.readyBodyPre')} <code>{service.repo_owner_name}</code>{t('webhook.readyBodyMid', { provider: providerName })}<code>@jcode review</code>{t('webhook.readyBodyPost')}
       </p>
       {oauthReturned && (
         <p className={styles.returned} data-testid="webhook-oauth-returned">
-          OAuth is connected. {sync.isPending ? 'Synchronizing the webhook…' : 'Webhook setup is ready.'}
+          {t('webhook.oauthConnected')} {sync.isPending ? t('webhook.synchronizing') : t('webhook.setupReady')}
         </p>
       )}
       {success && (
         <p className={styles.success} data-testid="webhook-setup-success" role="status">
-          {PROVIDER_LABELS[success.provider] ?? success.provider} webhook is synced to <code>{success.endpoint}</code>.
+          {PROVIDER_LABELS[success.provider] ?? success.provider} {t('webhook.syncedTo')} <code>{success.endpoint}</code>.
         </p>
       )}
       {error && (
@@ -182,10 +184,10 @@ export function WebhookSetupCard({
           loading={sync.isPending}
           data-testid="webhook-sync"
         >
-          Sync {providerName} webhook
+          {t('webhook.syncButton', { provider: providerName })}
         </Button>
         <a className={styles.reconnect} href={connectURL} data-testid="webhook-oauth-reconnect">
-          Reconnect OAuth
+          {t('webhook.reconnectOauth')}
         </a>
       </div>
     </section>

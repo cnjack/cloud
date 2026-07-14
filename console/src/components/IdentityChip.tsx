@@ -11,13 +11,14 @@
  * falls back to a plain role label so the header still renders.
  */
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Role } from '../api/config';
 import type { AuthProviderInfo, Me } from '../api/types';
 import styles from './IdentityChip.module.css';
 
-const ROLE_LABEL: Record<Role, string> = {
-  'cluster-admin': 'Cluster admin',
-  'project-admin': 'Project admin',
+const ROLE_LABEL_KEYS: Record<Role, string> = {
+  'cluster-admin': 'components.identity.roleClusterAdmin',
+  'project-admin': 'components.identity.roleProjectAdmin',
 };
 
 function initials(name: string): string {
@@ -51,6 +52,7 @@ export function IdentityChip({
   /** When provided (real sessions, not demo), renders a sign-out affordance. */
   onSignOut?: () => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -74,12 +76,12 @@ export function IdentityChip({
   // trust-level chip so the header still names a role.
   if (!me) {
     return (
-      <span className={styles.chip} data-testid="identity-chip" data-role={role} title={ROLE_LABEL[role]}>
+      <span className={styles.chip} data-testid="identity-chip" data-role={role} title={t(ROLE_LABEL_KEYS[role])}>
         <span className={styles.dot} aria-hidden />
-        <span className={styles.role}>{ROLE_LABEL[role]}</span>
+        <span className={styles.role}>{t(ROLE_LABEL_KEYS[role])}</span>
         {onSignOut && (
           <button type="button" className={styles.signOutInline} onClick={onSignOut} data-testid="sign-out">
-            Sign out
+            {t('components.identity.signOut')}
           </button>
         )}
       </span>
@@ -89,9 +91,9 @@ export function IdentityChip({
   const linked = new Set(me.identities.map((i) => i.provider));
   const linkable = me.is_service ? [] : providers.filter((p) => !linked.has(p.id));
   const badge = me.is_service
-    ? 'Cluster admin'
+    ? t('components.identity.roleClusterAdmin')
     : me.user.is_cluster_admin
-      ? 'Cluster admin'
+      ? t('components.identity.roleClusterAdmin')
       : null;
 
   return (
@@ -126,17 +128,17 @@ export function IdentityChip({
 
           {me.is_service ? (
             <div className={styles.section}>
-              <span className={styles.sectionLabel}>Session</span>
+              <span className={styles.sectionLabel}>{t('components.identity.session')}</span>
               <span className={styles.serviceNote}>
-                Authenticated with the console token — no linked identities.
+                {t('components.identity.serviceNote')}
               </span>
             </div>
           ) : (
             <>
               <div className={styles.section} data-testid="linked-identities">
-                <span className={styles.sectionLabel}>Linked accounts</span>
+                <span className={styles.sectionLabel}>{t('components.identity.linkedAccounts')}</span>
                 {me.identities.length === 0 ? (
-                  <span className={styles.serviceNote}>No linked accounts yet.</span>
+                  <span className={styles.serviceNote}>{t('components.identity.noLinkedAccounts')}</span>
                 ) : (
                   me.identities.map((id) => (
                     <div className={styles.identity} key={`${id.provider}:${id.username}`}>
@@ -152,7 +154,7 @@ export function IdentityChip({
 
               {linkable.length > 0 && (
                 <div className={styles.section} data-testid="linkable-providers">
-                  <span className={styles.sectionLabel}>Link another</span>
+                  <span className={styles.sectionLabel}>{t('components.identity.linkAnother')}</span>
                   {linkable.map((p) => (
                     <a
                       key={p.id}
@@ -164,7 +166,7 @@ export function IdentityChip({
                       <span className={styles.identityIcon} aria-hidden>
                         {p.name.charAt(0)}
                       </span>
-                      Link {p.name}
+                      {t('components.identity.link', { name: p.name })}
                     </a>
                   ))}
                 </div>
@@ -183,7 +185,7 @@ export function IdentityChip({
               data-testid="sign-out"
               role="menuitem"
             >
-              Sign out
+              {t('components.identity.signOut')}
             </button>
           )}
         </div>

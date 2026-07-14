@@ -18,6 +18,8 @@
  * board shows a clear panel, never a blank modal.
  */
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { useQuery } from '@tanstack/react-query';
 import { JTypeApiError, JTypeBoard, type BoardLocale } from 'jtype-board-react';
 import 'jtype-board-react/style.css';
@@ -59,39 +61,39 @@ interface BoardOpenErrorCopy {
  * non-sensitive guidance rather than collapsing every outage into a misleading
  * “deleted or renamed” message.
  */
-function boardOpenErrorCopy(error: unknown): BoardOpenErrorCopy {
+function boardOpenErrorCopy(error: unknown, t: TFunction): BoardOpenErrorCopy {
   const code = error instanceof JTypeApiError ? error.code : undefined;
   switch (code) {
     case 'kanban_not_configured':
       return {
-        title: 'Kanban is not configured',
-        message: 'A cluster administrator needs to configure the jtype integration before this board can open.',
+        title: t('kanban.notConfiguredTitle'),
+        message: t('kanban.notConfiguredMsg'),
       };
     case 'jtype_unreachable':
     case 'network_error':
       return {
-        title: 'Kanban is unavailable',
-        message: 'The jtype service could not be reached. Retry when the service is available.',
+        title: t('kanban.unavailableTitle'),
+        message: t('kanban.unavailableMsg'),
       };
     case 'jtype_unauthorized':
       return {
-        title: 'Kanban access needs attention',
-        message: 'The current Kanban connection cannot read this board. A project owner or cluster administrator needs to repair the integration.',
+        title: t('kanban.unauthorizedTitle'),
+        message: t('kanban.unauthorizedMsg'),
       };
     case 'workspace_not_found':
       return {
-        title: 'Kanban workspace was not found',
-        message: 'This board link points to a workspace that is no longer available to the project.',
+        title: t('kanban.workspaceNotFoundTitle'),
+        message: t('kanban.workspaceNotFoundMsg'),
       };
     case 'board_not_found':
       return {
-        title: 'This board could not be opened',
-        message: 'The board may have been deleted or renamed, or the integration lost access.',
+        title: t('kanban.boardNotFoundTitle'),
+        message: t('kanban.boardNotFoundMsg'),
       };
     default:
       return {
-        title: 'This board could not be opened',
-        message: 'The board could not be opened right now. Retry, or ask a project owner to check the board link.',
+        title: t('kanban.boardNotFoundTitle'),
+        message: t('kanban.boardOpenDefaultMsg'),
       };
   }
 }
@@ -103,6 +105,7 @@ interface Props {
 }
 
 export function KanbanBoardModal({ projectId, links, onClose }: Props) {
+  const { t } = useTranslation();
   const api = useApi();
   // Memoize the injected client: a new identity per render restarts the board.
   const proxyClient = useMemo(
@@ -123,12 +126,12 @@ export function KanbanBoardModal({ projectId, links, onClose }: Props) {
     // The board doc set is stable across a modal session; don't refetch on focus.
     staleTime: 60_000,
   });
-  const failure = resolved.isError ? boardOpenErrorCopy(resolved.error) : null;
+  const failure = resolved.isError ? boardOpenErrorCopy(resolved.error, t) : null;
 
   return (
     <Modal
       open
-      title="Kanban"
+      title={t('kanban.title')}
       onClose={onClose}
       size="wide"
       data-testid="kanban-board-modal"
@@ -137,7 +140,7 @@ export function KanbanBoardModal({ projectId, links, onClose }: Props) {
         {links.length > 1 && (
           <div className={styles.selectorRow}>
             <SelectField
-              label="Board"
+              label={t('kanban.boardLabel')}
               className={styles.selector}
               value={selectedId}
               onChange={setSelectedId}
@@ -148,7 +151,7 @@ export function KanbanBoardModal({ projectId, links, onClose }: Props) {
         )}
 
         {!link ? null : resolved.isPending ? (
-          <LoadingBlock label="Opening board…" />
+          <LoadingBlock label={t('kanban.openingBoard')} />
         ) : resolved.isError ? (
           <div className={styles.failPanel} role="alert" data-testid="kanban-board-fail">
             <div className={styles.failTitle}>{failure?.title}</div>
@@ -157,7 +160,7 @@ export function KanbanBoardModal({ projectId, links, onClose }: Props) {
             </div>
             {link.board_status === 'invalid' && (
               <div className={styles.failDetail}>
-                The link is marked invalid — its board or columns last failed validation.
+                {t('kanban.linkMarkedInvalid')}
               </div>
             )}
             <div className={styles.failActions}>
@@ -168,7 +171,7 @@ export function KanbanBoardModal({ projectId, links, onClose }: Props) {
                 onClick={() => void resolved.refetch()}
                 data-testid="kanban-board-retry"
               >
-                Retry
+                {t('common.retry')}
               </Button>
             </div>
           </div>
@@ -181,9 +184,7 @@ export function KanbanBoardModal({ projectId, links, onClose }: Props) {
                 data-state="invalid"
                 data-testid="kanban-board-link-invalid"
               >
-                <strong>This Kanban automation link is invalid.</strong> Card-triggered runs and
-                writeback are stopped until a project owner repairs the board or column mapping.
-                Viewing the board remains available.
+                <strong>{t('kanban.linkInvalidTitle')}</strong> {t('kanban.linkInvalidBody')}
               </div>
             )}
             {link.board_status === 'unvalidated' && (
@@ -193,9 +194,7 @@ export function KanbanBoardModal({ projectId, links, onClose }: Props) {
                 data-state="unvalidated"
                 data-testid="kanban-board-link-unvalidated"
               >
-                <strong>This Kanban automation link has not been validated.</strong> Its
-                card-triggered runs and writeback cannot be confirmed until an owner verifies the
-                board connection and column mapping.
+                <strong>{t('kanban.linkUnvalidatedTitle')}</strong> {t('kanban.linkUnvalidatedBody')}
               </div>
             )}
             {!link.enabled && (
@@ -205,8 +204,7 @@ export function KanbanBoardModal({ projectId, links, onClose }: Props) {
                 data-state="disabled"
                 data-testid="kanban-board-link-disabled"
               >
-                <strong>This Kanban automation link is disabled.</strong> The board is viewable,
-                but card-triggered runs and writeback are disabled.
+                <strong>{t('kanban.linkDisabledTitle')}</strong> {t('kanban.linkDisabledBody')}
               </div>
             )}
             <div className={styles.board}>

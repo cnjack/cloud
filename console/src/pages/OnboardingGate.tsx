@@ -15,8 +15,10 @@
 import { ArrowRight, Check, GithubLogo, GitBranch, Key, Lock } from '@phosphor-icons/react';
 import { useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '../auth/AuthProvider';
 import { Wordmark } from '../components/Wordmark';
+import { LanguageToggle } from '../components/LanguageToggle';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -25,13 +27,14 @@ import { LoadingBlock } from '../components/States';
 import styles from './OnboardingGate.module.css';
 
 /** The deploy README distilled to the three commands that fix "unreachable". */
-const SETUP_STEPS: Array<{ cmd: string; what: string }> = [
-  { cmd: 'cd cloud/deploy && make build', what: 'Build the four local images' },
-  { cmd: 'make up', what: 'Deploy to the OrbStack cluster and wait for rollouts' },
-  { cmd: 'make port-forward', what: 'Forward the orchestrator API to localhost:8080' },
+const SETUP_STEPS: Array<{ cmd: string; whatKey: string }> = [
+  { cmd: 'cd cloud/deploy && make build', whatKey: 'onboarding.setupStep1' },
+  { cmd: 'make up', whatKey: 'onboarding.setupStep2' },
+  { cmd: 'make port-forward', whatKey: 'onboarding.setupStep3' },
 ];
 
 function CommandRow({ cmd, what }: { cmd: string; what: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -49,7 +52,7 @@ function CommandRow({ cmd, what }: { cmd: string; what: string }) {
         <span className={styles.cmdWhat}>{what}</span>
       </div>
       <Button variant="ghost" size="sm" onClick={copy}>
-        {copied ? 'Copied' : 'Copy'}
+        {copied ? t('common.copied') : t('common.copy')}
       </Button>
     </div>
   );
@@ -57,44 +60,44 @@ function CommandRow({ cmd, what }: { cmd: string; what: string }) {
 
 type GateVariant = 'probing' | 'setup' | 'signin' | 'welcome' | 'landing';
 
-const GATE_COPY: Record<GateVariant, { eyebrow: string; title: string; story: string; utility: string; status: string }> = {
-  probing: { eyebrow: 'Connecting', title: 'Bring the runtime into reach.', story: 'The Console is checking whether an authenticated workflow can begin.', utility: 'Connection setup', status: 'probing' },
-  setup: { eyebrow: 'Local setup', title: 'Bring the runtime into reach.', story: 'The Console is ready. The orchestrator has not answered yet, so no authenticated workflow can begin.', utility: 'Connection setup', status: 'unreachable' },
-  signin: { eyebrow: 'Your code. Your cluster.', title: 'Keep the work close to the system.', story: 'jcode Cloud dispatches coding Tasks into infrastructure your team already controls.', utility: 'Secure entry', status: 'sign in' },
-  welcome: { eyebrow: 'Workspace ready', title: 'The first boundary is yours to set.', story: 'You signed in first. jcode Cloud assigned the Cluster administrator role to this identity.', utility: 'First-user setup', status: 'signed in' },
-  landing: { eyebrow: 'Session ready', title: 'The control plane is within reach.', story: 'The console token established a Cluster administrator session for this browser.', utility: 'Session boundary', status: 'authenticated' },
-};
-
 function GateAside({ variant }: { variant: GateVariant }) {
+  const { t } = useTranslation();
   if (variant === 'welcome') {
     return (
       <aside className={styles.aside}>
-        <span className={styles.eyebrow}>Assigned role</span><Key size={24} aria-hidden="true" />
-        <h3>Cluster administrator</h3><p>Administration is separate from Project ownership.</p>
-        <ul className={styles.roleList}><li><Check size={14} />Manage model grants</li><li><Check size={14} />Configure connections</li><li><Check size={14} />View capacity and policy</li></ul>
+        <span className={styles.eyebrow}>{t('onboarding.assignedRole')}</span><Key size={24} aria-hidden="true" />
+        <h3>{t('onboarding.clusterAdministrator')}</h3><p>{t('onboarding.adminSeparate')}</p>
+        <ul className={styles.roleList}><li><Check size={14} />{t('onboarding.roleManageGrants')}</li><li><Check size={14} />{t('onboarding.roleConfigureConnections')}</li><li><Check size={14} />{t('onboarding.roleViewCapacity')}</li></ul>
       </aside>
     );
   }
   if (variant === 'signin') {
-    return <aside className={styles.aside}><span className={styles.eyebrow}>Session boundary</span><h3>What sign-in establishes</h3><p>The orchestrator maps the provider identity to one jcode Cloud user. Project roles and repository access are evaluated separately.</p><div className={styles.security}><Lock size={14} /><span>Provider tokens stay server-side and are never rendered into this page.</span></div></aside>;
+    return <aside className={styles.aside}><span className={styles.eyebrow}>{t('onboarding.sessionBoundary')}</span><h3>{t('onboarding.whatSignInEstablishes')}</h3><p>{t('onboarding.signInEstablishesBody')}</p><div className={styles.security}><Lock size={14} /><span>{t('onboarding.providerTokensServerSide')}</span></div></aside>;
   }
   if (variant === 'setup' || variant === 'probing') {
-    return <aside className={styles.aside}><span className={styles.eyebrow}>Current probe</span><h3>What the Console knows</h3><p>This state reports only reachability. It does not infer whether Kubernetes, images, or credentials are healthy.</p><dl className={styles.probeFacts}><div><dt>Target</dt><dd>localhost:8080</dd></div><div><dt>Response</dt><dd>{variant === 'setup' ? 'unreachable' : 'waiting'}</dd></div></dl></aside>;
+    return <aside className={styles.aside}><span className={styles.eyebrow}>{t('onboarding.currentProbe')}</span><h3>{t('onboarding.whatConsoleKnows')}</h3><p>{t('onboarding.probeBody')}</p><dl className={styles.probeFacts}><div><dt>{t('onboarding.probeTarget')}</dt><dd>localhost:8080</dd></div><div><dt>{t('onboarding.probeResponse')}</dt><dd>{variant === 'setup' ? t('onboarding.probeUnreachable') : t('onboarding.probeWaiting')}</dd></div></dl></aside>;
   }
   return null;
 }
 
 function GateFrame({ children, variant }: { children: ReactNode; variant: GateVariant }) {
-  const copy = GATE_COPY[variant];
+  const { t } = useTranslation();
+  const copy = {
+    eyebrow: t(`onboarding.${variant}Eyebrow`),
+    title: t(`onboarding.${variant}Title`),
+    story: t(`onboarding.${variant}Story`),
+    utility: t(`onboarding.${variant}Utility`),
+    status: t(`onboarding.${variant}Status`),
+  };
   return (
     <div className={styles.frame} data-variant={variant}>
       <aside className={styles.rail}>
         <div className={styles.brand}><Wordmark /></div>
         <div className={styles.story}><span className={styles.eyebrow}>{copy.eyebrow}</span><h1>{copy.title}</h1><span className={styles.storyLine} /><p>{copy.story}</p></div>
-        <footer className={styles.railFooter}><span>self-hosted</span><span>v0.1.0</span></footer>
+        <footer className={styles.railFooter}><span>{t('onboarding.selfHosted')}</span><span>v0.1.0</span></footer>
       </aside>
       <main className={styles.surface}>
-        <header className={styles.utility}><span>{copy.utility}</span><div><span className={styles.state}>{copy.status}</span><ThemeToggle /></div></header>
+        <header className={styles.utility}><span>{copy.utility}</span><div><span className={styles.state}>{copy.status}</span><LanguageToggle /><ThemeToggle /></div></header>
         <div className={styles.stage}><div className={styles.content}>{children}<GateAside variant={variant} /></div></div>
       </main>
     </div>
@@ -102,28 +105,28 @@ function GateFrame({ children, variant }: { children: ReactNode; variant: GateVa
 }
 
 function SetupGuide() {
+  const { t } = useTranslation();
   const { retryProbe } = useAuth();
   return (
     <GateFrame variant="setup">
       <Card className={styles.card} data-testid="setup-guide">
-        <h1 className={styles.title}>Can&rsquo;t reach the orchestrator</h1>
+        <h1 className={styles.title}>{t('onboarding.cantReachTitle')}</h1>
         <p className={styles.lede}>
-          The console proxies <code>/api</code> to{' '}
-          <code>localhost:8080</code>, but nothing answered. Bring the stack up,
-          then this page moves on by itself.
+          {t('onboarding.setupLede1')} <code>/api</code> {t('onboarding.setupLede2')}{' '}
+          <code>localhost:8080</code>{t('onboarding.setupLede3')}
         </p>
         <div className={styles.cmdList}>
           {SETUP_STEPS.map((s) => (
-            <CommandRow key={s.cmd} cmd={s.cmd} what={s.what} />
+            <CommandRow key={s.cmd} cmd={s.cmd} what={t(s.whatKey)} />
           ))}
         </div>
         <div className={styles.footerRow}>
           <span className={styles.autoNote} role="status">
             <span className={styles.pulse} aria-hidden />
-            Re-checking every 3s — no refresh needed
+            {t('onboarding.recheckingNote')}
           </span>
           <Button variant="secondary" size="sm" onClick={retryProbe}>
-            Check now
+            {t('onboarding.checkNow')}
           </Button>
         </div>
       </Card>
@@ -131,14 +134,15 @@ function SetupGuide() {
   );
 }
 
-const REASON_COPY: Record<string, string | null> = {
+const REASON_KEY: Record<string, string | null> = {
   none: null,
-  rejected: 'The saved token was rejected — it may have been rotated. Enter the current one.',
-  expired: 'Your session ended (expired or revoked). Sign in again.',
-  'signed-out': 'Signed out.',
+  rejected: 'onboarding.reasonRejected',
+  expired: 'onboarding.reasonExpired',
+  'signed-out': 'onboarding.reasonSignedOut',
 };
 
 function ProviderButtons() {
+  const { t } = useTranslation();
   const { providers } = useAuth();
   if (providers.length === 0) return null;
   return (
@@ -148,7 +152,7 @@ function ProviderButtons() {
         // round trip + Set-Cookie happen on the orchestrator.
         <a key={p.id} href={p.login_url} className={styles.provider} data-provider={p.id}>
           <span className={styles.providerIcon} aria-hidden>{p.id.toLowerCase().includes('github') ? <GithubLogo size={18} weight="fill" /> : <GitBranch size={18} />}</span>
-          <span>Continue with {p.name}</span>
+          <span>{t('onboarding.continueWith', { name: p.name })}</span>
           <ArrowRight size={16} aria-hidden="true" />
         </a>
       ))}
@@ -157,6 +161,7 @@ function ProviderButtons() {
 }
 
 function SignIn() {
+  const { t } = useTranslation();
   const { login, reason, providers, loginError } = useAuth();
   const [token, setToken] = useState('');
   const [error, setError] = useState<string | undefined>();
@@ -166,7 +171,8 @@ function SignIn() {
   const [advManual, setAdvManual] = useState<boolean | null>(null);
   const noProviders = providers.length === 0;
   const advOpen = advManual ?? noProviders;
-  const notice = loginError ?? REASON_COPY[reason] ?? null;
+  const reasonKey = REASON_KEY[reason];
+  const notice = loginError ?? (reasonKey ? t(reasonKey) : null);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -180,11 +186,11 @@ function SignIn() {
   return (
     <GateFrame variant="signin">
       <Card className={styles.card} data-testid="sign-in">
-        <h1 className={styles.title}>Sign in</h1>
+        <h1 className={styles.title}>{t('onboarding.signInHeading')}</h1>
         <p className={styles.lede}>
           {noProviders
-            ? 'No OAuth provider is configured. Use the console token the orchestrator was deployed with.'
-            : 'Continue with your git provider to get a personal, per-user session.'}
+            ? t('onboarding.signInLedeNoProviders')
+            : t('onboarding.signInLedeProviders')}
         </p>
         {notice && (
           <p
@@ -210,13 +216,13 @@ function SignIn() {
               <span className={styles.advCaret} data-open={advOpen || undefined} aria-hidden>
                 ▸
               </span>
-              Advanced: console token
+              {t('onboarding.advancedConsoleToken')}
             </button>
           )}
           {advOpen && (
             <form onSubmit={submit} className={styles.form} data-testid="console-token-form">
               <TextField
-                label="Console token"
+                label={t('onboarding.consoleTokenLabel')}
                 type="password"
                 autoComplete="off"
                 autoFocus={noProviders}
@@ -224,10 +230,10 @@ function SignIn() {
                 onChange={(e) => setToken(e.target.value)}
                 error={error}
                 placeholder="dev-console-token"
-                hint="The CONSOLE_TOKEN the orchestrator was deployed with — cluster-admin. Stored locally in this browser."
+                hint={t('onboarding.consoleTokenHint')}
               />
               <Button type="submit" variant={noProviders ? 'primary' : 'secondary'} loading={busy}>
-                Sign in with token
+                {t('onboarding.signInWithToken')}
               </Button>
             </form>
           )}
@@ -238,23 +244,24 @@ function SignIn() {
 }
 
 function WelcomeCard() {
+  const { t } = useTranslation();
   const { welcome, dismissWelcome, me } = useAuth();
   const firstAdmin = welcome === 'first-admin';
   return (
     <GateFrame variant="welcome">
       <Card className={styles.card} data-testid="welcome-card" data-welcome={welcome ?? undefined}>
         <h1 className={styles.title}>
-          {firstAdmin ? 'You’re the first user — cluster admin' : `Welcome, ${me?.user.display_name ?? 'friend'}`}
+          {firstAdmin ? t('onboarding.welcomeFirstAdminTitle') : t('onboarding.welcomeGreeting', { name: me?.user.display_name ?? t('onboarding.friend') })}
         </h1>
         <p className={styles.lede}>
           {firstAdmin
-            ? 'You signed in first, so you’re now the cluster administrator: you can see every project and manage capacity. Everyone who joins after you starts as a regular user.'
-            : 'You’re signed in. Create a project to point jcode Cloud at a repository, or open one you’ve been added to.'}
+            ? t('onboarding.welcomeFirstAdminLede')
+            : t('onboarding.welcomeLede')}
         </p>
         <div className={styles.footerRow}>
-          <span className={styles.autoNote}>Signed in as {me?.user.display_name}</span>
+          <span className={styles.autoNote}>{t('onboarding.signedInAs', { name: me?.user.display_name })}</span>
           <Button variant="primary" onClick={dismissWelcome} autoFocus data-testid="welcome-enter">
-            Get started
+            {t('onboarding.getStarted')}
           </Button>
         </div>
       </Card>
@@ -263,35 +270,36 @@ function WelcomeCard() {
 }
 
 function Landing() {
+  const { t } = useTranslation();
   const { me, enterConsole } = useAuth();
   const identity = me?.identities?.[0];
   return (
     <GateFrame variant="landing">
       <Card className={styles.card} data-testid="landing-card">
-        <h1 className={styles.title}>You&rsquo;re in — cluster admin</h1>
-        <p className={styles.lede}>Signed in to this orchestrator:</p>
+        <h1 className={styles.title}>{t('onboarding.landingCardTitle')}</h1>
+        <p className={styles.lede}>{t('onboarding.landingLede')}</p>
         <dl className={styles.facts}>
           <div className={styles.fact}>
-            <dt>Principal</dt>
+            <dt>{t('onboarding.principal')}</dt>
             <dd>{me?.user.display_name ?? '—'}</dd>
           </div>
           <div className={styles.fact}>
-            <dt>Access</dt>
-            <dd>{me?.user.is_cluster_admin ? 'cluster admin' : 'member'}</dd>
+            <dt>{t('onboarding.access')}</dt>
+            <dd>{me?.user.is_cluster_admin ? t('onboarding.accessClusterAdmin') : t('onboarding.accessMember')}</dd>
           </div>
           <div className={styles.fact}>
-            <dt>Session</dt>
-            <dd>{me?.is_service ? 'console token' : 'user session'}</dd>
+            <dt>{t('onboarding.session')}</dt>
+            <dd>{me?.is_service ? t('onboarding.sessionConsoleToken') : t('onboarding.sessionUser')}</dd>
           </div>
           <div className={styles.fact}>
-            <dt>Identity</dt>
+            <dt>{t('onboarding.identity')}</dt>
             <dd>{identity ? `${identity.provider}/${identity.username}` : '—'}</dd>
           </div>
         </dl>
         <div className={styles.footerRow}>
-          <span className={styles.autoNote}>Everything runs headless in your cluster.</span>
+          <span className={styles.autoNote}>{t('onboarding.everythingHeadless')}</span>
           <Button variant="primary" onClick={enterConsole} autoFocus>
-            Enter console
+            {t('onboarding.enterConsole')}
           </Button>
         </div>
       </Card>
@@ -300,13 +308,14 @@ function Landing() {
 }
 
 export function OnboardingGate({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
   const { status, landing, welcome } = useAuth();
 
   switch (status) {
     case 'probing':
       return (
         <GateFrame variant="probing">
-          <LoadingBlock label="Connecting to the orchestrator…" />
+          <LoadingBlock label={t('onboarding.connecting')} />
         </GateFrame>
       );
     case 'unreachable':

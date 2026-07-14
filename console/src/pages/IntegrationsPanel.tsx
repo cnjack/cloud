@@ -8,6 +8,7 @@
  * so a bad token / disallowed host surfaces here as a readable error (fail-visible).
  */
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
 import { Select } from '../components/Select';
@@ -25,6 +26,7 @@ import styles from './ProjectSettingsModal.module.css';
 const PROVIDERS: GitProvider[] = ['gitea', 'github', 'gitlab'];
 
 export function IntegrationsPanel({ project }: { project: Project }) {
+  const { t } = useTranslation();
   const toast = useToast();
   const integrations = useIntegrations(project.id);
   const create = useCreateIntegration(project.id);
@@ -54,13 +56,13 @@ export function IntegrationsPanel({ project }: { project: Project }) {
           setToken('');
           toast.push({
             kind: 'success',
-            message: `Integration “${integ.name}” connected as @${integ.bot_username}.`,
+            message: t('integrations.connected', { name: integ.name, bot: integ.bot_username }),
           });
         },
         onError: (err) =>
           toast.push({
             kind: 'error',
-            message: err instanceof ApiError ? err.message : 'Could not add the integration.',
+            message: err instanceof ApiError ? err.message : t('integrations.addError'),
           }),
       },
     );
@@ -71,12 +73,12 @@ export function IntegrationsPanel({ project }: { project: Project }) {
       onSuccess: () =>
         toast.push({
           kind: 'success',
-          message: 'Integration removed. Any service that used it falls back to the per-user path.',
+          message: t('integrations.removed'),
         }),
       onError: (err) =>
         toast.push({
           kind: 'error',
-          message: err instanceof ApiError ? err.message : 'Could not remove the integration.',
+          message: err instanceof ApiError ? err.message : t('integrations.removeError'),
         }),
     });
   };
@@ -84,9 +86,7 @@ export function IntegrationsPanel({ project }: { project: Project }) {
   return (
     <div className={styles.body} data-testid="integrations-panel">
       <p className={styles.guardrailHint}>
-        Connect a git identity for unattended repository operations. OAuth is recommended; a
-        manually created bot token remains available as an advanced alternative. PR review
-        webhooks are connected separately from each service’s Automation tab.
+        {t('integrations.intro')}
       </p>
 
       {integrations.data && integrations.data.length > 0 ? (
@@ -103,16 +103,16 @@ export function IntegrationsPanel({ project }: { project: Project }) {
         </div>
       ) : (
         <p className={styles.guardrailHint} data-testid="integrations-empty">
-          No integrations yet — connect one below.
+          {t('integrations.empty')}
         </p>
       )}
 
-      <div className={styles.integrationMode} role="group" aria-label="Integration authorization method">
+      <div className={styles.integrationMode} role="group" aria-label={t('integrations.methodAria')}>
         <button type="button" data-active={mode === 'oauth' || undefined} onClick={() => setMode('oauth')} data-testid="integration-mode-oauth">
-          OAuth app
+          {t('integrations.oauthApp')}
         </button>
         <button type="button" data-active={mode === 'token' || undefined} onClick={() => setMode('token')} data-testid="integration-mode-token">
-          Bot token
+          {t('integrations.botToken')}
         </button>
       </div>
 
@@ -132,7 +132,7 @@ export function IntegrationsPanel({ project }: { project: Project }) {
         )}
         <div>
           <label className={styles.guardrailTitle} htmlFor="integration-provider">
-            Provider
+            {t('integrations.provider')}
           </label>
           <Select
             id="integration-provider"
@@ -144,19 +144,19 @@ export function IntegrationsPanel({ project }: { project: Project }) {
           />
         </div>
         <TextField
-          label="Host"
-          placeholder="github.com or http://gitea.jcloud.svc.cluster.local:3000"
+          label={t('integrations.host')}
+          placeholder={t('integrations.hostPlaceholder')}
           value={host}
           onChange={(e) => setHost(e.target.value)}
           required
           data-testid="integration-host"
           autoComplete="off"
-          hint="Must be an allowed cluster git host (see the Cluster page)."
+          hint={t('integrations.hostHint')}
           name="host"
         />
         <TextField
-          label="Name (optional)"
-          placeholder="default"
+          label={t('integrations.nameLabel')}
+          placeholder={t('integrations.namePlaceholder')}
           value={name}
           onChange={(e) => setName(e.target.value)}
           data-testid="integration-name"
@@ -166,14 +166,14 @@ export function IntegrationsPanel({ project }: { project: Project }) {
         {mode === 'oauth' ? (
           <>
             <div className={styles.oauthCallback}>
-              <span>OAuth callback URL</span>
+              <span>{t('integrations.oauthCallbackUrl')}</span>
               <code>{`${window.location.origin}/auth/callback/${provider}`}</code>
-              <small>Register this callback URL in the provider OAuth application.</small>
+              <small>{t('integrations.oauthCallbackHint')}</small>
             </div>
             <TextField
-              label="Client ID"
+              label={t('integrations.clientId')}
               name="client_id"
-              placeholder="OAuth application client ID"
+              placeholder={t('integrations.clientIdPlaceholder')}
               value={clientId}
               onChange={(e) => setClientId(e.target.value)}
               required
@@ -181,29 +181,29 @@ export function IntegrationsPanel({ project }: { project: Project }) {
               autoComplete="off"
             />
             <TextField
-              label="Client secret"
+              label={t('integrations.clientSecret')}
               name="client_secret"
               type="password"
-              placeholder="OAuth application client secret"
+              placeholder={t('integrations.clientSecretPlaceholder')}
               value={clientSecret}
               onChange={(e) => setClientSecret(e.target.value)}
               required
               data-testid="integration-client-secret"
               autoComplete="new-password"
-              hint="Used only during this authorization round trip; it is not stored in the integration."
+              hint={t('integrations.clientSecretHint')}
             />
           </>
         ) : (
           <TextField
-            label="Bot token"
+            label={t('integrations.botToken')}
             type="password"
-            placeholder="org PAT / group token with repo write scope"
+            placeholder={t('integrations.botTokenPlaceholder')}
             value={token}
             onChange={(e) => setToken(e.target.value)}
             required
             data-testid="integration-token"
             autoComplete="new-password"
-            hint="Verified against the provider on save. Stored encrypted; never displayed after."
+            hint={t('integrations.botTokenHint')}
           />
         )}
         <div className={styles.kanbanFormActions}>
@@ -214,7 +214,7 @@ export function IntegrationsPanel({ project }: { project: Project }) {
             disabled={mode === 'oauth' ? !host.trim() || !clientId.trim() || !clientSecret.trim() : !host.trim() || !token.trim()}
             data-testid="integration-add"
           >
-            {mode === 'oauth' ? `Authorize with ${providerLabel(provider)}` : 'Connect with bot token'}
+            {mode === 'oauth' ? t('integrations.authorizeWith', { provider: providerLabel(provider) }) : t('integrations.connectWithBotToken')}
           </Button>
         </div>
       </form>
@@ -244,6 +244,7 @@ function IntegrationRow({
   deleting: boolean;
   onRemove: () => void;
 }) {
+  const { t } = useTranslation();
   const toast = useToast();
   const updateToken = useUpdateIntegration(projectId);
   const [editing, setEditing] = useState(false);
@@ -252,7 +253,7 @@ function IntegrationRow({
   const rotate = (e: React.FormEvent) => {
     e.preventDefault();
     if (!token.trim()) {
-      toast.push({ kind: 'error', message: 'Enter the new token (an integration always needs one).' });
+      toast.push({ kind: 'error', message: t('integrations.enterToken') });
       return;
     }
     updateToken.mutate(
@@ -261,12 +262,12 @@ function IntegrationRow({
         onSuccess: (updated) => {
           setToken('');
           setEditing(false);
-          toast.push({ kind: 'success', message: `Token rotated — now @${updated.bot_username}.` });
+          toast.push({ kind: 'success', message: t('integrations.tokenRotated', { bot: updated.bot_username }) });
         },
         onError: (err) =>
           toast.push({
             kind: 'error',
-            message: err instanceof ApiError ? err.message : 'Could not rotate the token.',
+            message: err instanceof ApiError ? err.message : t('integrations.rotateError'),
           }),
       },
     );
@@ -281,7 +282,7 @@ function IntegrationRow({
             {integration.provider}
           </span>
           <span className={styles.badge} data-testid={`integration-credential-${integration.id}`}>
-            {integration.cred_type === 'oauth' ? 'OAuth' : 'Bot token'}
+            {integration.cred_type === 'oauth' ? 'OAuth' : t('integrations.botToken')}
           </span>
         </div>
         <div className={styles.kanbanSub}>
@@ -291,9 +292,9 @@ function IntegrationRow({
         {editing && (
           <form className={styles.tokenEditor} onSubmit={rotate} noValidate>
             <TextField
-              label="New bot token"
+              label={t('integrations.newBotToken')}
               type="password"
-              placeholder="verified against the provider on save"
+              placeholder={t('integrations.rotatePlaceholder')}
               value={token}
               onChange={(e) => setToken(e.target.value)}
               data-testid={`integration-token-input-${integration.id}`}
@@ -306,10 +307,10 @@ function IntegrationRow({
               loading={updateToken.isPending}
               data-testid={`integration-token-save-${integration.id}`}
             >
-              Rotate
+              {t('integrations.rotate')}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(false)}>
-              Cancel
+              {t('common.cancel')}
             </Button>
           </form>
         )}
@@ -317,7 +318,7 @@ function IntegrationRow({
       <div style={{ display: 'flex', gap: 8 }}>
         {!editing && (
           integration.cred_type === 'oauth' ? (
-            <span className={styles.guardrailHint}>Remove and authorize again to reconnect.</span>
+            <span className={styles.guardrailHint}>{t('integrations.reconnectHint')}</span>
           ) : (
             <Button
               type="button"
@@ -326,7 +327,7 @@ function IntegrationRow({
               onClick={() => setEditing(true)}
               data-testid={`integration-rotate-${integration.id}`}
             >
-              Rotate token
+              {t('integrations.rotateToken')}
             </Button>
           )
         )}
@@ -338,7 +339,7 @@ function IntegrationRow({
           onClick={onRemove}
           data-testid={`integration-delete-${integration.id}`}
         >
-          Remove
+          {t('common.remove')}
         </Button>
       </div>
     </div>

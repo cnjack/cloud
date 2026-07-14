@@ -15,6 +15,7 @@
  * inline next to still-visible live controls on three different surfaces.
  */
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { ArrowRight } from '@phosphor-icons/react';
 import { useProjectModels } from '../api/queries';
@@ -36,6 +37,7 @@ export interface ModelGate {
 export function useModelGate(projectId: string, enabled = true): ModelGate {
   const q = useProjectModels(projectId, enabled);
   const isClusterAdmin = useRole() === 'cluster-admin';
+  const { t } = useTranslation();
 
   if (!enabled) return { configured: true, notice: null };
 
@@ -52,7 +54,7 @@ export function useModelGate(projectId: string, enabled = true): ModelGate {
           data-testid="model-unverified"
         >
           <span className={styles.text}>
-            Couldn’t verify the model status — runs may fail if no model is available.
+            {t('components.modelGate.unverified')}
           </span>
         </div>
       ),
@@ -69,15 +71,15 @@ export function useModelGate(projectId: string, enabled = true): ModelGate {
     configured: false,
     notice: (
       <div className={styles.notice} role="alert" data-testid="model-not-configured">
-        <span className={styles.text}>No model is available for this project, so runs can’t start.</span>
+        <span className={styles.text}>{t('components.modelGate.notConfigured')}</span>
         {isClusterAdmin ? (
           <Link to="/system" className={styles.link} data-testid="model-config-link">
-            <span>Grant a model on the Cluster page</span>
+            <span>{t('components.modelGate.grantLink')}</span>
             <ArrowRight size={15} weight="regular" aria-hidden="true" />
           </Link>
         ) : (
           <span className={styles.text}>
-            Contact a cluster administrator to grant a model to this project.
+            {t('components.modelGate.contactAdmin')}
           </span>
         )}
       </div>

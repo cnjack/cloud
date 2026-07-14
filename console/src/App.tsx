@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/AppShell';
 import { OnboardingGate } from './pages/OnboardingGate';
@@ -21,6 +22,7 @@ import { readQueryParam, stripQueryParams } from './lib/url';
  */
 function useLinkFlash() {
   const toast = useToast();
+  const { t } = useTranslation();
   const fired = useRef(false);
   useEffect(() => {
     if (fired.current) return;
@@ -30,28 +32,28 @@ function useLinkFlash() {
     const integrationConnected = readQueryParam('integration_connected');
     const integrationError = readQueryParam('integration_error');
     if (linked) {
-      toast.push({ kind: 'success', message: `Linked your ${linked} account.` });
+      toast.push({ kind: 'success', message: t('app.linked', { provider: linked }) });
     } else if (linkError === 'taken') {
       toast.push({
         kind: 'error',
-        message: 'That account is already linked to another user.',
+        message: t('app.linkTaken'),
       });
     } else if (linkError) {
-      toast.push({ kind: 'error', message: 'Could not link that account.' });
+      toast.push({ kind: 'error', message: t('app.linkError') });
     } else if (integrationConnected) {
-      toast.push({ kind: 'success', message: `${integrationConnected} integration connected.` });
+      toast.push({ kind: 'success', message: t('app.integrationConnected', { provider: integrationConnected }) });
     } else if (integrationError) {
       const message = integrationError === 'conflict'
-        ? 'An integration with that name already exists.'
+        ? t('app.integrationConflict')
         : integrationError === 'expiring_token_unsupported'
-          ? 'This provider issued a short-lived token. Use the bot token option for unattended access.'
-          : 'Could not authorize the git integration.';
+          ? t('app.integrationExpiringToken')
+          : t('app.integrationError');
       toast.push({ kind: 'error', message });
     }
     if (linked || linkError || integrationConnected || integrationError) {
       stripQueryParams(['linked', 'link_error', 'integration_connected', 'integration_error']);
     }
-  }, [toast]);
+  }, [toast, t]);
 }
 
 export function App() {

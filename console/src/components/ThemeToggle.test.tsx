@@ -35,7 +35,7 @@ describe('ThemeToggle', () => {
     render(<ThemeToggle />);
     const btn = screen.getByTestId('theme-toggle');
     expect(btn.getAttribute('data-theme-state')).toBe('dark');
-    expect(btn.getAttribute('aria-label')).toBe('Switch to light theme');
+    expect(btn.getAttribute('aria-label')).toBe('Switch to light mode');
   });
 
   it('toggles the document data-theme and persists the choice', () => {
@@ -45,7 +45,7 @@ describe('ThemeToggle', () => {
     fireEvent.click(btn);
     expect(document.documentElement.dataset.theme).toBe('light');
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('light');
-    expect(btn.getAttribute('aria-label')).toBe('Switch to dark theme');
+    expect(btn.getAttribute('aria-label')).toBe('Switch to dark mode');
 
     fireEvent.click(btn);
     expect(document.documentElement.dataset.theme).toBe('dark');

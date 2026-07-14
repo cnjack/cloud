@@ -15,6 +15,7 @@
  *      "user" (a person answered) or "timeout" (nobody did — the runner
  *      deny-safed the request and moved on).
  */
+import { useTranslation } from 'react-i18next';
 import type { PermissionCardItem, PermissionControls } from './types';
 import styles from './PermissionCard.module.css';
 
@@ -25,16 +26,17 @@ export function PermissionCard({
   item: PermissionCardItem;
   controls?: PermissionControls;
 }) {
+  const { t } = useTranslation();
   const decidedOptionId = controls?.decided?.[item.requestId];
 
   if (item.status === 'resolved') {
     const chosen = item.options.find((o) => o.optionId === item.resolvedOptionId);
     const chosenLabel =
-      chosen?.name ?? (item.resolvedOptionId ? item.resolvedOptionId : 'No action (cancelled)');
+      chosen?.name ?? (item.resolvedOptionId ? item.resolvedOptionId : t('run.permission.noAction'));
     return (
       <div className={styles.card} data-status="resolved" data-testid="permission-card">
         <div className={styles.head}>
-          <span className={styles.label}>permission</span>
+          <span className={styles.label}>{t('run.permission.label')}</span>
           <span className={styles.title}>{item.title}</span>
         </div>
         <div className={styles.outcome} data-testid="permission-outcome">
@@ -44,7 +46,7 @@ export function PermissionCard({
             data-resolution={item.resolution || undefined}
             data-testid="permission-resolution"
           >
-            {item.resolution === 'timeout' ? 'timed out' : item.resolution || 'resolved'}
+            {item.resolution === 'timeout' ? t('run.permission.timedOut') : item.resolution || t('run.permission.resolved')}
           </span>
         </div>
       </div>
@@ -57,7 +59,7 @@ export function PermissionCard({
   return (
     <div className={styles.card} data-status="pending" data-testid="permission-card">
       <div className={styles.head}>
-        <span className={styles.label}>permission required</span>
+        <span className={styles.label}>{t('run.permission.required')}</span>
         <span className={styles.title}>{item.title}</span>
       </div>
       <div className={styles.options}>
@@ -77,12 +79,12 @@ export function PermissionCard({
         ))}
         {decidedOptionId && (
           <span className={styles.waiting} data-testid="permission-waiting">
-            Answered — waiting for the agent…
+            {t('run.permission.answered')}
           </span>
         )}
         {!decidedOptionId && controls?.disabled && (
           <span className={styles.waiting} data-testid="permission-readonly">
-            Read-only — a project member can answer.
+            {t('run.permission.readonly')}
           </span>
         )}
       </div>

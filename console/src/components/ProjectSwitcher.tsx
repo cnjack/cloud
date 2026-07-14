@@ -3,6 +3,7 @@
  * (PRD app-shell: "project switcher"). Reads the projects list from cache.
  */
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useProjects } from '../api/queries';
 import { projectRepoSummary } from '../lib/repo';
 import styles from './ProjectSwitcher.module.css';
@@ -16,6 +17,7 @@ export function ProjectSwitcher({
   onSelect: (id: string) => void;
   onAll: () => void;
 }) {
+  const { t } = useTranslation();
   const { data: projects } = useProjects();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -30,7 +32,7 @@ export function ProjectSwitcher({
   }, [open]);
 
   const active = projects?.find((p) => p.id === activeProjectId);
-  const label = active ? active.name : 'All projects';
+  const label = active ? active.name : t('components.projectSwitcher.allProjects');
 
   return (
     <div className={styles.wrap} ref={ref}>
@@ -57,7 +59,7 @@ export function ProjectSwitcher({
             }}
             type="button"
           >
-            All projects
+            {t('components.projectSwitcher.allProjects')}
           </button>
           {(projects ?? []).map((p) => (
             <button
@@ -75,7 +77,7 @@ export function ProjectSwitcher({
             </button>
           ))}
           {projects && projects.length === 0 && (
-            <div className={styles.emptyItem}>No projects yet</div>
+            <div className={styles.emptyItem}>{t('components.projectSwitcher.noProjects')}</div>
           )}
         </div>
       )}

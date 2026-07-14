@@ -5,19 +5,20 @@
  * server derives the provider/owner-name from the URL and rejects draft_pr on a
  * raw repo (git://, no owner/name path) with a clean 400.
  */
+import { useTranslation } from 'react-i18next';
 import type { GitMode } from '../api/types';
 import styles from './GitModeToggle.module.css';
 
-const MODES: { value: GitMode; label: string; hint: string }[] = [
+const MODES: { value: GitMode; labelKey: string; hintKey: string }[] = [
   {
     value: 'readonly',
-    label: 'Read-only diff',
-    hint: 'A successful run produces a diff artifact only — nothing is pushed.',
+    labelKey: 'components.gitMode.readonlyLabel',
+    hintKey: 'components.gitMode.readonlyHint',
   },
   {
     value: 'draft_pr',
-    label: 'Draft PR',
-    hint: 'On success the agent pushes a branch and opens a draft PR to review. Never auto-merges, never triggers CI.',
+    labelKey: 'components.gitMode.draftPrLabel',
+    hintKey: 'components.gitMode.draftPrHint',
   },
 ];
 
@@ -28,14 +29,16 @@ export function GitModeToggle({
   value: GitMode;
   onChange: (next: GitMode) => void;
 }) {
-  const activeHint = MODES.find((m) => m.value === value)?.hint;
+  const { t } = useTranslation();
+  const activeMode = MODES.find((m) => m.value === value);
+  const activeHint = activeMode ? t(activeMode.hintKey) : undefined;
   return (
     <div className={styles.wrap}>
-      <span className={styles.legend}>Git integration</span>
+      <span className={styles.legend}>{t('components.gitMode.legend')}</span>
       <div
         className={styles.segmented}
         role="radiogroup"
-        aria-label="Git integration mode"
+        aria-label={t('components.gitMode.modeAria')}
         data-testid="git-mode-control"
       >
         {MODES.map((m) => (
@@ -49,7 +52,7 @@ export function GitModeToggle({
             data-testid={`git-mode-${m.value}`}
             onClick={() => onChange(m.value)}
           >
-            {m.label}
+            {t(m.labelKey)}
           </button>
         ))}
       </div>

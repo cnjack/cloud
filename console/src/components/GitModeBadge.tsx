@@ -6,6 +6,7 @@
  *                 reviewable-PR promise, mono provider_repo)
  * Absent git_mode is treated as readonly (older projects / diff-only default).
  */
+import { useTranslation } from 'react-i18next';
 import type { GitMode } from '../api/types';
 import { ArrowRight } from '@phosphor-icons/react';
 import styles from './GitModeBadge.module.css';
@@ -17,6 +18,7 @@ export function GitModeBadge({
   gitMode?: GitMode | string;
   providerRepo?: string;
 }) {
+  const { t } = useTranslation();
   const isDraftPr = gitMode === 'draft_pr';
 
   if (isDraftPr) {
@@ -25,10 +27,10 @@ export function GitModeBadge({
         className={styles.badge}
         data-mode="draft_pr"
         data-testid="git-mode-badge"
-        title="Successful runs push a branch and open a draft PR to review."
+        title={t('components.gitMode.draftPrTitle')}
       >
         <span className={styles.dot} aria-hidden />
-        Draft PR
+        {t('components.gitMode.draftPrLabel')}
         {providerRepo && (
           <>
             <ArrowRight className={styles.arrow} size={14} weight="regular" aria-hidden="true" />
@@ -44,10 +46,10 @@ export function GitModeBadge({
       className={styles.badge}
       data-mode="readonly"
       data-testid="git-mode-badge"
-      title="Successful runs produce a diff artifact only — nothing is pushed."
+      title={t('components.gitMode.readonlyTitle')}
     >
       <span className={styles.dot} aria-hidden />
-      Read-only diff
+      {t('components.gitMode.readonlyLabel')}
     </span>
   );
 }

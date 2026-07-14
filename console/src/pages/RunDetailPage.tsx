@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import { ArrowClockwise, ArrowLeft, ArrowSquareOut, CaretDown, Check, ClipboardText, Cpu, HandPalm, LockSimple, MagnifyingGlass, PaperPlaneTilt, Plus, ShieldWarning, Stop } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { RuntimeProvider, ToolRegistryProvider } from 'jcode-ui';
 import type { ChatRuntime, RuntimeActions, RuntimeState } from 'jcode-ui-core/runtime';
 import {
@@ -26,6 +28,7 @@ import { PrPanel } from '../components/PrPanel';
 import { LoadingBlock, ErrorBlock, InlineHint } from '../components/States';
 import { Spinner } from '../components/Spinner';
 import { StatusBadge } from '../components/StatusBadge';
+import { LanguageToggle } from '../components/LanguageToggle';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { useToast } from '../components/Toast';
 import { Wordmark } from '../components/Wordmark';
@@ -36,13 +39,16 @@ import { ProjectSettingsAction } from '../project-workspace/ProjectSettingsActio
 import { Timeline, type PermissionControls } from '../runview';
 import styles from './RunDetailPage.module.css';
 
-const FAILURE_LABELS: Record<FailureReason, string> = {
-  clone_failed: 'Repository clone failed',
-  setup_failed: 'Project setup failed',
-  agent_error: 'Agent error',
-  timeout: 'Timed out',
-  push_failed: 'Branch push failed',
-};
+function failureLabel(reason: FailureReason, t: TFunction): string {
+  const labels: Record<FailureReason, string> = {
+    clone_failed: t('runDetail.failure.cloneFailed'),
+    setup_failed: t('runDetail.failure.setupFailed'),
+    agent_error: t('runDetail.failure.agentError'),
+    timeout: t('runDetail.failure.timeout'),
+    push_failed: t('runDetail.failure.pushFailed'),
+  };
+  return labels[reason];
+}
 
 type View = 'conversation' | 'diff' | 'pr';
 type FailedSubmission = { runId: string; kind: 'follow_up' | 'resume'; text: string; options?: ResumeSessionOptions };
@@ -52,6 +58,7 @@ export function RunDetailPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const api = useApi();
+  const { t } = useTranslation();
   const [view, setView] = useState<View>('conversation');
   const [failedSubmission, setFailedSubmission] = useState<FailedSubmission | null>(null);
   const conversationRef = useRef<HTMLElement>(null);
@@ -110,7 +117,7 @@ export function RunDetailPage() {
               delete next[requestId];
               return next;
             });
-            toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : 'Could not send the permission decision.' });
+            toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : t('runDetail.toast.permissionDecisionFailed') });
           },
         },
       );
@@ -124,7 +131,7 @@ export function RunDetailPage() {
       {
         onError: (error) => {
           setFailedSubmission({ runId, kind: 'follow_up', text });
-          toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : 'Could not send the message.' });
+          toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : t('runDetail.toast.messageFailed') });
         },
       },
     );
@@ -136,12 +143,12 @@ export function RunDetailPage() {
       { runId, prompt: text, options },
       {
         onSuccess: (nextRun) => {
-          toast.push({ kind: 'success', message: 'Session resumed.' });
+          toast.push({ kind: 'success', message: t('runDetail.toast.sessionResumed') });
           navigate(`/runs/${nextRun.id}`);
         },
         onError: (error) => {
           setFailedSubmission({ runId, kind: 'resume', text, options });
-          toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : 'Could not resume the session.' });
+          toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : t('runDetail.toast.resumeFailed') });
         },
       },
     );
@@ -161,8 +168,8 @@ export function RunDetailPage() {
       enqueueMessage: sendFollowUp,
       removeQueuedMessage: () => {},
       stop: () => cancel.mutate(runId, {
-        onSuccess: () => toast.push({ kind: 'info', message: 'Run canceled.' }),
-        onError: (error) => toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : 'Cancel failed.' }),
+        onSuccess: () => toast.push({ kind: 'info', message: t('runDetail.toast.canceled') }),
+        onError: (error) => toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : t('runDetail.toast.cancelFailed') }),
       }),
       resolveApproval: () => {},
       submitAskUser: () => {},
@@ -171,15 +178,15 @@ export function RunDetailPage() {
     return { getState: () => state, subscribe: () => () => {}, actions };
   }, [cancel, continueSession, runId, sendFollowUp, status, terminal, toast]);
 
-  if (run.isLoading) return <LoadingBlock label="Loading run…" />;
-  if (!run.data) return <ErrorBlock error={run.error} onRetry={() => run.refetch()} title="Couldn't load run" />;
-  if (project.isLoading) return <LoadingBlock label="Loading project workspace…" />;
+  if (run.isLoading) return <LoadingBlock label={t('runDetail.loadingRun')} />;
+  if (!run.data) return <ErrorBlock error={run.error} onRetry={() => run.refetch()} title={t('runDetail.loadRunError')} />;
+  if (project.isLoading) return <LoadingBlock label={t('runDetail.loadingWorkspace')} />;
 
   const current = run.data;
   const services = project.data?.services ?? [];
   const service = services.find((entry) => entry.id === current.service_id);
   const activeServiceId = service?.id ?? current.service_id ?? services[0]?.id ?? '';
-  const projectName = project.data?.name ?? `Project ${shortId(current.project_id)}`;
+  const projectName = project.data?.name ?? t('runDetail.projectName', { id: shortId(current.project_id) });
   const terminalRun = isTerminal(current.status);
   const failed = current.status === 'failed';
   const isSession = current.session === true;
@@ -193,19 +200,19 @@ export function RunDetailPage() {
   )?.ts;
 
   const doCancel = () => cancel.mutate(runId, {
-    onSuccess: () => toast.push({ kind: 'info', message: 'Run canceled.' }),
-    onError: (error) => toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : 'Cancel failed.' }),
+    onSuccess: () => toast.push({ kind: 'info', message: t('runDetail.toast.canceled') }),
+    onError: (error) => toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : t('runDetail.toast.cancelFailed') }),
   });
   const doRetry = () => retry.mutate(runId, {
     onSuccess: (nextRun) => {
-      toast.push({ kind: 'success', message: 'Retry dispatched.' });
+      toast.push({ kind: 'success', message: t('runDetail.toast.retryDispatched') });
       navigate(`/runs/${nextRun.id}`);
     },
-    onError: (error) => toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : 'Retry failed.' }),
+    onError: (error) => toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : t('runDetail.toast.retryFailed') }),
   });
   const doFinishSession = () => finishSession.mutate(runId, {
-    onSuccess: () => toast.push({ kind: 'info', message: 'Session finishing — the agent is wrapping up.' }),
-    onError: (error) => toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : 'Could not finish the session.' }),
+    onSuccess: () => toast.push({ kind: 'info', message: t('runDetail.toast.sessionFinishing') }),
+    onError: (error) => toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : t('runDetail.toast.finishFailed') }),
   });
 
   return (
@@ -221,35 +228,36 @@ export function RunDetailPage() {
             canManage={(project.data?.role ?? 'owner') === 'owner'}
             onSelectService={(serviceId) => navigate(`/projects/${current.project_id}?service=${encodeURIComponent(serviceId)}&tab=tasks`)}
             onSelectTab={() => navigate(`/projects/${current.project_id}`)}
-            railTop={<><Wordmark /><Link to="/" className={styles.projectsLink}>Projects</Link></>}
-            railFooter={<div className={styles.railFooter}><span>Project workspace</span><ThemeToggle /></div>}
+            railTop={<><Wordmark /><Link to="/" className={styles.projectsLink}>{t('runDetail.nav.projects')}</Link></>}
+            railFooter={<div className={styles.railFooter}><span>{t('runDetail.railFooter')}</span><ThemeToggle /></div>}
             projectAction={(project.data?.role ?? 'owner') === 'owner' ? (
               <ProjectSettingsAction to={`/projects/${current.project_id}?service=${encodeURIComponent(activeServiceId)}&tab=tasks&view=project-settings`} />
             ) : undefined}
             utility={
               <>
-                <nav className={styles.breadcrumbs} aria-label="Breadcrumb">
-                  <Link to="/">Projects</Link><span>/</span>
+                <nav className={styles.breadcrumbs} aria-label={t('runDetail.breadcrumbLabel')}>
+                  <Link to="/">{t('runDetail.nav.projects')}</Link><span>/</span>
                   <Link to={`/projects/${current.project_id}`}>{projectName}</Link><span>/</span>
-                  <span>Tasks</span><span>/</span><span>Detail</span>
+                  <span>{t('runDetail.breadcrumb.tasks')}</span><span>/</span><span>{t('runDetail.breadcrumb.detail')}</span>
                 </nav>
+                <LanguageToggle />
                 <ThemeToggle />
               </>
             }
           >
             <div className={styles.taskDetail}>
               <header className={styles.taskHeader} data-testid="run-status-header" data-status={current.status}>
-                <Link to={`/projects/${current.project_id}`} className={styles.backToProject} data-testid="run-back-to-project"><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>Recent tasks</span></Link>
+                <Link to={`/projects/${current.project_id}`} className={styles.backToProject} data-testid="run-back-to-project"><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>{t('runDetail.recentTasks')}</span></Link>
                 <div className={styles.taskTitleRow}>
                   <div>
                     <h1>{current.prompt}</h1>
-                    <p>{runKindLabel(current)} · {service?.name ?? 'Service unavailable'} · {runOriginLabel(current)} · {formatDateTime(current.created_at)}</p>
+                    <p>{runKindLabel(current, t)} · {service?.name ?? t('runDetail.serviceUnavailable')} · {runOriginLabel(current, t)} · {formatDateTime(current.created_at)}</p>
                   </div>
                   <div className={styles.headerActions}>
                     <StatusBadge status={current.status} />
-                    {noChanges && <span className={styles.noChangesBadge} data-testid="no-changes-badge">No changes</span>}
-                    {!terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doCancel} loading={cancel.isPending} data-testid="cancel-btn"><Stop size={15} weight="regular" aria-hidden="true" /><span>Stop</span></Button>}
-                    {terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doRetry} loading={retry.isPending} disabled={!modelGate.configured} data-testid="retry-btn"><ArrowClockwise size={15} weight="regular" aria-hidden="true" /><span>Retry</span></Button>}
+                    {noChanges && <span className={styles.noChangesBadge} data-testid="no-changes-badge">{t('runDetail.noChangesBadge')}</span>}
+                    {!terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doCancel} loading={cancel.isPending} data-testid="cancel-btn"><Stop size={15} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.stop')}</span></Button>}
+                    {terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doRetry} loading={retry.isPending} disabled={!modelGate.configured} data-testid="retry-btn"><ArrowClockwise size={15} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.retry')}</span></Button>}
                   </div>
                 </div>
               </header>
@@ -269,40 +277,40 @@ export function RunDetailPage() {
                       {terminalRun && canAct && modelGate.notice}
                       {failed && (
                         <div className={styles.failBanner} role="alert" data-testid="failure-banner">
-                          <strong>{current.failure_reason ? FAILURE_LABELS[current.failure_reason] : 'Run failed'}</strong>
-                          <span>{current.failure_message || current.error || 'The run failed without a message.'}</span>
+                          <strong>{current.failure_reason ? failureLabel(current.failure_reason, t) : t('runDetail.failure.runFailed')}</strong>
+                          <span>{current.failure_message || current.error || t('runDetail.failure.noMessage')}</span>
                         </div>
                       )}
                       {streamFailed && (
                         <div className={styles.streamError} role="alert" data-testid="stream-error">
-                          <span>Live updates disconnected. Showing periodic refreshes.</span>
-                          <Button variant="secondary" size="sm" onClick={stream.reconnect} data-testid="stream-reconnect">Reconnect</Button>
+                          <span>{t('runDetail.streamDisconnected')}</span>
+                          <Button variant="secondary" size="sm" onClick={stream.reconnect} data-testid="stream-reconnect">{t('runDetail.reconnect')}</Button>
                         </div>
                       )}
-                      {run.isError && run.data && <InlineHint>Couldn't refresh the latest run details — showing the last known state.</InlineHint>}
+                      {run.isError && run.data && <InlineHint>{t('runDetail.refreshError')}</InlineHint>}
 
                       {view === 'diff' ? (
                         <RunDiff run={current} noChanges={noChanges} diff={diff} downloadUrl={api.diffDownloadUrl(runId)} onBack={() => setView('conversation')} />
                       ) : view === 'pr' ? (
-                        <div className={styles.subview}><button type="button" onClick={() => setView('conversation')}><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>Conversation</span></button><PrPanel runId={runId} projectId={current.project_id} canReview={canAct} /></div>
+                        <div className={styles.subview}><button type="button" onClick={() => setView('conversation')}><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.conversation')}</span></button><PrPanel runId={runId} projectId={current.project_id} canReview={canAct} /></div>
                       ) : (
                         <>
                           <div className={styles.dateDivider}><span>{new Date(current.created_at).toLocaleDateString()}</span></div>
                           <article className={styles.initialPrompt} data-testid="run-initial-prompt">
                             <div className={styles.userAvatar}>U</div>
-                            <div><div className={styles.messageMeta}><strong>You</strong><time>{formatDateTime(current.created_at)}</time></div><p>{current.prompt}</p></div>
+                            <div><div className={styles.messageMeta}><strong>{t('runDetail.you')}</strong><time>{formatDateTime(current.created_at)}</time></div><p>{current.prompt}</p></div>
                           </article>
 
                           {isReview && current.review_output ? (
                             <div className={styles.reviewOutput} data-testid="review-output"><Markdown source={current.review_output} /></div>
                           ) : isReview && !terminalRun ? (
-                            <div className={styles.reviewProgress} data-testid="review-in-progress"><Spinner label="Review in progress…" /><Timeline events={stream.events} isRunning={live} permissions={permissionControls} /></div>
+                            <div className={styles.reviewProgress} data-testid="review-in-progress"><Spinner label={t('runDetail.reviewInProgress')} /><Timeline events={stream.events} isRunning={live} permissions={permissionControls} /></div>
                           ) : isReview ? (
-                            <p className={styles.empty}>{failed ? 'This review failed, so no output was produced.' : 'No review output was produced.'}</p>
+                            <p className={styles.empty}>{failed ? t('runDetail.reviewFailed') : t('runDetail.noReviewOutput')}</p>
                           ) : stream.events.length > 0 || live ? (
                             <Timeline events={stream.events} isRunning={live} permissions={permissionControls} />
                           ) : (
-                            <p className={styles.empty}>{terminalRun ? 'No conversation events were recorded.' : 'Waiting for the agent…'}</p>
+                            <p className={styles.empty}>{terminalRun ? t('runDetail.noEvents') : t('runDetail.waitingForAgent')}</p>
                           )}
                         </>
                       )}
@@ -383,9 +391,10 @@ function SessionComposer({
   onFinish: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   if (!current.session || !canAct) return null;
   if (sessionLive && !sessionAwaiting && !sessionTurnRunning) {
-    return <div className={styles.sessionDock} data-testid="session-panel"><div className={styles.sessionPending}><span data-testid="session-pending-note">{current.status === 'queued' ? 'Session queued — waiting for a free session slot in this project.' : 'Session starting — the workspace is being scheduled.'}</span></div></div>;
+    return <div className={styles.sessionDock} data-testid="session-panel"><div className={styles.sessionPending}><span data-testid="session-pending-note">{current.status === 'queued' ? t('runDetail.session.sessionQueued') : t('runDetail.session.sessionStarting')}</span></div></div>;
   }
   if (sessionLive) {
     return (
@@ -394,7 +403,7 @@ function SessionComposer({
           disabled={sendPending || cancelPending}
           mode="follow-up"
           running={sessionTurnRunning}
-          placeholder={sessionAwaiting ? 'Continue this task…' : 'Queue a follow-up — it will run after the current turn…'}
+          placeholder={sessionAwaiting ? t('runDetail.composer.continuePlaceholder') : t('runDetail.composer.followUpPlaceholder')}
           currentModelId={current.model_id ?? ''}
           currentModelName={current.model_name}
           currentPermissionMode={current.permission_mode === 'approval' ? 'approval' : 'full_access'}
@@ -404,9 +413,9 @@ function SessionComposer({
         />
         {failedSubmission?.kind === 'follow_up' && <FailedSubmissionNotice submission={failedSubmission} onRetry={() => onSend(failedSubmission.text)} />}
         <div className={styles.sessionActions}>
-          <span data-testid="session-actions-hint">Finish lets the agent wrap up after the current turn; Cancel stops immediately.</span>
+          <span data-testid="session-actions-hint">{t('runDetail.session.sessionActionsHint')}</span>
           <div className={styles.sessionActionButtons}>
-            <Button type="button" variant="ghost" size="sm" onClick={onFinish} loading={finishPending} data-testid="session-finish-btn">Finish session</Button>
+            <Button type="button" variant="ghost" size="sm" onClick={onFinish} loading={finishPending} data-testid="session-finish-btn">{t('runDetail.session.finishSession')}</Button>
           </div>
         </div>
       </div>
@@ -414,12 +423,12 @@ function SessionComposer({
   }
   return (
     <div className={styles.sessionDock} data-testid="resume-session-panel">
-      <span className={styles.resumeHint}>Continue this session — the agent keeps the same context.</span>
+      <span className={styles.resumeHint}>{t('runDetail.session.resumeHint')}</span>
       <ConversationComposer
         disabled={!modelConfigured || resumePending}
         mode="resume"
         running={false}
-        placeholder="Continue this task…"
+        placeholder={t('runDetail.composer.continuePlaceholder')}
         currentModelId={current.model_id ?? ''}
         currentModelName={current.model_name}
         currentPermissionMode={current.permission_mode === 'approval' ? 'approval' : 'full_access'}
@@ -454,6 +463,7 @@ function ConversationComposer({
   onSend: (text: string, options?: ResumeSessionOptions) => void;
   onStop?: () => void;
 }) {
+  const { t } = useTranslation();
   const [text, setText] = useState('');
   const [modelId, setModelId] = useState(currentModelId);
   const [permissionMode, setPermissionMode] = useState(currentPermissionMode);
@@ -462,8 +472,8 @@ function ConversationComposer({
   const modelOptions = useMemo(() => {
     const options: ComposerModelOption[] = [{
       value: '',
-      label: configurable ? 'Service default' : currentModelName || 'Service default',
-      subline: configurable ? 'Use the service configured model' : 'Model is fixed for this active session',
+      label: configurable ? t('runDetail.composer.serviceDefault') : currentModelName || t('runDetail.composer.serviceDefault'),
+      subline: configurable ? t('runDetail.composer.useServiceModel') : t('runDetail.composer.modelFixed'),
     }];
     if (currentModelId && !models.some((model) => model.id === currentModelId)) {
       options.unshift({ value: currentModelId, label: currentModelName || currentModelId, subline: currentModelId });
@@ -500,7 +510,7 @@ function ConversationComposer({
         <textarea
           ref={textareaRef}
           className={styles.conversationInput}
-          aria-label="Message input"
+          aria-label={t('runDetail.composer.messageInput')}
           placeholder={placeholder}
           value={text}
           rows={1}
@@ -515,7 +525,7 @@ function ConversationComposer({
         />
         <div className={styles.conversationControls}>
           <div className={styles.composerSettings}>
-            <button className={styles.composerAdd} type="button" disabled title="Attachments are not available in Cloud sessions yet." aria-label="Attachments unavailable">
+            <button className={styles.composerAdd} type="button" disabled title={t('runDetail.composer.attachmentsUnavailableTitle')} aria-label={t('runDetail.composer.attachmentsUnavailable')}>
               <Plus size={16} weight="regular" aria-hidden="true" />
             </button>
             <PermissionPicker
@@ -523,7 +533,7 @@ function ConversationComposer({
               onChange={setPermissionMode}
               disabled={disabled || !configurable}
             />
-            {!configurable && <span className={styles.composerLocked}><LockSimple size={13} weight="regular" aria-hidden="true" />Model and access apply when you resume.</span>}
+            {!configurable && <span className={styles.composerLocked}><LockSimple size={13} weight="regular" aria-hidden="true" />{t('runDetail.composer.modelAccessLocked')}</span>}
           </div>
           <div className={styles.conversationSubmit}>
             <ModelPicker
@@ -533,14 +543,14 @@ function ConversationComposer({
               disabled={disabled || !configurable}
             />
             {running && onStop && (
-              <button className={styles.composerStop} type="button" onClick={onStop} disabled={disabled} aria-label="Stop">
-                <Stop size={14} weight="fill" aria-hidden="true" /><span>Stop</span>
+              <button className={styles.composerStop} type="button" onClick={onStop} disabled={disabled} aria-label={t('runDetail.action.stop')}>
+                <Stop size={14} weight="fill" aria-hidden="true" /><span>{t('runDetail.action.stop')}</span>
               </button>
             )}
             {(!running || text.trim()) && (
-              <button className={styles.composerSend} type="submit" disabled={disabled || !text.trim()} aria-label="Send message">
+              <button className={styles.composerSend} type="submit" disabled={disabled || !text.trim()} aria-label={t('runDetail.composer.sendMessage')}>
                 <PaperPlaneTilt size={14} weight="regular" aria-hidden="true" />
-                <span>{running ? 'Queue' : 'Send'}</span>
+                <span>{running ? t('runDetail.composer.queue') : t('runDetail.composer.send')}</span>
               </button>
             )}
           </div>
@@ -562,6 +572,7 @@ function ModelPicker({ value, onChange, options, disabled }: {
   options: readonly ComposerModelOption[];
   disabled: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
@@ -574,24 +585,24 @@ function ModelPicker({ value, onChange, options, disabled }: {
       <button
         className={styles.composerTrigger}
         type="button"
-        aria-label="Model"
+        aria-label={t('runDetail.modelLabel')}
         aria-expanded={open}
-        title={disabled ? 'The active agent session keeps its existing model.' : 'Choose the model for the resumed session.'}
+        title={disabled ? t('runDetail.model.disabledTitle') : t('runDetail.model.chooseTitle')}
         disabled={disabled}
         data-testid="conversation-model-select"
         onClick={(event) => { event.stopPropagation(); setOpen((current) => !current); }}
       >
         <Cpu size={16} weight="regular" aria-hidden="true" />
-        <span>{selected?.label ?? 'Model'}</span>
+        <span>{selected?.label ?? t('runDetail.modelLabel')}</span>
         <CaretDown size={12} weight="bold" aria-hidden="true" />
       </button>
       {open && (
-        <div className={`${styles.composerMenu} ${styles.modelMenu}`} role="listbox" aria-label="Model">
+        <div className={`${styles.composerMenu} ${styles.modelMenu}`} role="listbox" aria-label={t('runDetail.modelLabel')}>
           <label className={styles.modelSearch}>
             <MagnifyingGlass size={14} weight="regular" aria-hidden="true" />
-            <input aria-label="Filter models" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter models…" autoFocus />
+            <input aria-label={t('runDetail.model.filterModels')} value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={t('runDetail.model.filterModelsPlaceholder')} autoFocus />
           </label>
-          <div className={styles.composerMenuLabel}>Models</div>
+          <div className={styles.composerMenuLabel}>{t('runDetail.model.modelsHeading')}</div>
           <div className={styles.modelOptions}>
             {visible.map((option) => (
               <button
@@ -607,7 +618,7 @@ function ModelPicker({ value, onChange, options, disabled }: {
                 {option.value === value && <Check size={14} weight="bold" aria-hidden="true" />}
               </button>
             ))}
-            {visible.length === 0 && <span className={styles.noModelResults}>No matching models</span>}
+            {visible.length === 0 && <span className={styles.noModelResults}>{t('runDetail.model.noMatchingModels')}</span>}
           </div>
         </div>
       )}
@@ -620,13 +631,14 @@ function PermissionPicker({ value, onChange, disabled }: {
   onChange: (value: 'approval' | 'full_access') => void;
   disabled: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   useDismissablePicker(rootRef, open, setOpen);
   const modes = [
-    { value: 'approval' as const, label: 'Ask for approval', subline: 'Agent asks before running tools', disabled: false, Icon: HandPalm },
-    { value: 'plan' as const, label: 'Plan', subline: 'Not available in Cloud sessions yet', disabled: true, Icon: ClipboardText },
-    { value: 'full_access' as const, label: 'Full access', subline: 'Agent can act without asking', disabled: false, Icon: ShieldWarning },
+    { value: 'approval' as const, label: t('runDetail.permission.askForApproval'), subline: t('runDetail.permission.askForApprovalSub'), disabled: false, Icon: HandPalm },
+    { value: 'plan' as const, label: t('runDetail.permission.plan'), subline: t('runDetail.permission.planSub'), disabled: true, Icon: ClipboardText },
+    { value: 'full_access' as const, label: t('runDetail.permission.fullAccess'), subline: t('runDetail.permission.fullAccessSub'), disabled: false, Icon: ShieldWarning },
   ];
   const selected = modes.find((mode) => mode.value === value) ?? modes[0]!;
 
@@ -635,9 +647,9 @@ function PermissionPicker({ value, onChange, disabled }: {
       <button
         className={`${styles.composerTrigger} ${value === 'full_access' ? styles.fullAccess : ''}`}
         type="button"
-        aria-label="Permission mode"
+        aria-label={t('runDetail.permission.permissionMode')}
         aria-expanded={open}
-        title={disabled ? 'The active agent session keeps its existing permission mode.' : 'Choose how the resumed agent asks for permission.'}
+        title={disabled ? t('runDetail.permission.disabledTitle') : t('runDetail.permission.chooseTitle')}
         disabled={disabled}
         data-testid="conversation-permission-select"
         onClick={(event) => { event.stopPropagation(); setOpen((current) => !current); }}
@@ -647,7 +659,7 @@ function PermissionPicker({ value, onChange, disabled }: {
         <CaretDown size={12} weight="bold" aria-hidden="true" />
       </button>
       {open && (
-        <div className={`${styles.composerMenu} ${styles.permissionMenu}`} role="listbox" aria-label="Permission mode">
+        <div className={`${styles.composerMenu} ${styles.permissionMenu}`} role="listbox" aria-label={t('runDetail.permission.permissionMode')}>
           {modes.map((mode) => (
             <button
               key={mode.value}
@@ -716,33 +728,34 @@ function RunInspector({
   onPr: () => void;
   showPr: boolean;
 }) {
+  const { t } = useTranslation();
   return (
-    <aside className={styles.inspector} data-testid="run-inspector" aria-label="Run details">
-      <InspectorSection title="Run overview">
+    <aside className={styles.inspector} data-testid="run-inspector" aria-label={t('runDetail.inspector.runDetailsLabel')}>
+      <InspectorSection title={t('runDetail.inspector.runOverview')}>
         <dl className={styles.facts}>
-          <InspectorFact label="Service">{serviceName ?? (run.service_id ? shortId(run.service_id) : 'Unavailable')}</InspectorFact>
-          <InspectorFact label="Trigger">{runOriginLabel(run)}</InspectorFact>
-          <InspectorFact label="Model">{run.model_name || run.model_id || 'Not reported'}</InspectorFact>
-          <InspectorFact label="Permission">{run.permission_mode === 'approval' ? 'Ask before actions' : 'Full access'}</InspectorFact>
-          <InspectorFact label="Workspace">{run.k8s_job_name || 'Not reported'}</InspectorFact>
+          <InspectorFact label={t('runDetail.inspector.service')}>{serviceName ?? (run.service_id ? shortId(run.service_id) : t('runDetail.inspector.unavailable'))}</InspectorFact>
+          <InspectorFact label={t('runDetail.inspector.trigger')}>{runOriginLabel(run, t)}</InspectorFact>
+          <InspectorFact label={t('runDetail.modelLabel')}>{run.model_name || run.model_id || t('runDetail.inspector.notReported')}</InspectorFact>
+          <InspectorFact label={t('runDetail.inspector.permission')}>{run.permission_mode === 'approval' ? t('runDetail.inspector.askBeforeActions') : t('runDetail.permission.fullAccess')}</InspectorFact>
+          <InspectorFact label={t('runDetail.inspector.workspace')}>{run.k8s_job_name || t('runDetail.inspector.notReported')}</InspectorFact>
         </dl>
       </InspectorSection>
       {!run.kind || run.kind === 'agent' ? (
-        <InspectorSection title="Changes">
-          <p className={styles.inspectorHint}>{noChanges ? 'No code changes' : diffState === 'ready' ? 'Review the complete patch' : diffState === 'loading' ? 'Loading change summary…' : diffState === 'error' ? 'Diff unavailable' : 'Available after the agent produces a diff'}</p>
+        <InspectorSection title={t('runDetail.inspector.changes')}>
+          <p className={styles.inspectorHint}>{noChanges ? t('runDetail.inspector.noCodeChanges') : diffState === 'ready' ? t('runDetail.inspector.reviewPatch') : diffState === 'loading' ? t('runDetail.inspector.loadingChangeSummary') : diffState === 'error' ? t('runDetail.inspector.diffUnavailable') : t('runDetail.inspector.diffAfterAgent')}</p>
           {diffContent && <DiffSummary patch={diffContent} />}
-          <button type="button" className={styles.inspectorAction} onClick={onDiff} data-testid="tab-diff"><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /><span>View complete diff</span></button>
-          {showPr && <button type="button" className={styles.inspectorAction} onClick={onPr} data-testid="tab-pr"><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /><span>Open pull request details</span></button>}
-          {run.pr_url && <a className={styles.inspectorAction} href={run.pr_url} target="_blank" rel="noreferrer" data-testid="pr-link"><span>Draft PR {run.pr_number ? `#${run.pr_number}` : ''}</span><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /></a>}
+          <button type="button" className={styles.inspectorAction} onClick={onDiff} data-testid="tab-diff"><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /><span>{t('runDetail.inspector.viewCompleteDiff')}</span></button>
+          {showPr && <button type="button" className={styles.inspectorAction} onClick={onPr} data-testid="tab-pr"><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /><span>{t('runDetail.inspector.openPrDetails')}</span></button>}
+          {run.pr_url && <a className={styles.inspectorAction} href={run.pr_url} target="_blank" rel="noreferrer" data-testid="pr-link"><span>{t('runDetail.inspector.draftPr')} {run.pr_number ? `#${run.pr_number}` : ''}</span><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /></a>}
         </InspectorSection>
       ) : null}
-      <InspectorSection title="Execution">
+      <InspectorSection title={t('runDetail.inspector.execution')}>
         <dl className={styles.facts}>
-          <InspectorFact label="Started">{startedAt ? formatDateTime(startedAt) : 'Not started'}</InspectorFact>
-          <InspectorFact label="Duration">{startedAt ? formatDuration(startedAt, run.finished_at) : 'Not started'}</InspectorFact>
-          <InspectorFact label="Run ID"><code>{run.id}</code></InspectorFact>
-          {run.retried_from && <InspectorFact label="Retry of"><Link to={`/runs/${run.retried_from}`}>{shortId(run.retried_from)}</Link></InspectorFact>}
-          {run.resumed_from && <InspectorFact label="Resumed from"><Link to={`/runs/${run.resumed_from}`} data-testid="resumed-from">resumed from {shortId(run.resumed_from)}</Link></InspectorFact>}
+          <InspectorFact label={t('runDetail.inspector.started')}>{startedAt ? formatDateTime(startedAt) : t('runDetail.inspector.notStarted')}</InspectorFact>
+          <InspectorFact label={t('runDetail.inspector.duration')}>{startedAt ? formatDuration(startedAt, run.finished_at) : t('runDetail.inspector.notStarted')}</InspectorFact>
+          <InspectorFact label={t('runDetail.inspector.runId')}><code>{run.id}</code></InspectorFact>
+          {run.retried_from && <InspectorFact label={t('runDetail.inspector.retryOf')}><Link to={`/runs/${run.retried_from}`}>{shortId(run.retried_from)}</Link></InspectorFact>}
+          {run.resumed_from && <InspectorFact label={t('runDetail.inspector.resumedFrom')}><Link to={`/runs/${run.resumed_from}`} data-testid="resumed-from">{t('runDetail.inspector.resumedFromLink', { id: shortId(run.resumed_from) })}</Link></InspectorFact>}
         </dl>
         <OriginReference run={run} />
       </InspectorSection>
@@ -774,11 +787,12 @@ function InspectorFact({ label, children }: { label: string; children: ReactNode
 }
 
 function OriginReference({ run }: { run: Run }) {
+  const { t } = useTranslation();
   if (run.origin === 'webhook' && run.origin_comment_url) {
-    return <a className={styles.originRef} href={run.origin_comment_url} target="_blank" rel="noreferrer" data-testid="origin-chip"><span>from PR comment</span><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /></a>;
+    return <a className={styles.originRef} href={run.origin_comment_url} target="_blank" rel="noreferrer" data-testid="origin-chip"><span>{t('runDetail.origin.fromPrComment')}</span><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /></a>;
   }
-  if (run.origin === 'schedule') return <span className={styles.originRef} data-testid="origin-chip-schedule">scheduled</span>;
-  if (run.origin === 'automation') return <span className={styles.originRef} data-testid="origin-chip-automation">PR event Automation</span>;
+  if (run.origin === 'schedule') return <span className={styles.originRef} data-testid="origin-chip-schedule">{t('runDetail.origin.scheduled')}</span>;
+  if (run.origin === 'automation') return <span className={styles.originRef} data-testid="origin-chip-automation">{t('runDetail.origin.prEventAutomation')}</span>;
   return null;
 }
 
@@ -795,35 +809,37 @@ function RunDiff({
   downloadUrl: string;
   onBack: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className={styles.subview}>
-      <button type="button" onClick={onBack}><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>Conversation</span></button>
-      {run.status !== 'succeeded' && !diff.data ? <p className={styles.empty}>{run.status === 'failed' ? 'This run failed, so no diff was produced.' : 'The diff will be available after the agent produces an artifact.'}</p>
-        : noChanges ? <p className={styles.empty} data-testid="diff-no-changes">This run made no code changes.</p>
-          : diff.isLoading ? <LoadingBlock label="Loading diff…" />
-            : diff.isError ? <ErrorBlock error={diff.error} onRetry={() => diff.refetch()} title="Couldn't load diff" />
+      <button type="button" onClick={onBack}><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.conversation')}</span></button>
+      {run.status !== 'succeeded' && !diff.data ? <p className={styles.empty}>{run.status === 'failed' ? t('runDetail.diff.runFailedNoDiff') : t('runDetail.diff.diffAfterArtifact')}</p>
+        : noChanges ? <p className={styles.empty} data-testid="diff-no-changes">{t('runDetail.diff.noCodeChanges')}</p>
+          : diff.isLoading ? <LoadingBlock label={t('runDetail.diff.loadingDiff')} />
+            : diff.isError ? <ErrorBlock error={diff.error} onRetry={() => diff.refetch()} title={t('runDetail.diff.loadDiffError')} />
               : <DiffView patch={diff.data?.content ?? ''} downloadUrl={downloadUrl} downloadName={`${shortId(run.id)}.diff`} />}
     </div>
   );
 }
 
 function FailedSubmissionNotice({ submission, onRetry }: { submission: FailedSubmission; onRetry: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className={styles.failedSubmission} role="alert" data-testid="failed-submission">
-      <strong>Message not sent.</strong><span>Your draft is preserved.</span><pre>{submission.text}</pre>
-      <Button type="button" variant="secondary" size="sm" onClick={onRetry}>Retry unsent message</Button>
+      <strong>{t('runDetail.failedSubmission.notSent')}</strong><span>{t('runDetail.failedSubmission.draftPreserved')}</span><pre>{submission.text}</pre>
+      <Button type="button" variant="secondary" size="sm" onClick={onRetry}>{t('runDetail.failedSubmission.retryUnsent')}</Button>
     </div>
   );
 }
 
-function runKindLabel(run: Run): string {
-  if (run.kind === 'review') return 'Code review';
-  return run.session ? 'Session' : 'Manual task';
+function runKindLabel(run: Run, t: TFunction): string {
+  if (run.kind === 'review') return t('runDetail.kind.codeReview');
+  return run.session ? t('runDetail.kind.session') : t('runDetail.kind.manualTask');
 }
 
-function runOriginLabel(run: Run): string {
-  if (run.origin === 'webhook') return 'Provider webhook';
-  if (run.origin === 'schedule') return 'Schedule';
-  if (run.origin === 'automation') return 'PR event';
-  return 'Manual';
+function runOriginLabel(run: Run, t: TFunction): string {
+  if (run.origin === 'webhook') return t('runDetail.originLabel.webhook');
+  if (run.origin === 'schedule') return t('runDetail.originLabel.schedule');
+  if (run.origin === 'automation') return t('runDetail.originLabel.prEvent');
+  return t('runDetail.originLabel.manual');
 }

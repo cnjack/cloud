@@ -11,6 +11,7 @@
  * (invalid_cron / cron_too_frequent) surface as a toast.
  */
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '../components/Button';
 import { TextField, TextAreaField } from '../components/Field';
 import { useToast } from '../components/Toast';
@@ -37,6 +38,7 @@ export function SchedulesPanel({
   createOpen?: boolean;
   onCreateOpenChange?: (open: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const toast = useToast();
   const schedulesQ = useServiceSchedules(service.id);
   const create = useCreateServiceSchedule(service.id);
@@ -61,12 +63,12 @@ export function SchedulesPanel({
           setCron('');
           setPrompt('');
           setShowForm(false);
-          toast.push({ kind: 'success', message: 'Schedule added.' });
+          toast.push({ kind: 'success', message: t('schedules.added') });
         },
         onError: (err) =>
           toast.push({
             kind: 'error',
-            message: err instanceof ApiError ? err.message : 'Could not add the schedule.',
+            message: err instanceof ApiError ? err.message : t('schedules.addError'),
           }),
       },
     );
@@ -78,8 +80,8 @@ export function SchedulesPanel({
     <section className={styles.panel} data-testid="schedules-panel">
       <div className={styles.head}>
           <div>
-            <span className={styles.eyebrow}>Schedule</span>
-            <h2 className={styles.title}>Scheduled tasks</h2>
+            <span className={styles.eyebrow}>{t('schedules.eyebrow')}</span>
+            <h2 className={styles.title}>{t('schedules.title')}</h2>
           </div>
         {canManage && !showForm && (
           <Button
@@ -89,22 +91,22 @@ export function SchedulesPanel({
             onClick={() => setShowForm(true)}
             data-testid="schedule-add-open"
           >
-            Add schedule
+            {t('schedules.addSchedule')}
           </Button>
         )}
       </div>
       <p className={styles.hint}>
-        Cron triggers dispatch a headless task against <strong>{service.name}</strong> using its default model.
+        {t('schedules.hint', { name: service.name })}
       </p>
 
       {schedulesQ.isLoading ? (
-        <p className={styles.hint}>Loading…</p>
+        <p className={styles.hint}>{t('common.loading')}</p>
       ) : schedulesQ.isError ? (
         <div className={styles.loadError} role="alert" data-testid="schedules-load-error">
           <p>
             {schedulesQ.error instanceof ApiError
               ? schedulesQ.error.message
-              : 'Couldn’t load schedules for this service.'}
+              : t('schedules.loadError')}
           </p>
           <Button
             type="button"
@@ -114,12 +116,12 @@ export function SchedulesPanel({
             disabled={schedulesQ.isFetching}
             data-testid="schedules-retry"
           >
-            {schedulesQ.isFetching ? 'Retrying…' : 'Retry'}
+            {schedulesQ.isFetching ? t('schedules.retrying') : t('common.retry')}
           </Button>
         </div>
       ) : schedules.length === 0 ? (
         <p className={styles.empty} data-testid="schedules-empty">
-          No schedules yet{canManage ? ' — add one to run this repo on a cron.' : '.'}
+          {canManage ? t('schedules.emptyManage') : t('schedules.empty')}
         </p>
       ) : (
         <ul className={styles.list} data-testid="schedules-list">
@@ -138,7 +140,7 @@ export function SchedulesPanel({
                       toast.push({
                         kind: 'error',
                         message:
-                          err instanceof ApiError ? err.message : 'Could not update the schedule.',
+                          err instanceof ApiError ? err.message : t('schedules.updateError'),
                       }),
                   },
                 )
@@ -149,25 +151,25 @@ export function SchedulesPanel({
                   {
                     onSuccess: () => {
                       done();
-                      toast.push({ kind: 'success', message: 'Schedule updated.' });
+                      toast.push({ kind: 'success', message: t('schedules.updated') });
                     },
                     onError: (err) =>
                       toast.push({
                         kind: 'error',
                         message:
-                          err instanceof ApiError ? err.message : 'Could not update the schedule.',
+                          err instanceof ApiError ? err.message : t('schedules.updateError'),
                       }),
                   },
                 )
               }
               onRemove={() =>
                 del.mutate(sc.id, {
-                  onSuccess: () => toast.push({ kind: 'success', message: 'Schedule removed.' }),
+                  onSuccess: () => toast.push({ kind: 'success', message: t('schedules.removed') }),
                   onError: (err) =>
                     toast.push({
                       kind: 'error',
                       message:
-                        err instanceof ApiError ? err.message : 'Could not remove the schedule.',
+                        err instanceof ApiError ? err.message : t('schedules.removeError'),
                     }),
                 })
               }
@@ -179,18 +181,18 @@ export function SchedulesPanel({
       {canManage && showForm && (
         <form className={styles.form} onSubmit={submit} noValidate data-testid="schedule-form">
           <TextField
-            label="Cron expression"
+            label={t('schedules.cronLabel')}
             placeholder="0 9 * * 1-5"
             value={cron}
             onChange={(e) => setCron(e.target.value)}
             required
             data-testid="schedule-cron"
             autoComplete="off"
-            hint="5 fields: minute hour day-of-month month day-of-week, evaluated in UTC. Minimum interval 5 minutes."
+            hint={t('schedules.cronHint')}
           />
           <TextAreaField
-            label="Prompt"
-            placeholder="Describe the task to run on schedule, e.g. Update the changelog from merged PRs."
+            label={t('schedules.promptLabel')}
+            placeholder={t('schedules.promptPlaceholder')}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             required
@@ -205,10 +207,10 @@ export function SchedulesPanel({
               loading={create.isPending}
               data-testid="schedule-create"
             >
-              Add
+              {t('common.add')}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={() => setShowForm(false)}>
-              Cancel
+              {t('common.cancel')}
             </Button>
           </div>
         </form>
@@ -234,6 +236,7 @@ function ScheduleRow({
   onSaveEdit: (input: { cron_expr: string; prompt: string }, done: () => void) => void;
   onRemove: () => void;
 }) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [cron, setCron] = useState(schedule.cron_expr);
   const [prompt, setPrompt] = useState(schedule.prompt);
@@ -255,7 +258,7 @@ function ScheduleRow({
             data-state={schedule.enabled ? 'on' : 'off'}
             data-testid={`schedule-state-${schedule.id}`}
           >
-            {schedule.enabled ? 'enabled' : 'disabled'}
+            {schedule.enabled ? t('schedules.stateEnabled') : t('schedules.stateDisabled')}
           </span>
           {schedule.last_error ? (
             <span
@@ -263,21 +266,21 @@ function ScheduleRow({
               title={schedule.last_error}
               data-testid={`schedule-error-${schedule.id}`}
             >
-              did not dispatch
+              {t('schedules.didNotDispatch')}
             </span>
           ) : null}
         </div>
         <div className={styles.sub}>{summarize(schedule.prompt, 100)}</div>
         <div className={styles.stamp}>
           {schedule.last_fired_at
-            ? `last fired ${timeAgo(schedule.last_fired_at)}`
-            : 'not yet fired'}
+            ? t('schedules.lastFired', { time: timeAgo(schedule.last_fired_at) })
+            : t('schedules.notYetFired')}
           {schedule.last_error ? ` · ${schedule.last_error}` : ''}
         </div>
         {editing && (
           <form className={styles.editForm} onSubmit={save} noValidate>
             <TextField
-              label="Cron expression"
+              label={t('schedules.cronLabel')}
               value={cron}
               onChange={(e) => setCron(e.target.value)}
               required
@@ -285,7 +288,7 @@ function ScheduleRow({
               autoComplete="off"
             />
             <TextAreaField
-              label="Prompt"
+              label={t('schedules.promptLabel')}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               required
@@ -299,10 +302,10 @@ function ScheduleRow({
                 size="sm"
                 data-testid={`schedule-edit-save-${schedule.id}`}
               >
-                Save
+                {t('common.save')}
               </Button>
               <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(false)}>
-                Cancel
+                {t('common.cancel')}
               </Button>
             </div>
           </form>
@@ -318,7 +321,7 @@ function ScheduleRow({
             onClick={onToggle}
             data-testid={`schedule-toggle-${schedule.id}`}
           >
-            {schedule.enabled ? 'Disable' : 'Enable'}
+            {schedule.enabled ? t('common.disable') : t('common.enable')}
           </Button>
           <Button
             type="button"
@@ -331,7 +334,7 @@ function ScheduleRow({
             }}
             data-testid={`schedule-edit-${schedule.id}`}
           >
-            Edit
+            {t('common.edit')}
           </Button>
           <Button
             type="button"
@@ -341,7 +344,7 @@ function ScheduleRow({
             onClick={onRemove}
             data-testid={`schedule-delete-${schedule.id}`}
           >
-            Remove
+            {t('common.remove')}
           </Button>
         </div>
       )}

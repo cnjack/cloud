@@ -20,8 +20,10 @@
  *                 user to paste a token instead (the paste field is always kept
  *                 by the parent), never a silent failure.
  */
+import { useTranslation } from 'react-i18next';
 import { ApiError, apiErrorCode } from '../api/client';
 import { ArrowSquareOut } from '@phosphor-icons/react';
+import { i18n } from '../i18n';
 import { daysUntil } from '../lib/format';
 import type { KanbanConnectStart, KanbanConnectStatus } from '../api/types';
 import { Button } from './Button';
@@ -31,11 +33,11 @@ import styles from './KanbanConnect.module.css';
  * "expires in N days" / an expired-copy for a KNOWN token expiry; null when the
  * expiry is unknown (manual PAT / env / none) so the caller renders no badge.
  */
-export function expiryLabel(iso: string | undefined, expiredCopy = 'expired'): string | null {
+export function expiryLabel(iso: string | undefined, expiredCopy?: string): string | null {
   const d = daysUntil(iso);
   if (d === null) return null;
-  if (d <= 0) return expiredCopy;
-  return `expires in ${d} day${d === 1 ? '' : 's'}`;
+  if (d <= 0) return expiredCopy ?? i18n.t('components.kanbanConnect.expiryExpired');
+  return i18n.t('components.kanbanConnect.expiresInDays', { count: d });
 }
 
 export interface KanbanConnectFlowProps {
@@ -73,6 +75,7 @@ export function KanbanConnectFlow({
   onStart,
   onReset,
 }: KanbanConnectFlowProps) {
+  const { t } = useTranslation();
   // An old jtype (no OAuth routes) fails at START with a typed 409.
   const unsupportedStart = apiErrorCode(startError) === 'jtype_oauth_unsupported';
   // Any OTHER start failure (jtype unreachable, cipher_not_configured, a raced
@@ -82,7 +85,7 @@ export function KanbanConnectFlow({
     startError && !unsupportedStart
       ? startError instanceof ApiError
         ? startError.message
-        : 'Could not start the connect flow.'
+        : t('components.kanbanConnect.startError')
       : null;
   // A dropped in-memory flow (e.g. orchestrator restart) 404s on poll — treated
   // exactly like an expired flow so the user just reconnects.
@@ -114,7 +117,7 @@ export function KanbanConnectFlow({
       disabled={disabled}
       data-testid={testid}
     >
-      Connect with jtype
+      {t('components.kanbanConnect.connect')}
     </Button>
   );
 
@@ -140,7 +143,7 @@ export function KanbanConnectFlow({
 
       {phase === 'pending' && connectStart && (
         <div className={styles.panel} data-testid={`${idPrefix}-panel`}>
-          <p className={styles.instructions}>Enter this code in jtype to authorize:</p>
+          <p className={styles.instructions}>{t('components.kanbanConnect.enterCode')}</p>
           <div className={styles.code} data-testid={`${idPrefix}-code`}>
             {connectStart.user_code}
           </div>
@@ -151,11 +154,11 @@ export function KanbanConnectFlow({
             rel="noopener noreferrer"
             data-testid={`${idPrefix}-link`}
           >
-            <span>Open jtype to authorize</span>
+            <span>{t('components.kanbanConnect.openJtype')}</span>
             <ArrowSquareOut size={15} weight="regular" aria-hidden="true" />
           </a>
           <p className={styles.status} data-testid={`${idPrefix}-status`}>
-            Waiting for you to authorize in jtype…
+            {t('components.kanbanConnect.waiting')}
           </p>
           <Button
             type="button"
@@ -164,7 +167,7 @@ export function KanbanConnectFlow({
             onClick={onReset}
             data-testid={`${idPrefix}-cancel`}
           >
-            Cancel
+            {t('common.cancel')}
           </Button>
         </div>
       )}
@@ -172,13 +175,13 @@ export function KanbanConnectFlow({
       {phase === 'complete' && (
         <div className={styles.panel} data-testid={`${idPrefix}-panel`}>
           <p className={styles.success} data-testid={`${idPrefix}-complete`}>
-            <span className={styles.badge}>Connected — token set</span>
+            <span className={styles.badge}>{t('components.kanbanConnect.connected')}</span>
             {expiryLabel(status?.token_expires_at)
               ? ` ${expiryLabel(status?.token_expires_at)}`
               : ''}
           </p>
           <Button type="button" variant="ghost" size="sm" onClick={onReset}>
-            Done
+            {t('common.done')}
           </Button>
         </div>
       )}
@@ -191,8 +194,8 @@ export function KanbanConnectFlow({
             data-testid={phase === 'failed' ? `${idPrefix}-failed` : `${idPrefix}-expired`}
           >
             {phase === 'failed'
-              ? 'Connection failed — click Connect again.'
-              : 'Connection expired — click Connect again.'}
+              ? t('components.kanbanConnect.failed')
+              : t('components.kanbanConnect.expired')}
           </p>
           {/* Reset first so onStart begins a clean flow. */}
           <Button
@@ -206,7 +209,7 @@ export function KanbanConnectFlow({
             disabled={disabled}
             data-testid={`${idPrefix}-start`}
           >
-            Connect with jtype
+            {t('components.kanbanConnect.connect')}
           </Button>
         </div>
       )}
@@ -214,10 +217,10 @@ export function KanbanConnectFlow({
       {phase === 'unsupported' && (
         <div className={styles.panel} data-testid={`${idPrefix}-panel`}>
           <p className={styles.notice} role="alert" data-testid={`${idPrefix}-unsupported`}>
-            This jtype deployment doesn’t support one-click Connect — paste a token instead.
+            {t('components.kanbanConnect.unsupported')}
           </p>
           <Button type="button" variant="ghost" size="sm" onClick={onReset}>
-            Dismiss
+            {t('common.dismiss')}
           </Button>
         </div>
       )}

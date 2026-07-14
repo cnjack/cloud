@@ -7,6 +7,7 @@
  * Kept deliberately simple: one link row, one primary action, one list.
  */
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ArrowSquareOut } from '@phosphor-icons/react';
 import { useNavigate } from 'react-router-dom';
 import { usePR, useRequestReview } from '../api/queries';
@@ -21,11 +22,11 @@ import { useToast } from './Toast';
 import { timeAgo } from '../lib/format';
 import styles from './PrPanel.module.css';
 
-const PR_STATE_LABELS: Record<PrState, string> = {
-  open: 'Open',
-  merged: 'Merged',
-  closed: 'Closed',
-  unknown: 'Unknown',
+const PR_STATE_LABEL_KEYS: Record<PrState, string> = {
+  open: 'components.prPanel.stateOpen',
+  merged: 'components.prPanel.stateMerged',
+  closed: 'components.prPanel.stateClosed',
+  unknown: 'components.prPanel.stateUnknown',
 };
 
 function normalizeState(state: string): PrState {
@@ -37,15 +38,17 @@ function normalizeState(state: string): PrState {
 /** Small pill badge for the PR's provider state (reuses the StatusBadge pill
  *  language; colour comes from status tokens via data-state). */
 export function PrStateBadge({ state }: { state: string }) {
+  const { t } = useTranslation();
   const s = normalizeState(state);
+  const label = t(PR_STATE_LABEL_KEYS[s]);
   return (
     <span
       className={styles.stateBadge}
       data-state={s}
       role="status"
-      aria-label={`Pull request state: ${PR_STATE_LABELS[s]}`}
+      aria-label={t('components.prPanel.stateAria', { state: label })}
     >
-      {PR_STATE_LABELS[s]}
+      {label}
     </span>
   );
 }
@@ -59,6 +62,7 @@ export function PrPanel({
   projectId: string;
   canReview: boolean;
 }) {
+  const { t } = useTranslation();
   const pr = usePR(runId, true);
   const navigate = useNavigate();
   const toast = useToast();
@@ -70,23 +74,23 @@ export function PrPanel({
   const doReview = () =>
     requestReview.mutate(runId, {
       onSuccess: (run) => {
-        toast.push({ kind: 'success', message: 'AI review requested.' });
+        toast.push({ kind: 'success', message: t('components.prPanel.reviewRequested') });
         navigate(`/runs/${run.id}`);
       },
       onError: (err) =>
         toast.push({
           kind: 'error',
-          message: err instanceof ApiError ? err.message : 'Could not request a review.',
+          message: err instanceof ApiError ? err.message : t('components.prPanel.reviewError'),
         }),
     });
 
-  if (pr.isLoading && !pr.data) return <LoadingBlock label="Loading pull request…" />;
+  if (pr.isLoading && !pr.data) return <LoadingBlock label={t('components.prPanel.loading')} />;
   if (pr.isError && !pr.data)
     return (
       <ErrorBlock
         error={pr.error}
         onRetry={() => pr.refetch()}
-        title="Couldn't load the pull request"
+        title={t('components.prPanel.loadError')}
       />
     );
 
@@ -107,7 +111,7 @@ export function PrPanel({
             <ArrowSquareOut className={styles.arrow} size={14} weight="regular" aria-hidden="true" />
           </a>
         ) : (
-          <span className={styles.noPr}>No pull request opened yet.</span>
+          <span className={styles.noPr}>{t('components.prPanel.noPr')}</span>
         )}
         <PrStateBadge state={info.state} />
         {info.head_branch && <span className={styles.branch}>{info.head_branch}</span>}
@@ -122,17 +126,17 @@ export function PrPanel({
             disabled={!modelGate.configured}
             data-testid="request-review-btn"
           >
-            Request AI review
+            {t('components.prPanel.requestReview')}
           </Button>
           {modelGate.notice}
         </div>
       )}
 
       <section className={styles.reviews}>
-        <h3 className={styles.reviewsTitle}>Reviews</h3>
+        <h3 className={styles.reviewsTitle}>{t('components.prPanel.reviewsTitle')}</h3>
         {info.review_runs.length === 0 ? (
           <p className={styles.empty} data-testid="reviews-empty">
-            No AI reviews yet.
+            {t('components.prPanel.reviewsEmpty')}
           </p>
         ) : (
           <div className={styles.reviewList}>
@@ -147,6 +151,7 @@ export function PrPanel({
 }
 
 function ReviewItem({ review }: { review: ReviewRunSummary }) {
+  const { t } = useTranslation();
   const hasOutput = !!review.review_output;
   const [open, setOpen] = useState(true);
   return (
@@ -166,7 +171,7 @@ function ReviewItem({ review }: { review: ReviewRunSummary }) {
             onClick={() => setOpen((v) => !v)}
             data-testid="review-toggle"
           >
-            {open ? 'Hide' : 'Show'}
+            {open ? t('components.prPanel.hide') : t('components.prPanel.show')}
           </button>
         )}
       </div>
@@ -179,8 +184,8 @@ function ReviewItem({ review }: { review: ReviewRunSummary }) {
       ) : (
         <p className={styles.pending}>
           {review.status === 'failed'
-            ? 'The review run failed before producing output.'
-            : 'Review in progress…'}
+            ? t('components.prPanel.reviewFailed')
+            : t('components.prPanel.reviewInProgress')}
         </p>
       )}
     </article>

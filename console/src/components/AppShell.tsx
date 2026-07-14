@@ -5,12 +5,14 @@ import {
 } from '@phosphor-icons/react';
 import { useEffect, useMemo } from 'react';
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { NavLink, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import { useDemoMode, useRole } from '../api/ApiProvider';
 import { useProjects } from '../api/queries';
 import type { Project } from '../api/types';
 import { useOptionalAuth } from '../auth/AuthProvider';
 import { IdentityChip } from './IdentityChip';
+import { LanguageToggle } from './LanguageToggle';
 import { ThemeToggle } from './ThemeToggle';
 import { Wordmark } from './Wordmark';
 import styles from './AppShell.module.css';
@@ -42,27 +44,24 @@ function projectInitials(name: string): string {
   return `${words[0]![0]}${words[words.length - 1]![0]}`.toUpperCase();
 }
 
-function serviceLabel(project: Project): string {
-  const count = project.services?.length ?? 0;
-  return `${count} ${count === 1 ? 'service' : 'services'}`;
-}
-
 function Breadcrumbs() {
   const { pathname } = useLocation();
+  const { t } = useTranslation();
   if (pathname === '/projects/new') {
-    return <><NavLink to="/projects">Projects</NavLink><span>/</span><strong>New Project</strong></>;
+    return <><NavLink to="/projects">{t('shell.crumbProjects')}</NavLink><span>/</span><strong>{t('shell.crumbNewProject')}</strong></>;
   }
   if (pathname.startsWith('/cluster')) {
-    const leaf = pathname === '/cluster/models' ? 'Models' : pathname === '/cluster/connections' ? 'Connections' : 'Overview';
-    return <><span>Cluster</span><span>/</span><strong>{leaf}</strong></>;
+    const leaf = pathname === '/cluster/models' ? t('shell.crumbModels') : pathname === '/cluster/connections' ? t('shell.crumbConnections') : t('shell.crumbOverview');
+    return <><span>{t('shell.crumbCluster')}</span><span>/</span><strong>{leaf}</strong></>;
   }
   if (pathname === '/projects' || pathname === '/') {
-    return <><span>Workspace</span><span>/</span><strong>Projects</strong></>;
+    return <><span>{t('shell.crumbWorkspace')}</span><span>/</span><strong>{t('shell.crumbProjects')}</strong></>;
   }
-  return <><span>Workspace</span><span>/</span><strong>Not found</strong></>;
+  return <><span>{t('shell.crumbWorkspace')}</span><span>/</span><strong>{t('shell.crumbNotFound')}</strong></>;
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
   const demo = useDemoMode();
   const role = useRole();
   const auth = useOptionalAuth();
@@ -102,19 +101,20 @@ export function AppShell({ children }: { children: ReactNode }) {
     );
   }
 
+  const isCluster = location.pathname.startsWith('/cluster');
   return (
     <div className={styles.shell}>
-      <a className={styles.skipLink} href="#main-content">Skip to content</a>
-      <aside className={styles.rail} aria-label="Global navigation">
+      <a className={styles.skipLink} href="#main-content">{t('shell.skipToContent')}</a>
+      <aside className={styles.rail} aria-label={t('shell.globalNav')}>
         <div className={styles.brandRow}><Wordmark /></div>
         <div className={styles.railContext}>
-          <span className={styles.eyebrow}>{location.pathname.startsWith('/cluster') ? 'Administration' : 'Workspace'}</span>
-          <strong>{location.pathname.startsWith('/cluster') ? 'Cluster' : 'jcode Cloud'}</strong>
-          <small>{location.pathname.startsWith('/cluster') ? 'Cluster configuration' : 'Self-hosted coding workspace'}</small>
+          <span className={styles.eyebrow}>{isCluster ? t('shell.adminEyebrow') : t('shell.workspaceEyebrow')}</span>
+          <strong>{isCluster ? t('shell.clusterTitle') : t('shell.cloudTitle')}</strong>
+          <small>{isCluster ? t('shell.clusterSubtitle') : t('shell.cloudSubtitle')}</small>
         </div>
-        <nav className={styles.railNav} aria-label="Primary">
+        <nav className={styles.railNav} aria-label={t('shell.primaryNav')}>
           <NavLink to="/projects" className={({ isActive }) => `${styles.navItem} ${isActive ? styles.active : ''}`}>
-            <SquaresFour size={16} aria-hidden="true" /><span>Projects</span><span className={styles.navCount}>{projects.data?.length ?? '—'}</span>
+            <SquaresFour size={16} aria-hidden="true" /><span>{t('shell.projects')}</span><span className={styles.navCount}>{projects.data?.length ?? '—'}</span>
           </NavLink>
           {role === 'cluster-admin' && (
             <NavLink
@@ -122,22 +122,22 @@ export function AppShell({ children }: { children: ReactNode }) {
               className={({ isActive }) => `${styles.navItem} ${isActive ? styles.active : ''}`}
               data-testid="cluster-nav"
             >
-              <HardDrives size={16} aria-hidden="true" /><span>Cluster</span><span className={styles.navCount}>admin</span>
+              <HardDrives size={16} aria-hidden="true" /><span>{t('shell.cluster')}</span><span className={styles.navCount}>{t('shell.adminBadge')}</span>
             </NavLink>
           )}
         </nav>
         <section className={styles.railSection} aria-labelledby="recent-projects-label">
           <div className={styles.railSectionHead}>
-            <span id="recent-projects-label">Recent projects</span><span>{recentProjects.length}</span>
+            <span id="recent-projects-label">{t('shell.recentProjects')}</span><span>{recentProjects.length}</span>
           </div>
           {recentProjects.length === 0 ? (
-            <p className={styles.railEmpty}>Projects you open will appear here as shortcuts.</p>
+            <p className={styles.railEmpty}>{t('shell.recentEmpty')}</p>
           ) : (
-            <nav className={styles.recentProjects} aria-label="Recent projects">
+            <nav className={styles.recentProjects} aria-label={t('shell.recentAria')}>
               {recentProjects.map((project) => (
                 <button key={project.id} type="button" className={styles.recentItem} onClick={() => navigate(`/projects/${project.id}`)}>
                   <span className={styles.projectMark}>{projectInitials(project.name)}</span>
-                  <span className={styles.recentCopy}><strong>{project.name}</strong><small>{serviceLabel(project)}</small></span>
+                  <span className={styles.recentCopy}><strong>{project.name}</strong><small>{t('shell.services', { count: project.services?.length ?? 0 })}</small></span>
                   <CaretRight size={14} aria-hidden="true" />
                 </button>
               ))}
@@ -145,18 +145,19 @@ export function AppShell({ children }: { children: ReactNode }) {
           )}
         </section>
         <footer className={styles.railFooter}>
-          <div className={styles.environment}><span>{demo ? 'demo / local' : 'orchestrator'}</span><span>v0.1.0</span></div>
+          <div className={styles.environment}><span>{demo ? t('shell.demoEnv') : t('shell.orchestratorEnv')}</span><span>v0.1.0</span></div>
           <div className={styles.identityRow}>
             <IdentityChip me={me} providers={providers} role={role} onSignOut={onSignOut} />
           </div>
         </footer>
       </aside>
 
-      <section className={styles.surface} aria-label="jcode Cloud workspace">
+      <section className={styles.surface} aria-label={t('shell.workspaceAria')}>
         <header className={styles.utilityBar}>
           <div className={styles.breadcrumbs}><Breadcrumbs /></div>
           <div className={styles.utilityActions}>
-            {demo && <span className={styles.demoTag}>DEMO</span>}
+            {demo && <span className={styles.demoTag}>{t('shell.demoTag')}</span>}
+            <LanguageToggle />
             <ThemeToggle />
           </div>
         </header>

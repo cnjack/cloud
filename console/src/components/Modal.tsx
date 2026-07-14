@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 import { Portal } from '@headlessui/react';
 import { X } from '@phosphor-icons/react';
 import styles from './Modal.module.css';
@@ -25,6 +26,7 @@ export function Modal({
   size = 'default',
   'data-testid': testId,
 }: ModalProps) {
+  const { t } = useTranslation();
   const panelRef = useRef<HTMLDivElement>(null);
   const foreignPortalHostRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -211,7 +213,7 @@ export function Modal({
             <button
               className={styles.close}
               onClick={onClose}
-              aria-label="Close dialog"
+              aria-label={t('components.modal.close')}
               type="button"
             >
               <X size={18} weight="regular" aria-hidden="true" />

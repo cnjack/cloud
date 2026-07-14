@@ -1,4 +1,7 @@
-/* format.ts — small presentation helpers (no deps). */
+/* format.ts — small presentation helpers. Relative-time / duration words resolve
+ * through the shared i18n instance so they follow the active UI locale; callers
+ * stay unchanged (components re-render on language change via useTranslation). */
+import { i18n } from '../i18n';
 
 export function formatTime(iso: string | null | undefined): string {
   if (!iso) return '';
@@ -29,13 +32,13 @@ export function timeAgo(iso: string | null | undefined): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return '';
   const secs = Math.round((Date.now() - then) / 1000);
-  if (secs < 45) return 'just now';
+  if (secs < 45) return i18n.t('format.justNow');
   const mins = Math.round(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60) return i18n.t('format.minutesAgo', { n: mins });
   const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
+  if (hrs < 24) return i18n.t('format.hoursAgo', { n: hrs });
   const days = Math.round(hrs / 24);
-  return `${days}d ago`;
+  return i18n.t('format.daysAgo', { n: days });
 }
 
 /** Human duration between two ISO timestamps (or start→now). */
@@ -48,12 +51,12 @@ export function formatDuration(
   const e = end ? new Date(end).getTime() : Date.now();
   if (Number.isNaN(s) || Number.isNaN(e) || e < s) return '';
   const secs = Math.round((e - s) / 1000);
-  if (secs < 60) return `${secs}s`;
+  if (secs < 60) return i18n.t('format.durationSeconds', { n: secs });
   const mins = Math.floor(secs / 60);
   const rem = secs % 60;
-  if (mins < 60) return rem ? `${mins}m ${rem}s` : `${mins}m`;
+  if (mins < 60) return rem ? i18n.t('format.durationMinutesSeconds', { m: mins, s: rem }) : i18n.t('format.durationMinutes', { m: mins });
   const hrs = Math.floor(mins / 60);
-  return `${hrs}h ${mins % 60}m`;
+  return i18n.t('format.durationHoursMinutes', { h: hrs, m: mins % 60 });
 }
 
 /**

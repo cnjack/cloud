@@ -1,4 +1,5 @@
 import { useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Service } from '../api/types';
 import { WORKSPACE_TABS, type WorkspaceTab } from './location';
 import { serviceMark, serviceProviderLabel } from './presentation';
@@ -39,6 +40,7 @@ export function ProjectWorkspaceShell({
   header?: ReactNode;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const tabs: readonly WorkspaceTab[] = canManage
     ? WORKSPACE_TABS
@@ -68,13 +70,13 @@ export function ProjectWorkspaceShell({
 
   return (
     <div className={styles.shell} data-testid="project-workspace-shell">
-      <aside className={styles.rail} aria-label="Project services">
+      <aside className={styles.rail} aria-label={t('projectWorkspace.railServicesAria')}>
         <div className={styles.railTop}>{railTop}</div>
         <div className={styles.projectSummary} data-testid="project-summary">
           <div className={styles.projectSummaryCopy}>
-            <span className={styles.eyebrow}>Project</span>
+            <span className={styles.eyebrow}>{t('projectWorkspace.projectEyebrow')}</span>
             <strong title={projectName}>{projectName}</strong>
-            <small>{services.length === 1 ? '1 service' : `${services.length} services`}</small>
+            <small>{t('projectWorkspace.serviceCount', { count: services.length })}</small>
           </div>
           {projectAction && (
             <div className={styles.projectAction} data-testid="project-administration">
@@ -85,11 +87,11 @@ export function ProjectWorkspaceShell({
 
         <div className={styles.serviceArea}>
           <div className={styles.sectionHead}>
-            <span>Services</span>
+            <span>{t('projectWorkspace.servicesHeading')}</span>
             <span>{services.length}</span>
           </div>
           {services.length > 0 ? (
-            <nav className={styles.serviceList} aria-label="Services">
+            <nav className={styles.serviceList} aria-label={t('projectWorkspace.servicesHeading')}>
               {services.map((service) => {
                 const selected = service.id === activeServiceId;
                 return (
@@ -116,7 +118,7 @@ export function ProjectWorkspaceShell({
               })}
             </nav>
           ) : (
-            <p className={styles.railEmpty}>No service connected yet.</p>
+            <p className={styles.railEmpty}>{t('projectWorkspace.noServiceConnected')}</p>
           )}
           {railAction && <div className={styles.railAction}>{railAction}</div>}
         </div>
@@ -124,7 +126,7 @@ export function ProjectWorkspaceShell({
         {railFooter && <div className={styles.railFooter}>{railFooter}</div>}
       </aside>
 
-      <section className={styles.surface} aria-label={`${projectName} workspace`}>
+      <section className={styles.surface} aria-label={t('projectWorkspace.workspaceAria', { projectName })}>
         <div className={styles.utility}>
           <div className={styles.utilityContent}>{utility}</div>
           {mobileActions && <div className={styles.mobileActions}>{mobileActions}</div>}
@@ -132,7 +134,7 @@ export function ProjectWorkspaceShell({
         {mode === 'workspace' && (
           <>
             <header className={styles.header}>{header}</header>
-            <div className={styles.tabs} role="tablist" aria-label="Project workspace sections" onKeyDown={onTabsKeyDown}>
+            <div className={styles.tabs} role="tablist" aria-label={t('projectWorkspace.tabsAria')} onKeyDown={onTabsKeyDown}>
               {tabs.map((tab) => (
                 <button
                   key={tab}
@@ -146,7 +148,7 @@ export function ProjectWorkspaceShell({
                   data-active={activeTab === tab || undefined}
                   onClick={() => selectTab(tab)}
                 >
-                  {tab === 'tasks' ? 'Tasks' : tab === 'automations' ? 'Automations' : 'Service settings'}
+                  {tab === 'tasks' ? t('projectWorkspace.tabTasks') : tab === 'automations' ? t('projectWorkspace.tabAutomations') : t('projectWorkspace.tabServiceSettings')}
                 </button>
               ))}
             </div>

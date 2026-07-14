@@ -26,6 +26,7 @@ import {
   useState,
 } from 'react';
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { AuthProviderInfo, Me } from '../api/types';
 import { fetchAuthProviders, postLogout } from '../api/client';
 import {
@@ -118,15 +119,16 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const REPROBE_MS = 3_000;
 
-const LOGIN_ERROR_COPY: Record<string, string> = {
-  provider_denied: 'The provider denied the sign-in request. Try again.',
-  exchange_failed: 'Sign-in could not complete (token exchange failed).',
-  profile_failed: 'Sign-in could not read your profile from the provider.',
-  server_misconfigured: 'Sign-in is not configured on the server.',
-  server_error: 'The server hit an error completing sign-in.',
+const LOGIN_ERROR_KEYS: Record<string, string> = {
+  provider_denied: 'app.auth.loginProviderDenied',
+  exchange_failed: 'app.auth.loginExchangeFailed',
+  profile_failed: 'app.auth.loginProfileFailed',
+  server_misconfigured: 'app.auth.loginServerMisconfigured',
+  server_error: 'app.auth.loginServerError',
 };
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
   const demo = useMemo(() => loadConfig().demo, []);
   const [status, setStatus] = useState<AuthStatus>(demo ? 'ready' : 'probing');
   const [reason, setReason] = useState<UnauthReason>('none');
@@ -142,7 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Read once at mount; the param is stripped in the boot effect below.
   const [loginError] = useState<string | null>(() => {
     const e = readQueryParam('login_error');
-    return e ? (LOGIN_ERROR_COPY[e] ?? 'Sign-in failed. Please try again.') : null;
+    return e ? t(LOGIN_ERROR_KEYS[e] ?? 'app.auth.loginFailed') : null;
   });
 
   // The active console token (Advanced path) lives in a ref so getToken stays
@@ -218,10 +220,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (token: string): Promise<{ ok: boolean; error?: string }> => {
       const trimmed = token.trim();
-      if (!trimmed) return { ok: false, error: 'Enter the console token.' };
+      if (!trimmed) return { ok: false, error: t('app.auth.enterToken') };
       const epoch = ++epochRef.current;
       const result = await probeMe(trimmed);
-      if (epoch !== epochRef.current) return { ok: false, error: 'Superseded.' };
+      if (epoch !== epochRef.current) return { ok: false, error: t('app.auth.superseded') };
       switch (result.kind) {
         case 'ok':
           writeStoredToken(trimmed);
@@ -232,13 +234,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setStatus('ready');
           return { ok: true };
         case 'unauthorized':
-          return { ok: false, error: 'Token rejected by the orchestrator.' };
+          return { ok: false, error: t('app.auth.tokenRejected') };
         case 'unreachable':
           setStatus('unreachable');
-          return { ok: false, error: 'Lost the orchestrator — see setup steps.' };
+          return { ok: false, error: t('app.auth.lostOrchestrator') };
       }
     },
-    [],
+    [t],
   );
 
   const logout = useCallback(() => {

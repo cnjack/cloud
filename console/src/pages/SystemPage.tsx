@@ -12,6 +12,7 @@
  * § "System / admin").
  */
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   useSystem,
   useModels,
@@ -46,6 +47,7 @@ import type {
 import styles from './SystemPage.module.css';
 
 export function SystemPage() {
+  const { t } = useTranslation();
   const role = useRole();
   const isClusterAdmin = role === 'cluster-admin';
   // Gate the fetch to cluster-admins so a project-admin never issues the request.
@@ -58,8 +60,8 @@ export function SystemPage() {
       <div className={styles.page}>
         <EmptyState
           data-testid="system-forbidden"
-          title="Cluster view is for cluster admins"
-          description="Your role manages projects only. Ask a cluster administrator for capacity, guardrail, and provider details."
+          title={t('cluster.system.forbiddenTitle')}
+          description={t('cluster.system.forbiddenDescription')}
         />
       </div>
     );
@@ -69,27 +71,25 @@ export function SystemPage() {
     <div className={styles.page}>
       <header className={styles.header}>
         <div>
-          <h1 className={styles.title}>Cluster</h1>
+          <h1 className={styles.title}>{t('cluster.system.title')}</h1>
           <p className={styles.subtitle}>
-            Snapshot of this orchestrator: capacity, guardrails, and wiring. The
-            model is configured here; other changes are made out-of-band (env /
-            kubectl).
+            {t('cluster.system.subtitle')}
           </p>
         </div>
       </header>
 
       {system.isLoading ? (
-        <LoadingBlock label="Loading cluster snapshot…" />
+        <LoadingBlock label={t('cluster.system.loadingSnapshot')} />
       ) : system.isError ? (
         <ErrorBlock
           error={system.error}
           onRetry={() => system.refetch()}
-          title="Couldn't load the cluster snapshot"
+          title={t('cluster.system.snapshotError')}
         />
       ) : !system.data ? (
         <EmptyState
-          title="No snapshot"
-          description="The orchestrator returned no system information."
+          title={t('cluster.system.noSnapshotTitle')}
+          description={t('cluster.system.noSnapshotDescription')}
         />
       ) : (
         <SystemCards data={system.data} />
@@ -99,6 +99,7 @@ export function SystemPage() {
 }
 
 function SystemCards({ data }: { data: SystemInfo }) {
+  const { t } = useTranslation();
   const { capacity, guardrails, provider, runner, version, namespace, launcher } =
     data;
   const unlimited = capacity.max_concurrent_runs <= 0;
@@ -118,11 +119,11 @@ function SystemCards({ data }: { data: SystemInfo }) {
       {/* Capacity */}
       <Card className={styles.card}>
         <div className={styles.cardHead}>
-          <h2 className={styles.cardTitle}>Capacity</h2>
+          <h2 className={styles.cardTitle}>{t('cluster.system.capacityTitle')}</h2>
           <span className={styles.cardHint}>
             {unlimited
-              ? 'unlimited concurrency'
-              : `${active} active / ${capacity.max_concurrent_runs} max`}
+              ? t('cluster.system.unlimitedConcurrency')
+              : t('cluster.system.activeMax', { active, max: capacity.max_concurrent_runs })}
           </span>
         </div>
         {!unlimited && (
@@ -132,17 +133,17 @@ function SystemCards({ data }: { data: SystemInfo }) {
             aria-valuenow={active}
             aria-valuemin={0}
             aria-valuemax={capacity.max_concurrent_runs}
-            aria-label="Active runs against max concurrency"
+            aria-label={t('cluster.system.capacityBarAria')}
           >
             <span className={styles.barFill} style={{ width: `${pct}%` }} />
           </div>
         )}
         <dl className={styles.stats}>
-          <Stat label="Running" value={capacity.running} />
-          <Stat label="Scheduling" value={capacity.scheduling} />
-          <Stat label="Queued" value={capacity.queued} />
+          <Stat label={t('cluster.system.statRunning')} value={capacity.running} />
+          <Stat label={t('cluster.system.statScheduling')} value={capacity.scheduling} />
+          <Stat label={t('cluster.system.statQueued')} value={capacity.queued} />
           <Stat
-            label="Max concurrent"
+            label={t('cluster.system.statMaxConcurrent')}
             value={unlimited ? '∞' : capacity.max_concurrent_runs}
           />
         </dl>
@@ -151,60 +152,60 @@ function SystemCards({ data }: { data: SystemInfo }) {
       {/* Guardrails */}
       <Card className={styles.card}>
         <div className={styles.cardHead}>
-          <h2 className={styles.cardTitle}>Guardrails</h2>
+          <h2 className={styles.cardTitle}>{t('cluster.system.guardrailsTitle')}</h2>
         </div>
         <dl className={styles.rows}>
-          <Row label="Run timeout" value={formatSeconds(guardrails.run_timeout_seconds)} />
-          <Row label="Job TTL" value={formatSeconds(guardrails.job_ttl_seconds)} />
+          <Row label={t('cluster.system.runTimeoutLabel')} value={formatSeconds(guardrails.run_timeout_seconds)} />
+          <Row label={t('cluster.system.jobTtlLabel')} value={formatSeconds(guardrails.job_ttl_seconds)} />
         </dl>
       </Card>
 
       {/* Provider */}
       <Card className={styles.card}>
         <div className={styles.cardHead}>
-          <h2 className={styles.cardTitle}>Provider</h2>
+          <h2 className={styles.cardTitle}>{t('cluster.system.providerTitle')}</h2>
           <span
             className={styles.pill}
             data-on={provider.gitea_enabled || undefined}
             data-testid="provider-status"
           >
-            {provider.gitea_enabled ? 'Gitea enabled' : 'Gitea disabled'}
+            {provider.gitea_enabled ? t('cluster.system.giteaEnabled') : t('cluster.system.giteaDisabled')}
           </span>
         </div>
         <dl className={styles.rows}>
-          <Row label="Draft PRs" value={provider.gitea_enabled ? 'On' : 'Off (diff-only)'} />
+          <Row label={t('cluster.system.draftPrsLabel')} value={provider.gitea_enabled ? t('cluster.system.on') : t('cluster.system.offDiffOnly')} />
           <Row
-            label="Gitea URL"
+            label={t('cluster.system.giteaUrlLabel')}
             value={provider.gitea_url || '—'}
             mono
           />
           <Row
-            label="Allowed git hosts"
+            label={t('cluster.system.allowedHostsLabel')}
             value={
               provider.allowed_git_hosts && provider.allowed_git_hosts.length > 0
                 ? provider.allowed_git_hosts.join(', ')
-                : 'unrestricted (any host)'
+                : t('cluster.system.unrestrictedAnyHost')
             }
             mono
           />
         </dl>
         <p className={styles.cardHint} data-testid="allowed-git-hosts-hint">
-          Project integrations may only target these hosts (ALLOWED_GIT_HOSTS). Empty = any host.
+          {t('cluster.system.allowedHostsHint')}
         </p>
       </Card>
 
       {/* Runner */}
       <Card className={styles.card}>
         <div className={styles.cardHead}>
-          <h2 className={styles.cardTitle}>Runner</h2>
+          <h2 className={styles.cardTitle}>{t('cluster.system.runnerTitle')}</h2>
         </div>
         <dl className={styles.rows}>
-          <Row label="Image" value={runner.image || '—'} mono />
-          <Row label="Namespace" value={namespace || '—'} mono />
-          <Row label="Launcher" value={launcher || '—'} mono />
+          <Row label={t('cluster.system.imageLabel')} value={runner.image || '—'} mono />
+          <Row label={t('cluster.system.namespaceLabel')} value={namespace || '—'} mono />
+          <Row label={t('cluster.system.launcherLabel')} value={launcher || '—'} mono />
           <Row
-            label="Persistent workspace"
-            value={runner.persistent_workspace ? 'On' : 'Off'}
+            label={t('cluster.system.persistentWorkspaceLabel')}
+            value={runner.persistent_workspace ? t('cluster.system.on') : t('cluster.system.off')}
           />
         </dl>
       </Card>
@@ -212,39 +213,39 @@ function SystemCards({ data }: { data: SystemInfo }) {
       {/* Auth (M2/M4) */}
       <Card className={styles.card}>
         <div className={styles.cardHead}>
-          <h2 className={styles.cardTitle}>Auth</h2>
+          <h2 className={styles.cardTitle}>{t('cluster.system.authTitle')}</h2>
           <span
             className={styles.pill}
             data-on={(data.auth?.providers.length ?? 0) > 0 || undefined}
             data-testid="auth-status"
           >
             {(data.auth?.providers.length ?? 0) > 0
-              ? `${data.auth!.providers.length} provider${data.auth!.providers.length === 1 ? '' : 's'}`
-              : 'token only'}
+              ? t('cluster.system.providerCount', { count: data.auth!.providers.length })
+              : t('cluster.system.tokenOnly')}
           </span>
         </div>
         <dl className={styles.rows}>
           <Row
-            label="OAuth providers"
+            label={t('cluster.system.oauthProvidersLabel')}
             value={
               data.auth && data.auth.providers.length > 0
                 ? data.auth.providers.join(', ')
-                : 'none (console token only)'
+                : t('cluster.system.noneConsoleToken')
             }
             mono
           />
-          <Row label="Users" value={String(data.auth?.users_count ?? 0)} mono />
+          <Row label={t('cluster.system.usersLabel')} value={String(data.auth?.users_count ?? 0)} mono />
         </dl>
       </Card>
 
       {/* Version */}
       <Card className={styles.card}>
         <div className={styles.cardHead}>
-          <h2 className={styles.cardTitle}>Version</h2>
+          <h2 className={styles.cardTitle}>{t('cluster.system.versionTitle')}</h2>
         </div>
         <dl className={styles.rows}>
-          <Row label="Orchestrator" value={version.version || '—'} mono />
-          <Row label="Commit" value={version.commit || '—'} mono />
+          <Row label={t('cluster.system.orchestratorLabel')} value={version.version || '—'} mono />
+          <Row label={t('cluster.system.commitLabel')} value={version.commit || '—'} mono />
         </dl>
       </Card>
     </div>
@@ -258,38 +259,38 @@ function SystemCards({ data }: { data: SystemInfo }) {
  * displayed — only whether one is set. Feedback goes through the app-wide toast.
  */
 function ModelCard() {
+  const { t } = useTranslation();
   const models = useModels(true);
   const projects = useProjects();
 
   return (
     <Card className={[styles.card, styles.modelCard].join(' ')} data-testid="model-card">
       <div className={styles.cardHead}>
-        <h2 className={styles.cardTitle}>Model catalog</h2>
+        <h2 className={styles.cardTitle}>{t('cluster.system.modelCatalogTitle')}</h2>
         {models.data && (
           <span className={styles.pill} data-on={models.data.length > 0 || undefined} data-testid="model-status">
             {models.data.length > 0
-              ? `${models.data.length} model${models.data.length === 1 ? '' : 's'}`
-              : 'No models'}
+              ? t('cluster.system.modelCount', { count: models.data.length })
+              : t('cluster.system.noModels')}
           </span>
         )}
       </div>
 
       <p className={styles.modelHint} data-testid="model-hint">
-        Register OpenAI-compatible endpoints, then authorize them per project.
-        Runs are blocked for a project until it has at least one granted model.
+        {t('cluster.system.modelCatalogHint')}
       </p>
 
       {models.isLoading ? (
-        <LoadingBlock label="Loading model catalog…" />
+        <LoadingBlock label={t('cluster.system.loadingModelCatalog')} />
       ) : models.isError ? (
-        <ErrorBlock error={models.error} onRetry={() => models.refetch()} title="Couldn't load the model catalog" />
+        <ErrorBlock error={models.error} onRetry={() => models.refetch()} title={t('cluster.system.modelCatalogError')} />
       ) : (
         <div data-testid="model-list">
           {(models.data ?? []).map((m) => (
             <ModelRow key={m.id} model={m} projects={projects.data ?? []} />
           ))}
           {(models.data ?? []).length === 0 && (
-            <p className={styles.modelHint}>No models yet — add one below.</p>
+            <p className={styles.modelHint}>{t('cluster.system.noModelsYet')}</p>
           )}
           <ModelAddForm />
         </div>
@@ -307,6 +308,7 @@ function ModelCard() {
  * key" sends api_key:"" to make the endpoint keyless.
  */
 function ModelRow({ model, projects }: { model: Model; projects: Project[] }) {
+  const { t } = useTranslation();
   const toast = useToast();
   const update = useUpdateModel();
   const del = useDeleteModel();
@@ -335,19 +337,19 @@ function ModelRow({ model, projects }: { model: Model; projects: Project[] }) {
           setApiKey('');
           setClearKey(false);
           setEditing(false);
-          toast.push({ kind: 'success', message: 'Model saved.' });
+          toast.push({ kind: 'success', message: t('cluster.system.modelSaved') });
         },
         onError: (err) =>
-          toast.push({ kind: 'error', message: err instanceof ApiError ? err.message : 'Could not save the model.' }),
+          toast.push({ kind: 'error', message: err instanceof ApiError ? err.message : t('cluster.system.modelSaveError') }),
       },
     );
   };
 
   const remove = () => {
     del.mutate(model.id, {
-      onSuccess: () => toast.push({ kind: 'success', message: 'Model removed.' }),
+      onSuccess: () => toast.push({ kind: 'success', message: t('cluster.system.modelRemoved') }),
       onError: (err) =>
-        toast.push({ kind: 'error', message: err instanceof ApiError ? err.message : 'Could not remove the model.' }),
+        toast.push({ kind: 'error', message: err instanceof ApiError ? err.message : t('cluster.system.modelRemoveError') }),
     });
   };
 
@@ -357,32 +359,32 @@ function ModelRow({ model, projects }: { model: Model; projects: Project[] }) {
         <div className={styles.kanbanLinkTitle}>
           {model.name}
           <span className={styles.pill} data-on={model.api_key_set || undefined} style={{ marginLeft: 8 }}>
-            {model.api_key_set ? 'key set' : 'keyless'}
+            {model.api_key_set ? t('cluster.system.keySet') : t('cluster.system.keyless')}
           </span>
         </div>
         <div className={styles.kanbanLinkSub}>{model.model_name}</div>
 
         {editing ? (
           <form className={styles.modelForm} onSubmit={save} noValidate>
-            <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} data-testid={`model-edit-name-${model.id}`} autoComplete="off" required />
-            <TextField label="Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} data-testid={`model-edit-base-${model.id}`} autoComplete="off" required />
-            <TextField label="Model (provider/model)" value={modelName} onChange={(e) => setModelName(e.target.value)} data-testid={`model-edit-model-${model.id}`} autoComplete="off" required />
+            <TextField label={t('cluster.system.nameLabel')} value={name} onChange={(e) => setName(e.target.value)} data-testid={`model-edit-name-${model.id}`} autoComplete="off" required />
+            <TextField label={t('cluster.system.baseUrlLabel')} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} data-testid={`model-edit-base-${model.id}`} autoComplete="off" required />
+            <TextField label={t('cluster.system.modelProviderLabel')} value={modelName} onChange={(e) => setModelName(e.target.value)} data-testid={`model-edit-model-${model.id}`} autoComplete="off" required />
             <TextField
-              label="API key"
+              label={t('cluster.system.apiKeyLabel')}
               type="password"
               placeholder={
                 clearKey
-                  ? 'will be cleared (keyless)'
+                  ? t('cluster.system.apiKeyPlaceholderClear')
                   : model.api_key_set
-                    ? '•••••••• (blank = unchanged; type to rotate)'
-                    : 'sk-…  (blank for keyless)'
+                    ? t('cluster.system.apiKeyPlaceholderRotate')
+                    : t('cluster.system.apiKeyPlaceholderNew')
               }
               value={clearKey ? '' : apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               disabled={clearKey}
               data-testid={`model-edit-key-${model.id}`}
               autoComplete="off"
-              hint="Stored encrypted. Never displayed after saving."
+              hint={t('cluster.system.apiKeyHint')}
             />
             {model.api_key_set && (
               <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -392,15 +394,15 @@ function ModelRow({ model, projects }: { model: Model; projects: Project[] }) {
                   onChange={(e) => setClearKey(e.target.checked)}
                   data-testid={`model-edit-clear-key-${model.id}`}
                 />
-                Clear key (make this endpoint keyless)
+                {t('cluster.system.clearKeyLabel')}
               </label>
             )}
             <div className={styles.modelActions}>
               <Button type="submit" variant="primary" loading={update.isPending} data-testid={`model-save-${model.id}`}>
-                Save
+                {t('common.save')}
               </Button>
               <Button type="button" variant="secondary" onClick={() => setEditing(false)}>
-                Cancel
+                {t('common.cancel')}
               </Button>
             </div>
           </form>
@@ -411,10 +413,10 @@ function ModelRow({ model, projects }: { model: Model; projects: Project[] }) {
       {!editing && (
         <div style={{ display: 'flex', gap: 8 }}>
           <Button type="button" variant="secondary" onClick={() => setEditing(true)} data-testid={`model-edit-${model.id}`}>
-            Edit
+            {t('common.edit')}
           </Button>
           <Button type="button" variant="secondary" onClick={remove} disabled={del.isPending} data-testid={`model-delete-${model.id}`}>
-            Remove
+            {t('common.remove')}
           </Button>
         </div>
       )}
@@ -428,16 +430,17 @@ function ModelRow({ model, projects }: { model: Model; projects: Project[] }) {
  * model.
  */
 function GrantsEditor({ model, projects }: { model: Model; projects: Project[] }) {
+  const { t } = useTranslation();
   const toast = useToast();
   const setGrant = useSetModelGrant();
   const granted = new Set(model.granted_project_ids);
 
   if (projects.length === 0) {
-    return <p className={styles.modelHint}>No projects to authorize yet.</p>;
+    return <p className={styles.modelHint}>{t('cluster.system.noProjectsToAuthorize')}</p>;
   }
   return (
     <div data-testid={`model-grants-${model.id}`} style={{ marginTop: 8 }}>
-      <div className={styles.fieldLabel}>Authorized projects</div>
+      <div className={styles.fieldLabel}>{t('cluster.system.authorizedProjects')}</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 4 }}>
         {projects.map((p) => (
           <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -453,7 +456,7 @@ function GrantsEditor({ model, projects }: { model: Model; projects: Project[] }
                     onError: (err) =>
                       toast.push({
                         kind: 'error',
-                        message: err instanceof ApiError ? err.message : 'Could not update the grant.',
+                        message: err instanceof ApiError ? err.message : t('cluster.system.grantUpdateError'),
                       }),
                   },
                 )
@@ -469,6 +472,7 @@ function GrantsEditor({ model, projects }: { model: Model; projects: Project[] }
 
 /** ModelAddForm — the inline "register a model" form (name, base URL, model, key). */
 function ModelAddForm() {
+  const { t } = useTranslation();
   const toast = useToast();
   const create = useCreateModel();
   const [name, setName] = useState('');
@@ -486,32 +490,32 @@ function ModelAddForm() {
           setBaseUrl('');
           setModelName('');
           setApiKey('');
-          toast.push({ kind: 'success', message: 'Model added.' });
+          toast.push({ kind: 'success', message: t('cluster.system.modelAdded') });
         },
         onError: (err) =>
-          toast.push({ kind: 'error', message: err instanceof ApiError ? err.message : 'Could not add the model.' }),
+          toast.push({ kind: 'error', message: err instanceof ApiError ? err.message : t('cluster.system.modelAddError') }),
       },
     );
   };
 
   return (
     <form className={styles.modelForm} onSubmit={submit} noValidate data-testid="model-add-form">
-      <TextField label="Name" placeholder="GPT-4o" value={name} onChange={(e) => setName(e.target.value)} data-testid="model-add-name" autoComplete="off" required />
-      <TextField label="Base URL" placeholder="https://api.openai.com/v1" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} data-testid="model-add-base" autoComplete="off" required />
-      <TextField label="Model (provider/model)" placeholder="openai/gpt-4o" value={modelName} onChange={(e) => setModelName(e.target.value)} data-testid="model-add-model" autoComplete="off" required />
+      <TextField label={t('cluster.system.nameLabel')} placeholder="GPT-4o" value={name} onChange={(e) => setName(e.target.value)} data-testid="model-add-name" autoComplete="off" required />
+      <TextField label={t('cluster.system.baseUrlLabel')} placeholder="https://api.openai.com/v1" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} data-testid="model-add-base" autoComplete="off" required />
+      <TextField label={t('cluster.system.modelProviderLabel')} placeholder="openai/gpt-4o" value={modelName} onChange={(e) => setModelName(e.target.value)} data-testid="model-add-model" autoComplete="off" required />
       <TextField
-        label="API key"
+        label={t('cluster.system.apiKeyLabel')}
         type="password"
-        placeholder="sk-…  (blank for keyless endpoints)"
+        placeholder={t('cluster.system.apiKeyPlaceholderAdd')}
         value={apiKey}
         onChange={(e) => setApiKey(e.target.value)}
         data-testid="model-add-key"
         autoComplete="off"
-        hint="Stored encrypted. Never displayed after saving."
+        hint={t('cluster.system.apiKeyHint')}
       />
       <div className={styles.modelActions}>
         <Button type="submit" variant="primary" loading={create.isPending} data-testid="model-add-submit">
-          Add model
+          {t('cluster.system.addModel')}
         </Button>
       </div>
     </form>
@@ -536,6 +540,7 @@ function ModelAddForm() {
  * error notice next to the badge — never a bare, unexplained "off".
  */
 function KanbanCard({ systemReason }: { systemReason?: string }) {
+  const { t } = useTranslation();
   const config = useKanbanConfig();
   // Fail-visible (D27): why the resolver refused to produce an effective config.
   const reason = config.data?.reason || systemReason;
@@ -543,7 +548,7 @@ function KanbanCard({ systemReason }: { systemReason?: string }) {
   return (
     <Card className={[styles.card, styles.modelCard].join(' ')} data-testid="kanban-card">
       <div className={styles.cardHead}>
-        <h2 className={styles.cardTitle}>Kanban</h2>
+        <h2 className={styles.cardTitle}>{t('cluster.system.kanbanTitle')}</h2>
         {config.data && (
           <span
             className={styles.pill}
@@ -552,10 +557,10 @@ function KanbanCard({ systemReason }: { systemReason?: string }) {
             data-testid="kanban-status"
           >
             {config.data.source === 'db'
-              ? 'DB (console)'
+              ? t('cluster.system.kanbanSourceDb')
               : config.data.source === 'env'
-                ? 'env (JTYPE_BASE_URL)'
-                : 'off'}
+                ? t('cluster.system.kanbanSourceEnv')
+                : t('cluster.system.kanbanSourceOff')}
           </span>
         )}
       </div>
@@ -567,12 +572,12 @@ function KanbanCard({ systemReason }: { systemReason?: string }) {
       )}
 
       {config.isLoading ? (
-        <LoadingBlock label="Loading kanban config…" />
+        <LoadingBlock label={t('cluster.system.loadingKanban')} />
       ) : config.isError ? (
         <ErrorBlock
           error={config.error}
           onRetry={() => config.refetch()}
-          title="Couldn't load the kanban config"
+          title={t('cluster.system.kanbanError')}
         />
       ) : config.data ? (
         // Re-key on the resolved config's identity so a Save (env→db) or a Clear
@@ -601,6 +606,7 @@ function KanbanCard({ systemReason }: { systemReason?: string }) {
  * (only offered when a DB override exists — there is nothing to clear otherwise).
  */
 function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
+  const { t } = useTranslation();
   const toast = useToast();
   const update = useUpdateKanbanConfig();
   const del = useDeleteKanbanConfig();
@@ -642,12 +648,12 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
       onSuccess: () => {
         setToken('');
         setClearToken(false);
-        toast.push({ kind: 'success', message: 'Kanban config saved.' });
+        toast.push({ kind: 'success', message: t('cluster.system.kanbanConfigSaved') });
       },
       onError: (err) =>
         toast.push({
           kind: 'error',
-          message: err instanceof ApiError ? err.message : 'Could not save the kanban config.',
+          message: err instanceof ApiError ? err.message : t('cluster.system.kanbanConfigSaveError'),
         }),
     });
   };
@@ -656,12 +662,12 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
     del.mutate(undefined, {
       onSuccess: () => {
         setConfirmClear(false);
-        toast.push({ kind: 'success', message: 'Cluster kanban config cleared.' });
+        toast.push({ kind: 'success', message: t('cluster.system.kanbanConfigCleared') });
       },
       onError: (err) =>
         toast.push({
           kind: 'error',
-          message: err instanceof ApiError ? err.message : 'Could not clear the kanban config.',
+          message: err instanceof ApiError ? err.message : t('cluster.system.kanbanConfigClearError'),
         }),
     });
   };
@@ -670,15 +676,13 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
     <>
       <p className={styles.modelHint} data-testid="kanban-hint">
         {config.effective_enabled
-          ? `Cards dragged into a link's trigger column dispatch an agent run; finished runs write back as a card comment (effective jtype: ${
-              config.effective_base_url || '—'
-            }, source: ${config.source}). Links are managed by each project owner in Project settings → Kanban.`
-          : 'Set the cluster jtype base URL below to enable card-triggered runs. Each link then authorises with its own jtype token (or the cluster fallback token set here).'}
+          ? t('cluster.system.kanbanHintEnabled', { base: config.effective_base_url || '—', source: config.source })
+          : t('cluster.system.kanbanHintDisabled')}
       </p>
 
       <form className={styles.modelForm} onSubmit={save} noValidate data-testid="kanban-config-form">
         <TextField
-          label="jtype base URL"
+          label={t('cluster.system.kanbanBaseUrlLabel')}
           placeholder="http://jtype.jcloud.svc.cluster.local:13345"
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
@@ -687,21 +691,21 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
           required
         />
         <TextField
-          label="Cluster jtype token (fallback)"
+          label={t('cluster.system.kanbanTokenLabel')}
           type="password"
           placeholder={
             clearToken
-              ? 'will be cleared (links rely on their own tokens)'
+              ? t('cluster.system.kanbanTokenPlaceholderClear')
               : config.token_set
-                ? '•••••••• (blank = unchanged; type to rotate)'
-                : 'blank = rely on each link’s own token'
+                ? t('cluster.system.apiKeyPlaceholderRotate')
+                : t('cluster.system.kanbanTokenPlaceholderNew')
           }
           value={clearToken ? '' : token}
           onChange={(e) => setToken(e.target.value)}
           disabled={clearToken}
           data-testid="kanban-config-token"
           autoComplete="off"
-          hint="Stored encrypted. Never displayed after saving. A per-link token always takes precedence; this is only the fallback."
+          hint={t('cluster.system.kanbanTokenHint')}
         />
         {config.token_set && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -711,12 +715,12 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
               onChange={(e) => setClearToken(e.target.checked)}
               data-testid="kanban-config-clear-token"
             />
-            Clear cluster token (links rely on their own tokens)
+            {t('cluster.system.kanbanClearTokenLabel')}
           </label>
         )}
         <div className={styles.modelActions}>
           <Button type="submit" variant="primary" loading={update.isPending} data-testid="kanban-config-save">
-            Save
+            {t('common.save')}
           </Button>
           {/* Offered whenever a DB ROW exists — not gated on source: a broken row
               (e.g. token without AUTH_TOKEN_KEY) resolves to source "none", and
@@ -724,14 +728,14 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
           {(config.base_url !== '' || config.token_set) &&
             (confirmClear ? (
               <>
-                <span className={styles.cardHint}>Clear the DB config?</span>
+                <span className={styles.cardHint}>{t('cluster.system.clearDbConfirm')}</span>
                 <Button
                   type="button"
                   variant="secondary"
                   onClick={() => setConfirmClear(false)}
                   disabled={del.isPending}
                 >
-                  Keep
+                  {t('cluster.system.keep')}
                 </Button>
                 <Button
                   type="button"
@@ -740,7 +744,7 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
                   loading={del.isPending}
                   data-testid="kanban-config-clear-confirm"
                 >
-                  Clear cluster config
+                  {t('cluster.system.clearClusterConfig')}
                 </Button>
               </>
             ) : (
@@ -750,7 +754,7 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
                 onClick={() => setConfirmClear(true)}
                 data-testid="kanban-config-clear"
               >
-                Clear cluster config
+                {t('cluster.system.clearClusterConfig')}
               </Button>
             ))}
         </div>
@@ -760,7 +764,7 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
           the config form; the paste field above stays as the manual fallback. */}
       <div className={styles.connectSection}>
         <div className={styles.connectHead}>
-          <span className={styles.connectLabel}>Cluster fallback token</span>
+          <span className={styles.connectLabel}>{t('cluster.system.clusterFallbackToken')}</span>
           {clusterExpiry && (
             <span
               className={styles.pill}
@@ -775,7 +779,7 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
         <KanbanConnectFlow
           idPrefix="kanban-connect"
           disabled={config.base_url === ''}
-          disabledHint="Save the jtype base URL first"
+          disabledHint={t('cluster.system.connectDisabledHint')}
           active={!!connectId}
           starting={startConnect.isPending}
           startError={startConnect.error}
@@ -805,9 +809,9 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
                     data-testid={`kanban-cred-${l.id}`}
                   >
                     {{
-                      per_link: 'own token',
-                      cluster_fallback: 'cluster token',
-                      missing: 'no credential',
+                      per_link: t('cluster.system.credOwnToken'),
+                      cluster_fallback: t('cluster.system.credClusterToken'),
+                      missing: t('cluster.system.credMissing'),
                     }[l.credential_status]}
                   </span>
                   {/* D29: a fail-visible board-validation pill (absent board_status
@@ -819,7 +823,7 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
                       style={{ marginLeft: 8 }}
                       data-testid={`kanban-board-status-${l.id}`}
                     >
-                      {l.board_status === 'invalid' ? 'board/columns invalid' : 'not validated'}
+                      {l.board_status === 'invalid' ? t('cluster.system.boardInvalid') : t('cluster.system.boardNotValidated')}
                     </span>
                   )}
                 </div>
@@ -832,7 +836,7 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
           ))}
         </div>
       ) : (
-        <p className={styles.modelHint}>No kanban links yet — project owners add them in Project settings.</p>
+        <p className={styles.modelHint}>{t('cluster.system.noKanbanLinks')}</p>
       )}
     </>
   );

@@ -6,6 +6,7 @@
  * front of the user.
  */
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
@@ -24,6 +25,7 @@ export function CreateProjectModal({
   onClose: () => void;
   onCreated: (project: Project) => void;
 }) {
+  const { t } = useTranslation();
   const create = useCreateProject();
   const toast = useToast();
 
@@ -44,7 +46,7 @@ export function CreateProjectModal({
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
-      setError('Name is required.');
+      setError(t('projects.create.nameRequired'));
       return;
     }
     setError(undefined);
@@ -53,12 +55,12 @@ export function CreateProjectModal({
       { name: name.trim() },
       {
         onSuccess: (project) => {
-          toast.push({ kind: 'success', message: `Project “${project.name}” created.` });
+          toast.push({ kind: 'success', message: t('projects.create.created', { name: project.name }) });
           reset();
           onCreated(project);
         },
         onError: (err) => {
-          const msg = err instanceof ApiError ? err.message : 'Failed to create project.';
+          const msg = err instanceof ApiError ? err.message : t('projects.create.createFailed');
           toast.push({ kind: 'error', message: msg });
         },
       },
@@ -69,12 +71,12 @@ export function CreateProjectModal({
     <Modal
       open={open}
       onClose={close}
-      title="New project"
+      title={t('projects.create.modalTitle')}
       data-testid="create-project-modal"
       footer={
         <>
           <Button variant="ghost" onClick={close} type="button">
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -83,20 +85,20 @@ export function CreateProjectModal({
             loading={create.isPending}
             data-testid="create-project-submit"
           >
-            Create project
+            {t('projects.create.submit')}
           </Button>
         </>
       }
     >
       <form id="create-project-form" onSubmit={submit} noValidate className={styles.form}>
         <TextField
-          label="Name"
+          label={t('projects.create.nameLabel')}
           required
-          placeholder="demo"
+          placeholder={t('projects.create.namePlaceholder')}
           value={name}
           onChange={(e) => setName(e.target.value)}
           error={error}
-          hint="You'll add repositories on the project page next."
+          hint={t('projects.create.nameHint')}
           data-testid="project-name-input"
           autoComplete="off"
         />

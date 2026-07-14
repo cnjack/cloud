@@ -1,4 +1,7 @@
 import '@testing-library/dom';
+// Initialise i18n so components rendered in tests resolve real English copy
+// (react-i18next uses the shared instance; without this, t() returns raw keys).
+import '../i18n';
 
 // jsdom does not implement element scrolling. jcode-ui's stream-follow hook
 // intentionally uses scrollTo, so provide the browser API shape for component

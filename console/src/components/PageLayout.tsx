@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Link, NavLink } from 'react-router-dom';
 import styles from './PageLayout.module.css';
 
@@ -33,11 +34,12 @@ export function PageHeader({
 }
 
 export function ClusterSubnav() {
+  const { t } = useTranslation();
   return (
-    <nav className={styles.subnav} aria-label="Cluster sections">
-      <NavLink to="/cluster" end>Overview</NavLink>
-      <NavLink to="/cluster/models">Models</NavLink>
-      <NavLink to="/cluster/connections">Connections</NavLink>
+    <nav className={styles.subnav} aria-label={t('shell.clusterSections')}>
+      <NavLink to="/cluster" end>{t('shell.crumbOverview')}</NavLink>
+      <NavLink to="/cluster/models">{t('shell.crumbModels')}</NavLink>
+      <NavLink to="/cluster/connections">{t('shell.crumbConnections')}</NavLink>
     </nav>
   );
 }

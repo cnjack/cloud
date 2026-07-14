@@ -6,6 +6,7 @@
  * is UX, not authorization.
  */
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   useMembers,
   useAddMember,
@@ -45,6 +46,7 @@ export function MembersPanel({
   projectId: string;
   canManage: boolean;
 }) {
+  const { t } = useTranslation();
   const members = useMembers(projectId);
   const addMember = useAddMember(projectId);
   const removeMember = useRemoveMember(projectId);
@@ -54,6 +56,13 @@ export function MembersPanel({
   const [role, setRole] = useState<MemberRole>('member');
   const search = useSearchUsers(query);
 
+  const roleLabel = (r: MemberRole) =>
+    r === 'owner'
+      ? t('members.roleOwner')
+      : r === 'member'
+        ? t('members.roleMember')
+        : t('members.roleViewer');
+
   const existingIds = new Set((members.data ?? []).map((m) => m.user_id));
 
   const add = (user: UserSearchResult) => {
@@ -61,13 +70,16 @@ export function MembersPanel({
       { user_id: user.id, role },
       {
         onSuccess: (m) => {
-          toast.push({ kind: 'success', message: `${m.display_name} added as ${m.role}.` });
+          toast.push({
+            kind: 'success',
+            message: t('members.addedAs', { name: m.display_name, role: m.role }),
+          });
           setQuery('');
         },
         onError: (err) =>
           toast.push({
             kind: 'error',
-            message: err instanceof ApiError ? err.message : 'Could not add member.',
+            message: err instanceof ApiError ? err.message : t('members.addError'),
           }),
       },
     );
@@ -80,7 +92,7 @@ export function MembersPanel({
         onError: (err) =>
           toast.push({
             kind: 'error',
-            message: err instanceof ApiError ? err.message : 'Could not update role.',
+            message: err instanceof ApiError ? err.message : t('members.updateRoleError'),
           }),
       },
     );
@@ -88,11 +100,11 @@ export function MembersPanel({
 
   const remove = (userId: string, name: string) => {
     removeMember.mutate(userId, {
-      onSuccess: () => toast.push({ kind: 'info', message: `${name} removed.` }),
+      onSuccess: () => toast.push({ kind: 'info', message: t('members.removed', { name }) }),
       onError: (err) =>
         toast.push({
           kind: 'error',
-          message: err instanceof ApiError ? err.message : 'Could not remove member.',
+          message: err instanceof ApiError ? err.message : t('members.removeError'),
         }),
     });
   };
@@ -104,19 +116,19 @@ export function MembersPanel({
           <div className={styles.searchWrap}>
             <input
               className={styles.search}
-              placeholder="Search people by name…"
+              placeholder={t('members.searchPlaceholder')}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               data-testid="member-search-input"
               autoComplete="off"
-              aria-label="Search people to add"
+              aria-label={t('members.searchAria')}
             />
             {query.trim() && (
               <div className={styles.results} role="listbox" data-testid="member-search-results">
                 {search.isLoading ? (
-                  <div className={styles.resultEmpty}>Searching…</div>
+                  <div className={styles.resultEmpty}>{t('members.searching')}</div>
                 ) : (search.data ?? []).filter((u) => !existingIds.has(u.id)).length === 0 ? (
-                  <div className={styles.resultEmpty}>No matching people.</div>
+                  <div className={styles.resultEmpty}>{t('members.noMatches')}</div>
                 ) : (
                   (search.data ?? [])
                     .filter((u) => !existingIds.has(u.id))
@@ -132,7 +144,7 @@ export function MembersPanel({
                       >
                         <Avatar url={u.avatar_url} name={u.display_name} />
                         <span className={styles.resultName}>{u.display_name}</span>
-                        {u.is_cluster_admin && <span className={styles.resultTag}>admin</span>}
+                        {u.is_cluster_admin && <span className={styles.resultTag}>{t('members.adminTag')}</span>}
                       </button>
                     ))
                 )}
@@ -144,19 +156,19 @@ export function MembersPanel({
             value={role}
             onChange={(value) => setRole(value as MemberRole)}
             data-testid="member-add-role"
-            aria-label="Role for the added member"
-            options={ROLES.map((r) => ({ value: r, label: r }))}
+            aria-label={t('members.roleForAddedAria')}
+            options={ROLES.map((r) => ({ value: r, label: roleLabel(r) }))}
           />
         </div>
       )}
 
       {members.isLoading ? (
-        <LoadingBlock label="Loading members…" />
+        <LoadingBlock label={t('members.loading')} />
       ) : members.isError ? (
         <ErrorBlock
           error={members.error}
           onRetry={() => members.refetch()}
-          title="Couldn't load members"
+          title={t('members.loadError')}
         />
       ) : (
         <ul className={styles.list} data-testid="members-list">
@@ -174,8 +186,8 @@ export function MembersPanel({
                     value={m.role}
                     onChange={(value) => changeRole(m.user_id, value as MemberRole)}
                     data-testid="member-role-select"
-                    aria-label={`Role for ${m.display_name}`}
-                    options={ROLES.map((r) => ({ value: r, label: r }))}
+                    aria-label={t('members.roleForAria', { name: m.display_name })}
+                    options={ROLES.map((r) => ({ value: r, label: roleLabel(r) }))}
                   />
                   <Button
                     type="button"
@@ -183,13 +195,13 @@ export function MembersPanel({
                     size="sm"
                     onClick={() => remove(m.user_id, m.display_name)}
                     data-testid="member-remove"
-                    aria-label={`Remove ${m.display_name}`}
+                    aria-label={t('members.removeAria', { name: m.display_name })}
                   >
-                    Remove
+                    {t('common.remove')}
                   </Button>
                 </>
               ) : (
-                <span className={styles.roleBadge}>{m.role}</span>
+                <span className={styles.roleBadge}>{roleLabel(m.role)}</span>
               )}
             </li>
           ))}

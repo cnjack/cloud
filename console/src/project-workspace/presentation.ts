@@ -1,3 +1,4 @@
+import { i18n } from '../i18n';
 import type { Run, Service } from '../api/types';
 
 export function serviceMark(service: Service): string {
@@ -21,7 +22,7 @@ export function serviceSource(service: Service): string {
 }
 
 export function serviceProviderLabel(service: Service): string {
-  if (service.repo_kind === 'raw') return 'Path / remote URL';
+  if (service.repo_kind === 'raw') return i18n.t('workspace.provider.pathOrUrl');
   switch (service.provider?.toLowerCase()) {
     case 'gitea':
       return 'Gitea';
@@ -30,15 +31,15 @@ export function serviceProviderLabel(service: Service): string {
     case 'gitlab':
       return 'GitLab';
     default:
-      return 'Git repository';
+      return i18n.t('workspace.provider.gitRepository');
   }
 }
 
 export function runKindLabel(run: Run): string {
-  if (run.kind === 'review') return 'Review';
-  if (run.origin === 'automation') return 'PR event';
-  if (run.origin === 'schedule') return 'Schedule';
-  if (run.origin === 'kanban') return 'Kanban';
-  if (run.origin === 'webhook') return 'Webhook';
-  return run.session ? 'Session' : 'Task';
+  if (run.kind === 'review') return i18n.t('workspace.runKind.review');
+  if (run.origin === 'automation') return i18n.t('workspace.runKind.prEvent');
+  if (run.origin === 'schedule') return i18n.t('workspace.runKind.schedule');
+  if (run.origin === 'kanban') return i18n.t('workspace.runKind.kanban');
+  if (run.origin === 'webhook') return i18n.t('workspace.runKind.webhook');
+  return run.session ? i18n.t('workspace.runKind.session') : i18n.t('workspace.runKind.task');
 }

@@ -14,6 +14,7 @@
  *     (owner) — replaces borrowing CONSOLE_TOKEN for external/CI use.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Plus, Trash } from '@phosphor-icons/react';
 import { Modal } from '../components/Modal';
 import { Button } from '../components/Button';
@@ -89,13 +90,13 @@ function sameEnv(a: Record<string, string>, b: Record<string, string>): boolean 
 
 type SettingsSectionId = 'general' | 'members' | 'integrations' | 'kanban' | 'models' | 'apikeys';
 
-const SETTINGS_NAV: ReadonlyArray<{ id: SettingsSectionId; label: string }> = [
-  { id: 'general', label: 'General' },
-  { id: 'members', label: 'Members' },
-  { id: 'integrations', label: 'Git integrations' },
-  { id: 'kanban', label: 'Kanban' },
-  { id: 'models', label: 'Model access' },
-  { id: 'apikeys', label: 'API keys' },
+const SETTINGS_NAV: ReadonlyArray<{ id: SettingsSectionId; labelKey: string }> = [
+  { id: 'general', labelKey: 'projectSettings.navGeneral' },
+  { id: 'members', labelKey: 'projectSettings.navMembers' },
+  { id: 'integrations', labelKey: 'projectSettings.navIntegrations' },
+  { id: 'kanban', labelKey: 'projectSettings.navKanban' },
+  { id: 'models', labelKey: 'projectSettings.navModels' },
+  { id: 'apikeys', labelKey: 'projectSettings.navApiKeys' },
 ];
 
 /**
@@ -110,6 +111,7 @@ export function ProjectSettingsPage({
   project: Project;
   onDeleted: () => void;
 }) {
+  const { t } = useTranslation();
   const update = useUpdateProject();
   const del = useDeleteProject();
   const toast = useToast();
@@ -131,8 +133,8 @@ export function ProjectSettingsPage({
     for (const row of envRows) {
       const key = row.key.trim();
       if (!key) continue;
-      if (!isValidEnvKey(key)) return `“${key}” is not a valid environment variable name.`;
-      if (isReservedEnvKey(key)) return `“${key}” is reserved by the orchestrator and can’t be set.`;
+      if (!isValidEnvKey(key)) return t('projectSettings.envInvalidName', { key });
+      if (isReservedEnvKey(key)) return t('projectSettings.envReserved', { key });
     }
     return '';
   })();
@@ -164,11 +166,11 @@ export function ProjectSettingsPage({
       { id: project.id, input },
       {
         onSuccess: (updated) =>
-          toast.push({ kind: 'success', message: `Project “${updated.name}” updated.` }),
+          toast.push({ kind: 'success', message: t('projectSettings.projectUpdated', { name: updated.name }) }),
         onError: (error) =>
           toast.push({
             kind: 'error',
-            message: error instanceof ApiError ? error.message : 'Failed to update project.',
+            message: error instanceof ApiError ? error.message : t('projectSettings.updateFailed'),
           }),
       },
     );
@@ -177,13 +179,13 @@ export function ProjectSettingsPage({
   const remove = () => {
     del.mutate(project.id, {
       onSuccess: () => {
-        toast.push({ kind: 'success', message: `Project “${project.name}” deleted.` });
+        toast.push({ kind: 'success', message: t('projectSettings.projectDeleted', { name: project.name }) });
         onDeleted();
       },
       onError: (error) =>
         toast.push({
           kind: 'error',
-          message: error instanceof ApiError ? error.message : 'Failed to delete project.',
+          message: error instanceof ApiError ? error.message : t('projectSettings.deleteFailed'),
         }),
     });
   };
@@ -196,15 +198,15 @@ export function ProjectSettingsPage({
     <div className={styles.settingsPage} data-testid="project-settings-page">
       <div className={styles.settingsPageHead}>
         <div>
-          <span className={styles.settingsEyebrow}>Project administration</span>
-          <h1>Settings</h1>
-          <p>Manage the project container. Repository behavior remains scoped to each service.</p>
+          <span className={styles.settingsEyebrow}>{t('projectSettings.eyebrow')}</span>
+          <h1>{t('projectSettings.title')}</h1>
+          <p>{t('projectSettings.subtitle')}</p>
         </div>
       </div>
 
       <div className={styles.settingsLayout} ref={bodyRef}>
-        <nav className={styles.settingsNav} aria-label="Project settings sections">
-          {visibleNav.map(({ id, label }) => (
+        <nav className={styles.settingsNav} aria-label={t('projectSettings.navAria')}>
+          {visibleNav.map(({ id, labelKey }) => (
             <button
               key={id}
               type="button"
@@ -213,38 +215,38 @@ export function ProjectSettingsPage({
               data-active={activeSection === id || undefined}
               onClick={() => jumpTo(id)}
             >
-              {label}
+              {t(labelKey)}
             </button>
           ))}
         </nav>
 
         <div className={styles.settingsDocument}>
           <form id="project-settings-form" onSubmit={save} noValidate>
-            <SettingsSection id="general" title="General" description="Project identity and execution guardrails.">
+            <SettingsSection id="general" title={t('projectSettings.navGeneral')} description={t('projectSettings.generalDesc')}>
             <div className={styles.body}>
               <TextField
-                label="Project name"
+                label={t('projectSettings.projectName')}
                 placeholder="demo"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                hint="Repository branch and git mode are configured per service."
+                hint={t('projectSettings.projectNameHintPage')}
                 data-testid="settings-name-input"
                 autoComplete="off"
               />
               {canManage && (
                 <section className={styles.guardrails} data-testid="guardrails">
                   <div className={styles.guardrailHead}>
-                    <span className={styles.guardrailTitle}>Execution guardrails</span>
-                    <span className={styles.guardrailHint}>Leave a limit blank to inherit the cluster default.</span>
+                    <span className={styles.guardrailTitle}>{t('projectSettings.executionGuardrails')}</span>
+                    <span className={styles.guardrailHint}>{t('projectSettings.guardrailBlankHint')}</span>
                   </div>
                   <div className={styles.guardrailGrid}>
-                    <TextField label="Max concurrent runs" type="number" min={1} inputMode="numeric" placeholder="cluster default" value={maxConcurrent} onChange={(event) => setMaxConcurrent(event.target.value)} data-testid="settings-max-concurrent" autoComplete="off" />
-                    <TextField label="Run timeout (seconds)" type="number" min={1} inputMode="numeric" placeholder="cluster default" value={runTimeout} onChange={(event) => setRunTimeout(event.target.value)} data-testid="settings-run-timeout" autoComplete="off" />
+                    <TextField label={t('projectSettings.maxConcurrent')} type="number" min={1} inputMode="numeric" placeholder={t('projectSettings.clusterDefaultPlaceholder')} value={maxConcurrent} onChange={(event) => setMaxConcurrent(event.target.value)} data-testid="settings-max-concurrent" autoComplete="off" />
+                    <TextField label={t('projectSettings.runTimeout')} type="number" min={1} inputMode="numeric" placeholder={t('projectSettings.clusterDefaultPlaceholder')} value={runTimeout} onChange={(event) => setRunTimeout(event.target.value)} data-testid="settings-run-timeout" autoComplete="off" />
                   </div>
                   <div className={styles.envBlock} data-testid="settings-injected-env">
                     <div className={styles.guardrailHead}>
-                      <span className={styles.guardrailTitle}>Injected environment</span>
-                      <span className={styles.guardrailHint}>Merged into every run. System variables are reserved.</span>
+                      <span className={styles.guardrailTitle}>{t('projectSettings.injectedEnv')}</span>
+                      <span className={styles.guardrailHint}>{t('projectSettings.injectedEnvHintPage')}</span>
                     </div>
                     {envRows.length > 0 && (
                       <div className={styles.envRows}>
@@ -256,13 +258,13 @@ export function ProjectSettingsPage({
                               <input className={[styles.envInput, invalid && styles.envInvalid].filter(Boolean).join(' ')} placeholder="KEY" value={row.key} aria-invalid={invalid || undefined} onChange={(event) => setEnvRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} data-testid={`env-key-${index}`} autoComplete="off" />
                               <span className={styles.envEq}>=</span>
                               <input className={styles.envInput} placeholder="value" value={row.value} onChange={(event) => setEnvRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} data-testid={`env-value-${index}`} autoComplete="off" />
-                              <button type="button" className={styles.envRemove} onClick={() => setEnvRows((rows) => rows.filter((_, itemIndex) => itemIndex !== index))} data-testid={`env-remove-${index}`} aria-label="Remove variable"><Trash size={15} weight="regular" aria-hidden="true" /></button>
+                              <button type="button" className={styles.envRemove} onClick={() => setEnvRows((rows) => rows.filter((_, itemIndex) => itemIndex !== index))} data-testid={`env-remove-${index}`} aria-label={t('projectSettings.removeVariable')}><Trash size={15} weight="regular" aria-hidden="true" /></button>
                             </div>
                           );
                         })}
                       </div>
                     )}
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setEnvRows((rows) => [...rows, { key: '', value: '' }])} data-testid="env-add"><Plus size={15} weight="regular" aria-hidden="true" /><span>Add variable</span></Button>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setEnvRows((rows) => [...rows, { key: '', value: '' }])} data-testid="env-add"><Plus size={15} weight="regular" aria-hidden="true" /><span>{t('projectSettings.addVariable')}</span></Button>
                     {envError && <span className={styles.envError} data-testid="env-error">{envError}</span>}
                   </div>
                 </section>
@@ -271,56 +273,56 @@ export function ProjectSettingsPage({
             </SettingsSection>
           </form>
 
-          <SettingsSection id="members" title="Members and permissions" description="Choose who can view, run, and administer this project.">
+          <SettingsSection id="members" title={t('projectSettings.membersTitle')} description={t('projectSettings.membersDesc')}>
             <MembersPanel projectId={project.id} canManage={canManage} />
           </SettingsSection>
 
           {canManage && (
-            <SettingsSection id="integrations" title="Git integrations" description="Credentials for unattended repository operations. Webhook OAuth setup remains per service.">
+            <SettingsSection id="integrations" title={t('projectSettings.navIntegrations')} description={t('projectSettings.integrationsDesc')}>
               <IntegrationsPanel project={project} />
             </SettingsSection>
           )}
 
           {canManage && (
-            <SettingsSection id="kanban" title="Kanban links" description="Route jtype board transitions to a specific service.">
+            <SettingsSection id="kanban" title={t('projectSettings.kanbanTitle')} description={t('projectSettings.kanbanDesc')}>
               <KanbanPanel project={project} />
             </SettingsSection>
           )}
 
-          <SettingsSection id="models" title="Model access" description="Models currently available to sessions in this project.">
+          <SettingsSection id="models" title={t('projectSettings.navModels')} description={t('projectSettings.modelsDesc')}>
             <ModelAccessPanel projectId={project.id} />
           </SettingsSection>
 
           {canManage && (
-            <SettingsSection id="apikeys" title="Project API keys" description="Revocable credentials for API-triggered automation.">
+            <SettingsSection id="apikeys" title={t('projectSettings.apiKeysTitle')} description={t('projectSettings.apiKeysDesc')}>
               <ApiKeysPanel project={project} />
             </SettingsSection>
           )}
 
           {canManage && (
-            <SettingsSection id="danger" title="Danger zone" description="Permanent, destructive project actions.">
+            <SettingsSection id="danger" title={t('projectSettings.dangerTitle')} description={t('projectSettings.dangerDesc')}>
               <section className={styles.danger} data-testid="danger-zone">
                 <div className={styles.dangerText}>
-                  <span className={styles.dangerTitle}>Delete project</span>
-                  <span className={styles.dangerHint}>Permanently removes this project and all of its runs, events, and artifacts.</span>
+                  <span className={styles.dangerTitle}>{t('projectSettings.deleteProject')}</span>
+                  <span className={styles.dangerHint}>{t('projectSettings.deleteHintPage')}</span>
                 </div>
                 {confirmDelete ? (
                   <div className={styles.confirmRow} data-testid="delete-confirm">
-                    <span className={styles.confirmLabel}>Delete for good?</span>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setConfirmDelete(false)} disabled={del.isPending}>Keep</Button>
-                    <Button type="button" variant="danger" size="sm" loading={del.isPending} onClick={remove} data-testid="project-delete-confirm">Delete project</Button>
+                    <span className={styles.confirmLabel}>{t('projectSettings.deleteForGood')}</span>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setConfirmDelete(false)} disabled={del.isPending}>{t('projectSettings.keep')}</Button>
+                    <Button type="button" variant="danger" size="sm" loading={del.isPending} onClick={remove} data-testid="project-delete-confirm">{t('projectSettings.deleteProject')}</Button>
                   </div>
                 ) : (
-                  <Button type="button" variant="danger" size="sm" onClick={() => setConfirmDelete(true)} disabled={busy} data-testid="project-delete">Delete project</Button>
+                  <Button type="button" variant="danger" size="sm" onClick={() => setConfirmDelete(true)} disabled={busy} data-testid="project-delete">{t('projectSettings.deleteProject')}</Button>
                 )}
               </section>
             </SettingsSection>
           )}
 
           <div className={styles.settingsSavebar}>
-            <span>{envError || 'Project settings are saved independently from service settings.'}</span>
+            <span>{envError || t('projectSettings.savebarHint')}</span>
             <div>
-              <Button variant="primary" type="submit" form="project-settings-form" loading={update.isPending} disabled={!!envError} data-testid="project-settings-save">Save changes</Button>
+              <Button variant="primary" type="submit" form="project-settings-form" loading={update.isPending} disabled={!!envError} data-testid="project-settings-save">{t('projectSettings.saveChanges')}</Button>
             </div>
           </div>
         </div>
@@ -352,11 +354,12 @@ function SettingsSection({
 }
 
 function ModelAccessPanel({ projectId }: { projectId: string }) {
+  const { t } = useTranslation();
   const models = useProjectModels(projectId);
-  if (models.isLoading) return <p className={styles.settingsState}>Loading model access…</p>;
-  if (models.isError) return <p className={styles.settingsState} role="alert">Model access could not be loaded. Retry from the project workspace.</p>;
+  if (models.isLoading) return <p className={styles.settingsState}>{t('projectSettings.loadingModelAccess')}</p>;
+  if (models.isError) return <p className={styles.settingsState} role="alert">{t('projectSettings.modelAccessLoadError')}</p>;
   if (!models.data || (models.data.models.length === 0 && !models.data.env_fallback)) {
-    return <p className={styles.settingsState}>No model is configured for this project. Ask a cluster administrator to grant one.</p>;
+    return <p className={styles.settingsState}>{t('projectSettings.noModelConfigured')}</p>;
   }
   return (
     <div className={styles.modelList}>
@@ -364,10 +367,10 @@ function ModelAccessPanel({ projectId }: { projectId: string }) {
         <div key={model.id} className={styles.modelRow}>
           <span className={styles.modelMark} aria-hidden>AI</span>
           <span><strong>{model.name}</strong><code>{model.model_name}</code></span>
-          <small>Granted</small>
+          <small>{t('projectSettings.granted')}</small>
         </div>
       ))}
-      {models.data.env_fallback && <p className={styles.settingsState}>Cluster environment model fallback is active.</p>}
+      {models.data.env_fallback && <p className={styles.settingsState}>{t('projectSettings.envFallbackActive')}</p>}
     </div>
   );
 }
@@ -383,6 +386,7 @@ export function ProjectSettingsModal({
   onClose: () => void;
   onDeleted: () => void;
 }) {
+  const { t } = useTranslation();
   const update = useUpdateProject();
   const del = useDeleteProject();
   const toast = useToast();
@@ -412,8 +416,8 @@ export function ProjectSettingsModal({
     for (const r of envRows) {
       const k = r.key.trim();
       if (!k) continue;
-      if (!isValidEnvKey(k)) return `“${k}” is not a valid environment variable name.`;
-      if (isReservedEnvKey(k)) return `“${k}” is reserved by the orchestrator and can’t be set.`;
+      if (!isValidEnvKey(k)) return t('projectSettings.envInvalidName', { key: k });
+      if (isReservedEnvKey(k)) return t('projectSettings.envReserved', { key: k });
     }
     return '';
   })();
@@ -464,12 +468,12 @@ export function ProjectSettingsModal({
       { id: project.id, input },
       {
         onSuccess: (updated) => {
-          toast.push({ kind: 'success', message: `Project “${updated.name}” updated.` });
+          toast.push({ kind: 'success', message: t('projectSettings.projectUpdated', { name: updated.name }) });
           onClose();
         },
         onError: (err) => {
           // The server's typed 400 (e.g. reserved_env_key) message is shown verbatim.
-          const msg = err instanceof ApiError ? err.message : 'Failed to update project.';
+          const msg = err instanceof ApiError ? err.message : t('projectSettings.updateFailed');
           toast.push({ kind: 'error', message: msg });
         },
       },
@@ -479,11 +483,11 @@ export function ProjectSettingsModal({
   const remove = () => {
     del.mutate(project.id, {
       onSuccess: () => {
-        toast.push({ kind: 'success', message: `Project “${project.name}” deleted.` });
+        toast.push({ kind: 'success', message: t('projectSettings.projectDeleted', { name: project.name }) });
         onDeleted();
       },
       onError: (err) => {
-        const msg = err instanceof ApiError ? err.message : 'Failed to delete project.';
+        const msg = err instanceof ApiError ? err.message : t('projectSettings.deleteFailed');
         toast.push({ kind: 'error', message: msg });
       },
     });
@@ -493,7 +497,7 @@ export function ProjectSettingsModal({
     tab === 'general' ? (
       <>
         <Button variant="ghost" onClick={close} type="button">
-          Cancel
+          {t('common.cancel')}
         </Button>
         <Button
           variant="primary"
@@ -503,12 +507,12 @@ export function ProjectSettingsModal({
           disabled={!!envError}
           data-testid="project-settings-save"
         >
-          Save changes
+          {t('projectSettings.saveChanges')}
         </Button>
       </>
     ) : (
       <Button variant="secondary" onClick={close} type="button" data-testid="settings-done">
-        Done
+        {t('common.done')}
       </Button>
     );
 
@@ -516,7 +520,7 @@ export function ProjectSettingsModal({
     <Modal
       open={open}
       onClose={close}
-      title="Project settings"
+      title={t('projectSettings.modalTitle')}
       data-testid="project-settings-modal"
       footer={footer}
     >
@@ -530,7 +534,7 @@ export function ProjectSettingsModal({
           onClick={() => setTab('general')}
           data-testid="tab-general"
         >
-          General
+          {t('projectSettings.navGeneral')}
         </button>
         <button
           type="button"
@@ -541,7 +545,7 @@ export function ProjectSettingsModal({
           onClick={() => setTab('members')}
           data-testid="tab-members"
         >
-          Members
+          {t('projectSettings.navMembers')}
         </button>
         {canManage && (
           <button
@@ -553,7 +557,7 @@ export function ProjectSettingsModal({
             onClick={() => setTab('integrations')}
             data-testid="tab-integrations"
           >
-            Bot integrations
+            {t('projectSettings.tabBotIntegrations')}
           </button>
         )}
         {canManage && (
@@ -566,7 +570,7 @@ export function ProjectSettingsModal({
             onClick={() => setTab('kanban')}
             data-testid="tab-kanban"
           >
-            Kanban
+            {t('projectSettings.navKanban')}
           </button>
         )}
         {canManage && (
@@ -579,7 +583,7 @@ export function ProjectSettingsModal({
             onClick={() => setTab('apikeys')}
             data-testid="tab-apikeys"
           >
-            API keys
+            {t('projectSettings.navApiKeys')}
           </button>
         )}
       </div>
@@ -588,11 +592,11 @@ export function ProjectSettingsModal({
         <form id="project-settings-form" onSubmit={save} noValidate>
           <div className={styles.body}>
             <TextField
-              label="Name"
+              label={t('projectSettings.name')}
               placeholder="demo"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              hint="Repository settings (branch, git mode) live on each repository on the project page."
+              hint={t('projectSettings.nameHintModal')}
               data-testid="settings-name-input"
               autoComplete="off"
             />
@@ -600,30 +604,30 @@ export function ProjectSettingsModal({
             {canManage && (
               <section className={styles.guardrails} data-testid="guardrails">
                 <div className={styles.guardrailHead}>
-                  <span className={styles.guardrailTitle}>Guardrails</span>
+                  <span className={styles.guardrailTitle}>{t('projectSettings.guardrails')}</span>
                   <span className={styles.guardrailHint}>
-                    Leave a limit blank to inherit the cluster default.
+                    {t('projectSettings.guardrailBlankHint')}
                   </span>
                 </div>
 
                 <div className={styles.guardrailGrid}>
                   <TextField
-                    label="Max concurrent runs"
+                    label={t('projectSettings.maxConcurrent')}
                     type="number"
                     min={1}
                     inputMode="numeric"
-                    placeholder="cluster default"
+                    placeholder={t('projectSettings.clusterDefaultPlaceholder')}
                     value={maxConcurrent}
                     onChange={(e) => setMaxConcurrent(e.target.value)}
                     data-testid="settings-max-concurrent"
                     autoComplete="off"
                   />
                   <TextField
-                    label="Run timeout (seconds)"
+                    label={t('projectSettings.runTimeout')}
                     type="number"
                     min={1}
                     inputMode="numeric"
-                    placeholder="cluster default"
+                    placeholder={t('projectSettings.clusterDefaultPlaceholder')}
                     value={runTimeout}
                     onChange={(e) => setRunTimeout(e.target.value)}
                     data-testid="settings-run-timeout"
@@ -633,10 +637,9 @@ export function ProjectSettingsModal({
 
                 <div className={styles.envBlock} data-testid="settings-injected-env">
                   <div className={styles.guardrailHead}>
-                    <span className={styles.guardrailTitle}>Injected environment</span>
+                    <span className={styles.guardrailTitle}>{t('projectSettings.injectedEnv')}</span>
                     <span className={styles.guardrailHint}>
-                      Extra variables merged into every run. System variables (RUN_*, MODEL_*, …)
-                      are reserved.
+                      {t('projectSettings.injectedEnvHintModal')}
                     </span>
                   </div>
                   {envRows.length > 0 && (
@@ -682,7 +685,7 @@ export function ProjectSettingsModal({
                               className={styles.envRemove}
                               onClick={() => setEnvRows((rows) => rows.filter((_, j) => j !== i))}
                               data-testid={`env-remove-${i}`}
-                              aria-label="Remove variable"
+                              aria-label={t('projectSettings.removeVariable')}
                             >
                               <Trash size={15} weight="regular" aria-hidden="true" />
                             </button>
@@ -699,7 +702,7 @@ export function ProjectSettingsModal({
                     data-testid="env-add"
                   >
                     <Plus size={15} weight="regular" aria-hidden="true" />
-                    <span>Add variable</span>
+                    <span>{t('projectSettings.addVariable')}</span>
                   </Button>
                   {envError && (
                     <span className={styles.envError} data-testid="env-error">
@@ -712,15 +715,14 @@ export function ProjectSettingsModal({
 
             <section className={styles.danger} data-testid="danger-zone">
               <div className={styles.dangerText}>
-                <span className={styles.dangerTitle}>Delete project</span>
+                <span className={styles.dangerTitle}>{t('projectSettings.deleteProject')}</span>
                 <span className={styles.dangerHint}>
-                  Permanently removes this project and all of its runs, events and
-                  artifacts. This cannot be undone.
+                  {t('projectSettings.deleteHintModal')}
                 </span>
               </div>
               {confirmDelete ? (
                 <div className={styles.confirmRow} data-testid="delete-confirm">
-                  <span className={styles.confirmLabel}>Delete for good?</span>
+                  <span className={styles.confirmLabel}>{t('projectSettings.deleteForGood')}</span>
                   <Button
                     type="button"
                     variant="ghost"
@@ -728,7 +730,7 @@ export function ProjectSettingsModal({
                     onClick={() => setConfirmDelete(false)}
                     disabled={del.isPending}
                   >
-                    Keep
+                    {t('projectSettings.keep')}
                   </Button>
                   <Button
                     type="button"
@@ -738,7 +740,7 @@ export function ProjectSettingsModal({
                     onClick={remove}
                     data-testid="project-delete-confirm"
                   >
-                    Delete project
+                    {t('projectSettings.deleteProject')}
                   </Button>
                 </div>
               ) : (
@@ -750,7 +752,7 @@ export function ProjectSettingsModal({
                   disabled={busy}
                   data-testid="project-delete"
                 >
-                  Delete project
+                  {t('projectSettings.deleteProject')}
                 </Button>
               )}
             </section>
@@ -782,6 +784,7 @@ export function ProjectSettingsModal({
  * than letting them create a link that silently never fires.
  */
 function KanbanPanel({ project }: { project: Project }) {
+  const { t } = useTranslation();
   const toast = useToast();
   const system = useSystem();
   const links = useProjectKanbanLinks(project.id);
@@ -828,7 +831,7 @@ function KanbanPanel({ project }: { project: Project }) {
     setDiscoveryError(
       err instanceof ApiError
         ? err.message
-        : 'Could not reach jtype to list workspaces/boards — enter the details manually.',
+        : t('projectSettings.jtypeDiscoveryFailed'),
     );
   }, [
     manual,
@@ -877,12 +880,12 @@ function KanbanPanel({ project }: { project: Project }) {
           setTriggerCol('');
           setDoneCol('');
           setToken('');
-          toast.push({ kind: 'success', message: 'Kanban link added.' });
+          toast.push({ kind: 'success', message: t('projectSettings.kanbanLinkAdded') });
         },
         onError: (err) =>
           toast.push({
             kind: 'error',
-            message: err instanceof ApiError ? err.message : 'Could not add the link.',
+            message: err instanceof ApiError ? err.message : t('projectSettings.kanbanLinkAddFailed'),
           }),
       },
     );
@@ -890,11 +893,11 @@ function KanbanPanel({ project }: { project: Project }) {
 
   const remove = (id: string) => {
     del.mutate(id, {
-      onSuccess: () => toast.push({ kind: 'success', message: 'Kanban link removed.' }),
+      onSuccess: () => toast.push({ kind: 'success', message: t('projectSettings.kanbanLinkRemoved') }),
       onError: (err) =>
         toast.push({
           kind: 'error',
-          message: err instanceof ApiError ? err.message : 'Could not remove the link.',
+          message: err instanceof ApiError ? err.message : t('projectSettings.kanbanLinkRemoveFailed'),
         }),
     });
   };
@@ -902,15 +905,12 @@ function KanbanPanel({ project }: { project: Project }) {
   return (
     <div className={styles.body} data-testid="kanban-panel">
       <p className={styles.guardrailHint}>
-        Drag a card into a link&apos;s trigger column to dispatch an agent run; the result is
-        written back as a card comment (and the card moved to the done column when set). Each link
-        can carry its own jtype token; leave it blank to use the cluster fallback.
+        {t('projectSettings.kanbanIntro')}
       </p>
 
       {kanbanOff && (
         <p className={styles.kanbanError} data-testid="kanban-disabled">
-          jtype kanban isn’t enabled for this cluster yet — ask a cluster admin to configure it on
-          the Cluster page.
+          {t('projectSettings.kanbanDisabled')}
         </p>
       )}
 
@@ -930,19 +930,19 @@ function KanbanPanel({ project }: { project: Project }) {
         </div>
       ) : (
         <p className={styles.guardrailHint} data-testid="kanban-empty">
-          No kanban links yet — add one below.
+          {t('projectSettings.kanbanEmpty')}
         </p>
       )}
 
       <form className={styles.kanbanForm} onSubmit={submit} noValidate data-testid="kanban-link-form">
         <SelectField
-          label="Service"
+          label={t('projectSettings.service')}
           required
           value={serviceId}
           onChange={setServiceId}
           disabled={kanbanOff}
           data-testid="kanban-link-service"
-          placeholder="Select service…"
+          placeholder={t('projectSettings.selectService')}
           options={services.map((s) => ({ value: s.id, label: s.name }))}
         />
 
@@ -970,7 +970,7 @@ function KanbanPanel({ project }: { project: Project }) {
               }}
               data-testid="kanban-link-manual-toggle"
             >
-              {manual ? 'Use pickers' : 'Enter manually'}
+              {manual ? t('projectSettings.usePickers') : t('projectSettings.enterManually')}
             </Button>
           </div>
         )}
@@ -983,7 +983,7 @@ function KanbanPanel({ project }: { project: Project }) {
         {manual ? (
           <>
             <TextField
-              label="jtype workspace id"
+              label={t('projectSettings.jtypeWorkspaceId')}
               placeholder="f006b727-…"
               value={workspaceId}
               onChange={(e) => setWorkspaceId(e.target.value)}
@@ -993,7 +993,7 @@ function KanbanPanel({ project }: { project: Project }) {
               autoComplete="off"
             />
             <TextField
-              label="Board ref"
+              label={t('projectSettings.boardRef')}
               placeholder="jtype.board"
               value={boardRef}
               onChange={(e) => setBoardRef(e.target.value)}
@@ -1001,10 +1001,10 @@ function KanbanPanel({ project }: { project: Project }) {
               disabled={kanbanOff}
               data-testid="kanban-link-board"
               autoComplete="off"
-              hint="A board name or path (e.g. jtype.board). The server resolves it to the board’s id."
+              hint={t('projectSettings.boardRefHint')}
             />
             <TextField
-              label="Trigger column"
+              label={t('projectSettings.triggerColumn')}
               placeholder="ai"
               value={triggerCol}
               onChange={(e) => setTriggerCol(e.target.value)}
@@ -1014,7 +1014,7 @@ function KanbanPanel({ project }: { project: Project }) {
               autoComplete="off"
             />
             <TextField
-              label="Done column (optional)"
+              label={t('projectSettings.doneColumnOptional')}
               placeholder="done"
               value={doneCol}
               onChange={(e) => setDoneCol(e.target.value)}
@@ -1026,17 +1026,17 @@ function KanbanPanel({ project }: { project: Project }) {
         ) : (
           <>
             <SelectField
-              label="jtype workspace"
+              label={t('projectSettings.jtypeWorkspace')}
               required
               value={workspaceId}
               onChange={pickWorkspace}
               disabled={kanbanOff || workspaces.isLoading}
               data-testid="kanban-link-workspace-select"
-              placeholder={workspaces.isLoading ? 'Loading workspaces…' : 'Select workspace…'}
+              placeholder={workspaces.isLoading ? t('projectSettings.loadingWorkspaces') : t('projectSettings.selectWorkspace')}
               options={(workspaces.data ?? []).map((w) => ({ value: w.id, label: w.name }))}
             />
             <SelectField
-              label="Board"
+              label={t('projectSettings.board')}
               required
               value={boardRef}
               onChange={pickBoard}
@@ -1044,45 +1044,45 @@ function KanbanPanel({ project }: { project: Project }) {
               data-testid="kanban-link-board-select"
               placeholder={
                 !workspaceId
-                  ? 'Pick a workspace first'
+                  ? t('projectSettings.pickWorkspaceFirst')
                   : boards.isLoading
-                    ? 'Loading boards…'
-                    : 'Select board…'
+                    ? t('projectSettings.loadingBoards')
+                    : t('projectSettings.selectBoard')
               }
               options={boardList.map((b) => ({ value: b.ref, label: b.title }))}
             />
             <SelectField
-              label="Trigger column"
+              label={t('projectSettings.triggerColumn')}
               required
               value={triggerCol}
               onChange={setTriggerCol}
               disabled={kanbanOff || !boardRef}
               data-testid="kanban-link-trigger-select"
-              placeholder={boardRef ? 'Select column…' : 'Pick a board first'}
+              placeholder={boardRef ? t('projectSettings.selectColumn') : t('projectSettings.pickBoardFirst')}
               options={columnOptions}
             />
             <SelectField
-              label="Done column (optional)"
+              label={t('projectSettings.doneColumnOptional')}
               value={doneCol}
               onChange={setDoneCol}
               disabled={kanbanOff || !boardRef}
               data-testid="kanban-link-done-select"
-              placeholder={boardRef ? '— none —' : 'Pick a board first'}
-              options={[{ value: '', label: '— none —' }, ...columnOptions]}
+              placeholder={boardRef ? t('projectSettings.noneOption') : t('projectSettings.pickBoardFirst')}
+              options={[{ value: '', label: t('projectSettings.noneOption') }, ...columnOptions]}
             />
           </>
         )}
 
         <TextField
-          label="jtype token (optional)"
+          label={t('projectSettings.jtypeTokenOptional')}
           type="password"
-          placeholder="blank = use cluster fallback token"
+          placeholder={t('projectSettings.tokenFallbackPlaceholder')}
           value={token}
           onChange={(e) => setToken(e.target.value)}
           disabled={kanbanOff}
           data-testid="kanban-link-token"
           autoComplete="off"
-          hint="Stored encrypted. Never displayed after saving."
+          hint={t('projectSettings.tokenStoredHint')}
         />
         <div className={styles.kanbanFormActions}>
           <Button
@@ -1092,7 +1092,7 @@ function KanbanPanel({ project }: { project: Project }) {
             disabled={kanbanOff || incomplete}
             data-testid="kanban-link-add"
           >
-            Add link
+            {t('projectSettings.addLink')}
           </Button>
         </div>
       </form>
@@ -1121,6 +1121,7 @@ function KanbanLinkRow({
   kanbanOff: boolean;
   onRemove: () => void;
 }) {
+  const { t } = useTranslation();
   const toast = useToast();
   const updateToken = useUpdateProjectKanbanLinkToken(projectId);
   const [editing, setEditing] = useState(false);
@@ -1140,9 +1141,9 @@ function KanbanLinkRow({
   };
 
   const badge = {
-    per_link: 'own token',
-    cluster_fallback: 'cluster token',
-    missing: 'no credential — set a token',
+    per_link: t('projectSettings.credOwnToken'),
+    cluster_fallback: t('projectSettings.credClusterToken'),
+    missing: t('projectSettings.credMissing'),
   }[link.credential_status];
 
   // D29: an absent board_status is a pre-D29 row backfilled to "ok" (validated).
@@ -1152,7 +1153,7 @@ function KanbanLinkRow({
   const boardLabel = link.board_title || `${link.workspace_id} / ${link.board_ref}`;
 
   // Expiry badge for a device-flow token (unknown for manual/fallback ⇒ no badge).
-  const linkExpiry = expiryLabel(link.token_expires_at, 'expired — reconnect');
+  const linkExpiry = expiryLabel(link.token_expires_at, t('projectSettings.expiredReconnect'));
 
   const saveToken = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1165,14 +1166,14 @@ function KanbanLinkRow({
           toast.push({
             kind: 'success',
             message: updated.token_set
-              ? 'Token updated.'
-              : 'Token cleared — the link now uses the cluster fallback (if configured).',
+              ? t('projectSettings.tokenUpdated')
+              : t('projectSettings.tokenCleared'),
           });
         },
         onError: (err) =>
           toast.push({
             kind: 'error',
-            message: err instanceof ApiError ? err.message : 'Could not update the token.',
+            message: err instanceof ApiError ? err.message : t('projectSettings.tokenUpdateFailed'),
           }),
       },
     );
@@ -1196,7 +1197,7 @@ function KanbanLinkRow({
               data-state={boardStatus === 'invalid' ? 'invalid' : 'unvalidated'}
               data-testid={`kanban-board-status-${link.id}`}
             >
-              {boardStatus === 'invalid' ? 'board/columns invalid' : 'columns not validated'}
+              {boardStatus === 'invalid' ? t('projectSettings.boardColumnsInvalid') : t('projectSettings.columnsNotValidated')}
             </span>
           )}
           {linkExpiry && (
@@ -1215,8 +1216,7 @@ function KanbanLinkRow({
         </div>
         {boardStatus === 'unvalidated' && (
           <p className={styles.kanbanBoardNotice} data-testid={`kanban-board-notice-${link.id}`}>
-            This link was created without a token — its board and columns haven’t been checked yet.
-            Connect a jtype token below (or check the board ref).
+            {t('projectSettings.boardUnvalidatedNotice')}
           </p>
         )}
         {boardStatus === 'invalid' && (
@@ -1225,8 +1225,7 @@ function KanbanLinkRow({
             role="alert"
             data-testid={`kanban-board-notice-${link.id}`}
           >
-            Board not found or its columns changed — the poller is skipping this link. Fix the board
-            (delete and re-add via the pickers) or reconnect a token.
+            {t('projectSettings.boardInvalidNotice')}
           </p>
         )}
         {/* D28: one-click connect for this link's own token. Disabled while the
@@ -1235,7 +1234,7 @@ function KanbanLinkRow({
           <KanbanConnectFlow
             idPrefix={`kanban-link-connect-${link.id}`}
             disabled={kanbanOff}
-            disabledHint="Enable jtype on the Cluster page first"
+            disabledHint={t('projectSettings.enableJtypeHint')}
             active={!!connectId}
             starting={startConnect.isPending}
             startError={startConnect.error}
@@ -1249,9 +1248,9 @@ function KanbanLinkRow({
         {editing && (
           <form className={styles.tokenEditor} onSubmit={saveToken} noValidate>
             <TextField
-              label="New jtype token"
+              label={t('projectSettings.newJtypeToken')}
               type="password"
-              placeholder="blank = clear (use cluster fallback)"
+              placeholder={t('projectSettings.tokenClearPlaceholder')}
               value={token}
               onChange={(e) => setToken(e.target.value)}
               data-testid={`kanban-token-input-${link.id}`}
@@ -1264,10 +1263,10 @@ function KanbanLinkRow({
               loading={updateToken.isPending}
               data-testid={`kanban-token-save-${link.id}`}
             >
-              Save
+              {t('common.save')}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(false)}>
-              Cancel
+              {t('common.cancel')}
             </Button>
           </form>
         )}
@@ -1281,7 +1280,7 @@ function KanbanLinkRow({
             onClick={() => setEditing(true)}
             data-testid={`kanban-token-edit-${link.id}`}
           >
-            Update token
+            {t('projectSettings.updateToken')}
           </Button>
         )}
         <Button
@@ -1292,7 +1291,7 @@ function KanbanLinkRow({
           onClick={onRemove}
           data-testid={`kanban-link-delete-${link.id}`}
         >
-          Remove
+          {t('common.remove')}
         </Button>
       </div>
     </div>
@@ -1308,6 +1307,7 @@ function KanbanLinkRow({
  * reveal card below is the only chance to copy it.
  */
 function ApiKeysPanel({ project }: { project: Project }) {
+  const { t } = useTranslation();
   const toast = useToast();
   const keys = useApiKeys(project.id);
   const create = useCreateApiKey(project.id);
@@ -1324,12 +1324,12 @@ function ApiKeysPanel({ project }: { project: Project }) {
         onSuccess: (created) => {
           setName('');
           setRevealed(created);
-          toast.push({ kind: 'success', message: `API key “${created.name}” created.` });
+          toast.push({ kind: 'success', message: t('projectSettings.apiKeyCreated', { name: created.name }) });
         },
         onError: (err) =>
           toast.push({
             kind: 'error',
-            message: err instanceof ApiError ? err.message : 'Could not create the API key.',
+            message: err instanceof ApiError ? err.message : t('projectSettings.apiKeyCreateFailed'),
           }),
       },
     );
@@ -1337,11 +1337,11 @@ function ApiKeysPanel({ project }: { project: Project }) {
 
   const doRevoke = (id: string) => {
     revoke.mutate(id, {
-      onSuccess: () => toast.push({ kind: 'success', message: 'API key revoked.' }),
+      onSuccess: () => toast.push({ kind: 'success', message: t('projectSettings.apiKeyRevoked') }),
       onError: (err) =>
         toast.push({
           kind: 'error',
-          message: err instanceof ApiError ? err.message : 'Could not revoke the API key.',
+          message: err instanceof ApiError ? err.message : t('projectSettings.apiKeyRevokeFailed'),
         }),
     });
   };
@@ -1349,10 +1349,7 @@ function ApiKeysPanel({ project }: { project: Project }) {
   return (
     <div className={styles.body} data-testid="apikeys-panel">
       <p className={styles.guardrailHint}>
-        A project-scoped key authenticates as <code>Authorization: Bearer &lt;key&gt;</code> and can
-        trigger runs and read this project only — never another project, never this project&apos;s
-        settings or members, and never the cluster-admin surface. Use it for external/CI automation
-        instead of the cluster-wide console token.
+        {t('projectSettings.apiKeyIntro1')}<code>Authorization: Bearer &lt;key&gt;</code>{t('projectSettings.apiKeyIntro2')}
       </p>
 
       {revealed && (
@@ -1372,24 +1369,24 @@ function ApiKeysPanel({ project }: { project: Project }) {
         </div>
       ) : (
         <p className={styles.guardrailHint} data-testid="apikeys-empty">
-          No API keys yet — create one below.
+          {t('projectSettings.apiKeysEmpty')}
         </p>
       )}
 
       <form className={styles.kanbanForm} onSubmit={submit} noValidate data-testid="apikey-form">
         <TextField
-          label="Name"
+          label={t('projectSettings.name')}
           placeholder="ci-bot"
           value={name}
           onChange={(e) => setName(e.target.value)}
           required
           data-testid="apikey-name"
           autoComplete="off"
-          hint="Helps you tell keys apart later — pick something identifying, like the CI job that will use it."
+          hint={t('projectSettings.apiKeyNameHint')}
         />
         <div className={styles.kanbanFormActions}>
           <Button type="submit" variant="primary" loading={create.isPending} data-testid="apikey-create">
-            Create key
+            {t('projectSettings.createKey')}
           </Button>
         </div>
       </form>
@@ -1410,6 +1407,7 @@ function ApiKeyReveal({
   created: CreateApiKeyResponse;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -1423,10 +1421,9 @@ function ApiKeyReveal({
   return (
     <section className={styles.apiKeyReveal} data-testid="apikey-reveal">
       <div className={styles.guardrailHead}>
-        <span className={styles.guardrailTitle}>“{created.name}” created</span>
+        <span className={styles.guardrailTitle}>{t('projectSettings.apiKeyRevealTitle', { name: created.name })}</span>
         <span className={styles.guardrailHint}>
-          Shown once — copy it now. It cannot be displayed again; if you lose it, revoke this key and
-          create a new one.
+          {t('projectSettings.apiKeyRevealHint')}
         </span>
       </div>
       <div className={styles.apiKeyRevealRow}>
@@ -1434,12 +1431,12 @@ function ApiKeyReveal({
           {created.key}
         </code>
         <Button type="button" variant="secondary" size="sm" onClick={copy} data-testid="apikey-reveal-copy">
-          {copied ? 'Copied' : 'Copy'}
+          {copied ? t('common.copied') : t('common.copy')}
         </Button>
       </div>
       <div className={styles.kanbanFormActions}>
         <Button type="button" variant="ghost" size="sm" onClick={onDismiss} data-testid="apikey-reveal-dismiss">
-          Done
+          {t('common.done')}
         </Button>
       </div>
     </section>
@@ -1459,6 +1456,7 @@ function ApiKeyRow({
   revoking: boolean;
   onRevoke: () => void;
 }) {
+  const { t } = useTranslation();
   const revoked = !!apiKey.revoked_at;
   return (
     <div className={styles.kanbanRow} data-testid={`apikey-${apiKey.id}`}>
@@ -1470,13 +1468,13 @@ function ApiKeyRow({
             data-state={revoked ? 'missing' : 'per_link'}
             data-testid={`apikey-status-${apiKey.id}`}
           >
-            {revoked ? 'revoked' : 'active'}
+            {revoked ? t('projectSettings.statusRevoked') : t('projectSettings.statusActive')}
           </span>
           <code className={styles.repoField}>{apiKey.prefix}…</code>
         </div>
         <div className={styles.kanbanSub}>
-          Created {timeAgo(apiKey.created_at)}
-          {apiKey.last_used_at ? ` · last used ${timeAgo(apiKey.last_used_at)}` : ' · never used'}
+          {t('projectSettings.createdAt', { time: timeAgo(apiKey.created_at) })}
+          {apiKey.last_used_at ? t('projectSettings.lastUsed', { time: timeAgo(apiKey.last_used_at) }) : t('projectSettings.neverUsed')}
         </div>
       </div>
       {!revoked && (
@@ -1488,7 +1486,7 @@ function ApiKeyRow({
           onClick={onRevoke}
           data-testid={`apikey-revoke-${apiKey.id}`}
         >
-          Revoke
+          {t('projectSettings.revoke')}
         </Button>
       )}
     </div>

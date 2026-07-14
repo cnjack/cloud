@@ -1,5 +1,7 @@
 import { renderMarkdown } from 'jcode-ui';
 import { ArrowSquareOut, CaretRight, Check, Circle, File, Warning } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { groupTimeline } from './grouping';
 import { terminalStatusSeq } from './eventModel';
 import { PermissionCard } from './PermissionCard';
@@ -21,6 +23,7 @@ export function Timeline({
   isRunning?: boolean;
   permissions?: PermissionControls;
 }) {
+  const { t } = useTranslation();
   const items = groupTimeline(events);
   const finalStatus = terminalStatusSeq(events);
   const rows: React.ReactNode[] = [];
@@ -33,7 +36,7 @@ export function Timeline({
         tools.push(items[index + 1] as ToolCardItem);
         index += 1;
       }
-      rows.push(<ToolProgress key={`tools-${tools[0]!.seq}`} tools={tools} />);
+      rows.push(<ToolProgress key={`tools-${tools[0]!.seq}`} tools={tools} t={t} />);
       continue;
     }
     rows.push(
@@ -42,6 +45,7 @@ export function Timeline({
         item={item}
         finalStatus={finalStatus}
         permissions={permissions}
+        t={t}
       />,
     );
   }
@@ -50,10 +54,10 @@ export function Timeline({
     <div className={styles.wrap} data-testid="event-timeline">
       <div className={styles.thread}>{rows}</div>
       {isRunning && (
-        <div className={styles.pending} role="status" aria-label="Thinking…">
+        <div className={styles.pending} role="status" aria-label={t('run.thinkingAria')}>
           <span className={styles.avatar} aria-hidden>JC</span>
           <span className={styles.dots} aria-hidden><i /><i /><i /></span>
-          <span>Thinking</span>
+          <span>{t('run.thinking')}</span>
         </div>
       )}
     </div>
@@ -68,10 +72,12 @@ function TimelineRow({
   item,
   finalStatus,
   permissions,
+  t,
 }: {
   item: GroupedTimelineItem;
   finalStatus?: number;
   permissions?: PermissionControls;
+  t: TFunction;
 }) {
   if (item.kind === 'text_block') {
     return (
@@ -91,7 +97,7 @@ function TimelineRow({
       <article className={`${styles.message} ${styles.userMessage}`} data-testid="thread-message-user">
         <div className={styles.messageHead}>
           <span className={`${styles.avatar} ${styles.userAvatar}`} aria-hidden>U</span>
-          <strong>{item.by || 'Project member'}</strong>
+          <strong>{item.by || t('run.projectMember')}</strong>
           <time>{timeLabel(item.ts)}</time>
         </div>
         <div className={styles.userBubble}>{item.prompt}</div>
@@ -113,7 +119,7 @@ function TimelineRow({
       <span className={styles.eventRule} aria-hidden />
       <span className={styles.eventIcon} aria-hidden>{eventIcon(item)}</span>
       <div>
-        <span>{eventLabel(item, finalStatus)}</span>
+        <span>{eventLabel(item, finalStatus, t)}</span>
         {item.kind === 'unknown' && <pre>{item.raw}</pre>}
       </div>
       <time>{timeLabel(item.ts)}</time>
@@ -121,7 +127,7 @@ function TimelineRow({
   );
 }
 
-function ToolProgress({ tools }: { tools: ToolCardItem[] }) {
+function ToolProgress({ tools, t }: { tools: ToolCardItem[]; t: TFunction }) {
   return (
     <div className={styles.progress} data-testid="thread-progress">
       {tools.map((tool, index) => (
@@ -129,8 +135,8 @@ function ToolProgress({ tools }: { tools: ToolCardItem[] }) {
           <summary>
             <span className={styles.toolRail} aria-hidden>{index === tools.length - 1 ? '└' : '├'}</span>
             <span className={styles.toolIcon} aria-hidden>{tool.status === 'running' ? <CaretRight size={13} weight="bold" /> : tool.status === 'failed' ? <Warning size={13} weight="bold" /> : <Check size={13} weight="bold" />}</span>
-            <strong>{toolTitle(tool)} <small>· {tool.tool}</small></strong>
-            <span className={styles.toolStatus}>{tool.status === 'succeeded' ? 'Done' : tool.status}</span>
+            <strong>{toolTitle(tool, t)} <small>· {tool.tool}</small></strong>
+            <span className={styles.toolStatus}>{tool.status === 'succeeded' ? t('run.toolStatusDone') : toolStatusLabel(tool.status, t)}</span>
           </summary>
           <div className={styles.toolDetails}>
             {tool.args && tool.args !== '{}' && <pre>{tool.args}</pre>}
@@ -142,14 +148,15 @@ function ToolProgress({ tools }: { tools: ToolCardItem[] }) {
   );
 }
 
-function toolTitle(tool: ToolCardItem): string {
-  const labels: Record<string, string> = {
-    read: 'Read project context',
-    edit: 'Edit files',
-    execute: 'Run command',
-    search: 'Search workspace',
-  };
-  return labels[tool.tool] ?? tool.tool.replaceAll('_', ' ');
+function toolTitle(tool: ToolCardItem, t: TFunction): string {
+  const known = new Set(['read', 'edit', 'execute', 'search']);
+  return known.has(tool.tool) ? t(`run.tool.${tool.tool}`) : tool.tool.replaceAll('_', ' ');
+}
+
+/** Localised label for a non-succeeded tool status; unknown tokens pass through. */
+function toolStatusLabel(status: string, t: TFunction): string {
+  const known = new Set(['running', 'failed', 'queued', 'canceled']);
+  return known.has(status) ? t(`run.toolStatus.${status}`) : status;
 }
 
 function eventIcon(item: GroupedTimelineItem): React.ReactNode {
@@ -160,22 +167,28 @@ function eventIcon(item: GroupedTimelineItem): React.ReactNode {
   return <Circle size={9} weight="fill" />;
 }
 
-function eventLabel(item: GroupedTimelineItem, finalStatus?: number): string {
+function eventLabel(item: GroupedTimelineItem, finalStatus: number | undefined, t: TFunction): string {
   switch (item.kind) {
     case 'status': {
-      const status = sentence(item.status);
-      return item.seq === finalStatus ? `Final status: ${status}` : `Status: ${status}`;
+      const status = statusName(item.status, t);
+      return item.seq === finalStatus ? t('run.finalStatus', { status }) : t('run.status', { status });
     }
+    // failure.message is backend-provided text (dynamic) — rendered as-is.
     case 'failure': return item.reason ? `${item.message} · ${item.reason}` : item.message;
-    case 'artifact': return `Artifact ready: ${item.artifact}`;
-    case 'git': return item.commitSha ? `Pushed ${item.branch} at ${item.commitSha}` : `Pushed ${item.branch}`;
-    case 'result': return item.message;
-    case 'session_info':
-    case 'session_finish': return item.message;
-    case 'permission_resolved': return `Permission ${item.resolution === 'timeout' ? 'timed out' : 'resolved'}${item.optionId ? ` · ${item.optionId}` : ''}`;
-    case 'unknown': return `Unknown event: ${item.type}`;
-    case 'tool_call': return `${toolName(item.tool)} started`;
-    case 'tool_result': return item.isError ? `${toolName(item.tool ?? 'tool')} failed` : `${toolName(item.tool ?? 'tool')} completed`;
+    case 'artifact': return t('run.artifactReady', { artifact: item.artifact });
+    case 'git': return item.commitSha ? t('run.pushedAt', { branch: item.branch, sha: item.commitSha }) : t('run.pushed', { branch: item.branch });
+    // Re-derive the deterministic result/session copy from the structured
+    // fields so it localises (eventModel stays English-decoupled).
+    case 'result': return item.outcome === 'no_changes' ? t('run.result.noChanges') : (item.outcome || t('run.result.generic'));
+    case 'session_info': return item.resumed ? t('run.session.resumed') : t('run.session.established');
+    case 'session_finish': return item.reason === 'idle_timeout' ? t('run.session.finishedIdle') : t('run.session.finished');
+    case 'permission_resolved': {
+      const base = item.resolution === 'timeout' ? t('run.permissionTimedOut') : t('run.permissionResolved');
+      return item.optionId ? `${base} · ${item.optionId}` : base;
+    }
+    case 'unknown': return t('run.unknownEvent', { type: item.type });
+    case 'tool_call': return t('run.toolStarted', { tool: toolName(item.tool) });
+    case 'tool_result': return item.isError ? t('run.toolFailed', { tool: toolName(item.tool ?? 'tool') }) : t('run.toolCompleted', { tool: toolName(item.tool ?? 'tool') });
     default: return '';
   }
 }
@@ -184,9 +197,12 @@ function toolName(value: string): string {
   return value.replaceAll('_', ' ');
 }
 
-function sentence(value: string): string {
+/** Localised run-status name; unknown tokens are sentence-cased as before. */
+function statusName(value: string, t: TFunction): string {
+  const known = new Set(['queued', 'scheduling', 'running', 'awaiting_input', 'succeeded', 'failed', 'canceled', 'blocked']);
+  if (known.has(value)) return t(`run.statusName.${value}`);
   const normalized = value.replaceAll('_', ' ');
-  return normalized ? normalized[0]!.toUpperCase() + normalized.slice(1) : 'Unknown';
+  return normalized ? normalized[0]!.toUpperCase() + normalized.slice(1) : t('run.unknownStatus');
 }
 
 function timeLabel(value: string): string {
