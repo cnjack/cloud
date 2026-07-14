@@ -25,6 +25,7 @@ import type {
   AutomationList,
   ApiKey,
   BoardEmbedLink,
+  CatalogModel,
   CreateApiKeyInput,
   CreateApiKeyResponse,
   CreateAutomationInput,
@@ -35,6 +36,8 @@ import type {
   CreateServiceInput,
   FailureReason,
   CreateModelInput,
+  CreateModelProviderInput,
+  CreateProviderModelInput,
   CreateIntegrationInput,
   Integration,
   JtypeBoard,
@@ -47,6 +50,9 @@ import type {
   Member,
   MemberRole,
   Model,
+  ModelProvider,
+  ModelProviderVerification,
+  ProviderModel,
   PrInfo,
   Project,
   ProjectModels,
@@ -66,6 +72,7 @@ import type {
   UpdateAutomationInput,
   UpdateKanbanConfigInput,
   UpdateModelInput,
+  UpdateModelProviderInput,
   UpdateProjectInput,
   UpdateScheduleInput,
   UpdateServiceInput,
@@ -388,6 +395,7 @@ export function createMockClient(): ApiClient {
   // more on the Cluster page to exercise the multi-model pick.
   const models = new Map<string, Model>();
   const modelGrants = new Map<string, Set<string>>();
+  const modelProviders = new Map<string, ModelProvider>();
   function seedModel(id: string, name: string, model: string): void {
     models.set(id, {
       id,
@@ -404,9 +412,49 @@ export function createMockClient(): ApiClient {
   }
   seedModel('mdl_gpt4o', 'GPT-4o (mock)', 'openai/gpt-4o');
 
+  modelProviders.set('prv_openai', {
+    id: 'prv_openai',
+    name: 'OpenAI compatible',
+    kind: 'openai',
+    base_url: 'http://mockllm.jcloud.svc.cluster.local:8081/v1',
+    auth_type: 'api_key',
+    api_key_set: true,
+    catalog_mode: 'auto',
+    catalog_available: true,
+    project_grants: 0,
+    created_at: nowISO(),
+    updated_at: nowISO(),
+    updated_by: 'demo-admin',
+    models: [{
+      id: 'mdl_gpt4o',
+      provider_id: 'prv_openai',
+      name: 'GPT-4o (mock)',
+      model_id: 'gpt-4o',
+      runtime_model_name: 'openai/gpt-4o',
+      context_window: 128_000,
+      capabilities: { reasoning: true, tools: true, image: true },
+      source: 'catalog',
+      granted_project_ids: [],
+    }],
+  });
+
   /** Recompute a model's granted_project_ids from the grant set (view helper). */
   function modelView(m: Model): Model {
     return { ...m, granted_project_ids: [...(modelGrants.get(m.id) ?? [])].sort() };
+  }
+
+  function providerView(provider: ModelProvider): ModelProvider {
+    const modelsWithGrants = provider.models.map((model) => ({
+      ...model,
+      capabilities: { ...model.capabilities },
+      granted_project_ids: [...(modelGrants.get(model.id) ?? [])].sort(),
+    }));
+    const grantedProjects = new Set(modelsWithGrants.flatMap((model) => model.granted_project_ids));
+    return {
+      ...provider,
+      models: modelsWithGrants,
+      project_grants: grantedProjects.size,
+    };
   }
   function grantAllModelsTo(projectId: string): void {
     for (const set of modelGrants.values()) set.add(projectId);
@@ -1333,6 +1381,10 @@ export function createMockClient(): ApiClient {
           providers: ['gitea'],
           users_count: DEMO_USERS.length,
         },
+        archive: {
+          enabled: false,
+          reason: 'S3_ARCHIVE_BUCKET and object-storage credentials are not configured',
+        },
         kanban: (() => {
           // D27: reflect the mutable cluster config + its source so the demo edit
           // flow roundtrips (set base_url on the Cluster page → snapshot flips on).
@@ -1346,6 +1398,147 @@ export function createMockClient(): ApiClient {
         })(),
       };
       return delay(info);
+    },
+
+    /* ---- model providers + discovery ------------------------------------ */
+    async listModelProviders(): Promise<ModelProvider[]> {
+      return delay([...modelProviders.values()].map(providerView));
+    },
+
+    async createModelProvider(input: CreateModelProviderInput): Promise<ModelProvider> {
+      const name = input.name?.trim() ?? '';
+      const kind = input.kind?.trim().toLowerCase() ?? '';
+      const baseUrl = input.base_url?.trim().replace(/\/$/, '') ?? '';
+      if (!name) throw badRequest('name is required');
+      if (!/^[a-z0-9_-]+$/.test(kind)) throw badRequest('kind must be a lowercase provider id');
+      if (!/^https?:\/\/.+/i.test(baseUrl)) throw badRequest('base_url must be an http(s) URL');
+      if ([...modelProviders.values()].some((provider) => provider.name === name)) {
+        throw new ApiError(409, `a model provider named '${name}' already exists`, {
+          error: { code: 'conflict', message: `provider '${name}' exists` },
+        });
+      }
+      const id = genId('prv');
+      const provider: ModelProvider = {
+        id,
+        name,
+        kind,
+        base_url: baseUrl,
+        auth_type: input.auth_type,
+        api_key_set: input.auth_type === 'api_key' && !!input.api_key,
+        catalog_mode: input.catalog_mode,
+        catalog_available: input.catalog_mode === 'disabled' ? false : null,
+        models: [],
+        project_grants: 0,
+        created_at: nowISO(),
+        updated_at: nowISO(),
+        updated_by: 'demo-admin',
+      };
+      modelProviders.set(id, provider);
+      return delay(providerView(provider));
+    },
+
+    async updateModelProvider(id: string, input: UpdateModelProviderInput): Promise<ModelProvider> {
+      const provider = modelProviders.get(id);
+      if (!provider) throw new ApiError(404, 'model provider not found');
+      if (input.name !== undefined) provider.name = input.name.trim();
+      if (input.kind !== undefined) provider.kind = input.kind.trim().toLowerCase();
+      if (input.base_url !== undefined) provider.base_url = input.base_url.trim().replace(/\/$/, '');
+      if (input.auth_type !== undefined) {
+        provider.auth_type = input.auth_type;
+        if (input.auth_type !== 'api_key') provider.api_key_set = false;
+      }
+      if (input.api_key !== undefined) provider.api_key_set = input.api_key !== '';
+      if (input.catalog_mode !== undefined) {
+        provider.catalog_mode = input.catalog_mode;
+        provider.catalog_available = input.catalog_mode === 'disabled' ? false : null;
+      }
+      provider.updated_at = nowISO();
+      for (const providerModel of provider.models) {
+        const legacy = models.get(providerModel.id);
+        if (legacy) {
+          legacy.base_url = provider.base_url;
+          legacy.model_name = `${provider.kind}/${providerModel.model_id}`;
+        }
+      }
+      return delay(providerView(provider));
+    },
+
+    async deleteModelProvider(id: string): Promise<void> {
+      const provider = modelProviders.get(id);
+      if (!provider) throw new ApiError(404, 'model provider not found');
+      for (const model of provider.models) {
+        models.delete(model.id);
+        modelGrants.delete(model.id);
+      }
+      modelProviders.delete(id);
+      return delay(undefined);
+    },
+
+    async verifyModelProvider(id: string): Promise<ModelProviderVerification> {
+      const provider = modelProviders.get(id);
+      if (!provider) throw new ApiError(404, 'model provider not found');
+      provider.catalog_available = provider.catalog_mode !== 'disabled';
+      provider.last_verified_at = nowISO();
+      provider.last_verification_error = '';
+      provider.updated_at = nowISO();
+      return delay({
+        reachable: true,
+        catalog_available: provider.catalog_available,
+        latency_ms: 42,
+      });
+    },
+
+    async getModelProviderCatalog(id: string): Promise<CatalogModel[]> {
+      const provider = modelProviders.get(id);
+      if (!provider) throw new ApiError(404, 'model provider not found');
+      if (provider.catalog_mode === 'disabled') {
+        throw new ApiError(409, 'this provider does not expose a model catalog; add a custom model', {
+          error: { code: 'catalog_unavailable', message: 'this provider does not expose a model catalog; add a custom model' },
+        });
+      }
+      return delay([
+        { id: 'gpt-4o', name: 'GPT-4o', context_window: 128_000, capabilities: { reasoning: true, tools: true, image: true } },
+        { id: 'o3', name: 'o3', context_window: 200_000, capabilities: { reasoning: true, tools: true, image: true } },
+      ]);
+    },
+
+    async createProviderModel(providerId: string, input: CreateProviderModelInput): Promise<ProviderModel> {
+      const provider = modelProviders.get(providerId);
+      if (!provider) throw new ApiError(404, 'model provider not found');
+      const name = input.name?.trim() ?? '';
+      const modelId = input.model_id?.trim() ?? '';
+      if (!name) throw badRequest('name is required');
+      if (!modelId || /\s/.test(modelId)) throw badRequest('model_id is required and cannot contain whitespace');
+      if (provider.models.some((model) => model.model_id === modelId)) {
+        throw new ApiError(409, 'that model is already configured');
+      }
+      const id = genId('mdl');
+      const providerModel: ProviderModel = {
+        id,
+        provider_id: providerId,
+        name,
+        model_id: modelId,
+        runtime_model_name: `${provider.kind}/${modelId}`,
+        context_window: input.context_window,
+        capabilities: { ...input.capabilities },
+        source: input.source,
+        granted_project_ids: [],
+      };
+      provider.models.push(providerModel);
+      provider.updated_at = nowISO();
+      models.set(id, {
+        id,
+        name,
+        base_url: provider.base_url,
+        model_name: providerModel.runtime_model_name,
+        api_key_set: provider.api_key_set,
+        created_at: nowISO(),
+        updated_at: nowISO(),
+        updated_by: 'demo-admin',
+        granted_project_ids: [],
+      });
+      modelGrants.set(id, new Set());
+      return delay({ ...providerModel, capabilities: { ...providerModel.capabilities } });
     },
 
     /* ---- model catalog + project grants (D21) ----------------------------- */

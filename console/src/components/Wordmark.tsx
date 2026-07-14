@@ -1,18 +1,16 @@
 import { Link } from 'react-router-dom';
+import appIcon from '../../../design/assets/app-icon.svg';
 import styles from './Wordmark.module.css';
 
 /*
- * Wordmark — the [J]CODE CLOUD brand lockup. JetBrains Mono, orange bracketed J,
- * per jcode-design. Links home.
+ * Wordmark — the canonical jcode application icon and Cloud product lockup.
  */
 export function Wordmark() {
   return (
     <Link to="/" className={styles.wordmark} aria-label="jcode Cloud home">
-      <span className={styles.bracket}>[</span>
-      <span className={styles.j}>J</span>
-      <span className={styles.bracket}>]</span>
-      <span className={styles.rest}>CODE</span>
-      <span className={styles.cloud}>CLOUD</span>
+      <img className={styles.icon} src={appIcon} alt="" />
+      <span className={styles.name}>JCODE</span>
+      <span className={styles.cloud}>Cloud</span>
     </Link>
   );
 }

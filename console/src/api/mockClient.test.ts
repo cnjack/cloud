@@ -512,6 +512,48 @@ describe('mockClient — getSystem (cluster snapshot)', () => {
   });
 });
 
+describe('mockClient — model provider catalog', () => {
+  it('keeps credentials write-only while creating and verifying a custom provider model', async () => {
+    const client = createMockClient();
+    const createP = client.createModelProvider({
+      name: 'Coding Plan',
+      kind: 'openai',
+      base_url: 'https://coding-plan.internal/v1',
+      auth_type: 'api_key',
+      api_key: 'never-return-this',
+      catalog_mode: 'disabled',
+    });
+    await flush(300);
+    const provider = await createP;
+    expect(provider.api_key_set).toBe(true);
+    expect(JSON.stringify(provider)).not.toContain('never-return-this');
+
+    const modelP = client.createProviderModel(provider.id, {
+      name: 'Coding Plan',
+      model_id: 'coding-plan',
+      context_window: 32_000,
+      capabilities: { reasoning: false, tools: true, image: false },
+      source: 'custom',
+    });
+    await flush(300);
+    const model = await modelP;
+    expect(model.runtime_model_name).toBe('openai/coding-plan');
+
+    const verifyP = client.verifyModelProvider(provider.id);
+    await flush(300);
+    expect((await verifyP).catalog_available).toBe(false);
+
+    const catalogP = client.getModelProviderCatalog(provider.id).then(
+      () => ({ ok: true as const }),
+      (error) => ({ ok: false as const, error }),
+    );
+    await flush(300);
+    const catalog = await catalogP;
+    expect(catalog.ok).toBe(false);
+    if (!catalog.ok) expect(apiErrorCode(catalog.error)).toBe('catalog_unavailable');
+  });
+});
+
 // PR review flow (blueprint §5): getPR reports a live PR + reviews; requestReview
 // spawns a kind=review run that produces markdown output.
 describe('mockClient — PR review flow', () => {

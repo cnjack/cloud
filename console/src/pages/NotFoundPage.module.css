@@ -1,0 +1,11 @@
+.stage { display: grid; min-height: 100%; grid-template-columns: minmax(0, 1fr) auto; place-items: center start; gap: 48px; padding: var(--space-16) clamp(var(--space-8), 7vw, 112px); }
+.copy { display: grid; max-width: 34rem; gap: var(--space-4); }
+.code { color: var(--color-accent); font-family: var(--font-mono); font-size: var(--fs-caption); font-weight: var(--fw-semibold); letter-spacing: 1.4px; }
+.copy h1 { font-size: clamp(40px, 7vw, 88px); font-weight: var(--fw-semibold); letter-spacing: -5px; line-height: .92; }
+.copy p { max-width: 48ch; color: var(--color-text-dim); font-size: var(--fs-body); line-height: 1.65; }
+.path { position: relative; width: min(25vw, 15rem); aspect-ratio: 1; border: 1px solid var(--color-border); border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--color-accent) 12%, var(--color-panel)) 0 6%, transparent 7%); }
+.path::before, .path::after { position: absolute; content: ''; }
+.path::before { inset: 18%; border: 1px dashed var(--color-border-strong); border-radius: 50%; }
+.path::after { top: 49%; left: -10%; width: 120%; height: 1px; transform: rotate(-28deg); background: var(--color-accent); }
+@media (max-width: 860px) { .stage { grid-template-columns: 1fr; } .path { display: none; } }
+@media (max-width: 608px) { .stage { padding: 48px var(--space-6); } }

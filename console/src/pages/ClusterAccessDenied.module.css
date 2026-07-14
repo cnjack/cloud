@@ -1,0 +1,13 @@
+.stage { display: grid; min-height: 496px; grid-template-columns: minmax(0, 1fr) minmax(15rem, .65fr); align-items: center; gap: var(--space-16); padding: 48px clamp(var(--space-4), 5vw, var(--space-16)); }
+.copy { display: grid; max-width: 35rem; gap: var(--space-4); }
+.code { color: var(--color-accent); font-family: var(--font-mono); font-size: var(--fs-caption); font-weight: var(--fw-semibold); letter-spacing: 1.4px; }
+.copy h1 { font-size: clamp(32px, 5vw, 64px); font-weight: var(--fw-semibold); letter-spacing: -3px; line-height: .98; text-wrap: balance; }
+.copy > p { max-width: 52ch; color: var(--color-text-dim); font-size: var(--fs-body); line-height: 1.65; }
+.notice { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; border: 1px solid color-mix(in srgb, var(--color-warning) 38%, var(--color-border)); border-radius: var(--radius-lg); background: var(--status-scheduling-bg); padding: 14px; color: var(--status-scheduling-fg); font-size: var(--fs-caption); line-height: 1.55; }
+.notice strong { display: block; font-weight: var(--fw-semibold); }
+.boundary { display: grid; position: relative; width: min(100%, 18rem); aspect-ratio: 1; place-items: center; justify-self: center; border: 1px solid var(--color-border); border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--color-accent) 9%, var(--color-panel)) 0 18%, transparent 19%); color: var(--color-accent); }
+.boundary::before, .boundary::after { position: absolute; border: 1px solid var(--color-border-strong); content: ''; }
+.boundary::before { inset: 18%; border-radius: 50%; }
+.boundary::after { inset: 36%; transform: rotate(45deg); border-color: var(--color-accent); border-radius: var(--radius-lg); }
+.boundary svg { position: relative; z-index: 1; }
+@media (max-width: 860px) { .stage { grid-template-columns: 1fr; min-height: 0; gap: 40px; padding: 40px 0; } .boundary { width: min(72vw, 17rem); } }

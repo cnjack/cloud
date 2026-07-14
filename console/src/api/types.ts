@@ -580,6 +580,17 @@ export interface SystemInfo {
      */
     reason?: string;
   };
+  /**
+   * Persistent-workspace cold archive status. Disabled is an explicit state and
+   * carries an actionable reason; object-storage credentials are never exposed.
+   */
+  archive?: {
+    enabled: boolean;
+    reason?: string;
+    endpoint?: string;
+    bucket?: string;
+    idle_days?: number;
+  };
 }
 
 /* ---- kanban links (Feature E) --------------------------------------------- */
@@ -981,6 +992,85 @@ export interface Model {
   updated_at: string;
   updated_by: string;
   granted_project_ids: string[];
+}
+
+export interface ModelCapabilities {
+  reasoning: boolean;
+  tools: boolean;
+  image: boolean;
+}
+
+export interface ProviderModel {
+  id: string;
+  provider_id: string;
+  name: string;
+  model_id: string;
+  runtime_model_name: string;
+  context_window: number;
+  capabilities: ModelCapabilities;
+  source: 'catalog' | 'custom';
+  granted_project_ids: string[];
+}
+
+export type ModelProviderAuthType = 'api_key' | 'service_identity' | 'none';
+export type ModelProviderCatalogMode = 'auto' | 'disabled';
+
+/** Cluster-admin provider view. Credentials are write-only (`api_key_set`). */
+export interface ModelProvider {
+  id: string;
+  name: string;
+  kind: string;
+  base_url: string;
+  auth_type: ModelProviderAuthType;
+  api_key_set: boolean;
+  catalog_mode: ModelProviderCatalogMode;
+  catalog_available: boolean | null;
+  last_verified_at?: string;
+  last_verification_error?: string;
+  models: ProviderModel[];
+  project_grants: number;
+  created_at: string;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface CreateModelProviderInput {
+  name: string;
+  kind: string;
+  base_url: string;
+  auth_type: ModelProviderAuthType;
+  api_key: string;
+  catalog_mode: ModelProviderCatalogMode;
+}
+
+export interface UpdateModelProviderInput {
+  name?: string;
+  kind?: string;
+  base_url?: string;
+  auth_type?: ModelProviderAuthType;
+  api_key?: string;
+  catalog_mode?: ModelProviderCatalogMode;
+}
+
+export interface CatalogModel {
+  id: string;
+  name?: string;
+  context_window: number;
+  capabilities: ModelCapabilities;
+}
+
+export interface ModelProviderVerification {
+  reachable: boolean;
+  catalog_available: boolean;
+  latency_ms: number;
+}
+
+export interface CreateProviderModelInput {
+  name: string;
+  model_id: string;
+  context_window: number;
+  capabilities: ModelCapabilities;
+  source: 'catalog' | 'custom';
 }
 
 /** POST /api/v1/system/models body. api_key may be empty (keyless endpoints). */

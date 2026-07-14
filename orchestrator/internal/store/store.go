@@ -332,9 +332,19 @@ type Store interface {
 	GetRunBundle(ctx context.Context, runID string) ([]byte, error)
 
 	// --- Model catalog + project grants (D21) --------------------------------
-	// The single-row cluster_model_config is superseded by a catalog of models a
-	// cluster admin registers and grants to individual projects. api_key_enc stays
-	// encrypted on every read — the plaintext is NEVER returned over the API.
+	// Provider rows own endpoints/credentials; catalog model rows own model
+	// metadata and Project grants. api_key_enc stays encrypted on every read — the
+	// plaintext is NEVER returned over the API.
+
+	CreateModelProvider(ctx context.Context, p *domain.ModelProvider) error
+	GetModelProvider(ctx context.Context, id string) (*domain.ModelProvider, error)
+	ListModelProviders(ctx context.Context) ([]domain.ModelProvider, error)
+	// UpdateModelProvider atomically updates provider metadata and synchronizes
+	// the runtime base_url/api_key projection on every child model.
+	UpdateModelProvider(ctx context.Context, p *domain.ModelProvider) error
+	// DeleteModelProvider cascades child models and their grants/default refs.
+	DeleteModelProvider(ctx context.Context, id string) error
+	ListModelsForProvider(ctx context.Context, providerID string) ([]domain.Model, error)
 
 	// CreateModel inserts a catalog model. A duplicate name returns
 	// ErrAlreadyExists (mapped to 409). The caller pre-fills id/created_at.

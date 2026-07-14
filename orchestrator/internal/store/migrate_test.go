@@ -26,6 +26,30 @@ func TestPRReviewAutomationMigrationUsesModelCatalog(t *testing.T) {
 	}
 }
 
+func TestModelProvidersMigrationContract(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0027_model_providers.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := string(sql)
+	for _, required := range []string{
+		"CREATE TABLE IF NOT EXISTS model_providers",
+		"provider_id",
+		"model_id",
+		"context_window",
+		"supports_reasoning",
+		"supports_tools",
+		"supports_image",
+		"model_source",
+		"ON DELETE CASCADE",
+		"INSERT INTO model_providers",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Fatalf("0027 migration missing %q", required)
+		}
+	}
+}
+
 func mustExec(t *testing.T, ctx context.Context, c *pgx.Conn, sql string, args ...any) {
 	t.Helper()
 	if _, err := c.Exec(ctx, sql, args...); err != nil {

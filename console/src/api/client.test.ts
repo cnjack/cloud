@@ -296,6 +296,42 @@ describe('httpClient — system', () => {
   });
 });
 
+describe('httpClient — model providers', () => {
+  it('uses the provider collection and action routes with encoded ids', async () => {
+    const { calls } = mockFetch(({ url, init }) => {
+      if (url.endsWith('/system/model-providers') && !init?.method) {
+        return { body: { providers: [{ id: 'provider one', name: 'OpenAI' }] } };
+      }
+      if (url.endsWith('/catalog')) return { body: { models: [{ id: 'gpt-4o', name: 'GPT-4o' }] } };
+      if (url.endsWith('/verify')) return { body: { reachable: true, catalog_available: true, latency_ms: 12 } };
+      if (url.endsWith('/models')) return { status: 201, body: { id: 'mdl-1', ...JSON.parse(init!.body as string) } };
+      if (init?.method === 'DELETE') return { status: 204 };
+      return { status: init?.method === 'POST' ? 201 : 200, body: { id: 'provider one', ...JSON.parse(init!.body as string) } };
+    });
+    const client = createHttpClient('t');
+
+    const listed = await client.listModelProviders();
+    expect(listed[0]!.id).toBe('provider one');
+    await client.createModelProvider({ name: 'OpenAI', kind: 'openai', base_url: 'https://api.openai.com/v1', auth_type: 'api_key', api_key: 'write-only', catalog_mode: 'auto' });
+    await client.updateModelProvider('provider one', { catalog_mode: 'disabled' });
+    await client.verifyModelProvider('provider one');
+    await client.getModelProviderCatalog('provider one');
+    await client.createProviderModel('provider one', { name: 'Plan', model_id: 'plan', context_window: 32_000, capabilities: { reasoning: false, tools: true, image: false }, source: 'custom' });
+    await client.deleteModelProvider('provider one');
+
+    expect(calls.map((call) => call.url)).toEqual([
+      '/api/v1/system/model-providers',
+      '/api/v1/system/model-providers',
+      '/api/v1/system/model-providers/provider%20one',
+      '/api/v1/system/model-providers/provider%20one/verify',
+      '/api/v1/system/model-providers/provider%20one/catalog',
+      '/api/v1/system/model-providers/provider%20one/models',
+      '/api/v1/system/model-providers/provider%20one',
+    ]);
+    expect(calls.map((call) => call.init?.method)).toEqual([undefined, 'POST', 'PATCH', 'POST', undefined, 'POST', 'DELETE']);
+  });
+});
+
 describe('httpClient — runtime token source (login gate)', () => {
   it('reads the token through a getter on every request, so rotation needs no rebuild', async () => {
     const { calls } = mockFetch(() => ({ body: { projects: [] } }));

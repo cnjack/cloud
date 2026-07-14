@@ -3,9 +3,12 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/AppShell';
 import { OnboardingGate } from './pages/OnboardingGate';
 import { ProjectsPage } from './pages/ProjectsPage';
+import { NewProjectPage } from './pages/NewProjectPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { RunDetailPage } from './pages/RunDetailPage';
-import { SystemPage } from './pages/SystemPage';
+import { ClusterOverviewPage } from './pages/ClusterOverviewPage';
+import { ClusterModelsPage } from './pages/ClusterModelsPage';
+import { ClusterConnectionsPage } from './pages/ClusterConnectionsPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { useToast } from './components/Toast';
 import { readQueryParam, stripQueryParams } from './lib/url';
@@ -59,13 +62,15 @@ export function App() {
     <OnboardingGate>
       <AppShell>
         <Routes>
-          <Route path="/" element={<ProjectsPage />} />
-          <Route path="/projects" element={<Navigate to="/" replace />} />
+          <Route path="/" element={<Navigate to="/projects" replace />} />
+          <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/projects/new" element={<NewProjectPage />} />
           <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
           <Route path="/runs/:runId" element={<RunDetailPage />} />
-          {/* Cluster-admin view. The route exists for both roles; SystemPage itself
-              renders a plain notice for project-admin (presentation-only gating). */}
-          <Route path="/system" element={<SystemPage />} />
+          <Route path="/cluster" element={<ClusterOverviewPage />} />
+          <Route path="/cluster/models" element={<ClusterModelsPage />} />
+          <Route path="/cluster/connections" element={<ClusterConnectionsPage />} />
+          <Route path="/system" element={<Navigate to="/cluster" replace />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </AppShell>

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -1385,12 +1386,119 @@ func (s *PGStore) GetRunBundle(ctx context.Context, runID string) ([]byte, error
 
 // --- Model catalog + project grants (D21) -----------------------------------
 
-const modelCols = `id, name, base_url, model_name, api_key_enc, created_at, updated_at, updated_by`
+const modelProviderCols = `id, name, kind, base_url, auth_type, api_key_enc, catalog_mode,
+	catalog_available, last_verified_at, last_verification_error, created_at, updated_at, updated_by`
+
+func scanModelProvider(row pgx.Row) (*domain.ModelProvider, error) {
+	var p domain.ModelProvider
+	err := row.Scan(&p.ID, &p.Name, &p.Kind, &p.BaseURL, &p.AuthType, &p.APIKeyEnc,
+		&p.CatalogMode, &p.CatalogAvailable, &p.LastVerifiedAt, &p.LastVerificationError,
+		&p.CreatedAt, &p.UpdatedAt, &p.UpdatedBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan model provider: %w", err)
+	}
+	return &p, nil
+}
+
+func (s *PGStore) CreateModelProvider(ctx context.Context, p *domain.ModelProvider) error {
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO model_providers (id, name, kind, base_url, auth_type, api_key_enc,
+		 catalog_mode, catalog_available, last_verified_at, last_verification_error,
+		 created_at, updated_at, updated_by)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12)`,
+		p.ID, p.Name, p.Kind, p.BaseURL, p.AuthType, p.APIKeyEnc, p.CatalogMode,
+		p.CatalogAvailable, p.LastVerifiedAt, p.LastVerificationError, p.CreatedAt, p.UpdatedBy)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("create model provider: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetModelProvider(ctx context.Context, id string) (*domain.ModelProvider, error) {
+	return scanModelProvider(s.pool.QueryRow(ctx,
+		`SELECT `+modelProviderCols+` FROM model_providers WHERE id=$1`, id))
+}
+
+func (s *PGStore) ListModelProviders(ctx context.Context) ([]domain.ModelProvider, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+modelProviderCols+` FROM model_providers ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list model providers: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.ModelProvider
+	for rows.Next() {
+		p, err := scanModelProvider(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) UpdateModelProvider(ctx context.Context, p *domain.ModelProvider) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin update model provider: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx,
+		`UPDATE model_providers SET name=$2, kind=$3, base_url=$4, auth_type=$5,
+		 api_key_enc=$6, catalog_mode=$7, catalog_available=$8, last_verified_at=$9,
+		 last_verification_error=$10, updated_at=now(), updated_by=$11 WHERE id=$1`,
+		p.ID, p.Name, p.Kind, p.BaseURL, p.AuthType, p.APIKeyEnc, p.CatalogMode,
+		p.CatalogAvailable, p.LastVerifiedAt, p.LastVerificationError, p.UpdatedBy)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("update model provider: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE model_configs SET base_url=$2, api_key_enc=$3,
+		 model_name=$4 || '/' || model_id, updated_at=now(), updated_by=$5
+		 WHERE provider_id=$1`, p.ID, p.BaseURL, p.APIKeyEnc, p.Kind, p.UpdatedBy); err != nil {
+		return fmt.Errorf("sync provider models: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit update model provider: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) DeleteModelProvider(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM model_providers WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("delete model provider: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const modelCols = `id, provider_id, name, base_url, model_name, model_id, api_key_enc,
+	context_window, supports_reasoning, supports_tools, supports_image, model_source,
+	created_at, updated_at, updated_by`
 
 func scanModel(row pgx.Row) (*domain.Model, error) {
 	var m domain.Model
-	err := row.Scan(&m.ID, &m.Name, &m.BaseURL, &m.ModelName, &m.APIKeyEnc,
-		&m.CreatedAt, &m.UpdatedAt, &m.UpdatedBy)
+	err := row.Scan(&m.ID, &m.ProviderID, &m.Name, &m.BaseURL, &m.ModelName, &m.ModelID, &m.APIKeyEnc,
+		&m.ContextWindow, &m.Capabilities.Reasoning, &m.Capabilities.Tools,
+		&m.Capabilities.Image, &m.Source, &m.CreatedAt, &m.UpdatedAt, &m.UpdatedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1405,15 +1513,54 @@ func (s *PGStore) CreateModel(ctx context.Context, m *domain.Model) error {
 	if m.CreatedAt.IsZero() {
 		m.CreatedAt = time.Now().UTC()
 	}
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO model_configs (id, name, base_url, model_name, api_key_enc, created_at, updated_at, updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,now(),$7)`,
-		m.ID, m.Name, m.BaseURL, m.ModelName, m.APIKeyEnc, m.CreatedAt, m.UpdatedBy)
+	if m.Source == "" {
+		m.Source = "custom"
+	}
+	if m.ModelID == "" {
+		_, bare, ok := strings.Cut(m.ModelName, "/")
+		if ok {
+			m.ModelID = bare
+		} else {
+			m.ModelID = m.ModelName
+		}
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin create model: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if m.ProviderID == "" {
+		m.ProviderID = m.ID
+		authType := domain.ModelProviderAuthNone
+		if len(m.APIKeyEnc) > 0 {
+			authType = domain.ModelProviderAuthAPIKey
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO model_providers (id,name,kind,base_url,auth_type,api_key_enc,catalog_mode,created_at,updated_at,updated_by)
+			 VALUES ($1,$2,'custom',$3,$4,$5,'disabled',$6,now(),$7)`,
+			m.ProviderID, m.Name, m.BaseURL, authType, m.APIKeyEnc, m.CreatedAt, m.UpdatedBy); err != nil {
+			if isUniqueViolation(err) {
+				return ErrAlreadyExists
+			}
+			return fmt.Errorf("create implicit model provider: %w", err)
+		}
+	}
+	_, err = tx.Exec(ctx,
+		`INSERT INTO model_configs (id, provider_id, name, base_url, model_name, model_id, api_key_enc,
+		 context_window, supports_reasoning, supports_tools, supports_image, model_source,
+		 created_at, updated_at, updated_by)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),$14)`,
+		m.ID, m.ProviderID, m.Name, m.BaseURL, m.ModelName, m.ModelID, m.APIKeyEnc,
+		m.ContextWindow, m.Capabilities.Reasoning, m.Capabilities.Tools,
+		m.Capabilities.Image, m.Source, m.CreatedAt, m.UpdatedBy)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrAlreadyExists
 		}
 		return fmt.Errorf("create model: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit create model: %w", err)
 	}
 	return nil
 }
@@ -1452,10 +1599,29 @@ func (s *PGStore) CountModels(ctx context.Context) (int, error) {
 
 // UpdateModel updates a model's mutable fields. Duplicate name => ErrAlreadyExists.
 func (s *PGStore) UpdateModel(ctx context.Context, m *domain.Model) error {
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE model_configs SET name=$2, base_url=$3, model_name=$4, api_key_enc=$5,
-		    updated_at=now(), updated_by=$6 WHERE id=$1`,
-		m.ID, m.Name, m.BaseURL, m.ModelName, m.APIKeyEnc, m.UpdatedBy)
+	if m.Source == "" {
+		m.Source = "custom"
+	}
+	if m.ModelID == "" {
+		_, bare, ok := strings.Cut(m.ModelName, "/")
+		if ok {
+			m.ModelID = bare
+		} else {
+			m.ModelID = m.ModelName
+		}
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin update model: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx,
+		`UPDATE model_configs SET name=$2, base_url=$3, model_name=$4, model_id=$5, api_key_enc=$6,
+		 context_window=$7, supports_reasoning=$8, supports_tools=$9, supports_image=$10,
+		 model_source=$11, updated_at=now(), updated_by=$12 WHERE id=$1`,
+		m.ID, m.Name, m.BaseURL, m.ModelName, m.ModelID, m.APIKeyEnc, m.ContextWindow,
+		m.Capabilities.Reasoning, m.Capabilities.Tools, m.Capabilities.Image,
+		m.Source, m.UpdatedBy)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrAlreadyExists
@@ -1465,7 +1631,54 @@ func (s *PGStore) UpdateModel(ctx context.Context, m *domain.Model) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
+	if m.ProviderID != "" {
+		providerKind, _, hasKind := strings.Cut(m.ModelName, "/")
+		if !hasKind {
+			providerKind = "custom"
+		}
+		authType := domain.ModelProviderAuthNone
+		if len(m.APIKeyEnc) > 0 {
+			authType = domain.ModelProviderAuthAPIKey
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE model_providers SET kind=$2, base_url=$3, api_key_enc=$4, auth_type=$5,
+			 updated_at=now(), updated_by=$6 WHERE id=$1`,
+			m.ProviderID, providerKind, m.BaseURL, m.APIKeyEnc, authType, m.UpdatedBy); err != nil {
+			return fmt.Errorf("sync model provider: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE model_configs SET base_url=$2, api_key_enc=$3,
+			 model_name=$4 || '/' || model_id, updated_at=now(), updated_by=$5
+			 WHERE provider_id=$1`,
+			m.ProviderID, m.BaseURL, m.APIKeyEnc, providerKind, m.UpdatedBy); err != nil {
+			return fmt.Errorf("sync sibling provider models: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit update model: %w", err)
+	}
 	return nil
+}
+
+func (s *PGStore) ListModelsForProvider(ctx context.Context, providerID string) ([]domain.Model, error) {
+	if _, err := s.GetModelProvider(ctx, providerID); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+modelCols+` FROM model_configs WHERE provider_id=$1 ORDER BY created_at ASC`, providerID)
+	if err != nil {
+		return nil, fmt.Errorf("list models for provider: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Model
+	for rows.Next() {
+		m, err := scanModel(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
 }
 
 // DeleteModel removes a catalog model (grants cascade; service/run refs SET NULL).

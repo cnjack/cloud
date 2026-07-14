@@ -21,6 +21,7 @@ import type {
   AuthProviderInfo,
   AuthProvidersEnvelope,
   BoardEmbedLink,
+  CatalogModel,
   CreateApiKeyInput,
   CreateApiKeyResponse,
   CreateAutomationInput,
@@ -28,6 +29,8 @@ import type {
   CreateProjectInput,
   CreateIntegrationInput,
   CreateModelInput,
+  CreateModelProviderInput,
+  CreateProviderModelInput,
   CreateRunInput,
   CreateScheduleInput,
   CreateServiceInput,
@@ -44,6 +47,9 @@ import type {
   Member,
   MembersEnvelope,
   Model,
+  ModelProvider,
+  ModelProviderVerification,
+  ProviderModel,
   PrInfo,
   Project,
   ProjectModels,
@@ -66,6 +72,7 @@ import type {
   UpdateIntegrationInput,
   UpdateKanbanConfigInput,
   UpdateModelInput,
+  UpdateModelProviderInput,
   UpdateProjectInput,
   UpdateScheduleInput,
   UpdateServiceInput,
@@ -182,6 +189,15 @@ export interface ApiClient {
    * guardrails, provider, runner, version, auth). Never carries a secret.
    */
   getSystem(): Promise<SystemInfo>;
+
+  /* ---- model providers + catalog discovery ----------------------------- */
+  listModelProviders(): Promise<ModelProvider[]>;
+  createModelProvider(input: CreateModelProviderInput): Promise<ModelProvider>;
+  updateModelProvider(id: string, input: UpdateModelProviderInput): Promise<ModelProvider>;
+  deleteModelProvider(id: string): Promise<void>;
+  verifyModelProvider(id: string): Promise<ModelProviderVerification>;
+  getModelProviderCatalog(id: string): Promise<CatalogModel[]>;
+  createProviderModel(id: string, input: CreateProviderModelInput): Promise<ProviderModel>;
 
   /* ---- model catalog + project grants (D21) ----------------------------- */
   /** GET /api/v1/system/models — the whole catalog (cluster-admin). */
@@ -637,6 +653,34 @@ export function createHttpClient(
     },
 
     getSystem: () => req<SystemInfo>('/system'),
+
+    listModelProviders: async () =>
+      (await req<{ providers: ModelProvider[] }>('/system/model-providers')).providers ?? [],
+    createModelProvider: (input) =>
+      req<ModelProvider>('/system/model-providers', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    updateModelProvider: (id, input) =>
+      req<ModelProvider>(`/system/model-providers/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    deleteModelProvider: (id) =>
+      req<void>(`/system/model-providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    verifyModelProvider: (id) =>
+      req<ModelProviderVerification>(`/system/model-providers/${encodeURIComponent(id)}/verify`, {
+        method: 'POST',
+      }),
+    getModelProviderCatalog: async (id) =>
+      (await req<{ models: CatalogModel[] }>(
+        `/system/model-providers/${encodeURIComponent(id)}/catalog`,
+      )).models ?? [],
+    createProviderModel: (id, input) =>
+      req<ProviderModel>(`/system/model-providers/${encodeURIComponent(id)}/models`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
 
     // Model catalog + project grants (D21).
     listModels: async () =>

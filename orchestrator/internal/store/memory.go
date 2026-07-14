@@ -28,6 +28,7 @@ type MemStore struct {
 	identities      map[string]domain.UserIdentity   // keyed by identity id
 	sessions        map[string]domain.Session        // keyed by session id
 	members         map[string]domain.ProjectMember  // keyed by projectID+"|"+userID
+	modelProviders  map[string]domain.ModelProvider  // keyed by provider id
 	models          map[string]domain.Model          // catalog, keyed by model id (D21)
 	modelGrants     map[string]bool                  // keyed by modelID+"|"+projectID
 	integrations    map[string]domain.Integration    // keyed by integration id (D19 / F5)
@@ -55,6 +56,7 @@ func NewMemStore() *MemStore {
 		identities:      map[string]domain.UserIdentity{},
 		sessions:        map[string]domain.Session{},
 		members:         map[string]domain.ProjectMember{},
+		modelProviders:  map[string]domain.ModelProvider{},
 		models:          map[string]domain.Model{},
 		modelGrants:     map[string]bool{},
 		integrations:    map[string]domain.Integration{},
@@ -1237,6 +1239,139 @@ func (m *MemStore) GetRunBundle(_ context.Context, runID string) ([]byte, error)
 
 // --- model catalog + project grants (D21) ---
 
+func cloneModelProvider(p domain.ModelProvider) domain.ModelProvider {
+	if p.APIKeyEnc != nil {
+		p.APIKeyEnc = append([]byte(nil), p.APIKeyEnc...)
+	}
+	if p.CatalogAvailable != nil {
+		v := *p.CatalogAvailable
+		p.CatalogAvailable = &v
+	}
+	if p.LastVerifiedAt != nil {
+		v := *p.LastVerifiedAt
+		p.LastVerifiedAt = &v
+	}
+	return p
+}
+
+func (m *MemStore) CreateModelProvider(_ context.Context, p *domain.ModelProvider) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, existing := range m.modelProviders {
+		if existing.Name == p.Name {
+			return ErrAlreadyExists
+		}
+	}
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = time.Now().UTC()
+	}
+	p.UpdatedAt = p.CreatedAt
+	m.modelProviders[p.ID] = cloneModelProvider(*p)
+	return nil
+}
+
+func (m *MemStore) GetModelProvider(_ context.Context, id string) (*domain.ModelProvider, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.modelProviders[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := cloneModelProvider(p)
+	return &cp, nil
+}
+
+func (m *MemStore) ListModelProviders(_ context.Context) ([]domain.ModelProvider, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.ModelProvider, 0, len(m.modelProviders))
+	for _, p := range m.modelProviders {
+		out = append(out, cloneModelProvider(p))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) UpdateModelProvider(_ context.Context, p *domain.ModelProvider) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.modelProviders[p.ID]; !ok {
+		return ErrNotFound
+	}
+	for id, existing := range m.modelProviders {
+		if id != p.ID && existing.Name == p.Name {
+			return ErrAlreadyExists
+		}
+	}
+	p.UpdatedAt = time.Now().UTC()
+	m.modelProviders[p.ID] = cloneModelProvider(*p)
+	for id, mod := range m.models {
+		if mod.ProviderID == p.ID {
+			mod.BaseURL = p.BaseURL
+			mod.APIKeyEnc = append([]byte(nil), p.APIKeyEnc...)
+			mod.ModelName = p.Kind + "/" + mod.ModelID
+			m.models[id] = mod
+		}
+	}
+	return nil
+}
+
+func (m *MemStore) deleteModelLocked(id string) error {
+	if _, ok := m.models[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.models, id)
+	for k := range m.modelGrants {
+		if strings.HasPrefix(k, id+"|") {
+			delete(m.modelGrants, k)
+		}
+	}
+	for sid, svc := range m.services {
+		if svc.DefaultModelID != nil && *svc.DefaultModelID == id {
+			svc.DefaultModelID = nil
+			m.services[sid] = svc
+		}
+	}
+	for rid, run := range m.runs {
+		if run.ModelID != nil && *run.ModelID == id {
+			run.ModelID = nil
+			m.runs[rid] = run
+		}
+	}
+	return nil
+}
+
+func (m *MemStore) DeleteModelProvider(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.modelProviders[id]; !ok {
+		return ErrNotFound
+	}
+	for modelID, mod := range m.models {
+		if mod.ProviderID == id {
+			_ = m.deleteModelLocked(modelID)
+		}
+	}
+	delete(m.modelProviders, id)
+	return nil
+}
+
+func (m *MemStore) ListModelsForProvider(_ context.Context, providerID string) ([]domain.Model, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.modelProviders[providerID]; !ok {
+		return nil, ErrNotFound
+	}
+	var out []domain.Model
+	for _, mod := range m.models {
+		if mod.ProviderID == providerID {
+			out = append(out, cloneModel(mod))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
 // cloneModel deep-copies a model so callers can't mutate the stored api_key_enc.
 func cloneModel(m domain.Model) domain.Model {
 	if m.APIKeyEnc != nil {
@@ -1254,6 +1389,36 @@ func (m *MemStore) CreateModel(_ context.Context, mod *domain.Model) error {
 	for _, e := range m.models {
 		if e.Name == mod.Name {
 			return ErrAlreadyExists
+		}
+	}
+	if mod.CreatedAt.IsZero() {
+		mod.CreatedAt = time.Now().UTC()
+	}
+	if mod.ProviderID == "" {
+		mod.ProviderID = mod.ID
+		authType := domain.ModelProviderAuthNone
+		if len(mod.APIKeyEnc) > 0 {
+			authType = domain.ModelProviderAuthAPIKey
+		}
+		m.modelProviders[mod.ProviderID] = domain.ModelProvider{
+			ID: mod.ProviderID, Name: mod.Name, Kind: "custom", BaseURL: mod.BaseURL,
+			AuthType: authType, APIKeyEnc: append([]byte(nil), mod.APIKeyEnc...),
+			CatalogMode: domain.ModelProviderCatalogDisabled, CreatedAt: mod.CreatedAt,
+			UpdatedAt: mod.CreatedAt, UpdatedBy: mod.UpdatedBy,
+		}
+	}
+	if _, ok := m.modelProviders[mod.ProviderID]; !ok {
+		return ErrNotFound
+	}
+	if mod.Source == "" {
+		mod.Source = "custom"
+	}
+	if mod.ModelID == "" {
+		_, bare, ok := strings.Cut(mod.ModelName, "/")
+		if ok {
+			mod.ModelID = bare
+		} else {
+			mod.ModelID = mod.ModelName
 		}
 	}
 	m.models[mod.ID] = cloneModel(*mod)
@@ -1303,7 +1468,42 @@ func (m *MemStore) UpdateModel(_ context.Context, mod *domain.Model) error {
 			return ErrAlreadyExists
 		}
 	}
+	if mod.Source == "" {
+		mod.Source = "custom"
+	}
+	if mod.ModelID == "" {
+		_, bare, ok := strings.Cut(mod.ModelName, "/")
+		if ok {
+			mod.ModelID = bare
+		} else {
+			mod.ModelID = mod.ModelName
+		}
+	}
 	m.models[mod.ID] = cloneModel(*mod)
+	if provider, ok := m.modelProviders[mod.ProviderID]; ok {
+		kind, _, hasKind := strings.Cut(mod.ModelName, "/")
+		if hasKind {
+			provider.Kind = kind
+		}
+		provider.BaseURL = mod.BaseURL
+		provider.APIKeyEnc = append([]byte(nil), mod.APIKeyEnc...)
+		provider.AuthType = domain.ModelProviderAuthNone
+		if len(mod.APIKeyEnc) > 0 {
+			provider.AuthType = domain.ModelProviderAuthAPIKey
+		}
+		provider.UpdatedAt = time.Now().UTC()
+		provider.UpdatedBy = mod.UpdatedBy
+		m.modelProviders[provider.ID] = provider
+		for id, sibling := range m.models {
+			if sibling.ProviderID != provider.ID {
+				continue
+			}
+			sibling.BaseURL = provider.BaseURL
+			sibling.APIKeyEnc = append([]byte(nil), provider.APIKeyEnc...)
+			sibling.ModelName = provider.Kind + "/" + sibling.ModelID
+			m.models[id] = sibling
+		}
+	}
 	return nil
 }
 
@@ -1312,28 +1512,7 @@ func (m *MemStore) UpdateModel(_ context.Context, mod *domain.Model) error {
 func (m *MemStore) DeleteModel(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.models[id]; !ok {
-		return ErrNotFound
-	}
-	delete(m.models, id)
-	for k := range m.modelGrants {
-		if strings.HasPrefix(k, id+"|") {
-			delete(m.modelGrants, k)
-		}
-	}
-	for sid, svc := range m.services {
-		if svc.DefaultModelID != nil && *svc.DefaultModelID == id {
-			svc.DefaultModelID = nil
-			m.services[sid] = svc
-		}
-	}
-	for rid, run := range m.runs {
-		if run.ModelID != nil && *run.ModelID == id {
-			run.ModelID = nil
-			m.runs[rid] = run
-		}
-	}
-	return nil
+	return m.deleteModelLocked(id)
 }
 
 // ListModelsForProject returns the models granted to a project, newest first.
