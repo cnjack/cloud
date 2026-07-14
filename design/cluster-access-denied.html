@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Cluster role boundary layout prototype." />
+  <link rel="icon" href="./assets/favicon.svg" />
+  <title>Cluster access — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><span class="wordmark-mark"><b>j</b>&gt;_</span><span>code</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="rail-context"><span class="eyebrow">Workspace</span><strong>jcode Cloud</strong><small>Self-hosted coding workspace</small></div>
+      <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./projects.html"><svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">2</span></a></nav>
+      <section class="rail-section" aria-labelledby="recentProjectsLabel"><div class="rail-section-head"><span id="recentProjectsLabel">Recent projects</span><span>2</span></div><nav class="recent-projects" aria-label="Recent projects"><a class="recent-item" href="./project-workspace.html"><span class="project-mark">JC</span><span class="recent-item-copy"><strong>jcode Cloud</strong><small>member · 3 services</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./project-workspace.html"><span class="project-mark">JD</span><span class="recent-item-copy"><strong>jcode Docs</strong><small>owner · 1 service</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a></nav></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>wangwenhui@local</span><span>v0.1.0</span></div><div class="identity-row"><span class="identity-mark">M</span><span class="identity-copy"><strong>Ming</strong><small>Project admin</small></span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface" aria-label="Cluster access boundary">
+      <header class="utility-bar"><div class="breadcrumbs"><span>Direct route</span><span class="breadcrumb-separator">/</span><strong>Cluster</strong></div><div class="utility-actions"><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <section class="access-stage">
+            <div class="access-copy"><span class="not-found-code">ROLE / PROJECT ADMIN</span><h1>Cluster stays outside this role.</h1><p>Your role manages Projects only. Capacity, model credentials, guardrails, and provider configuration require a Cluster administrator.</p><div class="notice" data-tone="warning"><svg class="icon"><use href="./assets/icons.svg#i-warning" /></svg><span><strong>The Cluster navigation is intentionally hidden.</strong>This direct route explains the boundary without issuing a system snapshot request.</span></div><div class="access-actions"><a class="button button-primary" href="./projects.html"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-left" /></svg>Back to Projects</a></div></div>
+            <div class="access-boundary" aria-hidden="true"><svg class="icon"><use href="./assets/icons.svg#i-lock" /></svg></div>
+          </section>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

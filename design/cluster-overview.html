@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Cluster overview layout prototype." />
+  <link rel="icon" href="./assets/favicon.svg" />
+  <title>Cluster overview — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><span class="wordmark-mark"><b>j</b>&gt;_</span><span>code</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="rail-context"><span class="eyebrow">Administration</span><strong>Cluster</strong><small>wangwenhui@local</small></div>
+      <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./projects.html"><svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">3</span></a><a class="nav-item" href="./cluster-overview.html" aria-current="page"><svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg><span>Cluster</span><span class="nav-count">admin</span></a></nav>
+      <section class="rail-section" aria-labelledby="recentProjectsLabel"><div class="rail-section-head"><span id="recentProjectsLabel">Recent projects</span><span>3</span></div><nav class="recent-projects" aria-label="Recent projects"><a class="recent-item" href="./project-workspace.html"><span class="project-mark">JC</span><span class="recent-item-copy"><strong>jcode Cloud</strong><small>3 services</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./project-workspace.html"><span class="project-mark">JD</span><span class="recent-item-copy"><strong>jcode Docs</strong><small>1 service</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./project-workspace.html"><span class="project-mark">RI</span><span class="recent-item-copy"><strong>Runner images</strong><small>2 services</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a></nav></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>namespace / jcode</span><span>v0.1.0</span></div><div class="identity-row"><span class="identity-mark">J</span><span class="identity-copy"><strong>Jack</strong><small>cluster admin</small></span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface" aria-label="Cluster administration">
+      <header class="utility-bar"><div class="breadcrumbs"><span>Administration</span><span class="breadcrumb-separator">/</span><strong>Cluster</strong></div><div class="utility-actions"><span class="prototype-chip">sample snapshot</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <nav class="subnav" aria-label="Cluster sections"><a href="./cluster-overview.html" aria-current="page">Overview</a><a href="./cluster-models.html">Models</a><a href="./cluster-connections.html">Connections</a></nav>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <header class="page-header">
+            <div class="page-heading"><span class="eyebrow">Orchestrator snapshot</span><h1>Cluster</h1><p>Capacity, guardrails, and runtime wiring for this orchestrator. Editable configuration stays in its owning section.</p><div class="cluster-summary"><span>namespace / jcode</span><span>·</span><span>launcher / kubernetes</span><span>·</span><span>commit / bceffb2</span></div></div>
+            <div class="header-actions"><span class="status-label" data-tone="success">snapshot loaded</span><button class="button" type="button" data-prototype-action="Prototype refresh — no API request was sent.">Refresh</button></div>
+          </header>
+
+          <dl class="metric-strip" aria-label="Run capacity summary">
+            <div class="metric"><dt>Running</dt><dd>2</dd><small>active now</small></div>
+            <div class="metric"><dt>Scheduling</dt><dd>1</dd><small>awaiting pod</small></div>
+            <div class="metric"><dt>Queued</dt><dd>0</dd><small>waiting for capacity</small></div>
+            <div class="metric"><dt>Max</dt><dd>8</dd><small>concurrent Runs</small></div>
+          </dl>
+
+          <div class="cluster-layout">
+            <div class="cluster-main">
+              <section class="section-panel" aria-labelledby="capacityTitle">
+                <header class="section-panel-head"><h2 id="capacityTitle">Capacity</h2><span class="mono section-copy">3 active / 8 max</span></header>
+                <div class="capacity-body">
+                  <div class="capacity-figure"><div class="capacity-copy"><strong>37.5%</strong><span>of configured concurrency is in use</span></div><span class="capacity-max">5 slots available</span></div>
+                  <div class="capacity-track" role="progressbar" aria-label="Active Runs against max concurrency" aria-valuenow="3" aria-valuemin="0" aria-valuemax="8"><span class="capacity-fill"></span></div>
+                  <div class="capacity-legend"><span class="legend-item"><span class="legend-dot"></span>2 running</span><span class="legend-item"><span class="legend-dot" data-tone="muted"></span>1 scheduling</span></div>
+                </div>
+              </section>
+
+              <section class="section-panel" aria-labelledby="providerTitle">
+                <header class="section-panel-head"><h2 id="providerTitle">Git provider policy</h2><span class="status-label" data-tone="success">Gitea enabled</span></header>
+                <dl class="definition-list"><div class="definition-row"><dt>Gitea URL</dt><dd class="mono">https://gitea.j-code.net</dd></div><div class="definition-row"><dt>Draft PR output</dt><dd>Available to authorized identities</dd></div><div class="definition-row"><dt>Allowed Git hosts</dt><dd class="mono">gitea.j-code.net, github.com</dd></div></dl>
+              </section>
+
+              <div class="configuration-callout"><svg class="icon"><use href="./assets/icons.svg#i-cpu" /></svg><span><strong>Three catalog models are configured.</strong>Model credentials and Project grants are managed in <a href="./cluster-models.html"><u>Models</u></a>; Projects never receive provider keys.</span></div>
+            </div>
+
+            <aside class="cluster-aside">
+              <section class="section-panel" aria-labelledby="guardrailTitle"><header class="section-panel-head"><h2 id="guardrailTitle">Guardrails</h2></header><dl class="definition-list"><div class="definition-row"><dt>Run timeout</dt><dd class="mono">30m</dd></div><div class="definition-row"><dt>Job TTL</dt><dd class="mono">24h</dd></div></dl></section>
+              <section class="section-panel" aria-labelledby="runnerTitle"><header class="section-panel-head"><h2 id="runnerTitle">Runner</h2></header><dl class="definition-list"><div class="definition-row"><dt>Image</dt><dd class="mono">jcode-runner:latest</dd></div><div class="definition-row"><dt>Launcher</dt><dd class="mono">kubernetes</dd></div><div class="definition-row"><dt>Workspace</dt><dd>Persistent</dd></div></dl></section>
+              <section class="section-panel" aria-labelledby="versionTitle"><header class="section-panel-head"><h2 id="versionTitle">Build</h2></header><dl class="definition-list"><div class="definition-row"><dt>Version</dt><dd class="mono">0.1.0</dd></div><div class="definition-row"><dt>Commit</dt><dd class="mono">bceffb2</dd></div><div class="definition-row"><dt>Users</dt><dd class="mono">14</dd></div></dl></section>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

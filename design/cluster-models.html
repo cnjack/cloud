@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Cluster model catalog layout prototype." />
+  <link rel="icon" href="./assets/favicon.svg" />
+  <title>Cluster models — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><span class="wordmark-mark"><b>j</b>&gt;_</span><span>code</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="rail-context"><span class="eyebrow">Administration</span><strong>Cluster</strong><small>wangwenhui@local</small></div>
+      <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./projects.html"><svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">3</span></a><a class="nav-item" href="./cluster-overview.html" aria-current="page"><svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg><span>Cluster</span><span class="nav-count">admin</span></a></nav>
+      <section class="rail-section" aria-labelledby="recentProjectsLabel"><div class="rail-section-head"><span id="recentProjectsLabel">Recent projects</span><span>3</span></div><nav class="recent-projects" aria-label="Recent projects"><a class="recent-item" href="./project-workspace.html"><span class="project-mark">JC</span><span class="recent-item-copy"><strong>jcode Cloud</strong><small>3 services</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./project-workspace.html"><span class="project-mark">JD</span><span class="recent-item-copy"><strong>jcode Docs</strong><small>1 service</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a></nav></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>namespace / jcode</span><span>v0.1.0</span></div><div class="identity-row"><span class="identity-mark">J</span><span class="identity-copy"><strong>Jack</strong><small>cluster admin</small></span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface" aria-label="Cluster models">
+      <header class="utility-bar"><div class="breadcrumbs"><a href="./cluster-overview.html">Cluster</a><span class="breadcrumb-separator">/</span><strong>Models</strong></div><div class="utility-actions"><span class="prototype-chip">sample catalog</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <nav class="subnav" aria-label="Cluster sections"><a href="./cluster-overview.html">Overview</a><a href="./cluster-models.html" aria-current="page">Models</a><a href="./cluster-connections.html">Connections</a></nav>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <header class="page-header"><div class="page-heading"><span class="eyebrow">Cluster catalog</span><h1>Models</h1><p>Register provider endpoints once, keep credentials sealed, and grant Projects only the models they are allowed to use.</p></div><div class="header-actions"><button class="button button-primary" type="button" data-prototype-action="Open the add-model editor in the implementation."><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>Add model</button></div></header>
+
+          <div class="models-layout">
+            <section aria-labelledby="modelListTitle">
+              <div class="section-heading"><div><h2 id="modelListTitle">Catalog</h2><p>3 registered models · credentials never returned</p></div></div>
+              <div class="model-list">
+                <button class="model-row" type="button" data-selected aria-pressed="true"><span class="provider-mark" data-tone="accent">GL</span><span class="model-copy"><strong>GLM 5.2</strong><small>https://open.bigmodel.cn/api/paas/v4 · glm-5.2</small></span><span class="model-meta"><span class="status-label" data-tone="success">key set</span><small>2 Project grants</small></span></button>
+                <button class="model-row" type="button" aria-pressed="false" data-prototype-action="Prototype selection: Qwen 3.6 27B"><span class="provider-mark">QW</span><span class="model-copy"><strong>Qwen 3.6 27B</strong><small>https://dashscope.aliyuncs.com/compatible-mode/v1 · qwen3.6-27b</small></span><span class="model-meta"><span class="status-label" data-tone="success">key set</span><small>1 Project grant</small></span></button>
+                <button class="model-row" type="button" aria-pressed="false" data-prototype-action="Prototype selection: Coding Plan"><span class="provider-mark">CP</span><span class="model-copy"><strong>Coding Plan</strong><small>https://coding-plan.internal/v1 · coding-plan</small></span><span class="model-meta"><span class="status-label">keyless</span><small>1 Project grant</small></span></button>
+              </div>
+            </section>
+
+            <form class="model-editor" data-form-prototype="Prototype only — model configuration was not saved.">
+              <header class="model-editor-head"><div><h2>GLM 5.2</h2><p>model_glm_52</p></div><button class="icon-button" type="button" data-prototype-action="Model actions: duplicate or delete"><svg class="icon"><use href="./assets/icons.svg#i-more" /></svg><span class="sr-only">Model actions</span></button></header>
+              <div class="fields">
+                <div class="field"><label for="modelName">Display name</label><input class="input" id="modelName" value="GLM 5.2" /></div>
+                <div class="field"><label for="modelBaseUrl">Base URL</label><input class="input mono" id="modelBaseUrl" value="https://open.bigmodel.cn/api/paas/v4" /></div>
+                <div class="field"><label for="modelId">Provider model</label><input class="input mono" id="modelId" value="glm-5.2" /></div>
+                <div class="credential-state"><span class="credential-state-copy"><strong>Provider credential</strong><small>A sealed key is configured. Its value is never displayed.</small></span><button class="button" type="button" data-prototype-action="Open rotate-key input">Rotate</button></div>
+                <div class="field"><span class="field-label">Project grants</span><div class="grant-list"><span class="grant"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg>jcode Cloud</span><span class="grant"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg>Runner images</span><button class="grant" type="button" data-prototype-action="Open Project grant selector"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>Grant Project</button></div><span class="field-hint">Projects see only the granted model name and provider model id.</span></div>
+              </div>
+              <div class="security-note"><svg class="icon"><use href="./assets/icons.svg#i-lock" /></svg><span>Leaving the credential field untouched preserves the stored secret. Clearing or rotating it must be an explicit action.</span></div>
+              <div class="editor-actions"><button class="button button-danger" type="button" data-prototype-action="Delete requires explicit confirmation">Delete</button><button class="button button-primary" type="submit">Save changes</button></div>
+            </form>
+          </div>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

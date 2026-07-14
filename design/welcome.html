@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud first-user welcome layout prototype." />
+  <link rel="icon" href="./assets/favicon.svg" />
+  <title>Welcome — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to welcome</a>
+  <div class="auth-shell">
+    <aside class="auth-rail" aria-label="jcode Cloud welcome introduction">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><span class="wordmark-mark"><b>j</b>&gt;_</span><span>code</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="auth-story"><span class="eyebrow">Workspace ready</span><h1>The first boundary is yours to set.</h1><span class="auth-story-line" aria-hidden="true"></span><p>You signed in first. jcode Cloud has assigned the Cluster administrator role to this identity.</p></div>
+      <footer class="auth-rail-footer"><span>Gitea OAuth</span><span>session active</span></footer>
+    </aside>
+
+    <main class="auth-surface" id="mainContent">
+      <header class="auth-utility"><span class="auth-utility-copy">First-user setup</span><div class="utility-actions"><span class="status-label" data-tone="success">signed in</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <div class="auth-stage">
+        <div class="welcome-content">
+          <section class="welcome-main"><span class="eyebrow">Hello, Jack</span><h2 class="welcome-title">You’re the first user.</h2><p class="welcome-lede">This identity is now the Cluster administrator. You can configure models and runtime integrations, then create the first Project. Everyone who joins later starts as a regular user until a Project owner adds them.</p><div class="welcome-actions"><a class="button button-primary" href="./projects.html">Enter workspace<svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></a></div></section>
+          <aside class="welcome-role"><span class="provider-mark"><svg class="icon icon-lg"><use href="./assets/icons.svg#i-key" /></svg></span><span class="eyebrow">Assigned role</span><h3>Cluster administrator</h3><p>Administration is separate from Project ownership.</p><ul><li><svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg><span>Manage the model catalog and Project grants</span></li><li><svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg><span>Configure cluster-wide jtype connectivity</span></li><li><svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg><span>View capacity, guardrails, and provider policy</span></li></ul></aside>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

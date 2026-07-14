@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud sign-in layout prototype." />
+  <link rel="icon" href="./assets/favicon.svg" />
+  <title>Sign in — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to sign in</a>
+  <div class="auth-shell">
+    <aside class="auth-rail" aria-label="jcode Cloud introduction">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><span class="wordmark-mark"><b>j</b>&gt;_</span><span>code</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="auth-story"><span class="eyebrow">Your code. Your cluster.</span><h1>Keep the work close to the system.</h1><span class="auth-story-line" aria-hidden="true"></span><p>jcode Cloud dispatches coding Tasks into the infrastructure your team already controls.</p></div>
+      <footer class="auth-rail-footer"><span>self-hosted</span><span>v0.1.0</span></footer>
+    </aside>
+
+    <main class="auth-surface" id="mainContent">
+      <header class="auth-utility"><span class="auth-utility-copy">Secure entry</span><div class="utility-actions"><span class="prototype-chip">sign-in state</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <div class="auth-stage">
+        <div class="auth-content">
+          <section class="auth-main" aria-labelledby="signInTitle">
+            <header class="auth-heading"><span class="eyebrow">Welcome back</span><h2 id="signInTitle">Sign in to your workspace.</h2><p>Continue with the Git provider configured by your Cluster administrator. Your repository identity stays personal to you.</p></header>
+            <div class="provider-list">
+              <button class="provider-button" type="button" data-prototype-action="Prototype only — the Gitea OAuth flow was not started."><span class="provider-mark" data-tone="accent">GT</span><span>Continue with Gitea</span><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></button>
+            </div>
+            <details class="advanced-block">
+              <summary class="advanced-summary">Advanced · console token</summary>
+              <form class="advanced-body" data-form-prototype="Prototype only — no console token was submitted.">
+                <div class="field"><label for="consoleToken">Console token</label><input class="input mono" type="password" id="consoleToken" placeholder="Enter the deployed CONSOLE_TOKEN" autocomplete="off" /><span class="field-hint">Cluster-admin fallback stored only in this browser. Prefer a personal OAuth session when available.</span></div>
+                <button class="button" type="submit">Sign in with token</button>
+              </form>
+            </details>
+          </section>
+
+          <aside class="auth-aside">
+            <span class="eyebrow">Session boundary</span><h3>What sign-in establishes</h3><p>The orchestrator maps the provider identity to one jcode Cloud user. Project roles and repository access are still evaluated separately.</p>
+            <dl class="auth-facts"><div class="auth-fact"><dt>Provider</dt><dd>Gitea OAuth</dd></div><div class="auth-fact"><dt>Session</dt><dd>HttpOnly cookie</dd></div><div class="auth-fact"><dt>Repository access</dt><dd>per user</dd></div></dl>
+            <div class="security-note"><svg class="icon"><use href="./assets/icons.svg#i-lock" /></svg><span>Provider tokens are kept server-side and never rendered into this page.</span></div>
+          </aside>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

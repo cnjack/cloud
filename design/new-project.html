@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud New Project editor layout prototype." />
+  <link rel="icon" href="./assets/favicon.svg" />
+  <title>New Project — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><span class="wordmark-mark"><b>j</b>&gt;_</span><span>code</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="rail-context"><span class="eyebrow">Workspace</span><strong>jcode Cloud</strong><small>Self-hosted coding workspace</small></div>
+      <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./projects.html" aria-current="page"><svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">3</span></a><a class="nav-item" href="./cluster-overview.html"><svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg><span>Cluster</span><span class="nav-count">admin</span></a></nav>
+      <section class="rail-section" aria-labelledby="recentProjectsLabel"><div class="rail-section-head"><span id="recentProjectsLabel">Recent projects</span><span>3</span></div><nav class="recent-projects" aria-label="Recent projects"><a class="recent-item" href="./project-workspace.html"><span class="project-mark">JC</span><span class="recent-item-copy"><strong>jcode Cloud</strong><small>3 services</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./project-workspace.html"><span class="project-mark">JD</span><span class="recent-item-copy"><strong>jcode Docs</strong><small>1 service</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a></nav></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>wangwenhui@local</span><span>v0.1.0</span></div><div class="identity-row"><span class="identity-mark">J</span><span class="identity-copy"><strong>Jack</strong><small>cluster admin</small></span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface editor-surface" aria-label="Create Project">
+      <header class="utility-bar"><div class="breadcrumbs"><a href="./projects.html">Projects</a><span class="breadcrumb-separator">/</span><strong>New Project</strong></div><div class="utility-actions"><span class="prototype-chip">editor proposal</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <header class="editor-header"><a class="text-button" href="./projects.html"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-left" /></svg>Projects</a><div class="editor-title"><h1>Create a Project</h1><p>Start with the ownership boundary. Services come next.</p></div><span class="status-label">draft</span></header>
+          <form class="editor-grid" data-form-prototype="Prototype only — no Project was created." novalidate>
+            <div class="editor-main">
+              <section class="form-section">
+                <div class="form-section-copy"><span class="eyebrow">01 / identity</span><h2>Project details</h2><p>Use the product or team boundary people will recognize.</p></div>
+                <div class="fields"><div class="field"><label for="projectName">Name <span class="required">*</span></label><input class="input" id="projectName" name="projectName" placeholder="e.g. jcode Cloud" required autocomplete="off" aria-describedby="projectNameHint projectNameError" /><span class="field-hint" id="projectNameHint">You can rename the Project later without changing Service URLs.</span><span class="field-error" id="projectNameError" data-field-error hidden>Name is required.</span></div></div>
+              </section>
+              <section class="form-section">
+                <div class="form-section-copy"><span class="eyebrow">02 / boundary</span><h2>What belongs here</h2><p>Repositories are added as Services after creation.</p></div>
+                <div class="configuration-callout"><svg class="icon"><use href="./assets/icons.svg#i-info" /></svg><span><strong>No repository is created or connected yet.</strong>The next screen opens the empty Project workspace, where the owner explicitly authorizes each Service.</span></div>
+              </section>
+              <div class="editor-actions"><a class="button button-ghost" href="./projects.html">Cancel</a><button class="button button-primary" type="submit"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>Create Project</button></div>
+            </div>
+            <aside class="editor-aside"><span class="eyebrow">After creation</span><h2>The workspace opens empty.</h2><p>This keeps Project creation honest: a container is successful even when no Git provider or model is available yet.</p><ul class="next-list"><li><svg class="icon"><use href="./assets/icons.svg#i-git" /></svg><span>Connect one or more repositories as Services.</span></li><li><svg class="icon"><use href="./assets/icons.svg#i-cpu" /></svg><span>Review the models granted by the Cluster administrator.</span></li><li><svg class="icon"><use href="./assets/icons.svg#i-bolt" /></svg><span>Start a Task only after its required dependencies are configured.</span></li></ul></aside>
+          </form>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>
