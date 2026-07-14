@@ -35,6 +35,9 @@ icons, and small prototype-only interactions live under `assets/`.
   rail-and-surface composition.
 - Orange is reserved for the primary action and focus. Status colors only
   describe explicitly labelled sample fixture data.
+- The application mark and model-provider icons come from the canonical jcode
+  assets. Provider rows use the same icon mapping and compact hierarchy as
+  jcode instead of invented initials.
 - Every unavailable dependency remains visible and explains the next action.
 - Desktop has one surface scroll owner. At narrow widths, the rail collapses to
   a compact top navigation and the document becomes the scroll owner.
@@ -53,7 +56,19 @@ The designs deliberately stay within current backend contracts:
   runner, and version already have Console queries.
 - Provider credentials remain write-only. The UI may show whether a credential
   is configured, never its stored value.
+- `cluster-models.html` groups models under their provider, matching jcode's
+  picker and provider-management hierarchy while retaining Cloud-specific
+  Project grants. The custom Coding Plan fixture visibly disables catalog
+  browsing because that endpoint does not advertise one.
 - Auth, setup, welcome, and 404 are visual restructures over existing states.
+
+## Shared asset sources
+
+- `assets/app-icon.svg` embeds the canonical 128px jcode desktop application
+  icon so the static prototype remains portable.
+- `assets/provider-zhipu.svg`, `assets/provider-qwen.svg`, and
+  `assets/provider-openai.svg` mirror the provider icon assets consumed by
+  jcode's `ProviderIcon` mapping.
 
 ## Review checklist
 

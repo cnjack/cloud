@@ -66,6 +66,38 @@
     search.addEventListener('input', filter);
   }
 
+  const modelSearch = document.querySelector('[data-model-search]');
+  if (modelSearch instanceof HTMLInputElement) {
+    const cards = [...document.querySelectorAll('[data-provider-card]')];
+    const count = document.querySelector('[data-model-count]');
+    const empty = document.querySelector('[data-model-search-empty]');
+    const filterModels = () => {
+      const query = modelSearch.value.trim().toLowerCase();
+      let visible = 0;
+
+      cards.forEach((card) => {
+        const providerText = `${card.getAttribute('data-provider-search') || ''} ${card.querySelector('.provider-card-head')?.textContent || ''}`.toLowerCase();
+        const providerMatch = !query || providerText.includes(query);
+        const rows = [...card.querySelectorAll('[data-catalog-model]')];
+        let visibleInCard = 0;
+
+        rows.forEach((row) => {
+          const match = providerMatch || (row.textContent || '').toLowerCase().includes(query);
+          row.toggleAttribute('hidden', !match);
+          if (match) visibleInCard += 1;
+        });
+
+        card.toggleAttribute('hidden', visibleInCard === 0);
+        visible += visibleInCard;
+      });
+
+      if (count) count.textContent = String(visible);
+      if (empty) empty.toggleAttribute('hidden', visible > 0);
+    };
+
+    modelSearch.addEventListener('input', filterModels);
+  }
+
   document.querySelectorAll('[data-form-prototype]').forEach((form) => {
     form.addEventListener('submit', (event) => {
       event.preventDefault();

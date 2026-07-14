@@ -56,6 +56,9 @@ substitute a mock, fake implementation, or fallback that looks successful.
   `design/`. Do not combine unrelated screens into one monolithic HTML file.
 - Reuse shared styles, icons, and prototype-only interactions from
   `design/assets/` so separate page files still express one design system.
+- For concepts shared with the sibling `jcode` product—especially models and
+  providers—use `../jcode` as the interaction and visual reference. Reuse its
+  canonical application and provider icons instead of inventing letter tiles.
 
 For each feature or bug fix:
 

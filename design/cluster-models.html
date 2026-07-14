@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="jcode Cloud Cluster model catalog layout prototype." />
-  <link rel="icon" href="./assets/favicon.svg" />
+  <meta name="description" content="jcode Cloud Cluster model provider catalog layout prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
   <title>Cluster models — jcode Cloud design</title>
   <link rel="stylesheet" href="./assets/prototype.css" />
   <script src="./assets/prototype.js" defer></script>
@@ -13,7 +13,7 @@
   <a class="skip-link" href="#mainContent">Skip to content</a>
   <div class="app-shell">
     <aside class="global-rail" aria-label="Global navigation">
-      <div class="brand-row"><a class="wordmark" href="./index.html"><span class="wordmark-mark"><b>j</b>&gt;_</span><span>code</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="brand-row"><a class="wordmark" href="./index.html"><img class="wordmark-icon" src="./assets/app-icon.svg" alt="" /><span class="wordmark-name">JCODE</span><span class="cloud-label">Cloud</span></a></div>
       <div class="rail-context"><span class="eyebrow">Administration</span><strong>Cluster</strong><small>wangwenhui@local</small></div>
       <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./projects.html"><svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">3</span></a><a class="nav-item" href="./cluster-overview.html" aria-current="page"><svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg><span>Cluster</span><span class="nav-count">admin</span></a></nav>
       <section class="rail-section" aria-labelledby="recentProjectsLabel"><div class="rail-section-head"><span id="recentProjectsLabel">Recent projects</span><span>3</span></div><nav class="recent-projects" aria-label="Recent projects"><a class="recent-item" href="./project-workspace.html"><span class="project-mark">JC</span><span class="recent-item-copy"><strong>jcode Cloud</strong><small>3 services</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./project-workspace.html"><span class="project-mark">JD</span><span class="recent-item-copy"><strong>jcode Docs</strong><small>1 service</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a></nav></section>
@@ -24,32 +24,89 @@
       <header class="utility-bar"><div class="breadcrumbs"><a href="./cluster-overview.html">Cluster</a><span class="breadcrumb-separator">/</span><strong>Models</strong></div><div class="utility-actions"><span class="prototype-chip">sample catalog</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
       <nav class="subnav" aria-label="Cluster sections"><a href="./cluster-overview.html">Overview</a><a href="./cluster-models.html" aria-current="page">Models</a><a href="./cluster-connections.html">Connections</a></nav>
       <main class="surface-scroll" id="mainContent">
-        <div class="surface-inner">
-          <header class="page-header"><div class="page-heading"><span class="eyebrow">Cluster catalog</span><h1>Models</h1><p>Register provider endpoints once, keep credentials sealed, and grant Projects only the models they are allowed to use.</p></div><div class="header-actions"><button class="button button-primary" type="button" data-prototype-action="Open the add-model editor in the implementation."><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>Add model</button></div></header>
+        <div class="surface-inner models-page">
+          <header class="page-header"><div class="page-heading"><span class="eyebrow">Cluster catalog</span><h1>Model providers</h1><p>Connect providers once, keep credentials sealed, then grant Projects only the models they are allowed to run.</p></div><div class="header-actions"><button class="button button-primary" type="button" data-prototype-action="Open the add-provider flow in its own implementation route."><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>Add provider</button></div></header>
 
-          <div class="models-layout">
-            <section aria-labelledby="modelListTitle">
-              <div class="section-heading"><div><h2 id="modelListTitle">Catalog</h2><p>3 registered models · credentials never returned</p></div></div>
-              <div class="model-list">
-                <button class="model-row" type="button" data-selected aria-pressed="true"><span class="provider-mark" data-tone="accent">GL</span><span class="model-copy"><strong>GLM 5.2</strong><small>https://open.bigmodel.cn/api/paas/v4 · glm-5.2</small></span><span class="model-meta"><span class="status-label" data-tone="success">key set</span><small>2 Project grants</small></span></button>
-                <button class="model-row" type="button" aria-pressed="false" data-prototype-action="Prototype selection: Qwen 3.6 27B"><span class="provider-mark">QW</span><span class="model-copy"><strong>Qwen 3.6 27B</strong><small>https://dashscope.aliyuncs.com/compatible-mode/v1 · qwen3.6-27b</small></span><span class="model-meta"><span class="status-label" data-tone="success">key set</span><small>1 Project grant</small></span></button>
-                <button class="model-row" type="button" aria-pressed="false" data-prototype-action="Prototype selection: Coding Plan"><span class="provider-mark">CP</span><span class="model-copy"><strong>Coding Plan</strong><small>https://coding-plan.internal/v1 · coding-plan</small></span><span class="model-meta"><span class="status-label">keyless</span><small>1 Project grant</small></span></button>
-              </div>
-            </section>
+          <section class="model-catalog" aria-labelledby="providerCatalogTitle">
+            <div class="model-security-note"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-lock" /></svg><span>Provider keys are write-only. The catalog reports only whether a credential is configured, never any part of the stored value.</span></div>
 
-            <form class="model-editor" data-form-prototype="Prototype only — model configuration was not saved.">
-              <header class="model-editor-head"><div><h2>GLM 5.2</h2><p>model_glm_52</p></div><button class="icon-button" type="button" data-prototype-action="Model actions: duplicate or delete"><svg class="icon"><use href="./assets/icons.svg#i-more" /></svg><span class="sr-only">Model actions</span></button></header>
-              <div class="fields">
-                <div class="field"><label for="modelName">Display name</label><input class="input" id="modelName" value="GLM 5.2" /></div>
-                <div class="field"><label for="modelBaseUrl">Base URL</label><input class="input mono" id="modelBaseUrl" value="https://open.bigmodel.cn/api/paas/v4" /></div>
-                <div class="field"><label for="modelId">Provider model</label><input class="input mono" id="modelId" value="glm-5.2" /></div>
-                <div class="credential-state"><span class="credential-state-copy"><strong>Provider credential</strong><small>A sealed key is configured. Its value is never displayed.</small></span><button class="button" type="button" data-prototype-action="Open rotate-key input">Rotate</button></div>
-                <div class="field"><span class="field-label">Project grants</span><div class="grant-list"><span class="grant"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg>jcode Cloud</span><span class="grant"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg>Runner images</span><button class="grant" type="button" data-prototype-action="Open Project grant selector"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>Grant Project</button></div><span class="field-hint">Projects see only the granted model name and provider model id.</span></div>
-              </div>
-              <div class="security-note"><svg class="icon"><use href="./assets/icons.svg#i-lock" /></svg><span>Leaving the credential field untouched preserves the stored secret. Clearing or rotating it must be an explicit action.</span></div>
-              <div class="editor-actions"><button class="button button-danger" type="button" data-prototype-action="Delete requires explicit confirmation">Delete</button><button class="button button-primary" type="submit">Save changes</button></div>
-            </form>
-          </div>
+            <div class="model-catalog-toolbar">
+              <label class="model-search-field" for="modelSearch"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-search" /></svg><span class="sr-only">Filter models or providers</span><input id="modelSearch" type="search" placeholder="Filter models or providers…" autocomplete="off" data-model-search /></label>
+              <span class="model-result-count"><b data-model-count>3</b> / 3 models</span>
+            </div>
+            <div class="section-heading compact-heading"><div><h2 id="providerCatalogTitle">Configured providers</h2><p>3 providers · 4 Project grants</p></div></div>
+
+            <div class="provider-stack">
+              <article class="provider-card" data-provider-card data-provider-search="zhipu ai bigmodel glm">
+                <header class="provider-card-head">
+                  <span class="provider-logo"><img src="./assets/provider-zhipu.svg" alt="" /></span>
+                  <div class="provider-card-copy">
+                    <div class="provider-card-title"><h2>Zhipu AI</h2><span class="status-label" data-tone="success">key set</span></div>
+                    <p><span class="mono">https://open.bigmodel.cn/api/paas/v4</span><span aria-hidden="true"> · </span>credential configured</p>
+                  </div>
+                  <div class="provider-actions"><button class="button button-ghost button-compact" type="button" data-prototype-action="Prototype check: Zhipu AI responded in 284 ms."><svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg>Verified</button><button class="icon-button" type="button" aria-label="Edit Zhipu AI provider" data-prototype-action="Open the Zhipu AI provider editor."><svg class="icon"><use href="./assets/icons.svg#i-sliders" /></svg></button><button class="icon-button" type="button" aria-label="More Zhipu AI actions" data-prototype-action="Provider actions: test, rotate key, or remove."><svg class="icon"><use href="./assets/icons.svg#i-more" /></svg></button></div>
+                </header>
+                <div class="provider-models">
+                  <div class="provider-models-bar"><span><b>1</b> configured model</span><div><button class="text-button" type="button" data-prototype-action="Open the Zhipu model catalog."><svg class="icon icon-sm"><use href="./assets/icons.svg#i-search" /></svg>Browse catalog</button><button class="button button-compact" type="button" data-prototype-action="Open the custom-model editor for Zhipu AI."><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>Custom model</button></div></div>
+                  <div class="provider-model-list">
+                    <div class="catalog-model-row" data-catalog-model>
+                      <span class="catalog-model-copy"><strong>GLM 5.2</strong><small>glm-5.2 · 200K context</small></span>
+                      <span class="model-capabilities" aria-label="Reasoning, tool use, and image input"><span class="capability-chip"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>Reasoning</span><span class="capability-chip"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg>Tools</span><span class="capability-chip">Image</span></span>
+                      <span class="project-grant-count"><b>2</b><small>Project grants</small></span>
+                      <button class="button button-ghost button-compact" type="button" data-prototype-action="Open Project grants for GLM 5.2.">Manage grants</button>
+                    </div>
+                  </div>
+                </div>
+              </article>
+
+              <article class="provider-card" data-provider-card data-provider-search="alibaba cloud dashscope qwen tongyi">
+                <header class="provider-card-head">
+                  <span class="provider-logo"><img src="./assets/provider-qwen.svg" alt="" /></span>
+                  <div class="provider-card-copy">
+                    <div class="provider-card-title"><h2>Alibaba Cloud</h2><span class="status-label" data-tone="success">key set</span></div>
+                    <p><span class="mono">https://dashscope.aliyuncs.com/compatible-mode/v1</span><span aria-hidden="true"> · </span>credential configured</p>
+                  </div>
+                  <div class="provider-actions"><button class="button button-ghost button-compact" type="button" data-prototype-action="Prototype check: Alibaba Cloud responded in 321 ms.">Test</button><button class="icon-button" type="button" aria-label="Edit Alibaba Cloud provider" data-prototype-action="Open the Alibaba Cloud provider editor."><svg class="icon"><use href="./assets/icons.svg#i-sliders" /></svg></button><button class="icon-button" type="button" aria-label="More Alibaba Cloud actions" data-prototype-action="Provider actions: test, rotate key, or remove."><svg class="icon"><use href="./assets/icons.svg#i-more" /></svg></button></div>
+                </header>
+                <div class="provider-models">
+                  <div class="provider-models-bar"><span><b>1</b> configured model</span><div><button class="text-button" type="button" data-prototype-action="Open the Qwen model catalog."><svg class="icon icon-sm"><use href="./assets/icons.svg#i-search" /></svg>Browse catalog</button><button class="button button-compact" type="button" data-prototype-action="Open the custom-model editor for Alibaba Cloud."><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>Custom model</button></div></div>
+                  <div class="provider-model-list">
+                    <div class="catalog-model-row" data-catalog-model>
+                      <span class="catalog-model-copy"><strong>Qwen 3.6 27B</strong><small>qwen3.6-27b · 128K context</small></span>
+                      <span class="model-capabilities" aria-label="Reasoning and tool use"><span class="capability-chip"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>Reasoning</span><span class="capability-chip"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg>Tools</span></span>
+                      <span class="project-grant-count"><b>1</b><small>Project grant</small></span>
+                      <button class="button button-ghost button-compact" type="button" data-prototype-action="Open Project grants for Qwen 3.6 27B.">Manage grants</button>
+                    </div>
+                  </div>
+                </div>
+              </article>
+
+              <article class="provider-card" data-provider-card data-provider-search="coding plan internal openai compatible custom">
+                <header class="provider-card-head">
+                  <span class="provider-logo"><img src="./assets/provider-openai.svg" alt="" /></span>
+                  <div class="provider-card-copy">
+                    <div class="provider-card-title"><h2>Coding Plan</h2><span class="status-label">custom</span><span class="status-label" data-tone="success">service identity</span></div>
+                    <p><span class="mono">https://coding-plan.internal/v1</span><span aria-hidden="true"> · </span>keyless workload identity</p>
+                  </div>
+                  <div class="provider-actions"><button class="button button-ghost button-compact" type="button" data-prototype-action="Prototype check: Coding Plan responded in 42 ms.">Test</button><button class="icon-button" type="button" aria-label="Edit Coding Plan provider" data-prototype-action="Open the Coding Plan provider editor."><svg class="icon"><use href="./assets/icons.svg#i-sliders" /></svg></button><button class="icon-button" type="button" aria-label="More Coding Plan actions" data-prototype-action="Provider actions: test or remove."><svg class="icon"><use href="./assets/icons.svg#i-more" /></svg></button></div>
+                </header>
+                <div class="provider-models">
+                  <div class="provider-models-bar"><span><b>1</b> custom model</span><div><button class="text-button" type="button" disabled aria-describedby="codingCatalogNote"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-search" /></svg>Catalog unavailable</button><button class="button button-compact" type="button" data-prototype-action="Open the custom-model editor for Coding Plan."><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>Custom model</button></div></div>
+                  <div class="provider-model-list">
+                    <div class="catalog-model-row" data-catalog-model>
+                      <span class="catalog-model-copy"><strong>Coding Plan</strong><small>coding-plan · 32K context</small></span>
+                      <span class="model-capabilities" aria-label="Tool use"><span class="capability-chip"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg>Tools</span></span>
+                      <span class="project-grant-count"><b>1</b><small>Project grant</small></span>
+                      <button class="button button-ghost button-compact" type="button" data-prototype-action="Open Project grants for Coding Plan.">Manage grants</button>
+                    </div>
+                  </div>
+                  <p class="provider-limit-note" id="codingCatalogNote"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-info" /></svg>This endpoint does not expose a model catalog. Models must be added explicitly; no fallback catalog is substituted.</p>
+                </div>
+              </article>
+            </div>
+
+            <div class="model-search-empty" role="status" data-model-search-empty hidden><svg class="icon"><use href="./assets/icons.svg#i-search" /></svg><strong>No matching models or providers.</strong><span>Try a provider name, model id, or capability.</span></div>
+          </section>
         </div>
       </main>
     </section>
