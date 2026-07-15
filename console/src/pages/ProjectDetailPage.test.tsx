@@ -666,6 +666,8 @@ describe('ProjectDetailPage — workspace sections', () => {
 
     const retry = await screen.findByTestId('project-kanban-retry');
     expect(retry.textContent).toContain('Kanban unavailable');
+    expect(within(screen.getByTestId('workspace-service-actions')).getByTestId('project-kanban-retry')).toBe(retry);
+    expect(within(screen.getByTestId('project-utility-actions')).queryByTestId('project-kanban-retry')).toBeNull();
     expect(screen.queryByTestId('project-kanban-btn')).toBeNull();
   });
 });
@@ -1006,14 +1008,17 @@ describe('ProjectDetailPage — Kanban button gating (D31)', () => {
     expect(screen.queryByTestId('project-kanban-btn')).toBeNull();
   });
 
-  it('shows the Kanban button with ≥1 link and opens the modal on click', async () => {
+  it('shows the Kanban button beside the repository action and opens the modal on click', async () => {
     const { client } = makeClient(project('member', [svc('svc_default', 'default')]), {
       boardLinks: [boardLink()],
     });
     renderPage(client);
 
     const btn = await screen.findByTestId('project-kanban-btn');
-    expect(btn).toBeTruthy();
+    const serviceActions = screen.getByTestId('workspace-service-actions');
+    expect(within(serviceActions).getByTestId('project-kanban-btn')).toBe(btn);
+    expect(within(serviceActions).getByRole('link', { name: 'Open Gitea' })).toBeTruthy();
+    expect(within(screen.getByTestId('project-utility-actions')).queryByTestId('project-kanban-btn')).toBeNull();
     fireEvent.click(btn);
     expect(await screen.findByTestId('kanban-board-modal')).toBeTruthy();
   });

@@ -138,6 +138,8 @@ export function ProjectDetailPage() {
   const boardLinks = useProjectBoardLinks(projectId, !!p && canRun);
   const hasBoardLinks = (boardLinks.data?.length ?? 0) > 0;
   const boardLinksUnavailable = canRun && boardLinks.isError;
+  const hasServiceHeaderActions =
+    hasBoardLinks || boardLinksUnavailable || activeService?.repo_kind === 'provider';
 
   const integrationsQuery = useIntegrations(projectId, !!p && canRun);
   const availableIntegrations = useMemo(
@@ -426,28 +428,6 @@ export function ProjectDetailPage() {
               )}
             </nav>
             <div className={styles.workspaceUtilityActions} data-testid="project-utility-actions">
-              {hasBoardLinks && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setKanbanOpen(true)}
-                  data-testid="project-kanban-btn"
-                >
-                  {t('projectDetail.kanban')}
-                </Button>
-              )}
-              {boardLinksUnavailable && !hasBoardLinks && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => void boardLinks.refetch()}
-                  disabled={boardLinks.isFetching}
-                  title={t('projectDetail.kanbanRetryTitle')}
-                  data-testid="project-kanban-retry"
-                >
-                  {boardLinks.isFetching ? t('projectDetail.loadingKanban') : t('projectDetail.kanbanUnavailableRetry')}
-                </Button>
-              )}
               {demo && <span className={styles.workspaceDemoTag}>{t('projectDetail.demoTag')}</span>}
               <LanguageToggle />
               <ThemeToggle />
@@ -488,26 +468,52 @@ export function ProjectDetailPage() {
                 </div>
               </div>
             </div>
-            {activeService && activeService.repo_kind === 'provider' && (
-              activeService.repo_html_url ? (
-                <a
-                  className={styles.workspaceRepoAction}
-                  href={activeService.repo_html_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label={t('projectDetail.openProvider', { provider: serviceProviderLabel(activeService) })}
-                >
-                  <ArrowSquareOut size={16} aria-hidden="true" />
-                  <span>{t('projectDetail.openProvider', { provider: serviceProviderLabel(activeService) })}</span>
-                </a>
-              ) : (
-                <button
-                  type="button"
-                  className={styles.workspaceRepoAction}
-                  disabled
-                  title={t('projectDetail.repoUrlUnresolved')}
-                >{t('projectDetail.repositoryUnavailable')}</button>
-              )
+            {hasServiceHeaderActions && (
+              <div className={styles.workspaceServiceActions} data-testid="workspace-service-actions">
+                {hasBoardLinks && (
+                  <button
+                    type="button"
+                    className={styles.workspaceServiceAction}
+                    onClick={() => setKanbanOpen(true)}
+                    data-testid="project-kanban-btn"
+                  >
+                    {t('projectDetail.kanban')}
+                  </button>
+                )}
+                {boardLinksUnavailable && !hasBoardLinks && (
+                  <button
+                    type="button"
+                    className={styles.workspaceServiceAction}
+                    onClick={() => void boardLinks.refetch()}
+                    disabled={boardLinks.isFetching}
+                    title={t('projectDetail.kanbanRetryTitle')}
+                    data-testid="project-kanban-retry"
+                  >
+                    {boardLinks.isFetching ? t('projectDetail.loadingKanban') : t('projectDetail.kanbanUnavailableRetry')}
+                  </button>
+                )}
+                {activeService && activeService.repo_kind === 'provider' && (
+                  activeService.repo_html_url ? (
+                    <a
+                      className={styles.workspaceServiceAction}
+                      href={activeService.repo_html_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={t('projectDetail.openProvider', { provider: serviceProviderLabel(activeService) })}
+                    >
+                      <ArrowSquareOut size={16} aria-hidden="true" />
+                      <span>{t('projectDetail.openProvider', { provider: serviceProviderLabel(activeService) })}</span>
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      className={styles.workspaceServiceAction}
+                      disabled
+                      title={t('projectDetail.repoUrlUnresolved')}
+                    >{t('projectDetail.repositoryUnavailable')}</button>
+                  )
+                )}
+              </div>
             )}
           </div>
         }
