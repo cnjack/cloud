@@ -50,7 +50,12 @@ import { TaskComposer } from '../project-workspace/TaskComposer';
 import { AutomationsPanel } from '../project-workspace/AutomationsPanel';
 import { serviceMark, serviceProviderLabel, serviceSource } from '../project-workspace/presentation';
 import { KanbanBoardModal } from './KanbanBoardModal';
-import { ProjectSettingsPage } from './ProjectSettingsModal';
+import {
+  ProjectSettingsPage,
+  ProjectSettingsSubnav,
+  resolveProjectSettingsSection,
+  type ProjectSettingsSectionId,
+} from './ProjectSettingsModal';
 import styles from './ProjectDetailPage.module.css';
 
 export function ProjectDetailPage() {
@@ -101,6 +106,7 @@ export function ProjectDetailPage() {
   const activeService = services.find((service) => service.id === activeServiceId);
   const workspaceTab = workspaceLocation.tab;
   const projectSettingsOpen = canManage && searchParams.get('view') === 'project-settings';
+  const projectSettingsSection = resolveProjectSettingsSection(searchParams.get('settings'), canManage);
   const automationOAuthReturnTo = (() => {
     const params = new URLSearchParams();
     if (activeServiceId) params.set('service', activeServiceId);
@@ -128,12 +134,21 @@ export function ProjectDetailPage() {
 
   // The Project URL is the source of truth for its durable navigation state.
   useEffect(() => {
-    if (!p || !workspaceLocation.needsNormalization) return;
+    if (!p) return;
+    const requestedSettingsSection = searchParams.get('settings');
+    const settingsNeedsNormalization =
+      projectSettingsOpen
+      && requestedSettingsSection !== null
+      && requestedSettingsSection !== projectSettingsSection;
+    if (!workspaceLocation.needsNormalization && !settingsNeedsNormalization) return;
     const next = new URLSearchParams(searchParams);
-    next.set('service', workspaceLocation.serviceId);
-    next.set('tab', workspaceLocation.tab);
+    if (workspaceLocation.needsNormalization) {
+      next.set('service', workspaceLocation.serviceId);
+      next.set('tab', workspaceLocation.tab);
+    }
+    if (settingsNeedsNormalization) next.delete('settings');
     setSearchParams(next, { replace: true });
-  }, [p, searchParams, setSearchParams, workspaceLocation]);
+  }, [p, projectSettingsOpen, projectSettingsSection, searchParams, setSearchParams, workspaceLocation]);
 
   const boardLinks = useProjectBoardLinks(projectId, !!p && canRun);
   const hasBoardLinks = (boardLinks.data?.length ?? 0) > 0;
@@ -196,6 +211,7 @@ export function ProjectDetailPage() {
   const setWorkspaceTab = (tab: WorkspaceTab) => {
     const next = new URLSearchParams(searchParams);
     next.delete('view');
+    next.delete('settings');
     if (activeServiceId) next.set('service', activeServiceId);
     next.set('tab', tab);
     setSearchParams(next);
@@ -204,13 +220,25 @@ export function ProjectDetailPage() {
   const setProjectSettingsOpen = (open: boolean) => {
     const next = new URLSearchParams(searchParams);
     if (open) next.set('view', 'project-settings');
-    else next.delete('view');
+    else {
+      next.delete('view');
+      next.delete('settings');
+    }
+    setSearchParams(next);
+  };
+
+  const setProjectSettingsSection = (section: ProjectSettingsSectionId) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('view', 'project-settings');
+    if (section === 'general') next.delete('settings');
+    else next.set('settings', section);
     setSearchParams(next);
   };
 
   const selectService = (serviceId: string) => {
     const next = new URLSearchParams(searchParams);
     next.delete('view');
+    next.delete('settings');
     next.set('service', serviceId);
     next.set('tab', workspaceTab);
     setSearchParams(next);
@@ -434,6 +462,18 @@ export function ProjectDetailPage() {
             </div>
           </>
         }
+        subnav={
+          projectSettingsOpen ? (
+            <ProjectSettingsSubnav
+              canManage={canManage}
+              activeSection={projectSettingsSection}
+              onSelect={setProjectSettingsSection}
+            />
+          ) : undefined
+        }
+        scrollResetKey={
+          projectSettingsOpen ? `${p.id}:project-settings:${projectSettingsSection}` : undefined
+        }
         header={
           <div className={styles.workspaceServiceHeader}>
             <div className={styles.workspaceServiceIdentity}>
@@ -522,6 +562,7 @@ export function ProjectDetailPage() {
           <ProjectSettingsPage
             project={p}
             onDeleted={() => navigate('/')}
+            activeSection={projectSettingsSection}
           />
         ) : workspaceTab === 'tasks' && (
           <>

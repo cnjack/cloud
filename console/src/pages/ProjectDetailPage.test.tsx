@@ -149,13 +149,17 @@ function makeClient(
   return { client: client as ApiClient, calls };
 }
 
-function renderPage(client: ApiClient, role?: 'cluster-admin' | 'project-admin') {
+function renderPage(
+  client: ApiClient,
+  role?: 'cluster-admin' | 'project-admin',
+  initialEntry = '/projects/p1',
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
       <ApiProvider client={client} role={role}>
         <ToastProvider>
-          <MemoryRouter initialEntries={['/projects/p1']}>
+          <MemoryRouter initialEntries={[initialEntry]}>
             <LocationProbe />
             <Routes>
               <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
@@ -280,6 +284,39 @@ describe('ProjectDetailPage — project and service settings stay separate', () 
     expect(within(utility).getByTestId('theme-toggle')).toBeTruthy();
     expect(within(utility).queryByTestId('identity-chip')).toBeNull();
     expect(screen.queryByRole('link', { name: 'Cluster' })).toBeNull();
+  });
+
+  it('uses a shell-level section nav and restores the active settings section from the URL', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(
+      client,
+      undefined,
+      '/projects/p1?service=svc_default&tab=tasks&view=project-settings&settings=models',
+    );
+
+    const settingsNav = await screen.findByRole('navigation', { name: 'Project settings sections' });
+    expect(settingsNav.closest('[data-testid="project-workspace-scroll"]')).toBeNull();
+    expect(within(settingsNav).getByTestId('tab-models').getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('heading', { name: 'Model access' })).toBeTruthy();
+    expect(screen.queryByTestId('settings-name-input')).toBeNull();
+
+    const scrollOwner = screen.getByTestId('project-workspace-scroll');
+    scrollOwner.scrollTop = 240;
+    fireEvent.click(within(settingsNav).getByTestId('tab-members'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('workspace-location').textContent).toContain('settings=members'),
+    );
+    await waitFor(() => expect(scrollOwner.scrollTop).toBe(0));
+    expect(await screen.findByRole('heading', { name: 'Members and permissions' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Model access' })).toBeNull();
+
+    fireEvent.click(within(settingsNav).getByTestId('tab-general'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('workspace-location').textContent).not.toContain('settings='),
+    );
+    expect(screen.getByRole('heading', { name: 'Settings' })).toBeTruthy();
   });
 });
 

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-Hans" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Project Settings 三种页面骨架对比。" />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Project Settings 布局选择 — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/project-settings-options.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <main class="comparison-page">
+    <div class="comparison-inner">
+      <header class="comparison-header">
+        <div class="comparison-heading"><span class="eyebrow">jcode Cloud / design decision</span><h1>Project Settings<br />该属于哪一层？</h1><p>三套方案的右侧设置内容、横向分区导航、宽度与留白完全一致，只改变左侧导航语义。打开任一方案后，可以切换 General、Members、Kanban 等分区，也可以切换亮色与暗色。</p></div>
+        <button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button>
+      </header>
+
+      <section class="comparison-grid" aria-label="Project Settings layout options">
+        <a class="comparison-card" href="./project-settings-option-a.html">
+          <div class="comparison-preview" aria-hidden="true"><div class="mini-rail"><i class="mini-brand"></i><i class="mini-label"></i><i class="mini-title"></i><div class="mini-nav"><i data-active></i><i></i><i></i></div></div><div class="mini-surface"><i class="mini-utility"></i><i class="mini-tabs"></i><div class="mini-content"><i></i><i></i><i></i></div></div></div>
+          <div class="comparison-card-copy"><span class="option-kicker">Option A</span><h2>保留 Project / Service 侧栏</h2><p>进入 Project Settings 后仍能看到所有 Service，并可直接切换 Service。右侧设置区完全采用 Cluster 的横向导航与单分区页面。</p><div class="comparison-traits"><span>上下文最完整</span><span>可直接切 Service</span><span>当前实现方向</span></div><span class="comparison-card-action">打开完整页面<svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></span></div>
+        </a>
+
+        <a class="comparison-card" href="./project-settings-option-b.html">
+          <div class="comparison-preview" aria-hidden="true"><div class="mini-rail"><i class="mini-brand"></i><i class="mini-label"></i><i class="mini-title"></i><div class="mini-nav"><i data-active></i><i></i><i data-short></i></div></div><div class="mini-surface"><i class="mini-utility"></i><i class="mini-tabs"></i><div class="mini-content"><i></i><i></i><i></i></div></div></div>
+          <div class="comparison-card-copy"><span class="option-kicker">Option B</span><h2>完整使用 Cluster 的全局侧栏</h2><p>Project Settings 被视为全局管理页：左侧显示 Projects、Cluster 与最近项目，不显示当前 Project 的 Service 列表。</p><div class="comparison-traits"><span>与 Cluster 最一致</span><span>全局导航清晰</span><span>离开 Service 上下文</span></div><span class="comparison-card-action">打开完整页面<svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></span></div>
+        </a>
+
+        <a class="comparison-card" href="./project-settings-option-c.html">
+          <div class="comparison-preview" aria-hidden="true"><div class="mini-rail"><i class="mini-brand"></i><i class="mini-label"></i><i class="mini-title"></i><div class="mini-nav"><i></i><i data-active></i><i data-short></i></div></div><div class="mini-surface"><i class="mini-utility"></i><i class="mini-tabs"></i><div class="mini-content"><i></i><i></i><i></i></div></div></div>
+          <div class="comparison-card-copy"><span class="option-kicker">Option C</span><h2>Project 专注管理侧栏</h2><p>保留 Project 身份、返回入口、版本和登录信息，但进入 Settings 后隐藏 Service 列表，让管理任务保持专注。</p><div class="comparison-traits"><span>Project 语义明确</span><span>最少干扰</span><span>需返回后切 Service</span></div><span class="comparison-card-action">打开完整页面<svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></span></div>
+        </a>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

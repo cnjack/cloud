@@ -127,7 +127,11 @@ export function IntegrationsPanel({ project }: { project: Project }) {
         {mode === 'oauth' && (
           <>
             <input type="hidden" name="project_id" value={project.id} />
-            <input type="hidden" name="return_to" value={`/projects/${project.id}?view=project-settings`} />
+            <input
+              type="hidden"
+              name="return_to"
+              value={`/projects/${project.id}?view=project-settings&settings=integrations`}
+            />
           </>
         )}
         <div>

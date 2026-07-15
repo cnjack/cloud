@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Service } from '../api/types';
 import { WORKSPACE_TABS, type WorkspaceTab } from './location';
@@ -19,6 +19,8 @@ export function ProjectWorkspaceShell({
   railAction,
   projectAction,
   utility,
+  subnav,
+  scrollResetKey,
   mobileActions,
   header,
   children,
@@ -36,6 +38,8 @@ export function ProjectWorkspaceShell({
   railAction?: ReactNode;
   projectAction?: ReactNode;
   utility?: ReactNode;
+  subnav?: ReactNode;
+  scrollResetKey?: string;
   mobileActions?: ReactNode;
   header?: ReactNode;
   children: ReactNode;
@@ -45,6 +49,10 @@ export function ProjectWorkspaceShell({
   const tabs: readonly WorkspaceTab[] = canManage
     ? WORKSPACE_TABS
     : WORKSPACE_TABS.filter((tab) => tab !== 'settings');
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [scrollResetKey]);
 
   const selectTab = (next: WorkspaceTab) => {
     if (next !== activeTab && scrollRef.current) {
@@ -131,6 +139,7 @@ export function ProjectWorkspaceShell({
           <div className={styles.utilityContent}>{utility}</div>
           {mobileActions && <div className={styles.mobileActions}>{mobileActions}</div>}
         </div>
+        {subnav}
         {mode === 'workspace' && (
           <>
             <header className={styles.header}>{header}</header>

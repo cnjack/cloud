@@ -1,87 +1,30 @@
-/* Route-owned settings document. The shell owns scrolling; the left section
-   navigation and bottom save bar remain anchored inside that scroll owner. */
+/* Route-owned settings page. The shell owns the Cluster-style horizontal
+   navigation and scrolling; this module owns only the active section. */
 .settingsPage {
-  width: min(100%, 1080px);
-  margin: 0 auto;
-  padding: var(--space-6) var(--space-8) var(--space-16);
-}
-
-.settingsPageHead {
-  display: grid;
-  gap: var(--space-5);
-  padding-bottom: var(--space-6);
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-
-.settingsPageHead h1 {
-  margin: var(--space-2) 0 var(--space-1);
-  font-size: var(--fs-display);
-  letter-spacing: var(--tracking-tight);
-}
-
-.settingsPageHead p,
-.settingsSection > header p {
-  margin: 0;
-  color: var(--color-text-faint);
-  font-size: var(--fs-sm);
-  line-height: var(--lh-normal);
-}
-
-.settingsEyebrow {
-  color: var(--color-text-faint);
-  font-size: var(--fs-tiny);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--tracking-label);
-  text-transform: uppercase;
-}
-
-.settingsLayout {
-  display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  align-items: start;
-  gap: var(--space-10);
-  padding-top: var(--space-8);
-}
-
-.settingsNav {
-  position: sticky;
-  top: var(--space-6);
-  display: grid;
-  gap: 2px;
-}
-
-.settingsNav button {
-  padding: var(--space-2) var(--space-3);
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--color-text-dim);
-  cursor: pointer;
-  font-size: var(--fs-sm);
-  text-align: left;
-}
-
-.settingsNav button:hover,
-.settingsNav button[data-active] {
-  background: var(--color-panel-hover);
-  color: var(--color-text);
+  position: relative;
 }
 
 .settingsDocument {
   display: grid;
   min-width: 0;
   gap: var(--space-10);
+  padding-top: var(--space-8);
 }
 
-.settingsSection {
-  scroll-margin-top: var(--space-6);
-}
+.settingsSection { display: grid; }
 
 .settingsSection > header {
   display: grid;
   gap: var(--space-1);
   padding-bottom: var(--space-4);
   border-bottom: 1px solid var(--color-border);
+}
+
+.settingsSection > header p {
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
 }
 
 .settingsSection > header h2 {
@@ -160,15 +103,6 @@
 .modelRow code, .modelRow small { color: var(--color-text-faint); font-size: var(--fs-tiny); }
 
 @media (max-width: 760px) {
-  .settingsPage { padding: var(--space-5) var(--space-5) var(--space-12); }
-  .settingsLayout { grid-template-columns: minmax(0, 1fr); gap: var(--space-5); }
-  .settingsNav {
-    position: static;
-    display: flex;
-    overflow-x: auto;
-    padding-bottom: var(--space-2);
-  }
-  .settingsNav button { flex: none; }
   .settingsSavebar { margin: 0; }
 }
 

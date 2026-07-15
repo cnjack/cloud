@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Project Settings layout C: a focused Project administration rail without Services." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Project Settings · Option C — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/project-settings-options.css" />
+  <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/project-settings-options.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Project administration navigation">
+      <div class="brand-row"><a class="wordmark" href="./project-settings-layout-options.html"><img class="wordmark-icon" src="./assets/app-icon.svg" alt="" /><span class="wordmark-name">JCODE</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="project-rail-context"><div class="project-rail-context-copy"><span class="eyebrow">Project</span><strong>pain-test</strong><small>Administration</small></div><span class="provider-mark" data-tone="accent"><svg class="icon"><use href="./assets/icons.svg#i-sliders" /></svg></span></div>
+      <nav class="focus-nav" aria-label="Project context"><a class="nav-item" href="./project-workspace.html"><svg class="icon"><use href="./assets/icons.svg#i-arrow-left" /></svg><span>Back to project</span><span class="nav-count">2 svc</span></a><a class="nav-item" href="#" aria-current="page"><svg class="icon"><use href="./assets/icons.svg#i-sliders" /></svg><span>Project settings</span><span class="nav-count">owner</span></a></nav>
+      <section class="rail-section"><div class="focus-scope"><span class="focus-scope-head">Project scope</span><div class="focus-scope-grid"><span><strong>2</strong>services</span><span><strong>2</strong>members</span><span><strong>1</strong>board</span></div><div class="notice"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-info" /></svg><span>Service navigation is hidden while administering the Project. Use “Back to project” to return.</span></div></div></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>orchestrator</span><span>v0.1.0</span></div><div class="identity-row"><span class="identity-mark">王</span><span class="identity-copy"><strong>王文慧</strong><small>cluster admin</small></span><button class="icon-button" type="button" aria-label="Account menu"><svg class="icon"><use href="./assets/icons.svg#i-more" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface" aria-label="Project settings">
+      <header class="utility-bar"><div class="breadcrumbs"><a href="./projects.html">Projects</a><span class="breadcrumb-separator">/</span><a href="./project-workspace.html">pain-test</a><span class="breadcrumb-separator">/</span><strong>Project settings</strong></div><div class="utility-actions"><span class="prototype-chip">Option C · Focus rail</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <nav class="subnav project-settings-subnav" aria-label="Project settings sections">
+        <button type="button" data-settings-section="general" data-title="Settings" data-description="Manage the project container. Repository behavior remains scoped to each service." aria-current="page">General</button>
+        <button type="button" data-settings-section="members" data-title="Members and permissions" data-description="Choose who can view, run, and administer this project.">Members</button>
+        <button type="button" data-settings-section="integrations" data-title="Git integrations" data-description="Credentials for unattended repository operations. Webhook OAuth setup remains per service.">Git integrations</button>
+        <button type="button" data-settings-section="kanban" data-title="Kanban links" data-description="Route jtype board transitions to a specific service.">Kanban</button>
+        <button type="button" data-settings-section="models" data-title="Model access" data-description="Models currently available to sessions in this project.">Model access</button>
+        <button type="button" data-settings-section="apikeys" data-title="Project API keys" data-description="Revocable credentials for API-triggered automation.">API keys</button>
+      </nav>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <header class="page-header"><div class="page-heading"><span class="eyebrow">Project administration</span><h1 data-settings-heading>Settings</h1><p data-settings-description>Manage the project container. Repository behavior remains scoped to each service.</p></div></header>
+          <div class="project-settings-content">
+            <section class="settings-section-page" data-settings-panel="general">
+              <div class="settings-main-stack">
+                <div class="settings-field"><label for="projectNameC">Project name</label><input class="input" id="projectNameC" value="pain-test" /><small>Repository branch and git mode are configured per service.</small></div>
+                <section class="section-panel"><header class="section-panel-head"><div class="settings-card-intro"><h2>Execution guardrails</h2><span class="settings-card-copy">Leave a limit blank to inherit the cluster default.</span></div></header><div class="settings-card-body"><div class="settings-grid-two"><div class="settings-field"><label for="maxRunsC">Max concurrent runs</label><input class="input" id="maxRunsC" placeholder="cluster default" /></div><div class="settings-field"><label for="timeoutC">Run timeout (seconds)</label><input class="input" id="timeoutC" placeholder="cluster default" /></div></div><div class="settings-card-intro"><strong>Injected environment</strong><span class="settings-card-copy">Merged into every run. System variables are reserved.</span></div><div class="environment-row"><input class="input" aria-label="Variable name" value="DEPLOY_ENV" /><span class="environment-equals">=</span><input class="input" aria-label="Variable value" value="staging" /><button class="button button-ghost" type="button">Remove</button></div><div><button class="button button-ghost" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg>Add variable</button></div></div></section>
+                <section><div class="section-heading"><div><h2>Danger zone</h2><p>Permanent, destructive project actions.</p></div></div><div class="settings-danger"><span class="settings-danger-copy"><strong>Delete project</strong><small>Permanently removes this project and all of its runs, events, and artifacts.</small></span><button class="button button-danger" type="button" data-prototype-action="Destructive confirmation would open here.">Delete project</button></div></section>
+              </div>
+              <div class="settings-savebar"><span>Project settings are saved independently from service settings.</span><button class="button button-primary" type="button" data-prototype-action="Prototype only — Project settings were not saved.">Save changes</button></div>
+            </section>
+            <section class="settings-section-page" data-settings-panel="members" hidden><div class="settings-toolbar"><label class="settings-search"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-search" /></svg><input type="search" placeholder="Search people by name…" /></label><button class="button" type="button">Member⌄</button></div><div class="settings-list"><div class="settings-row"><span class="identity-mark">王</span><span class="settings-row-copy"><strong>王文慧</strong><small>wangwenhui</small></span><button class="button" type="button">Owner⌄</button></div><div class="settings-row"><span class="identity-mark">J</span><span class="settings-row-copy"><strong>Jack</strong><small>jack</small></span><button class="button" type="button">Member⌄</button></div></div></section>
+            <section class="settings-section-page" data-settings-panel="integrations" hidden><section class="connection-card"><header class="connection-card-head"><span class="provider-mark"><svg class="icon"><use href="./assets/icons.svg#i-git" /></svg></span><span class="connection-card-copy"><strong>jcode-bot</strong><small>Gitea · git.scgzyun.com · @jcode-bot</small></span><span class="status-label" data-tone="success">connected</span></header><div class="connection-card-body"><div class="configuration-callout"><svg class="icon"><use href="./assets/icons.svg#i-lock" /></svg><span><strong>Credentials are write-only.</strong>Reconnect to rotate access without exposing the stored secret.</span></div></div></section></section>
+            <section class="settings-section-page" data-settings-panel="kanban" hidden><section class="connection-card"><header class="connection-card-head"><span class="provider-mark"><svg class="icon"><use href="./assets/icons.svg#i-link" /></svg></span><span class="connection-card-copy"><strong>infra-web · todo → done</strong><small>pain-team / jtype</small></span><span class="status-label" data-tone="success">enabled</span></header></section></section>
+            <section class="settings-section-page" data-settings-panel="models" hidden><div class="settings-list"><div class="settings-row"><span class="provider-mark" data-tone="accent"><svg class="icon"><use href="./assets/icons.svg#i-cpu" /></svg></span><span class="settings-row-copy"><strong>GLM 5.2</strong><small>openai/glm-5.2</small></span><span class="status-label" data-tone="success">granted</span></div></div></section>
+            <section class="settings-section-page" data-settings-panel="apikeys" hidden><div class="settings-list"><div class="settings-row"><span class="provider-mark"><svg class="icon"><use href="./assets/icons.svg#i-key" /></svg></span><span class="settings-row-copy"><strong>release-bot</strong><small>jck_a1b2 · used 3 days ago</small></span><span class="status-label" data-tone="success">active</span></div></div></section>
+          </div>
+        </div>
+      </main>
+    </section>
+  </div>
+  <nav class="layout-choice-switcher" aria-label="Layout options"><span>Layout</span><a href="./project-settings-option-a.html">A</a><a href="./project-settings-option-b.html">B</a><a href="./project-settings-option-c.html" aria-current="page">C</a><a class="choice-overview" href="./project-settings-layout-options.html">总览</a></nav>
+</body>
+</html>

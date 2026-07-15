@@ -1,6 +1,6 @@
 /*
  * ProjectSettingsModal — owner/cluster-admin project settings (blueprint §2/§5).
- * Tabs:
+ * Sections:
  *   - General: project rename, the guardrails editor (owner only — concurrency
  *     cap, run timeout, injected env), and a Delete-project action behind a
  *     confirm step. Repo config (branch / git mode) lives on each repository on
@@ -10,10 +10,11 @@
  *     execution. They are intentionally distinct from a member's OAuth-based
  *     provider webhook setup in the Service Automation area.
  *   - Kanban: jtype board→service bindings (owner).
+ *   - Model access: models granted to this project (members can view).
  *   - API keys (F12 / D24): project-scoped, revocable automation credentials
  *     (owner) — replaces borrowing CONSOLE_TOKEN for external/CI use.
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash } from '@phosphor-icons/react';
 import { Modal } from '../components/Modal';
@@ -43,6 +44,7 @@ import { KanbanConnectFlow, expiryLabel } from '../components/KanbanConnect';
 import { ApiError } from '../api/client';
 import { isReservedEnvKey, isValidEnvKey } from '../lib/env';
 import { timeAgo } from '../lib/format';
+import { PageHeader, SurfaceInner, pageLayoutStyles } from '../components/PageLayout';
 import type {
   ApiKey,
   CreateApiKeyResponse,
@@ -88,35 +90,122 @@ function sameEnv(a: Record<string, string>, b: Record<string, string>): boolean 
   return ak.every((k) => b[k] === a[k]);
 }
 
-type SettingsSectionId = 'general' | 'members' | 'integrations' | 'kanban' | 'models' | 'apikeys';
+export type ProjectSettingsSectionId = 'general' | 'members' | 'integrations' | 'kanban' | 'models' | 'apikeys';
 
-const SETTINGS_NAV: ReadonlyArray<{ id: SettingsSectionId; labelKey: string }> = [
-  { id: 'general', labelKey: 'projectSettings.navGeneral' },
-  { id: 'members', labelKey: 'projectSettings.navMembers' },
-  { id: 'integrations', labelKey: 'projectSettings.navIntegrations' },
-  { id: 'kanban', labelKey: 'projectSettings.navKanban' },
-  { id: 'models', labelKey: 'projectSettings.navModels' },
-  { id: 'apikeys', labelKey: 'projectSettings.navApiKeys' },
+const SETTINGS_NAV: ReadonlyArray<{
+  id: ProjectSettingsSectionId;
+  labelKey: string;
+  titleKey: string;
+  descriptionKey: string;
+  ownerOnly?: boolean;
+}> = [
+  {
+    id: 'general',
+    labelKey: 'projectSettings.navGeneral',
+    titleKey: 'projectSettings.title',
+    descriptionKey: 'projectSettings.subtitle',
+  },
+  {
+    id: 'members',
+    labelKey: 'projectSettings.navMembers',
+    titleKey: 'projectSettings.membersTitle',
+    descriptionKey: 'projectSettings.membersDesc',
+  },
+  {
+    id: 'integrations',
+    labelKey: 'projectSettings.navIntegrations',
+    titleKey: 'projectSettings.navIntegrations',
+    descriptionKey: 'projectSettings.integrationsDesc',
+    ownerOnly: true,
+  },
+  {
+    id: 'kanban',
+    labelKey: 'projectSettings.navKanban',
+    titleKey: 'projectSettings.kanbanTitle',
+    descriptionKey: 'projectSettings.kanbanDesc',
+    ownerOnly: true,
+  },
+  {
+    id: 'models',
+    labelKey: 'projectSettings.navModels',
+    titleKey: 'projectSettings.navModels',
+    descriptionKey: 'projectSettings.modelsDesc',
+  },
+  {
+    id: 'apikeys',
+    labelKey: 'projectSettings.navApiKeys',
+    titleKey: 'projectSettings.apiKeysTitle',
+    descriptionKey: 'projectSettings.apiKeysDesc',
+    ownerOnly: true,
+  },
 ];
 
+function visibleSettingsSections(canManage: boolean) {
+  return SETTINGS_NAV.filter(({ ownerOnly }) => canManage || !ownerOnly);
+}
+
+export function resolveProjectSettingsSection(
+  value: string | null,
+  canManage: boolean,
+): ProjectSettingsSectionId {
+  return visibleSettingsSections(canManage).some(({ id }) => id === value)
+    ? value as ProjectSettingsSectionId
+    : 'general';
+}
+
+export function ProjectSettingsSubnav({
+  canManage,
+  activeSection,
+  onSelect,
+}: {
+  canManage: boolean;
+  activeSection: ProjectSettingsSectionId;
+  onSelect: (section: ProjectSettingsSectionId) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <nav
+      className={pageLayoutStyles.subnav}
+      aria-label={t('projectSettings.navAria')}
+      data-testid="project-settings-subnav"
+    >
+      {visibleSettingsSections(canManage).map(({ id, labelKey }) => (
+        <button
+          key={id}
+          type="button"
+          data-testid={`tab-${id}`}
+          aria-current={activeSection === id ? 'page' : undefined}
+          data-active={activeSection === id || undefined}
+          onClick={() => onSelect(id)}
+        >
+          {t(labelKey)}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 /**
- * Route-owned Project administration. All project-level controls are visible in
- * one document; repository/service controls intentionally remain in the
- * Service settings tab of the workspace.
+ * Route-owned Project administration. Like the Cluster routes, each settings
+ * section owns one page while the shell owns the horizontal section navigation.
+ * Repository/service controls intentionally remain in the Service settings tab.
  */
 export function ProjectSettingsPage({
   project,
   onDeleted,
+  activeSection = 'general',
 }: {
   project: Project;
   onDeleted: () => void;
+  activeSection?: ProjectSettingsSectionId;
 }) {
   const { t } = useTranslation();
   const update = useUpdateProject();
   const del = useDeleteProject();
   const toast = useToast();
   const canManage = (project.role ?? 'owner') === 'owner';
-  const [activeSection, setActiveSection] = useState<SettingsSectionId>('general');
+  const section = resolveProjectSettingsSection(activeSection, canManage);
+  const sectionMeta = SETTINGS_NAV.find(({ id }) => id === section) ?? SETTINGS_NAV[0]!;
   const [name, setName] = useState(project.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [maxConcurrent, setMaxConcurrent] = useState(
@@ -126,7 +215,6 @@ export function ProjectSettingsPage({
     project.run_timeout_secs != null ? String(project.run_timeout_secs) : '',
   );
   const [envRows, setEnvRows] = useState<EnvRow[]>(envToRows(project.injected_env));
-  const bodyRef = useRef<HTMLDivElement>(null);
   const busy = update.isPending || del.isPending;
 
   const envError = (() => {
@@ -138,14 +226,6 @@ export function ProjectSettingsPage({
     }
     return '';
   })();
-
-  const jumpTo = (id: SettingsSectionId) => {
-    setActiveSection(id);
-    const target = bodyRef.current?.querySelector<HTMLElement>(`#project-settings-${id}`);
-    if (typeof target?.scrollIntoView === 'function') {
-      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  };
 
   const save = (event: React.FormEvent) => {
     event.preventDefault();
@@ -190,144 +270,218 @@ export function ProjectSettingsPage({
     });
   };
 
-  const visibleNav = SETTINGS_NAV.filter(
-    ({ id }) => canManage || (id !== 'integrations' && id !== 'kanban' && id !== 'apikeys'),
-  );
-
   return (
-    <div className={styles.settingsPage} data-testid="project-settings-page">
-      <div className={styles.settingsPageHead}>
-        <div>
-          <span className={styles.settingsEyebrow}>{t('projectSettings.eyebrow')}</span>
-          <h1>{t('projectSettings.title')}</h1>
-          <p>{t('projectSettings.subtitle')}</p>
-        </div>
-      </div>
-
-      <div className={styles.settingsLayout} ref={bodyRef}>
-        <nav className={styles.settingsNav} aria-label={t('projectSettings.navAria')}>
-          {visibleNav.map(({ id, labelKey }) => (
-            <button
-              key={id}
-              type="button"
-              data-testid={`tab-${id}`}
-              aria-current={activeSection === id ? 'location' : undefined}
-              data-active={activeSection === id || undefined}
-              onClick={() => jumpTo(id)}
-            >
-              {t(labelKey)}
-            </button>
-          ))}
-        </nav>
-
+    <SurfaceInner className={styles.settingsPage}>
+      <div data-testid="project-settings-page">
+        <PageHeader
+          eyebrow={t('projectSettings.eyebrow')}
+          title={t(sectionMeta.titleKey)}
+          description={t(sectionMeta.descriptionKey)}
+        />
         <div className={styles.settingsDocument}>
-          <form id="project-settings-form" onSubmit={save} noValidate>
-            <SettingsSection id="general" title={t('projectSettings.navGeneral')} description={t('projectSettings.generalDesc')}>
-            <div className={styles.body}>
-              <TextField
-                label={t('projectSettings.projectName')}
-                placeholder="demo"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                hint={t('projectSettings.projectNameHintPage')}
-                data-testid="settings-name-input"
-                autoComplete="off"
-              />
-              {canManage && (
-                <section className={styles.guardrails} data-testid="guardrails">
-                  <div className={styles.guardrailHead}>
-                    <span className={styles.guardrailTitle}>{t('projectSettings.executionGuardrails')}</span>
-                    <span className={styles.guardrailHint}>{t('projectSettings.guardrailBlankHint')}</span>
-                  </div>
-                  <div className={styles.guardrailGrid}>
-                    <TextField label={t('projectSettings.maxConcurrent')} type="number" min={1} inputMode="numeric" placeholder={t('projectSettings.clusterDefaultPlaceholder')} value={maxConcurrent} onChange={(event) => setMaxConcurrent(event.target.value)} data-testid="settings-max-concurrent" autoComplete="off" />
-                    <TextField label={t('projectSettings.runTimeout')} type="number" min={1} inputMode="numeric" placeholder={t('projectSettings.clusterDefaultPlaceholder')} value={runTimeout} onChange={(event) => setRunTimeout(event.target.value)} data-testid="settings-run-timeout" autoComplete="off" />
-                  </div>
-                  <div className={styles.envBlock} data-testid="settings-injected-env">
-                    <div className={styles.guardrailHead}>
-                      <span className={styles.guardrailTitle}>{t('projectSettings.injectedEnv')}</span>
-                      <span className={styles.guardrailHint}>{t('projectSettings.injectedEnvHintPage')}</span>
-                    </div>
-                    {envRows.length > 0 && (
-                      <div className={styles.envRows}>
-                        {envRows.map((row, index) => {
-                          const key = row.key.trim();
-                          const invalid = key !== '' && (!isValidEnvKey(key) || isReservedEnvKey(key));
-                          return (
-                            <div key={index} className={styles.envRow} data-testid="env-row">
-                              <input className={[styles.envInput, invalid && styles.envInvalid].filter(Boolean).join(' ')} placeholder="KEY" value={row.key} aria-invalid={invalid || undefined} onChange={(event) => setEnvRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} data-testid={`env-key-${index}`} autoComplete="off" />
-                              <span className={styles.envEq}>=</span>
-                              <input className={styles.envInput} placeholder="value" value={row.value} onChange={(event) => setEnvRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} data-testid={`env-value-${index}`} autoComplete="off" />
-                              <button type="button" className={styles.envRemove} onClick={() => setEnvRows((rows) => rows.filter((_, itemIndex) => itemIndex !== index))} data-testid={`env-remove-${index}`} aria-label={t('projectSettings.removeVariable')}><Trash size={15} weight="regular" aria-hidden="true" /></button>
-                            </div>
-                          );
-                        })}
+          {section === 'general' && (
+            <>
+              <form id="project-settings-form" onSubmit={save} noValidate>
+                <div className={styles.body}>
+                  <TextField
+                    label={t('projectSettings.projectName')}
+                    placeholder="demo"
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    hint={t('projectSettings.projectNameHintPage')}
+                    data-testid="settings-name-input"
+                    autoComplete="off"
+                  />
+                  {canManage && (
+                    <section className={styles.guardrails} data-testid="guardrails">
+                      <div className={styles.guardrailHead}>
+                        <span className={styles.guardrailTitle}>
+                          {t('projectSettings.executionGuardrails')}
+                        </span>
+                        <span className={styles.guardrailHint}>
+                          {t('projectSettings.guardrailBlankHint')}
+                        </span>
                       </div>
-                    )}
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setEnvRows((rows) => [...rows, { key: '', value: '' }])} data-testid="env-add"><Plus size={15} weight="regular" aria-hidden="true" /><span>{t('projectSettings.addVariable')}</span></Button>
-                    {envError && <span className={styles.envError} data-testid="env-error">{envError}</span>}
-                  </div>
-                </section>
-              )}
-            </div>
-            </SettingsSection>
-          </form>
-
-          <SettingsSection id="members" title={t('projectSettings.membersTitle')} description={t('projectSettings.membersDesc')}>
-            <MembersPanel projectId={project.id} canManage={canManage} />
-          </SettingsSection>
-
-          {canManage && (
-            <SettingsSection id="integrations" title={t('projectSettings.navIntegrations')} description={t('projectSettings.integrationsDesc')}>
-              <IntegrationsPanel project={project} />
-            </SettingsSection>
-          )}
-
-          {canManage && (
-            <SettingsSection id="kanban" title={t('projectSettings.kanbanTitle')} description={t('projectSettings.kanbanDesc')}>
-              <KanbanPanel project={project} />
-            </SettingsSection>
-          )}
-
-          <SettingsSection id="models" title={t('projectSettings.navModels')} description={t('projectSettings.modelsDesc')}>
-            <ModelAccessPanel projectId={project.id} />
-          </SettingsSection>
-
-          {canManage && (
-            <SettingsSection id="apikeys" title={t('projectSettings.apiKeysTitle')} description={t('projectSettings.apiKeysDesc')}>
-              <ApiKeysPanel project={project} />
-            </SettingsSection>
-          )}
-
-          {canManage && (
-            <SettingsSection id="danger" title={t('projectSettings.dangerTitle')} description={t('projectSettings.dangerDesc')}>
-              <section className={styles.danger} data-testid="danger-zone">
-                <div className={styles.dangerText}>
-                  <span className={styles.dangerTitle}>{t('projectSettings.deleteProject')}</span>
-                  <span className={styles.dangerHint}>{t('projectSettings.deleteHintPage')}</span>
+                      <div className={styles.guardrailGrid}>
+                        <TextField
+                          label={t('projectSettings.maxConcurrent')}
+                          type="number"
+                          min={1}
+                          inputMode="numeric"
+                          placeholder={t('projectSettings.clusterDefaultPlaceholder')}
+                          value={maxConcurrent}
+                          onChange={(event) => setMaxConcurrent(event.target.value)}
+                          data-testid="settings-max-concurrent"
+                          autoComplete="off"
+                        />
+                        <TextField
+                          label={t('projectSettings.runTimeout')}
+                          type="number"
+                          min={1}
+                          inputMode="numeric"
+                          placeholder={t('projectSettings.clusterDefaultPlaceholder')}
+                          value={runTimeout}
+                          onChange={(event) => setRunTimeout(event.target.value)}
+                          data-testid="settings-run-timeout"
+                          autoComplete="off"
+                        />
+                      </div>
+                      <div className={styles.envBlock} data-testid="settings-injected-env">
+                        <div className={styles.guardrailHead}>
+                          <span className={styles.guardrailTitle}>
+                            {t('projectSettings.injectedEnv')}
+                          </span>
+                          <span className={styles.guardrailHint}>
+                            {t('projectSettings.injectedEnvHintPage')}
+                          </span>
+                        </div>
+                        {envRows.length > 0 && (
+                          <div className={styles.envRows}>
+                            {envRows.map((row, index) => {
+                              const key = row.key.trim();
+                              const invalid = key !== ''
+                                && (!isValidEnvKey(key) || isReservedEnvKey(key));
+                              return (
+                                <div key={index} className={styles.envRow} data-testid="env-row">
+                                  <input
+                                    className={[styles.envInput, invalid && styles.envInvalid]
+                                      .filter(Boolean)
+                                      .join(' ')}
+                                    placeholder="KEY"
+                                    value={row.key}
+                                    aria-invalid={invalid || undefined}
+                                    onChange={(event) => setEnvRows((rows) => rows.map(
+                                      (item, itemIndex) => itemIndex === index
+                                        ? { ...item, key: event.target.value }
+                                        : item,
+                                    ))}
+                                    data-testid={`env-key-${index}`}
+                                    autoComplete="off"
+                                  />
+                                  <span className={styles.envEq}>=</span>
+                                  <input
+                                    className={styles.envInput}
+                                    placeholder="value"
+                                    value={row.value}
+                                    onChange={(event) => setEnvRows((rows) => rows.map(
+                                      (item, itemIndex) => itemIndex === index
+                                        ? { ...item, value: event.target.value }
+                                        : item,
+                                    ))}
+                                    data-testid={`env-value-${index}`}
+                                    autoComplete="off"
+                                  />
+                                  <button
+                                    type="button"
+                                    className={styles.envRemove}
+                                    onClick={() => setEnvRows((rows) => rows.filter(
+                                      (_, itemIndex) => itemIndex !== index,
+                                    ))}
+                                    data-testid={`env-remove-${index}`}
+                                    aria-label={t('projectSettings.removeVariable')}
+                                  >
+                                    <Trash size={15} weight="regular" aria-hidden="true" />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEnvRows((rows) => [...rows, { key: '', value: '' }])}
+                          data-testid="env-add"
+                        >
+                          <Plus size={15} weight="regular" aria-hidden="true" />
+                          <span>{t('projectSettings.addVariable')}</span>
+                        </Button>
+                        {envError && (
+                          <span className={styles.envError} data-testid="env-error">{envError}</span>
+                        )}
+                      </div>
+                    </section>
+                  )}
                 </div>
-                {confirmDelete ? (
-                  <div className={styles.confirmRow} data-testid="delete-confirm">
-                    <span className={styles.confirmLabel}>{t('projectSettings.deleteForGood')}</span>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setConfirmDelete(false)} disabled={del.isPending}>{t('projectSettings.keep')}</Button>
-                    <Button type="button" variant="danger" size="sm" loading={del.isPending} onClick={remove} data-testid="project-delete-confirm">{t('projectSettings.deleteProject')}</Button>
-                  </div>
-                ) : (
-                  <Button type="button" variant="danger" size="sm" onClick={() => setConfirmDelete(true)} disabled={busy} data-testid="project-delete">{t('projectSettings.deleteProject')}</Button>
-                )}
-              </section>
-            </SettingsSection>
+              </form>
+
+              {canManage && (
+                <SettingsSection
+                  id="danger"
+                  title={t('projectSettings.dangerTitle')}
+                  description={t('projectSettings.dangerDesc')}
+                >
+                  <section className={styles.danger} data-testid="danger-zone">
+                    <div className={styles.dangerText}>
+                      <span className={styles.dangerTitle}>{t('projectSettings.deleteProject')}</span>
+                      <span className={styles.dangerHint}>{t('projectSettings.deleteHintPage')}</span>
+                    </div>
+                    {confirmDelete ? (
+                      <div className={styles.confirmRow} data-testid="delete-confirm">
+                        <span className={styles.confirmLabel}>{t('projectSettings.deleteForGood')}</span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setConfirmDelete(false)}
+                          disabled={del.isPending}
+                        >
+                          {t('projectSettings.keep')}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="danger"
+                          size="sm"
+                          loading={del.isPending}
+                          onClick={remove}
+                          data-testid="project-delete-confirm"
+                        >
+                          {t('projectSettings.deleteProject')}
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="danger"
+                        size="sm"
+                        onClick={() => setConfirmDelete(true)}
+                        disabled={busy}
+                        data-testid="project-delete"
+                      >
+                        {t('projectSettings.deleteProject')}
+                      </Button>
+                    )}
+                  </section>
+                </SettingsSection>
+              )}
+
+              <div className={styles.settingsSavebar}>
+                <span>{envError || t('projectSettings.savebarHint')}</span>
+                <div>
+                  <Button
+                    variant="primary"
+                    type="submit"
+                    form="project-settings-form"
+                    loading={update.isPending}
+                    disabled={!!envError}
+                    data-testid="project-settings-save"
+                  >
+                    {t('projectSettings.saveChanges')}
+                  </Button>
+                </div>
+              </div>
+            </>
           )}
 
-          <div className={styles.settingsSavebar}>
-            <span>{envError || t('projectSettings.savebarHint')}</span>
-            <div>
-              <Button variant="primary" type="submit" form="project-settings-form" loading={update.isPending} disabled={!!envError} data-testid="project-settings-save">{t('projectSettings.saveChanges')}</Button>
-            </div>
-          </div>
+          {section === 'members' && <MembersPanel projectId={project.id} canManage={canManage} />}
+          {section === 'integrations' && canManage && <IntegrationsPanel project={project} />}
+          {section === 'kanban' && canManage && <KanbanPanel project={project} />}
+          {section === 'models' && <ModelAccessPanel projectId={project.id} />}
+          {section === 'apikeys' && canManage && <ApiKeysPanel project={project} />}
         </div>
       </div>
-    </div>
+    </SurfaceInner>
   );
 }
 

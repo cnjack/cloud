@@ -6,6 +6,7 @@
  *  - the Members tab: roster render, add-by-search, role change, remove
  */
 import { describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
@@ -28,7 +29,12 @@ import type {
   UserSearchResult,
 } from '../api/types';
 import { ApiError } from '../api/client';
-import { ProjectSettingsPage } from './ProjectSettingsModal';
+import {
+  ProjectSettingsPage,
+  ProjectSettingsSubnav,
+  resolveProjectSettingsSection,
+  type ProjectSettingsSectionId,
+} from './ProjectSettingsModal';
 import { pickOption } from '../test/select';
 
 function baseProject(overrides: Partial<Project> = {}): Project {
@@ -129,7 +135,7 @@ function renderModal(client: ApiClient, project: Project, onDeleted = vi.fn()) {
     <QueryClientProvider client={qc}>
       <ApiProvider client={settingsClient}>
         <ToastProvider>
-          <ProjectSettingsPage project={project} onDeleted={onDeleted} />
+          <ProjectSettingsHarness project={project} onDeleted={onDeleted} />
         </ToastProvider>
       </ApiProvider>
     </QueryClientProvider>,
@@ -137,17 +143,51 @@ function renderModal(client: ApiClient, project: Project, onDeleted = vi.fn()) {
   return { onDeleted };
 }
 
+function ProjectSettingsHarness({ project, onDeleted }: { project: Project; onDeleted: () => void }) {
+  const [activeSection, setActiveSection] = useState<ProjectSettingsSectionId>('general');
+  const canManage = (project.role ?? 'owner') === 'owner';
+  return (
+    <>
+      <ProjectSettingsSubnav
+        canManage={canManage}
+        activeSection={activeSection}
+        onSelect={setActiveSection}
+      />
+      <ProjectSettingsPage
+        project={project}
+        onDeleted={onDeleted}
+        activeSection={activeSection}
+      />
+    </>
+  );
+}
+
 describe('ProjectSettingsPage — full-page layout and General PATCH', () => {
-  it('renders every Project settings section together without dialog chrome', () => {
+  it('normalizes invalid or unauthorized section ids without hiding member-visible models', () => {
+    expect(resolveProjectSettingsSection('unknown', true)).toBe('general');
+    expect(resolveProjectSettingsSection('kanban', false)).toBe('general');
+    expect(resolveProjectSettingsSection('models', false)).toBe('models');
+  });
+
+  it('renders one Project settings section at a time with page-style navigation', () => {
     const project = baseProject();
     const { client } = makeClient(project);
     renderModal(client, project);
 
     expect(screen.getByTestId('project-settings-page')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
-    for (const heading of ['General', 'Members and permissions', 'Git integrations', 'Kanban links', 'Model access', 'Project API keys']) {
-      expect(screen.getByRole('heading', { name: heading })).toBeTruthy();
-    }
+    expect(screen.getByTestId('tab-general').getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('heading', { name: 'Settings' })).toBeTruthy();
+    expect(screen.getByTestId('settings-name-input')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Members and permissions' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Git integrations' })).toBeNull();
+
+    fireEvent.click(screen.getByTestId('tab-members'));
+
+    expect(screen.getByTestId('tab-members').getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('heading', { name: 'Members and permissions' })).toBeTruthy();
+    expect(screen.queryByTestId('settings-name-input')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Settings' })).toBeNull();
   });
 
   it('sends only the changed name (a rename is the only project-level edit)', async () => {
@@ -834,6 +874,9 @@ describe('ProjectSettingsModal — Integrations tab (D19 / F5)', () => {
     const form = screen.getByTestId('integration-form');
     expect(form.getAttribute('method')).toBe('post');
     expect(form.getAttribute('action')).toBe('/auth/integrations/gitea');
+    expect((form.querySelector('input[name="return_to"]') as HTMLInputElement).value).toBe(
+      '/projects/p1?view=project-settings&settings=integrations',
+    );
     expect(screen.getByTestId('integration-client-secret')).toBeTruthy();
     expect(screen.queryByTestId('integration-token')).toBeNull();
     expect((screen.getByTestId('integration-add') as HTMLButtonElement).disabled).toBe(true);

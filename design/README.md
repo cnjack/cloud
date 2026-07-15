@@ -3,6 +3,13 @@
 These files are visual and interaction references. They are not runtime assets,
 and the sample records in them are never a source of product data.
 
+## Approved Project Settings decision
+
+Option A is the product contract: keep the Project / Service rail, place the
+Cluster-style section navigation directly under the utility row, and render one
+active settings section at a time inside the shared Cluster content width.
+Options B and C remain comparison artifacts, not implementation requirements.
+
 ## Page map
 
 Each product page or major state has its own HTML document. Shared visual rules,
@@ -23,6 +30,10 @@ icons, and small prototype-only interactions live under `assets/`.
 | `welcome.html` | First-user / cluster-admin welcome state |
 | `not-found.html` | Routed 404 state |
 | `project-workspace.html` | Existing Project and conversation reference |
+| `project-settings-layout-options.html` | Decision page comparing three Project Settings shell options |
+| `project-settings-option-a.html` | Approved Project Settings contract with the Project / Service rail retained |
+| `project-settings-option-b.html` | Rejected comparison: Project Settings inside the global Cluster-style shell |
+| `project-settings-option-c.html` | Rejected comparison: Project Settings with a focused administration rail |
 
 ## Layout contract
 
