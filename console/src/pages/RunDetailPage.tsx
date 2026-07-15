@@ -186,6 +186,9 @@ export function RunDetailPage() {
   const services = project.data?.services ?? [];
   const service = services.find((entry) => entry.id === current.service_id);
   const activeServiceId = service?.id ?? current.service_id ?? services[0]?.id ?? '';
+  const serviceTasksPath = activeServiceId
+    ? `/projects/${current.project_id}?service=${encodeURIComponent(activeServiceId)}&tab=tasks`
+    : `/projects/${current.project_id}`;
   const projectName = project.data?.name ?? t('runDetail.projectName', { id: shortId(current.project_id) });
   const terminalRun = isTerminal(current.status);
   const failed = current.status === 'failed';
@@ -247,7 +250,7 @@ export function RunDetailPage() {
           >
             <div className={styles.taskDetail}>
               <header className={styles.taskHeader} data-testid="run-status-header" data-status={current.status}>
-                <Link to={`/projects/${current.project_id}`} className={styles.backToProject} data-testid="run-back-to-project"><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>{t('runDetail.recentTasks')}</span></Link>
+                <Link to={serviceTasksPath} className={styles.backToProject} data-testid="run-back-to-project"><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>{t('runDetail.recentTasks')}</span></Link>
                 <div className={styles.taskTitleRow}>
                   <div>
                     <h1>{current.prompt}</h1>
@@ -268,6 +271,7 @@ export function RunDetailPage() {
                     ref={conversationRef}
                     className={styles.conversation}
                     data-testid="conversation-scroll"
+                    data-scrollbar="hidden"
                     onScroll={(event) => {
                       const target = event.currentTarget;
                       followConversationRef.current = target.scrollHeight - target.scrollTop - target.clientHeight < 80;
