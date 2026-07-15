@@ -133,8 +133,6 @@
 .railEmpty { margin: 0 7px; border: 1px dashed var(--color-border-strong); border-radius: var(--radius-lg); padding: 14px; color: var(--color-text-faint); font-size: var(--fs-caption); line-height: 1.55; }
 
 .railFooter { display: grid; gap: var(--space-3); margin-top: auto; padding: var(--space-3) 7px 0; }
-.environment { display: flex; justify-content: space-between; gap: var(--space-2); color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); }
-.identityRow { min-height: 44px; border-top: 1px solid var(--color-border-subtle); padding-top: var(--space-3); }
 
 .surface {
   display: flex;

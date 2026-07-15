@@ -10,7 +10,7 @@
  *    draft_pr-needs-a-provider-repo validation inline
  */
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
@@ -261,6 +261,25 @@ describe('ProjectDetailPage — project and service settings stay separate', () 
     fireEvent.click(screen.getByRole('tab', { name: 'Service settings' }));
     expect(await screen.findByText('Service default model')).toBeTruthy();
     expect(screen.queryByTestId('project-settings-btn')).toBeNull();
+  });
+
+  it('uses the outer shell placement for theme, account, and version in Project settings', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(client, 'cluster-admin');
+
+    fireEvent.click(await screen.findByTestId('project-settings-trigger'));
+    expect(await screen.findByTestId('project-settings-page')).toBeTruthy();
+
+    const footer = screen.getByTestId('project-rail-footer');
+    expect(within(footer).getByText('orchestrator')).toBeTruthy();
+    expect(within(footer).getByText('v0.1.0')).toBeTruthy();
+    expect(within(footer).getByTestId('identity-chip')).toBeTruthy();
+    expect(within(footer).queryByTestId('theme-toggle')).toBeNull();
+
+    const utility = screen.getByTestId('project-utility-actions');
+    expect(within(utility).getByTestId('theme-toggle')).toBeTruthy();
+    expect(within(utility).queryByTestId('identity-chip')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Cluster' })).toBeNull();
   });
 });
 

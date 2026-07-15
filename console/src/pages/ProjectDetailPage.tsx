@@ -31,8 +31,8 @@ import { EmptyState } from '../components/EmptyState';
 import { TextField } from '../components/Field';
 import { GitModeBadge } from '../components/GitModeBadge';
 import { GitModeToggle } from '../components/GitModeToggle';
-import { IdentityChip } from '../components/IdentityChip';
 import { useModelGate } from '../components/ModelGate';
+import { RailAccountFooter } from '../components/RailAccountFooter';
 import { Select } from '../components/Select';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import { LanguageToggle } from '../components/LanguageToggle';
@@ -364,16 +364,14 @@ export function ProjectDetailPage() {
           </>
         }
         railFooter={
-          <div className={styles.workspaceFooterRow}>
-            {appRole === 'cluster-admin' ? (
-              <Link to="/system" className={styles.workspaceClusterLink}>
-                {t('projectDetail.cluster')}
-              </Link>
-            ) : (
-              <span className={styles.workspaceFooterLabel}>{t('projectDetail.projectWorkspace')}</span>
-            )}
-            <ThemeToggle />
-          </div>
+          <RailAccountFooter
+            demo={demo}
+            me={auth?.me ?? null}
+            providers={auth?.providers ?? []}
+            role={appRole}
+            onSignOut={auth && !demo ? auth.logout : undefined}
+            testId="project-rail-footer"
+          />
         }
         railAction={
           canAddRepo ? (
@@ -397,20 +395,12 @@ export function ProjectDetailPage() {
           ) : undefined
         }
         mobileActions={
-          <>
-            {canAddRepo && (
-              <button type="button" className={styles.mobileAddService} onClick={openAddService}>
-                <Plus size={16} weight="regular" aria-hidden="true" />
-                <span>{t('common.add')}</span>
-              </button>
-            )}
-            {appRole === 'cluster-admin' && (
-              <Link to="/system" className={styles.mobileClusterLink}>
-                {t('projectDetail.cluster')}
-              </Link>
-            )}
-            <ThemeToggle />
-          </>
+          canAddRepo ? (
+            <button type="button" className={styles.mobileAddService} onClick={openAddService}>
+              <Plus size={16} weight="regular" aria-hidden="true" />
+              <span>{t('common.add')}</span>
+            </button>
+          ) : undefined
         }
         utility={
           <>
@@ -435,7 +425,7 @@ export function ProjectDetailPage() {
                 </>
               )}
             </nav>
-            <div className={styles.workspaceUtilityActions}>
+            <div className={styles.workspaceUtilityActions} data-testid="project-utility-actions">
               {hasBoardLinks && (
                 <Button
                   variant="secondary"
@@ -460,12 +450,7 @@ export function ProjectDetailPage() {
               )}
               {demo && <span className={styles.workspaceDemoTag}>{t('projectDetail.demoTag')}</span>}
               <LanguageToggle />
-              <IdentityChip
-                me={auth?.me ?? null}
-                providers={auth?.providers ?? []}
-                role={appRole}
-                onSignOut={auth && !demo ? auth.logout : undefined}
-              />
+              <ThemeToggle />
             </div>
           </>
         }

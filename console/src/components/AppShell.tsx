@@ -11,8 +11,8 @@ import { useDemoMode, useRole } from '../api/ApiProvider';
 import { useProjects } from '../api/queries';
 import type { Project } from '../api/types';
 import { useOptionalAuth } from '../auth/AuthProvider';
-import { IdentityChip } from './IdentityChip';
 import { LanguageToggle } from './LanguageToggle';
+import { RailAccountFooter } from './RailAccountFooter';
 import { ThemeToggle } from './ThemeToggle';
 import { Wordmark } from './Wordmark';
 import styles from './AppShell.module.css';
@@ -145,10 +145,14 @@ export function AppShell({ children }: { children: ReactNode }) {
           )}
         </section>
         <footer className={styles.railFooter}>
-          <div className={styles.environment}><span>{demo ? t('shell.demoEnv') : t('shell.orchestratorEnv')}</span><span>v0.1.0</span></div>
-          <div className={styles.identityRow}>
-            <IdentityChip me={me} providers={providers} role={role} onSignOut={onSignOut} />
-          </div>
+          <RailAccountFooter
+            demo={demo}
+            me={me}
+            providers={providers}
+            role={role}
+            onSignOut={onSignOut}
+            testId="app-rail-footer"
+          />
         </footer>
       </aside>
 

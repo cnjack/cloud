@@ -1,0 +1,19 @@
+.footer {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.environment {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+}
+
+.identityRow {
+  min-height: 44px;
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: var(--space-3);
+}

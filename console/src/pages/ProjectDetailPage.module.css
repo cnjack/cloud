@@ -979,24 +979,6 @@ li:last-child > .pickerItem {
   text-decoration: none;
 }
 
-.workspaceFooterRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.workspaceClusterLink,
-.workspaceFooterLabel {
-  color: var(--color-text-dim);
-  font-size: var(--fs-caption);
-}
-
-.workspaceClusterLink:hover {
-  color: var(--color-text);
-  text-decoration: none;
-}
-
 .railAddService {
   display: inline-flex;
   align-items: center;
@@ -1015,8 +997,7 @@ li:last-child > .pickerItem {
   color: var(--color-accent-dim);
 }
 
-.mobileAddService,
-.mobileClusterLink {
+.mobileAddService {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
@@ -1030,8 +1011,7 @@ li:last-child > .pickerItem {
   white-space: nowrap;
 }
 
-.mobileAddService:hover,
-.mobileClusterLink:hover {
+.mobileAddService:hover {
   color: var(--color-text);
   text-decoration: none;
 }
