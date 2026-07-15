@@ -49,6 +49,30 @@ describe('IdentityChip — user principal', () => {
     fireEvent.click(screen.getByTestId('sign-out'));
     expect(onSignOut).toHaveBeenCalledTimes(1);
   });
+
+  // The shell docks the chip in the bottom rail: a downward menu would run past
+  // the viewport (and the rail's overflow clips it), hiding Sign out.
+  it('flips the menu above the chip when there is no room below it', () => {
+    render(<IdentityChip me={userMe()} providers={PROVIDERS} role="cluster-admin" onSignOut={vi.fn()} />);
+    const chip = screen.getByTestId('identity-chip');
+    vi.spyOn(chip, 'getBoundingClientRect').mockReturnValue({
+      // Sitting at the bottom of a 768px-tall jsdom viewport.
+      top: window.innerHeight - 45,
+      bottom: window.innerHeight - 15,
+    } as DOMRect);
+
+    fireEvent.click(chip);
+    expect(screen.getByTestId('identity-menu').getAttribute('data-placement')).toBe('top');
+  });
+
+  it('keeps the menu below the chip when it fits (header placement)', () => {
+    render(<IdentityChip me={userMe()} providers={PROVIDERS} role="cluster-admin" onSignOut={vi.fn()} />);
+    const chip = screen.getByTestId('identity-chip');
+    vi.spyOn(chip, 'getBoundingClientRect').mockReturnValue({ top: 8, bottom: 38 } as DOMRect);
+
+    fireEvent.click(chip);
+    expect(screen.getByTestId('identity-menu').getAttribute('data-placement')).toBe('bottom');
+  });
 });
 
 describe('IdentityChip — service principal', () => {

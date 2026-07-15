@@ -21,6 +21,10 @@ const ROLE_LABEL_KEYS: Record<Role, string> = {
   'project-admin': 'components.identity.roleProjectAdmin',
 };
 
+/** Roughly the menu's tallest natural height — the room it wants below the chip
+ *  before it flips above instead. Kept in sync with .menu's max-height. */
+const MENU_MAX_HEIGHT = 320;
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return '?';
@@ -54,7 +58,23 @@ export function IdentityChip({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  // The shell docks this chip in the bottom rail, where a downward menu would
+  // run past the viewport (and get clipped by the rail's overflow), hiding Sign
+  // out. Flip above the chip whenever the room below can't hold the menu.
+  const [placement, setPlacement] = useState<'top' | 'bottom'>('bottom');
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  const toggle = () => {
+    if (!open) {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (rect) {
+        const below = window.innerHeight - rect.bottom;
+        setPlacement(below < MENU_MAX_HEIGHT && rect.top > below ? 'top' : 'bottom');
+      }
+    }
+    setOpen((current) => !current);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -99,6 +119,7 @@ export function IdentityChip({
   return (
     <div className={styles.wrap} ref={ref}>
       <button
+        ref={triggerRef}
         type="button"
         className={styles.trigger}
         data-testid="identity-chip"
@@ -106,7 +127,7 @@ export function IdentityChip({
         data-cluster-admin={me.user.is_cluster_admin || undefined}
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
       >
         <Avatar me={me} />
         <span className={styles.name}>{me.user.display_name}</span>
@@ -117,7 +138,7 @@ export function IdentityChip({
       </button>
 
       {open && (
-        <div className={styles.menu} role="menu" data-testid="identity-menu">
+        <div className={styles.menu} role="menu" data-testid="identity-menu" data-placement={placement}>
           <div className={styles.menuHead}>
             <Avatar me={me} />
             <div className={styles.menuHeadText}>

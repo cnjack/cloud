@@ -109,12 +109,18 @@
   color: var(--color-danger-fg);
 }
 
-/* --- dropdown menu --- */
+/* --- dropdown menu ---
+ * Opens below the chip by default; the component sets data-placement="top" when
+ * the room below can't hold it (the shell docks the chip in the bottom rail), so
+ * Sign out never lands past the viewport. max-height keeps a long identity list
+ * scrollable instead of overflowing either way. */
 .menu {
   position: absolute;
   top: calc(100% + var(--space-2));
   right: 0;
   min-width: 240px;
+  max-height: min(320px, calc(100dvh - var(--space-4)));
+  overflow-y: auto;
   z-index: var(--z-modal);
   display: flex;
   flex-direction: column;
@@ -123,6 +129,10 @@
   border-radius: var(--radius-lg);
   background: var(--color-panel-raised);
   box-shadow: var(--shadow-2);
+}
+.menu[data-placement='top'] {
+  top: auto;
+  bottom: calc(100% + var(--space-2));
 }
 
 .menuHead {
