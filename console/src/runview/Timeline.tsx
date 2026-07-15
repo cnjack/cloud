@@ -133,7 +133,12 @@ function ToolProgress({ tools, t }: { tools: ToolCardItem[]; t: TFunction }) {
       {tools.map((tool, index) => (
         <details className={styles.tool} key={tool.callId} data-status={tool.status} data-testid="thread-tool" open={tool.status === 'failed'}>
           <summary>
-            <span className={styles.toolRail} aria-hidden>{index === tools.length - 1 ? '└' : '├'}</span>
+            <span
+              className={styles.toolRail}
+              data-last={index === tools.length - 1 || undefined}
+              data-testid="thread-tool-rail"
+              aria-hidden
+            />
             <span className={styles.toolIcon} aria-hidden>{tool.status === 'running' ? <CaretRight size={13} weight="bold" /> : tool.status === 'failed' ? <Warning size={13} weight="bold" /> : <Check size={13} weight="bold" />}</span>
             <strong>{toolTitle(tool, t)} <small>· {tool.tool}</small></strong>
             <span className={styles.toolStatus}>{tool.status === 'succeeded' ? t('run.toolStatusDone') : toolStatusLabel(tool.status, t)}</span>

@@ -126,8 +126,52 @@ describe('RunDetailPage — resilient error states', () => {
     expect(screen.getByTestId('run-inspector').textContent).toContain('Run overview');
     expect(screen.getByTestId('run-inspector').textContent).toContain('Changes');
     expect(screen.getByTestId('run-inspector').textContent).toContain('Execution');
-    expect(screen.getByTestId('run-back-to-project').getAttribute('href')).toBe('/projects/proj1');
+    expect(screen.getByTestId('run-back-to-project').getAttribute('href')).toBe(
+      '/projects/proj1?service=svc-1&tab=tasks',
+    );
+    expect(screen.getByTestId('conversation-scroll').getAttribute('data-scrollbar')).toBe('hidden');
     expect(screen.queryByTestId('tab-events')).toBeNull();
+  });
+
+  it('returns to the run service instead of the first project service', async () => {
+    const { client, ctl } = makeClient('member');
+    const run = baseRun({ service_id: 'svc-2' });
+    ctl.getRun.mockResolvedValue(run);
+    client.getProject = async () => ({
+      id: 'proj1',
+      name: 'demo',
+      created_at: '',
+      role: 'member',
+      services: [
+        {
+          id: 'svc-1',
+          project_id: 'proj1',
+          name: 'notes',
+          repo_kind: 'provider',
+          provider: 'gitea',
+          repo_owner_name: 'jcloud/notes',
+          default_branch: 'main',
+          git_mode: 'draft_pr',
+          created_at: '',
+        },
+        {
+          id: 'svc-2',
+          project_id: 'proj1',
+          name: 'infra-web',
+          repo_kind: 'provider',
+          provider: 'gitea',
+          repo_owner_name: 'jcloud/infra-web',
+          default_branch: 'main',
+          git_mode: 'draft_pr',
+          created_at: '',
+        },
+      ],
+    });
+    renderPage(client, run);
+
+    expect((await screen.findByTestId('run-back-to-project')).getAttribute('href')).toBe(
+      '/projects/proj1?service=svc-2&tab=tasks',
+    );
   });
 
   it('keeps Project navigation in the fixed rail on a run route', async () => {

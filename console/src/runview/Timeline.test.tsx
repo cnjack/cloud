@@ -69,10 +69,27 @@ describe('Timeline — task conversation rendering', () => {
         ok: true,
         output: '/workspace',
       }),
+      ev(3, 'agent.tool_call', {
+        name: 'read',
+        call_id: 'c2',
+        args: { path: 'README.md' },
+      }),
+      ev(4, 'agent.tool_result', {
+        name: 'read',
+        call_id: 'c2',
+        ok: true,
+        output: '# Project',
+      }),
     ]);
 
     expect(screen.getByTestId('thread-progress')).toBeTruthy();
-    expect(container.querySelectorAll('[data-testid="thread-tool"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="thread-tool"]')).toHaveLength(2);
+    const rails = container.querySelectorAll('[data-testid="thread-tool-rail"]');
+    expect(rails).toHaveLength(2);
+    expect(rails[0]?.hasAttribute('data-last')).toBe(false);
+    expect(rails[1]?.getAttribute('data-last')).toBe('true');
+    expect(rails[0]?.textContent).toBe('');
+    expect(rails[1]?.textContent).toBe('');
     expect(container.textContent).toContain('execute');
   });
 
