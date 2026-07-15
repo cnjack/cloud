@@ -1738,6 +1738,22 @@ func (m *MemStore) CountServicesUsingIntegration(_ context.Context, integrationI
 
 func claimKey(linkID, documentID string) string { return linkID + "|" + documentID }
 
+func cloneKanbanLink(l domain.KanbanLink) domain.KanbanLink {
+	cp := l
+	if l.TokenEnc != nil {
+		cp.TokenEnc = append([]byte(nil), l.TokenEnc...)
+	}
+	if l.TokenExpiresAt != nil {
+		t := *l.TokenExpiresAt
+		cp.TokenExpiresAt = &t
+	}
+	if l.EventSequence != nil {
+		sequence := *l.EventSequence
+		cp.EventSequence = &sequence
+	}
+	return cp
+}
+
 func (m *MemStore) CreateKanbanLink(_ context.Context, l *domain.KanbanLink) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1746,7 +1762,7 @@ func (m *MemStore) CreateKanbanLink(_ context.Context, l *domain.KanbanLink) err
 			return fmt.Errorf("create kanban link: %w", ErrAlreadyExists)
 		}
 	}
-	cp := *l
+	cp := cloneKanbanLink(*l)
 	if cp.BoardStatus == "" {
 		cp.BoardStatus = domain.KanbanBoardOK // mirror the pg DEFAULT
 	}
@@ -1761,16 +1777,9 @@ func (m *MemStore) GetKanbanLink(_ context.Context, id string) (*domain.KanbanLi
 	if !ok {
 		return nil, ErrNotFound
 	}
-	// Deep-copy the token blob + expiry pointer so a caller can't mutate the
+	// Deep-copy the token blob + pointer fields so a caller can't mutate the
 	// stored row through the returned copy (matches GetClusterKanbanConfig).
-	cp := l
-	if l.TokenEnc != nil {
-		cp.TokenEnc = append([]byte(nil), l.TokenEnc...)
-	}
-	if l.TokenExpiresAt != nil {
-		t := *l.TokenExpiresAt
-		cp.TokenExpiresAt = &t
-	}
+	cp := cloneKanbanLink(l)
 	return &cp, nil
 }
 
@@ -1779,7 +1788,7 @@ func (m *MemStore) ListKanbanLinks(_ context.Context) ([]domain.KanbanLink, erro
 	defer m.mu.Unlock()
 	out := make([]domain.KanbanLink, 0, len(m.kanbanLinks))
 	for _, l := range m.kanbanLinks {
-		out = append(out, l)
+		out = append(out, cloneKanbanLink(l))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
@@ -1791,7 +1800,7 @@ func (m *MemStore) ListKanbanLinksByProject(_ context.Context, projectID string)
 	out := make([]domain.KanbanLink, 0)
 	for _, l := range m.kanbanLinks {
 		if l.ProjectID == projectID {
-			out = append(out, l)
+			out = append(out, cloneKanbanLink(l))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
@@ -1804,7 +1813,7 @@ func (m *MemStore) ListEnabledKanbanLinks(_ context.Context) ([]domain.KanbanLin
 	var out []domain.KanbanLink
 	for _, l := range m.kanbanLinks {
 		if l.Enabled {
-			out = append(out, l)
+			out = append(out, cloneKanbanLink(l))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
@@ -1853,6 +1862,22 @@ func (m *MemStore) SetKanbanLinkBoardStatus(_ context.Context, id, status, canon
 	}
 	l.UpdatedAt = time.Now().UTC()
 	m.kanbanLinks[id] = l
+	return nil
+}
+
+func (m *MemStore) AdvanceKanbanLinkEventSequence(_ context.Context, id string, sequence int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.kanbanLinks[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if l.EventSequence == nil || sequence > *l.EventSequence {
+		value := sequence
+		l.EventSequence = &value
+		l.UpdatedAt = time.Now().UTC()
+		m.kanbanLinks[id] = l
+	}
 	return nil
 }
 

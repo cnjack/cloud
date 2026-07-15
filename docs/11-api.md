@@ -726,6 +726,12 @@ project owner**,jtype 凭据从「单一集群 env」改为 **per-link 加密存
 日志);两者皆空 → 该 link **fail-visible 跳过**(不以空凭据打 jtype),回写侧则把
 该卡的 writeback **挂起重试**(不丢结果),owner 补上 token 后自动恢复。
 
+入站触发使用 jtype 的 durable board-event pull API，并把每个 link 最后成功处理的
+`event_sequence` 持久化在 DB。一次拉取只提交成功前缀：某个事件的文档读取、模型
+选择或 run 创建失败时，该事件不会越过游标，下个 tick（或进程重启后）会自动重试。
+游标为 NULL 的 link 首次执行兼容 level scan，补上事件日志启用前已位于 trigger 列
+的卡，再切换到 sequence pull；该游标是内部同步状态，不暴露给终端用户 API。
+
 `GET /api/v1/system` 的 `kanban` 字段:`enabled`(= `JTYPE_BASE_URL` 已配)、
 `base_url`、`poll_interval`、`cluster_token_set`(= 集群回退 token 是否配置,**非** token 本身)。
 

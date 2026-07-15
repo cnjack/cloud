@@ -3,10 +3,10 @@
 // Architecture (docs/01): dragging a jtype card into a link's trigger column
 // dispatches an agent run. jtype's outbound webhook is guarded by SSRF
 // protection (https-only,拒绝内网) which the in-cluster orchestrator cannot
-// satisfy, and the board SSE stream needs a `full`-scope token — so we POLL the
-// jtype document API. The poll is level-based and idempotent (kanban_claims
-// dedup), restart-safe (claims survive), and driven by updatedClock so a card
-// move surfaces on the next tick — matching the existing reconciler philosophy.
+// satisfy, and the board SSE stream needs a `full`-scope token — so we pull
+// jtype's durable board event sequence. Each link persists its last successfully
+// handled sequence; kanban_claims provide replay-safe dispatch idempotency. A
+// one-time level scan bootstraps links whose cursor predates the event feed.
 //
 // Each link authorises with its OWN jtype PAT (F6 / D25): the per-link encrypted
 // token when set, else the cluster JTYPE_TOKEN env fallback; a link with neither
@@ -32,6 +32,7 @@ import (
 // interface so the poller is unit-tested with an in-memory fake (no HTTP).
 type DocumentAPI interface {
 	ListDocuments(ctx context.Context, workspace string) ([]jtype.Doc, error)
+	PullBoardEvents(ctx context.Context, workspace, boardRef string, afterSequence int64, limit int) (*jtype.KanbanEventPage, error)
 	GetDocument(ctx context.Context, workspace, id string) (*jtype.Document, error)
 	AddComment(ctx context.Context, workspace, docID, body string) error
 	// GetBoard resolves a board by name/ref and returns its config id + columns.
@@ -47,10 +48,9 @@ type ModelResolver interface {
 	SelectModel(ctx context.Context, projectID, defaultModelID, requested string) (modelcfg.Selection, modelcfg.SelectOutcome, error)
 }
 
-// Poller scans enabled kanban_links for cards in their trigger column and
-// dispatches agent runs. It owns an in-memory updatedClock cursor per link
-// (a pure optimization — claims dedup is the real idempotency, so a restart
-// re-scan from clock 0 is correct, just redundant).
+// Poller pulls durable jtype events for enabled kanban_links and dispatches agent
+// runs. The per-link event cursor is stored in kanban_links, so process restarts
+// resume without a lossy full-list watermark.
 type Poller struct {
 	st store.Store
 	// resolver resolves the EFFECTIVE cluster jtype config (base URL + cluster
@@ -70,8 +70,6 @@ type Poller struct {
 	interval   time.Duration
 	now        func() time.Time
 
-	mu      sync.Mutex
-	cursors map[string]int64 // linkID -> last seen updatedClock
 	// noted throttles the one-time notices (integration-off, per-link cluster-
 	// fallback deprecation, missing-credential) so the scan does not log every tick.
 	noted sync.Map // key -> struct{}
@@ -86,8 +84,7 @@ func New(st store.Store, resolver *kanbancfg.Resolver, clientFor func(f *jtype.F
 	return &Poller{
 		st: st, resolver: resolver, clientFor: clientFor, decrypt: decrypt,
 		models: models, log: log, consoleURL: consoleURL, interval: interval,
-		now:     func() time.Time { return time.Now().UTC() },
-		cursors: map[string]int64{},
+		now: func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -141,16 +138,15 @@ func (p *Poller) Tick(ctx context.Context) {
 	}
 }
 
-// pollLink scans one link's workspace for cards in the trigger column. Errors
-// reaching jtype are logged and retried next tick (the poller never crashes the
-// process — consistent with the reconciler's transient-error handling). f +
-// clusterToken are the tick's resolved jtype Factory + effective cluster fallback
-// token (source-coupled; D27).
+// pollLink pulls one link's durable board-event sequence. Errors reaching jtype
+// or handling an event leave the failed sequence uncommitted and retry it next
+// tick. f + clusterToken are the tick's resolved jtype Factory + effective
+// cluster fallback token (source-coupled; D27).
 func (p *Poller) pollLink(ctx context.Context, f *jtype.Factory, clusterToken string, link *domain.KanbanLink) {
 	// Resolve this link's PAT (D25 three-state): per-link encrypted token, else the
 	// cluster fallback, else fail-visibly skip (never a jtype call with an empty
-	// credential). The cursor is untouched on skip so the link re-scans in full the
-	// moment a token is configured. Notices are throttled to once per link.
+	// credential). The cursor is untouched on skip so the link resumes exactly
+	// where it stopped when a token is configured. Notices are throttled per link.
 	token, source, err := jtype.ResolveToken(link.TokenEnc, p.decrypt, clusterToken)
 	if err != nil {
 		if _, seen := p.noted.LoadOrStore("err:"+link.ID, struct{}{}); !seen {
@@ -180,27 +176,155 @@ func (p *Poller) pollLink(ctx context.Context, f *jtype.Factory, clusterToken st
 		}
 	}
 
-	cursor := p.cursor(link.ID)
+	// A NULL sequence marks a link created before durable board events (or a new
+	// link whose board may already contain trigger cards). Run exactly one
+	// compatibility level scan; only commit sequence 0 after every candidate was
+	// handled. A blocked/transient card keeps NULL and retries on the next tick.
+	if link.EventSequence == nil {
+		if !p.bootstrapLink(ctx, api, link) {
+			return
+		}
+		zero := int64(0)
+		link.EventSequence = &zero
+	}
+	p.pullEvents(ctx, api, link)
+}
+
+const eventPageLimit = 100
+
+// bootstrapLink performs the one-time compatibility level scan for a NULL event
+// cursor. It preserves the product contract that a card already in the trigger
+// column when a link becomes active is dispatched. Successful candidates are
+// claim-deduped if a later candidate blocks and the scan has to replay.
+func (p *Poller) bootstrapLink(ctx context.Context, api DocumentAPI, link *domain.KanbanLink) bool {
 	docs, err := api.ListDocuments(ctx, link.WorkspaceID)
 	if err != nil {
-		p.log.Warn("kanban poll: list documents", "link", link.ID, "workspace", link.WorkspaceID, "err", err)
-		return
+		p.log.Warn("kanban poll: bootstrap list documents", "link", link.ID, "workspace", link.WorkspaceID, "err", err)
+		return false
 	}
-	maxClock := cursor
 	for _, d := range docs {
-		if d.UpdatedClock <= cursor {
-			continue // seen (or pre-existing at startup); claims dedup still guards
-		}
-		if d.UpdatedClock > maxClock {
-			maxClock = d.UpdatedClock
-		}
-		// Only `.md` documents can be cards; cheaply skip boards/assets.
 		if !isMarkdown(d.Path) {
 			continue
 		}
-		p.maybeDispatch(ctx, api, link, d)
+		if !p.maybeDispatch(ctx, api, link, d, nil) {
+			return false
+		}
 	}
-	p.setCursor(link.ID, maxClock)
+	if err := p.st.AdvanceKanbanLinkEventSequence(ctx, link.ID, 0); err != nil {
+		p.log.Error("kanban poll: commit bootstrap cursor", "link", link.ID, "err", err)
+		return false
+	}
+	p.log.Info("kanban poll: compatibility bootstrap complete", "link", link.ID)
+	return true
+}
+
+// pullEvents drains oldest-first event pages. It advances only the successfully
+// handled prefix; a failure at sequence N leaves N and all later events for a
+// replay. Claims make replayed successful dispatches cheap and safe.
+func (p *Poller) pullEvents(ctx context.Context, api DocumentAPI, link *domain.KanbanLink) {
+	cursor := int64(0)
+	if link.EventSequence != nil {
+		cursor = *link.EventSequence
+	}
+	for {
+		page, err := api.PullBoardEvents(ctx, link.WorkspaceID, link.BoardRef, cursor, eventPageLimit)
+		if err != nil {
+			p.log.Warn("kanban poll: pull board events", "link", link.ID, "workspace", link.WorkspaceID,
+				"board", link.BoardRef, "after_sequence", cursor, "err", err)
+			return
+		}
+		if page == nil {
+			p.log.Warn("kanban poll: pull board events returned no page", "link", link.ID, "after_sequence", cursor)
+			return
+		}
+		if len(page.Events) == 0 {
+			if page.HasMore {
+				p.log.Warn("kanban poll: invalid empty event page with has_more", "link", link.ID, "after_sequence", cursor)
+			}
+			return
+		}
+
+		// The event contains a path but not a document id. Resolve all candidate
+		// paths with one list call per page; pages containing only non-trigger
+		// events avoid the list entirely.
+		var docsByPath map[string]jtype.Doc
+		if pageHasTriggerEvent(page.Events, link) {
+			docs, err := api.ListDocuments(ctx, link.WorkspaceID)
+			if err != nil {
+				p.log.Warn("kanban poll: resolve event document paths", "link", link.ID, "workspace", link.WorkspaceID, "err", err)
+				return
+			}
+			docsByPath = make(map[string]jtype.Doc, len(docs))
+			for _, d := range docs {
+				docsByPath[d.Path] = d
+			}
+		}
+
+		committed := cursor
+		for i := range page.Events {
+			event := &page.Events[i]
+			if event.Sequence <= committed {
+				p.log.Warn("kanban poll: non-increasing event sequence", "link", link.ID,
+					"after_sequence", committed, "event_sequence", event.Sequence)
+				return
+			}
+			if event.Board != link.BoardRef || event.Card.Status != link.TriggerColumn {
+				committed = event.Sequence
+				continue
+			}
+			d, ok := docsByPath[event.Card.Path]
+			if !ok || !isMarkdown(event.Card.Path) {
+				// The card may have been deleted or renamed after this immutable event.
+				// There is no document left to dispatch; a later event for its new path
+				// remains independently visible, so this entry is safely consumed.
+				p.log.Warn("kanban poll: event document no longer exists; skipping", "link", link.ID,
+					"sequence", event.Sequence, "path", event.Card.Path)
+				committed = event.Sequence
+				continue
+			}
+			if !p.maybeDispatch(ctx, api, link, d, event) {
+				p.commitEventSequence(ctx, link, cursor, committed)
+				return
+			}
+			committed = event.Sequence
+		}
+
+		if !p.commitEventSequence(ctx, link, cursor, committed) {
+			return
+		}
+		if committed == cursor {
+			p.log.Warn("kanban poll: event page made no progress", "link", link.ID, "after_sequence", cursor)
+			return
+		}
+		cursor = committed
+		if !page.HasMore {
+			return
+		}
+	}
+}
+
+func pageHasTriggerEvent(events []jtype.KanbanEvent, link *domain.KanbanLink) bool {
+	for i := range events {
+		if events[i].Board == link.BoardRef && events[i].Card.Status == link.TriggerColumn {
+			return true
+		}
+	}
+	return false
+}
+
+// commitEventSequence persists a successfully handled prefix. A store failure
+// intentionally causes replay; claims prevent duplicate dispatch.
+func (p *Poller) commitEventSequence(ctx context.Context, link *domain.KanbanLink, previous, sequence int64) bool {
+	if sequence <= previous {
+		return true
+	}
+	if err := p.st.AdvanceKanbanLinkEventSequence(ctx, link.ID, sequence); err != nil {
+		p.log.Error("kanban poll: commit event cursor", "link", link.ID, "sequence", sequence, "err", err)
+		return false
+	}
+	value := sequence
+	link.EventSequence = &value
+	return true
 }
 
 // revalidateBoard runs the D30 runtime board check for a link whose board_status
@@ -306,27 +430,39 @@ type errStr string
 
 func (e errStr) Error() string { return string(e) }
 
-// maybeDispatch fetches one document, decides if it is a card in the trigger
-// column, and dispatches a run (or posts the not-configured notice). api is the
-// link's token-bound jtype client (resolved in pollLink).
-func (p *Poller) maybeDispatch(ctx context.Context, api DocumentAPI, link *domain.KanbanLink, d jtype.Doc) {
+// maybeDispatch fetches one document and dispatches a run (or posts the
+// not-configured notice). During bootstrap event is nil and the current
+// frontmatter must match the linked board + trigger column. During sequence
+// processing the immutable event snapshot is the transition authority; the
+// current document is fetched for its body and may already have moved again.
+// The return value says whether this input was fully handled and its sequence may
+// be committed. False means retry from the same event on the next tick.
+func (p *Poller) maybeDispatch(ctx context.Context, api DocumentAPI, link *domain.KanbanLink, d jtype.Doc, event *jtype.KanbanEvent) bool {
 	doc, err := api.GetDocument(ctx, link.WorkspaceID, d.ID)
 	if err != nil {
 		p.log.Warn("kanban poll: get document", "link", link.ID, "doc", d.ID, "err", err)
-		return
+		return false
 	}
 	card := jtype.ParseCard(doc.Content)
-	if card.Board != link.BoardRef || card.Status != link.TriggerColumn {
-		return // not a card on this board, or not in the trigger column
+	if event == nil && (card.Board != link.BoardRef || card.Status != link.TriggerColumn) {
+		return true // bootstrap: not a card on this board/trigger column
+	}
+	if event != nil {
+		if event.Board != link.BoardRef || event.Card.Status != link.TriggerColumn {
+			return true
+		}
+		if card.Title == "" {
+			card.Title = event.Card.Title
+		}
 	}
 	prompt := buildPrompt(card)
 	claim, err := p.st.EnsureKanbanClaim(ctx, link.ID, d.ID, d.Path)
 	if err != nil {
 		p.log.Error("kanban poll: ensure claim", "link", link.ID, "doc", d.ID, "err", err)
-		return
+		return false
 	}
 	if claim.RunID != "" {
-		return // already dispatched for this card — idempotent
+		return true // already dispatched for this card — idempotent
 	}
 
 	// Fail-visible gate: refuse to queue a run the runner could not execute.
@@ -344,18 +480,19 @@ func (p *Poller) maybeDispatch(ctx context.Context, api DocumentAPI, link *domai
 		defaultModelID = derefStr(svc.DefaultModelID)
 	} else {
 		p.log.Warn("kanban poll: load service for default model", "link", link.ID, "service", link.ServiceID, "err", serr)
+		return false
 	}
 	sel, outcome, err := p.models.SelectModel(ctx, link.ProjectID, defaultModelID, "")
 	if err != nil {
 		p.log.Error("kanban poll: resolve model", "link", link.ID, "doc", d.ID, "err", err)
-		return // transient; retry next tick
+		return false // transient; retry next tick
 	}
 	if outcome != modelcfg.SelectOK {
 		// Both "can't dispatch" states are notify-once + retried on later ticks, but
 		// the card comment DIFFERS (P5): NotSelected points the service owner at the
 		// default-model setting, NotConfigured points at cluster-admin authorization.
 		p.notifyBlocked(ctx, api, link, d.ID, outcome)
-		return
+		return false
 	}
 
 	run := &domain.Run{
@@ -376,7 +513,7 @@ func (p *Poller) maybeDispatch(ctx context.Context, api DocumentAPI, link *domai
 	}
 	if err := p.st.CreateRun(ctx, run); err != nil {
 		p.log.Error("kanban poll: create run", "link", link.ID, "doc", d.ID, "err", err)
-		return // run_id stays empty; retried next tick (no claim leak — no run yet)
+		return false // run_id stays empty; retried next tick (no claim leak — no run yet)
 	}
 	// Commit the dispatch: stamp the claim's run_id. A racing tick that already
 	// stamped a run loses (SetKanbanClaimRun is conditional), and the orphan run
@@ -384,9 +521,10 @@ func (p *Poller) maybeDispatch(ctx context.Context, api DocumentAPI, link *domai
 	// is what dedups writeback, not the run) — acceptable and rare.
 	if err := p.st.SetKanbanClaimRun(ctx, link.ID, d.ID, run.ID); err != nil {
 		p.log.Error("kanban poll: stamp claim run", "link", link.ID, "doc", d.ID, "run", run.ID, "err", err)
-		return
+		return false
 	}
 	p.log.Info("kanban poll: dispatched run", "link", link.ID, "doc", d.ID, "run", run.ID, "card", card.Title)
+	return true
 }
 
 // derefStr returns the pointed-to string, or "" for a nil pointer.
@@ -447,20 +585,6 @@ func buildPrompt(card jtype.Card) string {
 // isMarkdown reports whether path ends with .md (cards are .md documents).
 func isMarkdown(path string) bool {
 	return len(path) > 3 && path[len(path)-3:] == ".md"
-}
-
-func (p *Poller) cursor(linkID string) int64 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.cursors[linkID]
-}
-
-func (p *Poller) setCursor(linkID string, clock int64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if clock > p.cursors[linkID] {
-		p.cursors[linkID] = clock
-	}
 }
 
 // _ asserts *jtype.Client satisfies DocumentAPI at compile time.

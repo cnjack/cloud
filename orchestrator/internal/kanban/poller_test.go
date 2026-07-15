@@ -45,23 +45,30 @@ func testLogger(t *testing.T) *slog.Logger {
 // fakeAPI is an in-memory jtype stand-in for poller tests.
 type fakeAPI struct {
 	mu         sync.Mutex
-	docs       map[string]jtype.Doc    // id -> list item
-	contents   map[string]string       // id -> content
+	docs       map[string]jtype.Doc // id -> list item
+	contents   map[string]string    // id -> content
+	events     []jtype.KanbanEvent
 	comments   map[string][]string     // docID -> bodies
 	boards     map[string]*jtype.Board // ref -> resolved board (D30 runtime check)
 	boardErr   error                   // when set, GetBoard returns it (transient/definitive)
 	getCalls   int                     // number of GetDocument calls (cursor probe)
-	boardCalls int                     // number of GetBoard calls (revalidation probe)
+	listCalls  int
+	boardCalls int // number of GetBoard calls (revalidation probe)
+	pullCalls  []int64
+	pageSize   int
 	listErr    error
+	pullErr    error
+	getErrOnce map[string]error
 	tokens     []string // PATs the token->client factory was asked to bind (F6)
 }
 
 func newFakeAPI() *fakeAPI {
 	return &fakeAPI{
-		docs:     map[string]jtype.Doc{},
-		contents: map[string]string{},
-		comments: map[string][]string{},
-		boards:   map[string]*jtype.Board{},
+		docs:       map[string]jtype.Doc{},
+		contents:   map[string]string{},
+		comments:   map[string][]string{},
+		boards:     map[string]*jtype.Board{},
+		getErrOnce: map[string]error{},
 	}
 }
 
@@ -82,12 +89,27 @@ func (f *fakeAPI) GetBoard(ctx context.Context, ws, ref string) (*jtype.Board, e
 }
 
 func (f *fakeAPI) addCard(id, path, board, status, title, body string, clock int64) {
+	f.addCardWithoutEvent(id, path, board, status, title, body, clock)
+	f.addEvent(clock, board, path, status, title)
+}
+
+func (f *fakeAPI) addCardWithoutEvent(id, path, board, status, title, body string, clock int64) {
 	content := "---\nboard: " + board + "\nstatus: " + status + "\ntitle: " + title + "\n---\n" + body + "\n"
 	f.docs[id] = jtype.Doc{ID: id, Path: path, UpdatedClock: clock, Title: title}
 	f.contents[id] = content
 }
 
+func (f *fakeAPI) addEvent(sequence int64, board, path, status, title string) {
+	f.events = append(f.events, jtype.KanbanEvent{
+		Sequence: sequence, Event: "kanban:card-updated", WorkspaceID: "ws", Board: board,
+		Card: jtype.KanbanEventCard{Path: path, Status: status, Title: title}, UpdatedClock: sequence,
+	})
+}
+
 func (f *fakeAPI) ListDocuments(ctx context.Context, ws string) ([]jtype.Doc, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listCalls++
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -98,10 +120,39 @@ func (f *fakeAPI) ListDocuments(ctx context.Context, ws string) ([]jtype.Doc, er
 	return out, nil
 }
 
+func (f *fakeAPI) PullBoardEvents(ctx context.Context, ws, board string, afterSequence int64, limit int) (*jtype.KanbanEventPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pullCalls = append(f.pullCalls, afterSequence)
+	if f.pullErr != nil {
+		return nil, f.pullErr
+	}
+	if f.pageSize > 0 && f.pageSize < limit {
+		limit = f.pageSize
+	}
+	page := &jtype.KanbanEventPage{NextSequence: afterSequence}
+	for _, event := range f.events {
+		if event.Board != board || event.Sequence <= afterSequence {
+			continue
+		}
+		if len(page.Events) == limit {
+			page.HasMore = true
+			break
+		}
+		page.Events = append(page.Events, event)
+		page.NextSequence = event.Sequence
+	}
+	return page, nil
+}
+
 func (f *fakeAPI) GetDocument(ctx context.Context, ws, id string) (*jtype.Document, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.getCalls++
+	if err := f.getErrOnce[id]; err != nil {
+		delete(f.getErrOnce, id)
+		return nil, err
+	}
 	return &jtype.Document{Path: f.docs[id].Path, Content: f.contents[id], ContentHash: "h", UpdatedClock: f.docs[id].UpdatedClock}, nil
 }
 
@@ -142,7 +193,8 @@ func newPollerHarness(t *testing.T, configured bool) (*Poller, *store.MemStore, 
 	_ = m.CreateService(ctx, svc)
 	link := &domain.KanbanLink{ID: domain.NewID(), WorkspaceID: "ws", BoardRef: "b",
 		ProjectID: p.ID, ServiceID: svc.ID, TriggerColumn: "ai", Enabled: true,
-		CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		EventSequence: int64Ptr(0),
+		CreatedAt:     time.Now(), UpdatedAt: time.Now()}
 	_ = m.CreateKanbanLink(ctx, link)
 
 	api := newFakeAPI()
@@ -182,7 +234,7 @@ func TestPollerDispatchesTriggerCard(t *testing.T) {
 	}
 }
 
-// A second tick must not re-dispatch (idempotent), and the cursor must suppress
+// A second tick must not re-dispatch (idempotent), and the durable cursor must suppress
 // the redundant GetDocument fetch entirely.
 func TestPollerIdempotentAndCursor(t *testing.T) {
 	poller, m, api, link, _, _ := newPollerHarness(t, true)
@@ -200,9 +252,216 @@ func TestPollerIdempotentAndCursor(t *testing.T) {
 	if len(runs2) != 1 {
 		t.Fatalf("tick2 re-dispatched; want 1 run, got %d", len(runs2))
 	}
-	// Cursor filters doc1 (clock unchanged) so no GetDocument on tick2.
+	// The second pull starts after sequence 5, so it never refetches doc1.
 	if api.getCalls != first {
 		t.Fatalf("cursor did not suppress fetch: getCalls went %d -> %d", first, api.getCalls)
+	}
+	if got := api.pullCalls[len(api.pullCalls)-1]; got != 5 {
+		t.Fatalf("second pull afterSequence = %d, want 5", got)
+	}
+}
+
+func TestPollerRetriesFailedEventWithoutAdvancingCursor(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 5)
+	api.getErrOnce["doc1"] = &jtype.Error{StatusCode: 503, Code: "unavailable", Message: "retry"}
+
+	poller.Tick(ctx)
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 0 {
+		t.Fatalf("failed event advanced cursor to %v, want 0", got.EventSequence)
+	}
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 0 {
+		t.Fatalf("failed fetch dispatched %d runs", len(runs))
+	}
+
+	poller.Tick(ctx)
+	got, _ = m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 5 {
+		t.Fatalf("successful retry cursor = %v, want 5", got.EventSequence)
+	}
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 1 {
+		t.Fatalf("successful retry want 1 run, got %d", len(runs))
+	}
+	if len(api.pullCalls) < 2 || api.pullCalls[0] != 0 || api.pullCalls[1] != 0 {
+		t.Fatalf("failed sequence was not retried: pull cursors = %v", api.pullCalls)
+	}
+}
+
+func TestPollerCommitsOnlySuccessfulEventPrefix(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	api.addCard("skip", "cards/skip.md", "b", "todo", "Skip", "body", 2)
+	api.addCard("retry", "cards/retry.md", "b", "ai", "Retry", "body", 5)
+	api.getErrOnce["retry"] = &jtype.Error{StatusCode: 503, Code: "unavailable", Message: "retry"}
+
+	poller.Tick(ctx)
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 2 {
+		t.Fatalf("partial failure cursor = %v, want successful prefix 2", got.EventSequence)
+	}
+
+	poller.Tick(ctx)
+	if len(api.pullCalls) < 2 || api.pullCalls[1] != 2 {
+		t.Fatalf("retry did not resume after committed prefix: %v", api.pullCalls)
+	}
+	got, _ = m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 5 {
+		t.Fatalf("retry cursor = %v, want 5", got.EventSequence)
+	}
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 1 {
+		t.Fatalf("retry want 1 run, got %d", len(runs))
+	}
+}
+
+func TestPollerPersistsCursorAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 5)
+	poller.Tick(ctx)
+	firstGets := api.getCalls
+
+	clientFor := func(_ *jtype.Factory, tok string) DocumentAPI {
+		api.tokens = append(api.tokens, tok)
+		return api
+	}
+	restarted := New(m, envResolver(m, "http://jtype.test", "cluster-tok"), clientFor, nil,
+		stubFor(true), testLogger(t), "http://console", time.Second)
+	restarted.Tick(ctx)
+
+	if api.getCalls != firstGets {
+		t.Fatalf("restart re-fetched committed event: getCalls %d -> %d", firstGets, api.getCalls)
+	}
+	if got := api.pullCalls[len(api.pullCalls)-1]; got != 5 {
+		t.Fatalf("restart pull afterSequence = %d, want persisted 5", got)
+	}
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 1 {
+		t.Fatalf("restart re-dispatched; got %d runs", len(runs))
+	}
+}
+
+func TestPollerDrainsEventPagesInOrder(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	api.pageSize = 1
+	api.addCard("doc1", "cards/one.md", "b", "ai", "One", "body", 5)
+	api.addCard("doc2", "cards/two.md", "b", "ai", "Two", "body", 8)
+
+	poller.Tick(ctx)
+
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 2 {
+		t.Fatalf("paged pull want 2 runs, got %d", len(runs))
+	}
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 8 {
+		t.Fatalf("paged cursor = %v, want 8", got.EventSequence)
+	}
+	if len(api.pullCalls) != 2 || api.pullCalls[0] != 0 || api.pullCalls[1] != 5 {
+		t.Fatalf("paged pull cursors = %v, want [0 5]", api.pullCalls)
+	}
+}
+
+func TestPollerAdvancesPastNonTriggerEventWithoutFetching(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	api.addCard("doc1", "cards/x.md", "b", "todo", "T", "body", 4)
+
+	poller.Tick(ctx)
+
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 4 {
+		t.Fatalf("non-trigger cursor = %v, want 4", got.EventSequence)
+	}
+	if api.getCalls != 0 {
+		t.Fatalf("non-trigger event fetched document %d times", api.getCalls)
+	}
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 0 {
+		t.Fatalf("non-trigger event dispatched %d runs", len(runs))
+	}
+}
+
+func TestPollerDispatchesTriggerEventAfterCardMovesAgain(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 4)
+	// The immutable sequence says the card entered the trigger column, but by the
+	// time Cloud fetches the body the current document has already moved to done.
+	api.addCardWithoutEvent("doc1", "cards/x.md", "b", "done", "T", "body", 5)
+	api.addEvent(5, "b", "cards/x.md", "done", "T")
+
+	poller.Tick(ctx)
+
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 1 {
+		t.Fatalf("durable trigger transition want 1 run, got %d", len(runs))
+	}
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 5 {
+		t.Fatalf("moved-again cursor = %v, want 5", got.EventSequence)
+	}
+}
+
+func TestPollerBootstrapsExistingCardsBeforeSequencePull(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, true)
+	if err := m.DeleteKanbanLink(ctx, link.ID); err != nil {
+		t.Fatal(err)
+	}
+	link.EventSequence = nil
+	if err := m.CreateKanbanLink(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	api.addCardWithoutEvent("legacy", "cards/legacy.md", "b", "ai", "Legacy", "body", 3)
+
+	poller.Tick(ctx)
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 0 {
+		t.Fatalf("bootstrap cursor = %v, want committed 0", got.EventSequence)
+	}
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 1 {
+		t.Fatalf("bootstrap want legacy card dispatched, got %d runs", len(runs))
+	}
+
+	api.addCard("new", "cards/new.md", "b", "ai", "New", "body", 9)
+	poller.Tick(ctx)
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 2 {
+		t.Fatalf("post-bootstrap event want second run, got %d", len(runs))
+	}
+	got, _ = m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 9 {
+		t.Fatalf("post-bootstrap cursor = %v, want 9", got.EventSequence)
+	}
+}
+
+func TestPollerRetriesBlockedCompatibilityBootstrap(t *testing.T) {
+	ctx := context.Background()
+	poller, m, api, link, _, _ := newPollerHarness(t, false)
+	if err := m.DeleteKanbanLink(ctx, link.ID); err != nil {
+		t.Fatal(err)
+	}
+	link.EventSequence = nil
+	if err := m.CreateKanbanLink(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	api.addCardWithoutEvent("legacy", "cards/legacy.md", "b", "ai", "Legacy", "body", 3)
+
+	poller.Tick(ctx)
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence != nil {
+		t.Fatalf("blocked bootstrap committed cursor %v, want nil", got.EventSequence)
+	}
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 0 {
+		t.Fatalf("blocked bootstrap dispatched %d runs", len(runs))
+	}
+
+	poller.models = stubFor(true)
+	poller.Tick(ctx)
+	got, _ = m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 0 {
+		t.Fatalf("recovered bootstrap cursor = %v, want 0", got.EventSequence)
+	}
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 1 {
+		t.Fatalf("recovered bootstrap want 1 run, got %d", len(runs))
 	}
 }
 
@@ -251,8 +510,6 @@ func TestPollerNotConfiguredNoticeOnce(t *testing.T) {
 
 	// Now configure the model and tick again: the card auto-dispatches.
 	poller.models = stubFor(true)
-	// Bump clock so the cursor re-surfaces the card.
-	api.docs["doc1"] = jtype.Doc{ID: "doc1", Path: "cards/x.md", UpdatedClock: 9, Title: "T"}
 	poller.Tick(context.Background())
 	runs2, _ := m.ListRunsByService(context.Background(), link.ServiceID, 10)
 	if len(runs2) != 1 {
@@ -296,6 +553,7 @@ func TestPollerOncePerCard(t *testing.T) {
 	poller.Tick(context.Background())
 
 	api.docs["doc1"] = jtype.Doc{ID: "doc1", Path: "cards/x.md", UpdatedClock: 9, Title: "T"}
+	api.addEvent(9, "b", "cards/x.md", "ai", "T")
 	poller.Tick(context.Background())
 	runs, _ := m.ListRunsByService(context.Background(), link.ServiceID, 10)
 	if len(runs) != 1 {
@@ -316,7 +574,8 @@ func seedLinkedProject(t *testing.T, tokenEnc []byte) (*store.MemStore, *fakeAPI
 	_ = m.CreateService(ctx, svc)
 	link := &domain.KanbanLink{ID: domain.NewID(), WorkspaceID: "ws", BoardRef: "b",
 		ProjectID: p.ID, ServiceID: svc.ID, TriggerColumn: "ai", Enabled: true,
-		TokenEnc: tokenEnc, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		EventSequence: int64Ptr(0),
+		TokenEnc:      tokenEnc, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	_ = m.CreateKanbanLink(ctx, link)
 	api := newFakeAPI()
 	return m, api, link
@@ -612,3 +871,5 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func int64Ptr(v int64) *int64 { return &v }

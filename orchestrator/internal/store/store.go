@@ -517,6 +517,10 @@ type Store interface {
 	// title overwrites the stored value; an empty one leaves it unchanged (so an
 	// "invalid" transition keeps the last-known ref). The claims are untouched.
 	SetKanbanLinkBoardStatus(ctx context.Context, id, status, canonicalRef, title string) error
+	// AdvanceKanbanLinkEventSequence durably advances a link's jtype event cursor.
+	// It is monotonic: replays or racing pollers can never move the cursor back.
+	// Advancing a NULL cursor to 0 commits the one-time compatibility bootstrap.
+	AdvanceKanbanLinkEventSequence(ctx context.Context, id string, sequence int64) error
 	DeleteKanbanLink(ctx context.Context, id string) error
 
 	// EnsureKanbanClaim inserts a (link_id, document_id) claim row with run_id

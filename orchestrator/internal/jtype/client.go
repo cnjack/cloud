@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -66,8 +67,40 @@ type BoardColumn struct {
 	Name string
 }
 
-// ListDocuments returns every document in the workspace (the poller filters to
-// `.md` cards by frontmatter board). 4xx/5xx return a typed *Error.
+// KanbanEvent is one durable card create/update entry returned by jtype's board
+// event pull endpoint. Sequence is workspace-monotonic and is the consumer
+// cursor; Card.Path is resolved to a document id through ListDocuments only when
+// an event reaches a link's trigger column.
+type KanbanEvent struct {
+	Sequence     int64           `json:"sequence"`
+	Event        string          `json:"event"`
+	WorkspaceID  string          `json:"workspaceId"`
+	Board        string          `json:"board"`
+	Card         KanbanEventCard `json:"card"`
+	EditedBy     string          `json:"editedBy"`
+	UpdatedClock int64           `json:"updatedClock"`
+}
+
+// KanbanEventCard is the card snapshot embedded in a durable event.
+type KanbanEventCard struct {
+	Path     string  `json:"path"`
+	Title    string  `json:"title"`
+	Status   string  `json:"status"`
+	Priority *string `json:"priority"`
+	Assignee *string `json:"assignee"`
+	Due      *string `json:"due"`
+}
+
+// KanbanEventPage is one oldest-first page from PullBoardEvents.
+type KanbanEventPage struct {
+	Events       []KanbanEvent `json:"events"`
+	NextSequence int64         `json:"nextSequence"`
+	HasMore      bool          `json:"hasMore"`
+}
+
+// ListDocuments returns every document in the workspace. The poller uses it for
+// its one-time compatibility scan and to resolve event paths to document ids.
+// 4xx/5xx return a typed *Error.
 func (c *Client) ListDocuments(ctx context.Context, workspace string) ([]Doc, error) {
 	var raw []struct {
 		ID           string `json:"id"`
@@ -83,6 +116,21 @@ func (c *Client) ListDocuments(ctx context.Context, workspace string) ([]Doc, er
 		out = append(out, Doc{ID: r.ID, Path: r.RelativePath, Title: r.Title, UpdatedClock: r.UpdatedClock})
 	}
 	return out, nil
+}
+
+// PullBoardEvents returns durable card events strictly after afterSequence,
+// oldest first. Consumers must persist a sequence only after every event up to
+// it has been handled successfully; replaying from the same sequence is safe.
+func (c *Client) PullBoardEvents(ctx context.Context, workspace, boardRef string, afterSequence int64, limit int) (*KanbanEventPage, error) {
+	q := url.Values{}
+	q.Set("afterSequence", strconv.FormatInt(afterSequence, 10))
+	q.Set("limit", strconv.Itoa(limit))
+	endpoint := c.path("/api/v1/workspaces/%s/boards/%s/events/pull", workspace, boardRef) + "?" + q.Encode()
+	var page KanbanEventPage
+	if err := c.getJSON(ctx, endpoint, &page); err != nil {
+		return nil, err
+	}
+	return &page, nil
 }
 
 // GetDocument fetches a single document's full content (frontmatter + body).

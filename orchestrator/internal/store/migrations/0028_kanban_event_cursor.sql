@@ -1,0 +1,11 @@
+-- 0028_kanban_event_cursor: persist the last successfully handled jtype board
+-- event sequence for every kanban link.
+--
+-- NULL deliberately means "compatibility bootstrap pending". The first poll
+-- after upgrade performs one level scan so cards that were already in the
+-- trigger column before jtype's durable event log was deployed are not lost,
+-- then stores 0 and switches permanently to sequence pulls. Subsequent values
+-- are advanced monotonically only after successful event handling.
+--
+-- Additive and idempotent so replaying the migration is safe.
+ALTER TABLE kanban_links ADD COLUMN IF NOT EXISTS event_sequence BIGINT;

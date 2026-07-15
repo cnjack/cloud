@@ -50,6 +50,25 @@ func TestModelProvidersMigrationContract(t *testing.T) {
 	}
 }
 
+func TestKanbanEventCursorMigrationContract(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0028_kanban_event_cursor.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := string(sql)
+	for _, required := range []string{
+		"ALTER TABLE kanban_links",
+		"ADD COLUMN IF NOT EXISTS event_sequence BIGINT",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Fatalf("0028 migration missing %q", required)
+		}
+	}
+	if strings.Contains(migration, "event_sequence BIGINT NOT NULL") {
+		t.Fatal("event_sequence must be nullable so existing links run the compatibility bootstrap")
+	}
+}
+
 func mustExec(t *testing.T, ctx context.Context, c *pgx.Conn, sql string, args ...any) {
 	t.Helper()
 	if _, err := c.Exec(ctx, sql, args...); err != nil {

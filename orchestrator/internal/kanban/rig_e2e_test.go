@@ -33,7 +33,10 @@ func TestRigPollerDispatches(t *testing.T) {
 	client := jtype.NewClient(base, tok, 10*time.Second)
 
 	// Seed a fresh card already in the trigger (ai) column.
-	path := "cards/poller-e2e-" + time.Now().UTC().Format("20060102-150405.000000000") + ".md"
+	path := os.Getenv("JCLOUD_JTYPE_CARD_PATH")
+	if path == "" {
+		path = "cards/poller-e2e-" + time.Now().UTC().Format("20060102-150405.000000000") + ".md"
+	}
 	content := "---\nboard: " + board + "\nstatus: ai\ntitle: poller e2e\n---\nbody of the card\n"
 	if err := client.SaveDocument(ctx, ws, path, content, ""); err != nil {
 		t.Fatalf("seed card: %v", err)
@@ -48,7 +51,10 @@ func TestRigPollerDispatches(t *testing.T) {
 	_ = st.CreateService(ctx, svc)
 	link := &domain.KanbanLink{ID: domain.NewID(), WorkspaceID: ws, BoardRef: board,
 		ProjectID: p.ID, ServiceID: svc.ID, TriggerColumn: "ai", DoneColumn: "done",
-		Enabled: true, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+		// Start at sequence 0 so this live rig proves the durable event endpoint,
+		// rather than satisfying the assertion through the compatibility scan.
+		EventSequence: int64Ptr(0), Enabled: true,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	if err := st.CreateKanbanLink(ctx, link); err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +89,13 @@ func TestRigPollerDispatches(t *testing.T) {
 	}
 	if run.Prompt != "poller e2e\n\nbody of the card" {
 		t.Fatalf("run prompt = %q", run.Prompt)
+	}
+	gotLink, err := st.GetKanbanLink(ctx, link.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotLink.EventSequence == nil || *gotLink.EventSequence <= 0 {
+		t.Fatalf("poller did not commit the live jtype event sequence: %v", gotLink.EventSequence)
 	}
 	t.Logf("rig poller OK: card %s → run %s", path, run.ID)
 }

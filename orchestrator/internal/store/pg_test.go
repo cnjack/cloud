@@ -49,6 +49,66 @@ func pgTestStore(t *testing.T) (*PGStore, string) {
 	return st, r.ID
 }
 
+// TestPGKanbanClaimNullableAndWritebackScan covers two PostgreSQL-only contracts
+// that the memory store cannot expose: a fresh claim has NULL document/run
+// fields that must decode to empty Go strings, and the terminal writeback join
+// must stay aligned with every nullable kanban_links column.
+func TestPGKanbanClaimNullableAndWritebackScan(t *testing.T) {
+	ctx := context.Background()
+	st, runID := pgTestStore(t)
+	run, err := st.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := int64(0)
+	link := &domain.KanbanLink{
+		ID: domain.NewID(), WorkspaceID: "ws", BoardRef: "b",
+		ProjectID: run.ProjectID, ServiceID: run.ServiceID,
+		TriggerColumn: "todo", DoneColumn: "done", Enabled: true,
+		EventSequence: &zero, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := st.CreateKanbanLink(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AdvanceKanbanLinkEventSequence(ctx, link.ID, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AdvanceKanbanLinkEventSequence(ctx, link.ID, 3); err != nil {
+		t.Fatal(err)
+	}
+	storedLink, err := st.GetKanbanLink(ctx, link.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedLink.EventSequence == nil || *storedLink.EventSequence != 7 {
+		t.Fatalf("monotonic cursor = %v, want 7", storedLink.EventSequence)
+	}
+
+	claim, err := st.EnsureKanbanClaim(ctx, link.ID, "doc-1", "")
+	if err != nil {
+		t.Fatalf("fresh NULL claim scan: %v", err)
+	}
+	if claim.RunID != "" || claim.DocumentPath != "" {
+		t.Fatalf("fresh claim = %+v, want empty run/path", claim)
+	}
+	if err := st.SetKanbanClaimRun(ctx, link.ID, "doc-1", runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool().Exec(ctx, `UPDATE runs SET status='succeeded' WHERE id=$1`, runID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := st.ListKanbanRunsAwaitingWriteback(ctx)
+	if err != nil {
+		t.Fatalf("writeback scan: %v", err)
+	}
+	if len(pending) != 1 || pending[0].Claim.RunID != runID || pending[0].Link.ID != link.ID {
+		t.Fatalf("pending writeback = %+v", pending)
+	}
+	if pending[0].Link.EventSequence == nil || *pending[0].Link.EventSequence != 7 {
+		t.Fatalf("writeback link cursor = %v, want 7", pending[0].Link.EventSequence)
+	}
+}
+
 // TestPGIntegrationRoundTrip exercises the D19/F5 integration pgx paths that the
 // memory store cannot: the bytea token blob round-trip, unique(project_id,name),
 // UpdateIntegration rotation, the services.integration_id FK, and ON DELETE SET

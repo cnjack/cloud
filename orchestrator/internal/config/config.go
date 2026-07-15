@@ -136,8 +136,8 @@ type Config struct {
 	// every read/write without a cluster token).
 	JtypeToken string
 	// JtypePollInterval is JTYPE_POLL_INTERVAL (default 15s): how often the
-	// poller scans enabled kanban_links for cards in their trigger column. <=0
-	// with a configured base/token disables the poller (writeback still runs).
+	// poller pulls durable board events for enabled kanban_links. <=0 with a
+	// configured base/token disables the poller (writeback still runs).
 	JtypePollInterval time.Duration
 
 	// --- schedule triggers (F11 / D24) ---------------------------------------

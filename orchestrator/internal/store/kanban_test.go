@@ -87,6 +87,38 @@ func TestKanbanLinkCRUD(t *testing.T) {
 	}
 }
 
+func TestAdvanceKanbanLinkEventSequenceIsMonotonic(t *testing.T) {
+	ctx := context.Background()
+	m, p, svc := newKanbanTestStore(t)
+	link := &domain.KanbanLink{
+		ID: domain.NewID(), WorkspaceID: "ws", BoardRef: "board",
+		ProjectID: p.ID, ServiceID: svc.ID, TriggerColumn: "todo", Enabled: true,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := m.CreateKanbanLink(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence != nil {
+		t.Fatalf("new cursor = %v, want nil bootstrap state", got.EventSequence)
+	}
+
+	if err := m.AdvanceKanbanLinkEventSequence(ctx, link.ID, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AdvanceKanbanLinkEventSequence(ctx, link.ID, 3); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 7 {
+		t.Fatalf("cursor = %v, want monotonic 7", got.EventSequence)
+	}
+
+	if err := m.AdvanceKanbanLinkEventSequence(ctx, "missing", 9); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing link want ErrNotFound, got %v", err)
+	}
+}
+
 // TestKanbanLinkTokenAndByProject covers F6 / D25: the per-link token_enc blob
 // roundtrips (stored opaque, TokenSet reflects presence) and ListKanbanLinksByProject
 // scopes to one project.

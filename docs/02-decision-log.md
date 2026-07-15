@@ -117,11 +117,11 @@ runner 的 `MODEL_BASE_URL` 不再指真实 LLM,改指 orchestrator 进程内的
 
 ## 补充 —— Feature E jtype 看板集成（落地 D11 "看板 = 触发源 + 回写 sink"）
 
-### D17 · 看板双向打通 → 轮询（非 webhook/SSE）+ claim 幂等 + claim 承载回写
+### D17 · 看板双向打通 → durable sequence 轮询（非 webhook/SSE）+ claim 幂等 + claim 承载回写
 
 架构愿景（docs/01）："拖卡片到指定列 = 派一个 AI run；run 完成后回写卡片"。落地时的关键取舍：
 
-**(a) 入站用轮询，不用 webhook/SSE。** jtype 出站 webhook 有 SSRF 防护（target 强制 https 且拒内网 IP），orchestrator 在内网收不到；board SSE 事件流只放行 `full`-scope token（不接受 mcp PAT）。所以 orchestrator 主动按 `updatedClock` 增量轮询 jtype 文档列表（`GET /workspaces/{ws}/documents`）—— level-based、幂等、重启无缝恢复（claim 表 + 内存游标，游标仅为优化，重启从 0 重扫由 claim 去重兜底），契合现有 reconciler 哲学。一个 mcp-scope PAT（editor 权限）覆盖该实例所有 workspace 的全部读写。"移动到某列" = 改卡片 frontmatter `status`（`POST .../documents/save`）；列变更无独立事件，轮询天然覆盖。
+**(a) 入站用 durable sequence pull，不用 webhook/SSE。** jtype 出站 webhook 有 SSRF 防护（target 强制 https 且拒内网 IP），orchestrator 在内网收不到；board SSE 事件流只放行 `full`-scope token（不接受 mcp PAT）。jtype v22 起提供 `GET /workspaces/{ws}/boards/{board}/events/pull?afterSequence=…`：orchestrator 为每个 link 在 `kanban_links.event_sequence` 持久保存最后**成功处理**的 sequence，按最老事件优先拉取；事件 N 失败时只提交 N 之前的成功前缀，N 与后续事件下一 tick 重放，进程重启也从 DB 游标继续。事件只给 card path，只有页内出现 trigger 状态时才做一次文档列表查询把 path 映射为 document id，再由 `kanban_claims` 兜住重放幂等。迁移 `0028_kanban_event_cursor` 让存量 link 的游标先为 NULL：首次做一次 level scan，保证事件日志上线前已经停在 trigger 列的卡不丢；全部候选处理成功后提交 0 并永久切到 sequence pull。一个 mcp-scope PAT（editor 权限）可完成拉取、读文档和回写。"移动到某列" 仍是改卡片 frontmatter `status`（`POST .../documents/save`），但列变化现在有事务内持久事件，不再用进程内 `updatedClock` 水位猜测。
 
 **(b) 幂等单元 = `kanban_claims(link_id, document_id)`，且 `run_id` 留空可重试。** UNIQUE(link_id, document_id) 保证一张卡每个 link 至多派一次 run。`run_id` 在派发成功后才 stamp，于是"LLM 未配置"时（fail-visible 闸）：claim 已建立但 `run_id` 为空 → 不派 run、只发**一次**"LLM 未配置"卡片评论（`notified_not_configured_at` 节流）→ 下个 tick 继续重试 → 管理员配上模型后**自动补派**，且不刷屏。这同时满足 fail-visible + 可恢复 + 零垃圾评论，比"永久 claim 掉"（不可恢复）或"cooldown"（重启丢、重复评论）都好。回写幂等由 `writeback_at`（first-writer-wins）保证，模式沿用 reconcileReviews（AddComment 后 stamp；DB 错误导致的极小概率重复评论被接受）。
 

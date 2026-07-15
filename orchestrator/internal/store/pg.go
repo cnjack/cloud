@@ -2142,12 +2142,12 @@ func (s *PGStore) GetArtifact(ctx context.Context, runID string, kind domain.Art
 // --- Kanban (Feature E) -----------------------------------------------------
 
 // kanbanLinkCols are the kanban_links columns in scan order. done_column,
-// board_title and token_enc / token_expires_at may be NULL; the rest are NOT NULL
-// (board_status defaults 'ok'). The nullable blobs trail so scan-order edits stay
+// board_title, event_sequence and token_enc / token_expires_at may be NULL; the rest are NOT NULL
+// (board_status defaults 'ok'). Nullable fields trail so scan-order edits stay
 // localized (F6 / D25; token_expires_at D28; board_title/board_status D30).
 const kanbanLinkCols = `id, workspace_id, board_ref, project_id, service_id,
 	trigger_column, done_column, enabled, created_at, updated_at, board_status,
-	board_title, token_enc, token_expires_at`
+	board_title, token_enc, token_expires_at, event_sequence`
 
 func scanKanbanLink(row pgx.Row) (*domain.KanbanLink, error) {
 	var l domain.KanbanLink
@@ -2155,7 +2155,7 @@ func scanKanbanLink(row pgx.Row) (*domain.KanbanLink, error) {
 	err := row.Scan(
 		&l.ID, &l.WorkspaceID, &l.BoardRef, &l.ProjectID, &l.ServiceID,
 		&l.TriggerColumn, &doneColumn, &l.Enabled, &l.CreatedAt, &l.UpdatedAt,
-		&l.BoardStatus, &boardTitle, &l.TokenEnc, &l.TokenExpiresAt)
+		&l.BoardStatus, &boardTitle, &l.TokenEnc, &l.TokenExpiresAt, &l.EventSequence)
 	if err != nil {
 		return nil, err
 	}
@@ -2177,10 +2177,10 @@ func (s *PGStore) CreateKanbanLink(ctx context.Context, l *domain.KanbanLink) er
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO kanban_links (`+kanbanLinkCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		l.ID, l.WorkspaceID, l.BoardRef, l.ProjectID, l.ServiceID,
 		l.TriggerColumn, nullStr(l.DoneColumn), l.Enabled, l.CreatedAt, l.UpdatedAt,
-		status, nullStr(l.BoardTitle), l.TokenEnc, nullTime(l.TokenExpiresAt))
+		status, nullStr(l.BoardTitle), l.TokenEnc, nullTime(l.TokenExpiresAt), l.EventSequence)
 	if err != nil {
 		return mapKanbanLinkErr("create kanban link", err)
 	}
@@ -2291,6 +2291,21 @@ func (s *PGStore) SetKanbanLinkBoardStatus(ctx context.Context, id, status, cano
 	return nil
 }
 
+func (s *PGStore) AdvanceKanbanLinkEventSequence(ctx context.Context, id string, sequence int64) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE kanban_links
+		    SET event_sequence=GREATEST(COALESCE(event_sequence, 0), $2),
+		        updated_at=now()
+		  WHERE id=$1`, id, sequence)
+	if err != nil {
+		return fmt.Errorf("advance kanban link event sequence: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *PGStore) DeleteKanbanLink(ctx context.Context, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM kanban_links WHERE id=$1`, id)
 	if err != nil {
@@ -2308,6 +2323,7 @@ func (s *PGStore) EnsureKanbanClaim(ctx context.Context, linkID, documentID, doc
 	// tick may have stamped between the two statements — that is fine: the caller
 	// re-checks run_id and skips).
 	var c domain.KanbanClaim
+	var storedPath, runID *string
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO kanban_claims (id, link_id, document_id, document_path, claimed_at)
 		 VALUES ($1, $2, $3, $4, now())
@@ -2320,13 +2336,19 @@ func (s *PGStore) EnsureKanbanClaim(ctx context.Context, linkID, documentID, doc
 		        notified_not_configured_at, writeback_at, claimed_at
 		 FROM kanban_claims WHERE link_id=$1 AND document_id=$2`,
 		linkID, documentID).Scan(
-		&c.ID, &c.LinkID, &c.DocumentID, &c.DocumentPath, &c.RunID,
+		&c.ID, &c.LinkID, &c.DocumentID, &storedPath, &runID,
 		&c.NotifiedNotConfiguredAt, &c.WritebackAt, &c.ClaimedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load kanban claim: %w", err)
+	}
+	if storedPath != nil {
+		c.DocumentPath = *storedPath
+	}
+	if runID != nil {
+		c.RunID = *runID
 	}
 	return &c, nil
 }
@@ -2377,17 +2399,27 @@ func (s *PGStore) ListKanbanRunsAwaitingWriteback(ctx context.Context) ([]Kanban
 	var out []KanbanWriteback
 	for rows.Next() {
 		var wb KanbanWriteback
-		var doneColumn *string
+		var claimPath, claimRunID, doneColumn, boardTitle *string
 		if err := rows.Scan(
-			&wb.Claim.ID, &wb.Claim.LinkID, &wb.Claim.DocumentID, &wb.Claim.DocumentPath, &wb.Claim.RunID,
+			&wb.Claim.ID, &wb.Claim.LinkID, &wb.Claim.DocumentID, &claimPath, &claimRunID,
 			&wb.Claim.NotifiedNotConfiguredAt, &wb.Claim.WritebackAt, &wb.Claim.ClaimedAt,
 			&wb.Link.ID, &wb.Link.WorkspaceID, &wb.Link.BoardRef, &wb.Link.ProjectID, &wb.Link.ServiceID,
-			&wb.Link.TriggerColumn, &doneColumn, &wb.Link.Enabled, &wb.Link.CreatedAt, &wb.Link.UpdatedAt, &wb.Link.TokenEnc,
+			&wb.Link.TriggerColumn, &doneColumn, &wb.Link.Enabled, &wb.Link.CreatedAt, &wb.Link.UpdatedAt,
+			&wb.Link.BoardStatus, &boardTitle, &wb.Link.TokenEnc, &wb.Link.TokenExpiresAt, &wb.Link.EventSequence,
 		); err != nil {
 			return nil, fmt.Errorf("scan kanban writeback: %w", err)
 		}
+		if claimPath != nil {
+			wb.Claim.DocumentPath = *claimPath
+		}
+		if claimRunID != nil {
+			wb.Claim.RunID = *claimRunID
+		}
 		if doneColumn != nil {
 			wb.Link.DoneColumn = *doneColumn
+		}
+		if boardTitle != nil {
+			wb.Link.BoardTitle = *boardTitle
 		}
 		run, err := s.GetRun(ctx, wb.Claim.RunID)
 		if err != nil {

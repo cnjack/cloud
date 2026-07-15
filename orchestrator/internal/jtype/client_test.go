@@ -203,6 +203,54 @@ func TestClientListGetSaveComment(t *testing.T) {
 	}
 }
 
+func TestClientPullBoardEvents(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if r.URL.EscapedPath() != "/api/v1/workspaces/ws%20one/boards/b%2Fteam/events/pull" {
+			t.Fatalf("path = %q", r.URL.EscapedPath())
+		}
+		if got := r.URL.Query().Get("afterSequence"); got != "41" {
+			t.Fatalf("afterSequence = %q, want 41", got)
+		}
+		if got := r.URL.Query().Get("limit"); got != "100" {
+			t.Fatalf("limit = %q, want 100", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer tok-123" {
+			t.Fatalf("authorization = %q", got)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"events": []map[string]any{{
+				"sequence": 42, "event": "kanban:card-updated",
+				"workspaceId": "ws one", "board": "b/team",
+				"card": map[string]any{
+					"path": "cards/fix.md", "title": "Fix it", "status": "todo",
+					"priority": nil, "assignee": nil, "due": nil,
+				},
+				"editedBy": "user-1", "updatedClock": 42,
+			}},
+			"nextSequence": 42,
+			"hasMore":      true,
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok-123", 0)
+	page, err := c.PullBoardEvents(context.Background(), "ws one", "b/team", 41, 100)
+	if err != nil {
+		t.Fatalf("pull events: %v", err)
+	}
+	if page.NextSequence != 42 || !page.HasMore || len(page.Events) != 1 {
+		t.Fatalf("page = %+v", page)
+	}
+	event := page.Events[0]
+	if event.Sequence != 42 || event.Event != "kanban:card-updated" ||
+		event.Card.Path != "cards/fix.md" || event.Card.Status != "todo" {
+		t.Fatalf("event = %+v", event)
+	}
+}
+
 func TestClientMoveCardRoundtrip(t *testing.T) {
 	f := newFakeJtype()
 	srv := httptest.NewServer(f.mux)

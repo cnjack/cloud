@@ -975,6 +975,12 @@ type KanbanLink struct {
 	// Enabled gates the poller. A disabled link is retained (its claims persist)
 	// but never scanned.
 	Enabled bool `json:"enabled"`
+	// EventSequence is the last durably handled jtype board event. Nil marks an
+	// upgraded/new link that still needs one compatibility level scan so cards
+	// already in TriggerColumn before the event feed existed are not lost. After
+	// that bootstrap, 0 means pull from the beginning of the durable event log.
+	// Internal synchronization state; it is not part of the public link payload.
+	EventSequence *int64 `json:"-"`
 	// TokenEnc is the per-link jtype PAT, AES-256-GCM sealed (nonce||ciphertext)
 	// with AUTH_TOKEN_KEY — the same scheme the model catalog uses (D25 / F6).
 	// nil => the poller/writeback fall back to the cluster JTYPE_TOKEN env. Never
