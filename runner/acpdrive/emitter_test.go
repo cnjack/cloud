@@ -295,7 +295,33 @@ func TestEmitterNilIsNoop(t *testing.T) {
 	var e *Emitter // nil
 	e.EmitText("nothing")
 	e.Emit(eventAgentToolCall, map[string]any{"name": "x"})
+	e.Flush()
 	e.Close() // must not panic
+}
+
+// Flush must push queued events out immediately — in order, and without
+// waiting for the flush ticker. The session loop relies on this before
+// reporting turn-complete (see Flush's doc comment).
+func TestEmitterFlushDeliversImmediately(t *testing.T) {
+	cs := &captureServer{}
+	ts := httptest.NewServer(cs.handler())
+	defer ts.Close()
+	// Absurdly long flush interval: if Flush secretly relied on the ticker,
+	// this test would hang instead of failing.
+	e := newTestEmitter(t, ts.URL, EmitterConfig{FlushInterval: time.Hour, BatchMax: 100})
+
+	e.EmitText("chunk-1\n")
+	e.EmitText("chunk-2\n")
+	e.Flush()
+
+	evs := cs.allEvents()
+	if len(evs) != 2 {
+		t.Fatalf("events after Flush = %d, want 2 (Flush must not wait for the ticker)", len(evs))
+	}
+	if evs[0].Payload["text"] != "chunk-1\n" || evs[1].Payload["text"] != "chunk-2\n" {
+		t.Fatalf("events = %+v, want chunk-1 then chunk-2 in order", evs)
+	}
+	e.Close()
 }
 
 // --- mapper tests ---

@@ -90,7 +90,10 @@ type Emitter struct {
 
 	ch   chan event
 	done chan struct{}
-	wg   sync.WaitGroup
+	// flushReq carries Flush() requests to the loop: each request is an ack
+	// channel the loop closes once everything queued so far has been sent.
+	flushReq chan chan struct{}
+	wg       sync.WaitGroup
 }
 
 // EmitterConfig configures a new emitter. Zero values fall back to defaults.
@@ -153,6 +156,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		shutdownDeadline: cfg.ShutdownDeadline,
 		ch:               make(chan event, cfg.BufferSize),
 		done:             make(chan struct{}),
+		flushReq:         make(chan chan struct{}),
 	}
 	e.wg.Add(1)
 	go e.loop()
@@ -326,6 +330,30 @@ func (e *Emitter) EmitPermissionResolved(requestID, optionID, resolution string)
 // or shutdownDeadline (default 10s) elapses — whichever comes first — so a
 // wedged/unreachable orchestrator can never block the caller (and therefore
 // container shutdown) for more than that budget.
+// Flush blocks until every event queued so far has been POSTed (in order),
+// then returns. Used by the session loop before reporting turn-complete: the
+// orchestrator parks the run in awaiting_input on that POST, so any text
+// still sitting in the batch buffer would be stored AFTER the status event —
+// the console then renders the status row splitting the turn's final message.
+// Flushing first keeps the stored seq order matching the order things happened.
+// Best-effort like everything else here: it returns when the queue is drained
+// or the emitter is closed mid-wait, whichever comes first.
+func (e *Emitter) Flush() {
+	if e == nil {
+		return
+	}
+	ack := make(chan struct{})
+	select {
+	case e.flushReq <- ack:
+	case <-e.done:
+		return
+	}
+	select {
+	case <-ack:
+	case <-e.done:
+	}
+}
+
 func (e *Emitter) Close() {
 	if e == nil {
 		return
@@ -365,6 +393,15 @@ func (e *Emitter) loop() {
 				e.send(batch, time.Time{})
 				batch = batch[:0]
 			}
+		case req := <-e.flushReq:
+			// Flush(): push out everything queued so far, in order, then ack.
+			drain()
+			for len(batch) > 0 {
+				e.send(batch, time.Time{})
+				batch = batch[:0]
+				drain()
+			}
+			close(req)
 		case <-e.done:
 			// Final drain: pull everything still queued and flush in batches,
 			// but bounded by an overall deadline so a wedged/unreachable

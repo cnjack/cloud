@@ -317,6 +317,13 @@ func runSession(ctx context.Context, cfg sessionConfig) error {
 			}
 		}
 
+		// Flush the event queue BEFORE reporting turn-complete: that POST parks
+		// the run in awaiting_input on the orchestrator, and any turn text
+		// still sitting in the emitter's batch buffer would be stored AFTER
+		// the status event — the console then renders the status row splitting
+		// the turn's final message.
+		emitter.Flush()
+
 		if err := cp.postTurnComplete(ctx, turn, stopReason); err != nil {
 			return fmt.Errorf("[turn %d] turn-complete: %w", turn, err)
 		}

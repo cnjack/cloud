@@ -5,8 +5,16 @@
  *
  *   1. streaming text merge — jcode streams `agent.text` one ACP chunk at a
  *      time; showing each chunk as its own timeline row is the "one word per
- *      line" bug this module fixes. Consecutive agent.text events, with
- *      nothing else interleaved, collapse into a single prose block.
+ *      line" bug this module fixes. Consecutive agent.text events collapse
+ *      into a single prose block. Only CONTENT-FLOW events (tool cards,
+ *      permission cards, user messages) break the run — system rows
+ *      (run.status, run.session, artifact/git/result/failure, …) do NOT:
+ *      they are written by a different component than agent.text (the
+ *      orchestrator, e.g. parking the run in awaiting_input at turn end,
+ *      vs the runner's batched emitter) and can land BETWEEN the chunks of
+ *      one message. Breaking there split a single sentence into two bubbles
+ *      with a status row wedged mid-message; instead the text merges across
+ *      such rows and the row renders after the merged block.
  *   2. tool call/result pairing — `agent.tool_call` / `agent.tool_result`
  *      share a call_id; pairing them into one card (name + status + args +
  *      output) reads far better than two independent raw-JSON rows. An event
@@ -29,6 +37,24 @@ import type {
   ToolCardItem,
 } from './types';
 
+// Event types that are part of the agent's content flow: a tool card, a
+// permission card or a user chat bubble between two prose chunks must render
+// BETWEEN those chunks, so they break the streaming text merge. Everything
+// else (run.status, run.session, session.finish, run.artifact, run.git,
+// run.result, run.failure, unknown types) is a system row and must NOT split
+// a message — see the module header.
+const TEXT_MERGE_BREAKERS = new Set([
+  'agent.tool_call',
+  'agent.tool_result',
+  'agent.permission_request',
+  'agent.permission_resolved',
+  'user.message',
+]);
+
+function breaksTextMerge(type: string): boolean {
+  return TEXT_MERGE_BREAKERS.has(type);
+}
+
 export function groupTimeline(events: RunViewEvent[]): GroupedTimelineItem[] {
   // Defensive: group strictly in seq order regardless of the order the caller
   // handed events in. The reducer upstream already guarantees this, but a
@@ -47,8 +73,10 @@ export function groupTimeline(events: RunViewEvent[]): GroupedTimelineItem[] {
   const permCards = new Map<string, PermissionCardItem>();
 
   for (const ev of sorted) {
-    if (ev.type !== 'agent.text') {
-      // Any non-text event breaks a run of merged text chunks.
+    if (breaksTextMerge(ev.type)) {
+      // A content-flow event between two prose chunks must RENDER between
+      // them, so the chunks stay separate bubbles. System rows are excluded:
+      // see the module header for the cross-writer interleaving rationale.
       openText = null;
     }
 

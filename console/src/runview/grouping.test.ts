@@ -1,6 +1,7 @@
 /*
  * grouping.test.ts — groupTimeline() coverage:
- *   - streaming text merge (pure run, interrupted run)
+ *   - streaming text merge (pure run, merge across system rows, content-flow
+ *     events — tool cards, permission cards, user messages — break the run)
  *   - purity / re-projection: recomputing from scratch on a growing or
  *     out-of-order event list never leaks state between calls
  *   - call_id pairing (paired success/error, orphan call, orphan result,
@@ -41,16 +42,48 @@ describe('groupTimeline — streaming text merge', () => {
     expect(grouped[2]).toMatchObject({ seq: 4, lastSeq: 5, text: 'cd' });
   });
 
-  it('starts a new block after a status row interrupts (any non-text event breaks the run)', () => {
+  it('merges ACROSS system rows: a status row mid-message must not split the bubble', () => {
+    // The production case: a session turn ends, the orchestrator parks the
+    // run in awaiting_input, and the runner's last text batch arrives AFTER
+    // that status write. One sentence must still render as one bubble; the
+    // status row renders after it.
     const events = [
-      ev(1, 'agent.text', { text: 'a' }),
-      ev(2, 'run.status', { status: 'running' }),
-      ev(3, 'agent.text', { text: 'b' }),
+      ev(1, 'agent.text', { text: '需要用 Go 做' }),
+      ev(2, 'run.status', { status: 'awaiting_input' }),
+      ev(3, 'agent.text', { text: '点什么吗?' }),
     ];
     const grouped = groupTimeline(events);
-    expect(grouped.map((g) => g.kind)).toEqual(['text_block', 'status', 'text_block']);
-    expect(grouped[0]).toMatchObject({ text: 'a' });
-    expect(grouped[2]).toMatchObject({ text: 'b' });
+    expect(grouped.map((g) => g.kind)).toEqual(['text_block', 'status']);
+    expect(grouped[0]).toMatchObject({ seq: 1, lastSeq: 3, text: '需要用 Go 做点什么吗?' });
+    expect(grouped[1]).toMatchObject({ kind: 'status', status: 'awaiting_input' });
+  });
+
+  it('starts a new bubble after a user.message (a new human turn is content flow)', () => {
+    const events = [
+      ev(1, 'agent.text', { text: 'answer 1' }),
+      ev(2, 'run.status', { status: 'awaiting_input' }),
+      ev(3, 'user.message', { prompt: 'next question' }),
+      ev(4, 'run.status', { status: 'running' }),
+      ev(5, 'agent.text', { text: 'answer 2' }),
+    ];
+    const grouped = groupTimeline(events);
+    expect(grouped.map((g) => g.kind)).toEqual(['text_block', 'status', 'user_message', 'status', 'text_block']);
+    expect(grouped[0]).toMatchObject({ text: 'answer 1' });
+    expect(grouped[4]).toMatchObject({ text: 'answer 2' });
+  });
+
+  it('starts a new bubble around a permission card (interactive cards are content flow)', () => {
+    const options = [{ option_id: 'allow', name: 'Allow', kind: 'allow_once' }];
+    const events = [
+      ev(1, 'agent.text', { text: 'I need to edit X' }),
+      ev(2, 'agent.permission_request', { request_id: 'r1', title: 'Edit X', options }),
+      ev(3, 'agent.permission_resolved', { request_id: 'r1', option_id: 'allow', resolution: 'user' }),
+      ev(4, 'agent.text', { text: 'edited' }),
+    ];
+    const grouped = groupTimeline(events);
+    expect(grouped.map((g) => g.kind)).toEqual(['text_block', 'permission_card', 'text_block']);
+    expect(grouped[0]).toMatchObject({ text: 'I need to edit X' });
+    expect(grouped[2]).toMatchObject({ text: 'edited' });
   });
 });
 

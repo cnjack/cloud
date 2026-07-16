@@ -271,3 +271,12 @@ Task composer 只派发一次 run 的 prompt、per-run model 与 permission mode
 Automation 的 webhook setup 采用显式 `POST /services/{id}/webhook`：member 用自己已连接的同 provider OAuth 授权同步，绝不借 integration bot credential 或 cluster PAT。raw repo、OAuth/receiver 缺失、provider 拒绝都以 typed visible state 呈现；成功只表示 provider 接受了注册，不伪造 delivery health。OAuth callback 可以安全回到原来的 Service Automation URL，并自动执行一次幂等同步；手动 Sync 仍可用于重新配置。Kanban 保持 D31 的真实服务端代理，不降级成假按钮。
 
 完整 component、capability、scroll 和测试约束见 [15-project-workspace-architecture.md](15-project-workspace-architecture.md)。
+
+---
+### D33 · 时间线文本合并对系统行宽容 + runner 事件先于 turn-complete 落库（修正 D18 合并契约）
+
+两处 run 详情页渲染/事件定序修复，同源：agent.text 由 runner 批量 emitter 上报，`run.status(awaiting_input)` 由 orchestrator 在 turn-complete 时写入——两个写入方、两条链路，尾部文本批次可能晚于 status 落库。
+
+- **console**：`grouping.ts` 的文本合并改为只被**内容流事件**打断（tool_call/tool_result、permission_request/resolved、user.message）；系统行（run.status、run.session、artifact/git/result/failure 等）不再劈开消息气泡，改为渲染在合并块之后。D18 的"任何非文本事件都打断"契约废止。
+- **runner**：`acpdrive` 的 Emitter 新增阻塞式 `Flush()`,session 循环在 POST turn-complete 前先冲刷事件队列，从源头保证同写入方的事件 seq 先于状态写。
+- **被否**:只在 runner 侧修定序——orchestrator 直写状态与 runner 上报之间无全局时钟，跨写入方乱序不可根除，存量事件也需要 console 侧宽容才能正确渲染。
