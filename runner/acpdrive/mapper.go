@@ -95,9 +95,14 @@ func terminalToolStatus(s acp.ToolCallStatus) bool {
 }
 
 // blockText extracts plain text from a ContentBlock (only text blocks carry it).
+// The text is returned VERBATIM — never trimmed. agent.text chunks are streamed
+// increments that the console concatenates into one message, so trimming a
+// chunk's trailing "\n" eats the very newline that separates markdown blocks
+// (headings, tables, list items). Models that stream line-aligned chunks lose
+// every line ending that way and the whole report flattens into one line.
 func blockText(b acp.ContentBlock) string {
 	if b.Text != nil {
-		return strings.TrimRight(b.Text.Text, "\n")
+		return b.Text.Text
 	}
 	return ""
 }
@@ -113,7 +118,9 @@ func toolOutput(raw any, content []acp.ToolCallContent) string {
 	for _, c := range content {
 		switch {
 		case c.Content != nil:
-			if t := blockText(c.Content.Content); t != "" {
+			// Tool output is a complete terminal payload, not a stream
+			// increment: a trailing newline is pure noise here, keep trimming.
+			if t := strings.TrimRight(blockText(c.Content.Content), "\n"); t != "" {
 				parts = append(parts, t)
 			}
 		case c.Diff != nil:

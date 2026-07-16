@@ -124,7 +124,7 @@ absent, so it never masks a standalone run's real outcome.
 
 ```
 runner/
-├── Dockerfile           # debian-slim + git + ca-certs + prebuilt binaries
+├── Dockerfile           # debian-slim + git + ripgrep + py/node/go/rust toolchains + prebuilt binaries
 ├── entrypoint.sh        # clone → config → drive ACP run → stream events → upload diff / report failure
 ├── build.sh             # host cross-compile jcode+acpdrive+orchclient+mockllm → bin/, docker build
 ├── test.sh              # standalone headless proof (build, sidecar mock, no-TTY run, assert)
@@ -305,9 +305,11 @@ dominated by the one-time Go compile.
   OpenAI-compatible provider. No code change — `entrypoint.sh` already
   parameterizes it. (Providers not in jcode's registry need the
   `custom_models` entry the config already writes.)
-- **Language toolchains** (go/java/python/node). Deliberately omitted to keep
-  the image minimal. Extension point: add `apt-get install` / language installs
-  to the Dockerfile, or layer task-specific images `FROM jcode-runner`.
+- ~~**Language toolchains** (go/java/python/node).~~ **DONE (py/node/go/rust)** —
+  the image now ships python3 + pip + venv, Node.js LTS, Go and a minimal
+  rustup toolchain (all sha256-verified in the Dockerfile), so the agent can
+  run a repo's own builds/tests. Java is still omitted; layer it
+  `FROM jcode-runner` if a task needs it.
 - **Persistent volume (PVC)** for `/workspace` and the output — currently a
   bind mount / ephemeral dir.
 - ~~**Event streaming.**~~ **DONE** — `acpdrive` now maps ACP `session/update`
