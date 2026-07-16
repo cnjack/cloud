@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -315,8 +316,45 @@ func TestMapAgentText(t *testing.T) {
 	if len(evs) != 1 || evs[0].Type != eventAgentText {
 		t.Fatalf("events = %+v want one agent.text", evs)
 	}
-	if evs[0].Payload["text"] != "I will read the README" {
-		t.Fatalf("text = %q (trailing newline not trimmed?)", evs[0].Payload["text"])
+	if evs[0].Payload["text"] != "I will read the README\n" {
+		t.Fatalf("text = %q (streamed chunk must be verbatim, trailing newline kept)", evs[0].Payload["text"])
+	}
+}
+
+// Regression for the run-detail markdown rendering bug: markdown structure
+// lives in the newlines BETWEEN chunks. A model that streams line-aligned
+// chunks ("# T\n", "\n", "- a\n", …) had every line ending eaten by the old
+// per-chunk TrimRight, so the console's concatenated message flattened into
+// one unreadable line (raw "##", "| --- |" visible). Chunks must pass through
+// verbatim — including chunks that are nothing BUT a newline.
+func TestMapAgentTextKeepsChunkNewlines(t *testing.T) {
+	cs := &captureServer{}
+	ts := httptest.NewServer(cs.handler())
+	defer ts.Close()
+	e := newTestEmitter(t, ts.URL, EmitterConfig{FlushInterval: 10 * time.Millisecond})
+
+	chunks := []string{"# 报告\n", "\n", "- a\n", "- b\n", "\n", "| c | d |\n", "|---|---|\n"}
+	for _, chunk := range chunks {
+		mapSessionUpdate(e, acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.TextBlock(chunk)},
+		})
+	}
+	e.Close()
+
+	evs := cs.allEvents()
+	if len(evs) != len(chunks) {
+		t.Fatalf("events = %d, want %d (newline-only chunks must not be dropped)", len(evs), len(chunks))
+	}
+	var sb strings.Builder
+	for _, ev := range evs {
+		if ev.Type != eventAgentText {
+			t.Fatalf("event type = %q, want agent.text", ev.Type)
+		}
+		text, _ := ev.Payload["text"].(string)
+		sb.WriteString(text)
+	}
+	if got, want := sb.String(), strings.Join(chunks, ""); got != want {
+		t.Fatalf("concatenated text = %q, want verbatim %q", got, want)
 	}
 }
 
