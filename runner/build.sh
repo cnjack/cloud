@@ -29,6 +29,15 @@ echo "[build] jcode source: $JCODE_SRC"
 echo "[build] target: linux/$TARGETARCH"
 [ -d "$JCODE_SRC/cmd/jcode" ] || { echo "[build] jcode source not found at $JCODE_SRC" >&2; exit 1; }
 
+# jcode upstream no longer tracks generated sources (internal/model/
+# registry_generated.go is gitignored there, regenerated from models.dev).
+# A fresh checkout — e.g. CI's — fails to compile without it, so regenerate
+# when absent. Needs network to models.dev; skipped when the file exists.
+if [ ! -f "$JCODE_SRC/internal/model/registry_generated.go" ]; then
+  echo "[build] registry_generated.go missing — running go generate (models.dev)..."
+  ( cd "$JCODE_SRC" && go generate ./internal/model )
+fi
+
 mkdir -p "$HERE/bin"
 
 echo "[build] compiling jcode (headless, static)..."
