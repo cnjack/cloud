@@ -60,6 +60,7 @@ import type {
   RunEvent,
   RunMessage,
   RunPermission,
+  RunnerPrewarm,
   ResumeSessionOptions,
   RunsEnvelope,
   Schedule,
@@ -189,6 +190,14 @@ export interface ApiClient {
    * guardrails, provider, runner, version, auth). Never carries a secret.
    */
   getSystem(): Promise<SystemInfo>;
+
+  /**
+   * POST /api/v1/system/runner-image/prewarm — the Cluster page "sync runner
+   * image" action (cluster-admin): (re)assert the prewarm DaemonSet so every
+   * node re-pulls the current runner image. 409 prewarm_not_supported when the
+   * launcher has no cluster. Returns the post-sync prewarm snapshot.
+   */
+  prewarmRunnerImage(): Promise<RunnerPrewarm>;
 
   /* ---- model providers + catalog discovery ----------------------------- */
   listModelProviders(): Promise<ModelProvider[]>;
@@ -653,6 +662,9 @@ export function createHttpClient(
     },
 
     getSystem: () => req<SystemInfo>('/system'),
+
+    prewarmRunnerImage: () =>
+      req<RunnerPrewarm>('/system/runner-image/prewarm', { method: 'POST' }),
 
     listModelProviders: async () =>
       (await req<{ providers: ModelProvider[] }>('/system/model-providers')).providers ?? [],

@@ -9,6 +9,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/version"
 )
 
@@ -69,6 +70,23 @@ type systemRunner struct {
 	// C / D05): when on, each service keeps a persistent workspace PVC (reused
 	// checkout + jcode memory) and runs serialize per service. Purely informational.
 	PersistentWorkspace bool `json:"persistent_workspace"`
+	// Prewarm is the runner-image prewarm snapshot (console Cluster page "sync
+	// runner image"): the DaemonSet keeping the image cached on every node.
+	Prewarm systemPrewarm `json:"prewarm"`
+}
+
+// systemPrewarm mirrors the runner-image prewarm DaemonSet. Supported is false
+// when the active launcher has no cluster (process/disabled/API-only) — the
+// console then hides the sync action instead of offering a button that would
+// 409 (D14 fail-visible). Error is a CURATED line (never raw client-go detail):
+// /system is readable by any authenticated user.
+type systemPrewarm struct {
+	Supported bool   `json:"supported"`
+	Desired   int32  `json:"desired"`
+	Ready     int32  `json:"ready"`
+	Image     string `json:"image"`
+	LastSync  string `json:"last_sync"`
+	Error     string `json:"error,omitempty"`
 }
 
 // systemKanban is the jtype kanban integration snapshot (Feature E/F6; D27). It
@@ -161,6 +179,7 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 		Runner: systemRunner{
 			Image:               s.cfg.RunnerImage,
 			PersistentWorkspace: s.cfg.PersistentWorkspace,
+			Prewarm:             s.prewarmStatus(r.Context()),
 		},
 		Auth: systemAuth{
 			Providers:  s.configuredProviderIDs(),
@@ -172,6 +191,50 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 		Launcher:  launcherKind(s.cfg.JobLauncher, s.cfg.DisableK8s),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// prewarmStatus reads the runner-image prewarm DaemonSet through the optional
+// k8s.ImagePrewarmer launcher capability. A read error (e.g. RBAC not yet
+// granted) collapses to a curated Error line — /system is readable by ANY
+// authenticated user, so raw client-go detail never crosses the wire.
+func (s *Server) prewarmStatus(ctx context.Context) systemPrewarm {
+	pw, ok := s.launcher.(k8s.ImagePrewarmer)
+	if !ok {
+		return systemPrewarm{Supported: false}
+	}
+	st, err := pw.RunnerImagePrewarmStatus(ctx)
+	if err != nil {
+		s.log.Warn("system: prewarm status read failed", "err", err)
+		return systemPrewarm{Supported: true, Error: "prewarm status unavailable — see orchestrator logs"}
+	}
+	return systemPrewarm{
+		Supported: true,
+		Desired:   st.Desired,
+		Ready:     st.Ready,
+		Image:     st.Image,
+		LastSync:  st.LastSync,
+	}
+}
+
+// handlePrewarmRunnerImage is the console Cluster page's "sync runner image"
+// action (cluster-admin only): (re)assert the prewarm DaemonSet on the current
+// RUNNER_IMAGE and restart its pods so every node re-pulls — including an
+// unchanged :latest tag that was re-pushed. Returns the post-sync snapshot.
+func (s *Server) handlePrewarmRunnerImage(w http.ResponseWriter, r *http.Request) {
+	if !s.requireClusterAdmin(w, r) {
+		return
+	}
+	pw, ok := s.launcher.(k8s.ImagePrewarmer)
+	if !ok {
+		writeError(w, http.StatusConflict, "prewarm_not_supported", "runner-image prewarm requires the kubernetes launcher")
+		return
+	}
+	if err := pw.PrewarmRunnerImage(r.Context()); err != nil {
+		s.log.Error("prewarm runner image", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not sync the runner image")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.prewarmStatus(r.Context()))
 }
 
 // archiveStatus builds the fail-visible archive snapshot (F10 / D23 ③). Enabled

@@ -29,6 +29,15 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "create", "delete"]
+  # Runner-image prewarm (console Cluster page "sync runner image", F-prewarm):
+  # the orchestrator keeps a DaemonSet of sleeper pods on the runner image so
+  # every node has it cached, and restarts those pods on a manual sync.
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["create", "get", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

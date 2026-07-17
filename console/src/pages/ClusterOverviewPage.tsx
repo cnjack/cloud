@@ -1,9 +1,10 @@
 import { Cpu, Info } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Link } from 'react-router-dom';
 import { useRole } from '../api/ApiProvider';
-import { useModelProviders, useSystem } from '../api/queries';
-import type { SystemInfo } from '../api/types';
+import { useModelProviders, usePrewarmRunnerImage, useSystem } from '../api/queries';
+import type { RunnerPrewarm, SystemInfo } from '../api/types';
 import { Button } from '../components/Button';
 import {
   ClusterSubnav,
@@ -14,6 +15,7 @@ import {
   SurfaceInner,
 } from '../components/PageLayout';
 import { ErrorBlock, LoadingBlock } from '../components/States';
+import { formatDateTime } from '../lib/format';
 import { ClusterAccessDenied } from './ClusterAccessDenied';
 import styles from './ClusterOverviewPage.module.css';
 
@@ -97,7 +99,7 @@ function ClusterSnapshot({ data, modelCount, onRefresh }: { data: SystemInfo; mo
 
         <aside className={styles.aside}>
           <SectionPanel title={t('cluster.overview.guardrailsTitle')}><DefinitionList items={[{ label: t('cluster.overview.runTimeoutLabel'), value: <span className={styles.mono}>{duration(data.guardrails.run_timeout_seconds)}</span> }, { label: t('cluster.overview.jobTtlLabel'), value: <span className={styles.mono}>{duration(data.guardrails.job_ttl_seconds)}</span> }]} /></SectionPanel>
-          <SectionPanel title={t('cluster.overview.runnerTitle')}><DefinitionList items={[{ label: t('cluster.overview.imageLabel'), value: <span className={styles.mono}>{data.runner.image || '—'}</span> }, { label: t('cluster.overview.launcherLabel'), value: <span className={styles.mono}>{data.launcher || '—'}</span> }, { label: t('cluster.overview.workspaceLabel'), value: data.runner.persistent_workspace ? t('cluster.overview.persistent') : t('cluster.overview.ephemeral') }]} /></SectionPanel>
+          <RunnerPanel data={data} />
           <SectionPanel title={t('cluster.overview.buildTitle')}><DefinitionList items={[{ label: t('cluster.overview.versionLabel'), value: <span className={styles.mono}>{data.version.version || '—'}</span> }, { label: t('cluster.overview.commitLabel'), value: <span className={styles.mono}>{data.version.commit || '—'}</span> }, { label: t('cluster.overview.usersLabel'), value: <span className={styles.mono}>{data.auth?.users_count ?? 0}</span> }]} /></SectionPanel>
           {!data.archive?.enabled && data.archive?.reason && <div className={styles.archiveNote}><Info size={16} aria-hidden="true" /><span><strong>{t('cluster.overview.coldArchiveUnavailable')}</strong>{data.archive.reason}</span></div>}
         </aside>
@@ -108,4 +110,44 @@ function ClusterSnapshot({ data, modelCount, onRefresh }: { data: SystemInfo; mo
 
 function Metric({ label, value, note }: { label: string; value: string | number; note: string }) {
   return <div><dt>{label}</dt><dd>{value}</dd><small>{note}</small></div>;
+}
+
+/**
+ * The runner panel: image/launcher/workspace facts plus the runner-image
+ * prewarm status and the "sync runner image" action. The sync button exists
+ * only when the orchestrator reports the capability (supported) — with a
+ * non-kubernetes launcher there is no cluster to pre-pull onto, and offering
+ * the button would just 409 (D14 fail-visible).
+ */
+function RunnerPanel({ data }: { data: SystemInfo }) {
+  const { t } = useTranslation();
+  const prewarm = data.runner.prewarm;
+  const sync = usePrewarmRunnerImage();
+
+  return (
+    <SectionPanel
+      title={t('cluster.overview.runnerTitle')}
+      aside={prewarm?.supported ? (
+        <Button size="sm" loading={sync.isPending} onClick={() => sync.mutate()} data-testid="runner-image-sync">
+          {t('cluster.overview.prewarmSync')}
+        </Button>
+      ) : undefined}
+    >
+      <DefinitionList items={[
+        { label: t('cluster.overview.imageLabel'), value: <span className={styles.mono}>{data.runner.image || '—'}</span> },
+        { label: t('cluster.overview.launcherLabel'), value: <span className={styles.mono}>{data.launcher || '—'}</span> },
+        { label: t('cluster.overview.workspaceLabel'), value: data.runner.persistent_workspace ? t('cluster.overview.persistent') : t('cluster.overview.ephemeral') },
+        { label: t('cluster.overview.prewarmLabel'), value: prewarmValue(prewarm, t) },
+        ...(prewarm?.last_sync ? [{ label: t('cluster.overview.prewarmLastSyncLabel'), value: formatDateTime(prewarm.last_sync) }] : []),
+      ]} />
+      {prewarm?.error && <p className={styles.prewarmNote} role="status">{prewarm.error}</p>}
+      {sync.isError && <p className={styles.prewarmNote} role="alert">{t('cluster.overview.prewarmSyncError')}</p>}
+    </SectionPanel>
+  );
+}
+
+function prewarmValue(prewarm: RunnerPrewarm | undefined, t: TFunction): string {
+  if (!prewarm || !prewarm.supported) return t('cluster.overview.prewarmUnsupported');
+  if (prewarm.desired === 0 && !prewarm.last_sync) return t('cluster.overview.prewarmNever');
+  return t('cluster.overview.prewarmReady', { ready: prewarm.ready, desired: prewarm.desired });
 }

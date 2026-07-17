@@ -23,5 +23,6 @@
 .callout strong, .archiveNote strong { display: block; font-weight: var(--fw-semibold); }
 .callout a { color: currentColor; font-weight: var(--fw-semibold); text-decoration: underline; }
 .archiveNote { border: 1px solid color-mix(in srgb, var(--color-warning) 38%, var(--color-border)); background: var(--status-scheduling-bg); color: var(--status-scheduling-fg); }
+.prewarmNote { margin: 10px 0 0; font-size: var(--fs-caption); color: var(--color-warning); }
 @media (max-width: 1152px) { .layout { grid-template-columns: 1fr; } }
 @media (max-width: 608px) { .metrics { grid-template-columns: 1fr 1fr; } .metrics > div:nth-child(2) { border-right: 0; } .metrics > div:nth-child(-n + 2) { border-bottom: 1px solid var(--color-border-subtle); } .capacityFigure { grid-template-columns: 1fr; } }

@@ -368,6 +368,21 @@ export function useSystem(enabled = true) {
   });
 }
 
+/**
+ * The Cluster page "sync runner image" action: (re)assert the runner-image
+ * prewarm DaemonSet so every node re-pulls the current image (including a
+ * re-pushed :latest). The /system snapshot is invalidated so the runner panel
+ * shows the post-sync desired/ready counts + last_sync.
+ */
+export function usePrewarmRunnerImage() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.prewarmRunnerImage(),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.system }),
+  });
+}
+
 /* ---- model catalog + project grants (D21) -------------------------------- */
 
 /** The whole model catalog (cluster-admin). Powers the Cluster page ModelCard. */

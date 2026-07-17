@@ -505,6 +505,22 @@ export interface RunArtifact {
 /* ---- system / admin snapshot (11-api.md § "System / admin") -------------- */
 
 /**
+ * The runner-image prewarm snapshot (runner.prewarm in GET /api/v1/system, and
+ * the response of POST /api/v1/system/runner-image/prewarm). desired/ready are
+ * the prewarm DaemonSet's pod counts; last_sync is the RFC3339 time of the
+ * last API-triggered sync ('' = never synced). error is the server's curated
+ * status-read failure line (never raw client-go detail).
+ */
+export interface RunnerPrewarm {
+  supported: boolean;
+  desired: number;
+  ready: number;
+  image: string;
+  last_sync: string;
+  error?: string;
+}
+
+/**
  * The read-only cluster-admin snapshot from GET /api/v1/system. It NEVER carries
  * a secret: `provider.gitea_enabled` is a derived boolean (the PAT is set), the
  * token itself is never on the wire. Mirrors the orchestrator systemResponse.
@@ -541,6 +557,15 @@ export interface SystemInfo {
      * and runs serialize per service. Optional so lean fixtures still type-check.
      */
     persistent_workspace?: boolean;
+    /**
+     * Runner-image prewarm (console Cluster page "sync runner image"): the
+     * orchestrator keeps a DaemonSet of sleeper pods so every node has the
+     * runner image cached, and a sync restarts them to force a fresh pull
+     * (imagePullPolicy: Always covers a re-pushed :latest). supported=false
+     * when the launcher has no cluster (process/disabled) — hide the sync
+     * action then. Optional so lean fixtures still type-check.
+     */
+    prewarm?: RunnerPrewarm;
   };
   namespace: string;
   /** kubernetes | process | disabled */

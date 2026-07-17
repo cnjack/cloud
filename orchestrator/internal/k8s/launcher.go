@@ -126,3 +126,18 @@ type JobLauncher interface {
 	// cluster (process/local) return (false, nil): there are no PVCs to archive.
 	WorkspacePVCExists(ctx context.Context, serviceID string) (bool, error)
 }
+
+// ImagePrewarmer is an OPTIONAL launcher capability (kubernetes launcher only):
+// it keeps the runner image cached on every node (a DaemonSet of sleeper pods,
+// see prewarm.go) so runs start without a cold pull. Launchers without a
+// cluster (process/local) do NOT implement it; callers type-assert and surface
+// "not supported" (D14 fail-visible) rather than silently no-op'ing.
+type ImagePrewarmer interface {
+	// PrewarmRunnerImage (re)asserts the prewarm DaemonSet on the current
+	// runner image and restarts its pods, forcing a fresh pull on every node.
+	PrewarmRunnerImage(ctx context.Context) error
+	// RunnerImagePrewarmStatus reports the prewarm DaemonSet's desired/ready
+	// counts, effective image, and last API-triggered sync time. A never-synced
+	// state is not an error.
+	RunnerImagePrewarmStatus(ctx context.Context) (PrewarmStatus, error)
+}

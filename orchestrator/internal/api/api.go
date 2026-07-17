@@ -271,6 +271,11 @@ func (s *Server) Handler() http.Handler {
 	// "System / admin"). Never returns a secret.
 	mux.Handle("GET /api/v1/system", s.authed(s.handleGetSystem))
 
+	// Runner-image prewarm (console Cluster page "sync runner image"):
+	// (re)assert the prewarm DaemonSet and force every node to re-pull the
+	// current RUNNER_IMAGE. Cluster-admin only (enforced in the handler).
+	mux.Handle("POST /api/v1/system/runner-image/prewarm", s.authed(s.handlePrewarmRunnerImage))
+
 	// Model catalog (D21). CRUD + per-model project grants are cluster-admin only
 	// (enforced in the handlers). The plaintext API key is never returned; the
 	// base_url is admin-only detail. Members read the models granted to a project

@@ -63,6 +63,7 @@ import type {
   RunEventType,
   RunMessage,
   RunPermission,
+  RunnerPrewarm,
   ResumeSessionOptions,
   RunStatus,
   Schedule,
@@ -91,6 +92,11 @@ function genId(prefix: string): string {
 function nowISO(offsetMs = 0): string {
   return new Date(Date.now() + offsetMs).toISOString();
 }
+
+// Demo runner-image prewarm state: '' until the Cluster page's "sync runner
+// image" button is pressed, then the sync timestamp (so the demo flow
+// roundtrips: sync → snapshot shows last_sync + all nodes cached).
+let prewarmSyncedAt = '';
 
 /**
  * Build a 400 ApiError with the same nested envelope shape the HTTP client
@@ -1374,7 +1380,16 @@ export function createMockClient(): ApiClient {
           gitea_url: 'http://gitea.jcloud.svc.cluster.local:3000',
           allowed_git_hosts: ['gitea.jcloud.svc.cluster.local', 'github.com'],
         },
-        runner: { image: 'ghcr.io/jcloud/runner:demo' },
+        runner: {
+          image: 'ghcr.io/jcloud/runner:demo',
+          prewarm: {
+            supported: true,
+            desired: 2,
+            ready: prewarmSyncedAt ? 2 : 0,
+            image: 'ghcr.io/jcloud/runner:demo',
+            last_sync: prewarmSyncedAt,
+          },
+        },
         namespace: 'jcloud',
         launcher: 'kubernetes',
         auth: {
@@ -1398,6 +1413,17 @@ export function createMockClient(): ApiClient {
         })(),
       };
       return delay(info);
+    },
+
+    async prewarmRunnerImage(): Promise<RunnerPrewarm> {
+      prewarmSyncedAt = nowISO();
+      return delay({
+        supported: true,
+        desired: 2,
+        ready: 2,
+        image: 'ghcr.io/jcloud/runner:demo',
+        last_sync: prewarmSyncedAt,
+      });
     },
 
     /* ---- model providers + discovery ------------------------------------ */

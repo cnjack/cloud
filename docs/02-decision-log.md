@@ -280,3 +280,9 @@ Automation 的 webhook setup 采用显式 `POST /services/{id}/webhook`：member
 - **console**：`grouping.ts` 的文本合并改为只被**内容流事件**打断（tool_call/tool_result、permission_request/resolved、user.message）；系统行（run.status、run.session、artifact/git/result/failure 等）不再劈开消息气泡，改为渲染在合并块之后。D18 的"任何非文本事件都打断"契约废止。
 - **runner**：`acpdrive` 的 Emitter 新增阻塞式 `Flush()`,session 循环在 POST turn-complete 前先冲刷事件队列，从源头保证同写入方的事件 seq 先于状态写。
 - **被否**:只在 runner 侧修定序——orchestrator 直写状态与 runner 上报之间无全局时钟，跨写入方乱序不可根除，存量事件也需要 console 侧宽容才能正确渲染。
+
+---
+### D34 · runner 镜像预热 → 常驻 prewarm DaemonSet + console 手动同步
+
+run 首次启动的冷拉取(数百 MB 镜像)由 **jcloud-runner-prewarm DaemonSet** 兜住:每节点一个 `sleep infinity` sleeper pod(requests 1m/16Mi),常驻缓存 `RUNNER_IMAGE`。console Cluster 页新增"同步最新镜像"按钮 → `POST /system/runner-image/prewarm`(cluster-admin)→ 创建/对齐 DaemonSet 并**删除 prewarm pod 强制重建**,配合 `imagePullPolicy: Always` 覆盖"同 tag 重推 `:latest`"场景;`GET /system` 的 `runner.prewarm` 回显 desired/ready/last_sync。launcher 无集群能力(process/disabled)时 `supported:false` + `409 prewarm_not_supported`,console 直接隐藏按钮(D14)。
+- **被否**:run pod 设 `imagePullPolicy: Always` 代替预热——每次 run 启动仍串行付拉取等待,预热意义尽失;构建期预热(节点镜像 bake)——节点组由公司集群统一管理,不可控;registry 内网 mirror——加速有效但同样不消除"节点上没有"的首次拉取,可与本方案叠加而非替代。
