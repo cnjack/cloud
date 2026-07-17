@@ -69,6 +69,39 @@ func TestKanbanEventCursorMigrationContract(t *testing.T) {
 	}
 }
 
+func TestProjectModelManagementMigrationContract(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0029_project_model_management.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := string(sql)
+	// Idempotent, project-scoped shape (M1). Every column/index is guarded so a
+	// re-apply is a clean no-op; the global UNIQUE(name) becomes scope-aware.
+	for _, required := range []string{
+		"ALTER TABLE model_providers ADD COLUMN IF NOT EXISTS project_id TEXT",
+		"ALTER TABLE model_providers ADD COLUMN IF NOT EXISTS headers_enc BYTEA",
+		"ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS project_id TEXT",
+		"ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true",
+		"ON DELETE CASCADE",
+		"model_providers_name_key",
+		"model_configs_name_key",
+		"CREATE UNIQUE INDEX IF NOT EXISTS model_providers_scope_name_idx",
+		"CREATE UNIQUE INDEX IF NOT EXISTS model_configs_scope_name_idx",
+		"COALESCE(project_id, '')",
+		"CREATE INDEX IF NOT EXISTS model_providers_project_idx",
+		"CREATE INDEX IF NOT EXISTS model_configs_project_idx",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Fatalf("0029 migration missing %q", required)
+		}
+	}
+	// The scope-name uniqueness must be enabled, not NOT NULL (cluster rows stay
+	// project_id NULL); a bare NOT NULL on project_id would break cluster catalog.
+	if strings.Contains(migration, "project_id TEXT NOT NULL") {
+		t.Fatal("project_id must be nullable so cluster-global rows keep project_id NULL")
+	}
+}
+
 func mustExec(t *testing.T, ctx context.Context, c *pgx.Conn, sql string, args ...any) {
 	t.Helper()
 	if _, err := c.Exec(ctx, sql, args...); err != nil {

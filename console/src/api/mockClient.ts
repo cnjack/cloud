@@ -75,6 +75,7 @@ import type {
   UpdateModelInput,
   UpdateModelProviderInput,
   UpdateProjectInput,
+  UpdateProviderModelInput,
   UpdateScheduleInput,
   UpdateServiceInput,
   UserSearchResult,
@@ -402,6 +403,11 @@ export function createMockClient(): ApiClient {
   const models = new Map<string, Model>();
   const modelGrants = new Map<string, Set<string>>();
   const modelProviders = new Map<string, ModelProvider>();
+  // M2: project-owned providers (each carries project_id + write-only headers),
+  // keyed by project id. Independent of the cluster catalog above — a project
+  // owns its providers/models outright (no grant fan-out); its enabled models
+  // union into listProjectModels so the composer + ModelGate pick them up.
+  const projectModelProviders = new Map<string, ModelProvider[]>();
   function seedModel(id: string, name: string, model: string): void {
     models.set(id, {
       id,
@@ -464,6 +470,46 @@ export function createMockClient(): ApiClient {
   }
   function grantAllModelsTo(projectId: string): void {
     for (const set of modelGrants.values()) set.add(projectId);
+  }
+
+  /** Project provider view: project models carry `enabled` and NO grants. */
+  function projectProviderView(provider: ModelProvider): ModelProvider {
+    return {
+      ...provider,
+      models: provider.models.map((model) => ({
+        ...model,
+        capabilities: { ...model.capabilities },
+      })),
+    };
+  }
+
+  /** Validate + normalise a header map (mirrors the orchestrator's 400s). */
+  function normalizeHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+    if (headers === undefined) return undefined;
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+      if (!key.trim() || value.trim() === '') {
+        throw badRequest('header name and value are required');
+      }
+      out[key.trim()] = value;
+    }
+    return out;
+  }
+
+  /** The project-owned providers store for one project. */
+  function projectProvidersOf(projectId: string): ModelProvider[] {
+    let list = projectModelProviders.get(projectId);
+    if (!list) {
+      list = [];
+      projectModelProviders.set(projectId, list);
+    }
+    return list;
+  }
+
+  function findProjectProvider(projectId: string, id: string): ModelProvider {
+    const provider = projectProvidersOf(projectId).find((p) => p.id === id);
+    if (!provider) throw new ApiError(404, 'model provider not found');
+    return provider;
   }
 
   /** Ids of models granted to a project. */
@@ -1567,6 +1613,153 @@ export function createMockClient(): ApiClient {
       return delay({ ...providerModel, capabilities: { ...providerModel.capabilities } });
     },
 
+    /* ---- project-owned model providers (M2) ------------------------------- */
+    async listProjectModelProviders(projectId: string): Promise<ModelProvider[]> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      return delay(projectProvidersOf(projectId).map(projectProviderView));
+    },
+
+    async createProjectModelProvider(projectId: string, input: CreateModelProviderInput): Promise<ModelProvider> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      const name = input.name?.trim() ?? '';
+      const kind = input.kind?.trim().toLowerCase() ?? '';
+      const baseUrl = input.base_url?.trim().replace(/\/$/, '') ?? '';
+      if (!name) throw badRequest('name is required');
+      if (!/^[a-z0-9_-]+$/.test(kind)) throw badRequest('kind must be a lowercase provider id');
+      if (!/^https?:\/\/.+/i.test(baseUrl)) throw badRequest('base_url must be an http(s) URL');
+      if (input.api_key && input.auth_type !== 'api_key') {
+        throw badRequest('api_key is only valid when auth_type is api_key');
+      }
+      const list = projectProvidersOf(projectId);
+      if (list.some((p) => p.name === name)) {
+        throw new ApiError(409, `a model provider named '${name}' already exists`, {
+          error: { code: 'conflict', message: `provider '${name}' exists` },
+        });
+      }
+      const headers = normalizeHeaders(input.headers);
+      const provider: ModelProvider = {
+        id: genId('prv'),
+        project_id: projectId,
+        name,
+        kind,
+        base_url: baseUrl,
+        auth_type: input.auth_type,
+        api_key_set: input.auth_type === 'api_key' && !!input.api_key,
+        headers_set: !!(headers && Object.keys(headers).length > 0),
+        catalog_mode: input.catalog_mode,
+        catalog_available: input.catalog_mode === 'disabled' ? false : null,
+        models: [],
+        created_at: nowISO(),
+        updated_at: nowISO(),
+        updated_by: 'demo-admin',
+      };
+      list.push(provider);
+      return delay(projectProviderView(provider));
+    },
+
+    async updateProjectModelProvider(projectId: string, id: string, input: UpdateModelProviderInput): Promise<ModelProvider> {
+      const provider = findProjectProvider(projectId, id);
+      if (input.name !== undefined) provider.name = input.name.trim();
+      if (input.kind !== undefined) provider.kind = input.kind.trim().toLowerCase();
+      if (input.base_url !== undefined) provider.base_url = input.base_url.trim().replace(/\/$/, '');
+      if (input.auth_type !== undefined) {
+        provider.auth_type = input.auth_type;
+        if (input.auth_type !== 'api_key') provider.api_key_set = false;
+      }
+      if (input.api_key !== undefined) provider.api_key_set = input.api_key !== '';
+      if (input.headers !== undefined) {
+        const headers = normalizeHeaders(input.headers);
+        provider.headers_set = !!(headers && Object.keys(headers).length > 0);
+      }
+      if (input.catalog_mode !== undefined) {
+        provider.catalog_mode = input.catalog_mode;
+        provider.catalog_available = input.catalog_mode === 'disabled' ? false : null;
+      }
+      // Any probe-affecting change resets the verification state (mirrors M1).
+      provider.last_verified_at = undefined;
+      provider.last_verification_error = undefined;
+      provider.updated_at = nowISO();
+      for (const m of provider.models) m.runtime_model_name = `${provider.kind}/${m.model_id}`;
+      return delay(projectProviderView(provider));
+    },
+
+    async deleteProjectModelProvider(projectId: string, id: string): Promise<void> {
+      findProjectProvider(projectId, id);
+      projectModelProviders.set(projectId, projectProvidersOf(projectId).filter((p) => p.id !== id));
+      return delay(undefined);
+    },
+
+    async verifyProjectModelProvider(projectId: string, id: string): Promise<ModelProviderVerification> {
+      const provider = findProjectProvider(projectId, id);
+      provider.catalog_available = provider.catalog_mode !== 'disabled';
+      provider.last_verified_at = nowISO();
+      provider.last_verification_error = undefined;
+      provider.updated_at = nowISO();
+      return delay({ reachable: true, catalog_available: provider.catalog_available, latency_ms: 37 });
+    },
+
+    async getProjectModelProviderCatalog(projectId: string, id: string): Promise<CatalogModel[]> {
+      const provider = findProjectProvider(projectId, id);
+      if (provider.catalog_mode === 'disabled') {
+        throw new ApiError(409, 'this provider does not expose a model catalog; add a custom model', {
+          error: { code: 'catalog_unavailable', message: 'this provider does not expose a model catalog; add a custom model' },
+        });
+      }
+      return delay([
+        { id: 'gpt-4o', name: 'GPT-4o', context_window: 128_000, capabilities: { reasoning: true, tools: true, image: true } },
+        { id: 'o3', name: 'o3', context_window: 200_000, capabilities: { reasoning: true, tools: true, image: true } },
+      ]);
+    },
+
+    async createProjectProviderModel(projectId: string, id: string, input: CreateProviderModelInput): Promise<ProviderModel> {
+      const provider = findProjectProvider(projectId, id);
+      const name = input.name?.trim() ?? '';
+      const modelId = input.model_id?.trim() ?? '';
+      if (!name) throw badRequest('name is required');
+      if (!modelId || /\s/.test(modelId)) throw badRequest('model_id is required and cannot contain whitespace');
+      if (provider.models.some((m) => m.model_id === modelId)) {
+        throw new ApiError(409, 'that model is already configured');
+      }
+      const model: ProviderModel = {
+        id: genId('mdl'),
+        provider_id: provider.id,
+        name,
+        model_id: modelId,
+        runtime_model_name: `${provider.kind}/${modelId}`,
+        context_window: input.context_window,
+        capabilities: { ...input.capabilities },
+        source: input.source,
+        enabled: true,
+      };
+      provider.models.push(model);
+      provider.updated_at = nowISO();
+      return delay({ ...model, capabilities: { ...model.capabilities } });
+    },
+
+    async updateProjectProviderModel(projectId: string, providerId: string, modelId: string, input: UpdateProviderModelInput): Promise<ProviderModel> {
+      const provider = findProjectProvider(projectId, providerId);
+      const model = provider.models.find((m) => m.id === modelId);
+      if (!model) throw new ApiError(404, 'model not found');
+      if (input.name !== undefined) {
+        const name = input.name.trim();
+        if (!name) throw badRequest('name cannot be empty');
+        model.name = name;
+      }
+      if (input.context_window !== undefined) model.context_window = input.context_window;
+      if (input.capabilities !== undefined) model.capabilities = { ...input.capabilities };
+      if (input.enabled !== undefined) model.enabled = input.enabled;
+      provider.updated_at = nowISO();
+      return delay({ ...model, capabilities: { ...model.capabilities } });
+    },
+
+    async deleteProjectProviderModel(projectId: string, providerId: string, modelId: string): Promise<void> {
+      const provider = findProjectProvider(projectId, providerId);
+      if (!provider.models.some((m) => m.id === modelId)) throw new ApiError(404, 'model not found');
+      provider.models = provider.models.filter((m) => m.id !== modelId);
+      provider.updated_at = nowISO();
+      return delay(undefined);
+    },
+
     /* ---- model catalog + project grants (D21) ----------------------------- */
     async listModels(): Promise<Model[]> {
       return delay([...models.values()].map(modelView).reverse());
@@ -1658,10 +1851,15 @@ export function createMockClient(): ApiClient {
 
     async listProjectModels(projectId: string): Promise<ProjectModels> {
       if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      // M1 union: project-owned ENABLED models ∪ cluster-granted models.
+      const owned = projectProvidersOf(projectId)
+        .flatMap((p) => p.models)
+        .filter((m) => m.enabled !== false)
+        .map((m) => ({ id: m.id, name: m.name, model_name: m.runtime_model_name }));
       const granted = [...models.values()]
         .filter((m) => modelGrants.get(m.id)?.has(projectId))
         .map((m) => ({ id: m.id, name: m.name, model_name: m.model_name }));
-      return delay({ models: granted, env_fallback: false });
+      return delay({ models: [...owned, ...granted], env_fallback: false });
     },
 
     /* ---- kanban links (Feature E / F6) ------------------------------------ */

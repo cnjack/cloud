@@ -24,6 +24,7 @@ package modelcfg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -55,6 +56,11 @@ type Resolved struct {
 	ModelName string
 	APIKey    string
 	APIKeySet bool
+	// Headers is the DECRYPTED custom-header map the owning provider configured
+	// (jcode advanced-form parity), or nil when none. Like APIKey it is a secret:
+	// the LLM proxy applies it on the outbound upstream request but it is NEVER
+	// serialised to API clients and never enters the runner pod.
+	Headers map[string]string
 }
 
 // Configured reports whether a usable model config was materialised.
@@ -128,6 +134,20 @@ func resolveModel(ctx context.Context, st ConfigReader, cipher *auth.Cipher, cfg
 			}
 			out.APIKey = key
 			out.APIKeySet = true
+		}
+		// Custom headers snapshotted from the provider (jcode advanced-form
+		// parity). A sealed-but-uncipherable header set (cipher nil / wrong key) is
+		// a fail-visible error, never silently dropped — exactly like the key above.
+		if len(m.HeadersEnc) > 0 {
+			raw, derr := cipher.DecryptString(m.HeadersEnc)
+			if derr != nil {
+				return Resolved{}, derr
+			}
+			var headers map[string]string
+			if err := json.Unmarshal([]byte(raw), &headers); err != nil {
+				return Resolved{}, err
+			}
+			out.Headers = headers
 		}
 		return out, nil
 	}

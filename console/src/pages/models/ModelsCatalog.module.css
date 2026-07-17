@@ -1,3 +1,7 @@
+/*
+ * Shared model-catalog styles for the cluster page (ClusterModelsPage) and the
+ * project-scoped manager (ProjectModelsPanel). One implementation, two scopes.
+ */
 .catalog { width: min(100%, 56rem); margin-inline: auto; padding-top: var(--space-5); }
 .security { display: flex; align-items: center; gap: var(--space-2); border: 1px solid color-mix(in srgb, var(--color-text) 10%, var(--color-border)); border-radius: var(--radius-lg); background: var(--color-bg-inset); padding: 10px var(--space-3); color: var(--color-text-muted); font-size: var(--fs-caption); line-height: 1.5; }
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-4) 0 var(--space-5); }
@@ -34,6 +38,9 @@
 .modelRow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(8rem, auto) 6.5rem auto; align-items: center; gap: var(--space-3); min-height: 56px; padding: var(--space-2) 10px; transition: background var(--dur-fast) var(--ease-out); }
 .modelRow + .modelRow { border-top: 1px solid var(--color-border-subtle); }
 .modelRow:hover { background: var(--color-panel-hover); }
+/* Project scope: capabilities + the enable Switch + edit/delete controls. */
+.modelRowProject { grid-template-columns: minmax(0, 1fr) minmax(6rem, auto) auto; }
+.modelControls { display: inline-flex; align-items: center; gap: 6px; }
 .modelCopy { display: grid; min-width: 0; gap: 2px; }
 .modelCopy strong { overflow: hidden; font-size: var(--fs-sm); font-weight: var(--fw-medium); text-overflow: ellipsis; white-space: nowrap; }
 .modelCopy small { overflow: hidden; color: var(--color-text-muted); font-family: var(--font-mono); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
@@ -42,6 +49,13 @@
 .grantCount { display: inline-grid; grid-template-columns: auto auto; min-width: 92px; align-items: baseline; justify-content: end; gap: 6px; line-height: 1; white-space: nowrap; }
 .grantCount b { color: var(--color-text); font-family: var(--font-mono); font-size: var(--fs-caption); font-weight: var(--fw-semibold); }
 .grantCount small { color: var(--color-text-faint); font-size: 9.5px; }
+/* An accessible on/off switch (jcode parity — 34x20 track, 16 knob). */
+.switch { position: relative; display: inline-flex; flex: none; width: 34px; height: 20px; padding: 0; border: 1px solid var(--color-border); border-radius: 999px; background: var(--color-panel-raised); cursor: pointer; transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+.switch:disabled { cursor: not-allowed; opacity: .5; }
+.switch:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.switch[data-on] { background: var(--color-accent); border-color: var(--color-accent); }
+.switchKnob { position: absolute; top: 1px; left: 1px; width: 16px; height: 16px; border-radius: 50%; background: var(--color-panel); box-shadow: var(--shadow-1); transition: transform var(--dur-fast) var(--ease-out); }
+.switch[data-on] .switchKnob { transform: translateX(14px); }
 .limitNote { margin-top: var(--space-2); border-radius: var(--radius-md); background: var(--color-bg-inset); padding: var(--space-2) 10px; color: var(--color-text-muted); font-size: var(--fs-tiny); line-height: 1.5; }
 .searchEmpty { display: grid; min-height: 192px; place-items: center; align-content: center; gap: 6px; color: var(--color-text-muted); text-align: center; }
 .searchEmpty strong { color: var(--color-text); font-size: var(--fs-body); }
@@ -52,6 +66,15 @@
 .capabilityFields legend { width: 100%; margin-bottom: 6px; color: var(--color-text-dim); font-size: var(--fs-caption); font-weight: var(--fw-semibold); }
 .capabilityFields label { display: inline-flex; align-items: center; gap: 6px; color: var(--color-text-dim); font-size: var(--fs-caption); cursor: pointer; }
 .capabilityFields input, .grantList input { accent-color: var(--color-accent); }
+/* Advanced disclosure + custom-header rows in the provider form. */
+.advanced { display: grid; gap: var(--space-3); border-top: 1px solid var(--color-border-subtle); padding-top: var(--space-3); }
+.advancedToggle { display: inline-flex; align-items: center; gap: 6px; justify-self: start; border: 0; border-radius: var(--radius-md); background: transparent; padding: var(--space-1) 6px; color: var(--color-text-dim); font-size: var(--fs-caption); font-weight: var(--fw-semibold); cursor: pointer; }
+.advancedToggle:hover { color: var(--color-text); }
+.headerFields { display: grid; gap: var(--space-2); }
+.headerHint { color: var(--color-text-muted); font-size: var(--fs-tiny); line-height: 1.5; }
+.headerRow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); }
+.headerInput { width: 100%; min-width: 0; height: var(--space-8); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-panel); padding: 0 10px; color: var(--color-text); font-size: var(--fs-sm); }
+.headerInput:focus { outline: 0; border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 10%, transparent); }
 .catalogError { display: grid; gap: var(--space-3); }
 .catalogError p, .dialogIntro { color: var(--color-text-muted); font-size: var(--fs-caption); line-height: 1.55; }
 .catalogError button { justify-self: start; }
@@ -67,6 +90,21 @@
 .grantList strong { font-size: var(--fs-sm); }
 .grantList small { color: var(--color-text-muted); font-size: var(--fs-tiny); }
 
+/* Project models panel: owner admin section + read-only cluster-granted list. */
+.panel { display: grid; gap: var(--space-5); }
+.panelSection { display: grid; gap: var(--space-3); }
+.panelHead { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.panelHeadCopy { display: grid; gap: 2px; }
+.panelHeadCopy h3 { font-size: 15px; font-weight: var(--fw-semibold); letter-spacing: -.2px; }
+.panelHeadCopy p { color: var(--color-text-muted); font-size: var(--fs-caption); line-height: 1.5; }
+.grantedList { display: grid; gap: var(--space-2); }
+.grantedRow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
+.grantedRow > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
+.grantedRow strong { font-size: var(--fs-sm); }
+.grantedRow code, .grantedRow small { color: var(--color-text-faint); font-size: var(--fs-tiny); }
+.grantedMark { display: grid; width: 32px; height: 32px; place-items: center; border-radius: var(--radius-md); background: var(--color-panel-raised); color: var(--color-text-dim); font-family: var(--font-mono); font-size: var(--fs-tiny); }
+.panelState { margin: 0; padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); color: var(--color-text-dim); font-size: var(--fs-sm); }
+
 @media (max-width: 608px) {
   .toolbar { align-items: stretch; flex-direction: column; gap: 10px; }
   .search { width: 100%; }
@@ -79,5 +117,6 @@
   .modelCopy { grid-column: 1; grid-row: 1; }
   .grantCount { grid-column: 2; grid-row: 1; }
   .capabilities { grid-column: 1; grid-row: 2; justify-content: flex-start; }
-  .modelRow > button { grid-column: 2; grid-row: 2; justify-self: end; }
+  .modelRow > button, .modelRow .modelControls { grid-column: 2; grid-row: 2; justify-self: end; }
+  .modelRowProject { grid-template-columns: minmax(0, 1fr) auto; }
 }

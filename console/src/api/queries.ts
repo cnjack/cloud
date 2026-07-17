@@ -37,6 +37,7 @@ import type {
   UpdateModelInput,
   UpdateModelProviderInput,
   UpdateProjectInput,
+  UpdateProviderModelInput,
   UpdateScheduleInput,
   UpdateServiceInput,
 } from './types';
@@ -54,6 +55,9 @@ export const qk = {
   models: ['models'] as const,
   modelProviders: ['model-providers'] as const,
   modelProviderCatalog: (id: string) => ['model-provider-catalog', id] as const,
+  projectModelProviders: (projectId: string) => ['project-model-providers', projectId] as const,
+  projectModelProviderCatalog: (projectId: string, providerId: string) =>
+    ['project-model-provider-catalog', projectId, providerId] as const,
   projectModels: (projectId: string) => ['project-models', projectId] as const,
   kanbanLinks: ['kanban-links'] as const,
   kanbanConfig: ['kanban-config'] as const,
@@ -469,6 +473,116 @@ export function useCreateProviderModel() {
       qc.invalidateQueries({ queryKey: qk.modelProviderCatalog(providerId) });
       qc.invalidateQueries({ queryKey: qk.models });
     },
+  });
+}
+
+/* ---- project-owned model providers (M2) ---------------------------------- */
+
+/**
+ * Every project-owned provider/model mutation makes three views stale: the
+ * project's provider list (this admin surface), the project's usable-model union
+ * (`useProjectModels`, keyed off qk.projectModels — feeds the composer picker,
+ * the per-service default `<Select>`, and the ModelGate), and — because a
+ * just-created enabled model must reach any OTHER open project view — the whole
+ * `['project-models']` prefix. Mirrors the useSetModelGrant invalidation set.
+ */
+function invalidateProjectModels(
+  qc: ReturnType<typeof useQueryClient>,
+  projectId: string,
+): void {
+  qc.invalidateQueries({ queryKey: qk.projectModelProviders(projectId) });
+  qc.invalidateQueries({ queryKey: qk.projectModels(projectId) });
+  qc.invalidateQueries({ queryKey: ['project-models'] });
+}
+
+/** A project's own model providers (owner write / member read). */
+export function useProjectModelProviders(projectId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.projectModelProviders(projectId),
+    queryFn: () => api.listProjectModelProviders(projectId),
+    enabled: enabled && !!projectId,
+  });
+}
+
+export function useCreateProjectModelProvider(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateModelProviderInput) => api.createProjectModelProvider(projectId, input),
+    onSuccess: () => invalidateProjectModels(qc, projectId),
+  });
+}
+
+export function useUpdateProjectModelProvider(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UpdateModelProviderInput }) =>
+      api.updateProjectModelProvider(projectId, id, input),
+    onSuccess: () => invalidateProjectModels(qc, projectId),
+  });
+}
+
+export function useDeleteProjectModelProvider(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteProjectModelProvider(projectId, id),
+    onSuccess: () => invalidateProjectModels(qc, projectId),
+  });
+}
+
+export function useVerifyProjectModelProvider(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.verifyProjectModelProvider(projectId, id),
+    // Persisted probe result (success or visible failure) → refresh the card.
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.projectModelProviders(projectId) }),
+  });
+}
+
+export function useProjectModelProviderCatalog(projectId: string, providerId: string, enabled: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.projectModelProviderCatalog(projectId, providerId),
+    queryFn: () => api.getProjectModelProviderCatalog(projectId, providerId),
+    enabled: enabled && !!projectId && !!providerId,
+    retry: false,
+  });
+}
+
+export function useCreateProjectProviderModel(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ providerId, input }: { providerId: string; input: CreateProviderModelInput }) =>
+      api.createProjectProviderModel(projectId, providerId, input),
+    onSuccess: (_model, { providerId }) => {
+      invalidateProjectModels(qc, projectId);
+      qc.invalidateQueries({ queryKey: qk.projectModelProviderCatalog(projectId, providerId) });
+    },
+  });
+}
+
+export function useUpdateProjectProviderModel(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ providerId, modelId, input }: { providerId: string; modelId: string; input: UpdateProviderModelInput }) =>
+      api.updateProjectProviderModel(projectId, providerId, modelId, input),
+    onSuccess: () => invalidateProjectModels(qc, projectId),
+  });
+}
+
+export function useDeleteProjectProviderModel(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ providerId, modelId }: { providerId: string; modelId: string }) =>
+      api.deleteProjectProviderModel(projectId, providerId, modelId),
+    onSuccess: () => invalidateProjectModels(qc, projectId),
   });
 }
 

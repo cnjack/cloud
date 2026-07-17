@@ -339,6 +339,9 @@ type Store interface {
 	CreateModelProvider(ctx context.Context, p *domain.ModelProvider) error
 	GetModelProvider(ctx context.Context, id string) (*domain.ModelProvider, error)
 	ListModelProviders(ctx context.Context) ([]domain.ModelProvider, error)
+	// ListModelProvidersForProject returns the providers OWNED by a project (M1),
+	// oldest first. Cluster-global providers (project_id NULL) are never returned.
+	ListModelProvidersForProject(ctx context.Context, projectID string) ([]domain.ModelProvider, error)
 	// UpdateModelProvider atomically updates provider metadata and synchronizes
 	// the runtime base_url/api_key projection on every child model.
 	UpdateModelProvider(ctx context.Context, p *domain.ModelProvider) error
@@ -364,8 +367,9 @@ type Store interface {
 	// DeleteModel removes a catalog model. Its grants cascade; services.default_
 	// model_id and runs.model_id referencing it are set NULL. ErrNotFound if absent.
 	DeleteModel(ctx context.Context, id string) error
-	// ListModelsForProject returns the models GRANTED to a project (the member-
-	// visible set + the resolution chain's authorization set), newest first.
+	// ListModelsForProject returns a project's USABLE model set, newest first: its
+	// OWN enabled models UNION the cluster models GRANTED to it (M1). This is the
+	// member-visible set and the resolution chain's authorization set.
 	ListModelsForProject(ctx context.Context, projectID string) ([]domain.Model, error)
 	// ListProjectIDsForModel returns the project ids a model is granted to (admin
 	// grant-management view).

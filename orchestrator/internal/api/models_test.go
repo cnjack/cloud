@@ -27,6 +27,9 @@ func catalogServer(t *testing.T, cipher bool) (*httptest.Server, *store.MemStore
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, sse.NewHub(), nil)
+	// Provider verify/catalog tests point at an httptest upstream on 127.0.0.1;
+	// opt out of the SSRF dial guard so those loopback probes are exercised.
+	srv.allowPrivateModelHosts = true
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, st

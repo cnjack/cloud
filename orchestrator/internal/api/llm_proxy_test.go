@@ -3,6 +3,8 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/sse"
@@ -229,6 +232,89 @@ func TestLLMProxyForwardsBaseWithoutV1(t *testing.T) {
 	}
 	if cap.auth != "Bearer realkey" {
 		t.Fatalf("upstream Authorization=%q want 'Bearer realkey'", cap.auth)
+	}
+}
+
+// TestLLMProxyAppliesCustomHeaders is the end-to-end FIX A assertion: a catalog
+// model whose provider carries custom headers has those headers APPLIED on the
+// forwarded upstream request, while the managed API key still wins over any
+// custom Authorization header (keyed provider). The runner never sees either
+// secret — they live only in the orchestrator + the encrypted columns.
+func TestLLMProxyAppliesCustomHeaders(t *testing.T) {
+	var gotAuth, gotCustom string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotCustom = r.Header.Get("X-Provider-Header")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	t.Cleanup(up.Close)
+
+	st := store.NewMemStore()
+	cfg := &config.Config{ConsoleToken: consoleToken, AuthTokenKey: validTokenKey(t)}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(st, cfg, log, sse.NewHub(), nil)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	// Seal the key + custom headers with the SAME cipher the resolver uses.
+	keyEnc, err := srv.cipher.EncryptString("realkey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdrRaw, _ := json.Marshal(map[string]string{
+		"X-Provider-Header": "abc",
+		// A custom Authorization must LOSE to the managed key for a keyed provider.
+		"Authorization": "Bearer custom-should-lose",
+	})
+	hdrEnc, err := srv.cipher.EncryptString(string(hdrRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	proj := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
+	if err := st.CreateProject(ctx, proj); err != nil {
+		t.Fatal(err)
+	}
+	model := &domain.Model{
+		ID: domain.NewID(), Name: "m", BaseURL: up.URL + "/v1", ModelName: "openai/x",
+		ModelID: "x", APIKeyEnc: keyEnc, HeadersEnc: hdrEnc, CreatedAt: time.Now(),
+	}
+	if err := st.CreateModel(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: proj.ID, Name: "default",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "git://x/y.git", DefaultBranch: "main", CreatedAt: time.Now(),
+	}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	mid := model.ID
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: proj.ID, ServiceID: svc.ID, Prompt: "t",
+		Status: domain.StatusQueued, Kind: domain.RunKindAgent, Attempt: 1, ModelID: &mid, CreatedAt: time.Now(),
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	tok, _ := auth.GenerateRunToken()
+	if _, err := st.ScheduleRun(ctx, run.ID, "j", auth.HashToken(tok), "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := proxyPost(t, ts.URL, tok, "runs/"+run.ID+"/llm/v1/chat/completions", []byte("{}"))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	if gotCustom != "abc" {
+		t.Fatalf("upstream X-Provider-Header=%q want abc (custom header was not applied)", gotCustom)
+	}
+	if gotAuth != "Bearer realkey" {
+		t.Fatalf("upstream Authorization=%q want 'Bearer realkey' (managed key must win over a custom Authorization)", gotAuth)
 	}
 }
 

@@ -245,6 +245,25 @@ func (s *Server) handleGrantModel(w http.ResponseWriter, r *http.Request) {
 	}
 	modelID := r.PathValue("id")
 	projectID := r.PathValue("projectID")
+	// Grants are only meaningful for cluster-global models. A project-owned model
+	// (project_id != "") is private to its owning project — granting it to another
+	// project would leak it cross-project and bypass its enabled toggle. Reject it
+	// with a typed error rather than silently creating a cross-project grant.
+	target, err := s.st.GetModel(r.Context(), modelID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "model or project not found")
+		return
+	}
+	if err != nil {
+		s.log.Error("load model for grant", "model", modelID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not load model")
+		return
+	}
+	if target.ProjectID != "" {
+		writeError(w, http.StatusConflict, "model_not_grantable",
+			"this model is owned by a project and cannot be granted; grants apply only to cluster-global models")
+		return
+	}
 	if err := s.st.GrantModel(r.Context(), modelID, projectID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "model or project not found")

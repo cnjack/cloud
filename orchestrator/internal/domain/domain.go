@@ -773,12 +773,19 @@ const (
 // CatalogAvailable is nil until the endpoint has been tested, false when a live
 // probe proves /models unavailable, and true after a successful catalog request.
 type ModelProvider struct {
-	ID                    string                   `json:"id"`
-	Name                  string                   `json:"name"`
-	Kind                  string                   `json:"kind"`
-	BaseURL               string                   `json:"base_url"`
-	AuthType              ModelProviderAuthType    `json:"auth_type"`
-	APIKeyEnc             []byte                   `json:"-"`
+	ID string `json:"id"`
+	// ProjectID owns this provider (project-scoped, M1). "" (SQL NULL) means the
+	// provider is cluster-global — the pre-M1 behavior, cluster-admin managed.
+	ProjectID string                `json:"project_id,omitempty"`
+	Name      string                `json:"name"`
+	Kind      string                `json:"kind"`
+	BaseURL   string                `json:"base_url"`
+	AuthType  ModelProviderAuthType `json:"auth_type"`
+	APIKeyEnc []byte                `json:"-"`
+	// HeadersEnc is the AES-256-GCM ciphertext (nonce||ciphertext) of an optional
+	// custom-headers JSON map (jcode advanced-form parity), or nil when unset. The
+	// plaintext is NEVER serialised — hence json:"-"; only HeadersSet is echoed.
+	HeadersEnc            []byte                   `json:"-"`
 	CatalogMode           ModelProviderCatalogMode `json:"catalog_mode"`
 	CatalogAvailable      *bool                    `json:"catalog_available,omitempty"`
 	LastVerifiedAt        *time.Time               `json:"last_verified_at,omitempty"`
@@ -789,6 +796,10 @@ type ModelProvider struct {
 }
 
 func (p *ModelProvider) APIKeySet() bool { return len(p.APIKeyEnc) > 0 }
+
+// HeadersSet reports whether the provider carries (encrypted) custom headers.
+// Used to echo headers_set to owners without ever exposing the plaintext.
+func (p *ModelProvider) HeadersSet() bool { return len(p.HeadersEnc) > 0 }
 
 // ModelCapabilities are explicit authored/catalog metadata. False means the
 // capability is not advertised; the product never invents support from a model
@@ -809,6 +820,9 @@ type Model struct {
 	ID string `json:"id"`
 	// ProviderID owns endpoint identity and credentials.
 	ProviderID string `json:"provider_id"`
+	// ProjectID owns this model (project-scoped, M1), denormalised from its
+	// provider. "" (SQL NULL) means the model is cluster-global (pre-M1 behavior).
+	ProjectID string `json:"project_id,omitempty"`
 	// Name is the unique display name (e.g. "GPT-4o").
 	Name string `json:"name"`
 	// BaseURL is the OpenAI-compatible base URL (http/https).
@@ -822,8 +836,20 @@ type Model struct {
 	Capabilities  ModelCapabilities `json:"capabilities"`
 	// Source is catalog or custom.
 	Source string `json:"source"`
+	// Enabled is the per-model on/off toggle (jcode Switch parity, M1). It applies
+	// to project-owned models: a disabled model is excluded from the project's
+	// usable set (ListModelsForProject). Cluster models are governed by grants and
+	// are stored enabled.
+	Enabled bool `json:"enabled"`
 	// APIKeyEnc is the encrypted API key (nonce||ciphertext), or nil when absent.
 	APIKeyEnc []byte `json:"-"`
+	// HeadersEnc is the AES-256-GCM ciphertext of the owning provider's optional
+	// custom-headers JSON map, SNAPSHOTTED from the provider at create time and
+	// re-synced when the provider's headers change (same denormalisation as
+	// BaseURL/APIKeyEnc). The runtime resolver decrypts it so the LLM proxy can
+	// apply the headers on outbound requests; the plaintext is NEVER serialised —
+	// hence json:"-". Nil when the provider has no custom headers.
+	HeadersEnc []byte `json:"-"`
 	// CreatedAt / UpdatedAt / UpdatedBy record audit metadata (UpdatedBy is a user
 	// id or "" for the service principal).
 	CreatedAt time.Time `json:"created_at"`
@@ -834,6 +860,10 @@ type Model struct {
 // APIKeySet reports whether the model carries an (encrypted) API key. Used to
 // echo api_key_set to admins without ever exposing the plaintext.
 func (m *Model) APIKeySet() bool { return len(m.APIKeyEnc) > 0 }
+
+// HeadersSet reports whether the model carries (encrypted) custom headers
+// snapshotted from its provider. Never exposes the plaintext.
+func (m *Model) HeadersSet() bool { return len(m.HeadersEnc) > 0 }
 
 // KanbanConfig is the single-row cluster-level jtype kanban configuration a
 // cluster admin sets from the console (D27): the jtype document API base URL

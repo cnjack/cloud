@@ -1387,18 +1387,23 @@ func (s *PGStore) GetRunBundle(ctx context.Context, runID string) ([]byte, error
 // --- Model catalog + project grants (D21) -----------------------------------
 
 const modelProviderCols = `id, name, kind, base_url, auth_type, api_key_enc, catalog_mode,
-	catalog_available, last_verified_at, last_verification_error, created_at, updated_at, updated_by`
+	catalog_available, last_verified_at, last_verification_error, created_at, updated_at, updated_by,
+	project_id, headers_enc`
 
 func scanModelProvider(row pgx.Row) (*domain.ModelProvider, error) {
 	var p domain.ModelProvider
+	var projectID *string
 	err := row.Scan(&p.ID, &p.Name, &p.Kind, &p.BaseURL, &p.AuthType, &p.APIKeyEnc,
 		&p.CatalogMode, &p.CatalogAvailable, &p.LastVerifiedAt, &p.LastVerificationError,
-		&p.CreatedAt, &p.UpdatedAt, &p.UpdatedBy)
+		&p.CreatedAt, &p.UpdatedAt, &p.UpdatedBy, &projectID, &p.HeadersEnc)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scan model provider: %w", err)
+	}
+	if projectID != nil {
+		p.ProjectID = *projectID
 	}
 	return &p, nil
 }
@@ -1410,10 +1415,11 @@ func (s *PGStore) CreateModelProvider(ctx context.Context, p *domain.ModelProvid
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO model_providers (id, name, kind, base_url, auth_type, api_key_enc,
 		 catalog_mode, catalog_available, last_verified_at, last_verification_error,
-		 created_at, updated_at, updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12)`,
+		 created_at, updated_at, updated_by, project_id, headers_enc)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12,$13,$14)`,
 		p.ID, p.Name, p.Kind, p.BaseURL, p.AuthType, p.APIKeyEnc, p.CatalogMode,
-		p.CatalogAvailable, p.LastVerifiedAt, p.LastVerificationError, p.CreatedAt, p.UpdatedBy)
+		p.CatalogAvailable, p.LastVerifiedAt, p.LastVerificationError, p.CreatedAt, p.UpdatedBy,
+		nullStr(p.ProjectID), p.HeadersEnc)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrAlreadyExists
@@ -1446,18 +1452,40 @@ func (s *PGStore) ListModelProviders(ctx context.Context) ([]domain.ModelProvide
 	return out, rows.Err()
 }
 
+// ListModelProvidersForProject returns the providers OWNED by a project (M1),
+// oldest first. Cluster-global providers (project_id NULL) are never returned.
+func (s *PGStore) ListModelProvidersForProject(ctx context.Context, projectID string) ([]domain.ModelProvider, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+modelProviderCols+` FROM model_providers WHERE project_id=$1 ORDER BY created_at ASC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list model providers for project: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.ModelProvider
+	for rows.Next() {
+		p, err := scanModelProvider(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) UpdateModelProvider(ctx context.Context, p *domain.ModelProvider) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin update model provider: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// project_id is intentionally immutable — a provider never moves between the
+	// cluster and a project, or between projects (its models' scope rides on it).
 	tag, err := tx.Exec(ctx,
 		`UPDATE model_providers SET name=$2, kind=$3, base_url=$4, auth_type=$5,
 		 api_key_enc=$6, catalog_mode=$7, catalog_available=$8, last_verified_at=$9,
-		 last_verification_error=$10, updated_at=now(), updated_by=$11 WHERE id=$1`,
+		 last_verification_error=$10, updated_at=now(), updated_by=$11, headers_enc=$12 WHERE id=$1`,
 		p.ID, p.Name, p.Kind, p.BaseURL, p.AuthType, p.APIKeyEnc, p.CatalogMode,
-		p.CatalogAvailable, p.LastVerifiedAt, p.LastVerificationError, p.UpdatedBy)
+		p.CatalogAvailable, p.LastVerifiedAt, p.LastVerificationError, p.UpdatedBy, p.HeadersEnc)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrAlreadyExists
@@ -1469,8 +1497,8 @@ func (s *PGStore) UpdateModelProvider(ctx context.Context, p *domain.ModelProvid
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE model_configs SET base_url=$2, api_key_enc=$3,
-		 model_name=$4 || '/' || model_id, updated_at=now(), updated_by=$5
-		 WHERE provider_id=$1`, p.ID, p.BaseURL, p.APIKeyEnc, p.Kind, p.UpdatedBy); err != nil {
+		 model_name=$4 || '/' || model_id, headers_enc=$5, updated_at=now(), updated_by=$6
+		 WHERE provider_id=$1`, p.ID, p.BaseURL, p.APIKeyEnc, p.Kind, p.HeadersEnc, p.UpdatedBy); err != nil {
 		return fmt.Errorf("sync provider models: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1492,24 +1520,31 @@ func (s *PGStore) DeleteModelProvider(ctx context.Context, id string) error {
 
 const modelCols = `id, provider_id, name, base_url, model_name, model_id, api_key_enc,
 	context_window, supports_reasoning, supports_tools, supports_image, model_source,
-	created_at, updated_at, updated_by`
+	created_at, updated_at, updated_by, project_id, enabled, headers_enc`
 
 func scanModel(row pgx.Row) (*domain.Model, error) {
 	var m domain.Model
+	var projectID *string
 	err := row.Scan(&m.ID, &m.ProviderID, &m.Name, &m.BaseURL, &m.ModelName, &m.ModelID, &m.APIKeyEnc,
 		&m.ContextWindow, &m.Capabilities.Reasoning, &m.Capabilities.Tools,
-		&m.Capabilities.Image, &m.Source, &m.CreatedAt, &m.UpdatedAt, &m.UpdatedBy)
+		&m.Capabilities.Image, &m.Source, &m.CreatedAt, &m.UpdatedAt, &m.UpdatedBy,
+		&projectID, &m.Enabled, &m.HeadersEnc)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scan model: %w", err)
 	}
+	if projectID != nil {
+		m.ProjectID = *projectID
+	}
 	return &m, nil
 }
 
-// CreateModel inserts a catalog model. Duplicate name => ErrAlreadyExists.
+// CreateModel inserts a catalog model. Duplicate name => ErrAlreadyExists. A new
+// model is always enabled (jcode Switch parity; the DB column default is true).
 func (s *PGStore) CreateModel(ctx context.Context, m *domain.Model) error {
+	m.Enabled = true
 	if m.CreatedAt.IsZero() {
 		m.CreatedAt = time.Now().UTC()
 	}
@@ -1536,9 +1571,9 @@ func (s *PGStore) CreateModel(ctx context.Context, m *domain.Model) error {
 			authType = domain.ModelProviderAuthAPIKey
 		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO model_providers (id,name,kind,base_url,auth_type,api_key_enc,catalog_mode,created_at,updated_at,updated_by)
-			 VALUES ($1,$2,'custom',$3,$4,$5,'disabled',$6,now(),$7)`,
-			m.ProviderID, m.Name, m.BaseURL, authType, m.APIKeyEnc, m.CreatedAt, m.UpdatedBy); err != nil {
+			`INSERT INTO model_providers (id,name,kind,base_url,auth_type,api_key_enc,catalog_mode,created_at,updated_at,updated_by,project_id)
+			 VALUES ($1,$2,'custom',$3,$4,$5,'disabled',$6,now(),$7,$8)`,
+			m.ProviderID, m.Name, m.BaseURL, authType, m.APIKeyEnc, m.CreatedAt, m.UpdatedBy, nullStr(m.ProjectID)); err != nil {
 			if isUniqueViolation(err) {
 				return ErrAlreadyExists
 			}
@@ -1548,11 +1583,11 @@ func (s *PGStore) CreateModel(ctx context.Context, m *domain.Model) error {
 	_, err = tx.Exec(ctx,
 		`INSERT INTO model_configs (id, provider_id, name, base_url, model_name, model_id, api_key_enc,
 		 context_window, supports_reasoning, supports_tools, supports_image, model_source,
-		 created_at, updated_at, updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),$14)`,
+		 created_at, updated_at, updated_by, project_id, enabled, headers_enc)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),$14,$15,$16,$17)`,
 		m.ID, m.ProviderID, m.Name, m.BaseURL, m.ModelName, m.ModelID, m.APIKeyEnc,
 		m.ContextWindow, m.Capabilities.Reasoning, m.Capabilities.Tools,
-		m.Capabilities.Image, m.Source, m.CreatedAt, m.UpdatedBy)
+		m.Capabilities.Image, m.Source, m.CreatedAt, m.UpdatedBy, nullStr(m.ProjectID), m.Enabled, m.HeadersEnc)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrAlreadyExists
@@ -1618,10 +1653,10 @@ func (s *PGStore) UpdateModel(ctx context.Context, m *domain.Model) error {
 	tag, err := tx.Exec(ctx,
 		`UPDATE model_configs SET name=$2, base_url=$3, model_name=$4, model_id=$5, api_key_enc=$6,
 		 context_window=$7, supports_reasoning=$8, supports_tools=$9, supports_image=$10,
-		 model_source=$11, updated_at=now(), updated_by=$12 WHERE id=$1`,
+		 model_source=$11, updated_at=now(), updated_by=$12, enabled=$13 WHERE id=$1`,
 		m.ID, m.Name, m.BaseURL, m.ModelName, m.ModelID, m.APIKeyEnc, m.ContextWindow,
 		m.Capabilities.Reasoning, m.Capabilities.Tools, m.Capabilities.Image,
-		m.Source, m.UpdatedBy)
+		m.Source, m.UpdatedBy, m.Enabled)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrAlreadyExists
@@ -1639,6 +1674,18 @@ func (s *PGStore) UpdateModel(ctx context.Context, m *domain.Model) error {
 		authType := domain.ModelProviderAuthNone
 		if len(m.APIKeyEnc) > 0 {
 			authType = domain.ModelProviderAuthAPIKey
+		} else {
+			// A keyless provider is normally auth_type=none, but a valid
+			// service_identity provider is ALSO keyless — editing one of its models'
+			// metadata must not silently downgrade it to none. Preserve it.
+			var current domain.ModelProviderAuthType
+			if err := tx.QueryRow(ctx,
+				`SELECT auth_type FROM model_providers WHERE id=$1`, m.ProviderID).Scan(&current); err != nil {
+				return fmt.Errorf("read provider auth type: %w", err)
+			}
+			if current == domain.ModelProviderAuthServiceIdentity {
+				authType = domain.ModelProviderAuthServiceIdentity
+			}
 		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE model_providers SET kind=$2, base_url=$3, api_key_enc=$4, auth_type=$5,
@@ -1693,13 +1740,16 @@ func (s *PGStore) DeleteModel(ctx context.Context, id string) error {
 	return nil
 }
 
-// ListModelsForProject returns the models granted to a project, newest first.
+// ListModelsForProject returns a project's USABLE model set, newest first (M1):
+// its OWN enabled models UNION the cluster models granted to it. This is THE
+// single query that defines a project's usable set — the modelcfg selection chain
+// and service-default validation ride on it unchanged.
 func (s *PGStore) ListModelsForProject(ctx context.Context, projectID string) ([]domain.Model, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+prefixCols("mc", modelCols)+`
 		 FROM model_configs mc
-		 JOIN model_grants g ON g.model_id = mc.id
-		 WHERE g.project_id = $1
+		 WHERE (mc.project_id = $1 AND mc.enabled)
+		    OR mc.id IN (SELECT model_id FROM model_grants WHERE project_id = $1)
 		 ORDER BY mc.created_at DESC`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list models for project: %w", err)

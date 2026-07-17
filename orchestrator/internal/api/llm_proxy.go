@@ -111,9 +111,22 @@ func (s *Server) handleLLMProxy(w http.ResponseWriter, r *http.Request, runID st
 			pr.Out.URL.RawPath = "" // Path is authoritative; rest is plain ASCII
 			// Send the real upstream Host (some LLM gateways reject a foreign Host).
 			pr.Out.Host = target.Host
-			// Drop the runner's RUN_TOKEN Authorization and inject the real key.
-			// A keyless endpoint (APIKey == "") sends no Authorization at all.
+			// Always drop the runner's inbound RUN_TOKEN Authorization first so it
+			// never reaches the upstream, regardless of what replaces it below.
 			pr.Out.Header.Del("Authorization")
+			// Apply the provider's custom headers (jcode advanced-form parity). Set
+			// BEFORE the managed key so a keyed provider's managed Authorization wins
+			// (set last), while a keyless provider's custom Authorization survives.
+			// Skip Host + hop-by-hop headers; header VALUES are never logged.
+			for k, v := range model.Headers {
+				if skipCustomHeader(k) {
+					continue
+				}
+				pr.Out.Header.Set(k, v)
+			}
+			// Inject the real key LAST so it always wins for a keyed provider. A
+			// keyless endpoint (APIKey == "") keeps whatever the custom headers set
+			// (an explicit Authorization) or nothing at all.
 			if model.APIKey != "" {
 				pr.Out.Header.Set("Authorization", "Bearer "+model.APIKey)
 			}
@@ -145,4 +158,18 @@ func stripTrailingV1(path string) string {
 	s := strings.TrimRight(path, "/")
 	s, _ = strings.CutSuffix(s, "/v1")
 	return s
+}
+
+// skipCustomHeader reports whether a provider-configured custom header must NOT
+// be applied to an outbound request. The proxy controls transport framing and
+// the upstream Host, so a custom header may never override Host, Content-Length,
+// or the hop-by-hop set — those are the proxy's / transport's to manage.
+func skipCustomHeader(name string) bool {
+	switch http.CanonicalHeaderKey(name) {
+	case "Host", "Content-Length", "Connection", "Keep-Alive",
+		"Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer",
+		"Transfer-Encoding", "Upgrade":
+		return true
+	}
+	return false
 }

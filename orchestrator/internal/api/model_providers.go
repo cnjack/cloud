@@ -368,8 +368,34 @@ func (s *Server) providerCredential(p *domain.ModelProvider) (string, error) {
 	return s.cipher.DecryptString(p.APIKeyEnc)
 }
 
+// providerHeaders decrypts the provider's optional custom-header map so the
+// verify/catalog probe reaches header-gated gateways, mirroring providerCredential.
+// A sealed-but-uncipherable set (no cipher / wrong key) is a fail-visible error,
+// never silently dropped. Returns nil when the provider has no custom headers.
+func (s *Server) providerHeaders(p *domain.ModelProvider) (map[string]string, error) {
+	if len(p.HeadersEnc) == 0 {
+		return nil, nil
+	}
+	if s.cipher == nil {
+		return nil, fmt.Errorf("AUTH_TOKEN_KEY is not configured")
+	}
+	raw, err := s.cipher.DecryptString(p.HeadersEnc)
+	if err != nil {
+		return nil, err
+	}
+	var headers map[string]string
+	if err := json.Unmarshal([]byte(raw), &headers); err != nil {
+		return nil, err
+	}
+	return headers, nil
+}
+
 func (s *Server) requestProviderModels(ctx context.Context, p *domain.ModelProvider) (*http.Response, error) {
 	credential, err := s.providerCredential(p)
+	if err != nil {
+		return nil, err
+	}
+	headers, err := s.providerHeaders(p)
 	if err != nil {
 		return nil, err
 	}
@@ -379,6 +405,14 @@ func (s *Server) requestProviderModels(ctx context.Context, p *domain.ModelProvi
 		return nil, err
 	}
 	request.Header.Set("Accept", "application/json")
+	// Custom headers first; the managed Authorization (below) then wins for a
+	// keyed provider, while a keyless provider's custom Authorization survives.
+	for k, v := range headers {
+		if skipCustomHeader(k) {
+			continue
+		}
+		request.Header.Set(k, v)
+	}
 	if credential != "" {
 		request.Header.Set("Authorization", "Bearer "+credential)
 	}
@@ -592,6 +626,7 @@ func (s *Server) handleCreateProviderModel(w http.ResponseWriter, r *http.Reques
 		ID: domain.NewID(), ProviderID: provider.ID, Name: name,
 		BaseURL: provider.BaseURL, ModelName: provider.Kind + "/" + modelID,
 		ModelID: modelID, APIKeyEnc: append([]byte(nil), provider.APIKeyEnc...),
+		HeadersEnc:    append([]byte(nil), provider.HeadersEnc...),
 		ContextWindow: req.ContextWindow, Capabilities: req.Capabilities, Source: source,
 		CreatedAt: now, UpdatedAt: now, UpdatedBy: principalFrom(r.Context()).userID(),
 	}

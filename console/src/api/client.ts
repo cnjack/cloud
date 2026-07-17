@@ -75,6 +75,7 @@ import type {
   UpdateModelInput,
   UpdateModelProviderInput,
   UpdateProjectInput,
+  UpdateProviderModelInput,
   UpdateScheduleInput,
   UpdateServiceInput,
   UserSearchResult,
@@ -207,6 +208,26 @@ export interface ApiClient {
   verifyModelProvider(id: string): Promise<ModelProviderVerification>;
   getModelProviderCatalog(id: string): Promise<CatalogModel[]>;
   createProviderModel(id: string, input: CreateProviderModelInput): Promise<ProviderModel>;
+
+  /* ---- project-owned model providers (M2; owner write / member read) ---- */
+  /** GET /api/v1/projects/{id}/model-providers — the project's own providers (member+). Unwraps `{providers}`. */
+  listProjectModelProviders(projectId: string): Promise<ModelProvider[]>;
+  /** POST /api/v1/projects/{id}/model-providers — add a project provider (owner). */
+  createProjectModelProvider(projectId: string, input: CreateModelProviderInput): Promise<ModelProvider>;
+  /** PATCH /api/v1/projects/{id}/model-providers/{pid} — edit a project provider (owner). */
+  updateProjectModelProvider(projectId: string, id: string, input: UpdateModelProviderInput): Promise<ModelProvider>;
+  /** DELETE /api/v1/projects/{id}/model-providers/{pid} — remove a project provider (owner). */
+  deleteProjectModelProvider(projectId: string, id: string): Promise<void>;
+  /** POST /api/v1/projects/{id}/model-providers/{pid}/verify — probe reachability (owner). */
+  verifyProjectModelProvider(projectId: string, id: string): Promise<ModelProviderVerification>;
+  /** GET /api/v1/projects/{id}/model-providers/{pid}/catalog — discovered models (owner). Unwraps `{models}`; 409 catalog_unavailable when disabled. */
+  getProjectModelProviderCatalog(projectId: string, id: string): Promise<CatalogModel[]>;
+  /** POST /api/v1/projects/{id}/model-providers/{pid}/models — add a model (owner). */
+  createProjectProviderModel(projectId: string, id: string, input: CreateProviderModelInput): Promise<ProviderModel>;
+  /** PATCH /api/v1/projects/{id}/model-providers/{pid}/models/{mid} — edit a model incl. its enabled toggle (owner). */
+  updateProjectProviderModel(projectId: string, providerId: string, modelId: string, input: UpdateProviderModelInput): Promise<ProviderModel>;
+  /** DELETE /api/v1/projects/{id}/model-providers/{pid}/models/{mid} — remove a model (owner). */
+  deleteProjectProviderModel(projectId: string, providerId: string, modelId: string): Promise<void>;
 
   /* ---- model catalog + project grants (D21) ----------------------------- */
   /** GET /api/v1/system/models — the whole catalog (cluster-admin). */
@@ -693,6 +714,53 @@ export function createHttpClient(
         method: 'POST',
         body: JSON.stringify(input),
       }),
+
+    // Project-owned model providers (M2). Same wire shapes as the cluster
+    // catalog, scoped under /projects/{id}/model-providers (owner write / member
+    // read); list/catalog use the same {providers}/{models} envelopes.
+    listProjectModelProviders: async (projectId) =>
+      (await req<{ providers: ModelProvider[] }>(
+        `/projects/${encodeURIComponent(projectId)}/model-providers`,
+      )).providers ?? [],
+    createProjectModelProvider: (projectId, input) =>
+      req<ModelProvider>(`/projects/${encodeURIComponent(projectId)}/model-providers`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    updateProjectModelProvider: (projectId, id, input) =>
+      req<ModelProvider>(
+        `/projects/${encodeURIComponent(projectId)}/model-providers/${encodeURIComponent(id)}`,
+        { method: 'PATCH', body: JSON.stringify(input) },
+      ),
+    deleteProjectModelProvider: (projectId, id) =>
+      req<void>(
+        `/projects/${encodeURIComponent(projectId)}/model-providers/${encodeURIComponent(id)}`,
+        { method: 'DELETE' },
+      ),
+    verifyProjectModelProvider: (projectId, id) =>
+      req<ModelProviderVerification>(
+        `/projects/${encodeURIComponent(projectId)}/model-providers/${encodeURIComponent(id)}/verify`,
+        { method: 'POST' },
+      ),
+    getProjectModelProviderCatalog: async (projectId, id) =>
+      (await req<{ models: CatalogModel[] }>(
+        `/projects/${encodeURIComponent(projectId)}/model-providers/${encodeURIComponent(id)}/catalog`,
+      )).models ?? [],
+    createProjectProviderModel: (projectId, id, input) =>
+      req<ProviderModel>(
+        `/projects/${encodeURIComponent(projectId)}/model-providers/${encodeURIComponent(id)}/models`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    updateProjectProviderModel: (projectId, providerId, modelId, input) =>
+      req<ProviderModel>(
+        `/projects/${encodeURIComponent(projectId)}/model-providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`,
+        { method: 'PATCH', body: JSON.stringify(input) },
+      ),
+    deleteProjectProviderModel: (projectId, providerId, modelId) =>
+      req<void>(
+        `/projects/${encodeURIComponent(projectId)}/model-providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`,
+        { method: 'DELETE' },
+      ),
 
     // Model catalog + project grants (D21).
     listModels: async () =>

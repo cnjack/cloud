@@ -706,4 +706,93 @@ func TestMemStoreModelGrants(t *testing.T) {
 	}
 }
 
+// TestMemStoreProjectOwnedModels covers the M1 project-owned scope: the usable
+// set is the project's OWN enabled models UNION its cluster grants; disabling a
+// project-owned model drops it; provider/model names are unique per scope; and
+// ListModelProvidersForProject returns only that project's providers.
+func TestMemStoreProjectOwnedModels(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+
+	for _, id := range []string{"pA", "pB"} {
+		if err := m.CreateProject(ctx, &domain.Project{ID: id, Name: id, CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A cluster-global provider + model (project_id ""), granted to pA.
+	if err := m.CreateModelProvider(ctx, &domain.ModelProvider{ID: "cp", Name: "OpenAI", Kind: "openai", BaseURL: "http://c/v1", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	clusterModel := &domain.Model{ID: "cm", ProviderID: "cp", Name: "cluster-gpt", BaseURL: "http://c/v1", ModelName: "openai/gpt", ModelID: "gpt", CreatedAt: time.Now()}
+	if err := m.CreateModel(ctx, clusterModel); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.GrantModel(ctx, "cm", "pA"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A pA-owned provider + model. It may reuse the name "OpenAI" — scope differs.
+	if err := m.CreateModelProvider(ctx, &domain.ModelProvider{ID: "ap", ProjectID: "pA", Name: "OpenAI", Kind: "openai", BaseURL: "http://a/v1", CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("project provider reusing a cluster name should be allowed: %v", err)
+	}
+	ownedModel := &domain.Model{ID: "am", ProviderID: "ap", ProjectID: "pA", Name: "cluster-gpt", BaseURL: "http://a/v1", ModelName: "openai/o1", ModelID: "o1", CreatedAt: time.Now()}
+	if err := m.CreateModel(ctx, ownedModel); err != nil {
+		t.Fatalf("project model reusing a cluster name should be allowed: %v", err)
+	}
+	if !ownedModel.Enabled {
+		t.Fatal("a freshly created model must be enabled")
+	}
+
+	// Same-scope duplicate name is still rejected.
+	if err := m.CreateModelProvider(ctx, &domain.ModelProvider{ID: "ap2", ProjectID: "pA", Name: "OpenAI", BaseURL: "http://a/v1", CreatedAt: time.Now()}); err != ErrAlreadyExists {
+		t.Fatalf("same-scope dup provider name: err=%v want ErrAlreadyExists", err)
+	}
+
+	// pA usable set = owned-enabled ∪ granted = {am, cm}.
+	set, _ := m.ListModelsForProject(ctx, "pA")
+	if got := idset(set); len(got) != 2 || !got["am"] || !got["cm"] {
+		t.Fatalf("pA usable set=%v want {am,cm}", got)
+	}
+	// pB has neither an owned model nor a grant.
+	if set, _ := m.ListModelsForProject(ctx, "pB"); len(set) != 0 {
+		t.Fatalf("pB usable set=%v want empty", idset(set))
+	}
+
+	// Disable the owned model → drops out of pA's usable set; the grant stays.
+	ownedModel.Enabled = false
+	if err := m.UpdateModel(ctx, ownedModel); err != nil {
+		t.Fatal(err)
+	}
+	set, _ = m.ListModelsForProject(ctx, "pA")
+	if got := idset(set); len(got) != 1 || !got["cm"] {
+		t.Fatalf("after disable pA usable set=%v want {cm}", got)
+	}
+
+	// ListModelProvidersForProject returns only that project's providers.
+	provs, _ := m.ListModelProvidersForProject(ctx, "pA")
+	if len(provs) != 1 || provs[0].ID != "ap" {
+		t.Fatalf("pA providers=%+v want only ap", provs)
+	}
+	if provs, _ := m.ListModelProvidersForProject(ctx, "pB"); len(provs) != 0 {
+		t.Fatalf("pB providers=%+v want none", provs)
+	}
+
+	// Deleting the project provider cascades its model.
+	if err := m.DeleteModelProvider(ctx, "ap"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.GetModel(ctx, "am"); err != ErrNotFound {
+		t.Fatalf("provider delete should cascade its model: err=%v", err)
+	}
+}
+
+func idset(models []domain.Model) map[string]bool {
+	out := map[string]bool{}
+	for _, mod := range models {
+		out[mod.ID] = true
+	}
+	return out
+}
+
 func strp(s string) *string { return &s }

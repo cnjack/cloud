@@ -554,6 +554,93 @@ describe('mockClient — model provider catalog', () => {
   });
 });
 
+describe('mockClient — project-owned model providers (M2)', () => {
+  async function makeProject(client: ApiClient) {
+    const cp = client.createProject({ name: 'demo' });
+    await flush(500);
+    return cp;
+  }
+
+  it('CRUDs a project provider + model, keeps headers write-only, and unions enabled models into listProjectModels', async () => {
+    const client = createMockClient();
+    const project = await makeProject(client);
+
+    // Create a provider with write-only headers → headers_set true, key hidden.
+    const cp = client.createProjectModelProvider(project.id, {
+      name: 'Project OpenAI', kind: 'openai', base_url: 'https://api.example.com/v1',
+      auth_type: 'api_key', api_key: 'never-return-this', catalog_mode: 'disabled',
+      headers: { 'X-Org': 'acme' },
+    });
+    await flush(300);
+    const provider = await cp;
+    expect(provider.project_id).toBe(project.id);
+    expect(provider.api_key_set).toBe(true);
+    expect(provider.headers_set).toBe(true);
+    expect(JSON.stringify(provider)).not.toContain('never-return-this');
+    expect(JSON.stringify(provider)).not.toContain('acme');
+
+    // Add a custom model — it defaults to enabled and unions into project models.
+    const cm = client.createProjectProviderModel(project.id, provider.id, {
+      name: 'Plan', model_id: 'plan', context_window: 32_000,
+      capabilities: { reasoning: false, tools: true, image: false }, source: 'custom',
+    });
+    await flush(300);
+    const model = await cm;
+    expect(model.enabled).toBe(true);
+    expect(model.runtime_model_name).toBe('openai/plan');
+
+    let lp = client.listProjectModels(project.id);
+    await flush(300);
+    expect((await lp).models.some((m) => m.id === model.id)).toBe(true);
+
+    // Disabling the model drops it from the usable union (per-model toggle).
+    const up = client.updateProjectProviderModel(project.id, provider.id, model.id, { enabled: false });
+    await flush(300);
+    expect((await up).enabled).toBe(false);
+    lp = client.listProjectModels(project.id);
+    await flush(300);
+    expect((await lp).models.some((m) => m.id === model.id)).toBe(false);
+
+    // Catalog is unavailable on a disabled-catalog provider (fail-visible 409).
+    const cat = client.getProjectModelProviderCatalog(project.id, provider.id).then(
+      () => ({ ok: true as const }), (error) => ({ ok: false as const, error }),
+    );
+    await flush(300);
+    const catRes = await cat;
+    expect(catRes.ok).toBe(false);
+    if (!catRes.ok) expect(apiErrorCode(catRes.error)).toBe('catalog_unavailable');
+
+    // Clearing headers via {} flips headers_set off.
+    const upd = client.updateProjectModelProvider(project.id, provider.id, { headers: {} });
+    await flush(300);
+    expect((await upd).headers_set).toBe(false);
+
+    // Delete the model, then the provider.
+    const dm = client.deleteProjectProviderModel(project.id, provider.id, model.id);
+    await flush(300);
+    await dm;
+    const dp = client.deleteProjectModelProvider(project.id, provider.id);
+    await flush(300);
+    await dp;
+    const list = client.listProjectModelProviders(project.id);
+    await flush(300);
+    expect(await list).toHaveLength(0);
+  });
+
+  it('rejects a blank header value with a typed 400', async () => {
+    const client = createMockClient();
+    const project = await makeProject(client);
+    const p = client.createProjectModelProvider(project.id, {
+      name: 'P', kind: 'openai', base_url: 'https://api.example.com/v1',
+      auth_type: 'none', api_key: '', catalog_mode: 'auto', headers: { 'X-Bad': '' },
+    }).then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
+    await flush(300);
+    const res = await p;
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect((res.err as ApiError).status).toBe(400);
+  });
+});
+
 // PR review flow (blueprint §5): getPR reports a live PR + reviews; requestReview
 // spawns a kind=review run that produces markdown output.
 describe('mockClient — PR review flow', () => {

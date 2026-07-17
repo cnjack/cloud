@@ -1034,13 +1034,30 @@ export interface ProviderModel {
   context_window: number;
   capabilities: ModelCapabilities;
   source: 'catalog' | 'custom';
-  granted_project_ids: string[];
+  /**
+   * Cluster scope only: the projects authorized to run this model. Absent on the
+   * project-scoped provider view (a project owns its models outright), so it is
+   * optional on the shared type and the grants control renders in cluster scope.
+   */
+  granted_project_ids?: string[];
+  /**
+   * Project scope only: the per-model on/off toggle (jcode parity). Absent on the
+   * cluster view; the enable Switch renders only in project scope.
+   */
+  enabled?: boolean;
 }
 
 export type ModelProviderAuthType = 'api_key' | 'service_identity' | 'none';
 export type ModelProviderCatalogMode = 'auto' | 'disabled';
 
-/** Cluster-admin provider view. Credentials are write-only (`api_key_set`). */
+/**
+ * Provider view shared by the cluster catalog and the project-scoped manager.
+ * Credentials/headers are write-only (`api_key_set` / `headers_set`).
+ *
+ * Cluster scope carries `project_grants` (the grant fan-out count); the project
+ * scope carries `project_id` instead and omits `project_grants`. Both fields are
+ * optional so the one shared type serves both scopes.
+ */
 export interface ModelProvider {
   id: string;
   name: string;
@@ -1048,12 +1065,17 @@ export interface ModelProvider {
   base_url: string;
   auth_type: ModelProviderAuthType;
   api_key_set: boolean;
+  /** Project scope: true when custom request headers are configured (write-only). */
+  headers_set?: boolean;
   catalog_mode: ModelProviderCatalogMode;
   catalog_available: boolean | null;
   last_verified_at?: string;
   last_verification_error?: string;
   models: ProviderModel[];
-  project_grants: number;
+  /** Cluster scope: number of projects granted at least one of this provider's models. */
+  project_grants?: number;
+  /** Project scope: the owning project id. */
+  project_id?: string;
   created_at: string;
   updated_at: string;
   updated_by: string;
@@ -1066,6 +1088,8 @@ export interface CreateModelProviderInput {
   auth_type: ModelProviderAuthType;
   api_key: string;
   catalog_mode: ModelProviderCatalogMode;
+  /** Optional custom request headers (write-only). A blank key/value is a 400. */
+  headers?: Record<string, string>;
 }
 
 export interface UpdateModelProviderInput {
@@ -1075,6 +1099,16 @@ export interface UpdateModelProviderInput {
   auth_type?: ModelProviderAuthType;
   api_key?: string;
   catalog_mode?: ModelProviderCatalogMode;
+  /** Present replaces the whole header set; `{}` clears; omitted keeps existing. */
+  headers?: Record<string, string>;
+}
+
+/** PATCH /projects/{id}/model-providers/{pid}/models/{mid} body — all optional. */
+export interface UpdateProviderModelInput {
+  name?: string;
+  context_window?: number;
+  capabilities?: ModelCapabilities;
+  enabled?: boolean;
 }
 
 export interface CatalogModel {

@@ -64,9 +64,19 @@ type Server struct {
 	// Shared with the reconciler via Models() so a console PUT/DELETE's
 	// Invalidate() is immediately visible to Job scheduling. Never nil.
 	models *modelcfg.Resolver
-	// modelProviderHTTP performs cluster-admin provider verification/catalog
-	// requests. It has a short timeout and is replaceable in package tests.
+	// modelProviderHTTP performs the server-side model-provider verify/catalog
+	// probe (GET base_url/models) for BOTH the cluster-admin and the project-owner
+	// endpoints. It has a short timeout AND an SSRF dial guard (guardedDialContext)
+	// that refuses to connect to loopback/link-local/private/unspecified IPs — the
+	// project endpoints are reachable by any project owner, so without the guard
+	// they would be a request oracle against the internal network (incl. the cloud
+	// metadata endpoint). Replaceable in package tests.
 	modelProviderHTTP *http.Client
+	// allowPrivateModelHosts disables the modelProviderHTTP SSRF dial guard. It is
+	// false in production (the guard is always on) and set true ONLY by the test
+	// harness that points providers at an httptest server on 127.0.0.1, so those
+	// tests exercise a real probe without the loopback block tripping.
+	allowPrivateModelHosts bool
 
 	// kanban resolves the EFFECTIVE cluster jtype kanban config (base URL +
 	// optional cluster fallback token) at REQUEST time from the console-managed DB
@@ -161,7 +171,20 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Effective-model resolver (Feature A): one cached instance for every gate
 	// (run create/retry/review, webhook, and — via Models() — the reconciler).
 	s.models = modelcfg.NewResolver(st, s.cipher, cfg)
-	s.modelProviderHTTP = &http.Client{Timeout: 8 * time.Second}
+	// Provider verify/catalog probe client. The transport's DialContext carries the
+	// SSRF guard (see ssrf.go); the guard reads s.allowPrivateModelHosts at dial
+	// time so a test can opt out for an httptest (127.0.0.1) upstream.
+	s.modelProviderHTTP = &http.Client{
+		Timeout: 8 * time.Second,
+		Transport: &http.Transport{
+			DialContext:           guardedDialContext(func() bool { return s.allowPrivateModelHosts }),
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
 	// D27 — effective cluster jtype kanban config resolver (DB row set from the
 	// console > JTYPE_* env). One cached instance shared with the poller +
 	// reconciler via Kanban(); a console write Invalidate()s it so a stored base
@@ -330,6 +353,24 @@ func (s *Server) Handler() http.Handler {
 	// Models a project is granted (D21). Member+; returns only id/name/model_name
 	// (never the base_url or key) plus an env_fallback flag for the ModelGate.
 	mux.Handle("GET /api/v1/projects/{id}/models", s.authed(s.handleListProjectModels))
+
+	// Project-owned model providers + models (M1) — the project's own provider
+	// manager (jcode parity), usable by all its services. Listing is member+; every
+	// mutation is owner-managed. The api_key and custom headers are write-only
+	// (echoed only as api_key_set / headers_set); base_url is owner/member-visible.
+	// Every {pid}/{mid} handler asserts the row's project_id equals {id}, so a
+	// cluster-global row (project_id NULL) or another project's row is a 404 — these
+	// routes can never reach outside the project's own scope. A mutation
+	// Invalidate()s the shared model resolver so the change takes effect at once.
+	mux.Handle("GET /api/v1/projects/{id}/model-providers", s.authed(s.handleListProjectModelProviders))
+	mux.Handle("POST /api/v1/projects/{id}/model-providers", s.authed(s.handleCreateProjectModelProvider))
+	mux.Handle("PATCH /api/v1/projects/{id}/model-providers/{pid}", s.authed(s.handleUpdateProjectModelProvider))
+	mux.Handle("DELETE /api/v1/projects/{id}/model-providers/{pid}", s.authed(s.handleDeleteProjectModelProvider))
+	mux.Handle("POST /api/v1/projects/{id}/model-providers/{pid}/verify", s.authed(s.handleVerifyProjectModelProvider))
+	mux.Handle("GET /api/v1/projects/{id}/model-providers/{pid}/catalog", s.authed(s.handleProjectModelProviderCatalog))
+	mux.Handle("POST /api/v1/projects/{id}/model-providers/{pid}/models", s.authed(s.handleCreateProjectProviderModel))
+	mux.Handle("PATCH /api/v1/projects/{id}/model-providers/{pid}/models/{mid}", s.authed(s.handleUpdateProjectProviderModel))
+	mux.Handle("DELETE /api/v1/projects/{id}/model-providers/{pid}/models/{mid}", s.authed(s.handleDeleteProjectProviderModel))
 
 	// Integrations (D19 / F5) — project-level git host bindings with a bot
 	// credential. Listing + repo discovery are member+ (a member may add a repo off

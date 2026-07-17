@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -142,6 +143,52 @@ func TestResolveCatalogKeylessModel(t *testing.T) {
 	}
 	if got.Source != SourceCatalog || got.APIKeySet {
 		t.Fatalf("keyless catalog got %+v", got)
+	}
+	if got.Headers != nil {
+		t.Fatalf("keyless/headerless model should resolve nil Headers, got %+v", got.Headers)
+	}
+}
+
+// TestResolveCatalogModelDecryptsHeaders proves the provider's custom headers are
+// decrypted onto Resolved.Headers so the LLM proxy can apply them — FIX A: a
+// stored header must actually reach the runtime, not just echo headers_set.
+func TestResolveCatalogModelDecryptsHeaders(t *testing.T) {
+	st := store.NewMemStore()
+	cipher := testCipher(t)
+	raw, err := json.Marshal(map[string]string{"X-Api-Version": "2024-01", "X-Extra": "y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := cipher.EncryptString(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &domain.Model{ID: domain.NewID(), Name: "gpt", BaseURL: "http://db/v1", ModelName: "openai/gpt-4o", HeadersEnc: enc, CreatedAt: time.Now()}
+	if err := st.CreateModel(context.Background(), m); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+	got, err := resolveModel(context.Background(), st, cipher, &config.Config{}, m.ID)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(got.Headers) != 2 || got.Headers["X-Api-Version"] != "2024-01" || got.Headers["X-Extra"] != "y" {
+		t.Fatalf("headers mismatch: %+v", got.Headers)
+	}
+}
+
+// TestResolveCatalogHeadersWithoutCipherErrors is the header analogue of the key
+// case: a sealed header set with no cipher is a fail-visible error, never
+// silently dropped.
+func TestResolveCatalogHeadersWithoutCipherErrors(t *testing.T) {
+	st := store.NewMemStore()
+	cipher := testCipher(t)
+	enc, _ := cipher.EncryptString(`{"X-A":"b"}`)
+	m := &domain.Model{ID: domain.NewID(), Name: "gpt", BaseURL: "http://db/v1", ModelName: "openai/gpt-4o", HeadersEnc: enc, CreatedAt: time.Now()}
+	if err := st.CreateModel(context.Background(), m); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+	if _, err := resolveModel(context.Background(), st, nil, &config.Config{}, m.ID); err == nil {
+		t.Fatal("expected an error decrypting headers with no cipher configured")
 	}
 }
 

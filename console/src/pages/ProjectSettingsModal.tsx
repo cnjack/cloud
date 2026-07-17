@@ -22,6 +22,7 @@ import { Button } from '../components/Button';
 import { SelectField, TextField } from '../components/Field';
 import { MembersPanel } from './MembersPanel';
 import { IntegrationsPanel } from './IntegrationsPanel';
+import { ProjectModelsPanel } from './models/ProjectModelsPanel';
 import {
   useUpdateProject,
   useDeleteProject,
@@ -37,7 +38,6 @@ import {
   useApiKeys,
   useCreateApiKey,
   useRevokeApiKey,
-  useProjectModels,
 } from '../api/queries';
 import { useToast } from '../components/Toast';
 import { KanbanConnectFlow, expiryLabel } from '../components/KanbanConnect';
@@ -477,7 +477,7 @@ export function ProjectSettingsPage({
           {section === 'members' && <MembersPanel projectId={project.id} canManage={canManage} />}
           {section === 'integrations' && canManage && <IntegrationsPanel project={project} />}
           {section === 'kanban' && canManage && <KanbanPanel project={project} />}
-          {section === 'models' && <ModelAccessPanel projectId={project.id} />}
+          {section === 'models' && <ProjectModelsPanel projectId={project.id} canManage={canManage} />}
           {section === 'apikeys' && canManage && <ApiKeysPanel project={project} />}
         </div>
       </div>
@@ -504,28 +504,6 @@ function SettingsSection({
       </header>
       <div className={styles.settingsSectionBody}>{children}</div>
     </section>
-  );
-}
-
-function ModelAccessPanel({ projectId }: { projectId: string }) {
-  const { t } = useTranslation();
-  const models = useProjectModels(projectId);
-  if (models.isLoading) return <p className={styles.settingsState}>{t('projectSettings.loadingModelAccess')}</p>;
-  if (models.isError) return <p className={styles.settingsState} role="alert">{t('projectSettings.modelAccessLoadError')}</p>;
-  if (!models.data || (models.data.models.length === 0 && !models.data.env_fallback)) {
-    return <p className={styles.settingsState}>{t('projectSettings.noModelConfigured')}</p>;
-  }
-  return (
-    <div className={styles.modelList}>
-      {models.data.models.map((model) => (
-        <div key={model.id} className={styles.modelRow}>
-          <span className={styles.modelMark} aria-hidden>AI</span>
-          <span><strong>{model.name}</strong><code>{model.model_name}</code></span>
-          <small>{t('projectSettings.granted')}</small>
-        </div>
-      ))}
-      {models.data.env_fallback && <p className={styles.settingsState}>{t('projectSettings.envFallbackActive')}</p>}
-    </div>
   );
 }
 

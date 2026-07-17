@@ -1243,6 +1243,9 @@ func cloneModelProvider(p domain.ModelProvider) domain.ModelProvider {
 	if p.APIKeyEnc != nil {
 		p.APIKeyEnc = append([]byte(nil), p.APIKeyEnc...)
 	}
+	if p.HeadersEnc != nil {
+		p.HeadersEnc = append([]byte(nil), p.HeadersEnc...)
+	}
 	if p.CatalogAvailable != nil {
 		v := *p.CatalogAvailable
 		p.CatalogAvailable = &v
@@ -1257,8 +1260,11 @@ func cloneModelProvider(p domain.ModelProvider) domain.ModelProvider {
 func (m *MemStore) CreateModelProvider(_ context.Context, p *domain.ModelProvider) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Scope-aware uniqueness (M1): a name is unique WITHIN its scope
+	// (COALESCE(project_id,'')), so the cluster and each project can name a
+	// provider the same thing.
 	for _, existing := range m.modelProviders {
-		if existing.Name == p.Name {
+		if existing.Name == p.Name && existing.ProjectID == p.ProjectID {
 			return ErrAlreadyExists
 		}
 	}
@@ -1292,6 +1298,21 @@ func (m *MemStore) ListModelProviders(_ context.Context) ([]domain.ModelProvider
 	return out, nil
 }
 
+// ListModelProvidersForProject returns the providers OWNED by a project (M1),
+// oldest first. Cluster-global providers (project_id "") are never returned.
+func (m *MemStore) ListModelProvidersForProject(_ context.Context, projectID string) ([]domain.ModelProvider, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.ModelProvider
+	for _, p := range m.modelProviders {
+		if p.ProjectID == projectID {
+			out = append(out, cloneModelProvider(p))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
 func (m *MemStore) UpdateModelProvider(_ context.Context, p *domain.ModelProvider) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1299,7 +1320,7 @@ func (m *MemStore) UpdateModelProvider(_ context.Context, p *domain.ModelProvide
 		return ErrNotFound
 	}
 	for id, existing := range m.modelProviders {
-		if id != p.ID && existing.Name == p.Name {
+		if id != p.ID && existing.Name == p.Name && existing.ProjectID == p.ProjectID {
 			return ErrAlreadyExists
 		}
 	}
@@ -1309,6 +1330,7 @@ func (m *MemStore) UpdateModelProvider(_ context.Context, p *domain.ModelProvide
 		if mod.ProviderID == p.ID {
 			mod.BaseURL = p.BaseURL
 			mod.APIKeyEnc = append([]byte(nil), p.APIKeyEnc...)
+			mod.HeadersEnc = append([]byte(nil), p.HeadersEnc...)
 			mod.ModelName = p.Kind + "/" + mod.ModelID
 			m.models[id] = mod
 		}
@@ -1372,22 +1394,29 @@ func (m *MemStore) ListModelsForProvider(_ context.Context, providerID string) (
 	return out, nil
 }
 
-// cloneModel deep-copies a model so callers can't mutate the stored api_key_enc.
+// cloneModel deep-copies a model so callers can't mutate the stored api_key_enc
+// or headers_enc.
 func cloneModel(m domain.Model) domain.Model {
 	if m.APIKeyEnc != nil {
 		m.APIKeyEnc = append([]byte(nil), m.APIKeyEnc...)
+	}
+	if m.HeadersEnc != nil {
+		m.HeadersEnc = append([]byte(nil), m.HeadersEnc...)
 	}
 	return m
 }
 
 func grantKey(modelID, projectID string) string { return modelID + "|" + projectID }
 
-// CreateModel inserts a catalog model. Duplicate name => ErrAlreadyExists.
+// CreateModel inserts a catalog model. Duplicate name => ErrAlreadyExists. A new
+// model is always enabled (jcode Switch parity; the DB column default is true).
 func (m *MemStore) CreateModel(_ context.Context, mod *domain.Model) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	mod.Enabled = true
+	// Scope-aware uniqueness (M1): unique WITHIN scope (COALESCE(project_id,'')).
 	for _, e := range m.models {
-		if e.Name == mod.Name {
+		if e.Name == mod.Name && e.ProjectID == mod.ProjectID {
 			return ErrAlreadyExists
 		}
 	}
@@ -1401,7 +1430,7 @@ func (m *MemStore) CreateModel(_ context.Context, mod *domain.Model) error {
 			authType = domain.ModelProviderAuthAPIKey
 		}
 		m.modelProviders[mod.ProviderID] = domain.ModelProvider{
-			ID: mod.ProviderID, Name: mod.Name, Kind: "custom", BaseURL: mod.BaseURL,
+			ID: mod.ProviderID, ProjectID: mod.ProjectID, Name: mod.Name, Kind: "custom", BaseURL: mod.BaseURL,
 			AuthType: authType, APIKeyEnc: append([]byte(nil), mod.APIKeyEnc...),
 			CatalogMode: domain.ModelProviderCatalogDisabled, CreatedAt: mod.CreatedAt,
 			UpdatedAt: mod.CreatedAt, UpdatedBy: mod.UpdatedBy,
@@ -1464,7 +1493,7 @@ func (m *MemStore) UpdateModel(_ context.Context, mod *domain.Model) error {
 		return ErrNotFound
 	}
 	for id, e := range m.models {
-		if id != mod.ID && e.Name == mod.Name {
+		if id != mod.ID && e.Name == mod.Name && e.ProjectID == mod.ProjectID {
 			return ErrAlreadyExists
 		}
 	}
@@ -1487,9 +1516,13 @@ func (m *MemStore) UpdateModel(_ context.Context, mod *domain.Model) error {
 		}
 		provider.BaseURL = mod.BaseURL
 		provider.APIKeyEnc = append([]byte(nil), mod.APIKeyEnc...)
-		provider.AuthType = domain.ModelProviderAuthNone
+		// Recompute auth_type from key presence, but preserve a valid keyless
+		// service_identity provider — editing a model's metadata must not silently
+		// downgrade it to none (mirrors the PG UpdateModel sync).
 		if len(mod.APIKeyEnc) > 0 {
 			provider.AuthType = domain.ModelProviderAuthAPIKey
+		} else if provider.AuthType != domain.ModelProviderAuthServiceIdentity {
+			provider.AuthType = domain.ModelProviderAuthNone
 		}
 		provider.UpdatedAt = time.Now().UTC()
 		provider.UpdatedBy = mod.UpdatedBy
@@ -1515,13 +1548,15 @@ func (m *MemStore) DeleteModel(_ context.Context, id string) error {
 	return m.deleteModelLocked(id)
 }
 
-// ListModelsForProject returns the models granted to a project, newest first.
+// ListModelsForProject returns a project's USABLE model set, newest first (M1):
+// its OWN enabled models UNION the cluster models granted to it.
 func (m *MemStore) ListModelsForProject(_ context.Context, projectID string) ([]domain.Model, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []domain.Model
 	for id, mod := range m.models {
-		if m.modelGrants[grantKey(id, projectID)] {
+		ownedEnabled := mod.ProjectID == projectID && mod.Enabled
+		if ownedEnabled || m.modelGrants[grantKey(id, projectID)] {
 			out = append(out, cloneModel(mod))
 		}
 	}

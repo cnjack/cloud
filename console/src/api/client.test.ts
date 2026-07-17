@@ -332,6 +332,51 @@ describe('httpClient — model providers', () => {
   });
 });
 
+describe('httpClient — project model providers (M2)', () => {
+  it('uses the project-scoped provider + model routes with encoded ids and unwraps envelopes', async () => {
+    const { calls } = mockFetch(({ url, init }) => {
+      if (url.endsWith('/model-providers') && !init?.method) {
+        return { body: { providers: [{ id: 'prv 1', name: 'OpenAI', project_id: 'p1' }] } };
+      }
+      if (url.endsWith('/catalog')) return { body: { models: [{ id: 'gpt-4o', name: 'GPT-4o' }] } };
+      if (url.endsWith('/verify')) return { body: { reachable: true, catalog_available: true, latency_ms: 12 } };
+      if (url.endsWith('/models') && init?.method === 'POST') return { status: 201, body: { id: 'mdl-1', ...JSON.parse(init.body as string) } };
+      if (init?.method === 'DELETE') return { status: 204 };
+      if (init?.method === 'PATCH') return { status: 200, body: { id: 'x', ...JSON.parse(init!.body as string) } };
+      return { status: init?.method === 'POST' ? 201 : 200, body: { id: 'prv 1', ...JSON.parse(init!.body as string) } };
+    });
+    const client = createHttpClient('t');
+
+    const listed = await client.listProjectModelProviders('p1');
+    expect(listed[0]!.id).toBe('prv 1');
+    await client.createProjectModelProvider('p1', { name: 'OpenAI', kind: 'openai', base_url: 'https://api.openai.com/v1', auth_type: 'api_key', api_key: 'write-only', catalog_mode: 'auto', headers: { 'X-Org': 'acme' } });
+    await client.updateProjectModelProvider('p1', 'prv 1', { catalog_mode: 'disabled', headers: {} });
+    await client.verifyProjectModelProvider('p1', 'prv 1');
+    await client.getProjectModelProviderCatalog('p1', 'prv 1');
+    await client.createProjectProviderModel('p1', 'prv 1', { name: 'Plan', model_id: 'plan', context_window: 32_000, capabilities: { reasoning: false, tools: true, image: false }, source: 'custom' });
+    await client.updateProjectProviderModel('p1', 'prv 1', 'mdl 2', { enabled: false });
+    await client.deleteProjectProviderModel('p1', 'prv 1', 'mdl 2');
+    await client.deleteProjectModelProvider('p1', 'prv 1');
+
+    expect(calls.map((call) => call.url)).toEqual([
+      '/api/v1/projects/p1/model-providers',
+      '/api/v1/projects/p1/model-providers',
+      '/api/v1/projects/p1/model-providers/prv%201',
+      '/api/v1/projects/p1/model-providers/prv%201/verify',
+      '/api/v1/projects/p1/model-providers/prv%201/catalog',
+      '/api/v1/projects/p1/model-providers/prv%201/models',
+      '/api/v1/projects/p1/model-providers/prv%201/models/mdl%202',
+      '/api/v1/projects/p1/model-providers/prv%201/models/mdl%202',
+      '/api/v1/projects/p1/model-providers/prv%201',
+    ]);
+    expect(calls.map((call) => call.init?.method)).toEqual([undefined, 'POST', 'PATCH', 'POST', undefined, 'POST', 'PATCH', 'DELETE', 'DELETE']);
+    // The create body carries the write-only headers verbatim.
+    expect(JSON.parse(calls[1]!.init!.body as string).headers).toEqual({ 'X-Org': 'acme' });
+    // A `{}` headers PATCH clears the set.
+    expect(JSON.parse(calls[2]!.init!.body as string).headers).toEqual({});
+  });
+});
+
 describe('httpClient — runtime token source (login gate)', () => {
   it('reads the token through a getter on every request, so rotation needs no rebuild', async () => {
     const { calls } = mockFetch(() => ({ body: { projects: [] } }));
