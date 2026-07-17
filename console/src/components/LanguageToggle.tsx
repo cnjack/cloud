@@ -5,7 +5,7 @@
  * localStorage. Colors come from currentColor / theme tokens (lint-safe).
  */
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
-import { Check, Translate } from '@phosphor-icons/react';
+import { Check, Globe } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { LOCALE_LABELS, SUPPORTED_LOCALES, setLocale, type SupportedLocale } from '../i18n';
 import styles from './LanguageToggle.module.css';
@@ -21,7 +21,7 @@ export function LanguageToggle() {
         aria-label={t('language.label')}
         title={t('language.label')}
       >
-        <Translate size={16} weight="regular" aria-hidden="true" />
+        <Globe size={16} weight="regular" aria-hidden="true" />
       </MenuButton>
       <MenuItems
         modal={false}

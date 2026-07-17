@@ -33,6 +33,10 @@
 .railFooter { display: flex; align-items: center; justify-content: space-between; color: var(--color-text-faint); font-size: var(--fs-tiny); }
 .breadcrumbs { display: flex; min-width: 0; align-items: center; gap: var(--space-2); color: var(--color-text-faint); font-size: var(--fs-caption); }
 .breadcrumbs a { color: var(--color-text-dim); }
+/* The utility bar is justify-content: space-between, so the toggles must be ONE
+   grouped child — three bare children would spread the language toggle into
+   the middle of the bar. Mirrors ProjectDetailPage's workspaceUtilityActions. */
+.utilityActions { display: flex; flex: none; align-items: center; gap: var(--space-2); }
 
 .taskDetail { display: flex; height: 100%; min-height: 0; flex-direction: column; background: var(--color-panel); }
 .taskHeader { z-index: 4; display: grid; flex: none; gap: 10px; padding: 13px 22px 14px; border-bottom: 1px solid var(--color-border); background: var(--color-panel); }

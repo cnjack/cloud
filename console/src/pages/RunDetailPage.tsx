@@ -243,8 +243,10 @@ export function RunDetailPage() {
                   <Link to={`/projects/${current.project_id}`}>{projectName}</Link><span>/</span>
                   <span>{t('runDetail.breadcrumb.tasks')}</span><span>/</span><span>{t('runDetail.breadcrumb.detail')}</span>
                 </nav>
-                <LanguageToggle />
-                <ThemeToggle />
+                <div className={styles.utilityActions} data-testid="run-utility-actions">
+                  <LanguageToggle />
+                  <ThemeToggle />
+                </div>
               </>
             }
           >
