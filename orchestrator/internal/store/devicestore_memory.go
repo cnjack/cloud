@@ -40,6 +40,7 @@ func (m *MemStore) UpsertDeviceRegistration(_ context.Context, d *domain.Device)
 	existing.Name = d.Name
 	existing.Hostname = d.Hostname
 	existing.JcodeVersion = d.JcodeVersion
+	existing.Platform = d.Platform
 	existing.Pubkey = d.Pubkey
 	existing.LastSeenAt = d.LastSeenAt
 	m.devices[d.ID] = existing

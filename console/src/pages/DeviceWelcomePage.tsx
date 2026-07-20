@@ -1,15 +1,16 @@
-import { ArrowRight, Warning } from '@phosphor-icons/react';
+import { ArrowRight, Lock, Warning } from '@phosphor-icons/react';
 import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { useDevices, useDeviceSessions, useSendDeviceMessage, DevicePairingCard } from '@jcloud/device-ui';
+import { useDevices, useDeviceSessions, useSendDeviceMessage, DevicePairingCard, channelLabelKey } from '@jcloud/device-ui';
 import type { DeviceSession } from '@jcloud/device-ui';
 import { Button } from '../components/Button';
 import { PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout';
 import { Select } from '../components/Select';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import { useToast } from '../components/Toast';
+import { e2eeBadgeTooltip, platformBadgeLabel } from '../lib/deviceBadges';
 import { timeAgo } from '../lib/format';
 import styles from './DeviceWelcomePage.module.css';
 
@@ -78,6 +79,7 @@ export function DeviceWelcomePage() {
       ? t('device.list.lastSeen', { time: timeAgo(device.last_seen_at) })
       : t('device.list.neverSeen'),
   ].filter((part): part is string => !!part);
+  const platform = platformBadgeLabel(device?.platform, t);
 
   return (
     <SurfaceInner>
@@ -87,9 +89,17 @@ export function DeviceWelcomePage() {
           title={name}
           description={metaParts.join(' · ')}
           actions={
-            <StatusLabel tone={online ? 'success' : 'neutral'}>
-              {online ? t('device.list.online') : t('device.list.offline')}
-            </StatusLabel>
+            <span className={styles.badges}>
+              {platform && <StatusLabel tone="neutral">{platform}</StatusLabel>}
+              {device?.pubkey && (
+                <StatusLabel tone="success" title={e2eeBadgeTooltip(device, t)}>
+                  <Lock size={11} weight="bold" aria-hidden="true" />
+                </StatusLabel>
+              )}
+              <StatusLabel tone={online ? 'success' : 'neutral'}>
+                {online ? t('device.list.online') : t('device.list.offline')}
+              </StatusLabel>
+            </span>
           }
         />
 
@@ -161,6 +171,13 @@ export function DeviceWelcomePage() {
 function SessionRow({ deviceId, session }: { deviceId: string; session: DeviceSession }) {
   const { t } = useTranslation();
   const running = session.status === 'running';
+  // List-level source badge: only renders when jcode relays `source` in the
+  // session meta (DeviceSessionMeta passthrough) — it does not today, so this
+  // degrades to nothing until the device starts sending it. Known channels
+  // get a translated label; unknown non-empty values render raw (same rule
+  // as the timeline channel badge).
+  const source = typeof session.meta?.source === 'string' ? session.meta.source.trim() : '';
+  const sourceKey = channelLabelKey(source);
   return (
     <li>
       <Link
@@ -174,6 +191,7 @@ function SessionRow({ deviceId, session }: { deviceId: string; session: DeviceSe
             <span className={styles.statusBadge} data-tone={running ? 'running' : 'idle'}>
               {running ? t('device.welcome.status.running') : t('device.welcome.status.idle')}
             </span>
+            {source && <span className={styles.sourceBadge}>{sourceKey ? t(sourceKey) : source}</span>}
           </span>
           <span className={styles.rowMeta}>
             {session.meta?.project && <span className={styles.mono}>{session.meta.project}</span>}

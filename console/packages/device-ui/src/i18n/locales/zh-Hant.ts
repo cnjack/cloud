@@ -31,7 +31,11 @@ export default {
       "lastSeen": "上次上線 {time}",
       "neverSeen": "從未上線",
       "loadErrorTitle": "無法載入裝置",
-      "servicePrincipal": "裝置與使用者帳號綁定——請以使用者身份登入，而不是使用控制台服務權杖。"
+      "servicePrincipal": "裝置與使用者帳號綁定——請以使用者身份登入，而不是使用控制台服務權杖。",
+      "platformDesktop": "桌面端",
+      "platformCli": "CLI",
+      "e2ee": "端對端加密",
+      "e2eeWithKeyGen": "端對端加密 · 金鑰世代 {gen}"
     },
     "welcome": {
       "back": "裝置",
@@ -83,7 +87,14 @@ export default {
       "subagentFailed": "子 agent {name} 失敗",
       "sendFailed": "無法傳送：{message}",
       "deviceOffline": "裝置已離線",
-      "emptyHistory": "此工作階段還沒有事件。"
+      "emptyHistory": "此工作階段還沒有事件。",
+      "source": {
+        "console": "主控台",
+        "mobile": "行動端",
+        "desktop": "桌面端",
+        "wechat": "微信",
+        "local": "本機"
+      }
     },
     "guide": {
       "entry": "使用指南",

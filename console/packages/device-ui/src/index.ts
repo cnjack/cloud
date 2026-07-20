@@ -80,6 +80,7 @@ export { DeviceTimeline } from './deviceview/DeviceTimeline';
 export type { DeviceApprovalControls } from './deviceview/DeviceTimeline';
 export { DevicePairingCard } from './deviceview/DevicePairingCard';
 export { mapDeviceEvent, applyToolResult, prettyArgs } from './deviceview/eventModel';
+export { KNOWN_MESSAGE_SOURCES, channelLabelKey } from './deviceview/channels';
 export { groupDeviceEvents } from './deviceview/grouping';
 export {
   initialDeviceSessionState,

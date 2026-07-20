@@ -67,6 +67,7 @@ type deviceView struct {
 	Name         string     `json:"name"`
 	Hostname     string     `json:"hostname,omitempty"`
 	JcodeVersion string     `json:"jcode_version,omitempty"`
+	Platform     string     `json:"platform"`
 	Pubkey       string     `json:"pubkey,omitempty"`
 	KeyGen       int        `json:"key_gen"`
 	Online       bool       `json:"online"`
@@ -80,6 +81,7 @@ func (s *Server) toDeviceView(d *domain.Device) deviceView {
 		Name:         d.Name,
 		Hostname:     d.Hostname,
 		JcodeVersion: d.JcodeVersion,
+		Platform:     d.Platform,
 		Pubkey:       d.Pubkey,
 		KeyGen:       d.KeyGen,
 		Online:       s.deviceOnline(d),

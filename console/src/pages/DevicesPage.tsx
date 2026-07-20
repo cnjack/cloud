@@ -1,4 +1,4 @@
-import { Devices, Question } from '@phosphor-icons/react';
+import { Devices, Lock, Question } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Link } from 'react-router-dom';
@@ -9,6 +9,7 @@ import { Button } from '../components/Button';
 import { EmptyState } from '../components/EmptyState';
 import { PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout';
 import { ErrorBlock, LoadingBlock } from '../components/States';
+import { e2eeBadgeTooltip, platformBadgeLabel } from '../lib/deviceBadges';
 import { timeAgo } from '../lib/format';
 import styles from './DevicesPage.module.css';
 
@@ -64,25 +65,36 @@ export function DevicesPage() {
           </div>
         ) : (
           <div className={styles.grid}>
-            {(devices.data ?? []).map((device) => (
-              <Link key={device.id} to={`/devices/${device.id}`} className={styles.card} data-testid="device-card">
-                <header className={styles.cardHead}>
-                  <h2>{device.name}</h2>
-                  <StatusLabel tone={device.online ? 'success' : 'neutral'}>
-                    {device.online ? t('device.list.online') : t('device.list.offline')}
-                  </StatusLabel>
-                </header>
-                <dl className={styles.facts}>
-                  {device.hostname && (
-                    <div className={styles.fact}><dt>Hostname</dt><dd className={styles.mono}>{device.hostname}</dd></div>
-                  )}
-                  {device.jcode_version && (
-                    <div className={styles.fact}><dt>jcode</dt><dd className={styles.mono}>{device.jcode_version}</dd></div>
-                  )}
-                  <div className={styles.fact}><dd className={styles.seen}>{lastSeenLabel(device, t)}</dd></div>
-                </dl>
-              </Link>
-            ))}
+            {(devices.data ?? []).map((device) => {
+              const platform = platformBadgeLabel(device.platform, t);
+              return (
+                <Link key={device.id} to={`/devices/${device.id}`} className={styles.card} data-testid="device-card">
+                  <header className={styles.cardHead}>
+                    <h2>{device.name}</h2>
+                    <span className={styles.badges}>
+                      {platform && <StatusLabel tone="neutral">{platform}</StatusLabel>}
+                      {device.pubkey && (
+                        <StatusLabel tone="success" title={e2eeBadgeTooltip(device, t)}>
+                          <Lock size={11} weight="bold" aria-hidden="true" />
+                        </StatusLabel>
+                      )}
+                      <StatusLabel tone={device.online ? 'success' : 'neutral'}>
+                        {device.online ? t('device.list.online') : t('device.list.offline')}
+                      </StatusLabel>
+                    </span>
+                  </header>
+                  <dl className={styles.facts}>
+                    {device.hostname && (
+                      <div className={styles.fact}><dt>Hostname</dt><dd className={styles.mono}>{device.hostname}</dd></div>
+                    )}
+                    {device.jcode_version && (
+                      <div className={styles.fact}><dt>jcode</dt><dd className={styles.mono}>{device.jcode_version}</dd></div>
+                    )}
+                    <div className={styles.fact}><dd className={styles.seen}>{lastSeenLabel(device, t)}</dd></div>
+                  </dl>
+                </Link>
+              );
+            })}
           </div>
         )}
       </div>

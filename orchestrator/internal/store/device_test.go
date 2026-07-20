@@ -33,7 +33,7 @@ func TestDeviceRegistrationLifecycle(t *testing.T) {
 	d := mkDevice(t, m, "user-1")
 
 	got, err := m.GetDevice(ctx, d.ID)
-	if err != nil || got.Name != "jack-macbook" || got.UserID != "user-1" || got.Pubkey != "" {
+	if err != nil || got.Name != "jack-macbook" || got.UserID != "user-1" || got.Pubkey != "" || got.Platform != "" {
 		t.Fatalf("get: %+v err=%v", got, err)
 	}
 	if _, err := m.GetDevice(ctx, "missing"); !errors.Is(err, ErrNotFound) {
@@ -49,6 +49,7 @@ func TestDeviceRegistrationLifecycle(t *testing.T) {
 		Name:         "renamed",
 		Hostname:     "macbook.local",
 		JcodeVersion: "0.9.1",
+		Platform:     "cli",
 		Pubkey:       "pubkey-b64",
 		KeyGen:       99, // must be ignored
 		LastSeenAt:   &now,
@@ -63,11 +64,21 @@ func TestDeviceRegistrationLifecycle(t *testing.T) {
 	if got.UserID != "user-1" || got.KeyGen != 1 {
 		t.Fatalf("upsert clobbered owner/key_gen: %+v", got)
 	}
-	if got.Hostname != "macbook.local" || got.JcodeVersion != "0.9.1" || got.Pubkey != "pubkey-b64" {
+	if got.Hostname != "macbook.local" || got.JcodeVersion != "0.9.1" || got.Platform != "cli" || got.Pubkey != "pubkey-b64" {
 		t.Fatalf("registration payload not stored: %+v", got)
 	}
 	if got.LastSeenAt == nil || !got.LastSeenAt.Equal(now) {
 		t.Fatalf("last_seen_at not stamped: %+v", got.LastSeenAt)
+	}
+
+	// A re-register overwrites the payload, platform included.
+	reg.Platform = "desktop"
+	if err := m.UpsertDeviceRegistration(ctx, reg); err != nil {
+		t.Fatalf("re-register: %v", err)
+	}
+	got, _ = m.GetDevice(ctx, d.ID)
+	if got.Platform != "desktop" {
+		t.Fatalf("re-register did not update platform: %+v", got)
 	}
 
 	// Heartbeat re-stamps last_seen_at.

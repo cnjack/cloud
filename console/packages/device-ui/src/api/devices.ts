@@ -17,6 +17,8 @@ export interface Device {
   name: string;
   hostname?: string;
   jcode_version?: string;
+  /** Device kind reported at registration: "desktop" | "cli" (anything else: hide). */
+  platform?: string;
   /** The device's E2EE identity public key (base64), set once registered. */
   pubkey?: string;
   /** The device's current CEK generation. */
@@ -33,6 +35,8 @@ export interface DeviceSessionMeta {
   project?: string;
   model?: string;
   provider?: string;
+  /** Originating channel ("console" | "mobile" | …) when jcode relays it in meta. */
+  source?: string;
   [key: string]: unknown;
 }
 

@@ -13,6 +13,7 @@ import { CaretRight, Check, Circle, Prohibit, Warning } from '@phosphor-icons/re
 import { PermissionCard } from '../runview';
 import type { PermissionCardItem, PermissionControls } from '../runview';
 import { groupDeviceEvents } from './grouping';
+import { channelLabelKey } from './channels';
 import type {
   DeviceApprovalItem,
   DeviceToolCardItem,
@@ -104,12 +105,17 @@ function Row({
   t: TFunction;
 }) {
   if (item.kind === 'user_message') {
+    // Known channels get a translated badge; unknown non-empty sources render
+    // raw as a fallback; empty source renders no badge at all.
+    const sourceKey = channelLabelKey(item.source);
     return (
       <article className={`${run.message} ${run.userMessage}`} data-testid="device-message-user">
         <div className={run.messageHead}>
           <span className={`${run.avatar} ${run.userAvatar}`} aria-hidden>U</span>
           <strong>{t('device.session.you')}</strong>
-          {item.source && <span className={styles.channelBadge}>{item.source}</span>}
+          {item.source && (
+            <span className={styles.channelBadge}>{sourceKey ? t(sourceKey) : item.source}</span>
+          )}
           <time>{timeLabel(item.ts)}</time>
         </div>
         <div className={run.userBubble}>{item.content}</div>

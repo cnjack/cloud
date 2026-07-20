@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Desktop task dispatch flow layout prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Dispatch a task — jcode Desktop design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+  <style>
+    /* page-specific: stacked flow states */
+    .page-stack {
+      display: grid;
+      align-content: start;
+      gap: 2.5rem;
+      padding-top: 2rem;
+    }
+
+    /* page-specific: composer inside a section-panel */
+    .composer-body {
+      display: grid;
+      gap: 0.75rem;
+      padding: 1rem;
+    }
+
+    .composer-body .textarea {
+      min-height: 5rem;
+    }
+
+    .composer-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+
+    .composer-actions .select {
+      width: auto;
+      min-width: 8rem;
+      min-height: 2rem;
+      padding: 0.25rem 0.5rem;
+      font-size: 0.75rem;
+    }
+
+    .composer-hint {
+      color: var(--text-faint);
+      font-size: 0.625rem;
+    }
+
+    /* page-specific: dispatch target picker rows */
+    .target-picker {
+      display: grid;
+      gap: 0.5rem;
+      padding: 1rem;
+    }
+
+    .target-option {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      padding: 0.625rem 0.75rem;
+    }
+
+    .target-option[data-selected="true"] {
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+      background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+    }
+
+    .target-option[data-disabled="true"] {
+      opacity: 0.55;
+    }
+
+    .target-option-copy {
+      display: grid;
+      gap: 0.125rem;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .target-option-copy small {
+      color: var(--text-faint);
+      font-family: var(--font-mono);
+      font-size: 0.5625rem;
+    }
+
+    /* page-specific: neutral tone for offline status dots (prototype.css only ships success/warning) */
+    .status-label[data-tone="muted"] {
+      border-color: var(--border);
+      background: var(--surface-inset);
+      color: var(--text-muted);
+    }
+
+    .status-label[data-tone="muted"]::before {
+      background: var(--border-strong);
+    }
+
+    /* page-specific: success notice tone (prototype.css ships warning/danger only) */
+    .notice[data-tone="success"] {
+      border: 1px solid color-mix(in srgb, var(--success) 38%, var(--border));
+      background: var(--success-bg);
+      color: var(--success);
+    }
+
+    .section-offset {
+      margin-top: 2rem;
+    }
+
+    .panel-offset {
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row"><a class="wordmark" href="./desktop-devices-panel.html"><img class="wordmark-icon" src="./assets/app-icon.svg" alt="" /><span class="wordmark-name">JCODE</span><span class="cloud-label">Desktop</span></a></div>
+      <div class="rail-context"><span class="eyebrow">This device</span><strong>dev-mbp-01</strong><small>macOS · ~/work/jcode</small></div>
+      <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./desktop-remote-session.html"><svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg><span>Sessions</span><span class="nav-count">2</span></a><a class="nav-item" href="./desktop-devices-panel.html" aria-current="page"><svg class="icon"><use href="./assets/icons.svg#i-cpu" /></svg><span>Devices</span><span class="nav-count">4</span></a></nav>
+      <section class="rail-section" aria-labelledby="devicesRailLabel"><div class="rail-section-head"><span id="devicesRailLabel">Devices</span><span>4</span></div><nav class="recent-projects" aria-label="Devices"><a class="recent-item" href="./desktop-devices-panel.html"><span class="project-mark">DM</span><span class="recent-item-copy"><strong>dev-mbp-01</strong><small>this device · 2 sessions</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./desktop-dispatch.html" aria-current="page"><span class="project-mark">WS</span><span class="recent-item-copy"><strong>workstation-01</strong><small>online · running 1 task</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./desktop-dispatch.html"><span class="project-mark">HC</span><span class="recent-item-copy"><strong>homelab-cli</strong><small>online · idle</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./desktop-dispatch.html"><span class="project-mark">NS</span><span class="recent-item-copy"><strong>nas-01</strong><small>offline · 2d ago</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a></nav></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>cloud / cloud.j-code.net</span><span>v0.4.2</span></div><div class="identity-row"><span class="identity-mark">J</span><span class="identity-copy"><strong>Jack</strong><small>signed in via device code</small></span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface" aria-label="Dispatch a task">
+      <header class="utility-bar"><div class="breadcrumbs"><a href="./desktop-devices-panel.html">Devices</a><span class="breadcrumb-separator">/</span><strong>New task</strong></div><div class="utility-actions"><span class="prototype-chip">three states</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <a class="text-button" href="./desktop-devices-panel.html"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-left" /></svg>Devices</a>
+          <header class="page-header">
+            <div class="page-heading"><span class="eyebrow">Dispatch</span><h1>Run a task on another device</h1><p>Pick a target, describe the work, and confirm. The task runs end-to-end on the remote machine; you get a notification here when it finishes.</p></div>
+          </header>
+
+          <div class="page-stack">
+            <section aria-labelledby="composeTitle">
+              <div class="section-heading"><h2 id="composeTitle">Compose</h2><span class="prototype-chip">state: compose</span></div>
+
+              <section class="section-panel">
+                <header class="section-panel-head"><h2>Target device</h2><span class="mono section-copy">3 reachable</span></header>
+                <div class="target-picker" role="radiogroup" aria-label="Target device">
+                  <div class="target-option" data-selected="true" role="radio" aria-checked="true" tabindex="0"><span class="status-label" data-tone="success">online</span><span class="target-option-copy"><strong>workstation-01</strong><small>Linux · desktop · ~/work/cloud</small></span></div>
+                  <div class="target-option" role="radio" aria-checked="false" tabindex="0"><span class="status-label" data-tone="success">online</span><span class="target-option-copy"><strong>homelab-cli</strong><small>Linux · CLI · ~/srv/jtype</small></span></div>
+                  <div class="target-option" data-disabled="true" aria-disabled="true"><span class="status-label" data-tone="muted">offline</span><span class="target-option-copy"><strong>nas-01</strong><small>one-shot tasks queue until it reconnects</small></span></div>
+                </div>
+              </section>
+
+              <section class="section-panel panel-offset">
+                <div class="composer-body">
+                  <div class="field"><label for="taskPrompt">Task</label><textarea class="textarea" id="taskPrompt" placeholder="Describe the task for the remote device…">The login redirect test flakes about 1 in 5 runs on CI. Find the race and fix it, then run the suite 20 times to confirm.</textarea></div>
+                  <div class="composer-actions">
+                    <select class="select" aria-label="Run mode"><option value="full_access" selected>task · full access</option><option value="code">interactive · code</option><option value="ask">interactive · ask</option></select>
+                    <button class="button button-primary" type="button" data-prototype-action="Prototype only — review step is shown below.">Review dispatch</button>
+                  </div>
+                  <span class="composer-hint">Task mode runs unattended and notifies you on completion. Interactive modes open a live remote session instead.</span>
+                </div>
+              </section>
+            </section>
+
+            <section aria-labelledby="confirmTitle">
+              <div class="section-heading"><h2 id="confirmTitle">Confirm</h2><span class="prototype-chip">state: confirm</span></div>
+              <section class="section-panel">
+                <header class="section-panel-head"><h2>Dispatch summary</h2><span class="status-label" data-tone="success">ready</span></header>
+                <dl class="definition-list">
+                  <div class="definition-row"><dt>Target device</dt><dd>workstation-01 <span class="mono section-copy">Linux · online</span></dd></div>
+                  <div class="definition-row"><dt>Project</dt><dd class="mono">~/work/cloud</dd></div>
+                  <div class="definition-row"><dt>Branch</dt><dd class="mono">feat/jcode-device-relay</dd></div>
+                  <div class="definition-row"><dt>Mode</dt><dd class="mono">task · full_access</dd></div>
+                  <div class="definition-row"><dt>Prompt</dt><dd>The login redirect test flakes about 1 in 5 runs on CI. Find the race and fix it, then run the suite 20 times to confirm.</dd></div>
+                </dl>
+                <div class="composer-body">
+                  <div class="composer-actions">
+                    <span class="composer-hint">Delivered end-to-end encrypted via the cloud relay. The session belongs to workstation-01 and stays visible there.</span>
+                    <span class="composer-actions"><button class="button" type="button" data-prototype-action="Prototype only — back to compose.">Back</button><a class="button button-primary" href="./desktop-remote-session.html">Dispatch</a></span>
+                  </div>
+                </div>
+              </section>
+            </section>
+
+            <section aria-labelledby="dispatchedTitle">
+              <div class="section-heading"><h2 id="dispatchedTitle">Dispatched</h2><span class="prototype-chip">state: dispatched</span></div>
+              <div class="notice" data-tone="success"><svg class="icon"><use href="./assets/icons.svg#i-check" /></svg><span><strong>Task dispatched to workstation-01.</strong>Command <span class="mono">cmd_7f3a…e21c</span> was accepted by the relay. You will be notified on this device when the task finishes.</span></div>
+              <section class="section-panel panel-offset">
+                <header class="section-panel-head"><h2>Fix flaky login redirect test</h2><span class="status-label">dispatched</span></header>
+                <dl class="definition-list">
+                  <div class="definition-row"><dt>Task</dt><dd class="mono">task_2c9d…a410</dd></div>
+                  <div class="definition-row"><dt>Target</dt><dd class="mono">workstation-01 · ~/work/cloud</dd></div>
+                  <div class="definition-row"><dt>Status</dt><dd>picked up 4s ago · session starting</dd></div>
+                </dl>
+                <div class="composer-body">
+                  <div class="composer-actions">
+                    <a class="text-button" href="./desktop-devices-panel.html"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-left" /></svg>Back to devices</a>
+                    <a class="button button-primary" href="./desktop-remote-session.html">Follow the remote session<svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></a>
+                  </div>
+                </div>
+              </section>
+            </section>
+          </div>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

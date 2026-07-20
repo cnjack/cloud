@@ -23,6 +23,7 @@ type deviceRegisterReq struct {
 	Name         string `json:"name"`
 	Hostname     string `json:"hostname"`
 	JcodeVersion string `json:"jcode_version"`
+	Platform     string `json:"platform"`
 	Pubkey       string `json:"pubkey"`
 }
 
@@ -65,6 +66,12 @@ func (s *Server) handleDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	d.Hostname = strings.TrimSpace(req.Hostname)
 	d.JcodeVersion = strings.TrimSpace(req.JcodeVersion)
+	// Platform is trimmed and length-capped but otherwise unchecked: unknown
+	// values pass through so a future connector flavor needs no server change.
+	d.Platform = strings.TrimSpace(req.Platform)
+	if len(d.Platform) > 32 {
+		d.Platform = d.Platform[:32]
+	}
 	d.Pubkey = strings.TrimSpace(req.Pubkey)
 	d.LastSeenAt = &now
 	if err := s.st.UpsertDeviceRegistration(r.Context(), d); err != nil {

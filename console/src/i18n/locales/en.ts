@@ -123,6 +123,10 @@ export default {
       neverSeen: 'Never seen',
       loadErrorTitle: 'Could not load devices',
       servicePrincipal: 'Devices are tied to a user account — sign in with a user session, not the console service token.',
+      platformDesktop: 'Desktop',
+      platformCli: 'CLI',
+      e2ee: 'End-to-end encrypted',
+      e2eeWithKeyGen: 'End-to-end encrypted · key generation {gen}',
     },
     welcome: {
       back: 'Devices',
@@ -175,6 +179,13 @@ export default {
       sendFailed: 'Could not send: {message}',
       deviceOffline: 'Device is offline',
       emptyHistory: 'No events in this session yet.',
+      source: {
+        console: 'Console',
+        mobile: 'Mobile',
+        desktop: 'Desktop',
+        wechat: 'WeChat',
+        local: 'Local',
+      },
     },
     guide: {
       entry: 'Usage guide',

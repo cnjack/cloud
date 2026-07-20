@@ -843,6 +843,10 @@ export default {
       neverSeen: '확인된 적 없음',
       loadErrorTitle: '기기를 불러올 수 없습니다',
       servicePrincipal: '기기는 사용자 계정에 연결됩니다. 콘솔 서비스 토큰이 아닌 사용자 세션으로 로그인하세요.',
+      platformDesktop: '데스크톱',
+      platformCli: 'CLI',
+      e2ee: '종단간 암호화',
+      e2eeWithKeyGen: '종단간 암호화 · 키 세대 {gen}',
     },
     welcome: {
       back: '기기',
@@ -895,6 +899,13 @@ export default {
       sendFailed: '보낼 수 없습니다: {message}',
       deviceOffline: '기기가 오프라인입니다',
       emptyHistory: '이 세션에는 아직 이벤트가 없습니다.',
+      source: {
+        console: '콘솔',
+        mobile: '모바일',
+        desktop: '데스크톱',
+        wechat: 'WeChat',
+        local: '로컬',
+      },
     },
     guide: {
       entry: '사용 가이드',

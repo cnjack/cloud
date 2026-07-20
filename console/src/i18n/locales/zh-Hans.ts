@@ -843,6 +843,10 @@ export default {
       neverSeen: '从未上线',
       loadErrorTitle: '无法加载设备',
       servicePrincipal: '设备与用户账号绑定——请以用户身份登录，而不是使用控制台服务令牌。',
+      platformDesktop: '桌面端',
+      platformCli: 'CLI',
+      e2ee: '端到端加密',
+      e2eeWithKeyGen: '端到端加密 · 密钥代数 {gen}',
     },
     welcome: {
       back: '设备',
@@ -895,6 +899,13 @@ export default {
       sendFailed: '无法发送：{message}',
       deviceOffline: '设备已离线',
       emptyHistory: '此会话还没有事件。',
+      source: {
+        console: '控制台',
+        mobile: '移动端',
+        desktop: '桌面端',
+        wechat: '微信',
+        local: '本地',
+      },
     },
     guide: {
       entry: '使用指南',

@@ -34,6 +34,12 @@ icons, and small prototype-only interactions live under `assets/`.
 | `project-settings-option-a.html` | Approved Project Settings contract with the Project / Service rail retained |
 | `project-settings-option-b.html` | Rejected comparison: Project Settings inside the global Cluster-style shell |
 | `project-settings-option-c.html` | Rejected comparison: Project Settings with a focused administration rail |
+| `device-list.html` | Cloud console device list, populated and empty states |
+| `device-welcome.html` | Cloud console device detail: new-session composer and session list |
+| `device-session.html` | Cloud console remote session: live and device-offline states |
+| `desktop-devices-panel.html` | jcode Desktop devices panel: same-account devices and dispatched tasks |
+| `desktop-dispatch.html` | jcode Desktop task dispatch flow: compose, confirm, and dispatched states |
+| `desktop-remote-session.html` | jcode Desktop remote session view with running-on-device banner |
 
 ## Layout contract
 

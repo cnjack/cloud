@@ -306,7 +306,10 @@ func TestDevicePollAndAck(t *testing.T) {
 func TestClientDevicesAuthz(t *testing.T) {
 	fx := setupDevice(t)
 	token, deviceID, owner := onlineDevice(t, fx)
-	_ = token
+	// Register a platform so it surfaces in the client list/detail views.
+	reg := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/register", token,
+		map[string]any{"pubkey": "pk", "platform": "desktop"})
+	reg.Body.Close()
 	stranger := mkSession(t, fx.st, mkUser(t, fx.st, "stranger").ID)
 
 	// List: the owner's device shows online; the stranger's list is empty.
@@ -318,7 +321,7 @@ func TestClientDevicesAuthz(t *testing.T) {
 		Devices []deviceView `json:"devices"`
 	}
 	decode(t, resp, &lv)
-	if len(lv.Devices) != 1 || lv.Devices[0].ID != deviceID || !lv.Devices[0].Online {
+	if len(lv.Devices) != 1 || lv.Devices[0].ID != deviceID || !lv.Devices[0].Online || lv.Devices[0].Platform != "desktop" {
 		t.Fatalf("list = %+v want the one online device", lv.Devices)
 	}
 	resp = do(t, http.MethodGet, fx.ts.URL+"/api/v1/devices", stranger, nil)
@@ -335,7 +338,7 @@ func TestClientDevicesAuthz(t *testing.T) {
 	}
 	var dv deviceView
 	decode(t, resp, &dv)
-	if dv.ID != deviceID || !dv.Online {
+	if dv.ID != deviceID || !dv.Online || dv.Platform != "desktop" {
 		t.Fatalf("detail = %+v", dv)
 	}
 	for _, tc := range []struct {

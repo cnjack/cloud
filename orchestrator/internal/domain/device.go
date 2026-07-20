@@ -15,6 +15,10 @@ type Device struct {
 	Name         string `json:"name"`
 	Hostname     string `json:"hostname,omitempty"`
 	JcodeVersion string `json:"jcode_version,omitempty"`
+	// Platform is the connector flavor ("desktop"|"cli"), reported at register
+	// time. Empty until the first register call; unknown values pass through
+	// so future platforms need no server change.
+	Platform string `json:"platform,omitempty"`
 	// Pubkey is the device's X25519 public key (base64), published at register
 	// time for the E2EE key exchange (docs/17 §6). Empty until the first
 	// register call — the row predates it (created at token issuance).

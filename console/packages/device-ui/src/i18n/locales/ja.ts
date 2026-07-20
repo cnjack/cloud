@@ -31,7 +31,11 @@ export default {
       "lastSeen": "最終確認 {time}",
       "neverSeen": "未接続",
       "loadErrorTitle": "デバイスを読み込めませんでした",
-      "servicePrincipal": "デバイスはユーザーアカウントに紐づいています。コンソールのサービストークンではなく、ユーザーセッションでサインインしてください。"
+      "servicePrincipal": "デバイスはユーザーアカウントに紐づいています。コンソールのサービストークンではなく、ユーザーセッションでサインインしてください。",
+      "platformDesktop": "デスクトップ",
+      "platformCli": "CLI",
+      "e2ee": "エンドツーエンド暗号化",
+      "e2eeWithKeyGen": "エンドツーエンド暗号化 · キー世代 {gen}"
     },
     "welcome": {
       "back": "デバイス",
@@ -83,7 +87,14 @@ export default {
       "subagentFailed": "サブエージェント {name} が失敗しました",
       "sendFailed": "送信できませんでした: {message}",
       "deviceOffline": "デバイスはオフラインです",
-      "emptyHistory": "このセッションにはまだイベントがありません。"
+      "emptyHistory": "このセッションにはまだイベントがありません。",
+      "source": {
+        "console": "コンソール",
+        "mobile": "モバイル",
+        "desktop": "デスクトップ",
+        "wechat": "WeChat",
+        "local": "ローカル"
+      }
     },
     "guide": {
       "entry": "利用ガイド",

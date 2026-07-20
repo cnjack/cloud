@@ -247,9 +247,10 @@ func TestDeviceRegisterAndHeartbeat(t *testing.T) {
 	fx := setupDevice(t)
 	token, deviceID := fx.redeemFlow(t)
 
-	// Register updates the row and returns the server config.
+	// Register updates the row and returns the server config. Platform is
+	// trimmed like the other free-form fields.
 	resp := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/register", token,
-		map[string]any{"name": "workstation", "hostname": "ws.local", "jcode_version": "0.9.1", "pubkey": "pk-b64"})
+		map[string]any{"name": "workstation", "hostname": "ws.local", "jcode_version": "0.9.1", "platform": " desktop ", "pubkey": "pk-b64"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("register: status=%d want 200", resp.StatusCode)
 	}
@@ -265,8 +266,46 @@ func TestDeviceRegisterAndHeartbeat(t *testing.T) {
 	if dev.Name != "workstation" || dev.Hostname != "ws.local" || dev.JcodeVersion != "0.9.1" || dev.Pubkey != "pk-b64" {
 		t.Fatalf("register payload not stored: %+v", dev)
 	}
+	if dev.Platform != "desktop" {
+		t.Fatalf("platform not stored/trimmed: %+v", dev)
+	}
 	if dev.LastSeenAt == nil {
 		t.Fatalf("register did not stamp last_seen_at")
+	}
+
+	// A re-register overwrites platform; unknown values pass through, capped
+	// at 32 chars.
+	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/register", token,
+		map[string]any{"pubkey": "pk-b64", "platform": "some-future-platform-that-is-far-too-long"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("re-register: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	dev, _ = fx.st.GetDevice(t.Context(), deviceID)
+	if dev.Platform != "some-future-platform-that-is-far" || len(dev.Platform) != 32 {
+		t.Fatalf("platform not updated/capped: %q", dev.Platform)
+	}
+
+	// A register without platform resets it to ''.
+	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/register", token,
+		map[string]any{"pubkey": "pk-b64"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("register without platform: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	dev, _ = fx.st.GetDevice(t.Context(), deviceID)
+	if dev.Platform != "" {
+		t.Fatalf("platform not reset: %q want ''", dev.Platform)
+	}
+
+	// The client detail view always carries platform, '' included (the field
+	// is non-omitempty for a stable client contract).
+	owner := mustUser(t, fx, deviceID)
+	resp = do(t, http.MethodGet, fx.ts.URL+"/api/v1/devices/"+deviceID, owner, nil)
+	var dv map[string]any
+	decode(t, resp, &dv)
+	if p, ok := dv["platform"]; !ok || p != "" {
+		t.Fatalf("client view platform = %v (present=%v) want ''", p, ok)
 	}
 
 	// Heartbeat → 204 and re-stamps last_seen_at.
