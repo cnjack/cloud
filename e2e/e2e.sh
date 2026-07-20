@@ -24,8 +24,8 @@
 # kubectl. See README.md.
 #
 # Usage:
-#   ./e2e.sh                 # full suite (J1-J3; J4 draft-PR runs if Gitea is up; J7 device login; J8 device relay)
-#   ONLY=j1 ./e2e.sh         # a single journey (j1|j2|j3|j4|j7|j8)
+#   ./e2e.sh                 # full suite (J1-J3; J4 draft-PR runs if Gitea is up; J7 device login; J8 device relay; J9 device E2EE)
+#   ONLY=j1 ./e2e.sh         # a single journey (j1|j2|j3|j4|j7|j8|j9)
 #   LOCAL_PORT=18099 ./e2e.sh
 
 set -uo pipefail
@@ -65,6 +65,10 @@ teardown() {
   # J8 seeds its own user and runs local processes (jcode web, mockllm pf).
   if declare -F j8_cleanup >/dev/null 2>&1; then
     j8_cleanup
+  fi
+  # J9 (E2EE) seeds its own user and runs the same local processes.
+  if declare -F j9_cleanup >/dev/null 2>&1; then
+    j9_cleanup
   fi
   if [ -n "$PF_PID" ]; then
     kill "$PF_PID" 2>/dev/null
@@ -139,6 +143,8 @@ source "$HERE/j4-gitea.sh"
 source "$HERE/j7-device-login.sh"
 # shellcheck source=j8-device-relay.sh
 source "$HERE/j8-device-relay.sh"
+# shellcheck source=j9-device-e2ee.sh
+source "$HERE/j9-device-e2ee.sh"
 
 case "$ONLY" in
   j1)  j1_run ;;
@@ -147,8 +153,9 @@ case "$ONLY" in
   j4)  j4_run ;;
   j7)  j7_run ;;
   j8)  j8_run ;;
-  all) j1_run; j2_run; j3_run; j4_run; j7_run; j8_run ;;
-  *)   echo "unknown ONLY=$ONLY (want j1|j2|j3|j4|j7|j8|all)" >&2; exit 6 ;;
+  j9)  j9_run ;;
+  all) j1_run; j2_run; j3_run; j4_run; j7_run; j8_run; j9_run ;;
+  *)   echo "unknown ONLY=$ONLY (want j1|j2|j3|j4|j7|j8|j9|all)" >&2; exit 6 ;;
 esac
 
 # --- 5. latency spot-check (informational) ----------------------------------

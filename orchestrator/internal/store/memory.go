@@ -46,6 +46,7 @@ type MemStore struct {
 	deviceSessions  map[string]domain.DeviceSession  // keyed by deviceID+"|"+sessionID
 	deviceEvents    map[string][]domain.DeviceEvent  // keyed by deviceID+"|"+sessionID, kept sorted by seq
 	deviceCommands  map[string]domain.DeviceCommand  // keyed by command id
+	devicePairings  map[string]domain.DevicePairing  // keyed by pairing id
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -78,6 +79,7 @@ func NewMemStore() *MemStore {
 		deviceSessions:  map[string]domain.DeviceSession{},
 		deviceEvents:    map[string][]domain.DeviceEvent{},
 		deviceCommands:  map[string]domain.DeviceCommand{},
+		devicePairings:  map[string]domain.DevicePairing{},
 	}
 }
 

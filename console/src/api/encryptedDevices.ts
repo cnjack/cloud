@@ -1,0 +1,92 @@
+/*
+ * encryptedDevices.ts — transparent E2EE over the device relay DeviceApi
+ * (docs/17 §6, M5).
+ *
+ * The wrapper sits UNDER the react-query/hook layer, so the rendering layer
+ * never sees ciphertext: session meta, durable-event payloads and SSE frame
+ * payloads that arrive as envelopes (object + string `enc`) are opened with
+ * the device's CEK before they reach the UI; anything without the marker is
+ * gray-rollout plaintext and passes through untouched. Outgoing messages /
+ * approval responses are sealed as envelopes when (and only when) this client
+ * holds the device's CEK.
+ *
+ * Fail-visibly policy: a decrypt failure with a CEK present is a real error
+ * (wrong key, tampered ciphertext) and propagates; ciphertext WITHOUT a local
+ * CEK passes through as-is — the pairing card (useDevicePairing) is the
+ * visible state for that, and the envelope shape simply renders as an
+ * untitled/empty payload until pairing completes.
+ */
+import { decryptJson, encryptJson, isEnvelope } from '../devicecrypto/envelope';
+import type { DeviceCrypto } from '../devicecrypto/provider';
+import type { DeviceApi, DeviceSession, DeviceSessionEvent, DeviceStreamFrame } from './devices';
+
+export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceApi {
+  /** Open an envelope when we hold the key; pass everything else through. */
+  async function open<T>(deviceId: string, value: T): Promise<T> {
+    if (!isEnvelope(value)) return value;
+    const key = await crypto.getKey(deviceId);
+    if (!key) return value;
+    return (await decryptJson(key, value)) as T;
+  }
+
+  return {
+    ...api,
+
+    listSessions: async (deviceId) => {
+      const sessions = await api.listSessions(deviceId);
+      return Promise.all(
+        sessions.map(async (s): Promise<DeviceSession> => {
+          if (!isEnvelope(s.meta)) return s;
+          return { ...s, meta: await open<DeviceSession['meta']>(deviceId, s.meta) };
+        }),
+      );
+    },
+
+    listSessionEvents: async (deviceId, sessionId, afterSeq, limit) => {
+      const events = await api.listSessionEvents(deviceId, sessionId, afterSeq, limit);
+      return Promise.all(
+        events.map(async (e): Promise<DeviceSessionEvent> => {
+          if (!isEnvelope(e.payload)) return e;
+          return { ...e, payload: await open<DeviceSessionEvent['payload']>(deviceId, e.payload) };
+        }),
+      );
+    },
+
+    sendMessage: async (deviceId, sessionId, text, mode) => {
+      const key = await crypto.getKey(deviceId);
+      if (!key) return api.sendMessage(deviceId, sessionId, text, mode);
+      // The plaintext payload the server would have built itself (channel is
+      // pinned to console — the server no longer sees the body to pin it).
+      const keyGen = (await crypto.getKeyGen(deviceId)) ?? 1;
+      const payload: Record<string, unknown> = { text, channel: 'console' };
+      if (mode) payload.mode = mode;
+      const envelope = await encryptJson(key, keyGen, payload);
+      return api.sendEnvelope(deviceId, sessionId, envelope);
+    },
+
+    respondApproval: async (deviceId, sessionId, approvalId, decision) => {
+      const key = await crypto.getKey(deviceId);
+      if (!key) return api.respondApproval(deviceId, sessionId, approvalId, decision);
+      const keyGen = (await crypto.getKeyGen(deviceId)) ?? 1;
+      const envelope = await encryptJson(key, keyGen, { approval_id: approvalId, decision });
+      return api.respondApprovalEnvelope(deviceId, sessionId, envelope);
+    },
+
+    streamDevice: (deviceId, cb) =>
+      api.streamDevice(deviceId, {
+        ...cb,
+        onFrame: (frame: DeviceStreamFrame) => {
+          if (frame.event === 'device.status' || !isEnvelope(frame.data.payload)) {
+            cb.onFrame(frame);
+            return;
+          }
+          open(deviceId, frame.data.payload)
+            .then((payload) => {
+              if (payload === frame.data.payload) return; // no CEK — pass through
+              cb.onFrame({ ...frame, data: { ...frame.data, payload } } as DeviceStreamFrame);
+            })
+            .catch((err) => cb.onError?.(err));
+        },
+      }),
+  };
+}

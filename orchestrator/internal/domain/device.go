@@ -86,6 +86,10 @@ const (
 	DeviceCmdChatSend        = "chat.send"
 	DeviceCmdChatStop        = "chat.stop"
 	DeviceCmdApprovalRespond = "approval.respond"
+	// DeviceCmdPairingRequest asks the device to approve/deny a client pairing
+	// (docs/17 §6.3). Payload {pairing_id, label, kty, pubkey} — plaintext
+	// routing metadata, never CEK-bearing.
+	DeviceCmdPairingRequest = "pairing.request"
 )
 
 // DeviceCommand lifecycle states (docs/17 §5): pending (queued) → delivered
@@ -113,4 +117,33 @@ type DeviceCommand struct {
 	Result    []byte     `json:"-"`
 	CreatedAt time.Time  `json:"created_at"`
 	AckedAt   *time.Time `json:"acked_at,omitempty"`
+}
+
+// Device pairing lifecycle states (docs/17 §6.3): pending (awaiting the
+// on-device approval) → approved (wrap stored) / denied; pending rows past the
+// 10-minute window read as expired.
+const (
+	DevicePairingPending  = "pending"
+	DevicePairingApproved = "approved"
+	DevicePairingDenied   = "denied"
+	DevicePairingExpired  = "expired"
+)
+
+// DevicePairingWindow is how long a pending pairing waits for the on-device
+// approval before it reads as expired (docs/17 §6.3).
+const DevicePairingWindow = 10 * time.Minute
+
+// DevicePairing is one client's request for the device's CEK (docs/17 §6.3).
+// Label/Pubkey are the requester's P-256 identity (SPKI, base64); Wrap is the
+// approved device's ECIES-wrapped CEK blob — OPAQUE JSON to the server, stored
+// and returned verbatim, unwrapped only by the requesting client.
+type DevicePairing struct {
+	ID         string     `json:"id"`
+	DeviceID   string     `json:"-"`
+	Label      string     `json:"label"`
+	Pubkey     string     `json:"pubkey"`
+	Status     string     `json:"status"`
+	Wrap       []byte     `json:"-"` // opaque wrap blob (json.RawMessage at the API edge)
+	CreatedAt  time.Time  `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 }

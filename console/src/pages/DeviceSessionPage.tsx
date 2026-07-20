@@ -13,7 +13,7 @@ import {
 import { Button } from '../components/Button';
 import { StatusLabel, SurfaceInner } from '../components/PageLayout';
 import { useToast } from '../components/Toast';
-import { DeviceTimeline } from '../deviceview';
+import { DevicePairingCard, DeviceTimeline } from '../deviceview';
 import { resolveOnline } from '../deviceview/offline';
 import { useDeviceSessionStream } from '../hooks/useDeviceSessionStream';
 import styles from './DeviceSessionPage.module.css';
@@ -118,6 +118,8 @@ export function DeviceSessionPage() {
             <span>{t('device.session.offlineBanner')}</span>
           </div>
         )}
+
+        <DevicePairingCard deviceId={deviceId} />
 
         {phase === 'error' && (
           <div className={styles.streamError} role="alert">

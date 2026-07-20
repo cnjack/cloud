@@ -149,6 +149,8 @@ j8_run() {
 
   J8_HOME="$(mktemp -t j8-home.XXXXXX)"; rm -f "$J8_HOME"; mkdir -p "$J8_HOME/.jcode"
   J8_WS="$(mktemp -t j8-ws.XXXXXX)"; rm -f "$J8_WS"; mkdir -p "$J8_WS"
+  # cloud.e2ee=false pins J8 to the plaintext grey path (docs/17 §6.6): its
+  # assertions read cleartext event payloads. E2E encryption is covered by J9.
   cat >"$J8_HOME/.jcode/config.json" <<JSON
 {
   "providers": {
@@ -162,7 +164,8 @@ j8_run() {
   },
   "model": "mock/mock-model",
   "default_mode": "full_access",
-  "memory": { "enabled": false }
+  "memory": { "enabled": false },
+  "cloud": { "e2ee": false }
 }
 JSON
 

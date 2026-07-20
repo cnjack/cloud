@@ -896,6 +896,29 @@ export default {
       deviceOffline: '裝置已離線',
       emptyHistory: '此工作階段還沒有事件。',
     },
+    pairing: {
+      start: '配對此用戶端',
+      idle: {
+        title: '尚未設定端對端加密',
+        body: '將此瀏覽器與裝置配對後，才能讀取和傳送加密的工作階段內容。金鑰的明文只存在於裝置上。',
+      },
+      pending: {
+        title: '等待裝置上批准',
+        body: '請在 10 分鐘內於裝置上批准此配對：',
+      },
+      denied: {
+        title: '配對已被拒絕',
+        body: '裝置拒絕了此配對請求。如是誤操作，請重新發起。',
+      },
+      expired: {
+        title: '配對已過期',
+        body: '配對請求未在 10 分鐘內獲得批准，請重新發起。',
+      },
+      error: {
+        title: '配對失敗',
+        body: '配對過程中出現問題，請重試。',
+      },
+    },
     title: '授權裝置',
     lede: '一個 jcode CLI 正在請求登入此雲端。輸入它顯示的驗證碼以繼續。',
     codeLabel: '裝置驗證碼',

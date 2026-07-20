@@ -123,6 +123,9 @@ type Server struct {
 	// hold / 500ms tick). Overridable by tests that need a fast hold.
 	devicePollMaxHold time.Duration
 	devicePollTick    time.Duration
+	// Device pairing expiry window. Zero => domain.DevicePairingWindow (10m).
+	// Overridable by tests that exercise the expiry branch without sleeping.
+	devicePairingWindow time.Duration
 }
 
 // boardValidator is the slice of *jtype.Client the admin link API needs to
@@ -379,6 +382,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/messages", s.authed(s.handleDeviceSendMessage))
 	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/stop", s.authed(s.handleDeviceStopSession))
 	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/approval", s.authed(s.handleDeviceApproval))
+	// Device pairing — CEK distribution (docs/17 §6.3): the client requests a
+	// pairing and polls its state; the device decides over the internal API.
+	mux.Handle("POST /api/v1/devices/{id}/pairings", s.authed(s.handleCreateDevicePairing))
+	mux.Handle("GET /api/v1/devices/{id}/pairings/{pid}", s.authed(s.handleGetDevicePairing))
 
 	mux.Handle("POST /api/v1/projects", s.authed(s.handleCreateProject))
 	mux.Handle("GET /api/v1/projects", s.authed(s.handleListProjects))
@@ -538,6 +545,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /internal/v1/device/sessions/{sid}/ephemeral", s.authed(s.handleDeviceSessionEphemeral))
 	mux.Handle("GET /internal/v1/device/poll", s.authed(s.handleDevicePoll))
 	mux.Handle("POST /internal/v1/device/commands/{id}/ack", s.authed(s.handleDeviceCommandAck))
+	// Pairing decisions + token self-revocation (docs/17 §6.3 / §3.3).
+	mux.Handle("GET /internal/v1/device/pairings", s.authed(s.handleListDevicePairings))
+	mux.Handle("GET /internal/v1/device/pairings/{pid}", s.authed(s.handleGetOwnPairing))
+	mux.Handle("POST /internal/v1/device/pairings/{pid}/respond", s.authed(s.handleRespondDevicePairing))
+	mux.Handle("POST /internal/v1/device/revoke", s.authed(s.handleDeviceRevoke))
 	mux.Handle("POST /internal/v1/runs/{id}/artifact", s.runToken(s.handleIngestArtifact))
 	// M3 runner contract: the runner fetches its source bundle, uploads the
 	// draft-PR git bundle, and posts review output — all authed by the RUN_TOKEN.

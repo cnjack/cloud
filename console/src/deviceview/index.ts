@@ -3,6 +3,7 @@
  */
 export { DeviceTimeline } from './DeviceTimeline';
 export type { DeviceApprovalControls } from './DeviceTimeline';
+export { DevicePairingCard } from './DevicePairingCard';
 export { mapDeviceEvent, applyToolResult, prettyArgs } from './eventModel';
 export { groupDeviceEvents } from './grouping';
 export {

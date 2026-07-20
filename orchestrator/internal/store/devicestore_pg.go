@@ -299,3 +299,94 @@ func (s *PGStore) AckDeviceCommand(ctx context.Context, deviceID, commandID, sta
 	}
 	return nil
 }
+
+// --- device pairings (docs/17 §6.3) --------------------------------------------
+
+const devicePairingCols = `id, device_id, requester_label, requester_pubkey, status, wrapped_cek, created_at, resolved_at`
+
+func scanDevicePairing(row pgx.Row) (*domain.DevicePairing, error) {
+	var p domain.DevicePairing
+	err := row.Scan(&p.ID, &p.DeviceID, &p.Label, &p.Pubkey, &p.Status, &p.Wrap, &p.CreatedAt, &p.ResolvedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan device pairing: %w", err)
+	}
+	return &p, nil
+}
+
+func (s *PGStore) CreateDevicePairing(ctx context.Context, p *domain.DevicePairing) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO device_pairings (`+devicePairingCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		p.ID, p.DeviceID, p.Label, p.Pubkey, p.Status, p.Wrap, p.CreatedAt, p.ResolvedAt)
+	if err != nil {
+		return fmt.Errorf("insert device pairing: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetDevicePairing(ctx context.Context, deviceID, pairingID string) (*domain.DevicePairing, error) {
+	return scanDevicePairing(s.pool.QueryRow(ctx,
+		`SELECT `+devicePairingCols+` FROM device_pairings WHERE id=$1 AND device_id=$2`,
+		pairingID, deviceID))
+}
+
+func (s *PGStore) ListDevicePairings(ctx context.Context, deviceID, status string) ([]domain.DevicePairing, error) {
+	query := `SELECT ` + devicePairingCols + ` FROM device_pairings WHERE device_id=$1`
+	args := []any{deviceID}
+	if status != "" {
+		query += ` AND status=$2`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at, id`
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list device pairings: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.DevicePairing
+	for rows.Next() {
+		var p domain.DevicePairing
+		if err := rows.Scan(&p.ID, &p.DeviceID, &p.Label, &p.Pubkey, &p.Status, &p.Wrap, &p.CreatedAt, &p.ResolvedAt); err != nil {
+			return nil, fmt.Errorf("scan device pairing: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) ResolveDevicePairing(ctx context.Context, deviceID, pairingID, status string, wrap []byte, at time.Time) error {
+	// Only a pending pairing takes the resolution; a duplicate respond is a
+	// no-op (same idempotency pattern as AckDeviceCommand).
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE device_pairings SET status=$3, wrapped_cek=$4, resolved_at=$5
+		 WHERE id=$1 AND device_id=$2 AND status='pending'`,
+		pairingID, deviceID, status, wrap, at)
+	if err != nil {
+		return fmt.Errorf("resolve device pairing: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	var one int
+	err = s.pool.QueryRow(ctx,
+		`SELECT 1 FROM device_pairings WHERE id=$1 AND device_id=$2`, pairingID, deviceID).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("resolve device pairing: probe: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) RevokeDeviceTokens(ctx context.Context, deviceID string, at time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE device_tokens SET revoked_at=$2 WHERE device_id=$1 AND revoked_at IS NULL`,
+		deviceID, at)
+	if err != nil {
+		return fmt.Errorf("revoke device tokens: %w", err)
+	}
+	return nil
+}

@@ -707,6 +707,32 @@ type Store interface {
 	// command; the two cases are intentionally indistinguishable).
 	AckDeviceCommand(ctx context.Context, deviceID, commandID, status string, result []byte, at time.Time) error
 
+	// --- Device pairings (docs/17 §6.3 — P3) ----------------------------------
+	// A pairing is one client's request for the device's CEK: pending until the
+	// device approves (wrap stored) or denies it.
+
+	// CreateDevicePairing inserts a fresh pairing row (status pending). The
+	// caller pre-fills id/device_id/label/pubkey/created_at.
+	CreateDevicePairing(ctx context.Context, p *domain.DevicePairing) error
+	// GetDevicePairing returns a pairing BY ID SCOPED TO ITS DEVICE — a pairing
+	// of another device is indistinguishable from an unknown one (ErrNotFound).
+	GetDevicePairing(ctx context.Context, deviceID, pairingID string) (*domain.DevicePairing, error)
+	// ListDevicePairings returns a device's pairings in one status ("" = all),
+	// oldest first.
+	ListDevicePairings(ctx context.Context, deviceID, status string) ([]domain.DevicePairing, error)
+	// ResolveDevicePairing settles a pending pairing: it sets the status
+	// (approved — storing the opaque wrap blob — / denied / expired) and stamps
+	// resolved_at, but ONLY while the pairing is pending, so a duplicate
+	// respond is an idempotent no-op. ErrNotFound when no such pairing exists
+	// FOR THIS DEVICE.
+	ResolveDevicePairing(ctx context.Context, deviceID, pairingID, status string, wrap []byte, at time.Time) error
+
+	// RevokeDeviceTokens revokes ALL of the device's live device tokens
+	// (POST /internal/v1/device/revoke — the device revokes its own token at
+	// logout). Already-revoked rows are untouched, so the call is an
+	// idempotent no-op when nothing is live.
+	RevokeDeviceTokens(ctx context.Context, deviceID string, at time.Time) error
+
 	// Lifecycle
 	Close()
 }

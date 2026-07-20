@@ -247,3 +247,73 @@ func (m *MemStore) AckDeviceCommand(_ context.Context, deviceID, commandID, stat
 	m.deviceCommands[commandID] = c
 	return nil
 }
+
+// --- device pairings (docs/17 §6.3) --------------------------------------------
+
+func (m *MemStore) CreateDevicePairing(_ context.Context, p *domain.DevicePairing) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.devicePairings[p.ID] = *p
+	return nil
+}
+
+func (m *MemStore) GetDevicePairing(_ context.Context, deviceID, pairingID string) (*domain.DevicePairing, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.devicePairings[pairingID]
+	if !ok || p.DeviceID != deviceID {
+		return nil, ErrNotFound
+	}
+	cp := p
+	return &cp, nil
+}
+
+func (m *MemStore) ListDevicePairings(_ context.Context, deviceID, status string) ([]domain.DevicePairing, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.DevicePairing
+	for _, p := range m.devicePairings {
+		if p.DeviceID == deviceID && (status == "" || p.Status == status) {
+			out = append(out, p)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+func (m *MemStore) ResolveDevicePairing(_ context.Context, deviceID, pairingID, status string, wrap []byte, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.devicePairings[pairingID]
+	if !ok || p.DeviceID != deviceID {
+		return ErrNotFound
+	}
+	if p.Status != domain.DevicePairingPending {
+		// Already resolved: a duplicate respond is an idempotent no-op.
+		return nil
+	}
+	at = at.UTC()
+	p.Status = status
+	p.Wrap = wrap
+	p.ResolvedAt = &at
+	m.devicePairings[pairingID] = p
+	return nil
+}
+
+func (m *MemStore) RevokeDeviceTokens(_ context.Context, deviceID string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	at = at.UTC()
+	for id, tok := range m.deviceTokens {
+		if tok.DeviceID == deviceID && tok.RevokedAt == nil {
+			tok.RevokedAt = &at
+			m.deviceTokens[id] = tok
+		}
+	}
+	return nil
+}

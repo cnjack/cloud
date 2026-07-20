@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -285,13 +286,19 @@ type deviceCommandAcceptedView struct {
 // unobserved; fail visibly instead) and enqueues the command row the
 // connector's poll delivers.
 func (s *Server) enqueueDeviceCommand(w http.ResponseWriter, r *http.Request, d *domain.Device, kind string, sessionID *string, payload map[string]any) {
-	if !s.deviceOnline(d) {
-		writeError(w, http.StatusConflict, "device_offline", "the device is offline — the command would not be delivered")
-		return
-	}
 	env, err := json.Marshal(payload)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not encode the command")
+		return
+	}
+	s.enqueueDeviceCommandRaw(w, r, d, kind, sessionID, env)
+}
+
+// enqueueDeviceCommandRaw is enqueueDeviceCommand for callers that already
+// hold the payload bytes (an E2EE envelope stored verbatim, docs/17 §6.2).
+func (s *Server) enqueueDeviceCommandRaw(w http.ResponseWriter, r *http.Request, d *domain.Device, kind string, sessionID *string, env []byte) {
+	if !s.deviceOnline(d) {
+		writeError(w, http.StatusConflict, "device_offline", "the device is offline — the command would not be delivered")
 		return
 	}
 	c := &domain.DeviceCommand{
@@ -311,9 +318,24 @@ func (s *Server) enqueueDeviceCommand(w http.ResponseWriter, r *http.Request, d 
 	writeJSON(w, http.StatusAccepted, deviceCommandAcceptedView{CommandID: c.ID, SessionID: sessionID})
 }
 
+// commandEnvelopePayload validates an E2EE command envelope (docs/17 §6.2 —
+// an object with a string `enc` marker) and returns it verbatim as the command
+// payload: the server routes it to the device without ever parsing beyond the
+// marker. The device detects the ciphertext form by the same `enc` rule.
+func commandEnvelopePayload(raw json.RawMessage) ([]byte, error) {
+	var probe struct {
+		Enc string `json:"enc"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil || probe.Enc == "" {
+		return nil, errors.New("envelope must be a JSON object with a string enc field")
+	}
+	return []byte(raw), nil
+}
+
 type deviceSendMessageReq struct {
-	Text string `json:"text"`
-	Mode string `json:"mode,omitempty"`
+	Text     string          `json:"text"`
+	Mode     string          `json:"mode,omitempty"`
+	Envelope json.RawMessage `json:"envelope,omitempty"`
 }
 
 // handleDeviceSendMessage enqueues a chat.send command (docs/17 §4.3). sid
@@ -321,6 +343,10 @@ type deviceSendMessageReq struct {
 // connector allocates the local id (mirrored back via the sessions upsert);
 // the response's session_id is then null too. channel is pinned to "console"
 // (this is the console/mobile entry point).
+//
+// The body is one of two shapes (docs/17 §6.2 gray rollout): {text, mode?} —
+// the server builds the plaintext payload itself — or {envelope} — a client-
+// side E2EE ciphertext of the same payload, stored verbatim and never parsed.
 func (s *Server) handleDeviceSendMessage(w http.ResponseWriter, r *http.Request) {
 	d := s.authorizeDevice(w, r, r.PathValue("id"))
 	if d == nil {
@@ -331,13 +357,26 @@ func (s *Server) handleDeviceSendMessage(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
 		return
 	}
-	if strings.TrimSpace(req.Text) == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "text is required")
-		return
-	}
 	var sessionID *string
 	if sid := r.PathValue("sid"); sid != "new" {
 		sessionID = &sid
+	}
+	if len(req.Envelope) > 0 {
+		if strings.TrimSpace(req.Text) != "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "send either text or envelope, not both")
+			return
+		}
+		env, err := commandEnvelopePayload(req.Envelope)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		s.enqueueDeviceCommandRaw(w, r, d, domain.DeviceCmdChatSend, sessionID, env)
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "text is required")
+		return
 	}
 	payload := map[string]any{"text": req.Text, "channel": "console"}
 	if req.Mode != "" {
@@ -347,24 +386,46 @@ func (s *Server) handleDeviceSendMessage(w http.ResponseWriter, r *http.Request)
 }
 
 // handleDeviceStopSession enqueues a chat.stop command for a running session
-// (docs/17 §4.3). The payload is empty; the target session rides the command's
-// outer session_id field.
+// (docs/17 §4.3). The payload is normally empty ({}); an E2EE client MAY send
+// {envelope} instead, which is stored verbatim like every other ciphertext.
+// The target session rides the command's outer session_id field either way.
 func (s *Server) handleDeviceStopSession(w http.ResponseWriter, r *http.Request) {
 	d := s.authorizeDevice(w, r, r.PathValue("id"))
 	if d == nil {
 		return
 	}
 	sid := r.PathValue("sid")
+	// The body is optional (an empty POST stays valid): a present envelope is
+	// the ciphertext payload, no body means the plaintext {}.
+	var req struct {
+		Envelope json.RawMessage `json:"envelope,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.Envelope) > 0 {
+		env, err := commandEnvelopePayload(req.Envelope)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		s.enqueueDeviceCommandRaw(w, r, d, domain.DeviceCmdChatStop, &sid, env)
+		return
+	}
 	s.enqueueDeviceCommand(w, r, d, domain.DeviceCmdChatStop, &sid, map[string]any{})
 }
 
 type deviceApprovalReq struct {
-	ApprovalID string `json:"approval_id"`
-	Decision   string `json:"decision"`
+	ApprovalID string          `json:"approval_id"`
+	Decision   string          `json:"decision"`
+	Envelope   json.RawMessage `json:"envelope,omitempty"`
 }
 
 // handleDeviceApproval enqueues an approval.respond command (docs/17 §4.3):
-// the user's answer to a permission request the device raised.
+// the user's answer to a permission request the device raised. The body is
+// {approval_id, decision} in plaintext, or {envelope} — the E2EE ciphertext
+// of that same payload, stored verbatim.
 func (s *Server) handleDeviceApproval(w http.ResponseWriter, r *http.Request) {
 	d := s.authorizeDevice(w, r, r.PathValue("id"))
 	if d == nil {
@@ -375,11 +436,24 @@ func (s *Server) handleDeviceApproval(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
 		return
 	}
+	sid := r.PathValue("sid")
+	if len(req.Envelope) > 0 {
+		if strings.TrimSpace(req.ApprovalID) != "" || strings.TrimSpace(req.Decision) != "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "send either approval_id/decision or envelope, not both")
+			return
+		}
+		env, err := commandEnvelopePayload(req.Envelope)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		s.enqueueDeviceCommandRaw(w, r, d, domain.DeviceCmdApprovalRespond, &sid, env)
+		return
+	}
 	if strings.TrimSpace(req.ApprovalID) == "" || strings.TrimSpace(req.Decision) == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "approval_id and decision are required")
 		return
 	}
-	sid := r.PathValue("sid")
 	s.enqueueDeviceCommand(w, r, d, domain.DeviceCmdApprovalRespond, &sid, map[string]any{
 		"approval_id": req.ApprovalID,
 		"decision":    req.Decision,

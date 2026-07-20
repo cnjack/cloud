@@ -896,6 +896,29 @@ export default {
       deviceOffline: '设备已离线',
       emptyHistory: '此会话还没有事件。',
     },
+    pairing: {
+      start: '配对此客户端',
+      idle: {
+        title: '尚未设置端到端加密',
+        body: '将此浏览器与设备配对后，才能读取和发送加密的会话内容。密钥的明文只存在于设备上。',
+      },
+      pending: {
+        title: '等待设备上批准',
+        body: '请在 10 分钟内在设备上批准此配对：',
+      },
+      denied: {
+        title: '配对被拒绝',
+        body: '设备拒绝了此配对请求。如是误操作，请重新发起。',
+      },
+      expired: {
+        title: '配对已过期',
+        body: '配对请求未在 10 分钟内获得批准，请重新发起。',
+      },
+      error: {
+        title: '配对失败',
+        body: '配对过程中出现问题，请重试。',
+      },
+    },
     title: '授权设备',
     lede: '一个 jcode CLI 正在请求登录此云端。输入它显示的验证码以继续。',
     codeLabel: '设备验证码',

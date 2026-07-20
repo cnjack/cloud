@@ -176,6 +176,29 @@ export default {
       deviceOffline: 'Device is offline',
       emptyHistory: 'No events in this session yet.',
     },
+    pairing: {
+      start: 'Pair this client',
+      idle: {
+        title: 'End-to-end encryption not set up',
+        body: 'Pair this browser with the device to read and send encrypted session content. The device stays the only place your key exists in plaintext.',
+      },
+      pending: {
+        title: 'Waiting for approval on the device',
+        body: 'Approve this pairing on the device within 10 minutes:',
+      },
+      denied: {
+        title: 'Pairing denied',
+        body: 'The device denied this pairing request. Start a new one if that was a mistake.',
+      },
+      expired: {
+        title: 'Pairing expired',
+        body: 'The pairing request was not approved within 10 minutes. Start a new one.',
+      },
+      error: {
+        title: 'Pairing failed',
+        body: 'Something went wrong while pairing. Try again.',
+      },
+    },
     title: 'Authorize a device',
     lede: 'A jcode CLI is asking to sign in to this cloud. Enter the code it shows to continue.',
     codeLabel: 'Device code',

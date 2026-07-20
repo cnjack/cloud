@@ -10,6 +10,7 @@ import { PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout'
 import { Select } from '../components/Select';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import { useToast } from '../components/Toast';
+import { DevicePairingCard } from '../deviceview';
 import { timeAgo } from '../lib/format';
 import styles from './DeviceWelcomePage.module.css';
 
@@ -94,6 +95,8 @@ export function DeviceWelcomePage() {
         />
 
         <div className={styles.stack}>
+          <DevicePairingCard deviceId={deviceId} />
+
           {!online && (
             <div className={styles.banner} role="alert">
               <Warning size={16} aria-hidden="true" />

@@ -8,6 +8,8 @@
  * DeviceApi; the app builds the real one from the auth token getter.
  */
 import { ApiError, type TokenSource } from './client';
+import type { DeviceEnvelope } from '../devicecrypto/envelope';
+import type { DeviceWrap } from '../devicecrypto/pairing';
 
 /** One connected jcode device (GET /devices). */
 export interface Device {
@@ -15,6 +17,10 @@ export interface Device {
   name: string;
   hostname?: string;
   jcode_version?: string;
+  /** The device's E2EE identity public key (base64), set once registered. */
+  pubkey?: string;
+  /** The device's current CEK generation. */
+  key_gen?: number;
   online: boolean;
   last_seen_at?: string;
   created_at?: string;
@@ -56,6 +62,18 @@ export interface SendMessageResult {
   session_id: string | null;
 }
 
+/** Pairing creation response (POST /devices/{id}/pairings). */
+export interface CreatePairingResult {
+  pairing_id: string;
+  status: string;
+}
+
+/** Pairing state (GET /devices/{id}/pairings/{pid}); wrap rides along once approved. */
+export interface PairingState {
+  status: 'pending' | 'approved' | 'denied' | 'expired';
+  wrap?: DeviceWrap;
+}
+
 /** SSE frame from GET /devices/{id}/stream. */
 export type DeviceStreamFrame =
   | { event: 'device.status'; data: { online: boolean } }
@@ -79,9 +97,17 @@ export interface DeviceApi {
   listSessionEvents(deviceId: string, sessionId: string, afterSeq?: number, limit?: number): Promise<DeviceSessionEvent[]>;
   /** POST messages; sid "new" starts a fresh session. 409 device_offline when offline. */
   sendMessage(deviceId: string, sessionId: string, text: string, mode?: string): Promise<SendMessageResult>;
+  /** POST an E2EE envelope body (docs/17 §6.2) instead of plaintext text. */
+  sendEnvelope(deviceId: string, sessionId: string, envelope: DeviceEnvelope): Promise<SendMessageResult>;
   stopSession(deviceId: string, sessionId: string): Promise<void>;
   /** decision: approve | approve_all | deny (jcode approval vocabulary). */
   respondApproval(deviceId: string, sessionId: string, approvalId: string, decision: string): Promise<void>;
+  /** POST an E2EE envelope body to the approval endpoint. */
+  respondApprovalEnvelope(deviceId: string, sessionId: string, envelope: DeviceEnvelope): Promise<void>;
+  /** Start a CEK pairing (docs/17 §6.3): the device is asked to approve. */
+  createPairing(deviceId: string, req: { label: string; kty: string; pubkey: string }): Promise<CreatePairingResult>;
+  /** Poll a pairing's state; wrap arrives once approved. */
+  getPairing(deviceId: string, pairingId: string): Promise<PairingState>;
   /** Subscribe to the device-wide SSE stream. */
   streamDevice(deviceId: string, cb: DeviceStreamCallbacks): DeviceStreamHandle;
 }
@@ -145,6 +171,12 @@ export function createDeviceApi(token: TokenSource): DeviceApi {
         { method: 'POST', body: JSON.stringify(mode ? { text, mode } : { text }) },
       ),
 
+    sendEnvelope: (deviceId, sessionId, envelope) =>
+      req<SendMessageResult>(
+        `${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}/messages`,
+        { method: 'POST', body: JSON.stringify({ envelope }) },
+      ),
+
     stopSession: async (deviceId, sessionId) => {
       await req<void>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}/stop`, { method: 'POST' });
     },
@@ -155,6 +187,22 @@ export function createDeviceApi(token: TokenSource): DeviceApi {
         body: JSON.stringify({ approval_id: approvalId, decision }),
       });
     },
+
+    respondApprovalEnvelope: async (deviceId, sessionId, envelope) => {
+      await req<void>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}/approval`, {
+        method: 'POST',
+        body: JSON.stringify({ envelope }),
+      });
+    },
+
+    createPairing: (deviceId, body) =>
+      req<CreatePairingResult>(`${dev(deviceId)}/pairings`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+
+    getPairing: (deviceId, pairingId) =>
+      req<PairingState>(`${dev(deviceId)}/pairings/${encodeURIComponent(pairingId)}`),
 
     streamDevice: (deviceId, cb) => {
       // Native EventSource cannot set Authorization headers; the stream route
