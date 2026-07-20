@@ -199,7 +199,9 @@ jobs:
 
   release:
     # Tag only once every image for this version has been pushed, so the git tag
-    # always corresponds to a fully published release.
+    # always corresponds to a fully published release. Only main cuts releases —
+    # workflow_dispatch from a feature branch builds/pushes images without a tag.
+    if: github.ref == 'refs/heads/main'
     needs: [version, orchestrator, runner, console, mockllm]
     runs-on: ubuntu-latest
     permissions:
