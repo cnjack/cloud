@@ -10,6 +10,7 @@ import { RunDetailPage } from './pages/RunDetailPage';
 import { ClusterOverviewPage } from './pages/ClusterOverviewPage';
 import { ClusterModelsPage } from './pages/ClusterModelsPage';
 import { ClusterConnectionsPage } from './pages/ClusterConnectionsPage';
+import { DeviceAuthorizePage } from './pages/DeviceAuthorizePage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { useToast } from './components/Toast';
 import { readQueryParam, stripQueryParams } from './lib/url';
@@ -72,6 +73,8 @@ export function App() {
           <Route path="/cluster" element={<ClusterOverviewPage />} />
           <Route path="/cluster/models" element={<ClusterModelsPage />} />
           <Route path="/cluster/connections" element={<ClusterConnectionsPage />} />
+          {/* jcode device login (docs/17 §3): the CLI's verification_uri target. */}
+          <Route path="/device" element={<DeviceAuthorizePage />} />
           <Route path="/system" element={<Navigate to="/cluster" replace />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>

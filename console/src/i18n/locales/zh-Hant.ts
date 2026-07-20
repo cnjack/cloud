@@ -830,6 +830,27 @@ export default {
     backToProjects: '返回專案',
   },
 
+  device: {
+    title: '授權裝置',
+    lede: '一個 jcode CLI 正在請求登入此雲端。輸入它顯示的驗證碼以繼續。',
+    codeLabel: '裝置驗證碼',
+    codeHint: '`jcode login` 顯示的 8 位驗證碼，形如 XXXX-XXXX。',
+    codeRequired: '請輸入 CLI 顯示的驗證碼。',
+    continue: '繼續',
+    confirmTitle: '這是你的裝置嗎？',
+    confirmBody: '僅當此驗證碼與你正在執行的 `jcode login` 顯示的一致時才批准。',
+    approve: '批准',
+    deny: '拒絕',
+    approvedTitle: '裝置已批准',
+    approvedBody: 'CLI 現在可以完成登入了——你可以關閉此頁面。',
+    deniedTitle: '裝置已拒絕',
+    deniedBody: '登入請求已被拒絕，CLI 將停止等待。',
+    another: '授權另一台裝置',
+    errorNotFound: '沒有與該驗證碼匹配的待處理登入——它可能已過期。請重新執行 `jcode login`。',
+    errorAlreadyDecided: '該登入請求已被批准或拒絕。',
+    errorGeneric: '無法授權裝置，請重試。',
+  },
+
   projectDetail: {
     promptRequired: '請描述要交給 agent 的工作。',
     sessionStarted: '工作階段已開始。',

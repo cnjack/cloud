@@ -830,6 +830,27 @@ export default {
     backToProjects: '返回项目',
   },
 
+  device: {
+    title: '授权设备',
+    lede: '一个 jcode CLI 正在请求登录此云端。输入它显示的验证码以继续。',
+    codeLabel: '设备验证码',
+    codeHint: '`jcode login` 显示的 8 位验证码，形如 XXXX-XXXX。',
+    codeRequired: '请输入 CLI 显示的验证码。',
+    continue: '继续',
+    confirmTitle: '这是你的设备吗？',
+    confirmBody: '仅当此验证码与你正在运行的 `jcode login` 显示的一致时才批准。',
+    approve: '批准',
+    deny: '拒绝',
+    approvedTitle: '设备已批准',
+    approvedBody: 'CLI 现在可以完成登录了——你可以关闭此页面。',
+    deniedTitle: '设备已拒绝',
+    deniedBody: '登录请求已被拒绝，CLI 将停止等待。',
+    another: '授权另一台设备',
+    errorNotFound: '没有与该验证码匹配的待处理登录——它可能已过期。请重新运行 `jcode login`。',
+    errorAlreadyDecided: '该登录请求已被批准或拒绝。',
+    errorGeneric: '无法授权设备，请重试。',
+  },
+
   projectDetail: {
     promptRequired: '为 agent 描述任务。',
     sessionStarted: '会话已开始。',

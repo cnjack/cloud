@@ -830,6 +830,27 @@ export default {
     backToProjects: 'Back to Projects',
   },
 
+  device: {
+    title: 'Authorize a device',
+    lede: 'A jcode CLI is asking to sign in to this cloud. Enter the code it shows to continue.',
+    codeLabel: 'Device code',
+    codeHint: 'The 8-character code shown by `jcode login`, e.g. XXXX-XXXX.',
+    codeRequired: 'Enter the code shown by the CLI.',
+    continue: 'Continue',
+    confirmTitle: 'Is this your device?',
+    confirmBody: 'Approve only if this code matches what your `jcode login` is showing right now.',
+    approve: 'Approve',
+    deny: 'Deny',
+    approvedTitle: 'Device approved',
+    approvedBody: 'The CLI can finish signing in now — you can close this page.',
+    deniedTitle: 'Device denied',
+    deniedBody: 'The sign-in request was rejected. The CLI will stop waiting.',
+    another: 'Authorize another device',
+    errorNotFound: 'No pending sign-in matches that code — it may have expired. Run `jcode login` again.',
+    errorAlreadyDecided: 'That sign-in was already approved or denied.',
+    errorGeneric: 'Could not authorize the device. Try again.',
+  },
+
   projectDetail: {
     promptRequired: 'Describe the task for the agent.',
     sessionStarted: 'Session started.',

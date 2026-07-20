@@ -830,6 +830,27 @@ export default {
     backToProjects: '프로젝트로 돌아가기',
   },
 
+  device: {
+    title: '기기 승인',
+    lede: 'jcode CLI가 이 클라우드에 로그인을 요청하고 있습니다. 표시된 코드를 입력해 계속하세요.',
+    codeLabel: '기기 코드',
+    codeHint: '`jcode login`에 표시된 8자리 코드입니다(예: XXXX-XXXX).',
+    codeRequired: 'CLI에 표시된 코드를 입력하세요.',
+    continue: '계속',
+    confirmTitle: '이 기기가 본인의 기기인가요?',
+    confirmBody: '이 코드가 지금 실행 중인 `jcode login`에 표시된 것과 일치할 때만 승인하세요.',
+    approve: '승인',
+    deny: '거부',
+    approvedTitle: '기기가 승인되었습니다',
+    approvedBody: '이제 CLI가 로그인을 완료할 수 있습니다. 이 페이지를 닫아도 됩니다.',
+    deniedTitle: '기기가 거부되었습니다',
+    deniedBody: '로그인 요청이 거부되었습니다. CLI가 대기를 중단합니다.',
+    another: '다른 기기 승인',
+    errorNotFound: '해당 코드와 일치하는 대기 중인 로그인이 없습니다. 만료되었을 수 있습니다. `jcode login`을 다시 실행하세요.',
+    errorAlreadyDecided: '해당 로그인은 이미 승인 또는 거부되었습니다.',
+    errorGeneric: '기기를 승인할 수 없습니다. 다시 시도하세요.',
+  },
+
   projectDetail: {
     promptRequired: '에이전트가 수행할 작업을 설명하세요.',
     sessionStarted: '세션이 시작되었습니다.',

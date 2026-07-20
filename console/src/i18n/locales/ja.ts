@@ -830,6 +830,27 @@ export default {
     backToProjects: 'プロジェクトに戻る',
   },
 
+  device: {
+    title: 'デバイスを承認',
+    lede: 'jcode CLI がこのクラウドへのサインインを要求しています。表示されているコードを入力して続行してください。',
+    codeLabel: 'デバイスコード',
+    codeHint: '`jcode login` に表示される 8 文字のコード（例: XXXX-XXXX）。',
+    codeRequired: 'CLI に表示されているコードを入力してください。',
+    continue: '続行',
+    confirmTitle: 'このデバイスはあなたのものですか？',
+    confirmBody: 'このコードが実行中の `jcode login` に表示されているものと一致する場合のみ承認してください。',
+    approve: '承認',
+    deny: '拒否',
+    approvedTitle: 'デバイスを承認しました',
+    approvedBody: 'CLI がサインインを完了できます。このページは閉じて構いません。',
+    deniedTitle: 'デバイスを拒否しました',
+    deniedBody: 'サインイン要求は拒否されました。CLI は待機を停止します。',
+    another: '別のデバイスを承認',
+    errorNotFound: 'そのコードに一致する保留中のサインインはありません。期限切れの可能性があります。`jcode login` を再実行してください。',
+    errorAlreadyDecided: 'そのサインインはすでに承認または拒否されています。',
+    errorGeneric: 'デバイスを承認できませんでした。もう一度お試しください。',
+  },
+
   projectDetail: {
     promptRequired: 'エージェントに実行させるタスクを記述してください。',
     sessionStarted: 'セッションを開始しました。',

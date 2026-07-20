@@ -631,6 +631,38 @@ type Store interface {
 	// effective immediately (the next GetAPIKeyByHash for that key 404s).
 	RevokeAPIKey(ctx context.Context, id string) error
 
+	// --- Devices (docs/17 — jcode device relay) --------------------------------
+	// A device is one local jcode installation logged in via the RFC 8628
+	// device-code flow. The device row is created at token issuance (only its
+	// name is known then); register/heartbeat enrich it afterwards.
+
+	// CreateDevice inserts a fresh device row at token-issuance time. The
+	// caller pre-fills id/user_id/name/created_at; pubkey stays empty until the
+	// first register call.
+	CreateDevice(ctx context.Context, d *domain.Device) error
+	// GetDevice returns a device by id (ErrNotFound if absent).
+	GetDevice(ctx context.Context, id string) (*domain.Device, error)
+	// UpsertDeviceRegistration applies a /device/register payload: it updates
+	// name/hostname/jcode_version/pubkey and stamps last_seen_at, keyed by
+	// d.ID. user_id/key_gen/created_at are NEVER touched (a register call can
+	// neither re-own a device nor roll its key generation). ErrNotFound when
+	// the device does not exist — the row is always created at token issuance,
+	// so a missing row means the device was deleted under a live token.
+	UpsertDeviceRegistration(ctx context.Context, d *domain.Device) error
+	// TouchDeviceLastSeen stamps last_seen_at (the 30s heartbeat). ErrNotFound
+	// when the device does not exist.
+	TouchDeviceLastSeen(ctx context.Context, id string, at time.Time) error
+	// CreateDeviceToken inserts a freshly-issued device token. The store never
+	// sees plaintext, only the already-computed TokenHash (see
+	// auth.GenerateDeviceToken / auth.HashToken).
+	CreateDeviceToken(ctx context.Context, t *domain.DeviceToken) error
+	// GetDeviceTokenByHash resolves a presented Bearer token's SHA-256 to its
+	// token row (with UserID joined from devices) for principal resolution
+	// (api/principal.go). It excludes revoked tokens AND tokens of revoked
+	// devices — ErrNotFound covers all three cases, so revocation is effective
+	// on the very next lookup with no cache to invalidate.
+	GetDeviceTokenByHash(ctx context.Context, tokenHash string) (*domain.DeviceToken, error)
+
 	// Lifecycle
 	Close()
 }

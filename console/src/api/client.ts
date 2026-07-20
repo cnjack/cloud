@@ -1060,3 +1060,27 @@ export async function postLogout(token: string | undefined): Promise<void> {
     /* network error — the local session is cleared regardless */
   }
 }
+
+/**
+ * POST /auth/device/authorize — approve or deny a jcode device-code login
+ * (docs/17 §3). Lives outside ApiClient (like the other /auth helpers): the
+ * route is not under /api/v1 and auth rides the session cookie + optional
+ * Bearer fallback. Throws ApiError on a typed failure (unknown/expired code,
+ * already decided) so the page can show the server message verbatim.
+ */
+export async function postDeviceAuthorize(
+  token: string | undefined,
+  userCode: string,
+  approve: boolean,
+): Promise<void> {
+  const res = await fetch('/auth/device/authorize', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({ user_code: userCode, approve }),
+  });
+  if (!res.ok) return parseError(res);
+}

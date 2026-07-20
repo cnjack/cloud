@@ -104,6 +104,9 @@ type Server struct {
 	// connects is the in-memory registry of pending "Connect with jtype" OAuth
 	// device flows (D28); no DB persistence — a restart drops in-flight flows.
 	connects *connectRegistry
+	// deviceFlows is the in-memory registry of pending jcode device-code logins
+	// (docs/17 §3); same no-persistence rationale as connects.
+	deviceFlows *deviceFlowRegistry
 	// oauthClientFor builds a jtype OAuth device-flow client for a base URL.
 	// Production wires jtypeoauth.NewClient; a test injects a fake with a poll spy.
 	oauthClientFor func(baseURL string) oauthClient
@@ -203,6 +206,8 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// pending flows + the jtype OAuth device-flow client seam (overridden by tests).
 	s.connects = newConnectRegistry()
 	s.oauthClientFor = func(baseURL string) oauthClient { return jtypeoauth.NewClient(baseURL, nil) }
+	// docs/17 — jcode device login: pending RFC 8628 flows live in memory only.
+	s.deviceFlows = newDeviceFlowRegistry()
 	return s
 }
 
@@ -289,6 +294,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /auth/integrations/{provider}", s.authed(s.handleStartIntegrationOAuth))
 	mux.Handle("POST /auth/logout", s.authed(s.handleAuthLogout))
 	mux.Handle("GET /api/v1/me", s.authed(s.handleMe))
+
+	// jcode device login (docs/17 §3 — RFC 8628 device-code flow). code/token
+	// are unauthenticated (the CLI has no credential yet — the device_code IS
+	// the credential); authorize requires a console session. The browser side of
+	// the flow is the console's /device route, not an orchestrator page.
+	mux.HandleFunc("POST /auth/device/code", s.handleDeviceCode)
+	mux.HandleFunc("POST /auth/device/token", s.handleDeviceToken)
+	mux.Handle("POST /auth/device/authorize", s.authed(s.handleDeviceAuthorize))
 
 	// Read-only admin snapshot for the cluster-admin console view (11-api.md §
 	// "System / admin"). Never returns a secret.
@@ -492,6 +505,11 @@ func (s *Server) Handler() http.Handler {
 
 	// Internal endpoints — require the per-run RUN_TOKEN.
 	mux.Handle("POST /internal/v1/runs/{id}/events", s.runToken(s.handleIngestEvents))
+	// jcode device uplink (docs/17 §4.1) — authenticated by the device token
+	// (the "jcd_" Bearer resolves to a device principal in resolvePrincipal;
+	// requireDevice rejects anything else).
+	mux.Handle("POST /internal/v1/device/register", s.authed(s.handleDeviceRegister))
+	mux.Handle("POST /internal/v1/device/heartbeat", s.authed(s.handleDeviceHeartbeat))
 	mux.Handle("POST /internal/v1/runs/{id}/artifact", s.runToken(s.handleIngestArtifact))
 	// M3 runner contract: the runner fetches its source bundle, uploads the
 	// draft-PR git bundle, and posts review output — all authed by the RUN_TOKEN.
