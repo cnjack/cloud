@@ -115,6 +115,14 @@ type Server struct {
 	// (25s hold / 500ms poll). Overridable by tests that need a fast hold.
 	nextPromptHold time.Duration
 	nextPromptPoll time.Duration
+
+	// Device relay (docs/17 §4): deviceHub fans out device-level stream events
+	// to the client SSE endpoint, keyed by device id. Never nil (built in New).
+	deviceHub *sse.DeviceHub
+	// Device command long-poll timings. Zero => the package defaults (30s max
+	// hold / 500ms tick). Overridable by tests that need a fast hold.
+	devicePollMaxHold time.Duration
+	devicePollTick    time.Duration
 }
 
 // boardValidator is the slice of *jtype.Client the admin link API needs to
@@ -208,6 +216,8 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	s.oauthClientFor = func(baseURL string) oauthClient { return jtypeoauth.NewClient(baseURL, nil) }
 	// docs/17 — jcode device login: pending RFC 8628 flows live in memory only.
 	s.deviceFlows = newDeviceFlowRegistry()
+	// docs/17 §4 — device relay: the device-level SSE fan-out hub (client stream).
+	s.deviceHub = sse.NewDeviceHub()
 	return s
 }
 
@@ -357,6 +367,19 @@ func (s *Server) Handler() http.Handler {
 	// User search (any logged-in user; for the add-member picker).
 	mux.Handle("GET /api/v1/users", s.authed(s.handleSearchUsers))
 
+	// Device relay client API (docs/17 §4.3) — the console/mobile view of the
+	// caller's OWN devices (session auth; ownership enforced per handler). The
+	// stream endpoint also accepts ?access_token= (browser EventSource cannot
+	// set a header — same rationale as the run stream).
+	mux.Handle("GET /api/v1/devices", s.authed(s.handleListDevices))
+	mux.Handle("GET /api/v1/devices/{id}", s.authed(s.handleGetDevice))
+	mux.Handle("GET /api/v1/devices/{id}/sessions", s.authed(s.handleListDeviceSessions))
+	mux.Handle("GET /api/v1/devices/{id}/sessions/{sid}/events", s.authed(s.handleListDeviceSessionEvents))
+	mux.Handle("GET /api/v1/devices/{id}/stream", s.authedStream(s.handleDeviceStream))
+	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/messages", s.authed(s.handleDeviceSendMessage))
+	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/stop", s.authed(s.handleDeviceStopSession))
+	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/approval", s.authed(s.handleDeviceApproval))
+
 	mux.Handle("POST /api/v1/projects", s.authed(s.handleCreateProject))
 	mux.Handle("GET /api/v1/projects", s.authed(s.handleListProjects))
 	mux.Handle("GET /api/v1/projects/{id}", s.authed(s.handleGetProject))
@@ -505,11 +528,16 @@ func (s *Server) Handler() http.Handler {
 
 	// Internal endpoints — require the per-run RUN_TOKEN.
 	mux.Handle("POST /internal/v1/runs/{id}/events", s.runToken(s.handleIngestEvents))
-	// jcode device uplink (docs/17 §4.1) — authenticated by the device token
+	// jcode device uplink (docs/17 §4.1/§4.2) — authenticated by the device token
 	// (the "jcd_" Bearer resolves to a device principal in resolvePrincipal;
 	// requireDevice rejects anything else).
 	mux.Handle("POST /internal/v1/device/register", s.authed(s.handleDeviceRegister))
 	mux.Handle("POST /internal/v1/device/heartbeat", s.authed(s.handleDeviceHeartbeat))
+	mux.Handle("POST /internal/v1/device/sessions", s.authed(s.handleDeviceSessionsUpsert))
+	mux.Handle("POST /internal/v1/device/sessions/{sid}/events", s.authed(s.handleDeviceSessionEvents))
+	mux.Handle("POST /internal/v1/device/sessions/{sid}/ephemeral", s.authed(s.handleDeviceSessionEphemeral))
+	mux.Handle("GET /internal/v1/device/poll", s.authed(s.handleDevicePoll))
+	mux.Handle("POST /internal/v1/device/commands/{id}/ack", s.authed(s.handleDeviceCommandAck))
 	mux.Handle("POST /internal/v1/runs/{id}/artifact", s.runToken(s.handleIngestArtifact))
 	// M3 runner contract: the runner fetches its source bundle, uploads the
 	// draft-PR git bundle, and posts review output — all authed by the RUN_TOKEN.

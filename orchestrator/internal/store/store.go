@@ -662,6 +662,50 @@ type Store interface {
 	// devices — ErrNotFound covers all three cases, so revocation is effective
 	// on the very next lookup with no cache to invalidate.
 	GetDeviceTokenByHash(ctx context.Context, tokenHash string) (*domain.DeviceToken, error)
+	// ListDevicesForUser returns a user's non-revoked devices, oldest first
+	// (the "my devices" client view).
+	ListDevicesForUser(ctx context.Context, userID string) ([]domain.Device, error)
+
+	// --- Device relay (docs/17 §4 — P2) ---------------------------------------
+	// Sessions/events/commands are the relay's data plane. Meta/envelope blobs
+	// are OPAQUE to the store (plaintext JSON in M3, E2EE ciphertext from M5):
+	// they are stored and returned verbatim, never parsed.
+
+	// UpsertDeviceSession inserts or refreshes a session-metadata mirror row,
+	// keyed by (device_id, session_id). meta/status/updated_at are overwritten
+	// wholesale (the device owns its mirror).
+	UpsertDeviceSession(ctx context.Context, s *domain.DeviceSession) error
+	// ListDeviceSessions returns a device's session index, most-recently
+	// updated first.
+	ListDeviceSessions(ctx context.Context, deviceID string) ([]domain.DeviceSession, error)
+	// AppendDeviceEvents appends a batch to a session's durable log,
+	// IDEMPOTENTLY by (device_id, session_id, seq): an already-present seq is
+	// skipped and reported as conflicted, never an error. The batch reports the
+	// accepted/conflicted seqs (input order preserved within each list) and the
+	// session's current max seq (0 when the log is empty).
+	AppendDeviceEvents(ctx context.Context, deviceID, sessionID string, events []*domain.DeviceEvent) (*DeviceEventBatch, error)
+	// ListDeviceEvents returns durable events with seq > afterSeq, ascending
+	// (the client replay path).
+	ListDeviceEvents(ctx context.Context, deviceID, sessionID string, afterSeq int64, limit int) ([]domain.DeviceEvent, error)
+	// MaxDeviceEventSeq returns the session's current max seq, or 0 when the
+	// log is empty (the connector's reconnect cursor).
+	MaxDeviceEventSeq(ctx context.Context, deviceID, sessionID string) (int64, error)
+	// CreateDeviceCommand enqueues a downlink command (status pending). The
+	// caller pre-fills id/device_id/kind/session_id/envelope/created_at.
+	CreateDeviceCommand(ctx context.Context, c *domain.DeviceCommand) error
+	// DeliverPendingDeviceCommands is the poll's offer step: it atomically
+	// marks the device's oldest pending commands (up to limit, created_at
+	// order) delivered and returns them in that order. Empty when nothing is
+	// pending. Delivery is SINGLE-SHOT (a lost poll response is not re-offered;
+	// the ack resolves the command) — the simple contract of docs/17 §4.2.
+	DeliverPendingDeviceCommands(ctx context.Context, deviceID string, limit int) ([]domain.DeviceCommand, error)
+	// AckDeviceCommand records a command's execution result: it sets the
+	// status (acked/failed), stores the opaque result blob, and stamps
+	// acked_at — but ONLY while the command is unresolved, so a duplicate ack
+	// (lost response retry) is a no-op, not an error. ErrNotFound when no such
+	// command exists FOR THIS DEVICE (a device can never ack another device's
+	// command; the two cases are intentionally indistinguishable).
+	AckDeviceCommand(ctx context.Context, deviceID, commandID, status string, result []byte, at time.Time) error
 
 	// Lifecycle
 	Close()
@@ -689,3 +733,13 @@ type ArchiveCandidate struct {
 // ErrInvalidTransition is returned by the run mutators when a status change is
 // not permitted by the domain state machine.
 var ErrInvalidTransition = errors.New("invalid run status transition")
+
+// DeviceEventBatch reports the outcome of an AppendDeviceEvents call
+// (docs/17 §4.1): which seqs were newly inserted, which were skipped as
+// idempotent replays (already present under (device_id, session_id, seq)), and
+// the session's current max seq (0 when the log is empty).
+type DeviceEventBatch struct {
+	Accepted   []int64
+	Conflicted []int64
+	MaxSeq     int64
+}

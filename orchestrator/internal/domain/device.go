@@ -45,3 +45,72 @@ type DeviceToken struct {
 	// to invalidate.
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 }
+
+// Device session routing states (docs/17 §5). Status is PLAINTEXT so list UIs
+// can render it without the CEK; everything else about a session is opaque.
+const (
+	DeviceSessionIdle    = "idle"
+	DeviceSessionRunning = "running"
+)
+
+// DeviceSession is the cloud mirror of one local jcode session's metadata
+// (docs/17 §2.1). Meta is OPAQUE to the server: in the plaintext relay phase
+// (M3) it is the SessionMeta JSON, from M5 it is the E2EE ciphertext — the
+// server stores and returns the bytes verbatim and never parses them.
+type DeviceSession struct {
+	DeviceID  string    `json:"-"`
+	SessionID string    `json:"session_id"`
+	Status    string    `json:"status"`
+	Meta      []byte    `json:"-"` // opaque JSON blob (json.RawMessage at the API edge)
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// DeviceEvent is one durable event in a device session's append-only log
+// (docs/17 §4.4). (DeviceID, SessionID, Seq) is the idempotency key — a
+// redelivered seq is skipped. Kind is PLAINTEXT (the server routes/renders the
+// skeleton); Envelope is the OPAQUE payload blob (plaintext JSON in M3, E2EE
+// ciphertext from M5) stored verbatim, never parsed.
+type DeviceEvent struct {
+	DeviceID  string    `json:"-"`
+	SessionID string    `json:"session_id"`
+	Seq       int64     `json:"seq"`
+	Kind      string    `json:"kind"`
+	Envelope  []byte    `json:"-"` // opaque payload blob (json.RawMessage at the API edge)
+	CreatedAt time.Time `json:"ts"`
+}
+
+// Downlink command kinds (orchestrator → device, docs/17 §4.2). The payload
+// contract per kind lives in docs/17 and the wire spec; the server builds
+// chat.* payloads itself and treats everything as opaque bytes afterwards.
+const (
+	DeviceCmdChatSend        = "chat.send"
+	DeviceCmdChatStop        = "chat.stop"
+	DeviceCmdApprovalRespond = "approval.respond"
+)
+
+// DeviceCommand lifecycle states (docs/17 §5): pending (queued) → delivered
+// (handed to the device by a poll) → acked (executed ok) / failed (executed
+// with error).
+const (
+	DeviceCommandPending   = "pending"
+	DeviceCommandDelivered = "delivered"
+	DeviceCommandAcked     = "acked"
+	DeviceCommandFailed    = "failed"
+)
+
+// DeviceCommand is one queued downlink instruction for a device (docs/17
+// §4.2). SessionID is nil for a command that starts a NEW session (chat.send
+// with a null session_id — the jcode connector allocates the local session id
+// and mirrors it back via the sessions upsert). Envelope/Result are OPAQUE
+// JSON blobs (E2EE ciphertext from M5); the server never parses them.
+type DeviceCommand struct {
+	ID        string     `json:"id"`
+	DeviceID  string     `json:"-"`
+	Kind      string     `json:"kind"`
+	SessionID *string    `json:"session_id"`
+	Envelope  []byte     `json:"-"` // opaque payload blob (json.RawMessage at the API edge)
+	Status    string     `json:"status"`
+	Result    []byte     `json:"-"`
+	CreatedAt time.Time  `json:"created_at"`
+	AckedAt   *time.Time `json:"acked_at,omitempty"`
+}

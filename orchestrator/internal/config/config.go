@@ -146,6 +146,12 @@ type Config struct {
 	// the poller entirely (no scheduled runs dispatch).
 	SchedulePollInterval time.Duration
 
+	// --- jcode device relay (docs/17) ------------------------------------------
+	// DeviceHeartbeatTTL is DEVICE_HEARTBEAT_TTL (default 90s): a device whose
+	// last_seen_at is older than this reads offline (heartbeat cadence is 30s,
+	// so the TTL tolerates ~2 missed beats).
+	DeviceHeartbeatTTL time.Duration
+
 	// --- object-storage archive layer (F10 / D23 ③) --------------------------
 	// The persistent-workspace archive layer tars a long-idle service's PVC to
 	// object storage (S3/MinIO) and deletes the PVC, restoring it on the next run.
@@ -256,6 +262,7 @@ func Load() (*Config, error) {
 		JtypeToken:             os.Getenv("JTYPE_TOKEN"),
 		JtypePollInterval:      getdur("JTYPE_POLL_INTERVAL", 15*time.Second),
 		SchedulePollInterval:   getdur("SCHEDULE_POLL_INTERVAL", 30*time.Second),
+		DeviceHeartbeatTTL:     getdur("DEVICE_HEARTBEAT_TTL", 90*time.Second),
 		S3Endpoint:             os.Getenv("S3_ENDPOINT"),
 		S3Bucket:               os.Getenv("S3_BUCKET"),
 		S3AccessKey:            os.Getenv("S3_ACCESS_KEY"),

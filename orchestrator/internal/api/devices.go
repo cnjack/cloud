@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -57,6 +58,7 @@ func (s *Server) handleDeviceRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
+	wasOnline := deviceOnlineAt(d, s.deviceTTL(), now)
 	// A blank name keeps the issuance-time default (the CLI's client_name).
 	if name := strings.TrimSpace(req.Name); name != "" {
 		d.Name = name
@@ -74,6 +76,11 @@ func (s *Server) handleDeviceRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not register the device")
 		return
 	}
+	// Announce the offline→online edge to live client streams (best-effort; the
+	// stream itself derives the signal from last_seen_at on connect).
+	if !wasOnline {
+		s.publishDeviceEvent(d.ID, sse.DeviceEventStatus, map[string]any{"online": true})
+	}
 	writeJSON(w, http.StatusOK, deviceRegisterView{
 		DeviceID:          d.ID,
 		ServerTime:        now.Format(time.RFC3339),
@@ -89,7 +96,15 @@ func (s *Server) handleDeviceHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if p == nil {
 		return
 	}
-	if err := s.st.TouchDeviceLastSeen(r.Context(), p.deviceID, time.Now().UTC()); err != nil {
+	now := time.Now().UTC()
+	// Load first so an offline→online edge can be announced; a missing row
+	// means the device was deleted under a live token (404).
+	d := s.loadDeviceForPrincipal(w, r, p.deviceID)
+	if d == nil {
+		return
+	}
+	wasOnline := deviceOnlineAt(d, s.deviceTTL(), now)
+	if err := s.st.TouchDeviceLastSeen(r.Context(), p.deviceID, now); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "device not found")
 			return
@@ -97,6 +112,9 @@ func (s *Server) handleDeviceHeartbeat(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("device heartbeat", "device", p.deviceID, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not record the heartbeat")
 		return
+	}
+	if !wasOnline {
+		s.publishDeviceEvent(d.ID, sse.DeviceEventStatus, map[string]any{"online": true})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

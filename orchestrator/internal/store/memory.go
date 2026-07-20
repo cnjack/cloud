@@ -43,6 +43,9 @@ type MemStore struct {
 	kanbanConfig    *domain.KanbanConfig             // single-row cluster kanban config, nil = absent (D27)
 	devices         map[string]domain.Device         // keyed by device id (docs/17)
 	deviceTokens    map[string]domain.DeviceToken    // keyed by device token id
+	deviceSessions  map[string]domain.DeviceSession  // keyed by deviceID+"|"+sessionID
+	deviceEvents    map[string][]domain.DeviceEvent  // keyed by deviceID+"|"+sessionID, kept sorted by seq
+	deviceCommands  map[string]domain.DeviceCommand  // keyed by command id
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -72,6 +75,9 @@ func NewMemStore() *MemStore {
 		apiKeys:         map[string]domain.APIKey{},
 		devices:         map[string]domain.Device{},
 		deviceTokens:    map[string]domain.DeviceToken{},
+		deviceSessions:  map[string]domain.DeviceSession{},
+		deviceEvents:    map[string][]domain.DeviceEvent{},
+		deviceCommands:  map[string]domain.DeviceCommand{},
 	}
 }
 
