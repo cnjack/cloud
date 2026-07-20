@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Device welcome layout prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>dev-mbp-01 — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+  <style>
+    /* page-specific: stacked content sections */
+    .page-stack {
+      display: grid;
+      align-content: start;
+      gap: 2.5rem;
+      padding-top: 2rem;
+    }
+
+    /* page-specific: session composer inside a section-panel */
+    .composer-body {
+      display: grid;
+      gap: 0.75rem;
+      padding: 1rem;
+    }
+
+    .composer-body .textarea {
+      min-height: 5rem;
+    }
+
+    .composer-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+
+    .composer-actions .select {
+      width: auto;
+      min-width: 7rem;
+      min-height: 2rem;
+      padding: 0.25rem 0.5rem;
+      font-size: 0.75rem;
+    }
+
+    .composer-hint {
+      color: var(--text-faint);
+      font-size: 0.625rem;
+    }
+
+    .section-offset {
+      margin-top: 2rem;
+    }
+
+    .panel-offset {
+      margin-top: 1rem;
+    }
+
+    /* page-specific: neutral tone for offline status dots (prototype.css only ships success/warning) */
+    .status-label[data-tone="muted"] {
+      border-color: var(--border);
+      background: var(--surface-inset);
+      color: var(--text-muted);
+    }
+
+    .status-label[data-tone="muted"]::before {
+      background: var(--border-strong);
+    }
+
+    /* page-specific: terminal icon inside a project-mark */
+    .project-mark .icon {
+      width: 0.875rem;
+      height: 0.875rem;
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><img class="wordmark-icon" src="./assets/app-icon.svg" alt="" /><span class="wordmark-name">JCODE</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="rail-context"><span class="eyebrow">Workspace</span><strong>Devices</strong><small>wangwenhui@local</small></div>
+      <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./projects.html"><svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">3</span></a><a class="nav-item" href="./device-list.html" aria-current="page"><svg class="icon"><use href="./assets/icons.svg#i-cpu" /></svg><span>Devices</span><span class="nav-count">3</span></a><a class="nav-item" href="./cluster-overview.html"><svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg><span>Cluster</span><span class="nav-count">admin</span></a></nav>
+      <section class="rail-section" aria-labelledby="recentDevicesLabel"><div class="rail-section-head"><span id="recentDevicesLabel">Recent devices</span><span>3</span></div><nav class="recent-projects" aria-label="Recent devices"><a class="recent-item" href="./device-welcome.html"><span class="project-mark">DM</span><span class="recent-item-copy"><strong>dev-mbp-01</strong><small>online · 2 sessions</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./device-welcome.html"><span class="project-mark">WS</span><span class="recent-item-copy"><strong>workstation-01</strong><small>online · idle</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./device-welcome.html"><span class="project-mark">NS</span><span class="recent-item-copy"><strong>nas-01</strong><small>offline · 2d ago</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a></nav></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>namespace / jcode</span><span>v0.1.0</span></div><div class="identity-row"><span class="identity-mark">J</span><span class="identity-copy"><strong>Jack</strong><small>cluster admin</small></span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface" aria-label="Device detail">
+      <header class="utility-bar"><div class="breadcrumbs"><a href="./device-list.html">Devices</a><span class="breadcrumb-separator">/</span><strong>dev-mbp-01</strong></div><div class="utility-actions"><span class="prototype-chip">two states</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <header class="page-header">
+            <div class="page-heading"><span class="eyebrow">Device</span><h1>dev-mbp-01</h1><p>Start a new session on this machine, or reopen one that is already running. Sessions keep their working directory and history on the device.</p></div>
+            <div class="header-actions"><span class="status-label" data-tone="success">online</span><button class="button" type="button" data-prototype-action="Prototype refresh — no API request was sent.">Refresh</button></div>
+          </header>
+
+          <div class="page-stack">
+            <section class="section-panel" aria-labelledby="connectionTitle">
+              <header class="section-panel-head"><h2 id="connectionTitle">Connection</h2><span class="mono section-copy">jack-mbp.local</span></header>
+              <dl class="definition-list">
+                <div class="definition-row"><dt>Hostname</dt><dd class="mono">jack-mbp.local</dd></div>
+                <div class="definition-row"><dt>jcode version</dt><dd class="mono">0.4.2</dd></div>
+                <div class="definition-row"><dt>Last seen</dt><dd>3m ago</dd></div>
+              </dl>
+            </section>
+
+            <section aria-labelledby="onlineStateTitle">
+              <div class="section-heading"><h2 id="onlineStateTitle">New session</h2><span class="prototype-chip">state: online</span></div>
+              <section class="section-panel">
+                <div class="composer-body">
+                  <div class="field"><label for="promptOnline">Prompt</label><textarea class="textarea" id="promptOnline" placeholder="Ask jcode anything…"></textarea></div>
+                  <div class="composer-actions">
+                    <select class="select" aria-label="Session mode"><option value="code" selected>code</option><option value="ask">ask</option></select>
+                    <button class="button button-primary" type="button" data-prototype-action="Prototype only — no session was started.">Send</button>
+                  </div>
+                </div>
+              </section>
+
+              <div class="section-heading section-offset"><h2 id="sessionListTitle">Sessions</h2><span class="list-count">3 sessions</span></div>
+              <ul class="project-list">
+                <li><a class="project-row" href="./device-session.html"><span class="project-mark"><svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="project-row-main"><span class="project-row-title"><strong>Fix flaky login redirect test</strong><span class="status-label">running</span></span><span class="project-row-meta"><span class="mono">~/work/jcode</span><span class="meta-dot">updated 3m ago</span></span></span><span class="project-row-side"><span>Open session</span><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></span></a></li>
+                <li><a class="project-row" href="./device-session.html"><span class="project-mark"><svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="project-row-main"><span class="project-row-title"><strong>Explain the device pairing flow</strong><span class="status-label" data-tone="warning">awaiting_input</span></span><span class="project-row-meta"><span class="mono">~/work/cloud</span><span class="meta-dot">updated 26m ago</span></span></span><span class="project-row-side"><span>Open session</span><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></span></a></li>
+                <li><a class="project-row" href="./device-session.html"><span class="project-mark"><svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="project-row-main"><span class="project-row-title"><strong>Generate release notes for v0.4.2</strong><span class="status-label" data-tone="success">done</span></span><span class="project-row-meta"><span class="mono">~/work/jcode</span><span class="meta-dot">updated 2h ago</span></span></span><span class="project-row-side"><span>Open session</span><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></span></a></li>
+              </ul>
+            </section>
+
+            <section aria-labelledby="offlineStateTitle">
+              <div class="section-heading"><h2 id="offlineStateTitle">Device offline</h2><span class="prototype-chip">state: offline</span></div>
+              <div class="notice" data-tone="warning"><svg class="icon"><use href="./assets/icons.svg#i-warning" /></svg><span><strong>This device is offline.</strong>Messages can't be sent until it reconnects.</span></div>
+              <section class="section-panel panel-offset">
+                <header class="section-panel-head"><h2>New session</h2><span class="status-label" data-tone="muted">offline</span></header>
+                <div class="composer-body">
+                  <div class="field"><label for="promptOffline">Prompt</label><textarea class="textarea" id="promptOffline" placeholder="Ask jcode anything…" disabled></textarea></div>
+                  <div class="composer-actions">
+                    <select class="select" aria-label="Session mode" disabled><option value="code" selected>code</option><option value="ask">ask</option></select>
+                    <button class="button button-primary" type="button" disabled>Send</button>
+                  </div>
+                  <span class="composer-hint">Composer is disabled while the device is unreachable.</span>
+                </div>
+              </section>
+            </section>
+          </div>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

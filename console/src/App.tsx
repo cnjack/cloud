@@ -2,11 +2,15 @@ import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/AppShell';
+import { DeviceApiProvider } from './api/DeviceApiProvider';
 import { OnboardingGate } from './pages/OnboardingGate';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { NewProjectPage } from './pages/NewProjectPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { RunDetailPage } from './pages/RunDetailPage';
+import { DevicesPage } from './pages/DevicesPage';
+import { DeviceWelcomePage } from './pages/DeviceWelcomePage';
+import { DeviceSessionPage } from './pages/DeviceSessionPage';
 import { ClusterOverviewPage } from './pages/ClusterOverviewPage';
 import { ClusterModelsPage } from './pages/ClusterModelsPage';
 import { ClusterConnectionsPage } from './pages/ClusterConnectionsPage';
@@ -64,20 +68,25 @@ export function App() {
     // setup guidance, sign-in, and the post-login welcome/landing cards.
     <OnboardingGate>
       <AppShell>
-        <Routes>
-          <Route path="/" element={<Navigate to="/projects" replace />} />
-          <Route path="/projects" element={<ProjectsPage />} />
-          <Route path="/projects/new" element={<NewProjectPage />} />
-          <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
-          <Route path="/runs/:runId" element={<RunDetailPage />} />
-          <Route path="/cluster" element={<ClusterOverviewPage />} />
-          <Route path="/cluster/models" element={<ClusterModelsPage />} />
-          <Route path="/cluster/connections" element={<ClusterConnectionsPage />} />
-          {/* jcode device login (docs/17 §3): the CLI's verification_uri target. */}
-          <Route path="/device" element={<DeviceAuthorizePage />} />
-          <Route path="/system" element={<Navigate to="/cluster" replace />} />
-          <Route path="*" element={<NotFoundPage />} />
-        </Routes>
+        <DeviceApiProvider>
+          <Routes>
+            <Route path="/" element={<Navigate to="/projects" replace />} />
+            <Route path="/projects" element={<ProjectsPage />} />
+            <Route path="/projects/new" element={<NewProjectPage />} />
+            <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+            <Route path="/devices" element={<DevicesPage />} />
+            <Route path="/devices/:deviceId" element={<DeviceWelcomePage />} />
+            <Route path="/devices/:deviceId/sessions/:sessionId" element={<DeviceSessionPage />} />
+            <Route path="/cluster" element={<ClusterOverviewPage />} />
+            <Route path="/cluster/models" element={<ClusterModelsPage />} />
+            <Route path="/cluster/connections" element={<ClusterConnectionsPage />} />
+            {/* jcode device login (docs/17 §3): the CLI's verification_uri target. */}
+            <Route path="/device" element={<DeviceAuthorizePage />} />
+            <Route path="/system" element={<Navigate to="/cluster" replace />} />
+            <Route path="*" element={<NotFoundPage />} />
+          </Routes>
+        </DeviceApiProvider>
       </AppShell>
     </OnboardingGate>
   );

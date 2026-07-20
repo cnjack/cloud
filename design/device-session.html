@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Device session layout prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Fix flaky login redirect test — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+  <style>
+    /* page-specific: stacked content sections */
+    .page-stack {
+      display: grid;
+      align-content: start;
+      gap: 2.5rem;
+      padding-top: 2rem;
+    }
+
+    .section-offset {
+      margin-top: 2rem;
+    }
+
+    /* page-specific: chat timeline */
+    .timeline {
+      display: grid;
+      gap: 1rem;
+      max-width: 44rem;
+    }
+
+    .msg {
+      display: grid;
+      max-width: 85%;
+      gap: 0.375rem;
+    }
+
+    .msg-user {
+      justify-self: end;
+      justify-items: end;
+    }
+
+    .msg-assistant {
+      justify-self: start;
+    }
+
+    .msg-bubble {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      padding: 0.75rem 0.875rem;
+      font-size: 0.75rem;
+      line-height: 1.6;
+    }
+
+    .msg-user .msg-bubble {
+      border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+      background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+    }
+
+    .msg-assistant .msg-bubble {
+      background: var(--surface-soft);
+    }
+
+    .msg-bubble p + p {
+      margin-top: 0.5rem;
+    }
+
+    .msg-bubble pre {
+      overflow-x: auto;
+      margin-top: 0.625rem;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-md);
+      background: var(--surface-inset);
+      padding: 0.625rem 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      line-height: 1.6;
+    }
+
+    .msg-meta {
+      color: var(--text-faint);
+      font-family: var(--font-mono);
+      font-size: 0.5625rem;
+    }
+
+    /* page-specific: tool call card (details/summary) */
+    .tool-card {
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+    }
+
+    .tool-card summary {
+      display: flex;
+      min-height: 2.5rem;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      font-weight: 600;
+      cursor: pointer;
+      list-style: none;
+    }
+
+    .tool-card summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .tool-card summary:hover {
+      color: var(--text);
+    }
+
+    .tool-card summary .icon {
+      width: 0.8125rem;
+      height: 0.8125rem;
+    }
+
+    .tool-card-body {
+      border-top: 1px solid var(--border-soft);
+      background: var(--surface-inset);
+      padding: 0.625rem 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.625rem;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    /* page-specific: approval card */
+    .approval-card {
+      display: grid;
+      gap: 0.625rem;
+      border: 1px solid color-mix(in srgb, var(--warning) 38%, var(--border));
+      border-radius: var(--radius-lg);
+      background: var(--warning-bg);
+      padding: 0.875rem;
+    }
+
+    .approval-card strong {
+      color: var(--warning);
+      font-size: 0.75rem;
+      font-weight: 650;
+    }
+
+    .approval-card code {
+      color: var(--warning);
+      font-size: 0.6875rem;
+    }
+
+    .approval-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    /* page-specific: streaming typing dots */
+    .typing {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      margin-top: 0.5rem;
+    }
+
+    .typing span {
+      width: 0.3125rem;
+      height: 0.3125rem;
+      border-radius: 50%;
+      background: var(--text-faint);
+      animation: typing-blink 1.2s ease-in-out infinite;
+    }
+
+    .typing span:nth-child(2) {
+      animation-delay: 0.15s;
+    }
+
+    .typing span:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+
+    @keyframes typing-blink {
+      0%, 100% { opacity: 0.25; }
+      50% { opacity: 1; }
+    }
+
+    /* page-specific: composer bar at the bottom of a session */
+    .composer-bar {
+      display: grid;
+      max-width: 44rem;
+      gap: 0.625rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      background: var(--surface);
+      padding: 0.875rem;
+      box-shadow: var(--shadow);
+    }
+
+    .composer-bar .textarea {
+      min-height: 4rem;
+      border-color: var(--border);
+      background: var(--surface-soft);
+    }
+
+    .composer-bar-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><img class="wordmark-icon" src="./assets/app-icon.svg" alt="" /><span class="wordmark-name">JCODE</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="rail-context"><span class="eyebrow">Workspace</span><strong>Devices</strong><small>wangwenhui@local</small></div>
+      <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./projects.html"><svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">3</span></a><a class="nav-item" href="./device-list.html" aria-current="page"><svg class="icon"><use href="./assets/icons.svg#i-cpu" /></svg><span>Devices</span><span class="nav-count">3</span></a><a class="nav-item" href="./cluster-overview.html"><svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg><span>Cluster</span><span class="nav-count">admin</span></a></nav>
+      <section class="rail-section" aria-labelledby="recentDevicesLabel"><div class="rail-section-head"><span id="recentDevicesLabel">Recent devices</span><span>3</span></div><nav class="recent-projects" aria-label="Recent devices"><a class="recent-item" href="./device-welcome.html"><span class="project-mark">DM</span><span class="recent-item-copy"><strong>dev-mbp-01</strong><small>online · 2 sessions</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./device-welcome.html"><span class="project-mark">WS</span><span class="recent-item-copy"><strong>workstation-01</strong><small>online · idle</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./device-welcome.html"><span class="project-mark">NS</span><span class="recent-item-copy"><strong>nas-01</strong><small>offline · 2d ago</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a></nav></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>namespace / jcode</span><span>v0.1.0</span></div><div class="identity-row"><span class="identity-mark">J</span><span class="identity-copy"><strong>Jack</strong><small>cluster admin</small></span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface" aria-label="Device session">
+      <header class="utility-bar"><div class="breadcrumbs"><a href="./device-list.html">Devices</a><span class="breadcrumb-separator">/</span><a href="./device-welcome.html">dev-mbp-01</a><span class="breadcrumb-separator">/</span><strong>Session</strong></div><div class="utility-actions"><span class="prototype-chip">two states</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <a class="text-button" href="./device-welcome.html"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-left" /></svg>dev-mbp-01</a>
+          <header class="page-header">
+            <div class="page-heading"><span class="eyebrow">Session</span><h1>Fix flaky login redirect test</h1><p>Running on <span class="mono">jack-mbp.local</span> in <span class="mono">~/work/jcode</span>. Messages stream from the device in real time.</p></div>
+            <div class="header-actions"><span class="status-label">running</span></div>
+          </header>
+
+          <div class="page-stack">
+            <section aria-labelledby="liveStateTitle">
+              <div class="section-heading"><h2 id="liveStateTitle">Live session</h2><span class="prototype-chip">state: live</span></div>
+
+              <div class="timeline">
+                <div class="msg msg-user">
+                  <div class="msg-bubble"><p>The login redirect test flakes about 1 in 5 runs on CI. Find the race and fix it.</p></div>
+                  <span class="msg-meta">you · 3m ago</span>
+                </div>
+
+                <div class="msg msg-assistant">
+                  <div class="msg-bubble">
+                    <p>I found the race: the test asserts on <code>location.href</code> before the router commits the navigation. Waiting for the <code>navigated</code> event makes it deterministic:</p>
+                    <pre>await page.waitForEvent('navigated');
+expect(page.location.pathname).toBe('/console');</pre>
+                  </div>
+                  <span class="msg-meta">jcode · 2m ago</span>
+                </div>
+
+                <details class="tool-card">
+                  <summary><svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg>Bash — pnpm test login-redirect<span class="status-label" data-tone="success">exit 0</span></summary>
+                  <div class="tool-card-body">$ pnpm test login-redirect
+  ✓ redirects to /console after login (412ms)
+  ✓ preserves the return-url query param (208ms)
+Tests: 2 passed, 2 total</div>
+                </details>
+
+                <section class="approval-card" aria-label="Command approval">
+                  <strong>Allow command: git push?</strong>
+                  <code>git push origin fix/login-redirect-flake</code>
+                  <div class="approval-actions"><button class="button button-primary" type="button" data-prototype-action="Prototype only — approval was not sent.">Approve</button><button class="button" type="button" data-prototype-action="Prototype only — approval was not sent.">Always allow</button><button class="button button-danger" type="button" data-prototype-action="Prototype only — denial was not sent.">Deny</button></div>
+                </section>
+
+                <div class="msg msg-assistant">
+                  <div class="msg-bubble">
+                    <p>Both test cases now pass consistently across 20 repeated runs. Summarizing the change</p>
+                    <span class="typing" aria-label="jcode is typing"><span></span><span></span><span></span></span>
+                  </div>
+                  <span class="msg-meta">jcode · streaming… <span class="prototype-chip">state: streaming</span></span>
+                </div>
+              </div>
+
+              <div class="composer-bar section-offset">
+                <textarea class="textarea" placeholder="Send a message to this session…" aria-label="Message"></textarea>
+                <div class="composer-bar-actions"><button class="button button-danger" type="button" data-prototype-action="Prototype only — the session was not stopped.">Stop</button><button class="button button-primary" type="button" data-prototype-action="Prototype only — no message was sent.">Send</button></div>
+              </div>
+            </section>
+
+            <section aria-labelledby="offlineStateTitle">
+              <div class="section-heading"><h2 id="offlineStateTitle">Device offline</h2><span class="prototype-chip">state: offline</span></div>
+              <div class="notice" data-tone="warning"><svg class="icon"><use href="./assets/icons.svg#i-warning" /></svg><span><strong>This device is offline.</strong>Messages can't be sent until it reconnects.</span></div>
+
+              <div class="timeline section-offset">
+                <div class="msg msg-user">
+                  <div class="msg-bubble"><p>Push the branch once the fix is in.</p></div>
+                  <span class="msg-meta">you · queued while offline</span>
+                </div>
+                <div class="msg msg-assistant">
+                  <div class="msg-bubble"><p>The device disconnected before this message could be delivered. History is kept locally and will sync on reconnect.</p></div>
+                  <span class="msg-meta">jcode · unreachable</span>
+                </div>
+              </div>
+
+              <div class="composer-bar section-offset">
+                <textarea class="textarea" placeholder="Send a message to this session…" aria-label="Message" disabled></textarea>
+                <div class="composer-bar-actions"><button class="button button-danger" type="button" disabled>Stop</button><button class="button button-primary" type="button" disabled>Send</button></div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

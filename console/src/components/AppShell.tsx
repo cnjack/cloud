@@ -1,5 +1,6 @@
 import {
   CaretRight,
+  Devices,
   HardDrives,
   SquaresFour,
 } from '@phosphor-icons/react';
@@ -53,6 +54,9 @@ function Breadcrumbs() {
   if (pathname.startsWith('/cluster')) {
     const leaf = pathname === '/cluster/models' ? t('shell.crumbModels') : pathname === '/cluster/connections' ? t('shell.crumbConnections') : t('shell.crumbOverview');
     return <><span>{t('shell.crumbCluster')}</span><span>/</span><strong>{leaf}</strong></>;
+  }
+  if (pathname.startsWith('/devices')) {
+    return <><span>{t('shell.crumbWorkspace')}</span><span>/</span><strong>{t('shell.devices')}</strong></>;
   }
   if (pathname === '/projects' || pathname === '/') {
     return <><span>{t('shell.crumbWorkspace')}</span><span>/</span><strong>{t('shell.crumbProjects')}</strong></>;
@@ -115,6 +119,9 @@ export function AppShell({ children }: { children: ReactNode }) {
         <nav className={styles.railNav} aria-label={t('shell.primaryNav')}>
           <NavLink to="/projects" className={({ isActive }) => `${styles.navItem} ${isActive ? styles.active : ''}`}>
             <SquaresFour size={16} aria-hidden="true" /><span>{t('shell.projects')}</span><span className={styles.navCount}>{projects.data?.length ?? '—'}</span>
+          </NavLink>
+          <NavLink to="/devices" className={({ isActive }) => `${styles.navItem} ${isActive ? styles.active : ''}`}>
+            <Devices size={16} aria-hidden="true" /><span>{t('shell.devices')}</span>
           </NavLink>
           {role === 'cluster-admin' && (
             <NavLink

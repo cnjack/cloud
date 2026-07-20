@@ -1,0 +1,12 @@
+.channelBadge {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  color: var(--color-text-faint);
+  font-size: var(--fs-tiny);
+  text-transform: lowercase;
+}
+
+.askQuestion {
+  color: var(--color-text-muted);
+}

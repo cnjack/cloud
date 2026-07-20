@@ -14,8 +14,10 @@
 #          command_id; the session index gains a session that reaches idle;
 #          the same session exists in the LOCAL jcode web (/api/sessions)
 #   J8-S3  durable replay: GET .../sessions/{sid}/events has user_message /
-#          tool_call / tool_result / agent_done; seqs are 1..N gapless; the
-#          user_message payload carries data.source="console" (channel marker)
+#          agent_message / tool_call / tool_result / agent_done; seqs are 1..N
+#          gapless; the user_message payload carries data.source="console"
+#          (channel marker); agent_message payload.text carries the mockllm
+#          final answer (connector-synthesized at agent_done)
 #   J8-S4  live SSE: GET .../devices/{id}/stream emits an initial
 #          device.status(online) frame, then session.event (durable notify)
 #          and session.delta (ephemeral agent_text) frames for a new message
@@ -302,12 +304,17 @@ JSON
   seqs_ok="$(printf '%s' "$ev_body" | jq '([.events[].seq]) as $s | ($s|length) as $n | ($n > 0) and ($s == [range(1;$n+1)])' 2>/dev/null)"
   assert_eq J8-S3 "durable seqs are 1..N gapless and ascending" "true" "$seqs_ok"
   kinds="$(printf '%s' "$ev_body" | jq -r '.events[].kind' 2>/dev/null)"
-  for k in user_message tool_call tool_result agent_done; do
+  for k in user_message agent_message tool_call tool_result agent_done; do
     assert_contains J8-S3 "durable log carries a $k event" "$kinds" "$k"
   done
   local chan
   chan="$(printf '%s' "$ev_body" | jq -r '[.events[] | select(.kind=="user_message") | .payload.data.source] | unique | join(",")' 2>/dev/null)"
   assert_eq J8-S3 "user_message payload marks the channel source" "console" "$chan"
+  # agent_message is the connector-synthesized durable assistant text: the
+  # replay must carry the mockllm write_file scenario's final message.
+  local amsg
+  amsg="$(printf '%s' "$ev_body" | jq -r '[.events[] | select(.kind=="agent_message") | .payload.data.text] | join("\n")' 2>/dev/null)"
+  assert_contains J8-S3 "agent_message payload carries the assistant text" "$amsg" "HELLO_FROM_JCODE.txt"
 
   # --- J8-S4: live SSE stream ------------------------------------------------
   local stream_out="$J8_HOME/stream.out" spid sse_ok="false"
