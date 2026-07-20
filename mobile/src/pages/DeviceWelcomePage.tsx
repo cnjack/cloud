@@ -76,7 +76,10 @@ export function DeviceWelcomePage() {
       </header>
 
       <div className="content" data-testid="device-welcome">
-        <DevicePairingCard deviceId={deviceId} />
+        <DevicePairingCard
+          deviceId={deviceId}
+          guideLink={<Link to="/guide">{t('device.guide.entry')}</Link>}
+        />
 
         {!online && (
           <div className="banner" role="alert">

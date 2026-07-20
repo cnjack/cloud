@@ -94,7 +94,10 @@ export function DeviceWelcomePage() {
         />
 
         <div className={styles.stack}>
-          <DevicePairingCard deviceId={deviceId} />
+          <DevicePairingCard
+            deviceId={deviceId}
+            guideLink={<Link to="/devices/guide">{t('device.guide.entry')}</Link>}
+          />
 
           {!online && (
             <div className={styles.banner} role="alert">

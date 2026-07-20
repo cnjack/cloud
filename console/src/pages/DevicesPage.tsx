@@ -1,4 +1,4 @@
-import { Devices } from '@phosphor-icons/react';
+import { Devices, Question } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Link } from 'react-router-dom';
@@ -29,6 +29,12 @@ export function DevicesPage() {
           eyebrow={t('shell.workspaceEyebrow')}
           title={t('device.list.title')}
           description={t('device.list.subtitle')}
+          actions={
+            <Link to="/devices/guide" className={styles.guideLink}>
+              <Question size={14} aria-hidden="true" />
+              {t('device.guide.entry')}
+            </Link>
+          }
         />
 
         {devices.isLoading ? (

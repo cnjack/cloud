@@ -6,12 +6,13 @@
  * expired / error offer a retry. `ready` renders nothing — E2EE is live.
  */
 import { Key, WarningCircle } from '@phosphor-icons/react';
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../components/Button';
 import { useDevicePairing } from '../hooks/useDevicePairing';
 import styles from './DevicePairingCard.module.css';
 
-export function DevicePairingCard({ deviceId }: { deviceId: string }) {
+export function DevicePairingCard({ deviceId, guideLink }: { deviceId: string; guideLink?: ReactNode }) {
   const { t } = useTranslation();
   const pairing = useDevicePairing(deviceId);
 
@@ -39,6 +40,7 @@ export function DevicePairingCard({ deviceId }: { deviceId: string }) {
             </Button>
           </div>
         )}
+        {guideLink && <div className={styles.guide}>{guideLink}</div>}
       </div>
     </div>
   );

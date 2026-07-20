@@ -6,8 +6,9 @@ import { DEFAULT_CLOUD_URL, useMobileAuth, validateCloudUrl } from '../auth';
 /**
  * LoginPage — cloud URL (https; http only for loopback dev rigs) + a user
  * session token. Validated against GET /api/v1/me before persisting.
+ * `onGuide` opens the in-app user guide (M7) without signing in.
  */
-export function LoginPage() {
+export function LoginPage({ onGuide }: { onGuide?: () => void }) {
   const { t } = useTranslation();
   const auth = useMobileAuth();
   const [cloudUrl, setCloudUrl] = useState(DEFAULT_CLOUD_URL);
@@ -89,6 +90,12 @@ export function LoginPage() {
           <Button type="submit" variant="primary" disabled={!token.trim()} loading={busy}>
             {busy ? t('mobile.login.signingIn') : t('mobile.login.submit')}
           </Button>
+
+          {onGuide && (
+            <button type="button" className="login-guide" onClick={onGuide} data-testid="login-guide">
+              {t('device.guide.entry')}
+            </button>
+          )}
         </form>
       </div>
     </div>

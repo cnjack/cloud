@@ -10,6 +10,7 @@ import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { RunDetailPage } from './pages/RunDetailPage';
 import { DevicesPage } from './pages/DevicesPage';
 import { DeviceWelcomePage } from './pages/DeviceWelcomePage';
+import { DeviceGuidePage } from './pages/DeviceGuidePage';
 import { DeviceSessionPage } from './pages/DeviceSessionPage';
 import { ClusterOverviewPage } from './pages/ClusterOverviewPage';
 import { ClusterModelsPage } from './pages/ClusterModelsPage';
@@ -76,6 +77,7 @@ export function App() {
             <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
             <Route path="/devices" element={<DevicesPage />} />
+            <Route path="/devices/guide" element={<DeviceGuidePage />} />
             <Route path="/devices/:deviceId" element={<DeviceWelcomePage />} />
             <Route path="/devices/:deviceId/sessions/:sessionId" element={<DeviceSessionPage />} />
             <Route path="/cluster" element={<ClusterOverviewPage />} />

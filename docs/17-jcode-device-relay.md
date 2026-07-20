@@ -211,7 +211,7 @@ CREATE TABLE device_pairings (
 
 ### 6.5 灾难恢复
 
-CEK 生成时显示 24 词 recovery phrase（BIP39 编码 256bit）。全部设备丢失后，`jcode login --recover` 输入短语重建 CEK。
+CEK 生成时同时可导出 24 词 recovery phrase（BIP39 编码 256bit，`jcode cloud key show-phrase`）。全部设备丢失后，`jcode cloud key recover` 输入短语重建 CEK。
 
 ### 6.6 灰度策略
 
