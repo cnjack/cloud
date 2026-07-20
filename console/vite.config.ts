@@ -35,6 +35,12 @@ export default defineConfig(({ mode }) => {
           target,
           changeOrigin: true,
         },
+        // Device uplink (register/heartbeat/poll) — local jcode connectors in
+        // dev talk to the same origin as the SPA, mirroring the nginx template.
+        '/internal': {
+          target,
+          changeOrigin: true,
+        },
       },
     },
     build: {
