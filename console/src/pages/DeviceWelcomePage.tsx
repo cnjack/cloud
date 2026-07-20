@@ -3,14 +3,13 @@ import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { useDevices, useDeviceSessions, useSendDeviceMessage } from '../api/deviceQueries';
-import type { DeviceSession } from '../api/devices';
+import { useDevices, useDeviceSessions, useSendDeviceMessage, DevicePairingCard } from '@jcloud/device-ui';
+import type { DeviceSession } from '@jcloud/device-ui';
 import { Button } from '../components/Button';
 import { PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout';
 import { Select } from '../components/Select';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import { useToast } from '../components/Toast';
-import { DevicePairingCard } from '../deviceview';
 import { timeAgo } from '../lib/format';
 import styles from './DeviceWelcomePage.module.css';
 

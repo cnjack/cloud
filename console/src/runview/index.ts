@@ -6,7 +6,7 @@
  */
 
 export { Timeline } from './Timeline';
-export { PermissionCard } from './PermissionCard';
+export { PermissionCard } from '@jcloud/device-ui';
 export { groupTimeline } from './grouping';
 export { toTimelineItem, terminalStatusSeq } from './eventModel';
 export { toThreadItems } from './threadModel';

@@ -7,7 +7,7 @@
  * standalone avoids forcing mockClient.ts to fake devices. Tests inject a fake
  * DeviceApi; the app builds the real one from the auth token getter.
  */
-import { ApiError, type TokenSource } from './client';
+import { ApiError, type TokenSource } from './errors';
 import type { DeviceEnvelope } from '../devicecrypto/envelope';
 import type { DeviceWrap } from '../devicecrypto/pairing';
 
@@ -114,14 +114,30 @@ export interface DeviceApi {
 
 const BASE = '/api/v1';
 
-export function createDeviceApi(token: TokenSource): DeviceApi {
+export interface DeviceApiOptions {
+  /**
+   * URL prefix the device endpoints hang off. Defaults to the same-origin
+   * `/api/v1` (console); cross-origin hosts (the mobile app's Tauri webview)
+   * pass an absolute `https://host/api/v1`.
+   */
+  baseUrl?: string;
+  /**
+   * fetch/EventSource credential mode. `same-origin` (default) carries the
+   * console's session cookie; Bearer-token hosts pass `omit`.
+   */
+  credentials?: RequestCredentials;
+}
+
+export function createDeviceApi(token: TokenSource, options: DeviceApiOptions = {}): DeviceApi {
   const getToken = typeof token === 'function' ? token : () => token;
+  const base = options.baseUrl ?? BASE;
+  const credentials = options.credentials ?? 'same-origin';
 
   async function req<T>(path: string, init?: RequestInit): Promise<T> {
     const tok = getToken();
-    const res = await fetch(`${BASE}${path}`, {
+    const res = await fetch(`${base}${path}`, {
       ...init,
-      credentials: 'same-origin',
+      credentials,
       headers: {
         Accept: 'application/json',
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
@@ -211,7 +227,7 @@ export function createDeviceApi(token: TokenSource): DeviceApi {
       const tok = getToken();
       if (tok) params.set('access_token', tok);
       const qs = params.toString();
-      const es = new EventSource(`${BASE}${dev(deviceId)}/stream${qs ? `?${qs}` : ''}`);
+      const es = new EventSource(`${base}${dev(deviceId)}/stream${qs ? `?${qs}` : ''}`);
 
       const handle = (e: MessageEvent) => {
         try {

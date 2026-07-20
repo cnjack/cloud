@@ -44,7 +44,13 @@ export default defineConfig(({ mode }) => {
     test: {
       globals: true,
       environment: 'jsdom',
-      include: ['src/**/*.{test,spec}.{ts,tsx}'],
+      // Include the shared package's suites: they moved to
+      // packages/device-ui (M6) but still run in this harness so
+      // `pnpm test` keeps covering them.
+      include: [
+        'src/**/*.{test,spec}.{ts,tsx}',
+        'packages/device-ui/src/**/*.{test,spec}.{ts,tsx}',
+      ],
       setupFiles: ['src/test/setup.ts'],
     },
   };

@@ -58,6 +58,8 @@ describe('cross-implementation test vectors', () => {
     '../jcode-cloud-relay/shared/test-vectors.json',
     '../../jcode-cloud-relay/shared/test-vectors.json',
     '../../../jcode-cloud-relay/shared/test-vectors.json',
+    // packages/device-ui cwd (the suite also runs from the package root).
+    '../../../../jcode-cloud-relay/shared/test-vectors.json',
   ]
     .map((p) => resolve(process.cwd(), p))
     .find((p) => existsSync(p));

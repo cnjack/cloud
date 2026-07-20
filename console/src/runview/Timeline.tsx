@@ -4,14 +4,14 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { groupTimeline } from './grouping';
 import { terminalStatusSeq } from './eventModel';
-import { PermissionCard } from './PermissionCard';
+import { PermissionCard } from '@jcloud/device-ui';
 import type {
   GroupedTimelineItem,
   PermissionControls,
   RunViewEvent,
   ToolCardItem,
 } from './types';
-import styles from './Timeline.module.css';
+import { timelineCss as styles } from '@jcloud/device-ui';
 
 /** Semantic conversation renderer for the Cloud task-detail surface. */
 export function Timeline({

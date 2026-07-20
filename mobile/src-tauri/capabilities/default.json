@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "Default capability set for the single main window.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

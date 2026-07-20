@@ -1,20 +1,11 @@
 /*
- * DeviceApiProvider.tsx — exposes the device relay DeviceApi (devices.ts) to
- * the tree. Separate from ApiProvider because the device surface is not part
- * of the demo/mock client contract. Tests inject a fake via the `api` prop.
- *
- * The default instance is wrapped in the E2EE layer (encryptedDevices.ts +
- * the shared CEK store) so sessions/events/SSE payloads are decrypted and
- * outgoing messages encrypted transparently, below react-query.
+ * DeviceApiProvider.tsx — console-side wrapper around @jcloud/device-ui's
+ * provider: wires the auth gate's token getter in, so the rest of the app
+ * (App.tsx, tests injecting `api`) keeps its existing shape.
  */
-import { createContext, useContext, useMemo } from 'react';
 import type { ReactNode } from 'react';
+import { DeviceApiProvider as DeviceUiApiProvider, type DeviceApi } from '@jcloud/device-ui';
 import { useOptionalAuth } from '../auth/AuthProvider';
-import { sharedDeviceCrypto } from '../devicecrypto/provider';
-import { createDeviceApi, type DeviceApi } from './devices';
-import { withDeviceCrypto } from './encryptedDevices';
-
-const DeviceApiContext = createContext<DeviceApi | null>(null);
 
 export function DeviceApiProvider({
   children,
@@ -25,16 +16,9 @@ export function DeviceApiProvider({
   api?: DeviceApi;
 }) {
   const auth = useOptionalAuth();
-  const getToken = auth?.getToken;
-  const value = useMemo<DeviceApi>(
-    () => api ?? withDeviceCrypto(createDeviceApi(getToken ?? (() => undefined)), sharedDeviceCrypto),
-    [api, getToken],
+  return (
+    <DeviceUiApiProvider api={api} getToken={auth?.getToken}>
+      {children}
+    </DeviceUiApiProvider>
   );
-  return <DeviceApiContext.Provider value={value}>{children}</DeviceApiContext.Provider>;
-}
-
-export function useDeviceApi(): DeviceApi {
-  const ctx = useContext(DeviceApiContext);
-  if (!ctx) throw new Error('useDeviceApi must be used within <DeviceApiProvider>');
-  return ctx;
 }

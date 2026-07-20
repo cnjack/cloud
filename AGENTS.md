@@ -72,6 +72,13 @@ For each feature or bug fix:
 4. **Run proportionate verification.**
    - Orchestrator changes: `cd orchestrator && go test ./...`
    - Console changes: `cd console && pnpm test && pnpm typecheck`
+   - Shared device-UI package (console/packages/device-ui): also
+     `pnpm --filter @jcloud/device-ui test`; its locale bundles are generated —
+     re-run `node console/scripts/extract-device-locales.mjs` after editing the
+     console's `device.*` copy.
+   - Mobile app (cloud/mobile): `pnpm build` (web) and
+     `cargo check` (src-tauri); `scripts/rig.sh up` brings up the local
+     device-relay demo rig.
    - Manifest changes: render each affected Kustomize target before delivery.
 5. **Commit cleanly.** Use Conventional Commits and keep one coherent feature
    in each commit.

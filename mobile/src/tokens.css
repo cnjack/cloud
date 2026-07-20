@@ -1,0 +1,424 @@
+/*
+ * tokens.css — THE single source of truth for color, type, spacing, radii.
+ * ---------------------------------------------------------------------------
+ * DESIGN SYSTEM RULE: no component may hardcode a hex color or raw px. Every
+ * value comes from a custom property declared here. `npm run lint:tokens` greps
+ * src/ for stray hex colors outside this file and fails the build if any leak.
+ *
+ * Skin: "jcode Cloud Console".
+ * A calm jcode-adjacent workspace: warm paper ground, white working surfaces,
+ * hairline neutral borders, and a deliberately sparing orange accent. The dark
+ * theme follows the same orange vocabulary instead of becoming a separate UI.
+ * Fonts load via <link> in index.html and fall back to system stacks offline.
+ *
+ * THEMING: `:root` holds the LIGHT palette (default). The DARK palette lives in
+ * the `:root[data-theme='dark']` block at the bottom and re-points the SAME
+ * semantic tokens at a night primitive family. index.html stamps a concrete
+ * `data-theme` on <html> before first paint (localStorage > OS preference), so
+ * there is no theme flash and no bare `@media` duplication. The header
+ * ThemeToggle flips `data-theme` and persists the choice. Components never see
+ * any of this — they only ever read the semantic `--color-*` tokens.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ---- Brand primitives (raw values; only referenced by semantic tokens) -- */
+  --jc-void: #f2f3f0;      /* page ground */
+  --jc-void-900: #fafaf8;  /* rail / inset ground */
+  --jc-void-850: #f7f8f5;  /* inset fields */
+  --jc-ink-900: #ffffff;   /* card / panel */
+  --jc-ink-850: #fbfbf9;   /* raised panel (composer, header controls) */
+  --jc-ink-800: #e7e8e5;   /* secondary button / menu bg */
+  --jc-ink-750: #e8ebe6;   /* code chip bg */
+  --jc-ink-650: #e4e5e2;   /* hairline on card */
+  --jc-ink-600: #eeefec;   /* row hover / muted chip */
+  --jc-ink-550: #dfe0dd;   /* card border */
+  --jc-ink-500: #d7d8d5;   /* border mid */
+  --jc-ink-450: #cbccc9;   /* control border */
+  --jc-ink-400: #b7b9b4;   /* strong border (menus, kbd) */
+  --jc-ink-350: #a5a7a2;   /* strongest border */
+
+  --jc-slate-600: #545650;
+  --jc-slate-500: #656761;
+  --jc-slate-400: #777973;
+  --jc-slate-350: #8a8c88;
+  --jc-slate-300: #6a6c67;
+  --jc-slate-250: #7b7d78;
+  --jc-slate-200: #565853;
+  --jc-slate-150: #3e403c;
+  --jc-slate-100: #252622;
+  --jc-slate-50:  #171814;
+  --jc-white:     #ffffff;
+
+  /* jcode orange accent family (legacy variable names kept to avoid a token API break). */
+  --jc-violet-500: #f07800;
+  --jc-violet-400: #ff8400;
+  --jc-violet-300: #ff9d33;
+  --jc-violet-200: #ffe0bd;
+  --jc-violet-bg:  #fff0df; /* awaiting_input surface */
+
+  /* status hues */
+  --jc-blue: #2563eb;      /* running / tool */
+  --jc-blue-fg: #1e4d9b;
+  --jc-blue-bg: #e8efff;
+  --jc-green: #16a34a;     /* success / git */
+  --jc-green-fg: #146b38;
+  --jc-green-bg: #dfeee3;
+  --jc-red: #d93c15;       /* failed / blocked */
+  --jc-red-fg: #9c260b;
+  --jc-red-bg: #f6e2dc;
+  --jc-amber: #b86f00;     /* waiting / scheduling */
+  --jc-amber-fg: #804200;
+  --jc-amber-bg: #f2eadc;
+  --jc-review: #7a5bba;    /* needs-review */
+  --jc-neutral-dot: #8a8c88;
+
+  /* diff hues */
+  --jc-diff-add-bg: #dfeee3;
+  --jc-diff-add-fg: #146b38;
+  --jc-diff-del-bg: #f6e2dc;
+  --jc-diff-del-fg: #9c260b;
+  --jc-diff-meta-fg: #5d687f;
+
+  /* ---- LIGHT primitives -------------------------------------------------- */
+  /* Referenced only by the :root[data-theme='light'] semantic block below.
+     Declared here (harmless in dark) so the two themes read in parallel: raw
+     values live with the other primitives, semantic mapping lives per-theme.
+     A warm off-white paper ground, white cards, ink-slate text, a deeper
+     violet that keeps AA contrast on white, and soft pastel status tints. */
+  --jc-paper: #f2f3f0;      /* page ground */
+  --jc-paper-inset: #e7e8e5; /* inset fields / code chips */
+  --jc-paper-card: #ffffff; /* card / panel */
+  --jc-paper-raised: #fbfbfc; /* raised panel (header controls, menus) */
+  --jc-paper-hover: #eeeef1; /* row / control hover */
+
+  --jc-line-100: #e4e4e9;   /* card border */
+  --jc-line-200: #d6d6dd;   /* control / strong border */
+  --jc-line-050: #eeeef2;   /* subtle hairline */
+
+  --jc-slate-ink-900: #111111; /* primary text (near-black) */
+  --jc-slate-ink-600: #666666; /* muted text */
+  --jc-slate-ink-500: #777973; /* dim text */
+  --jc-slate-ink-400: #8a8c88; /* faint text */
+
+  --jc-violet-600: #e97800; /* accent on light (deeper for white-bg contrast) */
+  --jc-violet-700: #cc6500; /* accent hover on light */
+  --jc-violet-bg-l: #fff0df; /* awaiting_input surface (light) */
+
+  /* light status tints: pastel bg + darker readable fg */
+  --jc-blue-bg-l: #e8efff;
+  --jc-blue-fg-l: #1e4d9b;
+  --jc-green-bg-l: #dfeee3;
+  --jc-green-fg-l: #146b38;
+  --jc-red-bg-l: #f6e2dc;
+  --jc-red-fg-l: #9c260b;
+  --jc-amber-bg-l: #f2eadc;
+  --jc-amber-fg-l: #804200;
+  --jc-diff-meta-fg-l: #5d687f;
+
+  /* dark primitives stay separate so the light default never leaks into dark mode. */
+  --jc-night: #111111;
+  --jc-night-inset: #151515;
+  --jc-night-panel: #1a1a1a;
+  --jc-night-raised: #2e2e2e;
+  --jc-night-hover: #252525;
+  --jc-night-border: #2e2e2e;
+  --jc-night-border-strong: #454545;
+  --jc-night-text: #ffffff;
+  --jc-night-muted: #b8b9b6;
+  --jc-night-dim: #92938f;
+  --jc-night-faint: #6f706d;
+
+  /* ---- Semantic surface tokens ------------------------------------------- */
+  --color-bg: var(--jc-void);
+  --color-bg-inset: var(--jc-void-900);
+  --color-panel: var(--jc-ink-900);
+  --color-panel-raised: var(--jc-ink-800);
+  --color-panel-hover: var(--jc-ink-600);
+  --color-code-bg: var(--jc-ink-750);
+  --color-overlay: rgba(0, 0, 0, 0.55);
+
+  --color-border: var(--jc-ink-550);
+  --color-border-strong: var(--jc-ink-400);
+  --color-border-subtle: var(--jc-ink-650);
+
+  /* ---- Text -------------------------------------------------------------- */
+  --color-text: var(--jc-slate-50);
+  --color-text-muted: var(--jc-slate-200);
+  --color-text-dim: var(--jc-slate-300);
+  --color-text-faint: var(--jc-slate-400);
+
+  /* ---- Accent ------------------------------------------------------------ */
+  --color-accent: var(--jc-violet-400);
+  --color-accent-hover: var(--jc-violet-300);
+  --color-accent-dim: var(--jc-violet-500);
+  --color-on-accent: var(--jc-void);
+  --color-focus-ring: var(--jc-violet-400);
+
+  /* ---- Status: badge bg / fg / dot --------------------------------------- */
+  --status-queued-bg: var(--jc-ink-600);
+  --status-queued-fg: var(--jc-slate-200);
+  --status-queued-dot: var(--jc-neutral-dot);
+
+  --status-scheduling-bg: var(--jc-amber-bg);
+  --status-scheduling-fg: var(--jc-amber-fg);
+  --status-scheduling-dot: var(--jc-amber);
+
+  --status-running-bg: var(--jc-blue-bg);
+  --status-running-fg: var(--jc-blue-fg);
+  --status-running-dot: var(--jc-blue);
+
+  --status-succeeded-bg: var(--jc-green-bg);
+  --status-succeeded-fg: var(--jc-green-fg);
+  --status-succeeded-dot: var(--jc-green);
+
+  --status-failed-bg: var(--jc-red-bg);
+  --status-failed-fg: var(--jc-red-fg);
+  --status-failed-dot: var(--jc-red);
+
+  --status-canceled-bg: var(--jc-ink-600);
+  --status-canceled-fg: var(--jc-slate-300);
+  --status-canceled-dot: var(--jc-slate-400);
+
+  --status-blocked-bg: var(--jc-red-bg);
+  --status-blocked-fg: var(--jc-red-fg);
+  --status-blocked-dot: var(--jc-red);
+
+  /* awaiting_input (D22): "your turn" — a violet accent, distinct from the
+     amber (scheduling) / blue (running) in-motion states. */
+  --status-awaiting_input-bg: var(--jc-violet-bg);
+  --status-awaiting_input-fg: var(--jc-violet-200);
+  --status-awaiting_input-dot: var(--jc-violet-400);
+
+  /* ---- Semantic action colors -------------------------------------------- */
+  --color-success: var(--jc-green);
+  --color-danger: var(--jc-red);
+  --color-danger-fg: var(--jc-red-fg);
+  --color-warning: var(--jc-amber);
+
+  /* ---- Typography -------------------------------------------------------- */
+  --font-sans: 'Geist', 'Noto Sans SC', ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Menlo', 'Consolas',
+    monospace;
+
+  --fs-display: 27px;
+  --fs-h1: 20px;
+  --fs-h2: 16px;
+  --fs-h3: 14px;
+  --fs-body: 13px;
+  --fs-sm: 12.5px;
+  --fs-caption: 11.5px;
+  --fs-tiny: 10.5px;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  --lh-tight: 1.25;
+  --lh-normal: 1.5;
+  --lh-code: 1.6;
+
+  --tracking-tight: -0.4px;
+  --tracking-label: 0.6px;
+
+  /* ---- Spacing (4px base) ------------------------------------------------ */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+
+  /* ---- Radii ------------------------------------------------------------- */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-pill: 999px;
+
+  /* ---- Elevation --------------------------------------------------------- */
+  --shadow-1: 0 1px 2px rgba(24, 20, 16, 0.05), 0 1px 1px rgba(24, 20, 16, 0.03);
+  --shadow-2: 0 2px 4px rgba(24, 20, 16, 0.04), 0 8px 24px -8px rgba(24, 20, 16, 0.14);
+  --shadow-3: 0 4px 8px rgba(24, 20, 16, 0.04), 0 18px 40px -14px rgba(24, 20, 16, 0.22);
+
+  /* ---- Layout ------------------------------------------------------------ */
+  --shell-topbar-h: 52px;
+  --shell-max-w: 1280px;
+  --content-pad-x: 30px;
+  --content-pad-x-sm: 20px;
+
+  /* ---- Motion ------------------------------------------------------------ */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur-med: 200ms;
+
+  --z-modal: 1000;
+  --z-toast: 1100;
+}
+
+/* ===========================================================================
+ * LIGHT THEME — re-points the semantic tokens only (type/spacing/radii/motion
+ * are theme-agnostic and inherit from :root). Applied when index.html stamps
+ * data-theme="light" on <html> (localStorage choice or OS preference). Every
+ * declaration here mirrors a semantic token declared in :root above; keep them
+ * 1:1 so no token is left dark-only.
+ * ======================================================================== */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  /* surfaces */
+  --color-bg: var(--jc-paper);
+  --color-bg-inset: var(--jc-paper-inset);
+  --color-panel: var(--jc-paper-card);
+  --color-panel-raised: var(--jc-paper-raised);
+  --color-panel-hover: var(--jc-paper-hover);
+  --color-code-bg: var(--jc-paper-inset);
+  --color-overlay: rgba(24, 24, 27, 0.35);
+
+  --color-border: var(--jc-line-100);
+  --color-border-strong: var(--jc-line-200);
+  --color-border-subtle: var(--jc-line-050);
+
+  /* text */
+  --color-text: var(--jc-slate-ink-900);
+  --color-text-muted: var(--jc-slate-ink-600);
+  --color-text-dim: var(--jc-slate-ink-500);
+  --color-text-faint: var(--jc-slate-ink-400);
+
+  /* Accent — a deeper orange keeps white button labels readable. */
+  --color-accent: var(--jc-violet-600);
+  --color-accent-hover: var(--jc-violet-700);
+  --color-accent-dim: var(--jc-violet-500);
+  --color-on-accent: var(--jc-white);
+  --color-focus-ring: var(--jc-violet-600);
+
+  /* status badges */
+  --status-queued-bg: var(--jc-paper-hover);
+  --status-queued-fg: var(--jc-slate-ink-600);
+  --status-queued-dot: var(--jc-slate-350);
+
+  --status-scheduling-bg: var(--jc-amber-bg-l);
+  --status-scheduling-fg: var(--jc-amber-fg-l);
+  --status-scheduling-dot: var(--jc-amber);
+
+  --status-running-bg: var(--jc-blue-bg-l);
+  --status-running-fg: var(--jc-blue-fg-l);
+  --status-running-dot: var(--jc-blue);
+
+  --status-succeeded-bg: var(--jc-green-bg-l);
+  --status-succeeded-fg: var(--jc-green-fg-l);
+  --status-succeeded-dot: var(--jc-green);
+
+  --status-failed-bg: var(--jc-red-bg-l);
+  --status-failed-fg: var(--jc-red-fg-l);
+  --status-failed-dot: var(--jc-red);
+
+  --status-canceled-bg: var(--jc-paper-hover);
+  --status-canceled-fg: var(--jc-slate-ink-500);
+  --status-canceled-dot: var(--jc-slate-ink-400);
+
+  --status-blocked-bg: var(--jc-red-bg-l);
+  --status-blocked-fg: var(--jc-red-fg-l);
+  --status-blocked-dot: var(--jc-red);
+
+  /* awaiting_input (D22): warm "your turn" accent. */
+  --status-awaiting_input-bg: var(--jc-violet-bg-l);
+  --status-awaiting_input-fg: var(--jc-violet-700);
+  --status-awaiting_input-dot: var(--jc-violet-600);
+
+  /* semantic action colors */
+  --color-success: var(--jc-green-fg-l);
+  --color-danger: var(--jc-red-fg-l);
+  --color-danger-fg: var(--jc-red-fg-l);
+  --color-warning: var(--jc-amber-fg-l);
+
+  /* diff */
+  --jc-diff-add-bg: var(--jc-green-bg-l);
+  --jc-diff-add-fg: var(--jc-green-fg-l);
+  --jc-diff-del-bg: var(--jc-red-bg-l);
+  --jc-diff-del-fg: var(--jc-red-fg-l);
+  --jc-diff-meta-fg: var(--jc-diff-meta-fg-l);
+
+  /* elevation — warm, intentionally shallow on a paper ground */
+  --shadow-1: 0 1px 2px rgba(24, 20, 16, 0.05), 0 1px 1px rgba(24, 20, 16, 0.03);
+  --shadow-2: 0 2px 4px rgba(24, 20, 16, 0.04), 0 8px 24px -8px rgba(24, 20, 16, 0.14);
+  --shadow-3: 0 4px 8px rgba(24, 20, 16, 0.04), 0 18px 40px -14px rgba(24, 20, 16, 0.22);
+}
+
+/* Dark follows the same warm/orange product language. This mapping is explicit
+   because the default token set is intentionally light-first. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --color-bg: var(--jc-night);
+  --color-bg-inset: var(--jc-night-inset);
+  --color-panel: var(--jc-night-panel);
+  --color-panel-raised: var(--jc-night-raised);
+  --color-panel-hover: var(--jc-night-hover);
+  --color-code-bg: var(--jc-night-raised);
+  --color-overlay: rgba(20, 18, 16, 0.58);
+
+  --color-border: var(--jc-night-border);
+  --color-border-strong: var(--jc-night-border-strong);
+  --color-border-subtle: color-mix(in srgb, var(--jc-night-border) 72%, transparent);
+
+  --color-text: var(--jc-night-text);
+  --color-text-muted: var(--jc-night-muted);
+  --color-text-dim: var(--jc-night-dim);
+  --color-text-faint: var(--jc-night-faint);
+
+  --color-accent: var(--jc-violet-400);
+  --color-accent-hover: var(--jc-violet-300);
+  --color-accent-dim: var(--jc-violet-500);
+  --color-on-accent: var(--jc-white);
+  --color-focus-ring: var(--jc-violet-400);
+
+  --status-queued-bg: var(--jc-night-hover);
+  --status-queued-fg: var(--jc-night-muted);
+  --status-queued-dot: var(--jc-night-dim);
+  --status-scheduling-bg: #291c0f;
+  --status-scheduling-fg: #ffb25c;
+  --status-scheduling-dot: var(--jc-violet-400);
+  --status-running-bg: #18233b;
+  --status-running-fg: #bcd3ff;
+  --status-running-dot: #5c8dff;
+  --status-succeeded-bg: #1c2a20;
+  --status-succeeded-fg: #b6ffce;
+  --status-succeeded-dot: #22c55e;
+  --status-failed-bg: #2b1711;
+  --status-failed-fg: #ffb4a0;
+  --status-failed-dot: #ff714d;
+  --status-canceled-bg: var(--jc-night-hover);
+  --status-canceled-fg: var(--jc-night-dim);
+  --status-canceled-dot: var(--jc-night-faint);
+  --status-blocked-bg: #2b1711;
+  --status-blocked-fg: #ffb4a0;
+  --status-blocked-dot: #ff714d;
+  --status-awaiting_input-bg: #322113;
+  --status-awaiting_input-fg: #ffc27d;
+  --status-awaiting_input-dot: var(--jc-violet-400);
+
+  --color-success: #22c55e;
+  --color-danger: #ff714d;
+  --color-danger-fg: #ffb4a0;
+  --color-warning: #ffb25c;
+
+  --jc-diff-add-bg: #1c2a20;
+  --jc-diff-add-fg: #b6ffce;
+  --jc-diff-del-bg: #2b1711;
+  --jc-diff-del-fg: #ffb4a0;
+  --jc-diff-meta-fg: #a7b0c5;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --shadow-3: 0 12px 36px -12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.05);
+}

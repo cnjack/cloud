@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDeviceApi } from './devices';
-import { apiErrorCode } from './client';
+import { apiErrorCode } from './errors';
 
 interface FetchCall {
   url: string;

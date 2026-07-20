@@ -4,18 +4,19 @@ import { useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError, apiErrorCode } from '../api/client';
 import {
+  DevicePairingCard,
+  DeviceTimeline,
+  resolveOnline,
+  useDeviceSessionStream,
   useDevices,
   useDeviceSessions,
   useRespondDeviceApproval,
   useSendDeviceMessage,
   useStopDeviceSession,
-} from '../api/deviceQueries';
+} from '@jcloud/device-ui';
 import { Button } from '../components/Button';
 import { StatusLabel, SurfaceInner } from '../components/PageLayout';
 import { useToast } from '../components/Toast';
-import { DevicePairingCard, DeviceTimeline } from '../deviceview';
-import { resolveOnline } from '../deviceview/offline';
-import { useDeviceSessionStream } from '../hooks/useDeviceSessionStream';
 import styles from './DeviceSessionPage.module.css';
 
 export function DeviceSessionPage() {
