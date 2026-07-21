@@ -99,6 +99,8 @@ export type { ComposeValue, DeviceComposeProps } from './compose/DeviceCompose';
 // --- product composer (M14: jcode-ui/product over the device relay) ----------
 export { useDeviceComposer } from './product/useDeviceComposer';
 export type { UseDeviceComposerOptions, DeviceComposer } from './product/useDeviceComposer';
+export { usePendingNewSession } from './product/usePendingNewSession';
+export type { PendingNewSession } from './product/usePendingNewSession';
 export { DeviceChatRuntime } from './product/runtime';
 export type { DeviceRuntimeCallbacks } from './product/runtime';
 export {

@@ -32,6 +32,7 @@ export default {
     dismiss: '閉じる',
     create: '作成',
     creating: '作成中…',
+      createSlow: 'デバイスの応答が遅れています——まもなくセッションが表示されます。',
     confirm: '確認',
     continue: '続行',
   },

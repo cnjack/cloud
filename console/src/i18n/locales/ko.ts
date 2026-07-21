@@ -32,6 +32,7 @@ export default {
     dismiss: '닫기',
     create: '만들기',
     creating: '만드는 중…',
+      createSlow: '기기 응답이 느립니다. 잠시 후 세션이 표시됩니다.',
     confirm: '확인',
     continue: '계속',
   },

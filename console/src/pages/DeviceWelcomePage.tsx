@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { RuntimeProvider } from 'jcode-ui';
 import { ChatInput } from 'jcode-ui/product';
-import { useDevices, useDeviceSessions, useDeleteDevice, DevicePairingCard, DevicePairingGate, Button, channelLabelKey, useDeviceComposer } from '@jcloud/device-ui';
+import { useDevices, useDeviceSessions, useDeleteDevice, DevicePairingCard, DevicePairingGate, Button, channelLabelKey, useDeviceComposer, usePendingNewSession } from '@jcloud/device-ui';
 import type { DeviceSession } from '@jcloud/device-ui';
 import { PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout';
 import { ErrorBlock, LoadingBlock } from '../components/States';
@@ -11,6 +11,7 @@ import { useToast } from '../components/Toast';
 import { e2eeBadgeTooltip, platformBadgeLabel } from '../lib/deviceBadges';
 import { timeAgo } from '../lib/format';
 import styles from './DeviceWelcomePage.module.css';
+import { useEffect } from 'react';
 
 export function DeviceWelcomePage() {
   const { deviceId = '' } = useParams();
@@ -38,16 +39,27 @@ export function DeviceWelcomePage() {
     });
   };
 
-  // M14: the stock jcode product composer. sid 'new' lets the device assign
-  // the session id; the polling session list surfaces the new session for the
-  // user to open. Send failures have no Thread to land on here → toast.
+  // M14: the stock jcode product composer. A send to 'new' is tracked as a
+  // pending session: the list shows a creating row immediately (2s poll) and
+  // the session opens automatically the moment the relay mirrors it.
+  const { pending, expired, found, markSent, clear } = usePendingNewSession(deviceId);
   const { host, runtime } = useDeviceComposer({
     deviceId,
     sessionId: 'new',
     device,
     hasMessages: false,
     onError: (message) => toast.push({ kind: 'error', message }),
+    onSent: (info: { sessionId: string; text: string; at: number }) => markSent({ text: info.text, at: info.at }),
   });
+  useEffect(() => {
+    if (found) {
+      clear();
+      navigate(`/devices/${deviceId}/sessions/${found.session_id}`);
+    }
+  }, [found, clear, deviceId, navigate]);
+  useEffect(() => {
+    if (expired) toast.push({ kind: 'info', message: t('device.welcome.createSlow') });
+  }, [expired, toast, t]);
 
   if (devices.isLoading) {
     return <SurfaceInner><div className={styles.state}><LoadingBlock label={t('common.loading')} /></div></SurfaceInner>;
@@ -146,13 +158,24 @@ export function DeviceWelcomePage() {
               <LoadingBlock label={t('common.loading')} />
             ) : sessions.isError ? (
               <ErrorBlock error={sessions.error} onRetry={() => sessions.refetch()} />
-            ) : (sessions.data?.length ?? 0) === 0 ? (
-              <p className={styles.empty}>{t('device.welcome.noSessions')}</p>
             ) : (
               <ul className={styles.list}>
+                {pending && (
+                  <li className={styles.pendingRow} data-testid="pending-session-row" aria-live="polite">
+                    <span className={styles.rowMain}>
+                      <span className={styles.rowTitle}>
+                        <strong>{pending.text || t('device.welcome.untitled')}</strong>
+                        <span className={styles.statusBadge} data-tone="running">{t('device.welcome.creating')}</span>
+                      </span>
+                    </span>
+                  </li>
+                )}
                 {(sessions.data ?? []).map((session) => (
                   <SessionRow key={session.session_id} deviceId={deviceId} session={session} />
                 ))}
+                {!pending && (sessions.data ?? []).length === 0 && (
+                  <p className={styles.empty}>{t('device.welcome.noSessions')}</p>
+                )}
               </ul>
             )}
               </section>

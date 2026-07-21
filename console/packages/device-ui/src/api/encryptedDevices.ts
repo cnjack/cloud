@@ -18,7 +18,7 @@
  */
 import { decryptJson, encryptJson, isEnvelope } from '../devicecrypto/envelope';
 import type { DeviceCrypto } from '../devicecrypto/provider';
-import type { DeviceApi, DeviceSession, DeviceSessionEvent, DeviceStreamFrame } from './devices';
+import type { Device, DeviceApi, DeviceSession, DeviceSessionEvent, DeviceStreamFrame } from './devices';
 
 export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceApi {
   /** Open an envelope when we hold the key; pass everything else through. */
@@ -31,6 +31,19 @@ export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceAp
 
   return {
     ...api,
+
+    listDevices: async () => {
+      const devices = await api.listDevices();
+      // capabilities is reported as a sealed envelope on E2EE devices (M12) —
+      // without opening it here the composer pickers (models/projects/slash)
+      // silently render empty even when the device advertised them.
+      return Promise.all(
+        devices.map(async (d) => {
+          if (!isEnvelope(d.capabilities)) return d;
+          return { ...d, capabilities: await open<Device['capabilities']>(d.id, d.capabilities) };
+        }),
+      );
+    },
 
     listSessions: async (deviceId) => {
       const sessions = await api.listSessions(deviceId);

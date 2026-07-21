@@ -139,7 +139,8 @@ describe('OnboardingGate — sign-in layer (providers + Advanced)', () => {
 
     await waitFor(() => expect(screen.getByTestId('provider-buttons')).toBeTruthy());
     const btn = screen.getByText('Continue with Gitea').closest('a')!;
-    expect(btn.getAttribute('href')).toBe('/auth/login/gitea');
+    // OAuth links carry return_to so the user lands back where they started.
+    expect(btn.getAttribute('href')).toBe(`/auth/login/gitea?return_to=${encodeURIComponent('/')}`);
 
     // Advanced (console token) is collapsed until toggled.
     expect(screen.queryByTestId('console-token-form')).toBeNull();

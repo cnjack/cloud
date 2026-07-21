@@ -1,7 +1,7 @@
 import { ArrowLeft, Warning } from '@phosphor-icons/react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { RuntimeProvider } from 'jcode-ui';
 import { ChatInput } from 'jcode-ui/product';
 import {
@@ -10,6 +10,7 @@ import {
   useDeviceComposer,
   useDeviceSessions,
   useDevices,
+  usePendingNewSession,
   type DeviceSession,
 } from '@jcloud/device-ui';
 import { timeAgo } from '../lib/time';
@@ -22,6 +23,7 @@ import { timeAgo } from '../lib/time';
 export function DeviceWelcomePage() {
   const { deviceId = '' } = useParams();
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const devices = useDevices();
   const sessions = useDeviceSessions(deviceId);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -29,15 +31,23 @@ export function DeviceWelcomePage() {
   const device = devices.data?.find((d) => d.id === deviceId);
   const online = device?.online ?? false;
 
-  // M14: sid 'new' — the device assigns the session id; the polling session
-  // list surfaces it. No Thread on this page → send failures surface inline.
+  // A send to 'new' is tracked as pending: the list shows a creating row
+  // immediately (2s poll) and the session opens automatically once mirrored.
+  const { pending, found, markSent, clear } = usePendingNewSession(deviceId);
   const { host, runtime } = useDeviceComposer({
     deviceId,
     sessionId: 'new',
     device,
     hasMessages: false,
     onError: setSendError,
+    onSent: (info: { sessionId: string; text: string; at: number }) => markSent({ text: info.text, at: info.at }),
   });
+  useEffect(() => {
+    if (found) {
+      clear();
+      navigate(`/devices/${deviceId}/sessions/${found.session_id}`);
+    }
+  }, [found, clear, deviceId, navigate]);
 
   return (
     <div className="app-shell">
@@ -80,13 +90,23 @@ export function DeviceWelcomePage() {
           <h2 className="section-title">{t('device.welcome.sessions')}</h2>
           {sessions.isLoading ? (
             <p className="state-block">{t('mobile.common.loading')}</p>
-          ) : (sessions.data?.length ?? 0) === 0 ? (
-            <p className="state-block">{t('device.welcome.noSessions')}</p>
           ) : (
             <div>
+              {pending && (
+                <div className="session-row pending-row" data-testid="pending-session-row" aria-live="polite">
+                  <span className="session-row-main">
+                    <span className="session-row-title">{pending.text || t('mobile.common.untitled')}</span>
+                    <span className="session-row-meta">{t('device.welcome.creating')}</span>
+                  </span>
+                  <span className="pill" data-tone="warning">{t('device.welcome.status.running')}</span>
+                </div>
+              )}
               {(sessions.data ?? []).map((session) => (
                 <SessionRow key={session.session_id} deviceId={deviceId} session={session} />
               ))}
+              {!pending && (sessions.data?.length ?? 0) === 0 && (
+                <p className="state-block">{t('device.welcome.noSessions')}</p>
+              )}
             </div>
           )}
         </div>

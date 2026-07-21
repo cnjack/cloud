@@ -32,6 +32,7 @@ export default {
     dismiss: 'Dismiss',
     create: 'Create',
     creating: 'Creating…',
+      createSlow: 'The device is taking a while — the session will appear shortly.',
     confirm: 'Confirm',
     continue: 'Continue',
   },

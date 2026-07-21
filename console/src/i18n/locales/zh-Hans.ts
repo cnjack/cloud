@@ -32,6 +32,7 @@ export default {
     dismiss: '忽略',
     create: '创建',
     creating: '创建中…',
+      createSlow: '设备响应较慢——会话稍后出现。',
     confirm: '确认',
     continue: '继续',
   },

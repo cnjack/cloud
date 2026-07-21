@@ -18,14 +18,15 @@ export function useDevices() {
   return useQuery({ queryKey: dqk.devices, queryFn: () => api.listDevices() });
 }
 
-export function useDeviceSessions(deviceId: string) {
+export function useDeviceSessions(deviceId: string, refetchInterval = 10_000) {
   const api = useDeviceApi();
   return useQuery({
     queryKey: dqk.deviceSessions(deviceId),
     queryFn: () => api.listSessions(deviceId),
     enabled: !!deviceId,
     // Backstop polling: SSE delivers events but not the session list rollup.
-    refetchInterval: 10_000,
+    // Callers pass a shorter interval while awaiting a just-created session.
+    refetchInterval,
   });
 }
 

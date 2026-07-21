@@ -62,6 +62,12 @@ export interface UseDeviceComposerOptions {
    * here (e.g. a toast) so failures stay visible.
    */
   onError?: (message: string) => void;
+  /**
+   * Fired after a message was accepted by the relay (202). Welcome pages use
+   * this to track the not-yet-visible new session (pending card + auto-open
+   * once it appears in the session list).
+   */
+  onSent?: (info: { sessionId: string; text: string; at: number }) => void;
 }
 
 export interface DeviceComposer {
@@ -92,7 +98,7 @@ const EMPTY_STREAM = initialDeviceSessionState();
 let localSeq = -2_000_000;
 
 export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComposer {
-  const { deviceId, sessionId, device, streamState, sessionRunning, hasMessages, onError } = options;
+  const { deviceId, sessionId, device, streamState, sessionRunning, hasMessages, onError, onSent } = options;
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
@@ -123,6 +129,8 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
   const [localItems, setLocalItems] = useState<ThreadItem[]>([]);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const onSentRef = useRef(onSent);
+  onSentRef.current = onSent;
   const appendLocalError = useCallback((content: string) => {
     setLocalItems((prev) => [...prev, localSystemItem(`local_${localSeq}`, content, localSeq--)]);
     onErrorRef.current?.(content);
@@ -145,6 +153,9 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
     send.mutate(
       { sessionId, text, ...(mode ? { mode } : {}), ...(extras ? { extras } : {}) },
       {
+        onSuccess: () => {
+          onSentRef.current?.({ sessionId, text, at: Date.now() });
+        },
         onError: (error) => {
           appendLocalError(
             t('device.session.sendFailed', {

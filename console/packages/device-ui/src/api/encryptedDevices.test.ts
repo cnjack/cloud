@@ -106,6 +106,20 @@ describe('withDeviceCrypto reads', () => {
     expect(isEnvelope(sessions[0]!.meta)).toBe(true);
   });
 
+  it('opens envelope device capabilities (composer pickers depend on it)', async () => {
+    const envelope = await sealedMeta({ models: [{ provider: 'p', id: 'm1', label: 'M1' }] });
+    const inner = fakeInner({
+      listDevices: async () => [
+        { id: DEVICE, name: 'd', online: true, capabilities: envelope as never },
+      ],
+    });
+    const { store, crypto } = cryptoWithCek();
+    await store.put(DEVICE, { cek: CEK_RAW, keyGen: 1 });
+    const api = withDeviceCrypto(inner.api, crypto);
+    const devices = await api.listDevices();
+    expect(devices[0]!.capabilities).toEqual({ models: [{ provider: 'p', id: 'm1', label: 'M1' }] });
+  });
+
   it('opens envelope event payloads', async () => {
     const envelope = await sealedMeta({ type: 'user_message', data: { text: 'hi' } });
     const inner = fakeInner({
