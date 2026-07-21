@@ -1,0 +1,69 @@
+/* CodeInput — segmented device-code cells (M17). All colors come from the
+   semantic tokens in styles/tokens.css; sized like jtype's OTP cells
+   (large mono glyphs, accent focus ring, filled/complete/error states). */
+
+.group {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.slot {
+  display: contents;
+}
+
+.cell {
+  width: 44px;
+  height: 54px;
+  padding: 0;
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-inset);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-weight: var(--fw-bold);
+  text-align: center;
+  outline: none;
+  caret-color: var(--color-accent);
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+.cell:focus {
+  border-color: var(--color-accent);
+  background: var(--color-panel);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus-ring) 18%, transparent);
+}
+
+.filled {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+}
+
+.complete {
+  border-color: var(--color-accent);
+}
+
+.invalid {
+  border-color: var(--color-danger);
+}
+
+.sep {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-2);
+  color: var(--color-text-dim);
+  font-size: 18px;
+  user-select: none;
+}
+
+@media (max-width: 420px) {
+  .cell {
+    width: 36px;
+    height: 46px;
+    font-size: 20px;
+  }
+}

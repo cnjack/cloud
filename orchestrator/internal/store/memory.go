@@ -21,26 +21,33 @@ type MemStore struct {
 	projects        map[string]domain.Project
 	services        map[string]domain.Service
 	runs            map[string]domain.Run
-	events          map[string][]domain.RunEvent     // keyed by runID, kept sorted by seq
-	dedupe          map[string]bool                  // keyed by runID+"|"+source+"|"+client_seq
-	artifacts       map[string]domain.RunArtifact    // keyed by runID+"/"+kind
-	users           map[string]domain.User           // keyed by user id
-	identities      map[string]domain.UserIdentity   // keyed by identity id
-	sessions        map[string]domain.Session        // keyed by session id
-	members         map[string]domain.ProjectMember  // keyed by projectID+"|"+userID
-	modelProviders  map[string]domain.ModelProvider  // keyed by provider id
-	models          map[string]domain.Model          // catalog, keyed by model id (D21)
-	modelGrants     map[string]bool                  // keyed by modelID+"|"+projectID
-	integrations    map[string]domain.Integration    // keyed by integration id (D19 / F5)
-	kanbanLinks     map[string]domain.KanbanLink     // keyed by link id
-	kanbanClaims    map[string]domain.KanbanClaim    // keyed by linkID+"|"+documentID
-	schedules       map[string]domain.Schedule       // keyed by schedule id (F11 / D24)
-	automations     map[string]domain.Automation     // keyed by automation id
-	webhookBindings map[string]domain.WebhookBinding // keyed by service id
-	runMessages     map[string][]domain.RunMessage   // session follow-up queue, keyed by runID (D22)
-	permissions     map[string]domain.RunPermission  // permission requests, keyed by request_id (F8b)
-	apiKeys         map[string]domain.APIKey         // keyed by api key id (F12 / D24)
-	kanbanConfig    *domain.KanbanConfig             // single-row cluster kanban config, nil = absent (D27)
+	events          map[string][]domain.RunEvent         // keyed by runID, kept sorted by seq
+	dedupe          map[string]bool                      // keyed by runID+"|"+source+"|"+client_seq
+	artifacts       map[string]domain.RunArtifact        // keyed by runID+"/"+kind
+	users           map[string]domain.User               // keyed by user id
+	identities      map[string]domain.UserIdentity       // keyed by identity id
+	sessions        map[string]domain.Session            // keyed by session id
+	members         map[string]domain.ProjectMember      // keyed by projectID+"|"+userID
+	modelProviders  map[string]domain.ModelProvider      // keyed by provider id
+	models          map[string]domain.Model              // catalog, keyed by model id (D21)
+	modelGrants     map[string]bool                      // keyed by modelID+"|"+projectID
+	integrations    map[string]domain.Integration        // keyed by integration id (D19 / F5)
+	kanbanLinks     map[string]domain.KanbanLink         // keyed by link id
+	kanbanClaims    map[string]domain.KanbanClaim        // keyed by linkID+"|"+documentID
+	schedules       map[string]domain.Schedule           // keyed by schedule id (F11 / D24)
+	automations     map[string]domain.Automation         // keyed by automation id
+	webhookBindings map[string]domain.WebhookBinding     // keyed by service id
+	runMessages     map[string][]domain.RunMessage       // session follow-up queue, keyed by runID (D22)
+	permissions     map[string]domain.RunPermission      // permission requests, keyed by request_id (F8b)
+	apiKeys         map[string]domain.APIKey             // keyed by api key id (F12 / D24)
+	kanbanConfig    *domain.KanbanConfig                 // single-row cluster kanban config, nil = absent (D27)
+	devices         map[string]domain.Device             // keyed by device id (docs/17)
+	deviceTokens    map[string]domain.DeviceToken        // keyed by device token id
+	deviceSessions  map[string]domain.DeviceSession      // keyed by deviceID+"|"+sessionID
+	deviceEvents    map[string][]domain.DeviceEvent      // keyed by deviceID+"|"+sessionID, kept sorted by seq
+	deviceCommands  map[string]domain.DeviceCommand      // keyed by command id
+	devicePairings  map[string]domain.DevicePairing      // keyed by pairing id
+	deviceOffers    map[string]domain.DevicePairingOffer // keyed by offer id
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -68,6 +75,13 @@ func NewMemStore() *MemStore {
 		runMessages:     map[string][]domain.RunMessage{},
 		permissions:     map[string]domain.RunPermission{},
 		apiKeys:         map[string]domain.APIKey{},
+		devices:         map[string]domain.Device{},
+		deviceTokens:    map[string]domain.DeviceToken{},
+		deviceSessions:  map[string]domain.DeviceSession{},
+		deviceEvents:    map[string][]domain.DeviceEvent{},
+		deviceCommands:  map[string]domain.DeviceCommand{},
+		devicePairings:  map[string]domain.DevicePairing{},
+		deviceOffers:    map[string]domain.DevicePairingOffer{},
 	}
 }
 

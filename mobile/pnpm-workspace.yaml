@@ -1,0 +1,7 @@
+allowBuilds:
+  esbuild: true
+overrides:
+  # M14: consume the local (unpublished) jcode-ui product composer build;
+  # pin jcode-ui-core too because jcode-ui's manifest says "workspace:*".
+  jcode-ui: file:../../jcode/packages/jcode-ui
+  jcode-ui-core: file:../../jcode/packages/jcode-ui-core

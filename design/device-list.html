@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Devices list layout prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Devices — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <script src="./assets/prototype.js" defer></script>
+  <style>
+    /* page-specific: device card grid */
+    .page-stack {
+      display: grid;
+      align-content: start;
+      gap: 2.5rem;
+      padding-top: 2rem;
+    }
+
+    .device-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+      gap: 1rem;
+    }
+
+    .device-card {
+      display: block;
+      border-radius: var(--radius-xl);
+      transition: transform 120ms var(--ease);
+    }
+
+    .device-card:hover {
+      transform: translateY(-1px);
+    }
+
+    .device-card:hover .section-panel {
+      border-color: var(--border-strong);
+    }
+
+    /* page-specific: neutral tone for offline status dots (prototype.css only ships success/warning) */
+    .status-label[data-tone="muted"] {
+      border-color: var(--border);
+      background: var(--surface-inset);
+      color: var(--text-muted);
+    }
+
+    .status-label[data-tone="muted"]::before {
+      background: var(--border-strong);
+    }
+
+    .device-empty {
+      padding: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><img class="wordmark-icon" src="./assets/app-icon.svg" alt="" /><span class="wordmark-name">JCODE</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="rail-context"><span class="eyebrow">Workspace</span><strong>Devices</strong><small>wangwenhui@local</small></div>
+      <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./projects.html"><svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">3</span></a><a class="nav-item" href="./device-list.html" aria-current="page"><svg class="icon"><use href="./assets/icons.svg#i-cpu" /></svg><span>Devices</span><span class="nav-count">3</span></a><a class="nav-item" href="./cluster-overview.html"><svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg><span>Cluster</span><span class="nav-count">admin</span></a></nav>
+      <section class="rail-section" aria-labelledby="recentDevicesLabel"><div class="rail-section-head"><span id="recentDevicesLabel">Recent devices</span><span>3</span></div><nav class="recent-projects" aria-label="Recent devices"><a class="recent-item" href="./device-welcome.html"><span class="project-mark">DM</span><span class="recent-item-copy"><strong>dev-mbp-01</strong><small>online · 2 sessions</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./device-welcome.html"><span class="project-mark">WS</span><span class="recent-item-copy"><strong>workstation-01</strong><small>online · idle</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a><a class="recent-item" href="./device-welcome.html"><span class="project-mark">NS</span><span class="recent-item-copy"><strong>nas-01</strong><small>offline · 2d ago</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-chevron-right" /></svg></a></nav></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>namespace / jcode</span><span>v0.1.0</span></div><div class="identity-row"><span class="identity-mark">J</span><span class="identity-copy"><strong>Jack</strong><small>cluster admin</small></span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface" aria-label="Connected devices">
+      <header class="utility-bar"><div class="breadcrumbs"><span>Workspace</span><span class="breadcrumb-separator">/</span><strong>Devices</strong></div><div class="utility-actions"><span class="prototype-chip">sample snapshot</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <header class="page-header">
+            <div class="page-heading"><span class="eyebrow">Workspace</span><h1>Devices</h1><p>Machines connected to your account with the jcode CLI. Open a device to start sessions and follow running work from anywhere.</p></div>
+            <div class="header-actions"><span class="status-label" data-tone="success">2 online</span><button class="button" type="button" data-prototype-action="Prototype refresh — no API request was sent.">Refresh</button></div>
+          </header>
+
+          <dl class="metric-strip" aria-label="Device summary">
+            <div class="metric"><dt>Online</dt><dd>2</dd><small>reachable now</small></div>
+            <div class="metric"><dt>Offline</dt><dd>1</dd><small>last seen 2d ago</small></div>
+            <div class="metric"><dt>Devices</dt><dd>3</dd><small>connected total</small></div>
+            <div class="metric"><dt>Sessions</dt><dd>2</dd><small>active now</small></div>
+          </dl>
+
+          <div class="page-stack">
+            <section aria-labelledby="connectedDevicesTitle">
+              <div class="section-heading"><h2 id="connectedDevicesTitle">Connected devices</h2><span class="prototype-chip">state: populated</span></div>
+              <div class="device-grid">
+                <a class="device-card" href="./device-welcome.html">
+                  <section class="section-panel">
+                    <header class="section-panel-head"><h2>dev-mbp-01</h2><span class="status-label" data-tone="success">online</span></header>
+                    <dl class="definition-list">
+                      <div class="definition-row"><dt>Hostname</dt><dd class="mono">jack-mbp.local</dd></div>
+                      <div class="definition-row"><dt>jcode version</dt><dd class="mono">0.4.2</dd></div>
+                      <div class="definition-row"><dt>Last seen</dt><dd>3m ago</dd></div>
+                    </dl>
+                  </section>
+                </a>
+                <a class="device-card" href="./device-welcome.html">
+                  <section class="section-panel">
+                    <header class="section-panel-head"><h2>workstation-01</h2><span class="status-label" data-tone="success">online</span></header>
+                    <dl class="definition-list">
+                      <div class="definition-row"><dt>Hostname</dt><dd class="mono">ws-01.lan</dd></div>
+                      <div class="definition-row"><dt>jcode version</dt><dd class="mono">0.4.2</dd></div>
+                      <div class="definition-row"><dt>Last seen</dt><dd>just now</dd></div>
+                    </dl>
+                  </section>
+                </a>
+                <a class="device-card" href="./device-welcome.html">
+                  <section class="section-panel">
+                    <header class="section-panel-head"><h2>nas-01</h2><span class="status-label" data-tone="muted">offline</span></header>
+                    <dl class="definition-list">
+                      <div class="definition-row"><dt>Hostname</dt><dd class="mono">nas-01.lan</dd></div>
+                      <div class="definition-row"><dt>jcode version</dt><dd class="mono">0.3.9</dd></div>
+                      <div class="definition-row"><dt>Last seen</dt><dd>Last seen 2d ago</dd></div>
+                    </dl>
+                  </section>
+                </a>
+              </div>
+            </section>
+
+            <section aria-labelledby="emptyDevicesTitle">
+              <div class="section-heading"><h2 id="emptyDevicesTitle">Empty state</h2><span class="prototype-chip">state: empty</span></div>
+              <section class="section-panel">
+                <div class="device-empty">
+                  <div class="model-search-empty"><svg class="icon"><use href="./assets/icons.svg#i-cpu" /></svg><strong>No devices yet</strong><span>Run <code>jcode login</code> on a machine to connect it.</span></div>
+                </div>
+              </section>
+            </section>
+          </div>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

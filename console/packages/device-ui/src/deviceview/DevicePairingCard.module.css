@@ -1,0 +1,13 @@
+.card { display: flex; gap: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-accent) 35%, var(--color-border)); border-radius: var(--radius-lg); background: var(--color-panel); padding: var(--space-4); }
+.icon { display: flex; flex: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: var(--radius-md); background: var(--color-bg-inset); color: var(--color-accent); }
+.body { display: grid; min-width: 0; gap: var(--space-2); }
+.title { margin: 0; font-size: var(--fs-body); font-weight: var(--fw-semibold); letter-spacing: var(--tracking-tight); }
+.text { margin: 0; color: var(--color-text-muted); font-size: var(--fs-caption); line-height: var(--lh-normal); }
+.command { justify-self: start; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-inset); padding: var(--space-1) var(--space-2); font-family: var(--font-mono); font-size: var(--fs-caption); }
+.cliFallback { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.cliHint { color: var(--color-text-dim); font-size: var(--fs-caption); }
+.copyButton { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); cursor: pointer; transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+.copyButton:hover { color: var(--color-accent); border-color: var(--color-accent); }
+.actions { display: flex; gap: var(--space-2); padding-top: var(--space-1); }
+.guide { font-size: var(--fs-caption); }
+.guide a { color: var(--color-accent); }

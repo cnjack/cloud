@@ -1,0 +1,8 @@
+{
+  "name": "jcode-browser-rig",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}

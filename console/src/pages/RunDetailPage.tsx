@@ -162,6 +162,7 @@ export function RunDetailPage() {
       goal: null,
       todos: [],
       queued: [],
+      connection: 'connected',
     };
     const actions: RuntimeActions = {
       sendMessage: (text) => terminal ? continueSession(text) : sendFollowUp(text),

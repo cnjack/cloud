@@ -1,0 +1,6 @@
+.gate { display: grid; gap: var(--space-4); max-width: 560px; margin: 0 auto; padding: var(--space-6) var(--space-4); }
+.fullscreen { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-4); min-height: 0; padding: var(--space-6) var(--space-4); overflow-y: auto; }
+.fullscreen > * { width: 100%; max-width: 560px; }
+.lede { display: grid; justify-items: center; gap: var(--space-2); text-align: center; color: var(--color-accent); }
+.title { margin: 0; color: var(--color-text); font-size: var(--fs-h2); font-weight: var(--fw-semibold); letter-spacing: var(--tracking-tight); }
+.text { margin: 0; max-width: 46ch; color: var(--color-text-muted); font-size: var(--fs-caption); line-height: var(--lh-normal); }

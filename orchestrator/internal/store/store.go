@@ -631,6 +631,142 @@ type Store interface {
 	// effective immediately (the next GetAPIKeyByHash for that key 404s).
 	RevokeAPIKey(ctx context.Context, id string) error
 
+	// --- Devices (docs/17 — jcode device relay) --------------------------------
+	// A device is one local jcode installation logged in via the RFC 8628
+	// device-code flow. The device row is created at token issuance (only its
+	// name is known then); register/heartbeat enrich it afterwards.
+
+	// CreateDevice inserts a fresh device row at token-issuance time. The
+	// caller pre-fills id/user_id/name/created_at; pubkey stays empty until the
+	// first register call. A non-empty FingerprintHash colliding with the
+	// user's other NON-REVOKED device fails with ErrAlreadyExists (the 0036
+	// partial unique index — the M16 login dedup invariant); the caller should
+	// then fall back to FindDeviceByFingerprint and reuse that row.
+	CreateDevice(ctx context.Context, d *domain.Device) error
+	// GetDevice returns a device by id (ErrNotFound if absent).
+	GetDevice(ctx context.Context, id string) (*domain.Device, error)
+	// FindDeviceByFingerprint returns the user's non-revoked device carrying
+	// the given fingerprint hash (ErrNotFound when none) — the M16 login dedup
+	// lookup: a re-login from the same machine reuses this row.
+	FindDeviceByFingerprint(ctx context.Context, userID, fingerprintHash string) (*domain.Device, error)
+	// RevokeDevice soft-deletes a device (DELETE /api/v1/devices/{id}, M16):
+	// stamps revoked_at, which drops the row from every client view, frees its
+	// fingerprint for a future re-login, and kills its device tokens on the
+	// next lookup (GetDeviceTokenByHash joins devices). ErrNotFound when the
+	// device is absent or already revoked (a repeated DELETE reads as 404).
+	// device_events/device_sessions survive for audit.
+	RevokeDevice(ctx context.Context, id string, at time.Time) error
+	// UpsertDeviceRegistration applies a /device/register payload: it updates
+	// name/hostname/jcode_version/pubkey and stamps last_seen_at, keyed by
+	// d.ID. user_id/key_gen/created_at are NEVER touched (a register call can
+	// neither re-own a device nor roll its key generation). ErrNotFound when
+	// the device does not exist — the row is always created at token issuance,
+	// so a missing row means the device was deleted under a live token.
+	UpsertDeviceRegistration(ctx context.Context, d *domain.Device) error
+	// UpdateDeviceCapabilities mirrors the connector-reported compose
+	// capabilities (M12) onto the device row, stored verbatim; a nil blob
+	// clears the column. ErrNotFound when the device does not exist.
+	UpdateDeviceCapabilities(ctx context.Context, id string, capabilities []byte) error
+	// TouchDeviceLastSeen stamps last_seen_at (the 30s heartbeat). ErrNotFound
+	// when the device does not exist.
+	TouchDeviceLastSeen(ctx context.Context, id string, at time.Time) error
+	// CreateDeviceToken inserts a freshly-issued device token. The store never
+	// sees plaintext, only the already-computed TokenHash (see
+	// auth.GenerateDeviceToken / auth.HashToken).
+	CreateDeviceToken(ctx context.Context, t *domain.DeviceToken) error
+	// GetDeviceTokenByHash resolves a presented Bearer token's SHA-256 to its
+	// token row (with UserID joined from devices) for principal resolution
+	// (api/principal.go). It excludes revoked tokens AND tokens of revoked
+	// devices — ErrNotFound covers all three cases, so revocation is effective
+	// on the very next lookup with no cache to invalidate.
+	GetDeviceTokenByHash(ctx context.Context, tokenHash string) (*domain.DeviceToken, error)
+	// ListDevicesForUser returns a user's non-revoked devices, oldest first
+	// (the "my devices" client view).
+	ListDevicesForUser(ctx context.Context, userID string) ([]domain.Device, error)
+
+	// --- Device relay (docs/17 §4 — P2) ---------------------------------------
+	// Sessions/events/commands are the relay's data plane. Meta/envelope blobs
+	// are OPAQUE to the store (plaintext JSON in M3, E2EE ciphertext from M5):
+	// they are stored and returned verbatim, never parsed.
+
+	// UpsertDeviceSession inserts or refreshes a session-metadata mirror row,
+	// keyed by (device_id, session_id). meta/status/updated_at are overwritten
+	// wholesale (the device owns its mirror).
+	UpsertDeviceSession(ctx context.Context, s *domain.DeviceSession) error
+	// ListDeviceSessions returns a device's session index, most-recently
+	// updated first.
+	ListDeviceSessions(ctx context.Context, deviceID string) ([]domain.DeviceSession, error)
+	// AppendDeviceEvents appends a batch to a session's durable log,
+	// IDEMPOTENTLY by (device_id, session_id, seq): an already-present seq is
+	// skipped and reported as conflicted, never an error. The batch reports the
+	// accepted/conflicted seqs (input order preserved within each list) and the
+	// session's current max seq (0 when the log is empty).
+	AppendDeviceEvents(ctx context.Context, deviceID, sessionID string, events []*domain.DeviceEvent) (*DeviceEventBatch, error)
+	// ListDeviceEvents returns durable events with seq > afterSeq, ascending
+	// (the client replay path).
+	ListDeviceEvents(ctx context.Context, deviceID, sessionID string, afterSeq int64, limit int) ([]domain.DeviceEvent, error)
+	// MaxDeviceEventSeq returns the session's current max seq, or 0 when the
+	// log is empty (the connector's reconnect cursor).
+	MaxDeviceEventSeq(ctx context.Context, deviceID, sessionID string) (int64, error)
+	// CreateDeviceCommand enqueues a downlink command (status pending). The
+	// caller pre-fills id/device_id/kind/session_id/envelope/created_at.
+	CreateDeviceCommand(ctx context.Context, c *domain.DeviceCommand) error
+	// DeliverPendingDeviceCommands is the poll's offer step: it atomically
+	// marks the device's oldest pending commands (up to limit, created_at
+	// order) delivered and returns them in that order. Empty when nothing is
+	// pending. Delivery is SINGLE-SHOT (a lost poll response is not re-offered;
+	// the ack resolves the command) — the simple contract of docs/17 §4.2.
+	DeliverPendingDeviceCommands(ctx context.Context, deviceID string, limit int) ([]domain.DeviceCommand, error)
+	// AckDeviceCommand records a command's execution result: it sets the
+	// status (acked/failed), stores the opaque result blob, and stamps
+	// acked_at — but ONLY while the command is unresolved, so a duplicate ack
+	// (lost response retry) is a no-op, not an error. ErrNotFound when no such
+	// command exists FOR THIS DEVICE (a device can never ack another device's
+	// command; the two cases are intentionally indistinguishable).
+	AckDeviceCommand(ctx context.Context, deviceID, commandID, status string, result []byte, at time.Time) error
+
+	// --- Device pairings (docs/17 §6.3 — P3) ----------------------------------
+	// A pairing is one client's request for the device's CEK: pending until the
+	// device approves (wrap stored) or denies it.
+
+	// CreateDevicePairing inserts a fresh pairing row (status pending). The
+	// caller pre-fills id/device_id/label/pubkey/created_at.
+	CreateDevicePairing(ctx context.Context, p *domain.DevicePairing) error
+	// GetDevicePairing returns a pairing BY ID SCOPED TO ITS DEVICE — a pairing
+	// of another device is indistinguishable from an unknown one (ErrNotFound).
+	GetDevicePairing(ctx context.Context, deviceID, pairingID string) (*domain.DevicePairing, error)
+	// ListDevicePairings returns a device's pairings in one status ("" = all),
+	// oldest first.
+	ListDevicePairings(ctx context.Context, deviceID, status string) ([]domain.DevicePairing, error)
+	// ResolveDevicePairing settles a pending pairing: it sets the status
+	// (approved — storing the opaque wrap blob — / denied / expired) and stamps
+	// resolved_at, but ONLY while the pairing is pending, so a duplicate
+	// respond is an idempotent no-op. ErrNotFound when no such pairing exists
+	// FOR THIS DEVICE.
+	ResolveDevicePairing(ctx context.Context, deviceID, pairingID, status string, wrap []byte, at time.Time) error
+
+	// --- Device pairing offers (docs/17 §6.3 — M11 scan-to-pair) -------------
+	// An offer is a device-issued, single-use ticket (secret hash + expiry)
+	// that lets a QR-scanning client open a pairing without a prior account
+	// link to the device.
+
+	// CreateDevicePairingOffer inserts a fresh offer row. The caller pre-fills
+	// id/device_id/secret_hash/expires_at/created_at.
+	CreateDevicePairingOffer(ctx context.Context, o *domain.DevicePairingOffer) error
+	// GetDevicePairingOffer returns an offer by id (ErrNotFound when unknown).
+	GetDevicePairingOffer(ctx context.Context, offerID string) (*domain.DevicePairingOffer, error)
+	// ClaimDevicePairingOffer stamps claimed_by/claimed_at, but ONLY while the
+	// offer is unclaimed — the first claim wins, a concurrent/second claim gets
+	// ErrAlreadyExists; ErrNotFound when no such offer exists. Expiry is the
+	// caller's check (the row stays inspectable after it lapses).
+	ClaimDevicePairingOffer(ctx context.Context, offerID, userID string, at time.Time) error
+
+	// RevokeDeviceTokens revokes ALL of the device's live device tokens
+	// (POST /internal/v1/device/revoke — the device revokes its own token at
+	// logout). Already-revoked rows are untouched, so the call is an
+	// idempotent no-op when nothing is live.
+	RevokeDeviceTokens(ctx context.Context, deviceID string, at time.Time) error
+
 	// Lifecycle
 	Close()
 }
@@ -657,3 +793,13 @@ type ArchiveCandidate struct {
 // ErrInvalidTransition is returned by the run mutators when a status change is
 // not permitted by the domain state machine.
 var ErrInvalidTransition = errors.New("invalid run status transition")
+
+// DeviceEventBatch reports the outcome of an AppendDeviceEvents call
+// (docs/17 §4.1): which seqs were newly inserted, which were skipped as
+// idempotent replays (already present under (device_id, session_id, seq)), and
+// the session's current max seq (0 when the log is empty).
+type DeviceEventBatch struct {
+	Accepted   []int64
+	Conflicted []int64
+	MaxSeq     int64
+}

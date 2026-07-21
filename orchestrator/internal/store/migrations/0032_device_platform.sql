@@ -1,0 +1,11 @@
+-- 0032_device_platform.sql — device platform tag (docs/17-jcode-device-relay).
+--
+-- The jcode CLI/desktop connector reports which flavor it is
+-- ("desktop"|"cli") in the /device/register payload so list UIs can render
+-- the right icon/label. NOT NULL DEFAULT '' mirrors devices.pubkey: the row
+-- predates the first register call (created at token issuance), so '' is the
+-- "not reported yet" placeholder. Unknown values pass through unchecked —
+-- future platforms must not require a schema change.
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS makes a re-apply a clean no-op.
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT '';

@@ -56,6 +56,23 @@ func APIKeyDisplayPrefix(plaintext string) string {
 	return plaintext[:apiKeyDisplayPrefixLen]
 }
 
+// DeviceTokenPrefix tags a device token's plaintext (docs/17 §3.2) so the
+// principal resolver can recognise one before doing a DB lookup, without
+// confusing it with an opaque session token or a "jck_" API key.
+const DeviceTokenPrefix = "jcd_"
+
+// GenerateDeviceToken returns a fresh device token: DeviceTokenPrefix + 32
+// cryptographically-random bytes, hex-encoded. Only its SHA-256 (HashToken) is
+// ever persisted (device_tokens.token_hash) — the plaintext is returned to the
+// polling CLI exactly once, at issuance; there is no read-back path afterward.
+func GenerateDeviceToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate device token: %w", err)
+	}
+	return DeviceTokenPrefix + hex.EncodeToString(b), nil
+}
+
 // HashToken returns the lowercase hex SHA-256 of a token. Only the hash is
 // persisted (on Run.TokenHash); the plaintext lives only in the Job env.
 func HashToken(token string) string {

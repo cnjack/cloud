@@ -1,0 +1,42 @@
+{
+  "name": "@jcloud/device-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Shared jcode device-relay UI kernel: E2EE crypto, device API layer, session timeline components and pairing flow (docs/17). Consumed by the console and the mobile app.",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "jcode-ui": "file:../../../../jcode/packages/jcode-ui",
+    "jcode-ui-core": "file:../../../../jcode/packages/jcode-ui-core"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.62.0",
+    "i18next": "^25.3.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-i18next": "^15.6.1"
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "^5.62.0",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "i18next": "^25.3.2",
+    "jsdom": "^25.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-i18next": "^15.6.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "vitest": "^2.1.8"
+  }
+}

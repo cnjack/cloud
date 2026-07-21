@@ -1,0 +1,13 @@
+-- 0034_device_capabilities: the connector's compose-capability mirror (M12).
+--
+-- The jcode connector reports what its local install can offer a compose UI —
+-- project directories, models (provider/id/label) and effort levels — as a
+-- top-level `capabilities` field on the sessions upsert
+-- (POST /internal/v1/device/sessions). The server stores the blob VERBATIM
+-- (opaque JSON, like device_sessions.meta) and echoes it back on
+-- GET /api/v1/devices/{id} so console/mobile can render the compose panel.
+-- NULL (the default) means an older connector that predates the field —
+-- clients degrade by hiding the compose panel entirely.
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS makes a re-apply a no-op.
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS capabilities JSONB;

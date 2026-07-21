@@ -145,17 +145,26 @@ function ProviderButtons() {
   const { t } = useTranslation();
   const { providers } = useAuth();
   if (providers.length === 0) return null;
+  // Carry the current location through the OAuth round trip so the user lands
+  // back on the page that needed sign-in (e.g. /device?user_code=…) instead
+  // of the default landing page. The orchestrator verifies it is a
+  // same-console relative path (safeOAuthReturnTo).
+  const returnTo = `${window.location.pathname}${window.location.search}`;
   return (
     <div className={styles.providers} data-testid="provider-buttons">
-      {providers.map((p) => (
+      {providers.map((p) => {
         // A full navigation to the server route (NOT client routing) so the OAuth
         // round trip + Set-Cookie happen on the orchestrator.
-        <a key={p.id} href={p.login_url} className={styles.provider} data-provider={p.id}>
-          <span className={styles.providerIcon} aria-hidden>{p.id.toLowerCase().includes('github') ? <GithubLogo size={18} weight="fill" /> : <GitBranch size={18} />}</span>
-          <span>{t('onboarding.continueWith', { name: p.name })}</span>
-          <ArrowRight size={16} aria-hidden="true" />
-        </a>
-      ))}
+        const sep = p.login_url.includes('?') ? '&' : '?';
+        const href = `${p.login_url}${sep}return_to=${encodeURIComponent(returnTo)}`;
+        return (
+          <a key={p.id} href={href} className={styles.provider} data-provider={p.id}>
+            <span className={styles.providerIcon} aria-hidden>{p.id.toLowerCase().includes('github') ? <GithubLogo size={18} weight="fill" /> : <GitBranch size={18} />}</span>
+            <span>{t('onboarding.continueWith', { name: p.name })}</span>
+            <ArrowRight size={16} aria-hidden="true" />
+          </a>
+        );
+      })}
     </div>
   );
 }

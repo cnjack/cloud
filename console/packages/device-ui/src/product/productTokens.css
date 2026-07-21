@@ -1,0 +1,110 @@
+/*
+ * productTokens.css — M14 theme bridge.
+ *
+ * The jcode product composer (jcode-ui/product) and Thread read the product
+ * theme tokens (--color-surface/--color-foreground/--color-primary/…, i.e. the
+ * tokens.generated.css system), NOT the jcloud semantic names. Both systems
+ * are `--color-*` custom properties, so the bridge is a pure alias layer:
+ * every product token maps onto the closest jcloud semantic token, in both
+ * themes at once (the underlying tokens already switch on [data-theme]).
+ *
+ * Load order: jcloud tokens.css → jcode-ui/styles.css → jcode-ui/compat.css →
+ * this file. compat.css re-bridges the scoped --jcode-* tokens from these
+ * unprefixed names, so Thread & co. pick the same values up inside their
+ * [data-jcode-ui] roots. Dark mode for jcode-ui's own scoped blocks keys off
+ * the `.dark` class — hosts stamp it alongside data-theme='dark'.
+ */
+:root {
+  /* surfaces + text */
+  --color-surface: var(--color-panel);
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-text);
+  --color-muted: var(--color-bg-inset);
+  --color-muted-foreground: var(--color-text-muted);
+  --color-secondary: var(--color-panel-hover);
+
+  /* accent + actions */
+  --color-primary: var(--color-accent);
+  --color-on-primary: var(--color-on-accent);
+  --color-destructive: var(--color-danger);
+  --color-on-destructive: var(--color-on-accent);
+  --color-error-fg: var(--color-danger-fg);
+  --color-success-fg: var(--color-success);
+  --color-warning-fg: var(--color-warning);
+  --color-accent-neutral: var(--color-text);
+
+  /* washes (jcode derives these from primary/foreground via color-mix) */
+  --neutral-wash-soft: color-mix(in srgb, var(--color-text) 8%, transparent);
+  --neutral-wash: color-mix(in srgb, var(--color-text) 11%, transparent);
+  --neutral-wash-strong: color-mix(in srgb, var(--color-text) 16%, transparent);
+  --accent-wash: color-mix(in srgb, var(--color-accent) 11%, transparent);
+  --accent-fill: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  --backdrop: var(--color-overlay);
+
+  /* gaps in the jcloud scale (radius-md…pill and --shadow-1…3 already match
+     jcode's --radius-md…pill / --shadow-sm…lg values 1:1) */
+  --radius-xs: 3px;
+  --shadow-sm: var(--shadow-1);
+  --shadow-md: var(--shadow-2);
+  --shadow-lg: var(--shadow-3);
+  --shadow-xl: var(--shadow-3);
+  --z-dropdown: 40;
+}
+
+/* Scoped baseline reset for the jcode product surfaces. jcode-ui ships NO
+   preflight by design (hosts own the document reset) — the desktop web gets
+   these from tailwind's preflight; without them stock <button> chrome (border/
+   background) leaks into the slash menu, pickers and Thread rows. Declared in
+   @layer base so the package's utility classes still win (same as preflight). */
+@layer base {
+  .jcode-product button,
+  .jcode-product input,
+  .jcode-product textarea,
+  [data-jcode-ui] button,
+  [data-jcode-ui] input,
+  [data-jcode-ui] textarea {
+    border: 0 solid var(--color-border);
+    background-color: transparent;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+  }
+  .jcode-product button,
+  [data-jcode-ui] button {
+    cursor: pointer;
+  }
+  .jcode-product button:disabled,
+  [data-jcode-ui] button:disabled {
+    cursor: default;
+  }
+}
+
+/* M15: narrow-viewport composer parity (phones / narrow console windows).
+   The product composer's desktop toolbar squeezes chip text vertical once it
+   runs out of room (goal chip armed, context ring shown), and its popover
+   panels anchor to their chip wrappers — the 290px model panel and the 280px
+   context popup can be pushed past the left viewport edge. At ≤480px: let the
+   toolbar wrap with no-wrap chips (second row stays right-aligned), and
+   re-anchor all toolbar popovers to the full-width composer card. Selectors
+   key off the package's literal tailwind class tokens (dist is unhashed). */
+@media (max-width: 480px) {
+  .jcode-product div[class~='justify-between'][class~='py-2'] {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  /* Wrapped second row keeps the desktop's right alignment. */
+  .jcode-product div[class~='justify-between'][class~='py-2'] > div[class~='gap-2'] {
+    margin-left: auto;
+  }
+  .jcode-product div[class~='justify-between'][class~='py-2'] button {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  /* Panels (add/mode/context/model/effort) anchor to the full-width composer
+     card instead of their chip wrapper, so e.g. the 290px model panel and the
+     280px context popup can't be pushed past the left viewport edge. The card
+     is the nearest positioned ancestor once these wrappers go static. */
+  .jcode-product div[class~='justify-between'][class~='py-2'] div[class~='relative'] {
+    position: static;
+  }
+}

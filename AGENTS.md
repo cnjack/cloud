@@ -48,6 +48,80 @@ substitute a mock, fake implementation, or fallback that looks successful.
 - Do not change Gitea OAuth `redirect_uris` through an API `PATCH`: it rotates
   the client secret. Change it through the provider UI instead.
 
+## Device relay (jcode ⇄ jcloud)
+
+The device-relay feature lets local jcode instances log in (RFC 8628 device
+code), be remote-controlled over an outbound-only relay, and renders in
+console/mobile — all end-to-end encrypted. Durable rules for this area:
+
+- **Design docs are the contract.** `docs/17-jcode-device-relay.md` (relay,
+  E2EE, pairing) and `docs/18-device-mesh-dispatch.md` (dispatch, design-only).
+  Change the doc first when deviating; record implementation reality back into
+  the doc (field names, status codes).
+- **Ciphertext discipline.** Everything under the device namespace
+  (`device_sessions.meta`, `device_events.envelope`, command payloads,
+  `devices.capabilities`) is an opaque envelope — never parse it server-side.
+  Plaintext is limited to routing metadata: ids, seq, kind, timestamps, online
+  state. New write paths must preserve this; e2e proves it with psql
+  zero-plaintext greps.
+- **Migrations are append-only and idempotent** (`IF NOT EXISTS`, guarded
+  `DO $$ ... $$` blocks). New device tables need FK `ON DELETE CASCADE` chains
+  up to `users` — `0030` missed `device_events` and orphaned rows (fixed in
+  `0031`); always test cleanup-by-user-delete. When adding a column to
+  `devices`, grep **every** consumer of the column list (`deviceCols`, inline
+  `Scan` calls, list views) — `0035` added `e2ee` to the cols helper but one
+  inline `ListDevicesForUser` scan was missed and the list endpoint 500'd.
+  Run the PG-gated store suite (`JCLOUD_PG_DSN=... go test ./internal/store/`)
+  before delivery; Mem-only tests do not catch scan/column drift.
+- **e2e journeys** (`e2e/j*.sh`, keyed `Jx-Sn`): `j7` login, `j8` relay,
+  `j9` E2EE, `j10` QR pairing, `j11` compose facets. They run against the
+  OrbStack stack (context `orbstack`, ns `jcloud`), seed a user session
+  directly via psql (`HashToken` = sha256-hex), and drive a real `jcode web`
+  against in-cluster mockllm. Reuse `lib.sh` helpers; register new journeys in
+  `e2e.sh` (`ONLY=` + teardown cleanup).
+- **psql via `kubectl exec`**: dollar-quote SQL literals (`$$x$$`) — single
+  quotes die in the nested `sh -c`. `psql -t -A` still appends the command
+  tag to `RETURNING` output; parse the first line only.
+- **Browser-driven e2e** lives in `e2e/browser/` (Playwright, see its README):
+  run the console vite dev with `VITE_API_PROXY_TARGET` pointing at your
+  port-forward, seed `jcloud_session` as a cookie on the vite origin, and set
+  `JCODE_NO_BROWSER=1` so the CLI never pops unmanaged tabs.
+- **Upgrade order: orchestrator before connector.** Old orchestrators reject
+  upserts carrying new top-level fields (strict decode).
+- **jcode-ui `file:` dependency (M14 transition, until publish).** console,
+  console/packages/device-ui and mobile consume jcode-ui/jcode-ui-core as
+  unpublished `file:` paths into the sibling jcode checkout (`../../jcode`
+  from console/; overrides in both pnpm-workspace.yaml files pin them because
+  jcode-ui's manifest says `jcode-ui-core: workspace:*`). Build conventions
+  while this lasts:
+  - Local dev: build the jcode packages first (`pnpm install && pnpm build`
+    in `jcode/packages/jcode-ui-core`, then `jcode-ui`), then `pnpm install`
+    in console/mobile. Rebuild + reinstall whenever jcode-ui source changes.
+  - console-ci `verify` job: side-by-side checkouts (`path: cloud` +
+    cnjack/jcode at `path: jcode`, pinned `ref: feat/jcode-device-relay`)
+    so the relative `file:` paths resolve; jcode packages are built before
+    `pnpm install --frozen-lockfile`.
+  - Image builds (images.yml, console-ci `image` job, `make -C deploy
+    build-console`): run `node console/scripts/prepare-jcode-ui.mjs` — it
+    packs both packages into `console/.pkg/` (gitignored), temporarily
+    rewrites the manifests/lockfiles/Dockerfile to the tarballs, and
+    regenerates the lockfiles; `--restore` reverts everything (the Makefile
+    target restores even on build failure). The committed
+    `console/Dockerfile` stays untouched.
+  - After jcode-ui is published: switch the three package.json files and
+    both pnpm-workspace.yaml overrides to registry versions, delete
+    `console/scripts/prepare-jcode-ui.mjs`, the jcode checkout/pack steps
+    from both workflows, and the `.pkg/` gitignore entry.
+- **Deploy** to the company cluster (context `wangwenhui@local`, ns `jcode`):
+  push the branch, `gh workflow run images.yml --ref <branch>` (builds amd64
+  images, pushes ghcr `latest`, cuts a release tag only on main), then
+  `kubectl rollout restart deploy/orchestrator deploy/console`. Verify
+  `schema_migrations` and smoke the public path (no port-forward) afterwards.
+- **pnpm turns plain `pnpm install` into `--frozen-lockfile` when `CI=true`.**
+  Any script step meant to regenerate a lockfile must pass
+  `--no-frozen-lockfile` explicitly or it fails on runners with an
+  overrides/config mismatch (hit in the M14 .pkg pack step).
+
 ## Engineering workflow
 
 ### Keep design prototypes page-scoped
@@ -72,6 +146,25 @@ For each feature or bug fix:
 4. **Run proportionate verification.**
    - Orchestrator changes: `cd orchestrator && go test ./...`
    - Console changes: `cd console && pnpm test && pnpm typecheck`
+   - Shared device-UI package (console/packages/device-ui): also
+     `pnpm --filter @jcloud/device-ui test`; its locale bundles are generated —
+     re-run `node console/scripts/extract-device-locales.mjs` after editing the
+     console's `device.*` copy.
+   - **Tests must be CI-self-contained**: never read fixtures outside the repo
+     (the workspace-level `jcode-cloud-relay/` dir does not exist on runners) —
+     keep a canonical in-repo copy and treat the external file as optional.
+     Local-green-but-CI-red is usually one of: out-of-repo fixtures, missing
+     `waitFor` around asynchronously-mounted elements (2-core runners are
+     slow), or swallowed error states — log the underlying error in the test
+     before asserting so CI failures are self-explaining.
+   - Mobile app (cloud/mobile): `pnpm build` (web) and
+     `cargo check` (src-tauri); `scripts/rig.sh up` brings up the local
+     device-relay demo rig. `src-tauri/gen/` is gitignored and regenerated by
+     `tauri android/ios init`; after a regen, re-apply the M11 native deltas:
+     Android manifest `CAMERA` permission + `uses-feature camera
+     required=false`, iOS Info.plist `CFBundleURLTypes` (scheme `jcode`) +
+     `NSCameraUsageDescription`. The deep-link scheme itself is tracked in
+     `tauri.conf.json > plugins.deep-link` and re-injected at build.
    - Manifest changes: render each affected Kustomize target before delivery.
 5. **Commit cleanly.** Use Conventional Commits and keep one coherent feature
    in each commit.

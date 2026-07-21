@@ -16,6 +16,8 @@
           var t = localStorage.getItem(key);
           if (t !== 'light' && t !== 'dark') t = 'light';
           document.documentElement.dataset.theme = t;
+          // jcode-ui's scoped dark blocks key off the .dark class (M14).
+          document.documentElement.classList.toggle('dark', t === 'dark');
         } catch (e) {
           document.documentElement.dataset.theme = 'light';
         }

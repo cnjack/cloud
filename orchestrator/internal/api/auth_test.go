@@ -560,3 +560,98 @@ func TestSessionExpiryAndRevocation(t *testing.T) {
 		t.Fatalf("post-logout session: status=%d want 401 (revoked)", r.StatusCode)
 	}
 }
+
+// --- mobile client login (M11): jcode://auth deep link -------------------------
+
+// TestOAuthMobileLoginRedirectsToAppDeepLink covers the client=mobile login:
+// the signed state carries the client marker through the provider round trip
+// and the callback hands the session token to the app over the FIXED
+// jcode://auth deep link — token in the fragment, never in a query string.
+func TestOAuthMobileLoginRedirectsToAppDeepLink(t *testing.T) {
+	ts, _, stub := newAuthServer(t)
+	stub.setUser("mob", map[string]any{"id": 7, "login": "mob", "full_name": "Mobile User"})
+
+	cb := doOAuthFlow(t, ts, "/auth/login/gitea?client=mobile", "mob", "")
+	defer cb.Body.Close()
+	if cb.StatusCode != http.StatusFound {
+		t.Fatalf("callback status=%d want 302", cb.StatusCode)
+	}
+	loc := cb.Header.Get("Location")
+	if !strings.HasPrefix(loc, "jcode://auth#token=") {
+		t.Fatalf("Location=%q want the fixed jcode://auth#token= deep link", loc)
+	}
+	u, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	// Scheme whitelist: exactly jcode://auth, no query component at all.
+	if u.Scheme != "jcode" || u.Host != "auth" || u.RawQuery != "" || u.Path != "" {
+		t.Fatalf("deep link %q must be exactly jcode://auth#...", loc)
+	}
+	token, ok := strings.CutPrefix(u.Fragment, "token=")
+	if !ok || token == "" {
+		t.Fatalf("fragment %q carries no token", u.Fragment)
+	}
+
+	// The handed-out token is a live user session the app can use as a Bearer.
+	resp := do(t, "GET", ts.URL+"/api/v1/me", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("me with deep-link token: status=%d want 200", resp.StatusCode)
+	}
+	var me struct {
+		User struct {
+			DisplayName string `json:"display_name"`
+		} `json:"user"`
+	}
+	decode(t, resp, &me)
+	if me.User.DisplayName != "Mobile User" {
+		t.Fatalf("me=%+v want the mobile OAuth user", me)
+	}
+}
+
+// TestOAuthLoginRejectsUnknownClient pins the scheme whitelist: only
+// client=mobile (on plain login) selects the deep-link completion, anything
+// else — including attempts to smuggle a redirect target — is a 400, and the
+// desktop console flow (no client param) is unchanged.
+func TestOAuthLoginRejectsUnknownClient(t *testing.T) {
+	ts, st, stub := newAuthServer(t)
+	stub.setUser("x", map[string]any{"id": 1, "login": "x"})
+	client := noRedirectClient()
+
+	for _, q := range []string{
+		"client=desktop",
+		"client=jcode",
+		"redirect=https%3A%2F%2Fevil.example&client=mobile2",
+	} {
+		resp, err := client.Get(ts.URL + "/auth/login/gitea?" + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("login?%s: status=%d want 400", q, resp.StatusCode)
+		}
+	}
+
+	// Link mode is a console flow: client=mobile is rejected there too.
+	user := mkUser(t, st, "linker")
+	sess := mkSession(t, st, user.ID)
+	req, _ := http.NewRequest("GET", ts.URL+"/auth/link/gitea?client=mobile", nil)
+	req.Header.Set("Authorization", "Bearer "+sess)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("link?client=mobile: status=%d want 400", resp.StatusCode)
+	}
+
+	// No client param: the console redirect contract is untouched.
+	cb := doOAuthFlow(t, ts, "/auth/login/gitea", "x", "")
+	defer cb.Body.Close()
+	if loc := cb.Header.Get("Location"); !strings.HasPrefix(loc, "http://console.test") {
+		t.Fatalf("desktop login Location=%q want the console origin", loc)
+	}
+}

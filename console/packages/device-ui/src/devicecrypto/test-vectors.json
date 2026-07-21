@@ -1,0 +1,26 @@
+{
+  "vectors": [
+    {
+      "origin": "webcrypto-node",
+      "cek_b64": "+BkQKjIL1T3MbJu40fB1clbznwDvb/AOVsMZ/Yn12gg=",
+      "plaintext": "{\"title\":\"vector session\",\"project\":\"/repo/jcode\",\"model\":\"k2\"}",
+      "envelope": {
+        "enc": "aes-256-gcm",
+        "key_gen": 1,
+        "nonce": "iv+L/pA+uuMety5B",
+        "ct": "3jnpgNytgclq4BJNW/3FDsSd+3oqY3/s1nfYeBL6TqpMQvbMhg/RUnLrUiosZuBgIfxtbLqHyUVOSo/0tw6xP//bJbx8b/5EhOxxBb1vig=="
+      }
+    },
+    {
+      "origin": "go-stdlib",
+      "cek_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "plaintext": "{\"type\":\"agent_message\",\"task_id\":\"s1\",\"data\":{\"text\":\"hello E2E\"}}",
+      "envelope": {
+        "enc": "aes-256-gcm",
+        "key_gen": 1,
+        "nonce": "amNvZGUtcmVsYXkh",
+        "ct": "6TAl4JwmlZHU7dpwXh4NAzD72pWPn88OJKMWYJf1O1ztH6FrtOLSOHHb1s6UjkOtRs773hZQx7hi4bssDGxj6BdewORp7BsiBmijVdmnCNehQws="
+      }
+    }
+  ]
+}

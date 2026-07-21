@@ -21,11 +21,11 @@ const (
 
 // principal is the authenticated subject of a request. Exactly one of these is
 // true: a human `user` (OAuth login/session), a `service` principal (the
-// CONSOLE_TOKEN, treated as a virtual cluster admin with user_id=null), or a
-// project-scoped API key (F12 / D24 — scopedProjectID non-empty). A nil
-// principal means unauthenticated.
+// CONSOLE_TOKEN, treated as a virtual cluster admin with user_id=null), a
+// project-scoped API key (F12 / D24 — scopedProjectID non-empty), or a device
+// (docs/17 — deviceID non-empty). A nil principal means unauthenticated.
 type principal struct {
-	user         *domain.User // nil for the service principal / an API key
+	user         *domain.User // nil for the service principal / an API key / a device
 	service      bool         // authenticated via CONSOLE_TOKEN
 	sessionToken string       // plaintext session token (for logout); "" for service/API key
 	// scopedProjectID, when non-empty, means this principal authenticated with a
@@ -36,6 +36,14 @@ type principal struct {
 	// API keys itself (no self-renewal privilege escalation). This is the
 	// security core of F12: a leaked project key cannot reach another project.
 	scopedProjectID string
+	// deviceID, when non-empty, means this principal authenticated with a device
+	// token (docs/17 §3.2): a "jcd_"-prefixed Bearer token resolved (by SHA-256)
+	// to a revocable, device-bound credential. A device is NOT a user — user is
+	// nil so it is never cluster-admin and holds no project role; only the
+	// /internal/v1/device/* endpoints accept it (they assert isDevice).
+	// deviceUserID is the device's owning user, carried for attribution.
+	deviceID     string
+	deviceUserID string
 }
 
 // isClusterAdmin reports whether the principal has cluster-admin authority. The
@@ -57,6 +65,14 @@ func (p *principal) isClusterAdmin() bool {
 // above reports false for).
 func (p *principal) isAPIKey() bool {
 	return p != nil && p.scopedProjectID != ""
+}
+
+// isDevice reports whether the principal authenticated with a device token
+// (docs/17 §3.2). Device principals are accepted ONLY by the
+// /internal/v1/device/* endpoints; everywhere else a device is just "not a
+// user" (no project role, never cluster-admin).
+func (p *principal) isDevice() bool {
+	return p != nil && p.deviceID != ""
 }
 
 // userID returns the human user's id, or "" for the service principal.
@@ -124,6 +140,18 @@ func (s *Server) resolvePrincipal(r *http.Request, allowQuery bool) (*principal,
 			if k, err := s.st.GetAPIKeyByHash(ctx, auth.HashToken(tok)); err == nil {
 				s.touchAPIKeyLastUsed(ctx, k)
 				return &principal{scopedProjectID: k.ProjectID}, true
+			}
+			return nil, false
+		}
+		// Device token (docs/17 §3.2): a "jcd_"-prefixed token resolves by its
+		// SHA-256 to a revocable, device-bound credential. The store excludes
+		// revoked tokens and revoked devices, so a revoked credential falls
+		// straight through to "unresolved" — same 401 as an unknown token,
+		// effective on the very next lookup. A "jcd_" token is never a session
+		// token, so it does NOT fall through to the session lookup below.
+		if strings.HasPrefix(tok, auth.DeviceTokenPrefix) {
+			if dt, err := s.st.GetDeviceTokenByHash(ctx, auth.HashToken(tok)); err == nil {
+				return &principal{deviceID: dt.DeviceID, deviceUserID: dt.UserID}, true
 			}
 			return nil, false
 		}

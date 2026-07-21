@@ -47,11 +47,14 @@ export function ClusterSubnav() {
 export function StatusLabel({
   children,
   tone = 'neutral',
+  title,
 }: {
   children: ReactNode;
   tone?: 'neutral' | 'success' | 'warning' | 'danger';
+  /** Native tooltip (title attribute) — used by the E2EE lock badge. */
+  title?: string;
 }) {
-  return <span className={styles.status} data-tone={tone}>{children}</span>;
+  return <span className={styles.status} data-tone={tone} title={title}>{children}</span>;
 }
 
 export function ActionLink({

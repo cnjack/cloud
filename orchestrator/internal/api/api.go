@@ -104,6 +104,9 @@ type Server struct {
 	// connects is the in-memory registry of pending "Connect with jtype" OAuth
 	// device flows (D28); no DB persistence — a restart drops in-flight flows.
 	connects *connectRegistry
+	// deviceFlows is the in-memory registry of pending jcode device-code logins
+	// (docs/17 §3); same no-persistence rationale as connects.
+	deviceFlows *deviceFlowRegistry
 	// oauthClientFor builds a jtype OAuth device-flow client for a base URL.
 	// Production wires jtypeoauth.NewClient; a test injects a fake with a poll spy.
 	oauthClientFor func(baseURL string) oauthClient
@@ -112,6 +115,20 @@ type Server struct {
 	// (25s hold / 500ms poll). Overridable by tests that need a fast hold.
 	nextPromptHold time.Duration
 	nextPromptPoll time.Duration
+
+	// Device relay (docs/17 §4): deviceHub fans out device-level stream events
+	// to the client SSE endpoint, keyed by device id. Never nil (built in New).
+	deviceHub *sse.DeviceHub
+	// Device command long-poll timings. Zero => the package defaults (30s max
+	// hold / 500ms tick). Overridable by tests that need a fast hold.
+	devicePollMaxHold time.Duration
+	devicePollTick    time.Duration
+	// Device pairing expiry window. Zero => domain.DevicePairingWindow (10m).
+	// Overridable by tests that exercise the expiry branch without sleeping.
+	devicePairingWindow time.Duration
+	// Pairing-offer validity window (M11 scan-to-pair). Zero =>
+	// domain.DevicePairingOfferWindow (10m). Test-overridable.
+	devicePairingOfferWindow time.Duration
 }
 
 // boardValidator is the slice of *jtype.Client the admin link API needs to
@@ -203,6 +220,10 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// pending flows + the jtype OAuth device-flow client seam (overridden by tests).
 	s.connects = newConnectRegistry()
 	s.oauthClientFor = func(baseURL string) oauthClient { return jtypeoauth.NewClient(baseURL, nil) }
+	// docs/17 — jcode device login: pending RFC 8628 flows live in memory only.
+	s.deviceFlows = newDeviceFlowRegistry()
+	// docs/17 §4 — device relay: the device-level SSE fan-out hub (client stream).
+	s.deviceHub = sse.NewDeviceHub()
 	return s
 }
 
@@ -290,6 +311,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /auth/logout", s.authed(s.handleAuthLogout))
 	mux.Handle("GET /api/v1/me", s.authed(s.handleMe))
 
+	// jcode device login (docs/17 §3 — RFC 8628 device-code flow). code/token
+	// are unauthenticated (the CLI has no credential yet — the device_code IS
+	// the credential); authorize requires a console session. The browser side of
+	// the flow is the console's /device route, not an orchestrator page.
+	mux.HandleFunc("POST /auth/device/code", s.handleDeviceCode)
+	mux.HandleFunc("POST /auth/device/token", s.handleDeviceToken)
+	mux.Handle("POST /auth/device/authorize", s.authed(s.handleDeviceAuthorize))
+
 	// Read-only admin snapshot for the cluster-admin console view (11-api.md §
 	// "System / admin"). Never returns a secret.
 	mux.Handle("GET /api/v1/system", s.authed(s.handleGetSystem))
@@ -343,6 +372,27 @@ func (s *Server) Handler() http.Handler {
 
 	// User search (any logged-in user; for the add-member picker).
 	mux.Handle("GET /api/v1/users", s.authed(s.handleSearchUsers))
+
+	// Device relay client API (docs/17 §4.3) — the console/mobile view of the
+	// caller's OWN devices (session auth; ownership enforced per handler). The
+	// stream endpoint also accepts ?access_token= (browser EventSource cannot
+	// set a header — same rationale as the run stream).
+	mux.Handle("GET /api/v1/devices", s.authed(s.handleListDevices))
+	mux.Handle("GET /api/v1/devices/{id}", s.authed(s.handleGetDevice))
+	mux.Handle("DELETE /api/v1/devices/{id}", s.authed(s.handleDeleteDevice))
+	mux.Handle("GET /api/v1/devices/{id}/sessions", s.authed(s.handleListDeviceSessions))
+	mux.Handle("GET /api/v1/devices/{id}/sessions/{sid}/events", s.authed(s.handleListDeviceSessionEvents))
+	mux.Handle("GET /api/v1/devices/{id}/stream", s.authedStream(s.handleDeviceStream))
+	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/messages", s.authed(s.handleDeviceSendMessage))
+	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/stop", s.authed(s.handleDeviceStopSession))
+	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/approval", s.authed(s.handleDeviceApproval))
+	// Device pairing — CEK distribution (docs/17 §6.3): the client requests a
+	// pairing and polls its state; the device decides over the internal API.
+	mux.Handle("POST /api/v1/devices/{id}/pairings", s.authed(s.handleCreateDevicePairing))
+	mux.Handle("GET /api/v1/devices/{id}/pairings/{pid}", s.authed(s.handleGetDevicePairing))
+	// Pairing offers (docs/17 §6.3 — M11 scan-to-pair): the device mints a
+	// single-use offer (internal API), the QR-scanning client claims it.
+	mux.Handle("POST /api/v1/pairing-offers/{offer_id}/claim", s.authed(s.handleClaimPairingOffer))
 
 	mux.Handle("POST /api/v1/projects", s.authed(s.handleCreateProject))
 	mux.Handle("GET /api/v1/projects", s.authed(s.handleListProjects))
@@ -492,6 +542,22 @@ func (s *Server) Handler() http.Handler {
 
 	// Internal endpoints — require the per-run RUN_TOKEN.
 	mux.Handle("POST /internal/v1/runs/{id}/events", s.runToken(s.handleIngestEvents))
+	// jcode device uplink (docs/17 §4.1/§4.2) — authenticated by the device token
+	// (the "jcd_" Bearer resolves to a device principal in resolvePrincipal;
+	// requireDevice rejects anything else).
+	mux.Handle("POST /internal/v1/device/register", s.authed(s.handleDeviceRegister))
+	mux.Handle("POST /internal/v1/device/heartbeat", s.authed(s.handleDeviceHeartbeat))
+	mux.Handle("POST /internal/v1/device/sessions", s.authed(s.handleDeviceSessionsUpsert))
+	mux.Handle("POST /internal/v1/device/sessions/{sid}/events", s.authed(s.handleDeviceSessionEvents))
+	mux.Handle("POST /internal/v1/device/sessions/{sid}/ephemeral", s.authed(s.handleDeviceSessionEphemeral))
+	mux.Handle("GET /internal/v1/device/poll", s.authed(s.handleDevicePoll))
+	mux.Handle("POST /internal/v1/device/commands/{id}/ack", s.authed(s.handleDeviceCommandAck))
+	// Pairing decisions + token self-revocation (docs/17 §6.3 / §3.3).
+	mux.Handle("GET /internal/v1/device/pairings", s.authed(s.handleListDevicePairings))
+	mux.Handle("GET /internal/v1/device/pairings/{pid}", s.authed(s.handleGetOwnPairing))
+	mux.Handle("POST /internal/v1/device/pairings/{pid}/respond", s.authed(s.handleRespondDevicePairing))
+	mux.Handle("POST /internal/v1/device/pairing-offers", s.authed(s.handleCreatePairingOffer))
+	mux.Handle("POST /internal/v1/device/revoke", s.authed(s.handleDeviceRevoke))
 	mux.Handle("POST /internal/v1/runs/{id}/artifact", s.runToken(s.handleIngestArtifact))
 	// M3 runner contract: the runner fetches its source bundle, uploads the
 	// draft-PR git bundle, and posts review output — all authed by the RUN_TOKEN.

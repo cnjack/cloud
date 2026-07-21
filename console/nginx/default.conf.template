@@ -33,6 +33,20 @@ server {
         proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
     }
 
+    # Device uplink (register/heartbeat/poll/ack) — the local jcode connector
+    # reaches the orchestrator through this same edge. Long-poll holds up to
+    # 30s, so the read timeout must clear that comfortably.
+    location /internal/ {
+        proxy_pass ${ORCHESTRATOR_URL};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 120s;
+    }
+
     # SPA fallback.
     location / {
         try_files $uri /index.html;

@@ -31,6 +31,7 @@ function renderTimeline(
     goal: null,
     todos: [],
     queued: [],
+    connection: 'connected' as const,
   };
   const runtime: ChatRuntime = {
     getState: () => state,
