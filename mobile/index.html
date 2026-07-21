@@ -18,6 +18,8 @@
           t = 'dark'; // mobile is dark-first (docs/17 §7.2)
         }
         document.documentElement.dataset.theme = t;
+        // jcode-ui's scoped dark blocks key off the .dark class (M14).
+        document.documentElement.classList.toggle('dark', t === 'dark');
       })();
     </script>
   </head>

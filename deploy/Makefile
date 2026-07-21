@@ -42,6 +42,9 @@ ORCH_IMAGE    := jcloud/orchestrator:dev
 RUNNER_IMAGE  := jcloud/runner:dev
 MOCKLLM_IMAGE := jcloud/mockllm:dev
 GITSEED_IMAGE := jcloud/gitseed:dev
+CONSOLE_IMAGE := jcloud/console:dev
+
+CONSOLE_DIR   := $(CLOUD_ROOT)/console
 
 .PHONY: help
 help: ## Show this help.
@@ -58,7 +61,7 @@ _ctx-guard:
 	fi
 
 # --- build --------------------------------------------------------------
-.PHONY: build build-orchestrator build-runner build-mockllm build-gitseed
+.PHONY: build build-orchestrator build-runner build-mockllm build-gitseed build-console
 build: build-orchestrator build-runner build-mockllm build-gitseed ## Build all local images (orchestrator, runner, mockllm, gitseed).
 
 build-orchestrator: ## Build jcloud/orchestrator:dev from cloud/orchestrator/Dockerfile.
@@ -74,6 +77,20 @@ build-mockllm: ## Build jcloud/mockllm:dev from deploy/mockllm/Dockerfile (build
 
 build-gitseed: ## Build jcloud/gitseed:dev (alpine + git-daemon) for the in-cluster seed repo server.
 	docker build -t $(GITSEED_IMAGE) gitseed
+
+# M14 transition: console's jcode-ui deps are unpublished file: paths into the
+# sibling jcode repo, which is outside the docker build context. The prepare
+# script packs both packages into console/.pkg/ and temporarily rewrites the
+# manifests/lockfile/Dockerfile; --restore puts the workspace back afterwards
+# (runs even when the build fails). Not part of `build`: the console usually
+# runs as a local vite dev server against the port-forward.
+build-console: ## Build jcloud/console:dev (packs jcode-ui into console/.pkg first, restores after).
+	node "$(CONSOLE_DIR)/scripts/prepare-jcode-ui.mjs"
+	@status=0; \
+	docker build --platform "linux/$$( [ "$$(uname -m)" = arm64 ] && echo arm64 || echo amd64 )" \
+		-t $(CONSOLE_IMAGE) "$(CONSOLE_DIR)" || status=$$?; \
+	node "$(CONSOLE_DIR)/scripts/prepare-jcode-ui.mjs" --restore; \
+	exit $$status
 
 # --- deploy --------------------------------------------------------------
 .PHONY: up down restart

@@ -8,3 +8,5 @@ dist/
 !.env.demo
 coverage/
 .vite/
+# M14 transition: packed jcode-ui tarballs (scripts/prepare-jcode-ui.mjs)
+.pkg/

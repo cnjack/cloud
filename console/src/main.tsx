@@ -8,7 +8,11 @@ import { AuthProvider } from './auth/AuthProvider';
 import { ToastProvider } from './components/Toast';
 import './i18n';
 import 'jcode-ui/styles.css';
+// M14: legacy-token bridge + jcloud→product token aliases for the jcode
+// product composer / Thread (order matters: compat after styles, aliases last).
+import 'jcode-ui/compat.css';
 import './styles/global.css';
+import '@jcloud/device-ui/src/product/productTokens.css';
 
 const queryClient = new QueryClient({
   defaultOptions: {

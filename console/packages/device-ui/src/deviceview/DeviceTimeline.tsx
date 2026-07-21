@@ -4,6 +4,10 @@
  * followed by not-yet-superseded local finalized text blocks and the live
  * streaming bubble. Reuses runview's timeline CSS and PermissionCard so
  * the device view reads identically to the run detail view.
+ *
+ * @deprecated M14: superseded by jcode-ui <Thread> fed by product/toThreadItems
+ * (same grouping underneath). Kept compiling + exported for downstream pins;
+ * the console and mobile apps no longer render it.
  */
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';

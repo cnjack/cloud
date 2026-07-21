@@ -3,6 +3,11 @@
  * app. It renders the five compose elements a connector advertises through
  * Device.capabilities:
  *
+ * @deprecated M14: superseded by the jcode product composer (jcode-ui/product
+ * ChatInput driven by useDeviceComposer). Kept compiling + exported so
+ * downstream pins don't break; the console and mobile apps no longer render
+ * it. New work should go through the product/ module.
+ *
  *   project directory  (select over capabilities.projects)
  *   model              (select over capabilities.models, grouped by provider)
  *   effort             (segmented buttons over capabilities.efforts)

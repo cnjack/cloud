@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
-    "jcode-ui": "0.1.1"
+    "jcode-ui": "file:../../../../jcode/packages/jcode-ui",
+    "jcode-ui-core": "file:../../../../jcode/packages/jcode-ui-core"
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5.62.0",

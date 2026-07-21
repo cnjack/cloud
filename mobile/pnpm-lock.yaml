@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  jcode-ui: file:../../jcode/packages/jcode-ui
+  jcode-ui-core: file:../../jcode/packages/jcode-ui-core
+
 importers:
 
   .:
@@ -30,8 +34,8 @@ importers:
         specifier: ^25.3.2
         version: 25.10.10(typescript@5.9.3)
       jcode-ui:
-        specifier: 0.1.1
-        version: 0.1.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+        specifier: file:../../jcode/packages/jcode-ui
+        version: file:../../jcode/packages/jcode-ui(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       jsqr:
         specifier: ^1.4.0
         version: 1.4.0
@@ -717,8 +721,8 @@ packages:
       typescript:
         optional: true
 
-  jcode-ui-core@0.1.0:
-    resolution: {integrity: sha512-ziWRzhQoP8yU9Un4qE6OWayyhRzxrVC8hKJQXm+Aff135X54xNgJim1Vf1QUZVrw3oBERpeK8TJlJjbq6D6i/w==}
+  jcode-ui-core@file:../../jcode/packages/jcode-ui-core:
+    resolution: {directory: ../../jcode/packages/jcode-ui-core, type: directory}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
       react-dom: ^18.0.0 || ^19.0.0
@@ -728,11 +732,21 @@ packages:
       react-dom:
         optional: true
 
-  jcode-ui@0.1.1:
-    resolution: {integrity: sha512-XHg8Xe0PFPGnTJGcTE3LOMX9symuJurNUjwxygr95qAvsvSa1VN8CRGcNYRJ/34CiK7TQXfI0VoqqiM8H22jLg==}
+  jcode-ui@file:../../jcode/packages/jcode-ui:
+    resolution: {directory: ../../jcode/packages/jcode-ui, type: directory}
     peerDependencies:
+      '@xyflow/react': ^12.11.2
+      katex: '>=0.16'
+      mermaid: '>=10'
       react: ^18.0.0 || ^19.0.0
       react-dom: ^18.0.0 || ^19.0.0
+    peerDependenciesMeta:
+      '@xyflow/react':
+        optional: true
+      katex:
+        optional: true
+      mermaid:
+        optional: true
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -1120,11 +1134,15 @@ snapshots:
       '@phosphor-icons/react': 2.1.10(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@tanstack/react-query': 5.101.2(react@18.3.1)
       i18next: 25.10.10(typescript@5.9.3)
-      jcode-ui: 0.1.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      jcode-ui: file:../../jcode/packages/jcode-ui(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      jcode-ui-core: file:../../jcode/packages/jcode-ui-core(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
       react-i18next: 15.7.4(i18next@25.10.10(typescript@5.9.3))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3)
     transitivePeerDependencies:
+      - '@xyflow/react'
+      - katex
+      - mermaid
       - tailwindcss
 
   '@jridgewell/gen-mapping@0.3.13':
@@ -1435,20 +1453,20 @@ snapshots:
     optionalDependencies:
       typescript: 5.9.3
 
-  jcode-ui-core@0.1.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
+  jcode-ui-core@file:../../jcode/packages/jcode-ui-core(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
     dependencies:
       '@tanstack/react-virtual': 3.14.6(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
     optionalDependencies:
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
 
-  jcode-ui@0.1.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
+  jcode-ui@file:../../jcode/packages/jcode-ui(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
     dependencies:
       '@heroicons/react': 2.2.0(react@18.3.1)
       '@tailwindcss/typography': 0.5.20
       dompurify: 3.4.12
       highlight.js: 11.11.1
-      jcode-ui-core: 0.1.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      jcode-ui-core: file:../../jcode/packages/jcode-ui-core(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       marked: 18.0.6
       marked-highlight: 2.2.4(marked@18.0.6)
       react: 18.3.1

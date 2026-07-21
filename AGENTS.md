@@ -88,6 +88,30 @@ console/mobile — all end-to-end encrypted. Durable rules for this area:
   `JCODE_NO_BROWSER=1` so the CLI never pops unmanaged tabs.
 - **Upgrade order: orchestrator before connector.** Old orchestrators reject
   upserts carrying new top-level fields (strict decode).
+- **jcode-ui `file:` dependency (M14 transition, until publish).** console,
+  console/packages/device-ui and mobile consume jcode-ui/jcode-ui-core as
+  unpublished `file:` paths into the sibling jcode checkout (`../../jcode`
+  from console/; overrides in both pnpm-workspace.yaml files pin them because
+  jcode-ui's manifest says `jcode-ui-core: workspace:*`). Build conventions
+  while this lasts:
+  - Local dev: build the jcode packages first (`pnpm install && pnpm build`
+    in `jcode/packages/jcode-ui-core`, then `jcode-ui`), then `pnpm install`
+    in console/mobile. Rebuild + reinstall whenever jcode-ui source changes.
+  - console-ci `verify` job: side-by-side checkouts (`path: cloud` +
+    cnjack/jcode at `path: jcode`, pinned `ref: feat/jcode-device-relay`)
+    so the relative `file:` paths resolve; jcode packages are built before
+    `pnpm install --frozen-lockfile`.
+  - Image builds (images.yml, console-ci `image` job, `make -C deploy
+    build-console`): run `node console/scripts/prepare-jcode-ui.mjs` — it
+    packs both packages into `console/.pkg/` (gitignored), temporarily
+    rewrites the manifests/lockfiles/Dockerfile to the tarballs, and
+    regenerates the lockfiles; `--restore` reverts everything (the Makefile
+    target restores even on build failure). The committed
+    `console/Dockerfile` stays untouched.
+  - After jcode-ui is published: switch the three package.json files and
+    both pnpm-workspace.yaml overrides to registry versions, delete
+    `console/scripts/prepare-jcode-ui.mjs`, the jcode checkout/pack steps
+    from both workflows, and the `.pkg/` gitignore entry.
 - **Deploy** to the company cluster (context `wangwenhui@local`, ns `jcode`):
   push the branch, `gh workflow run images.yml --ref <branch>` (builds amd64
   images, pushes ghcr `latest`, cuts a release tag only on main), then

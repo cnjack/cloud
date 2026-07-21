@@ -104,9 +104,13 @@ describe('streaming text + lifecycle', () => {
     expect(s.agentRunning).toBe(false);
   });
 
-  it('ignores non-agent_text deltas and empty chunks', () => {
+  it('tracks token_update deltas (M14) and ignores empty chunks', () => {
     let s = initialDeviceSessionState();
-    expect(reduceDeviceDelta(s, 'token_update', { data: { total_tokens: 1 } })).toBe(s);
+    // token_update feeds the composer context ring (DeviceTokenSnapshot).
+    s = reduceDeviceDelta(s, 'token_update', { data: { total_tokens: 1 } });
+    expect(s.tokenSnapshot?.total_tokens).toBe(1);
+    // Malformed token payloads and empty text chunks are still no-ops.
+    expect(reduceDeviceDelta(s, 'token_update', { data: {} })).toBe(s);
     expect(reduceDeviceDelta(s, 'agent_text', { data: { text: '' } })).toBe(s);
   });
 });

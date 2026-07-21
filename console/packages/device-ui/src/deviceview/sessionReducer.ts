@@ -17,6 +17,24 @@ export interface FinalizedText {
   text: string;
 }
 
+/**
+ * Live token/context counters from the ephemeral token_update delta (M14) —
+ * structurally compatible with jcode-ui-core's TokenSnapshot so the product
+ * composer's context ring can read it directly.
+ */
+export interface DeviceTokenSnapshot {
+  total_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+  cache_write_tokens?: number;
+  call_count?: number;
+  cache_hit_rate?: number;
+  cache_supported?: boolean;
+  model_context_limit: number;
+}
+
 export interface DeviceSessionState {
   /** Durable events sorted ascending by seq, deduped. */
   events: DeviceViewEvent[];
@@ -31,6 +49,8 @@ export interface DeviceSessionState {
   finalizedText: FinalizedText[];
   /** Derived agent lifecycle: agent_start/task_status running → true. */
   agentRunning: boolean;
+  /** Latest token_update counters (null until the first LLM call reports). */
+  tokenSnapshot: DeviceTokenSnapshot | null;
   nextLocalId: number;
 }
 
@@ -42,6 +62,7 @@ export function initialDeviceSessionState(): DeviceSessionState {
     streamingText: '',
     finalizedText: [],
     agentRunning: false,
+    tokenSnapshot: null,
     nextLocalId: -1,
   };
 }
@@ -135,15 +156,43 @@ export function reduceDeviceEvents(
     }
   }
 
-  return { events, lastSeq, seen, streamingText, finalizedText, agentRunning, nextLocalId };
+  return { events, lastSeq, seen, streamingText, finalizedText, agentRunning, tokenSnapshot: state.tokenSnapshot, nextLocalId };
 }
 
-/** Fold one ephemeral session.delta into the state (agent_text only today). */
+function num(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/** Narrow a token_update delta payload (jcode WebTokenData) defensively. */
+export function mapTokenSnapshot(payload: unknown): DeviceTokenSnapshot | null {
+  const data = asRecord(asRecord(payload)?.data) ?? asRecord(payload);
+  if (!data) return null;
+  const total = num(data.total_tokens);
+  if (total === undefined) return null;
+  return {
+    total_tokens: total,
+    prompt_tokens: num(data.prompt_tokens) ?? 0,
+    completion_tokens: num(data.completion_tokens) ?? 0,
+    cached_tokens: num(data.cached_tokens),
+    reasoning_tokens: num(data.reasoning_tokens),
+    cache_write_tokens: num(data.cache_write_tokens),
+    call_count: num(data.call_count),
+    cache_hit_rate: num(data.cache_hit_rate),
+    cache_supported: typeof data.cache_supported === 'boolean' ? data.cache_supported : undefined,
+    model_context_limit: num(data.model_context_limit) ?? 0,
+  };
+}
+
+/** Fold one ephemeral session.delta into the state (agent_text + token_update). */
 export function reduceDeviceDelta(
   state: DeviceSessionState,
   kind: string,
   payload: unknown,
 ): DeviceSessionState {
+  if (kind === 'token_update') {
+    const tokenSnapshot = mapTokenSnapshot(payload);
+    return tokenSnapshot ? { ...state, tokenSnapshot } : state;
+  }
   if (kind !== 'agent_text') return state;
   const data = asRecord(asRecord(payload)?.data);
   const text = typeof data?.text === 'string' ? data.text : '';

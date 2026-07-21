@@ -1,26 +1,16 @@
 import { ArrowRight, Lock, Warning } from '@phosphor-icons/react';
-import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
-import { ApiError } from '../api/client';
-import { useDevices, useDeviceSessions, useSendDeviceMessage, DevicePairingCard, DevicePairingGate, DeviceCompose, channelLabelKey, composeExtras, initialComposeValue } from '@jcloud/device-ui';
-import type { ComposeValue, DeviceSession } from '@jcloud/device-ui';
-import { Button } from '../components/Button';
+import { RuntimeProvider } from 'jcode-ui';
+import { ChatInput } from 'jcode-ui/product';
+import { useDevices, useDeviceSessions, DevicePairingCard, DevicePairingGate, channelLabelKey, useDeviceComposer } from '@jcloud/device-ui';
+import type { DeviceSession } from '@jcloud/device-ui';
 import { PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout';
-import { Select } from '../components/Select';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import { useToast } from '../components/Toast';
 import { e2eeBadgeTooltip, platformBadgeLabel } from '../lib/deviceBadges';
 import { timeAgo } from '../lib/format';
 import styles from './DeviceWelcomePage.module.css';
-
-type Mode = '' | 'plan' | 'full_access';
-
-const MODE_OPTIONS: { value: Mode; label: string }[] = [
-  { value: '', label: 'default' },
-  { value: 'plan', label: 'plan' },
-  { value: 'full_access', label: 'full_access' },
-];
 
 export function DeviceWelcomePage() {
   const { deviceId = '' } = useParams();
@@ -28,38 +18,21 @@ export function DeviceWelcomePage() {
   const toast = useToast();
   const devices = useDevices();
   const sessions = useDeviceSessions(deviceId);
-  const send = useSendDeviceMessage(deviceId);
-  const [text, setText] = useState('');
-  const [mode, setMode] = useState<Mode>('');
-  const [compose, setCompose] = useState<ComposeValue>(initialComposeValue());
 
   const device = devices.data?.find((d) => d.id === deviceId);
   const online = device?.online ?? false;
   const name = device?.name ?? deviceId;
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const prompt = text.trim();
-    if (!prompt || !online || send.isPending) return;
-    const extras = composeExtras(compose, device?.capabilities);
-    send.mutate(
-      // sid "new" lets the device assign the session id; the 202 reply may
-      // carry session_id: null, so we stay put — the polling session list
-      // surfaces the new session for the user to open.
-      { sessionId: 'new', text: prompt, ...(mode ? { mode } : {}), ...(extras ? { extras } : {}) },
-      {
-        onSuccess: () => setText(''),
-        onError: (error) => {
-          toast.push({
-            kind: 'error',
-            message: error instanceof ApiError
-              ? error.message
-              : t('device.session.sendFailed', { message: String(error) }),
-          });
-        },
-      },
-    );
-  };
+  // M14: the stock jcode product composer. sid 'new' lets the device assign
+  // the session id; the polling session list surfaces the new session for the
+  // user to open. Send failures have no Thread to land on here → toast.
+  const { host, runtime } = useDeviceComposer({
+    deviceId,
+    sessionId: 'new',
+    device,
+    hasMessages: false,
+    onError: (message) => toast.push({ kind: 'error', message }),
+  });
 
   if (devices.isLoading) {
     return <SurfaceInner><div className={styles.state}><LoadingBlock label={t('common.loading')} /></div></SurfaceInner>;
@@ -128,35 +101,14 @@ export function DeviceWelcomePage() {
 
               <section aria-labelledby="new-session-title">
             <div className={styles.sectionHead}><h2 id="new-session-title">{t('device.welcome.newSession')}</h2></div>
-            <form className={styles.composer} data-testid="new-session-composer" onSubmit={submit}>
-              <DeviceCompose
-                capabilities={device?.capabilities}
-                disabled={!online || send.isPending}
-                value={compose}
-                onChange={setCompose}
-              />
-              <textarea
-                className={styles.textarea}
-                aria-label={t('device.welcome.newSession')}
-                placeholder={t('device.welcome.composerPlaceholder')}
-                value={text}
-                disabled={!online || send.isPending}
-                onChange={(event) => setText(event.target.value)}
-              />
-              <div className={styles.composerActions}>
-                <Select
-                  value={mode}
-                  onChange={(value) => setMode(value as Mode)}
-                  options={MODE_OPTIONS}
-                  aria-label={t('device.welcome.mode')}
-                  disabled={!online || send.isPending}
-                  className={styles.modeSelect}
-                />
-                <Button type="submit" variant="primary" disabled={!online || !text.trim()} loading={send.isPending}>
-                  {t('device.welcome.send')}
-                </Button>
-              </div>
-            </form>
+            {/* M14: stock jcode product composer (welcome placement: pickers
+                open downward, card elevated). Offline sends fail visibly via
+                the onError toast. */}
+            <div data-testid="new-session-composer" className="jcode-product">
+              <RuntimeProvider runtime={runtime}>
+                <ChatInput host={host} pickerPlacement="bottom" elevated />
+              </RuntimeProvider>
+            </div>
           </section>
 
           <section aria-labelledby="device-sessions-title">

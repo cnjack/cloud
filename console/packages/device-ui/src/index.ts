@@ -55,7 +55,9 @@ export type {
   DeviceCapabilities,
   DeviceCapabilityProject,
   DeviceCapabilityModel,
+  DeviceCapabilitySlashCommand,
   ComposeAttachment,
+  ComposeImage,
   SendMessageExtras,
   DeviceSessionMeta,
   DeviceSession,
@@ -81,6 +83,9 @@ export {
 } from './api/deviceQueries';
 
 // --- compose (M12 shared compose panel) ---------------------------------------
+// @deprecated M14: superseded by the jcode product composer (jcode-ui/product
+// ChatInput + useDeviceComposer). Kept exported for downstream pinning; the
+// console and mobile apps no longer render it.
 export {
   DeviceCompose,
   initialComposeValue,
@@ -90,7 +95,28 @@ export {
 } from './compose/DeviceCompose';
 export type { ComposeValue, DeviceComposeProps } from './compose/DeviceCompose';
 
+// --- product composer (M14: jcode-ui/product over the device relay) ----------
+export { useDeviceComposer } from './product/useDeviceComposer';
+export type { UseDeviceComposerOptions, DeviceComposer } from './product/useDeviceComposer';
+export { DeviceChatRuntime } from './product/runtime';
+export type { DeviceRuntimeCallbacks } from './product/runtime';
+export {
+  buildProviders,
+  buildSlashCommands,
+  buildWorkspaceTasks,
+  buildSendExtras,
+  initialDeviceComposerState,
+  modelKey,
+} from './product/hostState';
+export type { DeviceComposerState } from './product/hostState';
+export { toThreadItems, localSystemItem } from './product/threadItems';
+export type { DeviceItemDescriber, ToThreadItemsOptions } from './product/threadItems';
+export { buildProductComposerStrings } from './product/strings';
+
 // --- deviceview ---------------------------------------------------------------
+// @deprecated M14: superseded by jcode-ui <Thread> fed by toThreadItems (the
+// product/ module). Kept exported for downstream pinning; the console and
+// mobile apps no longer render it.
 export { DeviceTimeline } from './deviceview/DeviceTimeline';
 export type { DeviceApprovalControls } from './deviceview/DeviceTimeline';
 export { DevicePairingCard } from './deviceview/DevicePairingCard';
@@ -104,8 +130,9 @@ export {
   reduceDeviceEvents,
   reduceDeviceDelta,
   hasSeqGap,
+  mapTokenSnapshot,
 } from './deviceview/sessionReducer';
-export type { DeviceSessionState, FinalizedText } from './deviceview/sessionReducer';
+export type { DeviceSessionState, FinalizedText, DeviceTokenSnapshot } from './deviceview/sessionReducer';
 export { resolveOnline } from './deviceview/offline';
 export type {
   DeviceViewEvent,

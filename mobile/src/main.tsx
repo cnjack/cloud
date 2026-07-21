@@ -5,6 +5,10 @@ import { createRoot } from 'react-dom/client';
 import './tauriBridge';
 import './tokens.css';
 import './app.css';
+// M14: jcode product composer / Thread styles + jcloud→product token aliases.
+import 'jcode-ui/styles.css';
+import 'jcode-ui/compat.css';
+import '@jcloud/device-ui/src/product/productTokens.css';
 import './i18n';
 import { App } from './App';
 

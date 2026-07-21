@@ -1,73 +1,43 @@
-import { ArrowLeft, ArrowRight, SlidersHorizontal, Warning } from '@phosphor-icons/react';
-import { useState, type FormEvent } from 'react';
+import { ArrowLeft, Warning } from '@phosphor-icons/react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
+import { RuntimeProvider } from 'jcode-ui';
+import { ChatInput } from 'jcode-ui/product';
 import {
-  ApiError,
-  DeviceCompose,
   DevicePairingCard,
   DevicePairingGate,
-  apiErrorCode,
-  composeExtras,
-  initialComposeValue,
+  useDeviceComposer,
   useDeviceSessions,
   useDevices,
-  useSendDeviceMessage,
-  type ComposeValue,
   type DeviceSession,
 } from '@jcloud/device-ui';
 import { timeAgo } from '../lib/time';
 
-type Mode = '' | 'plan' | 'full_access';
-
-const MODES: Mode[] = ['', 'plan', 'full_access'];
-
 /**
  * DeviceWelcomePage — the desktop-welcome equivalent: new-session composer
- * (with mode picker) + the device's session list (docs/17 §7.2).
+ * (M14: the stock jcode product composer) + the device's session list
+ * (docs/17 §7.2).
  */
 export function DeviceWelcomePage() {
   const { deviceId = '' } = useParams();
   const { t } = useTranslation();
   const devices = useDevices();
   const sessions = useDeviceSessions(deviceId);
-  const send = useSendDeviceMessage(deviceId);
-  const [text, setText] = useState('');
-  const [mode, setMode] = useState<Mode>('');
-  const [compose, setCompose] = useState<ComposeValue>(initialComposeValue());
-  const [composeOpen, setComposeOpen] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
   const device = devices.data?.find((d) => d.id === deviceId);
   const online = device?.online ?? false;
-  // Old connectors never report capabilities: the compose panel (and its
-  // toggle) stay hidden, same degradation rule as the console.
-  const hasCompose = device?.capabilities != null;
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const prompt = text.trim();
-    if (!prompt || !online || send.isPending) return;
-    setSendError(null);
-    const extras = composeExtras(compose, device?.capabilities);
-    send.mutate(
-      // sid "new": the device assigns the session id; the polling session
-      // list surfaces it for the user to open.
-      { sessionId: 'new', text: prompt, ...(mode ? { mode } : {}), ...(extras ? { extras } : {}) },
-      {
-        onSuccess: () => setText(''),
-        onError: (error) => {
-          setSendError(
-            apiErrorCode(error) === 'device_offline'
-              ? t('mobile.session.deviceOffline')
-              : t('mobile.session.sendFailed', {
-                  message: error instanceof ApiError ? error.message : String(error),
-                }),
-          );
-        },
-      },
-    );
-  };
+  // M14: sid 'new' — the device assigns the session id; the polling session
+  // list surfaces it. No Thread on this page → send failures surface inline.
+  const { host, runtime } = useDeviceComposer({
+    deviceId,
+    sessionId: 'new',
+    device,
+    hasMessages: false,
+    onError: setSendError,
+  });
 
   return (
     <div className="app-shell">
@@ -121,62 +91,14 @@ export function DeviceWelcomePage() {
           )}
         </div>
 
-        <form className="composer" onSubmit={submit} data-testid="new-session-composer">
-        {hasCompose && composeOpen && (
-          <div className="compose-panel" data-testid="compose-panel">
-            <DeviceCompose
-              capabilities={device?.capabilities}
-              disabled={!online || send.isPending}
-              value={compose}
-              onChange={setCompose}
-            />
-          </div>
-        )}
-        <textarea
-          aria-label={t('device.welcome.newSession')}
-          placeholder={t('device.welcome.composerPlaceholder')}
-          value={text}
-          disabled={!online || send.isPending}
-          onChange={(e) => setText(e.target.value)}
-        />
+        <div className="composer product-composer jcode-product" data-testid="new-session-composer">
+        {/* M14: stock jcode product composer (welcome placement). Offline
+            sends fail visibly via the inline error below. */}
+        <RuntimeProvider runtime={runtime}>
+          <ChatInput host={host} pickerPlacement="bottom" elevated />
+        </RuntimeProvider>
         {sendError && <p className="send-error" role="alert">{sendError}</p>}
-        <div className="composer-actions">
-          {hasCompose && (
-            <button
-              type="button"
-              className="compose-toggle"
-              aria-label={t('mobile.compose.toggle')}
-              aria-expanded={composeOpen}
-              data-active={composeOpen}
-              disabled={!online || send.isPending}
-              onClick={() => setComposeOpen((open) => !open)}
-            >
-              <SlidersHorizontal size={16} />
-            </button>
-          )}
-          <div className="mode-picker" role="group" aria-label={t('device.welcome.mode')}>
-            {MODES.map((m) => (
-              <button
-                key={m || 'default'}
-                type="button"
-                data-active={mode === m}
-                disabled={!online || send.isPending}
-                onClick={() => setMode(m)}
-              >
-                {m || 'default'}
-              </button>
-            ))}
-          </div>
-          <button
-            type="submit"
-            className="topbar-back"
-            aria-label={t('device.welcome.send')}
-            disabled={!online || !text.trim() || send.isPending}
-          >
-            <ArrowRight size={18} color="var(--color-accent)" />
-          </button>
         </div>
-        </form>
       </DevicePairingGate>
     </div>
   );

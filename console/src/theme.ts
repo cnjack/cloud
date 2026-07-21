@@ -26,7 +26,11 @@ export function getTheme(): Theme {
 
 export function setTheme(theme: Theme): void {
   const el = root();
-  if (el) el.dataset.theme = theme;
+  if (el) {
+    el.dataset.theme = theme;
+    // jcode-ui's scoped dark blocks key off the .dark class (M14).
+    el.classList.toggle('dark', theme === 'dark');
+  }
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch {
@@ -48,7 +52,10 @@ export function useTheme(): { theme: Theme; toggle: () => void } {
     const onStorage = (e: StorageEvent) => {
       if (e.key === THEME_STORAGE_KEY && (e.newValue === 'light' || e.newValue === 'dark')) {
         const el = root();
-        if (el) el.dataset.theme = e.newValue;
+        if (el) {
+          el.dataset.theme = e.newValue;
+          el.classList.toggle('dark', e.newValue === 'dark');
+        }
         setThemeState(e.newValue);
       }
     };

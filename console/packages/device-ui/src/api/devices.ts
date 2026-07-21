@@ -46,6 +46,8 @@ export interface DeviceCapabilities {
   projects?: DeviceCapabilityProject[];
   models?: DeviceCapabilityModel[];
   efforts?: string[];
+  /** Slash commands advertised by the device (M14; absent on pre-M14 connectors). */
+  slash_commands?: DeviceCapabilitySlashCommand[];
 }
 
 export interface DeviceCapabilityProject {
@@ -59,6 +61,14 @@ export interface DeviceCapabilityModel {
   label: string;
 }
 
+/** One slash command the device relayed from its local jcode (M14). */
+export interface DeviceCapabilitySlashCommand {
+  slash: string;
+  description: string;
+  /** The connector only reports 'skill' | 'flow' today (jcode /api/slash-commands). */
+  type: string;
+}
+
 /** One compose attachment: a non-image file read into base64 (M12). */
 export interface ComposeAttachment {
   name: string;
@@ -66,10 +76,18 @@ export interface ComposeAttachment {
   data_b64: string;
 }
 
+/** A base64 image for the vision path (M14; mirrors jcode's chatImage). */
+export interface ComposeImage {
+  data: string;
+  media_type: string;
+  name?: string;
+}
+
 /**
- * The optional chat.send extension fields the compose panel produces (M12).
- * They ride the envelope plaintext (under the E2EE layer when paired) or the
- * plaintext body; the orchestrator passes them through untouched.
+ * The optional chat.send extension fields the compose panel produces (M12,
+ * extended in M14 with goal_armed + images). They ride the envelope plaintext
+ * (under the E2EE layer when paired) or the plaintext body; the orchestrator
+ * passes them through untouched.
  */
 export interface SendMessageExtras {
   project_path?: string;
@@ -77,6 +95,14 @@ export interface SendMessageExtras {
   effort?: string;
   goal?: string;
   attachments?: ComposeAttachment[];
+  /**
+   * M14: when true the payload text IS the goal objective — the connector
+   * POSTs /api/goal {objective, start:true} and ignores every other compose
+   * field (goal takes priority over mode/model/images/session options).
+   */
+  goal_armed?: boolean;
+  /** M14: vision images attached to the message ({data, media_type, name}). */
+  images?: ComposeImage[];
 }
 
 /** jcode SessionMeta as relayed by the device (passthrough JSON). */

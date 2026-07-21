@@ -621,3 +621,17 @@ a {
   width: 100%;
   min-height: 44px;
 }
+
+/* ---- M14: jcode product composer dock -------------------------------------- */
+/* The stock product composer renders its own borderless textarea; the legacy
+   .composer textarea chrome would double-draw on top of it. */
+.product-composer textarea {
+  min-height: 28px;
+  max-height: 200px;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+.product-composer textarea:focus {
+  border-color: transparent;
+}

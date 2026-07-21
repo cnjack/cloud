@@ -1,5 +1,11 @@
 packages:
   - packages/*
+overrides:
+  # M14: consume the local (unpublished) jcode-ui product composer build.
+  # jcode-ui's own manifest says "jcode-ui-core": "workspace:*", which only
+  # resolves inside the jcode repo — pin both to the sibling checkouts.
+  jcode-ui: file:../../jcode/packages/jcode-ui
+  jcode-ui-core: file:../../jcode/packages/jcode-ui-core
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:

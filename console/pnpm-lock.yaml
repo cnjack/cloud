@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  jcode-ui: file:../../jcode/packages/jcode-ui
+  jcode-ui-core: file:../../jcode/packages/jcode-ui-core
+
 importers:
 
   .:
@@ -24,11 +28,11 @@ importers:
         specifier: ^25.3.2
         version: 25.10.10(typescript@5.9.3)
       jcode-ui:
-        specifier: 0.1.1
-        version: 0.1.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(tailwindcss@4.3.2)
+        specifier: file:../../jcode/packages/jcode-ui
+        version: file:../../jcode/packages/jcode-ui(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(tailwindcss@4.3.2)
       jcode-ui-core:
-        specifier: 0.1.0
-        version: 0.1.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+        specifier: file:../../jcode/packages/jcode-ui-core
+        version: file:../../jcode/packages/jcode-ui-core(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       jtype-board-react:
         specifier: 0.1.0
         version: 0.1.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -85,8 +89,11 @@ importers:
         specifier: ^2.1.10
         version: 2.1.10(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       jcode-ui:
-        specifier: 0.1.1
-        version: 0.1.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(tailwindcss@4.3.2)
+        specifier: file:../../../../jcode/packages/jcode-ui
+        version: file:../../jcode/packages/jcode-ui(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(tailwindcss@4.3.2)
+      jcode-ui-core:
+        specifier: file:../../../../jcode/packages/jcode-ui-core
+        version: file:../../jcode/packages/jcode-ui-core(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
     devDependencies:
       '@tanstack/react-query':
         specifier: ^5.62.0
@@ -1132,8 +1139,8 @@ packages:
   is-potential-custom-element-name@1.0.1:
     resolution: {integrity: sha512-bCYeRA2rVibKZd+s2625gGnGF/t7DSqDs4dP7CrLA1m7jKWz6pps0LpYLJN8Q64HtmPKJ1hrN3nzPNKFEKOUiQ==}
 
-  jcode-ui-core@0.1.0:
-    resolution: {integrity: sha512-ziWRzhQoP8yU9Un4qE6OWayyhRzxrVC8hKJQXm+Aff135X54xNgJim1Vf1QUZVrw3oBERpeK8TJlJjbq6D6i/w==}
+  jcode-ui-core@file:../../jcode/packages/jcode-ui-core:
+    resolution: {directory: ../../jcode/packages/jcode-ui-core, type: directory}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
       react-dom: ^18.0.0 || ^19.0.0
@@ -1143,11 +1150,21 @@ packages:
       react-dom:
         optional: true
 
-  jcode-ui@0.1.1:
-    resolution: {integrity: sha512-XHg8Xe0PFPGnTJGcTE3LOMX9symuJurNUjwxygr95qAvsvSa1VN8CRGcNYRJ/34CiK7TQXfI0VoqqiM8H22jLg==}
+  jcode-ui@file:../../jcode/packages/jcode-ui:
+    resolution: {directory: ../../jcode/packages/jcode-ui, type: directory}
     peerDependencies:
+      '@xyflow/react': ^12.11.2
+      katex: '>=0.16'
+      mermaid: '>=10'
       react: ^18.0.0 || ^19.0.0
       react-dom: ^18.0.0 || ^19.0.0
+    peerDependenciesMeta:
+      '@xyflow/react':
+        optional: true
+      katex:
+        optional: true
+      mermaid:
+        optional: true
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -2451,20 +2468,20 @@ snapshots:
 
   is-potential-custom-element-name@1.0.1: {}
 
-  jcode-ui-core@0.1.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
+  jcode-ui-core@file:../../jcode/packages/jcode-ui-core(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
     dependencies:
       '@tanstack/react-virtual': 3.14.5(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
     optionalDependencies:
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
 
-  jcode-ui@0.1.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(tailwindcss@4.3.2):
+  jcode-ui@file:../../jcode/packages/jcode-ui(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(tailwindcss@4.3.2):
     dependencies:
       '@heroicons/react': 2.2.0(react@18.3.1)
       '@tailwindcss/typography': 0.5.20(tailwindcss@4.3.2)
       dompurify: 3.4.11
       highlight.js: 11.11.1
-      jcode-ui-core: 0.1.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      jcode-ui-core: file:../../jcode/packages/jcode-ui-core(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       marked: 18.0.5
       marked-highlight: 2.2.4(marked@18.0.5)
       react: 18.3.1
