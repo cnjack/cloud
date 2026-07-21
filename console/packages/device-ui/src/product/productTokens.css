@@ -78,3 +78,33 @@
     cursor: default;
   }
 }
+
+/* M15: narrow-viewport composer parity (phones / narrow console windows).
+   The product composer's desktop toolbar squeezes chip text vertical once it
+   runs out of room (goal chip armed, context ring shown), and its popover
+   panels anchor to their chip wrappers — the 290px model panel and the 280px
+   context popup can be pushed past the left viewport edge. At ≤480px: let the
+   toolbar wrap with no-wrap chips (second row stays right-aligned), and
+   re-anchor all toolbar popovers to the full-width composer card. Selectors
+   key off the package's literal tailwind class tokens (dist is unhashed). */
+@media (max-width: 480px) {
+  .jcode-product div[class~='justify-between'][class~='py-2'] {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  /* Wrapped second row keeps the desktop's right alignment. */
+  .jcode-product div[class~='justify-between'][class~='py-2'] > div[class~='gap-2'] {
+    margin-left: auto;
+  }
+  .jcode-product div[class~='justify-between'][class~='py-2'] button {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  /* Panels (add/mode/context/model/effort) anchor to the full-width composer
+     card instead of their chip wrapper, so e.g. the 290px model panel and the
+     280px context popup can't be pushed past the left viewport edge. The card
+     is the nearest positioned ancestor once these wrappers go static. */
+  .jcode-product div[class~='justify-between'][class~='py-2'] div[class~='relative'] {
+    position: static;
+  }
+}

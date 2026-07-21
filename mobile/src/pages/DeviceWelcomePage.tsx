@@ -95,7 +95,9 @@ export function DeviceWelcomePage() {
         {/* M14: stock jcode product composer (welcome placement). Offline
             sends fail visibly via the inline error below. */}
         <RuntimeProvider runtime={runtime}>
-          <ChatInput host={host} pickerPlacement="bottom" elevated />
+          {/* M15: placement "top" — the welcome composer is bottom-docked on
+              the phone shell, so a downward picker opens off-screen. */}
+          <ChatInput host={host} pickerPlacement="top" elevated />
         </RuntimeProvider>
         {sendError && <p className="send-error" role="alert">{sendError}</p>}
         </div>

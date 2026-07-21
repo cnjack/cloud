@@ -7,8 +7,15 @@ const rootDir = dirname(fileURLToPath(import.meta.url));
 
 // Tauri mobile dev: the webview loads devUrl (tauri.conf.json). The app talks
 // DIRECTLY to the orchestrator (absolute base URL entered on the login page),
-// so there is no /api proxy here — CORS is sidestepped because Tauri webviews
-// are not subject to browser CORS for fetch/EventSource.
+// so by default there is no /api proxy here — CORS is sidestepped because
+// Tauri webviews are not subject to browser CORS for fetch/EventSource.
+//
+// For browser-based dev (vite dev + phone-viewport browser / emulator Chrome,
+// where CORS IS enforced) set VITE_API_PROXY_TARGET=http://127.0.0.1:18080 to
+// get a same-origin /api + /auth proxy, then enter the dev server's own
+// origin as the cloud URL on the login page. Inert for Tauri dev.
+const proxyTarget = process.env.VITE_API_PROXY_TARGET;
+
 export default defineConfig({
   root: rootDir,
   plugins: [
@@ -34,6 +41,12 @@ export default defineConfig({
     // Tauri's mobile dev runner may load the page from a device/emulator that
     // reaches this server over the LAN — bind all interfaces.
     host: true,
+    proxy: proxyTarget
+      ? {
+          '/api': { target: proxyTarget, changeOrigin: true },
+          '/auth': { target: proxyTarget, changeOrigin: true },
+        }
+      : undefined,
   },
   build: {
     outDir: 'dist',
