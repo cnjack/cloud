@@ -876,6 +876,7 @@ export default {
       modeAutoSub: 'AI 审查放行安全工具；不确定的仍会询问。',
       modeFullAccess: '完全放行',
       modeFullAccessSub: '自由执行——不再有审批提示。',
+      modeCeilingHint: '云端会话最高可使用 Auto 模式。',
       modelFilter: '筛选模型…',
       modelCurrent: '当前',
       modelFavorites: '★ 收藏',
@@ -1063,7 +1064,7 @@ export default {
       pairing: {
         title: '配对与端到端加密',
         p1: '会话内容端到端加密：云端只存密文和路由元数据，无法读取你的会话。新客户端（新浏览器或手机）必须先与设备配对，才能解密任何内容。',
-        p2: '在客户端发起配对，然后在设备上于 10 分钟内批准：',
+        p2: '在手机上，最快的方式是扫描桌面端二维码：在 jcode 桌面应用中打开云端徽章（侧边栏）→「扫码配对」，再用手机应用扫描。也可以从客户端发起配对，然后在桌面端批准——请求等待期间侧边栏的云端徽章会脉冲闪烁，点击它并在 10 分钟内批准。也可以使用 CLI：',
         code1: 'jcode cloud pairings',
         code2: 'jcode cloud approve <pairing_id>',
         p3: '`pairings` 列出待批准的请求及其备注名；`approve` 批准其中一个（拒绝对应 `jcode cloud deny <pairing_id>`）。',
@@ -1097,13 +1098,16 @@ export default {
     },
     pairing: {
       start: '配对此客户端',
+      copy: '复制命令',
+      copied: '已复制',
       idle: {
         title: '尚未设置端到端加密',
-        body: '将此浏览器与设备配对后，才能读取和发送加密的会话内容。密钥的明文只存在于设备上。',
+        body: '将此客户端与设备配对后，才能读取和发送加密的会话内容。手机上最快的方式是扫描桌面端二维码：在 jcode 桌面应用中打开云端徽章（侧边栏）→「扫码配对」，用手机应用扫描即可。',
       },
       pending: {
         title: '等待设备上批准',
-        body: '请在 10 分钟内在设备上批准此配对：',
+        body: '请在设备上的 jcode 桌面应用中批准：侧边栏的云端徽章正在脉冲闪烁——点击它并在 10 分钟内批准此配对。在手机上，直接扫描桌面端二维码（云端徽章 →「扫码配对」）可立即完成配对。',
+        cliHint: '更习惯用终端？',
       },
       denied: {
         title: '配对被拒绝',
@@ -1126,6 +1130,7 @@ export default {
     lede: '一个 jcode CLI 正在请求登录此云端。输入它显示的验证码以继续。',
     codeLabel: '设备验证码',
     codeHint: '`jcode login` 显示的 8 位验证码，形如 XXXX-XXXX。',
+    codeCell: '第 {n} 个字符，共 {total} 个',
     codeRequired: '请输入 CLI 显示的验证码。',
     continue: '继续',
     confirmTitle: '这是你的设备吗？',

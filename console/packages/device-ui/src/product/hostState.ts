@@ -13,12 +13,21 @@
  *     devices simply produce an empty slash menu (plus the local /goal entry).
  */
 import type {
+  AgentMode,
   ModelRef,
   ProviderInfo,
   SlashCommandInfo,
   WorkspaceTaskRef,
 } from 'jcode-ui/product';
 import type { DeviceCapabilities, ComposeImage, SendMessageExtras } from '../api/devices';
+
+/**
+ * M20 cloud mode ceiling: cloud-originated sessions may run at most `auto` —
+ * full_access (bypass) is never offered in the composer, and the device
+ * connector independently rejects it (ack error mode_not_allowed_for_cloud).
+ * Projected into ProductComposerHost.allowedModes by useDeviceComposer.
+ */
+export const CLOUD_ALLOWED_MODES: AgentMode[] = ['approval', 'plan', 'auto'];
 
 /** Model enable/disable + favorites are keyed "provider/model" (desktop rule). */
 export function modelKey(ref: ModelRef): string {

@@ -35,6 +35,7 @@ import {
   buildSendExtras,
   buildSlashCommands,
   buildWorkspaceTasks,
+  CLOUD_ALLOWED_MODES,
   initialDeviceComposerState,
 } from './hostState';
 import type { DeviceComposerState } from './hostState';
@@ -277,6 +278,10 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
   );
 
   const selectMode = useCallback((mode: AgentMode) => {
+    // M20: the composer dropdown already hides full_access; this guard keeps
+    // the ceiling even if a caller bypasses the picker. The device connector
+    // is the protocol-level enforcement (ack mode_not_allowed_for_cloud).
+    if (!CLOUD_ALLOWED_MODES.includes(mode)) return;
     setCompose((c) => ({ ...c, mode, modeTouched: true }));
   }, []);
 
@@ -339,6 +344,8 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
       providerName: compose.model?.provider ?? '',
       modelName: compose.model?.model ?? '',
       mode: compose.mode,
+      // M20: cloud sessions are capped at auto — full_access is not offered.
+      allowedModes: CLOUD_ALLOWED_MODES,
       providers,
       favoriteModels: favorites,
       recentModels: recents,

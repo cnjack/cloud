@@ -876,6 +876,7 @@ export default {
       modeAutoSub: 'AI 審查放行安全工具；不確定的仍會詢問。',
       modeFullAccess: '完全放行',
       modeFullAccessSub: '自由執行——不再有審批提示。',
+      modeCeilingHint: '雲端工作階段最高可使用 Auto 模式。',
       modelFilter: '篩選模型…',
       modelCurrent: '目前',
       modelFavorites: '★ 收藏',
@@ -1063,7 +1064,7 @@ export default {
       pairing: {
         title: '配對與端到端加密',
         p1: '工作階段內容端到端加密：雲端只存密文和路由元資料，無法讀取你的工作階段。新用戶端（新瀏覽器或手機）必須先與裝置配對，才能解密任何內容。',
-        p2: '在用戶端發起配對，然後在裝置上於 10 分鐘內批准：',
+        p2: '在手機上，最快的方式是掃描桌面端 QR code：在 jcode 桌面應用中開啟雲端徽章（側邊欄）→「掃碼配對」，再用手機應用掃描。也可以從用戶端發起配對，然後在桌面端批准——請求等待期間側邊欄的雲端徽章會脈衝閃爍，點擊它並在 10 分鐘內批准。也可以使用 CLI：',
         code1: 'jcode cloud pairings',
         code2: 'jcode cloud approve <pairing_id>',
         p3: '`pairings` 列出待批准的請求及其備註名；`approve` 批准其中一個（拒絕對應 `jcode cloud deny <pairing_id>`）。',
@@ -1097,13 +1098,16 @@ export default {
     },
     pairing: {
       start: '配對此用戶端',
+      copy: '複製命令',
+      copied: '已複製',
       idle: {
         title: '尚未設定端對端加密',
-        body: '將此瀏覽器與裝置配對後，才能讀取和傳送加密的工作階段內容。金鑰的明文只存在於裝置上。',
+        body: '將此用戶端與裝置配對後，才能讀取和傳送加密的工作階段內容。在手機上，最快的方式是掃描桌面端 QR code：在 jcode 桌面應用中開啟雲端徽章（側邊欄）→「掃碼配對」，用手機應用掃描即可。',
       },
       pending: {
         title: '等待裝置上批准',
-        body: '請在 10 分鐘內於裝置上批准此配對：',
+        body: '請在裝置上的 jcode 桌面應用中批准：側邊欄的雲端徽章正在脈衝閃爍——點擊它並在 10 分鐘內批准此配對。在手機上，直接掃描桌面端 QR code（雲端徽章 →「掃碼配對」）可立即完成配對。',
+        cliHint: '習慣用終端機？',
       },
       denied: {
         title: '配對已被拒絕',
@@ -1126,6 +1130,7 @@ export default {
     lede: '一個 jcode CLI 正在請求登入此雲端。輸入它顯示的驗證碼以繼續。',
     codeLabel: '裝置驗證碼',
     codeHint: '`jcode login` 顯示的 8 位驗證碼，形如 XXXX-XXXX。',
+    codeCell: '第 {n} 個字元，共 {total} 個',
     codeRequired: '請輸入 CLI 顯示的驗證碼。',
     continue: '繼續',
     confirmTitle: '這是你的裝置嗎？',

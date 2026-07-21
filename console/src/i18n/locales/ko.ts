@@ -876,6 +876,7 @@ export default {
       modeAutoSub: 'AI 리뷰어가 안전한 도구를 허용하고, 불확실한 것은 묻습니다.',
       modeFullAccess: '전체 허용',
       modeFullAccessSub: '자유롭게 실행 — 승인 프롬프트 없음.',
+      modeCeilingHint: '클우드 세션은 Auto 모드까지 사용할 수 있습니다.',
       modelFilter: '모델 필터…',
       modelCurrent: '현재',
       modelFavorites: '★ 즐겨찾기',
@@ -1063,7 +1064,7 @@ export default {
       pairing: {
         title: '페어링과 종단간 암호화',
         p1: '세션 내용은 종단간 암호화됩니다. 클라우드에는 암호문과 라우팅 메타데이터만 저장되므로 세션을 읽을 수 없습니다. 새 클라이언트(새 브라우저나 휴폰)는 내용을 복호화하기 전에 디바이스와 페어링해야 합니다.',
-        p2: '클라이언트에서 페어링을 시작한 뒤 10분 이내에 디바이스에서 승인하세요:',
+        p2: '휴대폰에서는 데스크톱 QR 코드를 스캔하는 것이 가장 빠릅니다: jcode 데스크톱 앱에서 클라우드 배지(사이드바) →「QR 코드로 페어링」을 연 뒤 모바일 앱으로 스캔하세요. 클라이언트에서 페어링을 시작하고 데스크톱에서 승인할 수도 있습니다——요청이 대기하는 동안 사이드바의 클라우드 배지가 깜빡이며, 클릭해서 10분 이내에 승인하세요. CLI도 가능합니다:',
         code1: 'jcode cloud pairings',
         code2: 'jcode cloud approve <pairing_id>',
         p3: '`pairings`는 대기 중인 요청을 라벨과 함께 보여주고, `approve`로 승인합니다(거절은 `jcode cloud deny <pairing_id>`).',
@@ -1097,13 +1098,16 @@ export default {
     },
     pairing: {
       start: '이 클라이언트 페어링',
+      copy: '명령 복사',
+      copied: '복사됨',
       idle: {
         title: '종단 간 암호화가 설정되지 않았습니다',
-        body: '이 브라우저를 기기와 페어링해야 암호화된 세션 내용을 읽고 볼 수 있습니다. 키의 평문은 기기에만 존재합니다.',
+        body: '이 클라이언트를 기기와 페어링해야 암호화된 세션 내용을 읽고 볼 수 있습니다. 휴대폰에서는 데스크톱 QR 코드를 스캔하는 것이 가장 빠릅니다: jcode 데스크톱 앱의 클라우드 배지(사이드바) →「QR 코드로 페어링」을 모바일 앱으로 스캔하세요.',
       },
       pending: {
         title: '기기 승인 대기 중',
-        body: '10분 이내에 기기에서 이 페어링을 승인하세요:',
+        body: '기기의 jcode 데스크톱 앱에서 승인하세요: 사이드바의 클라우드 배지가 깜빡이고 있습니다 — 클릭해서 10분 이내에 이 페어링을 승인하세요. 휴대폰에서는 데스크톱 QR 코드(클라우드 배지 →「QR 코드로 페어링」)를 스캔하면 바로 페어링됩니다.',
+        cliHint: '터미널을 선호한다면',
       },
       denied: {
         title: '페어링이 거부되었습니다',
@@ -1126,6 +1130,7 @@ export default {
     lede: 'jcode CLI가 이 클라우드에 로그인을 요청하고 있습니다. 표시된 코드를 입력해 계속하세요.',
     codeLabel: '기기 코드',
     codeHint: '`jcode login`에 표시된 8자리 코드입니다(예: XXXX-XXXX).',
+    codeCell: '{total}자 중 {n}번째',
     codeRequired: 'CLI에 표시된 코드를 입력하세요.',
     continue: '계속',
     confirmTitle: '이 기기가 본인의 기기인가요?',

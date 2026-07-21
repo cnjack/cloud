@@ -9,6 +9,7 @@ import {
   buildSendExtras,
   buildSlashCommands,
   buildWorkspaceTasks,
+  CLOUD_ALLOWED_MODES,
   initialDeviceComposerState,
 } from './hostState';
 
@@ -123,5 +124,12 @@ describe('buildSendExtras', () => {
   it('returns undefined for a plain text send (payload stays byte-identical)', () => {
     expect(buildSendExtras(initialDeviceComposerState(), CAPS)).toBeUndefined();
     expect(buildSendExtras(initialDeviceComposerState(), null)).toBeUndefined();
+  });
+});
+
+describe('CLOUD_ALLOWED_MODES (M20 mode ceiling)', () => {
+  it('offers approval/plan/auto and never full_access', () => {
+    expect(CLOUD_ALLOWED_MODES).toEqual(['approval', 'plan', 'auto']);
+    expect(CLOUD_ALLOWED_MODES).not.toContain('full_access');
   });
 });

@@ -41,6 +41,7 @@ export function buildProductComposerStrings(t: TFunction): Partial<ProductCompos
     modeAutoSub: k('modeAutoSub'),
     modeFullAccess: k('modeFullAccess'),
     modeFullAccessSub: k('modeFullAccessSub'),
+    modeCeilingHint: k('modeCeilingHint'),
 
     modelFilter: k('modelFilter'),
     modelCurrent: k('modelCurrent'),

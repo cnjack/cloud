@@ -31,6 +31,9 @@
 #           (no ack, no file on disk, queue unharmed); a nonexistent
 #           project_path -> the local control plane mkdirs it and the command
 #           acks `acked` (asserted + recorded as the actual semantics)
+#   J11-S6  M20 mode ceiling: mode=full_access chat.send -> command acks
+#           `failed`, CEK-decrypted ack result carries
+#           mode_not_allowed_for_cloud; mode=auto still acks `acked`
 #
 # Sourced by e2e.sh (BASE/TOKEN exported) OR runnable standalone:
 #   BASE=http://127.0.0.1:18080 ./j11-compose.sh
@@ -532,6 +535,32 @@ EOF
   assert_true J11-S5 "the nonexistent project dir was created on-device" \
     "$([ -d "$J11_PROJ_MISSING" ] && echo true || echo false)"
   info "  nonexistent-project ack result (decrypted): $(j11_open_result "$bp_cmd" | head -c 200)"
+
+  # --- J11-S6: M20 mode ceiling -------------------------------------------------
+  # A cloud chat.send asking for full_access (bypass) is refused at the
+  # protocol layer: the command acks `failed` and the (CEK-decrypted) ack
+  # result carries mode_not_allowed_for_cloud. An allowed mode (auto) still
+  # acks ok.
+  printf '{"text":"try bypass","channel":"console","mode":"full_access","project_path":"%s"}' "$J11_PROJ_B" \
+    >"$J11_HOME/plain-fa.json"
+  resp="$(j11_seal_send "$J11_HOME/plain-fa.json")"
+  code="$(http_code "$resp")"
+  assert_eq J11-S6 "full_access chat.send still returns 202 (queued)" "202" "$code"
+  local fa_cmd fa_st fa_result
+  fa_cmd="$(printf '%s' "$(http_body "$resp")" | jq -r '.command_id // empty')"
+  fa_st="$(j11_wait_command "$fa_cmd")"
+  assert_eq J11-S6 "full_access chat.send command acks failed (M20 mode ceiling)" "failed" "$fa_st"
+  fa_result="$(j11_open_result "$fa_cmd")"
+  assert_contains J11-S6 "ack result carries mode_not_allowed_for_cloud" "$fa_result" "mode_not_allowed_for_cloud"
+  info "  full_access ack result (decrypted): $(printf '%s' "$fa_result" | head -c 200)"
+
+  printf '{"text":"auto is fine","channel":"console","mode":"auto","project_path":"%s"}' "$J11_PROJ_B" \
+    >"$J11_HOME/plain-auto.json"
+  resp="$(j11_seal_send "$J11_HOME/plain-auto.json")"
+  local auto_cmd auto_st
+  auto_cmd="$(printf '%s' "$(http_body "$resp")" | jq -r '.command_id // empty')"
+  auto_st="$(j11_wait_command "$auto_cmd")"
+  assert_eq J11-S6 "mode=auto chat.send still acks ok" "acked" "$auto_st"
 }
 
 # Standalone execution.

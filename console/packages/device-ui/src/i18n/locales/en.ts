@@ -65,6 +65,7 @@ export default {
       "modeAutoSub": "AI reviewer allows safe tools; uncertain ones ask.",
       "modeFullAccess": "Full access",
       "modeFullAccessSub": "Act freely — no approval prompts.",
+      "modeCeilingHint": "Cloud sessions are capped at Auto mode.",
       "modelFilter": "Filter models…",
       "modelCurrent": "Current",
       "modelFavorites": "★ Favorites",
@@ -169,6 +170,9 @@ export default {
       "noSessions": "No sessions yet — send a message to start one.",
       "untitled": "Untitled session",
       "offlineBanner": "This device is offline. Messages cannot be sent until it reconnects.",
+      "delete": "Delete device",
+      "deleteConfirm": "Delete {name}? The device is signed out and stops syncing. Session history is kept on the server.",
+      "deleted": "Device {name} deleted",
       "status": {
         "idle": "Idle",
         "running": "Running"
@@ -249,7 +253,7 @@ export default {
       "pairing": {
         "title": "Pairing & end-to-end encryption",
         "p1": "Session content is end-to-end encrypted: the cloud only stores ciphertext and routing metadata, so it cannot read your sessions. A new client (a new browser or a phone) must pair with a device before it can decrypt anything.",
-        "p2": "Start pairing from the client, then approve it on the device within 10 minutes:",
+        "p2": "On a phone, the fastest path is scanning the desktop QR code: in the jcode desktop app open the cloud badge (sidebar) → \"Pair via QR code\", then scan it with the mobile app. Otherwise start pairing from the client and approve it on the desktop — the sidebar cloud badge pulses while a request waits; click it and approve within 10 minutes. The CLI works too:",
         "code1": "jcode cloud pairings",
         "code2": "jcode cloud approve <pairing_id>",
         "p3": "`pairings` lists the pending requests with their labels; `approve` authorizes one (reject with `jcode cloud deny <pairing_id>`)."
@@ -283,13 +287,16 @@ export default {
     },
     "pairing": {
       "start": "Pair this client",
+      "copy": "Copy command",
+      "copied": "Copied",
       "idle": {
         "title": "End-to-end encryption not set up",
-        "body": "Pair this browser with the device to read and send encrypted session content. The device stays the only place your key exists in plaintext."
+        "body": "Pair this client with the device to read and send encrypted session content. On a phone, the fastest path is scanning the desktop QR code: cloud badge (sidebar) → \"Pair via QR code\", scanned with the mobile app."
       },
       "pending": {
         "title": "Waiting for approval on the device",
-        "body": "Approve this pairing on the device within 10 minutes:"
+        "body": "Approve it in the jcode desktop app on the device: the sidebar cloud badge is pulsing — click it and approve this pairing within 10 minutes. On a phone, scanning the desktop QR code (cloud badge → \"Pair via QR code\") pairs instantly instead.",
+        "cliHint": "Prefer the terminal?"
       },
       "denied": {
         "title": "Pairing denied",
@@ -312,6 +319,7 @@ export default {
     "lede": "A jcode CLI is asking to sign in to this cloud. Enter the code it shows to continue.",
     "codeLabel": "Device code",
     "codeHint": "The 8-character code shown by `jcode login`, e.g. XXXX-XXXX.",
+    "codeCell": "Character {n} of {total}",
     "codeRequired": "Enter the code shown by the CLI.",
     "continue": "Continue",
     "confirmTitle": "Is this your device?",

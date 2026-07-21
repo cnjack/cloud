@@ -162,6 +162,35 @@ describe('useDeviceComposer', () => {
     expect(sends[0]!.extras).toBeUndefined();
   });
 
+  it('caps the mode picker at auto (M20): full_access is not offered nor selectable', async () => {
+    const { api, sends } = makeFakeApi();
+    const { result } = renderHook(
+      () => useDeviceComposer({ deviceId: 'dev-1', sessionId: 'sess-1', device: DEVICE }),
+      { wrapper: wrapper(api) },
+    );
+    // The composer dropdown is driven by host.allowedModes (ChatInput filters
+    // MODE_DEFS with it) — full_access must not appear.
+    expect(result.current.host.allowedModes).toEqual(['approval', 'plan', 'auto']);
+    // A caller bypassing the picker is ignored too; the send carries no mode
+    // (and the device connector would ack mode_not_allowed_for_cloud anyway).
+    act(() => {
+      result.current.host.selectMode('full_access');
+    });
+    await act(async () => {
+      result.current.runtime.actions.sendMessage('hi');
+    });
+    expect(sends[0]!.mode).toBeUndefined();
+    expect(result.current.host.mode).toBe('approval');
+    // Allowed modes still stick.
+    act(() => {
+      result.current.host.selectMode('auto');
+    });
+    await act(async () => {
+      result.current.runtime.actions.sendMessage('hi again');
+    });
+    expect(sends[1]!.mode).toBe('auto');
+  });
+
   it('drains the type-ahead queue when the turn ends', async () => {
     const { api, sends } = makeFakeApi();
     const running = { ...initialDeviceSessionState(), agentRunning: true };
