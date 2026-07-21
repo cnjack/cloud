@@ -29,6 +29,11 @@ type deviceRegisterReq struct {
 	// the CEK cipher is active and cloud.e2ee did not disable it. It drives
 	// the downlink pairing gate (docs/17 §6.7).
 	E2EE bool `json:"e2ee"`
+	// Fingerprint is the sha256 hex of the machine fingerprint (M16). The
+	// device row normally already carries it from the token poll; register
+	// backfills rows minted without one (pre-M16 issuance, or a token minted
+	// before the CLI learned its fingerprint) so the NEXT login dedups.
+	Fingerprint string `json:"fingerprint"`
 }
 
 type deviceRegisterView struct {
@@ -58,9 +63,30 @@ func (s *Server) handleDeviceRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "pubkey is required")
 		return
 	}
+	fingerprint, ok := normalizeFingerprintHash(req.Fingerprint)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "fingerprint must be a sha256 hex string (64 lowercase hex chars)")
+		return
+	}
 	d := s.loadDeviceForPrincipal(w, r, p.deviceID)
 	if d == nil {
 		return
+	}
+	// Fingerprint backfill (M16): only onto a row that has none, and only when
+	// no OTHER device of this user already claims the hash — a second machine
+	// must never steal the first one's dedup key.
+	if fingerprint != "" && d.FingerprintHash == "" {
+		_, err := s.st.FindDeviceByFingerprint(r.Context(), d.UserID, fingerprint)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			d.FingerprintHash = fingerprint
+		case err == nil:
+			// Another live device holds this fingerprint: leave the row as-is.
+		default:
+			s.log.Error("device register: fingerprint lookup", "device", d.ID, "err", err)
+			writeError(w, http.StatusInternalServerError, "internal", "could not register the device")
+			return
+		}
 	}
 	now := time.Now().UTC()
 	wasOnline := deviceOnlineAt(d, s.deviceTTL(), now)

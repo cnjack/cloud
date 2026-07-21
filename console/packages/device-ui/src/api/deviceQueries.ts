@@ -52,6 +52,18 @@ export function useStopDeviceSession(deviceId: string) {
   });
 }
 
+/** M16: delete (soft-revoke) a device; the device list refetches afterwards. */
+export function useDeleteDevice() {
+  const api = useDeviceApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (deviceId: string) => api.deleteDevice(deviceId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: dqk.devices });
+    },
+  });
+}
+
 export function useRespondDeviceApproval(deviceId: string, sessionId: string) {
   const api = useDeviceApi();
   return useMutation({

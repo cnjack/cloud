@@ -23,6 +23,11 @@
 #          0600 with a jcd_ device_token; login --status shows the device;
 #          logout exits 0 and removes cloud.json (remote revoke 404 is
 #          tolerated by the CLI — the endpoint does not exist yet).
+#   J7-S9  M16: same-fingerprint re-login reuses the devices row
+#          (deduped:true, no new row); DELETE /api/v1/devices/{id} soft-deletes
+#          (404 ladder: unknown 404, service principal 403, own 204, repeat
+#          404), kills the device tokens (next heartbeat/register 401), drops
+#          the row from the list, and frees the fingerprint for a fresh row.
 #
 # A user session is REQUIRED for /auth/device/authorize (CONSOLE_TOKEN is a
 # service principal and gets 400 by design). There is no public "create user"
@@ -216,6 +221,81 @@ j7_run() {
     '{"device_code":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}')"
   assert_eq J7-S7 "unknown device_code poll returns 400" "400" "$(http_code "$resp")"
   assert_contains J7-S7 "unknown device_code error is expired_token" "$(http_body "$resp")" "expired_token"
+
+  # --- J7-S9: machine-fingerprint dedup + device DELETE (M16) ------------------
+  # Same user + same fingerprint on the token poll must reuse the existing
+  # devices row (deduped:true, no new row); DELETE soft-deletes the device and
+  # kills its tokens; a re-login afterwards mints a fresh row.
+  local fp="e2ef16$(printf 'a%.0s' $(seq 1 58))" # 64 hex chars (sha256 shape)
+  local f1_code f1_user f2_code f2_user fp_dev1 fp_dev2 fp_tok1 fp_tok2
+
+  resp="$(j7_post_code "/auth/device/code" "" '{"client_name":"e2e-j7-fp"}')"
+  f1_code="$(printf '%s' "$(http_body "$resp")" | jq -r '.device_code // empty')"
+  f1_user="$(printf '%s' "$(http_body "$resp")" | jq -r '.user_code // empty')"
+  j7_authorize "$f1_user" true >/dev/null
+  resp="$(j7_post_code "/auth/device/token" "" "{\"device_code\":\"$f1_code\",\"fingerprint\":\"$fp\"}")"
+  code="$(http_code "$resp")"; body="$(http_body "$resp")"
+  assert_eq J7-S9 "first fingerprint login returns 200" "200" "$code"
+  assert_eq J7-S9 "first fingerprint login deduped=false" "false" \
+    "$(printf '%s' "$body" | jq -r '.deduped | tostring')"
+  fp_dev1="$(printf '%s' "$body" | jq -r '.device_id // empty')"
+  fp_tok1="$(printf '%s' "$body" | jq -r '.access_token // empty')"
+  assert_nonempty J7-S9 "first fingerprint login device_id" "$fp_dev1"
+
+  resp="$(j7_post_code "/auth/device/code" "" '{"client_name":"e2e-j7-fp-again"}')"
+  f2_code="$(printf '%s' "$(http_body "$resp")" | jq -r '.device_code // empty')"
+  f2_user="$(printf '%s' "$(http_body "$resp")" | jq -r '.user_code // empty')"
+  j7_authorize "$f2_user" true >/dev/null
+  resp="$(j7_post_code "/auth/device/token" "" "{\"device_code\":\"$f2_code\",\"fingerprint\":\"$fp\"}")"
+  code="$(http_code "$resp")"; body="$(http_body "$resp")"
+  assert_eq J7-S9 "second same-fingerprint login returns 200" "200" "$code"
+  assert_eq J7-S9 "second same-fingerprint login deduped=true" "true" \
+    "$(printf '%s' "$body" | jq -r '.deduped | tostring')"
+  fp_dev2="$(printf '%s' "$body" | jq -r '.device_id // empty')"
+  fp_tok2="$(printf '%s' "$body" | jq -r '.access_token // empty')"
+  assert_eq J7-S9 "same fingerprint reuses the device row" "$fp_dev1" "$fp_dev2"
+  local dev_list dev_count
+  dev_list="$(curl -sS -H "Authorization: Bearer $J7_SESSION_TOKEN" "$BASE/api/v1/devices")"
+  dev_count="$(printf '%s' "$dev_list" | jq '[.devices[] | select(.id=="'"$fp_dev1"'")] | length')"
+  assert_eq J7-S9 "deduped login did not stack a second devices row" "1" "$dev_count"
+
+  # DELETE /api/v1/devices/{id}: permission ladder, then the happy path.
+  resp="$(curl -sS -w $'\n%{http_code}' -X DELETE -H "Authorization: Bearer $J7_SESSION_TOKEN" "$BASE/api/v1/devices/no-such-device")"
+  assert_eq J7-S9 "DELETE unknown device returns 404" "404" "$(http_code "$resp")"
+  resp="$(curl -sS -w $'\n%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/devices/$fp_dev1")"
+  assert_eq J7-S9 "DELETE as service principal returns 403" "403" "$(http_code "$resp")"
+  resp="$(curl -sS -w $'\n%{http_code}' -X DELETE -H "Authorization: Bearer $J7_SESSION_TOKEN" "$BASE/api/v1/devices/$fp_dev1")"
+  assert_eq J7-S9 "DELETE own device returns 204" "204" "$(http_code "$resp")"
+  # The deleted device's tokens die on the very next request.
+  resp="$(j7_post_code "/internal/v1/device/heartbeat" "$fp_tok2" '{}')"
+  assert_eq J7-S9 "heartbeat with a deleted device's token returns 401" "401" "$(http_code "$resp")"
+  resp="$(j7_post_code "/internal/v1/device/register" "$fp_tok1" "{\"pubkey\":\"$pubkey\"}")"
+  assert_eq J7-S9 "register with a deleted device's token returns 401" "401" "$(http_code "$resp")"
+  # The client surface reads the device as gone; a repeated DELETE is 404.
+  resp="$(curl -sS -w $'\n%{http_code}' -H "Authorization: Bearer $J7_SESSION_TOKEN" "$BASE/api/v1/devices/$fp_dev1")"
+  assert_eq J7-S9 "GET deleted device returns 404" "404" "$(http_code "$resp")"
+  dev_list="$(curl -sS -H "Authorization: Bearer $J7_SESSION_TOKEN" "$BASE/api/v1/devices")"
+  dev_count="$(printf '%s' "$dev_list" | jq '[.devices[] | select(.id=="'"$fp_dev1"'")] | length')"
+  assert_eq J7-S9 "deleted device drops out of the device list" "0" "$dev_count"
+  resp="$(curl -sS -w $'\n%{http_code}' -X DELETE -H "Authorization: Bearer $J7_SESSION_TOKEN" "$BASE/api/v1/devices/$fp_dev1")"
+  assert_eq J7-S9 "repeated DELETE returns 404" "404" "$(http_code "$resp")"
+  # The freed fingerprint mints a FRESH row on the next login.
+  resp="$(j7_post_code "/auth/device/code" "" '{"client_name":"e2e-j7-fp-relogin"}')"
+  f1_code="$(printf '%s' "$(http_body "$resp")" | jq -r '.device_code // empty')"
+  f1_user="$(printf '%s' "$(http_body "$resp")" | jq -r '.user_code // empty')"
+  j7_authorize "$f1_user" true >/dev/null
+  resp="$(j7_post_code "/auth/device/token" "" "{\"device_code\":\"$f1_code\",\"fingerprint\":\"$fp\"}")"
+  code="$(http_code "$resp")"; body="$(http_body "$resp")"
+  assert_eq J7-S9 "re-login after DELETE returns 200" "200" "$code"
+  assert_eq J7-S9 "re-login after DELETE deduped=false (fresh row)" "false" \
+    "$(printf '%s' "$body" | jq -r '.deduped | tostring')"
+  local fp_dev3
+  fp_dev3="$(printf '%s' "$body" | jq -r '.device_id // empty')"
+  if [ -n "$fp_dev3" ] && [ "$fp_dev3" != "$fp_dev1" ]; then
+    pass J7-S9 "re-login after DELETE mints a new device_id"
+  else
+    fail J7-S9 "re-login after DELETE reused the revoked row ('$fp_dev3')"
+  fi
 
   # --- J7-S8: the real CLI --------------------------------------------------------
   if [ ! -x "$JCODE_BIN" ]; then

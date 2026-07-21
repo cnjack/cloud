@@ -41,9 +41,10 @@ func (s *Server) deviceOnline(d *domain.Device) bool {
 }
 
 // authorizeDevice loads the device and enforces that it belongs to the request
-// principal's user. On failure it writes the error (404 unknown, 403 not the
-// owner — a principal without a user, e.g. the service principal, is always
-// 403) and returns nil; the caller must stop.
+// principal's user. On failure it writes the error (404 unknown OR revoked —
+// a soft-deleted device (M16) reads as gone on the whole client surface, 403
+// not the owner — a principal without a user, e.g. the service principal, is
+// always 403) and returns nil; the caller must stop.
 func (s *Server) authorizeDevice(w http.ResponseWriter, r *http.Request, deviceID string) *domain.Device {
 	d, err := s.st.GetDevice(r.Context(), deviceID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -55,11 +56,47 @@ func (s *Server) authorizeDevice(w http.ResponseWriter, r *http.Request, deviceI
 		writeError(w, http.StatusInternalServerError, "internal", "could not load the device")
 		return nil
 	}
+	if d.RevokedAt != nil {
+		writeError(w, http.StatusNotFound, "not_found", "device not found")
+		return nil
+	}
 	if uid := principalFrom(r.Context()).userID(); uid == "" || d.UserID != uid {
 		writeError(w, http.StatusForbidden, "forbidden", "this device belongs to another user")
 		return nil
 	}
 	return d
+}
+
+// handleDeleteDevice soft-deletes one of the caller's devices (M16): stamps
+// devices.revoked_at and revokes every live device token, so the device's next
+// request (heartbeat/poll) is a 401 and the row drops out of the device list.
+// History (device_sessions/device_events) is RETAINED for audit — only the
+// API surface goes away. A repeated DELETE hits the revoked row and reads 404.
+func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
+	d := s.authorizeDevice(w, r, r.PathValue("id"))
+	if d == nil {
+		return
+	}
+	now := time.Now().UTC()
+	if err := s.st.RevokeDevice(r.Context(), d.ID, now); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "device not found")
+			return
+		}
+		s.log.Error("delete device", "device", d.ID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not delete the device")
+		return
+	}
+	if err := s.st.RevokeDeviceTokens(r.Context(), d.ID, now); err != nil {
+		s.log.Error("delete device: revoke tokens", "device", d.ID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not revoke the device tokens")
+		return
+	}
+	// Live streams flip to offline immediately instead of waiting out the
+	// heartbeat TTL.
+	s.publishDeviceEvent(d.ID, sse.DeviceEventStatus, map[string]any{"online": false})
+	s.log.Info("device deleted", "device", d.ID, "user", d.UserID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type deviceView struct {

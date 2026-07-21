@@ -379,6 +379,7 @@ func (s *Server) Handler() http.Handler {
 	// set a header — same rationale as the run stream).
 	mux.Handle("GET /api/v1/devices", s.authed(s.handleListDevices))
 	mux.Handle("GET /api/v1/devices/{id}", s.authed(s.handleGetDevice))
+	mux.Handle("DELETE /api/v1/devices/{id}", s.authed(s.handleDeleteDevice))
 	mux.Handle("GET /api/v1/devices/{id}/sessions", s.authed(s.handleListDeviceSessions))
 	mux.Handle("GET /api/v1/devices/{id}/sessions/{sid}/events", s.authed(s.handleListDeviceSessionEvents))
 	mux.Handle("GET /api/v1/devices/{id}/stream", s.authedStream(s.handleDeviceStream))

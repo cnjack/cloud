@@ -638,10 +638,24 @@ type Store interface {
 
 	// CreateDevice inserts a fresh device row at token-issuance time. The
 	// caller pre-fills id/user_id/name/created_at; pubkey stays empty until the
-	// first register call.
+	// first register call. A non-empty FingerprintHash colliding with the
+	// user's other NON-REVOKED device fails with ErrAlreadyExists (the 0036
+	// partial unique index — the M16 login dedup invariant); the caller should
+	// then fall back to FindDeviceByFingerprint and reuse that row.
 	CreateDevice(ctx context.Context, d *domain.Device) error
 	// GetDevice returns a device by id (ErrNotFound if absent).
 	GetDevice(ctx context.Context, id string) (*domain.Device, error)
+	// FindDeviceByFingerprint returns the user's non-revoked device carrying
+	// the given fingerprint hash (ErrNotFound when none) — the M16 login dedup
+	// lookup: a re-login from the same machine reuses this row.
+	FindDeviceByFingerprint(ctx context.Context, userID, fingerprintHash string) (*domain.Device, error)
+	// RevokeDevice soft-deletes a device (DELETE /api/v1/devices/{id}, M16):
+	// stamps revoked_at, which drops the row from every client view, frees its
+	// fingerprint for a future re-login, and kills its device tokens on the
+	// next lookup (GetDeviceTokenByHash joins devices). ErrNotFound when the
+	// device is absent or already revoked (a repeated DELETE reads as 404).
+	// device_events/device_sessions survive for audit.
+	RevokeDevice(ctx context.Context, id string, at time.Time) error
 	// UpsertDeviceRegistration applies a /device/register payload: it updates
 	// name/hostname/jcode_version/pubkey and stamps last_seen_at, keyed by
 	// d.ID. user_id/key_gen/created_at are NEVER touched (a register call can

@@ -200,14 +200,40 @@ type deviceCodeView struct {
 
 type deviceTokenReq struct {
 	DeviceCode string `json:"device_code"`
+	// Fingerprint is the sha256 hex of the CLI's stable machine fingerprint
+	// (M16): a re-login from the same machine reuses the existing devices row
+	// instead of stacking a new one. Optional — pre-M16 CLIs omit it.
+	Fingerprint string `json:"fingerprint"`
 }
 
 // deviceTokenView is the successful POST /auth/device/token response. The
-// access_token plaintext appears in exactly this one response, ever.
+// access_token plaintext appears in exactly this one response, ever. Deduped
+// tells the CLI the machine was recognized and bound to an EXISTING device
+// row (same user + fingerprint, M16) rather than a freshly minted one.
 type deviceTokenView struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
 	DeviceID    string `json:"device_id"`
+	Deduped     bool   `json:"deduped"`
+}
+
+// normalizeFingerprintHash canonicalises a client-supplied fingerprint: the
+// CLI sends sha256 lowercase hex; case/whitespace slop is tolerated. ("",
+// true) means "absent" — pre-M16 clients stay valid.
+func normalizeFingerprintHash(raw string) (string, bool) {
+	fp := strings.ToLower(strings.TrimSpace(raw))
+	if fp == "" {
+		return "", true
+	}
+	if len(fp) != 64 {
+		return "", false
+	}
+	for _, c := range fp {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", false
+		}
+	}
+	return fp, true
 }
 
 type deviceAuthorizeReq struct {
@@ -273,6 +299,11 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "device_code is required")
 		return
 	}
+	fingerprint, ok := normalizeFingerprintHash(req.Fingerprint)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "fingerprint must be a sha256 hex string (64 lowercase hex chars)")
+		return
+	}
 
 	f := s.deviceFlows.getByCode(req.DeviceCode)
 	if f == nil {
@@ -298,20 +329,64 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Approved: mint the device + token, then consume the flow. If the store
-	// write fails the flow stays approved so the CLI's retry can complete.
+	// Approved: mint (or reuse, M16) the device + mint the token, then consume
+	// the flow. If the store write fails the flow stays approved so the CLI's
+	// retry can complete.
 	now := time.Now().UTC()
-	d := &domain.Device{
-		ID:        domain.NewID(),
-		UserID:    f.userID,
-		Name:      f.clientName,
-		KeyGen:    1,
-		CreatedAt: now,
+	var d *domain.Device
+	deduped := false
+	// Login dedup (M16): same user + same machine fingerprint reuses the
+	// existing non-revoked devices row — the machine gets a fresh token bound
+	// to the device it already is, instead of stacking a twin row per login.
+	if fingerprint != "" {
+		existing, err := s.st.FindDeviceByFingerprint(r.Context(), f.userID, fingerprint)
+		switch {
+		case err == nil:
+			d, deduped = existing, true
+		case errors.Is(err, store.ErrNotFound):
+		default:
+			s.log.Error("device login: fingerprint lookup", "user", f.userID, "err", err)
+			writeError(w, http.StatusInternalServerError, "internal", "could not look up the device")
+			return
+		}
 	}
-	if err := s.st.CreateDevice(r.Context(), d); err != nil {
-		s.log.Error("device login: create device", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "could not create the device")
-		return
+	if d == nil {
+		d = &domain.Device{
+			ID:              domain.NewID(),
+			UserID:          f.userID,
+			Name:            f.clientName,
+			KeyGen:          1,
+			FingerprintHash: fingerprint,
+			CreatedAt:       now,
+		}
+		if err := s.st.CreateDevice(r.Context(), d); err != nil {
+			// A concurrent redemption with the same fingerprint won the race
+			// (0036 partial unique index): reuse its row instead of failing.
+			if errors.Is(err, store.ErrAlreadyExists) && fingerprint != "" {
+				existing, ferr := s.st.FindDeviceByFingerprint(r.Context(), f.userID, fingerprint)
+				if ferr != nil {
+					s.log.Error("device login: fingerprint re-lookup", "user", f.userID, "err", ferr)
+					writeError(w, http.StatusInternalServerError, "internal", "could not create the device")
+					return
+				}
+				d, deduped = existing, true
+			} else {
+				s.log.Error("device login: create device", "err", err)
+				writeError(w, http.StatusInternalServerError, "internal", "could not create the device")
+				return
+			}
+		}
+	}
+	if deduped {
+		// Refresh the reused row: newest client_name and an immediate
+		// last_seen so the console's device list reflects the re-login.
+		d.Name = f.clientName
+		d.LastSeenAt = &now
+		if err := s.st.UpsertDeviceRegistration(r.Context(), d); err != nil {
+			s.log.Error("device login: refresh deduped device", "device", d.ID, "err", err)
+			writeError(w, http.StatusInternalServerError, "internal", "could not refresh the device")
+			return
+		}
 	}
 	plaintext, err := auth.GenerateDeviceToken()
 	if err != nil {
@@ -331,12 +406,13 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.status = deviceFlowRedeemed
-	s.log.Info("device login redeemed", "device", d.ID, "user", d.UserID)
+	s.log.Info("device login redeemed", "device", d.ID, "user", d.UserID, "deduped", deduped)
 
 	writeJSON(w, http.StatusOK, deviceTokenView{
 		AccessToken: plaintext,
 		TokenType:   "device",
 		DeviceID:    d.ID,
+		Deduped:     deduped,
 	})
 }
 

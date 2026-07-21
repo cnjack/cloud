@@ -15,12 +15,12 @@ import (
 // --- devices (docs/17 — jcode device relay) -----------------------------------
 
 const deviceCols = `id, user_id, name, hostname, jcode_version, platform, pubkey, key_gen,
-	capabilities, e2ee, last_seen_at, created_at, revoked_at`
+	capabilities, e2ee, fingerprint_hash, last_seen_at, created_at, revoked_at`
 
 func scanDevice(row pgx.Row) (*domain.Device, error) {
 	var d domain.Device
 	err := row.Scan(&d.ID, &d.UserID, &d.Name, &d.Hostname, &d.JcodeVersion, &d.Platform, &d.Pubkey,
-		&d.KeyGen, &d.Capabilities, &d.E2EE, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt)
+		&d.KeyGen, &d.Capabilities, &d.E2EE, &fingerprintHashScanner{&d.FingerprintHash}, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -30,12 +30,44 @@ func scanDevice(row pgx.Row) (*domain.Device, error) {
 	return &d, nil
 }
 
+// fingerprintHashScanner bridges the nullable fingerprint_hash column to the
+// domain's plain string: NULL (pre-M16 rows) decodes as "".
+type fingerprintHashScanner struct{ dst *string }
+
+func (f fingerprintHashScanner) Scan(src any) error {
+	if src == nil {
+		*f.dst = ""
+		return nil
+	}
+	s, ok := src.(string)
+	if !ok {
+		return fmt.Errorf("fingerprint_hash: unexpected type %T", src)
+	}
+	*f.dst = s
+	return nil
+}
+
+// nullFingerprint maps the domain's empty string to SQL NULL: '' must never
+// be stored, because the partial unique index (0036) treats every non-NULL
+// value as a real fingerprint.
+func nullFingerprint(hash string) any {
+	if hash == "" {
+		return nil
+	}
+	return hash
+}
+
 func (s *PGStore) CreateDevice(ctx context.Context, d *domain.Device) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO devices (`+deviceCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		`INSERT INTO devices (`+deviceCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		d.ID, d.UserID, d.Name, d.Hostname, d.JcodeVersion, d.Platform, d.Pubkey,
-		d.KeyGen, d.Capabilities, d.E2EE, d.LastSeenAt, d.CreatedAt, d.RevokedAt)
+		d.KeyGen, d.Capabilities, d.E2EE, nullFingerprint(d.FingerprintHash), d.LastSeenAt, d.CreatedAt, d.RevokedAt)
 	if err != nil {
+		// The 0036 partial unique index: another live device of this user
+		// already claims the fingerprint — the M16 login-dedup race signal.
+		if isUniqueViolation(err) {
+			return ErrAlreadyExists
+		}
 		return fmt.Errorf("insert device: %w", err)
 	}
 	return nil
@@ -52,9 +84,9 @@ func (s *PGStore) UpsertDeviceRegistration(ctx context.Context, d *domain.Device
 	// key generation. The row is created at token issuance, so RowsAffected==0
 	// means the device was deleted under a live token.
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE devices SET name=$2, hostname=$3, jcode_version=$4, platform=$5, pubkey=$6, e2ee=$7, last_seen_at=$8
+		`UPDATE devices SET name=$2, hostname=$3, jcode_version=$4, platform=$5, pubkey=$6, e2ee=$7, last_seen_at=$8, fingerprint_hash=$9
 		 WHERE id=$1`,
-		d.ID, d.Name, d.Hostname, d.JcodeVersion, d.Platform, d.Pubkey, d.E2EE, d.LastSeenAt)
+		d.ID, d.Name, d.Hostname, d.JcodeVersion, d.Platform, d.Pubkey, d.E2EE, d.LastSeenAt, nullFingerprint(d.FingerprintHash))
 	if err != nil {
 		return fmt.Errorf("upsert device registration: %w", err)
 	}
@@ -131,12 +163,40 @@ func (s *PGStore) ListDevicesForUser(ctx context.Context, userID string) ([]doma
 	for rows.Next() {
 		var d domain.Device
 		if err := rows.Scan(&d.ID, &d.UserID, &d.Name, &d.Hostname, &d.JcodeVersion, &d.Platform, &d.Pubkey,
-			&d.KeyGen, &d.Capabilities, &d.E2EE, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt); err != nil {
+			&d.KeyGen, &d.Capabilities, &d.E2EE, &fingerprintHashScanner{&d.FingerprintHash}, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt); err != nil {
 			return nil, fmt.Errorf("scan device: %w", err)
 		}
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// FindDeviceByFingerprint returns the user's NON-REVOKED device carrying the
+// given fingerprint hash (ErrNotFound when none) — the M16 login-dedup lookup.
+func (s *PGStore) FindDeviceByFingerprint(ctx context.Context, userID, fingerprintHash string) (*domain.Device, error) {
+	return scanDevice(s.pool.QueryRow(ctx,
+		`SELECT `+deviceCols+` FROM devices
+		 WHERE user_id=$1 AND fingerprint_hash=$2 AND revoked_at IS NULL
+		 ORDER BY created_at, id LIMIT 1`, userID, fingerprintHash))
+}
+
+// RevokeDevice soft-deletes a device (DELETE /api/v1/devices/{id}, M16): it
+// stamps revoked_at, which (a) drops the row from ListDevicesForUser and the
+// client API (readers treat it as gone), (b) frees its fingerprint for a
+// future re-login (the partial unique index excludes revoked rows), and
+// (c) kills every device token on the next lookup (GetDeviceTokenByHash joins
+// devices and excludes revoked rows). device_events/device_sessions survive
+// for audit (ON DELETE CASCADE only fires on a hard delete).
+func (s *PGStore) RevokeDevice(ctx context.Context, id string, at time.Time) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE devices SET revoked_at=$2 WHERE id=$1 AND revoked_at IS NULL`, id, at)
+	if err != nil {
+		return fmt.Errorf("revoke device: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // --- device relay: sessions / events / commands (docs/17 §4) ------------------

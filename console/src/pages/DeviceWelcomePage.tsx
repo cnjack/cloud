@@ -1,9 +1,9 @@
-import { ArrowRight, Lock, Warning } from '@phosphor-icons/react';
+import { ArrowRight, Lock, Trash, Warning } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { RuntimeProvider } from 'jcode-ui';
 import { ChatInput } from 'jcode-ui/product';
-import { useDevices, useDeviceSessions, DevicePairingCard, DevicePairingGate, channelLabelKey, useDeviceComposer } from '@jcloud/device-ui';
+import { useDevices, useDeviceSessions, useDeleteDevice, DevicePairingCard, DevicePairingGate, Button, channelLabelKey, useDeviceComposer } from '@jcloud/device-ui';
 import type { DeviceSession } from '@jcloud/device-ui';
 import { PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout';
 import { ErrorBlock, LoadingBlock } from '../components/States';
@@ -15,6 +15,7 @@ import styles from './DeviceWelcomePage.module.css';
 export function DeviceWelcomePage() {
   const { deviceId = '' } = useParams();
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const toast = useToast();
   const devices = useDevices();
   const sessions = useDeviceSessions(deviceId);
@@ -22,6 +23,20 @@ export function DeviceWelcomePage() {
   const device = devices.data?.find((d) => d.id === deviceId);
   const online = device?.online ?? false;
   const name = device?.name ?? deviceId;
+
+  // M16: delete the device (soft revoke server-side) after a confirm step,
+  // then drop back to the device list.
+  const deleteDevice = useDeleteDevice();
+  const onDelete = () => {
+    if (!window.confirm(t('device.welcome.deleteConfirm', { name }))) return;
+    deleteDevice.mutate(deviceId, {
+      onSuccess: () => {
+        toast.push({ kind: 'success', message: t('device.welcome.deleted', { name }) });
+        navigate('/devices');
+      },
+      onError: (err) => toast.push({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
+    });
+  };
 
   // M14: the stock jcode product composer. sid 'new' lets the device assign
   // the session id; the polling session list surfaces the new session for the
@@ -74,6 +89,17 @@ export function DeviceWelcomePage() {
               <StatusLabel tone={online ? 'success' : 'neutral'}>
                 {online ? t('device.list.online') : t('device.list.offline')}
               </StatusLabel>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={onDelete}
+                loading={deleteDevice.isPending}
+                data-testid="device-delete"
+                title={t('device.welcome.delete')}
+              >
+                <Trash size={13} weight="bold" aria-hidden="true" />
+                {t('device.welcome.delete')}
+              </Button>
             </span>
           }
         />

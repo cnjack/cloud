@@ -980,6 +980,9 @@ export default {
       noSessions: '아직 세션이 없습니다. 메시지를 보내 시작하세요.',
       untitled: '제목 없는 세션',
       offlineBanner: '이 기기는 오프라인입니다. 다시 연결될 때까지 메시지를 보낼 수 없습니다.',
+      delete: '기기 삭제',
+      deleteConfirm: '{name}을(를) 삭제하시겠습니까? 기기가 로그아웃되고 동기화가 중지됩니다. 세션 기록은 서버에 보관됩니다.',
+      deleted: '기기 {name}을(를) 삭제했습니다',
       status: {
         idle: '유휴',
         running: '실행 중',

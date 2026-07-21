@@ -980,6 +980,9 @@ export default {
       noSessions: '還沒有工作階段——傳送一則訊息即可開始。',
       untitled: '未命名工作階段',
       offlineBanner: '此裝置已離線。重新連線前無法傳送訊息。',
+      delete: '刪除裝置',
+      deleteConfirm: '確定刪除 {name} 嗎？裝置將登出並停止同步，工作階段歷史保留在伺服器上。',
+      deleted: '已刪除裝置 {name}',
       status: {
         idle: '閒置',
         running: '執行中',

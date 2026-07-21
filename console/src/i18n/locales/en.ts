@@ -263,6 +263,9 @@ export default {
       noSessions: 'No sessions yet — send a message to start one.',
       untitled: 'Untitled session',
       offlineBanner: 'This device is offline. Messages cannot be sent until it reconnects.',
+      delete: 'Delete device',
+      deleteConfirm: 'Delete {name}? The device is signed out and stops syncing. Session history is kept on the server.',
+      deleted: 'Device {name} deleted',
       status: {
         idle: 'Idle',
         running: 'Running',

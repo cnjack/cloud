@@ -33,10 +33,16 @@ type Device struct {
 	// E2EE is the connector's reported encryption state (M13, migration 0035):
 	// true means the device seals uplink with an active CEK and accepts only
 	// {envelope} downlink command payloads (the pairing gate, docs/17 §6.7).
-	E2EE        bool       `json:"e2ee"`
-	LastSeenAt  *time.Time `json:"last_seen_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
+	E2EE bool `json:"e2ee"`
+	// FingerprintHash is the sha256 hex of the device's stable machine
+	// fingerprint (M16, migration 0036): the CLI hashes its hardware id (or a
+	// persisted fallback) and only the hash ever leaves the machine. It is the
+	// login dedup key — at most one non-revoked device per (user, hash).
+	// Empty for devices minted before M16.
+	FingerprintHash string     `json:"fingerprint_hash,omitempty"`
+	LastSeenAt      *time.Time `json:"last_seen_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
 }
 
 // DeviceToken is a device principal credential (docs/17 §3.2). Only TokenHash

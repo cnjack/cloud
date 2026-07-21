@@ -980,6 +980,9 @@ export default {
       noSessions: '还没有会话——发送一条消息即可开始。',
       untitled: '未命名会话',
       offlineBanner: '此设备已离线。重新连接前无法发送消息。',
+      delete: '删除设备',
+      deleteConfirm: '确定删除 {name} 吗？设备将退出登录并停止同步，会话历史保留在服务器上。',
+      deleted: '已删除设备 {name}',
       status: {
         idle: '空闲',
         running: '运行中',

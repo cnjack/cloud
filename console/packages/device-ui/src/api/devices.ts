@@ -189,6 +189,8 @@ export interface DeviceApi {
   createPairing(deviceId: string, req: { label: string; kty: string; pubkey: string }): Promise<CreatePairingResult>;
   /** Poll a pairing's state; wrap arrives once approved. */
   getPairing(deviceId: string, pairingId: string): Promise<PairingState>;
+  /** Soft-delete the device (M16): revokes it + its tokens; history is retained server-side. */
+  deleteDevice(deviceId: string): Promise<void>;
   /** Subscribe to the device-wide SSE stream. */
   streamDevice(deviceId: string, cb: DeviceStreamCallbacks): DeviceStreamHandle;
 }
@@ -310,6 +312,10 @@ export function createDeviceApi(token: TokenSource, options: DeviceApiOptions = 
 
     getPairing: (deviceId, pairingId) =>
       req<PairingState>(`${dev(deviceId)}/pairings/${encodeURIComponent(pairingId)}`),
+
+    deleteDevice: async (deviceId) => {
+      await req<void>(dev(deviceId), { method: 'DELETE' });
+    },
 
     streamDevice: (deviceId, cb) => {
       // Native EventSource cannot set Authorization headers; the stream route

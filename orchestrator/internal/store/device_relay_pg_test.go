@@ -42,6 +42,19 @@ func TestPGDeviceRelay(t *testing.T) {
 		_, _ = st.Pool().Exec(context.Background(), `DELETE FROM users WHERE id=$1`, u.ID)
 	})
 
+	// A second user for the cross-user fingerprint-isolation check.
+	u2 := &domain.User{ID: domain.NewID(), DisplayName: "Relay User 2", CreatedAt: time.Now().UTC()}
+	id2 := &domain.UserIdentity{
+		ID: domain.NewID(), Provider: domain.ProviderGitea, ProviderUID: "relay-uid-" + u2.ID,
+		Username: "relay-" + u2.ID, AccessTokenEnc: []byte("enc"), CreatedAt: time.Now().UTC(),
+	}
+	if _, err := st.CreateUserWithIdentity(ctx, u2, id2); err != nil {
+		t.Fatalf("create user 2: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = st.Pool().Exec(context.Background(), `DELETE FROM users WHERE id=$1`, u2.ID)
+	})
+
 	d := &domain.Device{
 		ID: domain.NewID(), UserID: u.ID, Name: "relay-box", KeyGen: 1,
 		CreatedAt: time.Now().UTC(),
@@ -56,5 +69,6 @@ func TestPGDeviceRelay(t *testing.T) {
 	t.Run("eventsBeforeUpsert", func(t *testing.T) { testDeviceRelayEventsBeforeSessionUpsert(t, st, d.ID) })
 	t.Run("commands", func(t *testing.T) { testDeviceRelayCommands(t, st, d) })
 	t.Run("listForUser", func(t *testing.T) { testDeviceRelayListForUser(t, st, d.ID, u.ID) })
+	t.Run("fingerprintAndRevoke", func(t *testing.T) { testDeviceFingerprintAndRevoke(t, st, u.ID, u2.ID) })
 	t.Run("pairingOffers", func(t *testing.T) { testDevicePairingOffers(t, st, d.ID, u.ID) })
 }

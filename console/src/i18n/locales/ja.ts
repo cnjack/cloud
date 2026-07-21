@@ -980,6 +980,9 @@ export default {
       noSessions: 'セッションがまだありません。メッセージを送信して開始してください。',
       untitled: '無題のセッション',
       offlineBanner: 'このデバイスはオフラインです。再接続されるまでメッセージを送信できません。',
+      delete: 'デバイスを削除',
+      deleteConfirm: '{name} を削除しますか？デバイスはサインアウトされ、同期が停止します。セッション履歴はサーバーに保持されます。',
+      deleted: 'デバイス {name} を削除しました',
       status: {
         idle: 'アイドル',
         running: '実行中',

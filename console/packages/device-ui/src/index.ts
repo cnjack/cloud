@@ -80,6 +80,7 @@ export {
   useSendDeviceMessage,
   useStopDeviceSession,
   useRespondDeviceApproval,
+  useDeleteDevice,
 } from './api/deviceQueries';
 
 // --- compose (M12 shared compose panel) ---------------------------------------

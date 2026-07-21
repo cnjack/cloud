@@ -18,6 +18,10 @@ import (
 type deviceRelayStore interface {
 	CreateDevice(context.Context, *domain.Device) error
 	GetDevice(context.Context, string) (*domain.Device, error)
+	FindDeviceByFingerprint(context.Context, string, string) (*domain.Device, error)
+	RevokeDevice(context.Context, string, time.Time) error
+	CreateDeviceToken(context.Context, *domain.DeviceToken) error
+	GetDeviceTokenByHash(context.Context, string) (*domain.DeviceToken, error)
 	UpdateDeviceCapabilities(context.Context, string, []byte) error
 	UpsertDeviceSession(context.Context, *domain.DeviceSession) error
 	ListDeviceSessions(context.Context, string) ([]domain.DeviceSession, error)
@@ -348,4 +352,101 @@ func TestDeviceRelayMemStore(t *testing.T) {
 	t.Run("eventsBeforeUpsert", func(t *testing.T) { testDeviceRelayEventsBeforeSessionUpsert(t, m, d.ID) })
 	t.Run("commands", func(t *testing.T) { testDeviceRelayCommands(t, m, d) })
 	t.Run("listForUser", func(t *testing.T) { testDeviceRelayListForUser(t, m, d.ID, "user-1") })
+	t.Run("fingerprintAndRevoke", func(t *testing.T) { testDeviceFingerprintAndRevoke(t, m, "user-1", "user-2") })
+}
+
+// testDeviceFingerprintAndRevoke covers the M16 store contract: the
+// (user_id, fingerprint_hash) dedup invariant, the fingerprint lookup, and
+// RevokeDevice's soft-delete semantics (idempotency, list filtering, token
+// kill via the devices join, fingerprint freed for re-login).
+func testDeviceFingerprintAndRevoke(t *testing.T, st deviceRelayStore, userID, otherUserID string) {
+	t.Helper()
+	ctx := context.Background()
+	const fpA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const fpB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	mk := func(hash string) *domain.Device {
+		return &domain.Device{
+			ID: domain.NewID(), UserID: userID, Name: "fp-box", KeyGen: 1,
+			FingerprintHash: hash, CreatedAt: time.Now().UTC(),
+		}
+	}
+
+	// Empty-string fingerprints never collide (pre-M16 devices coexist).
+	if err := st.CreateDevice(ctx, mk("")); err != nil {
+		t.Fatalf("create fingerprint-free device: %v", err)
+	}
+	if err := st.CreateDevice(ctx, mk("")); err != nil {
+		t.Fatalf("second fingerprint-free device must not collide: %v", err)
+	}
+
+	a := mk(fpA)
+	if err := st.CreateDevice(ctx, a); err != nil {
+		t.Fatalf("create device A: %v", err)
+	}
+	// A second NON-REVOKED device with the same (user, hash) is rejected.
+	if err := st.CreateDevice(ctx, mk(fpA)); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("duplicate fingerprint: err=%v want ErrAlreadyExists", err)
+	}
+	// ... but another user may hold the same hash, and another hash is fine.
+	otherUser := mk(fpA)
+	otherUser.UserID = otherUserID
+	if err := st.CreateDevice(ctx, otherUser); err != nil {
+		t.Fatalf("same fingerprint for another user: %v", err)
+	}
+	if err := st.CreateDevice(ctx, mk(fpB)); err != nil {
+		t.Fatalf("different fingerprint: %v", err)
+	}
+
+	// The lookup finds only the user's own live row.
+	got, err := st.FindDeviceByFingerprint(ctx, userID, fpA)
+	if err != nil || got.ID != a.ID {
+		t.Fatalf("find by fingerprint: %+v err=%v, want device A", got, err)
+	}
+	if _, err := st.FindDeviceByFingerprint(ctx, userID, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("find unknown fingerprint: err=%v want ErrNotFound", err)
+	}
+	if _, err := st.FindDeviceByFingerprint(ctx, otherUserID+"-none", fpA); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("find another user's fingerprint: err=%v want ErrNotFound", err)
+	}
+
+	// RevokeDevice: stamps revoked_at; a repeat is ErrNotFound; the row drops
+	// out of ListDevicesForUser; its tokens stop resolving.
+	now := time.Now().UTC()
+	tok := &domain.DeviceToken{ID: domain.NewID(), DeviceID: a.ID, TokenHash: "hash-a", CreatedAt: now}
+	if err := st.CreateDeviceToken(ctx, tok); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	if err := st.RevokeDevice(ctx, a.ID, now); err != nil {
+		t.Fatalf("revoke device: %v", err)
+	}
+	if err := st.RevokeDevice(ctx, a.ID, now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("re-revoke: err=%v want ErrNotFound", err)
+	}
+	if err := st.RevokeDevice(ctx, "no-such-device", now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoke unknown: err=%v want ErrNotFound", err)
+	}
+	if _, err := st.GetDeviceTokenByHash(ctx, "hash-a"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked device's token still resolves: err=%v want ErrNotFound", err)
+	}
+	devices, err := st.ListDevicesForUser(ctx, userID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, d := range devices {
+		if d.ID == a.ID {
+			t.Fatalf("revoked device still listed: %+v", d)
+		}
+	}
+	if _, err := st.FindDeviceByFingerprint(ctx, userID, fpA); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked device still claims its fingerprint: err=%v want ErrNotFound", err)
+	}
+	// The freed fingerprint can be claimed by a fresh row (re-login).
+	fresh := mk(fpA)
+	if err := st.CreateDevice(ctx, fresh); err != nil {
+		t.Fatalf("re-login after revoke: %v", err)
+	}
+	got, err = st.FindDeviceByFingerprint(ctx, userID, fpA)
+	if err != nil || got.ID != fresh.ID {
+		t.Fatalf("find after re-login: %+v err=%v, want the fresh row", got, err)
+	}
 }

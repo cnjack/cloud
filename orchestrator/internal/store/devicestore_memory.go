@@ -13,6 +13,13 @@ import (
 func (m *MemStore) CreateDevice(_ context.Context, d *domain.Device) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Mirror the PG partial unique index (0036): at most one non-revoked
+	// device per (user, fingerprint) — the login dedup invariant.
+	if d.FingerprintHash != "" {
+		if _, err := m.findDeviceByFingerprintLocked(d.UserID, d.FingerprintHash); err == nil {
+			return ErrAlreadyExists
+		}
+	}
 	m.devices[d.ID] = *d
 	return nil
 }
@@ -44,6 +51,7 @@ func (m *MemStore) UpsertDeviceRegistration(_ context.Context, d *domain.Device)
 	existing.Pubkey = d.Pubkey
 	existing.E2EE = d.E2EE
 	existing.LastSeenAt = d.LastSeenAt
+	existing.FingerprintHash = d.FingerprintHash
 	m.devices[d.ID] = existing
 	return nil
 }
@@ -119,6 +127,45 @@ func (m *MemStore) ListDevicesForUser(_ context.Context, userID string) ([]domai
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
 	return out, nil
+}
+
+// findDeviceByFingerprintLocked returns the user's non-revoked device with the
+// given fingerprint hash (ErrNotFound when none). Caller holds m.mu.
+func (m *MemStore) findDeviceByFingerprintLocked(userID, fingerprintHash string) (*domain.Device, error) {
+	var best *domain.Device
+	for _, d := range m.devices {
+		if d.UserID != userID || d.FingerprintHash != fingerprintHash || d.RevokedAt != nil {
+			continue
+		}
+		cp := d
+		if best == nil || cp.CreatedAt.Before(best.CreatedAt) ||
+			(cp.CreatedAt.Equal(best.CreatedAt) && cp.ID < best.ID) {
+			best = &cp
+		}
+	}
+	if best == nil {
+		return nil, ErrNotFound
+	}
+	return best, nil
+}
+
+func (m *MemStore) FindDeviceByFingerprint(_ context.Context, userID, fingerprintHash string) (*domain.Device, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.findDeviceByFingerprintLocked(userID, fingerprintHash)
+}
+
+func (m *MemStore) RevokeDevice(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.devices[id]
+	if !ok || d.RevokedAt != nil {
+		return ErrNotFound
+	}
+	at = at.UTC()
+	d.RevokedAt = &at
+	m.devices[id] = d
+	return nil
 }
 
 // --- device relay: sessions / events / commands (docs/17 §4) ------------------
