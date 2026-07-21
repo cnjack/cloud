@@ -48,6 +48,40 @@ substitute a mock, fake implementation, or fallback that looks successful.
 - Do not change Gitea OAuth `redirect_uris` through an API `PATCH`: it rotates
   the client secret. Change it through the provider UI instead.
 
+## Device relay (jcode ⇄ jcloud)
+
+The device-relay feature lets local jcode instances log in (RFC 8628 device
+code), be remote-controlled over an outbound-only relay, and renders in
+console/mobile — all end-to-end encrypted. Durable rules for this area:
+
+- **Design docs are the contract.** `docs/17-jcode-device-relay.md` (relay,
+  E2EE, pairing) and `docs/18-device-mesh-dispatch.md` (dispatch, design-only).
+  Change the doc first when deviating; record implementation reality back into
+  the doc (field names, status codes).
+- **Ciphertext discipline.** Everything under the device namespace
+  (`device_sessions.meta`, `device_events.envelope`, command payloads,
+  `devices.capabilities`) is an opaque envelope — never parse it server-side.
+  Plaintext is limited to routing metadata: ids, seq, kind, timestamps, online
+  state. New write paths must preserve this; e2e proves it with psql
+  zero-plaintext greps.
+- **Migrations are append-only and idempotent** (`IF NOT EXISTS`, guarded
+  `DO $$ ... $$` blocks). New device tables need FK `ON DELETE CASCADE` chains
+  up to `users` — `0030` missed `device_events` and orphaned rows (fixed in
+  `0031`); always test cleanup-by-user-delete.
+- **e2e journeys** (`e2e/j*.sh`, keyed `Jx-Sn`): `j7` login, `j8` relay,
+  `j9` E2EE, `j10` QR pairing, `j11` compose facets. They run against the
+  OrbStack stack (context `orbstack`, ns `jcloud`), seed a user session
+  directly via psql (`HashToken` = sha256-hex), and drive a real `jcode web`
+  against in-cluster mockllm. Reuse `lib.sh` helpers; register new journeys in
+  `e2e.sh` (`ONLY=` + teardown cleanup).
+- **Upgrade order: orchestrator before connector.** Old orchestrators reject
+  upserts carrying new top-level fields (strict decode).
+- **Deploy** to the company cluster (context `wangwenhui@local`, ns `jcode`):
+  push the branch, `gh workflow run images.yml --ref <branch>` (builds amd64
+  images, pushes ghcr `latest`, cuts a release tag only on main), then
+  `kubectl rollout restart deploy/orchestrator deploy/console`. Verify
+  `schema_migrations` and smoke the public path (no port-forward) afterwards.
+
 ## Engineering workflow
 
 ### Keep design prototypes page-scoped
