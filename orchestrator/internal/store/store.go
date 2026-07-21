@@ -727,6 +727,22 @@ type Store interface {
 	// FOR THIS DEVICE.
 	ResolveDevicePairing(ctx context.Context, deviceID, pairingID, status string, wrap []byte, at time.Time) error
 
+	// --- Device pairing offers (docs/17 §6.3 — M11 scan-to-pair) -------------
+	// An offer is a device-issued, single-use ticket (secret hash + expiry)
+	// that lets a QR-scanning client open a pairing without a prior account
+	// link to the device.
+
+	// CreateDevicePairingOffer inserts a fresh offer row. The caller pre-fills
+	// id/device_id/secret_hash/expires_at/created_at.
+	CreateDevicePairingOffer(ctx context.Context, o *domain.DevicePairingOffer) error
+	// GetDevicePairingOffer returns an offer by id (ErrNotFound when unknown).
+	GetDevicePairingOffer(ctx context.Context, offerID string) (*domain.DevicePairingOffer, error)
+	// ClaimDevicePairingOffer stamps claimed_by/claimed_at, but ONLY while the
+	// offer is unclaimed — the first claim wins, a concurrent/second claim gets
+	// ErrAlreadyExists; ErrNotFound when no such offer exists. Expiry is the
+	// caller's check (the row stays inspectable after it lapses).
+	ClaimDevicePairingOffer(ctx context.Context, offerID, userID string, at time.Time) error
+
 	// RevokeDeviceTokens revokes ALL of the device's live device tokens
 	// (POST /internal/v1/device/revoke — the device revokes its own token at
 	// logout). Already-revoked rows are untouched, so the call is an

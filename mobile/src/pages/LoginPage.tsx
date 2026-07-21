@@ -2,11 +2,17 @@ import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@jcloud/device-ui';
 import { DEFAULT_CLOUD_URL, useMobileAuth, validateCloudUrl } from '../auth';
+import { startCloudLogin } from '../cloudOAuth';
 
 /**
  * LoginPage — cloud URL (https; http only for loopback dev rigs) + a user
  * session token. Validated against GET /api/v1/me before persisting.
  * `onGuide` opens the in-app user guide (M7) without signing in.
+ *
+ * M11 W2: the primary path is "Sign in with cloud" — the system browser runs
+ * the OAuth flow and returns the session token over the jcode://auth deep
+ * link (see cloudOAuth.ts). The manual token paste stays as the fallback
+ * (locked-down browsers, consoles without OAuth providers).
  */
 export function LoginPage({ onGuide }: { onGuide?: () => void }) {
   const { t } = useTranslation();
@@ -15,6 +21,8 @@ export function LoginPage({ onGuide }: { onGuide?: () => void }) {
   const [token, setToken] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [oauthBusy, setOauthBusy] = useState(false);
+  const [oauthStarted, setOauthStarted] = useState(false);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -39,6 +47,28 @@ export function LoginPage({ onGuide }: { onGuide?: () => void }) {
       }
     } finally {
       setBusy(false);
+    }
+  };
+
+  const signInWithCloud = async () => {
+    if (oauthBusy) return;
+    setError(null);
+    setOauthBusy(true);
+    try {
+      const result = await startCloudLogin(cloudUrl);
+      if (!result.ok) {
+        setError(
+          result.reason === 'open_failed'
+            ? t('mobile.login.oauthOpenFailed')
+            : t(result.reason === 'http_not_allowed' ? 'mobile.login.httpNotAllowed' : 'mobile.login.invalidUrl'),
+        );
+        return;
+      }
+      // The session lands via the jcode://auth deep link; show the waiting
+      // hint in case the user returns to the app manually first.
+      setOauthStarted(true);
+    } finally {
+      setOauthBusy(false);
     }
   };
 
@@ -70,6 +100,23 @@ export function LoginPage({ onGuide }: { onGuide?: () => void }) {
             />
           </label>
 
+          <Button
+            type="button"
+            variant="primary"
+            loading={oauthBusy}
+            onClick={() => void signInWithCloud()}
+            data-testid="login-oauth"
+          >
+            {t('mobile.login.signInWithCloud')}
+          </Button>
+          {oauthStarted && !auth.signedIn && (
+            <p className="field-hint" data-testid="login-oauth-waiting">{t('mobile.login.oauthWaiting')}</p>
+          )}
+
+          <div className="login-divider" aria-hidden>
+            <span>{t('mobile.login.manualFallback')}</span>
+          </div>
+
           <label className="field">
             <span className="field-label">{t('mobile.login.token')}</span>
             <input
@@ -87,7 +134,7 @@ export function LoginPage({ onGuide }: { onGuide?: () => void }) {
 
           {error && <p className="form-error" role="alert" data-testid="login-error">{error}</p>}
 
-          <Button type="submit" variant="primary" disabled={!token.trim()} loading={busy}>
+          <Button type="submit" variant="secondary" disabled={!token.trim()} loading={busy}>
             {busy ? t('mobile.login.signingIn') : t('mobile.login.submit')}
           </Button>
 

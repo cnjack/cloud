@@ -141,6 +141,16 @@ func (m *MemStore) AppendDeviceEvents(_ context.Context, deviceID, sessionID str
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := deviceSessionKey(deviceID, sessionID)
+	// Mirror the PG store: an event batch auto-creates a minimal session row
+	// (the connector uploads events ~10x more often than it mirrors sessions),
+	// so ListDeviceSessions sees the session right away. A later
+	// UpsertDeviceSession overwrites meta/status wholesale.
+	if _, ok := m.deviceSessions[key]; !ok {
+		m.deviceSessions[key] = domain.DeviceSession{
+			DeviceID: deviceID, SessionID: sessionID,
+			Status: domain.DeviceSessionRunning, UpdatedAt: time.Now().UTC(),
+		}
+	}
 	res := &DeviceEventBatch{Accepted: []int64{}, Conflicted: []int64{}}
 	for _, ev := range events {
 		if m.deviceEventSeqLocked(key, ev.Seq) {
@@ -316,5 +326,42 @@ func (m *MemStore) RevokeDeviceTokens(_ context.Context, deviceID string, at tim
 			m.deviceTokens[id] = tok
 		}
 	}
+	return nil
+}
+
+// --- device pairing offers (docs/17 §6.3 — M11 scan-to-pair) ------------------
+
+func (m *MemStore) CreateDevicePairingOffer(_ context.Context, o *domain.DevicePairingOffer) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deviceOffers[o.ID] = *o
+	return nil
+}
+
+func (m *MemStore) GetDevicePairingOffer(_ context.Context, offerID string) (*domain.DevicePairingOffer, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o, ok := m.deviceOffers[offerID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := o
+	return &cp, nil
+}
+
+func (m *MemStore) ClaimDevicePairingOffer(_ context.Context, offerID, userID string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o, ok := m.deviceOffers[offerID]
+	if !ok {
+		return ErrNotFound
+	}
+	if o.ClaimedAt != nil {
+		return ErrAlreadyExists
+	}
+	at = at.UTC()
+	o.ClaimedBy = &userID
+	o.ClaimedAt = &at
+	m.deviceOffers[offerID] = o
 	return nil
 }

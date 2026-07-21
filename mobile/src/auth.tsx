@@ -14,6 +14,7 @@
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import { consumePendingCloudUrl, watchAuthDeepLinks } from './cloudOAuth';
 
 export const DEFAULT_CLOUD_URL = 'https://cloud.j-code.net';
 
@@ -153,6 +154,24 @@ export function MobileAuthProvider({ children }: { children: ReactNode }) {
     }),
     [stored, me, login, logout],
   );
+
+  // Deep-link return of the OAuth round trip (M11 W2): jcode://auth#token=…
+  // arrives here (warm or cold start) and becomes the ordinary Bearer login —
+  // the same credential the manual paste path takes.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void watchAuthDeepLinks((token) => {
+      void login(consumePendingCloudUrl(stored?.cloudUrl ?? ''), token);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [login, stored?.cloudUrl]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -126,6 +126,9 @@ type Server struct {
 	// Device pairing expiry window. Zero => domain.DevicePairingWindow (10m).
 	// Overridable by tests that exercise the expiry branch without sleeping.
 	devicePairingWindow time.Duration
+	// Pairing-offer validity window (M11 scan-to-pair). Zero =>
+	// domain.DevicePairingOfferWindow (10m). Test-overridable.
+	devicePairingOfferWindow time.Duration
 }
 
 // boardValidator is the slice of *jtype.Client the admin link API needs to
@@ -386,6 +389,9 @@ func (s *Server) Handler() http.Handler {
 	// pairing and polls its state; the device decides over the internal API.
 	mux.Handle("POST /api/v1/devices/{id}/pairings", s.authed(s.handleCreateDevicePairing))
 	mux.Handle("GET /api/v1/devices/{id}/pairings/{pid}", s.authed(s.handleGetDevicePairing))
+	// Pairing offers (docs/17 §6.3 — M11 scan-to-pair): the device mints a
+	// single-use offer (internal API), the QR-scanning client claims it.
+	mux.Handle("POST /api/v1/pairing-offers/{offer_id}/claim", s.authed(s.handleClaimPairingOffer))
 
 	mux.Handle("POST /api/v1/projects", s.authed(s.handleCreateProject))
 	mux.Handle("GET /api/v1/projects", s.authed(s.handleListProjects))
@@ -549,6 +555,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /internal/v1/device/pairings", s.authed(s.handleListDevicePairings))
 	mux.Handle("GET /internal/v1/device/pairings/{pid}", s.authed(s.handleGetOwnPairing))
 	mux.Handle("POST /internal/v1/device/pairings/{pid}/respond", s.authed(s.handleRespondDevicePairing))
+	mux.Handle("POST /internal/v1/device/pairing-offers", s.authed(s.handleCreatePairingOffer))
 	mux.Handle("POST /internal/v1/device/revoke", s.authed(s.handleDeviceRevoke))
 	mux.Handle("POST /internal/v1/runs/{id}/artifact", s.runToken(s.handleIngestArtifact))
 	// M3 runner contract: the runner fetches its source bundle, uploads the

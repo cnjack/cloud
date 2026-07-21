@@ -52,6 +52,8 @@ func TestPGDeviceRelay(t *testing.T) {
 
 	t.Run("sessions", func(t *testing.T) { testDeviceRelaySessions(t, st, d.ID) })
 	t.Run("events", func(t *testing.T) { testDeviceRelayEvents(t, st, d.ID) })
+	t.Run("eventsBeforeUpsert", func(t *testing.T) { testDeviceRelayEventsBeforeSessionUpsert(t, st, d.ID) })
 	t.Run("commands", func(t *testing.T) { testDeviceRelayCommands(t, st, d) })
 	t.Run("listForUser", func(t *testing.T) { testDeviceRelayListForUser(t, st, d.ID, u.ID) })
+	t.Run("pairingOffers", func(t *testing.T) { testDevicePairingOffers(t, st, d.ID, u.ID) })
 }

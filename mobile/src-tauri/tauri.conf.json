@@ -23,6 +23,16 @@
       "capabilities": ["default"]
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["jcode"]
+      },
+      "mobile": [
+        { "scheme": ["jcode"], "host": "auth" }
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

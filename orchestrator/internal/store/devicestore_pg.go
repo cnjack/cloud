@@ -166,6 +166,21 @@ func (s *PGStore) AppendDeviceEvents(ctx context.Context, deviceID, sessionID st
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// The connector batches events every ~200ms but only mirrors session rows
+	// on its 2s sync tick, so the first batches of a fresh session can arrive
+	// before any device_sessions row exists — and the device_events_session_fk
+	// would reject them. Auto-create a minimal placeholder row in the same
+	// transaction: meta stays NULL (bytea is nullable) and the connector's
+	// regular upsert fills meta/status in when it lands (ON CONFLICT DO UPDATE
+	// there only touches meta/status/updated_at).
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO device_sessions (device_id, session_id, status, updated_at)
+		 VALUES ($1,$2,$3,now())
+		 ON CONFLICT (device_id, session_id) DO NOTHING`,
+		deviceID, sessionID, domain.DeviceSessionRunning); err != nil {
+		return nil, fmt.Errorf("append device events: ensure session row: %w", err)
+	}
+
 	res := &DeviceEventBatch{Accepted: []int64{}, Conflicted: []int64{}}
 	for _, ev := range events {
 		tag, err := tx.Exec(ctx,
@@ -389,4 +404,60 @@ func (s *PGStore) RevokeDeviceTokens(ctx context.Context, deviceID string, at ti
 		return fmt.Errorf("revoke device tokens: %w", err)
 	}
 	return nil
+}
+
+// --- device pairing offers (docs/17 §6.3 — M11 scan-to-pair) ------------------
+
+const devicePairingOfferCols = `id, device_id, secret_hash, claimed_by, claimed_at, expires_at, created_at`
+
+func scanDevicePairingOffer(row pgx.Row) (*domain.DevicePairingOffer, error) {
+	var o domain.DevicePairingOffer
+	err := row.Scan(&o.ID, &o.DeviceID, &o.SecretHash, &o.ClaimedBy, &o.ClaimedAt, &o.ExpiresAt, &o.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan device pairing offer: %w", err)
+	}
+	return &o, nil
+}
+
+func (s *PGStore) CreateDevicePairingOffer(ctx context.Context, o *domain.DevicePairingOffer) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO device_pairing_offers (`+devicePairingOfferCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		o.ID, o.DeviceID, o.SecretHash, o.ClaimedBy, o.ClaimedAt, o.ExpiresAt, o.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("insert device pairing offer: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetDevicePairingOffer(ctx context.Context, offerID string) (*domain.DevicePairingOffer, error) {
+	return scanDevicePairingOffer(s.pool.QueryRow(ctx,
+		`SELECT `+devicePairingOfferCols+` FROM device_pairing_offers WHERE id=$1`, offerID))
+}
+
+func (s *PGStore) ClaimDevicePairingOffer(ctx context.Context, offerID, userID string, at time.Time) error {
+	// Only an unclaimed offer takes the stamp: the first claim wins, a second
+	// (or concurrent) claim updates nothing and probes to tell 404 from 409.
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE device_pairing_offers SET claimed_by=$2, claimed_at=$3
+		 WHERE id=$1 AND claimed_at IS NULL`,
+		offerID, userID, at)
+	if err != nil {
+		return fmt.Errorf("claim device pairing offer: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	var claimedAt *time.Time
+	err = s.pool.QueryRow(ctx,
+		`SELECT claimed_at FROM device_pairing_offers WHERE id=$1`, offerID).Scan(&claimedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("claim device pairing offer: probe: %w", err)
+	}
+	return ErrAlreadyExists
 }

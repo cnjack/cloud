@@ -122,6 +122,64 @@ func testDeviceRelayEvents(t *testing.T, st deviceRelayStore, deviceID string) {
 	}
 }
 
+func testDeviceRelayEventsBeforeSessionUpsert(t *testing.T, st deviceRelayStore, deviceID string) {
+	t.Helper()
+	ctx := context.Background()
+	sid := "s-auto"
+
+	// Events land BEFORE any session upsert (the connector batches durable
+	// events every ~200ms but only mirrors session rows on its 2s sync tick):
+	// the append auto-creates a minimal session row, so nothing fails and the
+	// log replays immediately.
+	batch := []*domain.DeviceEvent{mkEvent(deviceID, sid, 1, "user"), mkEvent(deviceID, sid, 2, "assistant")}
+	res, err := st.AppendDeviceEvents(ctx, deviceID, sid, batch)
+	if err != nil {
+		t.Fatalf("append before session upsert: %v", err)
+	}
+	if len(res.Accepted) != 2 || len(res.Conflicted) != 0 || res.MaxSeq != 2 {
+		t.Fatalf("batch = %+v want accepted 2 / conflicted 0 / max 2", res)
+	}
+	evs, err := st.ListDeviceEvents(ctx, deviceID, sid, 0, 100)
+	if err != nil || len(evs) != 2 {
+		t.Fatalf("replay = %d events err=%v want 2 readable immediately", len(evs), err)
+	}
+
+	find := func() *domain.DeviceSession {
+		sessions, err := st.ListDeviceSessions(ctx, deviceID)
+		if err != nil {
+			t.Fatalf("list sessions: %v", err)
+		}
+		for i := range sessions {
+			if sessions[i].SessionID == sid {
+				return &sessions[i]
+			}
+		}
+		return nil
+	}
+
+	// The placeholder row is a bare running session with empty meta.
+	auto := find()
+	if auto == nil || auto.Status != domain.DeviceSessionRunning || len(auto.Meta) != 0 {
+		t.Fatalf("auto-created session = %+v want running with empty meta", auto)
+	}
+
+	// The connector's regular upsert lands later and fills meta/status in
+	// without disturbing the events.
+	if err := st.UpsertDeviceSession(ctx, &domain.DeviceSession{
+		DeviceID: deviceID, SessionID: sid, Status: domain.DeviceSessionIdle,
+		Meta: []byte(`{"title":"late"}`), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("late upsert: %v", err)
+	}
+	auto = find()
+	if auto == nil || auto.Status != domain.DeviceSessionIdle || string(auto.Meta) != `{"title":"late"}` {
+		t.Fatalf("session after late upsert = %+v want idle with meta", auto)
+	}
+	if evs, _ = st.ListDeviceEvents(ctx, deviceID, sid, 0, 100); len(evs) != 2 {
+		t.Fatalf("events after late upsert = %d want 2", len(evs))
+	}
+}
+
 func testDeviceRelayCommands(t *testing.T, st deviceRelayStore, d *domain.Device) {
 	t.Helper()
 	ctx := context.Background()
@@ -229,6 +287,7 @@ func TestDeviceRelayMemStore(t *testing.T) {
 	d := mkDevice(t, m, "user-1")
 	t.Run("sessions", func(t *testing.T) { testDeviceRelaySessions(t, m, d.ID) })
 	t.Run("events", func(t *testing.T) { testDeviceRelayEvents(t, m, d.ID) })
+	t.Run("eventsBeforeUpsert", func(t *testing.T) { testDeviceRelayEventsBeforeSessionUpsert(t, m, d.ID) })
 	t.Run("commands", func(t *testing.T) { testDeviceRelayCommands(t, m, d) })
 	t.Run("listForUser", func(t *testing.T) { testDeviceRelayListForUser(t, m, d.ID, "user-1") })
 }

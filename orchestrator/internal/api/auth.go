@@ -62,6 +62,10 @@ type oauthState struct {
 	Provider string `json:"p"`
 	Mode     string `json:"m"` // "login" | "link"
 	UserID   string `json:"u"` // set for link mode
+	// Client marks a login started by the mobile app (client=mobile): the
+	// callback then hands the session token to the app via the fixed
+	// jcode://auth deep link instead of the console redirect.
+	Client string `json:"c,omitempty"`
 	// ReturnTo is a verified same-console relative path. It is signed together
 	// with the rest of state so a post-OAuth redirect cannot be forged.
 	ReturnTo string `json:"r,omitempty"`
@@ -73,6 +77,16 @@ const (
 	oauthModeIntegration = "integration"
 
 	integrationOAuthCookieName = "jcloud_integration_oauth"
+
+	// oauthClientMobile is the only accepted value of the login endpoint's
+	// ?client= parameter. It selects the deep-link completion; no other value
+	// (and no arbitrary redirect target) is accepted, so the login endpoint
+	// can never be used as an open redirector.
+	oauthClientMobile = "mobile"
+	// mobileAuthDeepLink is the fixed app deep link receiving the session
+	// token. The token rides in the FRAGMENT so it never appears in server
+	// logs, referer headers, or browser history URLs.
+	mobileAuthDeepLink = "jcode://auth"
 )
 
 type pendingIntegrationOAuth struct {
@@ -215,6 +229,14 @@ func (s *Server) startOAuth(w http.ResponseWriter, r *http.Request, mode, userID
 		writeError(w, http.StatusNotFound, "not_found", "unknown or unconfigured provider")
 		return
 	}
+	// ?client=mobile opts into the mobile deep-link completion; it is the
+	// only accepted client value and only for plain logins (link mode is a
+	// console flow).
+	client := strings.TrimSpace(r.URL.Query().Get("client"))
+	if client != "" && (client != oauthClientMobile || mode != oauthModeLogin) {
+		writeError(w, http.StatusBadRequest, "bad_request", "unsupported client value")
+		return
+	}
 	nonce := randToken()
 	http.SetCookie(w, &http.Cookie{
 		Name:     stateCookieName,
@@ -226,7 +248,7 @@ func (s *Server) startOAuth(w http.ResponseWriter, r *http.Request, mode, userID
 		MaxAge:   600, // 10 minutes to complete the round trip
 	})
 	state := s.signState(oauthState{
-		Nonce: nonce, Provider: providerID, Mode: mode, UserID: userID,
+		Nonce: nonce, Provider: providerID, Mode: mode, UserID: userID, Client: client,
 		ReturnTo: safeOAuthReturnTo(r.URL.Query().Get("return_to")),
 	})
 	redirectURI := s.callbackRedirectURI(r, providerID)
@@ -329,7 +351,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.completeLink(w, r, prov.ID(), ou, accessEnc, refreshEnc, expiresAt, st.UserID, st.ReturnTo)
 		return
 	}
-	s.completeLogin(w, r, prov.ID(), ou, accessEnc, refreshEnc, expiresAt)
+	s.completeLogin(w, r, prov.ID(), ou, accessEnc, refreshEnc, expiresAt, st.Client)
 }
 
 func (s *Server) integrationOAuthProvider(id domain.GitProvider, host, clientID, clientSecret string) provider.OAuthProvider {
@@ -490,8 +512,10 @@ func (s *Server) completeLink(w http.ResponseWriter, r *http.Request, providerID
 // completeLogin upserts the user/identity, mints a session, sets the cookie and
 // redirects to CONSOLE_URL with the welcome param (blueprint §2 seam contract:
 // first user => ?welcome=first-admin, other new user => ?welcome=new, returning
-// user => no param).
-func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, providerID domain.GitProvider, ou *provider.OAuthUser, accessEnc, refreshEnc []byte, expiresAt *time.Time) {
+// user => no param). A login started with client=mobile instead redirects to
+// the fixed jcode://auth deep link with the session token in the fragment, so
+// the mobile app picks the session up without a console round trip.
+func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, providerID domain.GitProvider, ou *provider.OAuthUser, accessEnc, refreshEnc []byte, expiresAt *time.Time, client string) {
 	ctx := r.Context()
 	welcome := ""
 	var user *domain.User
@@ -545,6 +569,21 @@ func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, providerI
 		return
 	}
 
+	if client == oauthClientMobile {
+		// Mobile completion: hand the session token to the app over the FIXED
+		// jcode://auth deep link, token in the fragment (never logged, never
+		// sent to a server). The cloud URL is not needed — the app already
+		// knows which cloud it started the login against.
+		token, err := s.mintSession(r, user.ID)
+		if err != nil {
+			s.log.Error("create session", "err", err)
+			s.redirectConsole(w, r, map[string]string{"login_error": "server_error"})
+			return
+		}
+		http.Redirect(w, r, mobileAuthDeepLink+"#token="+url.QueryEscape(token), http.StatusFound)
+		return
+	}
+
 	if err := s.startSession(w, r, user.ID); err != nil {
 		s.log.Error("create session", "err", err)
 		s.redirectConsole(w, r, map[string]string{"login_error": "server_error"})
@@ -558,12 +597,12 @@ func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, providerI
 	s.redirectConsole(w, r, params)
 }
 
-// startSession mints an opaque session token, stores its hash, and sets the
-// jcloud_session cookie (httpOnly, SameSite=Lax, Path=/).
-func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID string) error {
+// mintSession creates a session row and returns the plaintext token (shown to
+// the caller exactly once — only the hash is persisted).
+func (s *Server) mintSession(r *http.Request, userID string) (string, error) {
 	token, err := auth.GenerateRunToken()
 	if err != nil {
-		return err
+		return "", err
 	}
 	now := time.Now().UTC()
 	sess := &domain.Session{
@@ -574,6 +613,16 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID str
 		ExpiresAt: now.Add(s.sessionTTL()),
 	}
 	if err := s.st.CreateSession(r.Context(), sess); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// startSession mints an opaque session token, stores its hash, and sets the
+// jcloud_session cookie (httpOnly, SameSite=Lax, Path=/).
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID string) error {
+	token, err := s.mintSession(r, userID)
+	if err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{

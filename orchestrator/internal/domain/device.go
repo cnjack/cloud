@@ -151,3 +151,23 @@ type DevicePairing struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 }
+
+// DevicePairingOfferWindow is how long a QR pairing offer stays claimable
+// (docs/17 §6.3 — M11 scan-to-pair): the desktop shows the QR while the offer
+// is live; after the window the claim endpoint answers 410.
+const DevicePairingOfferWindow = 10 * time.Minute
+
+// DevicePairingOffer is a device-issued, single-use ticket that lets a client
+// in front of the device's QR code start a CEK pairing WITHOUT owning the
+// device on the cloud account yet. The device mints it (secret returned once,
+// rendered into the QR); only the SHA-256 hash is persisted. A successful
+// claim stamps claimed_by/claimed_at, turning the offer single-use.
+type DevicePairingOffer struct {
+	ID         string     `json:"id"`
+	DeviceID   string     `json:"-"`
+	SecretHash string     `json:"-"`
+	ClaimedBy  *string    `json:"-"`
+	ClaimedAt  *time.Time `json:"claimed_at,omitempty"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+}

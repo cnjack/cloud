@@ -174,6 +174,66 @@ func mustUser(t *testing.T, fx deviceFixture, deviceID string) string {
 	return mkSession(t, fx.st, d.UserID)
 }
 
+// TestDeviceEventsBeforeSessionUpsert covers the connector's upload race:
+// durable event batches (200ms) can arrive before the session mirror upsert
+// (2s tick). The append must auto-create a minimal session row instead of
+// failing, replay must read immediately, and the late upsert must fill meta
+// in undisturbed.
+func TestDeviceEventsBeforeSessionUpsert(t *testing.T) {
+	fx := setupDevice(t)
+	token, deviceID := fx.redeemFlow(t)
+
+	resp := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions/s9/events", token, map[string]any{
+		"events": []map[string]any{
+			{"seq": 1, "kind": "user_message", "payload": map[string]any{"text": "early"}},
+		},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("events before upsert: status=%d want 200", resp.StatusCode)
+	}
+	var v deviceEventsView
+	decode(t, resp, &v)
+	if len(v.Accepted) != 1 || v.MaxSeq != 1 {
+		t.Fatalf("batch = %+v want 1 accepted / max 1", v)
+	}
+
+	// Replay reads immediately through the client endpoint.
+	u := mustUser(t, fx, deviceID)
+	resp = do(t, http.MethodGet, fx.ts.URL+"/api/v1/devices/"+deviceID+"/sessions/s9/events?after_seq=0&limit=10", u, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("client events: status=%d want 200", resp.StatusCode)
+	}
+	var lv struct {
+		Events []deviceEventView `json:"events"`
+	}
+	decode(t, resp, &lv)
+	if len(lv.Events) != 1 || lv.Events[0].Seq != 1 {
+		t.Fatalf("client events = %+v want the early event", lv.Events)
+	}
+
+	// The auto-created placeholder is a bare running session.
+	sessions, err := fx.st.ListDeviceSessions(t.Context(), deviceID)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "s9" || sessions[0].Status != domain.DeviceSessionRunning || len(sessions[0].Meta) != 0 {
+		t.Fatalf("auto-created session = %+v want running with empty meta", sessions)
+	}
+
+	// The late upsert fills meta/status in; the durable events survive.
+	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, map[string]any{
+		"sessions": []map[string]any{{"session_id": "s9", "status": "idle", "meta": map[string]any{"title": "late"}}},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("late upsert: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	sessions, _ = fx.st.ListDeviceSessions(t.Context(), deviceID)
+	if len(sessions) != 1 || sessions[0].Status != domain.DeviceSessionIdle || string(sessions[0].Meta) != `{"title":"late"}` {
+		t.Fatalf("session after late upsert = %+v want idle with meta", sessions)
+	}
+}
+
 func TestDeviceEphemeral(t *testing.T) {
 	fx := setupDevice(t)
 	token, _ := fx.redeemFlow(t)

@@ -205,6 +205,10 @@ CREATE TABLE device_pairings (
 5. 客户端轮询 `GET /api/v1/devices/{id}/pairings/{pid}` 到 approved → 取回 wrap：ECDH(客户端私钥, ephemeral_pubkey) → 同一 HKDF 派生 → AES-256-GCM 解出 CEK → 存系统 keychain（手机）/ IndexedDB（console，per device_id 存 cek raw + key_gen）。
 6. 配对记录 10 分钟过期（读取方惰性结算为 expired）。
 
+**扫码配对（M11）**：设备侧 mint 一次性 offer（`POST /internal/v1/device/pairing-offers`，device token）→ `{offer_id, secret, expires_at}`（10min；服务端只存 secret 的 SHA-256），渲染 QR `jcode://pair?cloud=..&device=..&offer=..&secret=..`。扫码客户端调 `POST /api/v1/pairing-offers/{offer_id}/claim`（session，body `{secret, label, kty:"P-256", pubkey}`）→ 建 §6.3 标准 pairing 行（pending）+ `pairing.request` 指令（payload 额外带 `offer_id`，供设备识别自己的 offer 自动批准）→ offer 标已用（claimed_by/claimed_at，条件更新防并发双领）→ 201 `{pairing_id, device_id}`。负路径：secret 错 403、过期 410、已用 409。存储：`device_pairing_offers` 表（migration 0033）。claim 之后客户端走 §6.3 第 5 步原路径（轮询 → 解 wrap 存 CEK），移动端复用同一 PairingSession 恢复逻辑。
+
+**移动端 OAuth 登录（M11）**：`GET /auth/login/{provider}?client=mobile` 在签名 state 里携带 client 标记；callback 完成 startSession 后 302 到固定 `jcode://auth#token=<session-token>`（token 放 fragment，不进日志/历史）。只接受 `client=mobile` 一个值（link/integration 模式拒绝），不接受任意 redirect 参数，防开放跳转。app 侧 tauri-plugin-deep-link 回收（Android intent-filter / iOS URL types，scheme jcode host auth），token 验证后存为 Bearer 登录态；手动粘贴 token 保留为降级。
+
 ### 6.4 吊销与换代
 
 吊销设备/客户端 → 任一在线持有 CEK 的设备执行：生成 gen N+1 CEK → 逐客户端用其公钥包裹分发（走配对响应同一通道）→ 服务端 `devices.key_gen` 更新。被吊销方无法读新内容。

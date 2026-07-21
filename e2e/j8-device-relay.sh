@@ -296,9 +296,18 @@ JSON
   fi
 
   # --- J8-S3: durable event replay ------------------------------------------
+  # The durable replay is eventually consistent: the device_sessions row is
+  # created by the connector's 2s session-sync ticker while the event batcher
+  # uploads every 200ms, so the first batches of a fresh session can 500 on
+  # FK device_events_session_fk for up to ~2s before landing (see
+  # reports/M11-auth-ux.md 联调章节, finding #2). Poll briefly for the log.
   local evs ev_body kinds seqs_ok
-  ev_body="$(http_body "$(j8_get_code "/api/v1/devices/$J8_DEVICE_ID/sessions/$sid/events?after_seq=0&limit=1000")")"
-  evs="$(printf '%s' "$ev_body" | jq -r '.events | length' 2>/dev/null)"
+  for i in $(seq 1 15); do
+    ev_body="$(http_body "$(j8_get_code "/api/v1/devices/$J8_DEVICE_ID/sessions/$sid/events?after_seq=0&limit=1000")")"
+    evs="$(printf '%s' "$ev_body" | jq -r '.events | length' 2>/dev/null)"
+    [ "${evs:-0}" -gt 0 ] 2>/dev/null && break
+    sleep 1
+  done
   if [ "${evs:-0}" -gt 0 ] 2>/dev/null; then
     pass J8-S3 "events replay returns $evs durable events"
   else
