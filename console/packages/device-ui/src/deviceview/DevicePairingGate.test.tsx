@@ -47,9 +47,11 @@ describe('DevicePairingGate', () => {
     );
     await waitFor(() => expect(screen.getByTestId('device-pairing-gate')).toBeTruthy());
     expect(screen.queryByTestId('gated-surface')).toBeNull();
-    // The guide explains why the surface is hidden and offers pairing.
+    // The guide explains why the surface is hidden and offers pairing. The
+    // card mounts after the pairing hook's first effect — on slow runners
+    // (CI) it may lag the gate by a tick.
     expect(screen.getByText('Pairing required')).toBeTruthy();
-    expect(screen.getByTestId('device-pairing-card')).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('device-pairing-card')).toBeTruthy());
   });
 
   it('renders children for an e2ee device once the CEK is stored', async () => {

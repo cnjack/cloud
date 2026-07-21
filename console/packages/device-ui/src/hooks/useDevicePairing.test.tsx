@@ -115,7 +115,20 @@ describe('useDevicePairing', () => {
     expect((await rig.sessions.get(DEVICE))?.pairingId).toBe('pair-1');
 
     act(() => rig.approve());
-    await waitFor(() => expect(result.current.phase).toBe('ready'));
+    // CI-only flake surfaced phase 'error' here with no diagnosable detail —
+    // dump the underlying error on timeout so the next failure is
+    // self-explaining in the CI log.
+    try {
+      await waitFor(() => expect(result.current.phase).toBe('ready'));
+    } catch (err) {
+      console.error(
+        '[useDevicePairing.test] ready never came; phase=',
+        result.current.phase,
+        'error=',
+        result.current.error,
+      );
+      throw err;
+    }
     expect(result.current.pairingId).toBeNull();
 
     // The unwrapped CEK landed in the store with the device's key generation,

@@ -51,9 +51,11 @@ describe('encrypt/decrypt roundtrip', () => {
 });
 
 describe('cross-implementation test vectors', () => {
-  // Shared file next to the cloud repo at jcode-cloud-relay/shared/test-vectors.json:
-  // {vectors: [{origin, cek_b64, plaintext, envelope}]} — one vector produced by the
-  // Go stdlib side, one by WebCrypto. Both MUST open to exactly the recorded plaintext.
+  // Canonical copy lives IN THE REPO (same dir as this test) so CI checkouts
+  // are self-contained; the workspace-level file at
+  // jcode-cloud-relay/shared/test-vectors.json is the dev-time cross-repo
+  // source of truth and, when present, is preferred so both sides verify the
+  // freshest vectors.
   const vectorPath = [
     '../jcode-cloud-relay/shared/test-vectors.json',
     '../../jcode-cloud-relay/shared/test-vectors.json',
@@ -63,10 +65,10 @@ describe('cross-implementation test vectors', () => {
   ]
     .map((p) => resolve(process.cwd(), p))
     .find((p) => existsSync(p));
-  if (!vectorPath) {
-    throw new Error('jcode-cloud-relay/shared/test-vectors.json not found next to the cloud repo');
-  }
-  const { vectors } = JSON.parse(readFileSync(vectorPath, 'utf8')) as {
+  const vectorsJson = vectorPath
+    ? readFileSync(vectorPath, 'utf8')
+    : readFileSync(new URL('./test-vectors.json', import.meta.url), 'utf8');
+  const { vectors } = JSON.parse(vectorsJson) as {
     vectors: Array<{ origin: string; cek_b64: string; plaintext: string; envelope: DeviceEnvelope }>;
   };
 
