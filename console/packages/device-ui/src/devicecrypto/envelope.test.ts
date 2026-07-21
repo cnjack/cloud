@@ -8,6 +8,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import sharedVectors from './test-vectors.json';
 import {
   b64decode,
   decryptJson,
@@ -65,10 +66,11 @@ describe('cross-implementation test vectors', () => {
   ]
     .map((p) => resolve(process.cwd(), p))
     .find((p) => existsSync(p));
-  const vectorsJson = vectorPath
-    ? readFileSync(vectorPath, 'utf8')
-    : readFileSync(new URL('./test-vectors.json', import.meta.url), 'utf8');
-  const { vectors } = JSON.parse(vectorsJson) as {
+  // In-repo canonical copy (a JSON import — import.meta.url is NOT a file://
+  // URL under vitest's transform, so fs+URL tricks break on CI).
+  const { vectors } = (
+    vectorPath ? JSON.parse(readFileSync(vectorPath, 'utf8')) : sharedVectors
+  ) as {
     vectors: Array<{ origin: string; cek_b64: string; plaintext: string; envelope: DeviceEnvelope }>;
   };
 

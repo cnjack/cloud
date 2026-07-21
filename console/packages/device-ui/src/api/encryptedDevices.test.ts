@@ -5,7 +5,7 @@
  * through untouched; outgoing bodies switch to the envelope form only with a
  * CEK in hand.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { decryptJson, encryptJson, importCek, isEnvelope } from '../devicecrypto/envelope';
 import { createDeviceCrypto } from '../devicecrypto/provider';
 import { createMemoryCekStore } from '../devicecrypto/storage';
@@ -134,8 +134,10 @@ describe('withDeviceCrypto reads', () => {
     const got: DeviceStreamFrame[] = [];
     const errors: unknown[] = [];
     api.streamDevice(DEVICE, { onFrame: (f) => got.push(f), onError: (e) => errors.push(e) });
-    // The decrypt hop is async; flush microtasks.
-    await new Promise((r) => setTimeout(r, 0));
+    // The decrypt hop crosses several event-loop turns (WebCrypto runs off
+    // the main thread); a single macrotask flush is not enough on slow CI
+    // runners — wait for both frames with a bounded poll.
+    await vi.waitFor(() => expect(got.length).toBe(2));
 
     expect(errors).toEqual([]);
     expect(got[0]).toEqual({ event: 'device.status', data: { online: true } });
