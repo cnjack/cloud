@@ -74,6 +74,13 @@ console/mobile — all end-to-end encrypted. Durable rules for this area:
   directly via psql (`HashToken` = sha256-hex), and drive a real `jcode web`
   against in-cluster mockllm. Reuse `lib.sh` helpers; register new journeys in
   `e2e.sh` (`ONLY=` + teardown cleanup).
+- **psql via `kubectl exec`**: dollar-quote SQL literals (`$$x$$`) — single
+  quotes die in the nested `sh -c`. `psql -t -A` still appends the command
+  tag to `RETURNING` output; parse the first line only.
+- **Browser-driven e2e** lives in `e2e/browser/` (Playwright, see its README):
+  run the console vite dev with `VITE_API_PROXY_TARGET` pointing at your
+  port-forward, seed `jcloud_session` as a cookie on the vite origin, and set
+  `JCODE_NO_BROWSER=1` so the CLI never pops unmanaged tabs.
 - **Upgrade order: orchestrator before connector.** Old orchestrators reject
   upserts carrying new top-level fields (strict decode).
 - **Deploy** to the company cluster (context `wangwenhui@local`, ns `jcode`):

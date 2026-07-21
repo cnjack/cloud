@@ -28,6 +28,10 @@ set -uo pipefail
 
 API="$BASE/api/v1"
 
+# Never let a `jcode login` under test pop a browser tab on the dev machine —
+# the verification_uri points at a vite dev server that usually isn't running.
+export JCODE_NO_BROWSER=1
+
 # ---------------------------------------------------------------------------
 # Colours (disabled when not a tty or NO_COLOR set).
 # ---------------------------------------------------------------------------
