@@ -210,6 +210,17 @@ if (!dockerfile.includes('.pkg')) {
 // NOTE: plain `pnpm install` becomes frozen automatically when CI=true, which
 // would compare the stale lockfile against the just-rewritten overrides and
 // bail. These two installs MUST regenerate the lockfile, so opt out explicitly.
-run('pnpm', ['install', '--no-frozen-lockfile'], consoleRoot);
-run('pnpm', ['install', '--no-frozen-lockfile'], mobileRoot);
+// ERR_PNPM_CACHE_MISSING_AFTER_304 is a known pnpm store flake on runners —
+// prune the store and retry once before giving up.
+function installFresh(cwd) {
+  try {
+    run('pnpm', ['install', '--no-frozen-lockfile'], cwd);
+  } catch (err) {
+    log(`install failed in ${cwd} — pruning pnpm store and retrying once`);
+    run('pnpm', ['store', 'prune'], cwd);
+    run('pnpm', ['install', '--no-frozen-lockfile'], cwd);
+  }
+}
+installFresh(consoleRoot);
+installFresh(mobileRoot);
 log('done — .pkg state ready; build the image, then run with --restore');
