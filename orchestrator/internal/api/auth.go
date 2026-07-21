@@ -351,7 +351,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.completeLink(w, r, prov.ID(), ou, accessEnc, refreshEnc, expiresAt, st.UserID, st.ReturnTo)
 		return
 	}
-	s.completeLogin(w, r, prov.ID(), ou, accessEnc, refreshEnc, expiresAt, st.Client)
+	s.completeLogin(w, r, prov.ID(), ou, accessEnc, refreshEnc, expiresAt, st.Client, st.ReturnTo)
 }
 
 func (s *Server) integrationOAuthProvider(id domain.GitProvider, host, clientID, clientSecret string) provider.OAuthProvider {
@@ -515,7 +515,7 @@ func (s *Server) completeLink(w http.ResponseWriter, r *http.Request, providerID
 // user => no param). A login started with client=mobile instead redirects to
 // the fixed jcode://auth deep link with the session token in the fragment, so
 // the mobile app picks the session up without a console round trip.
-func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, providerID domain.GitProvider, ou *provider.OAuthUser, accessEnc, refreshEnc []byte, expiresAt *time.Time, client string) {
+func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, providerID domain.GitProvider, ou *provider.OAuthUser, accessEnc, refreshEnc []byte, expiresAt *time.Time, client, returnTo string) {
 	ctx := r.Context()
 	welcome := ""
 	var user *domain.User
@@ -593,6 +593,13 @@ func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, providerI
 	params := map[string]string{}
 	if welcome != "" {
 		params["welcome"] = welcome
+	}
+	// Honor the signed return_to from the login that started this flow (e.g.
+	// /device?user_code=…), so post-OAuth the user lands back where they
+	// needed to sign in instead of the default page.
+	if returnTo != "" {
+		s.redirectConsoleTo(w, r, returnTo, params)
+		return
 	}
 	s.redirectConsole(w, r, params)
 }
