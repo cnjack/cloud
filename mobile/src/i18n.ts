@@ -50,6 +50,9 @@ const en: ShellBundle = {
       lastSeen: 'Last seen {time}',
       neverSeen: 'Never seen',
     },
+    compose: {
+      toggle: 'Session options',
+    },
     session: {
       sendFailed: 'Could not send: {message}',
       deviceOffline: 'Device is offline',
@@ -112,6 +115,9 @@ const zhHans: ShellBundle = {
       offline: '离线',
       lastSeen: '最近在线 {time}',
       neverSeen: '从未在线',
+    },
+    compose: {
+      toggle: '会话选项',
     },
     session: {
       sendFailed: '发送失败：{message}',
@@ -176,6 +182,9 @@ const zhHant: ShellBundle = {
       lastSeen: '最近上線 {time}',
       neverSeen: '從未上線',
     },
+    compose: {
+      toggle: '工作階段選項',
+    },
     session: {
       sendFailed: '傳送失敗：{message}',
       deviceOffline: '裝置已離線',
@@ -239,6 +248,9 @@ const ja: ShellBundle = {
       lastSeen: '最終確認 {time}',
       neverSeen: '未接続',
     },
+    compose: {
+      toggle: 'セッションオプション',
+    },
     session: {
       sendFailed: '送信できませんでした: {message}',
       deviceOffline: 'デバイスはオフラインです',
@@ -301,6 +313,9 @@ const ko: ShellBundle = {
       offline: '오프라인',
       lastSeen: '마지막 확인 {time}',
       neverSeen: '확인된 적 없음',
+    },
+    compose: {
+      toggle: '세션 옵션',
     },
     session: {
       sendFailed: '전송할 수 없습니다: {message}',

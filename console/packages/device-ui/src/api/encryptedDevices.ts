@@ -52,13 +52,19 @@ export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceAp
       );
     },
 
-    sendMessage: async (deviceId, sessionId, text, mode) => {
+    sendMessage: async (deviceId, sessionId, text, mode, extras) => {
       const key = await crypto.getKey(deviceId);
+      // No CEK: the plaintext gray-rollout path cannot carry the M12 compose
+      // extras (the orchestrator validates the plaintext body strictly), so
+      // they are dropped here — see createDeviceApi.sendMessage.
       if (!key) return api.sendMessage(deviceId, sessionId, text, mode);
       // The plaintext payload the server would have built itself (channel is
-      // pinned to console — the server no longer sees the body to pin it).
+      // pinned to console — the server no longer sees the body to pin it),
+      // extended with the M12 compose fields (project/model/effort/goal/
+      // attachments). The orchestrator stores the envelope verbatim; the
+      // connector reads these under the encryption layer.
       const keyGen = (await crypto.getKeyGen(deviceId)) ?? 1;
-      const payload: Record<string, unknown> = { text, channel: 'console' };
+      const payload: Record<string, unknown> = { text, channel: 'console', ...extras };
       if (mode) payload.mode = mode;
       const envelope = await encryptJson(key, keyGen, payload);
       return api.sendEnvelope(deviceId, sessionId, envelope);

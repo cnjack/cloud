@@ -47,6 +47,18 @@ func (m *MemStore) UpsertDeviceRegistration(_ context.Context, d *domain.Device)
 	return nil
 }
 
+func (m *MemStore) UpdateDeviceCapabilities(_ context.Context, id string, capabilities []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.devices[id]
+	if !ok {
+		return ErrNotFound
+	}
+	d.Capabilities = capabilities
+	m.devices[id] = d
+	return nil
+}
+
 func (m *MemStore) TouchDeviceLastSeen(_ context.Context, id string, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

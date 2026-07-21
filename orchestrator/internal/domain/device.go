@@ -24,10 +24,15 @@ type Device struct {
 	// register call — the row predates it (created at token issuance).
 	Pubkey string `json:"pubkey,omitempty"`
 	// KeyGen is the current CEK generation (docs/17 §6.1). 1 until E2EE lands.
-	KeyGen     int        `json:"key_gen"`
-	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	KeyGen int `json:"key_gen"`
+	// Capabilities is the connector's compose-capability mirror (M12):
+	// {projects:[{path,name}], models:[{provider,id,label}], efforts:[...]} as
+	// reported on the sessions upsert. OPAQUE to the server (stored verbatim,
+	// never parsed); nil until a connector new enough to send it upserts.
+	Capabilities []byte     `json:"-"` // opaque JSON blob (json.RawMessage at the API edge)
+	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
 }
 
 // DeviceToken is a device principal credential (docs/17 §3.2). Only TokenHash

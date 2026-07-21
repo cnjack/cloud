@@ -649,6 +649,10 @@ type Store interface {
 	// the device does not exist — the row is always created at token issuance,
 	// so a missing row means the device was deleted under a live token.
 	UpsertDeviceRegistration(ctx context.Context, d *domain.Device) error
+	// UpdateDeviceCapabilities mirrors the connector-reported compose
+	// capabilities (M12) onto the device row, stored verbatim; a nil blob
+	// clears the column. ErrNotFound when the device does not exist.
+	UpdateDeviceCapabilities(ctx context.Context, id string, capabilities []byte) error
 	// TouchDeviceLastSeen stamps last_seen_at (the 30s heartbeat). ErrNotFound
 	// when the device does not exist.
 	TouchDeviceLastSeen(ctx context.Context, id string, at time.Time) error

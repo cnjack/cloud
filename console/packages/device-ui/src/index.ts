@@ -52,6 +52,11 @@ export type { TokenSource } from './api/errors';
 export { createDeviceApi } from './api/devices';
 export type {
   Device,
+  DeviceCapabilities,
+  DeviceCapabilityProject,
+  DeviceCapabilityModel,
+  ComposeAttachment,
+  SendMessageExtras,
   DeviceSessionMeta,
   DeviceSession,
   DeviceSessionEvent,
@@ -74,6 +79,16 @@ export {
   useStopDeviceSession,
   useRespondDeviceApproval,
 } from './api/deviceQueries';
+
+// --- compose (M12 shared compose panel) ---------------------------------------
+export {
+  DeviceCompose,
+  initialComposeValue,
+  composeExtras,
+  COMPOSE_MAX_ATTACHMENT_BYTES,
+  COMPOSE_MAX_ATTACHMENTS,
+} from './compose/DeviceCompose';
+export type { ComposeValue, DeviceComposeProps } from './compose/DeviceCompose';
 
 // --- deviceview ---------------------------------------------------------------
 export { DeviceTimeline } from './deviceview/DeviceTimeline';

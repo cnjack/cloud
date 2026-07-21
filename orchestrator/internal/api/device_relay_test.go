@@ -91,7 +91,66 @@ func TestDeviceSessionsUpsert(t *testing.T) {
 	}
 }
 
-// deviceIDOf resolves the device a token belongs to (test helper).
+// TestDeviceCapabilitiesMirror covers the M12 contract: the connector reports
+// its compose capabilities as a top-level field on the sessions upsert, the
+// server stores them verbatim on the devices row, and GET /api/v1/devices/{id}
+// echoes them back. Absent leaves the mirror alone; an explicit null clears it.
+func TestDeviceCapabilitiesMirror(t *testing.T) {
+	fx := setupDevice(t)
+	token, deviceID, owner := onlineDevice(t, fx)
+
+	caps := map[string]any{
+		"projects": []map[string]any{{"path": "/repo", "name": "repo"}},
+		"models":   []map[string]any{{"provider": "anthropic", "id": "claude-opus-4-1", "label": "Opus 4.1"}},
+		"efforts":  []string{"low", "medium", "high"},
+	}
+	// A capabilities-only upsert (empty sessions list) is valid.
+	resp := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, map[string]any{
+		"sessions":     []map[string]any{},
+		"capabilities": caps,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upsert with capabilities: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	getCaps := func() json.RawMessage {
+		resp := do(t, http.MethodGet, fx.ts.URL+"/api/v1/devices/"+deviceID, owner, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("get device: status=%d want 200", resp.StatusCode)
+		}
+		var dv deviceView
+		decode(t, resp, &dv)
+		return dv.Capabilities
+	}
+	var got map[string]any
+	if err := json.Unmarshal(getCaps(), &got); err != nil || len(got) != 3 {
+		t.Fatalf("capabilities view = %s want the verbatim blob", getCaps())
+	}
+	if projs, _ := got["projects"].([]any); len(projs) != 1 {
+		t.Fatalf("capabilities.projects = %v", got["projects"])
+	}
+
+	// An upsert WITHOUT the field leaves the stored mirror untouched.
+	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, map[string]any{
+		"sessions": []map[string]any{{"session_id": "s1", "status": "idle"}},
+	})
+	resp.Body.Close()
+	if got := getCaps(); len(got) == 0 {
+		t.Fatalf("capabilities disappeared after a capabilities-less upsert")
+	}
+
+	// An explicit null clears the mirror (and the view omits the field again).
+	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, map[string]any{
+		"sessions":     []map[string]any{},
+		"capabilities": nil,
+	})
+	resp.Body.Close()
+	if got := getCaps(); len(got) != 0 {
+		t.Fatalf("cleared capabilities = %s want absent", got)
+	}
+}
+
 func deviceIDOf(t *testing.T, fx deviceFixture, token string) string {
 	t.Helper()
 	dt, err := fx.st.GetDeviceTokenByHash(t.Context(), auth.HashToken(token))

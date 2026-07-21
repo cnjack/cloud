@@ -422,6 +422,36 @@ a {
   color: var(--status-failed-fg);
 }
 
+/* ---- M12 compose panel (expandable, above the input) ------------------------- */
+
+.compose-panel {
+  max-height: 45vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-panel);
+  padding: var(--space-3);
+}
+
+.compose-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text-dim);
+  cursor: pointer;
+}
+.compose-toggle[data-active='true'] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: var(--status-awaiting_input-bg);
+}
+
 /* ---- session page timeline ---------------------------------------------------- */
 
 .timeline-scroll {

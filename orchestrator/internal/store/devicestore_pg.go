@@ -15,12 +15,12 @@ import (
 // --- devices (docs/17 — jcode device relay) -----------------------------------
 
 const deviceCols = `id, user_id, name, hostname, jcode_version, platform, pubkey, key_gen,
-	last_seen_at, created_at, revoked_at`
+	capabilities, last_seen_at, created_at, revoked_at`
 
 func scanDevice(row pgx.Row) (*domain.Device, error) {
 	var d domain.Device
 	err := row.Scan(&d.ID, &d.UserID, &d.Name, &d.Hostname, &d.JcodeVersion, &d.Platform, &d.Pubkey,
-		&d.KeyGen, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt)
+		&d.KeyGen, &d.Capabilities, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -32,9 +32,9 @@ func scanDevice(row pgx.Row) (*domain.Device, error) {
 
 func (s *PGStore) CreateDevice(ctx context.Context, d *domain.Device) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO devices (`+deviceCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		`INSERT INTO devices (`+deviceCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		d.ID, d.UserID, d.Name, d.Hostname, d.JcodeVersion, d.Platform, d.Pubkey,
-		d.KeyGen, d.LastSeenAt, d.CreatedAt, d.RevokedAt)
+		d.KeyGen, d.Capabilities, d.LastSeenAt, d.CreatedAt, d.RevokedAt)
 	if err != nil {
 		return fmt.Errorf("insert device: %w", err)
 	}
@@ -57,6 +57,20 @@ func (s *PGStore) UpsertDeviceRegistration(ctx context.Context, d *domain.Device
 		d.ID, d.Name, d.Hostname, d.JcodeVersion, d.Platform, d.Pubkey, d.LastSeenAt)
 	if err != nil {
 		return fmt.Errorf("upsert device registration: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) UpdateDeviceCapabilities(ctx context.Context, id string, capabilities []byte) error {
+	// Like the registration upsert, only the one mirrored column is writable;
+	// a nil blob clears it (a connector that stops reporting capabilities).
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE devices SET capabilities=$2 WHERE id=$1`, id, capabilities)
+	if err != nil {
+		return fmt.Errorf("update device capabilities: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -117,7 +131,7 @@ func (s *PGStore) ListDevicesForUser(ctx context.Context, userID string) ([]doma
 	for rows.Next() {
 		var d domain.Device
 		if err := rows.Scan(&d.ID, &d.UserID, &d.Name, &d.Hostname, &d.JcodeVersion, &d.Platform, &d.Pubkey,
-			&d.KeyGen, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt); err != nil {
+			&d.KeyGen, &d.Capabilities, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt); err != nil {
 			return nil, fmt.Errorf("scan device: %w", err)
 		}
 		out = append(out, d)

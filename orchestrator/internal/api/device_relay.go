@@ -59,6 +59,12 @@ func (s *Server) publishDeviceEvent(deviceID, typ string, data map[string]any) {
 
 type deviceSessionsUpsertReq struct {
 	Sessions []deviceSessionUpsert `json:"sessions"`
+	// Capabilities is the connector's compose-capability mirror (M12):
+	// {projects, models, efforts}. OPAQUE to the server — stored verbatim on
+	// the devices row and echoed back to clients on GET /devices/{id}. Absent
+	// leaves the stored value alone (old connectors); an explicit null clears
+	// it.
+	Capabilities json.RawMessage `json:"capabilities,omitempty"`
 }
 
 type deviceSessionUpsert struct {
@@ -74,8 +80,11 @@ type deviceSessionUpsertView struct {
 
 // handleDeviceSessionsUpsert mirrors the device's session index up (docs/17
 // §4.1): each entry is upserted keyed by (device_id, session_id) with meta
-// stored verbatim. The response carries every session's current max durable
-// seq so the connector can resume its numbering after a reconnect.
+// stored verbatim. A top-level `capabilities` blob (M12) rides the same call:
+// when present it replaces the devices-row mirror (an explicit null clears
+// it); when absent the stored value is untouched. The response carries every
+// session's current max durable seq so the connector can resume its numbering
+// after a reconnect.
 func (s *Server) handleDeviceSessionsUpsert(w http.ResponseWriter, r *http.Request) {
 	p := s.requireDevice(w, r)
 	if p == nil {
@@ -85,6 +94,17 @@ func (s *Server) handleDeviceSessionsUpsert(w http.ResponseWriter, r *http.Reque
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
 		return
+	}
+	if req.Capabilities != nil {
+		caps := []byte(req.Capabilities)
+		if string(caps) == "null" {
+			caps = nil
+		}
+		if err := s.st.UpdateDeviceCapabilities(r.Context(), p.deviceID, caps); err != nil {
+			s.log.Error("device capabilities update", "device", p.deviceID, "err", err)
+			writeError(w, http.StatusInternalServerError, "internal", "could not update the device capabilities")
+			return
+		}
 	}
 	now := time.Now().UTC()
 	views := make([]deviceSessionUpsertView, 0, len(req.Sessions))

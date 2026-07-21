@@ -63,16 +63,20 @@ func (s *Server) authorizeDevice(w http.ResponseWriter, r *http.Request, deviceI
 }
 
 type deviceView struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Hostname     string     `json:"hostname,omitempty"`
-	JcodeVersion string     `json:"jcode_version,omitempty"`
-	Platform     string     `json:"platform"`
-	Pubkey       string     `json:"pubkey,omitempty"`
-	KeyGen       int        `json:"key_gen"`
-	Online       bool       `json:"online"`
-	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Hostname     string `json:"hostname,omitempty"`
+	JcodeVersion string `json:"jcode_version,omitempty"`
+	Platform     string `json:"platform"`
+	Pubkey       string `json:"pubkey,omitempty"`
+	KeyGen       int    `json:"key_gen"`
+	// Capabilities is the connector-reported compose mirror (M12), echoed
+	// verbatim; omitted for devices that never reported any (old connectors —
+	// clients hide the compose panel then).
+	Capabilities json.RawMessage `json:"capabilities,omitempty"`
+	Online       bool            `json:"online"`
+	LastSeenAt   *time.Time      `json:"last_seen_at,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
 }
 
 func (s *Server) toDeviceView(d *domain.Device) deviceView {
@@ -84,6 +88,7 @@ func (s *Server) toDeviceView(d *domain.Device) deviceView {
 		Platform:     d.Platform,
 		Pubkey:       d.Pubkey,
 		KeyGen:       d.KeyGen,
+		Capabilities: d.Capabilities,
 		Online:       s.deviceOnline(d),
 		LastSeenAt:   d.LastSeenAt,
 		CreatedAt:    d.CreatedAt,

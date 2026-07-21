@@ -183,6 +183,47 @@ describe('withDeviceCrypto writes', () => {
     expect(inner.sentEnvelopeBodies).toHaveLength(0);
   });
 
+  it('merges the M12 compose extras into the envelope plaintext', async () => {
+    const inner = fakeInner();
+    const { store, crypto } = cryptoWithCek();
+    await store.put(DEVICE, { cek: CEK_RAW, keyGen: 1 });
+    const api = withDeviceCrypto(inner.api, crypto);
+
+    await api.sendMessage(DEVICE, 's1', 'hello', undefined, {
+      project_path: '/repo/a',
+      model: { provider: 'anthropic', id: 'claude-opus-4-1' },
+      effort: 'high',
+      goal: 'ship M12',
+      attachments: [{ name: 'spec.txt', mime: 'text/plain', data_b64: 'aGk=' }],
+    });
+    expect(inner.sentEnvelopeBodies).toHaveLength(1);
+    const key = await importCek(CEK_RAW);
+    expect(await decryptJson(key, inner.sentEnvelopeBodies[0] as never)).toEqual({
+      text: 'hello',
+      channel: 'console',
+      project_path: '/repo/a',
+      model: { provider: 'anthropic', id: 'claude-opus-4-1' },
+      effort: 'high',
+      goal: 'ship M12',
+      attachments: [{ name: 'spec.txt', mime: 'text/plain', data_b64: 'aGk=' }],
+    });
+  });
+
+  it('drops the compose extras on the unpaired plaintext fallback', async () => {
+    let sawExtras = false;
+    const inner = fakeInner({
+      sendMessage: async (_d, _s, _text, _mode, extras) => {
+        sawExtras = extras !== undefined;
+        return { command_id: 'c1', session_id: 's1' };
+      },
+    });
+    const { crypto } = cryptoWithCek();
+    const api = withDeviceCrypto(inner.api, crypto);
+    await api.sendMessage(DEVICE, 's1', 'hello', undefined, { effort: 'high' });
+    expect(sawExtras).toBe(false);
+    expect(inner.sentEnvelopeBodies).toHaveLength(0);
+  });
+
   it('seals approval responses when the CEK is held', async () => {
     const inner = fakeInner();
     const { store, crypto } = cryptoWithCek();

@@ -23,9 +23,53 @@ export interface Device {
   pubkey?: string;
   /** The device's current CEK generation. */
   key_gen?: number;
+  /**
+   * The connector-reported compose capabilities (M12). Absent/null on devices
+   * running a connector that predates the field — clients hide the compose
+   * panel entirely then.
+   */
+  capabilities?: DeviceCapabilities | null;
   online: boolean;
   last_seen_at?: string;
   created_at?: string;
+}
+
+/** The device-side compose surface mirrored by the connector (M12). */
+export interface DeviceCapabilities {
+  projects?: DeviceCapabilityProject[];
+  models?: DeviceCapabilityModel[];
+  efforts?: string[];
+}
+
+export interface DeviceCapabilityProject {
+  path: string;
+  name: string;
+}
+
+export interface DeviceCapabilityModel {
+  provider: string;
+  id: string;
+  label: string;
+}
+
+/** One compose attachment: a non-image file read into base64 (M12). */
+export interface ComposeAttachment {
+  name: string;
+  mime: string;
+  data_b64: string;
+}
+
+/**
+ * The optional chat.send extension fields the compose panel produces (M12).
+ * They ride the envelope plaintext (under the E2EE layer when paired) or the
+ * plaintext body; the orchestrator passes them through untouched.
+ */
+export interface SendMessageExtras {
+  project_path?: string;
+  model?: { provider: string; id: string };
+  effort?: string;
+  goal?: string;
+  attachments?: ComposeAttachment[];
 }
 
 /** jcode SessionMeta as relayed by the device (passthrough JSON). */
@@ -100,7 +144,7 @@ export interface DeviceApi {
   /** Replay durable events with seq > afterSeq (0 = from start). */
   listSessionEvents(deviceId: string, sessionId: string, afterSeq?: number, limit?: number): Promise<DeviceSessionEvent[]>;
   /** POST messages; sid "new" starts a fresh session. 409 device_offline when offline. */
-  sendMessage(deviceId: string, sessionId: string, text: string, mode?: string): Promise<SendMessageResult>;
+  sendMessage(deviceId: string, sessionId: string, text: string, mode?: string, extras?: SendMessageExtras): Promise<SendMessageResult>;
   /** POST an E2EE envelope body (docs/17 §6.2) instead of plaintext text. */
   sendEnvelope(deviceId: string, sessionId: string, envelope: DeviceEnvelope): Promise<SendMessageResult>;
   stopSession(deviceId: string, sessionId: string): Promise<void>;
@@ -185,10 +229,20 @@ export function createDeviceApi(token: TokenSource, options: DeviceApiOptions = 
       ).events ?? [];
     },
 
-    sendMessage: (deviceId, sessionId, text, mode) =>
+    sendMessage: (deviceId, sessionId, text, mode, _extras) =>
       req<SendMessageResult>(
         `${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}/messages`,
-        { method: 'POST', body: JSON.stringify(mode ? { text, mode } : { text }) },
+        {
+          method: 'POST',
+          // The M12 compose extras (project/model/effort/goal/attachments)
+          // ride the E2EE envelope plaintext only — the orchestrator passes
+          // them through under the encryption layer unchanged, while the
+          // plaintext gray-rollout body is strictly validated (unknown fields
+          // → 400), so extras are DELIBERATELY not sent here. Callers holding
+          // no CEK simply lose the compose options (an unpaired device is
+          // almost always an old connector without capabilities anyway).
+          body: JSON.stringify(mode ? { text, mode } : { text }),
+        },
       ),
 
     sendEnvelope: (deviceId, sessionId, envelope) =>

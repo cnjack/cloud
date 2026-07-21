@@ -112,6 +112,20 @@ export default {
   },
 
   device: {
+    compose: {
+      project: 'Project directory',
+      model: 'Model',
+      effort: 'Effort',
+      goal: 'Goal',
+      goalPlaceholder: 'What should this session achieve?',
+      attachments: 'Attachments',
+      attachAdd: 'Attach file',
+      removeAttachment: 'Remove {name}',
+      deviceDefault: 'Device default',
+      attachmentTooBig: '{name} is over 2 MB — pick a smaller file.',
+      attachmentTooMany: 'At most {max} attachments per message.',
+      attachmentImage: '{name} is an image — images are not supported yet.',
+    },
     list: {
       title: 'Devices',
       subtitle: 'jcode devices connected to your account. Send work to any online machine.',

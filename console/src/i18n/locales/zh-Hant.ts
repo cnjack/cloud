@@ -832,6 +832,20 @@ export default {
   },
 
   device: {
+    compose: {
+      project: '專案目錄',
+      model: '模型',
+      effort: '強度',
+      goal: '目標',
+      goalPlaceholder: '這個工作階段要達成什麼？',
+      attachments: '附件',
+      attachAdd: '附加檔案',
+      removeAttachment: '移除 {name}',
+      deviceDefault: '裝置預設',
+      attachmentTooBig: '{name} 超過 2 MB——請選擇較小的檔案。',
+      attachmentTooMany: '每則訊息最多 {max} 個附件。',
+      attachmentImage: '{name} 是圖片——暫不支援圖片附件。',
+    },
     list: {
       title: '裝置',
       subtitle: '連線到你帳號的 jcode 裝置。可以將工作傳送到任何一台線上機器。',

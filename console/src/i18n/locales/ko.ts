@@ -832,6 +832,20 @@ export default {
   },
 
   device: {
+    compose: {
+      project: '프로젝트 디렉터리',
+      model: '모델',
+      effort: '강도',
+      goal: '목표',
+      goalPlaceholder: '이 세션에서 달성할 것은 무엇인가요?',
+      attachments: '첨부 파일',
+      attachAdd: '파일 첨부',
+      removeAttachment: '{name} 제거',
+      deviceDefault: '디바이스 기본값',
+      attachmentTooBig: '{name} 파일이 2MB를 초과합니다 — 더 작은 파일을 선택하세요.',
+      attachmentTooMany: '메시지당 첨부 파일은 최대 {max}개입니다.',
+      attachmentImage: '{name} 파일은 이미지입니다 — 이미지는 아직 지원되지 않습니다.',
+    },
     list: {
       title: '기기',
       subtitle: '계정에 연결된 jcode 기기입니다. 온라인 상태의 모든 머신에 작업을 보낼 수 있습니다.',

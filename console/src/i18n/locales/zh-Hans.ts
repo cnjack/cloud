@@ -832,6 +832,20 @@ export default {
   },
 
   device: {
+    compose: {
+      project: '项目目录',
+      model: '模型',
+      effort: '强度',
+      goal: '目标',
+      goalPlaceholder: '这个会话要达成什么？',
+      attachments: '附件',
+      attachAdd: '添加文件',
+      removeAttachment: '移除 {name}',
+      deviceDefault: '设备默认',
+      attachmentTooBig: '{name} 超过 2 MB——请选择更小的文件。',
+      attachmentTooMany: '每条消息最多 {max} 个附件。',
+      attachmentImage: '{name} 是图片——暂不支持图片附件。',
+    },
     list: {
       title: '设备',
       subtitle: '连接到你账号的 jcode 设备。可以把工作发送到任何一台在线机器。',

@@ -832,6 +832,20 @@ export default {
   },
 
   device: {
+    compose: {
+      project: 'プロジェクトディレクトリ',
+      model: 'モデル',
+      effort: '強度',
+      goal: 'ゴール',
+      goalPlaceholder: 'このセッションで達成したいことは？',
+      attachments: '添付ファイル',
+      attachAdd: 'ファイルを添付',
+      removeAttachment: '{name} を削除',
+      deviceDefault: 'デバイスのデフォルト',
+      attachmentTooBig: '{name} は 2 MB を超えています。小さいファイルを選んでください。',
+      attachmentTooMany: '添付ファイルは 1 メッセージにつき最大 {max} 件です。',
+      attachmentImage: '{name} は画像です — 画像はまだサポートされていません。',
+    },
     list: {
       title: 'デバイス',
       subtitle: 'アカウントに接続されている jcode デバイス。オンラインのマシンに作業を送信できます。',

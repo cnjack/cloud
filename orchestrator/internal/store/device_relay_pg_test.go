@@ -50,6 +50,7 @@ func TestPGDeviceRelay(t *testing.T) {
 		t.Fatalf("create device: %v", err)
 	}
 
+	t.Run("capabilities", func(t *testing.T) { testDeviceCapabilities(t, st, d.ID) })
 	t.Run("sessions", func(t *testing.T) { testDeviceRelaySessions(t, st, d.ID) })
 	t.Run("events", func(t *testing.T) { testDeviceRelayEvents(t, st, d.ID) })
 	t.Run("eventsBeforeUpsert", func(t *testing.T) { testDeviceRelayEventsBeforeSessionUpsert(t, st, d.ID) })

@@ -3,8 +3,8 @@ import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { useDevices, useDeviceSessions, useSendDeviceMessage, DevicePairingCard, channelLabelKey } from '@jcloud/device-ui';
-import type { DeviceSession } from '@jcloud/device-ui';
+import { useDevices, useDeviceSessions, useSendDeviceMessage, DevicePairingCard, DeviceCompose, channelLabelKey, composeExtras, initialComposeValue } from '@jcloud/device-ui';
+import type { ComposeValue, DeviceSession } from '@jcloud/device-ui';
 import { Button } from '../components/Button';
 import { PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout';
 import { Select } from '../components/Select';
@@ -31,6 +31,7 @@ export function DeviceWelcomePage() {
   const send = useSendDeviceMessage(deviceId);
   const [text, setText] = useState('');
   const [mode, setMode] = useState<Mode>('');
+  const [compose, setCompose] = useState<ComposeValue>(initialComposeValue());
 
   const device = devices.data?.find((d) => d.id === deviceId);
   const online = device?.online ?? false;
@@ -40,11 +41,12 @@ export function DeviceWelcomePage() {
     event.preventDefault();
     const prompt = text.trim();
     if (!prompt || !online || send.isPending) return;
+    const extras = composeExtras(compose, device?.capabilities);
     send.mutate(
       // sid "new" lets the device assign the session id; the 202 reply may
       // carry session_id: null, so we stay put — the polling session list
       // surfaces the new session for the user to open.
-      { sessionId: 'new', text: prompt, ...(mode ? { mode } : {}) },
+      { sessionId: 'new', text: prompt, ...(mode ? { mode } : {}), ...(extras ? { extras } : {}) },
       {
         onSuccess: () => setText(''),
         onError: (error) => {
@@ -119,6 +121,12 @@ export function DeviceWelcomePage() {
           <section aria-labelledby="new-session-title">
             <div className={styles.sectionHead}><h2 id="new-session-title">{t('device.welcome.newSession')}</h2></div>
             <form className={styles.composer} data-testid="new-session-composer" onSubmit={submit}>
+              <DeviceCompose
+                capabilities={device?.capabilities}
+                disabled={!online || send.isPending}
+                value={compose}
+                onChange={setCompose}
+              />
               <textarea
                 className={styles.textarea}
                 aria-label={t('device.welcome.newSession')}

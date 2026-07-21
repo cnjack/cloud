@@ -1,14 +1,18 @@
-import { ArrowLeft, ArrowRight, Warning } from '@phosphor-icons/react';
+import { ArrowLeft, ArrowRight, SlidersHorizontal, Warning } from '@phosphor-icons/react';
 import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
 import {
   ApiError,
+  DeviceCompose,
   DevicePairingCard,
   apiErrorCode,
+  composeExtras,
+  initialComposeValue,
   useDeviceSessions,
   useDevices,
   useSendDeviceMessage,
+  type ComposeValue,
   type DeviceSession,
 } from '@jcloud/device-ui';
 import { timeAgo } from '../lib/time';
@@ -29,20 +33,26 @@ export function DeviceWelcomePage() {
   const send = useSendDeviceMessage(deviceId);
   const [text, setText] = useState('');
   const [mode, setMode] = useState<Mode>('');
+  const [compose, setCompose] = useState<ComposeValue>(initialComposeValue());
+  const [composeOpen, setComposeOpen] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
   const device = devices.data?.find((d) => d.id === deviceId);
   const online = device?.online ?? false;
+  // Old connectors never report capabilities: the compose panel (and its
+  // toggle) stay hidden, same degradation rule as the console.
+  const hasCompose = device?.capabilities != null;
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const prompt = text.trim();
     if (!prompt || !online || send.isPending) return;
     setSendError(null);
+    const extras = composeExtras(compose, device?.capabilities);
     send.mutate(
       // sid "new": the device assigns the session id; the polling session
       // list surfaces it for the user to open.
-      { sessionId: 'new', text: prompt, ...(mode ? { mode } : {}) },
+      { sessionId: 'new', text: prompt, ...(mode ? { mode } : {}), ...(extras ? { extras } : {}) },
       {
         onSuccess: () => setText(''),
         onError: (error) => {
@@ -103,6 +113,16 @@ export function DeviceWelcomePage() {
       </div>
 
       <form className="composer" onSubmit={submit} data-testid="new-session-composer">
+        {hasCompose && composeOpen && (
+          <div className="compose-panel" data-testid="compose-panel">
+            <DeviceCompose
+              capabilities={device?.capabilities}
+              disabled={!online || send.isPending}
+              value={compose}
+              onChange={setCompose}
+            />
+          </div>
+        )}
         <textarea
           aria-label={t('device.welcome.newSession')}
           placeholder={t('device.welcome.composerPlaceholder')}
@@ -112,6 +132,19 @@ export function DeviceWelcomePage() {
         />
         {sendError && <p className="send-error" role="alert">{sendError}</p>}
         <div className="composer-actions">
+          {hasCompose && (
+            <button
+              type="button"
+              className="compose-toggle"
+              aria-label={t('mobile.compose.toggle')}
+              aria-expanded={composeOpen}
+              data-active={composeOpen}
+              disabled={!online || send.isPending}
+              onClick={() => setComposeOpen((open) => !open)}
+            >
+              <SlidersHorizontal size={16} />
+            </button>
+          )}
           <div className="mode-picker" role="group" aria-label={t('device.welcome.mode')}>
             {MODES.map((m) => (
               <button

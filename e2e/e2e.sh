@@ -24,8 +24,8 @@
 # kubectl. See README.md.
 #
 # Usage:
-#   ./e2e.sh                 # full suite (J1-J3; J4 draft-PR runs if Gitea is up; J7 device login; J8 device relay; J9 device E2EE; J10 QR pairing)
-#   ONLY=j1 ./e2e.sh         # a single journey (j1|j2|j3|j4|j7|j8|j9|j10)
+#   ./e2e.sh                 # full suite (J1-J3; J4 draft-PR runs if Gitea is up; J7 device login; J8 device relay; J9 device E2EE; J10 QR pairing; J11 compose)
+#   ONLY=j1 ./e2e.sh         # a single journey (j1|j2|j3|j4|j7|j8|j9|j10|j11)
 #   LOCAL_PORT=18099 ./e2e.sh
 
 set -uo pipefail
@@ -73,6 +73,10 @@ teardown() {
   # J10 (QR pairing) seeds its own user and runs the same local processes.
   if declare -F j10_cleanup >/dev/null 2>&1; then
     j10_cleanup
+  fi
+  # J11 (compose) seeds its own user and runs the same local processes.
+  if declare -F j11_cleanup >/dev/null 2>&1; then
+    j11_cleanup
   fi
   if [ -n "$PF_PID" ]; then
     kill "$PF_PID" 2>/dev/null
@@ -151,6 +155,8 @@ source "$HERE/j8-device-relay.sh"
 source "$HERE/j9-device-e2ee.sh"
 # shellcheck source=j10-qr-pairing.sh
 source "$HERE/j10-qr-pairing.sh"
+# shellcheck source=j11-compose.sh
+source "$HERE/j11-compose.sh"
 
 case "$ONLY" in
   j1)  j1_run ;;
@@ -161,8 +167,9 @@ case "$ONLY" in
   j8)  j8_run ;;
   j9)  j9_run ;;
   j10) j10_run ;;
-  all) j1_run; j2_run; j3_run; j4_run; j7_run; j8_run; j9_run; j10_run ;;
-  *)   echo "unknown ONLY=$ONLY (want j1|j2|j3|j4|j7|j8|j9|j10|all)" >&2; exit 6 ;;
+  j11) j11_run ;;
+  all) j1_run; j2_run; j3_run; j4_run; j7_run; j8_run; j9_run; j10_run; j11_run ;;
+  *)   echo "unknown ONLY=$ONLY (want j1|j2|j3|j4|j7|j8|j9|j10|j11|all)" >&2; exit 6 ;;
 esac
 
 # --- 5. latency spot-check (informational) ----------------------------------

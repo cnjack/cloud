@@ -6,6 +6,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDeviceApi } from './DeviceApiProvider';
+import type { SendMessageExtras } from './devices';
 
 export const dqk = {
   devices: ['devices'] as const,
@@ -32,8 +33,8 @@ export function useSendDeviceMessage(deviceId: string) {
   const api = useDeviceApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ sessionId, text, mode }: { sessionId: string; text: string; mode?: string }) =>
-      api.sendMessage(deviceId, sessionId, text, mode),
+    mutationFn: ({ sessionId, text, mode, extras }: { sessionId: string; text: string; mode?: string; extras?: SendMessageExtras }) =>
+      api.sendMessage(deviceId, sessionId, text, mode, extras),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: dqk.deviceSessions(deviceId) });
     },

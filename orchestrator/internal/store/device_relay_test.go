@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -15,6 +17,8 @@ import (
 // set (mirroring the pgTestStore gating).
 type deviceRelayStore interface {
 	CreateDevice(context.Context, *domain.Device) error
+	GetDevice(context.Context, string) (*domain.Device, error)
+	UpdateDeviceCapabilities(context.Context, string, []byte) error
 	UpsertDeviceSession(context.Context, *domain.DeviceSession) error
 	ListDeviceSessions(context.Context, string) ([]domain.DeviceSession, error)
 	AppendDeviceEvents(context.Context, string, string, []*domain.DeviceEvent) (*DeviceEventBatch, error)
@@ -280,11 +284,65 @@ func testDeviceRelayListForUser(t *testing.T, st deviceRelayStore, deviceID, use
 	}
 }
 
+// testDeviceCapabilities covers the M12 compose-capability mirror: the blob
+// round-trips verbatim (JSONB on PG, plain bytes on memory) and a nil update
+// clears it.
+func testDeviceCapabilities(t *testing.T, st deviceRelayStore, deviceID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	d, err := st.GetDevice(ctx, deviceID)
+	if err != nil {
+		t.Fatalf("get device: %v", err)
+	}
+	if d.Capabilities != nil {
+		t.Fatalf("fresh device capabilities = %s want nil", d.Capabilities)
+	}
+
+	caps := []byte(`{"projects":[{"path":"/repo","name":"repo"}],"models":[{"provider":"anthropic","id":"claude-opus-4-1","label":"Opus 4.1"}],"efforts":["low","high"]}`)
+	if err := st.UpdateDeviceCapabilities(ctx, deviceID, caps); err != nil {
+		t.Fatalf("update capabilities: %v", err)
+	}
+	d, err = st.GetDevice(ctx, deviceID)
+	if err != nil {
+		t.Fatalf("re-get device: %v", err)
+	}
+	// Semantic compare, not byte-verbatim: PG stores JSONB (which normalizes
+	// key order/whitespace) while MemStore keeps the raw bytes — both must
+	// decode to the same value.
+	var gotCaps, wantCaps any
+	if err := json.Unmarshal(d.Capabilities, &gotCaps); err != nil {
+		t.Fatalf("stored capabilities not JSON: %v (%s)", err, d.Capabilities)
+	}
+	if err := json.Unmarshal(caps, &wantCaps); err != nil {
+		t.Fatalf("test fixture not JSON: %v", err)
+	}
+	if !reflect.DeepEqual(gotCaps, wantCaps) {
+		t.Fatalf("capabilities = %s want %s", d.Capabilities, caps)
+	}
+
+	if err := st.UpdateDeviceCapabilities(ctx, deviceID, nil); err != nil {
+		t.Fatalf("clear capabilities: %v", err)
+	}
+	d, err = st.GetDevice(ctx, deviceID)
+	if err != nil {
+		t.Fatalf("re-get cleared device: %v", err)
+	}
+	if d.Capabilities != nil {
+		t.Fatalf("cleared capabilities = %s want nil", d.Capabilities)
+	}
+
+	if err := st.UpdateDeviceCapabilities(ctx, "no-such-device", caps); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown device: err=%v want ErrNotFound", err)
+	}
+}
+
 // --- MemStore -----------------------------------------------------------------
 
 func TestDeviceRelayMemStore(t *testing.T) {
 	m := NewMemStore()
 	d := mkDevice(t, m, "user-1")
+	t.Run("capabilities", func(t *testing.T) { testDeviceCapabilities(t, m, d.ID) })
 	t.Run("sessions", func(t *testing.T) { testDeviceRelaySessions(t, m, d.ID) })
 	t.Run("events", func(t *testing.T) { testDeviceRelayEvents(t, m, d.ID) })
 	t.Run("eventsBeforeUpsert", func(t *testing.T) { testDeviceRelayEventsBeforeSessionUpsert(t, m, d.ID) })
