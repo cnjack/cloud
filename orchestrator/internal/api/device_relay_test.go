@@ -680,3 +680,118 @@ func TestDeviceStreamSSE(t *testing.T) {
 	}
 	bad.Body.Close()
 }
+
+// --- M13: the e2ee pairing gate ---------------------------------------------------
+
+// TestDevicePairingGate covers the M13 contract (docs/17 §6.7): register
+// reports and echoes the connector's encryption state (`e2ee`), and an
+// e2ee=true device accepts ONLY {envelope} command payloads on the three
+// client command endpoints — plaintext bodies get 409 pairing_required. An
+// e2ee=false device keeps the M3/M4 plaintext behavior untouched.
+func TestDevicePairingGate(t *testing.T) {
+	fx := setupDevice(t)
+	token, deviceID, owner := onlineDevice(t, fx)
+
+	envelope := map[string]any{"envelope": map[string]any{
+		"enc": "aes-256-gcm", "key_gen": 1, "nonce": "AAAAAAAAAAA=", "ct": "AAAA",
+	}}
+
+	// register 上报回显: e2ee=true lands on the row and the client view.
+	resp := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/register", token,
+		map[string]any{"pubkey": "pk", "e2ee": true})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("register e2ee=true: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if dev, _ := fx.st.GetDevice(t.Context(), deviceID); !dev.E2EE {
+		t.Fatalf("stored device e2ee = false, want true: %+v", dev)
+	}
+	resp = do(t, http.MethodGet, fx.ts.URL+"/api/v1/devices/"+deviceID, owner, nil)
+	var dv deviceView
+	decode(t, resp, &dv)
+	if !dv.E2EE {
+		t.Fatalf("client view e2ee = false, want true (register echo): %+v", dv)
+	}
+
+	// 明文三端点各 409 pairing_required.
+	for _, tc := range []struct {
+		path string
+		body map[string]any
+	}{
+		{"/sessions/s1/messages", map[string]any{"text": "plaintext-injection"}},
+		{"/sessions/s1/stop", map[string]any{}},
+		{"/sessions/s1/approval", map[string]any{"approval_id": "a1", "decision": "allow"}},
+	} {
+		resp := do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceID+tc.path, owner, tc.body)
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("e2ee plaintext POST %s: status=%d want 409", tc.path, resp.StatusCode)
+		}
+		var env errorBody
+		decode(t, resp, &env)
+		if env.Error.Code != "pairing_required" {
+			t.Fatalf("e2ee plaintext POST %s: code=%q want pairing_required", tc.path, env.Error.Code)
+		}
+		// Nothing was enqueued by the rejected calls.
+		if cmds, err := fx.st.DeliverPendingDeviceCommands(t.Context(), deviceID, 64); err != nil || len(cmds) != 0 {
+			t.Fatalf("rejected %s still enqueued %d commands (err=%v)", tc.path, len(cmds), err)
+		}
+	}
+
+	// 密文放行: all three endpoints accept the envelope form (202).
+	for _, tc := range []struct {
+		path string
+		body map[string]any
+	}{
+		{"/sessions/s1/messages", envelope},
+		{"/sessions/s1/stop", envelope},
+		{"/sessions/s1/approval", envelope},
+	} {
+		resp := do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceID+tc.path, owner, tc.body)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("e2ee envelope POST %s: status=%d want 202", tc.path, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	cmds, err := fx.st.DeliverPendingDeviceCommands(t.Context(), deviceID, 64)
+	if err != nil || len(cmds) != 3 {
+		t.Fatalf("envelope commands pending = %d err=%v want 3", len(cmds), err)
+	}
+	for _, c := range cmds {
+		var payload map[string]any
+		if err := json.Unmarshal(c.Envelope, &payload); err != nil || payload["enc"] != "aes-256-gcm" {
+			t.Fatalf("command %s payload not the verbatim envelope: %s", c.Kind, c.Envelope)
+		}
+	}
+
+	// e2ee=false 明文放行: a re-register without the flag flips the gate off
+	// (absent decodes as false — the old-connector grey path) and the client
+	// view echoes it.
+	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/register", token,
+		map[string]any{"pubkey": "pk"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("re-register: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = do(t, http.MethodGet, fx.ts.URL+"/api/v1/devices/"+deviceID, owner, nil)
+	decode(t, resp, &dv)
+	if dv.E2EE {
+		t.Fatalf("client view e2ee = true after a flag-less register, want false: %+v", dv)
+	}
+	resp = do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceID+"/sessions/s1/messages", owner,
+		map[string]any{"text": "plaintext is fine here"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("e2ee=false plaintext message: status=%d want 202", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceID+"/sessions/s1/stop", owner, nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("e2ee=false plaintext stop: status=%d want 202", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceID+"/sessions/s1/approval", owner,
+		map[string]any{"approval_id": "a1", "decision": "allow"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("e2ee=false plaintext approval: status=%d want 202", resp.StatusCode)
+	}
+	resp.Body.Close()
+}

@@ -5,6 +5,7 @@ import { Link, useParams } from 'react-router-dom';
 import {
   ApiError,
   DevicePairingCard,
+  DevicePairingGate,
   DeviceTimeline,
   apiErrorCode,
   resolveOnline,
@@ -94,24 +95,28 @@ export function DeviceSessionPage() {
         </button>
       </header>
 
-      {!online && (
-        <div className="banner" role="alert" data-testid="offline-banner">
-          <Warning size={16} aria-hidden />
-          <span>{t('device.session.offlineBanner')}</span>
-        </div>
-      )}
+      {/* M13: e2ee-enforcing devices hide the timeline and composer behind
+          the pairing gate (fullscreen centered guide) until this client
+          holds the CEK. */}
+      <DevicePairingGate device={device} fullscreen>
+        {!online && (
+          <div className="banner" role="alert" data-testid="offline-banner">
+            <Warning size={16} aria-hidden />
+            <span>{t('device.session.offlineBanner')}</span>
+          </div>
+        )}
 
-      <DevicePairingCard deviceId={deviceId} />
+        <DevicePairingCard deviceId={deviceId} />
 
-      {phase === 'error' && (
-        <div className="banner" role="alert">
-          <Warning size={16} aria-hidden />
-          <span>{t('mobile.session.streamError')}</span>
-          <button type="button" onClick={reconnect}>{t('mobile.session.reconnect')}</button>
-        </div>
-      )}
+        {phase === 'error' && (
+          <div className="banner" role="alert">
+            <Warning size={16} aria-hidden />
+            <span>{t('mobile.session.streamError')}</span>
+            <button type="button" onClick={reconnect}>{t('mobile.session.reconnect')}</button>
+          </div>
+        )}
 
-      <div className="timeline-scroll" data-testid="device-session">
+        <div className="timeline-scroll" data-testid="device-session">
         {emptyTimeline ? (
           <p className="state-block">{t('mobile.session.emptyHistory')}</p>
         ) : (
@@ -127,28 +132,29 @@ export function DeviceSessionPage() {
           />
         )}
         <div ref={endRef} aria-hidden />
-      </div>
-
-      <form className="composer" onSubmit={submit} data-testid="session-composer">
-        <textarea
-          aria-label={t('device.session.send')}
-          placeholder={t('device.session.composerPlaceholder')}
-          value={text}
-          disabled={!online || send.isPending}
-          onChange={(e) => setText(e.target.value)}
-        />
-        {sendError && <p className="send-error" role="alert">{sendError}</p>}
-        <div className="composer-actions">
-          <button
-            type="submit"
-            className="topbar-back"
-            aria-label={t('device.session.send')}
-            disabled={!online || !text.trim() || send.isPending}
-          >
-            <ArrowLeft size={18} style={{ transform: 'rotate(180deg)' }} color="var(--color-accent)" />
-          </button>
         </div>
-      </form>
+
+        <form className="composer" onSubmit={submit} data-testid="session-composer">
+          <textarea
+            aria-label={t('device.session.send')}
+            placeholder={t('device.session.composerPlaceholder')}
+            value={text}
+            disabled={!online || send.isPending}
+            onChange={(e) => setText(e.target.value)}
+          />
+          {sendError && <p className="send-error" role="alert">{sendError}</p>}
+          <div className="composer-actions">
+            <button
+              type="submit"
+              className="topbar-back"
+              aria-label={t('device.session.send')}
+              disabled={!online || !text.trim() || send.isPending}
+            >
+              <ArrowLeft size={18} style={{ transform: 'rotate(180deg)' }} color="var(--color-accent)" />
+            </button>
+          </div>
+        </form>
+      </DevicePairingGate>
     </div>
   );
 }

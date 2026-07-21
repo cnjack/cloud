@@ -223,6 +223,14 @@ CEK 生成时同时可导出 24 词 recovery phrase（BIP39 编码 256bit，`jco
 
 设备侧灰度开关：jcode 配置 `cloud.e2ee`（`~/.jcode/config.json`，bool，默认 true）。置 `false` 时 connector 跳过 CEK 初始化（`EnsureCEK`），上行保持明文路径——用于灰度回滚与排查，等价于测试注入的 `CipherDisabled`。缺省/`true` 即 M5 行为：connector 启动时惰性生成 CEK 并全量加密上行。
 
+### 6.7 配对门（M13）
+
+灰度期（§6.6）服务端对明文/密文一律透传，意味着任何持有用户 session 的调用方都能向已开启 E2EE 的设备直接注入明文指令——设备收到无法解密的 payload，E2EE 保证名存实亡。配对门在协议层关掉这条路：
+
+- **状态上报**：connector register（`POST /internal/v1/device/register`）新增可选字段 `e2ee: bool`，取**实际加密状态**（CEK 已激活且 `cloud.e2ee` 未置 false），不是配置项原样。服务端存 `devices.e2ee`（migration 0035，默认 false），并在 `GET /api/v1/devices/{id}` 的 deviceView 里回显（非 omitempty，老 connector 缺省即 false）。
+- **门**：`POST /api/v1/devices/{id}/sessions/{sid}/messages`、`/stop`、`/approval` 三个客户端指令端点——`e2ee=true` 的设备只接受 `{envelope:{enc,...}}` 密文形式；明文 body（如 `{text:...}`、空 body stop、`{approval_id,decision}`）返回 **409 `{error:{code:"pairing_required"}}`**，不入队。客户端见此错误应引导配对（§6.3）拿 CEK 后改发密文。
+- **兼容**：`e2ee=false`（老 connector 或 `cloud.e2ee:false`）行为完全不变，明文路径照常放行——J8（e2ee:false 设备）明文发送不受影响即回归证据。
+
 ## 7. 客户端
 
 ### 7.1 cloud console（M4）

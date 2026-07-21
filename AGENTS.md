@@ -67,7 +67,12 @@ console/mobile — all end-to-end encrypted. Durable rules for this area:
 - **Migrations are append-only and idempotent** (`IF NOT EXISTS`, guarded
   `DO $$ ... $$` blocks). New device tables need FK `ON DELETE CASCADE` chains
   up to `users` — `0030` missed `device_events` and orphaned rows (fixed in
-  `0031`); always test cleanup-by-user-delete.
+  `0031`); always test cleanup-by-user-delete. When adding a column to
+  `devices`, grep **every** consumer of the column list (`deviceCols`, inline
+  `Scan` calls, list views) — `0035` added `e2ee` to the cols helper but one
+  inline `ListDevicesForUser` scan was missed and the list endpoint 500'd.
+  Run the PG-gated store suite (`JCLOUD_PG_DSN=... go test ./internal/store/`)
+  before delivery; Mem-only tests do not catch scan/column drift.
 - **e2e journeys** (`e2e/j*.sh`, keyed `Jx-Sn`): `j7` login, `j8` relay,
   `j9` E2EE, `j10` QR pairing, `j11` compose facets. They run against the
   OrbStack stack (context `orbstack`, ns `jcloud`), seed a user session

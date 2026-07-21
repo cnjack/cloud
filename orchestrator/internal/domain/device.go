@@ -29,8 +29,12 @@ type Device struct {
 	// {projects:[{path,name}], models:[{provider,id,label}], efforts:[...]} as
 	// reported on the sessions upsert. OPAQUE to the server (stored verbatim,
 	// never parsed); nil until a connector new enough to send it upserts.
-	Capabilities []byte     `json:"-"` // opaque JSON blob (json.RawMessage at the API edge)
-	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
+	Capabilities []byte `json:"-"` // opaque JSON blob (json.RawMessage at the API edge)
+	// E2EE is the connector's reported encryption state (M13, migration 0035):
+	// true means the device seals uplink with an active CEK and accepts only
+	// {envelope} downlink command payloads (the pairing gate, docs/17 §6.7).
+	E2EE        bool       `json:"e2ee"`
+	LastSeenAt  *time.Time `json:"last_seen_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
 }

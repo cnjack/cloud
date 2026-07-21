@@ -25,6 +25,10 @@ type deviceRegisterReq struct {
 	JcodeVersion string `json:"jcode_version"`
 	Platform     string `json:"platform"`
 	Pubkey       string `json:"pubkey"`
+	// E2EE is the connector's actual encryption state (M13): true only when
+	// the CEK cipher is active and cloud.e2ee did not disable it. It drives
+	// the downlink pairing gate (docs/17 §6.7).
+	E2EE bool `json:"e2ee"`
 }
 
 type deviceRegisterView struct {
@@ -73,6 +77,9 @@ func (s *Server) handleDeviceRegister(w http.ResponseWriter, r *http.Request) {
 		d.Platform = d.Platform[:32]
 	}
 	d.Pubkey = strings.TrimSpace(req.Pubkey)
+	// e2ee is a bool the connector computes from its live cipher state; absent
+	// (old connector) decodes as false — the plaintext grey path, no gate.
+	d.E2EE = req.E2EE
 	d.LastSeenAt = &now
 	if err := s.st.UpsertDeviceRegistration(r.Context(), d); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

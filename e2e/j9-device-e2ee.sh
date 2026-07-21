@@ -31,6 +31,9 @@
 #   J9-S8  negatives: approving a nonexistent pairing fails; a pairing aged
 #          past the 10-minute window reads expired and approve fails (409);
 #          `jcode cloud deny` resolves a request to status=denied
+#   J9-S9  M13 pairing gate (docs/17 §6.7): the device view echoes register
+#          e2ee=true; plaintext bodies on messages/stop/approval get 409
+#          pairing_required; a sealed envelope still passes (202)
 #
 # Sourced by e2e.sh (BASE/TOKEN exported) OR runnable standalone:
 #   BASE=http://127.0.0.1:18080 ./j9-device-e2ee.sh
@@ -355,6 +358,34 @@ EOF
   assert_contains J9-S7 "raw events API returns ciphertext envelopes" "$ev_body" '"enc":"aes-256-gcm"'
   assert_not_contains J9-S7 "CEK-less client sees no mockllm plaintext" "$ev_body" "$J9_MOCK_FRAGMENT"
   assert_not_contains J9-S7 "CEK-less client sees no user message marker" "$ev_body" "$J9_MARKER"
+
+  # --- J9-S9: M13 pairing gate (docs/17 §6.7) ----------------------------------
+  # register 上报回显: this connector (CEK active, cloud.e2ee default on) must
+  # have reported e2ee=true, echoed on the client device view.
+  local e2ee_flag
+  e2ee_flag="$(http_body "$(j9_get_code "/api/v1/devices/$J9_DEVICE_ID")" \
+    | jq -r 'if .e2ee == null then "" else .e2ee end' 2>/dev/null)"
+  assert_eq J9-S9 "device view echoes register e2ee=true (CEK active)" "true" "$e2ee_flag"
+
+  # 明文注入被门拦: the seeded user session POSTing plaintext to the e2ee
+  # device gets 409 pairing_required on all three command endpoints; nothing
+  # is enqueued (the device could never decrypt it).
+  resp="$(j9_post_code "/api/v1/devices/$J9_DEVICE_ID/sessions/$sid/messages" '{"text":"plaintext-injection"}')"
+  assert_eq J9-S9 "plaintext {text} to an e2ee device returns 409" "409" "$(http_code "$resp")"
+  assert_contains J9-S9 "409 error is pairing_required" "$(http_body "$resp")" "pairing_required"
+  resp="$(j9_post_code "/api/v1/devices/$J9_DEVICE_ID/sessions/$sid/stop" '{}')"
+  assert_eq J9-S9 "plaintext stop to an e2ee device returns 409" "409" "$(http_code "$resp")"
+  resp="$(j9_post_code "/api/v1/devices/$J9_DEVICE_ID/sessions/$sid/approval" \
+    '{"approval_id":"a1","decision":"approve"}')"
+  assert_eq J9-S9 "plaintext approval to an e2ee device returns 409" "409" "$(http_code "$resp")"
+
+  # 密文放行: a sealed envelope on the same session still goes through (202).
+  printf '{"text":"%s gate-ping","channel":"console"}' "$J9_MARKER" >"$J9_HOME/plain-gate.json"
+  node "$J9_NODE_CLIENT" seal "$J9_HOME/cek.json" "$J9_HOME/plain-gate.json" \
+    >"$J9_HOME/env-gate.json" 2>>"$J9_HOME/node.log"
+  resp="$(j9_post_code "/api/v1/devices/$J9_DEVICE_ID/sessions/$sid/messages" \
+    "{\"envelope\":$(cat "$J9_HOME/env-gate.json")}")"
+  assert_eq J9-S9 "sealed envelope to the e2ee device still returns 202" "202" "$(http_code "$resp")"
 
   # --- J9-S8: negative paths ---------------------------------------------------
   HOME="$J9_HOME" "$JCODE_BIN" cloud approve "00000000000000000000000000000000" \

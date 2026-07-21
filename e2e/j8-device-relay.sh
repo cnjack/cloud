@@ -249,6 +249,12 @@ JSON
   devs="$(printf '%s' "$dev_body" | jq -r --arg id "$J8_DEVICE_ID" \
     '.devices[]? | select(.id==$id) | .name' 2>/dev/null)"
   assert_eq J8-S1 "device name mirrors the login --name" "e2e-j8" "$devs"
+  # M13 key compat point: a cloud.e2ee:false connector must report e2ee=false
+  # — anything else and the pairing gate (docs/17 §6.7, J9-S9) would block the
+  # plaintext sends this journey relies on below (S2/S4/S5/S7 are the proof).
+  assert_eq J8-S1 "device view echoes register e2ee=false (cloud.e2ee:false)" "false" \
+    "$(printf '%s' "$dev_body" | jq -r --arg id "$J8_DEVICE_ID" \
+      '.devices[]? | select(.id==$id) | .e2ee' 2>/dev/null)"
   # Negatives: the service principal owns no devices; a stranger's/unknown id 404s.
   local resp code
   resp="$(curl -sS -w $'\n%{http_code}' -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/devices")"

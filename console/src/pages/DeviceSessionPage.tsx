@@ -5,6 +5,7 @@ import { Link, useParams } from 'react-router-dom';
 import { ApiError, apiErrorCode } from '../api/client';
 import {
   DevicePairingCard,
+  DevicePairingGate,
   DeviceTimeline,
   resolveOnline,
   useDeviceSessionStream,
@@ -120,8 +121,6 @@ export function DeviceSessionPage() {
           </div>
         )}
 
-        <DevicePairingCard deviceId={deviceId} />
-
         {phase === 'error' && (
           <div className={styles.streamError} role="alert">
             <span>{t('device.session.streamError')}</span>
@@ -129,55 +128,61 @@ export function DeviceSessionPage() {
           </div>
         )}
 
-        {emptyTimeline ? (
-          <p className={styles.emptyHistory}>{t('device.session.emptyHistory')}</p>
-        ) : (
-          <DeviceTimeline
-            events={state.events}
-            finalizedText={state.finalizedText}
-            streamingText={state.streamingText}
-            agentRunning={state.agentRunning}
-            approvals={{
-              onDecide: (approvalId, decision) => {
-                respondApproval.mutate(
-                  { approvalId, decision },
-                  {
-                    onError: (error) => {
-                      toast.push({
-                        kind: 'error',
-                        message: error instanceof ApiError ? error.message : String(error),
-                      });
-                    },
-                  },
-                );
-              },
-              disabled: !online || respondApproval.isPending,
-            }}
-          />
-        )}
-        <div ref={endRef} aria-hidden="true" />
+        {/* M13: e2ee-enforcing devices hide the timeline and composer behind
+            the pairing gate until this client holds the CEK. */}
+        <DevicePairingGate device={device}>
+          <DevicePairingCard deviceId={deviceId} />
 
-        <form className={styles.composer} data-testid="session-composer" onSubmit={submit}>
-          <textarea
-            className={styles.textarea}
-            aria-label={t('device.session.send')}
-            placeholder={t('device.session.composerPlaceholder')}
-            value={text}
-            disabled={!online || send.isPending}
-            onChange={(event) => setText(event.target.value)}
-          />
-          {sendError && <p className={styles.sendError} role="alert">{sendError}</p>}
-          <div className={styles.composerActions}>
-            {running && (
-              <Button type="button" variant="danger" onClick={doStop} disabled={stop.isPending} loading={stop.isPending}>
-                {t('device.session.stop')}
+          {emptyTimeline ? (
+            <p className={styles.emptyHistory}>{t('device.session.emptyHistory')}</p>
+          ) : (
+            <DeviceTimeline
+              events={state.events}
+              finalizedText={state.finalizedText}
+              streamingText={state.streamingText}
+              agentRunning={state.agentRunning}
+              approvals={{
+                onDecide: (approvalId, decision) => {
+                  respondApproval.mutate(
+                    { approvalId, decision },
+                    {
+                      onError: (error) => {
+                        toast.push({
+                          kind: 'error',
+                          message: error instanceof ApiError ? error.message : String(error),
+                        });
+                      },
+                    },
+                  );
+                },
+                disabled: !online || respondApproval.isPending,
+              }}
+            />
+          )}
+          <div ref={endRef} aria-hidden="true" />
+
+          <form className={styles.composer} data-testid="session-composer" onSubmit={submit}>
+            <textarea
+              className={styles.textarea}
+              aria-label={t('device.session.send')}
+              placeholder={t('device.session.composerPlaceholder')}
+              value={text}
+              disabled={!online || send.isPending}
+              onChange={(event) => setText(event.target.value)}
+            />
+            {sendError && <p className={styles.sendError} role="alert">{sendError}</p>}
+            <div className={styles.composerActions}>
+              {running && (
+                <Button type="button" variant="danger" onClick={doStop} disabled={stop.isPending} loading={stop.isPending}>
+                  {t('device.session.stop')}
+                </Button>
+              )}
+              <Button type="submit" variant="primary" disabled={!online || !text.trim()} loading={send.isPending}>
+                {t('device.session.send')}
               </Button>
-            )}
-            <Button type="submit" variant="primary" disabled={!online || !text.trim()} loading={send.isPending}>
-              {t('device.session.send')}
-            </Button>
-          </div>
-        </form>
+            </div>
+          </form>
+        </DevicePairingGate>
       </div>
     </SurfaceInner>
   );

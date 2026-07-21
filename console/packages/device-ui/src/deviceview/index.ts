@@ -4,6 +4,8 @@
 export { DeviceTimeline } from './DeviceTimeline';
 export type { DeviceApprovalControls } from './DeviceTimeline';
 export { DevicePairingCard } from './DevicePairingCard';
+export { DevicePairingGate } from './DevicePairingGate';
+export type { DevicePairingGateProps } from './DevicePairingGate';
 export { mapDeviceEvent, applyToolResult, prettyArgs } from './eventModel';
 export { groupDeviceEvents } from './grouping';
 export {

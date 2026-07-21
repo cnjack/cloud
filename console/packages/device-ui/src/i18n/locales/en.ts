@@ -193,6 +193,10 @@ export default {
         "title": "Pairing expired",
         "body": "The pairing request was not approved within 10 minutes. Start a new one."
       },
+      "gate": {
+        "title": "Pairing required",
+        "body": "This device enforces end-to-end encryption. Session content and controls stay unavailable until pairing completes."
+      },
       "error": {
         "title": "Pairing failed",
         "body": "Something went wrong while pairing. Try again."

@@ -94,6 +94,8 @@ export type { ComposeValue, DeviceComposeProps } from './compose/DeviceCompose';
 export { DeviceTimeline } from './deviceview/DeviceTimeline';
 export type { DeviceApprovalControls } from './deviceview/DeviceTimeline';
 export { DevicePairingCard } from './deviceview/DevicePairingCard';
+export { DevicePairingGate } from './deviceview/DevicePairingGate';
+export type { DevicePairingGateProps } from './deviceview/DevicePairingGate';
 export { mapDeviceEvent, applyToolResult, prettyArgs } from './deviceview/eventModel';
 export { KNOWN_MESSAGE_SOURCES, channelLabelKey } from './deviceview/channels';
 export { groupDeviceEvents } from './deviceview/grouping';

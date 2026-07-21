@@ -6,6 +6,7 @@ import {
   ApiError,
   DeviceCompose,
   DevicePairingCard,
+  DevicePairingGate,
   apiErrorCode,
   composeExtras,
   initialComposeValue,
@@ -85,34 +86,42 @@ export function DeviceWelcomePage() {
         </span>
       </header>
 
-      <div className="content" data-testid="device-welcome">
-        <DevicePairingCard
-          deviceId={deviceId}
-          guideLink={<Link to="/guide">{t('device.guide.entry')}</Link>}
-        />
+      {/* M13: e2ee-enforcing devices hide the session list and composer
+          behind the pairing gate (fullscreen centered guide) until this
+          client holds the CEK; gray-rollout devices pass straight through. */}
+      <DevicePairingGate
+        device={device}
+        fullscreen
+        guideLink={<Link to="/guide">{t('device.guide.entry')}</Link>}
+      >
+        <div className="content" data-testid="device-welcome">
+          <DevicePairingCard
+            deviceId={deviceId}
+            guideLink={<Link to="/guide">{t('device.guide.entry')}</Link>}
+          />
 
-        {!online && (
-          <div className="banner" role="alert">
-            <Warning size={16} aria-hidden />
-            <span>{t('device.welcome.offlineBanner')}</span>
-          </div>
-        )}
+          {!online && (
+            <div className="banner" role="alert">
+              <Warning size={16} aria-hidden />
+              <span>{t('device.welcome.offlineBanner')}</span>
+            </div>
+          )}
 
-        <h2 className="section-title">{t('device.welcome.sessions')}</h2>
-        {sessions.isLoading ? (
-          <p className="state-block">{t('mobile.common.loading')}</p>
-        ) : (sessions.data?.length ?? 0) === 0 ? (
-          <p className="state-block">{t('device.welcome.noSessions')}</p>
-        ) : (
-          <div>
-            {(sessions.data ?? []).map((session) => (
-              <SessionRow key={session.session_id} deviceId={deviceId} session={session} />
-            ))}
-          </div>
-        )}
-      </div>
+          <h2 className="section-title">{t('device.welcome.sessions')}</h2>
+          {sessions.isLoading ? (
+            <p className="state-block">{t('mobile.common.loading')}</p>
+          ) : (sessions.data?.length ?? 0) === 0 ? (
+            <p className="state-block">{t('device.welcome.noSessions')}</p>
+          ) : (
+            <div>
+              {(sessions.data ?? []).map((session) => (
+                <SessionRow key={session.session_id} deviceId={deviceId} session={session} />
+              ))}
+            </div>
+          )}
+        </div>
 
-      <form className="composer" onSubmit={submit} data-testid="new-session-composer">
+        <form className="composer" onSubmit={submit} data-testid="new-session-composer">
         {hasCompose && composeOpen && (
           <div className="compose-panel" data-testid="compose-panel">
             <DeviceCompose
@@ -167,7 +176,8 @@ export function DeviceWelcomePage() {
             <ArrowRight size={18} color="var(--color-accent)" />
           </button>
         </div>
-      </form>
+        </form>
+      </DevicePairingGate>
     </div>
   );
 }

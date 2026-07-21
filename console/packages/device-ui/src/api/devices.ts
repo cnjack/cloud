@@ -24,6 +24,13 @@ export interface Device {
   /** The device's current CEK generation. */
   key_gen?: number;
   /**
+   * E2EE enforcement flag reported at registration (M13). When true the
+   * orchestrator rejects plaintext control with 409 pairing_required, so
+   * clients gate the session surfaces behind pairing (DevicePairingGate).
+   * Absent/false: gray rollout — no gate.
+   */
+  e2ee?: boolean;
+  /**
    * The connector-reported compose capabilities (M12). Absent/null on devices
    * running a connector that predates the field — clients hide the compose
    * panel entirely then.

@@ -15,12 +15,12 @@ import (
 // --- devices (docs/17 — jcode device relay) -----------------------------------
 
 const deviceCols = `id, user_id, name, hostname, jcode_version, platform, pubkey, key_gen,
-	capabilities, last_seen_at, created_at, revoked_at`
+	capabilities, e2ee, last_seen_at, created_at, revoked_at`
 
 func scanDevice(row pgx.Row) (*domain.Device, error) {
 	var d domain.Device
 	err := row.Scan(&d.ID, &d.UserID, &d.Name, &d.Hostname, &d.JcodeVersion, &d.Platform, &d.Pubkey,
-		&d.KeyGen, &d.Capabilities, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt)
+		&d.KeyGen, &d.Capabilities, &d.E2EE, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -32,9 +32,9 @@ func scanDevice(row pgx.Row) (*domain.Device, error) {
 
 func (s *PGStore) CreateDevice(ctx context.Context, d *domain.Device) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO devices (`+deviceCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		`INSERT INTO devices (`+deviceCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		d.ID, d.UserID, d.Name, d.Hostname, d.JcodeVersion, d.Platform, d.Pubkey,
-		d.KeyGen, d.Capabilities, d.LastSeenAt, d.CreatedAt, d.RevokedAt)
+		d.KeyGen, d.Capabilities, d.E2EE, d.LastSeenAt, d.CreatedAt, d.RevokedAt)
 	if err != nil {
 		return fmt.Errorf("insert device: %w", err)
 	}
@@ -52,9 +52,9 @@ func (s *PGStore) UpsertDeviceRegistration(ctx context.Context, d *domain.Device
 	// key generation. The row is created at token issuance, so RowsAffected==0
 	// means the device was deleted under a live token.
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE devices SET name=$2, hostname=$3, jcode_version=$4, platform=$5, pubkey=$6, last_seen_at=$7
+		`UPDATE devices SET name=$2, hostname=$3, jcode_version=$4, platform=$5, pubkey=$6, e2ee=$7, last_seen_at=$8
 		 WHERE id=$1`,
-		d.ID, d.Name, d.Hostname, d.JcodeVersion, d.Platform, d.Pubkey, d.LastSeenAt)
+		d.ID, d.Name, d.Hostname, d.JcodeVersion, d.Platform, d.Pubkey, d.E2EE, d.LastSeenAt)
 	if err != nil {
 		return fmt.Errorf("upsert device registration: %w", err)
 	}
@@ -131,7 +131,7 @@ func (s *PGStore) ListDevicesForUser(ctx context.Context, userID string) ([]doma
 	for rows.Next() {
 		var d domain.Device
 		if err := rows.Scan(&d.ID, &d.UserID, &d.Name, &d.Hostname, &d.JcodeVersion, &d.Platform, &d.Pubkey,
-			&d.KeyGen, &d.Capabilities, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt); err != nil {
+			&d.KeyGen, &d.Capabilities, &d.E2EE, &d.LastSeenAt, &d.CreatedAt, &d.RevokedAt); err != nil {
 			return nil, fmt.Errorf("scan device: %w", err)
 		}
 		out = append(out, d)

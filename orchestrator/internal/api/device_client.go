@@ -74,9 +74,13 @@ type deviceView struct {
 	// verbatim; omitted for devices that never reported any (old connectors —
 	// clients hide the compose panel then).
 	Capabilities json.RawMessage `json:"capabilities,omitempty"`
-	Online       bool            `json:"online"`
-	LastSeenAt   *time.Time      `json:"last_seen_at,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
+	// E2EE is the connector-reported encryption state (M13). Non-omitempty
+	// for a stable client contract (like platform): false covers both
+	// pre-M13 connectors and cloud.e2ee:false devices.
+	E2EE       bool       `json:"e2ee"`
+	Online     bool       `json:"online"`
+	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
 }
 
 func (s *Server) toDeviceView(d *domain.Device) deviceView {
@@ -89,6 +93,7 @@ func (s *Server) toDeviceView(d *domain.Device) deviceView {
 		Pubkey:       d.Pubkey,
 		KeyGen:       d.KeyGen,
 		Capabilities: d.Capabilities,
+		E2EE:         d.E2EE,
 		Online:       s.deviceOnline(d),
 		LastSeenAt:   d.LastSeenAt,
 		CreatedAt:    d.CreatedAt,
@@ -339,6 +344,22 @@ func commandEnvelopePayload(raw json.RawMessage) ([]byte, error) {
 	return []byte(raw), nil
 }
 
+// rejectPlaintextDownlink enforces the M13 pairing gate (docs/17 §6.7): a
+// device that registered e2ee=true accepts ONLY sealed {envelope} command
+// payloads on the client command endpoints — a plaintext body is refused with
+// 409 pairing_required (the device could not decrypt it, and a server-side
+// plaintext path would defeat the E2EE guarantee). e2ee=false devices keep
+// the M3/M4 plaintext behavior untouched. Returns true when it wrote the
+// rejection — the caller must stop.
+func rejectPlaintextDownlink(w http.ResponseWriter, d *domain.Device) bool {
+	if !d.E2EE {
+		return false
+	}
+	writeError(w, http.StatusConflict, "pairing_required",
+		"this device has end-to-end encryption active — pair a client and send the encrypted envelope form")
+	return true
+}
+
 type deviceSendMessageReq struct {
 	Text     string          `json:"text"`
 	Mode     string          `json:"mode,omitempty"`
@@ -354,6 +375,8 @@ type deviceSendMessageReq struct {
 // The body is one of two shapes (docs/17 §6.2 gray rollout): {text, mode?} —
 // the server builds the plaintext payload itself — or {envelope} — a client-
 // side E2EE ciphertext of the same payload, stored verbatim and never parsed.
+// Pairing gate (M13, docs/17 §6.7): an e2ee=true device accepts only the
+// envelope shape; plaintext gets 409 pairing_required.
 func (s *Server) handleDeviceSendMessage(w http.ResponseWriter, r *http.Request) {
 	d := s.authorizeDevice(w, r, r.PathValue("id"))
 	if d == nil {
@@ -381,6 +404,9 @@ func (s *Server) handleDeviceSendMessage(w http.ResponseWriter, r *http.Request)
 		s.enqueueDeviceCommandRaw(w, r, d, domain.DeviceCmdChatSend, sessionID, env)
 		return
 	}
+	if rejectPlaintextDownlink(w, d) {
+		return
+	}
 	if strings.TrimSpace(req.Text) == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "text is required")
 		return
@@ -396,6 +422,8 @@ func (s *Server) handleDeviceSendMessage(w http.ResponseWriter, r *http.Request)
 // (docs/17 §4.3). The payload is normally empty ({}); an E2EE client MAY send
 // {envelope} instead, which is stored verbatim like every other ciphertext.
 // The target session rides the command's outer session_id field either way.
+// On an e2ee=true device the envelope form is REQUIRED (M13 pairing gate —
+// the empty/plaintext body gets 409 pairing_required).
 func (s *Server) handleDeviceStopSession(w http.ResponseWriter, r *http.Request) {
 	d := s.authorizeDevice(w, r, r.PathValue("id"))
 	if d == nil {
@@ -420,6 +448,9 @@ func (s *Server) handleDeviceStopSession(w http.ResponseWriter, r *http.Request)
 		s.enqueueDeviceCommandRaw(w, r, d, domain.DeviceCmdChatStop, &sid, env)
 		return
 	}
+	if rejectPlaintextDownlink(w, d) {
+		return
+	}
 	s.enqueueDeviceCommand(w, r, d, domain.DeviceCmdChatStop, &sid, map[string]any{})
 }
 
@@ -432,7 +463,8 @@ type deviceApprovalReq struct {
 // handleDeviceApproval enqueues an approval.respond command (docs/17 §4.3):
 // the user's answer to a permission request the device raised. The body is
 // {approval_id, decision} in plaintext, or {envelope} — the E2EE ciphertext
-// of that same payload, stored verbatim.
+// of that same payload, stored verbatim. On an e2ee=true device only the
+// envelope form is accepted (M13 pairing gate, 409 pairing_required).
 func (s *Server) handleDeviceApproval(w http.ResponseWriter, r *http.Request) {
 	d := s.authorizeDevice(w, r, r.PathValue("id"))
 	if d == nil {
@@ -455,6 +487,9 @@ func (s *Server) handleDeviceApproval(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.enqueueDeviceCommandRaw(w, r, d, domain.DeviceCmdApprovalRespond, &sid, env)
+		return
+	}
+	if rejectPlaintextDownlink(w, d) {
 		return
 	}
 	if strings.TrimSpace(req.ApprovalID) == "" || strings.TrimSpace(req.Decision) == "" {

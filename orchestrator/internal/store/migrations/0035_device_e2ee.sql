@@ -1,0 +1,14 @@
+-- 0035_device_e2ee: the connector's encryption-state report (M13).
+--
+-- The jcode connector reports its ACTUAL uplink encryption state as a top-level
+-- `e2ee` field on POST /internal/v1/device/register: true only when the CEK
+-- cipher is active AND cloud.e2ee did not disable it. The server stores it on
+-- the devices row and echoes it back on GET /api/v1/devices/{id}, and uses it
+-- as the PAIRING GATE (docs/17 §6.7): an e2ee=true device accepts only
+-- {envelope} downlink command payloads on the messages/stop/approval client
+-- endpoints — a plaintext body is rejected with 409 pairing_required.
+-- e2ee=false devices (older connectors, or cloud.e2ee:false) keep the M3/M4
+-- plaintext path untouched.
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS makes a re-apply a no-op.
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS e2ee BOOL NOT NULL DEFAULT false;

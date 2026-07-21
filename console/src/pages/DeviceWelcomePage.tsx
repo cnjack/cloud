@@ -3,7 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { useDevices, useDeviceSessions, useSendDeviceMessage, DevicePairingCard, DeviceCompose, channelLabelKey, composeExtras, initialComposeValue } from '@jcloud/device-ui';
+import { useDevices, useDeviceSessions, useSendDeviceMessage, DevicePairingCard, DevicePairingGate, DeviceCompose, channelLabelKey, composeExtras, initialComposeValue } from '@jcloud/device-ui';
 import type { ComposeValue, DeviceSession } from '@jcloud/device-ui';
 import { Button } from '../components/Button';
 import { PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout';
@@ -106,11 +106,6 @@ export function DeviceWelcomePage() {
         />
 
         <div className={styles.stack}>
-          <DevicePairingCard
-            deviceId={deviceId}
-            guideLink={<Link to="/devices/guide">{t('device.guide.entry')}</Link>}
-          />
-
           {!online && (
             <div className={styles.banner} role="alert">
               <Warning size={16} aria-hidden="true" />
@@ -118,7 +113,20 @@ export function DeviceWelcomePage() {
             </div>
           )}
 
-          <section aria-labelledby="new-session-title">
+          {/* M13: e2ee-enforcing devices hide the session surfaces (composer,
+              session list) behind the pairing gate until this client holds
+              the CEK; gray-rollout devices pass straight through. */}
+          <DevicePairingGate
+            device={device}
+            guideLink={<Link to="/devices/guide">{t('device.guide.entry')}</Link>}
+          >
+            <div className={styles.stack}>
+              <DevicePairingCard
+                deviceId={deviceId}
+                guideLink={<Link to="/devices/guide">{t('device.guide.entry')}</Link>}
+              />
+
+              <section aria-labelledby="new-session-title">
             <div className={styles.sectionHead}><h2 id="new-session-title">{t('device.welcome.newSession')}</h2></div>
             <form className={styles.composer} data-testid="new-session-composer" onSubmit={submit}>
               <DeviceCompose
@@ -169,7 +177,9 @@ export function DeviceWelcomePage() {
                 ))}
               </ul>
             )}
-          </section>
+              </section>
+            </div>
+          </DevicePairingGate>
         </div>
       </div>
     </SurfaceInner>
