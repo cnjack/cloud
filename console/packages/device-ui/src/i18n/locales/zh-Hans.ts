@@ -168,6 +168,8 @@ export default {
       "sessionCount_one": "{count} 个会话",
       "sessionCount_other": "{count} 个会话",
       "noSessions": "还没有会话——发送一条消息即可开始。",
+      "creating": "正在创建会话…",
+      "createSlow": "设备响应较慢——会话稍后出现。",
       "untitled": "未命名会话",
       "offlineBanner": "此设备已离线。重新连接前无法发送消息。",
       "delete": "删除设备",

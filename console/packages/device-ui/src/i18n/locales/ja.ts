@@ -168,6 +168,8 @@ export default {
       "sessionCount_one": "{count} 件のセッション",
       "sessionCount_other": "{count} 件のセッション",
       "noSessions": "セッションがまだありません。メッセージを送信して開始してください。",
+      "creating": "セッションを作成しています…",
+      "createSlow": "デバイスの応答が遅れています——まもなくセッションが表示されます。",
       "untitled": "無題のセッション",
       "offlineBanner": "このデバイスはオフラインです。再接続されるまでメッセージを送信できません。",
       "delete": "デバイスを削除",

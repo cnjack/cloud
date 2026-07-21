@@ -171,7 +171,11 @@ export function useDevicePairing(deviceId: string, deps: DevicePairingDeps = {})
             setPairingId(null);
             setPhase('ready');
             // Refetch so already-cached ciphertext re-renders as plaintext.
+            // The devices row must be invalidated too: it carries the sealed
+            // capabilities envelope, and without a refetch the composer
+            // pickers (models/projects/slash) stay empty until a full reload.
             qc.invalidateQueries({ queryKey: dqk.deviceSessions(deviceId) });
+            qc.invalidateQueries({ queryKey: dqk.devices });
           } catch (err) {
             if (!cancelled) {
               setError(err);

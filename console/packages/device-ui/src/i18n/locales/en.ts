@@ -168,6 +168,8 @@ export default {
       "sessionCount_one": "{count} session",
       "sessionCount_other": "{count} sessions",
       "noSessions": "No sessions yet — send a message to start one.",
+      "creating": "Creating session…",
+      "createSlow": "The device is taking a while — the session will appear shortly.",
       "untitled": "Untitled session",
       "offlineBanner": "This device is offline. Messages cannot be sent until it reconnects.",
       "delete": "Delete device",

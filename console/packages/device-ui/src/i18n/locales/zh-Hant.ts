@@ -168,6 +168,8 @@ export default {
       "sessionCount_one": "{count} 個工作階段",
       "sessionCount_other": "{count} 個工作階段",
       "noSessions": "還沒有工作階段——傳送一則訊息即可開始。",
+      "creating": "正在建立工作階段…",
+      "createSlow": "裝置回應較慢——工作階段稍後出現。",
       "untitled": "未命名工作階段",
       "offlineBanner": "此裝置已離線。重新連線前無法傳送訊息。",
       "delete": "刪除裝置",
