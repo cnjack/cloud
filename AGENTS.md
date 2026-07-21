@@ -117,6 +117,10 @@ console/mobile — all end-to-end encrypted. Durable rules for this area:
   images, pushes ghcr `latest`, cuts a release tag only on main), then
   `kubectl rollout restart deploy/orchestrator deploy/console`. Verify
   `schema_migrations` and smoke the public path (no port-forward) afterwards.
+- **pnpm turns plain `pnpm install` into `--frozen-lockfile` when `CI=true`.**
+  Any script step meant to regenerate a lockfile must pass
+  `--no-frozen-lockfile` explicitly or it fails on runners with an
+  overrides/config mismatch (hit in the M14 .pkg pack step).
 
 ## Engineering workflow
 

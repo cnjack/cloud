@@ -207,6 +207,9 @@ if (!dockerfile.includes('.pkg')) {
 }
 
 // --- 7. regenerate both lockfiles --------------------------------------------
-run('pnpm', ['install'], consoleRoot);
-run('pnpm', ['install'], mobileRoot);
+// NOTE: plain `pnpm install` becomes frozen automatically when CI=true, which
+// would compare the stale lockfile against the just-rewritten overrides and
+// bail. These two installs MUST regenerate the lockfile, so opt out explicitly.
+run('pnpm', ['install', '--no-frozen-lockfile'], consoleRoot);
+run('pnpm', ['install', '--no-frozen-lockfile'], mobileRoot);
 log('done — .pkg state ready; build the image, then run with --restore');
