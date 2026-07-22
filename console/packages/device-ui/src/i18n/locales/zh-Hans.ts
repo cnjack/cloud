@@ -259,10 +259,10 @@ export default {
       "pairing": {
         "title": "配对与端到端加密",
         "p1": "会话内容端到端加密：云端只存密文和路由元数据，无法读取你的会话。新客户端（新浏览器或手机）必须先与设备配对，才能解密任何内容。",
-        "p2": "在手机上，最快的方式是扫描桌面端二维码：在 jcode 桌面应用中打开云端徽章（侧边栏）→「扫码配对」，再用手机应用扫描。也可以从客户端发起配对，然后在桌面端批准——请求等待期间侧边栏的云端徽章会脉冲闪烁，点击它并在 10 分钟内批准。也可以使用 CLI：",
+        "p2": "在浏览器或手机端发起配对，然后打开设备上的 jcode Desktop，进入「设置 → 云端」，核对客户端名称，并在 10 分钟内批准或拒绝。CLI 仍可用于自动化：",
         "code1": "jcode cloud pairings",
         "code2": "jcode cloud approve <pairing_id>",
-        "p3": "`pairings` 列出待批准的请求及其备注名；`approve` 批准其中一个（拒绝对应 `jcode cloud deny <pairing_id>`）。"
+        "p3": "推荐在 Desktop 的「设置 → 云端」中审核。自动化场景可用 `pairings` 查看待处理请求，再用 `approve` 批准（拒绝对应 `jcode cloud deny <pairing_id>`）。"
       },
       "keys": {
         "title": "密钥与恢复",
@@ -293,16 +293,13 @@ export default {
     },
     "pairing": {
       "start": "配对此客户端",
-      "copy": "复制命令",
-      "copied": "已复制",
       "idle": {
         "title": "尚未设置端到端加密",
-        "body": "将此客户端与设备配对后，才能读取和发送加密的会话内容。手机上最快的方式是扫描桌面端二维码：在 jcode 桌面应用中打开云端徽章（侧边栏）→「扫码配对」，用手机应用扫描即可。"
+        "body": "请从当前客户端发起配对。请求会出现在 jcode Desktop 的「设置 → 云端」中；在那里批准之前，加密会话内容保持锁定。"
       },
       "pending": {
         "title": "等待设备上批准",
-        "body": "请在设备上的 jcode 桌面应用中批准：侧边栏的云端徽章正在脉冲闪烁——点击它并在 10 分钟内批准此配对。在手机上，直接扫描桌面端二维码（云端徽章 →「扫码配对」）可立即完成配对。",
-        "cliHint": "更习惯用终端？"
+        "body": "请打开设备上的 jcode Desktop，进入「设置 → 云端」，核对当前客户端，并在 10 分钟内批准或拒绝此请求。"
       },
       "denied": {
         "title": "配对被拒绝",
@@ -322,22 +319,22 @@ export default {
       }
     },
     "title": "授权设备",
-    "lede": "一个 jcode CLI 正在请求登录此云端。输入它显示的验证码以继续。",
+    "lede": "jcode Desktop 正在请求登录此云端。输入 Desktop 中显示的验证码以继续。",
     "codeLabel": "设备验证码",
-    "codeHint": "`jcode login` 显示的 8 位验证码，形如 XXXX-XXXX。",
+    "codeHint": "jcode Desktop 中显示的 8 位验证码，形如 XXXX-XXXX。",
     "codeCell": "第 {n} 个字符，共 {total} 个",
-    "codeRequired": "请输入 CLI 显示的验证码。",
+    "codeRequired": "请输入 jcode Desktop 显示的验证码。",
     "continue": "继续",
     "confirmTitle": "这是你的设备吗？",
-    "confirmBody": "仅当此验证码与你正在运行的 `jcode login` 显示的一致时才批准。",
+    "confirmBody": "仅当此验证码与 jcode Desktop 当前显示的登录请求一致时才批准。",
     "approve": "批准",
     "deny": "拒绝",
     "approvedTitle": "设备已批准",
-    "approvedBody": "CLI 现在可以完成登录了——你可以关闭此页面。",
+    "approvedBody": "请返回 jcode Desktop，登录将自动完成。",
     "deniedTitle": "设备已拒绝",
-    "deniedBody": "登录请求已被拒绝，CLI 将停止等待。",
+    "deniedBody": "登录请求已被拒绝，jcode Desktop 将停止等待。",
     "another": "授权另一台设备",
-    "errorNotFound": "没有与该验证码匹配的待处理登录——它可能已过期。请重新运行 `jcode login`。",
+    "errorNotFound": "没有与该验证码匹配的待处理登录——它可能已过期。请从 jcode Desktop 重新发起登录。",
     "errorAlreadyDecided": "该登录请求已被批准或拒绝。",
     "errorGeneric": "无法授权设备，请重试。"
   }

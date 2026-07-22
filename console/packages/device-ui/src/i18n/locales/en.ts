@@ -259,10 +259,10 @@ export default {
       "pairing": {
         "title": "Pairing & end-to-end encryption",
         "p1": "Session content is end-to-end encrypted: the cloud only stores ciphertext and routing metadata, so it cannot read your sessions. A new client (a new browser or a phone) must pair with a device before it can decrypt anything.",
-        "p2": "On a phone, the fastest path is scanning the desktop QR code: in the jcode desktop app open the cloud badge (sidebar) → \"Pair via QR code\", then scan it with the mobile app. Otherwise start pairing from the client and approve it on the desktop — the sidebar cloud badge pulses while a request waits; click it and approve within 10 minutes. The CLI works too:",
+        "p2": "Start pairing from the browser or mobile app. Then open jcode Desktop on the device, go to Settings → Cloud, verify the client label, and approve or deny the request within 10 minutes. The CLI remains available for automation:",
         "code1": "jcode cloud pairings",
         "code2": "jcode cloud approve <pairing_id>",
-        "p3": "`pairings` lists the pending requests with their labels; `approve` authorizes one (reject with `jcode cloud deny <pairing_id>`)."
+        "p3": "Desktop Settings → Cloud is the recommended approval path. `pairings` lists pending requests for automation; `approve` authorizes one (reject with `jcode cloud deny <pairing_id>`)."
       },
       "keys": {
         "title": "Keys & recovery",
@@ -293,16 +293,13 @@ export default {
     },
     "pairing": {
       "start": "Pair this client",
-      "copy": "Copy command",
-      "copied": "Copied",
       "idle": {
         "title": "End-to-end encryption not set up",
-        "body": "Pair this client with the device to read and send encrypted session content. On a phone, the fastest path is scanning the desktop QR code: cloud badge (sidebar) → \"Pair via QR code\", scanned with the mobile app."
+        "body": "Start pairing from this client. A review request will appear in jcode Desktop under Settings → Cloud; encrypted content stays locked until you approve it there."
       },
       "pending": {
         "title": "Waiting for approval on the device",
-        "body": "Approve it in the jcode desktop app on the device: the sidebar cloud badge is pulsing — click it and approve this pairing within 10 minutes. On a phone, scanning the desktop QR code (cloud badge → \"Pair via QR code\") pairs instantly instead.",
-        "cliHint": "Prefer the terminal?"
+        "body": "Open jcode Desktop on the device, go to Settings → Cloud, verify this client, and approve or deny the request within 10 minutes."
       },
       "denied": {
         "title": "Pairing denied",
@@ -322,22 +319,22 @@ export default {
       }
     },
     "title": "Authorize a device",
-    "lede": "A jcode CLI is asking to sign in to this cloud. Enter the code it shows to continue.",
+    "lede": "jcode Desktop is asking to sign in to this cloud. Enter the code shown in Desktop to continue.",
     "codeLabel": "Device code",
-    "codeHint": "The 8-character code shown by `jcode login`, e.g. XXXX-XXXX.",
+    "codeHint": "The 8-character code shown in jcode Desktop, e.g. XXXX-XXXX.",
     "codeCell": "Character {n} of {total}",
-    "codeRequired": "Enter the code shown by the CLI.",
+    "codeRequired": "Enter the code shown in jcode Desktop.",
     "continue": "Continue",
     "confirmTitle": "Is this your device?",
-    "confirmBody": "Approve only if this code matches what your `jcode login` is showing right now.",
+    "confirmBody": "Approve only if this code matches the current sign-in request shown in jcode Desktop.",
     "approve": "Approve",
     "deny": "Deny",
     "approvedTitle": "Device approved",
-    "approvedBody": "The CLI can finish signing in now — you can close this page.",
+    "approvedBody": "Return to jcode Desktop; sign-in will finish automatically.",
     "deniedTitle": "Device denied",
-    "deniedBody": "The sign-in request was rejected. The CLI will stop waiting.",
+    "deniedBody": "The sign-in request was rejected. jcode Desktop will stop waiting.",
     "another": "Authorize another device",
-    "errorNotFound": "No pending sign-in matches that code — it may have expired. Run `jcode login` again.",
+    "errorNotFound": "No pending sign-in matches that code — it may have expired. Start sign-in again from jcode Desktop.",
     "errorAlreadyDecided": "That sign-in was already approved or denied.",
     "errorGeneric": "Could not authorize the device. Try again."
   }

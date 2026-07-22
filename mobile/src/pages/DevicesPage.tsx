@@ -1,4 +1,4 @@
-import { Devices, Question, QrCode, SignOut } from '@phosphor-icons/react';
+import { Devices, Question, SignOut } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { ApiError, useDevices, type Device } from '@jcloud/device-ui';
@@ -18,9 +18,6 @@ export function DevicesPage() {
           {t('device.list.title')}
           {auth?.me && <span className="topbar-sub">{auth.me.user.display_name}</span>}
         </div>
-        <Link to="/scan" className="topbar-back" aria-label={t('mobile.scan.entry')} data-testid="scan-entry">
-          <QrCode size={18} />
-        </Link>
         <Link to="/guide" className="topbar-back" aria-label={t('device.guide.entry')} data-testid="guide-entry">
           <Question size={18} />
         </Link>

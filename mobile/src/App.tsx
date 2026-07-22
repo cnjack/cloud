@@ -8,7 +8,6 @@ import { MobileAuthProvider, useMobileAuth } from './auth';
 import { LoginPage } from './pages/LoginPage';
 import { GuidePage } from './pages/GuidePage';
 import { DevicesPage } from './pages/DevicesPage';
-import { ScanPage } from './pages/ScanPage';
 import { DeviceWelcomePage } from './pages/DeviceWelcomePage';
 import { DeviceSessionPage } from './pages/DeviceSessionPage';
 
@@ -60,7 +59,6 @@ function AuthedTree() {
         <Routes>
           <Route path="/" element={<DevicesPage />} />
           <Route path="/guide" element={<GuidePage />} />
-          <Route path="/scan" element={<ScanPage />} />
           <Route path="/devices/:deviceId" element={<DeviceWelcomePage />} />
           <Route path="/devices/:deviceId/sessions/:sessionId" element={<DeviceSessionPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
