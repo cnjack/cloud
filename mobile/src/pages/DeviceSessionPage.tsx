@@ -47,6 +47,9 @@ export function DeviceSessionPage() {
     streamState: state,
     sessionRunning: session?.status === 'running',
     hasMessages: !emptyTimeline,
+    initialModel: session?.meta?.provider && session.meta.model
+      ? { provider: session.meta.provider, id: session.meta.model }
+      : null,
   });
 
   return (

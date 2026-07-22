@@ -1,6 +1,4 @@
 .page { display: flex; flex-direction: column; align-content: start; gap: var(--space-6); /* M14: bounded column so the jcode Thread owns its own scroll region (topbar 52px + SurfaceInner's 40px top pad). */ height: calc(100dvh - var(--shell-topbar-h) - 100px); min-height: 480px; }
-.back { display: inline-flex; width: fit-content; align-items: center; gap: 6px; color: var(--color-text-dim); font-size: var(--fs-caption); font-weight: var(--fw-medium); }
-.back:hover { color: var(--color-text); text-decoration: none; }
 .header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
 .heading { display: grid; min-width: 0; gap: var(--space-1); }
 .heading h1 { overflow-wrap: anywhere; font-size: var(--fs-h1); font-weight: var(--fw-semibold); letter-spacing: var(--tracking-tight); }

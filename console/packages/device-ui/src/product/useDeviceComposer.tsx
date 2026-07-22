@@ -31,6 +31,8 @@ import { useDeviceApi } from '../api/DeviceApiProvider';
 import type { DeviceSessionState } from '../deviceview/sessionReducer';
 import { initialDeviceSessionState } from '../deviceview/sessionReducer';
 import type { DeviceViewItem } from '../deviceview/types';
+import type { DeviceViewEvent } from '../deviceview/types';
+import { mapDeviceEvent } from '../deviceview/eventModel';
 import {
   buildProviders,
   buildSendExtras,
@@ -57,6 +59,8 @@ export interface UseDeviceComposerOptions {
   sessionRunning?: boolean;
   /** hasMessages drives the composer's welcome ↔ docked layout. */
   hasMessages?: boolean;
+  /** Existing-session model from SessionMeta, used before event replay lands. */
+  initialModel?: { provider: string; id: string } | null;
   /**
    * Extra error sink for send/stop/approval failures. Errors always append a
    * local system row to the runtime timeline; hosts that don't render a
@@ -98,8 +102,57 @@ function writeJson(key: string, value: unknown): void {
 
 const EMPTY_STREAM = initialDeviceSessionState();
 let localSeq = -2_000_000;
+
+interface StoredSessionSelection {
+  mode?: AgentMode;
+  modeTouched?: boolean;
+  model?: ModelRef | null;
+  modelTouched?: boolean;
+}
+
+function sessionSelectionKey(deviceId: string, sessionId: string): string {
+  return `jcloud:composer:session:${deviceId}:${sessionId}`;
+}
+
+function latestSessionSelection(events: DeviceViewEvent[]): StoredSessionSelection {
+  const selection: StoredSessionSelection = {};
+  for (const event of events) {
+    const item = mapDeviceEvent(event);
+    if (item?.kind !== 'status') continue;
+    if (item.eventKind === 'mode_changed' && CLOUD_ALLOWED_MODES.includes(item.mode as AgentMode)) {
+      selection.mode = item.mode as AgentMode;
+      selection.modeTouched = false;
+    }
+    if (item.eventKind === 'model_changed' && item.provider && item.model) {
+      selection.model = { provider: item.provider, model: item.model };
+      selection.modelTouched = false;
+    }
+  }
+  return selection;
+}
+
+/** Keep real switches, but hide repeated broadcasts of an unchanged setting. */
+function withoutRepeatedSelectionEvents(events: DeviceViewEvent[]): DeviceViewEvent[] {
+  let mode = '';
+  let model = '';
+  return events.filter((event) => {
+    const item = mapDeviceEvent(event);
+    if (item?.kind !== 'status') return true;
+    if (item.eventKind === 'mode_changed' && item.mode) {
+      if (mode === item.mode) return false;
+      mode = item.mode;
+    }
+    if (item.eventKind === 'model_changed' && item.model) {
+      const key = `${item.provider ?? ''}/${item.model}`;
+      if (model === key) return false;
+      model = key;
+    }
+    return true;
+  });
+}
+
 export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComposer {
-  const { deviceId, sessionId, device, streamState, sessionRunning, hasMessages, onError, onSent } = options;
+  const { deviceId, sessionId, device, streamState, sessionRunning, hasMessages, initialModel, onError, onSent } = options;
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const deviceApi = useDeviceApi();
@@ -110,17 +163,60 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
   const respondApproval = useRespondDeviceApproval(deviceId, sessionId);
 
   // ── Composer state (local; applied per message via chat.send extras) ──────
-  const [compose, setCompose] = useState<DeviceComposerState>(() => ({
-    ...initialDeviceComposerState(device?.capabilities?.current_model),
-    effortOverrides: readJson(`jcloud:composer:effort:${deviceId}`, {}),
-  }));
+  const selectionKey = sessionSelectionKey(deviceId, sessionId);
+  const [compose, setCompose] = useState<DeviceComposerState>(() => {
+    const stored = readJson<StoredSessionSelection>(selectionKey, {});
+    const fallbackModel = initialModel ?? device?.capabilities?.current_model;
+    const initial = initialDeviceComposerState(fallbackModel);
+    return {
+      ...initial,
+      ...(stored.mode && CLOUD_ALLOWED_MODES.includes(stored.mode) ? { mode: stored.mode } : {}),
+      modeTouched: stored.modeTouched === true,
+      model: stored.model === undefined ? initial.model : stored.model,
+      modelTouched: stored.modelTouched === true,
+      effortOverrides: readJson(`jcloud:composer:effort:${deviceId}`, {}),
+    };
+  });
+  const persistSelection = useCallback((state: DeviceComposerState) => {
+    writeJson(selectionKey, {
+      mode: state.mode,
+      modeTouched: state.modeTouched,
+      model: state.model,
+      modelTouched: state.modelTouched,
+    } satisfies StoredSessionSelection);
+  }, [selectionKey]);
   useEffect(() => {
-    const current = capabilities?.current_model;
+    const current = initialModel ?? capabilities?.current_model;
     if (!current) return;
     setCompose((state) => state.model
       ? state
       : { ...state, model: { provider: current.provider, model: current.id } });
-  }, [capabilities?.current_model]);
+  }, [capabilities?.current_model, initialModel]);
+
+  // Durable mode/model events are the authoritative session selection. They
+  // restore the composer after navigation (and across web/mobile clients).
+  // A locally selected-but-unsent value remains pending until it is observed.
+  const observedSelection = useMemo(
+    () => latestSessionSelection(streamState?.events ?? []),
+    [streamState?.events],
+  );
+  useEffect(() => {
+    if (!observedSelection.mode && !observedSelection.model) return;
+    setCompose((state) => {
+      let next = state;
+      if (observedSelection.mode && (!state.modeTouched || state.mode === observedSelection.mode)) {
+        next = { ...next, mode: observedSelection.mode, modeTouched: false };
+      }
+      if (observedSelection.model && (
+        !state.modelTouched
+        || (state.model?.provider === observedSelection.model.provider && state.model?.model === observedSelection.model.model)
+      )) {
+        next = { ...next, model: observedSelection.model, modelTouched: false };
+      }
+      persistSelection(next);
+      return next;
+    });
+  }, [observedSelection.mode, observedSelection.model?.provider, observedSelection.model?.model, persistSelection]);
   const [favorites, setFavorites] = useState<string[]>(() =>
     readJson(`jcloud:composer:favorites:${deviceId}`, []),
   );
@@ -163,6 +259,17 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
       { sessionId, text, ...(mode ? { mode } : {}), ...(extras ? { extras } : {}) },
       {
         onSuccess: () => {
+          setCompose((current) => {
+            let next = current;
+            if (mode && current.mode === mode) next = { ...next, modeTouched: false };
+            if (extras?.model
+              && current.model?.provider === extras.model.provider
+              && current.model.model === extras.model.id) {
+              next = { ...next, modelTouched: false };
+            }
+            persistSelection(next);
+            return next;
+          });
           onSentRef.current?.({ sessionId, text, at: Date.now() });
         },
         onError: (error) => {
@@ -257,9 +364,13 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
   );
 
   const effectiveStream = streamState ?? EMPTY_STREAM;
+  const visibleStream = useMemo(
+    () => ({ ...effectiveStream, events: withoutRepeatedSelectionEvents(effectiveStream.events) }),
+    [effectiveStream],
+  );
   const items = useMemo(
-    () => [...toThreadItems(effectiveStream, { describe }), ...localItems],
-    [effectiveStream, describe, localItems],
+    () => [...toThreadItems(visibleStream, { describe }), ...localItems],
+    [visibleStream, describe, localItems],
   );
   const isRunning = effectiveStream.agentRunning || sessionRunning === true;
   const tokenSnapshot = effectiveStream.tokenSnapshot;
@@ -287,14 +398,18 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
   // ── Host actions ───────────────────────────────────────────────────────────
   const selectModel = useCallback(
     (provider: string, model: string) => {
-      setCompose((c) => ({ ...c, model: { provider, model } }));
+      setCompose((c) => {
+        const next = { ...c, model: { provider, model }, modelTouched: true };
+        persistSelection(next);
+        return next;
+      });
       setRecents((prev) => {
         const next = [{ provider, model }, ...prev.filter((r) => r.provider !== provider || r.model !== model)].slice(0, 8);
         writeJson(`jcloud:composer:recents:${deviceId}`, next);
         return next;
       });
     },
-    [deviceId],
+    [deviceId, persistSelection],
   );
 
   const selectMode = useCallback((mode: AgentMode) => {
@@ -302,8 +417,12 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
     // the ceiling even if a caller bypasses the picker. The device connector
     // is the protocol-level enforcement (ack mode_not_allowed_for_cloud).
     if (!CLOUD_ALLOWED_MODES.includes(mode)) return;
-    setCompose((c) => ({ ...c, mode, modeTouched: true }));
-  }, []);
+    setCompose((c) => {
+      const next = { ...c, mode, modeTouched: true };
+      persistSelection(next);
+      return next;
+    });
+  }, [persistSelection]);
 
   const setEffort = useCallback(
     (provider: string, model: string, effort: string) => {

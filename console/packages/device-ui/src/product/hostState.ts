@@ -99,6 +99,9 @@ export interface DeviceComposerState {
   modeTouched: boolean;
   /** Selected model override (null = device default). */
   model: ModelRef | null;
+  /** Like modeTouched: only send a model switch after an explicit selection.
+   * The selected model itself remains visible after the switch is applied. */
+  modelTouched: boolean;
   /** Per-"provider/model" reasoning-effort overrides. */
   effortOverrides: Record<string, string>;
   /** Next message becomes the session goal (chat.send goal_armed). */
@@ -112,6 +115,7 @@ export function initialDeviceComposerState(current?: { provider: string; id: str
     mode: 'approval',
     modeTouched: false,
     model: current ? { provider: current.provider, model: current.id } : null,
+    modelTouched: false,
     effortOverrides: {},
     goalArmed: false,
     projectPath: '',
@@ -133,14 +137,19 @@ export function buildSendExtras(
   images?: ComposeImage[],
 ): SendMessageExtras | undefined {
   const extras: SendMessageExtras = {};
-  if (state.model) {
+  const selectedEffort = state.model ? state.effortOverrides[modelKey(state.model)] : undefined;
+  // A model reference is needed while switching models and while applying an
+  // effort (the relay's effort endpoint is keyed by provider + model). Once a
+  // plain selection has been applied, omit it from later messages so returning
+  // to a session does not re-broadcast the same model_changed event.
+  if (state.model && (state.modelTouched || selectedEffort)) {
     const advertised = capabilities?.models?.some(
       (m) => m.provider === state.model!.provider && m.id === state.model!.model,
     );
     if (advertised) extras.model = { provider: state.model.provider, id: state.model.model };
   }
   if (extras.model) {
-    const effort = state.effortOverrides[modelKey(state.model!)];
+    const effort = selectedEffort;
     if (effort && (capabilities?.efforts ?? []).includes(effort)) extras.effort = effort;
   }
   // projectPath can come from the device-side workspace browser, so it is not

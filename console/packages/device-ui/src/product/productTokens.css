@@ -61,8 +61,11 @@
 /* The host's global focus ring otherwise draws a second orange rectangle
    inside ChatInput. The composer shell already provides the input boundary,
    and the caret remains the textarea's focus affordance. */
+.jcode-product textarea:focus,
 .jcode-product textarea:focus-visible {
-  outline: none;
+  outline: none !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
 }
 
 /* Scoped baseline reset for the jcode product surfaces. jcode-ui ships NO

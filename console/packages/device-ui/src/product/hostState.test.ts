@@ -96,6 +96,7 @@ describe('buildSendExtras', () => {
     const state = {
       ...initialDeviceComposerState(),
       model: { provider: 'anthropic', model: 'claude-opus-4' },
+      modelTouched: true,
       effortOverrides: { 'anthropic/claude-opus-4': 'high' },
       projectPath: '/home/jack/a',
     };

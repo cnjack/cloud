@@ -62,9 +62,21 @@ function wrapper(api: DeviceApi) {
 }
 
 beforeEach(() => {
-  // Node ≥23 exposes a global localStorage that shadows jsdom's; either may
-  // be undefined here — the hook guards the same way.
-  globalThis.localStorage?.clear();
+  // Node ≥23 exposes a disabled global localStorage that shadows jsdom's.
+  // Install a tiny per-test implementation so session preference behavior is
+  // exercised exactly as it is in browsers and mobile webviews.
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+      key: (index: number) => [...values.keys()][index] ?? null,
+      get length() { return values.size; },
+    } satisfies Storage,
+  });
 });
 
 describe('useDeviceComposer', () => {
@@ -207,6 +219,55 @@ describe('useDeviceComposer', () => {
       result.current.runtime.actions.sendMessage('hi again');
     });
     expect(sends[1]!.mode).toBe('auto');
+  });
+
+  it('restores the applied session mode and does not resend it after remount', async () => {
+    const { api, sends } = makeFakeApi();
+    const first = renderHook(
+      () => useDeviceComposer({ deviceId: 'dev-1', sessionId: 'sess-restore', device: DEVICE }),
+      { wrapper: wrapper(api) },
+    );
+    act(() => first.result.current.host.selectMode('auto'));
+    await act(async () => {
+      first.result.current.runtime.actions.sendMessage('first');
+    });
+    expect(sends[0]!.mode).toBe('auto');
+    first.unmount();
+
+    const second = renderHook(
+      () => useDeviceComposer({ deviceId: 'dev-1', sessionId: 'sess-restore', device: DEVICE }),
+      { wrapper: wrapper(api) },
+    );
+    expect(second.result.current.host.mode).toBe('auto');
+    await act(async () => {
+      second.result.current.runtime.actions.sendMessage('second');
+    });
+    expect(sends[1]!.mode).toBeUndefined();
+  });
+
+  it('restores mode and model from durable session events and hides unchanged repeats', async () => {
+    const { api } = makeFakeApi();
+    const streamState = {
+      ...initialDeviceSessionState(),
+      events: [
+        { seq: 1, ts: '2026-01-01T00:00:00Z', kind: 'model_changed', payload: { data: { provider: 'anthropic', model: 'claude-opus-4' } } },
+        { seq: 2, ts: '2026-01-01T00:00:01Z', kind: 'mode_changed', payload: { data: { mode: 'auto' } } },
+        { seq: 3, ts: '2026-01-01T00:00:02Z', kind: 'model_changed', payload: { data: { provider: 'anthropic', model: 'claude-opus-4' } } },
+        { seq: 4, ts: '2026-01-01T00:00:03Z', kind: 'mode_changed', payload: { data: { mode: 'auto' } } },
+      ],
+    };
+    const { result } = renderHook(
+      () => useDeviceComposer({ deviceId: 'dev-1', sessionId: 'sess-events', device: DEVICE, streamState }),
+      { wrapper: wrapper(api) },
+    );
+    await act(async () => {});
+    expect(result.current.host.mode).toBe('auto');
+    expect(result.current.host.providerName).toBe('anthropic');
+    expect(result.current.host.modelName).toBe('claude-opus-4');
+    const systemRows = result.current.runtime.getState().items.filter(
+      (item) => item.kind === 'message' && item.data.role === 'system',
+    );
+    expect(systemRows).toHaveLength(2);
   });
 
   it('drains the type-ahead queue when the turn ends', async () => {

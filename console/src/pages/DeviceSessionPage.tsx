@@ -1,6 +1,6 @@
-import { ArrowLeft, Warning } from '@phosphor-icons/react';
+import { Warning } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
-import { Link, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { RuntimeProvider, Thread } from 'jcode-ui';
 import { ChatInput } from 'jcode-ui/product';
 import {
@@ -41,16 +41,14 @@ export function DeviceSessionPage() {
     streamState: state,
     sessionRunning: session?.status === 'running',
     hasMessages: !emptyTimeline,
+    initialModel: session?.meta?.provider && session.meta.model
+      ? { provider: session.meta.provider, id: session.meta.model }
+      : null,
   });
 
   return (
     <SurfaceInner>
       <div className={styles.page} data-testid="device-session">
-        <Link to={`/devices/${deviceId}`} className={styles.back}>
-          <ArrowLeft size={14} aria-hidden="true" />
-          <span>{t('device.session.back')}</span>
-        </Link>
-
         <header className={styles.header}>
           <div className={styles.heading}>
             <h1>{title}</h1>
