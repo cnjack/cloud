@@ -2418,6 +2418,24 @@ export function createMockClient(): ApiClient {
       throw new ApiError(404, 'service not found');
     },
 
+    async deleteService(serviceId: string): Promise<void> {
+      for (const [projectId, list] of services) {
+        const index = list.findIndex((service) => service.id === serviceId);
+        if (index < 0) continue;
+        if ([...runs.values()].some((run) => run.service_id === serviceId)) {
+          throw new ApiError(409, 'service has runs and cannot be deleted', {
+            error: { code: 'conflict', message: 'service has runs and cannot be deleted' },
+          });
+        }
+        list.splice(index, 1);
+        services.set(projectId, list);
+        const project = projects.get(projectId);
+        if (project) project.services = [...list];
+        return delay(undefined);
+      }
+      throw new ApiError(404, 'service not found');
+    },
+
     async ensureServiceWebhook(serviceId: string) {
       for (const list of services.values()) {
         const svc = list.find((entry) => entry.id === serviceId);

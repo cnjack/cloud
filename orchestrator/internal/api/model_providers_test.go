@@ -33,6 +33,7 @@ type modelProviderViewT struct {
 	BaseURL       string               `json:"base_url"`
 	AuthType      string               `json:"auth_type"`
 	APIKeySet     bool                 `json:"api_key_set"`
+	HeadersSet    bool                 `json:"headers_set"`
 	CatalogMode   string               `json:"catalog_mode"`
 	Models        []providerModelViewT `json:"models"`
 	ProjectGrants int                  `json:"project_grants"`
@@ -84,8 +85,9 @@ func TestModelProviderCRUDCatalogAndCredentials(t *testing.T) {
 	provider := createProvider(t, ts, map[string]any{
 		"name": "Zhipu AI", "kind": "zhipu", "base_url": upstream.URL + "/v1",
 		"auth_type": "api_key", "api_key": secret, "catalog_mode": "auto",
+		"headers": map[string]any{"X-Org": "desktop-parity"},
 	})
-	if provider.ID == "" || provider.Name != "Zhipu AI" || provider.Kind != "zhipu" || !provider.APIKeySet {
+	if provider.ID == "" || provider.Name != "Zhipu AI" || provider.Kind != "zhipu" || !provider.APIKeySet || !provider.HeadersSet {
 		t.Fatalf("provider view mismatch: %+v", provider)
 	}
 
@@ -144,7 +146,7 @@ func TestModelProviderCRUDCatalogAndCredentials(t *testing.T) {
 	}
 
 	resp = do(t, http.MethodPatch, ts.URL+"/api/v1/system/model-providers/"+provider.ID, consoleToken, map[string]any{
-		"kind": "openai", "base_url": upstream.URL + "/compatible/v1",
+		"kind": "openai", "base_url": upstream.URL + "/compatible/v1", "headers": map[string]any{},
 	})
 	if resp.StatusCode != http.StatusOK {
 		raw, _ = io.ReadAll(resp.Body)
@@ -156,7 +158,7 @@ func TestModelProviderCRUDCatalogAndCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get provider model after update: %v", err)
 	}
-	if storedModel.BaseURL != upstream.URL+"/compatible/v1" || storedModel.ModelName != "openai/glm-5.2" || !storedModel.APIKeySet() {
+	if storedModel.BaseURL != upstream.URL+"/compatible/v1" || storedModel.ModelName != "openai/glm-5.2" || !storedModel.APIKeySet() || storedModel.HeadersSet() {
 		t.Fatalf("provider update did not synchronize runtime model: %+v", storedModel)
 	}
 

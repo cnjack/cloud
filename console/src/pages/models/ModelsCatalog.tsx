@@ -45,6 +45,7 @@ import { ProviderIcon } from '../../components/ProviderIcon';
 import { StatusLabel } from '../../components/PageLayout';
 import { ErrorBlock, LoadingBlock } from '../../components/States';
 import { useToast } from '../../components/Toast';
+import { DESKTOP_PROVIDERS, desktopProvider } from '../../lib/desktopProviders';
 import type { ModelsAdminApi, ModelsScope } from './scope';
 import { useModelsAdminApi } from './scope';
 import styles from './ModelsCatalog.module.css';
@@ -144,6 +145,7 @@ export function ModelsCatalog({ scope, editor, onEditorChange, searchable = true
       <ProviderDialog
         api={api}
         provider={editor === 'new' ? null : editor}
+        configuredKinds={list.map((configured) => configured.kind)}
         open={editor !== null}
         onClose={() => onEditorChange(null)}
       />
@@ -393,11 +395,13 @@ function GrantDialog({ model, open, onClose }: { model: ProviderModel; open: boo
 
 interface HeaderRow { key: string; value: string }
 
-function ProviderDialog({ api, provider, open, onClose }: { api: ModelsAdminApi; provider: ModelProvider | null; open: boolean; onClose: () => void }) {
+function ProviderDialog({ api, provider, configuredKinds, open, onClose }: { api: ModelsAdminApi; provider: ModelProvider | null; configuredKinds: string[]; open: boolean; onClose: () => void }) {
   const { t } = useTranslation();
   const create = api.createProvider;
   const update = api.updateProvider;
   const toast = useToast();
+  const [mode, setMode] = useState<'registry' | 'custom'>('registry');
+  const [selectedProvider, setSelectedProvider] = useState('');
   const [name, setName] = useState('');
   const [kind, setKind] = useState('openai');
   const [baseUrl, setBaseUrl] = useState('');
@@ -411,6 +415,8 @@ function ProviderDialog({ api, provider, open, onClose }: { api: ModelsAdminApi;
 
   useEffect(() => {
     if (!open) return;
+    setMode('registry');
+    setSelectedProvider('');
     setName(provider?.name ?? '');
     setKind(provider?.kind ?? 'openai');
     setBaseUrl(provider?.base_url ?? '');
@@ -422,6 +428,22 @@ function ProviderDialog({ api, provider, open, onClose }: { api: ModelsAdminApi;
     setClearHeaders(false);
     setError(undefined);
   }, [open, provider]);
+
+  const chooseMode = (next: 'registry' | 'custom') => {
+    setMode(next);
+    setSelectedProvider('');
+    setName('');
+    setKind(next === 'custom' ? 'openai' : '');
+    setBaseUrl('');
+  };
+
+  const chooseProvider = (id: string) => {
+    setSelectedProvider(id);
+    const preset = desktopProvider(id);
+    setName(preset?.name ?? '');
+    setKind(preset?.id ?? '');
+    setBaseUrl(preset?.baseUrl ?? '');
+  };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -461,35 +483,56 @@ function ProviderDialog({ api, provider, open, onClose }: { api: ModelsAdminApi;
   return (
     <Modal open={open} onClose={onClose} title={provider ? t('cluster.models.editProviderTitle', { name: provider.name }) : t('cluster.models.addProviderTitle')} footer={<><Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button><Button variant="primary" loading={create.isPending || update.isPending} onClick={() => document.getElementById(formId)?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))}>{provider ? t('cluster.models.saveProvider') : t('cluster.models.addProvider')}</Button></>}>
       <form id={formId} className={styles.dialogForm} onSubmit={submit}>
-        <TextField label={t('cluster.models.providerNameLabel')} required value={name} onChange={(event) => setName(event.target.value)} placeholder={t('cluster.models.providerNamePlaceholder')} />
-        <TextField label={t('cluster.models.providerTypeLabel')} required value={kind} onChange={(event) => setKind(event.target.value.toLowerCase())} placeholder="openai" hint={t('cluster.models.providerTypeHint')} />
-        <TextField label={t('cluster.models.baseUrlLabel')} required value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" />
-        <SelectField label={t('cluster.models.authLabel')} value={authType} onChange={(value) => setAuthType(value as ModelProviderAuthType)} options={[{ value: 'api_key', label: t('cluster.models.authApiKey') }, { value: 'service_identity', label: t('cluster.models.authServiceIdentityOption') }, { value: 'none', label: t('cluster.models.authNone') }]} />
-        {authType === 'api_key' && <TextField label={provider ? t('cluster.models.rotateApiKeyLabel') : t('cluster.models.authApiKey')} type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={provider?.api_key_set ? t('cluster.models.apiKeyPlaceholderKeep') : t('cluster.models.apiKeyPlaceholderEnter')} hint={t('cluster.models.apiKeyHint')} />}
-        <SelectField label={t('cluster.models.catalogLabel')} value={catalogMode} onChange={(value) => setCatalogMode(value as ModelProviderCatalogMode)} options={[{ value: 'auto', label: t('cluster.models.catalogAuto') }, { value: 'disabled', label: t('cluster.models.catalogDisabled') }]} />
-        {api.scope.kind === 'project' && (
-          <div className={styles.advanced}>
-            <button type="button" className={styles.advancedToggle} aria-expanded={advancedOpen} data-testid="provider-advanced-toggle" onClick={() => setAdvancedOpen((o) => !o)}>
-              <SlidersHorizontal size={13} aria-hidden="true" />{t('cluster.models.advancedLabel')}
-            </button>
-            {advancedOpen && (
-              <div className={styles.headerFields}>
-                <span className={styles.headerHint}>{provider?.headers_set ? t('cluster.models.headersConfiguredHint') : t('cluster.models.headersHint')}</span>
-                {headerRows.map((row, index) => (
-                  <div className={styles.headerRow} key={index}>
-                    <input className={styles.headerInput} placeholder={t('cluster.models.headerKeyPlaceholder')} value={row.key} autoComplete="off" data-testid={`header-key-${index}`} onChange={(event) => setHeaderRow(index, { key: event.target.value })} />
-                    <input className={styles.headerInput} placeholder={t('cluster.models.headerValuePlaceholder')} value={row.value} autoComplete="off" data-testid={`header-value-${index}`} onChange={(event) => setHeaderRow(index, { value: event.target.value })} />
-                    <button className={styles.iconButton} type="button" aria-label={t('cluster.models.removeHeader')} onClick={() => setHeaderRows((rows) => rows.filter((_, i) => i !== index))}><Trash size={15} aria-hidden="true" /></button>
-                  </div>
-                ))}
-                <Button type="button" variant="ghost" size="sm" data-testid="add-header" onClick={() => { setClearHeaders(false); setHeaderRows((rows) => [...rows, { key: '', value: '' }]); }}><Plus size={13} aria-hidden="true" />{t('cluster.models.addHeader')}</Button>
-                {provider?.headers_set && headerRows.length === 0 && (
-                  <Button type="button" variant={clearHeaders ? 'danger' : 'ghost'} size="sm" data-testid="clear-headers" onClick={() => setClearHeaders((c) => !c)}>{clearHeaders ? t('projectSettings.models.clearHeadersPending') : t('projectSettings.models.clearHeadersAction')}</Button>
-                )}
+        {!provider && (
+          <div className={styles.providerPicker}>
+            <div className={styles.providerMode} role="group" aria-label={t('cluster.models.providerSourceLabel')}>
+              <button type="button" data-active={mode === 'registry' || undefined} data-testid="provider-mode-registry" onClick={() => chooseMode('registry')}>{t('cluster.models.providerRegistryMode')}</button>
+              <button type="button" data-active={mode === 'custom' || undefined} data-testid="provider-mode-custom" onClick={() => chooseMode('custom')}>{t('cluster.models.providerCustomMode')}</button>
+            </div>
+            {mode === 'registry' && (
+              <label className={styles.nativeSelectField}>
+                <span>{t('cluster.models.providerSelectLabel')} <b aria-hidden="true">*</b></span>
+                <select aria-label={t('cluster.models.providerSelectLabel')} value={selectedProvider} onChange={(event) => chooseProvider(event.target.value)}>
+                  <option value="">{t('cluster.models.providerSelectPlaceholder')}</option>
+                  {DESKTOP_PROVIDERS.filter((preset) => !configuredKinds.includes(preset.id)).map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                </select>
+              </label>
+            )}
+            {mode === 'registry' && selectedProvider && (
+              <div className={styles.providerPreset} data-testid="selected-provider-preset">
+                <ProviderIcon kind={kind} name={name} />
+                <span><strong>{name}</strong><code>{kind}</code></span>
               </div>
             )}
           </div>
         )}
+        {(provider || mode === 'custom') && <TextField label={t('cluster.models.providerNameLabel')} required value={name} onChange={(event) => setName(event.target.value)} placeholder={t('cluster.models.providerNamePlaceholder')} />}
+        {!provider && mode === 'custom' && <TextField label={t('cluster.models.providerTypeLabel')} required value={kind} onChange={(event) => setKind(event.target.value.toLowerCase())} placeholder="openai" hint={t('cluster.models.providerTypeHint')} />}
+        <SelectField label={t('cluster.models.authLabel')} value={authType} onChange={(value) => setAuthType(value as ModelProviderAuthType)} options={[{ value: 'api_key', label: t('cluster.models.authApiKey') }, { value: 'service_identity', label: t('cluster.models.authServiceIdentityOption') }, { value: 'none', label: t('cluster.models.authNone') }]} />
+        {authType === 'api_key' && <TextField label={provider ? t('cluster.models.rotateApiKeyLabel') : t('cluster.models.authApiKey')} type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={provider?.api_key_set ? t('cluster.models.apiKeyPlaceholderKeep') : t('cluster.models.apiKeyPlaceholderEnter')} hint={t('cluster.models.apiKeyHint')} />}
+        <div className={styles.advanced}>
+          <button type="button" className={styles.advancedToggle} aria-expanded={advancedOpen} data-testid="provider-advanced-toggle" onClick={() => setAdvancedOpen((o) => !o)}>
+            <SlidersHorizontal size={13} aria-hidden="true" />{t('cluster.models.advancedLabel')}
+          </button>
+          {advancedOpen && (
+            <div className={styles.headerFields}>
+              <TextField label={t('cluster.models.baseUrlLabel')} required value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" />
+              <SelectField label={t('cluster.models.catalogLabel')} value={catalogMode} onChange={(value) => setCatalogMode(value as ModelProviderCatalogMode)} options={[{ value: 'auto', label: t('cluster.models.catalogAuto') }, { value: 'disabled', label: t('cluster.models.catalogDisabled') }]} />
+              <span className={styles.headerHint}>{provider?.headers_set ? t('cluster.models.headersConfiguredHint') : t('cluster.models.headersHint')}</span>
+              {headerRows.map((row, index) => (
+                <div className={styles.headerRow} key={index}>
+                  <input className={styles.headerInput} placeholder={t('cluster.models.headerKeyPlaceholder')} value={row.key} autoComplete="off" data-testid={`header-key-${index}`} onChange={(event) => setHeaderRow(index, { key: event.target.value })} />
+                  <input className={styles.headerInput} placeholder={t('cluster.models.headerValuePlaceholder')} value={row.value} autoComplete="off" data-testid={`header-value-${index}`} onChange={(event) => setHeaderRow(index, { value: event.target.value })} />
+                  <button className={styles.iconButton} type="button" aria-label={t('cluster.models.removeHeader')} onClick={() => setHeaderRows((rows) => rows.filter((_, i) => i !== index))}><Trash size={15} aria-hidden="true" /></button>
+                </div>
+              ))}
+              <Button type="button" variant="ghost" size="sm" data-testid="add-header" onClick={() => { setClearHeaders(false); setHeaderRows((rows) => [...rows, { key: '', value: '' }]); }}><Plus size={13} aria-hidden="true" />{t('cluster.models.addHeader')}</Button>
+              {provider?.headers_set && headerRows.length === 0 && (
+                <Button type="button" variant={clearHeaders ? 'danger' : 'ghost'} size="sm" data-testid="clear-headers" onClick={() => setClearHeaders((c) => !c)}>{clearHeaders ? t('projectSettings.models.clearHeadersPending') : t('projectSettings.models.clearHeadersAction')}</Button>
+              )}
+            </div>
+          )}
+        </div>
         {error && <p className={styles.formError} role="alert">{error}</p>}
       </form>
     </Modal>

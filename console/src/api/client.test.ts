@@ -224,6 +224,7 @@ describe('httpClient — me / services / members (M4)', () => {
 
   it('lists + creates services and dispatches a service run', async () => {
     const { calls } = mockFetch(({ url, init }) => {
+      if (url.includes('/services/') && init?.method === 'DELETE') return { status: 204 };
       if (url.endsWith('/services') && init?.method === 'POST')
         return { status: 201, body: JSON.parse(init.body as string) };
       if (url.endsWith('/services'))
@@ -243,6 +244,10 @@ describe('httpClient — me / services / members (M4)', () => {
     await client.createServiceRun('s1', { prompt: 'go' });
     expect(calls[2]!.url).toBe('/api/v1/services/s1/runs');
     expect(calls[2]!.init!.method).toBe('POST');
+
+    await client.deleteService('s1');
+    expect(calls[3]!.url).toBe('/api/v1/services/s1');
+    expect(calls[3]!.init!.method).toBe('DELETE');
   });
 
   it('lists + adds + removes members and searches users', async () => {

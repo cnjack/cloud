@@ -408,6 +408,8 @@ export interface ApiClient {
   createService(projectId: string, input: CreateServiceInput): Promise<Service>;
   /** PATCH /api/v1/services/{id} — edit a service (owner); default model (D21). */
   updateService(serviceId: string, input: UpdateServiceInput): Promise<Service>;
+  /** DELETE /api/v1/services/{id} — remove an unused service (owner). */
+  deleteService(serviceId: string): Promise<void>;
   /**
    * POST /api/v1/services/{id}/webhook — explicitly sync the provider's
    * @jcode comment webhook with the calling member's OAuth account. The API
@@ -941,6 +943,9 @@ export function createHttpClient(
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
+
+    deleteService: (serviceId) =>
+      req<void>(`/services/${encodeURIComponent(serviceId)}`, { method: 'DELETE' }),
 
     ensureServiceWebhook: (serviceId) =>
       req<ServiceWebhookSetup>(`/services/${encodeURIComponent(serviceId)}/webhook`, {

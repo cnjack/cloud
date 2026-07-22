@@ -5,15 +5,35 @@ import deepseek from '@lobehub/icons-static-svg/icons/deepseek-color.svg?raw';
 import zhipu from '@lobehub/icons-static-svg/icons/zhipu-color.svg?raw';
 import qwen from '@lobehub/icons-static-svg/icons/qwen-color.svg?raw';
 import moonshot from '@lobehub/icons-static-svg/icons/moonshot.svg?raw';
+import zai from '@lobehub/icons-static-svg/icons/zai.svg?raw';
+import mistral from '@lobehub/icons-static-svg/icons/mistral-color.svg?raw';
+import openrouter from '@lobehub/icons-static-svg/icons/openrouter.svg?raw';
+import groq from '@lobehub/icons-static-svg/icons/groq.svg?raw';
+import together from '@lobehub/icons-static-svg/icons/together-color.svg?raw';
+import minimax from '@lobehub/icons-static-svg/icons/minimax-color.svg?raw';
+import siliconcloud from '@lobehub/icons-static-svg/icons/siliconcloud-color.svg?raw';
+import hunyuan from '@lobehub/icons-static-svg/icons/hunyuan-color.svg?raw';
+import xiaomi from '@lobehub/icons-static-svg/icons/xiaomimimo.svg?raw';
+import ollama from '@lobehub/icons-static-svg/icons/ollama.svg?raw';
 
 const ICONS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/openrouter/, openrouter],
   [/openai/, openai],
   [/anthropic|claude/, anthropic],
   [/gemini|google|vertex/, gemini],
   [/deepseek/, deepseek],
-  [/zhipu|zai/, zhipu],
+  [/zhipu/, zhipu],
+  [/zai/, zai],
+  [/mistral/, mistral],
+  [/groq/, groq],
+  [/together/, together],
   [/alibaba|qwen|dashscope|tongyi/, qwen],
   [/moonshot|kimi/, moonshot],
+  [/minimax/, minimax],
+  [/silicon/, siliconcloud],
+  [/tencent|hunyuan/, hunyuan],
+  [/xiaomi|mimo/, xiaomi],
+  [/ollama/, ollama],
 ];
 
 export function iconForDeviceProvider(provider: string): string | null {

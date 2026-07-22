@@ -119,6 +119,7 @@ export type { DeviceComposerState } from './product/hostState';
 export { toThreadItems, localSystemItem } from './product/threadItems';
 export type { DeviceItemDescriber, ToThreadItemsOptions } from './product/threadItems';
 export { buildProductComposerStrings } from './product/strings';
+export { iconForDeviceProvider } from './product/providerIcons';
 
 // --- deviceview ---------------------------------------------------------------
 // @deprecated M14: superseded by jcode-ui <Thread> fed by toThreadItems (the

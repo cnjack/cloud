@@ -662,6 +662,20 @@ export function useUpdateService(projectId: string) {
   });
 }
 
+/** Remove an unused service and refresh every project surface that lists it. */
+export function useDeleteService(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (serviceId: string) => api.deleteService(serviceId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.services(projectId) });
+      qc.invalidateQueries({ queryKey: qk.project(projectId) });
+      qc.invalidateQueries({ queryKey: qk.projects });
+    },
+  });
+}
+
 /** Explicit provider webhook synchronization for one service's Automation page. */
 export function useEnsureServiceWebhook() {
   const api = useApi();

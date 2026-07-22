@@ -85,6 +85,7 @@ interface Calls {
   serviceRuns: { sid: string; input: CreateRunInput }[];
   services: { pid: string; input: CreateServiceInput }[];
   serviceUpdates: { sid: string; input: UpdateServiceInput }[];
+  serviceDeletes: string[];
   automations: { sid: string; input: CreateAutomationInput }[];
   automationUpdates: { id: string; input: UpdateAutomationInput }[];
 }
@@ -103,7 +104,7 @@ function makeClient(
     automationList?: AutomationList;
   } = {},
 ): { client: ApiClient; calls: Calls } {
-  const calls: Calls = { serviceRuns: [], services: [], serviceUpdates: [], automations: [], automationUpdates: [] };
+  const calls: Calls = { serviceRuns: [], services: [], serviceUpdates: [], serviceDeletes: [], automations: [], automationUpdates: [] };
   const client: Partial<ApiClient> = {
     getProject: async () => p,
     listRuns: async () => [] as Run[],
@@ -144,6 +145,10 @@ function makeClient(
     updateService: async (sid, input) => {
       calls.serviceUpdates.push({ sid, input });
       return { ...svc(sid, 'default'), default_model_id: input.default_model_id ?? null };
+    },
+    deleteService: async (sid) => {
+      calls.serviceDeletes.push(sid);
+      p.services = (p.services ?? []).filter((service) => service.id !== sid);
     },
   };
   return { client: client as ApiClient, calls };
@@ -776,9 +781,10 @@ describe('ProjectDetailPage — zero-repo empty state', () => {
 
     await waitFor(() => expect(screen.getByTestId('no-repo-empty')).toBeTruthy());
     expect(screen.queryByTestId('run-input')).toBeNull();
-    expect(screen.getByText('No repositories yet')).toBeTruthy();
+    expect(screen.getByText('No services yet')).toBeTruthy();
     // The owner can still attach the first repository.
     expect(screen.getByTestId('add-repo-trigger')).toBeTruthy();
+    expect(screen.getByTestId('empty-add-service')).toBeTruthy();
   });
 
   it('activates a newly attached first service instead of remaining in the empty workspace', async () => {
@@ -793,6 +799,17 @@ describe('ProjectDetailPage — zero-repo empty state', () => {
 
     await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
     expect(screen.getByRole('heading', { name: 'frontend' })).toBeTruthy();
+  });
+
+  it('deletes an unused service and lands on the empty Service state', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(client);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete default service' }));
+
+    await waitFor(() => expect(calls.serviceDeletes).toEqual(['svc_default']));
+    expect(await screen.findByTestId('no-repo-empty')).toBeTruthy();
   });
 });
 

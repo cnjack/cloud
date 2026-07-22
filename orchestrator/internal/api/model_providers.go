@@ -33,6 +33,7 @@ type modelProviderAdminView struct {
 	BaseURL               string                          `json:"base_url"`
 	AuthType              domain.ModelProviderAuthType    `json:"auth_type"`
 	APIKeySet             bool                            `json:"api_key_set"`
+	HeadersSet            bool                            `json:"headers_set"`
 	CatalogMode           domain.ModelProviderCatalogMode `json:"catalog_mode"`
 	CatalogAvailable      *bool                           `json:"catalog_available"`
 	LastVerifiedAt        *time.Time                      `json:"last_verified_at,omitempty"`
@@ -74,7 +75,7 @@ func (s *Server) modelProviderView(ctx context.Context, p domain.ModelProvider) 
 	}
 	return modelProviderAdminView{
 		ID: p.ID, Name: p.Name, Kind: p.Kind, BaseURL: p.BaseURL,
-		AuthType: p.AuthType, APIKeySet: p.APIKeySet(), CatalogMode: p.CatalogMode,
+		AuthType: p.AuthType, APIKeySet: p.APIKeySet(), HeadersSet: p.HeadersSet(), CatalogMode: p.CatalogMode,
 		CatalogAvailable: p.CatalogAvailable, LastVerifiedAt: p.LastVerifiedAt,
 		LastVerificationError: p.LastVerificationError, Models: modelViews,
 		ProjectGrants: len(projects), CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
@@ -104,12 +105,13 @@ func (s *Server) handleListModelProviders(w http.ResponseWriter, r *http.Request
 }
 
 type createModelProviderReq struct {
-	Name        string `json:"name"`
-	Kind        string `json:"kind"`
-	BaseURL     string `json:"base_url"`
-	AuthType    string `json:"auth_type"`
-	APIKey      string `json:"api_key"`
-	CatalogMode string `json:"catalog_mode"`
+	Name        string            `json:"name"`
+	Kind        string            `json:"kind"`
+	BaseURL     string            `json:"base_url"`
+	AuthType    string            `json:"auth_type"`
+	APIKey      string            `json:"api_key"`
+	CatalogMode string            `json:"catalog_mode"`
+	Headers     map[string]string `json:"headers"`
 }
 
 func validProviderKind(kind string) bool {
@@ -189,10 +191,14 @@ func (s *Server) handleCreateModelProvider(w http.ResponseWriter, r *http.Reques
 	if authType != domain.ModelProviderAuthAPIKey {
 		enc = nil
 	}
+	headersEnc, ok := s.encryptModelHeaders(w, req.Headers)
+	if !ok {
+		return
+	}
 	now := time.Now().UTC()
 	provider := &domain.ModelProvider{
 		ID: domain.NewID(), Name: name, Kind: kind, BaseURL: baseURL,
-		AuthType: authType, APIKeyEnc: enc, CatalogMode: catalogMode,
+		AuthType: authType, APIKeyEnc: enc, HeadersEnc: headersEnc, CatalogMode: catalogMode,
 		CreatedAt: now, UpdatedAt: now, UpdatedBy: principalFrom(r.Context()).userID(),
 	}
 	if catalogMode == domain.ModelProviderCatalogDisabled {
@@ -216,12 +222,13 @@ func (s *Server) handleCreateModelProvider(w http.ResponseWriter, r *http.Reques
 }
 
 type updateModelProviderReq struct {
-	Name        *string `json:"name"`
-	Kind        *string `json:"kind"`
-	BaseURL     *string `json:"base_url"`
-	AuthType    *string `json:"auth_type"`
-	APIKey      *string `json:"api_key"`
-	CatalogMode *string `json:"catalog_mode"`
+	Name        *string            `json:"name"`
+	Kind        *string            `json:"kind"`
+	BaseURL     *string            `json:"base_url"`
+	AuthType    *string            `json:"auth_type"`
+	APIKey      *string            `json:"api_key"`
+	CatalogMode *string            `json:"catalog_mode"`
+	Headers     *map[string]string `json:"headers"`
 }
 
 func (s *Server) handleUpdateModelProvider(w http.ResponseWriter, r *http.Request) {
@@ -295,7 +302,14 @@ func (s *Server) handleUpdateModelProvider(w http.ResponseWriter, r *http.Reques
 		}
 		provider.CatalogMode = mode
 	}
-	probeChanged := req.Kind != nil || req.BaseURL != nil || req.AuthType != nil || req.APIKey != nil || req.CatalogMode != nil
+	if req.Headers != nil {
+		headersEnc, ok := s.encryptModelHeaders(w, *req.Headers)
+		if !ok {
+			return
+		}
+		provider.HeadersEnc = headersEnc
+	}
+	probeChanged := req.Kind != nil || req.BaseURL != nil || req.AuthType != nil || req.APIKey != nil || req.CatalogMode != nil || req.Headers != nil
 	if probeChanged {
 		provider.CatalogAvailable = nil
 		provider.LastVerifiedAt = nil

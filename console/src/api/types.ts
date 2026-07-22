@@ -1065,7 +1065,7 @@ export interface ModelProvider {
   base_url: string;
   auth_type: ModelProviderAuthType;
   api_key_set: boolean;
-  /** Project scope: true when custom request headers are configured (write-only). */
+  /** True when custom request headers are configured (write-only). */
   headers_set?: boolean;
   catalog_mode: ModelProviderCatalogMode;
   catalog_available: boolean | null;

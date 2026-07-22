@@ -8,11 +8,12 @@
  */
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowSquareOut, Plus } from '@phosphor-icons/react';
+import { ArrowSquareOut, Plus, Trash } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   useCreateService,
   useCreateServiceRun,
+  useDeleteService,
   useIntegrationRepos,
   useIntegrations,
   useProject,
@@ -73,6 +74,7 @@ export function ProjectDetailPage() {
   const createServiceRun = useCreateServiceRun(projectId);
   const createService = useCreateService(projectId);
   const updateService = useUpdateService(projectId);
+  const deleteService = useDeleteService(projectId);
 
   const [prompt, setPrompt] = useState('');
   const [promptError, setPromptError] = useState<string>();
@@ -154,7 +156,7 @@ export function ProjectDetailPage() {
   const hasBoardLinks = (boardLinks.data?.length ?? 0) > 0;
   const boardLinksUnavailable = canRun && boardLinks.isError;
   const hasServiceHeaderActions =
-    hasBoardLinks || boardLinksUnavailable || activeService?.repo_kind === 'provider';
+    hasBoardLinks || boardLinksUnavailable || activeService?.repo_kind === 'provider' || (canManage && !!activeService);
 
   const integrationsQuery = useIntegrations(projectId, !!p && canRun);
   const availableIntegrations = useMemo(
@@ -297,6 +299,23 @@ export function ProjectDetailPage() {
           }),
       },
     );
+  };
+
+  const removeActiveService = () => {
+    if (!activeService) return;
+    if (!window.confirm(t('projectDetail.deleteServiceConfirm', { name: activeService.name }))) return;
+    deleteService.mutate(activeService.id, {
+      onSuccess: () => {
+        const next = new URLSearchParams(searchParams);
+        next.delete('service');
+        setSearchParams(next, { replace: true });
+        toast.push({ kind: 'success', message: t('projectDetail.serviceDeleted', { name: activeService.name }) });
+      },
+      onError: (error) => toast.push({
+        kind: 'error',
+        message: error instanceof ApiError ? error.message : t('projectDetail.deleteServiceFailed'),
+      }),
+    });
   };
 
   const pickRepo = (repo: ProviderRepo) => {
@@ -553,6 +572,19 @@ export function ProjectDetailPage() {
                     >{t('projectDetail.repositoryUnavailable')}</button>
                   )
                 )}
+                {canManage && activeService && (
+                  <button
+                    type="button"
+                    className={styles.workspaceServiceAction}
+                    onClick={removeActiveService}
+                    disabled={deleteService.isPending}
+                    aria-label={t('projectDetail.deleteServiceAria', { name: activeService.name })}
+                    data-testid="delete-service"
+                  >
+                    <Trash size={16} aria-hidden="true" />
+                    <span>{t('projectDetail.deleteService')}</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -575,6 +607,7 @@ export function ProjectDetailPage() {
                     ? t('projectDetail.addRepoEmptyManage')
                     : t('projectDetail.addRepoEmptyMember')
                 }
+                action={canManage ? <Button data-testid="empty-add-service" onClick={openAddService}><Plus size={14} aria-hidden="true" />{t('projectDetail.addService')}</Button> : undefined}
               />
             )}
 

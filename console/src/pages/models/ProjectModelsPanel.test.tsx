@@ -116,7 +116,10 @@ describe('ProjectModelsPanel', () => {
 
     fireEvent.click(screen.getByTestId('project-add-provider'));
     const dialog = await screen.findByRole('dialog', { name: 'Add model provider' });
+    fireEvent.click(within(dialog).getByTestId('provider-mode-custom'));
     fireEvent.change(within(dialog).getByLabelText(/Provider name/), { target: { value: 'My provider' } });
+    fireEvent.change(within(dialog).getByLabelText(/Provider type/), { target: { value: 'openai' } });
+    fireEvent.click(within(dialog).getByTestId('provider-advanced-toggle'));
     fireEvent.change(within(dialog).getByLabelText(/Base URL/), { target: { value: 'https://api.acme.com/v1' } });
     fireEvent.change(within(dialog).getByLabelText(/API key/), { target: { value: 'sk-test' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add provider' }));
@@ -128,6 +131,27 @@ describe('ProjectModelsPanel', () => {
     });
   });
 
+  it('owner selects the same named provider preset used by Desktop', async () => {
+    const { client, ctl } = makeClient();
+    renderPanel(true, client);
+    await screen.findByTestId('provider-card-prv-1');
+
+    fireEvent.click(screen.getByTestId('project-add-provider'));
+    const dialog = await screen.findByRole('dialog', { name: 'Add model provider' });
+    fireEvent.change(within(dialog).getByLabelText('Provider'), {
+      target: { value: 'zhipuai-coding-plan' },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/API key/), { target: { value: 'sk-plan' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add provider' }));
+
+    await waitFor(() => expect(ctl.createdProviders).toHaveLength(1));
+    expect(ctl.createdProviders[0]).toMatchObject({
+      name: 'Zhipu AI Coding Plan',
+      kind: 'zhipuai-coding-plan',
+      base_url: 'https://open.bigmodel.cn/api/coding/paas/v4',
+    });
+  });
+
   it('owner attaches custom request headers through the Advanced disclosure', async () => {
     const { client, ctl } = makeClient();
     renderPanel(true, client);
@@ -135,10 +159,12 @@ describe('ProjectModelsPanel', () => {
 
     fireEvent.click(screen.getByTestId('project-add-provider'));
     const dialog = await screen.findByRole('dialog', { name: 'Add model provider' });
+    fireEvent.click(within(dialog).getByTestId('provider-mode-custom'));
     fireEvent.change(within(dialog).getByLabelText(/Provider name/), { target: { value: 'Hdr' } });
+    fireEvent.change(within(dialog).getByLabelText(/Provider type/), { target: { value: 'openai' } });
+    fireEvent.click(within(dialog).getByTestId('provider-advanced-toggle'));
     fireEvent.change(within(dialog).getByLabelText(/Base URL/), { target: { value: 'https://api.acme.com/v1' } });
     fireEvent.change(within(dialog).getByLabelText(/API key/), { target: { value: 'sk' } });
-    fireEvent.click(within(dialog).getByTestId('provider-advanced-toggle'));
     fireEvent.click(within(dialog).getByTestId('add-header'));
     fireEvent.change(within(dialog).getByTestId('header-key-0'), { target: { value: 'X-Org' } });
     fireEvent.change(within(dialog).getByTestId('header-value-0'), { target: { value: 'acme' } });

@@ -104,4 +104,34 @@ describe('ClusterModelsPage', () => {
     expect(await within(card).findByText('Last test: provider connection refused')).toBeTruthy();
     expect(listModelProviders.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('uses the Desktop provider preset picker at Cluster scope too', async () => {
+    const createModelProvider = vi.fn().mockImplementation(async (input) => ({
+      ...provider,
+      id: 'prv-zhipu-plan',
+      name: input.name,
+      kind: input.kind,
+      base_url: input.base_url,
+      models: [],
+    }));
+    renderPage({ createModelProvider });
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add model provider' });
+    fireEvent.change(within(dialog).getByLabelText('Provider'), {
+      target: { value: 'zhipuai-coding-plan' },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/API key/), { target: { value: 'sk-plan' } });
+    fireEvent.click(within(dialog).getByTestId('provider-advanced-toggle'));
+    fireEvent.click(within(dialog).getByTestId('add-header'));
+    fireEvent.change(within(dialog).getByTestId('header-key-0'), { target: { value: 'X-Org' } });
+    fireEvent.change(within(dialog).getByTestId('header-value-0'), { target: { value: 'cloud' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add provider' }));
+
+    await waitFor(() => expect(createModelProvider).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'Zhipu AI Coding Plan',
+      kind: 'zhipuai-coding-plan',
+      base_url: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      headers: { 'X-Org': 'cloud' },
+    })));
+  });
 });
