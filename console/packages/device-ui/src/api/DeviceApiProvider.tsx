@@ -12,6 +12,7 @@
 import { createContext, useContext, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { sharedDeviceCrypto } from '../devicecrypto/provider';
+import type { DeviceCrypto } from '../devicecrypto/provider';
 import { createDeviceApi, type DeviceApi, type DeviceApiOptions } from './devices';
 import type { TokenSource } from './errors';
 import { withDeviceCrypto } from './encryptedDevices';
@@ -23,6 +24,7 @@ export function DeviceApiProvider({
   api,
   getToken,
   options,
+  crypto,
 }: {
   children: ReactNode;
   /** Injectable for tests; defaults to the real HTTP API on the token source. */
@@ -31,15 +33,17 @@ export function DeviceApiProvider({
   getToken?: TokenSource;
   /** Cross-origin base URL / credentials overrides (mobile). */
   options?: DeviceApiOptions;
+  /** Optional host-specific CEK storage (mobile uses Keychain/Keystore). */
+  crypto?: DeviceCrypto;
 }) {
   const value = useMemo<DeviceApi>(
     () =>
       api ??
       withDeviceCrypto(
         createDeviceApi(getToken ?? (() => undefined), options),
-        sharedDeviceCrypto,
+        crypto ?? sharedDeviceCrypto,
       ),
-    [api, getToken, options],
+    [api, getToken, options, crypto],
   );
   return <DeviceApiContext.Provider value={value}>{children}</DeviceApiContext.Provider>;
 }

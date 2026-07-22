@@ -5,7 +5,8 @@
  * targets a browser (redirects, same-origin cookies); inside a Tauri webview
  * the simplest RELIABLE credential is a user session token sent as a Bearer
  * header — the same credential the e2e rigs seed and jcode's device API
- * accepts. The user pastes the token once; it persists in localStorage.
+ * accepts. The user pastes the token once; it persists in Android Keystore /
+ * iOS Keychain. Older localStorage sessions are migrated on first launch.
  *
  * The cloud URL follows jcode login's rule (internal/cloud/client.go
  * ValidateCloudURL): https everywhere; plain http only for loopback. The
@@ -15,6 +16,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { consumePendingCloudUrl, watchAuthDeepLinks } from './cloudOAuth';
+import { isNativeRuntime, secureDelete, secureGet, secureSet } from './secureStorage';
 
 export const DEFAULT_CLOUD_URL = 'https://cloud.j-code.net';
 
@@ -68,7 +70,7 @@ export interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
-function loadStored(): { cloudUrl: string; token: string } | null {
+function loadLegacyStored(): { cloudUrl: string; token: string } | null {
   try {
     const cloudUrl = localStorage.getItem(URL_KEY);
     const token = localStorage.getItem(TOKEN_KEY);
@@ -80,11 +82,41 @@ function loadStored(): { cloudUrl: string; token: string } | null {
 }
 
 export function MobileAuthProvider({ children }: { children: ReactNode }) {
-  const [stored, setStored] = useState(loadStored);
+  const [stored, setStored] = useState<{ cloudUrl: string; token: string } | null>(null);
   const [me, setMe] = useState<Me | null>(null);
-  const [checking, setChecking] = useState(() => loadStored() !== null);
+  const [checking, setChecking] = useState(true);
+
+  // Restore the native token and migrate legacy localStorage once. The cloud
+  // URL is not secret, so it remains available to the login screen.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const legacy = loadLegacyStored();
+      let cloudUrl = legacy?.cloudUrl ?? '';
+      try {
+        cloudUrl = localStorage.getItem(URL_KEY) || cloudUrl;
+      } catch {
+        /* storage unavailable */
+      }
+      let token = isNativeRuntime() ? await secureGet(TOKEN_KEY) : legacy?.token ?? null;
+      if (!token && legacy?.token) {
+        token = legacy.token;
+        if (isNativeRuntime()) await secureSet(TOKEN_KEY, token);
+      }
+      if (isNativeRuntime()) {
+        try { localStorage.removeItem(TOKEN_KEY); } catch { /* storage unavailable */ }
+      }
+      if (cancelled) return;
+      if (cloudUrl && token) setStored({ cloudUrl, token });
+      else setChecking(false);
+    })().catch(() => {
+      if (!cancelled) setChecking(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const logout = useCallback(() => {
+    void secureDelete(TOKEN_KEY);
     try {
       localStorage.removeItem(URL_KEY);
       localStorage.removeItem(TOKEN_KEY);
@@ -137,10 +169,12 @@ export function MobileAuthProvider({ children }: { children: ReactNode }) {
       const meJson = (await res.json()) as Me;
       try {
         localStorage.setItem(URL_KEY, cloudUrl);
-        localStorage.setItem(TOKEN_KEY, trimmed);
+        if (!isNativeRuntime()) localStorage.setItem(TOKEN_KEY, trimmed);
+        else localStorage.removeItem(TOKEN_KEY);
       } catch {
         /* storage unavailable */
       }
+      await secureSet(TOKEN_KEY, trimmed);
       setMe(meJson);
       setStored({ cloudUrl, token: trimmed });
       setChecking(false);

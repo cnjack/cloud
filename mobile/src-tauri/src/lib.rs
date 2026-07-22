@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
 use tauri::State;
+use tauri_plugin_jcode_secure_storage::SecureStorage;
 
 /// One plain request/response round-trip, mirrored from the JS fetch shim.
 #[derive(serde::Deserialize)]
@@ -52,10 +53,18 @@ async fn device_fetch(req: FetchRequest) -> Result<FetchResponse, String> {
     let headers = resp
         .headers()
         .iter()
-        .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.as_str().to_string(), s.to_string())))
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|s| (k.as_str().to_string(), s.to_string()))
+        })
         .collect();
     let body = resp.text().await.map_err(|e| e.to_string())?;
-    Ok(FetchResponse { status, headers, body })
+    Ok(FetchResponse {
+        status,
+        headers,
+        body,
+    })
 }
 
 /// One message from the Rust SSE pump to the JS EventSource shim.
@@ -99,10 +108,17 @@ async fn run_stream(url: &str, on_msg: &Channel<SseMsg>) -> Result<(), String> {
             buf.drain(..=pos);
             if line.is_empty() {
                 if !data.is_empty() {
-                    let name = if event.is_empty() { "message".to_string() } else { event.clone() };
+                    let name = if event.is_empty() {
+                        "message".to_string()
+                    } else {
+                        event.clone()
+                    };
                     let payload = data.trim_end_matches('\n').to_string();
                     on_msg
-                        .send(SseMsg::Frame { event: name, data: payload })
+                        .send(SseMsg::Frame {
+                            event: name,
+                            data: payload,
+                        })
                         .map_err(|e| e.to_string())?;
                 }
                 event.clear();
@@ -147,7 +163,10 @@ async fn device_stream_start(
 }
 
 #[tauri::command]
-async fn device_stream_close(registry: State<'_, StreamRegistry>, id: String) -> Result<(), String> {
+async fn device_stream_close(
+    registry: State<'_, StreamRegistry>,
+    id: String,
+) -> Result<(), String> {
     if let Ok(mut map) = registry.0.lock() {
         if let Some(abort) = map.remove(&id) {
             abort.abort();
@@ -156,16 +175,42 @@ async fn device_stream_close(registry: State<'_, StreamRegistry>, id: String) ->
     Ok(())
 }
 
+#[tauri::command]
+fn secure_get(
+    storage: State<'_, SecureStorage<tauri::Wry>>,
+    key: String,
+) -> Result<Option<String>, String> {
+    storage.get(&key).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn secure_set(
+    storage: State<'_, SecureStorage<tauri::Wry>>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    storage.set(&key, &value).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn secure_delete(storage: State<'_, SecureStorage<tauri::Wry>>, key: String) -> Result<(), String> {
+    storage.delete(&key).map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_jcode_secure_storage::init())
         .manage(StreamRegistry::default())
         .invoke_handler(tauri::generate_handler![
             device_fetch,
             device_stream_start,
-            device_stream_close
+            device_stream_close,
+            secure_get,
+            secure_set,
+            secure_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running jcloud-mobile");

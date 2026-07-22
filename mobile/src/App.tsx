@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { DeviceApiProvider } from '@jcloud/device-ui';
+import { mobileDeviceCrypto } from './mobileCrypto';
 import { MobileAuthProvider, useMobileAuth } from './auth';
 import { LoginPage } from './pages/LoginPage';
 import { GuidePage } from './pages/GuidePage';
@@ -53,6 +54,7 @@ function AuthedTree() {
     <DeviceApiProvider
       getToken={auth.token}
       options={{ baseUrl: `${auth.cloudUrl}/api/v1`, credentials: 'omit' }}
+      crypto={mobileDeviceCrypto}
     >
       <HashRouter>
         <Routes>
