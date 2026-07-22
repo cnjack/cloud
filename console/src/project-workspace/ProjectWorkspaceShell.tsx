@@ -7,6 +7,7 @@ import styles from './ProjectWorkspaceShell.module.css';
 
 export function ProjectWorkspaceShell({
   mode = 'workspace',
+  workspaceChrome = true,
   projectName,
   services,
   activeServiceId,
@@ -26,6 +27,7 @@ export function ProjectWorkspaceShell({
   children,
 }: {
   mode?: 'workspace' | 'detail' | 'settings';
+  workspaceChrome?: boolean;
   projectName: string;
   services: readonly Service[];
   activeServiceId: string;
@@ -140,7 +142,7 @@ export function ProjectWorkspaceShell({
           {mobileActions && <div className={styles.mobileActions}>{mobileActions}</div>}
         </div>
         {subnav}
-        {mode === 'workspace' && (
+        {mode === 'workspace' && workspaceChrome && (
           <>
             <header className={styles.header}>{header}</header>
             <div className={styles.tabs} role="tablist" aria-label={t('projectWorkspace.tabsAria')} onKeyDown={onTabsKeyDown}>
@@ -170,7 +172,7 @@ export function ProjectWorkspaceShell({
           data-scroll-owner={mode}
         >
           <div
-            {...(mode === 'workspace'
+            {...(mode === 'workspace' && workspaceChrome
               ? {
                   id: `workspace-panel-${activeTab}`,
                   role: 'tabpanel',

@@ -775,16 +775,31 @@ describe('ProjectDetailPage — model not configured (Feature A)', () => {
 });
 
 describe('ProjectDetailPage — zero-repo empty state', () => {
-  it('replaces the composer with an empty state until a repository is added', async () => {
+  it('shows one focused first-service onboarding state without inactive workspace chrome', async () => {
     const { client } = makeClient(project('owner', []));
     renderPage(client);
 
     await waitFor(() => expect(screen.getByTestId('no-repo-empty')).toBeTruthy());
     expect(screen.queryByTestId('run-input')).toBeNull();
-    expect(screen.getByText('No services yet')).toBeTruthy();
-    // The owner can still attach the first repository.
-    expect(screen.getByTestId('add-repo-trigger')).toBeTruthy();
+    expect(screen.queryByTestId('runs-empty')).toBeNull();
+    expect(screen.queryByRole('tab')).toBeNull();
+    expect(screen.queryByTestId('add-repo-trigger')).toBeNull();
     expect(screen.getByTestId('empty-add-service')).toBeTruthy();
+  });
+
+  it('replaces onboarding with a focused first-service setup instead of appending it below activity', async () => {
+    const { client } = makeClient(project('owner', []));
+    renderPage(client);
+
+    fireEvent.click(await screen.findByTestId('empty-add-service'));
+
+    expect(await screen.findByTestId('first-service-setup')).toBeTruthy();
+    expect(screen.queryByTestId('no-repo-empty')).toBeNull();
+    expect(screen.queryByTestId('runs-empty')).toBeNull();
+    expect(screen.getByTestId('repo-picker')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('first-service-cancel'));
+    expect(await screen.findByTestId('no-repo-empty')).toBeTruthy();
   });
 
   it('activates a newly attached first service instead of remaining in the empty workspace', async () => {
@@ -794,7 +809,7 @@ describe('ProjectDetailPage — zero-repo empty state', () => {
     ];
     renderPage(client);
 
-    fireEvent.click(await screen.findByTestId('add-repo-trigger'));
+    fireEvent.click(await screen.findByTestId('empty-add-service'));
     fireEvent.click(await screen.findByTestId('repo-pick'));
 
     await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());

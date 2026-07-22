@@ -8,7 +8,7 @@
  */
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowSquareOut, Plus, Trash } from '@phosphor-icons/react';
+import { ArrowSquareOut, GitBranch, Plus, Trash } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   useCreateService,
@@ -397,6 +397,7 @@ export function ProjectDetailPage() {
     <>
       <ProjectWorkspaceShell
         mode={projectSettingsOpen ? 'settings' : 'workspace'}
+        workspaceChrome={projectSettingsOpen || services.length > 0}
         projectName={p.name}
         services={services}
         activeServiceId={activeServiceId}
@@ -423,7 +424,7 @@ export function ProjectDetailPage() {
           />
         }
         railAction={
-          canAddRepo ? (
+          canAddRepo && services.length > 0 ? (
             <button
               type="button"
               className={styles.railAddService}
@@ -444,7 +445,7 @@ export function ProjectDetailPage() {
           ) : undefined
         }
         mobileActions={
-          canAddRepo ? (
+          canAddRepo && services.length > 0 ? (
             <button type="button" className={styles.mobileAddService} onClick={openAddService}>
               <Plus size={16} weight="regular" aria-hidden="true" />
               <span>{t('common.add')}</span>
@@ -598,17 +599,25 @@ export function ProjectDetailPage() {
           />
         ) : workspaceTab === 'tasks' && (
           <>
-            {canRun && services.length === 0 && (
-              <EmptyState
-                data-testid="no-repo-empty"
-                title={t('projectDetail.addRepoEmptyTitle')}
-                description={
-                  canManage
+            {services.length === 0 && !addOpen && (
+              <section className={styles.firstServiceEmpty} data-testid="no-repo-empty">
+                <span className={styles.firstServiceIcon} aria-hidden="true">
+                  <GitBranch size={22} weight="regular" />
+                </span>
+                <span className={styles.firstServiceEyebrow}>{t('projectDetail.firstServiceEyebrow')}</span>
+                <h2>{t('projectDetail.addRepoEmptyTitle')}</h2>
+                <p>
+                  {canManage
                     ? t('projectDetail.addRepoEmptyManage')
-                    : t('projectDetail.addRepoEmptyMember')
-                }
-                action={canManage ? <Button data-testid="empty-add-service" onClick={openAddService}><Plus size={14} aria-hidden="true" />{t('projectDetail.addService')}</Button> : undefined}
-              />
+                    : t('projectDetail.addRepoEmptyMember')}
+                </p>
+                {canAddRepo && (
+                  <Button data-testid="empty-add-service" onClick={openAddService}>
+                    <Plus size={14} aria-hidden="true" />
+                    {t('projectDetail.firstServiceAction')}
+                  </Button>
+                )}
+              </section>
             )}
 
             {canRun && activeService && (
@@ -629,18 +638,43 @@ export function ProjectDetailPage() {
               />
             )}
 
-            <RunActivityList
-              runs={visibleRuns}
-              isLoading={runs.isLoading}
-              error={runs.isError ? runs.error : undefined}
-              onRetry={() => void runs.refetch()}
-              filter={runFilter}
-              onFilterChange={setRunFilter}
-              canRun={canRun}
-            />
+            {services.length > 0 && (
+              <RunActivityList
+                runs={visibleRuns}
+                isLoading={runs.isLoading}
+                error={runs.isError ? runs.error : undefined}
+                onRetry={() => void runs.refetch()}
+                filter={runFilter}
+                onFilterChange={setRunFilter}
+                canRun={canRun}
+              />
+            )}
 
             {canAddRepo && addOpen && (
-              <section className={styles.addRepo} aria-label={t('projectDetail.addService')}>
+              <section
+                className={`${styles.addRepo} ${services.length === 0 ? styles.firstServiceSetup : ''}`}
+                aria-label={t('projectDetail.addService')}
+                data-testid={services.length === 0 ? 'first-service-setup' : undefined}
+              >
+                {services.length === 0 && (
+                  <header className={styles.firstServiceSetupHeader}>
+                    <div>
+                      <span>{t('projectDetail.firstServiceEyebrow')}</span>
+                      <h2>{t('projectDetail.firstServiceSetupTitle')}</h2>
+                      <p>{t('projectDetail.firstServiceSetupDescription')}</p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setAddOpen(false)}
+                      disabled={createService.isPending}
+                      data-testid="first-service-cancel"
+                    >
+                      {t('common.cancel')}
+                    </Button>
+                  </header>
+                )}
                 <Card className={styles.addRepoCard}>
                   <div className={styles.repoPicker} data-testid="repo-picker">
                     {(availableIntegrations.length > 0 || canManage) && (
@@ -746,15 +780,17 @@ export function ProjectDetailPage() {
                       />
                       <GitModeToggle value={repoMode} onChange={setRepoMode} />
                       <div className={styles.addRepoActions}>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setAddOpen(false)}
-                          disabled={createService.isPending}
-                        >
-                          {t('common.cancel')}
-                        </Button>
+                        {services.length > 0 && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setAddOpen(false)}
+                            disabled={createService.isPending}
+                          >
+                            {t('common.cancel')}
+                          </Button>
+                        )}
                         <Button
                           type="submit"
                           variant="primary"
@@ -770,15 +806,17 @@ export function ProjectDetailPage() {
 
                   {integrationMode && (
                     <div className={styles.addRepoActions}>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setAddOpen(false)}
-                        disabled={createService.isPending}
-                      >
-                        {t('common.cancel')}
-                      </Button>
+                      {services.length > 0 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setAddOpen(false)}
+                          disabled={createService.isPending}
+                        >
+                          {t('common.cancel')}
+                        </Button>
+                      )}
                     </div>
                   )}
                 </Card>
