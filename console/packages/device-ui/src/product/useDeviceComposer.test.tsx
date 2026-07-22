@@ -270,6 +270,27 @@ describe('useDeviceComposer', () => {
     expect(systemRows).toHaveLength(2);
   });
 
+  it('keeps meaningful goal updates but hides the cleared-goal noise row', async () => {
+    const { api } = makeFakeApi();
+    const streamState = {
+      ...initialDeviceSessionState(),
+      events: [
+        { seq: 1, ts: '2026-01-01T00:00:00Z', kind: 'goal_update', payload: { data: { objective: 'ship it', status: 'active' } } },
+        { seq: 2, ts: '2026-01-01T00:00:01Z', kind: 'goal_update', payload: { data: null } },
+      ],
+    };
+    const { result } = renderHook(
+      () => useDeviceComposer({ deviceId: 'dev-1', sessionId: 'sess-goal', device: DEVICE, streamState }),
+      { wrapper: wrapper(api) },
+    );
+    await act(async () => {});
+    const systemRows = result.current.runtime.getState().items.filter(
+      (item) => item.kind === 'message' && item.data.role === 'system',
+    );
+    expect(systemRows).toHaveLength(1);
+    expect(systemRows[0]?.kind === 'message' && systemRows[0].data.content).toContain('ship it');
+  });
+
   it('drains the type-ahead queue when the turn ends', async () => {
     const { api, sends } = makeFakeApi();
     const running = { ...initialDeviceSessionState(), agentRunning: true };

@@ -341,7 +341,7 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
             case 'goal_update':
               return item.goalObjective
                 ? t('device.session.goalUpdated', { objective: item.goalObjective })
-                : t('device.session.goalCleared');
+                : null; // clearing is state cleanup, not conversation content
             default:
               return null; // agent_start / task_status / todo_update: noise
           }
