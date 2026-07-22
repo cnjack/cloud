@@ -563,12 +563,6 @@ func TestClientCommandsOffline409(t *testing.T) {
 			t.Fatalf("POST %s: code=%q want device_offline", tc.path, env.Error.Code)
 		}
 	}
-	resp := do(t, http.MethodDelete, fx.ts.URL+"/api/v1/devices/"+deviceID+"/sessions/s1", owner, nil)
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("DELETE session offline: status=%d want 409", resp.StatusCode)
-	}
-	resp.Body.Close()
-
 	// Validation fires before the offline check? No — ownership + body first:
 	// an empty text is a 400 even on an offline device... verify online path
 	// enqueues the right commands instead.
@@ -576,7 +570,7 @@ func TestClientCommandsOffline409(t *testing.T) {
 	_ = token
 	owner = mustUser(t, fx, deviceIDOf(t, fx, token))
 
-	resp = do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceIDOf(t, fx, token)+"/sessions/s1/stop", owner, nil)
+	resp := do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceIDOf(t, fx, token)+"/sessions/s1/stop", owner, nil)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("stop: status=%d want 202", resp.StatusCode)
 	}
@@ -608,7 +602,7 @@ func TestClientCommandsOffline409(t *testing.T) {
 	}
 }
 
-func TestClientDeleteSessionEnqueuesCommandAndRemovesMirror(t *testing.T) {
+func TestClientCannotDeleteDesktopSession(t *testing.T) {
 	fx := setupDevice(t)
 	token, deviceID, owner := onlineDevice(t, fx)
 	resp := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, map[string]any{
@@ -618,18 +612,18 @@ func TestClientDeleteSessionEnqueuesCommandAndRemovesMirror(t *testing.T) {
 	resp.Body.Close()
 
 	resp = do(t, http.MethodDelete, fx.ts.URL+"/api/v1/devices/"+deviceID+"/sessions/s-delete", owner, nil)
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("delete session: status=%d want 202", resp.StatusCode)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("delete session: status=%d want 405", resp.StatusCode)
 	}
 	resp.Body.Close()
 
 	cmds, err := fx.st.DeliverPendingDeviceCommands(t.Context(), deviceID, 64)
-	if err != nil || len(cmds) != 1 || cmds[0].Kind != domain.DeviceCmdSessionDelete || cmds[0].SessionID == nil || *cmds[0].SessionID != "s-delete" {
-		t.Fatalf("delete commands = %+v err=%v", cmds, err)
+	if err != nil || len(cmds) != 0 {
+		t.Fatalf("delete commands = %+v err=%v, want none", cmds, err)
 	}
 	sessions, err := fx.st.ListDeviceSessions(t.Context(), deviceID)
-	if err != nil || len(sessions) != 0 {
-		t.Fatalf("sessions after delete = %+v err=%v, want empty", sessions, err)
+	if err != nil || len(sessions) != 1 || sessions[0].SessionID != "s-delete" {
+		t.Fatalf("sessions after rejected delete = %+v err=%v, want mirror retained", sessions, err)
 	}
 }
 

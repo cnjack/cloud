@@ -72,8 +72,9 @@ export function useDevicePairing(deviceId: string, deps: DevicePairingDeps = {})
   const [error, setError] = useState<unknown>(null);
   const sessionRef = useRef<PairingSession | null>(null);
 
-  // Initial resolution: CEK in hand → ready; a persisted in-flight pairing
-  // resumes as pending; otherwise the guide card (idle).
+  // Initial resolution also checks the durable pairing record. Revoked clients
+  // drop their CEK; active clients open a newer rekey wrap with the persisted
+  // pairing private key before the device surfaces are unlocked.
   useEffect(() => {
     if (!deviceId) return;
     let cancelled = false;
@@ -83,9 +84,41 @@ export function useDevicePairing(deviceId: string, deps: DevicePairingDeps = {})
     sessionRef.current = null;
     (async () => {
       try {
-        if (await crypto.getKey(deviceId)) {
-          if (!cancelled) setPhase('ready');
-          return;
+        const stored = await crypto.store.get(deviceId);
+        if (stored) {
+          if (stored.pairingId) {
+            let state;
+            try {
+              state = await api.getPairing(deviceId, stored.pairingId);
+            } catch {
+              // A transient cloud failure must not hide already-decrypted local
+              // data. Revocation/rekey takes effect on the next successful check.
+              if (!cancelled) setPhase('ready');
+              return;
+            }
+            if (state.status === 'revoked') {
+              await crypto.store.delete(deviceId);
+            } else if (state.status === 'approved') {
+              if (state.key_gen > stored.keyGen) {
+                if (!state.wrap || !stored.privateKeyJwk) {
+                  throw new Error('pairing was rekeyed but this client cannot open the new key — pair again');
+                }
+                const privateKey = await importPairingPrivateKey(stored.privateKeyJwk);
+                const { cek, keyGen } = await unwrapCek(privateKey, state.wrap);
+                await crypto.store.put(deviceId, { ...stored, cek, keyGen });
+              }
+              if (!cancelled) setPhase('ready');
+              return;
+            } else {
+              // A stored CEK without a live approval row is not authoritative.
+              await crypto.store.delete(deviceId);
+            }
+          } else {
+            // Legacy CEK records predate durable pairing identities. They stay
+            // usable until a decrypt failure clears them and asks to pair again.
+            if (!cancelled) setPhase('ready');
+            return;
+          }
         }
         const session = await sessions.get(deviceId);
         if (cancelled) return;
@@ -165,7 +198,12 @@ export function useDevicePairing(deviceId: string, deps: DevicePairingDeps = {})
           try {
             const privateKey = await importPairingPrivateKey(session.privateKeyJwk);
             const { cek, keyGen } = await unwrapCek(privateKey, state.wrap);
-            await crypto.store.put(deviceId, { cek, keyGen });
+            await crypto.store.put(deviceId, {
+              cek,
+              keyGen,
+              pairingId,
+              privateKeyJwk: session.privateKeyJwk,
+            });
             await sessions.delete(deviceId);
             sessionRef.current = null;
             if (cancelled) return;

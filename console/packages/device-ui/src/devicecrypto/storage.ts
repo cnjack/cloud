@@ -12,6 +12,10 @@ export interface StoredCek {
   /** Raw 32-byte CEK. */
   cek: Uint8Array;
   keyGen: number;
+  /** Durable approved-client identity used for rekey/revoke checks. */
+  pairingId?: string;
+  /** Kept so a later desktop rekey wrap can be opened without re-pairing. */
+  privateKeyJwk?: JsonWebKey;
 }
 
 export interface CekStore {
@@ -139,6 +143,8 @@ async function idbDelete(store: string, key: string): Promise<void> {
 interface StoredCekRecord {
   cek: number[];
   keyGen: number;
+  pairingId?: string;
+  privateKeyJwk?: JsonWebKey;
 }
 
 /**
@@ -156,10 +162,20 @@ export function createIdbCekStore(): CekStore {
   return {
     get: async (deviceId) => {
       const rec = await idbGet<StoredCekRecord>(CEK_STORE, deviceId);
-      return rec ? { cek: new Uint8Array(rec.cek), keyGen: rec.keyGen } : null;
+      return rec ? {
+        cek: new Uint8Array(rec.cek),
+        keyGen: rec.keyGen,
+        pairingId: rec.pairingId,
+        privateKeyJwk: rec.privateKeyJwk,
+      } : null;
     },
     put: async (deviceId, cek) => {
-      const rec: StoredCekRecord = { cek: Array.from(cek.cek), keyGen: cek.keyGen };
+      const rec: StoredCekRecord = {
+        cek: Array.from(cek.cek),
+        keyGen: cek.keyGen,
+        pairingId: cek.pairingId,
+        privateKeyJwk: cek.privateKeyJwk,
+      };
       await idbPut(CEK_STORE, deviceId, rec);
       bump(deviceId);
     },

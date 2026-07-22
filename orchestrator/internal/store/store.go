@@ -25,6 +25,10 @@ var ErrIdentityTaken = errors.New("identity already linked to another user")
 // uniqueness constraint rejects the insert. The API maps it to a 409.
 var ErrAlreadyExists = errors.New("already exists")
 
+// ErrConflict is returned when an optimistic concurrency precondition no
+// longer holds (for example, a device key generation advanced concurrently).
+var ErrConflict = errors.New("conflict")
+
 // EventInput is a single event to append. For AppendEvents the Seq is the
 // authoritative global seq (caller-assigned). For AppendRunnerEvents the Seq is
 // only the runner's client-side sequence number, used as a per-source
@@ -641,6 +645,12 @@ type Store interface {
 	// effective immediately (the next GetAPIKeyByHash for that key 404s).
 	RevokeAPIKey(ctx context.Context, id string) error
 
+	// --- Account settings (docs/19) ------------------------------------------
+	// The document is a client-side AES-GCM envelope. The store treats it as
+	// opaque bytes and uses Version as a whole-document CAS token.
+	GetAccountSettings(ctx context.Context, userID string) (*domain.AccountSettings, error)
+	PutAccountSettings(ctx context.Context, userID string, baseVersion int64, envelope []byte, at time.Time) (*domain.AccountSettings, error)
+
 	// --- Devices (docs/17 — jcode device relay) --------------------------------
 	// A device is one local jcode installation logged in via the RFC 8628
 	// device-code flow. The device row is created at token issuance (only its
@@ -762,7 +772,12 @@ type Store interface {
 	// resolved_at, but ONLY while the pairing is pending, so a duplicate
 	// respond is an idempotent no-op. ErrNotFound when no such pairing exists
 	// FOR THIS DEVICE.
-	ResolveDevicePairing(ctx context.Context, deviceID, pairingID, status string, wrap []byte, at time.Time) error
+	ResolveDevicePairing(ctx context.Context, deviceID, pairingID, status string, wrap []byte, expectedKeyGen int, at time.Time) error
+	// RekeyDevicePairings atomically revokes one approved pairing, replaces the
+	// opaque CEK wraps of every remaining approved pairing, and advances the
+	// device key generation. The API validates the complete wrap set before
+	// calling this method; persistence must not expose a partially rotated state.
+	RekeyDevicePairings(ctx context.Context, deviceID, revokedPairingID string, keyGen int, wraps map[string][]byte, at time.Time) error
 
 	// --- Device pairing offers (docs/17 §6.3 — M11 scan-to-pair) -------------
 	// An offer is a device-issued, single-use ticket (secret hash + expiry)

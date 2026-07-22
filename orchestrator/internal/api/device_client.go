@@ -553,57 +553,12 @@ func (s *Server) handleDeviceStopSession(w http.ResponseWriter, r *http.Request)
 	s.enqueueDeviceCommand(w, r, d, domain.DeviceCmdChatStop, &sid, map[string]any{})
 }
 
-// handleDeleteDeviceSession asks the online desktop to delete the local
-// session, then immediately removes the cloud mirror. If the local execution
-// fails, the connector's next replace snapshot restores the mirror, keeping
-// the desktop authoritative without leaving a stale row in the UI meanwhile.
-func (s *Server) handleDeleteDeviceSession(w http.ResponseWriter, r *http.Request) {
-	d := s.authorizeDevice(w, r, r.PathValue("id"))
-	if d == nil {
-		return
-	}
-	if !s.deviceOnline(d) {
-		writeError(w, http.StatusConflict, "device_offline", "the device is offline — the command would not be delivered")
-		return
-	}
-	sid := r.PathValue("sid")
-	var req struct {
-		Envelope json.RawMessage `json:"envelope,omitempty"`
-	}
-	if err := decodeJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
-		return
-	}
-	var env []byte
-	var err error
-	if len(req.Envelope) > 0 {
-		env, err = commandEnvelopePayload(req.Envelope)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-			return
-		}
-	} else {
-		if rejectPlaintextDownlink(w, d) {
-			return
-		}
-		env = []byte(`{}`)
-	}
-	c := &domain.DeviceCommand{
-		ID: domain.NewID(), DeviceID: d.ID, Kind: domain.DeviceCmdSessionDelete,
-		SessionID: &sid, Envelope: env, Status: domain.DeviceCommandPending,
-		CreatedAt: time.Now().UTC(),
-	}
-	if err := s.st.CreateDeviceCommand(r.Context(), c); err != nil {
-		s.log.Error("enqueue device command", "device", d.ID, "kind", c.Kind, "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "could not enqueue the command")
-		return
-	}
-	if err := s.st.DeleteDeviceSession(r.Context(), d.ID, sid); err != nil {
-		s.log.Error("delete device session mirror", "device", d.ID, "session", sid, "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "could not delete the session mirror")
-		return
-	}
-	writeJSON(w, http.StatusAccepted, deviceCommandAcceptedView{CommandID: c.ID, SessionID: &sid})
+// handleRejectDeviceSessionDelete is the compatibility tombstone for clients
+// released before conversations became desktop-owned. It deliberately does
+// not authorize/load the device, enqueue a command, or mutate the mirror.
+func (s *Server) handleRejectDeviceSessionDelete(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Allow", "GET")
+	writeError(w, http.StatusMethodNotAllowed, "desktop_only", "conversations can only be deleted from jcode Desktop")
 }
 
 type deviceApprovalReq struct {

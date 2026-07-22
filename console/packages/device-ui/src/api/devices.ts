@@ -168,8 +168,18 @@ export interface CreatePairingResult {
 
 /** Pairing state (GET /devices/{id}/pairings/{pid}); wrap rides along once approved. */
 export interface PairingState {
-  status: 'pending' | 'approved' | 'denied' | 'expired';
+  status: 'pending' | 'approved' | 'denied' | 'expired' | 'revoked';
+  key_gen: number;
   wrap?: DeviceWrap;
+}
+
+export interface DevicePairingRecord {
+  id: string;
+  label: string;
+  pubkey: string;
+  status: PairingState['status'];
+  created_at: string;
+  resolved_at?: string;
 }
 
 /** SSE frame from GET /devices/{id}/stream. */
@@ -199,10 +209,6 @@ export interface DeviceApi {
   sendEnvelope(deviceId: string, sessionId: string, envelope: DeviceEnvelope): Promise<SendMessageResult>;
   /** Stop a session; E2EE clients pass the encrypted empty command payload. */
   stopSession(deviceId: string, sessionId: string, envelope?: DeviceEnvelope): Promise<void>;
-  /** Delete a session on the desktop and remove its cloud mirror. */
-  deleteSession(deviceId: string, sessionId: string): Promise<void>;
-  /** E2EE form of deleteSession. */
-  deleteSessionEnvelope(deviceId: string, sessionId: string, envelope: DeviceEnvelope): Promise<void>;
   /** List folders on the desktop device, starting at its home when path is omitted. */
   browseFolders(deviceId: string, path?: string): Promise<BrowseFoldersResult>;
   /** E2EE command/result form used by withDeviceCrypto. */
@@ -215,6 +221,10 @@ export interface DeviceApi {
   createPairing(deviceId: string, req: { label: string; kty: string; pubkey: string }): Promise<CreatePairingResult>;
   /** Poll a pairing's state; wrap arrives once approved. */
   getPairing(deviceId: string, pairingId: string): Promise<PairingState>;
+  /** Approved clients can review pairing requests from other clients. */
+  listPairings(deviceId: string, approverId: string, status?: PairingState['status']): Promise<DevicePairingRecord[]>;
+  /** Resolve another client's request using this approved client's identity. */
+  respondPairing(deviceId: string, pairingId: string, req: { approver_id: string; approve: boolean; key_gen?: number; wrap?: DeviceWrap }): Promise<void>;
   /** Soft-delete the device (M16): revokes it + its tokens; history is retained server-side. */
   deleteDevice(deviceId: string): Promise<void>;
   /** Subscribe to the device-wide SSE stream. */
@@ -340,17 +350,6 @@ export function createDeviceApi(token: TokenSource, options: DeviceApiOptions = 
       });
     },
 
-    deleteSession: async (deviceId, sessionId) => {
-      await req<void>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
-    },
-
-    deleteSessionEnvelope: async (deviceId, sessionId, envelope) => {
-      await req<void>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}`, {
-        method: 'DELETE',
-        body: JSON.stringify({ envelope }),
-      });
-    },
-
     browseFolders: async (deviceId, path) => {
       const state = await startBrowse(deviceId, { path: path ?? '' });
       if (state.status === 'failed') {
@@ -384,6 +383,18 @@ export function createDeviceApi(token: TokenSource, options: DeviceApiOptions = 
 
     getPairing: (deviceId, pairingId) =>
       req<PairingState>(`${dev(deviceId)}/pairings/${encodeURIComponent(pairingId)}`),
+
+    listPairings: async (deviceId, approverId, status = 'pending') => {
+      const params = new URLSearchParams({ approver_id: approverId, status });
+      return (await req<{ pairings: DevicePairingRecord[] }>(`${dev(deviceId)}/pairings?${params}`)).pairings ?? [];
+    },
+
+    respondPairing: async (deviceId, pairingId, body) => {
+      await req<void>(`${dev(deviceId)}/pairings/${encodeURIComponent(pairingId)}/respond`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
 
     deleteDevice: async (deviceId) => {
       await req<void>(dev(deviceId), { method: 'DELETE' });

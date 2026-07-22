@@ -396,11 +396,16 @@ func (s *Server) Handler() http.Handler {
 	// stream endpoint also accepts ?access_token= (browser EventSource cannot
 	// set a header — same rationale as the run stream).
 	mux.Handle("GET /api/v1/devices", s.authed(s.handleListDevices))
+	mux.Handle("GET /api/v1/account/settings", s.authed(s.handleGetAccountSettings))
+	mux.Handle("PUT /api/v1/account/settings", s.authed(s.handlePutAccountSettings))
 	mux.Handle("GET /api/v1/devices/{id}", s.authed(s.handleGetDevice))
 	mux.Handle("DELETE /api/v1/devices/{id}", s.authed(s.handleDeleteDevice))
 	mux.Handle("GET /api/v1/devices/{id}/sessions", s.authed(s.handleListDeviceSessions))
 	mux.Handle("GET /api/v1/devices/{id}/sessions/{sid}/events", s.authed(s.handleListDeviceSessionEvents))
-	mux.Handle("DELETE /api/v1/devices/{id}/sessions/{sid}", s.authed(s.handleDeleteDeviceSession))
+	// Compatibility tombstone: cloud/mobile never own conversation deletion.
+	// Keeping an explicit 405 prevents older clients from interpreting a generic
+	// 404 as a transient routing failure and retrying a destructive request.
+	mux.Handle("DELETE /api/v1/devices/{id}/sessions/{sid}", s.authed(s.handleRejectDeviceSessionDelete))
 	mux.Handle("POST /api/v1/devices/{id}/workspace/browse", s.authed(s.handleDeviceBrowseWorkspace))
 	mux.Handle("GET /api/v1/devices/{id}/commands/{cid}", s.authed(s.handleGetDeviceCommand))
 	mux.Handle("GET /api/v1/devices/{id}/stream", s.authedStream(s.handleDeviceStream))
@@ -410,7 +415,9 @@ func (s *Server) Handler() http.Handler {
 	// Device pairing — CEK distribution (docs/17 §6.3): the client requests a
 	// pairing and polls its state; the device decides over the internal API.
 	mux.Handle("POST /api/v1/devices/{id}/pairings", s.authed(s.handleCreateDevicePairing))
+	mux.Handle("GET /api/v1/devices/{id}/pairings", s.authed(s.handleListClientDevicePairings))
 	mux.Handle("GET /api/v1/devices/{id}/pairings/{pid}", s.authed(s.handleGetDevicePairing))
+	mux.Handle("POST /api/v1/devices/{id}/pairings/{pid}/respond", s.authed(s.handleRespondClientDevicePairing))
 	// Pairing offers (docs/17 §6.3 — M11 scan-to-pair): the device mints a
 	// single-use offer (internal API), the QR-scanning client claims it.
 	mux.Handle("POST /api/v1/pairing-offers/{offer_id}/claim", s.authed(s.handleClaimPairingOffer))
@@ -577,6 +584,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /internal/v1/device/pairings", s.authed(s.handleListDevicePairings))
 	mux.Handle("GET /internal/v1/device/pairings/{pid}", s.authed(s.handleGetOwnPairing))
 	mux.Handle("POST /internal/v1/device/pairings/{pid}/respond", s.authed(s.handleRespondDevicePairing))
+	mux.Handle("POST /internal/v1/device/pairings/rekey", s.authed(s.handleRekeyDevicePairings))
+	mux.Handle("GET /internal/v1/device/account-settings", s.authed(s.handleGetAccountSettings))
+	mux.Handle("PUT /internal/v1/device/account-settings", s.authed(s.handlePutAccountSettings))
 	mux.Handle("POST /internal/v1/device/pairing-offers", s.authed(s.handleCreatePairingOffer))
 	mux.Handle("POST /internal/v1/device/revoke", s.authed(s.handleDeviceRevoke))
 	mux.Handle("POST /internal/v1/runs/{id}/artifact", s.runToken(s.handleIngestArtifact))

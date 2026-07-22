@@ -1,4 +1,4 @@
-import { ArrowLeft, Trash, Warning } from '@phosphor-icons/react';
+import { ArrowLeft, Warning } from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -6,10 +6,10 @@ import { RuntimeProvider } from 'jcode-ui';
 import { ChatInput } from 'jcode-ui/product';
 import {
   DevicePairingCard,
+  DevicePairingApprovals,
   DevicePairingGate,
   useDeviceComposer,
   useDeviceSessions,
-  useDeleteDeviceSession,
   useDevices,
   usePendingNewSession,
   type DeviceSession,
@@ -80,6 +80,7 @@ export function DeviceWelcomePage() {
             deviceId={deviceId}
             guideLink={<Link to="/guide">{t('device.guide.entry')}</Link>}
           />
+          <DevicePairingApprovals deviceId={deviceId} />
 
           {!online && (
             <div className="banner" role="alert">
@@ -129,13 +130,8 @@ export function DeviceWelcomePage() {
 
 function SessionRow({ deviceId, session }: { deviceId: string; session: DeviceSession }) {
   const { t } = useTranslation();
-  const deleteSession = useDeleteDeviceSession(deviceId);
   const running = session.status === 'running';
   const title = session.meta?.title || t('mobile.common.untitled');
-  const onDelete = () => {
-    if (!window.confirm(t('device.welcome.sessionDeleteConfirm', { name: title }))) return;
-    deleteSession.mutate(session.session_id);
-  };
   return (
     <div className="session-row" data-testid="session-row">
       <Link to={`/devices/${deviceId}/sessions/${session.session_id}`} className="session-row-link">
@@ -150,15 +146,6 @@ function SessionRow({ deviceId, session }: { deviceId: string; session: DeviceSe
           {running ? t('device.welcome.status.running') : t('device.welcome.status.idle')}
         </span>
       </Link>
-      <button
-        type="button"
-        className="session-delete"
-        onClick={onDelete}
-        disabled={running || deleteSession.isPending}
-        aria-label={t('device.welcome.sessionDelete')}
-      >
-        <Trash size={18} aria-hidden />
-      </button>
     </div>
   );
 }

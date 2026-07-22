@@ -78,6 +78,31 @@ async function deriveWrapKey(privateKey: CryptoKey, ephemeralSpki: Uint8Array): 
   );
 }
 
+/** wrapCekForClient is the approved-client form of Desktop's WrapCEK. */
+export async function wrapCekForClient(
+  requesterPubkey: string,
+  cek: Uint8Array,
+  keyGen: number,
+): Promise<DeviceWrap> {
+  const ephemeral = await generatePairingKeys();
+  const key = await deriveWrapKey(ephemeral.privateKey, b64decode(requesterPubkey));
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = new TextEncoder().encode(JSON.stringify({
+    cek: b64encode(cek),
+    key_gen: keyGen,
+  }));
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: nonce as BufferSource },
+    key,
+    plaintext,
+  );
+  return {
+    ephemeral_pubkey: ephemeral.pubkeyBase64,
+    nonce: b64encode(nonce),
+    ct: b64encode(new Uint8Array(ct)),
+  };
+}
+
 /** unwrapCek opens the device's wrap blob with the client's pairing private key. */
 export async function unwrapCek(
   privateKey: CryptoKey,

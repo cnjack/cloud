@@ -31,7 +31,6 @@ interface FakeInner {
   approvalEnvelopeBodies: unknown[];
   stopEnvelopeBodies: unknown[];
   frames: DeviceStreamFrame[];
-  deleteEnvelopeBodies: unknown[];
   browseEnvelopeBodies: unknown[];
 }
 
@@ -40,7 +39,6 @@ function fakeInner(overrides: Partial<DeviceApi> = {}): FakeInner {
   const approvalEnvelopeBodies: unknown[] = [];
   const stopEnvelopeBodies: unknown[] = [];
   const frames: DeviceStreamFrame[] = [];
-  const deleteEnvelopeBodies: unknown[] = [];
   const browseEnvelopeBodies: unknown[] = [];
   const api: DeviceApi = {
     listDevices: async () => [],
@@ -54,8 +52,6 @@ function fakeInner(overrides: Partial<DeviceApi> = {}): FakeInner {
     stopSession: async (_d, _s, envelope) => {
       if (envelope) stopEnvelopeBodies.push(envelope);
     },
-    deleteSession: async () => {},
-    deleteSessionEnvelope: async (_d, _s, envelope) => { deleteEnvelopeBodies.push(envelope); },
     browseFolders: async (_d, path) => ({ current: path ?? '/home/jack', folders: [] }),
     browseFoldersEnvelope: async (_d, envelope) => {
       browseEnvelopeBodies.push(envelope);
@@ -74,7 +70,7 @@ function fakeInner(overrides: Partial<DeviceApi> = {}): FakeInner {
     },
     ...overrides,
   };
-  return { api, sentEnvelopeBodies, approvalEnvelopeBodies, stopEnvelopeBodies, frames, deleteEnvelopeBodies, browseEnvelopeBodies };
+  return { api, sentEnvelopeBodies, approvalEnvelopeBodies, stopEnvelopeBodies, frames, browseEnvelopeBodies };
 }
 
 function cryptoWithCek() {
@@ -306,17 +302,6 @@ describe('withDeviceCrypto writes', () => {
       approval_id: 'a1',
       decision: 'approve',
     });
-  });
-
-  it('seals session deletion when the CEK is held', async () => {
-    const inner = fakeInner();
-    const { store, crypto } = cryptoWithCek();
-    await store.put(DEVICE, { cek: CEK_RAW, keyGen: 1 });
-    const api = withDeviceCrypto(inner.api, crypto);
-    await api.deleteSession(DEVICE, 's1');
-    expect(inner.deleteEnvelopeBodies).toHaveLength(1);
-    const key = await importCek(CEK_RAW);
-    expect(await decryptJson(key, inner.deleteEnvelopeBodies[0] as never)).toEqual({});
   });
 
   it('seals workspace browse requests and opens the result', async () => {

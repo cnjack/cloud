@@ -110,14 +110,6 @@ export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceAp
       return api.respondApprovalEnvelope(deviceId, sessionId, envelope);
     },
 
-    deleteSession: async (deviceId, sessionId) => {
-      const key = await crypto.getKey(deviceId);
-      if (!key) return api.deleteSession(deviceId, sessionId);
-      const keyGen = (await crypto.getKeyGen(deviceId)) ?? 1;
-      const envelope = await encryptJson(key, keyGen, {});
-      return api.deleteSessionEnvelope(deviceId, sessionId, envelope);
-    },
-
     browseFolders: async (deviceId, path) => {
       const key = await crypto.getKey(deviceId);
       if (!key) return api.browseFolders(deviceId, path);

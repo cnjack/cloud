@@ -399,22 +399,86 @@ func (m *MemStore) ListDevicePairings(_ context.Context, deviceID, status string
 	return out, nil
 }
 
-func (m *MemStore) ResolveDevicePairing(_ context.Context, deviceID, pairingID, status string, wrap []byte, at time.Time) error {
+func (m *MemStore) ResolveDevicePairing(_ context.Context, deviceID, pairingID, status string, wrap []byte, expectedKeyGen int, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if expectedKeyGen > 0 {
+		d, ok := m.devices[deviceID]
+		if !ok {
+			return ErrNotFound
+		}
+		if d.KeyGen != expectedKeyGen {
+			return ErrConflict
+		}
+	}
 	p, ok := m.devicePairings[pairingID]
 	if !ok || p.DeviceID != deviceID {
 		return ErrNotFound
 	}
 	if p.Status != domain.DevicePairingPending {
-		// Already resolved: a duplicate respond is an idempotent no-op.
-		return nil
+		// A duplicate response with the same outcome is idempotent. A competing
+		// outcome lost the pending-state compare-and-swap and must be surfaced to
+		// the caller instead of being reported as successful.
+		if p.Status == status {
+			return nil
+		}
+		return ErrConflict
 	}
 	at = at.UTC()
 	p.Status = status
 	p.Wrap = wrap
 	p.ResolvedAt = &at
 	m.devicePairings[pairingID] = p
+	return nil
+}
+
+func (m *MemStore) RekeyDevicePairings(_ context.Context, deviceID, revokedPairingID string, keyGen int, wraps map[string][]byte, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	target, ok := m.devicePairings[revokedPairingID]
+	if !ok || target.DeviceID != deviceID || target.Status != domain.DevicePairingApproved {
+		return ErrNotFound
+	}
+	d, ok := m.devices[deviceID]
+	if !ok || d.KeyGen != keyGen-1 {
+		if ok {
+			return ErrConflict
+		}
+		return ErrNotFound
+	}
+	// Validate the complete mutation before touching any row. This mirrors the
+	// all-or-nothing PostgreSQL transaction and keeps the memory store useful as
+	// a faithful concurrency/test double.
+	validated := make(map[string]domain.DevicePairing, len(wraps))
+	expected := make(map[string]struct{})
+	for id, p := range m.devicePairings {
+		if p.DeviceID == deviceID && p.Status == domain.DevicePairingApproved && id != revokedPairingID {
+			expected[id] = struct{}{}
+		}
+	}
+	if len(wraps) != len(expected) {
+		return ErrConflict
+	}
+	for id := range expected {
+		wrap, exists := wraps[id]
+		if !exists || len(wrap) == 0 {
+			return ErrConflict
+		}
+		p := m.devicePairings[id]
+		validated[id] = p
+	}
+	at = at.UTC()
+	target.Status = domain.DevicePairingRevoked
+	target.Wrap = nil
+	target.ResolvedAt = &at
+	m.devicePairings[revokedPairingID] = target
+	for id, wrap := range wraps {
+		p := validated[id]
+		p.Wrap = append([]byte(nil), wrap...)
+		m.devicePairings[id] = p
+	}
+	d.KeyGen = keyGen
+	m.devices[deviceID] = d
 	return nil
 }
 

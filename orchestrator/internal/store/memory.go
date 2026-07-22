@@ -40,6 +40,7 @@ type MemStore struct {
 	runMessages     map[string][]domain.RunMessage       // session follow-up queue, keyed by runID (D22)
 	permissions     map[string]domain.RunPermission      // permission requests, keyed by request_id (F8b)
 	apiKeys         map[string]domain.APIKey             // keyed by api key id (F12 / D24)
+	accountSettings map[string]domain.AccountSettings    // keyed by user id (docs/19)
 	kanbanConfig    *domain.KanbanConfig                 // single-row cluster kanban config, nil = absent (D27)
 	devices         map[string]domain.Device             // keyed by device id (docs/17)
 	deviceTokens    map[string]domain.DeviceToken        // keyed by device token id
@@ -75,6 +76,7 @@ func NewMemStore() *MemStore {
 		runMessages:     map[string][]domain.RunMessage{},
 		permissions:     map[string]domain.RunPermission{},
 		apiKeys:         map[string]domain.APIKey{},
+		accountSettings: map[string]domain.AccountSettings{},
 		devices:         map[string]domain.Device{},
 		deviceTokens:    map[string]domain.DeviceToken{},
 		deviceSessions:  map[string]domain.DeviceSession{},

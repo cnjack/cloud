@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { RuntimeProvider } from 'jcode-ui';
 import { ChatInput } from 'jcode-ui/product';
-import { useDevices, useDeviceSessions, useDeleteDevice, useDeleteDeviceSession, DevicePairingCard, DevicePairingGate, Button, channelLabelKey, useDeviceComposer, usePendingNewSession } from '@jcloud/device-ui';
+import { useDevices, useDeviceSessions, useDeleteDevice, DevicePairingCard, DevicePairingApprovals, DevicePairingGate, Button, channelLabelKey, useDeviceComposer, usePendingNewSession } from '@jcloud/device-ui';
 import type { DeviceSession } from '@jcloud/device-ui';
 import { PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout';
 import { ErrorBlock, LoadingBlock } from '../components/States';
@@ -140,6 +140,7 @@ export function DeviceWelcomePage() {
                 deviceId={deviceId}
                 guideLink={<Link to="/devices/guide">{t('device.guide.entry')}</Link>}
               />
+              <DevicePairingApprovals deviceId={deviceId} />
 
               <section aria-labelledby="new-session-title">
             <div className={styles.sectionHead}><h2 id="new-session-title">{t('device.welcome.newSession')}</h2></div>
@@ -193,17 +194,8 @@ export function DeviceWelcomePage() {
 
 function SessionRow({ deviceId, session }: { deviceId: string; session: DeviceSession }) {
   const { t } = useTranslation();
-  const toast = useToast();
-  const deleteSession = useDeleteDeviceSession(deviceId);
   const running = session.status === 'running';
   const title = session.meta?.title || t('device.welcome.untitled');
-  const onDelete = () => {
-    if (!window.confirm(t('device.welcome.sessionDeleteConfirm', { name: title }))) return;
-    deleteSession.mutate(session.session_id, {
-      onSuccess: () => toast.push({ kind: 'success', message: t('device.welcome.sessionDeleted', { name: title }) }),
-      onError: (err) => toast.push({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
-    });
-  };
   // List-level source badge: only renders when jcode relays `source` in the
   // session meta (DeviceSessionMeta passthrough) — it does not today, so this
   // degrades to nothing until the device starts sending it. Known channels
@@ -212,7 +204,7 @@ function SessionRow({ deviceId, session }: { deviceId: string; session: DeviceSe
   const source = typeof session.meta?.source === 'string' ? session.meta.source.trim() : '';
   const sourceKey = channelLabelKey(source);
   return (
-    <li className={styles.rowShell}>
+    <li>
       <Link
         to={`/devices/${deviceId}/sessions/${session.session_id}`}
         className={styles.row}
@@ -233,16 +225,6 @@ function SessionRow({ deviceId, session }: { deviceId: string; session: DeviceSe
         </span>
         <ArrowRight size={16} aria-hidden="true" className={styles.rowArrow} />
       </Link>
-      <button
-        type="button"
-        className={styles.sessionDelete}
-        onClick={onDelete}
-        disabled={running || deleteSession.isPending}
-        title={running ? t('device.welcome.sessionDeleteRunning') : t('device.welcome.sessionDelete')}
-        aria-label={t('device.welcome.sessionDelete')}
-      >
-        <Trash size={15} aria-hidden="true" />
-      </button>
     </li>
   );
 }

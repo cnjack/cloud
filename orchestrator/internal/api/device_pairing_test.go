@@ -103,7 +103,7 @@ func TestDevicePairingFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("get unknown pairing: status=%d want 404", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// While pending, the client status read shows pending without a wrap.
 	if v := pairingStatus(t, fx, deviceID, owner, pid); v.Status != domain.DevicePairingPending || v.Wrap != nil {
@@ -116,12 +116,12 @@ func TestDevicePairingFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("approve without wrap: status=%d want 400", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// Approve with the wrapped CEK blob.
 	wrap := map[string]any{"ephemeral_pubkey": "b64-eph", "nonce": "b64-n", "ct": "b64-ct"}
 	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/pairings/"+pid+"/respond", token,
-		map[string]any{"approve": true, "wrap": wrap})
+		map[string]any{"approve": true, "key_gen": 1, "wrap": wrap})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("respond approve: status=%d want 200", resp.StatusCode)
 	}
@@ -146,7 +146,7 @@ func TestDevicePairingFlow(t *testing.T) {
 	// Idempotent: re-responding (approve or deny) is a 200 no-op reporting the
 	// stored status.
 	for _, body := range []map[string]any{
-		{"approve": true, "wrap": wrap},
+		{"approve": true, "key_gen": 1, "wrap": wrap},
 		{"approve": false},
 	} {
 		resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/pairings/"+pid+"/respond", token, body)
@@ -158,6 +158,157 @@ func TestDevicePairingFlow(t *testing.T) {
 			t.Fatalf("duplicate respond %v: status=%q want approved (unchanged)", body, rv.Status)
 		}
 	}
+}
+
+func approvePairing(t *testing.T, fx deviceFixture, token, pid, ct string) {
+	t.Helper()
+	resp := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/pairings/"+pid+"/respond", token,
+		map[string]any{"approve": true, "key_gen": 1, "wrap": map[string]any{
+			"ephemeral_pubkey": "b64-eph", "nonce": "b64-n", "ct": ct,
+		}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve pairing %s: status=%d want 200", pid, resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestApprovedClientCanApproveAnotherClient(t *testing.T) {
+	fx := setupDevice(t)
+	token, deviceID, owner := onlineDevice(t, fx)
+	approverID := createPairing(t, fx, deviceID, owner, "paired-phone")
+	approvePairing(t, fx, token, approverID, "old-wrap")
+	targetID := createPairing(t, fx, deviceID, owner, "new-browser")
+
+	resp := do(t, http.MethodGet, fx.ts.URL+"/api/v1/devices/"+deviceID+
+		"/pairings?status=pending&approver_id="+approverID, owner, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approved client list: status=%d want 200", resp.StatusCode)
+	}
+	var list struct {
+		Pairings []devicePairingView `json:"pairings"`
+	}
+	decode(t, resp, &list)
+	if len(list.Pairings) != 1 || list.Pairings[0].ID != targetID || list.Pairings[0].Pubkey != "b64-spki" {
+		t.Fatalf("approved client pending list = %+v", list.Pairings)
+	}
+
+	newWrap := map[string]any{"ephemeral_pubkey": "client-eph", "nonce": "client-n", "ct": "client-ct"}
+	resp = do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceID+"/pairings/"+targetID+"/respond", owner,
+		map[string]any{"approver_id": approverID, "approve": true, "key_gen": 1, "wrap": newWrap})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approved client respond: status=%d want 200", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	status := pairingStatus(t, fx, deviceID, owner, targetID)
+	if status.Status != domain.DevicePairingApproved {
+		t.Fatalf("target status = %+v want approved", status)
+	}
+	var gotWrap map[string]any
+	if err := json.Unmarshal(status.Wrap, &gotWrap); err != nil || gotWrap["ct"] != "client-ct" {
+		t.Fatalf("target wrap = %s err=%v", status.Wrap, err)
+	}
+}
+
+func TestUnapprovedClientCannotReviewPairings(t *testing.T) {
+	fx := setupDevice(t)
+	_, deviceID, owner := onlineDevice(t, fx)
+	pendingID := createPairing(t, fx, deviceID, owner, "not-approved")
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   map[string]any
+	}{
+		{http.MethodGet, "/api/v1/devices/" + deviceID + "/pairings?approver_id=" + pendingID, nil},
+		{http.MethodPost, "/api/v1/devices/" + deviceID + "/pairings/" + pendingID + "/respond",
+			map[string]any{"approver_id": pendingID, "approve": false}},
+	} {
+		resp := do(t, tc.method, fx.ts.URL+tc.path, owner, tc.body)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s %s: status=%d want 403", tc.method, tc.path, resp.StatusCode)
+		}
+		var env errorBody
+		decode(t, resp, &env)
+		if env.Error.Code != "pairing_approval_required" {
+			t.Fatalf("%s %s: code=%q", tc.method, tc.path, env.Error.Code)
+		}
+	}
+}
+
+func TestDeviceRekeyRevokesTargetAndRewrapsRemainingClients(t *testing.T) {
+	fx := setupDevice(t)
+	token, deviceID, owner := onlineDevice(t, fx)
+	revokedID := createPairing(t, fx, deviceID, owner, "old-phone")
+	keptID := createPairing(t, fx, deviceID, owner, "kept-browser")
+	lateID := createPairing(t, fx, deviceID, owner, "racing-browser")
+	approvePairing(t, fx, token, revokedID, "old-phone-wrap")
+	approvePairing(t, fx, token, keptID, "old-browser-wrap")
+
+	resp := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/pairings/rekey", token,
+		map[string]any{
+			"revoke_pairing_id": revokedID,
+			"key_gen":           2,
+			"wraps": []map[string]any{{
+				"pairing_id": keptID,
+				"wrap":       map[string]any{"ephemeral_pubkey": "new-eph", "nonce": "new-n", "ct": "new-wrap"},
+			}},
+		})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rekey: status=%d want 200", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	revoked := pairingStatus(t, fx, deviceID, owner, revokedID)
+	if revoked.Status != domain.DevicePairingRevoked || revoked.Wrap != nil || revoked.KeyGen != 2 {
+		t.Fatalf("revoked status = %+v", revoked)
+	}
+	kept := pairingStatus(t, fx, deviceID, owner, keptID)
+	if kept.Status != domain.DevicePairingApproved || kept.KeyGen != 2 {
+		t.Fatalf("kept status = %+v", kept)
+	}
+	var gotWrap map[string]any
+	if err := json.Unmarshal(kept.Wrap, &gotWrap); err != nil || gotWrap["ct"] != "new-wrap" {
+		t.Fatalf("kept wrap = %s err=%v", kept.Wrap, err)
+	}
+
+	resp = do(t, http.MethodGet, fx.ts.URL+"/api/v1/devices/"+deviceID, owner, nil)
+	var device deviceView
+	decode(t, resp, &device)
+	if device.KeyGen != 2 {
+		t.Fatalf("device key_gen=%d want 2", device.KeyGen)
+	}
+
+	// A response prepared before the rotation cannot land an old-generation
+	// wrap after the transaction commits. It stays pending for a fresh approval.
+	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/pairings/"+lateID+"/respond", token,
+		map[string]any{"approve": true, "key_gen": 1, "wrap": map[string]any{
+			"ephemeral_pubkey": "stale-eph", "nonce": "stale-n", "ct": "stale-wrap",
+		}})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("stale-generation approval: status=%d want 409", resp.StatusCode)
+	}
+	var staleErr errorBody
+	decode(t, resp, &staleErr)
+	if staleErr.Error.Code != "key_generation_conflict" {
+		t.Fatalf("stale-generation approval: code=%q", staleErr.Error.Code)
+	}
+	late := pairingStatus(t, fx, deviceID, owner, lateID)
+	if late.Status != domain.DevicePairingPending || late.Wrap != nil {
+		t.Fatalf("stale-generation pairing mutated: %+v", late)
+	}
+
+	// Lost-response retry is idempotent: it must report success instead of
+	// encouraging Desktop to roll its persisted CEK back to generation 1.
+	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/pairings/rekey", token,
+		map[string]any{
+			"revoke_pairing_id": revokedID,
+			"key_gen":           2,
+			"wraps":             []map[string]any{},
+		})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("idempotent rekey: status=%d want 200", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
 }
 
 func TestDevicePairingDenyAndAuthz(t *testing.T) {
@@ -268,7 +419,7 @@ func TestDevicePairingExpiry(t *testing.T) {
 
 	// The device can no longer approve it: 409 pairing_expired.
 	resp := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/pairings/"+pid+"/respond", token,
-		map[string]any{"approve": true, "wrap": map[string]any{"ct": "x"}})
+		map[string]any{"approve": true, "key_gen": 1, "wrap": map[string]any{"ct": "x"}})
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("respond expired: status=%d want 409", resp.StatusCode)
 	}

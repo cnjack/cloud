@@ -293,6 +293,13 @@ export default {
     },
     "pairing": {
       "start": "配對此用戶端",
+      "requests": {
+        "title": "配對請求",
+        "body": "此已批准用戶端可以安全地批准其他瀏覽器或手機。",
+        "approve": "批准",
+        "deny": "拒絕",
+        "approvalLost": "此用戶端已不再獲批，請先重新配對。"
+      },
       "idle": {
         "title": "尚未設定端對端加密",
         "body": "請從目前用戶端發起配對。請求會出現在 jcode Desktop 的「設定 → 雲端」中；在那裡批准前，加密工作階段內容會保持鎖定。"

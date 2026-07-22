@@ -105,7 +105,6 @@ const (
 	DeviceCmdChatSend        = "chat.send"
 	DeviceCmdChatStop        = "chat.stop"
 	DeviceCmdApprovalRespond = "approval.respond"
-	DeviceCmdSessionDelete   = "session.delete"
 	// DeviceCmdPairingRequest asks the device to approve/deny a client pairing
 	// (docs/17 §6.3). Payload {pairing_id, label, kty, pubkey} — plaintext
 	// routing metadata, never CEK-bearing.
@@ -151,6 +150,7 @@ const (
 	DevicePairingApproved = "approved"
 	DevicePairingDenied   = "denied"
 	DevicePairingExpired  = "expired"
+	DevicePairingRevoked  = "revoked"
 )
 
 // DevicePairingWindow is how long a pending pairing waits for the on-device

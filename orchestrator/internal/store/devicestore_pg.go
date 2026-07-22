@@ -47,7 +47,7 @@ func (f fingerprintHashScanner) Scan(src any) error {
 	return nil
 }
 
-// nullFingerprint maps the domain's empty string to SQL NULL: '' must never
+// nullFingerprint maps the domain's empty string to SQL NULL: ” must never
 // be stored, because the partial unique index (0036) treats every non-NULL
 // value as a real fingerprint.
 func nullFingerprint(hash string) any {
@@ -480,10 +480,28 @@ func (s *PGStore) ListDevicePairings(ctx context.Context, deviceID, status strin
 	return out, rows.Err()
 }
 
-func (s *PGStore) ResolveDevicePairing(ctx context.Context, deviceID, pairingID, status string, wrap []byte, at time.Time) error {
-	// Only a pending pairing takes the resolution; a duplicate respond is a
-	// no-op (same idempotency pattern as AckDeviceCommand).
-	tag, err := s.pool.Exec(ctx,
+func (s *PGStore) ResolveDevicePairing(ctx context.Context, deviceID, pairingID, status string, wrap []byte, expectedKeyGen int, at time.Time) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve device pairing: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if expectedKeyGen > 0 {
+		var currentKeyGen int
+		err = tx.QueryRow(ctx, `SELECT key_gen FROM devices WHERE id=$1 FOR UPDATE`, deviceID).Scan(&currentKeyGen)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("resolve device pairing: lock device: %w", err)
+		}
+		if currentKeyGen != expectedKeyGen {
+			return ErrConflict
+		}
+	}
+	// Only a pending pairing takes the resolution. A duplicate response with
+	// the same outcome is idempotent; a competing outcome is a conflict.
+	tag, err := tx.Exec(ctx,
 		`UPDATE device_pairings SET status=$3, wrapped_cek=$4, resolved_at=$5
 		 WHERE id=$1 AND device_id=$2 AND status='pending'`,
 		pairingID, deviceID, status, wrap, at)
@@ -491,16 +509,106 @@ func (s *PGStore) ResolveDevicePairing(ctx context.Context, deviceID, pairingID,
 		return fmt.Errorf("resolve device pairing: %w", err)
 	}
 	if tag.RowsAffected() == 1 {
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("resolve device pairing: commit: %w", err)
+		}
 		return nil
 	}
-	var one int
-	err = s.pool.QueryRow(ctx,
-		`SELECT 1 FROM device_pairings WHERE id=$1 AND device_id=$2`, pairingID, deviceID).Scan(&one)
+	var currentStatus string
+	err = tx.QueryRow(ctx,
+		`SELECT status FROM device_pairings WHERE id=$1 AND device_id=$2`, pairingID, deviceID).Scan(&currentStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("resolve device pairing: probe: %w", err)
+	}
+	if currentStatus != status {
+		return ErrConflict
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("resolve device pairing: commit no-op: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) RekeyDevicePairings(ctx context.Context, deviceID, revokedPairingID string, keyGen int, wraps map[string][]byte, at time.Time) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("rekey device pairings: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// Claim the generation transition first. The compare-and-swap both locks the
+	// device row and prevents two concurrent revocations from committing wraps
+	// derived from the same old CEK.
+	tag, err := tx.Exec(ctx, `UPDATE devices SET key_gen=$2 WHERE id=$1 AND key_gen=$3`, deviceID, keyGen, keyGen-1)
+	if err != nil {
+		return fmt.Errorf("rekey device pairings: update device: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	// Every approval takes the same device-row lock in ResolveDevicePairing.
+	// Re-read the complete approved set while holding it so a response racing
+	// this rekey cannot leave a newly approved client on generation N.
+	rows, err := tx.Query(ctx,
+		`SELECT id FROM device_pairings WHERE device_id=$1 AND status='approved' FOR UPDATE`, deviceID)
+	if err != nil {
+		return fmt.Errorf("rekey device pairings: lock approved set: %w", err)
+	}
+	expected := make(map[string]struct{})
+	targetPresent := false
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("rekey device pairings: scan approved set: %w", err)
+		}
+		if id == revokedPairingID {
+			targetPresent = true
+		} else {
+			expected[id] = struct{}{}
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rekey device pairings: approved set: %w", err)
+	}
+	if !targetPresent {
+		return ErrNotFound
+	}
+	if len(wraps) != len(expected) {
+		return ErrConflict
+	}
+	for id := range expected {
+		if len(wraps[id]) == 0 {
+			return ErrConflict
+		}
+	}
+	tag, err = tx.Exec(ctx,
+		`UPDATE device_pairings SET status='revoked', wrapped_cek=NULL, resolved_at=$3
+		 WHERE id=$1 AND device_id=$2 AND status='approved'`,
+		revokedPairingID, deviceID, at)
+	if err != nil {
+		return fmt.Errorf("rekey device pairings: revoke: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrNotFound
+	}
+	for id, wrap := range wraps {
+		tag, err = tx.Exec(ctx,
+			`UPDATE device_pairings SET wrapped_cek=$3
+			 WHERE id=$1 AND device_id=$2 AND status='approved'`,
+			id, deviceID, wrap)
+		if err != nil {
+			return fmt.Errorf("rekey device pairings: update wrap %s: %w", id, err)
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrNotFound
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("rekey device pairings: commit: %w", err)
 	}
 	return nil
 }

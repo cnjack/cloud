@@ -25,6 +25,7 @@ import (
 // /api/v1/devices/{id}/pairings/{pid}). Wrap rides along only once approved.
 type pairingStatusView struct {
 	Status string          `json:"status"`
+	KeyGen int             `json:"key_gen"`
 	Wrap   json.RawMessage `json:"wrap,omitempty"`
 }
 
@@ -53,7 +54,7 @@ func (s *Server) settlePairingExpiry(r *http.Request, p *domain.DevicePairing, n
 	if s.effectivePairingStatus(p, now) != domain.DevicePairingExpired {
 		return
 	}
-	if err := s.st.ResolveDevicePairing(r.Context(), p.DeviceID, p.ID, domain.DevicePairingExpired, nil, now); err != nil {
+	if err := s.st.ResolveDevicePairing(r.Context(), p.DeviceID, p.ID, domain.DevicePairingExpired, nil, 0, now); err != nil {
 		s.log.Error("settle pairing expiry", "pairing", p.ID, "err", err)
 	}
 }
@@ -154,7 +155,7 @@ func (s *Server) handleGetDevicePairing(w http.ResponseWriter, r *http.Request) 
 	}
 	now := time.Now().UTC()
 	s.settlePairingExpiry(r, p, now)
-	view := pairingStatusView{Status: s.effectivePairingStatus(p, now)}
+	view := pairingStatusView{Status: s.effectivePairingStatus(p, now), KeyGen: d.KeyGen}
 	if p.Status == domain.DevicePairingApproved && len(p.Wrap) > 0 {
 		view.Wrap = json.RawMessage(p.Wrap)
 	}
@@ -164,9 +165,19 @@ func (s *Server) handleGetDevicePairing(w http.ResponseWriter, r *http.Request) 
 // --- device endpoints (device token auth) ---------------------------------------
 
 type devicePairingView struct {
-	ID        string    `json:"id"`
-	Label     string    `json:"label"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string     `json:"id"`
+	Label      string     `json:"label"`
+	Pubkey     string     `json:"pubkey"`
+	Status     string     `json:"status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
+}
+
+func pairingView(p *domain.DevicePairing, status string) devicePairingView {
+	return devicePairingView{
+		ID: p.ID, Label: p.Label, Pubkey: p.Pubkey, Status: status,
+		CreatedAt: p.CreatedAt, ResolvedAt: p.ResolvedAt,
+	}
 }
 
 // handleListDevicePairings is the device's view of its pairing requests
@@ -193,14 +204,129 @@ func (s *Server) handleListDevicePairings(w http.ResponseWriter, r *http.Request
 	for i := range pairings {
 		s.settlePairingExpiry(r, &pairings[i], now)
 		if s.effectivePairingStatus(&pairings[i], now) == status {
-			views = append(views, devicePairingView{
-				ID:        pairings[i].ID,
-				Label:     pairings[i].Label,
-				CreatedAt: pairings[i].CreatedAt,
-			})
+			views = append(views, pairingView(&pairings[i], status))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"pairings": views})
+}
+
+func (s *Server) requireApprovedClientPairing(w http.ResponseWriter, r *http.Request, deviceID, pairingID string) *domain.DevicePairing {
+	if strings.TrimSpace(pairingID) == "" {
+		writeError(w, http.StatusForbidden, "pairing_approval_required", "an approved pairing identity is required")
+		return nil
+	}
+	p, err := s.st.GetDevicePairing(r.Context(), deviceID, pairingID)
+	if err != nil || p.Status != domain.DevicePairingApproved {
+		writeError(w, http.StatusForbidden, "pairing_approval_required", "this client is not approved to review pairings")
+		return nil
+	}
+	return p
+}
+
+// handleListClientDevicePairings lets an already-approved console/mobile
+// client review pending requests. The approver id is a high-entropy capability
+// minted during its own pairing and becomes invalid as soon as that row is
+// revoked; the account session still supplies the ownership boundary.
+func (s *Server) handleListClientDevicePairings(w http.ResponseWriter, r *http.Request) {
+	d := s.authorizeDevice(w, r, r.PathValue("id"))
+	if d == nil {
+		return
+	}
+	if s.requireApprovedClientPairing(w, r, d.ID, r.URL.Query().Get("approver_id")) == nil {
+		return
+	}
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		status = domain.DevicePairingPending
+	}
+	now := time.Now().UTC()
+	pairings, err := s.st.ListDevicePairings(r.Context(), d.ID, "")
+	if err != nil {
+		s.log.Error("list client device pairings", "device", d.ID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not list pairings")
+		return
+	}
+	views := make([]devicePairingView, 0, len(pairings))
+	for i := range pairings {
+		s.settlePairingExpiry(r, &pairings[i], now)
+		effective := s.effectivePairingStatus(&pairings[i], now)
+		if effective == status {
+			views = append(views, pairingView(&pairings[i], effective))
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pairings": views})
+}
+
+type respondClientDevicePairingReq struct {
+	ApproverID string          `json:"approver_id"`
+	Approve    bool            `json:"approve"`
+	KeyGen     int             `json:"key_gen,omitempty"`
+	Wrap       json.RawMessage `json:"wrap,omitempty"`
+}
+
+// handleRespondClientDevicePairing is the paired-client equivalent of the
+// device response endpoint. CEK wrapping happens in the approved client; the
+// orchestrator verifies the durable approver record and stores only the opaque
+// wrap for the target.
+func (s *Server) handleRespondClientDevicePairing(w http.ResponseWriter, r *http.Request) {
+	d := s.authorizeDevice(w, r, r.PathValue("id"))
+	if d == nil {
+		return
+	}
+	var req respondClientDevicePairingReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	if s.requireApprovedClientPairing(w, r, d.ID, req.ApproverID) == nil {
+		return
+	}
+	targetID := r.PathValue("pid")
+	if targetID == req.ApproverID {
+		writeError(w, http.StatusBadRequest, "bad_request", "a pairing cannot approve itself")
+		return
+	}
+	if req.Approve && len(req.Wrap) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "approve requires the wrapped CEK (wrap)")
+		return
+	}
+	if req.Approve && req.KeyGen < 1 {
+		writeError(w, http.StatusBadRequest, "bad_request", "approve requires key_gen")
+		return
+	}
+	target, err := s.st.GetDevicePairing(r.Context(), d.ID, targetID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "pairing not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load the pairing")
+		return
+	}
+	now := time.Now().UTC()
+	status := s.effectivePairingStatus(target, now)
+	if status == domain.DevicePairingExpired {
+		s.settlePairingExpiry(r, target, now)
+		writeError(w, http.StatusConflict, "pairing_expired", "the pairing request has expired")
+		return
+	}
+	if status == domain.DevicePairingPending {
+		status = domain.DevicePairingDenied
+		var wrap []byte
+		if req.Approve {
+			status = domain.DevicePairingApproved
+			wrap = []byte(req.Wrap)
+		}
+		if err := s.st.ResolveDevicePairing(r.Context(), d.ID, target.ID, status, wrap, req.KeyGen, now); err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				writeError(w, http.StatusConflict, "key_generation_conflict", "the content key changed; refresh and approve again")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "internal", "could not record the response")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": status})
 }
 
 // handleGetOwnPairing returns one pairing to the device itself (docs/17 §6.3),
@@ -224,25 +350,32 @@ func (s *Server) handleGetOwnPairing(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC()
 	s.settlePairingExpiry(r, pairing, now)
+	d, err := s.st.GetDevice(r.Context(), p.deviceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load the device")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":         pairing.ID,
 		"label":      pairing.Label,
 		"pubkey":     pairing.Pubkey,
 		"status":     s.effectivePairingStatus(pairing, now),
 		"created_at": pairing.CreatedAt,
+		"key_gen":    d.KeyGen,
 	})
 }
 
 type respondDevicePairingReq struct {
 	Approve bool            `json:"approve"`
+	KeyGen  int             `json:"key_gen,omitempty"`
 	Wrap    json.RawMessage `json:"wrap,omitempty"`
 }
 
 // handleRespondDevicePairing records the device's decision (docs/17 §6.3):
-// approve requires the ECIES-wrapped CEK blob (stored verbatim for the client
-// to fetch); deny needs nothing. Idempotent — re-responding to an already
-// resolved pairing is a 200 no-op reporting the stored status; a pairing of
-// another device is 404; a stale pending pairing settles as expired (409).
+// approve requires the CEK generation and ECIES-wrapped CEK blob (stored
+// verbatim for the client to fetch); deny needs neither. Repeating the same
+// outcome is idempotent, while a competing outcome or stale generation is a
+// conflict. A pairing of another device is 404; stale pending settles expired.
 func (s *Server) handleRespondDevicePairing(w http.ResponseWriter, r *http.Request) {
 	p := s.requireDevice(w, r)
 	if p == nil {
@@ -255,6 +388,10 @@ func (s *Server) handleRespondDevicePairing(w http.ResponseWriter, r *http.Reque
 	}
 	if req.Approve && len(req.Wrap) == 0 {
 		writeError(w, http.StatusBadRequest, "bad_request", "approve requires the wrapped CEK (wrap)")
+		return
+	}
+	if req.Approve && req.KeyGen < 1 {
+		writeError(w, http.StatusBadRequest, "bad_request", "approve requires key_gen")
 		return
 	}
 
@@ -281,7 +418,11 @@ func (s *Server) handleRespondDevicePairing(w http.ResponseWriter, r *http.Reque
 		if req.Approve {
 			wrap = []byte(req.Wrap)
 		}
-		if err := s.st.ResolveDevicePairing(r.Context(), p.deviceID, pairing.ID, status, wrap, now); err != nil {
+		if err := s.st.ResolveDevicePairing(r.Context(), p.deviceID, pairing.ID, status, wrap, req.KeyGen, now); err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				writeError(w, http.StatusConflict, "key_generation_conflict", "the content key changed; refresh and approve again")
+				return
+			}
 			s.log.Error("respond device pairing: resolve", "device", p.deviceID, "pairing", pairing.ID, "err", err)
 			writeError(w, http.StatusInternalServerError, "internal", "could not record the response")
 			return
@@ -297,6 +438,93 @@ func (s *Server) handleRespondDevicePairing(w http.ResponseWriter, r *http.Reque
 	}
 	// Already approved/denied: a duplicate respond is an idempotent no-op.
 	writeJSON(w, http.StatusOK, map[string]string{"status": status})
+}
+
+type devicePairingRekeyReq struct {
+	RevokePairingID string `json:"revoke_pairing_id"`
+	KeyGen          int    `json:"key_gen"`
+	Wraps           []struct {
+		PairingID string          `json:"pairing_id"`
+		Wrap      json.RawMessage `json:"wrap"`
+	} `json:"wraps"`
+}
+
+// handleRekeyDevicePairings commits a targeted client revoke. The desktop has
+// already generated generation N+1 and wrapped it for every remaining approved
+// client; validation requires that complete set so persistence never strands a
+// non-revoked client with an old generation.
+func (s *Server) handleRekeyDevicePairings(w http.ResponseWriter, r *http.Request) {
+	p := s.requireDevice(w, r)
+	if p == nil {
+		return
+	}
+	var req devicePairingRekeyReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	d, err := s.st.GetDevice(r.Context(), p.deviceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load the device")
+		return
+	}
+	target, err := s.st.GetDevicePairing(r.Context(), d.ID, req.RevokePairingID)
+	// A retry after the transaction committed but its HTTP response was lost is
+	// successful and must not make desktop roll back to the compromised old CEK.
+	if err == nil && target.Status == domain.DevicePairingRevoked && req.KeyGen == d.KeyGen {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ok", "revoked_pairing_id": target.ID, "key_gen": req.KeyGen,
+		})
+		return
+	}
+	if req.KeyGen != d.KeyGen+1 {
+		writeError(w, http.StatusConflict, "key_generation_conflict", "key_gen must advance exactly one generation")
+		return
+	}
+	if err != nil || target.Status != domain.DevicePairingApproved {
+		writeError(w, http.StatusNotFound, "not_found", "approved pairing not found")
+		return
+	}
+	approved, err := s.st.ListDevicePairings(r.Context(), d.ID, domain.DevicePairingApproved)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load approved pairings")
+		return
+	}
+	expected := make(map[string]struct{}, len(approved)-1)
+	for i := range approved {
+		if approved[i].ID != target.ID {
+			expected[approved[i].ID] = struct{}{}
+		}
+	}
+	wraps := make(map[string][]byte, len(req.Wraps))
+	for _, item := range req.Wraps {
+		if _, ok := expected[item.PairingID]; !ok || len(item.Wrap) == 0 {
+			writeError(w, http.StatusBadRequest, "bad_request", "wraps must contain each remaining approved pairing exactly once")
+			return
+		}
+		if _, duplicate := wraps[item.PairingID]; duplicate {
+			writeError(w, http.StatusBadRequest, "bad_request", "duplicate pairing_id in wraps")
+			return
+		}
+		wraps[item.PairingID] = append([]byte(nil), item.Wrap...)
+	}
+	if len(wraps) != len(expected) {
+		writeError(w, http.StatusBadRequest, "bad_request", "a rekey wrap is required for every remaining approved pairing")
+		return
+	}
+	now := time.Now().UTC()
+	if err := s.st.RekeyDevicePairings(r.Context(), d.ID, target.ID, req.KeyGen, wraps, now); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, "key_generation_conflict", "device key generation changed concurrently")
+			return
+		}
+		s.log.Error("rekey device pairings", "device", d.ID, "pairing", target.ID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not commit pairing revocation")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "revoked_pairing_id": target.ID, "key_gen": req.KeyGen,
+	})
 }
 
 // handleDeviceRevoke revokes the device's own token(s) (docs/17 §3.3 — jcode

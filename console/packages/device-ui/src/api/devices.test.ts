@@ -95,14 +95,6 @@ describe('deviceApi — request shaping', () => {
     expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ envelope });
   });
 
-  it('deletes a session through the device command endpoint', async () => {
-    const { calls } = mockFetch(() => ({ status: 202, body: { command_id: 'c4', session_id: 's 1' } }));
-    const api = createDeviceApi(undefined);
-    await api.deleteSession('d1', 's 1');
-    expect(calls[0]!.url).toBe('/api/v1/devices/d1/sessions/s%201');
-    expect(calls[0]!.init!.method).toBe('DELETE');
-  });
-
   it('browses desktop folders through a command and its ack result', async () => {
     const { calls } = mockFetch(({ url }) => {
       if (url.endsWith('/workspace/browse')) {

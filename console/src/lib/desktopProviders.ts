@@ -25,8 +25,6 @@ export const DESKTOP_PROVIDERS: readonly DesktopProviderPreset[] = [
   { id: 'togetherai', name: 'Together AI', baseUrl: 'https://api.together.xyz/v1' },
   { id: 'alibaba-cn', name: 'Alibaba (China)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
   { id: 'alibaba-coding-plan-cn', name: 'Alibaba Coding Plan (China)', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1' },
-  { id: 'alibaba-token-plan-cn', name: 'Alibaba Token Plan (China)', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' },
-  { id: 'alibaba-token-plan', name: 'Alibaba Token Plan', baseUrl: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1' },
   { id: 'moonshotai', name: 'Moonshot AI', baseUrl: 'https://api.moonshot.ai/v1' },
   { id: 'minimax', name: 'MiniMax (minimax.io)', baseUrl: 'https://api.minimax.io/v1' },
   { id: 'minimax-coding-plan', name: 'MiniMax Token Plan (minimax.io)', baseUrl: 'https://api.minimax.io/v1' },
@@ -38,6 +36,8 @@ export const DESKTOP_PROVIDERS: readonly DesktopProviderPreset[] = [
   { id: 'xiaomi', name: 'Xiaomi', baseUrl: 'https://api.xiaomimimo.com/v1' },
   { id: 'xiaomi-token-plan-cn', name: 'Xiaomi Token Plan (China)', baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1' },
   { id: 'ollama-cloud', name: 'Ollama Cloud', baseUrl: 'https://ollama.com/v1' },
+  { id: 'alibaba-token-plan-cn', name: 'Alibaba Token Plan (China)', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' },
+  { id: 'alibaba-token-plan', name: 'Alibaba Token Plan', baseUrl: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1' },
   { id: 'kimi-for-coding', name: 'Kimi For Coding', baseUrl: 'https://api.kimi.com/coding/v1' },
   { id: 'tencent-tokenhub-ep', name: 'Tencent TokenHub Enterprise', baseUrl: 'https://tokenhub.tencentmaas.com/plan/v3' },
 ] as const;

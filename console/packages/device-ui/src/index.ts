@@ -29,6 +29,7 @@ export {
   generatePairingKeys,
   importPairingPrivateKey,
   unwrapCek,
+  wrapCekForClient,
 } from './devicecrypto/pairing';
 export type { DeviceWrap, PairingKeys } from './devicecrypto/pairing';
 export {
@@ -68,6 +69,7 @@ export type {
   DeviceCommandState,
   CreatePairingResult,
   PairingState,
+  DevicePairingRecord,
   DeviceStreamFrame,
   DeviceStreamCallbacks,
   DeviceStreamHandle,
@@ -82,7 +84,6 @@ export {
   useDeviceSessions,
   useSendDeviceMessage,
   useStopDeviceSession,
-  useDeleteDeviceSession,
   useRespondDeviceApproval,
   useDeleteDevice,
 } from './api/deviceQueries';
@@ -128,6 +129,7 @@ export { iconForDeviceProvider } from './product/providerIcons';
 export { DeviceTimeline } from './deviceview/DeviceTimeline';
 export type { DeviceApprovalControls } from './deviceview/DeviceTimeline';
 export { DevicePairingCard } from './deviceview/DevicePairingCard';
+export { DevicePairingApprovals } from './deviceview/DevicePairingApprovals';
 export { DevicePairingGate } from './deviceview/DevicePairingGate';
 export type { DevicePairingGateProps } from './deviceview/DevicePairingGate';
 export { mapDeviceEvent, applyToolResult, prettyArgs } from './deviceview/eventModel';

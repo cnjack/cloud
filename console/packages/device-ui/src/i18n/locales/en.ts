@@ -293,6 +293,13 @@ export default {
     },
     "pairing": {
       "start": "Pair this client",
+      "requests": {
+        "title": "Pairing requests",
+        "body": "This approved client can securely approve another browser or phone.",
+        "approve": "Approve",
+        "deny": "Deny",
+        "approvalLost": "This client is no longer approved. Pair it again first."
+      },
       "idle": {
         "title": "End-to-end encryption not set up",
         "body": "Start pairing from this client. A review request will appear in jcode Desktop under Settings → Cloud; encrypted content stays locked until you approve it there."

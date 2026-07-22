@@ -293,6 +293,13 @@ export default {
     },
     "pairing": {
       "start": "配对此客户端",
+      "requests": {
+        "title": "配对请求",
+        "body": "此已批准客户端可以安全地批准其他浏览器或手机。",
+        "approve": "批准",
+        "deny": "拒绝",
+        "approvalLost": "此客户端已不再获批，请先重新配对。"
+      },
       "idle": {
         "title": "尚未设置端到端加密",
         "body": "请从当前客户端发起配对。请求会出现在 jcode Desktop 的「设置 → 云端」中；在那里批准之前，加密会话内容保持锁定。"
