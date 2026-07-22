@@ -107,11 +107,11 @@ export interface DeviceComposerState {
   projectPath: string;
 }
 
-export function initialDeviceComposerState(): DeviceComposerState {
+export function initialDeviceComposerState(current?: { provider: string; id: string } | null): DeviceComposerState {
   return {
     mode: 'approval',
     modeTouched: false,
-    model: null,
+    model: current ? { provider: current.provider, model: current.id } : null,
     effortOverrides: {},
     goalArmed: false,
     projectPath: '',

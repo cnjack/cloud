@@ -45,6 +45,8 @@ export interface Device {
 export interface DeviceCapabilities {
   projects?: DeviceCapabilityProject[];
   models?: DeviceCapabilityModel[];
+  /** Model selected in desktop settings when capabilities were mirrored. */
+  current_model?: DeviceCapabilityModel | null;
   efforts?: string[];
   /** Slash commands advertised by the device (M14; absent on pre-M14 connectors). */
   slash_commands?: DeviceCapabilitySlashCommand[];

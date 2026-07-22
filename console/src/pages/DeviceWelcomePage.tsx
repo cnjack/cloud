@@ -1,4 +1,4 @@
-import { ArrowRight, Lock, Trash, Warning } from '@phosphor-icons/react';
+import { ArrowLeft, ArrowRight, Lock, Trash, Warning } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { RuntimeProvider } from 'jcode-ui';
@@ -86,6 +86,10 @@ export function DeviceWelcomePage() {
   return (
     <SurfaceInner>
       <div data-testid="device-welcome">
+        <Link to="/devices" className={styles.back}>
+          <ArrowLeft size={14} aria-hidden="true" />
+          {t('device.guide.back')}
+        </Link>
         <PageHeader
           eyebrow={t('device.list.title')}
           title={name}

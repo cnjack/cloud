@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@lobehub/icons-static-svg": "^1.94.0",
     "@phosphor-icons/react": "^2.1.10",
     "jcode-ui": "file:../../../../jcode/packages/jcode-ui",
     "jcode-ui-core": "file:../../../../jcode/packages/jcode-ui-core"

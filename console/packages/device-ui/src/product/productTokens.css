@@ -51,6 +51,13 @@
   --z-dropdown: 40;
 }
 
+.jcode-product [role='listbox'] {
+  max-height: min(24rem, calc(100dvh - 8rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: var(--z-dropdown);
+}
+
 /* Scoped baseline reset for the jcode product surfaces. jcode-ui ships NO
    preflight by design (hosts own the document reset) — the desktop web gets
    these from tailwind's preflight; without them stock <button> chrome (border/

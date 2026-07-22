@@ -11,18 +11,14 @@ import {
   useDeviceSessionStream,
   useDevices,
   useDeviceSessions,
-  useStopDeviceSession,
 } from '@jcloud/device-ui';
-import { ApiError } from '../api/client';
 import { Button } from '../components/Button';
-import { StatusLabel, SurfaceInner } from '../components/PageLayout';
-import { useToast } from '../components/Toast';
+import { SurfaceInner } from '../components/PageLayout';
 import styles from './DeviceSessionPage.module.css';
 
 export function DeviceSessionPage() {
   const { deviceId = '', sessionId = '' } = useParams();
   const { t } = useTranslation();
-  const toast = useToast();
 
   const devices = useDevices();
   const sessions = useDeviceSessions(deviceId);
@@ -31,10 +27,7 @@ export function DeviceSessionPage() {
 
   const { state, online: streamOnline, phase, reconnect } = useDeviceSessionStream(deviceId, sessionId);
   const online = resolveOnline(streamOnline, device?.online);
-  const running = state.agentRunning || session?.status === 'running';
   const title = session?.meta?.title || t('device.welcome.untitled');
-
-  const stop = useStopDeviceSession(deviceId);
 
   const emptyTimeline =
     state.events.length === 0 && state.finalizedText.length === 0 && !state.streamingText && !state.agentRunning;
@@ -49,14 +42,6 @@ export function DeviceSessionPage() {
     sessionRunning: session?.status === 'running',
     hasMessages: !emptyTimeline,
   });
-
-  const doStop = () => {
-    stop.mutate(sessionId, {
-      onError: (error) => {
-        toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : String(error) });
-      },
-    });
-  };
 
   return (
     <SurfaceInner>
@@ -75,20 +60,6 @@ export function DeviceSessionPage() {
                 {session?.meta?.project && <span className={styles.mono}> · {session.meta.project}</span>}
               </p>
             )}
-          </div>
-          <div className={styles.headerActions}>
-            <StatusLabel tone={running ? 'warning' : 'neutral'}>
-              {running ? t('device.welcome.status.running') : t('device.welcome.status.idle')}
-            </StatusLabel>
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={doStop}
-              disabled={!running || stop.isPending}
-              loading={stop.isPending}
-            >
-              {t('device.session.stop')}
-            </Button>
           </div>
         </header>
 

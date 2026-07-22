@@ -42,6 +42,7 @@ import type { DeviceComposerState } from './hostState';
 import { localSystemItem, toThreadItems } from './threadItems';
 import { DeviceChatRuntime } from './runtime';
 import { buildProductComposerStrings } from './strings';
+import { iconForDeviceProvider } from './providerIcons';
 
 export interface UseDeviceComposerOptions {
   deviceId: string;
@@ -109,9 +110,16 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
 
   // ── Composer state (local; applied per message via chat.send extras) ──────
   const [compose, setCompose] = useState<DeviceComposerState>(() => ({
-    ...initialDeviceComposerState(),
+    ...initialDeviceComposerState(device?.capabilities?.current_model),
     effortOverrides: readJson(`jcloud:composer:effort:${deviceId}`, {}),
   }));
+  useEffect(() => {
+    const current = capabilities?.current_model;
+    if (!current) return;
+    setCompose((state) => state.model
+      ? state
+      : { ...state, model: { provider: current.provider, model: current.id } });
+  }, [capabilities?.current_model]);
   const [favorites, setFavorites] = useState<string[]>(() =>
     readJson(`jcloud:composer:favorites:${deviceId}`, []),
   );
@@ -372,6 +380,7 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
       projectPath: compose.projectPath,
       tasks,
       strings,
+      resolveProviderIcon: iconForDeviceProvider,
 
       selectModel,
       selectMode,
