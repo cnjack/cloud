@@ -10,6 +10,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/credentials"
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -618,15 +619,89 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), svc.ProjectID, domain.RoleOwner) {
 		return
 	}
-	// A service with runs cannot be deleted (runs.service_id has no cascade —
-	// runs are historical). Return a clean 409 rather than a raw FK error.
-	if runs, err := s.st.ListRunsByService(r.Context(), id, 1); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not check service runs")
-		return
-	} else if len(runs) > 0 {
-		writeError(w, http.StatusConflict, "conflict", "service has runs and cannot be deleted")
+	// Fence new dispatches before touching runtime resources. The marker is
+	// durable and idempotent so a failed cleanup can be retried safely.
+	if err := s.st.MarkServiceDeleting(r.Context(), id, time.Now().UTC()); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "service not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "could not prepare service deletion")
 		return
 	}
+
+	runs, err := s.st.ListRunsByService(r.Context(), id, -1)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load service runs for deletion")
+		return
+	}
+
+	// Cancel every active run before deleting its Job. CancelRun is a CAS and
+	// returns the committed row, so a concurrent queued->scheduling transition
+	// cannot hide the Job name from cleanup.
+	jobs := map[string]struct{}{}
+	for i := range runs {
+		run := &runs[i]
+		committed := run
+		if !run.Status.Terminal() && run.Status != domain.StatusBlocked {
+			committed, err = s.st.CancelRun(r.Context(), run.ID, "CanceledByServiceDeletion", time.Now().UTC())
+			if err != nil {
+				if errors.Is(err, store.ErrInvalidTransition) {
+					committed, err = s.st.GetRun(r.Context(), run.ID)
+				}
+				if err != nil {
+					writeError(w, http.StatusServiceUnavailable, "cleanup_failed", "could not stop all service runs; retry deletion")
+					return
+				}
+			}
+			s.emitStatus(r.Context(), committed)
+		}
+		if committed.K8sJobName != "" {
+			jobs[committed.K8sJobName] = struct{}{}
+		}
+	}
+	// The archive helper Job is service-scoped rather than run-scoped.
+	jobs[k8s.ArchiveJobName(id)] = struct{}{}
+	if len(jobs) > 0 && s.launcher == nil {
+		// An API-only deployment cannot prove that named cluster Jobs stopped.
+		for name := range jobs {
+			if name != k8s.ArchiveJobName(id) {
+				writeError(w, http.StatusServiceUnavailable, "cleanup_unavailable", "runtime cleanup is unavailable; retry when the launcher is connected")
+				return
+			}
+		}
+	}
+	if s.launcher != nil {
+		for name := range jobs {
+			if err := s.launcher.DeleteJob(r.Context(), name); err != nil {
+				s.log.Warn("delete service: job cleanup failed", "service", id, "job", name, "err", err)
+				writeError(w, http.StatusServiceUnavailable, "cleanup_failed", "could not stop all service jobs; retry deletion")
+				return
+			}
+		}
+		if err := s.launcher.DeleteWorkspacePVC(r.Context(), id); err != nil {
+			s.log.Warn("delete service: workspace pvc cleanup failed", "service", id, "err", err)
+			writeError(w, http.StatusServiceUnavailable, "cleanup_failed", "could not delete the service workspace; retry deletion")
+			return
+		}
+	}
+
+	// A restored workspace leaves the deterministic cold archive behind, so
+	// delete by deterministic key even when archive_key has already been cleared.
+	if s.archiveCleaner != nil {
+		if err := s.archiveCleaner.Delete(r.Context(), "workspaces/"+id+".tar.zst"); err != nil {
+			s.log.Warn("delete service: archive cleanup failed", "service", id, "err", err)
+			writeError(w, http.StatusServiceUnavailable, "cleanup_failed", "could not delete the archived workspace; retry deletion")
+			return
+		}
+	} else if svc.ArchiveKey != "" {
+		writeError(w, http.StatusServiceUnavailable, "cleanup_unavailable", "archived workspace cleanup is unavailable; retry when object storage is connected")
+		return
+	}
+
+	// Database cleanup is last: runs are deleted first in the store transaction,
+	// which cascades their events, artifacts, messages and permissions; service
+	// schedules, automations, webhook state and kanban links cascade with service.
 	if err := s.st.DeleteService(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "service not found")
@@ -634,15 +709,6 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "could not delete service")
 		return
-	}
-	// Feature C — best-effort delete the service's persistent workspace PVC so no
-	// stale working copy / jcode memory lingers (D05 tenant-erasure guardrail). A
-	// failure (or no launcher / no PVC) is only logged, never blocks the delete:
-	// the DB row is already gone, and a NotFound is swallowed by the launcher.
-	if s.launcher != nil {
-		if err := s.launcher.DeleteWorkspacePVC(r.Context(), id); err != nil {
-			s.log.Warn("delete service: workspace pvc cleanup failed (non-fatal)", "service", id, "err", err)
-		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -123,6 +123,7 @@ func run(log *slog.Logger) error {
 	// reason (fail-visible, D14). A MALFORMED endpoint fails startup loudly rather
 	// than silently disabling a feature the admin plainly intended to enable.
 	var archiver reconciler.Archiver
+	var archiveCleaner api.ArchiveCleaner
 	if cfg.ArchiveEnabled() {
 		ac, err := objstore.New(objstore.Config{
 			Endpoint:       cfg.S3Endpoint,
@@ -136,12 +137,14 @@ func run(log *slog.Logger) error {
 			return err
 		}
 		archiver = ac
+		archiveCleaner = ac
 		log.Info("workspace archive enabled (F10)",
 			"endpoint", cfg.S3Endpoint, "bucket", cfg.S3Bucket, "idle_days", cfg.ArchiveIdleDays,
 			"persistent_workspace", cfg.PersistentWorkspace)
 	} else {
 		log.Info("workspace archive disabled (F10)", "reason", cfg.ArchiveDisabledReason())
 	}
+	srv.WithArchiveCleaner(archiveCleaner)
 
 	// --- reconciler ---
 	// The draft-PR / review passes push branches + open PRs + post reviews on the

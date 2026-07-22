@@ -662,7 +662,7 @@ export function useUpdateService(projectId: string) {
   });
 }
 
-/** Remove an unused service and refresh every project surface that lists it. */
+/** Stop all work, cascade-delete a service, and refresh every project surface. */
 export function useDeleteService(projectId: string) {
   const api = useApi();
   const qc = useQueryClient();

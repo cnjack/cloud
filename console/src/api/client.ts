@@ -408,7 +408,7 @@ export interface ApiClient {
   createService(projectId: string, input: CreateServiceInput): Promise<Service>;
   /** PATCH /api/v1/services/{id} — edit a service (owner); default model (D21). */
   updateService(serviceId: string, input: UpdateServiceInput): Promise<Service>;
-  /** DELETE /api/v1/services/{id} — remove an unused service (owner). */
+  /** DELETE /api/v1/services/{id} — stop runs and cascade-delete a service (owner). */
   deleteService(serviceId: string): Promise<void>;
   /**
    * POST /api/v1/services/{id}/webhook — explicitly sync the provider's

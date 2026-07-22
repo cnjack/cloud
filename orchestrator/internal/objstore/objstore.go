@@ -15,6 +15,7 @@
 package objstore
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -26,6 +27,8 @@ import (
 	"strings"
 	"time"
 )
+
+const deleteTimeout = 30 * time.Second
 
 // Config is the resolved object-storage configuration (from config.Config's
 // S3_* fields). Endpoint, Bucket, AccessKey and SecretKey are all required for a
@@ -41,9 +44,9 @@ type Config struct {
 	ForcePathStyle bool   // S3_FORCE_PATH_STYLE — MinIO needs true (host/bucket/key)
 }
 
-// Client signs presigned URLs for a single bucket. It performs no network I/O
-// itself (the archive/restore Job does the actual PUT/GET against the signed
-// URL); it only holds the credentials and the endpoint addressing rules.
+// Client signs presigned URLs for a single bucket. Archive/restore payload I/O
+// happens in Jobs through those URLs; the sole direct request is a control-plane
+// DELETE used to erase an archive when its Service is removed.
 type Client struct {
 	cfg    Config
 	scheme string
@@ -105,6 +108,30 @@ func (c *Client) PresignPut(key string, expiry time.Duration) (string, error) {
 // valid for expiry. The restore path downloads the tarball from it.
 func (c *Client) PresignGet(key string, expiry time.Duration) (string, error) {
 	return c.presign(http.MethodGet, key, expiry, time.Now().UTC())
+}
+
+// Delete removes one archived workspace object. Unlike archive/restore Jobs,
+// this runs in the control plane where the S3 credential already lives. A 404
+// is success so service-deletion retries are idempotent.
+func (c *Client) Delete(ctx context.Context, key string) error {
+	url, err := c.presign(http.MethodDelete, key, 5*time.Minute, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("objstore: build delete request: %w", err)
+	}
+	client := &http.Client{Timeout: deleteTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("objstore: delete %q: %w", key, err)
+	}
+	defer resp.Body.Close()
+	if (resp.StatusCode >= 200 && resp.StatusCode < 300) || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return fmt.Errorf("objstore: delete %q: status %s", key, resp.Status)
 }
 
 // presign implements SigV4 query-parameter (presigned URL) signing. now is

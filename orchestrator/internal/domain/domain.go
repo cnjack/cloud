@@ -330,6 +330,9 @@ type Service struct {
 	// working-copy backup.
 	ArchivedAt *time.Time `json:"archived_at,omitempty"`
 	ArchiveKey string     `json:"archive_key,omitempty"`
+	// DeletingAt is the retry-safe deletion fence. Once set, no new run may be
+	// created for this service while runtime and storage resources are drained.
+	DeletingAt *time.Time `json:"-"`
 }
 
 // Run is a single agent invocation against a service.

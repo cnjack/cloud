@@ -1,11 +1,16 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/k8s"
+	"github.com/cnjack/jcloud/internal/store"
 )
 
 // newProject creates a pure (service-less) project and returns its id.
@@ -28,7 +33,7 @@ func newProject(t *testing.T, ts *httptest.Server, name string) string {
 
 // TestServiceCRUDAPI exercises the primary service endpoints end to end.
 func TestServiceCRUDAPI(t *testing.T) {
-	ts, _, _ := newTestServer(t)
+	ts, st, _ := newTestServer(t)
 	pid := newProject(t, ts, "svc-crud")
 
 	// Create a provider service via smart-parsed repo_url.
@@ -77,7 +82,7 @@ func TestServiceCRUDAPI(t *testing.T) {
 		t.Fatalf("patch not applied: %+v", patched)
 	}
 
-	// Create a run against the service, then delete must 409 (service has runs).
+	// Create a run against the service, then delete cascades its history.
 	resp = do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "do it"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create service run: status=%d want 201", resp.StatusCode)
@@ -98,12 +103,133 @@ func TestServiceCRUDAPI(t *testing.T) {
 		t.Fatalf("service runs = %+v want [%s]", rl.Runs, run.ID)
 	}
 
-	// Delete with a run present -> 409.
+	// Delete with a run present -> 204 and the run history is cascaded.
 	resp = do(t, "DELETE", ts.URL+"/api/v1/services/"+svc.ID, consoleToken, nil)
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("delete service with runs: status=%d want 409", resp.StatusCode)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete service with runs: status=%d want 204", resp.StatusCode)
 	}
 	resp.Body.Close()
+	if _, err := st.GetRun(context.Background(), run.ID); err != store.ErrNotFound {
+		t.Fatalf("deleted service run still exists: %v", err)
+	}
+}
+
+// TestDeleteServiceStopsRunsAndCleansRuntimeResources proves destructive
+// service deletion first cancels active work, then removes the committed Job,
+// archive Job, workspace PVC and all durable rows.
+func TestDeleteServiceStopsRunsAndCleansRuntimeResources(t *testing.T) {
+	cleaner := &recordingArchiveCleaner{}
+	ts, st, fake := newTestServerWithLauncher(t, cleaner)
+	pid := newProject(t, ts, "svc-cascade")
+
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+		"name": "web", "repo_url": "https://github.com/acme/web.git",
+	})
+	var svc domain.Service
+	decode(t, resp, &svc)
+
+	resp = do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "do it"})
+	var run domain.Run
+	decode(t, resp, &run)
+	jobName := "run-" + run.ID[:8]
+	if _, err := st.ScheduleRun(context.Background(), run.ID, jobName, "token", "Scheduling"); err != nil {
+		t.Fatalf("schedule run: %v", err)
+	}
+	if _, err := st.MarkRunning(context.Background(), run.ID, "Running", time.Now()); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	if err := fake.CreateJob(context.Background(), k8s.JobSpec{Name: jobName}); err != nil {
+		t.Fatalf("create fake job: %v", err)
+	}
+	fake.SetPVCExists(svc.ID, true)
+
+	resp = do(t, "DELETE", ts.URL+"/api/v1/services/"+svc.ID, consoleToken, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete active service: status=%d want 204", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if _, err := st.GetRun(context.Background(), run.ID); err != store.ErrNotFound {
+		t.Fatalf("run still exists after cascade: %v", err)
+	}
+	if _, err := st.GetService(context.Background(), svc.ID); err != store.ErrNotFound {
+		t.Fatalf("service still exists after cascade: %v", err)
+	}
+	if !containsString(fake.Deleted, jobName) {
+		t.Fatalf("run Job not deleted: %v", fake.Deleted)
+	}
+	if !containsString(fake.Deleted, k8s.ArchiveJobName(svc.ID)) {
+		t.Fatalf("archive Job not deleted: %v", fake.Deleted)
+	}
+	if !containsString(fake.DeletedPVCs, svc.ID) {
+		t.Fatalf("workspace PVC not deleted: %v", fake.DeletedPVCs)
+	}
+	if len(cleaner.keys) != 1 || cleaner.keys[0] != "workspaces/"+svc.ID+".tar.zst" {
+		t.Fatalf("archive objects deleted=%v", cleaner.keys)
+	}
+}
+
+type recordingArchiveCleaner struct {
+	keys []string
+	err  error
+}
+
+func (c *recordingArchiveCleaner) Delete(_ context.Context, key string) error {
+	c.keys = append(c.keys, key)
+	return c.err
+}
+
+func TestDeleteServiceCleanupFailureIsRetryableAndFencesNewRuns(t *testing.T) {
+	ts, st, fake := newTestServerWithLauncher(t)
+	pid := newProject(t, ts, "svc-retry-delete")
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+		"name": "web", "repo_url": "https://github.com/acme/web.git",
+	})
+	var svc domain.Service
+	decode(t, resp, &svc)
+	resp = do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "do it"})
+	var run domain.Run
+	decode(t, resp, &run)
+	jobName := "run-" + run.ID[:8]
+	if _, err := st.ScheduleRun(context.Background(), run.ID, jobName, "token", "Scheduling"); err != nil {
+		t.Fatal(err)
+	}
+
+	fake.DeleteErr = errors.New("temporary kube error")
+	resp = do(t, "DELETE", ts.URL+"/api/v1/services/"+svc.ID, consoleToken, nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("failed cleanup status=%d want 503", resp.StatusCode)
+	}
+	resp.Body.Close()
+	kept, err := st.GetService(context.Background(), svc.ID)
+	if err != nil || kept.DeletingAt == nil {
+		t.Fatalf("service deletion fence missing: service=%+v err=%v", kept, err)
+	}
+	canceled, err := st.GetRun(context.Background(), run.ID)
+	if err != nil || canceled.Status != domain.StatusCanceled {
+		t.Fatalf("active run not canceled before cleanup failure: run=%+v err=%v", canceled, err)
+	}
+	resp = do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "must not queue"})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("dispatch during deletion status=%d want 409", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	fake.DeleteErr = nil
+	resp = do(t, "DELETE", ts.URL+"/api/v1/services/"+svc.ID, consoleToken, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("retry delete status=%d want 204", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestDeleteServiceCleansWorkspacePVC: deleting a run-less service best-effort

@@ -1,11 +1,41 @@
 package objstore
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDeleteRemovesOneObjectAndTreatsMissingAsSuccess(t *testing.T) {
+	var paths []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Fatalf("method=%s want DELETE", r.Method)
+		}
+		paths = append(paths, r.URL.Path)
+		if len(paths) == 2 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+	c, err := New(Config{Endpoint: ts.URL, Bucket: "workspaces", AccessKey: "a", SecretKey: "s", ForcePathStyle: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := c.Delete(context.Background(), "workspaces/svc.tar.zst"); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	}
+	if len(paths) != 2 || paths[0] != "/workspaces/workspaces/svc.tar.zst" {
+		t.Fatalf("delete paths=%v", paths)
+	}
+}
 
 // TestPresignGetMatchesAWSExample pins the SigV4 crypto to AWS's own published
 // example from "Authenticating Requests: Using Query Parameters (AWS Signature

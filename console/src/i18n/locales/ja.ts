@@ -1174,7 +1174,7 @@ export default {
     addService: 'サービスを追加',
     deleteService: 'サービスを削除',
     deleteServiceAria: '{name} サービスを削除',
-    deleteServiceConfirm: 'サービス「{name}」を削除しますか？実行履歴がない場合のみ削除できます。',
+    deleteServiceConfirm: 'サービス「{name}」を削除しますか？実行中のタスクを停止した後、このサービスのすべての実行、イベント、成果物、自動化、ワークスペースリソースを完全に削除します。この操作は元に戻せません。',
     serviceDeleted: 'サービス「{name}」を削除しました。',
     deleteServiceFailed: 'サービスを削除できませんでした。',
     breadcrumb: 'パンくずリスト',

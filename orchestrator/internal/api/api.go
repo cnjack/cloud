@@ -32,6 +32,12 @@ import (
 	"github.com/cnjack/jcloud/internal/store"
 )
 
+// ArchiveCleaner erases a service's cold workspace object. *objstore.Client is
+// the production implementation; the narrow interface keeps API tests local.
+type ArchiveCleaner interface {
+	Delete(context.Context, string) error
+}
+
 // Server holds the API dependencies.
 type Server struct {
 	st       store.Store
@@ -39,6 +45,9 @@ type Server struct {
 	log      *slog.Logger
 	hub      *sse.Hub
 	launcher k8s.JobLauncher // used to delete Jobs on cancel; may be nil in API-only mode
+	// archiveCleaner removes the deterministic workspace tarball when a service
+	// is destructively deleted. Nil when object storage is disabled.
+	archiveCleaner ArchiveCleaner
 
 	// Auth (M2). cipher encrypts identity tokens; oauth is the set of configured
 	// login providers keyed by id; stateKey signs the OAuth CSRF state. All are
@@ -224,6 +233,14 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	s.deviceFlows = newDeviceFlowRegistry()
 	// docs/17 §4 — device relay: the device-level SSE fan-out hub (client stream).
 	s.deviceHub = sse.NewDeviceHub()
+	return s
+}
+
+// WithArchiveCleaner wires object-storage cleanup into destructive service
+// deletion. It is separate from New so main can share one objstore client with
+// both the API and reconciler.
+func (s *Server) WithArchiveCleaner(cleaner ArchiveCleaner) *Server {
+	s.archiveCleaner = cleaner
 	return s
 }
 

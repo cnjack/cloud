@@ -1174,7 +1174,7 @@ export default {
     addService: '新增服務',
     deleteService: '刪除服務',
     deleteServiceAria: '刪除服務 {name}',
-    deleteServiceConfirm: '刪除服務「{name}」？只有尚未產生執行記錄的服務可以刪除。',
+    deleteServiceConfirm: '刪除服務「{name}」？執行中的工作會先停止，接著永久刪除該服務的所有工作、事件、產物、自動化與工作區資源。此操作無法復原。',
     serviceDeleted: '服務「{name}」已刪除。',
     deleteServiceFailed: '無法刪除服務。',
     breadcrumb: '麵包屑導覽',

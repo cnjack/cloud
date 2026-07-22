@@ -141,11 +141,10 @@ func (s *PGStore) DeleteProject(ctx context.Context, id string) error {
 const serviceCols = `id, project_id, name, repo_kind, provider, repo_owner_name,
 	raw_repo_url, provider_repo_id, default_branch, git_mode, default_model_id, integration_id, created_at`
 
-// serviceSelectCols is serviceCols plus the archive columns (F10). It is used by
-// every SELECT/scan of a service; INSERT/UPDATE keep using serviceCols because
-// archived_at/archive_key are written only by MarkServiceArchived /
-// ClearServiceArchive, never by service create/update.
-const serviceSelectCols = serviceCols + `, archived_at, archive_key`
+// serviceSelectCols is serviceCols plus control-plane lifecycle columns. It is
+// used by every SELECT/scan of a service; INSERT/ordinary UPDATE keep using
+// serviceCols because archive/deletion state has dedicated mutators.
+const serviceSelectCols = serviceCols + `, archived_at, archive_key, deleting_at`
 
 // nullStr maps an empty Go string to a SQL NULL so nullable columns (provider,
 // repo_owner_name, raw_repo_url) stay NULL rather than ” — the services CHECK
@@ -173,7 +172,7 @@ func scanService(row pgx.Row) (*domain.Service, error) {
 	var provider, ownerName, rawURL, archiveKey *string
 	err := row.Scan(&s.ID, &s.ProjectID, &s.Name, &s.RepoKind,
 		&provider, &ownerName, &rawURL, &s.ProviderRepoID, &s.DefaultBranch, &s.GitMode,
-		&s.DefaultModelID, &s.IntegrationID, &s.CreatedAt, &s.ArchivedAt, &archiveKey)
+		&s.DefaultModelID, &s.IntegrationID, &s.CreatedAt, &s.ArchivedAt, &archiveKey, &s.DeletingAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -282,9 +281,39 @@ func (s *PGStore) UpdateService(ctx context.Context, svc *domain.Service) error 
 }
 
 func (s *PGStore) DeleteService(ctx context.Context, id string) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM services WHERE id=$1`, id)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("delete service: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var lockedID string
+	if err := tx.QueryRow(ctx, `SELECT id FROM services WHERE id=$1 FOR UPDATE`, id).Scan(&lockedID); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return fmt.Errorf("delete service: lock: %w", err)
+	}
+	// Delete runs explicitly before the service because runs.service_id is a
+	// restrictive FK. Every run-owned row has ON DELETE CASCADE.
+	if _, err := tx.Exec(ctx, `DELETE FROM runs WHERE service_id=$1`, id); err != nil {
+		return fmt.Errorf("delete service runs: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM services WHERE id=$1`, id)
 	if err != nil {
 		return fmt.Errorf("delete service: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("delete service: commit: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) MarkServiceDeleting(ctx context.Context, id string, at time.Time) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE services SET deleting_at=COALESCE(deleting_at,$2) WHERE id=$1`, id, at)
+	if err != nil {
+		return fmt.Errorf("mark service deleting: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -303,7 +332,7 @@ func (s *PGStore) ListArchiveCandidates(ctx context.Context, idleBefore time.Tim
 		SELECT s.id, s.project_id, MAX(r.created_at) AS last_activity
 		FROM services s
 		JOIN runs r ON r.service_id = s.id
-		WHERE s.archived_at IS NULL
+		WHERE s.archived_at IS NULL AND s.deleting_at IS NULL
 		GROUP BY s.id, s.project_id
 		HAVING MAX(r.created_at) < $1
 		   AND COUNT(*) FILTER (
@@ -409,7 +438,25 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	if r.Origin == "" {
 		r.Origin = domain.RunOriginAPI
 	}
-	_, err := s.pool.Exec(ctx,
+	// Hold a shared lock on the service through the insert. MarkServiceDeleting's
+	// UPDATE needs the conflicting row lock, so either this run commits before the
+	// deletion fence (and the deleter will list/cancel it), or the fence wins and
+	// this dispatch is rejected. There is no gap where an unlisted run can appear.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("create run: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var deletingAt *time.Time
+	if err := tx.QueryRow(ctx, `SELECT deleting_at FROM services WHERE id=$1 FOR SHARE`, r.ServiceID).Scan(&deletingAt); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return fmt.Errorf("create run: lock service: %w", err)
+	}
+	if deletingAt != nil {
+		return ErrServiceDeleting
+	}
+	_, err = tx.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
@@ -423,6 +470,9 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 		r.AcpSessionID, r.ResumedFrom)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("create run: commit: %w", err)
 	}
 	return nil
 }
@@ -446,7 +496,24 @@ func (s *PGStore) GetRunByOriginEventKey(ctx context.Context, eventKey string) (
 }
 
 func (s *PGStore) ListRunsByService(ctx context.Context, serviceID string, limit int) ([]domain.Run, error) {
-	if limit <= 0 || limit > 500 {
+	if limit < 0 {
+		rows, err := s.pool.Query(ctx,
+			`SELECT `+runCols+` FROM runs WHERE service_id=$1 ORDER BY created_at DESC`, serviceID)
+		if err != nil {
+			return nil, fmt.Errorf("list all runs by service: %w", err)
+		}
+		defer rows.Close()
+		var out []domain.Run
+		for rows.Next() {
+			r, err := scanRun(rows)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, *r)
+		}
+		return out, rows.Err()
+	}
+	if limit == 0 || limit > 500 {
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx,

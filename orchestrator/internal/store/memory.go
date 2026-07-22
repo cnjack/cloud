@@ -260,8 +260,70 @@ func (m *MemStore) DeleteService(_ context.Context, id string) error {
 	if _, ok := m.services[id]; !ok {
 		return ErrNotFound
 	}
+	for runID, run := range m.runs {
+		if run.ServiceID == id {
+			m.deleteRunLocked(runID)
+		}
+	}
+	for linkID, link := range m.kanbanLinks {
+		if link.ServiceID == id {
+			delete(m.kanbanLinks, linkID)
+			for claimID, claim := range m.kanbanClaims {
+				if claim.LinkID == linkID {
+					delete(m.kanbanClaims, claimID)
+				}
+			}
+		}
+	}
+	for scheduleID, schedule := range m.schedules {
+		if schedule.ServiceID == id {
+			delete(m.schedules, scheduleID)
+		}
+	}
+	for automationID, automation := range m.automations {
+		if automation.ServiceID == id {
+			delete(m.automations, automationID)
+		}
+	}
+	delete(m.webhookBindings, id)
 	delete(m.services, id)
 	return nil
+}
+
+func (m *MemStore) MarkServiceDeleting(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	svc, ok := m.services[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if svc.DeletingAt == nil {
+		t := at
+		svc.DeletingAt = &t
+		m.services[id] = svc
+	}
+	return nil
+}
+
+func (m *MemStore) deleteRunLocked(runID string) {
+	delete(m.runs, runID)
+	delete(m.events, runID)
+	delete(m.runMessages, runID)
+	for key := range m.artifacts {
+		if strings.HasPrefix(key, runID+"/") {
+			delete(m.artifacts, key)
+		}
+	}
+	for key := range m.dedupe {
+		if strings.HasPrefix(key, runID+"|") {
+			delete(m.dedupe, key)
+		}
+	}
+	for requestID, permission := range m.permissions {
+		if permission.RunID == runID {
+			delete(m.permissions, requestID)
+		}
+	}
 }
 
 // ListArchiveCandidates mirrors the PG query (F10): a service not already
@@ -344,6 +406,12 @@ func (m *MemStore) ClearServiceArchive(_ context.Context, serviceID string) erro
 func (m *MemStore) CreateRun(_ context.Context, r *domain.Run) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Older focused store tests seed standalone runs directly; preserve that
+	// convenience while still enforcing the deletion fence whenever the service
+	// aggregate is present (production PG always has the FK).
+	if svc, ok := m.services[r.ServiceID]; ok && svc.DeletingAt != nil {
+		return ErrServiceDeleting
+	}
 	if r.Kind == "" {
 		r.Kind = domain.RunKindAgent
 	}

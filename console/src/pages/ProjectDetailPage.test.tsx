@@ -801,7 +801,7 @@ describe('ProjectDetailPage — zero-repo empty state', () => {
     expect(screen.getByRole('heading', { name: 'frontend' })).toBeTruthy();
   });
 
-  it('deletes an unused service and lands on the empty Service state', async () => {
+  it('cascade-deletes a service and lands on the empty Service state', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
     renderPage(client);

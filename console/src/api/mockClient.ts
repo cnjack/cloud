@@ -2422,10 +2422,8 @@ export function createMockClient(): ApiClient {
       for (const [projectId, list] of services) {
         const index = list.findIndex((service) => service.id === serviceId);
         if (index < 0) continue;
-        if ([...runs.values()].some((run) => run.service_id === serviceId)) {
-          throw new ApiError(409, 'service has runs and cannot be deleted', {
-            error: { code: 'conflict', message: 'service has runs and cannot be deleted' },
-          });
+        for (const [runId, run] of runs) {
+          if (run.service_id === serviceId) runs.delete(runId);
         }
         list.splice(index, 1);
         services.set(projectId, list);

@@ -56,6 +56,10 @@ func (s *Server) handleCreateServiceRun(w http.ResponseWriter, r *http.Request) 
 // createRunForService is the shared body of the two run-creation endpoints. The
 // authorization + project/service existence checks are done by the callers.
 func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc *domain.Service) {
+	if svc.DeletingAt != nil {
+		writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
+		return
+	}
 	var req createRunReq
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
@@ -108,6 +112,10 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 	// Permission mode (F8b) rides only on session runs (validated above).
 	run.PermissionMode = req.PermissionMode
 	if err := s.st.CreateRun(r.Context(), run); err != nil {
+		if errors.Is(err, store.ErrServiceDeleting) {
+			writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
+			return
+		}
 		s.log.Error("create run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create run")
 		return
@@ -344,6 +352,10 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
 		return
 	}
+	if svc.DeletingAt != nil {
+		writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
+		return
+	}
 	modelID, modelName, ok := s.selectModelForRun(w, r, svc, deref(orig.ModelID), modelcfg.NotGrantedReuseMessage())
 	if !ok {
 		return
@@ -472,6 +484,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	svc, err := s.st.GetService(r.Context(), orig.ServiceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		return
+	}
+	if svc.DeletingAt != nil {
+		writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
 		return
 	}
 	// A resume is a fresh dispatch. Preserve the original model by default, or

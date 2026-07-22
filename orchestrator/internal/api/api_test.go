@@ -49,7 +49,7 @@ func withTestModel(c *config.Config) *config.Config {
 
 // newTestServerWithLauncher builds a server wired to a FakeLauncher so cancel's
 // Job-deletion behaviour can be asserted.
-func newTestServerWithLauncher(t *testing.T) (*httptest.Server, *store.MemStore, *k8s.FakeLauncher) {
+func newTestServerWithLauncher(t *testing.T, cleaners ...ArchiveCleaner) (*httptest.Server, *store.MemStore, *k8s.FakeLauncher) {
 	t.Helper()
 	st := store.NewMemStore()
 	hub := sse.NewHub()
@@ -57,6 +57,9 @@ func newTestServerWithLauncher(t *testing.T) (*httptest.Server, *store.MemStore,
 	cfg := withTestModel(&config.Config{ConsoleToken: consoleToken})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, hub, fake)
+	if len(cleaners) > 0 {
+		srv.WithArchiveCleaner(cleaners[0])
+	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, st, fake

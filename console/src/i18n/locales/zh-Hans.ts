@@ -1174,7 +1174,7 @@ export default {
     addService: '添加服务',
     deleteService: '删除服务',
     deleteServiceAria: '删除服务 {name}',
-    deleteServiceConfirm: '删除服务“{name}”？仅尚未产生运行记录的服务可删除。',
+    deleteServiceConfirm: '删除服务“{name}”？仍在执行的任务会先停止，随后永久删除该服务的全部任务、事件、产物、自动化和工作区资源。此操作无法撤销。',
     serviceDeleted: '服务“{name}”已删除。',
     deleteServiceFailed: '无法删除服务。',
     breadcrumb: '面包屑',

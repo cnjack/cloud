@@ -13,6 +13,10 @@ import (
 // ErrNotFound is returned when a requested entity does not exist.
 var ErrNotFound = errors.New("not found")
 
+// ErrServiceDeleting is returned when a dispatch races a destructive service
+// deletion fence. Callers must not retry as a new run.
+var ErrServiceDeleting = errors.New("service is being deleted")
+
 // ErrIdentityTaken is returned by AttachIdentity when the (provider, provider_uid)
 // is already linked to a DIFFERENT user (the /auth/link conflict case).
 var ErrIdentityTaken = errors.New("identity already linked to another user")
@@ -66,6 +70,11 @@ type Store interface {
 	// then picks the first whose commenter is a member. Empty when none match.
 	ListServicesByRepo(ctx context.Context, provider domain.GitProvider, repoOwnerName string) ([]domain.Service, error)
 	UpdateService(ctx context.Context, s *domain.Service) error
+	// MarkServiceDeleting installs a durable fence before external cleanup.
+	// Idempotent: retries preserve the original timestamp.
+	MarkServiceDeleting(ctx context.Context, id string, at time.Time) error
+	// DeleteService removes the service and all of its runs in one transaction;
+	// run-owned events, artifacts, messages and permissions cascade from runs.
 	DeleteService(ctx context.Context, id string) error
 
 	// --- workspace archive layer (F10 / D23 ③) ------------------------------
@@ -98,7 +107,8 @@ type Store interface {
 	// GetRunByOriginEventKey is the provider-event Automation de-dup lookup.
 	GetRunByOriginEventKey(ctx context.Context, eventKey string) (*domain.Run, error)
 	ListRuns(ctx context.Context, projectID string, limit int) ([]domain.Run, error)
-	// ListRunsByService lists runs for a single service, newest first.
+	// ListRunsByService lists runs for a single service, newest first. limit < 0
+	// means all rows and is reserved for destructive cleanup paths.
 	ListRunsByService(ctx context.Context, serviceID string, limit int) ([]domain.Run, error)
 
 	// Run mutators. Each of these re-reads the committed row inside a

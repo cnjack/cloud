@@ -1174,7 +1174,7 @@ export default {
     addService: '서비스 추가',
     deleteService: '서비스 삭제',
     deleteServiceAria: '{name} 서비스 삭제',
-    deleteServiceConfirm: '“{name}” 서비스를 삭제할까요? 실행 기록이 없는 서비스만 삭제할 수 있습니다.',
+    deleteServiceConfirm: '“{name}” 서비스를 삭제할까요? 실행 중인 작업을 먼저 중지한 뒤 이 서비스의 모든 실행, 이벤트, 산출물, 자동화 및 작업 공간 리소스를 영구 삭제합니다. 이 작업은 되돌릴 수 없습니다.',
     serviceDeleted: '“{name}” 서비스를 삭제했습니다.',
     deleteServiceFailed: '서비스를 삭제할 수 없습니다.',
     breadcrumb: '이동 경로',

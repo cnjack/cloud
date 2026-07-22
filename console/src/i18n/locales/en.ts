@@ -1177,7 +1177,7 @@ export default {
     addService: 'Add service',
     deleteService: 'Delete service',
     deleteServiceAria: 'Delete {name} service',
-    deleteServiceConfirm: 'Delete the “{name}” service? This is only allowed before it has any runs.',
+    deleteServiceConfirm: 'Delete the “{name}” service? Active runs will be stopped first, then all runs, events, artifacts, automations, and workspace resources for this service will be permanently deleted. This cannot be undone.',
     serviceDeleted: 'Service “{name}” deleted.',
     deleteServiceFailed: 'Could not delete the service.',
     breadcrumb: 'Breadcrumb',
