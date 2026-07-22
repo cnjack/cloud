@@ -1,5 +1,6 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useState } from 'react';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { DeviceApiProvider } from '@jcloud/device-ui';
 import { MobileAuthProvider, useMobileAuth } from './auth';
@@ -28,9 +29,22 @@ export function App() {
 
 function AuthedTree() {
   const auth = useMobileAuth();
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const identity = auth.signedIn ? `${auth.cloudUrl}\n${auth.token}` : '';
+  const previousIdentity = useRef(identity);
+  useEffect(() => {
+    if (previousIdentity.current !== identity) {
+      queryClient.clear();
+      previousIdentity.current = identity;
+    }
+  }, [identity, queryClient]);
   // The guide is static content — reachable from the login screen too, so a
   // first-time user can read it before signing in.
   const [showGuide, setShowGuide] = useState(false);
+  if (auth.checking) {
+    return <div className="app-shell"><p className="state-block">{t('mobile.common.loading')}</p></div>;
+  }
   if (!auth.signedIn) {
     if (showGuide) return <GuidePage onBack={() => setShowGuide(false)} />;
     return <LoginPage onGuide={() => setShowGuide(true)} />;

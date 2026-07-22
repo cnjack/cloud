@@ -9,7 +9,7 @@ import type { ReactNode } from 'react';
 import { act, renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DeviceApiProvider } from '../api/DeviceApiProvider';
-import type { Device, DeviceApi } from '../api/devices';
+import type { Device, DeviceApi, SendMessageExtras } from '../api/devices';
 import { initialDeviceSessionState } from '../deviceview/sessionReducer';
 import { useDeviceComposer } from './useDeviceComposer';
 
@@ -26,12 +26,13 @@ interface SendCall {
   sessionId: string;
   text: string;
   mode?: string;
-  extras?: Record<string, unknown>;
+  extras?: SendMessageExtras;
 }
 
 function makeFakeApi() {
   const sends: SendCall[] = [];
   const approvals: { approvalId: string; decision: string }[] = [];
+  const browsed: (string | undefined)[] = [];
   const api: Partial<DeviceApi> = {
     sendMessage: async (_d, sessionId, text, mode, extras) => {
       sends.push({ sessionId, text, mode, extras });
@@ -41,8 +42,12 @@ function makeFakeApi() {
     respondApproval: async (_d, _s, approvalId, decision) => {
       approvals.push({ approvalId, decision });
     },
+    browseFolders: async (_d, path) => {
+      browsed.push(path);
+      return { current: path ?? '/home/jack', folders: [{ name: 'work', path: '/home/jack/work' }] };
+    },
   };
-  return { api: api as DeviceApi, sends, approvals };
+  return { api: api as DeviceApi, sends, approvals, browsed };
 }
 
 function wrapper(api: DeviceApi) {
@@ -92,6 +97,19 @@ describe('useDeviceComposer', () => {
     expect(host.imageSupport).toBe(false);
   });
 
+  it('browses folders on the desktop device', async () => {
+    const { api, browsed } = makeFakeApi();
+    const { result } = renderHook(
+      () => useDeviceComposer({ deviceId: 'dev-1', sessionId: 'new', device: DEVICE }),
+      { wrapper: wrapper(api) },
+    );
+    await expect(result.current.host.browseFolders('/home/jack')).resolves.toEqual({
+      current: '/home/jack',
+      folders: [{ name: 'work', path: '/home/jack/work' }],
+    });
+    expect(browsed).toEqual(['/home/jack']);
+  });
+
   it('sends an armed goal as {goal_armed: true} alone — goal beats every compose field', async () => {
     const { api, sends } = makeFakeApi();
     const { result } = renderHook(
@@ -133,7 +151,7 @@ describe('useDeviceComposer', () => {
     });
     await act(async () => {
       result.current.runtime.actions.sendMessage('hello', [
-        { data: 'aGk=', media_type: 'image/png', name: 'hi.png' },
+        { data: 'aGk=', media_type: 'image/png' },
       ]);
     });
     expect(sends[0]).toEqual({
@@ -144,7 +162,7 @@ describe('useDeviceComposer', () => {
         model: { provider: 'anthropic', id: 'claude-opus-4' },
         effort: 'high',
         project_path: '/home/jack/a',
-        images: [{ data: 'aGk=', media_type: 'image/png', name: 'hi.png' }],
+        images: [{ data: 'aGk=', media_type: 'image/png' }],
       },
     });
   });

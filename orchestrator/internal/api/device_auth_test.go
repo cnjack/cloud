@@ -106,6 +106,15 @@ func TestDeviceLoginHappyPath(t *testing.T) {
 	if resolved.TokenHash == tok.AccessToken {
 		t.Fatalf("plaintext token persisted: %q", resolved.TokenHash)
 	}
+	resp = do(t, http.MethodGet, fx.ts.URL+"/auth/device/authorize?user_code="+flow.UserCode, fx.sess, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("authorization state: status=%d want 200", resp.StatusCode)
+	}
+	var authState deviceAuthorizeStateView
+	decode(t, resp, &authState)
+	if authState.Status != deviceFlowRedeemed || authState.DeviceID != tok.DeviceID {
+		t.Fatalf("authorization state = %+v", authState)
+	}
 	dev, err := fx.st.GetDevice(t.Context(), tok.DeviceID)
 	if err != nil || dev.Name != "jcode-cli" {
 		t.Fatalf("device row: %+v err=%v", dev, err)

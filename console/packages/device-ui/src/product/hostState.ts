@@ -143,10 +143,10 @@ export function buildSendExtras(
     const effort = state.effortOverrides[modelKey(state.model!)];
     if (effort && (capabilities?.efforts ?? []).includes(effort)) extras.effort = effort;
   }
-  if (state.projectPath) {
-    const advertised = capabilities?.projects?.some((p) => p.path === state.projectPath);
-    if (advertised) extras.project_path = state.projectPath;
-  }
+  // projectPath can come from the device-side workspace browser, so it is not
+  // necessarily part of the capabilities snapshot captured at connector
+  // startup. The browser has already confirmed that the directory exists.
+  if (state.projectPath) extras.project_path = state.projectPath;
   if (images && images.length > 0) extras.images = images;
   return Object.keys(extras).length > 0 ? extras : undefined;
 }

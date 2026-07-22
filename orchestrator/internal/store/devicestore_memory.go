@@ -197,6 +197,35 @@ func (m *MemStore) ListDeviceSessions(_ context.Context, deviceID string) ([]dom
 	return out, nil
 }
 
+func (m *MemStore) DeleteDeviceSession(_ context.Context, deviceID, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := deviceSessionKey(deviceID, sessionID)
+	delete(m.deviceSessions, key)
+	delete(m.deviceEvents, key)
+	return nil
+}
+
+func (m *MemStore) DeleteDeviceSessionsExcept(_ context.Context, deviceID string, keepSessionIDs []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keep := make(map[string]struct{}, len(keepSessionIDs))
+	for _, sessionID := range keepSessionIDs {
+		keep[sessionID] = struct{}{}
+	}
+	for key, ds := range m.deviceSessions {
+		if ds.DeviceID != deviceID {
+			continue
+		}
+		if _, ok := keep[ds.SessionID]; ok {
+			continue
+		}
+		delete(m.deviceSessions, key)
+		delete(m.deviceEvents, key)
+	}
+	return nil
+}
+
 func (m *MemStore) AppendDeviceEvents(_ context.Context, deviceID, sessionID string, events []*domain.DeviceEvent) (*DeviceEventBatch, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -273,6 +302,19 @@ func (m *MemStore) CreateDeviceCommand(_ context.Context, c *domain.DeviceComman
 	defer m.mu.Unlock()
 	m.deviceCommands[c.ID] = *c
 	return nil
+}
+
+func (m *MemStore) GetDeviceCommand(_ context.Context, deviceID, commandID string) (*domain.DeviceCommand, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.deviceCommands[commandID]
+	if !ok || c.DeviceID != deviceID {
+		return nil, ErrNotFound
+	}
+	cp := c
+	cp.Envelope = append([]byte(nil), c.Envelope...)
+	cp.Result = append([]byte(nil), c.Result...)
+	return &cp, nil
 }
 
 func (m *MemStore) DeliverPendingDeviceCommands(_ context.Context, deviceID string, limit int) ([]domain.DeviceCommand, error) {

@@ -63,6 +63,9 @@ export type {
   DeviceSession,
   DeviceSessionEvent,
   SendMessageResult,
+  BrowseFolder,
+  BrowseFoldersResult,
+  DeviceCommandState,
   CreatePairingResult,
   PairingState,
   DeviceStreamFrame,
@@ -79,6 +82,7 @@ export {
   useDeviceSessions,
   useSendDeviceMessage,
   useStopDeviceSession,
+  useDeleteDeviceSession,
   useRespondDeviceApproval,
   useDeleteDevice,
 } from './api/deviceQueries';

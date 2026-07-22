@@ -1050,7 +1050,7 @@ export async function postDeviceAuthorize(
   token: string | undefined,
   userCode: string,
   approve: boolean,
-): Promise<void> {
+): Promise<{ status: string }> {
   const res = await fetch('/auth/device/authorize', {
     method: 'POST',
     credentials: 'same-origin',
@@ -1061,4 +1061,18 @@ export async function postDeviceAuthorize(
     body: JSON.stringify({ user_code: userCode, approve }),
   });
   if (!res.ok) return parseError(res);
+  return res.json() as Promise<{ status: string }>;
+}
+
+export async function getDeviceAuthorizeState(
+  token: string | undefined,
+  userCode: string,
+): Promise<{ status: string; device_id?: string }> {
+  const params = new URLSearchParams({ user_code: userCode });
+  const res = await fetch(`/auth/device/authorize?${params}`, {
+    credentials: 'same-origin',
+    headers: authHeaders(token),
+  });
+  if (!res.ok) return parseError(res);
+  return res.json() as Promise<{ status: string; device_id?: string }>;
 }

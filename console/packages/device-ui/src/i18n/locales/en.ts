@@ -175,6 +175,10 @@ export default {
       "delete": "Delete device",
       "deleteConfirm": "Delete {name}? The device is signed out and stops syncing. Session history is kept on the server.",
       "deleted": "Device {name} deleted",
+      "sessionDelete": "Delete session",
+      "sessionDeleteRunning": "Stop the session before deleting it",
+      "sessionDeleteConfirm": "Delete “{name}” from the desktop and cloud?",
+      "sessionDeleted": "Session “{name}” deleted",
       "status": {
         "idle": "Idle",
         "running": "Running"

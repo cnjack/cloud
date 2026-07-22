@@ -175,6 +175,10 @@ export default {
       "delete": "刪除裝置",
       "deleteConfirm": "確定刪除 {name} 嗎？裝置將登出並停止同步，工作階段歷史保留在伺服器上。",
       "deleted": "已刪除裝置 {name}",
+      "sessionDelete": "刪除工作階段",
+      "sessionDeleteRunning": "請先停止工作階段再刪除",
+      "sessionDeleteConfirm": "確定從桌面端和雲端刪除「{name}」嗎？",
+      "sessionDeleted": "已刪除工作階段「{name}」",
       "status": {
         "idle": "閒置",
         "running": "執行中"

@@ -145,6 +145,21 @@ export interface SendMessageResult {
   session_id: string | null;
 }
 
+export interface BrowseFolder {
+  name: string;
+  path: string;
+}
+
+export interface BrowseFoldersResult {
+  current: string;
+  folders: BrowseFolder[];
+}
+
+export interface DeviceCommandState {
+  status: 'pending' | 'delivered' | 'acked' | 'failed';
+  result?: unknown;
+}
+
 /** Pairing creation response (POST /devices/{id}/pairings). */
 export interface CreatePairingResult {
   pairing_id: string;
@@ -183,6 +198,14 @@ export interface DeviceApi {
   /** POST an E2EE envelope body (docs/17 §6.2) instead of plaintext text. */
   sendEnvelope(deviceId: string, sessionId: string, envelope: DeviceEnvelope): Promise<SendMessageResult>;
   stopSession(deviceId: string, sessionId: string): Promise<void>;
+  /** Delete a session on the desktop and remove its cloud mirror. */
+  deleteSession(deviceId: string, sessionId: string): Promise<void>;
+  /** E2EE form of deleteSession. */
+  deleteSessionEnvelope(deviceId: string, sessionId: string, envelope: DeviceEnvelope): Promise<void>;
+  /** List folders on the desktop device, starting at its home when path is omitted. */
+  browseFolders(deviceId: string, path?: string): Promise<BrowseFoldersResult>;
+  /** E2EE command/result form used by withDeviceCrypto. */
+  browseFoldersEnvelope(deviceId: string, envelope: DeviceEnvelope): Promise<DeviceCommandState>;
   /** decision: approve | approve_all | deny (jcode approval vocabulary). */
   respondApproval(deviceId: string, sessionId: string, approvalId: string, decision: string): Promise<void>;
   /** POST an E2EE envelope body to the approval endpoint. */
@@ -250,6 +273,27 @@ export function createDeviceApi(token: TokenSource, options: DeviceApiOptions = 
 
   const dev = (id: string) => `/devices/${encodeURIComponent(id)}`;
 
+  const commandState = (deviceId: string, commandId: string) =>
+    req<DeviceCommandState>(`${dev(deviceId)}/commands/${encodeURIComponent(commandId)}`);
+
+  async function waitForCommand(deviceId: string, commandId: string): Promise<DeviceCommandState> {
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      const state = await commandState(deviceId, commandId);
+      if (state.status === 'acked' || state.status === 'failed') return state;
+      if (Date.now() >= deadline) throw new Error('Timed out waiting for the desktop device');
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
+  async function startBrowse(deviceId: string, body: unknown): Promise<DeviceCommandState> {
+    const accepted = await req<SendMessageResult>(`${dev(deviceId)}/workspace/browse`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return waitForCommand(deviceId, accepted.command_id);
+  }
+
   return {
     listDevices: async () => (await req<{ devices: Device[] }>('/devices')).devices ?? [],
 
@@ -291,6 +335,28 @@ export function createDeviceApi(token: TokenSource, options: DeviceApiOptions = 
     stopSession: async (deviceId, sessionId) => {
       await req<void>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}/stop`, { method: 'POST' });
     },
+
+    deleteSession: async (deviceId, sessionId) => {
+      await req<void>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+    },
+
+    deleteSessionEnvelope: async (deviceId, sessionId, envelope) => {
+      await req<void>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ envelope }),
+      });
+    },
+
+    browseFolders: async (deviceId, path) => {
+      const state = await startBrowse(deviceId, { path: path ?? '' });
+      if (state.status === 'failed') {
+        const result = state.result as { error?: string } | undefined;
+        throw new Error(result?.error ?? 'Could not browse folders on the desktop device');
+      }
+      return state.result as BrowseFoldersResult;
+    },
+
+    browseFoldersEnvelope: (deviceId, envelope) => startBrowse(deviceId, { envelope }),
 
     respondApproval: async (deviceId, sessionId, approvalId, decision) => {
       await req<void>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}/approval`, {

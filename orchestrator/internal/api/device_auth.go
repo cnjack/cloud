@@ -57,9 +57,10 @@ type deviceFlow struct {
 	clientName string // becomes devices.name at redemption
 	expiresAt  time.Time
 
-	mu     sync.Mutex
-	status string // deviceFlow* — "" is never used; starts at pending
-	userID string // approver, set on approve
+	mu       sync.Mutex
+	status   string // deviceFlow* — "" is never used; starts at pending
+	userID   string // approver, set on approve
+	deviceID string // set when the approved CLI redeems the flow
 }
 
 // deviceFlowRegistry is the process-wide table of pending flows, indexed by
@@ -406,6 +407,7 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.status = deviceFlowRedeemed
+	f.deviceID = d.ID
 	s.log.Info("device login redeemed", "device", d.ID, "user", d.UserID, "deduped", deduped)
 
 	writeJSON(w, http.StatusOK, deviceTokenView{
@@ -462,6 +464,40 @@ func (s *Server) handleDeviceAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("device login decided", "status", f.status, "client", f.clientName, "user", p.userID())
 	writeJSON(w, http.StatusOK, map[string]string{"status": f.status})
+}
+
+type deviceAuthorizeStateView struct {
+	Status   string `json:"status"`
+	DeviceID string `json:"device_id,omitempty"`
+}
+
+// handleGetDeviceAuthorize lets the approval page follow the short transition
+// from approved to redeemed and open the exact device welcome page. The user
+// code is the capability; once approved, only the approving user may observe
+// its state.
+func (s *Server) handleGetDeviceAuthorize(w http.ResponseWriter, r *http.Request) {
+	p := principalFrom(r.Context())
+	if p.userID() == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "a user session is required to inspect a device authorization")
+		return
+	}
+	userCode := normalizeUserCode(r.URL.Query().Get("user_code"))
+	if userCode == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "user_code is required")
+		return
+	}
+	f := s.deviceFlows.getByUserCode(userCode)
+	if f == nil {
+		writeError(w, http.StatusNotFound, "not_found", "no device login matches that code")
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.userID != "" && f.userID != p.userID() {
+		writeError(w, http.StatusForbidden, "forbidden", "this device login belongs to another user")
+		return
+	}
+	writeJSON(w, http.StatusOK, deviceAuthorizeStateView{Status: f.status, DeviceID: f.deviceID})
 }
 
 // requireDevice resolves the device principal for the /internal/v1/device/*

@@ -330,6 +330,32 @@ type deviceCommandAcceptedView struct {
 	SessionID *string `json:"session_id"`
 }
 
+type deviceCommandStateView struct {
+	Status string          `json:"status"`
+	Result json.RawMessage `json:"result,omitempty"`
+}
+
+// handleGetDeviceCommand lets an owning client observe the result of a
+// request/response command. Result stays opaque: plaintext during gray rollout,
+// an E2EE envelope otherwise.
+func (s *Server) handleGetDeviceCommand(w http.ResponseWriter, r *http.Request) {
+	d := s.authorizeDevice(w, r, r.PathValue("id"))
+	if d == nil {
+		return
+	}
+	c, err := s.st.GetDeviceCommand(r.Context(), d.ID, r.PathValue("cid"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "command not found")
+		return
+	}
+	if err != nil {
+		s.log.Error("get device command", "device", d.ID, "command", r.PathValue("cid"), "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not load the command")
+		return
+	}
+	writeJSON(w, http.StatusOK, deviceCommandStateView{Status: c.Status, Result: json.RawMessage(c.Result)})
+}
+
 // enqueueDeviceCommand is the shared tail of the command entry points: it
 // rejects offline devices (409 device_offline — a queued command would sit
 // unobserved; fail visibly instead) and enqueues the command row the
@@ -395,6 +421,42 @@ func rejectPlaintextDownlink(w http.ResponseWriter, d *domain.Device) bool {
 	writeError(w, http.StatusConflict, "pairing_required",
 		"this device has end-to-end encryption active — pair a client and send the encrypted envelope form")
 	return true
+}
+
+// handleDeviceBrowseWorkspace queues a read-only directory listing on the
+// desktop. The response is collected through GET .../commands/{cid}; keeping
+// enqueue and result reads separate avoids holding an HTTP request open while
+// the device's long-poll receives and executes the command.
+func (s *Server) handleDeviceBrowseWorkspace(w http.ResponseWriter, r *http.Request) {
+	d := s.authorizeDevice(w, r, r.PathValue("id"))
+	if d == nil {
+		return
+	}
+	var req struct {
+		Path     string          `json:"path,omitempty"`
+		Envelope json.RawMessage `json:"envelope,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.Envelope) > 0 {
+		if strings.TrimSpace(req.Path) != "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "send either path or envelope, not both")
+			return
+		}
+		env, err := commandEnvelopePayload(req.Envelope)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		s.enqueueDeviceCommandRaw(w, r, d, domain.DeviceCmdWorkspaceBrowse, nil, env)
+		return
+	}
+	if rejectPlaintextDownlink(w, d) {
+		return
+	}
+	s.enqueueDeviceCommand(w, r, d, domain.DeviceCmdWorkspaceBrowse, nil, map[string]any{"path": req.Path})
 }
 
 type deviceSendMessageReq struct {
@@ -489,6 +551,59 @@ func (s *Server) handleDeviceStopSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.enqueueDeviceCommand(w, r, d, domain.DeviceCmdChatStop, &sid, map[string]any{})
+}
+
+// handleDeleteDeviceSession asks the online desktop to delete the local
+// session, then immediately removes the cloud mirror. If the local execution
+// fails, the connector's next replace snapshot restores the mirror, keeping
+// the desktop authoritative without leaving a stale row in the UI meanwhile.
+func (s *Server) handleDeleteDeviceSession(w http.ResponseWriter, r *http.Request) {
+	d := s.authorizeDevice(w, r, r.PathValue("id"))
+	if d == nil {
+		return
+	}
+	if !s.deviceOnline(d) {
+		writeError(w, http.StatusConflict, "device_offline", "the device is offline — the command would not be delivered")
+		return
+	}
+	sid := r.PathValue("sid")
+	var req struct {
+		Envelope json.RawMessage `json:"envelope,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	var env []byte
+	var err error
+	if len(req.Envelope) > 0 {
+		env, err = commandEnvelopePayload(req.Envelope)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+	} else {
+		if rejectPlaintextDownlink(w, d) {
+			return
+		}
+		env = []byte(`{}`)
+	}
+	c := &domain.DeviceCommand{
+		ID: domain.NewID(), DeviceID: d.ID, Kind: domain.DeviceCmdSessionDelete,
+		SessionID: &sid, Envelope: env, Status: domain.DeviceCommandPending,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.st.CreateDeviceCommand(r.Context(), c); err != nil {
+		s.log.Error("enqueue device command", "device", d.ID, "kind", c.Kind, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not enqueue the command")
+		return
+	}
+	if err := s.st.DeleteDeviceSession(r.Context(), d.ID, sid); err != nil {
+		s.log.Error("delete device session mirror", "device", d.ID, "session", sid, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not delete the session mirror")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, deviceCommandAcceptedView{CommandID: c.ID, SessionID: &sid})
 }
 
 type deviceApprovalReq struct {

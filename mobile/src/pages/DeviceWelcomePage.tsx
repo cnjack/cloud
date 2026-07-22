@@ -1,4 +1,4 @@
-import { ArrowLeft, Warning } from '@phosphor-icons/react';
+import { ArrowLeft, Trash, Warning } from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -9,6 +9,7 @@ import {
   DevicePairingGate,
   useDeviceComposer,
   useDeviceSessions,
+  useDeleteDeviceSession,
   useDevices,
   usePendingNewSession,
   type DeviceSession,
@@ -128,23 +129,36 @@ export function DeviceWelcomePage() {
 
 function SessionRow({ deviceId, session }: { deviceId: string; session: DeviceSession }) {
   const { t } = useTranslation();
+  const deleteSession = useDeleteDeviceSession(deviceId);
   const running = session.status === 'running';
+  const title = session.meta?.title || t('mobile.common.untitled');
+  const onDelete = () => {
+    if (!window.confirm(t('device.welcome.sessionDeleteConfirm', { name: title }))) return;
+    deleteSession.mutate(session.session_id);
+  };
   return (
-    <Link
-      to={`/devices/${deviceId}/sessions/${session.session_id}`}
-      className="session-row"
-      data-testid="session-row"
-    >
-      <span className="session-row-main">
-        <span className="session-row-title">{session.meta?.title || t('mobile.common.untitled')}</span>
-        <span className="session-row-meta">
-          {session.meta?.project && <span>{session.meta.project} · </span>}
-          {timeAgo(session.updated_at)}
+    <div className="session-row" data-testid="session-row">
+      <Link to={`/devices/${deviceId}/sessions/${session.session_id}`} className="session-row-link">
+        <span className="session-row-main">
+          <span className="session-row-title">{title}</span>
+          <span className="session-row-meta">
+            {session.meta?.project && <span>{session.meta.project} · </span>}
+            {timeAgo(session.updated_at)}
+          </span>
         </span>
-      </span>
-      <span className="pill" data-tone={running ? 'warning' : 'neutral'}>
-        {running ? t('device.welcome.status.running') : t('device.welcome.status.idle')}
-      </span>
-    </Link>
+        <span className="pill" data-tone={running ? 'warning' : 'neutral'}>
+          {running ? t('device.welcome.status.running') : t('device.welcome.status.idle')}
+        </span>
+      </Link>
+      <button
+        type="button"
+        className="session-delete"
+        onClick={onDelete}
+        disabled={running || deleteSession.isPending}
+        aria-label={t('device.welcome.sessionDelete')}
+      >
+        <Trash size={18} aria-hidden />
+      </button>
+    </div>
   );
 }

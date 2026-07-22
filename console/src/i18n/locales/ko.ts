@@ -986,6 +986,10 @@ export default {
       delete: '기기 삭제',
       deleteConfirm: '{name}을(를) 삭제하시겠습니까? 기기가 로그아웃되고 동기화가 중지됩니다. 세션 기록은 서버에 보관됩니다.',
       deleted: '기기 {name}을(를) 삭제했습니다',
+      sessionDelete: '세션 삭제',
+      sessionDeleteRunning: '삭제하기 전에 세션을 중지하세요',
+      sessionDeleteConfirm: '“{name}”을(를) 데스크톱과 클라우드에서 삭제할까요?',
+      sessionDeleted: '“{name}” 세션을 삭제했습니다',
       status: {
         idle: '유휴',
         running: '실행 중',

@@ -105,10 +105,15 @@ const (
 	DeviceCmdChatSend        = "chat.send"
 	DeviceCmdChatStop        = "chat.stop"
 	DeviceCmdApprovalRespond = "approval.respond"
+	DeviceCmdSessionDelete   = "session.delete"
 	// DeviceCmdPairingRequest asks the device to approve/deny a client pairing
 	// (docs/17 §6.3). Payload {pairing_id, label, kty, pubkey} — plaintext
 	// routing metadata, never CEK-bearing.
 	DeviceCmdPairingRequest = "pairing.request"
+	// DeviceCmdWorkspaceBrowse asks the desktop to list one local directory.
+	// The result is returned through the command ack and remains opaque to the
+	// orchestrator when E2EE is active.
+	DeviceCmdWorkspaceBrowse = "workspace.browse"
 )
 
 // DeviceCommand lifecycle states (docs/17 §5): pending (queued) → delivered

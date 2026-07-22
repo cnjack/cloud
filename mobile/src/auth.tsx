@@ -57,6 +57,8 @@ export type LoginResult =
 export interface AuthState {
   /** False until a token has been validated (the router shows LoginPage). */
   signedIn: boolean;
+  /** Restored credentials are being validated; do not render stale app/login UI. */
+  checking: boolean;
   cloudUrl: string;
   token: string;
   me: Me | null;
@@ -80,6 +82,7 @@ function loadStored(): { cloudUrl: string; token: string } | null {
 export function MobileAuthProvider({ children }: { children: ReactNode }) {
   const [stored, setStored] = useState(loadStored);
   const [me, setMe] = useState<Me | null>(null);
+  const [checking, setChecking] = useState(() => loadStored() !== null);
 
   const logout = useCallback(() => {
     try {
@@ -90,6 +93,7 @@ export function MobileAuthProvider({ children }: { children: ReactNode }) {
     }
     setMe(null);
     setStored(null);
+    setChecking(false);
   }, []);
 
   // Boot: validate the restored token once (a revoked session drops back to
@@ -112,6 +116,8 @@ export function MobileAuthProvider({ children }: { children: ReactNode }) {
         // their own error/retry states.
       } catch {
         /* unreachable — pages surface retry states */
+      } finally {
+        if (!cancelled) setChecking(false);
       }
     })();
     return () => {
@@ -137,6 +143,7 @@ export function MobileAuthProvider({ children }: { children: ReactNode }) {
       }
       setMe(meJson);
       setStored({ cloudUrl, token: trimmed });
+      setChecking(false);
       return { ok: true };
     } catch (err) {
       return { ok: false, reason: 'unreachable', message: String(err) };
@@ -146,13 +153,14 @@ export function MobileAuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthState>(
     () => ({
       signedIn: stored !== null,
+      checking,
       cloudUrl: stored?.cloudUrl ?? '',
       token: stored?.token ?? '',
       me,
       login,
       logout,
     }),
-    [stored, me, login, logout],
+    [stored, me, checking, login, logout],
   );
 
   // Deep-link return of the OAuth round trip (M11 W2): jcode://auth#token=…

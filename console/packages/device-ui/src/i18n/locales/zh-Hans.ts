@@ -175,6 +175,10 @@ export default {
       "delete": "删除设备",
       "deleteConfirm": "确定删除 {name} 吗？设备将退出登录并停止同步，会话历史保留在服务器上。",
       "deleted": "已删除设备 {name}",
+      "sessionDelete": "删除会话",
+      "sessionDeleteRunning": "请先停止会话再删除",
+      "sessionDeleteConfirm": "确定从桌面端和云端删除“{name}”吗？",
+      "sessionDeleted": "已删除会话“{name}”",
       "status": {
         "idle": "空闲",
         "running": "运行中"

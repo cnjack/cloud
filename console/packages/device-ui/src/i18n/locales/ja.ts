@@ -175,6 +175,10 @@ export default {
       "delete": "デバイスを削除",
       "deleteConfirm": "{name} を削除しますか？デバイスはサインアウトされ、同期が停止します。セッション履歴はサーバーに保持されます。",
       "deleted": "デバイス {name} を削除しました",
+      "sessionDelete": "セッションを削除",
+      "sessionDeleteRunning": "削除する前にセッションを停止してください",
+      "sessionDeleteConfirm": "「{name}」をデスクトップとクラウドから削除しますか？",
+      "sessionDeleted": "セッション「{name}」を削除しました",
       "status": {
         "idle": "アイドル",
         "running": "実行中"

@@ -313,6 +313,28 @@ a {
   background: var(--color-panel-hover);
 }
 
+.session-row-link {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-3);
+  color: inherit;
+}
+
+.session-delete {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-faint);
+}
+.session-delete:disabled { opacity: .3; }
+
 .session-row-main {
   flex: 1;
   min-width: 0;
@@ -626,7 +648,7 @@ a {
 /* The stock product composer renders its own borderless textarea; the legacy
    .composer textarea chrome would double-draw on top of it. */
 .product-composer textarea {
-  min-height: 28px;
+  min-height: 56px !important;
   max-height: 200px;
   padding: 0;
   border: none;
@@ -634,4 +656,29 @@ a {
 }
 .product-composer textarea:focus {
   border-color: transparent;
+  outline: none !important;
+}
+
+@media (max-width: 520px) {
+  .product-composer .jcode-product-composer-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .product-composer .jcode-product-composer-toolbar-left,
+  .product-composer .jcode-product-composer-toolbar-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .product-composer .jcode-product-composer-toolbar-left > :last-child,
+  .product-composer .jcode-product-composer-toolbar-right > :first-child {
+    min-width: 0;
+  }
+  .product-composer .jcode-product-composer-add-menu {
+    max-width: calc(100vw - 48px);
+  }
+  .product-composer .jcode-product-composer-model-menu {
+    right: -8px;
+    max-height: min(48dvh, 440px);
+  }
 }

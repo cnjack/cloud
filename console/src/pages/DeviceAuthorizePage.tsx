@@ -11,8 +11,9 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { CheckCircle, XCircle } from '@phosphor-icons/react';
-import { postDeviceAuthorize, apiErrorCode } from '../api/client';
+import { postDeviceAuthorize, getDeviceAuthorizeState, apiErrorCode } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { readQueryParam } from '../lib/url';
 import { Card } from '../components/Card';
@@ -29,6 +30,7 @@ const AUTO_ADVANCE_MS = 400;
 export function DeviceAuthorizePage() {
   const { t } = useTranslation();
   const { getToken } = useAuth();
+  const navigate = useNavigate();
   const [code, setCode] = useState(() => sanitizeCode(readQueryParam('user_code') ?? '').slice(0, CODE_LENGTH));
   const [stage, setStage] = useState<Stage>('enter');
   const [approved, setApproved] = useState(false);
@@ -62,6 +64,25 @@ export function DeviceAuthorizePage() {
     setError(undefined);
     try {
       await postDeviceAuthorize(getToken(), normalized, approve);
+      if (approve) {
+        // The device row is created by the CLI's next token poll. Follow that
+        // short hand-off so approval lands on the exact welcome page instead
+        // of making the user find the device in the list.
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          try {
+            const state = await getDeviceAuthorizeState(getToken(), normalized);
+            if (state.device_id) {
+              navigate(`/devices/${state.device_id}`, { replace: true });
+              return;
+            }
+          } catch {
+            break;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+        }
+        navigate('/devices', { replace: true });
+        return;
+      }
       setApproved(approve);
       setStage('done');
     } catch (err) {
@@ -119,10 +140,10 @@ export function DeviceAuthorizePage() {
               <Button variant="ghost" disabled={busy} onClick={() => decide(false)} data-testid="device-deny">
                 {t('device.deny')}
               </Button>
+              <Button variant="ghost" disabled={busy} onClick={() => setStage('enter')}>
+                {t('common.back')}
+              </Button>
             </div>
-            <Button variant="ghost" size="sm" disabled={busy} onClick={() => setStage('enter')}>
-              {t('common.back')}
-            </Button>
           </div>
         ) : (
           <form onSubmit={toConfirm} className={styles.form} data-testid="device-enter">

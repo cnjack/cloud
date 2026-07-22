@@ -318,6 +318,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /auth/device/code", s.handleDeviceCode)
 	mux.HandleFunc("POST /auth/device/token", s.handleDeviceToken)
 	mux.Handle("POST /auth/device/authorize", s.authed(s.handleDeviceAuthorize))
+	mux.Handle("GET /auth/device/authorize", s.authed(s.handleGetDeviceAuthorize))
 
 	// Read-only admin snapshot for the cluster-admin console view (11-api.md §
 	// "System / admin"). Never returns a secret.
@@ -382,6 +383,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/devices/{id}", s.authed(s.handleDeleteDevice))
 	mux.Handle("GET /api/v1/devices/{id}/sessions", s.authed(s.handleListDeviceSessions))
 	mux.Handle("GET /api/v1/devices/{id}/sessions/{sid}/events", s.authed(s.handleListDeviceSessionEvents))
+	mux.Handle("DELETE /api/v1/devices/{id}/sessions/{sid}", s.authed(s.handleDeleteDeviceSession))
+	mux.Handle("POST /api/v1/devices/{id}/workspace/browse", s.authed(s.handleDeviceBrowseWorkspace))
+	mux.Handle("GET /api/v1/devices/{id}/commands/{cid}", s.authed(s.handleGetDeviceCommand))
 	mux.Handle("GET /api/v1/devices/{id}/stream", s.authedStream(s.handleDeviceStream))
 	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/messages", s.authed(s.handleDeviceSendMessage))
 	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/stop", s.authed(s.handleDeviceStopSession))

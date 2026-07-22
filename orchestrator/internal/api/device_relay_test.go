@@ -91,6 +91,36 @@ func TestDeviceSessionsUpsert(t *testing.T) {
 	}
 }
 
+func TestDeviceSessionsReplaceRemovesStaleMirrors(t *testing.T) {
+	fx := setupDevice(t)
+	token, deviceID := fx.redeemFlow(t)
+
+	resp := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, map[string]any{
+		"sessions": []map[string]any{
+			{"session_id": "keep", "status": "idle"},
+			{"session_id": "remove", "status": "idle"},
+		},
+		"replace": true,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("seed snapshot: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, map[string]any{
+		"sessions": []map[string]any{{"session_id": "keep", "status": "idle"}},
+		"replace":  true,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("replace snapshot: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	sessions, err := fx.st.ListDeviceSessions(t.Context(), deviceID)
+	if err != nil || len(sessions) != 1 || sessions[0].SessionID != "keep" {
+		t.Fatalf("sessions after replace = %+v err=%v, want only keep", sessions, err)
+	}
+}
+
 // TestDeviceCapabilitiesMirror covers the M12 contract: the connector reports
 // its compose capabilities as a top-level field on the sessions upsert, the
 // server stores them verbatim on the devices row, and GET /api/v1/devices/{id}
@@ -521,6 +551,7 @@ func TestClientCommandsOffline409(t *testing.T) {
 		{"/sessions/s1/messages", map[string]any{"text": "hi"}},
 		{"/sessions/s1/stop", nil},
 		{"/sessions/s1/approval", map[string]any{"approval_id": "a1", "decision": "allow"}},
+		{"/workspace/browse", map[string]any{"path": "/Users/jack"}},
 	} {
 		resp := do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceID+tc.path, owner, tc.body)
 		if resp.StatusCode != http.StatusConflict {
@@ -532,6 +563,11 @@ func TestClientCommandsOffline409(t *testing.T) {
 			t.Fatalf("POST %s: code=%q want device_offline", tc.path, env.Error.Code)
 		}
 	}
+	resp := do(t, http.MethodDelete, fx.ts.URL+"/api/v1/devices/"+deviceID+"/sessions/s1", owner, nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("DELETE session offline: status=%d want 409", resp.StatusCode)
+	}
+	resp.Body.Close()
 
 	// Validation fires before the offline check? No — ownership + body first:
 	// an empty text is a 400 even on an offline device... verify online path
@@ -540,7 +576,7 @@ func TestClientCommandsOffline409(t *testing.T) {
 	_ = token
 	owner = mustUser(t, fx, deviceIDOf(t, fx, token))
 
-	resp := do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceIDOf(t, fx, token)+"/sessions/s1/stop", owner, nil)
+	resp = do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceIDOf(t, fx, token)+"/sessions/s1/stop", owner, nil)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("stop: status=%d want 202", resp.StatusCode)
 	}
@@ -569,6 +605,70 @@ func TestClientCommandsOffline409(t *testing.T) {
 	if err := json.Unmarshal(cmds[1].Envelope, &payload); err != nil ||
 		payload["approval_id"] != "a1" || payload["decision"] != "allow" {
 		t.Fatalf("approval payload = %s", cmds[1].Envelope)
+	}
+}
+
+func TestClientDeleteSessionEnqueuesCommandAndRemovesMirror(t *testing.T) {
+	fx := setupDevice(t)
+	token, deviceID, owner := onlineDevice(t, fx)
+	resp := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, map[string]any{
+		"sessions": []map[string]any{{"session_id": "s-delete", "status": "idle"}},
+		"replace":  true,
+	})
+	resp.Body.Close()
+
+	resp = do(t, http.MethodDelete, fx.ts.URL+"/api/v1/devices/"+deviceID+"/sessions/s-delete", owner, nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("delete session: status=%d want 202", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	cmds, err := fx.st.DeliverPendingDeviceCommands(t.Context(), deviceID, 64)
+	if err != nil || len(cmds) != 1 || cmds[0].Kind != domain.DeviceCmdSessionDelete || cmds[0].SessionID == nil || *cmds[0].SessionID != "s-delete" {
+		t.Fatalf("delete commands = %+v err=%v", cmds, err)
+	}
+	sessions, err := fx.st.ListDeviceSessions(t.Context(), deviceID)
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("sessions after delete = %+v err=%v, want empty", sessions, err)
+	}
+}
+
+func TestClientBrowseWorkspaceCommandResult(t *testing.T) {
+	fx := setupDevice(t)
+	token, deviceID, owner := onlineDevice(t, fx)
+
+	resp := do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceID+"/workspace/browse", owner,
+		map[string]any{"path": "/Users/jack/work path"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("browse: status=%d want 202", resp.StatusCode)
+	}
+	var accepted deviceCommandAcceptedView
+	decode(t, resp, &accepted)
+	cmds, err := fx.st.DeliverPendingDeviceCommands(t.Context(), deviceID, 64)
+	if err != nil || len(cmds) != 1 || cmds[0].Kind != domain.DeviceCmdWorkspaceBrowse {
+		t.Fatalf("browse commands = %+v err=%v", cmds, err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(cmds[0].Envelope, &payload); err != nil || payload["path"] != "/Users/jack/work path" {
+		t.Fatalf("browse payload = %s err=%v", cmds[0].Envelope, err)
+	}
+
+	result := map[string]any{
+		"current": "/Users/jack/work path",
+		"folders": []map[string]string{{"name": "jcode", "path": "/Users/jack/work path/jcode"}},
+	}
+	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/commands/"+accepted.CommandID+"/ack", token,
+		map[string]any{"status": "ok", "result": result})
+	resp.Body.Close()
+
+	resp = do(t, http.MethodGet, fx.ts.URL+"/api/v1/devices/"+deviceID+"/commands/"+accepted.CommandID, owner, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get browse result: status=%d want 200", resp.StatusCode)
+	}
+	var state deviceCommandStateView
+	decode(t, resp, &state)
+	if state.Status != domain.DeviceCommandAcked || !strings.Contains(string(state.Result), `"name":"jcode"`) {
+		t.Fatalf("browse state = %+v", state)
 	}
 }
 
@@ -685,7 +785,7 @@ func TestDeviceStreamSSE(t *testing.T) {
 
 // TestDevicePairingGate covers the M13 contract (docs/17 §6.7): register
 // reports and echoes the connector's encryption state (`e2ee`), and an
-// e2ee=true device accepts ONLY {envelope} command payloads on the three
+// e2ee=true device accepts ONLY {envelope} command payloads on the client
 // client command endpoints — plaintext bodies get 409 pairing_required. An
 // e2ee=false device keeps the M3/M4 plaintext behavior untouched.
 func TestDevicePairingGate(t *testing.T) {
@@ -713,7 +813,7 @@ func TestDevicePairingGate(t *testing.T) {
 		t.Fatalf("client view e2ee = false, want true (register echo): %+v", dv)
 	}
 
-	// 明文三端点各 409 pairing_required.
+	// Plaintext command endpoints each reject with pairing_required.
 	for _, tc := range []struct {
 		path string
 		body map[string]any
@@ -721,6 +821,7 @@ func TestDevicePairingGate(t *testing.T) {
 		{"/sessions/s1/messages", map[string]any{"text": "plaintext-injection"}},
 		{"/sessions/s1/stop", map[string]any{}},
 		{"/sessions/s1/approval", map[string]any{"approval_id": "a1", "decision": "allow"}},
+		{"/workspace/browse", map[string]any{"path": "/Users/jack"}},
 	} {
 		resp := do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceID+tc.path, owner, tc.body)
 		if resp.StatusCode != http.StatusConflict {
@@ -737,7 +838,7 @@ func TestDevicePairingGate(t *testing.T) {
 		}
 	}
 
-	// 密文放行: all three endpoints accept the envelope form (202).
+	// The same endpoints accept the encrypted envelope form (202).
 	for _, tc := range []struct {
 		path string
 		body map[string]any
@@ -745,6 +846,7 @@ func TestDevicePairingGate(t *testing.T) {
 		{"/sessions/s1/messages", envelope},
 		{"/sessions/s1/stop", envelope},
 		{"/sessions/s1/approval", envelope},
+		{"/workspace/browse", envelope},
 	} {
 		resp := do(t, http.MethodPost, fx.ts.URL+"/api/v1/devices/"+deviceID+tc.path, owner, tc.body)
 		if resp.StatusCode != http.StatusAccepted {
@@ -753,8 +855,8 @@ func TestDevicePairingGate(t *testing.T) {
 		resp.Body.Close()
 	}
 	cmds, err := fx.st.DeliverPendingDeviceCommands(t.Context(), deviceID, 64)
-	if err != nil || len(cmds) != 3 {
-		t.Fatalf("envelope commands pending = %d err=%v want 3", len(cmds), err)
+	if err != nil || len(cmds) != 4 {
+		t.Fatalf("envelope commands pending = %d err=%v want 4", len(cmds), err)
 	}
 	for _, c := range cmds {
 		var payload map[string]any

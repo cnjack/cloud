@@ -25,10 +25,13 @@ type deviceRelayStore interface {
 	UpdateDeviceCapabilities(context.Context, string, []byte) error
 	UpsertDeviceSession(context.Context, *domain.DeviceSession) error
 	ListDeviceSessions(context.Context, string) ([]domain.DeviceSession, error)
+	DeleteDeviceSession(context.Context, string, string) error
+	DeleteDeviceSessionsExcept(context.Context, string, []string) error
 	AppendDeviceEvents(context.Context, string, string, []*domain.DeviceEvent) (*DeviceEventBatch, error)
 	ListDeviceEvents(context.Context, string, string, int64, int) ([]domain.DeviceEvent, error)
 	MaxDeviceEventSeq(context.Context, string, string) (int64, error)
 	CreateDeviceCommand(context.Context, *domain.DeviceCommand) error
+	GetDeviceCommand(context.Context, string, string) (*domain.DeviceCommand, error)
 	DeliverPendingDeviceCommands(context.Context, string, int) ([]domain.DeviceCommand, error)
 	AckDeviceCommand(context.Context, string, string, string, []byte, time.Time) error
 	ListDevicesForUser(context.Context, string) ([]domain.Device, error)
@@ -73,6 +76,30 @@ func testDeviceRelaySessions(t *testing.T, st deviceRelayStore, deviceID string)
 	got := list[0]
 	if got.Status != domain.DeviceSessionIdle || string(got.Meta) != `{"title":"b"}` {
 		t.Fatalf("upsert did not overwrite: %+v", got)
+	}
+
+	// A full device snapshot removes mirrors (and their event logs) that are
+	// no longer present locally, while preserving the explicitly retained row.
+	if _, err := st.AppendDeviceEvents(ctx, deviceID, "s2", []*domain.DeviceEvent{mkEvent(deviceID, "s2", 1, "user")}); err != nil {
+		t.Fatalf("append s2 event: %v", err)
+	}
+	if err := st.DeleteDeviceSessionsExcept(ctx, deviceID, []string{"s1"}); err != nil {
+		t.Fatalf("delete sessions except s1: %v", err)
+	}
+	list, err = st.ListDeviceSessions(ctx, deviceID)
+	if err != nil || len(list) != 1 || list[0].SessionID != "s1" {
+		t.Fatalf("list after reconcile = %+v err=%v, want only s1", list, err)
+	}
+	events, err := st.ListDeviceEvents(ctx, deviceID, "s2", 0, 10)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("deleted session events = %+v err=%v, want none", events, err)
+	}
+	if err := st.DeleteDeviceSession(ctx, deviceID, "s1"); err != nil {
+		t.Fatalf("delete s1: %v", err)
+	}
+	list, err = st.ListDeviceSessions(ctx, deviceID)
+	if err != nil || len(list) != 0 {
+		t.Fatalf("list after delete = %+v err=%v, want empty", list, err)
 	}
 }
 
@@ -245,6 +272,13 @@ func testDeviceRelayCommands(t *testing.T, st deviceRelayStore, d *domain.Device
 	// Ack ok stores the result and stamps acked_at.
 	if err := st.AckDeviceCommand(ctx, deviceID, "c1", domain.DeviceCommandAcked, []byte(`{"ok":true}`), now.Add(2*time.Second)); err != nil {
 		t.Fatalf("ack c1: %v", err)
+	}
+	got, err := st.GetDeviceCommand(ctx, deviceID, "c1")
+	if err != nil || got.Status != domain.DeviceCommandAcked || string(got.Result) != `{"ok":true}` || got.AckedAt == nil {
+		t.Fatalf("get acked command = %+v err=%v", got, err)
+	}
+	if _, err := st.GetDeviceCommand(ctx, otherDevice.ID, "c1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("get command through other device: err=%v want ErrNotFound", err)
 	}
 	// A duplicate ack is an idempotent no-op.
 	if err := st.AckDeviceCommand(ctx, deviceID, "c1", domain.DeviceCommandFailed, []byte(`{"ok":false}`), now.Add(3*time.Second)); err != nil {

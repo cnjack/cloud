@@ -27,6 +27,7 @@ import type {
 } from 'jcode-ui/product';
 import type { Device, SendMessageExtras } from '../api/devices';
 import { dqk, useRespondDeviceApproval, useSendDeviceMessage, useStopDeviceSession } from '../api/deviceQueries';
+import { useDeviceApi } from '../api/DeviceApiProvider';
 import type { DeviceSessionState } from '../deviceview/sessionReducer';
 import { initialDeviceSessionState } from '../deviceview/sessionReducer';
 import type { DeviceViewItem } from '../deviceview/types';
@@ -97,11 +98,11 @@ function writeJson(key: string, value: unknown): void {
 
 const EMPTY_STREAM = initialDeviceSessionState();
 let localSeq = -2_000_000;
-
 export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComposer {
   const { deviceId, sessionId, device, streamState, sessionRunning, hasMessages, onError, onSent } = options;
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const deviceApi = useDeviceApi();
 
   const capabilities = device?.capabilities ?? null;
   const send = useSendDeviceMessage(deviceId);
@@ -358,6 +359,11 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
     setCompose((c) => ({ ...c, projectPath: path }));
   }, []);
 
+  const browseFolders = useCallback(
+    (path?: string) => deviceApi.browseFolders(deviceId, path),
+    [deviceApi, deviceId],
+  );
+
   const host = useMemo<ProductComposerHost>(
     () => ({
       providerName: compose.model?.provider ?? '',
@@ -394,14 +400,13 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
       // to its four basic rows (from tokenSnapshot) — same as desktop failure.
       fetchTaskStats: async () => null,
 
-      // The device's filesystem is unreachable from the cloud: nothing is
-      // "missing" client-side, and the folder browser lists no entries (the
-      // path input still accepts a device-side path → project_path extra).
+      // Known paths are device-owned and remain visible if validation cannot
+      // run. Folder browsing itself is a read-only relay command executed by
+      // the desktop against its local /api/browse endpoint.
       validateWorkspacePaths: async () => [],
-      browseFolders: async (path?: string) => ({ current: path ?? '', folders: [] }),
+      browseFolders,
       switchWorkspace,
-      // pickFolder / openRemoteConnect intentionally omitted (fail-visible:
-      // the picker's native-picker and remote-wizard entries hide themselves).
+      // Native folder dialogs and remote-connect setup stay desktop-only.
 
       // No git API on the relay: empty result → BranchPicker renders null.
       fetchBranches: async () => ({ current: '', branches: [] }),
@@ -430,6 +435,7 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
       setModelEnabled,
       refreshModels,
       setGoalArmed,
+      browseFolders,
       switchWorkspace,
     ],
   );

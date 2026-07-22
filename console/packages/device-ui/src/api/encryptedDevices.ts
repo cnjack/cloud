@@ -18,7 +18,7 @@
  */
 import { decryptJson, encryptJson, isEnvelope } from '../devicecrypto/envelope';
 import type { DeviceCrypto } from '../devicecrypto/provider';
-import type { Device, DeviceApi, DeviceSession, DeviceSessionEvent, DeviceStreamFrame } from './devices';
+import type { BrowseFoldersResult, Device, DeviceApi, DeviceSession, DeviceSessionEvent, DeviceStreamFrame } from './devices';
 
 export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceApi {
   /** Open an envelope when we hold the key; pass everything else through. */
@@ -89,6 +89,28 @@ export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceAp
       const keyGen = (await crypto.getKeyGen(deviceId)) ?? 1;
       const envelope = await encryptJson(key, keyGen, { approval_id: approvalId, decision });
       return api.respondApprovalEnvelope(deviceId, sessionId, envelope);
+    },
+
+    deleteSession: async (deviceId, sessionId) => {
+      const key = await crypto.getKey(deviceId);
+      if (!key) return api.deleteSession(deviceId, sessionId);
+      const keyGen = (await crypto.getKeyGen(deviceId)) ?? 1;
+      const envelope = await encryptJson(key, keyGen, {});
+      return api.deleteSessionEnvelope(deviceId, sessionId, envelope);
+    },
+
+    browseFolders: async (deviceId, path) => {
+      const key = await crypto.getKey(deviceId);
+      if (!key) return api.browseFolders(deviceId, path);
+      const keyGen = (await crypto.getKeyGen(deviceId)) ?? 1;
+      const envelope = await encryptJson(key, keyGen, { path: path ?? '' });
+      const state = await api.browseFoldersEnvelope(deviceId, envelope);
+      const result = await open<unknown>(deviceId, state.result);
+      if (state.status === 'failed') {
+        const failure = result as { error?: string } | undefined;
+        throw new Error(failure?.error ?? 'Could not browse folders on the desktop device');
+      }
+      return result as BrowseFoldersResult;
     },
 
     streamDevice: (deviceId, cb) =>

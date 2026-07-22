@@ -18,7 +18,7 @@
 }
 
 .result {
-  align-items: flex-start;
+  align-items: stretch;
 }
 
 .title {
@@ -44,8 +44,15 @@
 }
 
 .actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-3, 0.75rem);
+}
+.actions > * { width: 100%; justify-content: center; }
+
+@media (max-width: 34rem) {
+  .actions { grid-template-columns: 1fr; }
+  .card { padding: var(--space-5, 1.25rem); }
 }
 
 .codeField {

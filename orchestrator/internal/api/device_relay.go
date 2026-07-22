@@ -59,6 +59,10 @@ func (s *Server) publishDeviceEvent(deviceID, typ string, data map[string]any) {
 
 type deviceSessionsUpsertReq struct {
 	Sessions []deviceSessionUpsert `json:"sessions"`
+	// Replace marks Sessions as the connector's complete currently-synced
+	// index. Older connectors omit it and retain the historical upsert-only
+	// behaviour during rollout.
+	Replace bool `json:"replace,omitempty"`
 	// Capabilities is the connector's compose-capability mirror (M12):
 	// {projects, models, efforts}. OPAQUE to the server — stored verbatim on
 	// the devices row and echoed back to clients on GET /devices/{id}. Absent
@@ -108,6 +112,7 @@ func (s *Server) handleDeviceSessionsUpsert(w http.ResponseWriter, r *http.Reque
 	}
 	now := time.Now().UTC()
 	views := make([]deviceSessionUpsertView, 0, len(req.Sessions))
+	keepSessionIDs := make([]string, 0, len(req.Sessions))
 	for _, in := range req.Sessions {
 		sessionID := strings.TrimSpace(in.SessionID)
 		if sessionID == "" {
@@ -137,6 +142,14 @@ func (s *Server) handleDeviceSessionsUpsert(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		views = append(views, deviceSessionUpsertView{SessionID: sessionID, LastSeq: maxSeq})
+		keepSessionIDs = append(keepSessionIDs, sessionID)
+	}
+	if req.Replace {
+		if err := s.st.DeleteDeviceSessionsExcept(r.Context(), p.deviceID, keepSessionIDs); err != nil {
+			s.log.Error("device sessions reconcile", "device", p.deviceID, "err", err)
+			writeError(w, http.StatusInternalServerError, "internal", "could not reconcile the session index")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": views})
 }

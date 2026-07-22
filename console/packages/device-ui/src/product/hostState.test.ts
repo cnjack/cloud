@@ -106,14 +106,14 @@ describe('buildSendExtras', () => {
     });
   });
 
-  it('drops options the device no longer advertises', () => {
+  it('drops an unadvertised model but keeps a device-browsed project path', () => {
     const state = {
       ...initialDeviceComposerState(),
       model: { provider: 'gone', model: 'x' },
       effortOverrides: { 'gone/x': 'high' },
       projectPath: '/elsewhere',
     };
-    expect(buildSendExtras(state, CAPS)).toBeUndefined();
+    expect(buildSendExtras(state, CAPS)).toEqual({ project_path: '/elsewhere' });
   });
 
   it('passes images through untouched', () => {

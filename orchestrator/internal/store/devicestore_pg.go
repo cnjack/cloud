@@ -233,6 +233,25 @@ func (s *PGStore) ListDeviceSessions(ctx context.Context, deviceID string) ([]do
 	return out, rows.Err()
 }
 
+func (s *PGStore) DeleteDeviceSession(ctx context.Context, deviceID, sessionID string) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM device_sessions WHERE device_id=$1 AND session_id=$2`, deviceID, sessionID)
+	if err != nil {
+		return fmt.Errorf("delete device session: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) DeleteDeviceSessionsExcept(ctx context.Context, deviceID string, keepSessionIDs []string) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM device_sessions WHERE device_id=$1 AND NOT (session_id = ANY($2::text[]))`,
+		deviceID, keepSessionIDs)
+	if err != nil {
+		return fmt.Errorf("delete stale device sessions: %w", err)
+	}
+	return nil
+}
+
 func (s *PGStore) AppendDeviceEvents(ctx context.Context, deviceID, sessionID string, events []*domain.DeviceEvent) (*DeviceEventBatch, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -323,6 +342,22 @@ func (s *PGStore) CreateDeviceCommand(ctx context.Context, c *domain.DeviceComma
 		return fmt.Errorf("insert device command: %w", err)
 	}
 	return nil
+}
+
+func (s *PGStore) GetDeviceCommand(ctx context.Context, deviceID, commandID string) (*domain.DeviceCommand, error) {
+	var c domain.DeviceCommand
+	err := s.pool.QueryRow(ctx,
+		`SELECT `+deviceCommandCols+` FROM device_commands WHERE id=$1 AND device_id=$2`,
+		commandID, deviceID,
+	).Scan(&c.ID, &c.DeviceID, &c.Kind, &c.SessionID, &c.Envelope,
+		&c.Status, &c.Result, &c.CreatedAt, &c.AckedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get device command: %w", err)
+	}
+	return &c, nil
 }
 
 func (s *PGStore) DeliverPendingDeviceCommands(ctx context.Context, deviceID string, limit int) ([]domain.DeviceCommand, error) {

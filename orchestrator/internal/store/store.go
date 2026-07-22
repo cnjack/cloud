@@ -696,6 +696,11 @@ type Store interface {
 	// ListDeviceSessions returns a device's session index, most-recently
 	// updated first.
 	ListDeviceSessions(ctx context.Context, deviceID string) ([]domain.DeviceSession, error)
+	// DeleteDeviceSession removes one mirrored session and its durable events.
+	DeleteDeviceSession(ctx context.Context, deviceID, sessionID string) error
+	// DeleteDeviceSessionsExcept reconciles a device-owned full snapshot by
+	// removing every mirrored session not named in keepSessionIDs.
+	DeleteDeviceSessionsExcept(ctx context.Context, deviceID string, keepSessionIDs []string) error
 	// AppendDeviceEvents appends a batch to a session's durable log,
 	// IDEMPOTENTLY by (device_id, session_id, seq): an already-present seq is
 	// skipped and reported as conflicted, never an error. The batch reports the
@@ -711,6 +716,10 @@ type Store interface {
 	// CreateDeviceCommand enqueues a downlink command (status pending). The
 	// caller pre-fills id/device_id/kind/session_id/envelope/created_at.
 	CreateDeviceCommand(ctx context.Context, c *domain.DeviceCommand) error
+	// GetDeviceCommand returns one command scoped to its device. This is used by
+	// clients to observe completion of request/response commands such as the
+	// device-side workspace browser.
+	GetDeviceCommand(ctx context.Context, deviceID, commandID string) (*domain.DeviceCommand, error)
 	// DeliverPendingDeviceCommands is the poll's offer step: it atomically
 	// marks the device's oldest pending commands (up to limit, created_at
 	// order) delivered and returns them in that order. Empty when nothing is
