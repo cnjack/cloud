@@ -32,7 +32,10 @@ pub use mobile::SecureStorage;
 
 #[cfg(desktop)]
 pub struct SecureStorage<R: Runtime> {
-    _runtime: std::marker::PhantomData<R>,
+    // The desktop fallback does not own a Runtime value. Using a function
+    // marker keeps the type parameter without inheriting R's Send/Sync bounds,
+    // which tauri::State requires for managed state.
+    _runtime: std::marker::PhantomData<fn() -> R>,
     values: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
@@ -69,7 +72,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             #[cfg(mobile)]
             let storage = mobile::init(app, api)?;
             #[cfg(desktop)]
-            let storage = SecureStorage {
+            let _ = api;
+            #[cfg(desktop)]
+            let storage: SecureStorage<R> = SecureStorage {
                 _runtime: std::marker::PhantomData,
                 values: Default::default(),
             };

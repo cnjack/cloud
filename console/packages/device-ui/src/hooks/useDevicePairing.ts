@@ -15,11 +15,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useDeviceApi } from '../api/DeviceApiProvider';
+import { useDeviceApi, useDeviceCrypto } from '../api/DeviceApiProvider';
 import { dqk } from '../api/deviceQueries';
 import type { DeviceApi } from '../api/devices';
 import { generatePairingKeys, importPairingPrivateKey, unwrapCek } from '../devicecrypto/pairing';
-import { sharedDeviceCrypto, sharedPairingSessions } from '../devicecrypto/provider';
+import { sharedPairingSessions } from '../devicecrypto/provider';
 import type { DeviceCrypto } from '../devicecrypto/provider';
 import type { PairingSession, PairingSessionStore } from '../devicecrypto/storage';
 
@@ -58,8 +58,9 @@ export interface DevicePairing {
 
 export function useDevicePairing(deviceId: string, deps: DevicePairingDeps = {}): DevicePairing {
   const defaultApi = useDeviceApi();
+  const providerCrypto = useDeviceCrypto();
   const api = deps.api ?? defaultApi;
-  const crypto = deps.crypto ?? sharedDeviceCrypto;
+  const crypto = deps.crypto ?? providerCrypto;
   const sessions = deps.sessions ?? sharedPairingSessions;
   const label = deps.label ?? 'console-web';
   const pollMs = deps.pollMs ?? 3000;

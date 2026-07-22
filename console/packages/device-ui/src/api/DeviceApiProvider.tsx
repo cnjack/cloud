@@ -18,6 +18,7 @@ import type { TokenSource } from './errors';
 import { withDeviceCrypto } from './encryptedDevices';
 
 const DeviceApiContext = createContext<DeviceApi | null>(null);
+const DeviceCryptoContext = createContext<DeviceCrypto>(sharedDeviceCrypto);
 
 export function DeviceApiProvider({
   children,
@@ -36,20 +37,30 @@ export function DeviceApiProvider({
   /** Optional host-specific CEK storage (mobile uses Keychain/Keystore). */
   crypto?: DeviceCrypto;
 }) {
+  const cryptoValue = crypto ?? sharedDeviceCrypto;
   const value = useMemo<DeviceApi>(
     () =>
       api ??
       withDeviceCrypto(
         createDeviceApi(getToken ?? (() => undefined), options),
-        crypto ?? sharedDeviceCrypto,
+        cryptoValue,
       ),
-    [api, getToken, options, crypto],
+    [api, getToken, options, cryptoValue],
   );
-  return <DeviceApiContext.Provider value={value}>{children}</DeviceApiContext.Provider>;
+  return (
+    <DeviceCryptoContext.Provider value={cryptoValue}>
+      <DeviceApiContext.Provider value={value}>{children}</DeviceApiContext.Provider>
+    </DeviceCryptoContext.Provider>
+  );
 }
 
 export function useDeviceApi(): DeviceApi {
   const ctx = useContext(DeviceApiContext);
   if (!ctx) throw new Error('useDeviceApi must be used within <DeviceApiProvider>');
   return ctx;
+}
+
+/** The exact CEK source used by the encrypted API wrapper for this host. */
+export function useDeviceCrypto(): DeviceCrypto {
+  return useContext(DeviceCryptoContext);
 }

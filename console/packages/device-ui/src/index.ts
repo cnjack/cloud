@@ -75,7 +75,7 @@ export type {
   DeviceApiOptions,
 } from './api/devices';
 export { withDeviceCrypto } from './api/encryptedDevices';
-export { DeviceApiProvider, useDeviceApi } from './api/DeviceApiProvider';
+export { DeviceApiProvider, useDeviceApi, useDeviceCrypto } from './api/DeviceApiProvider';
 export {
   dqk,
   useDevices,

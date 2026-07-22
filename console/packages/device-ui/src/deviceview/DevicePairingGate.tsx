@@ -16,7 +16,8 @@ import { Lock } from '@phosphor-icons/react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Device } from '../api/devices';
-import { sharedDeviceCrypto, type DeviceCrypto } from '../devicecrypto/provider';
+import { useDeviceCrypto } from '../api/DeviceApiProvider';
+import type { DeviceCrypto } from '../devicecrypto/provider';
 import { DevicePairingCard } from './DevicePairingCard';
 import styles from './DevicePairingGate.module.css';
 
@@ -36,7 +37,8 @@ export function DevicePairingGate({ device, children, guideLink, fullscreen, cry
   const { t } = useTranslation();
   const gated = device?.e2ee === true;
   const deviceId = device?.id ?? '';
-  const keySource = crypto ?? sharedDeviceCrypto;
+  const providerCrypto = useDeviceCrypto();
+  const keySource = crypto ?? providerCrypto;
   // null = still resolving the local CEK; render nothing rather than flash
   // ciphertext for a beat.
   const [hasKey, setHasKey] = useState<boolean | null>(gated ? null : true);

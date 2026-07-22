@@ -34,6 +34,17 @@ function wrapper({ children }: { children: ReactNode }) {
   );
 }
 
+function wrapperWithCrypto(crypto: ReturnType<typeof createDeviceCrypto>) {
+  return function Wrapper({ children }: { children: ReactNode }) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return (
+      <QueryClientProvider client={qc}>
+        <DeviceApiProvider api={{} as DeviceApi} crypto={crypto}>{children}</DeviceApiProvider>
+      </QueryClientProvider>
+    );
+  };
+}
+
 const CHILDREN = <div data-testid="gated-surface">session surface</div>;
 
 describe('DevicePairingGate', () => {
@@ -62,6 +73,19 @@ describe('DevicePairingGate', () => {
         {CHILDREN}
       </DevicePairingGate>,
       { wrapper },
+    );
+    await waitFor(() => expect(screen.getByTestId('gated-surface')).toBeTruthy());
+    expect(screen.queryByTestId('device-pairing-gate')).toBeNull();
+  });
+
+  it('uses the host crypto store supplied by DeviceApiProvider', async () => {
+    const rig = makeRig();
+    await rig.store.put('dev-gate', { cek: CEK_RAW, keyGen: 1 });
+    render(
+      <DevicePairingGate device={makeDevice({ e2ee: true })}>
+        {CHILDREN}
+      </DevicePairingGate>,
+      { wrapper: wrapperWithCrypto(rig.crypto) },
     );
     await waitFor(() => expect(screen.getByTestId('gated-surface')).toBeTruthy());
     expect(screen.queryByTestId('device-pairing-gate')).toBeNull();

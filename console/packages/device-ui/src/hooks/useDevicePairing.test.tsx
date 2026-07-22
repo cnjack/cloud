@@ -76,7 +76,7 @@ function wrapperFor(rig: Rig) {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
-        <DeviceApiProvider api={rig.api}>{children}</DeviceApiProvider>
+        <DeviceApiProvider api={rig.api} crypto={rig.crypto}>{children}</DeviceApiProvider>
       </QueryClientProvider>
     );
   };
@@ -86,7 +86,6 @@ function renderPairing(rig: Rig) {
   return renderHook(
     () =>
       useDevicePairing(DEVICE, {
-        crypto: rig.crypto,
         sessions: rig.sessions,
         pollMs: 5,
       }),
