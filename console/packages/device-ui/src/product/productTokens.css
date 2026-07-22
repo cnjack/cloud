@@ -48,12 +48,28 @@
   --shadow-md: var(--shadow-2);
   --shadow-lg: var(--shadow-3);
   --shadow-xl: var(--shadow-3);
-  --z-dropdown: 40;
+  /* Product menus must clear the shell topbar (z:100) but remain below
+     application modals/toasts. */
+  --z-dropdown: 900;
 }
 
 .jcode-product [role='listbox'] {
   max-height: min(24rem, calc(100dvh - 8rem));
   overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: var(--z-dropdown);
+}
+
+/* Keep selector panels above neighbouring cards/header chrome and cap the
+   model catalog before it reaches the top of the viewport. Its list body owns
+   scrolling, so the current-model row and Manage action remain visible. */
+.jcode-product .jcode-product-composer-toolbar {
+  position: relative;
+  z-index: var(--z-dropdown);
+}
+
+.jcode-product .jcode-product-composer-model-menu {
+  max-height: min(420px, calc(100dvh - 180px));
   overscroll-behavior: contain;
   z-index: var(--z-dropdown);
 }
@@ -96,32 +112,63 @@
   }
 }
 
-/* M15: narrow-viewport composer parity (phones / narrow console windows).
-   The product composer's desktop toolbar squeezes chip text vertical once it
-   runs out of room (goal chip armed, context ring shown), and its popover
-   panels anchor to their chip wrappers — the 290px model panel and the 280px
-   context popup can be pushed past the left viewport edge. At ≤480px: let the
-   toolbar wrap with no-wrap chips (second row stays right-aligned), and
-   re-anchor all toolbar popovers to the full-width composer card. Selectors
-   key off the package's literal tailwind class tokens (dist is unhashed). */
+/* Narrow-viewport composer parity (phones / narrow console windows).
+   Compact the three selectors to icon buttons and keep every popup attached
+   to its own trigger. The stable jcode-ui class hooks avoid the old blanket
+   `position: static` rule, which made panels float above the entire textarea. */
 @media (max-width: 480px) {
-  .jcode-product div[class~='justify-between'][class~='py-2'] {
-    flex-wrap: wrap;
-    row-gap: 6px;
+  .jcode-product .jcode-product-composer-toolbar {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
   }
-  /* Wrapped second row keeps the desktop's right alignment. */
-  .jcode-product div[class~='justify-between'][class~='py-2'] > div[class~='gap-2'] {
+
+  .jcode-product .jcode-product-composer-toolbar-left,
+  .jcode-product .jcode-product-composer-toolbar-right {
+    width: auto;
+    justify-content: flex-start;
+  }
+
+  .jcode-product .jcode-product-composer-toolbar-right {
     margin-left: auto;
   }
-  .jcode-product div[class~='justify-between'][class~='py-2'] button {
+
+  .jcode-product .jcode-product-composer-toolbar button {
     flex-shrink: 0;
     white-space: nowrap;
   }
-  /* Panels (add/mode/context/model/effort) anchor to the full-width composer
-     card instead of their chip wrapper, so e.g. the 290px model panel and the
-     280px context popup can't be pushed past the left viewport edge. The card
-     is the nearest positioned ancestor once these wrappers go static. */
-  .jcode-product div[class~='justify-between'][class~='py-2'] div[class~='relative'] {
-    position: static;
+
+  .jcode-product .jcode-product-composer-picker-anchor {
+    position: relative;
+  }
+
+  .jcode-product .jcode-product-composer-picker-trigger {
+    width: 32px;
+    height: 32px;
+    justify-content: center;
+    padding: 0 !important;
+  }
+
+  .jcode-product .jcode-product-composer-picker-label,
+  .jcode-product .jcode-product-composer-picker-chevron {
+    display: none;
+  }
+
+  .jcode-product .jcode-product-composer-mode-menu {
+    left: 0;
+    width: min(264px, calc(100vw - 48px));
+    max-height: min(54dvh, 420px);
+    overflow-y: auto;
+  }
+
+  /* The model anchor also contains the effort icon; offset the model panel by
+     one compact button so its right edge lines up with the model trigger. */
+  .jcode-product .jcode-product-composer-model-picker > .jcode-product-composer-model-menu {
+    right: 36px;
+    max-height: min(54dvh, 440px);
+  }
+
+  .jcode-product .jcode-product-composer-effort-menu {
+    right: 0;
   }
 }
