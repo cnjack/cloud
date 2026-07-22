@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@jcloud/device-ui": "file:../console/packages/device-ui",
+    "@lobehub/icons-static-svg": "^1.94.0",
     "@phosphor-icons/react": "^2.1.10",
     "@tanstack/react-query": "^5.62.0",
     "@tauri-apps/api": "^2.9.0",
