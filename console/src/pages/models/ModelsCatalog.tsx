@@ -506,10 +506,9 @@ function ProviderDialog({ api, provider, configuredKinds, open, onClose }: { api
             )}
           </div>
         )}
+        {authType === 'api_key' && <TextField label={provider ? t('cluster.models.rotateApiKeyLabel') : t('cluster.models.authApiKey')} type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={provider?.api_key_set ? t('cluster.models.apiKeyPlaceholderKeep') : t('cluster.models.apiKeyPlaceholderEnter')} hint={t('cluster.models.apiKeyHint')} />}
         {(provider || mode === 'custom') && <TextField label={t('cluster.models.providerNameLabel')} required value={name} onChange={(event) => setName(event.target.value)} placeholder={t('cluster.models.providerNamePlaceholder')} />}
         {!provider && mode === 'custom' && <TextField label={t('cluster.models.providerTypeLabel')} required value={kind} onChange={(event) => setKind(event.target.value.toLowerCase())} placeholder="openai" hint={t('cluster.models.providerTypeHint')} />}
-        <SelectField label={t('cluster.models.authLabel')} value={authType} onChange={(value) => setAuthType(value as ModelProviderAuthType)} options={[{ value: 'api_key', label: t('cluster.models.authApiKey') }, { value: 'service_identity', label: t('cluster.models.authServiceIdentityOption') }, { value: 'none', label: t('cluster.models.authNone') }]} />
-        {authType === 'api_key' && <TextField label={provider ? t('cluster.models.rotateApiKeyLabel') : t('cluster.models.authApiKey')} type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={provider?.api_key_set ? t('cluster.models.apiKeyPlaceholderKeep') : t('cluster.models.apiKeyPlaceholderEnter')} hint={t('cluster.models.apiKeyHint')} />}
         <div className={styles.advanced}>
           <button type="button" className={styles.advancedToggle} aria-expanded={advancedOpen} data-testid="provider-advanced-toggle" onClick={() => setAdvancedOpen((o) => !o)}>
             <SlidersHorizontal size={13} aria-hidden="true" />{t('cluster.models.advancedLabel')}
@@ -517,6 +516,7 @@ function ProviderDialog({ api, provider, configuredKinds, open, onClose }: { api
           {advancedOpen && (
             <div className={styles.headerFields}>
               <TextField label={t('cluster.models.baseUrlLabel')} required value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" />
+              <SelectField label={t('cluster.models.authLabel')} value={authType} onChange={(value) => setAuthType(value as ModelProviderAuthType)} options={[{ value: 'api_key', label: t('cluster.models.authApiKey') }, { value: 'service_identity', label: t('cluster.models.authServiceIdentityOption') }, { value: 'none', label: t('cluster.models.authNone') }]} />
               <SelectField label={t('cluster.models.catalogLabel')} value={catalogMode} onChange={(value) => setCatalogMode(value as ModelProviderCatalogMode)} options={[{ value: 'auto', label: t('cluster.models.catalogAuto') }, { value: 'disabled', label: t('cluster.models.catalogDisabled') }]} />
               <span className={styles.headerHint}>{provider?.headers_set ? t('cluster.models.headersConfiguredHint') : t('cluster.models.headersHint')}</span>
               {headerRows.map((row, index) => (
