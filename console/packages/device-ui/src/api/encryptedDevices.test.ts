@@ -132,6 +132,30 @@ describe('withDeviceCrypto reads', () => {
     expect(devices[0]!.capabilities).toEqual({ models: [{ provider: 'p', id: 'm1', label: 'M1' }] });
   });
 
+  it('forgets a stale CEK instead of failing the whole device list', async () => {
+    const freshCek = crypto.getRandomValues(new Uint8Array(32));
+    const envelope = await encryptJson(
+      await importCek(freshCek),
+      1,
+      { models: [{ provider: 'p', id: 'm1', label: 'M1' }] },
+    );
+    const inner = fakeInner({
+      listDevices: async () => [
+        { id: DEVICE, name: 'd', online: true, e2ee: true, capabilities: envelope as never },
+      ],
+    });
+    const { store, crypto: deviceCrypto } = cryptoWithCek();
+    await store.put(DEVICE, { cek: CEK_RAW, keyGen: 1 });
+    const api = withDeviceCrypto(inner.api, deviceCrypto);
+
+    const devices = await api.listDevices();
+
+    expect(devices).toEqual([
+      { id: DEVICE, name: 'd', online: true, e2ee: true, capabilities: envelope },
+    ]);
+    expect(await store.get(DEVICE)).toBeNull();
+  });
+
   it('opens envelope event payloads', async () => {
     const envelope = await sealedMeta({ type: 'user_message', data: { text: 'hi' } });
     const inner = fakeInner({

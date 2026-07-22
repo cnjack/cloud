@@ -36,11 +36,22 @@ export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceAp
       const devices = await api.listDevices();
       // capabilities is reported as a sealed envelope on E2EE devices (M12) —
       // without opening it here the composer pickers (models/projects/slash)
-      // silently render empty even when the device advertised them.
+      // silently render empty even when the device advertised them.  The
+      // capabilities envelope also doubles as a cheap CEK validity check. A
+      // desktop reinstall or re-login can register a fresh CEK under the same
+      // stable device id/key generation, leaving this browser with a stale
+      // IndexedDB key.  Do not let that one stale key fail the whole device
+      // query: forget it and return the envelope so DevicePairingGate can ask
+      // the user to pair this browser with the device again.
       return Promise.all(
         devices.map(async (d) => {
           if (!isEnvelope(d.capabilities)) return d;
-          return { ...d, capabilities: await open<Device['capabilities']>(d.id, d.capabilities) };
+          try {
+            return { ...d, capabilities: await open<Device['capabilities']>(d.id, d.capabilities) };
+          } catch {
+            await crypto.store.delete(d.id);
+            return d;
+          }
         }),
       );
     },
