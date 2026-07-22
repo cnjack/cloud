@@ -94,6 +94,14 @@ export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceAp
       return api.sendEnvelope(deviceId, sessionId, envelope);
     },
 
+    stopSession: async (deviceId, sessionId) => {
+      const key = await crypto.getKey(deviceId);
+      if (!key) return api.stopSession(deviceId, sessionId);
+      const keyGen = (await crypto.getKeyGen(deviceId)) ?? 1;
+      const envelope = await encryptJson(key, keyGen, {});
+      return api.stopSession(deviceId, sessionId, envelope);
+    },
+
     respondApproval: async (deviceId, sessionId, approvalId, decision) => {
       const key = await crypto.getKey(deviceId);
       if (!key) return api.respondApproval(deviceId, sessionId, approvalId, decision);

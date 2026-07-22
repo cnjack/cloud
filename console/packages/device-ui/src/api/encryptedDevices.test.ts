@@ -29,6 +29,7 @@ interface FakeInner {
   api: DeviceApi;
   sentEnvelopeBodies: unknown[];
   approvalEnvelopeBodies: unknown[];
+  stopEnvelopeBodies: unknown[];
   frames: DeviceStreamFrame[];
   deleteEnvelopeBodies: unknown[];
   browseEnvelopeBodies: unknown[];
@@ -37,6 +38,7 @@ interface FakeInner {
 function fakeInner(overrides: Partial<DeviceApi> = {}): FakeInner {
   const sentEnvelopeBodies: unknown[] = [];
   const approvalEnvelopeBodies: unknown[] = [];
+  const stopEnvelopeBodies: unknown[] = [];
   const frames: DeviceStreamFrame[] = [];
   const deleteEnvelopeBodies: unknown[] = [];
   const browseEnvelopeBodies: unknown[] = [];
@@ -49,7 +51,9 @@ function fakeInner(overrides: Partial<DeviceApi> = {}): FakeInner {
       sentEnvelopeBodies.push(envelope);
       return { command_id: 'c2', session_id: 's1' };
     },
-    stopSession: async () => {},
+    stopSession: async (_d, _s, envelope) => {
+      if (envelope) stopEnvelopeBodies.push(envelope);
+    },
     deleteSession: async () => {},
     deleteSessionEnvelope: async (_d, _s, envelope) => { deleteEnvelopeBodies.push(envelope); },
     browseFolders: async (_d, path) => ({ current: path ?? '/home/jack', folders: [] }),
@@ -70,7 +74,7 @@ function fakeInner(overrides: Partial<DeviceApi> = {}): FakeInner {
     },
     ...overrides,
   };
-  return { api, sentEnvelopeBodies, approvalEnvelopeBodies, frames, deleteEnvelopeBodies, browseEnvelopeBodies };
+  return { api, sentEnvelopeBodies, approvalEnvelopeBodies, stopEnvelopeBodies, frames, deleteEnvelopeBodies, browseEnvelopeBodies };
 }
 
 function cryptoWithCek() {
@@ -199,6 +203,19 @@ describe('withDeviceCrypto reads', () => {
 });
 
 describe('withDeviceCrypto writes', () => {
+  it('seals stop commands when the CEK is held', async () => {
+    const inner = fakeInner();
+    const { store, crypto } = cryptoWithCek();
+    await store.put(DEVICE, { cek: CEK_RAW, keyGen: 2 });
+    const api = withDeviceCrypto(inner.api, crypto);
+
+    await api.stopSession(DEVICE, 's1');
+    expect(inner.stopEnvelopeBodies).toHaveLength(1);
+    const key = await importCek(CEK_RAW);
+    expect(await decryptJson(key, inner.stopEnvelopeBodies[0] as never)).toEqual({});
+    expect((inner.stopEnvelopeBodies[0] as { key_gen: number }).key_gen).toBe(2);
+  });
+
   it('sends the envelope form (with channel pinned) when the CEK is held', async () => {
     const inner = fakeInner();
     const { store, crypto } = cryptoWithCek();

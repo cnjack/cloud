@@ -197,7 +197,8 @@ export interface DeviceApi {
   sendMessage(deviceId: string, sessionId: string, text: string, mode?: string, extras?: SendMessageExtras): Promise<SendMessageResult>;
   /** POST an E2EE envelope body (docs/17 §6.2) instead of plaintext text. */
   sendEnvelope(deviceId: string, sessionId: string, envelope: DeviceEnvelope): Promise<SendMessageResult>;
-  stopSession(deviceId: string, sessionId: string): Promise<void>;
+  /** Stop a session; E2EE clients pass the encrypted empty command payload. */
+  stopSession(deviceId: string, sessionId: string, envelope?: DeviceEnvelope): Promise<void>;
   /** Delete a session on the desktop and remove its cloud mirror. */
   deleteSession(deviceId: string, sessionId: string): Promise<void>;
   /** E2EE form of deleteSession. */
@@ -332,8 +333,11 @@ export function createDeviceApi(token: TokenSource, options: DeviceApiOptions = 
         { method: 'POST', body: JSON.stringify({ envelope }) },
       ),
 
-    stopSession: async (deviceId, sessionId) => {
-      await req<void>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}/stop`, { method: 'POST' });
+    stopSession: async (deviceId, sessionId, envelope) => {
+      await req<void>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}/stop`, {
+        method: 'POST',
+        ...(envelope ? { body: JSON.stringify({ envelope }) } : {}),
+      });
     },
 
     deleteSession: async (deviceId, sessionId) => {

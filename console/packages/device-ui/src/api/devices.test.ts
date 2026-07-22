@@ -87,6 +87,14 @@ describe('deviceApi — request shaping', () => {
     expect(calls[0]!.init!.method).toBe('POST');
   });
 
+  it('posts the encrypted envelope form for an E2EE stop', async () => {
+    const { calls } = mockFetch(() => ({ status: 202, body: { command_id: 'c3', session_id: 's1' } }));
+    const api = createDeviceApi(undefined);
+    const envelope = { enc: 'aes-256-gcm', key_gen: 2, nonce: 'bm9uY2U=', ct: 'Y3Q=' };
+    await api.stopSession('d1', 's1', envelope);
+    expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ envelope });
+  });
+
   it('deletes a session through the device command endpoint', async () => {
     const { calls } = mockFetch(() => ({ status: 202, body: { command_id: 'c4', session_id: 's 1' } }));
     const api = createDeviceApi(undefined);
