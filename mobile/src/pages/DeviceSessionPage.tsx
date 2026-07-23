@@ -1,6 +1,6 @@
 import { ArrowLeft, Warning } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { RuntimeProvider, Thread } from 'jcode-ui';
 import { ChatInput } from 'jcode-ui/product';
 import {

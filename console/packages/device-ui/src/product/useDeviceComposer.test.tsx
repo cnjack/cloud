@@ -149,7 +149,7 @@ describe('useDeviceComposer', () => {
       result.current.runtime.actions.sendMessage('second');
     });
 
-    expect(sends.map((send) => send.text)).toEqual(['first']);
+    await waitFor(() => expect(sends.map((send) => send.text)).toEqual(['first']));
     expect(result.current.isSendLocked).toBe(true);
     await waitFor(() => expect(onSent).toHaveBeenCalledWith(expect.objectContaining({
       commandId: 'cmd-1',
@@ -196,7 +196,7 @@ describe('useDeviceComposer', () => {
     screen.rerender(renderTree('device-b'));
     await waitFor(() => expect(latest!.isSendLocked).toBe(false));
     act(() => latest!.runtime.actions.sendMessage('B'));
-    expect(sends).toEqual(['device-a', 'device-b']);
+    await waitFor(() => expect(sends).toEqual(['device-a', 'device-b']));
     expect(latest!.isSendLocked).toBe(true);
 
     await act(async () => {
