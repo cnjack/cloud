@@ -2,8 +2,8 @@
  * usePendingNewSession — pending card + found matching (UX review fix).
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, renderHook, waitFor } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import { act, render, renderHook, waitFor } from '@testing-library/react';
+import { useEffect, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { DeviceApiProvider } from '../api/DeviceApiProvider';
 import type { DeviceApi, DeviceSession } from '../api/devices';
@@ -29,6 +29,20 @@ function wrapper(api: DeviceApi) {
 
 const row = (id: string, updatedAt: string): DeviceSession =>
   ({ session_id: id, status: 'running', meta: { title: id }, updated_at: updatedAt }) as DeviceSession;
+
+type PendingState = ReturnType<typeof usePendingNewSession>;
+
+function KeyedPendingHarness({
+  deviceId,
+  report,
+}: {
+  deviceId: string;
+  report: (state: PendingState) => void;
+}) {
+  const state = usePendingNewSession(deviceId);
+  useEffect(() => report(state), [report, state]);
+  return null;
+}
 
 describe('usePendingNewSession', () => {
   it('surfaces a pending row after markSent', async () => {
@@ -111,5 +125,51 @@ describe('usePendingNewSession', () => {
 
     await waitFor(() => expect(result.current.issue).toBe('timed_out'));
     expect(result.current.found).toBeNull();
+  });
+
+  it('isolates pending correlation when the welcome route switches devices', async () => {
+    let latest: PendingState | null = null;
+    let resolveA: ((state: { status: 'acked'; result: { session_id: string } }) => void) | null = null;
+    const reads: { deviceId: string; commandId: string }[] = [];
+    const api = {
+      listSessions: async (deviceId: string) =>
+        deviceId === 'device-b' ? [row('session-b', '2026-03-01T10:00:00Z')] : [],
+      getCommandState: async (deviceId: string, commandId: string) => {
+        reads.push({ deviceId, commandId });
+        if (deviceId === 'device-a') {
+          return new Promise<{ status: 'acked'; result: { session_id: string } }>((resolve) => {
+            resolveA = resolve;
+          });
+        }
+        return { status: 'acked' as const, result: { session_id: 'session-b' } };
+      },
+    } as unknown as DeviceApi;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const report = (state: PendingState) => { latest = state; };
+    const renderTree = (deviceId: string) => (
+      <QueryClientProvider client={qc}>
+        <DeviceApiProvider api={api}>
+          <KeyedPendingHarness key={deviceId} deviceId={deviceId} report={report} />
+        </DeviceApiProvider>
+      </QueryClientProvider>
+    );
+    const screen = render(renderTree('device-a'));
+    await waitFor(() => expect(latest).not.toBeNull());
+    act(() => latest!.markSent({ commandId: 'command-a', text: 'A', at: Date.now() }));
+    await waitFor(() => expect(reads).toEqual([{ deviceId: 'device-a', commandId: 'command-a' }]));
+
+    screen.rerender(renderTree('device-b'));
+    await waitFor(() => expect(latest!.pending).toBeNull());
+    act(() => latest!.markSent({ commandId: 'command-b', text: 'B', at: Date.now() }));
+    await waitFor(() => expect(latest!.found?.session_id).toBe('session-b'));
+    expect(reads).toContainEqual({ deviceId: 'device-b', commandId: 'command-b' });
+    expect(reads).not.toContainEqual({ deviceId: 'device-b', commandId: 'command-a' });
+
+    await act(async () => {
+      resolveA?.({ status: 'acked', result: { session_id: 'session-a' } });
+      await Promise.resolve();
+    });
+    expect(latest!.found?.session_id).toBe('session-b');
+    expect(latest!.pending?.commandId).toBe('command-b');
   });
 });

@@ -24,6 +24,10 @@ import { navigateBack } from '../navigation';
  */
 export function DeviceWelcomePage() {
   const { deviceId = '' } = useParams();
+  return <DeviceWelcomeContent key={deviceId} deviceId={deviceId} />;
+}
+
+function DeviceWelcomeContent({ deviceId }: { deviceId: string }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const devices = useDevices();
