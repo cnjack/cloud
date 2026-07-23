@@ -8,51 +8,103 @@
  * page can show a pending card immediately and auto-open the session as soon
  * as the relay mirrors it (with a faster poll while waiting).
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useDeviceApi } from '../api/DeviceApiProvider';
 import { useDeviceSessions } from '../api/deviceQueries';
 import type { DeviceSession } from '../api/devices';
 
 export interface PendingNewSession {
+  commandId: string;
   text: string;
   at: number;
 }
 
-/** Give up waiting and let the user open the session manually. */
+/** Report an unresolved command rather than guessing a session from a snapshot. */
 export const PENDING_SESSION_TIMEOUT_MS = 60_000;
-/** Clock skew allowance when matching the mirrored session's updated_at. */
-const SKEW_MS = 10_000;
+const COMMAND_POLL_MS = 500;
+
+export type PendingNewSessionIssue =
+  | 'command_failed'
+  | 'missing_session_id'
+  | 'command_state_error'
+  | 'timed_out';
+
+function sessionIDFromResult(result: unknown): string | null {
+  if (!result || typeof result !== 'object') return null;
+  const sessionID = (result as { session_id?: unknown }).session_id;
+  return typeof sessionID === 'string' && sessionID.trim() ? sessionID : null;
+}
 
 export function usePendingNewSession(deviceId: string) {
+  const api = useDeviceApi();
   const [pending, setPending] = useState<PendingNewSession | null>(null);
-  const [expired, setExpired] = useState(false);
+  const [issue, setIssue] = useState<PendingNewSessionIssue | null>(null);
+  const [acknowledgedSessionID, setAcknowledgedSessionID] = useState<string | null>(null);
   const sessions = useDeviceSessions(deviceId, pending ? 2_000 : 10_000);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const markSent = (info: { text: string; at: number }) => {
-    setExpired(false);
-    setPending({ text: info.text, at: info.at });
+  const markSent = (info: PendingNewSession) => {
+    setIssue(null);
+    setAcknowledgedSessionID(null);
+    setPending(info);
   };
-  const clear = () => setPending(null);
+  const clear = () => {
+    setPending(null);
+    setIssue(null);
+    setAcknowledgedSessionID(null);
+  };
 
   useEffect(() => {
     if (!pending) return;
-    timer.current = setTimeout(() => {
-      setExpired(true);
-      setPending(null);
-    }, PENDING_SESSION_TIMEOUT_MS);
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const deadline = pending.at + PENDING_SESSION_TIMEOUT_MS;
+    const poll = async () => {
+      try {
+        const state = await api.getCommandState(deviceId, pending.commandId);
+        if (cancelled) return;
+        if (state.status === 'acked') {
+          const sessionID = sessionIDFromResult(state.result);
+          if (!sessionID) {
+            setIssue('missing_session_id');
+            return;
+          }
+          setAcknowledgedSessionID(sessionID);
+          return;
+        }
+        if (state.status === 'failed') {
+          setIssue('command_failed');
+          return;
+        }
+        if (Date.now() >= deadline) {
+          setIssue('timed_out');
+          return;
+        }
+        timer = setTimeout(() => void poll(), COMMAND_POLL_MS);
+      } catch {
+        if (!cancelled) setIssue('command_state_error');
+      }
     };
-  }, [pending]);
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [api, deviceId, pending]);
+
+  useEffect(() => {
+    if (!pending || issue || acknowledgedSessionID === null) return;
+    const remaining = Math.max(0, pending.at + PENDING_SESSION_TIMEOUT_MS - Date.now());
+    const timer = setTimeout(() => setIssue('timed_out'), remaining);
+    return () => clearTimeout(timer);
+  }, [acknowledgedSessionID, issue, pending]);
 
   const found = useMemo((): DeviceSession | null => {
-    if (!pending || !sessions.data) return null;
-    // The mirrored session is updated at/after the send; newest first wins.
-    const candidates = sessions.data
-      .filter((s) => Date.parse(s.updated_at) >= pending.at - SKEW_MS)
-      .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
-    return candidates[0] ?? null;
-  }, [pending, sessions.data]);
+    if (issue || !acknowledgedSessionID || !sessions.data) return null;
+    const session = sessions.data.find((candidate) => candidate.session_id === acknowledgedSessionID);
+    // Events can arrive before the connector's session metadata upsert. Do not
+    // promote that placeholder into a navigable conversation.
+    return session?.meta === null ? null : session ?? null;
+  }, [acknowledgedSessionID, issue, sessions.data]);
 
-  return { pending, expired, found, markSent, clear };
+  return { pending, issue, found, markSent, clear };
 }

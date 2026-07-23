@@ -73,7 +73,7 @@ export interface UseDeviceComposerOptions {
    * this to track the not-yet-visible new session (pending card + auto-open
    * once it appears in the session list).
    */
-  onSent?: (info: { sessionId: string; text: string; at: number }) => void;
+  onSent?: (info: { commandId: string; sessionId: string; text: string; at: number }) => void;
 }
 
 export interface DeviceComposer {
@@ -258,7 +258,7 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
     send.mutate(
       { sessionId, text, ...(mode ? { mode } : {}), ...(extras ? { extras } : {}) },
       {
-        onSuccess: () => {
+        onSuccess: (accepted) => {
           setCompose((current) => {
             let next = current;
             if (mode && current.mode === mode) next = { ...next, modeTouched: false };
@@ -270,7 +270,7 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
             persistSelection(next);
             return next;
           });
-          onSentRef.current?.({ sessionId, text, at: Date.now() });
+          onSentRef.current?.({ commandId: accepted.command_id, sessionId, text, at: Date.now() });
         },
         onError: (error) => {
           appendLocalError(

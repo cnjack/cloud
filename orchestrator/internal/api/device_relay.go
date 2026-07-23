@@ -72,9 +72,10 @@ type deviceSessionsUpsertReq struct {
 }
 
 type deviceSessionUpsert struct {
-	SessionID string          `json:"session_id"`
-	Status    string          `json:"status"`
-	Meta      json.RawMessage `json:"meta"`
+	SessionID      string          `json:"session_id"`
+	Status         string          `json:"status"`
+	Meta           json.RawMessage `json:"meta"`
+	LastActivityAt *time.Time      `json:"last_activity_at,omitempty"`
 }
 
 type deviceSessionUpsertView struct {
@@ -124,11 +125,16 @@ func (s *Server) handleDeviceSessionsUpsert(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		ds := &domain.DeviceSession{
-			DeviceID:  p.deviceID,
-			SessionID: sessionID,
-			Status:    in.Status,
-			Meta:      []byte(in.Meta),
-			UpdatedAt: now,
+			DeviceID:       p.deviceID,
+			SessionID:      sessionID,
+			Status:         in.Status,
+			Meta:           []byte(in.Meta),
+			LastActivityAt: in.LastActivityAt,
+			UpdatedAt:      now,
+		}
+		if ds.LastActivityAt != nil {
+			activity := ds.LastActivityAt.UTC()
+			ds.LastActivityAt = &activity
 		}
 		if err := s.st.UpsertDeviceSession(r.Context(), ds); err != nil {
 			s.log.Error("device sessions upsert", "device", p.deviceID, "session", sessionID, "err", err)

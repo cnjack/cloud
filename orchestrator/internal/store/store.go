@@ -738,11 +738,12 @@ type Store interface {
 	// they are stored and returned verbatim, never parsed.
 
 	// UpsertDeviceSession inserts or refreshes a session-metadata mirror row,
-	// keyed by (device_id, session_id). meta/status/updated_at are overwritten
-	// wholesale (the device owns its mirror).
+	// keyed by (device_id, session_id). meta/status/mirror updated_at are
+	// overwritten wholesale (the device owns its mirror). last_activity_at is
+	// optional local routing metadata and remains NULL for legacy connectors.
 	UpsertDeviceSession(ctx context.Context, s *domain.DeviceSession) error
-	// ListDeviceSessions returns a device's session index, most-recently
-	// updated first.
+	// ListDeviceSessions returns a device's session index by connector-provided
+	// activity time (newest first); legacy rows with no activity time sort last.
 	ListDeviceSessions(ctx context.Context, deviceID string) ([]domain.DeviceSession, error)
 	// DeleteDeviceSession removes one mirrored session and its durable events.
 	DeleteDeviceSession(ctx context.Context, deviceID, sessionID string) error

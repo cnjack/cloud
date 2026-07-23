@@ -15,6 +15,7 @@ import {
   type DeviceSession,
 } from '@jcloud/device-ui';
 import { timeAgo } from '../lib/time';
+import { navigateBack } from '../navigation';
 
 /**
  * DeviceWelcomePage — the desktop-welcome equivalent: new-session composer
@@ -27,6 +28,7 @@ export function DeviceWelcomePage() {
   const navigate = useNavigate();
   const devices = useDevices();
   const sessions = useDeviceSessions(deviceId);
+  const visibleSessions = (sessions.data ?? []).filter((session) => session.meta !== null);
   const [sendError, setSendError] = useState<string | null>(null);
 
   const device = devices.data?.find((d) => d.id === deviceId);
@@ -34,14 +36,14 @@ export function DeviceWelcomePage() {
 
   // A send to 'new' is tracked as pending: the list shows a creating row
   // immediately (2s poll) and the session opens automatically once mirrored.
-  const { pending, found, markSent, clear } = usePendingNewSession(deviceId);
+  const { pending, issue, found, markSent, clear } = usePendingNewSession(deviceId);
   const { host, runtime } = useDeviceComposer({
     deviceId,
     sessionId: 'new',
     device,
     hasMessages: false,
     onError: setSendError,
-    onSent: (info: { sessionId: string; text: string; at: number }) => markSent({ text: info.text, at: info.at }),
+    onSent: markSent,
   });
   useEffect(() => {
     if (found) {
@@ -53,9 +55,9 @@ export function DeviceWelcomePage() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <Link to="/" className="topbar-back" aria-label={t('device.list.title')}>
+        <button type="button" onClick={() => navigateBack(navigate, '/')} className="topbar-back" aria-label={t('device.list.title')}>
           <ArrowLeft size={18} />
-        </Link>
+        </button>
         <div className="topbar-title">
           {device?.name ?? deviceId}
           <span className="topbar-sub">
@@ -103,10 +105,10 @@ export function DeviceWelcomePage() {
                   <span className="pill" data-tone="warning">{t('device.welcome.status.running')}</span>
                 </div>
               )}
-              {(sessions.data ?? []).map((session) => (
+              {visibleSessions.map((session) => (
                 <SessionRow key={session.session_id} deviceId={deviceId} session={session} />
               ))}
-              {!pending && (sessions.data?.length ?? 0) === 0 && (
+              {!pending && visibleSessions.length === 0 && (
                 <p className="state-block">{t('device.welcome.noSessions')}</p>
               )}
             </div>
@@ -122,6 +124,7 @@ export function DeviceWelcomePage() {
           <ChatInput host={host} pickerPlacement="top" elevated />
         </RuntimeProvider>
         {sendError && <p className="send-error" role="alert">{sendError}</p>}
+        {issue && <p className="send-error" role="alert">{t('device.welcome.createSlow')}</p>}
         </div>
       </DevicePairingGate>
     </div>
@@ -139,7 +142,7 @@ function SessionRow({ deviceId, session }: { deviceId: string; session: DeviceSe
           <span className="session-row-title">{title}</span>
           <span className="session-row-meta">
             {session.meta?.project && <span>{session.meta.project} · </span>}
-            {timeAgo(session.updated_at)}
+            {session.last_activity_at && timeAgo(session.last_activity_at)}
           </span>
         </span>
         <span className="pill" data-tone={running ? 'warning' : 'neutral'}>

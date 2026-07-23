@@ -189,10 +189,19 @@ func (m *MemStore) ListDeviceSessions(_ context.Context, deviceID string) ([]dom
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+		left, right := out[i].LastActivityAt, out[j].LastActivityAt
+		switch {
+		case left == nil && right == nil:
 			return out[i].SessionID < out[j].SessionID
+		case left == nil:
+			return false
+		case right == nil:
+			return true
+		case left.Equal(*right):
+			return out[i].SessionID < out[j].SessionID
+		default:
+			return left.After(*right)
 		}
-		return out[i].UpdatedAt.After(out[j].UpdatedAt)
 	})
 	return out, nil
 }

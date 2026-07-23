@@ -8,7 +8,7 @@ import {
 } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useMobileAuth } from '../auth';
 import {
   LOCALE_LABELS,
@@ -17,6 +17,7 @@ import {
   type Locale,
 } from '../i18n';
 import { useMobileTheme, type MobileTheme } from '../theme';
+import { navigateBack } from '../navigation';
 
 function initials(name: string): string {
   return Array.from(name.trim()).slice(0, 2).join('').toUpperCase() || 'JC';
@@ -24,6 +25,7 @@ function initials(name: string): string {
 
 export function SettingsPage() {
   const { t, i18n } = useTranslation();
+  const navigate = useNavigate();
   const auth = useMobileAuth();
   const { theme, setTheme } = useMobileTheme();
   const name = auth.me?.user.display_name || t('mobile.settings.accountPending');
@@ -32,9 +34,9 @@ export function SettingsPage() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <Link to="/" className="topbar-back" aria-label={t('device.list.title')}>
+        <button type="button" onClick={() => navigateBack(navigate, '/')} className="topbar-back" aria-label={t('device.list.title')}>
           <ArrowLeft size={18} />
-        </Link>
+        </button>
         <div className="topbar-title">{t('mobile.settings.title')}</div>
       </header>
 

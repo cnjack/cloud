@@ -66,6 +66,12 @@ export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceAp
       );
     },
 
+    getCommandState: async (deviceId, commandId) => {
+      const state = await api.getCommandState(deviceId, commandId);
+      if (!isEnvelope(state.result)) return state;
+      return { ...state, result: await open(deviceId, state.result) };
+    },
+
     listSessionEvents: async (deviceId, sessionId, afterSeq, limit) => {
       const events = await api.listSessionEvents(deviceId, sessionId, afterSeq, limit);
       return Promise.all(

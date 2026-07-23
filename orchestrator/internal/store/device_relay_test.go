@@ -49,28 +49,39 @@ func testDeviceRelaySessions(t *testing.T, st deviceRelayStore, deviceID string)
 	t.Helper()
 	ctx := context.Background()
 
-	// Insert then upsert: meta/status/updated_at are overwritten wholesale.
+	// Insert then upsert: meta/status/mirror updated_at are overwritten wholesale.
 	first := time.Now().UTC()
-	ds := &domain.DeviceSession{DeviceID: deviceID, SessionID: "s1", Status: domain.DeviceSessionRunning, Meta: []byte(`{"title":"a"}`), UpdatedAt: first}
+	newerActivity := first.Add(2 * time.Hour)
+	ds := &domain.DeviceSession{DeviceID: deviceID, SessionID: "s1", Status: domain.DeviceSessionRunning, Meta: []byte(`{"title":"a"}`), LastActivityAt: &newerActivity, UpdatedAt: first}
 	if err := st.UpsertDeviceSession(ctx, ds); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	second := first.Add(time.Minute)
-	ds2 := &domain.DeviceSession{DeviceID: deviceID, SessionID: "s1", Status: domain.DeviceSessionIdle, Meta: []byte(`{"title":"b"}`), UpdatedAt: second}
+	ds2 := &domain.DeviceSession{DeviceID: deviceID, SessionID: "s1", Status: domain.DeviceSessionIdle, Meta: []byte(`{"title":"b"}`), LastActivityAt: &newerActivity, UpdatedAt: second}
 	if err := st.UpsertDeviceSession(ctx, ds2); err != nil {
 		t.Fatalf("re-upsert: %v", err)
 	}
-	// A second session, older, to check ordering (updated_at desc).
-	older := &domain.DeviceSession{DeviceID: deviceID, SessionID: "s2", Status: domain.DeviceSessionIdle, UpdatedAt: first}
+	// Sessions with the same mirror time still order by real activity. Equal
+	// activity is resolved by session id, and a legacy NULL row is last.
+	olderActivity := first.Add(time.Hour)
+	older := &domain.DeviceSession{DeviceID: deviceID, SessionID: "s2", Status: domain.DeviceSessionIdle, LastActivityAt: &olderActivity, UpdatedAt: second}
 	if err := st.UpsertDeviceSession(ctx, older); err != nil {
 		t.Fatalf("upsert s2: %v", err)
+	}
+	tied := &domain.DeviceSession{DeviceID: deviceID, SessionID: "s3", Status: domain.DeviceSessionIdle, LastActivityAt: &olderActivity, UpdatedAt: second}
+	if err := st.UpsertDeviceSession(ctx, tied); err != nil {
+		t.Fatalf("upsert s3: %v", err)
+	}
+	legacy := &domain.DeviceSession{DeviceID: deviceID, SessionID: "s0", Status: domain.DeviceSessionIdle, UpdatedAt: second}
+	if err := st.UpsertDeviceSession(ctx, legacy); err != nil {
+		t.Fatalf("upsert legacy: %v", err)
 	}
 
 	list, err := st.ListDeviceSessions(ctx, deviceID)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(list) != 2 || list[0].SessionID != "s1" || list[1].SessionID != "s2" {
+	if len(list) != 4 || list[0].SessionID != "s1" || list[1].SessionID != "s2" || list[2].SessionID != "s3" || list[3].SessionID != "s0" {
 		t.Fatalf("list order/content: %+v", list)
 	}
 	got := list[0]

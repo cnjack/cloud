@@ -65,6 +65,7 @@ export default defineConfig(({ mode }) => {
       include: [
         'src/**/*.{test,spec}.{ts,tsx}',
         'packages/device-ui/src/**/*.{test,spec}.{ts,tsx}',
+        '../mobile/src/**/*.{test,spec}.{ts,tsx}',
       ],
       setupFiles: ['src/test/setup.ts'],
     },

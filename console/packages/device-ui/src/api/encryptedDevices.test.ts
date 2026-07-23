@@ -43,6 +43,7 @@ function fakeInner(overrides: Partial<DeviceApi> = {}): FakeInner {
   const api: DeviceApi = {
     listDevices: async () => [],
     listSessions: async () => [],
+    getCommandState: async () => ({ status: 'pending' }),
     listSessionEvents: async () => [],
     sendMessage: async () => ({ command_id: 'c1', session_id: 's1' }),
     sendEnvelope: async (_d, _s, envelope) => {
@@ -116,6 +117,21 @@ describe('withDeviceCrypto reads', () => {
     const api = withDeviceCrypto(inner.api, crypto);
     const sessions = await api.listSessions(DEVICE);
     expect(isEnvelope(sessions[0]!.meta)).toBe(true);
+  });
+
+  it('opens an encrypted new-session ACK result before exact correlation', async () => {
+    const envelope = await sealedMeta({ session_id: 'created-1' });
+    const inner = fakeInner({
+      getCommandState: async () => ({ status: 'acked', result: envelope }),
+    });
+    const { store, crypto } = cryptoWithCek();
+    await store.put(DEVICE, { cek: CEK_RAW, keyGen: 1 });
+    const api = withDeviceCrypto(inner.api, crypto);
+
+    await expect(api.getCommandState(DEVICE, 'command-1')).resolves.toEqual({
+      status: 'acked',
+      result: { session_id: 'created-1' },
+    });
   });
 
   it('opens envelope device capabilities (composer pickers depend on it)', async () => {

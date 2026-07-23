@@ -8,7 +8,8 @@
 import { ArrowLeft } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
+import { navigateBack } from '../navigation';
 
 const shot = (name: string) => `${import.meta.env.BASE_URL}guide/${name}.png`;
 
@@ -62,9 +63,7 @@ export function GuidePage({ onBack }: { onBack?: () => void }) {
       <ArrowLeft size={18} />
     </button>
   ) : (
-    <Link to="/" className="topbar-back" aria-label={t('device.guide.back')}>
-      <ArrowLeft size={18} />
-    </Link>
+    <GuideRouterBack label={t('device.guide.back')} />
   );
 
   return (
@@ -146,5 +145,14 @@ export function GuidePage({ onBack }: { onBack?: () => void }) {
         </Section>
       </div>
     </div>
+  );
+}
+
+function GuideRouterBack({ label }: { label: string }) {
+  const navigate = useNavigate();
+  return (
+    <button type="button" className="topbar-back" onClick={() => navigateBack(navigate, '/')} aria-label={label}>
+      <ArrowLeft size={18} />
+    </button>
   );
 }
