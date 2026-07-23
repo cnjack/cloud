@@ -31,3 +31,8 @@ kubectl -n jcode rollout status deploy/console --timeout=120s
 
 Because the manifests use immutable version tags, `kubectl apply` records
 exactly which release is running. Do not replace them with `latest`.
+
+The company overlay deliberately deletes the base development
+`orchestrator-secret` from its rendered resources. Applying the overlay
+therefore preserves the real, out-of-band Secret already installed in the
+cluster.

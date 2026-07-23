@@ -30,6 +30,20 @@ images:
     newTag: v0.0.74
 
 patches:
+  # Production credentials are replayed out-of-band from the gitignored
+  # company Secret. Remove the base development Secret from the rendered
+  # overlay so `kubectl apply -k` can never overwrite live credentials with
+  # repository placeholders.
+  - target:
+      kind: Secret
+      name: orchestrator-secret
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: orchestrator-secret
+
   # ghcr images must actually be pulled (base pins Never for the local store).
   - target:
       kind: Deployment
