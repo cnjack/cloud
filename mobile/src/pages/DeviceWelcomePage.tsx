@@ -36,8 +36,8 @@ export function DeviceWelcomePage() {
 
   // A send to 'new' is tracked as pending: the list shows a creating row
   // immediately (2s poll) and the session opens automatically once mirrored.
-  const { pending, issue, found, markSent, clear } = usePendingNewSession(deviceId);
-  const { host, runtime } = useDeviceComposer({
+  const { pending, issue, found, markSent, clear, isRetryingCommandState } = usePendingNewSession(deviceId);
+  const { host, runtime, isSendLocked, releaseNewSessionLock } = useDeviceComposer({
     deviceId,
     sessionId: 'new',
     device,
@@ -51,6 +51,9 @@ export function DeviceWelcomePage() {
       navigate(`/devices/${deviceId}/sessions/${found.session_id}`);
     }
   }, [found, clear, deviceId, navigate]);
+  useEffect(() => {
+    if (issue) releaseNewSessionLock();
+  }, [issue, releaseNewSessionLock]);
 
   return (
     <div className="app-shell">
@@ -101,6 +104,7 @@ export function DeviceWelcomePage() {
                   <span className="session-row-main">
                     <span className="session-row-title">{pending.text || t('mobile.common.untitled')}</span>
                     <span className="session-row-meta">{t('device.welcome.creating')}</span>
+                    {isRetryingCommandState && <span className="session-row-meta">{t('device.welcome.createSlow')}</span>}
                   </span>
                   <span className="pill" data-tone="warning">{t('device.welcome.status.running')}</span>
                 </div>
@@ -118,11 +122,13 @@ export function DeviceWelcomePage() {
         <div className="composer product-composer jcode-product" data-testid="new-session-composer">
         {/* M14: stock jcode product composer (welcome placement). Offline
             sends fail visibly via the inline error below. */}
-        <RuntimeProvider runtime={runtime}>
-          {/* M15: placement "top" — the welcome composer is bottom-docked on
-              the phone shell, so a downward picker opens off-screen. */}
-          <ChatInput host={host} pickerPlacement="top" elevated />
-        </RuntimeProvider>
+        <fieldset className="composer-lock" disabled={isSendLocked} aria-busy={isSendLocked}>
+          <RuntimeProvider runtime={runtime}>
+            {/* M15: placement "top" — the welcome composer is bottom-docked on
+                the phone shell, so a downward picker opens off-screen. */}
+            <ChatInput host={host} pickerPlacement="top" elevated />
+          </RuntimeProvider>
+        </fieldset>
         {sendError && <p className="send-error" role="alert">{sendError}</p>}
         {issue && <p className="send-error" role="alert">{t('device.welcome.createSlow')}</p>}
         </div>

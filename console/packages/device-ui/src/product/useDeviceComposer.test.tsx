@@ -6,7 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DeviceApiProvider } from '../api/DeviceApiProvider';
 import type { Device, DeviceApi, SendMessageExtras } from '../api/devices';
@@ -120,6 +120,30 @@ describe('useDeviceComposer', () => {
       folders: [{ name: 'work', path: '/home/jack/work' }],
     });
     expect(browsed).toEqual(['/home/jack']);
+  });
+
+  it('accepts only one welcome creation command until a terminal outcome releases it', async () => {
+    const { api, sends } = makeFakeApi();
+    const onSent = vi.fn();
+    const { result } = renderHook(
+      () => useDeviceComposer({ deviceId: 'dev-1', sessionId: 'new', device: DEVICE, onSent }),
+      { wrapper: wrapper(api) },
+    );
+
+    act(() => {
+      result.current.runtime.actions.sendMessage('first');
+      result.current.runtime.actions.sendMessage('second');
+    });
+
+    expect(sends.map((send) => send.text)).toEqual(['first']);
+    expect(result.current.isSendLocked).toBe(true);
+    await waitFor(() => expect(onSent).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: 'cmd-1',
+      sessionId: 'new',
+      text: 'first',
+    })));
+    act(() => result.current.releaseNewSessionLock());
+    expect(result.current.isSendLocked).toBe(false);
   });
 
   it('sends an armed goal as {goal_armed: true} alone — goal beats every compose field', async () => {

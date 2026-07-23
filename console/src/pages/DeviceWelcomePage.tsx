@@ -43,8 +43,8 @@ export function DeviceWelcomePage() {
   // M14: the stock jcode product composer. A send to 'new' is tracked as a
   // pending session: the list shows a creating row immediately (2s poll) and
   // the session opens automatically the moment the relay mirrors it.
-  const { pending, issue, found, markSent, clear } = usePendingNewSession(deviceId);
-  const { host, runtime } = useDeviceComposer({
+  const { pending, issue, found, markSent, clear, isRetryingCommandState } = usePendingNewSession(deviceId);
+  const { host, runtime, isSendLocked, releaseNewSessionLock } = useDeviceComposer({
     deviceId,
     sessionId: 'new',
     device,
@@ -61,6 +61,9 @@ export function DeviceWelcomePage() {
   useEffect(() => {
     if (issue) toast.push({ kind: 'info', message: t('device.welcome.createSlow') });
   }, [issue, toast, t]);
+  useEffect(() => {
+    if (issue) releaseNewSessionLock();
+  }, [issue, releaseNewSessionLock]);
 
   if (devices.isLoading) {
     return <SurfaceInner><div className={styles.state}><LoadingBlock label={t('common.loading')} /></div></SurfaceInner>;
@@ -149,9 +152,11 @@ export function DeviceWelcomePage() {
                 open downward, card elevated). Offline sends fail visibly via
                 the onError toast. */}
             <div data-testid="new-session-composer" className="jcode-product">
-              <RuntimeProvider runtime={runtime}>
-                <ChatInput host={host} pickerPlacement="bottom" elevated />
-              </RuntimeProvider>
+              <fieldset className={styles.composerLock} disabled={isSendLocked} aria-busy={isSendLocked}>
+                <RuntimeProvider runtime={runtime}>
+                  <ChatInput host={host} pickerPlacement="bottom" elevated />
+                </RuntimeProvider>
+              </fieldset>
             </div>
           </section>
 
@@ -172,6 +177,7 @@ export function DeviceWelcomePage() {
                       <span className={styles.rowTitle}>
                         <strong>{pending.text || t('device.welcome.untitled')}</strong>
                         <span className={styles.statusBadge} data-tone="running">{t('device.welcome.creating')}</span>
+                        {isRetryingCommandState && <span className={styles.statusBadge}>{t('device.welcome.createSlow')}</span>}
                       </span>
                     </span>
                   </li>

@@ -625,6 +625,12 @@ a {
   flex-direction: column;
   gap: var(--space-2);
 }
+.composer-lock {
+  min-inline-size: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
 
 .composer textarea {
   width: 100%;

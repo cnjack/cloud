@@ -26,7 +26,6 @@ const COMMAND_POLL_MS = 500;
 export type PendingNewSessionIssue =
   | 'command_failed'
   | 'missing_session_id'
-  | 'command_state_error'
   | 'timed_out';
 
 function sessionIDFromResult(result: unknown): string | null {
@@ -40,28 +39,37 @@ export function usePendingNewSession(deviceId: string) {
   const [pending, setPending] = useState<PendingNewSession | null>(null);
   const [issue, setIssue] = useState<PendingNewSessionIssue | null>(null);
   const [acknowledgedSessionID, setAcknowledgedSessionID] = useState<string | null>(null);
+  const [isRetryingCommandState, setIsRetryingCommandState] = useState(false);
   const sessions = useDeviceSessions(deviceId, pending ? 2_000 : 10_000);
 
   const markSent = (info: PendingNewSession) => {
     setIssue(null);
     setAcknowledgedSessionID(null);
+    setIsRetryingCommandState(false);
     setPending(info);
   };
   const clear = () => {
     setPending(null);
     setIssue(null);
     setAcknowledgedSessionID(null);
+    setIsRetryingCommandState(false);
   };
 
   useEffect(() => {
     if (!pending) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
     const deadline = pending.at + PENDING_SESSION_TIMEOUT_MS;
+    const schedule = (delay: number) => {
+      timer = setTimeout(() => void poll(), delay);
+    };
     const poll = async () => {
       try {
         const state = await api.getCommandState(deviceId, pending.commandId);
         if (cancelled) return;
+        failures = 0;
+        setIsRetryingCommandState(false);
         if (state.status === 'acked') {
           const sessionID = sessionIDFromResult(state.result);
           if (!sessionID) {
@@ -79,9 +87,16 @@ export function usePendingNewSession(deviceId: string) {
           setIssue('timed_out');
           return;
         }
-        timer = setTimeout(() => void poll(), COMMAND_POLL_MS);
+        schedule(COMMAND_POLL_MS);
       } catch {
-        if (!cancelled) setIssue('command_state_error');
+        if (cancelled) return;
+        if (Date.now() >= deadline) {
+          setIssue('timed_out');
+          return;
+        }
+        setIsRetryingCommandState(true);
+        failures += 1;
+        schedule(Math.min(COMMAND_POLL_MS * 2 ** (failures - 1), 4_000));
       }
     };
     void poll();
@@ -92,11 +107,11 @@ export function usePendingNewSession(deviceId: string) {
   }, [api, deviceId, pending]);
 
   useEffect(() => {
-    if (!pending || issue || acknowledgedSessionID === null) return;
+    if (!pending || issue) return;
     const remaining = Math.max(0, pending.at + PENDING_SESSION_TIMEOUT_MS - Date.now());
     const timer = setTimeout(() => setIssue('timed_out'), remaining);
     return () => clearTimeout(timer);
-  }, [acknowledgedSessionID, issue, pending]);
+  }, [issue, pending]);
 
   const found = useMemo((): DeviceSession | null => {
     if (issue || !acknowledgedSessionID || !sessions.data) return null;
@@ -106,5 +121,5 @@ export function usePendingNewSession(deviceId: string) {
     return session?.meta === null ? null : session ?? null;
   }, [acknowledgedSessionID, issue, sessions.data]);
 
-  return { pending, issue, found, markSent, clear };
+  return { pending, issue, found, markSent, clear, isRetryingCommandState };
 }

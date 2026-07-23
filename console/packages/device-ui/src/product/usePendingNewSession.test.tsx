@@ -48,6 +48,27 @@ describe('usePendingNewSession', () => {
     await waitFor(() => expect(result.current.found?.session_id).toBe('s-new'));
   });
 
+  it('retries a transient command-state failure and still finds the exact ACK session', async () => {
+    let reads = 0;
+    const api = {
+      listSessions: async () => [
+        row('s-old', '2026-03-01T10:00:00Z'),
+        row('s-new', '2026-03-01T10:00:00Z'),
+      ],
+      getCommandState: async () => {
+        reads += 1;
+        if (reads === 1) throw new Error('temporary network failure');
+        return { status: 'acked' as const, result: { session_id: 's-new' } };
+      },
+    } as unknown as DeviceApi;
+    const { result } = renderHook(() => usePendingNewSession(DEVICE), { wrapper: wrapper(api) });
+    act(() => result.current.markSent({ commandId: 'command-1', text: 'hi', at: Date.now() }));
+
+    await waitFor(() => expect(result.current.found?.session_id).toBe('s-new'), { timeout: 2_000 });
+    expect(reads).toBe(2);
+    expect(result.current.issue).toBeNull();
+  });
+
   it('keeps a known placeholder pending until the matching metadata is mirrored', async () => {
     const api = sessionsApi([{ ...row('s-new', '2026-03-01T10:00:00Z'), meta: null }]);
     const { result } = renderHook(() => usePendingNewSession(DEVICE), { wrapper: wrapper(api) });
@@ -72,6 +93,22 @@ describe('usePendingNewSession', () => {
       text: 'hi',
       at: Date.now() - PENDING_SESSION_TIMEOUT_MS,
     }));
+    await waitFor(() => expect(result.current.issue).toBe('timed_out'));
+    expect(result.current.found).toBeNull();
+  });
+
+  it('times out a command-state request that never settles', async () => {
+    const api = {
+      listSessions: async () => [],
+      getCommandState: async () => new Promise<never>(() => {}),
+    } as unknown as DeviceApi;
+    const { result } = renderHook(() => usePendingNewSession(DEVICE), { wrapper: wrapper(api) });
+    act(() => result.current.markSent({
+      commandId: 'command-1',
+      text: 'hi',
+      at: Date.now() - PENDING_SESSION_TIMEOUT_MS,
+    }));
+
     await waitFor(() => expect(result.current.issue).toBe('timed_out'));
     expect(result.current.found).toBeNull();
   });
