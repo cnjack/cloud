@@ -85,6 +85,7 @@ func TestDeviceSessionsUpsert(t *testing.T) {
 	for _, body := range []map[string]any{
 		{"sessions": []map[string]any{{"session_id": "s1", "status": "busy"}}},
 		{"sessions": []map[string]any{{"status": "idle"}}},
+		{"sessions": []map[string]any{{"session_id": "s1", "status": "idle", "last_activity_at": "2026-03-01T18:11:12+08:00"}}},
 		{"sessions": []map[string]any{}, "surprise": 1},
 	} {
 		resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, body)
