@@ -214,8 +214,8 @@ func TestLLMProxyForwardsBaseWithV1(t *testing.T) {
 }
 
 // TestLLMProxyForwardsBaseWithoutV1 proves the proxy also does the right thing
-// when the real model base does NOT end in /v1: stripTrailingV1 is a no-op, and
-// the /v1 arriving in the rest path is appended, still yielding /v1/chat/completions.
+// when the real model base does NOT end in a version: the /v1 arriving in the
+// rest path is appended, still yielding /v1/chat/completions.
 func TestLLMProxyForwardsBaseWithoutV1(t *testing.T) {
 	cap := &upstreamCapture{}
 	up := newUpstream(t, cap)
@@ -232,6 +232,113 @@ func TestLLMProxyForwardsBaseWithoutV1(t *testing.T) {
 	}
 	if cap.auth != "Bearer realkey" {
 		t.Fatalf("upstream Authorization=%q want 'Bearer realkey'", cap.auth)
+	}
+}
+
+// TestLLMProxyForwardsVersionedProviderBase is the regression test for
+// OpenAI-compatible providers whose configured base is versioned with something
+// other than /v1 (Zhipu Coding Plan currently uses /api/coding/paas/v4). The
+// Cloud proxy's compatibility /v1 must not be appended after the upstream /v4.
+func TestLLMProxyForwardsVersionedProviderBase(t *testing.T) {
+	cap := &upstreamCapture{}
+	up := newUpstream(t, cap)
+	ts, st := proxyTestServer(t, up.URL+"/api/coding/paas/v4", "realkey")
+	rid, tok := proxyRun(t, st)
+
+	resp := proxyPost(t, ts.URL, tok, "runs/"+rid+"/llm/v1/chat/completions", []byte("{}"))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	if cap.path != "/api/coding/paas/v4/chat/completions" {
+		t.Fatalf("upstream path=%q want /api/coding/paas/v4/chat/completions", cap.path)
+	}
+}
+
+func TestComposeUpstreamPath(t *testing.T) {
+	tests := []struct {
+		name string
+		base string
+		rest string
+		want string
+	}{
+		{name: "empty base", rest: "v1/chat/completions", want: "/v1/chat/completions"},
+		{name: "unversioned base", base: "/proxy", rest: "/v1/chat/completions", want: "/proxy/v1/chat/completions"},
+		{name: "same version", base: "/proxy/v1/", rest: "v1/chat/completions", want: "/proxy/v1/chat/completions"},
+		{name: "provider version wins", base: "/api/coding/paas/v4", rest: "v1/chat/completions", want: "/api/coding/paas/v4/chat/completions"},
+		{name: "non-version v folder", base: "/proxy/version", rest: "v1/chat/completions", want: "/proxy/version/v1/chat/completions"},
+		{name: "rest without version", base: "/proxy/v4", rest: "models", want: "/proxy/v4/models"},
+		{name: "root only", base: "", rest: "", want: "/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := composeUpstreamPath(tt.base, tt.rest); got != tt.want {
+				t.Fatalf("composeUpstreamPath(%q, %q)=%q want %q", tt.base, tt.rest, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLLMProxyNormalizesNonJSONUpstreamError ensures an empty/HTML provider
+// failure remains actionable to OpenAI-compatible clients instead of surfacing
+// as the misleading "unexpected end of JSON input".
+func TestLLMProxyNormalizesNonJSONUpstreamError(t *testing.T) {
+	cap := &upstreamCapture{
+		respond: func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusNotFound)
+		},
+	}
+	up := newUpstream(t, cap)
+	ts, st := proxyTestServer(t, up.URL+"/v1", "realkey")
+	rid, tok := proxyRun(t, st)
+
+	resp := proxyPost(t, ts.URL, tok, "runs/"+rid+"/llm/v1/chat/completions", []byte("{}"))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status=%d want 404", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type=%q want application/json", got)
+	}
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode normalized error: %v", err)
+	}
+	if body.Error.Code != "upstream_http_404" || body.Error.Type != "upstream_error" {
+		t.Fatalf("normalized error=%+v", body.Error)
+	}
+}
+
+// TestLLMProxyPreservesJSONUpstreamError proves the safety net does not rewrite
+// a provider's own structured diagnostics.
+func TestLLMProxyPreservesJSONUpstreamError(t *testing.T) {
+	const upstreamBody = `{"error":{"code":"quota_exceeded","message":"no quota"}}`
+	cap := &upstreamCapture{
+		respond: func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, upstreamBody)
+		},
+	}
+	up := newUpstream(t, cap)
+	ts, st := proxyTestServer(t, up.URL+"/v1", "realkey")
+	rid, tok := proxyRun(t, st)
+
+	resp := proxyPost(t, ts.URL, tok, "runs/"+rid+"/llm/v1/chat/completions", []byte("{}"))
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusTooManyRequests || string(got) != upstreamBody {
+		t.Fatalf("status/body=%d %q want 429 %q", resp.StatusCode, string(got), upstreamBody)
 	}
 }
 

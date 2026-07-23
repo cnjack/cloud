@@ -1,10 +1,14 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,13 +47,13 @@ var llmProxyTransport = &http.Transport{
 // is method-agnostic on purpose so the OpenAI client's POST completions AND GET
 // /models both work.
 //
-// Path forwarding is transparent w.r.t. /v1: jcode treats base_url as already
-// including /v1 and appends a relative path like /chat/completions. The runner's
-// proxy base is ${ORCH}/internal/v1/runs/{id}/llm (no /v1) and the entrypoint
-// appends /v1, so the request that arrives here carries rest="v1/chat/completions".
-// The proxy strips the trailing /v1 from the REAL model.BaseURL (which also ends
-// in /v1) and re-attaches the rest — so both bases compose to the same upstream
-// path with no /v1 doubling. See stripTrailingV1.
+// Path forwarding is transparent across provider API versions. jcode calls the
+// Cloud proxy through its OpenAI-compatible /v1 surface, so the request arriving
+// here carries rest="v1/chat/completions". Most providers either have no version
+// in BaseURL or end in /v1; some compatible providers instead expose the same
+// operation below a different versioned base such as /v4. composeUpstreamPath
+// keeps the provider's terminal version authoritative, preventing both /v1/v1
+// and /v4/v1 path corruption.
 //
 // Fail-visible (CLAUDE.md red line #1): an unconfigured model returns a typed
 // 503 model_not_configured rather than a fabricated success; a resolve error is
@@ -101,12 +105,11 @@ func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, mode
 	}
 
 	// rest is the path after the "/llm" mount (no leading slash), e.g.
-	// "v1/chat/completions". Forward path = real base root (trailing /v1 stripped)
-	// + "/" + rest, so a base ending in /v1 composes with rest's /v1 without
-	// doubling. RawQuery is inherited by the cloned outgoing URL and preserved.
+	// "v1/chat/completions". A terminal API version in the real provider base is
+	// authoritative; otherwise the proxy's /v1 is retained. RawQuery is inherited
+	// by the cloned outgoing URL and preserved.
 	rest := r.PathValue("rest")
-	root := stripTrailingV1(target.Path)
-	forwardPath := root + "/" + rest
+	forwardPath := composeUpstreamPath(target.Path, rest)
 
 	rp := &httputil.ReverseProxy{
 		// Flush immediately so SSE token chunks reach the runner as they arrive
@@ -141,6 +144,7 @@ func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, mode
 			}
 			// Hop-by-hop headers are stripped by ReverseProxy; keep no extras.
 		},
+		ModifyResponse: normalizeUpstreamError,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			// Log only method/subject/status — never the key, body, or full URL.
 			s.log.Warn("llm proxy: upstream error", "subject_kind", subjectKind, "subject", subjectID, "method", r.Method,
@@ -151,22 +155,101 @@ func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, mode
 	rp.ServeHTTP(w, r)
 }
 
-// stripTrailingV1 removes a trailing "/v1" (and any trailing slashes) from a URL
-// path so the proxy can re-attach the "/v1/..." that arrives in the request rest
-// without doubling it. Examples:
+// composeUpstreamPath joins the configured provider base path and the relative
+// path presented by Cloud's OpenAI-compatible /v1 proxy. If the provider base
+// already terminates in an API version, that version wins:
 //
-//	"/v1"          -> ""
-//	"/v1/"         -> ""
-//	"/proxy/v1"    -> "/proxy"
-//	""             -> ""
-//	"/v2"          -> "/v2"   (no /v1 to strip; transparent)
+//	("", "v1/chat/completions")                    -> "/v1/chat/completions"
+//	("/proxy", "v1/chat/completions")              -> "/proxy/v1/chat/completions"
+//	("/proxy/v1", "v1/chat/completions")           -> "/proxy/v1/chat/completions"
+//	("/api/coding/paas/v4", "v1/chat/completions") -> "/api/coding/paas/v4/chat/completions"
 //
-// This makes the proxy correct whether or not the real model.BaseURL terminates
-// in /v1, matching jcode's "base already includes /v1" convention.
-func stripTrailingV1(path string) string {
-	s := strings.TrimRight(path, "/")
-	s, _ = strings.CutSuffix(s, "/v1")
-	return s
+// This preserves jcode's stable /v1 Cloud contract without assuming that every
+// OpenAI-compatible upstream also locates its operations below /v1.
+func composeUpstreamPath(basePath, rest string) string {
+	base := strings.TrimRight(basePath, "/")
+	rest = strings.TrimLeft(rest, "/")
+
+	lastBaseSegment := base
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		lastBaseSegment = base[i+1:]
+	}
+	if isAPIVersionSegment(lastBaseSegment) {
+		if firstRestSegment, remainder, ok := strings.Cut(rest, "/"); ok && isAPIVersionSegment(firstRestSegment) {
+			rest = remainder
+		} else if isAPIVersionSegment(rest) {
+			rest = ""
+		}
+	}
+
+	if rest == "" {
+		if base == "" {
+			return "/"
+		}
+		return base
+	}
+	return base + "/" + rest
+}
+
+// isAPIVersionSegment deliberately recognizes only the unambiguous v<digits>
+// form used by provider URL paths. It must not treat an arbitrary final folder
+// beginning with "v" as an API version and silently discard part of a request.
+func isAPIVersionSegment(segment string) bool {
+	if len(segment) < 2 || segment[0] != 'v' {
+		return false
+	}
+	for _, r := range segment[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+const maxUpstreamErrorBody = 64 << 10
+
+// normalizeUpstreamError keeps valid JSON provider errors untouched, but turns
+// empty, HTML, truncated or otherwise non-JSON failures into a stable JSON
+// envelope. Without this guard an OpenAI-compatible client reports an unrelated
+// "unexpected end of JSON input" and hides the actionable upstream HTTP status.
+// Success responses (including SSE streams) never pass through this buffering.
+func normalizeUpstreamError(resp *http.Response) error {
+	if resp.StatusCode < http.StatusBadRequest {
+		return nil
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBody+1))
+	if err != nil {
+		return err
+	}
+	if err := resp.Body.Close(); err != nil {
+		return err
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(raw) <= maxUpstreamErrorBody && len(trimmed) > 0 && json.Valid(trimmed) {
+		resp.Body = io.NopCloser(bytes.NewReader(raw))
+		resp.ContentLength = int64(len(raw))
+		resp.Header.Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+		return nil
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"error": map[string]string{
+			"code":    "upstream_http_" + strconv.Itoa(resp.StatusCode),
+			"message": "the model provider returned HTTP " + strconv.Itoa(resp.StatusCode),
+			"type":    "upstream_error",
+		},
+	})
+	if err != nil {
+		return err
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(payload))
+	resp.ContentLength = int64(len(payload))
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("Transfer-Encoding")
+	return nil
 }
 
 // skipCustomHeader reports whether a provider-configured custom header must NOT
