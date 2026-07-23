@@ -59,8 +59,17 @@ export interface DeviceCapabilityProject {
 
 export interface DeviceCapabilityModel {
   provider: string;
+  provider_name?: string;
+  /** Canonical provider family; use this for icon lookup. */
+  kind?: string;
+  source?: 'desktop' | 'cloud';
+  scope?: 'cluster' | 'project';
+  scope_name?: string;
   id: string;
   label: string;
+  tool_call?: boolean;
+  reasoning?: boolean;
+  image_support?: boolean;
 }
 
 /** One slash command the device relayed from its local jcode (M14). */

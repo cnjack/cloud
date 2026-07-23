@@ -102,6 +102,26 @@ func TestProjectModelManagementMigrationContract(t *testing.T) {
 	}
 }
 
+func TestDesktopConfigMeshMigrationContract(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0039_desktop_config_mesh.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := string(sql)
+	for _, required := range []string{
+		"CREATE TABLE IF NOT EXISTS account_sync_keys",
+		"CREATE TABLE IF NOT EXISTS account_sync_key_wraps",
+		"CREATE TABLE IF NOT EXISTS account_provider_configs",
+		"ON DELETE CASCADE",
+		"CHECK (status IN ('pending','approved','denied'))",
+		"PRIMARY KEY (user_id, provider_id)",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Fatalf("0039 migration missing %q", required)
+		}
+	}
+}
+
 func mustExec(t *testing.T, ctx context.Context, c *pgx.Conn, sql string, args ...any) {
 	t.Helper()
 	if _, err := c.Exec(ctx, sql, args...); err != nil {

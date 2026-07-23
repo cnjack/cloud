@@ -651,6 +651,22 @@ type Store interface {
 	GetAccountSettings(ctx context.Context, userID string) (*domain.AccountSettings, error)
 	PutAccountSettings(ctx context.Context, userID string, baseVersion int64, envelope []byte, at time.Time) (*domain.AccountSettings, error)
 
+	// --- Desktop configuration mesh (docs/19) -------------------------------
+	// ASK material is never persisted in plaintext. Initialize creates the
+	// generation and the first approved device wrap atomically.
+	GetAccountSyncKey(ctx context.Context, userID string) (*domain.AccountSyncKey, error)
+	InitializeAccountSyncKey(ctx context.Context, userID, deviceID string, keyGen int, wrap []byte, at time.Time) (*domain.AccountSyncKeyWrap, error)
+	GetAccountSyncKeyWrap(ctx context.Context, userID, deviceID string) (*domain.AccountSyncKeyWrap, error)
+	RequestAccountSyncKey(ctx context.Context, userID, deviceID string, at time.Time) (*domain.AccountSyncKeyWrap, error)
+	ListAccountSyncKeyWraps(ctx context.Context, userID string, status domain.AccountSyncKeyStatus) ([]domain.AccountSyncKeyWrap, error)
+	RespondAccountSyncKeyRequest(ctx context.Context, userID, approverDeviceID, targetDeviceID string, approve bool, keyGen int, wrap []byte, at time.Time) (*domain.AccountSyncKeyWrap, error)
+	RevokeAccountSyncKeyWrap(ctx context.Context, userID, approverDeviceID, targetDeviceID string, keyGen int, at time.Time) (*domain.AccountSyncKeyWrap, error)
+
+	// Provider records are opaque ASK-encrypted envelopes with per-record CAS.
+	ListAccountProviderConfigs(ctx context.Context, userID string) ([]domain.AccountProviderConfig, error)
+	GetAccountProviderConfig(ctx context.Context, userID, providerID string) (*domain.AccountProviderConfig, error)
+	PutAccountProviderConfig(ctx context.Context, userID, providerID string, baseVersion int64, envelope []byte, deleted bool, at time.Time) (*domain.AccountProviderConfig, error)
+
 	// --- Devices (docs/17 — jcode device relay) --------------------------------
 	// A device is one local jcode installation logged in via the RFC 8628
 	// device-code flow. The device row is created at token issuance (only its

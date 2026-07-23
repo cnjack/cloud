@@ -76,6 +76,15 @@ func (s *Server) handleLLMProxy(w http.ResponseWriter, r *http.Request, runID st
 		writeError(w, http.StatusBadGateway, "model_resolve_failed", "could not resolve the model configuration")
 		return
 	}
+	s.proxyResolvedModel(w, r, model, "run", runID)
+}
+
+// proxyResolvedModel is the shared credential-injecting proxy for run-token and
+// device-token callers. Authorization happens before this function; keeping the
+// forwarding rules here prevents the two surfaces from drifting on secret
+// stripping, custom-header filtering, /v1 composition, SSE flushing or timeout
+// behavior.
+func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, model modelcfg.Resolved, subjectKind, subjectID string) {
 	if !model.Configured() {
 		// A run scheduled while configured whose config was cleared before the
 		// runner called must fail visibly — never pretend the call succeeded.
@@ -85,8 +94,8 @@ func (s *Server) handleLLMProxy(w http.ResponseWriter, r *http.Request, runID st
 	}
 
 	target, err := url.Parse(model.BaseURL)
-	if err != nil || target.Scheme == "" || target.Host == "" {
-		s.log.Error("llm proxy: invalid model base url", "run", runID, "base", model.BaseURL, "err", err)
+	if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" {
+		s.log.Error("llm proxy: invalid model base url", "subject_kind", subjectKind, "subject", subjectID, "err", err)
 		writeError(w, http.StatusBadGateway, "model_misconfigured", "the configured model base URL is invalid")
 		return
 	}
@@ -133,8 +142,8 @@ func (s *Server) handleLLMProxy(w http.ResponseWriter, r *http.Request, runID st
 			// Hop-by-hop headers are stripped by ReverseProxy; keep no extras.
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			// Log only method/run/status — never the key, the body, or the full URL.
-			s.log.Warn("llm proxy: upstream error", "run", runID, "method", r.Method,
+			// Log only method/subject/status — never the key, body, or full URL.
+			s.log.Warn("llm proxy: upstream error", "subject_kind", subjectKind, "subject", subjectID, "method", r.Method,
 				"status", http.StatusBadGateway, "err", err)
 			writeError(w, http.StatusBadGateway, "upstream_unreachable", "the model endpoint could not be reached")
 		},

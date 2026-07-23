@@ -19,6 +19,9 @@
 | [05-symphony-and-references.md](05-symphony-and-references.md) | Symphony SPEC 深读、Copilot/Codex 参考、Go+K8s ≈ Elixir+BEAM 映射 |
 | [06-reuse-roadmap-risks.md](06-reuse-roadmap-risks.md) | 复用记分卡、落地路线图 P0–P4 + 横切 CI/CD、风险与护栏 |
 | [15-project-workspace-architecture.md](15-project-workspace-architecture.md) | Project workspace route, component, capability, and scroll architecture |
+| [17-jcode-device-relay.md](17-jcode-device-relay.md) | Desktop ↔ Cloud outbound relay、E2EE、配对与移动端控制 |
+| [18-device-mesh-dispatch.md](18-device-mesh-dispatch.md) | 设备网格调度设计 |
+| [19-account-settings-sync.md](19-account-settings-sync.md) | 多 Desktop Provider 配置 E2EE 同步 + Cloud Provider Proxy |
 
 可视化蓝图(v1,早于存储/BYOK 细化):<https://claude.ai/code/artifact/68743dc8-aa5c-48f1-b712-fb8d974a2902>
 

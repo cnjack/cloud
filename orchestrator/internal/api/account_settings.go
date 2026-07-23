@@ -59,8 +59,12 @@ func accountSettingsResponse(settings *domain.AccountSettings) accountSettingsVi
 // deliberately never opens or logs ciphertext; whitelist validation happens
 // in the clients before sealing.
 func validateAccountSettingsEnvelope(raw json.RawMessage) error {
-	if len(raw) == 0 || len(raw) > maxAccountSettingsEnvelope {
-		return fmt.Errorf("envelope must be between 1 byte and 64 KiB")
+	return validateEncryptedEnvelope(raw, maxAccountSettingsEnvelope, "64 KiB")
+}
+
+func validateEncryptedEnvelope(raw json.RawMessage, maxSize int, maxLabel string) error {
+	if len(raw) == 0 || len(raw) > maxSize {
+		return fmt.Errorf("envelope must be between 1 byte and %s", maxLabel)
 	}
 	var envelope struct {
 		Enc    string `json:"enc"`

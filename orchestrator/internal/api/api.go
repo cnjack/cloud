@@ -587,6 +587,23 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /internal/v1/device/pairings/rekey", s.authed(s.handleRekeyDevicePairings))
 	mux.Handle("GET /internal/v1/device/account-settings", s.authed(s.handleGetAccountSettings))
 	mux.Handle("PUT /internal/v1/device/account-settings", s.authed(s.handlePutAccountSettings))
+	// Account Sync Key approval + per-provider encrypted Desktop config records
+	// (docs/19). Only a device principal may use these routes; browser sessions
+	// never receive ASK wraps or encrypted provider material.
+	mux.Handle("GET /internal/v1/device/config-key", s.authed(s.handleGetAccountSyncKey))
+	mux.Handle("POST /internal/v1/device/config-key/initialize", s.authed(s.handleInitializeAccountSyncKey))
+	mux.Handle("POST /internal/v1/device/config-key/request", s.authed(s.handleRequestAccountSyncKey))
+	mux.Handle("GET /internal/v1/device/config-key/requests", s.authed(s.handleListAccountSyncKeyRequests))
+	mux.Handle("POST /internal/v1/device/config-key/requests/{device_id}/respond", s.authed(s.handleRespondAccountSyncKeyRequest))
+	mux.Handle("DELETE /internal/v1/device/config-key/devices/{device_id}", s.authed(s.handleRevokeAccountSyncKeyDevice))
+	mux.Handle("GET /internal/v1/device/provider-configs", s.authed(s.handleListAccountProviderConfigs))
+	mux.Handle("GET /internal/v1/device/provider-configs/{provider_id}", s.authed(s.handleGetAccountProviderConfig))
+	mux.Handle("PUT /internal/v1/device/provider-configs/{provider_id}", s.authed(s.handlePutAccountProviderConfig))
+	// Cloud-managed providers exposed to authenticated Desktops. The catalog is
+	// secret-free; the proxy resolves the stored provider and injects Cloud-held
+	// credentials. Local Desktop providers never use this path.
+	mux.Handle("GET /internal/v1/device/cloud-models", s.authed(s.handleListDeviceCloudModels))
+	mux.Handle("/internal/v1/device/cloud-models/{model_id}/llm/{rest...}", s.authed(s.handleDeviceCloudModelProxy))
 	mux.Handle("POST /internal/v1/device/pairing-offers", s.authed(s.handleCreatePairingOffer))
 	mux.Handle("POST /internal/v1/device/revoke", s.authed(s.handleDeviceRevoke))
 	mux.Handle("POST /internal/v1/runs/{id}/artifact", s.runToken(s.handleIngestArtifact))

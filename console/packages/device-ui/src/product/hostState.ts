@@ -48,20 +48,28 @@ export function buildProviders(
   for (const m of capabilities?.models ?? []) {
     let p = byProvider.get(m.provider);
     if (!p) {
-      p = { id: m.provider, name: m.provider, models: [] };
+      p = {
+        id: m.provider,
+        name: m.provider_name || m.provider,
+        kind: m.kind || m.provider,
+        source: m.source || 'desktop',
+        scope: m.scope,
+        scope_name: m.scope_name,
+        models: [],
+      };
       byProvider.set(m.provider, p);
     }
     p.models.push({
       id: m.id,
       name: m.label || m.id,
-      tool_call: true,
+      tool_call: m.tool_call ?? true,
       enabled: !disabledKeys.has(`${m.provider}/${m.id}`),
       // The relay reports no per-model vision flag — allow images and let the
       // device reject what the active model cannot consume.
-      image_support: true,
+      image_support: m.image_support ?? true,
       // Device-wide effort ladder doubles as every model's reasoning options;
       // absent → the effort control hides itself.
-      reasoning: efforts.length > 0,
+      reasoning: m.reasoning ?? (efforts.length > 0),
       reasoning_options: efforts.length > 0 ? [{ type: 'effort', values: [...efforts] }] : undefined,
     });
   }
