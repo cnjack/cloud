@@ -10,6 +10,12 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) {
   throw new Error(`VERSION must be X.Y.Z, got ${JSON.stringify(version)}`);
 }
 
+const [major, minor, patch] = version.split('.').map(Number);
+// Android previously shipped 0.1.0 with the semver-derived code 1000. Keep
+// human-facing versionName aligned with the Git tag while guaranteeing every
+// release remains a normal upgrade from that historical build.
+const androidVersionCode = 1_000_000 + major * 1_000_000 + minor * 1_000 + patch;
+
 for (const file of [
   'console/package.json',
   'mobile/package.json',
@@ -19,6 +25,14 @@ for (const file of [
   if (actual !== version) {
     throw new Error(`${file}: version ${JSON.stringify(actual)} != VERSION ${version}`);
   }
+}
+
+const tauriConfig = JSON.parse(read('mobile/src-tauri/tauri.conf.json'));
+if (tauriConfig.bundle?.android?.versionCode !== androidVersionCode) {
+  throw new Error(
+    `mobile/src-tauri/tauri.conf.json: Android versionCode ` +
+      `${JSON.stringify(tauriConfig.bundle?.android?.versionCode)} != ${androidVersionCode}`,
+  );
 }
 
 const escaped = version.replaceAll('.', '\\.');

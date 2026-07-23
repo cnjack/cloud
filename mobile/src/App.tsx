@@ -10,6 +10,7 @@ import { GuidePage } from './pages/GuidePage';
 import { DevicesPage } from './pages/DevicesPage';
 import { DeviceWelcomePage } from './pages/DeviceWelcomePage';
 import { DeviceSessionPage } from './pages/DeviceSessionPage';
+import { SettingsPage } from './pages/SettingsPage';
 
 /**
  * App — provider stack + routes (docs/17 §7.2). HashRouter because the Tauri
@@ -59,6 +60,7 @@ function AuthedTree() {
         <Routes>
           <Route path="/" element={<DevicesPage />} />
           <Route path="/guide" element={<GuidePage />} />
+          <Route path="/settings" element={<SettingsPage />} />
           <Route path="/devices/:deviceId" element={<DeviceWelcomePage />} />
           <Route path="/devices/:deviceId/sessions/:sessionId" element={<DeviceSessionPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

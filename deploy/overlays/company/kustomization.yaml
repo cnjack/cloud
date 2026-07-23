@@ -27,7 +27,7 @@ resources:
 images:
   - name: jcloud/orchestrator
     newName: ghcr.io/cnjack/jcloud-orchestrator
-    newTag: v0.0.74
+    newTag: v0.0.75
 
 patches:
   # Production credentials are replayed out-of-band from the gitignored
@@ -71,7 +71,7 @@ patches:
         name: orchestrator-config
       data:
         K8S_NAMESPACE: jcode
-        RUNNER_IMAGE: ghcr.io/cnjack/jcloud-runner:v0.0.74
+        RUNNER_IMAGE: ghcr.io/cnjack/jcloud-runner:v0.0.75
         ORCH_BASE_URL: http://orchestrator.jcode.svc.cluster.local:8080
         CONSOLE_URL: https://cloud.j-code.net
         WEBHOOK_URL: http://orchestrator.jcode.svc.cluster.local:8080/webhooks/gitea

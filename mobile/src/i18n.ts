@@ -41,6 +41,19 @@ const en: ShellBundle = {
       logout: 'Sign out',
       untitled: 'Untitled session',
     },
+    settings: {
+      title: 'Settings',
+      account: 'Account',
+      accountPending: 'Cloud account',
+      appearance: 'Appearance',
+      theme: 'Theme',
+      themeHint: 'Choose how jcode looks on this device.',
+      themeLight: 'Light',
+      themeDark: 'Dark',
+      language: 'Language',
+      languageHint: 'Choose the language used by the mobile app.',
+      signOutHint: 'Remove the saved session from this device.',
+    },
     devices: {
       loadError: 'Could not load devices',
       emptyTitle: 'No devices yet',
@@ -88,6 +101,19 @@ const zhHans: ShellBundle = {
       retry: '重试',
       logout: '退出登录',
       untitled: '未命名会话',
+    },
+    settings: {
+      title: '设置',
+      account: '账号',
+      accountPending: '云端账号',
+      appearance: '外观',
+      theme: '主题',
+      themeHint: '选择 jcode 在这台设备上的显示方式。',
+      themeLight: '浅色',
+      themeDark: '深色',
+      language: '语言',
+      languageHint: '选择移动端界面使用的语言。',
+      signOutHint: '从这台设备移除已保存的登录会话。',
     },
     devices: {
       loadError: '设备加载失败',
@@ -137,6 +163,19 @@ const zhHant: ShellBundle = {
       logout: '登出',
       untitled: '未命名工作階段',
     },
+    settings: {
+      title: '設定',
+      account: '帳號',
+      accountPending: '雲端帳號',
+      appearance: '外觀',
+      theme: '主題',
+      themeHint: '選擇 jcode 在這台裝置上的顯示方式。',
+      themeLight: '淺色',
+      themeDark: '深色',
+      language: '語言',
+      languageHint: '選擇行動端介面使用的語言。',
+      signOutHint: '從這台裝置移除已儲存的登入工作階段。',
+    },
     devices: {
       loadError: '裝置載入失敗',
       emptyTitle: '尚無裝置',
@@ -184,6 +223,19 @@ const ja: ShellBundle = {
       retry: '再試行',
       logout: 'サインアウト',
       untitled: '無題のセッション',
+    },
+    settings: {
+      title: '設定',
+      account: 'アカウント',
+      accountPending: 'クラウドアカウント',
+      appearance: '表示',
+      theme: 'テーマ',
+      themeHint: 'このデバイスでの jcode の表示を選択します。',
+      themeLight: 'ライト',
+      themeDark: 'ダーク',
+      language: '言語',
+      languageHint: 'モバイルアプリで使用する言語を選択します。',
+      signOutHint: 'このデバイスから保存済みセッションを削除します。',
     },
     devices: {
       loadError: 'デバイスを読み込めませんでした',
@@ -233,6 +285,19 @@ const ko: ShellBundle = {
       logout: '로그아웃',
       untitled: '제목 없는 세션',
     },
+    settings: {
+      title: '설정',
+      account: '계정',
+      accountPending: '클라우드 계정',
+      appearance: '화면',
+      theme: '테마',
+      themeHint: '이 기기에서 jcode가 표시되는 방식을 선택합니다.',
+      themeLight: '라이트',
+      themeDark: '다크',
+      language: '언어',
+      languageHint: '모바일 앱에서 사용할 언어를 선택합니다.',
+      signOutHint: '이 기기에서 저장된 로그인 세션을 제거합니다.',
+    },
     devices: {
       loadError: '디바이스를 불러올 수 없습니다',
       emptyTitle: '아직 디바이스가 없습니다',
@@ -263,9 +328,24 @@ const SHELL: Record<string, ShellBundle> = {
   ko,
 };
 
-type Locale = (typeof DEVICE_UI_LOCALES)[number];
+export type Locale = (typeof DEVICE_UI_LOCALES)[number];
+export const SUPPORTED_LOCALES = DEVICE_UI_LOCALES;
+export const LOCALE_LABELS: Record<Locale, string> = {
+  en: 'English',
+  'zh-Hans': '简体中文',
+  'zh-Hant': '繁體中文',
+  ja: '日本語',
+  ko: '한국어',
+};
 const FALLBACK: Locale = 'en';
 const STORAGE_KEY = 'jcloud_locale';
+const HTML_LANG: Record<Locale, string> = {
+  en: 'en',
+  'zh-Hans': 'zh-Hans',
+  'zh-Hant': 'zh-Hant',
+  ja: 'ja',
+  ko: 'ko',
+};
 
 function isSupported(value: string | null | undefined): value is Locale {
   return !!value && (DEVICE_UI_LOCALES as readonly string[]).includes(value);
@@ -296,6 +376,10 @@ function initialLocale(): Locale {
   return browserLocale();
 }
 
+function applyDocumentLang(locale: Locale) {
+  if (typeof document !== 'undefined') document.documentElement.lang = HTML_LANG[locale];
+}
+
 const resources = Object.fromEntries(
   DEVICE_UI_LOCALES.map((lng) => [
     lng,
@@ -314,5 +398,18 @@ void i18n.use(initReactI18next).init({
   fallbackLng: FALLBACK,
   interpolation: { ...deviceUiInterpolation },
 });
+
+applyDocumentLang(i18n.language as Locale);
+
+export async function setLocale(locale: Locale): Promise<void> {
+  if (!isSupported(locale)) return;
+  await i18n.changeLanguage(locale);
+  applyDocumentLang(locale);
+  try {
+    localStorage.setItem(STORAGE_KEY, locale);
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 export { i18n };

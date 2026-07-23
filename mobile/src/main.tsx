@@ -11,6 +11,11 @@ import 'jcode-ui/compat.css';
 import '@jcloud/device-ui/src/product/productTokens.css';
 import './i18n';
 import { App } from './App';
+import { applyTheme, currentTheme } from './theme';
+
+// The inline head script prevents a paint flash; this second pass synchronizes
+// the native status/navigation bar color from the resolved CSS token.
+applyTheme(currentTheme());
 
 // Dev-only remote-eval hook for the iOS verification driver (see devDrive.ts).
 if (import.meta.env.DEV) {

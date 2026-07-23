@@ -1,4 +1,4 @@
-import { ArrowLeft, StopCircle, Warning } from '@phosphor-icons/react';
+import { ArrowLeft, Warning } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
 import { RuntimeProvider, Thread } from 'jcode-ui';
@@ -11,14 +11,14 @@ import {
   useDeviceSessionStream,
   useDeviceSessions,
   useDevices,
-  useStopDeviceSession,
 } from '@jcloud/device-ui';
 
 /**
  * DeviceSessionPage — one session: durable history replay + live SSE stream
  * (via the shared useDeviceSessionStream), rendered by the stock jcode Thread
- * with the product composer docked below (M14). Stop lives in the top bar;
- * approvals resolve through the runtime (relay chat approval vocabulary).
+ * with the product composer docked below (M14). The product composer owns the
+ * single stop control; approvals resolve through the runtime (relay chat
+ * approval vocabulary).
  */
 export function DeviceSessionPage() {
   const { deviceId = '', sessionId = '' } = useParams();
@@ -31,10 +31,7 @@ export function DeviceSessionPage() {
 
   const { state, online: streamOnline, phase, reconnect } = useDeviceSessionStream(deviceId, sessionId);
   const online = resolveOnline(streamOnline, device?.online);
-  const running = state.agentRunning || session?.status === 'running';
   const title = session?.meta?.title || t('mobile.common.untitled');
-
-  const stop = useStopDeviceSession(deviceId);
 
   const emptyTimeline =
     state.events.length === 0 && state.finalizedText.length === 0 && !state.streamingText && !state.agentRunning;
@@ -62,16 +59,6 @@ export function DeviceSessionPage() {
           {title}
           {device && <span className="topbar-sub">{device.name}</span>}
         </div>
-        <button
-          type="button"
-          className="topbar-back"
-          onClick={() => stop.mutate(sessionId)}
-          disabled={!running || stop.isPending}
-          aria-label={t('device.session.stop')}
-          data-testid="stop-session"
-        >
-          <StopCircle size={20} color={running ? 'var(--color-danger)' : 'currentColor'} />
-        </button>
       </header>
 
       {/* M13: e2ee-enforcing devices hide the timeline and composer behind

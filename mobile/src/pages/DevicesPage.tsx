@@ -1,35 +1,29 @@
-import { Devices, Question, SignOut } from '@phosphor-icons/react';
+import { Devices, GearSix, Question } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { ApiError, useDevices, type Device } from '@jcloud/device-ui';
-import { useMobileAuth } from '../auth';
 import { timeAgo } from '../lib/time';
 
 /** DevicesPage — the app's home: every connected jcode device as a card. */
 export function DevicesPage() {
   const { t } = useTranslation();
-  const auth = useMobileAuth();
   const devices = useDevices();
 
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="topbar-title">
-          {t('device.list.title')}
-          {auth?.me && <span className="topbar-sub">{auth.me.user.display_name}</span>}
-        </div>
+        <div className="topbar-title">{t('device.list.title')}</div>
         <Link to="/guide" className="topbar-back" aria-label={t('device.guide.entry')} data-testid="guide-entry">
           <Question size={18} />
         </Link>
-        <button
-          type="button"
+        <Link
+          to="/settings"
           className="topbar-back"
-          onClick={() => auth?.logout()}
-          aria-label={t('mobile.common.logout')}
-          data-testid="logout"
+          aria-label={t('mobile.settings.title')}
+          data-testid="settings-entry"
         >
-          <SignOut size={18} />
-        </button>
+          <GearSix size={18} />
+        </Link>
       </header>
 
       <div className="content content-pad-bottom" data-testid="devices-page">

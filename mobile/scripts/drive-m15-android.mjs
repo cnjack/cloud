@@ -175,20 +175,21 @@ shot('10-session-thread');
 await fillTa('[data-testid="session-composer"]', '用三行要点回答：移动端适配要注意什么？');
 await sleep(300);
 console.log(await clickText('[data-testid="session-composer"]', '/^发送$|^Send$/'));
-// stop button enables while the turn runs (mockllm window is ~200ms; sample fast)
+// The composer owns the only stop button (mockllm window is ~200ms; sample fast).
 console.log('stop window:', JSON.stringify(evaluate(`(async () => {
   const t0 = Date.now(); let enabledAt = null, disabledAgainAt = null;
   while (Date.now() - t0 < 5000) {
-    const dis = document.querySelector('[data-testid="stop-session"]').disabled;
-    if (!dis && enabledAt === null) enabledAt = Date.now() - t0;
-    if (dis && enabledAt !== null) { disabledAgainAt = Date.now() - t0; break; }
+    const stop = [...document.querySelectorAll('[data-testid="session-composer"] button')]
+      .find((button) => /^(停止|Stop)$/.test(button.textContent.trim()));
+    if (stop && enabledAt === null) enabledAt = Date.now() - t0;
+    if (!stop && enabledAt !== null) { disabledAgainAt = Date.now() - t0; break; }
     await new Promise((r) => setTimeout(r, 40));
   }
   return { enabledAt, disabledAgainAt };
 })()`)));
 await sleep(2500);
 shot('11-session-streaming');
-await waitFor(`document.querySelector('[data-testid="stop-session"]').disabled`, { timeoutMs: 60_000, label: 'turn finished' });
+await waitFor(`![...document.querySelectorAll('[data-testid="session-composer"] button')].some((button) => /^(停止|Stop)$/.test(button.textContent.trim()))`, { timeoutMs: 60_000, label: 'turn finished' });
 await sleep(1000);
 overflow('session-done');
 shot('12-session-done');
