@@ -281,7 +281,7 @@ describe('ProjectDetailPage — project and service settings stay separate', () 
 
     const footer = screen.getByTestId('project-rail-footer');
     expect(within(footer).getByText('orchestrator')).toBeTruthy();
-    expect(within(footer).getByText('v0.0.73')).toBeTruthy();
+    expect(within(footer).getByText('v0.0.74')).toBeTruthy();
     expect(within(footer).getByTestId('identity-chip')).toBeTruthy();
     expect(within(footer).queryByTestId('theme-toggle')).toBeNull();
 
