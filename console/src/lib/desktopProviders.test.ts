@@ -18,6 +18,8 @@ describe('Desktop provider registry parity', () => {
       ['togetherai', 'Together AI'],
       ['alibaba-cn', 'Alibaba (China)'],
       ['alibaba-coding-plan-cn', 'Alibaba Coding Plan (China)'],
+      ['alibaba-token-plan-cn', 'Alibaba Token Plan (China)'],
+      ['alibaba-token-plan', 'Alibaba Token Plan'],
       ['moonshotai', 'Moonshot AI'],
       ['minimax', 'MiniMax (minimax.io)'],
       ['minimax-coding-plan', 'MiniMax Token Plan (minimax.io)'],
@@ -29,8 +31,6 @@ describe('Desktop provider registry parity', () => {
       ['xiaomi', 'Xiaomi'],
       ['xiaomi-token-plan-cn', 'Xiaomi Token Plan (China)'],
       ['ollama-cloud', 'Ollama Cloud'],
-      ['alibaba-token-plan-cn', 'Alibaba Token Plan (China)'],
-      ['alibaba-token-plan', 'Alibaba Token Plan'],
       ['kimi-for-coding', 'Kimi For Coding'],
       ['tencent-tokenhub-ep', 'Tencent TokenHub Enterprise'],
     ]);
