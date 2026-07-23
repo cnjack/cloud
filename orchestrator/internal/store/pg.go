@@ -1882,6 +1882,89 @@ func (s *PGStore) RevokeModel(ctx context.Context, modelID, projectID string) er
 	return nil
 }
 
+// ListModelsForAccount returns direct Account entitlements only. Project access
+// remains a separate union performed by the device catalog authorizer.
+func (s *PGStore) ListModelsForAccount(ctx context.Context, userID string) ([]domain.Model, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+prefixCols("mc", modelCols)+`
+		 FROM model_configs mc
+		 JOIN model_account_grants mag ON mag.model_id=mc.id
+		 WHERE mag.user_id=$1 AND mc.project_id IS NULL
+		 ORDER BY mc.created_at DESC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list models for account: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Model
+	for rows.Next() {
+		model, err := scanModel(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *model)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) ListAccountIDsForModel(ctx context.Context, modelID string) ([]string, error) {
+	if _, err := s.GetModel(ctx, modelID); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT user_id FROM model_account_grants WHERE model_id=$1 ORDER BY user_id`, modelID)
+	if err != nil {
+		return nil, fmt.Errorf("list account ids for model: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan model account grant: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) GrantModelToAccount(ctx context.Context, modelID, userID, grantedBy string) error {
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO model_account_grants (model_id,user_id,granted_by)
+		 SELECT mc.id,$2,NULLIF($3,'') FROM model_configs mc
+		 WHERE mc.id=$1 AND mc.project_id IS NULL
+		 ON CONFLICT (model_id,user_id) DO NOTHING`,
+		modelID, userID, grantedBy)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return ErrNotFound
+		}
+		return fmt.Errorf("grant model to account: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Distinguish an idempotent existing row from an ungrantable/missing
+		// model. Existing grants are a successful no-op.
+		var exists bool
+		if err := s.pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM model_account_grants WHERE model_id=$1 AND user_id=$2)`,
+			modelID, userID).Scan(&exists); err != nil {
+			return fmt.Errorf("check model account grant: %w", err)
+		}
+		if !exists {
+			return ErrNotFound
+		}
+	}
+	return nil
+}
+
+func (s *PGStore) RevokeModelFromAccount(ctx context.Context, modelID, userID string) error {
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM model_account_grants WHERE model_id=$1 AND user_id=$2`, modelID, userID); err != nil {
+		return fmt.Errorf("revoke model from account: %w", err)
+	}
+	return nil
+}
+
 // --- Cluster kanban config (D27) --------------------------------------------
 
 // GetClusterKanbanConfig returns the single-row config (id pinned to 1), or

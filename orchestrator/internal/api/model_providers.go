@@ -24,6 +24,7 @@ type providerModelAdminView struct {
 	Capabilities      domain.ModelCapabilities `json:"capabilities"`
 	Source            string                   `json:"source"`
 	GrantedProjectIDs []string                 `json:"granted_project_ids"`
+	GrantedAccountIDs []string                 `json:"granted_account_ids"`
 }
 
 type modelProviderAdminView struct {
@@ -45,14 +46,18 @@ type modelProviderAdminView struct {
 	UpdatedBy             string                          `json:"updated_by"`
 }
 
-func providerModelView(m domain.Model, grants []string) providerModelAdminView {
-	if grants == nil {
-		grants = []string{}
+func providerModelView(m domain.Model, projectGrants, accountGrants []string) providerModelAdminView {
+	if projectGrants == nil {
+		projectGrants = []string{}
+	}
+	if accountGrants == nil {
+		accountGrants = []string{}
 	}
 	return providerModelAdminView{
 		ID: m.ID, ProviderID: m.ProviderID, Name: m.Name, ModelID: m.ModelID,
 		RuntimeModelName: m.ModelName, ContextWindow: m.ContextWindow,
-		Capabilities: m.Capabilities, Source: m.Source, GrantedProjectIDs: grants,
+		Capabilities: m.Capabilities, Source: m.Source,
+		GrantedProjectIDs: projectGrants, GrantedAccountIDs: accountGrants,
 	}
 }
 
@@ -71,7 +76,11 @@ func (s *Server) modelProviderView(ctx context.Context, p domain.ModelProvider) 
 		for _, projectID := range grants {
 			projects[projectID] = struct{}{}
 		}
-		modelViews = append(modelViews, providerModelView(model, grants))
+		accountGrants, err := s.st.ListAccountIDsForModel(ctx, model.ID)
+		if err != nil {
+			return modelProviderAdminView{}, err
+		}
+		modelViews = append(modelViews, providerModelView(model, grants, accountGrants))
 	}
 	return modelProviderAdminView{
 		ID: p.ID, Name: p.Name, Kind: p.Kind, BaseURL: p.BaseURL,
@@ -653,5 +662,5 @@ func (s *Server) handleCreateProviderModel(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.models.Invalidate()
-	writeJSON(w, http.StatusCreated, providerModelView(*model, []string{}))
+	writeJSON(w, http.StatusCreated, providerModelView(*model, []string{}, []string{}))
 }

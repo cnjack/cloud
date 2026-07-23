@@ -22,17 +22,40 @@ type deviceCloudModelView struct {
 }
 
 // accessibleDeviceCloudModels is the single authorization definition shared
-// by catalog listing and proxying. A model is visible when it belongs to one of
-// the user's projects and is enabled, or is a cluster model granted to one of
-// those projects. The first matching project is used only for display metadata;
-// the stable model id remains the authorization identity.
+// by catalog listing and proxying. A model is visible when it is granted to the
+// Account directly, belongs to one of the user's projects and is enabled,
+// or is a cluster model granted to one of those projects. Direct Account grants
+// win display metadata when the same model is also reachable through a Project.
+// The stable model id remains the authorization identity.
 func (s *Server) accessibleDeviceCloudModels(r *http.Request, userID string) (map[string]deviceCloudModelView, error) {
+	out := make(map[string]deviceCloudModelView)
+	providers := make(map[string]*domain.ModelProvider)
+	accountModels, err := s.st.ListModelsForAccount(r.Context(), userID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range accountModels {
+		model := &accountModels[i]
+		provider := providers[model.ProviderID]
+		if provider == nil {
+			provider, err = s.st.GetModelProvider(r.Context(), model.ProviderID)
+			if err != nil {
+				return nil, err
+			}
+			providers[model.ProviderID] = provider
+		}
+		out[model.ID] = deviceCloudModelView{
+			ModelID: model.ID, ProviderID: model.ProviderID,
+			Kind: provider.Kind, ProviderName: provider.Name,
+			ModelName: model.Name, UpstreamModelID: model.ModelID,
+			Scope: "account", ScopeID: userID, ScopeName: "Account",
+			Capabilities: model.Capabilities, ContextWindow: model.ContextWindow,
+		}
+	}
 	projects, err := s.st.ListProjectsForUser(r.Context(), userID)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]deviceCloudModelView)
-	providers := make(map[string]*domain.ModelProvider)
 	for _, project := range projects {
 		models, err := s.st.ListModelsForProject(r.Context(), project.ID)
 		if err != nil {
@@ -110,7 +133,8 @@ func (s *Server) handleDeviceCloudModelProxy(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusServiceUnavailable, "cloud_model_unavailable", "Cloud model access could not be verified")
 		return
 	}
-	if _, ok := available[modelID]; !ok {
+	authorized, ok := available[modelID]
+	if !ok {
 		// Existing-but-ungranted and unknown ids intentionally share the same
 		// response so a device cannot probe model resources outside its account.
 		// Desktop marks the exact Cloud selection unavailable and never falls
@@ -124,5 +148,13 @@ func (s *Server) handleDeviceCloudModelProxy(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusServiceUnavailable, "cloud_model_unavailable", "the selected Cloud model is unavailable")
 		return
 	}
+	// Attribute every accepted Cloud-model request without logging prompts,
+	// credentials, custom headers or upstream URLs.
+	s.log.Info("device cloud model proxy",
+		"user", p.deviceUserID,
+		"device", p.deviceID,
+		"model", modelID,
+		"scope", authorized.Scope,
+		"scope_id", authorized.ScopeID)
 	s.proxyResolvedModel(w, r, resolved, "device", p.deviceID)
 }

@@ -356,6 +356,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/system/models/{id}", s.authed(s.handleDeleteModel))
 	mux.Handle("PUT /api/v1/system/models/{id}/grants/{projectID}", s.authed(s.handleGrantModel))
 	mux.Handle("DELETE /api/v1/system/models/{id}/grants/{projectID}", s.authed(s.handleRevokeModel))
+	mux.Handle("PUT /api/v1/system/models/{id}/account-grants/{userID}", s.authed(s.handleGrantModelToAccount))
+	mux.Handle("DELETE /api/v1/system/models/{id}/account-grants/{userID}", s.authed(s.handleRevokeModelFromAccount))
 	// Provider-owned model catalog. Credentials are write-only; verification and
 	// catalog errors are typed and never replaced with synthetic model data.
 	mux.Handle("GET /api/v1/system/model-providers", s.authed(s.handleListModelProviders))

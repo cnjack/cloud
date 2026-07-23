@@ -13,8 +13,8 @@ import (
 )
 
 // modelAdminView is the cluster-admin catalog view of a model (D21). It NEVER
-// carries the plaintext API key — only api_key_set. granted_project_ids lets the
-// admin UI manage authorization inline.
+// carries the plaintext API key — only api_key_set. Account and Project grant
+// ids let the admin UI manage the two independent authorization scopes inline.
 type modelAdminView struct {
 	ID                string    `json:"id"`
 	Name              string    `json:"name"`
@@ -25,6 +25,7 @@ type modelAdminView struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 	UpdatedBy         string    `json:"updated_by"`
 	GrantedProjectIDs []string  `json:"granted_project_ids"`
+	GrantedAccountIDs []string  `json:"granted_account_ids"`
 }
 
 // modelMemberView is the member-facing projection of a granted model: id/name/
@@ -45,6 +46,13 @@ func (s *Server) adminModel(r *http.Request, m *domain.Model) modelAdminView {
 	if grants == nil {
 		grants = []string{}
 	}
+	accountGrants, accountErr := s.st.ListAccountIDsForModel(r.Context(), m.ID)
+	if accountErr != nil {
+		s.log.Warn("list model account grants", "model", m.ID, "err", accountErr)
+	}
+	if accountGrants == nil {
+		accountGrants = []string{}
+	}
 	return modelAdminView{
 		ID:                m.ID,
 		Name:              m.Name,
@@ -55,6 +63,7 @@ func (s *Server) adminModel(r *http.Request, m *domain.Model) modelAdminView {
 		UpdatedAt:         m.UpdatedAt,
 		UpdatedBy:         m.UpdatedBy,
 		GrantedProjectIDs: grants,
+		GrantedAccountIDs: accountGrants,
 	}
 }
 
@@ -305,6 +314,85 @@ func (s *Server) handleRevokeModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.adminModel(r, m))
+}
+
+// handleGrantModelToAccount authorizes every current and future authenticated
+// Desktop owned by an Account to use one cluster-global model. Device
+// authentication remains mandatory; browser sessions cannot call cloud_proxy.
+func (s *Server) handleGrantModelToAccount(w http.ResponseWriter, r *http.Request) {
+	if !s.requireClusterAdmin(w, r) {
+		return
+	}
+	modelID := r.PathValue("id")
+	userID := r.PathValue("userID")
+	target, err := s.st.GetModel(r.Context(), modelID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "model or account not found")
+		return
+	}
+	if err != nil {
+		s.log.Error("load model for account grant", "model", modelID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not load model")
+		return
+	}
+	if target.ProjectID != "" {
+		writeError(w, http.StatusConflict, "model_not_grantable",
+			"this model is owned by a project and cannot be granted to an account; account grants apply only to cluster-global models")
+		return
+	}
+	if err := s.st.GrantModelToAccount(
+		r.Context(), modelID, userID, principalFrom(r.Context()).userID(),
+	); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "model or account not found")
+			return
+		}
+		s.log.Error("grant model to account", "model", modelID, "account", userID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not grant model to account")
+		return
+	}
+	s.log.Info("model granted to account", "model", modelID, "account", userID,
+		"actor", principalFrom(r.Context()).userID())
+	s.models.Invalidate()
+	target, err = s.st.GetModel(r.Context(), modelID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "model not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "granted, but could not read back the model")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.adminModel(r, target))
+}
+
+// handleRevokeModelFromAccount removes the entitlement immediately for every
+// Desktop on the Account. The catalog and proxy both resolve grants per request,
+// so there is no authorization cache to invalidate.
+func (s *Server) handleRevokeModelFromAccount(w http.ResponseWriter, r *http.Request) {
+	if !s.requireClusterAdmin(w, r) {
+		return
+	}
+	modelID := r.PathValue("id")
+	userID := r.PathValue("userID")
+	if err := s.st.RevokeModelFromAccount(r.Context(), modelID, userID); err != nil {
+		s.log.Error("revoke model from account", "model", modelID, "account", userID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not revoke model from account")
+		return
+	}
+	target, err := s.st.GetModel(r.Context(), modelID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "model not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "revoked, but could not read back the model")
+		return
+	}
+	s.log.Info("model revoked from account", "model", modelID, "account", userID,
+		"actor", principalFrom(r.Context()).userID())
+	s.models.Invalidate()
+	writeJSON(w, http.StatusOK, s.adminModel(r, target))
 }
 
 // projectModelsView is GET /projects/{id}/models: the models granted to a

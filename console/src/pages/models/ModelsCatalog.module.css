@@ -46,7 +46,8 @@
 .modelCopy small { overflow: hidden; color: var(--color-text-muted); font-family: var(--font-mono); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .capabilities { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-1); }
 .capabilities > span { display: inline-flex; min-height: 20px; align-items: center; gap: var(--space-1); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-sm); background: var(--color-bg-inset); padding: 2px 6px; color: var(--color-text-dim); font-size: 9px; white-space: nowrap; }
-.grantCount { display: inline-grid; grid-template-columns: auto auto; min-width: 92px; align-items: baseline; justify-content: end; gap: 6px; line-height: 1; white-space: nowrap; }
+.grantCount { display: grid; min-width: 108px; justify-content: end; gap: 3px; line-height: 1; white-space: nowrap; }
+.grantCount > span { display: inline-grid; grid-template-columns: 18px auto; align-items: baseline; justify-content: end; gap: 6px; }
 .grantCount b { color: var(--color-text); font-family: var(--font-mono); font-size: var(--fs-caption); font-weight: var(--fw-semibold); }
 .grantCount small { color: var(--color-text-faint); font-size: 9.5px; }
 /* An accessible on/off switch (jcode parity — 34x20 track, 16 knob). */
@@ -101,6 +102,14 @@
 .grantList label > span { display: grid; gap: 2px; }
 .grantList strong { font-size: var(--fs-sm); }
 .grantList small { color: var(--color-text-muted); font-size: var(--fs-tiny); }
+.accessTabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin-top: var(--space-4); border-radius: var(--radius-md); background: var(--color-bg-inset); padding: 2px; }
+.accessTabs button { min-height: var(--space-8); border: 0; border-radius: calc(var(--radius-md) - 2px); background: transparent; color: var(--color-text-muted); font-size: var(--fs-caption); font-weight: var(--fw-semibold); cursor: pointer; }
+.accessTabs button[data-active] { background: var(--color-panel); color: var(--color-text); box-shadow: var(--shadow-1); }
+.accessPane { display: grid; gap: var(--space-3); padding-top: var(--space-3); }
+.accountSearch { display: flex; min-height: var(--space-8); align-items: center; gap: var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-panel); padding: 0 10px; color: var(--color-text-muted); }
+.accountSearch:focus-within { border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.accountSearch input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--color-text); font-size: var(--fs-sm); }
+.accountSearch input::placeholder { color: var(--color-text-faint); }
 
 /* Project models panel: owner admin section + read-only cluster-granted list. */
 .panel { display: grid; gap: var(--space-5); }

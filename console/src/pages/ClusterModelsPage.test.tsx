@@ -17,18 +17,22 @@ const provider: ModelProvider = {
     runtime_model_name: 'openai/coding-plan', context_window: 32_000,
     capabilities: { reasoning: false, tools: true, image: false }, source: 'custom',
     granted_project_ids: ['p1'],
+    granted_account_ids: ['u1'],
   }],
 };
 
 const project: Project = { id: 'p1', name: 'jcode Cloud', created_at: '', services: [] };
+const account = { id: 'u1', display_name: 'Ada Lovelace', is_cluster_admin: false };
 
 function renderPage(overrides: Partial<ApiClient> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const client = {
     listModelProviders: async () => [provider], listProjects: async () => [project],
+    searchUsers: async () => [account],
     getModelProviderCatalog: vi.fn().mockRejectedValue(new ApiError(409, 'catalog unavailable', { error: { code: 'catalog_unavailable' } })),
     createProviderModel: vi.fn().mockResolvedValue(provider.models[0]),
     grantModel: vi.fn().mockResolvedValue({}), revokeModel: vi.fn().mockResolvedValue({}),
+    grantModelToAccount: vi.fn().mockResolvedValue({}), revokeModelFromAccount: vi.fn().mockResolvedValue({}),
     verifyModelProvider: vi.fn().mockResolvedValue({ reachable: true, catalog_available: false, latency_ms: 42 }),
     ...overrides,
   } as unknown as ApiClient;
@@ -43,14 +47,14 @@ function renderPage(overrides: Partial<ApiClient> = {}) {
 }
 
 describe('ClusterModelsPage', () => {
-  it('keeps Custom model and Project grant controls aligned in their own columns', async () => {
+  it('keeps Custom model and Account/Project access controls aligned in their own columns', async () => {
     renderPage();
     const card = await screen.findByTestId('provider-card-prv-plan');
     expect(within(card).getByRole('button', { name: 'Custom model' })).toBeTruthy();
     const grant = within(card).getByTestId('grant-count-mdl-plan');
-    expect(grant.textContent).toContain('1');
-    expect(grant.textContent).toContain('Project grant');
-    expect(within(card).getByRole('button', { name: 'Manage grants' })).toBeTruthy();
+    expect(within(grant).getByText('Account grant')).toBeTruthy();
+    expect(within(grant).getByText('Project grant')).toBeTruthy();
+    expect(within(card).getByRole('button', { name: 'Manage access' })).toBeTruthy();
   });
 
   it('surfaces a disabled catalog and creates a custom model explicitly', async () => {
@@ -76,11 +80,25 @@ describe('ClusterModelsPage', () => {
   it('manages Project grants through the existing grant contract', async () => {
     const client = renderPage();
     await screen.findByTestId('provider-card-prv-plan');
-    fireEvent.click(screen.getByRole('button', { name: 'Manage grants' }));
-    const checkbox = screen.getByRole('checkbox', { name: 'jcode Cloud' });
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Projects' }));
+    const checkbox = await screen.findByRole('checkbox', { name: 'jcode Cloud' });
     expect((checkbox as HTMLInputElement).checked).toBe(true);
     fireEvent.click(checkbox);
     await waitFor(() => expect(client.revokeModel).toHaveBeenCalledWith('mdl-plan', 'p1'));
+  });
+
+  it('manages Account grants independently from Project grants', async () => {
+    const client = renderPage();
+    await screen.findByTestId('provider-card-prv-plan');
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }));
+    const dialog = screen.getByRole('dialog', { name: 'Model access · Coding Plan' });
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Accounts' }));
+    const checkbox = await within(dialog).findByRole('checkbox', { name: 'Ada Lovelace' });
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(client.revokeModelFromAccount).toHaveBeenCalledWith('mdl-plan', 'u1'));
+    expect(client.revokeModel).not.toHaveBeenCalled();
   });
 
   it('refreshes the provider card after a failed verification probe', async () => {

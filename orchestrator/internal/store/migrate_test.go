@@ -122,6 +122,26 @@ func TestDesktopConfigMeshMigrationContract(t *testing.T) {
 	}
 }
 
+func TestAccountModelGrantsMigrationContract(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0040_account_model_grants.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := strings.Join(strings.Fields(string(sql)), " ")
+	for _, required := range []string{
+		"CREATE TABLE IF NOT EXISTS model_account_grants",
+		"model_id TEXT NOT NULL REFERENCES model_configs(id) ON DELETE CASCADE",
+		"user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE",
+		"granted_by TEXT REFERENCES users(id) ON DELETE SET NULL",
+		"PRIMARY KEY (model_id, user_id)",
+		"CREATE INDEX IF NOT EXISTS model_account_grants_user_idx",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Fatalf("0040 migration missing %q", required)
+		}
+	}
+}
+
 func mustExec(t *testing.T, ctx context.Context, c *pgx.Conn, sql string, args ...any) {
 	t.Helper()
 	if _, err := c.Exec(ctx, sql, args...); err != nil {

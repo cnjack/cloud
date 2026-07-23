@@ -9,8 +9,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cnjack/jcloud/internal/config"
+	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -43,6 +45,7 @@ type modelAdminViewT struct {
 	ModelName         string   `json:"model_name"`
 	APIKeySet         bool     `json:"api_key_set"`
 	GrantedProjectIDs []string `json:"granted_project_ids"`
+	GrantedAccountIDs []string `json:"granted_account_ids"`
 }
 
 // createModel POSTs a model as the console admin and returns its view.
@@ -223,6 +226,113 @@ func TestModelGrantsAndProjectModels(t *testing.T) {
 	decode(t, resp, &pm)
 	if len(pm.Models) != 0 {
 		t.Fatalf("after revoke project should list 0 models: %+v", pm.Models)
+	}
+}
+
+// TestModelAccountGrants covers the direct Cluster-model → Account entitlement:
+// it is cluster-admin-only, idempotent, rejects project-owned models, and echoes
+// the durable account grant without exposing provider credentials.
+func TestModelAccountGrants(t *testing.T) {
+	ts, st := catalogServer(t, true)
+	_ = mkUser(t, st, "admin") // first user => cluster admin
+	bob := mkUser(t, st, "bob")
+	bobTok := mkSession(t, st, bob.ID)
+	model := createModel(t, ts, "gpt", "https://secret.internal/v1", "openai/gpt-4o", "sk-secret")
+
+	// A normal account cannot grant itself a Cluster model.
+	resp := do(t, http.MethodPut,
+		ts.URL+"/api/v1/system/models/"+model.ID+"/account-grants/"+bob.ID, bobTok, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("account grant as non-admin: status=%d want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Unknown accounts fail visibly instead of creating an orphan entitlement.
+	resp = do(t, http.MethodPut,
+		ts.URL+"/api/v1/system/models/"+model.ID+"/account-grants/missing", consoleToken, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing account grant: status=%d want 404", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Grant is idempotent and returned in the secret-free admin projection.
+	for i := 0; i < 2; i++ {
+		resp = do(t, http.MethodPut,
+			ts.URL+"/api/v1/system/models/"+model.ID+"/account-grants/"+bob.ID, consoleToken, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("grant attempt %d: status=%d want 200", i+1, resp.StatusCode)
+		}
+		var granted modelAdminViewT
+		decode(t, resp, &granted)
+		if len(granted.GrantedAccountIDs) != 1 || granted.GrantedAccountIDs[0] != bob.ID {
+			t.Fatalf("account grant view=%+v", granted)
+		}
+	}
+
+	// Account-wide Desktop access is not a Project grant. Even as a Project
+	// owner, Bob cannot select this model for a Cloud run until that Project is
+	// granted separately.
+	accountProject := &domain.Project{
+		ID: domain.NewID(), Name: "account-only", OwnerUserID: bob.ID, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateProject(t.Context(), accountProject); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertMember(t.Context(), &domain.ProjectMember{
+		ProjectID: accountProject.ID, UserID: bob.ID, Role: domain.RoleOwner, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp = do(t, http.MethodGet,
+		ts.URL+"/api/v1/projects/"+accountProject.ID+"/models", bobTok, nil)
+	var accountProjectModels projectModelsView
+	decode(t, resp, &accountProjectModels)
+	if len(accountProjectModels.Models) != 0 {
+		t.Fatalf("account grant leaked into Project models: %+v", accountProjectModels.Models)
+	}
+
+	// A project-owned model cannot be promoted into an account-wide entitlement.
+	project := &domain.Project{ID: domain.NewID(), Name: "private", CreatedAt: time.Now().UTC()}
+	if err := st.CreateProject(t.Context(), project); err != nil {
+		t.Fatal(err)
+	}
+	provider := &domain.ModelProvider{
+		ID: domain.NewID(), ProjectID: project.ID, Name: "private-provider", Kind: "openai",
+		BaseURL: "https://private.invalid/v1", AuthType: domain.ModelProviderAuthNone,
+		CatalogMode: domain.ModelProviderCatalogDisabled, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateModelProvider(t.Context(), provider); err != nil {
+		t.Fatal(err)
+	}
+	privateModel := &domain.Model{
+		ID: domain.NewID(), ProviderID: provider.ID, ProjectID: project.ID,
+		Name: "private-model", ModelName: "openai/private", ModelID: "private",
+		BaseURL: provider.BaseURL, Source: "custom", CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateModel(t.Context(), privateModel); err != nil {
+		t.Fatal(err)
+	}
+	resp = do(t, http.MethodPut,
+		ts.URL+"/api/v1/system/models/"+privateModel.ID+"/account-grants/"+bob.ID, consoleToken, nil)
+	var conflict errorBody
+	decode(t, resp, &conflict)
+	if resp.StatusCode != http.StatusConflict || conflict.Error.Code != "model_not_grantable" {
+		t.Fatalf("private account grant: status=%d code=%q want 409/model_not_grantable",
+			resp.StatusCode, conflict.Error.Code)
+	}
+
+	// Revoke is idempotent and immediately disappears from the admin view.
+	for i := 0; i < 2; i++ {
+		resp = do(t, http.MethodDelete,
+			ts.URL+"/api/v1/system/models/"+model.ID+"/account-grants/"+bob.ID, consoleToken, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("revoke attempt %d: status=%d want 200", i+1, resp.StatusCode)
+		}
+		var revoked modelAdminViewT
+		decode(t, resp, &revoked)
+		if len(revoked.GrantedAccountIDs) != 0 {
+			t.Fatalf("account grant survived revoke: %+v", revoked)
+		}
 	}
 }
 

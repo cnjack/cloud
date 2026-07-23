@@ -402,6 +402,7 @@ export function createMockClient(): ApiClient {
   // more on the Cluster page to exercise the multi-model pick.
   const models = new Map<string, Model>();
   const modelGrants = new Map<string, Set<string>>();
+  const modelAccountGrants = new Map<string, Set<string>>();
   const modelProviders = new Map<string, ModelProvider>();
   // M2: project-owned providers (each carries project_id + write-only headers),
   // keyed by project id. Independent of the cluster catalog above — a project
@@ -419,8 +420,10 @@ export function createMockClient(): ApiClient {
       updated_at: nowISO(),
       updated_by: 'demo-admin',
       granted_project_ids: [],
+      granted_account_ids: [],
     });
     modelGrants.set(id, new Set());
+    modelAccountGrants.set(id, new Set());
   }
   seedModel('mdl_gpt4o', 'GPT-4o (mock)', 'openai/gpt-4o');
 
@@ -447,12 +450,17 @@ export function createMockClient(): ApiClient {
       capabilities: { reasoning: true, tools: true, image: true },
       source: 'catalog',
       granted_project_ids: [],
+      granted_account_ids: [],
     }],
   });
 
-  /** Recompute a model's granted_project_ids from the grant set (view helper). */
+  /** Recompute authorization lists from the grant sets (view helper). */
   function modelView(m: Model): Model {
-    return { ...m, granted_project_ids: [...(modelGrants.get(m.id) ?? [])].sort() };
+    return {
+      ...m,
+      granted_project_ids: [...(modelGrants.get(m.id) ?? [])].sort(),
+      granted_account_ids: [...(modelAccountGrants.get(m.id) ?? [])].sort(),
+    };
   }
 
   function providerView(provider: ModelProvider): ModelProvider {
@@ -460,6 +468,7 @@ export function createMockClient(): ApiClient {
       ...model,
       capabilities: { ...model.capabilities },
       granted_project_ids: [...(modelGrants.get(model.id) ?? [])].sort(),
+      granted_account_ids: [...(modelAccountGrants.get(model.id) ?? [])].sort(),
     }));
     const grantedProjects = new Set(modelsWithGrants.flatMap((model) => model.granted_project_ids));
     return {
@@ -1541,6 +1550,7 @@ export function createMockClient(): ApiClient {
       for (const model of provider.models) {
         models.delete(model.id);
         modelGrants.delete(model.id);
+        modelAccountGrants.delete(model.id);
       }
       modelProviders.delete(id);
       return delay(undefined);
@@ -1595,6 +1605,7 @@ export function createMockClient(): ApiClient {
         capabilities: { ...input.capabilities },
         source: input.source,
         granted_project_ids: [],
+        granted_account_ids: [],
       };
       provider.models.push(providerModel);
       provider.updated_at = nowISO();
@@ -1608,8 +1619,10 @@ export function createMockClient(): ApiClient {
         updated_at: nowISO(),
         updated_by: 'demo-admin',
         granted_project_ids: [],
+        granted_account_ids: [],
       });
       modelGrants.set(id, new Set());
+      modelAccountGrants.set(id, new Set());
       return delay({ ...providerModel, capabilities: { ...providerModel.capabilities } });
     },
 
@@ -1787,10 +1800,12 @@ export function createMockClient(): ApiClient {
       const id = genId('mdl');
       const m: Model = {
         id, name, base_url: base, model_name: model, api_key_set: !!input.api_key,
-        created_at: nowISO(), updated_at: nowISO(), updated_by: 'demo-admin', granted_project_ids: [],
+        created_at: nowISO(), updated_at: nowISO(), updated_by: 'demo-admin',
+        granted_project_ids: [], granted_account_ids: [],
       };
       models.set(id, m);
       modelGrants.set(id, new Set());
+      modelAccountGrants.set(id, new Set());
       return delay(modelView(m));
     },
 
@@ -1828,6 +1843,7 @@ export function createMockClient(): ApiClient {
     async deleteModel(id: string): Promise<void> {
       if (!models.delete(id)) throw new ApiError(404, 'model not found');
       modelGrants.delete(id);
+      modelAccountGrants.delete(id);
       // Null any service default referencing it (mirrors ON DELETE SET NULL).
       for (const list of services.values()) {
         for (const s of list) if (s.default_model_id === id) s.default_model_id = null;
@@ -1846,6 +1862,20 @@ export function createMockClient(): ApiClient {
       const m = models.get(modelId);
       if (!m) throw new ApiError(404, 'model not found');
       modelGrants.get(modelId)?.delete(projectId);
+      return delay(modelView(m));
+    },
+
+    async grantModelToAccount(modelId: string, userId: string): Promise<Model> {
+      const m = models.get(modelId);
+      if (!m || !DEMO_USERS.some((user) => user.id === userId)) throw new ApiError(404, 'model or account not found');
+      (modelAccountGrants.get(modelId) ?? new Set()).add(userId);
+      return delay(modelView(m));
+    },
+
+    async revokeModelFromAccount(modelId: string, userId: string): Promise<Model> {
+      const m = models.get(modelId);
+      if (!m) throw new ApiError(404, 'model not found');
+      modelAccountGrants.get(modelId)?.delete(userId);
       return delay(modelView(m));
     },
 

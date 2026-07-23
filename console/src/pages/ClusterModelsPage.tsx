@@ -1,7 +1,7 @@
 /*
  * ClusterModelsPage — the cluster catalog of model providers (design/cluster-
  * models.html). The provider cards, catalog discovery, custom models, verify and
- * per-model grant management live in the shared, scope-parameterized ModelsCatalog
+ * per-model Account/Project access management live in the shared, scope-parameterized ModelsCatalog
  * (pages/models); this page is the cluster-admin shell around it (subnav, header,
  * the page-header "Add provider" button, and the access gate).
  */

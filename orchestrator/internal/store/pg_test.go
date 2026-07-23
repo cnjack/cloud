@@ -109,6 +109,73 @@ func TestPGKanbanClaimNullableAndWritebackScan(t *testing.T) {
 	}
 }
 
+func TestPGAccountModelGrantCascades(t *testing.T) {
+	ctx := context.Background()
+	st, _ := pgTestStore(t)
+	suffix := domain.NewID()
+	adminID := "admin_" + suffix
+	accountID := "account_" + suffix
+	providerID := "provider_" + suffix
+	modelID := "model_" + suffix
+
+	if _, err := st.Pool().Exec(ctx,
+		`INSERT INTO users (id, display_name, is_cluster_admin) VALUES ($1,'Grant admin',true),($2,'Target account',false)`,
+		adminID, accountID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = st.Pool().Exec(context.Background(), `DELETE FROM users WHERE id=$1`, adminID)
+		_, _ = st.Pool().Exec(context.Background(), `DELETE FROM model_providers WHERE id=$1`, providerID)
+	})
+	if _, err := st.Pool().Exec(ctx,
+		`INSERT INTO model_providers (id,name,kind,base_url,auth_type,catalog_mode,updated_by)
+		 VALUES ($1,$2,'openai','https://example.invalid/v1','none','disabled',$3)`,
+		providerID, "provider "+suffix, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool().Exec(ctx,
+		`INSERT INTO model_configs (id,name,base_url,model_name,provider_id,model_id,enabled,updated_by)
+		 VALUES ($1,$2,'https://example.invalid/v1','openai/test',$3,'test',true,$4)`,
+		modelID, "model "+suffix, providerID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.GrantModelToAccount(ctx, modelID, accountID, adminID); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	if _, err := st.Pool().Exec(ctx, `DELETE FROM users WHERE id=$1`, accountID); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM model_account_grants WHERE model_id=$1`, modelID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("account delete left %d model grants, want 0", count)
+	}
+
+	accountID = "account2_" + suffix
+	if _, err := st.Pool().Exec(ctx,
+		`INSERT INTO users (id, display_name) VALUES ($1,'Second target')`, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.GrantModelToAccount(ctx, modelID, accountID, adminID); err != nil {
+		t.Fatalf("second grant: %v", err)
+	}
+	if _, err := st.Pool().Exec(ctx, `DELETE FROM model_configs WHERE id=$1`, modelID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM model_account_grants WHERE user_id=$1`, accountID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("model delete left %d account grants, want 0", count)
+	}
+	_, _ = st.Pool().Exec(ctx, `DELETE FROM users WHERE id=$1`, accountID)
+}
+
 // TestPGIntegrationRoundTrip exercises the D19/F5 integration pgx paths that the
 // memory store cannot: the bytea token blob round-trip, unique(project_id,name),
 // UpdateIntegration rotation, the services.integration_id FK, and ON DELETE SET

@@ -998,14 +998,14 @@ export interface ApiKeysEnvelope {
   api_keys: ApiKey[];
 }
 
-/* ---- model catalog + project grants (D21) -------------------------------- */
+/* ---- model catalog + account/project grants (D21) ------------------------ */
 
 /**
  * GET /api/v1/system/models — one catalog model, the cluster-admin view.
  *
- * The plaintext API key is NEVER returned — only api_key_set. granted_project_ids
- * lists the projects authorized to use this model (managed inline on the Cluster
- * page).
+ * The plaintext API key is NEVER returned — only api_key_set. Grant lists identify
+ * Accounts whose Desktop devices may proxy through the model and Projects that
+ * may select it for Cloud runs.
  */
 export interface Model {
   id: string;
@@ -1017,6 +1017,7 @@ export interface Model {
   updated_at: string;
   updated_by: string;
   granted_project_ids: string[];
+  granted_account_ids: string[];
 }
 
 export interface ModelCapabilities {
@@ -1040,6 +1041,11 @@ export interface ProviderModel {
    * optional on the shared type and the grants control renders in cluster scope.
    */
   granted_project_ids?: string[];
+  /**
+   * Cluster scope only: Accounts whose current and future authenticated Desktop
+   * devices may use this Cluster-global model through cloud_proxy.
+   */
+  granted_account_ids?: string[];
   /**
    * Project scope only: the per-model on/off toggle (jcode parity). Absent on the
    * cluster view; the enable Switch renders only in project scope.

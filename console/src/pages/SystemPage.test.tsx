@@ -150,7 +150,7 @@ describe('SystemPage', () => {
   it('Model catalog: adds a model and shows a success toast (D21)', async () => {
     const createModel = vi.fn().mockResolvedValue({
       id: 'm1', name: 'GPT-4o', base_url: 'https://api.openai.com/v1', model_name: 'openai/gpt-4o',
-      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: [],
+      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: [], granted_account_ids: [],
     } satisfies Model);
     const client = {
       getSystem: vi.fn().mockResolvedValue(snapshot()),
@@ -201,7 +201,7 @@ describe('SystemPage', () => {
   it('Model catalog: lists a model and toggles a project grant (D21)', async () => {
     const model: Model = {
       id: 'm1', name: 'GPT-4o', base_url: 'https://api.openai.com/v1', model_name: 'openai/gpt-4o',
-      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: [],
+      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: [], granted_account_ids: [],
     };
     const project: Project = { id: 'p1', name: 'demo', created_at: '' };
     const grantModel = vi.fn().mockResolvedValue({ ...model, granted_project_ids: ['p1'] });
@@ -228,7 +228,7 @@ describe('SystemPage', () => {
   it('Model catalog: revokes a granted project and removes a model (D21)', async () => {
     const model: Model = {
       id: 'm1', name: 'GPT-4o', base_url: 'https://api.openai.com/v1', model_name: 'openai/gpt-4o',
-      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: ['p1'],
+      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: ['p1'], granted_account_ids: [],
     };
     const project: Project = { id: 'p1', name: 'demo', created_at: '' };
     const revokeModel = vi.fn().mockResolvedValue({ ...model, granted_project_ids: [] });
@@ -257,7 +257,7 @@ describe('SystemPage', () => {
   it('Model catalog: edit save reaches all three api_key states (omit/rotate/clear)', async () => {
     const model: Model = {
       id: 'm1', name: 'GPT-4o', base_url: 'https://api.openai.com/v1', model_name: 'openai/gpt-4o',
-      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: [],
+      api_key_set: true, created_at: '', updated_at: '', updated_by: '', granted_project_ids: [], granted_account_ids: [],
     };
     const updateModel = vi.fn().mockResolvedValue(model);
     const client = {

@@ -345,7 +345,7 @@ type Store interface {
 	PutRunBundle(ctx context.Context, runID string, data []byte) error
 	GetRunBundle(ctx context.Context, runID string) ([]byte, error)
 
-	// --- Model catalog + project grants (D21) --------------------------------
+	// --- Model catalog + account/project grants (D21) -------------------------
 	// Provider rows own endpoints/credentials; catalog model rows own model
 	// metadata and Project grants. api_key_enc stays encrypted on every read — the
 	// plaintext is NEVER returned over the API.
@@ -394,6 +394,18 @@ type Store interface {
 	// RevokeModel removes a project's grant. A missing grant is a no-op (not an
 	// error) so revoke is idempotent.
 	RevokeModel(ctx context.Context, modelID, projectID string) error
+	// ListModelsForAccount returns cluster-global models directly granted to an
+	// account. Every authenticated, non-revoked Desktop for that account inherits
+	// this entitlement; Project-owned models are never returned.
+	ListModelsForAccount(ctx context.Context, userID string) ([]domain.Model, error)
+	// ListAccountIDsForModel returns account ids directly entitled to a
+	// cluster-global model (admin access-management view).
+	ListAccountIDsForModel(ctx context.Context, modelID string) ([]string, error)
+	// GrantModelToAccount creates an idempotent account entitlement. grantedBy is
+	// the human administrator id, or empty for the service principal.
+	GrantModelToAccount(ctx context.Context, modelID, userID, grantedBy string) error
+	// RevokeModelFromAccount removes an account entitlement idempotently.
+	RevokeModelFromAccount(ctx context.Context, modelID, userID string) error
 
 	// --- Cluster kanban config (D27) -----------------------------------------
 	// The single-row cluster_kanban_config holds the cluster-level jtype base URL

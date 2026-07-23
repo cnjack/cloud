@@ -337,6 +337,24 @@ describe('httpClient — model providers', () => {
   });
 });
 
+describe('httpClient — Account model grants', () => {
+  it('uses the encoded Account grant route for idempotent grant and revoke', async () => {
+    const { calls } = mockFetch(() => ({
+      body: { id: 'model one', granted_project_ids: [], granted_account_ids: ['user one'] },
+    }));
+    const client = createHttpClient('t');
+
+    await client.grantModelToAccount('model one', 'user one');
+    await client.revokeModelFromAccount('model one', 'user one');
+
+    expect(calls.map((call) => call.url)).toEqual([
+      '/api/v1/system/models/model%20one/account-grants/user%20one',
+      '/api/v1/system/models/model%20one/account-grants/user%20one',
+    ]);
+    expect(calls.map((call) => call.init?.method)).toEqual(['PUT', 'DELETE']);
+  });
+});
+
 describe('httpClient — project model providers (M2)', () => {
   it('uses the project-scoped provider + model routes with encoded ids and unwraps envelopes', async () => {
     const { calls } = mockFetch(({ url, init }) => {

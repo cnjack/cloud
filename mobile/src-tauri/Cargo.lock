@@ -1869,7 +1869,7 @@ dependencies = [
 
 [[package]]
 name = "jcloud-mobile"
-version = "0.0.75"
+version = "0.0.76"
 dependencies = [
  "futures-util",
  "reqwest 0.12.28",

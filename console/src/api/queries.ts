@@ -648,6 +648,20 @@ export function useSetModelGrant() {
   });
 }
 
+/** Grant or revoke Account-wide Desktop access to a Cluster-global model. */
+export function useSetModelAccountGrant() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ modelId, userId, granted }: { modelId: string; userId: string; granted: boolean }) =>
+      granted ? api.grantModelToAccount(modelId, userId) : api.revokeModelFromAccount(modelId, userId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.models });
+      qc.invalidateQueries({ queryKey: qk.modelProviders });
+    },
+  });
+}
+
 /** Edit a service (owner) — currently just its default model (D21). */
 export function useUpdateService(projectId: string) {
   const api = useApi();
@@ -1175,14 +1189,14 @@ export function useRemoveMember(projectId: string) {
 }
 
 /**
- * User search for the add-member picker. Debounce-friendly: pass the live query
- * string; the query only fires once it is non-empty so an empty box is quiet.
+ * User search for account/member pickers. By default an empty query stays quiet;
+ * Account access management opts in so the initial Account page is useful.
  */
-export function useSearchUsers(q: string) {
+export function useSearchUsers(q: string, enabled = q.trim().length > 0) {
   const api = useApi();
   return useQuery({
     queryKey: qk.users(q),
     queryFn: () => api.searchUsers(q),
-    enabled: q.trim().length > 0,
+    enabled,
   });
 }

@@ -1,7 +1,7 @@
 {
   "name": "jcloud-console",
   "private": true,
-  "version": "0.0.75",
+  "version": "0.0.76",
   "type": "module",
   "description": "Web console for jcode Cloud Agent — self-hosted cloud coding agent.",
   "scripts": {

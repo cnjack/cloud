@@ -17,79 +17,81 @@ import (
 // and idempotency semantics as PGStore so tests exercise real behaviour without
 // a database. It is safe for concurrent use.
 type MemStore struct {
-	mu               sync.Mutex
-	projects         map[string]domain.Project
-	services         map[string]domain.Service
-	runs             map[string]domain.Run
-	events           map[string][]domain.RunEvent            // keyed by runID, kept sorted by seq
-	dedupe           map[string]bool                         // keyed by runID+"|"+source+"|"+client_seq
-	artifacts        map[string]domain.RunArtifact           // keyed by runID+"/"+kind
-	users            map[string]domain.User                  // keyed by user id
-	identities       map[string]domain.UserIdentity          // keyed by identity id
-	sessions         map[string]domain.Session               // keyed by session id
-	members          map[string]domain.ProjectMember         // keyed by projectID+"|"+userID
-	modelProviders   map[string]domain.ModelProvider         // keyed by provider id
-	models           map[string]domain.Model                 // catalog, keyed by model id (D21)
-	modelGrants      map[string]bool                         // keyed by modelID+"|"+projectID
-	integrations     map[string]domain.Integration           // keyed by integration id (D19 / F5)
-	kanbanLinks      map[string]domain.KanbanLink            // keyed by link id
-	kanbanClaims     map[string]domain.KanbanClaim           // keyed by linkID+"|"+documentID
-	schedules        map[string]domain.Schedule              // keyed by schedule id (F11 / D24)
-	automations      map[string]domain.Automation            // keyed by automation id
-	webhookBindings  map[string]domain.WebhookBinding        // keyed by service id
-	runMessages      map[string][]domain.RunMessage          // session follow-up queue, keyed by runID (D22)
-	permissions      map[string]domain.RunPermission         // permission requests, keyed by request_id (F8b)
-	apiKeys          map[string]domain.APIKey                // keyed by api key id (F12 / D24)
-	accountSettings  map[string]domain.AccountSettings       // keyed by user id (docs/19)
-	accountSyncKeys  map[string]domain.AccountSyncKey        // keyed by user id (docs/19)
-	accountSyncWraps map[string]domain.AccountSyncKeyWrap    // keyed by userID+"|"+deviceID
-	accountProviders map[string]domain.AccountProviderConfig // keyed by userID+"|"+providerID
-	kanbanConfig     *domain.KanbanConfig                    // single-row cluster kanban config, nil = absent (D27)
-	devices          map[string]domain.Device                // keyed by device id (docs/17)
-	deviceTokens     map[string]domain.DeviceToken           // keyed by device token id
-	deviceSessions   map[string]domain.DeviceSession         // keyed by deviceID+"|"+sessionID
-	deviceEvents     map[string][]domain.DeviceEvent         // keyed by deviceID+"|"+sessionID, kept sorted by seq
-	deviceCommands   map[string]domain.DeviceCommand         // keyed by command id
-	devicePairings   map[string]domain.DevicePairing         // keyed by pairing id
-	deviceOffers     map[string]domain.DevicePairingOffer    // keyed by offer id
+	mu                 sync.Mutex
+	projects           map[string]domain.Project
+	services           map[string]domain.Service
+	runs               map[string]domain.Run
+	events             map[string][]domain.RunEvent            // keyed by runID, kept sorted by seq
+	dedupe             map[string]bool                         // keyed by runID+"|"+source+"|"+client_seq
+	artifacts          map[string]domain.RunArtifact           // keyed by runID+"/"+kind
+	users              map[string]domain.User                  // keyed by user id
+	identities         map[string]domain.UserIdentity          // keyed by identity id
+	sessions           map[string]domain.Session               // keyed by session id
+	members            map[string]domain.ProjectMember         // keyed by projectID+"|"+userID
+	modelProviders     map[string]domain.ModelProvider         // keyed by provider id
+	models             map[string]domain.Model                 // catalog, keyed by model id (D21)
+	modelGrants        map[string]bool                         // keyed by modelID+"|"+projectID
+	modelAccountGrants map[string]string                       // keyed by modelID+"|"+userID, value=granting user
+	integrations       map[string]domain.Integration           // keyed by integration id (D19 / F5)
+	kanbanLinks        map[string]domain.KanbanLink            // keyed by link id
+	kanbanClaims       map[string]domain.KanbanClaim           // keyed by linkID+"|"+documentID
+	schedules          map[string]domain.Schedule              // keyed by schedule id (F11 / D24)
+	automations        map[string]domain.Automation            // keyed by automation id
+	webhookBindings    map[string]domain.WebhookBinding        // keyed by service id
+	runMessages        map[string][]domain.RunMessage          // session follow-up queue, keyed by runID (D22)
+	permissions        map[string]domain.RunPermission         // permission requests, keyed by request_id (F8b)
+	apiKeys            map[string]domain.APIKey                // keyed by api key id (F12 / D24)
+	accountSettings    map[string]domain.AccountSettings       // keyed by user id (docs/19)
+	accountSyncKeys    map[string]domain.AccountSyncKey        // keyed by user id (docs/19)
+	accountSyncWraps   map[string]domain.AccountSyncKeyWrap    // keyed by userID+"|"+deviceID
+	accountProviders   map[string]domain.AccountProviderConfig // keyed by userID+"|"+providerID
+	kanbanConfig       *domain.KanbanConfig                    // single-row cluster kanban config, nil = absent (D27)
+	devices            map[string]domain.Device                // keyed by device id (docs/17)
+	deviceTokens       map[string]domain.DeviceToken           // keyed by device token id
+	deviceSessions     map[string]domain.DeviceSession         // keyed by deviceID+"|"+sessionID
+	deviceEvents       map[string][]domain.DeviceEvent         // keyed by deviceID+"|"+sessionID, kept sorted by seq
+	deviceCommands     map[string]domain.DeviceCommand         // keyed by command id
+	devicePairings     map[string]domain.DevicePairing         // keyed by pairing id
+	deviceOffers       map[string]domain.DevicePairingOffer    // keyed by offer id
 }
 
 // NewMemStore returns an empty in-memory store.
 func NewMemStore() *MemStore {
 	return &MemStore{
-		projects:         map[string]domain.Project{},
-		services:         map[string]domain.Service{},
-		runs:             map[string]domain.Run{},
-		events:           map[string][]domain.RunEvent{},
-		dedupe:           map[string]bool{},
-		artifacts:        map[string]domain.RunArtifact{},
-		users:            map[string]domain.User{},
-		identities:       map[string]domain.UserIdentity{},
-		sessions:         map[string]domain.Session{},
-		members:          map[string]domain.ProjectMember{},
-		modelProviders:   map[string]domain.ModelProvider{},
-		models:           map[string]domain.Model{},
-		modelGrants:      map[string]bool{},
-		integrations:     map[string]domain.Integration{},
-		kanbanLinks:      map[string]domain.KanbanLink{},
-		kanbanClaims:     map[string]domain.KanbanClaim{},
-		schedules:        map[string]domain.Schedule{},
-		automations:      map[string]domain.Automation{},
-		webhookBindings:  map[string]domain.WebhookBinding{},
-		runMessages:      map[string][]domain.RunMessage{},
-		permissions:      map[string]domain.RunPermission{},
-		apiKeys:          map[string]domain.APIKey{},
-		accountSettings:  map[string]domain.AccountSettings{},
-		accountSyncKeys:  map[string]domain.AccountSyncKey{},
-		accountSyncWraps: map[string]domain.AccountSyncKeyWrap{},
-		accountProviders: map[string]domain.AccountProviderConfig{},
-		devices:          map[string]domain.Device{},
-		deviceTokens:     map[string]domain.DeviceToken{},
-		deviceSessions:   map[string]domain.DeviceSession{},
-		deviceEvents:     map[string][]domain.DeviceEvent{},
-		deviceCommands:   map[string]domain.DeviceCommand{},
-		devicePairings:   map[string]domain.DevicePairing{},
-		deviceOffers:     map[string]domain.DevicePairingOffer{},
+		projects:           map[string]domain.Project{},
+		services:           map[string]domain.Service{},
+		runs:               map[string]domain.Run{},
+		events:             map[string][]domain.RunEvent{},
+		dedupe:             map[string]bool{},
+		artifacts:          map[string]domain.RunArtifact{},
+		users:              map[string]domain.User{},
+		identities:         map[string]domain.UserIdentity{},
+		sessions:           map[string]domain.Session{},
+		members:            map[string]domain.ProjectMember{},
+		modelProviders:     map[string]domain.ModelProvider{},
+		models:             map[string]domain.Model{},
+		modelGrants:        map[string]bool{},
+		modelAccountGrants: map[string]string{},
+		integrations:       map[string]domain.Integration{},
+		kanbanLinks:        map[string]domain.KanbanLink{},
+		kanbanClaims:       map[string]domain.KanbanClaim{},
+		schedules:          map[string]domain.Schedule{},
+		automations:        map[string]domain.Automation{},
+		webhookBindings:    map[string]domain.WebhookBinding{},
+		runMessages:        map[string][]domain.RunMessage{},
+		permissions:        map[string]domain.RunPermission{},
+		apiKeys:            map[string]domain.APIKey{},
+		accountSettings:    map[string]domain.AccountSettings{},
+		accountSyncKeys:    map[string]domain.AccountSyncKey{},
+		accountSyncWraps:   map[string]domain.AccountSyncKeyWrap{},
+		accountProviders:   map[string]domain.AccountProviderConfig{},
+		devices:            map[string]domain.Device{},
+		deviceTokens:       map[string]domain.DeviceToken{},
+		deviceSessions:     map[string]domain.DeviceSession{},
+		deviceEvents:       map[string][]domain.DeviceEvent{},
+		deviceCommands:     map[string]domain.DeviceCommand{},
+		devicePairings:     map[string]domain.DevicePairing{},
+		deviceOffers:       map[string]domain.DevicePairingOffer{},
 	}
 }
 
@@ -1438,6 +1440,11 @@ func (m *MemStore) deleteModelLocked(id string) error {
 			delete(m.modelGrants, k)
 		}
 	}
+	for k := range m.modelAccountGrants {
+		if strings.HasPrefix(k, id+"|") {
+			delete(m.modelAccountGrants, k)
+		}
+	}
 	for sid, svc := range m.services {
 		if svc.DefaultModelID != nil && *svc.DefaultModelID == id {
 			svc.DefaultModelID = nil
@@ -1691,6 +1698,60 @@ func (m *MemStore) RevokeModel(_ context.Context, modelID, projectID string) err
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.modelGrants, grantKey(modelID, projectID))
+	return nil
+}
+
+func accountGrantKey(modelID, userID string) string { return modelID + "|" + userID }
+
+func (m *MemStore) ListModelsForAccount(_ context.Context, userID string) ([]domain.Model, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Model
+	for modelID, model := range m.models {
+		_, granted := m.modelAccountGrants[accountGrantKey(modelID, userID)]
+		if model.ProjectID == "" && granted {
+			out = append(out, cloneModel(model))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) ListAccountIDsForModel(_ context.Context, modelID string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.models[modelID]; !ok {
+		return nil, ErrNotFound
+	}
+	prefix := modelID + "|"
+	var out []string
+	for key := range m.modelAccountGrants {
+		if strings.HasPrefix(key, prefix) {
+			out = append(out, strings.TrimPrefix(key, prefix))
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (m *MemStore) GrantModelToAccount(_ context.Context, modelID, userID, grantedBy string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	model, ok := m.models[modelID]
+	if !ok || model.ProjectID != "" {
+		return ErrNotFound
+	}
+	if _, ok := m.users[userID]; !ok {
+		return ErrNotFound
+	}
+	m.modelAccountGrants[accountGrantKey(modelID, userID)] = grantedBy
+	return nil
+}
+
+func (m *MemStore) RevokeModelFromAccount(_ context.Context, modelID, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.modelAccountGrants, accountGrantKey(modelID, userID))
 	return nil
 }
 

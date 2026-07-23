@@ -213,7 +213,7 @@ export interface ApiClient {
   /** DELETE /api/v1/projects/{id}/model-providers/{pid}/models/{mid} — remove a model (owner). */
   deleteProjectProviderModel(projectId: string, providerId: string, modelId: string): Promise<void>;
 
-  /* ---- model catalog + project grants (D21) ----------------------------- */
+  /* ---- model catalog + account/project grants (D21) --------------------- */
   /** GET /api/v1/system/models — the whole catalog (cluster-admin). */
   listModels(): Promise<Model[]>;
   /** POST /api/v1/system/models — add a model (cluster-admin). */
@@ -226,6 +226,10 @@ export interface ApiClient {
   grantModel(modelId: string, projectId: string): Promise<Model>;
   /** DELETE /api/v1/system/models/{id}/grants/{projectId} — revoke. */
   revokeModel(modelId: string, projectId: string): Promise<Model>;
+  /** PUT /api/v1/system/models/{id}/account-grants/{userId} — authorize every Desktop for an Account. */
+  grantModelToAccount(modelId: string, userId: string): Promise<Model>;
+  /** DELETE /api/v1/system/models/{id}/account-grants/{userId} — revoke Account-wide Desktop access. */
+  revokeModelFromAccount(modelId: string, userId: string): Promise<Model>;
   /**
    * GET /api/v1/projects/{id}/models — models granted to a project (member+).
    * Carries only id/name/model_name plus env_fallback; never a base_url or key.
@@ -742,7 +746,7 @@ export function createHttpClient(
         { method: 'DELETE' },
       ),
 
-    // Model catalog + project grants (D21).
+    // Model catalog + account/project grants (D21).
     listModels: async () =>
       (await req<{ models: Model[] }>('/system/models')).models ?? [],
     createModel: (input) =>
@@ -762,6 +766,16 @@ export function createHttpClient(
     revokeModel: (modelId, projectId) =>
       req<Model>(
         `/system/models/${encodeURIComponent(modelId)}/grants/${encodeURIComponent(projectId)}`,
+        { method: 'DELETE' },
+      ),
+    grantModelToAccount: (modelId, userId) =>
+      req<Model>(
+        `/system/models/${encodeURIComponent(modelId)}/account-grants/${encodeURIComponent(userId)}`,
+        { method: 'PUT' },
+      ),
+    revokeModelFromAccount: (modelId, userId) =>
+      req<Model>(
+        `/system/models/${encodeURIComponent(modelId)}/account-grants/${encodeURIComponent(userId)}`,
         { method: 'DELETE' },
       ),
     listProjectModels: (projectId) =>
