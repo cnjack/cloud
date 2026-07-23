@@ -1,10 +1,11 @@
 # Build + push the jcloud images to GitHub Packages (ghcr.io), and cut a release.
 #
-# Every push to main is a release: the `version` job bumps the patch of the
-# latest vX.Y.Z git tag (starting at 0.0.1 when there are none), all four image
-# jobs push `<version>` + `latest` (+ the commit SHA for traceability), and the
-# final `release` job creates the matching `v<version>` git tag — but only after
-# every image has been pushed, so a failed build never leaves a dangling tag.
+# Every push to main is a release. VERSION is the single source of truth:
+# package manifests must match it, the Console and orchestrator display
+# `v<version>`, all four images push `v<version>` + `latest` (+ the commit SHA
+# for traceability), and the final job creates the same `v<version>` Git tag.
+# The tag is created only after every image has been pushed, so a failed build
+# never leaves a dangling release tag.
 #
 # Images (all linux/amd64 — the target company cluster is amd64-only):
 #   ghcr.io/<owner>/jcloud-orchestrator   from orchestrator/
@@ -19,7 +20,7 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Serialize releases so two overlapping runs can't compute the same version.
+# Serialize releases so two overlapping runs cannot publish the same version.
 concurrency:
   group: images-release
   cancel-in-progress: false
@@ -31,28 +32,36 @@ jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.bump.outputs.version }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - id: bump
-        name: Compute next patch version
+      - id: release
+        name: Validate release version
         run: |
           git fetch --tags --force
-          latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n1)
-          if [ -z "$latest" ]; then
-            version=0.0.1
-          else
-            v=${latest#v}
-            major=${v%%.*}
-            rest=${v#*.}
-            minor=${rest%%.*}
-            patch=${rest##*.}
-            version="$major.$minor.$((patch + 1))"
+          version=$(tr -d '[:space:]' < VERSION)
+          case "$version" in
+            ''|*[!0-9.]*|.*|*.) echo "VERSION must be X.Y.Z, got '$version'" >&2; exit 1 ;;
+          esac
+          [ "$(printf '%s' "$version" | awk -F. '{print NF}')" -eq 3 ] || {
+            echo "VERSION must be X.Y.Z, got '$version'" >&2
+            exit 1
+          }
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "release tag v$version already exists; bump VERSION first" >&2
+            exit 1
           fi
+          latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n1)
+          if [ -n "$latest" ] &&
+             [ "$(printf '%s\n%s\n' "$latest" "v$version" | sort -V | tail -n1)" != "v$version" ]; then
+            echo "VERSION v$version must be newer than latest tag $latest" >&2
+            exit 1
+          fi
+          node scripts/check-release-version.mjs
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Latest tag: ${latest:-<none>} -> next: v$version"
+          echo "Release version: v$version"
 
   orchestrator:
     needs: version
@@ -73,7 +82,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-orchestrator
           tags: |
-            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=v${{ needs.version.outputs.version }}
             type=raw,value=latest
             type=sha,format=long
       - uses: docker/build-push-action@v6
@@ -123,7 +132,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-runner
           tags: |
-            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=v${{ needs.version.outputs.version }}
             type=raw,value=latest
             type=sha,format=long
       - uses: docker/build-push-action@v6
@@ -147,13 +156,10 @@ jobs:
       # the docker build context (console/). The prepare script packs both
       # packages into console/.pkg/ and temporarily rewrites the
       # manifests/lockfile/Dockerfile to the tarballs. Delete this once
-      # jcode-ui is published to the registry. Pinned to the feature branch
-      # while it is unmerged (main lacks the jcode-ui/product export);
-      # drop `ref:` after the merge.
+      # jcode-ui is published to the registry.
       - uses: actions/checkout@v4
         with:
           repository: cnjack/jcode
-          ref: main
           path: jcode
       - uses: pnpm/action-setup@v4
         with:
@@ -176,7 +182,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-console
           tags: |
-            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=v${{ needs.version.outputs.version }}
             type=raw,value=latest
             type=sha,format=long
       - uses: docker/build-push-action@v6
@@ -186,6 +192,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VITE_APP_VERSION=v${{ needs.version.outputs.version }}
           cache-from: type=gha,scope=console
           cache-to: type=gha,mode=max,scope=console
 
@@ -208,7 +216,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-mockllm
           tags: |
-            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=v${{ needs.version.outputs.version }}
             type=raw,value=latest
             type=sha,format=long
       - uses: docker/build-push-action@v6

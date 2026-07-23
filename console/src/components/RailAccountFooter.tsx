@@ -2,9 +2,8 @@ import { useTranslation } from 'react-i18next';
 import type { Role } from '../api/config';
 import type { AuthProviderInfo, Me } from '../api/types';
 import { IdentityChip } from './IdentityChip';
+import { CONSOLE_VERSION } from '../version';
 import styles from './RailAccountFooter.module.css';
-
-const CONSOLE_VERSION = 'v0.1.0';
 
 export function RailAccountFooter({
   demo,

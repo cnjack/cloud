@@ -31,12 +31,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: cloud
-      # Pinned to the feature branch while it is unmerged — main does not
-      # carry the jcode-ui/product export yet. Drop `ref:` after the merge.
       - uses: actions/checkout@v4
         with:
           repository: cnjack/jcode
-          ref: main
           path: jcode
       - uses: pnpm/action-setup@v4
         with:
@@ -75,12 +72,9 @@ jobs:
       # the prepare script packs jcode-ui/jcode-ui-core into console/.pkg/
       # and temporarily rewrites the manifests/lockfile/Dockerfile to the
       # tarballs. Delete this once jcode-ui is published to the registry.
-      # Pinned to the feature branch while it is unmerged (main lacks the
-      # jcode-ui/product export); drop `ref:` after the merge.
       - uses: actions/checkout@v4
         with:
           repository: cnjack/jcode
-          ref: main
           path: jcode
       - uses: pnpm/action-setup@v4
         with:

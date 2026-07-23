@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "productName": "jcode",
-  "version": "0.1.0",
+  "version": "0.0.73",
   "identifier": "net.j-code.mobile",
   "build": {
     "frontendDist": "../dist",

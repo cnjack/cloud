@@ -24,6 +24,7 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
 import { LoadingBlock } from '../components/States';
+import { CONSOLE_VERSION } from '../version';
 import styles from './OnboardingGate.module.css';
 
 /** The deploy README distilled to the three commands that fix "unreachable". */
@@ -94,7 +95,7 @@ function GateFrame({ children, variant }: { children: ReactNode; variant: GateVa
       <aside className={styles.rail}>
         <div className={styles.brand}><Wordmark /></div>
         <div className={styles.story}><span className={styles.eyebrow}>{copy.eyebrow}</span><h1>{copy.title}</h1><span className={styles.storyLine} /><p>{copy.story}</p></div>
-        <footer className={styles.railFooter}><span>{t('onboarding.selfHosted')}</span><span>v0.1.0</span></footer>
+        <footer className={styles.railFooter}><span>{t('onboarding.selfHosted')}</span><span>{CONSOLE_VERSION}</span></footer>
       </aside>
       <main className={styles.surface}>
         <header className={styles.utility}><span>{copy.utility}</span><div><span className={styles.state}>{copy.status}</span><LanguageToggle /><ThemeToggle /></div></header>
