@@ -169,10 +169,11 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 type deviceSessionView struct {
-	SessionID string          `json:"session_id"`
-	Status    string          `json:"status"`
-	Meta      json.RawMessage `json:"meta"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	SessionID      string          `json:"session_id"`
+	Status         string          `json:"status"`
+	Meta           json.RawMessage `json:"meta"`
+	LastActivityAt *time.Time      `json:"last_activity_at,omitempty"`
+	UpdatedAt      time.Time       `json:"updated_at"`
 }
 
 // handleListDeviceSessions returns a device's session index (docs/17 §4.3).
@@ -192,10 +193,11 @@ func (s *Server) handleListDeviceSessions(w http.ResponseWriter, r *http.Request
 	views := make([]deviceSessionView, 0, len(sessions))
 	for _, ds := range sessions {
 		views = append(views, deviceSessionView{
-			SessionID: ds.SessionID,
-			Status:    ds.Status,
-			Meta:      json.RawMessage(ds.Meta),
-			UpdatedAt: ds.UpdatedAt,
+			SessionID:      ds.SessionID,
+			Status:         ds.Status,
+			Meta:           json.RawMessage(ds.Meta),
+			LastActivityAt: ds.LastActivityAt,
+			UpdatedAt:      ds.UpdatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": views})

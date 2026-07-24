@@ -77,11 +77,15 @@ const (
 // (M3) it is the SessionMeta JSON, from M5 it is the E2EE ciphertext — the
 // server stores and returns the bytes verbatim and never parses them.
 type DeviceSession struct {
-	DeviceID  string    `json:"-"`
-	SessionID string    `json:"session_id"`
-	Status    string    `json:"status"`
-	Meta      []byte    `json:"-"` // opaque JSON blob (json.RawMessage at the API edge)
-	UpdatedAt time.Time `json:"updated_at"`
+	DeviceID  string `json:"-"`
+	SessionID string `json:"session_id"`
+	Status    string `json:"status"`
+	Meta      []byte `json:"-"` // opaque JSON blob (json.RawMessage at the API edge)
+	// LastActivityAt is optional connector-provided routing metadata. It is the
+	// local session's real activity time, unlike UpdatedAt which is this mirror
+	// row's refresh time.
+	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 // DeviceEvent is one durable event in a device session's append-only log

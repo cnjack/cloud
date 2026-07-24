@@ -37,12 +37,12 @@ func TestDeviceRelayUplinkAuth(t *testing.T) {
 
 func TestDeviceSessionsUpsert(t *testing.T) {
 	fx := setupDevice(t)
-	token, _ := fx.redeemFlow(t)
+	token, deviceID := fx.redeemFlow(t)
 
 	// Fresh sessions upsert with last_seq 0 (no durable events yet).
 	resp := do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, map[string]any{
 		"sessions": []map[string]any{
-			{"session_id": "s1", "status": "running", "meta": map[string]any{"title": "first"}},
+			{"session_id": "s1", "status": "running", "meta": map[string]any{"title": "first"}, "last_activity_at": "2026-03-01T10:11:12Z"},
 			{"session_id": "s2", "status": "idle"},
 		},
 	})
@@ -55,6 +55,10 @@ func TestDeviceSessionsUpsert(t *testing.T) {
 	decode(t, resp, &v)
 	if len(v.Sessions) != 2 || v.Sessions[0].SessionID != "s1" || v.Sessions[0].LastSeq != 0 || v.Sessions[1].LastSeq != 0 {
 		t.Fatalf("upsert view = %+v want 2 sessions with last_seq 0", v)
+	}
+	sessions, err := fx.st.ListDeviceSessions(t.Context(), deviceID)
+	if err != nil || len(sessions) != 2 || sessions[0].LastActivityAt == nil || !sessions[0].LastActivityAt.Equal(time.Date(2026, 3, 1, 10, 11, 12, 0, time.UTC)) || sessions[1].LastActivityAt != nil {
+		t.Fatalf("activity timestamps = %+v err=%v, want persisted activity plus legacy NULL", sessions, err)
 	}
 
 	// The meta blob is stored verbatim (asserted end-to-end via the client
@@ -81,6 +85,7 @@ func TestDeviceSessionsUpsert(t *testing.T) {
 	for _, body := range []map[string]any{
 		{"sessions": []map[string]any{{"session_id": "s1", "status": "busy"}}},
 		{"sessions": []map[string]any{{"status": "idle"}}},
+		{"sessions": []map[string]any{{"session_id": "s1", "status": "idle", "last_activity_at": "2026-03-01T18:11:12+08:00"}}},
 		{"sessions": []map[string]any{}, "surprise": 1},
 	} {
 		resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, body)
@@ -513,7 +518,7 @@ func TestClientDevicesAuthz(t *testing.T) {
 
 	// Sessions index: meta verbatim, stranger 403.
 	resp = do(t, http.MethodPost, fx.ts.URL+"/internal/v1/device/sessions", token, map[string]any{
-		"sessions": []map[string]any{{"session_id": "s1", "status": "running", "meta": map[string]any{"title": "t"}}},
+		"sessions": []map[string]any{{"session_id": "s1", "status": "running", "meta": map[string]any{"title": "t"}, "last_activity_at": "2026-03-01T10:11:12Z"}},
 	})
 	resp.Body.Close()
 	resp = do(t, http.MethodGet, fx.ts.URL+"/api/v1/devices/"+deviceID+"/sessions", owner, nil)
@@ -526,6 +531,9 @@ func TestClientDevicesAuthz(t *testing.T) {
 	decode(t, resp, &sv)
 	if len(sv.Sessions) != 1 || sv.Sessions[0].SessionID != "s1" || sv.Sessions[0].Status != "running" {
 		t.Fatalf("sessions = %+v", sv.Sessions)
+	}
+	if sv.Sessions[0].LastActivityAt == nil || !sv.Sessions[0].LastActivityAt.Equal(time.Date(2026, 3, 1, 10, 11, 12, 0, time.UTC)) {
+		t.Fatalf("last_activity_at = %v want connector activity", sv.Sessions[0].LastActivityAt)
 	}
 	var meta map[string]any
 	if err := json.Unmarshal(sv.Sessions[0].Meta, &meta); err != nil || meta["title"] != "t" {

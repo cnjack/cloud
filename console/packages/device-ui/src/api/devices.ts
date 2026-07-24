@@ -133,6 +133,9 @@ export interface DeviceSession {
   /** jcode session status: "idle" | "running". */
   status: string;
   meta: DeviceSessionMeta | null;
+  /** Connector-reported local activity time; absent for legacy mirrors. */
+  last_activity_at?: string;
+  /** Cloud mirror refresh time, not a conversation activity time. */
   updated_at: string;
 }
 
@@ -210,6 +213,8 @@ export interface DeviceStreamHandle {
 export interface DeviceApi {
   listDevices(): Promise<Device[]>;
   listSessions(deviceId: string): Promise<DeviceSession[]>;
+  /** Read a device command state, including its opaque/decrypted ACK result. */
+  getCommandState(deviceId: string, commandId: string): Promise<DeviceCommandState>;
   /** Replay durable events with seq > afterSeq (0 = from start). */
   listSessionEvents(deviceId: string, sessionId: string, afterSeq?: number, limit?: number): Promise<DeviceSessionEvent[]>;
   /** POST messages; sid "new" starts a fresh session. 409 device_offline when offline. */
@@ -319,6 +324,8 @@ export function createDeviceApi(token: TokenSource, options: DeviceApiOptions = 
 
     listSessions: async (deviceId) =>
       (await req<{ sessions: DeviceSession[] }>(`${dev(deviceId)}/sessions`)).sessions ?? [],
+
+    getCommandState: commandState,
 
     listSessionEvents: async (deviceId, sessionId, afterSeq = 0, limit) => {
       const params = new URLSearchParams({ after_seq: String(afterSeq) });

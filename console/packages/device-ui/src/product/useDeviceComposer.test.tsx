@@ -5,8 +5,8 @@
  * the type-ahead queue drain, and approval-vocabulary mapping.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReactNode } from 'react';
-import { act, renderHook } from '@testing-library/react';
+import { useEffect, type ReactNode } from 'react';
+import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DeviceApiProvider } from '../api/DeviceApiProvider';
 import type { Device, DeviceApi, SendMessageExtras } from '../api/devices';
@@ -59,6 +59,20 @@ function wrapper(api: DeviceApi) {
       </QueryClientProvider>
     );
   };
+}
+
+type ComposerState = ReturnType<typeof useDeviceComposer>;
+
+function KeyedComposerHarness({
+  deviceId,
+  report,
+}: {
+  deviceId: string;
+  report: (composer: ComposerState) => void;
+}) {
+  const composer = useDeviceComposer({ deviceId, sessionId: 'new', device: DEVICE });
+  useEffect(() => report(composer), [composer, report]);
+  return null;
 }
 
 beforeEach(() => {
@@ -120,6 +134,76 @@ describe('useDeviceComposer', () => {
       folders: [{ name: 'work', path: '/home/jack/work' }],
     });
     expect(browsed).toEqual(['/home/jack']);
+  });
+
+  it('accepts only one welcome creation command until a terminal outcome releases it', async () => {
+    const { api, sends } = makeFakeApi();
+    const onSent = vi.fn();
+    const { result } = renderHook(
+      () => useDeviceComposer({ deviceId: 'dev-1', sessionId: 'new', device: DEVICE, onSent }),
+      { wrapper: wrapper(api) },
+    );
+
+    act(() => {
+      result.current.runtime.actions.sendMessage('first');
+      result.current.runtime.actions.sendMessage('second');
+    });
+
+    await waitFor(() => expect(sends.map((send) => send.text)).toEqual(['first']));
+    expect(result.current.isSendLocked).toBe(true);
+    await waitFor(() => expect(onSent).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: 'cmd-1',
+      sessionId: 'new',
+      text: 'first',
+    })));
+    act(() => result.current.releaseNewSessionLock());
+    expect(result.current.isSendLocked).toBe(false);
+  });
+
+  it('does not carry a new-session lock across a device route switch', async () => {
+    let latest: ComposerState | null = null;
+    let rejectA: ((error: Error) => void) | null = null;
+    const sends: string[] = [];
+    const api = {
+      sendMessage: async (deviceId: string) => {
+        sends.push(deviceId);
+        if (deviceId === 'device-a') {
+          return new Promise<never>((_resolve, reject) => {
+            rejectA = reject;
+          });
+        }
+        return { command_id: 'command-b', session_id: null };
+      },
+      stopSession: async () => {},
+      respondApproval: async () => {},
+      browseFolders: async () => ({ current: '/', folders: [] }),
+    } as unknown as DeviceApi;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const report = (composer: ComposerState) => { latest = composer; };
+    const renderTree = (deviceId: string) => (
+      <QueryClientProvider client={qc}>
+        <DeviceApiProvider api={api}>
+          <KeyedComposerHarness key={deviceId} deviceId={deviceId} report={report} />
+        </DeviceApiProvider>
+      </QueryClientProvider>
+    );
+    const screen = render(renderTree('device-a'));
+    await waitFor(() => expect(latest).not.toBeNull());
+    act(() => latest!.runtime.actions.sendMessage('A'));
+    expect(latest!.isSendLocked).toBe(true);
+    await waitFor(() => expect(sends).toEqual(['device-a']));
+
+    screen.rerender(renderTree('device-b'));
+    await waitFor(() => expect(latest!.isSendLocked).toBe(false));
+    act(() => latest!.runtime.actions.sendMessage('B'));
+    await waitFor(() => expect(sends).toEqual(['device-a', 'device-b']));
+    expect(latest!.isSendLocked).toBe(true);
+
+    await act(async () => {
+      rejectA?.(new Error('late A failure'));
+      await Promise.resolve();
+    });
+    expect(latest!.isSendLocked).toBe(true);
   });
 
   it('sends an armed goal as {goal_armed: true} alone — goal beats every compose field', async () => {

@@ -15,11 +15,16 @@ import { useEffect } from 'react';
 
 export function DeviceWelcomePage() {
   const { deviceId = '' } = useParams();
+  return <DeviceWelcomeContent key={deviceId} deviceId={deviceId} />;
+}
+
+function DeviceWelcomeContent({ deviceId }: { deviceId: string }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const toast = useToast();
   const devices = useDevices();
   const sessions = useDeviceSessions(deviceId);
+  const visibleSessions = (sessions.data ?? []).filter((session) => session.meta !== null);
 
   const device = devices.data?.find((d) => d.id === deviceId);
   const online = device?.online ?? false;
@@ -42,14 +47,14 @@ export function DeviceWelcomePage() {
   // M14: the stock jcode product composer. A send to 'new' is tracked as a
   // pending session: the list shows a creating row immediately (2s poll) and
   // the session opens automatically the moment the relay mirrors it.
-  const { pending, expired, found, markSent, clear } = usePendingNewSession(deviceId);
-  const { host, runtime } = useDeviceComposer({
+  const { pending, issue, found, markSent, clear, isRetryingCommandState } = usePendingNewSession(deviceId);
+  const { host, runtime, isSendLocked, releaseNewSessionLock } = useDeviceComposer({
     deviceId,
     sessionId: 'new',
     device,
     hasMessages: false,
     onError: (message) => toast.push({ kind: 'error', message }),
-    onSent: (info: { sessionId: string; text: string; at: number }) => markSent({ text: info.text, at: info.at }),
+    onSent: markSent,
   });
   useEffect(() => {
     if (found) {
@@ -58,8 +63,11 @@ export function DeviceWelcomePage() {
     }
   }, [found, clear, deviceId, navigate]);
   useEffect(() => {
-    if (expired) toast.push({ kind: 'info', message: t('device.welcome.createSlow') });
-  }, [expired, toast, t]);
+    if (issue) toast.push({ kind: 'info', message: t('device.welcome.createSlow') });
+  }, [issue, toast, t]);
+  useEffect(() => {
+    if (issue) releaseNewSessionLock();
+  }, [issue, releaseNewSessionLock]);
 
   if (devices.isLoading) {
     return <SurfaceInner><div className={styles.state}><LoadingBlock label={t('common.loading')} /></div></SurfaceInner>;
@@ -148,16 +156,18 @@ export function DeviceWelcomePage() {
                 open downward, card elevated). Offline sends fail visibly via
                 the onError toast. */}
             <div data-testid="new-session-composer" className="jcode-product">
-              <RuntimeProvider runtime={runtime}>
-                <ChatInput host={host} pickerPlacement="bottom" elevated />
-              </RuntimeProvider>
+              <fieldset className={styles.composerLock} disabled={isSendLocked} aria-busy={isSendLocked}>
+                <RuntimeProvider runtime={runtime}>
+                  <ChatInput host={host} pickerPlacement="bottom" elevated />
+                </RuntimeProvider>
+              </fieldset>
             </div>
           </section>
 
           <section aria-labelledby="device-sessions-title">
             <div className={styles.sectionHead}>
               <h2 id="device-sessions-title">{t('device.welcome.sessions')}</h2>
-              {sessions.data && <span className={styles.count}>{t('device.welcome.sessionCount', { count: sessions.data.length })}</span>}
+              {sessions.data && <span className={styles.count}>{t('device.welcome.sessionCount', { count: visibleSessions.length })}</span>}
             </div>
             {sessions.isLoading ? (
               <LoadingBlock label={t('common.loading')} />
@@ -171,14 +181,15 @@ export function DeviceWelcomePage() {
                       <span className={styles.rowTitle}>
                         <strong>{pending.text || t('device.welcome.untitled')}</strong>
                         <span className={styles.statusBadge} data-tone="running">{t('device.welcome.creating')}</span>
+                        {isRetryingCommandState && <span className={styles.statusBadge}>{t('device.welcome.createSlow')}</span>}
                       </span>
                     </span>
                   </li>
                 )}
-                {(sessions.data ?? []).map((session) => (
+                {visibleSessions.map((session) => (
                   <SessionRow key={session.session_id} deviceId={deviceId} session={session} />
                 ))}
-                {!pending && (sessions.data ?? []).length === 0 && (
+                {!pending && visibleSessions.length === 0 && (
                   <p className={styles.empty}>{t('device.welcome.noSessions')}</p>
                 )}
               </ul>
@@ -220,7 +231,7 @@ function SessionRow({ deviceId, session }: { deviceId: string; session: DeviceSe
           </span>
           <span className={styles.rowMeta}>
             {session.meta?.project && <span className={styles.mono}>{session.meta.project}</span>}
-            <span>{timeAgo(session.updated_at)}</span>
+            {session.last_activity_at && <span>{timeAgo(session.last_activity_at)}</span>}
           </span>
         </span>
         <ArrowRight size={16} aria-hidden="true" className={styles.rowArrow} />

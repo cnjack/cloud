@@ -43,6 +43,14 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: cloud/console/pnpm-lock.yaml
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: jcode/go.mod
+      # The Desktop provider parity test reads this generated, gitignored
+      # source. Generate it explicitly instead of relying on checkout state.
+      - name: Generate Desktop model registry
+        working-directory: jcode
+        run: go generate ./internal/model/...
       - name: Build jcode-ui packages
         working-directory: jcode/packages/jcode-ui-core
         run: |

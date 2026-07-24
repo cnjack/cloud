@@ -203,11 +203,12 @@ func (s *PGStore) RevokeDevice(ctx context.Context, id string, at time.Time) err
 
 func (s *PGStore) UpsertDeviceSession(ctx context.Context, ds *domain.DeviceSession) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO device_sessions (device_id, session_id, meta, status, updated_at)
-		 VALUES ($1,$2,$3,$4,$5)
+		`INSERT INTO device_sessions (device_id, session_id, meta, status, last_activity_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6)
 		 ON CONFLICT (device_id, session_id) DO UPDATE
-		 SET meta=EXCLUDED.meta, status=EXCLUDED.status, updated_at=EXCLUDED.updated_at`,
-		ds.DeviceID, ds.SessionID, ds.Meta, ds.Status, ds.UpdatedAt)
+		 SET meta=EXCLUDED.meta, status=EXCLUDED.status, last_activity_at=EXCLUDED.last_activity_at,
+		     updated_at=EXCLUDED.updated_at`,
+		ds.DeviceID, ds.SessionID, ds.Meta, ds.Status, ds.LastActivityAt, ds.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("upsert device session: %w", err)
 	}
@@ -216,8 +217,9 @@ func (s *PGStore) UpsertDeviceSession(ctx context.Context, ds *domain.DeviceSess
 
 func (s *PGStore) ListDeviceSessions(ctx context.Context, deviceID string) ([]domain.DeviceSession, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT device_id, session_id, meta, status, updated_at
-		 FROM device_sessions WHERE device_id=$1 ORDER BY updated_at DESC, session_id`, deviceID)
+		`SELECT device_id, session_id, meta, status, last_activity_at, updated_at
+		 FROM device_sessions WHERE device_id=$1
+		 ORDER BY last_activity_at DESC NULLS LAST, session_id`, deviceID)
 	if err != nil {
 		return nil, fmt.Errorf("list device sessions: %w", err)
 	}
@@ -225,7 +227,7 @@ func (s *PGStore) ListDeviceSessions(ctx context.Context, deviceID string) ([]do
 	var out []domain.DeviceSession
 	for rows.Next() {
 		var ds domain.DeviceSession
-		if err := rows.Scan(&ds.DeviceID, &ds.SessionID, &ds.Meta, &ds.Status, &ds.UpdatedAt); err != nil {
+		if err := rows.Scan(&ds.DeviceID, &ds.SessionID, &ds.Meta, &ds.Status, &ds.LastActivityAt, &ds.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan device session: %w", err)
 		}
 		out = append(out, ds)

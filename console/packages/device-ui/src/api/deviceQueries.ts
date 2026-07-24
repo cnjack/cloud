@@ -6,12 +6,25 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDeviceApi } from './DeviceApiProvider';
-import type { SendMessageExtras } from './devices';
+import type { DeviceSession, SendMessageExtras } from './devices';
 
 export const dqk = {
   devices: ['devices'] as const,
   deviceSessions: (deviceId: string) => ['device-sessions', deviceId] as const,
 };
+
+/** Stable client-side defense for older or non-conforming relay implementations. */
+export function sortDeviceSessions(sessions: DeviceSession[]): DeviceSession[] {
+  return [...sessions].sort((left, right) => {
+    const leftAt = left.last_activity_at ? Date.parse(left.last_activity_at) : Number.NaN;
+    const rightAt = right.last_activity_at ? Date.parse(right.last_activity_at) : Number.NaN;
+    const leftKnown = Number.isFinite(leftAt);
+    const rightKnown = Number.isFinite(rightAt);
+    if (leftKnown && rightKnown && leftAt !== rightAt) return rightAt - leftAt;
+    if (leftKnown !== rightKnown) return leftKnown ? -1 : 1;
+    return left.session_id.localeCompare(right.session_id);
+  });
+}
 
 export function useDevices() {
   const api = useDeviceApi();
@@ -23,6 +36,7 @@ export function useDeviceSessions(deviceId: string, refetchInterval = 10_000) {
   return useQuery({
     queryKey: dqk.deviceSessions(deviceId),
     queryFn: () => api.listSessions(deviceId),
+    select: sortDeviceSessions,
     enabled: !!deviceId,
     // Backstop polling: SSE delivers events but not the session list rollup.
     // Callers pass a shorter interval while awaiting a just-created session.

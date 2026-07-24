@@ -143,6 +143,32 @@ describe('useDevicePairing', () => {
     expect(await decryptText(key, env)).toBe(JSON.stringify({ title: 'paired' }));
   });
 
+  it('keeps slow approval polls single-flight while unwrapping the CEK', async () => {
+    const rig = makeRig();
+    const getPairing = rig.api.getPairing.bind(rig.api);
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    rig.api.getPairing = async (...args) => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return await getPairing(...args);
+      } finally {
+        concurrent -= 1;
+      }
+    };
+
+    const { result } = renderPairing(rig);
+    await waitFor(() => expect(result.current.phase).toBe('idle'));
+    act(() => result.current.start());
+    await waitFor(() => expect(result.current.phase).toBe('pending'));
+    act(() => rig.approve());
+    await waitFor(() => expect(result.current.phase).toBe('ready'));
+
+    expect(maxConcurrent).toBe(1);
+  });
+
   it('surfaces a denial and can start over', async () => {
     const rig = makeRig();
     const { result } = renderPairing(rig);

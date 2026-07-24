@@ -80,6 +80,7 @@ export { withDeviceCrypto } from './api/encryptedDevices';
 export { DeviceApiProvider, useDeviceApi, useDeviceCrypto } from './api/DeviceApiProvider';
 export {
   dqk,
+  sortDeviceSessions,
   useDevices,
   useDeviceSessions,
   useSendDeviceMessage,
@@ -105,7 +106,7 @@ export type { ComposeValue, DeviceComposeProps } from './compose/DeviceCompose';
 export { useDeviceComposer } from './product/useDeviceComposer';
 export type { UseDeviceComposerOptions, DeviceComposer } from './product/useDeviceComposer';
 export { usePendingNewSession } from './product/usePendingNewSession';
-export type { PendingNewSession } from './product/usePendingNewSession';
+export type { PendingNewSession, PendingNewSessionIssue } from './product/usePendingNewSession';
 export { DeviceChatRuntime } from './product/runtime';
 export type { DeviceRuntimeCallbacks } from './product/runtime';
 export {

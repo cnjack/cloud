@@ -72,9 +72,10 @@ type deviceSessionsUpsertReq struct {
 }
 
 type deviceSessionUpsert struct {
-	SessionID string          `json:"session_id"`
-	Status    string          `json:"status"`
-	Meta      json.RawMessage `json:"meta"`
+	SessionID      string          `json:"session_id"`
+	Status         string          `json:"status"`
+	Meta           json.RawMessage `json:"meta"`
+	LastActivityAt *string         `json:"last_activity_at,omitempty"`
 }
 
 type deviceSessionUpsertView struct {
@@ -123,12 +124,18 @@ func (s *Server) handleDeviceSessionsUpsert(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusBadRequest, "bad_request", "status must be idle or running")
 			return
 		}
+		lastActivityAt, err := parseDeviceSessionActivity(in.LastActivityAt)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
 		ds := &domain.DeviceSession{
-			DeviceID:  p.deviceID,
-			SessionID: sessionID,
-			Status:    in.Status,
-			Meta:      []byte(in.Meta),
-			UpdatedAt: now,
+			DeviceID:       p.deviceID,
+			SessionID:      sessionID,
+			Status:         in.Status,
+			Meta:           []byte(in.Meta),
+			LastActivityAt: lastActivityAt,
+			UpdatedAt:      now,
 		}
 		if err := s.st.UpsertDeviceSession(r.Context(), ds); err != nil {
 			s.log.Error("device sessions upsert", "device", p.deviceID, "session", sessionID, "err", err)
@@ -152,6 +159,20 @@ func (s *Server) handleDeviceSessionsUpsert(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": views})
+}
+
+func parseDeviceSessionActivity(raw *string) (*time.Time, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	if !strings.HasSuffix(*raw, "Z") {
+		return nil, errors.New("last_activity_at must be an RFC3339 UTC timestamp ending in Z")
+	}
+	at, err := time.Parse(time.RFC3339, *raw)
+	if err != nil {
+		return nil, errors.New("last_activity_at must be an RFC3339 UTC timestamp")
+	}
+	return &at, nil
 }
 
 // --- durable events -----------------------------------------------------------

@@ -1,6 +1,6 @@
 import { ArrowLeft, Warning } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
-import { Link, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { RuntimeProvider, Thread } from 'jcode-ui';
 import { ChatInput } from 'jcode-ui/product';
 import {
@@ -12,6 +12,7 @@ import {
   useDeviceSessions,
   useDevices,
 } from '@jcloud/device-ui';
+import { navigateBack } from '../navigation';
 
 /**
  * DeviceSessionPage — one session: durable history replay + live SSE stream
@@ -23,6 +24,7 @@ import {
 export function DeviceSessionPage() {
   const { deviceId = '', sessionId = '' } = useParams();
   const { t } = useTranslation();
+  const navigate = useNavigate();
 
   const devices = useDevices();
   const sessions = useDeviceSessions(deviceId);
@@ -52,9 +54,9 @@ export function DeviceSessionPage() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <Link to={`/devices/${deviceId}`} className="topbar-back" aria-label={t('device.session.back')}>
+        <button type="button" onClick={() => navigateBack(navigate, `/devices/${deviceId}`)} className="topbar-back" aria-label={t('device.session.back')}>
           <ArrowLeft size={18} />
-        </Link>
+        </button>
         <div className="topbar-title">
           {title}
           {device && <span className="topbar-sub">{device.name}</span>}

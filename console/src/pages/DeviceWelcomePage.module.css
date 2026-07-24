@@ -7,6 +7,7 @@
 .sectionHead h2 { font-size: var(--fs-h3); font-weight: var(--fw-semibold); letter-spacing: var(--tracking-tight); }
 .count { color: var(--color-text-muted); font-size: var(--fs-caption); }
 .composer { display: grid; gap: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-xl); background: var(--color-panel); padding: var(--space-4); }
+.composerLock { min-inline-size: 0; margin: 0; border: 0; padding: 0; }
 .textarea { min-height: 5rem; resize: vertical; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-inset); padding: var(--space-2) var(--space-3); color: var(--color-text); font-family: inherit; font-size: var(--fs-sm); line-height: var(--lh-normal); }
 .textarea:focus { border-color: var(--color-accent); outline: none; }
 .textarea:disabled { cursor: not-allowed; opacity: 0.6; }

@@ -73,12 +73,16 @@ export interface UseDeviceComposerOptions {
    * this to track the not-yet-visible new session (pending card + auto-open
    * once it appears in the session list).
    */
-  onSent?: (info: { sessionId: string; text: string; at: number }) => void;
+  onSent?: (info: { commandId: string; sessionId: string; text: string; at: number }) => void;
 }
 
 export interface DeviceComposer {
   host: ProductComposerHost;
   runtime: DeviceChatRuntime;
+  /** A welcome-page creation command is in flight or awaiting exact ACK correlation. */
+  isSendLocked: boolean;
+  /** Re-enable a welcome composer after its accepted command reaches a terminal failure. */
+  releaseNewSessionLock: () => void;
 }
 
 // ── localStorage-backed per-device composer prefs ────────────────────────────
@@ -232,6 +236,12 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
 
   // ── Send pipeline (runtime action → relay chat.send) ──────────────────────
   const [localItems, setLocalItems] = useState<ThreadItem[]>([]);
+  const [isNewSessionLocked, setIsNewSessionLocked] = useState(false);
+  const newSessionLockedRef = useRef(false);
+  const releaseNewSessionLock = useCallback(() => {
+    newSessionLockedRef.current = false;
+    setIsNewSessionLocked(false);
+  }, []);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
   const onSentRef = useRef(onSent);
@@ -243,6 +253,11 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
 
   const sendRef = useRef<(text: string, images?: ChatImage[]) => void>(() => {});
   sendRef.current = (text, images) => {
+    if (sessionId === 'new') {
+      if (newSessionLockedRef.current) return;
+      newSessionLockedRef.current = true;
+      setIsNewSessionLocked(true);
+    }
     const state = composeRef.current;
     let mode: string | undefined;
     let extras: SendMessageExtras | undefined;
@@ -258,7 +273,7 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
     send.mutate(
       { sessionId, text, ...(mode ? { mode } : {}), ...(extras ? { extras } : {}) },
       {
-        onSuccess: () => {
+        onSuccess: (accepted) => {
           setCompose((current) => {
             let next = current;
             if (mode && current.mode === mode) next = { ...next, modeTouched: false };
@@ -270,9 +285,12 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
             persistSelection(next);
             return next;
           });
-          onSentRef.current?.({ sessionId, text, at: Date.now() });
+          onSentRef.current?.({ commandId: accepted.command_id, sessionId, text, at: Date.now() });
         },
         onError: (error) => {
+          if (sessionId === 'new') {
+            releaseNewSessionLock();
+          }
           appendLocalError(
             t('device.session.sendFailed', {
               message: error instanceof Error ? error.message : String(error),
@@ -559,5 +577,10 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
     ],
   );
 
-  return { host, runtime };
+  return {
+    host,
+    runtime,
+    isSendLocked: sessionId === 'new' && isNewSessionLocked,
+    releaseNewSessionLock,
+  };
 }
