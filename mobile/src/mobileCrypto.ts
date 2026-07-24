@@ -17,14 +17,29 @@ function bump(deviceId: string) {
 }
 
 function serialize(value: StoredCek): string {
-  return JSON.stringify({ cek: Array.from(value.cek), keyGen: value.keyGen });
+  return JSON.stringify({
+    cek: Array.from(value.cek),
+    keyGen: value.keyGen,
+    pairingId: value.pairingId,
+    privateKeyJwk: value.privateKeyJwk,
+  });
 }
 
 function deserialize(raw: string): StoredCek | null {
   try {
-    const value = JSON.parse(raw) as { cek?: unknown; keyGen?: unknown };
+    const value = JSON.parse(raw) as {
+      cek?: unknown;
+      keyGen?: unknown;
+      pairingId?: unknown;
+      privateKeyJwk?: unknown;
+    };
     if (!Array.isArray(value.cek) || typeof value.keyGen !== 'number') return null;
-    return { cek: new Uint8Array(value.cek as number[]), keyGen: value.keyGen };
+    return {
+      cek: new Uint8Array(value.cek as number[]),
+      keyGen: value.keyGen,
+      pairingId: typeof value.pairingId === 'string' ? value.pairingId : undefined,
+      privateKeyJwk: (value.privateKeyJwk as JsonWebKey | undefined) ?? undefined,
+    };
   } catch {
     return null;
   }
