@@ -71,6 +71,8 @@ export function useDevicePairing(deviceId: string, deps: DevicePairingDeps = {})
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const sessionRef = useRef<PairingSession | null>(null);
+  const pollRunningRef = useRef(false);
+  const pollRunIDRef = useRef(0);
 
   // Initial resolution also checks the durable pairing record. Revoked clients
   // drop their CEK; active clients open a newer rekey wrap with the persisted
@@ -179,23 +181,29 @@ export function useDevicePairing(deviceId: string, deps: DevicePairingDeps = {})
     let cancelled = false;
 
     const poll = async () => {
-      let state;
+      // Unwrapping and storing the approved CEK can take longer than a poll
+      // interval. Keep the poll single-flight so a second approval handler
+      // cannot race the first one after it deletes the pairing session.
+      if (pollRunningRef.current) return;
+      pollRunningRef.current = true;
+      const pollRunID = ++pollRunIDRef.current;
       try {
-        state = await api.getPairing(deviceId, pairingId);
-      } catch {
-        return; // transient: keep polling
-      }
-      if (cancelled) return;
-      switch (state.status) {
-        case 'approved': {
-          const session = sessionRef.current ?? (await sessions.get(deviceId));
-          if (cancelled) return;
-          if (!session || !state.wrap) {
-            setError(new Error('pairing approved but the local key is gone — pair again'));
-            setPhase('error');
-            return;
-          }
-          try {
+        let state;
+        try {
+          state = await api.getPairing(deviceId, pairingId);
+        } catch {
+          return; // transient: keep polling
+        }
+        if (cancelled) return;
+        switch (state.status) {
+          case 'approved': {
+            const session = sessionRef.current ?? (await sessions.get(deviceId));
+            if (cancelled) return;
+            if (!session || !state.wrap) {
+              setError(new Error('pairing approved but the local key is gone — pair again'));
+              setPhase('error');
+              return;
+            }
             const privateKey = await importPairingPrivateKey(session.privateKeyJwk);
             const { cek, keyGen } = await unwrapCek(privateKey, state.wrap);
             await crypto.store.put(deviceId, {
@@ -215,25 +223,29 @@ export function useDevicePairing(deviceId: string, deps: DevicePairingDeps = {})
             // pickers (models/projects/slash) stay empty until a full reload.
             qc.invalidateQueries({ queryKey: dqk.deviceSessions(deviceId) });
             qc.invalidateQueries({ queryKey: dqk.devices });
-          } catch (err) {
-            if (!cancelled) {
-              setError(err);
-              setPhase('error');
-            }
+            return;
           }
-          return;
+          case 'denied':
+          case 'expired': {
+            await sessions.delete(deviceId);
+            sessionRef.current = null;
+            if (cancelled) return;
+            setPairingId(null);
+            setPhase(state.status);
+            return;
+          }
+          default:
+            return; // still pending
         }
-        case 'denied':
-        case 'expired': {
-          await sessions.delete(deviceId);
-          sessionRef.current = null;
-          if (cancelled) return;
-          setPairingId(null);
-          setPhase(state.status);
-          return;
+      } catch (err) {
+        if (!cancelled) {
+          setError(err);
+          setPhase('error');
         }
-        default:
-          return; // still pending
+      } finally {
+        if (pollRunIDRef.current === pollRunID) {
+          pollRunningRef.current = false;
+        }
       }
     };
 

@@ -1,6 +1,6 @@
 /// <reference types="vitest/config" />
 import { readFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -32,6 +32,12 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
+      // Vitest 2 runs on Vite 5 and otherwise refuses to transform the
+      // mobile suites included below because they live just outside the
+      // console workspace root.
+      fs: {
+        allow: [rootDir, resolve(rootDir, '../mobile')],
+      },
       proxy: {
         '/api': {
           target,
