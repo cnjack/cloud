@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "productName": "jcode",
-  "version": "0.0.78",
+  "version": "0.0.79",
   "identifier": "net.j-code.mobile",
   "build": {
     "frontendDist": "../dist",
@@ -37,7 +37,7 @@
     "active": true,
     "targets": "all",
     "android": {
-      "versionCode": 1000078
+      "versionCode": 1000079
     },
     "icon": [
       "icons/32x32.png",

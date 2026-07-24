@@ -1,6 +1,6 @@
 [package]
 name = "jcloud-mobile"
-version = "0.0.78"
+version = "0.0.79"
 description = "jcode Cloud mobile — device relay client (Tauri 2 iOS/Android)"
 authors = ["jcode"]
 edition = "2021"
