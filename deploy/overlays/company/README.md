@@ -1,24 +1,13 @@
 # Company release deployment
 
-The company overlay deploys an immutable jcode Cloud release. `VERSION` at the
-repository root is the release source of truth:
+The company overlay deploys the jcode Cloud stack using `latest` image tags
+from ghcr.io. Every push to `main` triggers the `images` workflow, which
+auto-derives the next release version from git tags (bumps the patch number),
+builds all four images, pushes `v<version>` + `latest` + `sha-<commit>` tags,
+and creates the git tag only after every image has been published.
 
-- Git tag: `v<version>`
-- orchestrator, runner, console, and mock LLM image tag: `v<version>`
-- Console and orchestrator displayed version: `v<version>`
-- Mobile package version: `<version>`
-- this overlay's orchestrator, runner, and console images: `v<version>`
-
-Before merging a release commit, bump `VERSION` and the package/overlay
-references together. Run:
-
-```sh
-node scripts/check-release-version.mjs
-kubectl kustomize deploy/overlays/company >/dev/null
-```
-
-The `images` workflow repeats the version check before publishing. It creates
-the Git tag only after every image has been pushed.
+There is no `VERSION` file in the repo — the version is fully derived from
+the latest `v<X.Y.Z>` git tag at build time.
 
 After the workflow for `main` succeeds:
 
@@ -28,9 +17,6 @@ kubectl -n jcode rollout status deploy/postgres --timeout=120s
 kubectl -n jcode rollout status deploy/orchestrator --timeout=180s
 kubectl -n jcode rollout status deploy/console --timeout=120s
 ```
-
-Because the manifests use immutable version tags, `kubectl apply` records
-exactly which release is running. Do not replace them with `latest`.
 
 The company overlay deliberately deletes the base development
 `orchestrator-secret` from its rendered resources. Applying the overlay

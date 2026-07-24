@@ -1,8 +1,8 @@
 # Build + push the jcloud images to GitHub Packages (ghcr.io), and cut a release.
 #
-# Every push to main is a release. VERSION is the single source of truth:
-# package manifests must match it, the Console and orchestrator display
-# `v<version>`, all four images push `v<version>` + `latest` (+ the commit SHA
+# Every push to main is a release. The version is auto-derived from git tags:
+# the latest v<X.Y.Z> tag's patch number is bumped, so there is no VERSION file
+# in the repo. All four images push `v<version>` + `latest` (+ the commit SHA
 # for traceability), and the final job creates the same `v<version>` Git tag.
 # The tag is created only after every image has been pushed, so a failed build
 # never leaves a dangling release tag.
@@ -38,30 +38,29 @@ jobs:
         with:
           fetch-depth: 0
       - id: release
-        name: Validate release version
+        name: Derive release version from git tags
         run: |
           git fetch --tags --force
-          version=$(tr -d '[:space:]' < VERSION)
-          case "$version" in
-            ''|*[!0-9.]*|.*|*.) echo "VERSION must be X.Y.Z, got '$version'" >&2; exit 1 ;;
-          esac
-          [ "$(printf '%s' "$version" | awk -F. '{print NF}')" -eq 3 ] || {
-            echo "VERSION must be X.Y.Z, got '$version'" >&2
-            exit 1
-          }
-          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
-            echo "release tag v$version already exists; bump VERSION first" >&2
-            exit 1
-          fi
           latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n1)
-          if [ -n "$latest" ] &&
-             [ "$(printf '%s\n%s\n' "$latest" "v$version" | sort -V | tail -n1)" != "v$version" ]; then
-            echo "VERSION v$version must be newer than latest tag $latest" >&2
-            exit 1
+          if [ -z "$latest" ]; then
+            version="0.0.1"
+          else
+            # Bump the patch number of the latest tag.
+            base="${latest#v}"
+            major="${base%%.*}"
+            rest="${base#*.}"
+            minor="${rest%%.*}"
+            patch="${rest#*.}"
+            patch=$((patch + 1))
+            version="$major.$minor.$patch"
           fi
-          node scripts/check-release-version.mjs
+          # If the tag already exists (e.g. concurrent dispatch), keep bumping.
+          while git rev-parse -q --verify "refs/tags/v$version" >/dev/null; do
+            patch=$((patch + 1))
+            version="$major.$minor.$patch"
+          done
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Release version: v$version"
+          echo "Release version: v$version (latest tag: ${latest:-none})"
 
   orchestrator:
     needs: version
