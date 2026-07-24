@@ -686,11 +686,15 @@ func (s *Server) sessionTTL() time.Duration {
 	return 30 * 24 * time.Hour
 }
 
-// callbackRedirectURI reconstructs the OAuth redirect URI from the request so it
-// matches at both authorize and token-exchange time (OAuth requires the two to
-// be identical). It is the browser-facing origin, e.g.
-// http://localhost:8080/auth/callback/gitea.
+// callbackRedirectURI returns the OAuth redirect URI for the given provider.
+// It prefers the configured CONSOLE_URL origin (the browser-facing entry that
+// proxies /auth to the orchestrator) so the scheme is correct even when the
+// edge proxy chain does not forward X-Forwarded-Proto. Falls back to
+// request-based detection for direct-access / local-dev scenarios.
 func (s *Server) callbackRedirectURI(r *http.Request, providerID string) string {
+	if u, err := url.Parse(s.cfg.ConsoleURL); err == nil && u.Host != "" {
+		return u.Scheme + "://" + u.Host + "/auth/callback/" + providerID
+	}
 	return requestScheme(r) + "://" + r.Host + "/auth/callback/" + providerID
 }
 
