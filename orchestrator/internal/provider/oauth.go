@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/safehttp"
 )
 
 // OAuthProvider is the identity seam for a git host's OAuth2 login flow (M2). It
@@ -131,14 +132,14 @@ func (c *oauthClient) Exchange(ctx context.Context, code, redirectURI string) (*
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s token exchange: status %d: %s", c.id, resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("%s token exchange: upstream status %d", c.id, resp.StatusCode)
 	}
 	var tr tokenResp
 	if err := json.Unmarshal(body, &tr); err != nil {
 		return nil, fmt.Errorf("%s decode token: %w", c.id, err)
 	}
 	if tr.Error != "" {
-		return nil, fmt.Errorf("%s token exchange error: %s %s", c.id, tr.Error, tr.ErrorDesc)
+		return nil, fmt.Errorf("%s token exchange was rejected", c.id)
 	}
 	if tr.AccessToken == "" {
 		return nil, fmt.Errorf("%s token exchange: no access_token in response", c.id)
@@ -177,14 +178,14 @@ func (c *oauthClient) Refresh(ctx context.Context, refreshToken string) (*OAuthT
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s token refresh: status %d: %s", c.id, resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("%s token refresh: upstream status %d", c.id, resp.StatusCode)
 	}
 	var tr tokenResp
 	if err := json.Unmarshal(body, &tr); err != nil {
 		return nil, fmt.Errorf("%s decode refresh: %w", c.id, err)
 	}
 	if tr.Error != "" {
-		return nil, fmt.Errorf("%s token refresh error: %s %s", c.id, tr.Error, tr.ErrorDesc)
+		return nil, fmt.Errorf("%s token refresh was rejected", c.id)
 	}
 	if tr.AccessToken == "" {
 		return nil, fmt.Errorf("%s token refresh: no access_token in response", c.id)
@@ -213,7 +214,7 @@ func (c *oauthClient) FetchUser(ctx context.Context, tok *OAuthToken) (*OAuthUse
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s fetch user: status %d: %s", c.id, resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("%s fetch user: upstream status %d", c.id, resp.StatusCode)
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -271,7 +272,7 @@ func NewGiteaOAuth(cfg OAuthConfig) OAuthProvider {
 		tokenURL:     in + "/login/oauth/access_token",
 		userURL:      in + "/api/v1/user",
 		scope:        "read:user write:repository",
-		http:         &http.Client{Timeout: 15 * time.Second},
+		http:         oauthHTTPClient(in),
 		parseUser: func(m map[string]any) *OAuthUser {
 			return &OAuthUser{
 				ProviderUID: jsonField(m, "id"),
@@ -302,7 +303,7 @@ func NewGitHubOAuth(cfg OAuthConfig) OAuthProvider {
 		tokenURL:     in + "/login/oauth/access_token",
 		userURL:      apiBase + "/user",
 		scope:        "read:user repo",
-		http:         &http.Client{Timeout: 15 * time.Second},
+		http:         oauthHTTPClient(in),
 		parseUser: func(m map[string]any) *OAuthUser {
 			return &OAuthUser{
 				ProviderUID: jsonField(m, "id"),
@@ -327,7 +328,7 @@ func NewGitLabOAuth(cfg OAuthConfig) OAuthProvider {
 		tokenURL:     in + "/oauth/token",
 		userURL:      in + "/api/v4/user",
 		scope:        "read_user api",
-		http:         &http.Client{Timeout: 15 * time.Second},
+		http:         oauthHTTPClient(in),
 		parseUser: func(m map[string]any) *OAuthUser {
 			return &OAuthUser{
 				ProviderUID: jsonField(m, "id"),
@@ -337,6 +338,10 @@ func NewGitLabOAuth(cfg OAuthConfig) OAuthProvider {
 			}
 		},
 	}
+}
+
+func oauthHTTPClient(internalBaseURL string) *http.Client {
+	return safehttp.NewProviderClient(internalBaseURL, 15*time.Second)
 }
 
 func trimBase(s string) string { return strings.TrimRight(strings.TrimSpace(s), "/") }

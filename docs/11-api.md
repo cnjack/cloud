@@ -680,7 +680,7 @@ console 全部走以下新端点。api key **只写不读**(回显 `api_key_set`
 | `GET /api/v1/system/model-providers/{id}/catalog` | cluster-admin | 读取上游 `/models`；目录关闭/不支持时 `409 catalog_unavailable`，绝不补 synthetic fallback catalog |
 | `POST /api/v1/system/model-providers/{id}/models` | cluster-admin | `{name,model_id,context_window,capabilities,source?}`；`source ∈ {custom,catalog}`，同 provider 下 `model_id` 唯一 |
 | `GET /api/v1/system/models` | cluster-admin | 目录全量(含 `api_key_set` + `granted_account_ids` + `granted_project_ids`,不含明文 key) |
-| `POST /api/v1/system/models` | cluster-admin | `{name, base_url, model_name, api_key?}`;`base_url` 须 http(s),`model_name` 须 `provider/model`,name 唯一(重名 `409`);有 key 但无 `AUTH_TOKEN_KEY` → `409 cipher_not_configured` |
+| `POST /api/v1/system/models` | cluster-admin | `{name, base_url, model_name, api_key?}`;`base_url` 须 http(s),`model_name` 须 `provider/model`,name 唯一(重名 `409`);有 key 但无 `JCLOUD_MASTER_KEY` → `409 cipher_not_configured` |
 | `PATCH /api/v1/system/models/{id}` | cluster-admin | 字段皆可选(省略=不变);`api_key` 省略=不变、`""`=清空(keyless)、有值=轮换 |
 | `DELETE /api/v1/system/models/{id}` | cluster-admin | 删除;grants 级联,`services.default_model_id`/`runs.model_id` 置 NULL |
 | `PUT /api/v1/system/models/{id}/grants/{projectId}` | cluster-admin | 授权某 project(幂等);model/project 不存在 → `404` |
@@ -725,7 +725,7 @@ grant 返回 `409 model_not_grantable`。Account grant 不修改 Project members
 
 reconciler 的 Job-launch 闸与 LLM 反向代理都按 `run.model_id` **物化**同一模型
 (模型在入队后被删 → `503 model_not_configured` / `setup_failed`;模型有 key 但
-`AUTH_TOKEN_KEY` 未配 → **永久错误** → `setup_failed`,非无限重试;均不静默降级)。
+`JCLOUD_MASTER_KEY` 未配 → **永久错误** → `setup_failed`,非无限重试;均不静默降级)。
 
 ### 2.5b jtype kanban links(Feature E / F6 · D25,凭据规则 D36)
 
@@ -733,7 +733,7 @@ kanban link 把「jtype board 的某一列」绑到 project 的某个 service:�
 `trigger_column` 派一个 agent run,run 结束把结果回写为卡片评论(`done_column`
 非空时把卡片移到该列)。**F6 / D25 起,link 管理权从 cluster-admin 下放到
 project owner**,jtype 凭据从「单一集群 env」改为 **per-link 加密存储**
-(`token_enc`,AES-256-GCM,与模型 key 同一 `AUTH_TOKEN_KEY`,**只写不读**)。
+(`token_enc`,AES-256-GCM,与模型 key 同一 `JCLOUD_MASTER_KEY`,**只写不读**)。
 集群级只保留 `JTYPE_BASE_URL`(或 console 设置的 DB override,D27)——**D36 起
 不再有集群级回退凭据**(旧 `JTYPE_TOKEN` fallback 已删除):每个 link 必须携带
 自己的 token,没有就是 `credential_status: "missing"`。
@@ -754,7 +754,7 @@ project owner**,jtype 凭据从「单一集群 env」改为 **per-link 加密存
   `400 board_not_found / board_ambiguous`(D30)。
 - 没传 `token` → **软建**:`board_status="unvalidated"`,随后经 PATCH 或 per-link
   "Connect with jtype" 设备流(D28)补 token,poller 运行时复核(D30)。
-- 传了 `token` 但 `AUTH_TOKEN_KEY` 未配(无 cipher,无法加密)→ `409 cipher_not_configured`
+- 传了 `token` 但 `JCLOUD_MASTER_KEY` 未配(无 cipher,无法加密)→ `409 cipher_not_configured`
   (该检查在 board 网络校验**之前**——配置错误不被网络失败掩盖)。
 
 响应 `kanbanLinkView` 恒含 `token_set`(bool)与 `credential_status`
@@ -840,7 +840,7 @@ github/gitlab 用各自公有主机。因此 integration 的 `host` 必须与之
 `integration_id` 的**裸建库**仍 **owner-only**。
 
 **fail-visible(CLAUDE.md 红线 #1)**:连通性验证失败 `400 integration_unreachable`;
-host 不在白名单 `400 host_not_allowed`;`AUTH_TOKEN_KEY` 未配(无法加密)
+host 不在白名单 `400 host_not_allowed`;`JCLOUD_MASTER_KEY` 未配(无法加密)
 `409 cipher_not_configured`;repo 不可达 `400 repo_not_reachable`;跨 project 引用
 integration `404`。凭据解析(reconciler/webhook 注册/source 拉取共用
 `ResolveForService`):绑 integration → **一律**用其 token,**解密失败/cipher 缺失即

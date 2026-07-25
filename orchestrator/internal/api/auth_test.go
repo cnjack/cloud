@@ -85,10 +85,13 @@ func newAuthServer(t *testing.T) (*httptest.Server, *store.MemStore, *providerSt
 	t.Cleanup(psrv.Close)
 
 	st := store.NewMemStore()
+	if err := st.UpsertClusterSettings(context.Background(), &domain.ClusterSettings{PublicURL: "http://console.test", SetupComplete: true}); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &config.Config{
 		ConsoleToken: consoleToken,
 		ConsoleURL:   "http://console.test",
-		AuthTokenKey: validTokenKey(t),
+		MasterKey:    validTokenKey(t),
 		SessionTTL:   24 * time.Hour,
 		GiteaURL:     psrv.URL,
 		OAuthProviders: []config.OAuthProviderConfig{{
@@ -103,12 +106,9 @@ func newAuthServer(t *testing.T) (*httptest.Server, *store.MemStore, *providerSt
 	return ts, st, stub
 }
 
-// TestProjectIntegrationOAuthFlow covers the owner-managed alternative to a
-// pasted bot token: the owner supplies an OAuth app client, authorizes it at the
-// git host, and the callback stores the resulting access token as the project's
-// unattended integration credential. The client secret and token never appear
-// in the redirect or integration API view.
-func TestProjectIntegrationOAuthFlow(t *testing.T) {
+// TestLegacyProjectIntegrationOAuthRouteRemoved pins the clean-cut release:
+// project credentials are created only through Project Plugins.
+func TestLegacyProjectIntegrationOAuthRouteRemoved(t *testing.T) {
 	ts, _, stub := newAuthServer(t)
 	stub.setUser("owner", map[string]any{"id": 1, "login": "owner", "full_name": "Project owner"})
 	stub.setUser("bot", map[string]any{"id": 42, "login": "jcode-bot", "full_name": "jcode bot"})
@@ -124,14 +124,7 @@ func TestProjectIntegrationOAuthFlow(t *testing.T) {
 	var project projectView
 	decode(t, created, &project)
 
-	form := url.Values{
-		"project_id":    {project.ID},
-		"name":          {"automation-bot"},
-		"host":          {stub.baseURL},
-		"client_id":     {"project-client"},
-		"client_secret": {"project-secret"},
-		"return_to":     {"/projects/" + project.ID + "?view=project-settings"},
-	}
+	form := url.Values{"project_id": {project.ID}}
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/integrations/gitea", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(session)
@@ -140,38 +133,8 @@ func TestProjectIntegrationOAuthFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	start.Body.Close()
-	if start.StatusCode != http.StatusFound {
-		t.Fatalf("start status=%d want 302", start.StatusCode)
-	}
-	state := redirectQuery(t, start).Get("state")
-	if state == "" || strings.Contains(start.Header.Get("Location"), "project-secret") {
-		t.Fatalf("unsafe authorize redirect: %s", start.Header.Get("Location"))
-	}
-	stateCookie := findCookie(start, stateCookieName)
-	pendingCookie := findCookie(start, integrationOAuthCookieName)
-	if stateCookie == nil || pendingCookie == nil || strings.Contains(pendingCookie.Value, "project-secret") {
-		t.Fatal("OAuth start did not set opaque state and integration cookies")
-	}
-
-	callback, _ := http.NewRequest(http.MethodGet, ts.URL+"/auth/callback/gitea?code=bot&state="+url.QueryEscape(state), nil)
-	callback.AddCookie(stateCookie)
-	callback.AddCookie(pendingCookie)
-	cb, err := noRedirectClient().Do(callback)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cb.Body.Close()
-	if cb.StatusCode != http.StatusFound || redirectQuery(t, cb).Get("integration_connected") != "gitea" {
-		t.Fatalf("callback status=%d location=%s", cb.StatusCode, cb.Header.Get("Location"))
-	}
-
-	listed := do(t, "GET", ts.URL+"/api/v1/projects/"+project.ID+"/integrations", session.Value, nil)
-	var envelope struct {
-		Integrations []integrationView `json:"integrations"`
-	}
-	decode(t, listed, &envelope)
-	if len(envelope.Integrations) != 1 || envelope.Integrations[0].CredType != "oauth" || envelope.Integrations[0].BotUsername != "jcode-bot" {
-		t.Fatalf("integrations=%+v", envelope.Integrations)
+	if start.StatusCode != http.StatusNotFound {
+		t.Fatalf("legacy integration OAuth status=%d want 404", start.StatusCode)
 	}
 }
 

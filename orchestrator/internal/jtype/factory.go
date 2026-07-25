@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/cnjack/jcloud/internal/safehttp"
 )
 
 // Factory builds jtype Clients that share ONE HTTP connection pool but bind
@@ -32,7 +34,7 @@ func NewFactory(baseURL string, timeout time.Duration) *Factory {
 	}
 	return &Factory{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    &http.Client{Timeout: timeout},
+		http:    safehttp.NewProviderClient(baseURL, timeout),
 	}
 }
 
@@ -65,9 +67,9 @@ const (
 var ErrNoToken = errors.New("jtype: no credential for link (no per-link token)")
 
 // ErrNoCipher is returned when a link carries an encrypted per-link token but no
-// cipher is configured (AUTH_TOKEN_KEY unset) to decrypt it — a visible config
+// cipher is configured (JCLOUD_MASTER_KEY unset) to decrypt it — a visible config
 // error, never a silent skip.
-var ErrNoCipher = errors.New("jtype: link has an encrypted token but AUTH_TOKEN_KEY is not configured")
+var ErrNoCipher = errors.New("jtype: link has an encrypted token but JCLOUD_MASTER_KEY is not configured")
 
 // ResolveToken selects the PAT for a link (D25, simplified by D36 — per-link
 // token only, no cluster fallback; shared by the poller, the writeback pass,

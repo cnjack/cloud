@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/cnjack/jcloud/internal/safehttp"
 )
 
 // GitHubClient talks to the GitHub REST API (api.github.com or, for the unit
@@ -30,7 +32,7 @@ func NewGitHubClient(apiBase, token string) (*GitHubClient, error) {
 	if apiBase == "" {
 		apiBase = "https://api.github.com"
 	}
-	return &GitHubClient{apiBase: apiBase, token: token, http: &http.Client{Timeout: 15 * time.Second}}, nil
+	return &GitHubClient{apiBase: apiBase, token: token, http: safehttp.NewProviderClient(apiBase, 15*time.Second)}, nil
 }
 
 type githubPR struct {

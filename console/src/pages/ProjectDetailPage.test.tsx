@@ -25,6 +25,7 @@ import type {
   Integration,
   MemberRole,
   Project,
+  ProjectAutomationSpec,
   ProjectModel,
   ProviderRepo,
   Run,
@@ -102,6 +103,7 @@ function makeClient(
     // Absent = the endpoint is treated as returning [] (no button).
     boardLinks?: BoardEmbedLink[];
     automationList?: AutomationList;
+    projectAutomations?: ProjectAutomationSpec[];
   } = {},
 ): { client: ApiClient; calls: Calls } {
   const calls: Calls = { serviceRuns: [], services: [], serviceUpdates: [], serviceDeletes: [], automations: [], automationUpdates: [] };
@@ -120,6 +122,7 @@ function makeClient(
       env_fallback: opts.models ? false : (opts.modelConfigured ?? true),
     }),
     listServiceAutomations: async () => opts.automationList ?? { automations: [], webhook_binding: null },
+    listProjectAutomations: async () => opts.projectAutomations ?? [],
     createServiceAutomation: async (sid, input) => {
       calls.automations.push({ sid, input });
       return {
@@ -561,21 +564,17 @@ describe('ProjectDetailPage — multi-repo workspace', () => {
 });
 
 describe('ProjectDetailPage — workspace sections', () => {
-  it('renders persisted PR review Automations beside schedules instead of an @jcode setup card', async () => {
-    const review: Automation = {
-      id: 'auto-1', service_id: 'svc_default', name: 'Gitea PR automatic review',
-      instructions: 'Review security and regressions.', trigger_type: 'pr_review', model_id: 'm1',
-      events: ['opened', 'synchronize'], base_branch: 'main', include_drafts: false, enabled: true,
-      created_at: '', updated_at: '',
-    };
+  it('renders the unified Project Automation list without legacy schedule surfaces', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]), {
-      automationList: {
-        automations: [review],
-        webhook_binding: {
-          service_id: 'svc_default', provider: 'gitea', endpoint: '/webhooks/gitea', status: 'active',
-          last_delivery_status: 'accepted', last_delivery_at: '2026-07-13T02:00:00Z', updated_at: '',
+      projectAutomations: [{
+        automation: {
+          id: 'auto-1', service_id: 'svc_default', name: 'Gitea PR automatic review',
+          trigger_kind: 'scm', prompt_template: 'Review security and regressions.',
+          enabled: true, ignore_jcode: true, created_at: '', updated_at: '',
         },
-      },
+        scm: { branch: 'main' },
+        actions: [{ event_family: 'pull_request', action: 'opened' }],
+      }],
     });
     const schedules = vi.fn(async () => []);
     (client as { listServiceSchedules?: unknown }).listServiceSchedules = schedules;
@@ -584,84 +583,20 @@ describe('ProjectDetailPage — workspace sections', () => {
     await screen.findByTestId('run-input');
     fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
 
-    expect(await screen.findByTestId('schedules-panel')).toBeTruthy();
     expect(await screen.findByText('Gitea PR automatic review')).toBeTruthy();
     expect(screen.getByText('Review security and regressions.')).toBeTruthy();
-    expect(screen.queryByText(/@jcode review/i)).toBeNull();
-    await waitFor(() => expect(schedules).toHaveBeenCalledWith('svc_default'));
+    expect(screen.queryByTestId('schedules-panel')).toBeNull();
+    expect(schedules).not.toHaveBeenCalled();
   });
 
-  it('opens the schedule editor from the Automation primary action', async () => {
+  it('links the Automation primary action to the independent editor route', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
-    (client as { listServiceSchedules?: unknown }).listServiceSchedules = async () => [];
     renderPage(client);
 
     await screen.findByTestId('run-input');
     fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
-    fireEvent.click(await screen.findByTestId('automation-new-schedule'));
-
-    expect(await screen.findByTestId('schedule-form')).toBeTruthy();
-  });
-
-  it('shows GitHub automatic review as explicitly unsupported instead of claiming a healthy webhook', async () => {
-    const github = { ...svc('svc_github', 'web'), provider: 'github' };
-    const { client } = makeClient(project('owner', [github]));
-    renderPage(client);
-
-    await screen.findByTestId('run-input');
-    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
-
-    expect((await screen.findByTestId('automation-provider-unavailable')).textContent).toContain('Gitea-first');
-    expect(screen.queryByText(/Webhook healthy/i)).toBeNull();
-  });
-
-  it('creates a PR review Automation from the inline editor with an explicit model', async () => {
-    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
-      models: [{ id: 'm1', name: 'Review model', model_name: 'provider/review' }],
-    });
-    (client as { listServiceSchedules?: unknown }).listServiceSchedules = async () => [];
-    renderPage(client);
-
-    await screen.findByTestId('run-input');
-    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
-    fireEvent.click(await screen.findByTestId('automation-new-review'));
-    expect(await screen.findByTestId('automation-editor')).toBeTruthy();
-    fireEvent.change(screen.getByTestId('automation-name'), { target: { value: 'PR guard' } });
-    fireEvent.change(screen.getByTestId('automation-instructions'), { target: { value: 'Review security.' } });
-    fireEvent.change(screen.getByTestId('automation-model'), { target: { value: 'm1' } });
-    fireEvent.click(screen.getByTestId('automation-submit'));
-
-    await waitFor(() => expect(calls.automations).toHaveLength(1));
-    expect(calls.automations[0]).toMatchObject({
-      sid: 'svc_default',
-      input: { name: 'PR guard', instructions: 'Review security.', model_id: 'm1', trigger_type: 'pr_review' },
-    });
-  });
-
-  it('edits a persisted PR review Automation from its row actions', async () => {
-    const review: Automation = {
-      id: 'auto-1', service_id: 'svc_default', name: 'Existing guard', instructions: 'Review regressions.',
-      trigger_type: 'pr_review', model_id: 'm1', events: ['opened'], base_branch: 'main',
-      include_drafts: false, enabled: true, last_error: '', created_at: '', updated_at: '',
-    };
-    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
-      models: [{ id: 'm1', name: 'Review model', model_name: 'provider/review' }],
-      automationList: { automations: [review], webhook_binding: null },
-    });
-    (client as { listServiceSchedules?: unknown }).listServiceSchedules = async () => [];
-    renderPage(client);
-
-    await screen.findByTestId('run-input');
-    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Automation actions for Existing guard' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit Automation' }));
-    fireEvent.change(screen.getByTestId('automation-instructions'), { target: { value: 'Review security too.' } });
-    fireEvent.click(screen.getByTestId('automation-submit'));
-
-    await waitFor(() => expect(calls.automationUpdates).toHaveLength(1));
-    expect(calls.automationUpdates[0]).toMatchObject({
-      id: 'auto-1', input: { instructions: 'Review security too.', model_id: 'm1' },
-    });
+    const link = await screen.findByRole('link', { name: /New automation/i });
+    expect(link.getAttribute('href')).toBe('/projects/p1/automations/new?service=svc_default');
   });
 
   it('resets the workspace scroll when moving between Tasks and Automations', async () => {
@@ -689,12 +624,12 @@ describe('ProjectDetailPage — workspace sections', () => {
 
     await screen.findByTestId('run-input');
     fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
-    await screen.findByTestId('schedules-panel');
+    await screen.findByTestId('project-automations-panel');
     fireEvent.click(screen.getByTestId('service-rail-svc_web'));
 
     expect(screen.getByRole('tab', { name: 'Automations' }).getAttribute('aria-selected')).toBe('true');
     expect(screen.getByRole('heading', { name: 'web' })).toBeTruthy();
-    await waitFor(() => expect(schedules).toHaveBeenCalledWith('svc_web'));
+    expect(schedules).not.toHaveBeenCalled();
   });
 
   it('keeps a failed Kanban-link lookup visible instead of pretending there are no boards', async () => {
@@ -849,7 +784,8 @@ describe('ProjectDetailPage — viewer gating', () => {
     await screen.findByTestId('runs-empty');
     fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
 
-    expect(await screen.findByText(/Automations are available to project members/i)).toBeTruthy();
+    expect(await screen.findByTestId('project-automations-panel')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'New Automation' })).toBeNull();
     expect(schedules).not.toHaveBeenCalled();
   });
 });

@@ -355,6 +355,106 @@ describe('httpClient — Account model grants', () => {
   });
 });
 
+describe('httpClient — Plugin Automations', () => {
+  it('uses project collection routes and global Automation item routes with exact request bodies', async () => {
+    const { calls } = mockFetch(({ url, init }) => {
+      if (init?.method === 'DELETE') return { status: 204 };
+      if (url.endsWith('/capabilities')) {
+        return { body: { provider: 'gitea', minimum_version: '1.25', capabilities: [] } };
+      }
+      const body = init?.body ? JSON.parse(init.body as string) : {};
+      return {
+        status: init?.method === 'POST' ? 201 : 200,
+        body: {
+          automation: {
+            id: 'auto one', service_id: 'svc one', name: 'Guard',
+            trigger_kind: 'cron', prompt_template: 'Run checks',
+            enabled: true, ignore_jcode: true, created_at: '', updated_at: '',
+          },
+          cron: body.cron ?? { cron_expr: '0 9 * * 1-5' },
+        },
+      };
+    });
+    const client = createHttpClient('t');
+    const input = {
+      service_id: 'svc one',
+      name: 'Guard',
+      prompt_template: 'Run checks',
+      enabled: true,
+      ignore_jcode: true,
+      cron: { cron_expr: '0 9 * * 1-5' },
+    };
+
+    await client.createProjectAutomation('project one', input);
+    await client.getProjectAutomation('project one', 'auto one');
+    await client.updateProjectAutomation('project one', 'auto one', input);
+    await client.deleteProjectAutomation('project one', 'auto one');
+    await client.getProviderCapabilities('gitea');
+
+    expect(calls.map((call) => call.url)).toEqual([
+      '/api/v1/projects/project%20one/automations',
+      '/api/v1/automations/auto%20one',
+      '/api/v1/automations/auto%20one',
+      '/api/v1/automations/auto%20one',
+      '/api/v1/providers/gitea/capabilities',
+    ]);
+    expect(calls.map((call) => call.init?.method)).toEqual(['POST', undefined, 'PATCH', 'DELETE', undefined]);
+    expect(JSON.parse(calls[0]!.init!.body as string)).toEqual(input);
+    expect(JSON.parse(calls[2]!.init!.body as string)).toEqual(input);
+  });
+});
+
+describe('httpClient — Project Plugin connection flows', () => {
+  it('uses explicit GitHub App selection and JType device-flow routes', async () => {
+    const { calls } = mockFetch(({ url, init }) => {
+      if (url.endsWith('/plugins/github/installations')) {
+        return {
+          body: {
+            installations: [{
+              id: '12345',
+              account_id: '99',
+              account: 'acme',
+              target_type: 'Organization',
+              repository_selection: 'selected',
+            }],
+          },
+        };
+      }
+      if (url.includes('/plugins/github/installations/') && init?.method === 'POST') {
+        return { status: 201, body: { id: 'plugin-gh', provider: 'github', status: 'enabled', scopes: ['github-app'] } };
+      }
+      if (url.includes('/connect/')) {
+        return { body: { status: 'complete', token_set: true } };
+      }
+      return { body: { id: 'plugin-jtype', provider: 'jtype', status: 'enabled', workspace_id: 'ws one', scopes: ['full'] } };
+    });
+    const client = createHttpClient('t');
+
+    const installations = await client.listGitHubAppInstallations('project one');
+    await client.selectGitHubAppInstallation('project one', installations[0]!.id, {
+      consent_version: 'plugin-platform-v2-coarse-scope',
+      consent_accepted: true,
+      scopes: ['contents:write'],
+    });
+    await client.getJTypePluginConnectStatus('project one', 'plugin one', 'connect one');
+    await client.setProjectPluginWorkspace('plugin-jtype', 'ws one');
+
+    expect(calls.map((call) => call.url)).toEqual([
+      '/api/v1/projects/project%20one/plugins/github/installations',
+      '/api/v1/projects/project%20one/plugins/github/installations/12345/select',
+      '/api/v1/projects/project%20one/plugins/plugin%20one/connect/connect%20one',
+      '/api/v1/plugins/plugin-jtype',
+    ]);
+    expect(calls.map((call) => call.init?.method)).toEqual([undefined, 'POST', undefined, 'PATCH']);
+    expect(JSON.parse(calls[1]!.init!.body as string)).toEqual({
+      consent_version: 'plugin-platform-v2-coarse-scope',
+      consent_accepted: true,
+      scopes: ['contents:write'],
+    });
+    expect(JSON.parse(calls[3]!.init!.body as string)).toEqual({ workspace_id: 'ws one' });
+  });
+});
+
 describe('httpClient — project model providers (M2)', () => {
   it('uses the project-scoped provider + model routes with encoded ids and unwraps envelopes', async () => {
     const { calls } = mockFetch(({ url, init }) => {

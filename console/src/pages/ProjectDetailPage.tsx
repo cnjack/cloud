@@ -28,7 +28,6 @@ import { useOptionalAuth } from '../auth/AuthProvider';
 import { ApiError } from '../api/client';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
-import { EmptyState } from '../components/EmptyState';
 import { TextField } from '../components/Field';
 import { GitModeBadge } from '../components/GitModeBadge';
 import { GitModeToggle } from '../components/GitModeToggle';
@@ -48,7 +47,7 @@ import { ProjectSettingsAction } from '../project-workspace/ProjectSettingsActio
 import { RunActivityList, type RunFilter } from '../project-workspace/RunActivityList';
 import { SettingsPanel } from '../project-workspace/SettingsPanel';
 import { TaskComposer } from '../project-workspace/TaskComposer';
-import { AutomationsPanel } from '../project-workspace/AutomationsPanel';
+import { ProjectAutomationsPanel } from '../project-workspace/ProjectAutomationsPanel';
 import { serviceMark, serviceProviderLabel, serviceSource } from '../project-workspace/presentation';
 import { KanbanBoardModal } from './KanbanBoardModal';
 import {
@@ -82,7 +81,6 @@ export function ProjectDetailPage() {
   const [askApproval, setAskApproval] = useState(false);
   const [runFilter, setRunFilter] = useState<RunFilter>('all');
   const [kanbanOpen, setKanbanOpen] = useState(false);
-  const [scheduleCreateOpen, setScheduleCreateOpen] = useState(false);
 
   const [addOpen, setAddOpen] = useState(false);
   const [repoName, setRepoName] = useState('');
@@ -109,13 +107,6 @@ export function ProjectDetailPage() {
   const workspaceTab = workspaceLocation.tab;
   const projectSettingsOpen = canManage && searchParams.get('view') === 'project-settings';
   const projectSettingsSection = resolveProjectSettingsSection(searchParams.get('settings'), canManage);
-  const automationOAuthReturnTo = (() => {
-    const params = new URLSearchParams();
-    if (activeServiceId) params.set('service', activeServiceId);
-    params.set('tab', 'automations');
-    params.set('automation', 'review-new');
-    return `/projects/${encodeURIComponent(projectId)}?${params.toString()}`;
-  })();
 
   // A project switch must not retain a previous project's draft/model/form state.
   useEffect(() => {
@@ -124,7 +115,6 @@ export function ProjectDetailPage() {
     setSelectedModel('');
     setAskApproval(false);
     setRunFilter('all');
-    setScheduleCreateOpen(false);
     setAddOpen(false);
     setRepoName('');
     setRepoUrl('');
@@ -485,7 +475,7 @@ export function ProjectDetailPage() {
         subnav={
           projectSettingsOpen ? (
             <ProjectSettingsSubnav
-              canManage={canManage}
+              canManage={canRun}
               activeSection={projectSettingsSection}
               onSelect={setProjectSettingsSection}
             />
@@ -833,29 +823,12 @@ export function ProjectDetailPage() {
 
         {!projectSettingsOpen && workspaceTab === 'automations' && (
           <section className={styles.automationWorkspace}>
-            {activeService && canRun ? (
-              <AutomationsPanel
-                service={activeService}
-                canManage={canManage}
-                models={grantedModels}
-                scheduleCreateOpen={scheduleCreateOpen}
-                onScheduleCreateOpenChange={setScheduleCreateOpen}
-                me={auth?.me ?? null}
-                providers={auth?.providers ?? []}
-                oauthReturnTo={automationOAuthReturnTo}
-                initialEditorOpen={searchParams.get('automation') === 'review-new'}
-              />
-            ) : activeService ? (
-              <EmptyState
-                title={t('projectDetail.automationsMembersTitle')}
-                description={t('projectDetail.automationsMembersDesc')}
-              />
-            ) : (
-              <EmptyState
-                title={t('projectDetail.automationsNeedServiceTitle')}
-                description={t('projectDetail.automationsNeedServiceDesc')}
-              />
-            )}
+            <ProjectAutomationsPanel
+              projectId={projectId}
+              services={services}
+              canManage={canManage}
+              initialServiceId={activeService?.id}
+            />
           </section>
         )}
 

@@ -60,9 +60,15 @@ type Server struct {
 	// M3 runner-contract deps: creds resolves the per-run provider token (source
 	// bundle + reconcile push/review), git builds source bundles, srcCache caches
 	// them. Built in New from cfg + cipher + oauth so no signature churn.
-	creds    *credentials.Resolver
-	git      *gitcli.Git
-	srcCache *sourceCache
+	creds *credentials.Resolver
+	// pluginCredentialIssuer issues a CURRENT runtime access credential for an
+	// installation captured in a run snapshot. It is deliberately a narrow seam:
+	// handlers never see refresh tokens or provider App private keys, and a
+	// GitHub App implementation can mint installation tokens without changing
+	// the HTTP contract.
+	pluginCredentialIssuer credentials.PluginCredentialIssuer
+	git                    *gitcli.Git
+	srcCache               *sourceCache
 
 	// factory builds a PR client per resolved token for the live PR-status lookup
 	// (M5 GET /runs/{id}/pr). Same seam the reconciler uses; a test overrides it
@@ -164,10 +170,10 @@ type jtypeDiscovery interface {
 func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, launcher k8s.JobLauncher) *Server {
 	s := &Server{st: st, cfg: cfg, log: log, hub: hub, launcher: launcher}
 
-	// Token cipher (nil when AUTH_TOKEN_KEY is unset). config.Load has already
+	// Token cipher (nil when JCLOUD_MASTER_KEY is unset). config.Load has already
 	// validated the key when any provider is configured.
-	if c, err := auth.NewCipher(cfg.AuthTokenKey); err != nil {
-		log.Error("auth token cipher disabled: invalid AUTH_TOKEN_KEY", "err", err)
+	if c, err := auth.NewCipher(cfg.MasterKey); err != nil {
+		log.Error("auth token cipher disabled: invalid JCLOUD_MASTER_KEY", "err", err)
 	} else {
 		s.cipher = c
 	}
@@ -178,7 +184,7 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Derive the HMAC key that signs OAuth state from the token key so it is
 	// stable across restarts (a cookie mid-flow survives a rollout). Falls back to
 	// a per-process random key when no token key is set (no providers => unused).
-	if kb, err := auth.DecodeTokenKey(cfg.AuthTokenKey); err == nil {
+	if kb, err := auth.DecodeTokenKey(cfg.MasterKey); err == nil {
 		h := sha256.Sum256(append(kb, []byte("jcloud-oauth-state")...))
 		s.stateKey = h[:]
 	} else {
@@ -192,6 +198,7 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// cache. cipher/oauth may be nil/empty; the resolver then offers only the
 	// gitea PAT fallback.
 	s.creds = credentials.NewResolver(st, s.cipher, s.oauth, cfg.GiteaToken, log)
+	s.pluginCredentialIssuer = s.creds
 	s.git = gitcli.New()
 	s.srcCache = newSourceCache(cfg.SourceBundleTTL)
 	// PR-status client factory (M5). Shares the same builder the reconciler uses;
@@ -263,7 +270,7 @@ func (s *Server) WithArchiveCleaner(cleaner ArchiveCleaner) *Server {
 	return s
 }
 
-// Cipher exposes the token cipher (nil when AUTH_TOKEN_KEY is unset) so callers
+// Cipher exposes the token cipher (nil when JCLOUD_MASTER_KEY is unset) so callers
 // that need to seal/open per-link jtype PATs share the API's instance.
 func (s *Server) Cipher() *auth.Cipher { return s.cipher }
 
@@ -325,25 +332,24 @@ func (s *Server) Handler() http.Handler {
 	// Health (unauthenticated).
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
-	// @mention webhooks (M7 / blueprint §8 · F13). Public paths, each self-
-	// authenticated by its provider's scheme (gitea/github HMAC-sign the body;
-	// gitlab echoes the shared token). Registered ONLY when WEBHOOK_SECRET is
-	// configured — with no secret the routes are absent (404) and the system runs
-	// normally.
-	if s.cfg.WebhookSecret != "" {
-		mux.HandleFunc("POST /webhooks/gitea", s.handleGiteaWebhook)
-		mux.HandleFunc("POST /webhooks/github", s.handleGitHubWebhook)
-		mux.HandleFunc("POST /webhooks/gitlab", s.handleGitLabWebhook)
-	}
+	// Provider webhooks are always present and authenticate against the
+	// DB-backed cluster Provider config. A missing/invalid config is fail-visible;
+	// the legacy process-wide WEBHOOK_SECRET is not consulted.
+	mux.HandleFunc("POST /webhooks/gitea", s.handlePluginWebhook)
+	mux.HandleFunc("POST /webhooks/github", s.handlePluginWebhook)
+	mux.HandleFunc("POST /webhooks/gitlab", s.handlePluginWebhook)
 
 	// Auth endpoints (multitenant blueprint §2). Provider list + login start +
 	// callback are unauthenticated (they establish the session); link/logout/me
 	// require an existing principal.
 	mux.HandleFunc("GET /auth/providers", s.handleAuthProviders)
+	// Bootstrap is deliberately open only while no setup has completed. The
+	// approved product decision makes the first visitor the initial configurator.
+	mux.HandleFunc("GET /api/v1/setup", s.handleGetSetup)
+	mux.HandleFunc("PUT /api/v1/setup", s.handlePutSetup)
 	mux.HandleFunc("GET /auth/login/{provider}", s.handleAuthLogin)
 	mux.HandleFunc("GET /auth/callback/{provider}", s.handleAuthCallback)
 	mux.Handle("GET /auth/link/{provider}", s.authed(s.handleAuthLink))
-	mux.Handle("POST /auth/integrations/{provider}", s.authed(s.handleStartIntegrationOAuth))
 	mux.Handle("POST /auth/logout", s.authed(s.handleAuthLogout))
 	mux.Handle("GET /auth/mobile-handoff", s.authed(s.handleAuthMobileHandoff))
 	mux.Handle("GET /api/v1/me", s.authed(s.handleMe))
@@ -388,21 +394,6 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/system/model-providers/{id}/catalog", s.authed(s.handleModelProviderCatalog))
 	mux.Handle("POST /api/v1/system/model-providers/{id}/models", s.authed(s.handleCreateProviderModel))
 
-	// D27 — cluster jtype kanban config (the base URL ONLY, D36: no cluster-level
-	// token any more) a cluster admin sets from the console. Precedence DB > env
-	// (see internal/kanbancfg). Cluster-admin only (enforced in the handlers). A
-	// PUT/DELETE Invalidate()s the shared resolver so the change takes effect
-	// WITHOUT a restart.
-	mux.Handle("GET /api/v1/system/kanban", s.authed(s.handleGetKanbanConfig))
-	mux.Handle("PUT /api/v1/system/kanban", s.authed(s.handlePutKanbanConfig))
-	mux.Handle("DELETE /api/v1/system/kanban", s.authed(s.handleDeleteKanbanConfig))
-
-	// Feature E/F6 — jtype kanban links. Management (create/delete) is downshifted
-	// to the project OWNER via the project-scoped routes below (D25). The system
-	// route is retained as a cluster-admin READ-ONLY cross-project overview; the
-	// old POST/DELETE /system/kanban/links are taken down (console migrated).
-	mux.Handle("GET /api/v1/system/kanban/links", s.authed(s.handleListKanbanLinks))
-
 	// User search (any logged-in user; for the add-member picker).
 	mux.Handle("GET /api/v1/users", s.authed(s.handleSearchUsers))
 
@@ -443,6 +434,38 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /api/v1/projects/{id}", s.authed(s.handleUpdateProject))
 	mux.Handle("DELETE /api/v1/projects/{id}", s.authed(s.handleDeleteProject))
 
+	// Project Plugin platform. These routes replace the legacy integration and
+	// per-board Kanban configuration surfaces for new Console clients.
+	// Canonical Project Plugin provider configuration contract.
+	mux.Handle("GET /api/v1/system/providers", s.authed(s.handleListProviderConfigs))
+	mux.Handle("GET /api/v1/system/providers/{provider}", s.authed(s.handleGetProviderConfig))
+	mux.Handle("PUT /api/v1/system/providers/{provider}", s.authed(s.handlePutProviderConfig))
+	mux.Handle("POST /api/v1/system/providers/{provider}/test", s.authed(s.handleTestProviderConfig))
+	mux.Handle("GET /api/v1/system/providers/{provider}/impact", s.authed(s.handleProviderConfigImpact))
+	mux.Handle("GET /api/v1/projects/{id}/plugins", s.authed(s.handleListProjectPlugins))
+	mux.Handle("POST /api/v1/projects/{id}/plugins/{provider}/connect", s.authed(s.handleConnectProjectPlugin))
+	mux.Handle("GET /api/v1/projects/{id}/plugins/{installation}/connect/{connectID}", s.authed(s.handlePollJTypePluginConnect))
+	mux.Handle("GET /api/v1/projects/{id}/plugins/jtype/connect/{connectID}", s.authed(s.handlePollJTypePluginConnect))
+	mux.Handle("GET /api/v1/projects/{id}/plugins/github/installations", s.authed(s.handleListGitHubAppInstallations))
+	mux.Handle("GET /api/v1/projects/{id}/plugins/github/installations/{github_installation}/consent", s.authed(s.handlePreviewGitHubAppInstallationConsent))
+	mux.Handle("POST /api/v1/projects/{id}/plugins/github/installations/{github_installation}/select", s.authed(s.handleSelectGitHubAppInstallation))
+	mux.Handle("GET /api/v1/projects/{id}/plugins/{installation}/impact", s.authed(s.handlePluginImpact))
+	mux.Handle("GET /api/v1/projects/{id}/plugins/{installation}/audit", s.authed(s.handlePluginAudit))
+	mux.Handle("GET /api/v1/projects/{id}/plugins/{installation}/repositories", s.authed(s.handleListPluginRepositories))
+	mux.Handle("GET /api/v1/projects/{id}/plugins/{installation}/workspaces", s.authed(s.handleListPluginWorkspaces))
+	mux.Handle("GET /api/v1/projects/{id}/plugins/{installation}/boards", s.authed(s.handleListPluginBoards))
+	mux.Handle("PATCH /api/v1/plugins/{installation}", s.authed(s.handleUpdateProjectPlugin))
+	mux.Handle("DELETE /api/v1/plugins/{installation}", s.authed(s.handleDeleteProjectPlugin))
+	mux.Handle("GET /api/v1/providers/{provider}/capabilities", s.authed(s.handleProviderCapabilities))
+
+	// Unified Project Automations. SCM, Kanban and Cron all use this aggregate;
+	// the retired service schedule/automation resources are intentionally absent.
+	mux.Handle("GET /api/v1/projects/{id}/automations", s.authed(s.handleListPluginAutomations))
+	mux.Handle("POST /api/v1/projects/{id}/automations", s.authed(s.handleCreatePluginAutomation))
+	mux.Handle("GET /api/v1/automations/{aid}", s.authed(s.handleGetPluginAutomation))
+	mux.Handle("PATCH /api/v1/automations/{aid}", s.authed(s.handleUpdatePluginAutomation))
+	mux.Handle("DELETE /api/v1/automations/{aid}", s.authed(s.handleDeletePluginAutomation))
+
 	// Models a project is granted (D21). Member+; returns only id/name/model_name
 	// (never the base_url or key) plus an env_fallback flag for the ModelGate.
 	mux.Handle("GET /api/v1/projects/{id}/models", s.authed(s.handleListProjectModels))
@@ -465,52 +488,6 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /api/v1/projects/{id}/model-providers/{pid}/models/{mid}", s.authed(s.handleUpdateProjectProviderModel))
 	mux.Handle("DELETE /api/v1/projects/{id}/model-providers/{pid}/models/{mid}", s.authed(s.handleDeleteProjectProviderModel))
 
-	// Integrations (D19 / F5) — project-level git host bindings with a bot
-	// credential. Listing + repo discovery are member+ (a member may add a repo off
-	// a project's existing integration); create/rotate/delete are owner-managed. The
-	// token is write-only (never echoed); create/rotate verify connectivity to the
-	// provider (discovering bot_username) and validate the host against the cluster
-	// allowlist (D20).
-	mux.Handle("GET /api/v1/projects/{id}/integrations", s.authed(s.handleListIntegrations))
-	mux.Handle("POST /api/v1/projects/{id}/integrations", s.authed(s.handleCreateIntegration))
-	mux.Handle("GET /api/v1/projects/{id}/integrations/{iid}/repos", s.authed(s.handleListIntegrationRepos))
-	mux.Handle("PATCH /api/v1/integrations/{iid}", s.authed(s.handleUpdateIntegration))
-	mux.Handle("DELETE /api/v1/integrations/{iid}", s.authed(s.handleDeleteIntegration))
-
-	// Kanban links a project owns (F6 / D25). Owner-managed: bind a jtype board
-	// column to one of the project's services, with an optional per-link jtype PAT
-	// (write-only). Board columns are validated against the live jtype board at
-	// create time with that token (or the cluster fallback).
-	mux.Handle("GET /api/v1/projects/{id}/kanban/links", s.authed(s.handleListProjectKanbanLinks))
-	mux.Handle("POST /api/v1/projects/{id}/kanban/links", s.authed(s.handleCreateProjectKanbanLink))
-	// PATCH rotates/clears ONLY the link's per-link token (claims retained, P2).
-	mux.Handle("PATCH /api/v1/projects/{id}/kanban/links/{linkID}", s.authed(s.handleUpdateProjectKanbanLink))
-	mux.Handle("DELETE /api/v1/projects/{id}/kanban/links/{linkID}", s.authed(s.handleDeleteProjectKanbanLink))
-	// D28 — per-link "Connect with jtype" device flow (create-then-connect); the
-	// cluster-surface flow was removed in D36. D37 adds the PROJECT surface
-	// (connect before the first link exists; the sealed blob comes back to the
-	// console to drive discovery + create-link). Owner only; POST starts, GET polls.
-	mux.Handle("POST /api/v1/projects/{id}/kanban/links/{linkID}/connect", s.authed(s.handleStartLinkConnect))
-	mux.Handle("GET /api/v1/projects/{id}/kanban/links/{linkID}/connect/{connectID}", s.authed(s.handlePollLinkConnect))
-	mux.Handle("POST /api/v1/projects/{id}/kanban/connect", s.authed(s.handleStartProjectConnect))
-	mux.Handle("GET /api/v1/projects/{id}/kanban/connect/{connectID}", s.authed(s.handlePollProjectConnect))
-	// D29 — jtype discovery for the console's cascading pickers (owner only). The
-	// credential is a per-link token borrowed from one of the project's links
-	// (D36), or a sealed blob supplied via X-Jtype-Token-Enc (D37, from a
-	// project-surface connect). The token is NEVER serialized.
-	mux.Handle("GET /api/v1/projects/{id}/kanban/jtype/workspaces", s.authed(s.handleListJtypeWorkspaces))
-	mux.Handle("GET /api/v1/projects/{id}/kanban/jtype/boards", s.authed(s.handleListJtypeBoards))
-	// D31 — member+ board embed proxy: gate the console's Kanban button (board/links)
-	// and render the real jtype board through a server-side proxy so the effective
-	// jtype token never reaches the browser. Every documents/* handler enforces the
-	// confused-deputy guard (the ?workspace= must be one of THIS project's links).
-	// Reads and writes are BOTH member+ (write matches run-dispatch authority; a
-	// board move is what the poller turns into a run). The token is NEVER serialized.
-	mux.Handle("GET /api/v1/projects/{id}/kanban/board/links", s.authed(s.handleListBoardEmbedLinks))
-	mux.Handle("GET /api/v1/projects/{id}/kanban/board/documents", s.authed(s.handleBoardListDocuments))
-	mux.Handle("GET /api/v1/projects/{id}/kanban/board/documents/{docID}", s.authed(s.handleBoardGetDocument))
-	mux.Handle("POST /api/v1/projects/{id}/kanban/board/documents/save", s.authed(s.handleBoardSaveDocument))
-
 	// Project-scoped API keys (F12 / D24) — a revocable automation credential
 	// bound to exactly one project, replacing the CONSOLE_TOKEN borrow-pattern
 	// for external/CI use. Management is owner-only; a principal authenticated
@@ -528,37 +505,12 @@ func (s *Server) Handler() http.Handler {
 
 	// Services (multitenant blueprint §4). A service is a repo config inside a
 	// project; runs are created against a service.
-	// Repo picker for Drone-style service onboarding (lists what the caller's
-	// provider credential can see).
-	mux.Handle("GET /api/v1/providers/{provider}/repos", s.authed(s.handleListProviderRepos))
-
 	mux.Handle("POST /api/v1/projects/{id}/services", s.authed(s.handleCreateService))
 	mux.Handle("GET /api/v1/projects/{id}/services", s.authed(s.handleListServices))
 	mux.Handle("PATCH /api/v1/services/{id}", s.authed(s.handleUpdateService))
 	mux.Handle("DELETE /api/v1/services/{id}", s.authed(s.handleDeleteService))
-	// Explicit, OAuth-only provider webhook setup. This never falls back to a
-	// project bot credential or cluster PAT: the member who requests it is the
-	// provider-side actor, and a missing grant is a visible 409.
-	mux.Handle("POST /api/v1/services/{id}/webhook", s.authed(s.handleEnsureServiceWebhook))
 	mux.Handle("POST /api/v1/services/{id}/runs", s.authed(s.handleCreateServiceRun))
 	mux.Handle("GET /api/v1/services/{id}/runs", s.authed(s.handleListServiceRuns))
-
-	// Schedules (F11 / D24) — service-level cron triggers. Listing is member+;
-	// create/update/delete are owner-managed. The schedule poller dispatches
-	// origin=schedule runs off these; an invalid/too-frequent cron is a
-	// fail-visible 400 at write time.
-	mux.Handle("GET /api/v1/services/{id}/schedules", s.authed(s.handleListServiceSchedules))
-	mux.Handle("POST /api/v1/services/{id}/schedules", s.authed(s.handleCreateServiceSchedule))
-	mux.Handle("PATCH /api/v1/schedules/{sid}", s.authed(s.handleUpdateSchedule))
-	mux.Handle("DELETE /api/v1/schedules/{sid}", s.authed(s.handleDeleteSchedule))
-
-	// Provider-event PR review Automations. Listing is member+; the handlers gate
-	// create/update/delete to owners and synchronize Gitea with the caller's OAuth
-	// grant before persisting an enabled policy.
-	mux.Handle("GET /api/v1/services/{id}/automations", s.authed(s.handleListServiceAutomations))
-	mux.Handle("POST /api/v1/services/{id}/automations", s.authed(s.handleCreateServiceAutomation))
-	mux.Handle("PATCH /api/v1/automations/{aid}", s.authed(s.handleUpdateAutomation))
-	mux.Handle("DELETE /api/v1/automations/{aid}", s.authed(s.handleDeleteAutomation))
 
 	// Run creation is service-scoped only (above); listing stays project-scoped.
 	mux.Handle("GET /api/v1/projects/{id}/runs", s.authed(s.handleListRuns))
@@ -590,6 +542,11 @@ func (s *Server) Handler() http.Handler {
 
 	// Internal endpoints — require the per-run RUN_TOKEN.
 	mux.Handle("POST /internal/v1/runs/{id}/events", s.runToken(s.handleIngestEvents))
+	// The runner credential sidecar polls this endpoint using the same RUN_TOKEN
+	// as the other internal endpoints. It returns credentials for immutable
+	// run snapshots only, so disabling an installation blocks NEW runs while an
+	// already-running pod can finish and refresh its short-lived config.
+	mux.Handle("GET /internal/v1/runs/{id}/plugins/credentials", s.runToken(s.handleRunPluginCredentials))
 	// jcode device uplink (docs/17 §4.1/§4.2) — authenticated by the device token
 	// (the "jcd_" Bearer resolves to a device principal in resolvePrincipal;
 	// requireDevice rejects anything else).
@@ -627,10 +584,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /internal/v1/device/pairing-offers", s.authed(s.handleCreatePairingOffer))
 	mux.Handle("POST /internal/v1/device/revoke", s.authed(s.handleDeviceRevoke))
 	mux.Handle("POST /internal/v1/runs/{id}/artifact", s.runToken(s.handleIngestArtifact))
-	// M3 runner contract: the runner fetches its source bundle, uploads the
-	// draft-PR git bundle, and posts review output — all authed by the RUN_TOKEN.
-	mux.Handle("GET /internal/v1/runs/{id}/source", s.runToken(s.handleGetSource))
-	mux.Handle("POST /internal/v1/runs/{id}/bundle", s.runToken(s.handleIngestBundle))
+	// Review output may be stored as a run artifact. SCM clone/push/comment
+	// operations are deliberately absent here: tasks use mounted Skills/CLIs.
 	mux.Handle("POST /internal/v1/runs/{id}/review", s.runToken(s.handleIngestReview))
 	// Multi-turn session (D22): the runner's acpdrive reports each turn's
 	// completion and long-polls for the next user message. RUN_TOKEN authed.
@@ -705,6 +660,15 @@ func (s *Server) runToken(h func(http.ResponseWriter, *http.Request, string)) ht
 		// Constant-time compare of the presented token's hash against stored hash.
 		if run.TokenHash == "" || !auth.ConstantTimeEqual(auth.HashToken(tok), run.TokenHash) {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "run token invalid")
+			return
+		}
+		// A run token is a capability for the lifetime of an active task only.
+		// Once the task reaches a terminal state it must not retain access to the
+		// model proxy, credential issuer, or any mutating internal endpoint.
+		switch run.Status {
+		case domain.StatusScheduling, domain.StatusRunning, domain.StatusAwaitingInput:
+		default:
+			writeError(w, http.StatusConflict, "run_not_active", "run token is no longer active")
 			return
 		}
 		// Stash the already-loaded run so hot internal handlers (the LLM proxy)

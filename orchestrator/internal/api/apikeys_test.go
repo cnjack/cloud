@@ -54,10 +54,7 @@ func setupAPIKeyFixture(t *testing.T) apiKeyFixture {
 	var pvA projectView
 	decode(t, resp, &pvA)
 
-	svcResp := do(t, "POST", ts.URL+"/api/v1/projects/"+pvA.ID+"/services", ownerTok,
-		map[string]any{"name": "default", "repo_url": "https://git/a.git"})
-	var svcA domain.Service
-	decode(t, svcResp, &svcA)
+	svcA := seedPluginBoundService(t, st, pvA.ID, "default", "test/a")
 
 	for uid, role := range map[string]string{member.ID: "member", viewer.ID: "viewer"} {
 		r := do(t, "POST", ts.URL+"/api/v1/projects/"+pvA.ID+"/members", ownerTok,
@@ -71,10 +68,7 @@ func setupAPIKeyFixture(t *testing.T) apiKeyFixture {
 	var pvB projectView
 	decode(t, respB, &pvB)
 
-	svcRespB := do(t, "POST", ts.URL+"/api/v1/projects/"+pvB.ID+"/services", otherOwnTok,
-		map[string]any{"name": "default", "repo_url": "https://git/b.git"})
-	var svcB domain.Service
-	decode(t, svcRespB, &svcB)
+	svcB := seedPluginBoundService(t, st, pvB.ID, "default", "test/b")
 
 	return apiKeyFixture{
 		ts:          ts,
@@ -480,12 +474,11 @@ func TestAPIKeyForbiddenNonProjectSurfaces(t *testing.T) {
 	f := setupAPIKeyFixture(t)
 	k := createAPIKey(t, f, "surfaces")
 
-	// F12-1: provider repo enumeration → 403 (would otherwise fall through to
-	// the cluster GITEA_TOKEN bot and list every org repo).
+	// The legacy cluster provider enumeration route is removed entirely.
 	repos := do(t, "GET", f.ts.URL+"/api/v1/providers/gitea/repos", k.Key, nil)
-	if repos.StatusCode != http.StatusForbidden {
+	if repos.StatusCode != http.StatusNotFound {
 		b, _ := io.ReadAll(repos.Body)
-		t.Fatalf("providers/repos: status=%d want 403 body=%s", repos.StatusCode, b)
+		t.Fatalf("providers/repos: status=%d want 404 body=%s", repos.StatusCode, b)
 	}
 	repos.Body.Close()
 

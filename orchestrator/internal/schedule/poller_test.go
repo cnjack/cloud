@@ -126,6 +126,36 @@ func TestDispatchOnceWhenDue(t *testing.T) {
 	}
 }
 
+func TestPluginCronAutomationDispatchesExactlyOnce(t *testing.T) {
+	now := time.Date(2026, 7, 9, 15, 0, 0, 0, time.UTC)
+	st := store.NewMemStore()
+	ctx := context.Background()
+	project := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: now.Add(-time.Hour)}
+	_ = st.CreateProject(ctx, project)
+	service := &domain.Service{ID: domain.NewID(), ProjectID: project.ID, Name: "svc", RepoKind: domain.RepoKindRaw, RawRepoURL: "u", DefaultBranch: "main", CreatedAt: now.Add(-time.Hour)}
+	_ = st.CreateService(ctx, service)
+	automation := &domain.PluginAutomation{ID: domain.NewID(), ServiceID: service.ID, Name: "nightly", TriggerKind: "cron", PromptTemplate: "run nightly", Enabled: true, CreatedAt: now.Add(-10 * time.Minute)}
+	trigger := &domain.CronTrigger{AutomationID: automation.ID, CronExpr: "*/5 * * * *"}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, nil, trigger); err != nil {
+		t.Fatal(err)
+	}
+	poller := NewPoller(st, okModels(), nil, testLogger(), time.Minute)
+	poller.now = func() time.Time { return now }
+	poller.Tick(ctx)
+	poller.Tick(ctx)
+	runs := runsFor(t, st, service.ID)
+	if len(runs) != 1 {
+		t.Fatalf("runs=%d want 1", len(runs))
+	}
+	if runs[0].Origin != domain.RunOriginAutomation || runs[0].OriginAutomationID != automation.ID || runs[0].Prompt != "run nightly" {
+		t.Fatalf("run=%+v", runs[0])
+	}
+	spec, err := st.GetPluginAutomationSpec(ctx, automation.ID)
+	if err != nil || spec.Cron == nil || spec.Cron.LastFiredAt == nil || !spec.Cron.LastFiredAt.Equal(now) {
+		t.Fatalf("spec=%+v err=%v", spec, err)
+	}
+}
+
 // TestNotDueNoDispatch: a schedule whose next fire is in the future is skipped.
 func TestNotDueNoDispatch(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)

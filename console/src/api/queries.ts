@@ -12,6 +12,7 @@ import { useApi } from './ApiProvider';
 import type {
   AddMemberInput,
   CreateAutomationInput,
+  CreateProjectAutomationInput,
   CreateApiKeyInput,
   CreateApiKeyResponse,
   CreateIntegrationInput,
@@ -28,6 +29,11 @@ import type {
   Member,
   Model,
   Project,
+  PluginConsentInput,
+  PluginAuditEvent,
+  ProviderKind,
+  UpdateClusterProviderConfigInput,
+  UpdateProjectAutomationInput,
   ResumeSessionOptions,
   Run,
   ServiceWebhookSetup,
@@ -81,6 +87,25 @@ export const qk = {
   serviceSchedules: (serviceId: string) => ['service-schedules', serviceId] as const,
   serviceAutomations: (serviceId: string) => ['service-automations', serviceId] as const,
   integrations: (projectId: string) => ['integrations', projectId] as const,
+  projectPlugins: (projectId: string) => ['project-plugins', projectId] as const,
+  projectPluginImpact: (projectId: string, installationId: string) =>
+    ['project-plugin-impact', projectId, installationId] as const,
+  projectPluginAudit: (projectId: string, installationId: string) =>
+    ['project-plugin-audit', projectId, installationId] as const,
+  pluginRepositories: (projectId: string, installationId: string, q: string) =>
+    ['plugin-repositories', projectId, installationId, q] as const,
+  pluginWorkspaces: (projectId: string, installationId: string) =>
+    ['plugin-workspaces', projectId, installationId] as const,
+  pluginBoards: (projectId: string, installationId: string, workspaceId: string) =>
+    ['plugin-boards', projectId, installationId, workspaceId] as const,
+  projectAutomations: (projectId: string) => ['project-automations', projectId] as const,
+  projectAutomation: (projectId: string, automationId: string) =>
+    ['project-automation', projectId, automationId] as const,
+  providerCapabilities: (provider: ProviderKind) => ['provider-capabilities', provider] as const,
+  githubAppInstallations: (projectId: string) => ['github-app-installations', projectId] as const,
+  jtypePluginConnect: (projectId: string, installationId: string, connectId: string) =>
+    ['jtype-plugin-connect', projectId, installationId, connectId] as const,
+  clusterProvider: (provider: ProviderKind) => ['cluster-provider', provider] as const,
   apiKeys: (projectId: string) => ['api-keys', projectId] as const,
   services: (projectId: string) => ['services', projectId] as const,
   members: (projectId: string) => ['members', projectId] as const,
@@ -1055,6 +1080,235 @@ export function useDeleteAutomation(serviceId: string) {
     mutationFn: (automationId: string) => api.deleteAutomation(automationId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceAutomations(serviceId) }),
   });
+}
+
+/* ---- unified Project Plugins and Automations ---------------------------- */
+
+export function useProjectPlugins(projectId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.projectPlugins(projectId),
+    queryFn: () => api.listProjectPlugins(projectId),
+    enabled: enabled && !!projectId,
+  });
+}
+
+export function useStartPluginInstall(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ provider, input }: { provider: ProviderKind; input: PluginConsentInput }) =>
+      api.startPluginInstall(projectId, provider, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectPlugins(projectId) }),
+  });
+}
+
+export function useGitHubAppInstallations(projectId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.githubAppInstallations(projectId),
+    queryFn: () => api.listGitHubAppInstallations(projectId),
+    enabled: enabled && !!projectId,
+    retry: false,
+  });
+}
+
+export function useSelectGitHubAppInstallation(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ installationId, input }: { installationId: string; input: PluginConsentInput }) =>
+      api.selectGitHubAppInstallation(projectId, installationId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectPlugins(projectId) }),
+  });
+}
+
+export function usePreviewGitHubAppInstallationConsent(projectId: string) {
+  const api = useApi();
+  return useMutation({
+    mutationFn: (installationId: string) =>
+      api.previewGitHubAppInstallationConsent(projectId, installationId),
+  });
+}
+
+export function useProjectPluginAudit(projectId: string, installationId: string, enabled = true) {
+  const api = useApi();
+  return useQuery<PluginAuditEvent[]>({
+    queryKey: qk.projectPluginAudit(projectId, installationId),
+    queryFn: () => api.listProjectPluginAudit(projectId, installationId),
+    enabled: enabled && !!projectId && !!installationId,
+    retry: false,
+  });
+}
+
+export function useJTypePluginConnectStatus(
+  projectId: string,
+  installationId: string,
+  connectId: string,
+  enabled = true,
+) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.jtypePluginConnect(projectId, installationId, connectId),
+    queryFn: () => api.getJTypePluginConnectStatus(projectId, installationId, connectId),
+    enabled: enabled && !!projectId && !!installationId && !!connectId,
+    refetchInterval: (query) => query.state.data?.status === 'complete' ? false : 2000,
+    retry: false,
+  });
+}
+
+export function useSetProjectPluginEnabled(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ installationId, enabled }: { installationId: string; enabled: boolean }) =>
+      api.setProjectPluginEnabled(installationId, enabled),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.projectPlugins(projectId) });
+    },
+  });
+}
+
+export function useSetProjectPluginWorkspace(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ installationId, workspaceId }: { installationId: string; workspaceId: string }) =>
+      api.setProjectPluginWorkspace(installationId, workspaceId),
+    onSuccess: (_plugin, { installationId }) => {
+      qc.invalidateQueries({ queryKey: qk.projectPlugins(projectId) });
+      qc.invalidateQueries({ queryKey: qk.pluginWorkspaces(projectId, installationId) });
+    },
+  });
+}
+
+export function useUninstallProjectPlugin(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ installationId, force = false }: { installationId: string; force?: boolean }) =>
+      api.uninstallProjectPlugin(installationId, force),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectPlugins(projectId) }),
+  });
+}
+
+export function useProjectPluginImpact(projectId: string, installationId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.projectPluginImpact(projectId, installationId),
+    queryFn: () => api.getProjectPluginImpact(projectId, installationId),
+    enabled: enabled && !!projectId && !!installationId,
+    retry: false,
+  });
+}
+
+export function usePluginRepositories(projectId: string, installationId: string, q = '', enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.pluginRepositories(projectId, installationId, q),
+    queryFn: () => api.listPluginRepositories(projectId, installationId, q || undefined),
+    enabled: enabled && !!projectId && !!installationId,
+    retry: false,
+  });
+}
+
+export function usePluginWorkspaces(projectId: string, installationId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.pluginWorkspaces(projectId, installationId),
+    queryFn: () => api.listPluginWorkspaces(projectId, installationId),
+    enabled: enabled && !!projectId && !!installationId,
+    retry: false,
+  });
+}
+
+export function usePluginBoards(projectId: string, installationId: string, workspaceId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.pluginBoards(projectId, installationId, workspaceId),
+    queryFn: () => api.listPluginBoards(projectId, installationId, workspaceId || undefined),
+    enabled: enabled && !!projectId && !!installationId && !!workspaceId,
+    retry: false,
+  });
+}
+
+export function useProjectAutomations(projectId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.projectAutomations(projectId),
+    queryFn: () => api.listProjectAutomations(projectId),
+    enabled: enabled && !!projectId,
+  });
+}
+
+export function useProjectAutomation(projectId: string, automationId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.projectAutomation(projectId, automationId),
+    queryFn: () => api.getProjectAutomation(projectId, automationId),
+    enabled: enabled && !!projectId && !!automationId,
+  });
+}
+
+export function useProviderCapabilities(provider: ProviderKind, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.providerCapabilities(provider),
+    queryFn: () => api.getProviderCapabilities(provider),
+    enabled,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
+export function useCreateProjectAutomation(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateProjectAutomationInput) => api.createProjectAutomation(projectId, input),
+    onSuccess: (automation) => {
+      qc.invalidateQueries({ queryKey: qk.projectAutomations(projectId) });
+      qc.setQueryData(qk.projectAutomation(projectId, automation.automation.id), automation);
+    },
+  });
+}
+
+export function useUpdateProjectAutomation(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ automationId, input }: { automationId: string; input: UpdateProjectAutomationInput }) =>
+      api.updateProjectAutomation(projectId, automationId, input),
+    onSuccess: (automation) => {
+      qc.invalidateQueries({ queryKey: qk.projectAutomations(projectId) });
+      qc.setQueryData(qk.projectAutomation(projectId, automation.automation.id), automation);
+    },
+  });
+}
+
+export function useDeleteProjectAutomation(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (automationId: string) => api.deleteProjectAutomation(projectId, automationId),
+    onSuccess: (_void, automationId) => {
+      qc.invalidateQueries({ queryKey: qk.projectAutomations(projectId) });
+      qc.removeQueries({ queryKey: qk.projectAutomation(projectId, automationId) });
+    },
+  });
+}
+
+export function useClusterProviderConfig(provider: ProviderKind, enabled = true) {
+  const api = useApi();
+  return useQuery({ queryKey: qk.clusterProvider(provider), queryFn: () => api.getClusterProviderConfig(provider), enabled });
+}
+export function useUpdateClusterProviderConfig(provider: ProviderKind) {
+  const api = useApi(); const qc = useQueryClient();
+  return useMutation({ mutationFn: (input: UpdateClusterProviderConfigInput) => api.updateClusterProviderConfig(provider, input), onSuccess: () => qc.invalidateQueries({ queryKey: qk.clusterProvider(provider) }) });
+}
+export function useTestClusterProviderConfig(provider: ProviderKind) {
+  const api = useApi(); const qc = useQueryClient();
+  return useMutation({ mutationFn: () => api.testClusterProviderConfig(provider), onSuccess: () => qc.invalidateQueries({ queryKey: qk.clusterProvider(provider) }) });
 }
 
 /* ---- integrations (D19 / F5) --------------------------------------------- */

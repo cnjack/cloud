@@ -173,7 +173,7 @@
 }
 
 /* D27, fail-visible: the kanban resolver's `reason` — a broken config (e.g. DB
-   token without AUTH_TOKEN_KEY) is a loud error notice, never a bare "off".
+   token without JCLOUD_MASTER_KEY) is a loud error notice, never a bare "off".
    Same failed-status palette as .pill[data-err]. */
 .errorNotice {
   font-size: var(--fs-caption);

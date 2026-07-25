@@ -235,6 +235,14 @@ MODEL_API_KEY="${MODEL_API_KEY:-dummy-key}"
 
 log "run_id=$RUN_ID kind=$RUN_KIND source_mode=$SOURCE_MODE git_mode=$GIT_MODE"
 
+# Persistent workspace mounts intentionally cover $HOME/.jcode, so image files
+# placed there would be hidden. Install the release-pinned Git provider Skills
+# from the image's read-only template on every task.
+if [ -d "${JCODE_BUNDLED_SKILLS_DIR:-/usr/local/share/jcloud/skills}" ]; then
+  /usr/local/bin/install-bundled-skills.sh \
+    || die setup_failed "could not install bundled Git provider Skills"
+fi
+
 # Defense in depth against cross-run hook execution (Feature C security). A
 # persistent workspace PVC can carry .git/hooks planted by a prior run's agent;
 # the next run's git checkout/fetch would then trigger that hook — executing
@@ -261,7 +269,14 @@ if [ "${START_MOCKLLM:-0}" = "1" ]; then
     sleep 0.1
   done
 fi
-trap '[ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true' EXIT
+runner_cleanup() {
+  [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
+  if [ -n "${PLUGIN_SYNC_STOP_FILE:-}" ]; then
+    mkdir -p "$(dirname "$PLUGIN_SYNC_STOP_FILE")" 2>/dev/null || true
+    : > "$PLUGIN_SYNC_STOP_FILE" 2>/dev/null || true
+  fi
+}
+trap runner_cleanup EXIT
 
 # --- 1. Validate inputs ------------------------------------------------------
 [ -n "${TASK_PROMPT:-}" ]    || die setup_failed "TASK_PROMPT is required"

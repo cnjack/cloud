@@ -26,6 +26,7 @@ func newTestServerPersistent(t *testing.T) (*httptest.Server, *store.MemStore) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, hub, nil)
 	ts := httptest.NewServer(srv.Handler())
+	registerTestServerStore(t, ts, st)
 	t.Cleanup(ts.Close)
 	return ts, st
 }

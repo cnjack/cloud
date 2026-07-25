@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cnjack/jcloud/internal/safehttp"
 )
 
 // GiteaWIPPrefix is Gitea's default "work in progress" title prefix. Gitea has
@@ -56,7 +58,7 @@ func NewGiteaClientWithScheme(baseURL, token, scheme string) (*GiteaClient, erro
 		baseURL: baseURL,
 		token:   token,
 		scheme:  scheme,
-		http:    &http.Client{Timeout: 15 * time.Second},
+		http:    safehttp.NewProviderClient(baseURL, 15*time.Second),
 	}, nil
 }
 
@@ -212,6 +214,15 @@ func (c *GiteaClient) EnsureReviewWebhook(ctx context.Context, owner, repo, hook
 		[]string{"issue_comment", "pull_request_comment", "pull_request", "pull_request_sync"}, true)
 }
 
+// EnsureSCMWebhook reconciles all webhook event kinds understood by the
+// unified SCM Automation model. Gitea versions may ignore events they do not
+// support; capability discovery keeps unsupported actions unavailable in the
+// Console, while this hook remains a single per-repository subscription.
+func (c *GiteaClient) EnsureSCMWebhook(ctx context.Context, owner, repo, hookURL, secret string) error {
+	return c.ensureWebhook(ctx, owner, repo, hookURL, secret,
+		[]string{"push", "pull_request", "pull_request_sync", "pull_request_review", "issues", "issue_comment", "pull_request_comment", "status", "create", "delete", "release"}, true)
+}
+
 func (c *GiteaClient) ensureWebhook(ctx context.Context, owner, repo, hookURL, secret string, required []string, reconcileEvents bool) error {
 	listPath := fmt.Sprintf("/api/v1/repos/%s/%s/hooks", owner, repo)
 	var hooks []struct {
@@ -240,6 +251,30 @@ func (c *GiteaClient) ensureWebhook(ctx context.Context, owner, repo, hookURL, s
 		}
 	}
 	return c.do(ctx, http.MethodPost, listPath, webhookBody(hookURL, secret, required), nil)
+}
+
+// DeleteSCMWebhook removes only this Cloud endpoint's repository hook. It is
+// deliberately idempotent: if an administrator removed it at the provider,
+// the last Automation can still be disabled/deleted cleanly.
+func (c *GiteaClient) DeleteSCMWebhook(ctx context.Context, owner, repo, hookURL string) error {
+	listPath := fmt.Sprintf("/api/v1/repos/%s/%s/hooks", owner, repo)
+	var hooks []struct {
+		ID     int64             `json:"id"`
+		Config map[string]string `json:"config"`
+	}
+	if err := c.do(ctx, http.MethodGet, listPath, nil, &hooks); err != nil {
+		return err
+	}
+	for _, h := range hooks {
+		if h.Config["url"] != hookURL {
+			continue
+		}
+		if h.ID == 0 {
+			return fmt.Errorf("existing webhook at target URL has no provider id")
+		}
+		return c.do(ctx, http.MethodDelete, fmt.Sprintf("%s/%d", listPath, h.ID), nil, nil)
+	}
+	return nil
 }
 
 func webhookBody(hookURL, secret string, events []string) map[string]any {
@@ -304,8 +339,9 @@ func prState(state string, merged bool) string {
 }
 
 // do performs one authenticated JSON request and decodes a 2xx body into out
-// (out may be nil to discard). Non-2xx responses become an error carrying the
-// status and a truncated body for diagnosis.
+// (out may be nil to discard). A non-2xx response never includes the upstream
+// body in its error: Gitea is a configured external boundary and a malicious
+// proxy may reflect the Authorization credential we just sent.
 func (c *GiteaClient) do(ctx context.Context, method, path string, body any, out any) error {
 	var rdr io.Reader
 	if body != nil {
@@ -329,14 +365,13 @@ func (c *GiteaClient) do(ctx context.Context, method, path string, body any, out
 		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &HTTPStatusError{Method: method, StatusCode: resp.StatusCode}
+	}
 	// 4MiB cap: PR payloads are tiny, but /repos/search on a big instance (an
 	// admin PAT sees everything) easily blows a smaller cap — a truncated body
 	// fails JSON decode with a misleading "unexpected end of JSON input".
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("gitea %s %s: status %d: %s",
-			method, path, resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
 	if out != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, out); err != nil {
 			return fmt.Errorf("decode %s %s: %w", method, path, err)
@@ -348,3 +383,4 @@ func (c *GiteaClient) do(ctx context.Context, method, path string, body any, out
 var _ Provider = (*GiteaClient)(nil)
 var _ RepoLister = (*GiteaClient)(nil)
 var _ CurrentUser = (*GiteaClient)(nil)
+var _ SCMWebhookManager = (*GiteaClient)(nil)

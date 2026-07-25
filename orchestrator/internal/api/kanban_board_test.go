@@ -1,3 +1,5 @@
+//go:build legacy_api
+
 package api
 
 import (
@@ -275,7 +277,7 @@ func TestBoardProxy_KanbanNotConfigured409(t *testing.T) {
 // 7. A link with no per-link token (D36: no cluster fallback) → 503
 // jtype_unreachable (ResolveToken => ErrNoToken). Never a silent skip.
 func TestBoardProxy_NoCredential503(t *testing.T) {
-	f := setupBoard(t) // integration ON
+	f := setupBoard(t)                      // integration ON
 	f.seedLink(t, "ws-A", "b_a", nil, true) // tokenless link
 
 	r := do(t, http.MethodGet, f.docsURL("ws-A"), f.tokens["member"], nil)

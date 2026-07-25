@@ -12,7 +12,7 @@ import (
 
 // Cipher encrypts/decrypts provider tokens for storage in user_identities
 // (access_token_enc / refresh_token_enc). It is AES-256-GCM with a random 96-bit
-// nonce prepended to each ciphertext, keyed by AUTH_TOKEN_KEY (32 bytes, base64).
+// nonce prepended to each ciphertext, keyed by JCLOUD_MASTER_KEY (32 bytes, base64).
 //
 // GCM is authenticated: Decrypt fails closed on any tampering (wrong key, flipped
 // bit, truncated blob), which is what the roundtrip/tamper unit tests assert.
@@ -21,21 +21,21 @@ type Cipher struct {
 }
 
 // ErrCipherNotConfigured is returned by Cipher methods when the cipher is nil —
-// i.e. no AUTH_TOKEN_KEY was configured. Callers only reach encryption once at
+// i.e. no JCLOUD_MASTER_KEY was configured. Callers only reach encryption once at
 // least one OAuth provider is configured, at which point config.Load has already
 // required a valid key, so this is a defensive guard.
-var ErrCipherNotConfigured = errors.New("token cipher not configured (AUTH_TOKEN_KEY unset)")
+var ErrCipherNotConfigured = errors.New("token cipher not configured (JCLOUD_MASTER_KEY unset)")
 
-// DecodeTokenKey base64-decodes an AUTH_TOKEN_KEY and validates it is exactly 32
+// DecodeTokenKey base64-decodes an JCLOUD_MASTER_KEY and validates it is exactly 32
 // bytes (AES-256). It is exported so config.Load can validate the key at startup
 // without constructing a Cipher.
 func DecodeTokenKey(b64 string) ([]byte, error) {
 	key, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
-		return nil, fmt.Errorf("AUTH_TOKEN_KEY is not valid base64: %w", err)
+		return nil, fmt.Errorf("JCLOUD_MASTER_KEY is not valid base64: %w", err)
 	}
 	if len(key) != 32 {
-		return nil, fmt.Errorf("AUTH_TOKEN_KEY must decode to 32 bytes for AES-256, got %d", len(key))
+		return nil, fmt.Errorf("JCLOUD_MASTER_KEY must decode to 32 bytes for AES-256, got %d", len(key))
 	}
 	return key, nil
 }

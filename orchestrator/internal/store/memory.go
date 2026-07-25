@@ -17,81 +17,110 @@ import (
 // and idempotency semantics as PGStore so tests exercise real behaviour without
 // a database. It is safe for concurrent use.
 type MemStore struct {
-	mu                 sync.Mutex
-	projects           map[string]domain.Project
-	services           map[string]domain.Service
-	runs               map[string]domain.Run
-	events             map[string][]domain.RunEvent            // keyed by runID, kept sorted by seq
-	dedupe             map[string]bool                         // keyed by runID+"|"+source+"|"+client_seq
-	artifacts          map[string]domain.RunArtifact           // keyed by runID+"/"+kind
-	users              map[string]domain.User                  // keyed by user id
-	identities         map[string]domain.UserIdentity          // keyed by identity id
-	sessions           map[string]domain.Session               // keyed by session id
-	members            map[string]domain.ProjectMember         // keyed by projectID+"|"+userID
-	modelProviders     map[string]domain.ModelProvider         // keyed by provider id
-	models             map[string]domain.Model                 // catalog, keyed by model id (D21)
-	modelGrants        map[string]bool                         // keyed by modelID+"|"+projectID
-	modelAccountGrants map[string]string                       // keyed by modelID+"|"+userID, value=granting user
-	integrations       map[string]domain.Integration           // keyed by integration id (D19 / F5)
-	kanbanLinks        map[string]domain.KanbanLink            // keyed by link id
-	kanbanClaims       map[string]domain.KanbanClaim           // keyed by linkID+"|"+documentID
-	schedules          map[string]domain.Schedule              // keyed by schedule id (F11 / D24)
-	automations        map[string]domain.Automation            // keyed by automation id
-	webhookBindings    map[string]domain.WebhookBinding        // keyed by service id
-	runMessages        map[string][]domain.RunMessage          // session follow-up queue, keyed by runID (D22)
-	permissions        map[string]domain.RunPermission         // permission requests, keyed by request_id (F8b)
-	apiKeys            map[string]domain.APIKey                // keyed by api key id (F12 / D24)
-	accountSettings    map[string]domain.AccountSettings       // keyed by user id (docs/19)
-	accountSyncKeys    map[string]domain.AccountSyncKey        // keyed by user id (docs/19)
-	accountSyncWraps   map[string]domain.AccountSyncKeyWrap    // keyed by userID+"|"+deviceID
-	accountProviders   map[string]domain.AccountProviderConfig // keyed by userID+"|"+providerID
-	kanbanConfig       *domain.KanbanConfig                    // single-row cluster kanban config, nil = absent (D27)
-	devices            map[string]domain.Device                // keyed by device id (docs/17)
-	deviceTokens       map[string]domain.DeviceToken           // keyed by device token id
-	deviceSessions     map[string]domain.DeviceSession         // keyed by deviceID+"|"+sessionID
-	deviceEvents       map[string][]domain.DeviceEvent         // keyed by deviceID+"|"+sessionID, kept sorted by seq
-	deviceCommands     map[string]domain.DeviceCommand         // keyed by command id
-	devicePairings     map[string]domain.DevicePairing         // keyed by pairing id
-	deviceOffers       map[string]domain.DevicePairingOffer    // keyed by offer id
+	mu                       sync.Mutex
+	projects                 map[string]domain.Project
+	services                 map[string]domain.Service
+	runs                     map[string]domain.Run
+	events                   map[string][]domain.RunEvent    // keyed by runID, kept sorted by seq
+	dedupe                   map[string]bool                 // keyed by runID+"|"+source+"|"+client_seq
+	artifacts                map[string]domain.RunArtifact   // keyed by runID+"/"+kind
+	users                    map[string]domain.User          // keyed by user id
+	identities               map[string]domain.UserIdentity  // keyed by identity id
+	sessions                 map[string]domain.Session       // keyed by session id
+	members                  map[string]domain.ProjectMember // keyed by projectID+"|"+userID
+	modelProviders           map[string]domain.ModelProvider // keyed by provider id
+	models                   map[string]domain.Model         // catalog, keyed by model id (D21)
+	modelGrants              map[string]bool                 // keyed by modelID+"|"+projectID
+	modelAccountGrants       map[string]string               // keyed by modelID+"|"+userID, value=granting user
+	integrations             map[string]domain.Integration   // keyed by integration id (D19 / F5)
+	providerConfigs          map[domain.ProviderKind]domain.ProviderConfig
+	providerConfigVersions   map[string]domain.ProviderConfig
+	pluginInstallations      map[string]domain.PluginInstallation
+	pluginCredentialVersions map[string]domain.PluginCredentialVersion
+	serviceRepoBindings      map[string]domain.ServiceRepositoryBinding
+	pluginAutomations        map[string]domain.PluginAutomation
+	pluginSCMActions         map[string]domain.SCMAction // service|family|action
+	pluginSCMTriggers        map[string]domain.SCMTrigger
+	pluginKanbanTriggers     map[string]domain.KanbanTrigger
+	pluginKanbanClaims       map[string]domain.PluginKanbanClaim
+	pluginCronTriggers       map[string]domain.CronTrigger
+	webhookReceipts          map[string]domain.WebhookReceipt // provider|delivery id
+	runPluginSnapshots       map[string]map[string]domain.RunPluginSnapshot
+	pluginAuditEvents        map[string]domain.PluginAuditEvent
+	clusterSettings          *domain.ClusterSettings
+	kanbanLinks              map[string]domain.KanbanLink            // keyed by link id
+	kanbanClaims             map[string]domain.KanbanClaim           // keyed by linkID+"|"+documentID
+	schedules                map[string]domain.Schedule              // keyed by schedule id (F11 / D24)
+	automations              map[string]domain.Automation            // keyed by automation id
+	webhookBindings          map[string]domain.WebhookBinding        // keyed by service id
+	runMessages              map[string][]domain.RunMessage          // session follow-up queue, keyed by runID (D22)
+	permissions              map[string]domain.RunPermission         // permission requests, keyed by request_id (F8b)
+	apiKeys                  map[string]domain.APIKey                // keyed by api key id (F12 / D24)
+	accountSettings          map[string]domain.AccountSettings       // keyed by user id (docs/19)
+	accountSyncKeys          map[string]domain.AccountSyncKey        // keyed by user id (docs/19)
+	accountSyncWraps         map[string]domain.AccountSyncKeyWrap    // keyed by userID+"|"+deviceID
+	accountProviders         map[string]domain.AccountProviderConfig // keyed by userID+"|"+providerID
+	kanbanConfig             *domain.KanbanConfig                    // single-row cluster kanban config, nil = absent (D27)
+	devices                  map[string]domain.Device                // keyed by device id (docs/17)
+	deviceTokens             map[string]domain.DeviceToken           // keyed by device token id
+	deviceSessions           map[string]domain.DeviceSession         // keyed by deviceID+"|"+sessionID
+	deviceEvents             map[string][]domain.DeviceEvent         // keyed by deviceID+"|"+sessionID, kept sorted by seq
+	deviceCommands           map[string]domain.DeviceCommand         // keyed by command id
+	devicePairings           map[string]domain.DevicePairing         // keyed by pairing id
+	deviceOffers             map[string]domain.DevicePairingOffer    // keyed by offer id
 }
 
 // NewMemStore returns an empty in-memory store.
 func NewMemStore() *MemStore {
 	return &MemStore{
-		projects:           map[string]domain.Project{},
-		services:           map[string]domain.Service{},
-		runs:               map[string]domain.Run{},
-		events:             map[string][]domain.RunEvent{},
-		dedupe:             map[string]bool{},
-		artifacts:          map[string]domain.RunArtifact{},
-		users:              map[string]domain.User{},
-		identities:         map[string]domain.UserIdentity{},
-		sessions:           map[string]domain.Session{},
-		members:            map[string]domain.ProjectMember{},
-		modelProviders:     map[string]domain.ModelProvider{},
-		models:             map[string]domain.Model{},
-		modelGrants:        map[string]bool{},
-		modelAccountGrants: map[string]string{},
-		integrations:       map[string]domain.Integration{},
-		kanbanLinks:        map[string]domain.KanbanLink{},
-		kanbanClaims:       map[string]domain.KanbanClaim{},
-		schedules:          map[string]domain.Schedule{},
-		automations:        map[string]domain.Automation{},
-		webhookBindings:    map[string]domain.WebhookBinding{},
-		runMessages:        map[string][]domain.RunMessage{},
-		permissions:        map[string]domain.RunPermission{},
-		apiKeys:            map[string]domain.APIKey{},
-		accountSettings:    map[string]domain.AccountSettings{},
-		accountSyncKeys:    map[string]domain.AccountSyncKey{},
-		accountSyncWraps:   map[string]domain.AccountSyncKeyWrap{},
-		accountProviders:   map[string]domain.AccountProviderConfig{},
-		devices:            map[string]domain.Device{},
-		deviceTokens:       map[string]domain.DeviceToken{},
-		deviceSessions:     map[string]domain.DeviceSession{},
-		deviceEvents:       map[string][]domain.DeviceEvent{},
-		deviceCommands:     map[string]domain.DeviceCommand{},
-		devicePairings:     map[string]domain.DevicePairing{},
-		deviceOffers:       map[string]domain.DevicePairingOffer{},
+		projects:                 map[string]domain.Project{},
+		services:                 map[string]domain.Service{},
+		runs:                     map[string]domain.Run{},
+		events:                   map[string][]domain.RunEvent{},
+		dedupe:                   map[string]bool{},
+		artifacts:                map[string]domain.RunArtifact{},
+		users:                    map[string]domain.User{},
+		identities:               map[string]domain.UserIdentity{},
+		sessions:                 map[string]domain.Session{},
+		members:                  map[string]domain.ProjectMember{},
+		modelProviders:           map[string]domain.ModelProvider{},
+		models:                   map[string]domain.Model{},
+		modelGrants:              map[string]bool{},
+		modelAccountGrants:       map[string]string{},
+		integrations:             map[string]domain.Integration{},
+		providerConfigs:          map[domain.ProviderKind]domain.ProviderConfig{},
+		providerConfigVersions:   map[string]domain.ProviderConfig{},
+		pluginInstallations:      map[string]domain.PluginInstallation{},
+		pluginCredentialVersions: map[string]domain.PluginCredentialVersion{},
+		serviceRepoBindings:      map[string]domain.ServiceRepositoryBinding{},
+		pluginAutomations:        map[string]domain.PluginAutomation{},
+		pluginSCMActions:         map[string]domain.SCMAction{},
+		pluginSCMTriggers:        map[string]domain.SCMTrigger{},
+		pluginKanbanTriggers:     map[string]domain.KanbanTrigger{},
+		pluginKanbanClaims:       map[string]domain.PluginKanbanClaim{},
+		pluginCronTriggers:       map[string]domain.CronTrigger{},
+		webhookReceipts:          map[string]domain.WebhookReceipt{},
+		runPluginSnapshots:       map[string]map[string]domain.RunPluginSnapshot{},
+		pluginAuditEvents:        map[string]domain.PluginAuditEvent{},
+		kanbanLinks:              map[string]domain.KanbanLink{},
+		kanbanClaims:             map[string]domain.KanbanClaim{},
+		schedules:                map[string]domain.Schedule{},
+		automations:              map[string]domain.Automation{},
+		webhookBindings:          map[string]domain.WebhookBinding{},
+		runMessages:              map[string][]domain.RunMessage{},
+		permissions:              map[string]domain.RunPermission{},
+		apiKeys:                  map[string]domain.APIKey{},
+		accountSettings:          map[string]domain.AccountSettings{},
+		accountSyncKeys:          map[string]domain.AccountSyncKey{},
+		accountSyncWraps:         map[string]domain.AccountSyncKeyWrap{},
+		accountProviders:         map[string]domain.AccountProviderConfig{},
+		devices:                  map[string]domain.Device{},
+		deviceTokens:             map[string]domain.DeviceToken{},
+		deviceSessions:           map[string]domain.DeviceSession{},
+		deviceEvents:             map[string][]domain.DeviceEvent{},
+		deviceCommands:           map[string]domain.DeviceCommand{},
+		devicePairings:           map[string]domain.DevicePairing{},
+		deviceOffers:             map[string]domain.DevicePairingOffer{},
 	}
 }
 
@@ -162,24 +191,32 @@ func (m *MemStore) DeleteProject(_ context.Context, id string) error {
 	if _, ok := m.projects[id]; !ok {
 		return ErrNotFound
 	}
-	delete(m.projects, id)
-	// Cascade: drop the project's services and runs (mirrors the FK ON DELETE
-	// CASCADE on services.project_id / runs.project_id).
+	// Delete services through the same aggregate cascade as DeleteService: this
+	// is how PostgreSQL reaches repository bindings, v2 Automations and their
+	// typed children when projects.project_id is deleted.
 	for sid, svc := range m.services {
 		if svc.ProjectID == id {
-			delete(m.services, sid)
+			m.deleteServiceLocked(sid)
 		}
 	}
+	// Tests may seed a run without its Service; project deletion still owns it.
 	for rid, r := range m.runs {
 		if r.ProjectID == id {
-			delete(m.runs, rid)
-			delete(m.runMessages, rid) // cascade run_messages (FK ON DELETE CASCADE)
-			// cascade run_permissions (FK ON DELETE CASCADE)
-			for reqID, perm := range m.permissions {
-				if perm.RunID == rid {
-					delete(m.permissions, reqID)
-				}
-			}
+			m.deleteRunLocked(rid)
+		}
+	}
+	// Project plugin installations are children of projects. The database keeps
+	// receipt/audit history but clears the removed installation reference.
+	for installationID, installation := range m.pluginInstallations {
+		if installation.ProjectID != id {
+			continue
+		}
+		m.clearPluginInstallationReferencesLocked(installationID)
+		delete(m.pluginInstallations, installationID)
+	}
+	for auditID, event := range m.pluginAuditEvents {
+		if event.ProjectID == id {
+			delete(m.pluginAuditEvents, auditID)
 		}
 	}
 	for k, mem := range m.members {
@@ -187,6 +224,7 @@ func (m *MemStore) DeleteProject(_ context.Context, id string) error {
 			delete(m.members, k)
 		}
 	}
+	delete(m.projects, id)
 	return nil
 }
 
@@ -202,6 +240,38 @@ func (m *MemStore) CreateService(_ context.Context, s *domain.Service) error {
 		s.DefaultBranch = "main"
 	}
 	m.services[s.ID] = *s
+	return nil
+}
+
+func (m *MemStore) CreatePluginBoundService(_ context.Context, s *domain.Service, binding *domain.ServiceRepositoryBinding) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s == nil || binding == nil || s.ID == "" || binding.ServiceID != s.ID || binding.InstallationID == "" || binding.ProviderRepoID == "" {
+		return errors.New("create plugin-bound service: invalid aggregate")
+	}
+	if _, exists := m.services[s.ID]; exists {
+		return ErrAlreadyExists
+	}
+	installation, exists := m.pluginInstallations[binding.InstallationID]
+	if !exists {
+		return ErrNotFound
+	}
+	if err := validateServiceRepositoryBinding(s, &installation); err != nil {
+		return err
+	}
+	for _, existing := range m.serviceRepoBindings {
+		if existing.InstallationID == binding.InstallationID && existing.ProviderRepoID == binding.ProviderRepoID {
+			return ErrAlreadyExists
+		}
+	}
+	if s.GitMode == "" {
+		s.GitMode = domain.GitModeReadonly
+	}
+	if s.DefaultBranch == "" {
+		s.DefaultBranch = "main"
+	}
+	m.services[s.ID] = *s
+	m.serviceRepoBindings[s.ID] = *binding
 	return nil
 }
 
@@ -260,6 +330,15 @@ func (m *MemStore) UpdateService(_ context.Context, s *domain.Service) error {
 	if _, ok := m.services[s.ID]; !ok {
 		return ErrNotFound
 	}
+	if binding, ok := m.serviceRepoBindings[s.ID]; ok {
+		installation, exists := m.pluginInstallations[binding.InstallationID]
+		if !exists {
+			return ErrNotFound
+		}
+		if err := validateServiceRepositoryBinding(s, &installation); err != nil {
+			return err
+		}
+	}
 	m.services[s.ID] = *s
 	return nil
 }
@@ -270,6 +349,13 @@ func (m *MemStore) DeleteService(_ context.Context, id string) error {
 	if _, ok := m.services[id]; !ok {
 		return ErrNotFound
 	}
+	m.deleteServiceLocked(id)
+	return nil
+}
+
+// deleteServiceLocked mirrors the FK cascade rooted at services. Caller must
+// hold m.mu.
+func (m *MemStore) deleteServiceLocked(id string) {
 	for runID, run := range m.runs {
 		if run.ServiceID == id {
 			m.deleteRunLocked(runID)
@@ -295,9 +381,14 @@ func (m *MemStore) DeleteService(_ context.Context, id string) error {
 			delete(m.automations, automationID)
 		}
 	}
+	for automationID, automation := range m.pluginAutomations {
+		if automation.ServiceID == id {
+			m.deletePluginAutomationLocked(automationID)
+		}
+	}
+	delete(m.serviceRepoBindings, id)
 	delete(m.webhookBindings, id)
 	delete(m.services, id)
-	return nil
 }
 
 func (m *MemStore) MarkServiceDeleting(_ context.Context, id string, at time.Time) error {
@@ -319,6 +410,7 @@ func (m *MemStore) deleteRunLocked(runID string) {
 	delete(m.runs, runID)
 	delete(m.events, runID)
 	delete(m.runMessages, runID)
+	delete(m.runPluginSnapshots, runID)
 	for key := range m.artifacts {
 		if strings.HasPrefix(key, runID+"/") {
 			delete(m.artifacts, key)
@@ -332,6 +424,13 @@ func (m *MemStore) deleteRunLocked(runID string) {
 	for requestID, permission := range m.permissions {
 		if permission.RunID == runID {
 			delete(m.permissions, requestID)
+		}
+	}
+	// automation_kanban_claims.run_id is ON DELETE SET NULL, not CASCADE.
+	for key, claim := range m.pluginKanbanClaims {
+		if claim.RunID == runID {
+			claim.RunID = ""
+			m.pluginKanbanClaims[key] = claim
 		}
 	}
 }
@@ -607,6 +706,97 @@ func (m *MemStore) ScheduleRun(_ context.Context, id, jobName, tokenHash, phase 
 		r.K8sJobName = jobName
 		r.TokenHash = tokenHash
 	})
+}
+
+func (m *MemStore) ClaimRunDispatch(_ context.Context, id, jobName, tokenHash, phase, requiredInstallationID string, snapshots []domain.RunPluginSnapshot) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if run.Status != domain.StatusQueued {
+		return nil, fmt.Errorf("%w: %s is not queued", ErrInvalidTransition, id)
+	}
+	seen := map[string]struct{}{}
+	requiredFound := requiredInstallationID == ""
+	for _, snap := range snapshots {
+		if snap.RunID != id || snap.InstallationID == "" {
+			return nil, fmt.Errorf("%w: invalid snapshot", ErrDispatchClaimUnavailable)
+		}
+		if _, duplicate := seen[snap.InstallationID]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate snapshot", ErrDispatchClaimUnavailable)
+		}
+		seen[snap.InstallationID] = struct{}{}
+		installation, exists := m.pluginInstallations[snap.InstallationID]
+		cfg, configExists := m.providerConfigs[installation.Provider]
+		if !exists || !configExists || installation.ProjectID != run.ProjectID ||
+			installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" ||
+			!cfg.PluginEnabled || cfg.ConfigRevision != installation.ConfigRevision ||
+			installation.CredentialVersionID == "" ||
+			(installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
+			(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
+			return nil, fmt.Errorf("%w: plugin %s", ErrDispatchClaimUnavailable, snap.InstallationID)
+		}
+		if snap.InstallationID == requiredInstallationID {
+			requiredFound = true
+		}
+	}
+	if !requiredFound {
+		return nil, fmt.Errorf("%w: required plugin missing", ErrDispatchClaimUnavailable)
+	}
+	// Validation completed before mutation: a bad later input cannot leave a
+	// partial batch of snapshots behind.
+	staged := map[string]domain.RunPluginSnapshot{}
+	for _, snap := range snapshots {
+		if snap.CreatedAt.IsZero() {
+			snap.CreatedAt = time.Now().UTC()
+		}
+		installation := m.pluginInstallations[snap.InstallationID]
+		snap.Provider = installation.Provider
+		snap.ProviderConfigRevision = installation.ConfigRevision
+		snap.CredentialVersionID = installation.CredentialVersionID
+		// The in-memory snapshot representation mirrors SQL: secret material lives
+		// in immutable version maps and is only joined for the issuer.
+		snap.ProviderBaseURL, snap.ProviderClientID, snap.ProviderClientSecretEnc = "", "", nil
+		snap.ProviderAppID, snap.ProviderAppPrivateKeyEnc = "", nil
+		snap.GitHubInstallID, snap.AccessTokenEnc, snap.RefreshTokenEnc, snap.TokenExpiresAt = "", nil, nil, nil
+		staged[snap.InstallationID] = snap
+	}
+	m.runPluginSnapshots[id] = staged
+	run.Status = domain.StatusScheduling
+	run.Phase = phase
+	run.K8sJobName = jobName
+	run.TokenHash = tokenHash
+	m.runs[id] = run
+	copy := run
+	return &copy, nil
+}
+
+func (m *MemStore) FailRunDispatch(_ context.Context, id, jobName, phase, message string, finishedAt time.Time) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if run.Status != domain.StatusScheduling || run.K8sJobName != jobName {
+		return nil, fmt.Errorf("%w: dispatch claim no longer current", ErrInvalidTransition)
+	}
+	delete(m.runPluginSnapshots, id)
+	run.Status = domain.StatusFailed
+	run.Phase = phase
+	run.Error = message
+	run.FailureReason = domain.FailureSetupFailed
+	run.FailureMessage = message
+	run.TokenHash = ""
+	if run.FinishedAt == nil {
+		t := finishedAt
+		run.FinishedAt = &t
+	}
+	m.runs[id] = run
+	copy := run
+	return &copy, nil
 }
 
 func (m *MemStore) MarkRunning(_ context.Context, id, phase string, startedAt time.Time) (*domain.Run, error) {
@@ -1881,6 +2071,965 @@ func (m *MemStore) CountServicesUsingIntegration(_ context.Context, integrationI
 	return n, nil
 }
 
+// --- Project plugins --------------------------------------------------------
+
+func clonePluginInstallation(in domain.PluginInstallation) domain.PluginInstallation {
+	cp := in
+	cp.Scopes = append([]string(nil), in.Scopes...)
+	cp.AccessTokenEnc = append([]byte(nil), in.AccessTokenEnc...)
+	cp.RefreshTokenEnc = append([]byte(nil), in.RefreshTokenEnc...)
+	return cp
+}
+
+func clonePluginProviderConfig(in domain.ProviderConfig) domain.ProviderConfig {
+	cp := in
+	cp.Capabilities = append([]string(nil), in.Capabilities...)
+	cp.ClientSecretEnc = append([]byte(nil), in.ClientSecretEnc...)
+	cp.AppPrivateKeyEnc = append([]byte(nil), in.AppPrivateKeyEnc...)
+	cp.WebhookSecretEnc = append([]byte(nil), in.WebhookSecretEnc...)
+	return cp
+}
+
+func clonePluginCredentialVersion(in domain.PluginCredentialVersion) domain.PluginCredentialVersion {
+	cp := in
+	cp.AccessTokenEnc = append([]byte(nil), in.AccessTokenEnc...)
+	cp.RefreshTokenEnc = append([]byte(nil), in.RefreshTokenEnc...)
+	if in.TokenExpiresAt != nil {
+		t := *in.TokenExpiresAt
+		cp.TokenExpiresAt = &t
+	}
+	return cp
+}
+
+func providerConfigVersionKey(provider domain.ProviderKind, revision int64) string {
+	return string(provider) + "|" + strconv.FormatInt(revision, 10)
+}
+
+func (m *MemStore) appendPluginCredentialVersionLocked(in *domain.PluginInstallation) {
+	version := domain.PluginCredentialVersion{
+		ID: domain.NewID(), InstallationID: in.ID, Provider: in.Provider,
+		GitHubInstallID: in.GitHubInstallID,
+		AccessTokenEnc:  append([]byte(nil), in.AccessTokenEnc...),
+		RefreshTokenEnc: append([]byte(nil), in.RefreshTokenEnc...),
+		CreatedAt:       time.Now().UTC(),
+	}
+	if in.TokenExpiresAt != nil {
+		t := *in.TokenExpiresAt
+		version.TokenExpiresAt = &t
+	}
+	m.pluginCredentialVersions[version.ID] = version
+	in.CredentialVersionID = version.ID
+}
+
+// hydrateRunPluginSnapshotLocked exposes immutable version material only to
+// the in-process credential issuer. The stored snapshot map itself retains
+// just references, matching the SQL schema and avoiding per-run secret copies.
+func (m *MemStore) hydrateRunPluginSnapshotLocked(snap domain.RunPluginSnapshot) domain.RunPluginSnapshot {
+	if cfg, ok := m.providerConfigVersions[providerConfigVersionKey(snap.Provider, snap.ProviderConfigRevision)]; ok {
+		snap.ProviderBaseURL = cfg.BaseURL
+		snap.ProviderClientID = cfg.ClientID
+		snap.ProviderClientSecretEnc = append([]byte(nil), cfg.ClientSecretEnc...)
+		snap.ProviderAppID = cfg.AppID
+		snap.ProviderAppPrivateKeyEnc = append([]byte(nil), cfg.AppPrivateKeyEnc...)
+	}
+	if version, ok := m.pluginCredentialVersions[snap.CredentialVersionID]; ok &&
+		version.InstallationID == snap.InstallationID && version.Provider == snap.Provider {
+		snap.GitHubInstallID = version.GitHubInstallID
+		snap.AccessTokenEnc = append([]byte(nil), version.AccessTokenEnc...)
+		snap.RefreshTokenEnc = append([]byte(nil), version.RefreshTokenEnc...)
+		if version.TokenExpiresAt != nil {
+			t := *version.TokenExpiresAt
+			snap.TokenExpiresAt = &t
+		}
+	}
+	return snap
+}
+
+func (m *MemStore) GetClusterSettings(_ context.Context) (*domain.ClusterSettings, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.clusterSettings == nil {
+		return nil, ErrNotFound
+	}
+	cp := *m.clusterSettings
+	return &cp, nil
+}
+
+func (m *MemStore) UpsertClusterSettings(_ context.Context, settings *domain.ClusterSettings) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := *settings
+	cp.UpdatedAt = time.Now().UTC()
+	m.clusterSettings = &cp
+	return nil
+}
+
+func (m *MemStore) GetProviderConfig(_ context.Context, provider domain.ProviderKind) (*domain.ProviderConfig, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfg, ok := m.providerConfigs[provider]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := clonePluginProviderConfig(cfg)
+	return &cp, nil
+}
+
+func (m *MemStore) ListProviderConfigs(_ context.Context) ([]domain.ProviderConfig, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.ProviderConfig, 0, len(m.providerConfigs))
+	for _, cfg := range m.providerConfigs {
+		out = append(out, clonePluginProviderConfig(cfg))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Provider < out[j].Provider })
+	return out, nil
+}
+
+func (m *MemStore) UpsertProviderConfig(_ context.Context, cfg *domain.ProviderConfig) error {
+	return m.upsertProviderConfigAndInvalidate(cfg, false, "")
+}
+
+func (m *MemStore) UpsertProviderConfigAndInvalidate(_ context.Context, cfg *domain.ProviderConfig, invalidate bool, reason string) error {
+	return m.upsertProviderConfigAndInvalidate(cfg, invalidate, reason)
+}
+
+func (m *MemStore) upsertProviderConfigAndInvalidate(cfg *domain.ProviderConfig, invalidate bool, reason string) error {
+	if cfg == nil || !domain.ValidProviderKind(cfg.Provider) {
+		return fmt.Errorf("upsert provider config: invalid provider")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := clonePluginProviderConfig(*cfg)
+	if old, ok := m.providerConfigs[cfg.Provider]; ok {
+		cp.ConfigRevision = old.ConfigRevision + 1
+	}
+	if cp.ConfigRevision == 0 {
+		cp.ConfigRevision = 1
+	}
+	cp.UpdatedAt = time.Now().UTC()
+	m.providerConfigs[cfg.Provider] = cp
+	m.providerConfigVersions[providerConfigVersionKey(cp.Provider, cp.ConfigRevision)] = clonePluginProviderConfig(cp)
+	for id, installation := range m.pluginInstallations {
+		if installation.Provider != cfg.Provider {
+			continue
+		}
+		if invalidate {
+			installation.Status = domain.PluginStatusActionRequired
+			installation.LastHealthError = reason
+		} else {
+			installation.ConfigRevision = cp.ConfigRevision
+		}
+		installation.UpdatedAt = cp.UpdatedAt
+		m.pluginInstallations[id] = installation
+	}
+	cfg.ConfigRevision = cp.ConfigRevision
+	return nil
+}
+
+func (m *MemStore) CountProviderConfigImpact(_ context.Context, provider domain.ProviderKind) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, installation := range m.pluginInstallations {
+		if installation.Provider == provider {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *MemStore) CreatePluginInstallation(_ context.Context, in *domain.PluginInstallation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, existing := range m.pluginInstallations {
+		if existing.ProjectID == in.ProjectID && existing.Provider == in.Provider {
+			return ErrAlreadyExists
+		}
+	}
+	cp := clonePluginInstallation(*in)
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now().UTC()
+	}
+	cp.UpdatedAt = cp.CreatedAt
+	m.appendPluginCredentialVersionLocked(&cp)
+	m.pluginInstallations[cp.ID] = cp
+	in.CredentialVersionID = cp.CredentialVersionID
+	return nil
+}
+
+func (m *MemStore) GetPluginInstallation(_ context.Context, id string) (*domain.PluginInstallation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	in, ok := m.pluginInstallations[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := clonePluginInstallation(in)
+	return &cp, nil
+}
+
+func (m *MemStore) GetPluginInstallationForProject(_ context.Context, projectID string, provider domain.ProviderKind) (*domain.PluginInstallation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, in := range m.pluginInstallations {
+		if in.ProjectID == projectID && in.Provider == provider {
+			cp := clonePluginInstallation(in)
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MemStore) ListPluginInstallationsByProject(_ context.Context, projectID string) ([]domain.PluginInstallation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []domain.PluginInstallation{}
+	for _, in := range m.pluginInstallations {
+		if in.ProjectID == projectID {
+			out = append(out, clonePluginInstallation(in))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Provider < out[j].Provider })
+	return out, nil
+}
+
+func (m *MemStore) UpdatePluginInstallation(_ context.Context, in *domain.PluginInstallation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.pluginInstallations[in.ID]; !ok {
+		return ErrNotFound
+	}
+	cp := clonePluginInstallation(*in)
+	cp.UpdatedAt = time.Now().UTC()
+	m.appendPluginCredentialVersionLocked(&cp)
+	m.pluginInstallations[in.ID] = cp
+	in.CredentialVersionID = cp.CredentialVersionID
+	return nil
+}
+
+func (m *MemStore) RotatePluginCredentialVersion(_ context.Context, version *domain.PluginCredentialVersion) error {
+	if version == nil || version.ID == "" || version.InstallationID == "" || !domain.ValidProviderKind(version.Provider) {
+		return fmt.Errorf("rotate plugin credential version: invalid version")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.pluginCredentialVersions[version.ID]
+	if !ok || current.InstallationID != version.InstallationID || current.Provider != version.Provider {
+		return ErrNotFound
+	}
+	current.AccessTokenEnc = append([]byte(nil), version.AccessTokenEnc...)
+	current.RefreshTokenEnc = append([]byte(nil), version.RefreshTokenEnc...)
+	if version.TokenExpiresAt == nil {
+		current.TokenExpiresAt = nil
+	} else {
+		t := *version.TokenExpiresAt
+		current.TokenExpiresAt = &t
+	}
+	m.pluginCredentialVersions[version.ID] = current
+	if installation, ok := m.pluginInstallations[version.InstallationID]; ok && installation.CredentialVersionID == version.ID {
+		installation.AccessTokenEnc = append([]byte(nil), version.AccessTokenEnc...)
+		installation.RefreshTokenEnc = append([]byte(nil), version.RefreshTokenEnc...)
+		if version.TokenExpiresAt == nil {
+			installation.TokenExpiresAt = nil
+		} else {
+			t := *version.TokenExpiresAt
+			installation.TokenExpiresAt = &t
+		}
+		installation.UpdatedAt = time.Now().UTC()
+		installation.LastHealthError = ""
+		healthyAt := installation.UpdatedAt
+		installation.LastHealthyAt = &healthyAt
+		m.pluginInstallations[installation.ID] = installation
+	}
+	return nil
+}
+
+func (m *MemStore) CountPluginInstallationImpact(_ context.Context, installationID string) (services, automations int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, b := range m.serviceRepoBindings {
+		if b.InstallationID == installationID {
+			services++
+		}
+	}
+	for _, a := range m.pluginAutomations {
+		if a.InstallationID == installationID {
+			automations++
+			continue
+		}
+		if b, ok := m.serviceRepoBindings[a.ServiceID]; ok && b.InstallationID == installationID {
+			automations++
+		}
+	}
+	return services, automations, nil
+}
+
+func (m *MemStore) UninstallPlugin(_ context.Context, installationID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.pluginInstallations[installationID]; !ok {
+		return ErrNotFound
+	}
+	serviceIDs := map[string]bool{}
+	for serviceID, binding := range m.serviceRepoBindings {
+		if binding.InstallationID == installationID {
+			serviceIDs[serviceID] = true
+		}
+	}
+	// Keep the claimed run intact until it has completed.  This mirrors the
+	// Postgres uninstall fence and prevents a committed dispatch from losing its
+	// run record between claim and Kubernetes Job creation.
+	for _, run := range m.runs {
+		if serviceIDs[run.ServiceID] && (run.Status == domain.StatusScheduling || run.Status == domain.StatusRunning || run.Status == domain.StatusAwaitingInput) {
+			return ErrConflict
+		}
+	}
+	for automationID, a := range m.pluginAutomations {
+		if serviceIDs[a.ServiceID] || a.InstallationID == installationID {
+			m.deletePluginAutomationLocked(automationID)
+		}
+	}
+	for serviceID := range serviceIDs {
+		m.deleteServiceLocked(serviceID)
+	}
+	m.clearPluginInstallationReferencesLocked(installationID)
+	delete(m.pluginInstallations, installationID)
+	return nil
+}
+
+// deletePluginAutomationLocked mirrors automations_v2's FK cascades and its
+// SET NULL references from runs/webhook receipts. Caller must hold m.mu.
+func (m *MemStore) deletePluginAutomationLocked(automationID string) {
+	delete(m.pluginAutomations, automationID)
+	delete(m.pluginSCMTriggers, automationID)
+	delete(m.pluginKanbanTriggers, automationID)
+	delete(m.pluginCronTriggers, automationID)
+	for key, action := range m.pluginSCMActions {
+		if action.AutomationID == automationID {
+			delete(m.pluginSCMActions, key)
+		}
+	}
+	for key, claim := range m.pluginKanbanClaims {
+		if claim.AutomationID == automationID {
+			delete(m.pluginKanbanClaims, key)
+		}
+	}
+	for runID, run := range m.runs {
+		if run.OriginAutomationID == automationID {
+			run.OriginAutomationID = ""
+			m.runs[runID] = run
+		}
+	}
+	for key, receipt := range m.webhookReceipts {
+		if receipt.MatchedAutomationID == automationID {
+			receipt.MatchedAutomationID = ""
+			m.webhookReceipts[key] = receipt
+		}
+	}
+}
+
+// clearPluginInstallationReferencesLocked implements the ON DELETE SET NULL
+// references that deliberately preserve receipts and immutable audit entries.
+// Caller must hold m.mu.
+func (m *MemStore) clearPluginInstallationReferencesLocked(installationID string) {
+	for key, receipt := range m.webhookReceipts {
+		if receipt.InstallationID == installationID {
+			receipt.InstallationID = ""
+			m.webhookReceipts[key] = receipt
+		}
+	}
+	for auditID, event := range m.pluginAuditEvents {
+		if event.InstallationID == installationID {
+			event.InstallationID = ""
+			m.pluginAuditEvents[auditID] = event
+		}
+	}
+}
+
+func (m *MemStore) GetServiceRepositoryBinding(_ context.Context, serviceID string) (*domain.ServiceRepositoryBinding, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.serviceRepoBindings[serviceID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return &b, nil
+}
+
+func (m *MemStore) UpsertServiceRepositoryBinding(_ context.Context, b *domain.ServiceRepositoryBinding) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	svc, ok := m.services[b.ServiceID]
+	if !ok {
+		return ErrNotFound
+	}
+	installation, ok := m.pluginInstallations[b.InstallationID]
+	if !ok {
+		return ErrNotFound
+	}
+	if err := validateServiceRepositoryBinding(&svc, &installation); err != nil {
+		return err
+	}
+	for serviceID, existing := range m.serviceRepoBindings {
+		if serviceID != b.ServiceID && existing.InstallationID == b.InstallationID && existing.ProviderRepoID == b.ProviderRepoID {
+			return ErrAlreadyExists
+		}
+	}
+	cp := *b
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now().UTC()
+	}
+	cp.UpdatedAt = time.Now().UTC()
+	m.serviceRepoBindings[b.ServiceID] = cp
+	return nil
+}
+
+func (m *MemStore) DeleteServiceRepositoryBinding(_ context.Context, serviceID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.serviceRepoBindings[serviceID]; !ok {
+		return ErrNotFound
+	}
+	delete(m.serviceRepoBindings, serviceID)
+	return nil
+}
+
+func (m *MemStore) CreatePluginAutomation(_ context.Context, a *domain.PluginAutomation, scm *domain.SCMTrigger, actions []domain.SCMAction, kanban *domain.KanbanTrigger, cron *domain.CronTrigger) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	svc, ok := m.services[a.ServiceID]
+	if !ok {
+		return ErrNotFound
+	}
+	if a.InstallationID != "" {
+		installation, ok := m.pluginInstallations[a.InstallationID]
+		if !ok {
+			return ErrNotFound
+		}
+		if installation.ProjectID != svc.ProjectID {
+			return fmt.Errorf("automation installation project mismatch")
+		}
+	}
+	if err := validatePluginAutomationAggregate(a, scm, actions, kanban, cron); err != nil {
+		return err
+	}
+	if err := m.validatePluginAutomationInstallationLocked(a, &svc, kanban); err != nil {
+		return err
+	}
+	for _, action := range actions {
+		key := action.ServiceID + "|" + action.EventFamily + "|" + action.Action
+		if _, exists := m.pluginSCMActions[key]; exists {
+			return ErrAlreadyExists
+		}
+	}
+	cp := *a
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now().UTC()
+	}
+	cp.UpdatedAt = cp.CreatedAt
+	m.pluginAutomations[cp.ID] = cp
+	if scm != nil {
+		m.pluginSCMTriggers[cp.ID] = *scm
+	}
+	if kanban != nil {
+		m.pluginKanbanTriggers[cp.ID] = *kanban
+	}
+	if cron != nil {
+		m.pluginCronTriggers[cp.ID] = *cron
+	}
+	for _, action := range actions {
+		m.pluginSCMActions[action.ServiceID+"|"+action.EventFamily+"|"+action.Action] = action
+	}
+	return nil
+}
+
+func (m *MemStore) GetPluginAutomation(_ context.Context, id string) (*domain.PluginAutomation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.pluginAutomations[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return &a, nil
+}
+
+func (m *MemStore) GetPluginAutomationSpec(_ context.Context, id string) (*domain.PluginAutomationSpec, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.pluginAutomations[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	spec := &domain.PluginAutomationSpec{Automation: a}
+	if v, ok := m.pluginSCMTriggers[id]; ok {
+		cp := v
+		spec.SCM = &cp
+	}
+	if v, ok := m.pluginKanbanTriggers[id]; ok {
+		cp := v
+		spec.Kanban = &cp
+	}
+	if v, ok := m.pluginCronTriggers[id]; ok {
+		cp := v
+		spec.Cron = &cp
+	}
+	for _, v := range m.pluginSCMActions {
+		if v.AutomationID == id {
+			spec.Actions = append(spec.Actions, v)
+		}
+	}
+	sort.Slice(spec.Actions, func(i, j int) bool {
+		return spec.Actions[i].EventFamily+spec.Actions[i].Action < spec.Actions[j].EventFamily+spec.Actions[j].Action
+	})
+	return spec, nil
+}
+
+func (m *MemStore) ListPluginAutomationsByProject(_ context.Context, projectID string) ([]domain.PluginAutomation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []domain.PluginAutomation{}
+	for _, a := range m.pluginAutomations {
+		if svc, ok := m.services[a.ServiceID]; ok && svc.ProjectID == projectID {
+			out = append(out, a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) ListPluginAutomationsForEvent(_ context.Context, provider domain.ProviderKind, repositoryID string, family, action string) ([]domain.PluginAutomation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []domain.PluginAutomation{}
+	for _, a := range m.pluginAutomations {
+		x, ok := m.pluginSCMActions[a.ServiceID+"|"+family+"|"+action]
+		if !ok || x.AutomationID != a.ID || !a.Enabled {
+			continue
+		}
+		b, ok := m.serviceRepoBindings[a.ServiceID]
+		if !ok || b.ProviderRepoID != repositoryID {
+			continue
+		}
+		in, ok := m.pluginInstallations[b.InstallationID]
+		if !ok || in.Provider != provider || in.Status != domain.PluginStatusEnabled {
+			continue
+		}
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) UpdatePluginAutomation(_ context.Context, a *domain.PluginAutomation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.pluginAutomations[a.ID]
+	if !ok {
+		return ErrNotFound
+	}
+	// Mirror PG: this lightweight update deliberately cannot mutate aggregate
+	// identity (Service, Installation, trigger kind, creator, created time).
+	current.Name = a.Name
+	current.PromptTemplate = a.PromptTemplate
+	current.Enabled = a.Enabled
+	current.IgnoreJCode = a.IgnoreJCode
+	current.LastTriggeredAt = a.LastTriggeredAt
+	current.LastRunID = a.LastRunID
+	current.LastError = a.LastError
+	current.UpdatedAt = time.Now().UTC()
+	m.pluginAutomations[a.ID] = current
+	return nil
+}
+
+func (m *MemStore) ReplacePluginAutomationSpec(_ context.Context, a *domain.PluginAutomation, scm *domain.SCMTrigger, actions []domain.SCMAction, kanban *domain.KanbanTrigger, cron *domain.CronTrigger) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.pluginAutomations[a.ID]; !ok {
+		return ErrNotFound
+	}
+	if err := validatePluginAutomationAggregate(a, scm, actions, kanban, cron); err != nil {
+		return err
+	}
+	svc, ok := m.services[a.ServiceID]
+	if !ok {
+		return ErrNotFound
+	}
+	if a.InstallationID != "" {
+		installation, ok := m.pluginInstallations[a.InstallationID]
+		if !ok {
+			return ErrNotFound
+		}
+		if installation.ProjectID != svc.ProjectID {
+			return fmt.Errorf("automation installation project mismatch")
+		}
+	}
+	if err := m.validatePluginAutomationInstallationLocked(a, &svc, kanban); err != nil {
+		return err
+	}
+	for _, x := range actions {
+		key := x.ServiceID + "|" + x.EventFamily + "|" + x.Action
+		if current, ok := m.pluginSCMActions[key]; ok && current.AutomationID != a.ID {
+			return ErrAlreadyExists
+		}
+	}
+	for k, x := range m.pluginSCMActions {
+		if x.AutomationID == a.ID {
+			delete(m.pluginSCMActions, k)
+		}
+	}
+	delete(m.pluginSCMTriggers, a.ID)
+	delete(m.pluginKanbanTriggers, a.ID)
+	delete(m.pluginCronTriggers, a.ID)
+	cp := *a
+	cp.UpdatedAt = time.Now().UTC()
+	m.pluginAutomations[a.ID] = cp
+	if scm != nil {
+		m.pluginSCMTriggers[a.ID] = *scm
+		for _, x := range actions {
+			m.pluginSCMActions[x.ServiceID+"|"+x.EventFamily+"|"+x.Action] = x
+		}
+	}
+	if kanban != nil {
+		m.pluginKanbanTriggers[a.ID] = *kanban
+	}
+	if cron != nil {
+		m.pluginCronTriggers[a.ID] = *cron
+	}
+	return nil
+}
+
+// validatePluginAutomationInstallationLocked mirrors the installation/service
+// guards in migration 0044. Caller must hold m.mu.
+func (m *MemStore) validatePluginAutomationInstallationLocked(a *domain.PluginAutomation, svc *domain.Service, kanban *domain.KanbanTrigger) error {
+	switch a.TriggerKind {
+	case "scm":
+		binding, ok := m.serviceRepoBindings[svc.ID]
+		if !ok || a.InstallationID == "" || binding.InstallationID != a.InstallationID {
+			return fmt.Errorf("scm automation must use its service repository plugin")
+		}
+	case "kanban":
+		installation, ok := m.pluginInstallations[a.InstallationID]
+		if !ok || kanban == nil || kanban.InstallationID != a.InstallationID || installation.Provider != domain.PluginJType {
+			return fmt.Errorf("kanban automation must use its jtype plugin")
+		}
+	case "cron":
+		if a.InstallationID != "" {
+			return fmt.Errorf("cron automation must not carry a plugin installation")
+		}
+	}
+	return nil
+}
+
+func (m *MemStore) DeletePluginAutomation(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.pluginAutomations[id]; !ok {
+		return ErrNotFound
+	}
+	m.deletePluginAutomationLocked(id)
+	return nil
+}
+
+func (m *MemStore) ListEnabledCronAutomations(_ context.Context) ([]domain.PluginAutomationSpec, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []domain.PluginAutomationSpec{}
+	for id, automation := range m.pluginAutomations {
+		if !automation.Enabled || automation.TriggerKind != "cron" {
+			continue
+		}
+		cron, ok := m.pluginCronTriggers[id]
+		if !ok {
+			continue
+		}
+		out = append(out, domain.PluginAutomationSpec{Automation: automation, Cron: &cron})
+	}
+	return out, nil
+}
+
+func (m *MemStore) AdvancePluginCronAutomation(_ context.Context, id string, previous, firedAt *time.Time, lastError string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cron, ok := m.pluginCronTriggers[id]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if (cron.LastFiredAt == nil) != (previous == nil) ||
+		(cron.LastFiredAt != nil && !cron.LastFiredAt.Equal(*previous)) {
+		return false, nil
+	}
+	cron.LastFiredAt = firedAt
+	cron.LastError = lastError
+	m.pluginCronTriggers[id] = cron
+	if automation, ok := m.pluginAutomations[id]; ok {
+		automation.LastError = lastError
+		m.pluginAutomations[id] = automation
+	}
+	return true, nil
+}
+
+func (m *MemStore) ListEnabledKanbanAutomations(_ context.Context) ([]domain.PluginAutomationSpec, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []domain.PluginAutomationSpec{}
+	for id, automation := range m.pluginAutomations {
+		if !automation.Enabled || automation.TriggerKind != "kanban" {
+			continue
+		}
+		trigger, ok := m.pluginKanbanTriggers[id]
+		if ok {
+			out = append(out, domain.PluginAutomationSpec{Automation: automation, Kanban: &trigger})
+		}
+	}
+	return out, nil
+}
+
+func pluginKanbanClaimKey(automationID, documentID string) string {
+	return automationID + "|" + documentID
+}
+
+func (m *MemStore) EnsurePluginKanbanClaim(_ context.Context, automationID, documentID, documentPath string) (*domain.PluginKanbanClaim, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := pluginKanbanClaimKey(automationID, documentID)
+	claim, ok := m.pluginKanbanClaims[key]
+	if !ok {
+		claim = domain.PluginKanbanClaim{AutomationID: automationID, DocumentID: documentID, DocumentPath: documentPath, CreatedAt: time.Now().UTC()}
+		m.pluginKanbanClaims[key] = claim
+	}
+	copy := claim
+	return &copy, nil
+}
+
+func (m *MemStore) SetPluginKanbanClaimRun(_ context.Context, automationID, documentID, runID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := pluginKanbanClaimKey(automationID, documentID)
+	claim, ok := m.pluginKanbanClaims[key]
+	if !ok {
+		return ErrNotFound
+	}
+	if claim.RunID != "" {
+		return ErrAlreadyExists
+	}
+	claim.RunID = runID
+	m.pluginKanbanClaims[key] = claim
+	return nil
+}
+
+func (m *MemStore) ListPluginKanbanRunsAwaitingWriteback(_ context.Context) ([]PluginKanbanWriteback, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []PluginKanbanWriteback{}
+	for _, claim := range m.pluginKanbanClaims {
+		if claim.RunID == "" || claim.WritebackAt != nil {
+			continue
+		}
+		run, ok := m.runs[claim.RunID]
+		if !ok || !run.Status.Terminal() {
+			continue
+		}
+		automation, ok := m.pluginAutomations[claim.AutomationID]
+		if !ok {
+			continue
+		}
+		trigger, ok := m.pluginKanbanTriggers[claim.AutomationID]
+		if !ok {
+			continue
+		}
+		out = append(out, PluginKanbanWriteback{Automation: automation, Trigger: trigger, Claim: claim, Run: run})
+	}
+	return out, nil
+}
+
+func (m *MemStore) MarkPluginKanbanWriteback(_ context.Context, automationID, documentID string, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := pluginKanbanClaimKey(automationID, documentID)
+	claim, ok := m.pluginKanbanClaims[key]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if claim.WritebackAt != nil {
+		return false, nil
+	}
+	claim.WritebackAt = &at
+	m.pluginKanbanClaims[key] = claim
+	return true, nil
+}
+
+func (m *MemStore) ClaimWebhookReceipt(_ context.Context, r *domain.WebhookReceipt) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := string(r.Provider) + "|" + r.DeliveryID
+	if _, ok := m.webhookReceipts[key]; ok {
+		return false, nil
+	}
+	cp := *r
+	if cp.ReceivedAt.IsZero() {
+		cp.ReceivedAt = time.Now().UTC()
+	}
+	m.webhookReceipts[key] = cp
+	return true, nil
+}
+
+func (m *MemStore) CompleteWebhookReceipt(_ context.Context, r *domain.WebhookReceipt) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := string(r.Provider) + "|" + r.DeliveryID
+	if _, ok := m.webhookReceipts[key]; !ok {
+		return ErrNotFound
+	}
+	m.webhookReceipts[key] = *r
+	return nil
+}
+
+func (m *MemStore) CreateRunPluginSnapshots(_ context.Context, snapshots []domain.RunPluginSnapshot) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Validate every referenced aggregate before changing any existing snapshot;
+	// this matches the all-or-nothing PG transaction semantics.
+	runIDs := map[string]struct{}{}
+	for _, snap := range snapshots {
+		if _, ok := m.runs[snap.RunID]; !ok {
+			return ErrNotFound
+		}
+		if _, ok := m.pluginInstallations[snap.InstallationID]; !ok {
+			return ErrNotFound
+		}
+		runIDs[snap.RunID] = struct{}{}
+	}
+	staged := make(map[string]map[string]domain.RunPluginSnapshot, len(runIDs))
+	for runID := range runIDs {
+		run, ok := m.runs[runID]
+		if !ok {
+			return ErrNotFound
+		}
+		staged[runID] = map[string]domain.RunPluginSnapshot{}
+		for installationID, snapshot := range m.runPluginSnapshots[runID] {
+			staged[runID][installationID] = snapshot
+		}
+		if run.Status != domain.StatusQueued {
+			continue
+		}
+		for installationID := range staged[runID] {
+			installation, ok := m.pluginInstallations[installationID]
+			cfg, configOK := m.providerConfigs[installation.Provider]
+			if !ok || installation.ProjectID != run.ProjectID ||
+				installation.Status != domain.PluginStatusEnabled ||
+				installation.LastHealthError != "" ||
+				!configOK || !cfg.PluginEnabled || cfg.ConfigRevision != installation.ConfigRevision ||
+				installation.CredentialVersionID == "" ||
+				(installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
+				(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
+				delete(staged[runID], installationID)
+			}
+		}
+	}
+	for _, snap := range snapshots {
+		run, ok := m.runs[snap.RunID]
+		if !ok {
+			return ErrNotFound
+		}
+		installation, ok := m.pluginInstallations[snap.InstallationID]
+		if !ok {
+			return ErrNotFound
+		}
+		cfg, configOK := m.providerConfigs[installation.Provider]
+		if installation.ProjectID != run.ProjectID ||
+			installation.Status != domain.PluginStatusEnabled ||
+			installation.LastHealthError != "" ||
+			!configOK || !cfg.PluginEnabled || cfg.ConfigRevision != installation.ConfigRevision ||
+			installation.CredentialVersionID == "" ||
+			(installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
+			(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
+			continue
+		}
+		if snap.CreatedAt.IsZero() {
+			snap.CreatedAt = time.Now().UTC()
+		}
+		// Persist references only. Immutable versions are joined by the reader.
+		snap.Provider = installation.Provider
+		snap.ProviderConfigRevision = installation.ConfigRevision
+		snap.CredentialVersionID = installation.CredentialVersionID
+		snap.ProviderBaseURL, snap.ProviderClientID, snap.ProviderClientSecretEnc = "", "", nil
+		snap.ProviderAppID, snap.ProviderAppPrivateKeyEnc = "", nil
+		snap.GitHubInstallID, snap.AccessTokenEnc, snap.RefreshTokenEnc, snap.TokenExpiresAt = "", nil, nil, nil
+		staged[snap.RunID][snap.InstallationID] = snap
+	}
+	for runID, next := range staged {
+		m.runPluginSnapshots[runID] = next
+	}
+	return nil
+}
+
+func (m *MemStore) ClearQueuedRunPluginSnapshots(_ context.Context, runID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run, ok := m.runs[runID]
+	if !ok {
+		return ErrNotFound
+	}
+	if run.Status == domain.StatusQueued {
+		delete(m.runPluginSnapshots, runID)
+	}
+	return nil
+}
+
+func (m *MemStore) ListRunPluginSnapshots(_ context.Context, runID string) ([]domain.RunPluginSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []domain.RunPluginSnapshot{}
+	for _, snap := range m.runPluginSnapshots[runID] {
+		out = append(out, m.hydrateRunPluginSnapshotLocked(snap))
+	}
+	return out, nil
+}
+
+func (m *MemStore) CreatePluginAuditEvent(_ context.Context, event *domain.PluginAuditEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := *event
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now().UTC()
+	}
+	m.pluginAuditEvents[cp.ID] = cp
+	return nil
+}
+
+func (m *MemStore) ListPluginAuditEvents(_ context.Context, projectID string, limit int) ([]domain.PluginAuditEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []domain.PluginAuditEvent{}
+	for _, event := range m.pluginAuditEvents {
+		if event.ProjectID == projectID {
+			out = append(out, event)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *MemStore) ListPluginInstallationAuditEvents(_ context.Context, projectID, installationID string, limit int) ([]domain.PluginAuditEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []domain.PluginAuditEvent{}
+	for _, event := range m.pluginAuditEvents {
+		if event.ProjectID == projectID && event.InstallationID == installationID {
+			out = append(out, event)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func claimKey(linkID, documentID string) string { return linkID + "|" + documentID }
 
 func cloneKanbanLink(l domain.KanbanLink) domain.KanbanLink {
@@ -2361,6 +3510,16 @@ func (m *MemStore) GetWebhookBinding(_ context.Context, serviceID string) (*doma
 		return nil, ErrNotFound
 	}
 	return &b, nil
+}
+
+func (m *MemStore) DeleteWebhookBinding(_ context.Context, serviceID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.webhookBindings[serviceID]; !ok {
+		return ErrNotFound
+	}
+	delete(m.webhookBindings, serviceID)
+	return nil
 }
 
 func (m *MemStore) RecordWebhookDelivery(_ context.Context, serviceID string, at time.Time, status, lastErr string) error {

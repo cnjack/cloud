@@ -139,7 +139,7 @@ ST-1 draft-PR org/repo/token:
   `client_secret` from the Secret when present; a stale same-name app left
   over from an interrupted prior run (Gitea never re-reveals a
   `client_secret` after creation) is deleted and recreated instead.
-- `AUTH_TOKEN_KEY` — a 32-byte random key, base64-encoded, that will encrypt
+- `JCLOUD_MASTER_KEY` — a 32-byte random key, base64-encoded, that will encrypt
   provider identity tokens at rest (`users`/`user_identities` schema in the
   blueprint). Generated once and kept stable across reruns (`head -c 32
   /dev/urandom | base64`, since the `alpine/k8s` bootstrap image has no
@@ -147,7 +147,7 @@ ST-1 draft-PR org/repo/token:
 
 Both land in the same `gitea-orchestrator` Secret that already carries
 `GITEA_URL`/`GITEA_TOKEN`, as `AUTH_GITEA_CLIENT_ID`,
-`AUTH_GITEA_CLIENT_SECRET`, `AUTH_TOKEN_KEY` — consumed by the orchestrator
+`AUTH_GITEA_CLIENT_SECRET`, `JCLOUD_MASTER_KEY` — consumed by the orchestrator
 Deployment via the same (optional) `envFrom` secretRef, no wiring changes
 needed there. `base/orchestrator/configmap.yaml` additionally carries
 `AUTH_GITEA_EXTERNAL_URL` (`http://localhost:3000`, browser-facing — matches

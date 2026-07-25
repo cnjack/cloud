@@ -7,6 +7,8 @@ import { OnboardingGate } from './pages/OnboardingGate';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { NewProjectPage } from './pages/NewProjectPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
+import { ProjectPluginDetailPage } from './pages/ProjectPluginDetailPage';
+import { AutomationEditorPage } from './pages/AutomationEditorPage';
 import { RunDetailPage } from './pages/RunDetailPage';
 import { DevicesPage } from './pages/DevicesPage';
 import { DeviceWelcomePage } from './pages/DeviceWelcomePage';
@@ -17,6 +19,7 @@ import { ClusterModelsPage } from './pages/ClusterModelsPage';
 import { ClusterConnectionsPage } from './pages/ClusterConnectionsPage';
 import { DeviceAuthorizePage } from './pages/DeviceAuthorizePage';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { SetupPage } from './pages/SetupPage';
 import { useToast } from './components/Toast';
 import { readQueryParam, stripQueryParams } from './lib/url';
 
@@ -72,9 +75,13 @@ export function App() {
         <DeviceApiProvider>
           <Routes>
             <Route path="/" element={<Navigate to="/projects" replace />} />
+            <Route path="/setup" element={<SetupPage />} />
             <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/projects/new" element={<NewProjectPage />} />
             <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
+            <Route path="/projects/:projectId/plugins/:provider" element={<ProjectPluginDetailPage />} />
+            <Route path="/projects/:projectId/automations/new" element={<AutomationEditorPage />} />
+            <Route path="/projects/:projectId/automations/:automationId/edit" element={<AutomationEditorPage />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
             <Route path="/devices" element={<DevicesPage />} />
             <Route path="/devices/guide" element={<DeviceGuidePage />} />

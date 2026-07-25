@@ -556,7 +556,7 @@ func TestGrantRejectsProjectOwnedModel(t *testing.T) {
 // A create with a key but no cipher is a fail-visible 409 (never store a key it
 // cannot protect) — the project path shares encryptModelKey with the cluster path.
 func TestProjectProviderKeyRequiresCipher(t *testing.T) {
-	ts, st := catalogServer(t, false) // no AUTH_TOKEN_KEY
+	ts, st := catalogServer(t, false) // no JCLOUD_MASTER_KEY
 	_ = mkUser(t, st, "seed-admin")
 	proj := createProject(t, ts)
 	ownerTok := mkProjectMember(t, st, proj.ID, "owner", domain.RoleOwner)

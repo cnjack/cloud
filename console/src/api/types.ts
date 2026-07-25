@@ -56,6 +56,243 @@ export type GitMode = 'readonly' | 'draft_pr';
  */
 export type GitProvider = 'gitea' | 'github' | 'gitlab';
 
+/**
+ * Project plugins are the single credential and tool boundary for source
+ * control and Kanban.  They deliberately replace the old Integration and
+ * Kanban-link concepts; a plugin is installed once per provider per project.
+ */
+export type ProviderKind = GitProvider | 'jtype';
+export interface SetupProviderInput {
+  provider: Exclude<ProviderKind, 'jtype'>;
+  base_url: string;
+  login_enabled: true;
+  plugin_enabled: boolean;
+  client_id: string;
+  /** Write-only; never returned by the API. */
+  client_secret: string;
+}
+export interface SetupStatus {
+  setup_required: boolean;
+  public_url?: string;
+  login_provider_count?: number;
+  providers?: ClusterProviderConfig[];
+}
+export interface SetupInput { public_url: string; provider: SetupProviderInput; }
+export interface ClusterProviderConfig {
+  provider: ProviderKind;
+  base_url?: string;
+  login_enabled: boolean;
+  plugin_enabled: boolean;
+  configured: boolean;
+  health: 'unknown' | 'healthy' | 'error';
+  health_message?: string;
+  config_revision?: number;
+  client_id?: string;
+  client_id_set?: boolean;
+  client_secret_set?: boolean;
+  app_id_set?: boolean;
+  app_private_key_set?: boolean;
+}
+export interface UpdateClusterProviderConfigInput {
+  base_url: string;
+  login_enabled: boolean;
+  plugin_enabled: boolean;
+  client_id: string;
+  client_secret?: string;
+  app_id?: string;
+  app_private_key?: string;
+}
+export type PluginStatus =
+  | 'not_connected'
+  | 'connecting'
+  | 'enabled'
+  | 'disabled'
+  | 'action_required'
+  | 'uninstalling'
+  | 'error';
+
+export interface ProjectPlugin {
+  id?: string;
+  project_id?: string;
+  provider: ProviderKind;
+  status: PluginStatus;
+  /** Stable external account/install identity, never a secret. */
+  account_name?: string;
+  account_id?: string;
+  external_account?: string;
+  external_account_id?: string;
+  token_set?: boolean;
+  consent_version?: string;
+  consented_at?: string;
+  last_health_error?: string;
+  last_healthy_at?: string;
+  /** A JType plugin is deliberately scoped to exactly one workspace. */
+  workspace_name?: string;
+  workspace_id?: string;
+  scopes: string[];
+  service_count?: number;
+  automation_count?: number;
+  installed_at?: string;
+  installed_by?: string;
+  last_error?: string;
+  capabilities?: ProviderCapabilities;
+}
+
+export interface ProviderCapabilities {
+  supported_actions: NormalizedScmAction[];
+  unavailable_actions?: Array<{ action: NormalizedScmAction; reason: string }>;
+}
+
+export interface ScmProviderCapabilities {
+  provider: ProviderKind;
+  minimum_version?: string;
+  instance_url?: string;
+  oauth_scopes?: string[];
+  capabilities: Array<{ family: string; actions: string[] }>;
+}
+
+export type NormalizedScmAction =
+  | 'push.updated'
+  | 'pull_request.opened'
+  | 'pull_request.reopened'
+  | 'pull_request.synchronized'
+  | 'pull_request.ready'
+  | 'pull_request.closed'
+  | 'pull_request.merged'
+  | 'review.approved'
+  | 'review.changes_requested'
+  | 'review.commented'
+  | 'review.dismissed'
+  | 'review.approval_removed'
+  | 'comment.created'
+  | 'issue.opened'
+  | 'issue.reopened'
+  | 'issue.updated'
+  | 'issue.closed'
+  | 'check.completed'
+  | 'tag.created'
+  | 'tag.deleted'
+  | 'release.published'
+  | 'release.updated'
+  | 'release.deleted';
+
+export interface PluginConsentInput {
+  /** Explicit acknowledgement of the immutable consent copy returned by API. */
+  consent_version: string;
+  consent_accepted: true;
+  scopes: string[];
+  /** GitHub only: digest returned by the actual App Installation permission preview. */
+  scope_digest?: string;
+}
+
+export interface PluginInstallStart {
+  authorize_url?: string;
+  plugin?: ProjectPlugin;
+  connect_id?: string;
+  user_code?: string;
+  verification_uri?: string;
+  verification_uri_complete?: string;
+  expires_in?: number;
+  interval?: number;
+}
+
+export interface GitHubAppInstallation {
+  id: string;
+  account_id: string;
+  account: string;
+  target_type: string;
+  repository_selection: string;
+}
+
+export interface GitHubInstallationConsentPreview {
+  installation_id: string;
+  account: string;
+  scopes: string[];
+  repository_selection: string;
+  scope_digest: string;
+}
+
+export interface JTypePluginConnectStatus {
+  status: 'pending' | 'complete' | 'expired' | 'denied' | 'unsupported';
+  token_set: boolean;
+  token_expires_at?: string;
+}
+
+export interface PluginAuditEvent {
+  id: string;
+  project_id: string;
+  installation_id?: string;
+  actor_user_id?: string;
+  event_type: string;
+  created_at: string;
+  detail?: string;
+}
+
+export interface PluginDetail extends ProjectPlugin {
+  resources: Array<{ id: string; name: string; kind: 'repository' | 'workspace' | 'board' }>;
+  audit_events: PluginAuditEvent[];
+}
+
+export type AutomationTriggerKind = 'scm' | 'kanban' | 'cron';
+export interface ProjectAutomationAggregate {
+  id: string;
+  service_id: string;
+  installation_id?: string;
+  name: string;
+  trigger_kind: AutomationTriggerKind;
+  prompt_template: string;
+  enabled: boolean;
+  ignore_jcode: boolean;
+  last_triggered_at?: string;
+  last_run_id?: string;
+  last_error?: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+export interface ScmAutomationAction { event_family: string; action: string; }
+export interface ProjectAutomationSpec {
+  automation: ProjectAutomationAggregate;
+  scm?: { automation_id?: string; branch?: string; path_pattern?: string; conclusion?: string };
+  actions?: ScmAutomationAction[];
+  kanban?: { automation_id?: string; installation_id: string; board_ref: string; trigger_column: string; done_column?: string };
+  cron?: { automation_id?: string; cron_expr: string };
+}
+/** @deprecated Transitional alias used only by the old mock; new UI uses ProjectAutomationSpec. */
+export interface ProjectAutomation {
+  id: string;
+  project_id: string;
+  service_id: string;
+  name: string;
+  trigger_kind: AutomationTriggerKind;
+  enabled: boolean;
+  prompt: string;
+  scm?: { provider: GitProvider; action: NormalizedScmAction; branch?: string; paths?: string[]; conclusions?: string[]; ignore_jcode: boolean };
+  kanban?: { workspace_id: string; board_id: string; board_name?: string; trigger_column: string; done_column?: string };
+  cron?: { expression: string };
+  last_error?: string;
+  last_triggered_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProjectAutomationInput {
+  service_id: string;
+  name: string;
+  prompt_template: string;
+  enabled?: boolean;
+  ignore_jcode?: boolean;
+  scm?: { branch?: string; path_pattern?: string; conclusion?: string; actions: ScmAutomationAction[] };
+  kanban?: { installation_id: string; board_ref: string; trigger_column: string; done_column?: string };
+  cron?: { cron_expr: string };
+}
+
+export type UpdateProjectAutomationInput = Partial<CreateProjectAutomationInput>;
+
+export interface PluginRepositoryResource { id: string; full_name: string; clone_url?: string; html_url?: string; default_branch?: string; private?: boolean; }
+export interface PluginWorkspaceResource { id: string; name: string; }
+export interface PluginBoardResource { id: string; ref: string; title: string; columns: Array<{ key: string; name: string }> }
+
 /** A project member's role on a project (blueprint §2 RBAC). */
 export type MemberRole = 'owner' | 'member' | 'viewer';
 

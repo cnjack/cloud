@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cnjack/jcloud/internal/safehttp"
 )
 
 // Client talks to the jtype document REST API (Authorization: Bearer <token>).
@@ -33,7 +35,7 @@ func NewClient(baseURL, token string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
-		http:    &http.Client{Timeout: timeout},
+		http:    safehttp.NewProviderClient(baseURL, timeout),
 	}
 }
 
@@ -441,46 +443,48 @@ func (e *ErrBoardAmbiguousError) Error() string {
 		e.Ref, len(e.Candidates), strings.Join(e.Candidates, ", "))
 }
 
-// readError turns a >=400 response body into a typed *Error. jtype's error
-// envelope is {"error":"<code>","message":"…"} (or {"error":{"code","message"}});
-// we tolerate either and fall back to the status text.
+// readError turns a >=400 response into a typed *Error. A configured JType
+// instance is still an external boundary: do not return its error message (or
+// an arbitrary error field) because a proxy can reflect the bearer token that
+// was sent on the request. We retain only a narrowly validated machine code and
+// use the local HTTP status text as the human message.
 func readError(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	code, msg := parseErrorBody(body)
+	code := parseErrorCode(body)
 	if code == "" {
 		code = statusErrorCode(resp.StatusCode)
 	}
-	if msg == "" {
-		msg = http.StatusText(resp.StatusCode)
-	}
-	return &Error{StatusCode: resp.StatusCode, Code: code, Message: msg}
+	return &Error{StatusCode: resp.StatusCode, Code: code, Message: http.StatusText(resp.StatusCode)}
 }
 
-func parseErrorBody(body []byte) (code, msg string) {
+func parseErrorCode(body []byte) string {
 	var loose struct {
-		Error   string `json:"error"`
-		Message string `json:"message"`
+		Error string `json:"error"`
 	}
 	if json.Unmarshal(body, &loose) == nil && loose.Error != "" {
-		// {"error":"conflict","message":"…"} or {"error":"<msg>"}.
-		code = loose.Error
-		msg = loose.Message
-		// If `error` looks like a sentence rather than a code, treat it as msg.
-		if strings.Contains(code, " ") && msg == "" {
-			msg, code = code, statusWord(code)
-		}
-		return code, msg
+		return safeErrorCode(loose.Error)
 	}
 	var nested struct {
 		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
+			Code string `json:"code"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(body, &nested) == nil {
-		return nested.Error.Code, nested.Error.Message
+		return safeErrorCode(nested.Error.Code)
 	}
-	return "", ""
+	return ""
+}
+
+func safeErrorCode(code string) string {
+	if len(code) == 0 || len(code) > 64 {
+		return ""
+	}
+	for _, r := range code {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
+			return ""
+		}
+	}
+	return code
 }
 
 func statusErrorCode(code int) string {
@@ -493,14 +497,6 @@ func statusErrorCode(code int) string {
 		return "unauthorized"
 	}
 	return "error"
-}
-
-// statusWord derives a short code from a sentence (last resort).
-func statusWord(s string) string {
-	for _, suffix := range []string{".", "!", "?"} {
-		s = strings.TrimSuffix(s, suffix)
-	}
-	return strings.ReplaceAll(strings.ToLower(strings.Fields(s)[0:1][0]), " ", "_")
 }
 
 // --- transport --------------------------------------------------------------

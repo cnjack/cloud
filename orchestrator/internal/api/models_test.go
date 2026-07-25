@@ -18,14 +18,14 @@ import (
 )
 
 // catalogServer builds an API server for the D21 model-catalog endpoints. When
-// cipher is true AUTH_TOKEN_KEY is set (needed to store a key). No MODEL_* env is
+// cipher is true JCLOUD_MASTER_KEY is set (needed to store a key). No MODEL_* env is
 // set, so the catalog is the ONLY source (env fallback off).
 func catalogServer(t *testing.T, cipher bool) (*httptest.Server, *store.MemStore) {
 	t.Helper()
 	st := store.NewMemStore()
 	cfg := &config.Config{ConsoleToken: consoleToken}
 	if cipher {
-		cfg.AuthTokenKey = validTokenKey(t)
+		cfg.MasterKey = validTokenKey(t)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, sse.NewHub(), nil)
@@ -33,6 +33,7 @@ func catalogServer(t *testing.T, cipher bool) (*httptest.Server, *store.MemStore
 	// opt out of the SSRF dial guard so those loopback probes are exercised.
 	srv.allowPrivateModelHosts = true
 	ts := httptest.NewServer(srv.Handler())
+	registerTestServerStore(t, ts, st)
 	t.Cleanup(ts.Close)
 	return ts, st
 }
@@ -139,9 +140,9 @@ func TestModelCatalogCRUDAndRBAC(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestModelCipherGate: a key needs AUTH_TOKEN_KEY; a keyless model saves fine.
+// TestModelCipherGate: a key needs JCLOUD_MASTER_KEY; a keyless model saves fine.
 func TestModelCipherGate(t *testing.T) {
-	ts, _ := catalogServer(t, false) // no AUTH_TOKEN_KEY
+	ts, _ := catalogServer(t, false) // no JCLOUD_MASTER_KEY
 
 	resp := do(t, "POST", ts.URL+"/api/v1/system/models", consoleToken, map[string]any{
 		"name": "gpt", "base_url": "http://x/v1", "model_name": "a/b", "api_key": "k",
@@ -532,6 +533,7 @@ func TestRetryAndReview409WhenModelNotConfigured(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, sse.NewHub(), nil)
 	ts := httptest.NewServer(srv.Handler())
+	registerTestServerStore(t, ts, st)
 	t.Cleanup(ts.Close)
 	ctx := context.Background()
 

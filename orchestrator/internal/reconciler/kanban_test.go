@@ -160,6 +160,46 @@ func TestWritebackSucceededPostsAndMoves(t *testing.T) {
 	}
 }
 
+func TestPluginKanbanWritebackUsesInstallationWorkspace(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
+	_ = st.CreateProject(ctx, project)
+	service := &domain.Service{ID: domain.NewID(), ProjectID: project.ID, Name: "svc", RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea, RepoOwnerName: "acme/repo", DefaultBranch: "main", CreatedAt: time.Now()}
+	_ = st.CreateService(ctx, service)
+	_ = st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginJType, BaseURL: "http://jtype.plugin", PluginEnabled: true})
+	installation := &domain.PluginInstallation{ID: domain.NewID(), ProjectID: project.ID, Provider: domain.PluginJType, Status: domain.PluginStatusEnabled, WorkspaceID: "workspace-fixed", AccessTokenEnc: []byte("PLUGINPAT"), ConsentedAt: time.Now(), CreatedAt: time.Now()}
+	_ = st.CreatePluginInstallation(ctx, installation)
+	automation := &domain.PluginAutomation{ID: domain.NewID(), ServiceID: service.ID, InstallationID: installation.ID, Name: "board", TriggerKind: "kanban", PromptTemplate: "p", Enabled: true, CreatedAt: time.Now()}
+	trigger := &domain.KanbanTrigger{AutomationID: automation.ID, InstallationID: installation.ID, BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done"}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{ID: domain.NewID(), ProjectID: project.ID, ServiceID: service.ID, Prompt: "p", Status: domain.StatusSucceeded, Origin: domain.RunOriginAutomation, OriginAutomationID: automation.ID, Attempt: 1, CreatedAt: time.Now()}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.EnsurePluginKanbanClaim(ctx, automation.ID, "doc-plugin", "cards/x.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetPluginKanbanClaimRun(ctx, automation.ID, "doc-plugin", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	writer := &fakeKanbanWriter{}
+	rec := wire(st, newWritebackRec(st), writer, "http://console")
+	rec.Tick(ctx)
+	rec.Tick(ctx)
+	if len(writer.moves) != 1 || writer.moves[0].ws != "workspace-fixed" || writer.moves[0].status != "done" {
+		t.Fatalf("moves=%+v", writer.moves)
+	}
+	if len(writer.comments) != 1 || writer.comments[0].docID != "doc-plugin" {
+		t.Fatalf("comments=%+v", writer.comments)
+	}
+	if len(writer.tokens) == 0 || writer.tokens[0] != "PLAIN-PLUGINPAT" {
+		t.Fatalf("tokens=%v", writer.tokens)
+	}
+}
+
 func TestWritebackFailedPostsReasonNoMove(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemStore()

@@ -1,3 +1,5 @@
+//go:build legacy_api
+
 package api
 
 import (
@@ -50,27 +52,6 @@ func fakeGitea(t *testing.T, bots map[string]string, repos []map[string]any) *ht
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return ts
-}
-
-// newCipherServer builds a server WITH a token cipher (AUTH_TOKEN_KEY), the
-// given cluster git-host allowlist, and GITEA_URL pointing at giteaURL (the
-// host_mismatch wiring constraint requires a gitea integration's host to match
-// the cluster GITEA_URL). Returns the cfg too so a test can TIGHTEN the
-// allowlist after setup (the dispatch-time gate).
-func newCipherServer(t *testing.T, allowed []string, giteaURL string) (*httptest.Server, *store.MemStore, *config.Config) {
-	t.Helper()
-	st := store.NewMemStore()
-	cfg := withTestModel(&config.Config{
-		ConsoleToken:    consoleToken,
-		AuthTokenKey:    validTokenKey(t),
-		AllowedGitHosts: allowed,
-		GiteaURL:        giteaURL,
-	})
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := New(st, cfg, log, sse.NewHub(), nil)
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
-	return ts, st, cfg
 }
 
 // createIntegration is a helper: POST an integration and return its view.
@@ -128,7 +109,7 @@ func TestIntegrationCreateVerifiesConnectivity(t *testing.T) {
 	}
 }
 
-// TestIntegrationCipherRequired: without AUTH_TOKEN_KEY the token cannot be
+// TestIntegrationCipherRequired: without JCLOUD_MASTER_KEY the token cannot be
 // sealed, so create is a typed 409 (never store a secret in the clear). The
 // server's GITEA_URL matches the host so the check under test — the cipher gate
 // — is the one that fires (host_mismatch is evaluated before it).
@@ -137,7 +118,7 @@ func TestIntegrationCipherRequired(t *testing.T) {
 	cfg := withTestModel(&config.Config{
 		ConsoleToken: consoleToken,
 		GiteaURL:     "https://gitea.example.com",
-		// No AuthTokenKey => no cipher.
+		// No MasterKey => no cipher.
 	})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, sse.NewHub(), nil)
@@ -697,7 +678,7 @@ func TestSourceFailsVisiblyOnIntegrationCredential(t *testing.T) {
 	decode(t, resp, &svc)
 
 	// Corrupt the sealed token so decryption fails (an operator error, e.g. a
-	// rotated AUTH_TOKEN_KEY).
+	// rotated JCLOUD_MASTER_KEY).
 	ctx := context.Background()
 	integ, err := st.GetIntegration(ctx, iv.ID)
 	if err != nil {

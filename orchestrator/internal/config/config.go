@@ -109,11 +109,11 @@ type Config struct {
 	WebhookURL string
 
 	// --- Auth / OAuth (M2; multitenant blueprint §2) ---
-	// AuthTokenKey is AUTH_TOKEN_KEY: a base64-encoded 32-byte key for the
+	// MasterKey is JCLOUD_MASTER_KEY: a base64-encoded 32-byte key for the
 	// AES-256-GCM encryption of provider tokens in user_identities. Required once
 	// any OAuth provider is configured (see Load); ignored (may be empty) when no
 	// provider is configured — the system then runs on CONSOLE_TOKEN alone.
-	AuthTokenKey string
+	MasterKey string
 	// ConsoleURL is CONSOLE_URL: where /auth/callback 302s back to after login.
 	ConsoleURL string
 	// SessionTTL is SESSION_TTL (default 30d): how long a login session lasts.
@@ -255,7 +255,7 @@ func Load() (*Config, error) {
 		SourceBundleTTL:        getdur("SOURCE_BUNDLE_TTL", 10*time.Minute),
 		WebhookSecret:          os.Getenv("WEBHOOK_SECRET"),
 		WebhookURL:             os.Getenv("WEBHOOK_URL"),
-		AuthTokenKey:           os.Getenv("AUTH_TOKEN_KEY"),
+		MasterKey:              os.Getenv("JCLOUD_MASTER_KEY"),
 		ConsoleURL:             getenv("CONSOLE_URL", "http://localhost:5173"),
 		SessionTTL:             getdur("SESSION_TTL", 30*24*time.Hour),
 		OAuthProviders:         loadOAuthProviders(),
@@ -293,15 +293,15 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("missing required env: %s", strings.Join(missing, ", "))
 	}
 
-	// AUTH_TOKEN_KEY is required (and must be a valid base64 32-byte key) ONLY
+	// JCLOUD_MASTER_KEY is required (and must be a valid base64 32-byte key) ONLY
 	// when at least one OAuth provider is configured — the token cipher is used to
 	// store identity tokens. With no providers the system runs on CONSOLE_TOKEN
 	// and the key is optional (blueprint §2 / backward compatibility).
 	if len(c.OAuthProviders) > 0 {
-		if c.AuthTokenKey == "" {
-			return nil, fmt.Errorf("AUTH_TOKEN_KEY is required when any AUTH_*_CLIENT_ID is configured")
+		if c.MasterKey == "" {
+			return nil, fmt.Errorf("JCLOUD_MASTER_KEY is required when any AUTH_*_CLIENT_ID is configured")
 		}
-		if err := validateTokenKey(c.AuthTokenKey); err != nil {
+		if err := validateTokenKey(c.MasterKey); err != nil {
 			return nil, err
 		}
 	}
@@ -339,14 +339,14 @@ func loadOAuthProviders() []OAuthProviderConfig {
 	return out
 }
 
-// validateTokenKey checks AUTH_TOKEN_KEY decodes to exactly 32 bytes (AES-256).
+// validateTokenKey checks JCLOUD_MASTER_KEY decodes to exactly 32 bytes (AES-256).
 func validateTokenKey(b64 string) error {
 	key, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
-		return fmt.Errorf("AUTH_TOKEN_KEY is not valid base64: %w", err)
+		return fmt.Errorf("JCLOUD_MASTER_KEY is not valid base64: %w", err)
 	}
 	if len(key) != 32 {
-		return fmt.Errorf("AUTH_TOKEN_KEY must decode to 32 bytes for AES-256, got %d", len(key))
+		return fmt.Errorf("JCLOUD_MASTER_KEY must decode to 32 bytes for AES-256, got %d", len(key))
 	}
 	return nil
 }

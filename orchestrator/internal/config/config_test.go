@@ -20,7 +20,7 @@ func validKey() string {
 }
 
 // TestLoadNoProvidersBackwardCompatible: with no AUTH_*_CLIENT_ID and no
-// AUTH_TOKEN_KEY, Load succeeds and reports zero providers — the system runs on
+// JCLOUD_MASTER_KEY, Load succeeds and reports zero providers — the system runs on
 // CONSOLE_TOKEN alone.
 func TestLoadNoProvidersBackwardCompatible(t *testing.T) {
 	baseEnv(t)
@@ -52,12 +52,12 @@ func TestLoadJtypeOAuthClient(t *testing.T) {
 }
 
 // TestLoadProviderRequiresTokenKey: configuring a provider CLIENT_ID without
-// AUTH_TOKEN_KEY is a startup error.
+// JCLOUD_MASTER_KEY is a startup error.
 func TestLoadProviderRequiresTokenKey(t *testing.T) {
 	baseEnv(t)
 	t.Setenv("AUTH_GITEA_CLIENT_ID", "cid")
 	if _, err := Load(); err == nil {
-		t.Fatal("provider configured without AUTH_TOKEN_KEY should error")
+		t.Fatal("provider configured without JCLOUD_MASTER_KEY should error")
 	}
 }
 
@@ -65,9 +65,9 @@ func TestLoadProviderRequiresTokenKey(t *testing.T) {
 func TestLoadProviderBadTokenKey(t *testing.T) {
 	baseEnv(t)
 	t.Setenv("AUTH_GITEA_CLIENT_ID", "cid")
-	t.Setenv("AUTH_TOKEN_KEY", base64.StdEncoding.EncodeToString(make([]byte, 16)))
+	t.Setenv("JCLOUD_MASTER_KEY", base64.StdEncoding.EncodeToString(make([]byte, 16)))
 	if _, err := Load(); err == nil {
-		t.Fatal("16-byte AUTH_TOKEN_KEY should error (need 32)")
+		t.Fatal("16-byte JCLOUD_MASTER_KEY should error (need 32)")
 	}
 }
 
@@ -75,7 +75,7 @@ func TestLoadProviderBadTokenKey(t *testing.T) {
 // its dual URLs.
 func TestLoadProviderConfigured(t *testing.T) {
 	baseEnv(t)
-	t.Setenv("AUTH_TOKEN_KEY", validKey())
+	t.Setenv("JCLOUD_MASTER_KEY", validKey())
 	t.Setenv("AUTH_GITEA_CLIENT_ID", "cid")
 	t.Setenv("AUTH_GITEA_CLIENT_SECRET", "sec")
 	t.Setenv("AUTH_GITEA_EXTERNAL_URL", "http://localhost:3000")
@@ -98,7 +98,7 @@ func TestLoadProviderConfigured(t *testing.T) {
 // the public host defaults.
 func TestLoadGithubDefaultsPublicHosts(t *testing.T) {
 	baseEnv(t)
-	t.Setenv("AUTH_TOKEN_KEY", validKey())
+	t.Setenv("JCLOUD_MASTER_KEY", validKey())
 	t.Setenv("AUTH_GITHUB_CLIENT_ID", "gid")
 	c, err := Load()
 	if err != nil {

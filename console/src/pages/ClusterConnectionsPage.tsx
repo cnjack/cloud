@@ -9,6 +9,9 @@ import {
   useKanbanConfig,
   useSystem,
   useUpdateKanbanConfig,
+  useClusterProviderConfig,
+  useTestClusterProviderConfig,
+  useUpdateClusterProviderConfig,
 } from '../api/queries';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
@@ -40,6 +43,7 @@ export function ClusterConnectionsPage() {
       <ClusterSubnav />
       <SurfaceInner>
         <PageHeader eyebrow={t('cluster.connections.eyebrow')} title={t('cluster.connections.title')} description={t('cluster.connections.description')} actions={<StatusLabel tone="success">{t('cluster.connections.configuredCount', { count: configured })}</StatusLabel>} />
+        <ProviderConfigs />
         <div className={styles.layout}>
           <div className={styles.stack}>
             <JtypeConnection config={config.data} />
@@ -68,6 +72,22 @@ export function ClusterConnectionsPage() {
       </SurfaceInner>
     </>
   );
+}
+
+function ProviderConfigs() {
+  return <div className={styles.layout} data-testid="cluster-provider-configs">
+    {(['github', 'gitlab', 'gitea', 'jtype'] as const).map((provider) => <ProviderConfigCard key={provider} provider={provider} />)}
+  </div>;
+}
+function ProviderConfigCard({ provider }: { provider: import('../api/types').ProviderKind }) {
+  const query = useClusterProviderConfig(provider); const update = useUpdateClusterProviderConfig(provider); const test = useTestClusterProviderConfig(provider);
+  const [url, setUrl] = useState(''); const [clientID, setClientID] = useState(''); const [clientSecret, setClientSecret] = useState(''); const [loginEnabled, setLoginEnabled] = useState(false); const [pluginEnabled, setPluginEnabled] = useState(false);
+  useEffect(() => { if (query.data) { setUrl(query.data.base_url ?? ''); setClientID(query.data.client_id ?? ''); setLoginEnabled(query.data.login_enabled); setPluginEnabled(query.data.plugin_enabled); } }, [query.data]);
+  if (query.isLoading) return <section className={styles.card}><LoadingBlock /></section>;
+  if (query.isError || !query.data) return <section className={styles.card}><ErrorBlock error={query.error} onRetry={() => void query.refetch()} /></section>;
+  const item = query.data;
+  const save = () => update.mutate({ base_url: url, client_id: clientID, client_secret: clientSecret, login_enabled: loginEnabled, plugin_enabled: pluginEnabled });
+  return <section className={styles.card}><header className={styles.cardHead}><span className={styles.providerMark}>{provider}</span><span className={styles.cardCopy}><strong>{provider === 'jtype' ? 'JType Kanban' : provider}</strong><small>{item.health_message ?? item.health}</small></span><StatusLabel tone={item.health === 'healthy' ? 'success' : item.health === 'error' ? 'danger' : 'warning'}>{item.health}</StatusLabel></header><div className={styles.cardBody}><TextField label="Instance URL" value={url} disabled={provider === 'github'} onChange={(event) => setUrl(event.target.value)} placeholder={provider === 'github' ? 'https://github.com' : 'https://provider.example'} /><label className={styles.checkLabel}><input type="checkbox" checked={loginEnabled} disabled={provider === 'jtype'} onChange={(event) => setLoginEnabled(event.target.checked)} />Login enabled</label><label className={styles.checkLabel}><input type="checkbox" checked={pluginEnabled} onChange={(event) => setPluginEnabled(event.target.checked)} />Plugin enabled</label>{provider !== 'jtype' && <><TextField label="OAuth client ID" value={clientID} onChange={(event) => setClientID(event.target.value)} /><TextField label="OAuth client secret" type="password" value={clientSecret} placeholder={item.client_secret_set ? 'Configured — enter to replace' : 'Enter secret'} onChange={(event) => setClientSecret(event.target.value)} /></>}<div className={styles.actions}><Button type="button" variant="secondary" loading={test.isPending} onClick={() => test.mutate()}>Test connection</Button><Button type="button" loading={update.isPending} onClick={save}>Save</Button></div></div></section>;
 }
 
 function ConnectionCard({ icon, title, subtitle, status, children }: { icon: ReactNode; title: string; subtitle: string; status: ReactNode; children: ReactNode }) {

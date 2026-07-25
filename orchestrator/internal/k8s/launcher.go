@@ -93,6 +93,12 @@ type JobSpec struct {
 	// path (no volume; the runner clones fresh into an emptyDir-like container FS),
 	// exactly the pre-Feature-C behaviour.
 	WorkspacePVC string
+
+	// PluginCredentials turns on the per-run credential sidecar. The sidecar
+	// writes short-lived CLI/Git/MCP config into a memory-backed shared volume;
+	// the runner receives that volume read-only. Kept false for credential-free
+	// runs so their pod shape remains exactly as it was before plugins.
+	PluginCredentials bool
 }
 
 // JobLauncher is the cluster-facing seam the reconciler depends on.

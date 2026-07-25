@@ -44,7 +44,7 @@ spec:
             - configMapRef:
                 name: orchestrator-config
             # GITEA_URL/GITEA_TOKEN (draft-PR) and AUTH_GITEA_CLIENT_ID/
-            # _CLIENT_SECRET + AUTH_TOKEN_KEY (OAuth login) for git.scgzyun.com
+            # _CLIENT_SECRET + JCLOUD_MASTER_KEY (OAuth login) for git.scgzyun.com
             # live here now, alongside CONSOLE_TOKEN/DATABASE_URL/MODEL_API_KEY.
             # (Previously an optional `gitea-orchestrator` secretRef minted by
             # the in-cluster gitea-bootstrap Job, which was removed.)

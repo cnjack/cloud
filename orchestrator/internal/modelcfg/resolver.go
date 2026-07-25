@@ -28,8 +28,8 @@ type Resolver struct {
 	cfg    *config.Config
 	now    func() time.Time // injectable clock for tests
 
-	mu     sync.Mutex
-	cache  map[string]cacheEntry // keyed by model id ("" = env fallback)
+	mu    sync.Mutex
+	cache map[string]cacheEntry // keyed by model id ("" = env fallback)
 }
 
 type cacheEntry struct {
@@ -38,7 +38,7 @@ type cacheEntry struct {
 }
 
 // NewResolver builds a Resolver over the given store/cipher/config. cipher may be
-// nil (no AUTH_TOKEN_KEY): a model without a key still resolves; one WITH a key
+// nil (no JCLOUD_MASTER_KEY): a model without a key still resolves; one WITH a key
 // surfaces the decryption error.
 func NewResolver(st ConfigReader, cipher *auth.Cipher, cfg *config.Config) *Resolver {
 	return &Resolver{st: st, cipher: cipher, cfg: cfg, now: time.Now, cache: map[string]cacheEntry{}}

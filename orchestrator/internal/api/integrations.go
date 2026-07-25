@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -234,7 +235,7 @@ func (s *Server) handleCreateIntegration(w http.ResponseWriter, r *http.Request)
 	// round-trip (fail-visible; never store a secret in the clear).
 	if s.cipher == nil {
 		writeError(w, http.StatusConflict, "cipher_not_configured",
-			"set AUTH_TOKEN_KEY on the orchestrator before storing an integration token")
+			"set JCLOUD_MASTER_KEY on the orchestrator before storing an integration token")
 		return
 	}
 	// Connectivity verification (fail-visible): the token must actually authenticate
@@ -335,7 +336,7 @@ func (s *Server) handleUpdateIntegration(w http.ResponseWriter, r *http.Request)
 		}
 		if s.cipher == nil {
 			writeError(w, http.StatusConflict, "cipher_not_configured",
-				"set AUTH_TOKEN_KEY on the orchestrator before rotating an integration token")
+				"set JCLOUD_MASTER_KEY on the orchestrator before rotating an integration token")
 			return
 		}
 		// Re-verify the rotated token and refresh bot_username (fail-visible).
@@ -469,7 +470,7 @@ func (s *Server) verifyIntegration(ctx context.Context, prov domain.GitProvider,
 func (s *Server) integrationClient(in *domain.Integration) (provider.Provider, string, string) {
 	if s.cipher == nil {
 		return nil, "cipher_not_configured",
-			"AUTH_TOKEN_KEY is not configured, so this integration's token cannot be decrypted"
+			"JCLOUD_MASTER_KEY is not configured, so this integration's token cannot be decrypted"
 	}
 	token, err := s.cipher.DecryptString(in.TokenEnc)
 	if err != nil {
@@ -489,10 +490,8 @@ func summarizeProviderErr(err error) string {
 	if err == nil {
 		return ""
 	}
-	msg := err.Error()
-	const max = 300
-	if len(msg) > max {
-		msg = msg[:max] + "…"
+	if status, ok := provider.IsProviderHTTPStatusError(err); ok {
+		return fmt.Sprintf("provider returned HTTP %d", status)
 	}
-	return msg
+	return "provider request failed"
 }

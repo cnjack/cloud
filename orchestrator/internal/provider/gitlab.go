@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/cnjack/jcloud/internal/safehttp"
 )
 
 // GitLabClient talks to the GitLab REST API (v4). It implements Provider using
@@ -35,7 +37,7 @@ func NewGitLabClient(apiBase, token string) (*GitLabClient, error) {
 	if apiBase == "" {
 		apiBase = "https://gitlab.com/api/v4"
 	}
-	return &GitLabClient{apiBase: apiBase, token: token, http: &http.Client{Timeout: 15 * time.Second}}, nil
+	return &GitLabClient{apiBase: apiBase, token: token, http: safehttp.NewProviderClient(apiBase, 15*time.Second)}, nil
 }
 
 type gitlabMR struct {
@@ -170,24 +172,81 @@ func (c *GitLabClient) ListRepos(ctx context.Context, query string, page, limit 
 // for MR comments; the shared secret goes in `token`, which GitLab echoes back as
 // the X-Gitlab-Token header the receiver checks.
 func (c *GitLabClient) EnsureCommentWebhook(ctx context.Context, owner, repo, hookURL, secret string) error {
+	return c.ensureWebhook(ctx, owner, repo, hookURL, secret, false)
+}
+
+// EnsureSCMWebhook reconciles the complete hook event set required by the
+// unified SCM Automation model. GitLab uses booleans rather than an event list;
+// this includes only standard, non-administrative repository events. It is
+// safe to call whenever an enabled SCM Automation is created or edited.
+func (c *GitLabClient) EnsureSCMWebhook(ctx context.Context, owner, repo, hookURL, secret string) error {
+	return c.ensureWebhook(ctx, owner, repo, hookURL, secret, true)
+}
+
+func (c *GitLabClient) ensureWebhook(ctx context.Context, owner, repo, hookURL, secret string, full bool) error {
 	listURL := fmt.Sprintf("%s/projects/%s/hooks", c.apiBase, projectPath(owner, repo))
 	var hooks []struct {
-		URL string `json:"url"`
+		ID                  int64  `json:"id"`
+		URL                 string `json:"url"`
+		PushEvents          bool   `json:"push_events"`
+		MergeRequestsEvents bool   `json:"merge_requests_events"`
+		NoteEvents          bool   `json:"note_events"`
+		IssuesEvents        bool   `json:"issues_events"`
+		PipelineEvents      bool   `json:"pipeline_events"`
+		TagPushEvents       bool   `json:"tag_push_events"`
+		ReleasesEvents      bool   `json:"releases_events"`
 	}
 	if err := doJSON(ctx, c.http, http.MethodGet, listURL, c.auth(), "application/json", nil, &hooks); err != nil {
 		return err
 	}
 	for _, h := range hooks {
 		if h.URL == hookURL {
-			return nil // already registered
+			if !full || (h.PushEvents && h.MergeRequestsEvents && h.NoteEvents && h.IssuesEvents && h.PipelineEvents && h.TagPushEvents && h.ReleasesEvents) {
+				return nil // already registered with everything this Automation needs
+			}
+			if h.ID == 0 {
+				return fmt.Errorf("existing webhook at target URL has no provider id")
+			}
+			return doJSON(ctx, c.http, http.MethodPut, listURL+"/"+fmt.Sprint(h.ID), c.auth(), "application/json", gitLabWebhookBody(hookURL, secret, true), nil)
 		}
 	}
-	body := map[string]any{
-		"url":         hookURL,
-		"note_events": true,
-		"token":       secret,
+	return doJSON(ctx, c.http, http.MethodPost, listURL, c.auth(), "application/json", gitLabWebhookBody(hookURL, secret, full), nil)
+}
+
+func gitLabWebhookBody(hookURL, secret string, full bool) map[string]any {
+	body := map[string]any{"url": hookURL, "note_events": true, "token": secret}
+	if full {
+		body["push_events"] = true
+		body["merge_requests_events"] = true
+		body["issues_events"] = true
+		body["pipeline_events"] = true
+		body["tag_push_events"] = true
+		body["releases_events"] = true
 	}
-	return doJSON(ctx, c.http, http.MethodPost, listURL, c.auth(), "application/json", body, nil)
+	return body
+}
+
+// DeleteSCMWebhook removes only the hook registered for this Cloud public URL.
+// It is idempotent: a missing hook already satisfies the lifecycle contract.
+func (c *GitLabClient) DeleteSCMWebhook(ctx context.Context, owner, repo, hookURL string) error {
+	listURL := fmt.Sprintf("%s/projects/%s/hooks", c.apiBase, projectPath(owner, repo))
+	var hooks []struct {
+		ID  int64  `json:"id"`
+		URL string `json:"url"`
+	}
+	if err := doJSON(ctx, c.http, http.MethodGet, listURL, c.auth(), "application/json", nil, &hooks); err != nil {
+		return err
+	}
+	for _, h := range hooks {
+		if h.URL != hookURL {
+			continue
+		}
+		if h.ID == 0 {
+			return fmt.Errorf("existing webhook at target URL has no provider id")
+		}
+		return doJSON(ctx, c.http, http.MethodDelete, listURL+"/"+fmt.Sprint(h.ID), c.auth(), "application/json", nil, nil)
+	}
+	return nil
 }
 
 // CurrentUser returns the token account's username (GET /user; D19 / F5).
@@ -205,3 +264,4 @@ func (c *GitLabClient) CurrentUser(ctx context.Context) (string, error) {
 var _ Provider = (*GitLabClient)(nil)
 var _ RepoLister = (*GitLabClient)(nil)
 var _ CurrentUser = (*GitLabClient)(nil)
+var _ SCMWebhookManager = (*GitLabClient)(nil)

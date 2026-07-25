@@ -661,7 +661,7 @@ func (s *Server) encryptModelHeaders(w http.ResponseWriter, headers map[string]s
 	}
 	if s.cipher == nil {
 		writeError(w, http.StatusConflict, "cipher_not_configured",
-			"set AUTH_TOKEN_KEY on the orchestrator before configuring provider headers")
+			"set JCLOUD_MASTER_KEY on the orchestrator before configuring provider headers")
 		return nil, false
 	}
 	enc, err := s.cipher.EncryptString(string(raw))

@@ -71,7 +71,7 @@ func TestGuardedDialContext(t *testing.T) {
 func catalogServerGuarded(t *testing.T) (*httptest.Server, *store.MemStore) {
 	t.Helper()
 	st := store.NewMemStore()
-	cfg := &config.Config{ConsoleToken: consoleToken, AuthTokenKey: validTokenKey(t)}
+	cfg := &config.Config{ConsoleToken: consoleToken, MasterKey: validTokenKey(t)}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, sse.NewHub(), nil)
 	ts := httptest.NewServer(srv.Handler())

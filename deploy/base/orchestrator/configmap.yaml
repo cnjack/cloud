@@ -78,7 +78,7 @@ data:
   # --- Auth (docs/13-multitenant-blueprint.md §2) ---
   # Consumed by internal/config.Load (M2): the OAuth login flow reads these
   # dual URLs, and CONSOLE_URL is where /auth/callback 302s back after login.
-  # AUTH_GITEA_CLIENT_ID/_CLIENT_SECRET + AUTH_TOKEN_KEY live in secret.yaml
+  # AUTH_GITEA_CLIENT_ID/_CLIENT_SECRET + JCLOUD_MASTER_KEY live in secret.yaml
   # (orchestrator-secret), matching the GITEA_URL/GITEA_TOKEN pattern. A
   # provider is "on" iff its CLIENT_ID is set; with none set the system runs on
   # CONSOLE_TOKEN alone (backward compatible). SESSION_TTL is optional (30d).

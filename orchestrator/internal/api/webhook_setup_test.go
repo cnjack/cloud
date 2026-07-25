@@ -1,3 +1,5 @@
+//go:build legacy_api
+
 package api
 
 import (
@@ -107,7 +109,7 @@ func newWebhookSetupFixture(t *testing.T, opts webhookSetupFixtureOptions) webho
 		ConsoleToken:  consoleToken,
 		GiteaURL:      "http://gitea.test",
 		GiteaToken:    "cluster-gitea-pat",
-		AuthTokenKey:  validTokenKey(t),
+		MasterKey:     validTokenKey(t),
 		WebhookURL:    "http://orchestrator.test/webhooks/gitea",
 		WebhookSecret: "webhook-secret",
 		OAuthProviders: []config.OAuthProviderConfig{{

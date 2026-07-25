@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/cnjack/jcloud/internal/safehttp"
 )
 
 // fakeJtypeOAuth is a tiny stand-in for jtype's two device-flow endpoints. It
@@ -199,6 +201,41 @@ func TestFullClientReportsRejectedCredentials(t *testing.T) {
 	c := NewFullClient(srv.URL, "jcode-cloud", "wrong-secret", nil)
 	if _, err := c.StartDeviceAuthorization(context.Background()); !errors.Is(err, ErrOAuthClientRejected) {
 		t.Fatalf("err=%v want ErrOAuthClientRejected", err)
+	}
+}
+
+func TestFullClientRefusesRedirectsAndDoesNotReflectSecret(t *testing.T) {
+	const clientSecret = "jtype-client-secret-must-not-leak"
+	targetHits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	c := NewFullClient(redirector.URL, "cloud", clientSecret, nil)
+	_, err := c.StartDeviceAuthorization(context.Background())
+	if !errors.Is(err, safehttp.ErrRedirectDenied) {
+		t.Fatalf("redirect error=%v want ErrRedirectDenied", err)
+	}
+	if targetHits != 0 {
+		t.Fatalf("redirect target received %d requests", targetHits)
+	}
+
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("Bearer " + clientSecret))
+	}))
+	defer failing.Close()
+	c = NewFullClient(failing.URL, "cloud", clientSecret, nil)
+	_, err = c.StartDeviceAuthorization(context.Background())
+	if err == nil || strings.Contains(err.Error(), clientSecret) {
+		t.Fatalf("JType OAuth error reflected a client secret: %v", err)
 	}
 }
 

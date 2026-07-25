@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -227,5 +228,40 @@ func TestIntegrationClientRefusesRedirects(t *testing.T) {
 
 	if targetHits != 0 {
 		t.Fatalf("redirect TARGET was hit %d times — SSRF bounce not blocked", targetHits)
+	}
+}
+
+func TestProviderClientsDoNotReflectUpstreamErrorBodies(t *testing.T) {
+	const accessToken = "provider-access-token-must-not-leak"
+	const reflected = "Bearer provider-access-token-must-not-leak"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(reflected))
+	}))
+	defer srv.Close()
+
+	clients := []struct {
+		name string
+		new  func() (CurrentUser, error)
+	}{
+		{"github", func() (CurrentUser, error) { return NewGitHubClient(srv.URL, accessToken) }},
+		{"gitlab", func() (CurrentUser, error) { return NewGitLabClient(srv.URL, accessToken) }},
+		{"gitea", func() (CurrentUser, error) { return NewGiteaClient(srv.URL, accessToken) }},
+	}
+	for _, tt := range clients {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := tt.new()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.CurrentUser(context.Background())
+			if err == nil || strings.Contains(err.Error(), accessToken) || strings.Contains(err.Error(), reflected) {
+				t.Fatalf("provider error reflected a credential: %v", err)
+			}
+			status, ok := IsProviderHTTPStatusError(err)
+			if !ok || status != http.StatusBadGateway || !errors.As(err, new(*HTTPStatusError)) {
+				t.Fatalf("error=%T(%v), want HTTPStatusError(502)", err, err)
+			}
+		})
 	}
 }

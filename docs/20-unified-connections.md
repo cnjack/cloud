@@ -81,7 +81,7 @@ list API 时,capability 标记 `unavailable(reason)`,UI 回退手动录入 —
 
 ### 3.4 凭据纪律(沿用现有红线)
 
-- token 一律 `token_enc`(AES-256-GCM,AUTH_TOKEN_KEY),API 永不回读明文;
+- token 一律 `token_enc`(AES-256-GCM,JCLOUD_MASTER_KEY),API 永不回读明文;
   读取/枚举一律**服务端代理**(沿用 D31 模式),浏览器只见元数据。
 - 个人 OAuth 身份与 bot connection **保持两个物种**(见 §4.2):webhook
   之类的"以触发者身份"操作继续用 member 自己的 OAuth;service 的

@@ -47,14 +47,20 @@ const (
 // both the git checkout and the jcode memory HOME, split by subPath so no second
 // volume is needed:
 //   - work/  -> /workspace     (the runner's git working copy)
-//   - home/  -> $HOME/.jcode    (jcode config.json + memory; HOME=/root per the
-//     runner image, see runner/Dockerfile `ENV HOME=/root`)
+//   - home/  -> $HOME/.jcode    (jcode config.json + memory; the runner uses
+//     the fixed non-root HOME=/home/jcode)
 const (
-	workspaceVolumeName = "workspace"
-	workspaceMountPath  = "/workspace"
-	workspaceSubPath    = "work"
-	jcodeHomeMountPath  = "/root/.jcode"
-	jcodeHomeSubPath    = "home"
+	workspaceVolumeName         = "workspace"
+	workspaceMountPath          = "/workspace"
+	workspaceSubPath            = "work"
+	jcodeHomeMountPath          = "/home/jcode/.jcode"
+	jcodeHomeSubPath            = "home"
+	pluginCredentialsVolumeName = "plugin-credentials"
+	pluginCredentialsMountPath  = "/run/jcloud/plugins"
+	jcodeMCPConfigMountPath     = "/home/jcode/.jcode/mcp.json"
+	pluginLifecycleVolumeName   = "plugin-lifecycle"
+	pluginLifecycleMountPath    = "/run/jcloud/lifecycle"
+	pluginSyncStopFile          = pluginLifecycleMountPath + "/runner-finished"
 )
 
 // Client is the client-go-backed JobLauncher.
@@ -246,6 +252,21 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 
 	backoffLimit := int32(0) // one attempt per Job; retries are new runs
 	ttl := c.cfg.TTLSeconds
+	runAsUser := int64(10001)
+	runAsGroup := int64(10001)
+	runAsNonRoot := true
+	allowPrivilegeEscalation := false
+	readOnlyRootFilesystem := false // toolchains and package managers need /tmp and image paths.
+	seccomp := &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}
+	containerSecurityContext := &corev1.SecurityContext{
+		RunAsUser:                &runAsUser,
+		RunAsGroup:               &runAsGroup,
+		RunAsNonRoot:             &runAsNonRoot,
+		AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+		ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile:           seccomp,
+	}
 	var deadline *int64
 	if spec.TimeoutSeconds > 0 {
 		d := spec.TimeoutSeconds
@@ -274,6 +295,95 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 		}
 	}
 
+	// Plugin runtime configuration is a deliberately short-lived tmpfs. The
+	// runner mounts it read-only; only the sidecar has write access. This keeps
+	// refresh tokens, App private keys, and the cluster master key outside the
+	// pod while still letting CLI tools read access tokens/config atomically.
+	if spec.PluginCredentials {
+		medium := corev1.StorageMediumMemory
+		volumes = append(volumes, corev1.Volume{
+			Name:         pluginCredentialsVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: medium}},
+		})
+		volumes = append(volumes, corev1.Volume{
+			Name:         pluginLifecycleVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: medium}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name: pluginCredentialsVolumeName, MountPath: pluginCredentialsMountPath, ReadOnly: true,
+		})
+		// jcode discovers global MCP servers from ~/.jcode/mcp.json. Mount the
+		// initializer-created JType file over that one path so the credential
+		// remains on tmpfs instead of the persistent jcode HOME volume.
+		mounts = append(mounts, corev1.VolumeMount{
+			Name: pluginCredentialsVolumeName, MountPath: jcodeMCPConfigMountPath,
+			SubPath: "jtype/mcp.json", ReadOnly: true,
+		})
+	}
+
+	if spec.PluginCredentials {
+		env = append(env,
+			corev1.EnvVar{Name: "JCODE_PLUGIN_CREDENTIALS_DIR", Value: pluginCredentialsMountPath},
+			corev1.EnvVar{Name: "GH_CONFIG_DIR", Value: pluginCredentialsMountPath + "/gh"},
+			corev1.EnvVar{Name: "GLAB_CONFIG_DIR", Value: pluginCredentialsMountPath + "/glab"},
+			corev1.EnvVar{Name: "XDG_CONFIG_HOME", Value: pluginCredentialsMountPath},
+			corev1.EnvVar{Name: "GIT_CONFIG_GLOBAL", Value: pluginCredentialsMountPath + "/git/config"},
+			corev1.EnvVar{Name: "PLUGIN_SYNC_STOP_FILE", Value: pluginSyncStopFile},
+		)
+		mounts = append(mounts, corev1.VolumeMount{
+			Name: pluginLifecycleVolumeName, MountPath: pluginLifecycleMountPath,
+		})
+	}
+
+	runner := corev1.Container{
+		Name:            "runner",
+		Image:           c.cfg.RunnerImage,
+		SecurityContext: containerSecurityContext.DeepCopy(),
+		Env:             env,
+		VolumeMounts:    mounts,
+		Resources: corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse(c.cfg.CPULimit),
+				corev1.ResourceMemory: resource.MustParse(c.cfg.MemoryLimit),
+			},
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse(c.cfg.CPURequest),
+				corev1.ResourceMemory: resource.MustParse(c.cfg.MemoryRequest),
+			},
+		},
+	}
+	containers := []corev1.Container{runner}
+	var initContainers []corev1.Container
+	if spec.PluginCredentials {
+		sidecarEnv := []corev1.EnvVar{
+			{Name: "ORCH_BASE_URL", Value: spec.Env["ORCH_BASE_URL"]},
+			{Name: "RUN_ID", Value: spec.Env["RUN_ID"]},
+			{Name: "RUN_TOKEN", Value: spec.Env["RUN_TOKEN"]},
+		}
+		credentialMount := []corev1.VolumeMount{{Name: pluginCredentialsVolumeName, MountPath: pluginCredentialsMountPath}}
+		lifecycleMount := corev1.VolumeMount{Name: pluginLifecycleVolumeName, MountPath: pluginLifecycleMountPath}
+		// An init pass prevents the task from racing the long-lived sidecar on
+		// startup. The sidecar then refreshes this same tmpfs config while the
+		// task runs.
+		initContainers = append(initContainers, corev1.Container{
+			Name: "plugin-credential-initializer", Image: c.cfg.RunnerImage,
+			Command: []string{"/usr/local/bin/orchclient", "sync-plugin-credentials", "--once", "--dir", pluginCredentialsMountPath},
+			Env:     sidecarEnv, VolumeMounts: credentialMount,
+			SecurityContext: containerSecurityContext.DeepCopy(),
+		})
+		// The production cluster is Kubernetes 1.28, before native sidecars. A
+		// normal companion container therefore watches a lifecycle file written
+		// by entrypoint's EXIT trap and terminates promptly with the runner.
+		containers = append(containers, corev1.Container{
+			Name:            "plugin-credential-sync",
+			Image:           c.cfg.RunnerImage,
+			Command:         []string{"/usr/local/bin/orchclient", "sync-plugin-credentials", "--dir", pluginCredentialsMountPath, "--stop-file", pluginSyncStopFile},
+			Env:             sidecarEnv,
+			VolumeMounts:    append(credentialMount, lifecycleMount),
+			SecurityContext: containerSecurityContext.DeepCopy(),
+		})
+	}
+
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      spec.Name,
@@ -292,25 +402,20 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 					Labels: map[string]string{LabelRunID: spec.RunID},
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy:      corev1.RestartPolicyNever,
-					ServiceAccountName: c.cfg.ServiceAccount,
-					Volumes:            volumes,
-					Containers: []corev1.Container{{
-						Name:         "runner",
-						Image:        c.cfg.RunnerImage,
-						Env:          env,
-						VolumeMounts: mounts,
-						Resources: corev1.ResourceRequirements{
-							Limits: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse(c.cfg.CPULimit),
-								corev1.ResourceMemory: resource.MustParse(c.cfg.MemoryLimit),
-							},
-							Requests: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse(c.cfg.CPURequest),
-								corev1.ResourceMemory: resource.MustParse(c.cfg.MemoryRequest),
-							},
-						},
-					}},
+					RestartPolicy:                corev1.RestartPolicyNever,
+					ServiceAccountName:           c.cfg.ServiceAccount,
+					AutomountServiceAccountToken: func() *bool { v := false; return &v }(),
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsUser:           &runAsUser,
+						RunAsGroup:          &runAsGroup,
+						RunAsNonRoot:        &runAsNonRoot,
+						FSGroup:             &runAsGroup,
+						FSGroupChangePolicy: func() *corev1.PodFSGroupChangePolicy { v := corev1.FSGroupChangeOnRootMismatch; return &v }(),
+						SeccompProfile:      seccomp.DeepCopy(),
+					},
+					Volumes:        volumes,
+					InitContainers: initContainers,
+					Containers:     containers,
 				},
 			},
 		},

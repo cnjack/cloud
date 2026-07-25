@@ -41,7 +41,7 @@ integrations(
   host         text not null,               -- gitea.jcloud.svc.cluster.local / github.com / gitlab.com
   cred_type    text not null default 'pat' check (cred_type in ('pat','github_app')),
                                              -- 抽象位:github 先落 pat,github_app 是将来扩展槽,今天不实现
-  token_enc    bytea not null,              -- AES-256-GCM(AUTH_TOKEN_KEY);org 级服务凭据,不可回读明文
+  token_enc    bytea not null,              -- AES-256-GCM(JCLOUD_MASTER_KEY);org 级服务凭据,不可回读明文
   created_by   uuid references users(id),
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now(),

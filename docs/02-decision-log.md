@@ -82,7 +82,7 @@ Gitea 优先 → GitHub + GitLab;控制台 Run 按钮 / CLI;Git webhook @mention
 ## 补充 —— 产品体验红线
 
 ### D14 · 未配置依赖 → fail-visible,禁止静默 mock
-任何未配置的依赖(LLM/provider/webhook)都是**一等公民状态**:API 返回带类型错误(`model_not_configured`),UI 禁用对应操作并给出去向提示,自动化路径可见地回帖原因。mock 实现只允许在测试/显式 e2e rig 中由脚手架显式接线,**永不作为产品 manifest 的默认兜底**。LLM 配置支持管理员在 Cluster 页自助填写(DB 存储,key 用 AUTH_TOKEN_KEY 加密),env 仅作显式覆盖。
+任何未配置的依赖(LLM/provider/webhook)都是**一等公民状态**:API 返回带类型错误(`model_not_configured`),UI 禁用对应操作并给出去向提示,自动化路径可见地回帖原因。mock 实现只允许在测试/显式 e2e rig 中由脚手架显式接线,**永不作为产品 manifest 的默认兜底**。LLM 配置支持管理员在 Cluster 页自助填写(DB 存储,key 用 JCLOUD_MASTER_KEY 加密),env 仅作显式覆盖。
 - **被否**:base configmap 默认指 mockllm(生产静默跑假 agent,用户误判 AI 已生效——真实事故);"没配就报 500"(不可操作,无去向)。
 
 ---
@@ -190,7 +190,7 @@ kanban link 的管理权从 cluster-admin 下放到 **project owner**；jtype �
 
 ### D27 · jtype 集群配置从 env-only 改为 DB + console 设置（env 保留回退）
 
-kanban 的集群级 jtype 配置（base_url + 可选 cluster fallback token）从"只能改 orchestrator env"改为 **cluster-admin 在 console Cluster 页可设**，落 DB 单行表 `cluster_kanban_config`（仿 `cluster_model_config`：base_url 明文、token AES-256-GCM 用 AUTH_TOKEN_KEY 加密、明文永不回读）。解析顺序 **DB > env**（env `JTYPE_BASE_URL/JTYPE_TOKEN` 保留作兼容回退，延续 D25）；cluster fallback token 与 base_url **同源绑定**（DB 配置只用 DB token，env 配置只用 env token），避免为 env 实例签发的 PAT 静默用于 DB 指向的另一实例。关键改造：新增 `kanbancfg.Resolver`（仿 `modelcfg.Resolver`，TTL + Invalidate，API/poller/reconciler 共享一份），poller 与 writeback **常驻按 tick 解析生效配置**，未配置即可见 no-op —— 于是 console 存下 base_url 后**无需重启**即生效（否则就是静默无效，违反 fail-visible 红线）。GET /api/v1/system 的 kanban 快照改为反映**生效值 + 来源**；token 写入无 cipher → 409 `cipher_not_configured`；DB 有 token 但无 AUTH_TOKEN_KEY → 显式报错，绝不静默回退 env。
+kanban 的集群级 jtype 配置（base_url + 可选 cluster fallback token）从"只能改 orchestrator env"改为 **cluster-admin 在 console Cluster 页可设**，落 DB 单行表 `cluster_kanban_config`（仿 `cluster_model_config`：base_url 明文、token AES-256-GCM 用 JCLOUD_MASTER_KEY 加密、明文永不回读）。解析顺序 **DB > env**（env `JTYPE_BASE_URL/JTYPE_TOKEN` 保留作兼容回退，延续 D25）；cluster fallback token 与 base_url **同源绑定**（DB 配置只用 DB token，env 配置只用 env token），避免为 env 实例签发的 PAT 静默用于 DB 指向的另一实例。关键改造：新增 `kanbancfg.Resolver`（仿 `modelcfg.Resolver`，TTL + Invalidate，API/poller/reconciler 共享一份），poller 与 writeback **常驻按 tick 解析生效配置**，未配置即可见 no-op —— 于是 console 存下 base_url 后**无需重启**即生效（否则就是静默无效，违反 fail-visible 红线）。GET /api/v1/system 的 kanban 快照改为反映**生效值 + 来源**；token 写入无 cipher → 409 `cipher_not_configured`；DB 有 token 但无 JCLOUD_MASTER_KEY → 显式报错，绝不静默回退 env。
 
 - **被否**：只加 DB 表 + PUT 路由而不动 boot 接线（存了不生效，静默 no-op，违反 D14 fail-visible）；cluster token 全局"DB token OR env token"混用（跨实例 PAT 泄漏面）；把 base_url 也留在 env、只把 token 上收（一半在 env 一半在 DB，运维心智割裂）。
 
@@ -204,7 +204,7 @@ kanban 的 jtype 凭据（集群 fallback token 与 per-link token）从"网页�
 - **成功即服务端落库，明文永不回浏览器**：poll 命中 `complete` 时 orchestrator 立刻 AES-256-GCM 封存 token、算出 `token_expires_at`、写入 `cluster_kanban_config.token_enc` / `kanban_links.token_enc`（集群侧再 `resolver.Invalidate()` 免重启生效），poll 响应只回 `{status, token_set, token_expires_at}`。比手贴路径更安全。
 - **per-link 走"先建链接再连接"**：连接作用在已存在的 link 上（复用 D25 的 per-link token 轮换写路径），目标为**生效的集群 base URL**；建链接表单的明文 token 字段保留（沿用 D25，可接受但非首选）。集群 fallback token 的连接**要求先存好 DB base_url**（D27 同源绑定），未存则 `409 base_url_not_configured`。
 - **迁移 0023 只加 `token_expires_at`**（两表，可空）：设备流 token 无 refresh、90 天到期，存到期时间用于 console 主动提示"N 天后过期 / 已过期请重连"；手贴 PAT / env token 记 NULL（未知，诚实）。
-- **fail-visible**：base URL 未配 → 按钮禁用给理由；旧版 jtype 无 OAuth 路由 → 类型化 `jtype_oauth_unsupported`，退回手贴，绝不静默；过期/未批准 → 显式 `status`；无 `AUTH_TOKEN_KEY` → 起流即 `cipher_not_configured`。全程无 mock 路径。
+- **fail-visible**：base URL 未配 → 按钮禁用给理由；旧版 jtype 无 OAuth 路由 → 类型化 `jtype_oauth_unsupported`，退回手贴，绝不静默；过期/未批准 → 显式 `status`；无 `JCLOUD_MASTER_KEY` → 起流即 `cipher_not_configured`。全程无 mock 路径。
 
 - **被否**：动态注册客户端并给 `cluster_kanban_config` 加 `client_id` 列（device grant 根本不校验 client，纯属无用复杂度）；orchestrator 后台轮询 + `oauth_device_flows` 落库（把可铸 token 的 `device_code` 静态存盘、加迁移与清理协程、为被弃流跑忙循环）；把 `device_code`/铸出的 token 回给浏览器由前端轮询（明文过浏览器）；给 per-link 连接做"连接产出 token 塞进建链接表单"（又把明文引回浏览器 state）。
 

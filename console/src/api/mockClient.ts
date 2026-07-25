@@ -26,9 +26,11 @@ import type {
   ApiKey,
   BoardEmbedLink,
   CatalogModel,
+  ClusterProviderConfig,
   CreateApiKeyInput,
   CreateApiKeyResponse,
   CreateAutomationInput,
+  CreateProjectAutomationInput,
   CreateKanbanLinkInput,
   CreateProjectInput,
   CreateRunInput,
@@ -55,6 +57,16 @@ import type {
   ProviderModel,
   PrInfo,
   Project,
+  ProjectAutomationSpec,
+  ProjectPlugin,
+  PluginConsentInput,
+  PluginInstallStart,
+  PluginRepositoryResource,
+  PluginWorkspaceResource,
+  PluginBoardResource,
+  ProviderKind,
+  SetupStatus,
+  SetupInput,
   ProjectModels,
   ReviewRunSummary,
   Run,
@@ -71,6 +83,8 @@ import type {
   SystemInfo,
   UpdateIntegrationInput,
   UpdateAutomationInput,
+  UpdateClusterProviderConfigInput,
+  UpdateProjectAutomationInput,
   UpdateKanbanConfigInput,
   UpdateModelInput,
   UpdateModelProviderInput,
@@ -388,6 +402,67 @@ export function createMockClient(): ApiClient {
   // F11 / D24: schedules (service cron triggers), keyed by schedule id.
   const schedules = new Map<string, Schedule>();
   const automations = new Map<string, Automation>();
+  const projectAutomations = new Map<string, ProjectAutomationSpec>();
+  const projectPlugins = new Map<string, Map<ProviderKind, ProjectPlugin>>();
+  const clusterProviders = new Map<ProviderKind, ClusterProviderConfig>((['github', 'gitlab', 'gitea', 'jtype'] as const).map((provider): [ProviderKind, ClusterProviderConfig] => [provider, { provider, base_url: provider === 'github' ? 'https://github.com' : '', login_enabled: provider !== 'jtype', plugin_enabled: true, configured: false, health: 'unknown' }]));
+
+  function pluginList(projectId: string): Map<ProviderKind, ProjectPlugin> {
+    if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+    let list = projectPlugins.get(projectId);
+    if (!list) {
+      list = new Map<ProviderKind, ProjectPlugin>();
+      for (const provider of ['github', 'gitlab', 'gitea', 'jtype'] as const) {
+        list.set(provider, {
+          provider,
+          status: 'not_connected',
+          scopes: [],
+          service_count: 0,
+          automation_count: 0,
+        });
+      }
+      projectPlugins.set(projectId, list);
+    }
+    return list;
+  }
+
+  function copyPlugin(plugin: ProjectPlugin): ProjectPlugin {
+    return { ...plugin, scopes: [...plugin.scopes], capabilities: plugin.capabilities ? {
+      supported_actions: [...plugin.capabilities.supported_actions],
+      unavailable_actions: plugin.capabilities.unavailable_actions?.map((row) => ({ ...row })),
+    } : undefined };
+  }
+
+  function automationFromInput(
+    input: CreateProjectAutomationInput,
+    existing?: ProjectAutomationSpec,
+  ): ProjectAutomationSpec {
+    const now = nowISO();
+    const triggerKind = input.scm ? 'scm' : input.kanban ? 'kanban' : 'cron';
+    return {
+      automation: {
+        id: existing?.automation.id ?? genId('auto'),
+        service_id: input.service_id,
+        installation_id: input.kanban?.installation_id,
+        name: input.name,
+        trigger_kind: triggerKind,
+        prompt_template: input.prompt_template,
+        enabled: input.enabled ?? existing?.automation.enabled ?? true,
+        ignore_jcode: input.ignore_jcode ?? existing?.automation.ignore_jcode ?? true,
+        created_by: existing?.automation.created_by ?? 'u_ada',
+        created_at: existing?.automation.created_at ?? now,
+        updated_at: now,
+      },
+      scm: input.scm ? {
+        automation_id: existing?.automation.id,
+        branch: input.scm.branch,
+        path_pattern: input.scm.path_pattern,
+        conclusion: input.scm.conclusion,
+      } : undefined,
+      actions: input.scm?.actions.map((action) => ({ ...action })),
+      kanban: input.kanban ? { automation_id: existing?.automation.id, ...input.kanban } : undefined,
+      cron: input.cron ? { automation_id: existing?.automation.id, ...input.cron } : undefined,
+    };
+  }
   // D19 / F5: project integrations, keyed by project id.
   const integrations = new Map<string, Integration[]>();
   // F12 / D24: project-scoped API keys, keyed by project id. The plaintext is
@@ -992,6 +1067,12 @@ export function createMockClient(): ApiClient {
   }
 
   return {
+    async getSetupStatus(): Promise<SetupStatus> { return delay({ setup_required: false, public_url: 'http://localhost:5173', login_provider_count: 1 }); },
+    async updateSetup(input: SetupInput): Promise<SetupStatus> { return delay({ setup_required: false, public_url: input.public_url, login_provider_count: 1 }); },
+    async getClusterProviderConfig(provider: ProviderKind): Promise<ClusterProviderConfig> { return delay({ ...clusterProviders.get(provider)! }); },
+    async updateClusterProviderConfig(provider: ProviderKind, input: UpdateClusterProviderConfigInput): Promise<ClusterProviderConfig> { const next = { ...clusterProviders.get(provider)!, ...input, configured: true, config_revision: (clusterProviders.get(provider)?.config_revision ?? 0) + 1 }; clusterProviders.set(provider, next); return delay({ ...next }); },
+    async testClusterProviderConfig(provider: ProviderKind): Promise<ClusterProviderConfig> { const next = { ...clusterProviders.get(provider)!, health: 'healthy' as const, health_message: 'Connection verified' }; clusterProviders.set(provider, next); return delay({ ...next }); },
+    async getClusterProviderImpact(): Promise<{ affected_installations: number; affected_projects: number }> { return delay({ affected_installations: 0, affected_projects: 0 }); },
     async getMe() {
       return delay(DEMO_ME);
     },
@@ -2265,6 +2346,216 @@ export function createMockClient(): ApiClient {
     },
     async deleteAutomation(automationId: string): Promise<void> {
       if (!automations.delete(automationId)) throw new ApiError(404, 'automation not found');
+      return delay(undefined);
+    },
+
+    async listProjectPlugins(projectId: string): Promise<ProjectPlugin[]> {
+      return delay([...pluginList(projectId).values()].map(copyPlugin));
+    },
+    async startPluginInstall(projectId: string, provider: ProviderKind, input: PluginConsentInput): Promise<PluginInstallStart> {
+      if (!input.consent_accepted || !input.consent_version) throw badRequest('plugin consent is required');
+      const plugin = pluginList(projectId).get(provider)!;
+      plugin.id = plugin.id ?? genId('plugin');
+      plugin.project_id = projectId;
+      plugin.status = 'enabled';
+      plugin.external_account = provider === 'jtype' ? 'JType workspace' : `${provider}-account`;
+      plugin.external_account_id = `${provider}-demo-id`;
+      plugin.scopes = [...input.scopes];
+      plugin.token_set = true;
+      plugin.consent_version = input.consent_version;
+      plugin.consented_at = nowISO();
+      if (provider === 'jtype') {
+        plugin.workspace_id = 'ws_team';
+      }
+      plugin.installed_at = nowISO();
+      plugin.installed_by = 'Demo owner';
+      plugin.capabilities = { supported_actions: ['push.updated', 'pull_request.opened', 'pull_request.synchronized', 'comment.created', 'issue.opened', 'check.completed', 'release.published'] };
+      pluginList(projectId).set(provider, plugin);
+      if (provider === 'jtype') {
+        return delay({
+          connect_id: 'connect-jtype-demo',
+          user_code: 'JTYP-42',
+          verification_uri: 'https://jtype.example/device',
+          verification_uri_complete: 'https://jtype.example/device?user_code=JTYP-42',
+          expires_in: 600,
+          interval: 2,
+        });
+      }
+      return delay({
+        authorize_url: `/auth/plugins/${provider}?project_id=${encodeURIComponent(projectId)}`,
+        plugin: copyPlugin(plugin),
+      });
+    },
+    async listGitHubAppInstallations() {
+      return delay([{ id: '12345', account_id: '99', account: 'acme', target_type: 'Organization', repository_selection: 'selected' }]);
+    },
+    async previewGitHubAppInstallationConsent(_projectId: string, installationId: string) {
+      return delay({
+        installation_id: installationId,
+        account: 'acme',
+        scopes: ['actions:write', 'checks:write', 'contents:write', 'issues:write', 'metadata:read', 'pull_requests:write', 'repository_selection:selected'],
+        repository_selection: 'selected',
+        scope_digest: `mock-${installationId}`,
+      });
+    },
+    async selectGitHubAppInstallation(projectId: string, installationId: string, input: PluginConsentInput): Promise<ProjectPlugin> {
+      if (!installationId) throw badRequest('GitHub App Installation is required');
+      const plugin = pluginList(projectId).get('github')!;
+      Object.assign(plugin, {
+        id: genId('plugin'), project_id: projectId, status: 'enabled',
+        external_account_id: '99', external_account: 'acme',
+        scopes: ['contents:write'], token_set: false, consent_version: input.consent_version,
+        consented_at: nowISO(),
+      });
+      return delay(copyPlugin(plugin));
+    },
+    async getJTypePluginConnectStatus() {
+      return delay({ status: 'complete' as const, token_set: true, token_expires_at: nowISO(3_600_000) });
+    },
+    async setProjectPluginEnabled(installationId: string, enabled: boolean): Promise<ProjectPlugin> {
+      for (const list of projectPlugins.values()) {
+        const plugin = [...list.values()].find((item) => item.id === installationId);
+        if (!plugin) continue;
+        plugin.status = enabled ? 'enabled' : 'disabled';
+        return delay(copyPlugin(plugin));
+      }
+      throw new ApiError(404, 'plugin installation not found');
+    },
+    async setProjectPluginWorkspace(installationId: string, workspaceId: string): Promise<ProjectPlugin> {
+      for (const list of projectPlugins.values()) {
+        const plugin = [...list.values()].find((item) => item.id === installationId);
+        if (!plugin) continue;
+        if (plugin.provider !== 'jtype') throw badRequest('workspace is only valid for JType');
+        plugin.workspace_id = workspaceId;
+        plugin.status = 'enabled';
+        return delay(copyPlugin(plugin));
+      }
+      throw new ApiError(404, 'plugin installation not found');
+    },
+    async getProjectPluginImpact(projectId: string, installationId: string): Promise<{ services: number; automations: number }> {
+      const plugin = [...pluginList(projectId).values()].find((item) => item.id === installationId);
+      if (!plugin) throw new ApiError(404, 'plugin installation not found');
+      const dependentServices = (services.get(projectId) ?? []).filter((service) => service.provider === plugin.provider);
+      const dependentServiceIds = new Set(dependentServices.map((service) => service.id));
+      return delay({
+        services: dependentServices.length,
+        automations: [...projectAutomations.values()].filter((spec) => dependentServiceIds.has(spec.automation.service_id)).length,
+      });
+    },
+    async listProjectPluginAudit(_projectId: string, installationId: string) {
+      return delay([{
+        id: genId('audit'),
+        project_id: _projectId,
+        installation_id: installationId,
+        event_type: 'connected',
+        created_at: nowISO(),
+      }]);
+    },
+    async uninstallProjectPlugin(installationId: string, _force = false): Promise<void> {
+      for (const list of projectPlugins.values()) {
+        const plugin = [...list.values()].find((item) => item.id === installationId);
+        if (!plugin) continue;
+        Object.assign(plugin, {
+          id: undefined, project_id: undefined, status: 'not_connected',
+          external_account: undefined, external_account_id: undefined, workspace_id: undefined,
+          scopes: [], service_count: 0, automation_count: 0, installed_at: undefined,
+          installed_by: undefined, token_set: false,
+        });
+        return delay(undefined);
+      }
+      throw new ApiError(404, 'plugin installation not found');
+    },
+    async listPluginRepositories(projectId: string, installationId: string, q?: string): Promise<PluginRepositoryResource[]> {
+      const plugin = [...pluginList(projectId).values()].find((item) => item.id === installationId);
+      if (!plugin) throw new ApiError(404, 'plugin installation not found');
+      const rows = [
+        { id: 'repo-1', full_name: 'acme/demo', clone_url: 'https://example.test/acme/demo.git', html_url: 'https://example.test/acme/demo', default_branch: 'main', private: false },
+        { id: 'repo-2', full_name: 'acme/platform', clone_url: 'https://example.test/acme/platform.git', html_url: 'https://example.test/acme/platform', default_branch: 'main', private: true },
+      ];
+      const needle = q?.trim().toLowerCase();
+      return delay(needle ? rows.filter((row) => row.full_name.includes(needle)) : rows);
+    },
+    async listPluginWorkspaces(projectId: string, installationId: string): Promise<PluginWorkspaceResource[]> {
+      const plugin = [...pluginList(projectId).values()].find((item) => item.id === installationId);
+      if (!plugin) throw new ApiError(404, 'plugin installation not found');
+      return delay([{ id: plugin.workspace_id ?? 'ws_team', name: 'My Team' }]);
+    },
+    async listPluginBoards(projectId: string, installationId: string, workspaceId?: string): Promise<PluginBoardResource[]> {
+      const plugin = [...pluginList(projectId).values()].find((item) => item.id === installationId);
+      if (!plugin) throw new ApiError(404, 'plugin installation not found');
+      if (!workspaceId) return delay([]);
+      return delay([{ id: 'board-1', ref: 'team.delivery', title: 'Delivery', columns: [
+        { key: 'todo', name: 'Todo' }, { key: 'ai', name: 'AI' }, { key: 'done', name: 'Done' },
+      ] }]);
+    },
+    async getProviderCapabilities(provider: ProviderKind) {
+      const actions = provider === 'github' ? [
+        ['push', ['updated']],
+        ['pull_request', ['opened', 'reopened', 'synchronized', 'ready', 'closed', 'merged']],
+        ['review', ['approved', 'changes_requested', 'commented', 'dismissed', 'approval_removed']],
+        ['comment', ['created']], ['issue', ['opened', 'reopened', 'updated', 'closed']],
+        ['check', ['completed']], ['tag', ['created', 'deleted']], ['release', ['published', 'updated', 'deleted']],
+      ] : provider === 'gitlab' ? [
+        ['push', ['updated']], ['pull_request', ['opened', 'reopened', 'synchronized', 'closed', 'merged']],
+        ['review', ['approved', 'approval_removed', 'commented']], ['comment', ['created']],
+        ['issue', ['opened', 'reopened', 'updated', 'closed']], ['check', ['completed']],
+        ['tag', ['created', 'deleted']], ['release', ['published', 'updated', 'deleted']],
+      ] : provider === 'gitea' ? [
+        ['push', ['updated']], ['pull_request', ['opened', 'reopened', 'synchronized', 'closed', 'merged']],
+        ['review', ['approved', 'changes_requested', 'commented']], ['comment', ['created']],
+        ['issue', ['opened', 'reopened', 'updated', 'closed']], ['check', ['completed']],
+        ['tag', ['created', 'deleted']], ['release', ['published', 'updated', 'deleted']],
+      ] : [];
+      return delay({
+        provider,
+        minimum_version: provider === 'gitlab' ? '17.11' : provider === 'gitea' ? '1.25' : undefined,
+        capabilities: actions.map(([family, supported]) => ({
+          family: family as string,
+          actions: supported as string[],
+        })),
+      });
+    },
+    async listProjectAutomations(projectId: string): Promise<ProjectAutomationSpec[]> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      const serviceIds = new Set((services.get(projectId) ?? []).map((service) => service.id));
+      return delay([...projectAutomations.values()].filter((spec) => serviceIds.has(spec.automation.service_id)));
+    },
+    async getProjectAutomation(projectId: string, automationId: string): Promise<ProjectAutomationSpec> {
+      const spec = projectAutomations.get(automationId);
+      const serviceIds = new Set((services.get(projectId) ?? []).map((service) => service.id));
+      if (!spec || !serviceIds.has(spec.automation.service_id)) throw new ApiError(404, 'automation not found');
+      return delay(structuredClone(spec));
+    },
+    async createProjectAutomation(projectId: string, input: CreateProjectAutomationInput): Promise<ProjectAutomationSpec> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      if (!input.name.trim() || !input.prompt_template.trim()) throw badRequest('name and prompt_template are required');
+      const spec = automationFromInput(input);
+      projectAutomations.set(spec.automation.id, spec);
+      return delay(structuredClone(spec));
+    },
+    async updateProjectAutomation(projectId: string, automationId: string, input: UpdateProjectAutomationInput): Promise<ProjectAutomationSpec> {
+      const existing = projectAutomations.get(automationId);
+      const serviceIds = new Set((services.get(projectId) ?? []).map((service) => service.id));
+      if (!existing || !serviceIds.has(existing.automation.service_id)) throw new ApiError(404, 'automation not found');
+      const merged: CreateProjectAutomationInput = {
+        service_id: input.service_id ?? existing.automation.service_id,
+        name: input.name ?? existing.automation.name,
+        prompt_template: input.prompt_template ?? existing.automation.prompt_template,
+        enabled: input.enabled ?? existing.automation.enabled,
+        ignore_jcode: input.ignore_jcode ?? existing.automation.ignore_jcode,
+        scm: input.scm ?? (existing.scm ? { ...existing.scm, actions: existing.actions ?? [] } : undefined),
+        kanban: input.kanban ?? existing.kanban,
+        cron: input.cron ?? existing.cron,
+      };
+      const updated = automationFromInput(merged, existing);
+      projectAutomations.set(automationId, updated);
+      return delay(structuredClone(updated));
+    },
+    async deleteProjectAutomation(projectId: string, automationId: string): Promise<void> {
+      const existing = projectAutomations.get(automationId);
+      const serviceIds = new Set((services.get(projectId) ?? []).map((service) => service.id));
+      if (!existing || !serviceIds.has(existing.automation.service_id)) throw new ApiError(404, 'automation not found');
+      projectAutomations.delete(automationId);
       return delay(undefined);
     },
 

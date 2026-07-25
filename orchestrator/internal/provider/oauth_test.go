@@ -3,11 +3,14 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/cnjack/jcloud/internal/safehttp"
 )
 
 // oauthStub serves the token + user endpoints for one provider. It records the
@@ -214,8 +217,48 @@ func TestOAuthExchangeErrorSurfaces(t *testing.T) {
 	defer srv.Close()
 	p := NewGiteaOAuth(OAuthConfig{ClientID: "c", ClientSecret: "s", ExternalURL: srv.URL, InternalURL: srv.URL})
 	if _, err := p.Exchange(context.Background(), "c", "http://cb"); err == nil ||
-		!strings.Contains(err.Error(), "bad_verification_code") {
-		t.Fatalf("err = %v want bad_verification_code", err)
+		!strings.Contains(err.Error(), "was rejected") {
+		t.Fatalf("err = %v want a sanitized rejection", err)
+	}
+}
+
+func TestOAuthDoesNotFollowRedirectOrReflectCredentials(t *testing.T) {
+	const clientSecret = "client-secret-must-not-leak"
+	const upstreamSecret = "upstream-token-must-not-leak"
+	targetHits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	p := NewGiteaOAuth(OAuthConfig{ClientID: "cid", ClientSecret: clientSecret, ExternalURL: redirector.URL, InternalURL: redirector.URL})
+	_, err := p.Exchange(context.Background(), "code", "http://cloud.example/callback")
+	if !errors.Is(err, safehttp.ErrRedirectDenied) {
+		t.Fatalf("redirect exchange error=%v want ErrRedirectDenied", err)
+	}
+	if targetHits != 0 {
+		t.Fatalf("redirect target received %d requests", targetHits)
+	}
+
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"` + upstreamSecret + `","error_description":"Bearer ` + clientSecret + `"}`))
+	}))
+	defer failing.Close()
+	p = NewGiteaOAuth(OAuthConfig{ClientID: "cid", ClientSecret: clientSecret, ExternalURL: failing.URL, InternalURL: failing.URL})
+	_, err = p.Exchange(context.Background(), "code", "http://cloud.example/callback")
+	if err == nil || strings.Contains(err.Error(), clientSecret) || strings.Contains(err.Error(), upstreamSecret) {
+		t.Fatalf("OAuth error reflected a credential: %v", err)
+	}
+	_, err = p.Refresh(context.Background(), upstreamSecret)
+	if err == nil || strings.Contains(err.Error(), clientSecret) || strings.Contains(err.Error(), upstreamSecret) {
+		t.Fatalf("OAuth refresh error reflected a credential: %v", err)
 	}
 }
 

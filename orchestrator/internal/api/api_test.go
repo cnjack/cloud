@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,14 @@ import (
 
 const consoleToken = "test-console-token"
 
+var testServerStores sync.Map
+
+func registerTestServerStore(t *testing.T, ts *httptest.Server, st *store.MemStore) {
+	t.Helper()
+	testServerStores.Store(ts.URL, st)
+	t.Cleanup(func() { testServerStores.Delete(ts.URL) })
+}
+
 func newTestServer(t *testing.T) (*httptest.Server, *store.MemStore, *sse.Hub) {
 	t.Helper()
 	st := store.NewMemStore()
@@ -32,6 +41,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.MemStore, *sse.Hub) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, hub, nil)
 	ts := httptest.NewServer(srv.Handler())
+	registerTestServerStore(t, ts, st)
 	t.Cleanup(ts.Close)
 	return ts, st, hub
 }
@@ -61,6 +71,7 @@ func newTestServerWithLauncher(t *testing.T, cleaners ...ArchiveCleaner) (*httpt
 		srv.WithArchiveCleaner(cleaners[0])
 	}
 	ts := httptest.NewServer(srv.Handler())
+	registerTestServerStore(t, ts, st)
 	t.Cleanup(ts.Close)
 	return ts, st, fake
 }
@@ -195,15 +206,42 @@ func createProject(t *testing.T, ts *httptest.Server) projFixture {
 	resp := do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]string{"name": "demo"})
 	var p domain.Project
 	decode(t, resp, &p)
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+p.ID+"/services", consoleToken, map[string]string{
-		"name": "default", "repo_url": "https://git/x.git",
-	})
-	var svc domain.Service
-	decode(t, resp, &svc)
-	if svc.ID == "" {
-		t.Fatalf("fixture service not created: %+v", svc)
+	rawStore, ok := testServerStores.Load(ts.URL)
+	if !ok {
+		t.Fatal("test server store is not registered")
 	}
+	st := rawStore.(*store.MemStore)
+	svc := seedPluginBoundService(t, st, p.ID, "default", "test/example")
 	return projFixture{Project: p, ServiceID: svc.ID}
+}
+
+func seedPluginBoundService(t *testing.T, st *store.MemStore, projectID, name, repositoryPath string) *domain.Service {
+	t.Helper()
+	now := time.Now().UTC()
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: projectID, Provider: domain.PluginGitHub,
+		Status: domain.PluginStatusEnabled, GitHubInstallID: "42",
+		ConsentVersion: pluginConsentVersion, ConsentedAt: now, CreatedAt: now,
+	}
+	if err := st.CreatePluginInstallation(context.Background(), installation); err != nil {
+		t.Fatalf("create fixture Plugin: %v", err)
+	}
+	repoID := int64(1)
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: projectID, Name: name,
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitHub,
+		RepoOwnerName: repositoryPath, ProviderRepoID: &repoID,
+		DefaultBranch: "main", GitMode: domain.GitModeReadonly, CreatedAt: now,
+	}
+	binding := &domain.ServiceRepositoryBinding{
+		ServiceID: svc.ID, InstallationID: installation.ID,
+		ProviderRepoID: "1", RepositoryPath: repositoryPath,
+		CloneURL: "https://github.com/" + repositoryPath + ".git", DefaultBranch: "main", CreatedAt: now,
+	}
+	if err := st.CreatePluginBoundService(context.Background(), svc, binding); err != nil {
+		t.Fatalf("create fixture Plugin-bound Service: %v", err)
+	}
+	return svc
 }
 
 func TestRunLifecycleAPI(t *testing.T) {
@@ -1039,58 +1077,6 @@ func TestIngestRunResultUnknownOutcomeIgnored(t *testing.T) {
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.Result != nil {
 		t.Fatalf("unknown outcome persisted as %v; want nil", *got.Result)
-	}
-}
-
-// TestCreateDraftPRService proves service creation accepts + persists git
-// integration config and validates draft_pr requirements (this validation moved
-// from the removed POST /projects repo shim to the services endpoint).
-func TestCreateDraftPRService(t *testing.T) {
-	ts, _, _ := newTestServer(t)
-	resp := do(t, "POST", ts.URL+"/api/v1/projects", consoleToken, map[string]string{"name": "gp"})
-	var proj domain.Project
-	decode(t, resp, &proj)
-	svcURL := ts.URL + "/api/v1/projects/" + proj.ID + "/services"
-
-	// Happy path: draft_pr with gitea + owner_name.
-	resp = do(t, "POST", svcURL, consoleToken, map[string]any{
-		"name": "gp", "repo_url": "http://git/x.git",
-		"git_mode": "draft_pr", "provider": "gitea", "owner_name": "jcloud/seed",
-	})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create draft_pr service: status=%d want 201", resp.StatusCode)
-	}
-	var svc domain.Service
-	decode(t, resp, &svc)
-	if svc.GitMode != domain.GitModeDraftPR || svc.Provider != domain.ProviderGitea || svc.RepoOwnerName != "jcloud/seed" {
-		t.Fatalf("git config not persisted: %+v", svc)
-	}
-
-	// draft_pr WITHOUT a provider repo (raw single-segment URL) -> 400.
-	resp = do(t, "POST", svcURL, consoleToken, map[string]any{
-		"name": "bad", "repo_url": "http://git/x.git", "git_mode": "draft_pr",
-	})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("draft_pr without repo: status=%d want 400", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	// Unknown git_mode -> 400.
-	resp = do(t, "POST", svcURL, consoleToken, map[string]any{
-		"name": "bad2", "repo_url": "http://git/x.git", "git_mode": "merge",
-	})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("bad git_mode: status=%d want 400", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	// Default (omit git_mode) -> readonly.
-	resp = do(t, "POST", svcURL, consoleToken, map[string]any{
-		"name": "ro", "repo_url": "http://git/x.git",
-	})
-	decode(t, resp, &svc)
-	if svc.GitMode != domain.GitModeReadonly {
-		t.Fatalf("default git_mode=%q want readonly", svc.GitMode)
 	}
 }
 

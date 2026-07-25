@@ -130,6 +130,12 @@ func (s *Server) handleGetSource(w http.ResponseWriter, r *http.Request, runID s
 		return
 	}
 	rawURL := domain.ServiceCloneURL(*svc, s.cfg.GiteaURL)
+	if binding, bindingErr := s.st.GetServiceRepositoryBinding(r.Context(), svc.ID); bindingErr == nil {
+		rawURL = binding.CloneURL
+	} else if !errors.Is(bindingErr, store.ErrNotFound) {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load repository binding")
+		return
+	}
 	if rawURL == "" {
 		writeError(w, http.StatusInternalServerError, "internal", "could not derive repository URL")
 		return

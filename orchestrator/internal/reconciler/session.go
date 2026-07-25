@@ -106,7 +106,7 @@ func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *d
 	}
 	f.Close()
 
-	rawURL := domain.ServiceCloneURL(*svc, r.cfg.GiteaURL)
+	rawURL := r.serviceCloneURL(ctx, svc)
 	if rawURL == "" {
 		r.log.Warn("reconcile session push: could not derive push URL", "run", run.ID)
 		return

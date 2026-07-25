@@ -4,11 +4,34 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 )
+
+// HTTPStatusError is the only upstream detail surfaced from a failed Provider
+// REST request. In particular, it intentionally excludes the response body:
+// an upstream proxy or compromised provider can reflect Authorization headers,
+// and callers must never serialize or log those opaque fragments.
+type HTTPStatusError struct {
+	Method     string
+	StatusCode int
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("provider %s request returned HTTP %d", e.Method, e.StatusCode)
+}
+
+// IsProviderHTTPStatusError lets API boundaries preserve the stable status
+// detail while treating every other upstream error as an opaque failure.
+func IsProviderHTTPStatusError(err error) (int, bool) {
+	var statusErr *HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return 0, false
+	}
+	return statusErr.StatusCode, true
+}
 
 // doJSON performs one authenticated JSON request against url and decodes a 2xx
 // body into out (out may be nil to discard). authHeader is the full
@@ -42,10 +65,10 @@ func doJSON(ctx context.Context, hc *http.Client, method, url, authHeader, accep
 		return fmt.Errorf("%s %s: %w", method, url, err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: status %d: %s", method, url, resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return &HTTPStatusError{Method: method, StatusCode: resp.StatusCode}
 	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if out != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, out); err != nil {
 			return fmt.Errorf("decode %s %s: %w", method, url, err)

@@ -22,6 +22,7 @@ import { Button } from '../components/Button';
 import { SelectField, TextField } from '../components/Field';
 import { MembersPanel } from './MembersPanel';
 import { IntegrationsPanel } from './IntegrationsPanel';
+import { ProjectPluginsPanel } from './ProjectPluginsPanel';
 import { ProjectModelsPanel } from './models/ProjectModelsPanel';
 import {
   useUpdateProject,
@@ -94,7 +95,7 @@ function sameEnv(a: Record<string, string>, b: Record<string, string>): boolean 
   return ak.every((k) => b[k] === a[k]);
 }
 
-export type ProjectSettingsSectionId = 'general' | 'members' | 'integrations' | 'kanban' | 'models' | 'apikeys';
+export type ProjectSettingsSectionId = 'general' | 'members' | 'plugins' | 'models' | 'apikeys';
 
 const SETTINGS_NAV: ReadonlyArray<{
   id: ProjectSettingsSectionId;
@@ -116,18 +117,10 @@ const SETTINGS_NAV: ReadonlyArray<{
     descriptionKey: 'projectSettings.membersDesc',
   },
   {
-    id: 'integrations',
-    labelKey: 'projectSettings.navIntegrations',
-    titleKey: 'projectSettings.navIntegrations',
-    descriptionKey: 'projectSettings.integrationsDesc',
-    ownerOnly: true,
-  },
-  {
-    id: 'kanban',
-    labelKey: 'projectSettings.navKanban',
-    titleKey: 'projectSettings.kanbanTitle',
-    descriptionKey: 'projectSettings.kanbanDesc',
-    ownerOnly: true,
+    id: 'plugins',
+    labelKey: 'projectSettings.navPlugins',
+    titleKey: 'projectSettings.pluginsTitle',
+    descriptionKey: 'projectSettings.pluginsDesc',
   },
   {
     id: 'models',
@@ -479,8 +472,7 @@ export function ProjectSettingsPage({
           )}
 
           {section === 'members' && <MembersPanel projectId={project.id} canManage={canManage} />}
-          {section === 'integrations' && canManage && <IntegrationsPanel project={project} />}
-          {section === 'kanban' && canManage && <KanbanPanel project={project} />}
+          {section === 'plugins' && <ProjectPluginsPanel project={project} />}
           {section === 'models' && <ProjectModelsPanel projectId={project.id} canManage={canManage} />}
           {section === 'apikeys' && canManage && <ApiKeysPanel project={project} />}
         </div>

@@ -463,7 +463,7 @@ func (s *Server) projectGrantsModel(ctx context.Context, projectID, modelID stri
 
 // encryptModelKey encrypts a plaintext model API key for storage. An empty key
 // stores nil (keyless). When a key is present but no cipher is configured
-// (AUTH_TOKEN_KEY unset) it writes a typed 409 and returns ok=false rather than
+// (JCLOUD_MASTER_KEY unset) it writes a typed 409 and returns ok=false rather than
 // storing a key it cannot protect. Mirrors the old single-config gate.
 func (s *Server) encryptModelKey(w http.ResponseWriter, key string) ([]byte, bool) {
 	if key == "" {
@@ -471,7 +471,7 @@ func (s *Server) encryptModelKey(w http.ResponseWriter, key string) ([]byte, boo
 	}
 	if s.cipher == nil {
 		writeError(w, http.StatusConflict, "cipher_not_configured",
-			"set AUTH_TOKEN_KEY on the orchestrator before configuring a model API key")
+			"set JCLOUD_MASTER_KEY on the orchestrator before configuring a model API key")
 		return nil, false
 	}
 	enc, err := s.cipher.EncryptString(key)

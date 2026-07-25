@@ -8,10 +8,12 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/jtypeoauth"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -41,7 +43,7 @@ import (
 // Security (D28 §5): the device_code and the minted access_token NEVER reach the
 // browser and are NEVER logged; only connect_id / base-URL host / status are
 // logged. On success the token is sealed server-side (AES-256-GCM,
-// AUTH_TOKEN_KEY); the poll response carries only {status, token_set,
+// JCLOUD_MASTER_KEY); the poll response carries only {status, token_set,
 // token_expires_at} plus, for the project surface, the sealed token_enc blob
 // — the plaintext never leaves the server.
 
@@ -63,6 +65,7 @@ const (
 	// returned to the console (the flow's starter only) to drive discovery and
 	// a subsequent create-link. Scoped to a project for authz.
 	surfaceProject = "project"
+	surfacePlugin  = "plugin"
 
 	connectPending     = "pending"
 	connectComplete    = "complete"
@@ -80,9 +83,10 @@ const maxConnectFlows = 128
 // project's kanban link, or (D37) just the project — a not-yet-linked
 // credential the console drives discovery + create-link with.
 type connectSurface struct {
-	kind      string // surfaceLink | surfaceProject
-	linkID    string // surfaceLink only
-	projectID string // authz + poll scoping
+	kind           string // surfaceLink | surfaceProject | surfacePlugin
+	linkID         string // surfaceLink only
+	projectID      string // authz + poll scoping
+	installationID string
 }
 
 // connectRecord is one in-flight device flow. It is keyed by an opaque 256-bit
@@ -105,6 +109,7 @@ type connectRecord struct {
 	surface                 connectSurface
 	baseURL                 string // the jtype base URL the flow authenticates against
 	deviceCode              string // SECRET — never serialized, never logged
+	oauth                   oauthClient
 	userCode                string
 	verificationURI         string
 	verificationURIComplete string
@@ -244,7 +249,7 @@ func (s *Server) handleStartLinkConnect(w http.ResponseWriter, r *http.Request) 
 	}
 	if s.cipher == nil {
 		writeError(w, http.StatusConflict, "cipher_not_configured",
-			"set AUTH_TOKEN_KEY on the orchestrator before connecting a per-link jtype token")
+			"set JCLOUD_MASTER_KEY on the orchestrator before connecting a per-link jtype token")
 		return
 	}
 	eff, err := s.kanban.Effective(r.Context())
@@ -302,7 +307,7 @@ func (s *Server) handleStartProjectConnect(w http.ResponseWriter, r *http.Reques
 	}
 	if s.cipher == nil {
 		writeError(w, http.StatusConflict, "cipher_not_configured",
-			"set AUTH_TOKEN_KEY on the orchestrator before connecting a jtype token")
+			"set JCLOUD_MASTER_KEY on the orchestrator before connecting a jtype token")
 		return
 	}
 	eff, err := s.kanban.Effective(r.Context())
@@ -338,29 +343,33 @@ func (s *Server) handlePollProjectConnect(w http.ResponseWriter, r *http.Request
 // startConnectFlow calls jtype's device_authorization, registers the flow, and
 // returns the start view. The device_code is stored server-side only; the
 // response withholds it (D28 §1.2). All errors are typed + fail-visible.
-func (s *Server) startConnectFlow(w http.ResponseWriter, r *http.Request, surface connectSurface, baseURL string) {
-	da, err := s.oauthClientFor(baseURL).StartDeviceAuthorization(r.Context())
+func (s *Server) startConnectFlow(w http.ResponseWriter, r *http.Request, surface connectSurface, baseURL string) *connectRecord {
+	return s.startConnectFlowWithClient(w, r, surface, baseURL, s.oauthClientFor(baseURL))
+}
+
+func (s *Server) startConnectFlowWithClient(w http.ResponseWriter, r *http.Request, surface connectSurface, baseURL string, client oauthClient) *connectRecord {
+	da, err := client.StartDeviceAuthorization(r.Context())
 	if errors.Is(err, jtypeoauth.ErrOAuthClientNotConfigured) {
 		writeError(w, http.StatusConflict, "jtype_oauth_client_not_configured",
 			"configure JTYPE_OAUTH_CLIENT_SECRET before connecting JType")
-		return
+		return nil
 	}
 	if errors.Is(err, jtypeoauth.ErrOAuthClientRejected) {
 		writeError(w, http.StatusConflict, "jtype_oauth_client_rejected",
 			"JType rejected the configured OAuth client credentials")
-		return
+		return nil
 	}
 	if errors.Is(err, jtypeoauth.ErrOAuthUnsupported) {
 		writeError(w, http.StatusConflict, "jtype_oauth_unsupported",
 			"This jtype deployment does not support Connect — paste a token instead.")
-		return
+		return nil
 	}
 	if err != nil {
 		s.log.Warn("kanban connect: start device authorization",
 			"surface", surface.kind, "host", hostOf(baseURL), "err", err)
 		writeError(w, http.StatusServiceUnavailable, "jtype_unreachable",
 			"could not reach jtype to start the connect flow")
-		return
+		return nil
 	}
 
 	expiresIn := da.ExpiresIn
@@ -384,6 +393,7 @@ func (s *Server) startConnectFlow(w http.ResponseWriter, r *http.Request, surfac
 		verificationURIComplete: da.VerificationURIComplete,
 		expiresAt:               now.Add(time.Duration(expiresIn) * time.Second),
 		interval:                time.Duration(interval) * time.Second,
+		oauth:                   client,
 	}
 	s.connects.add(rec)
 	// NON-secret context only (never device_code/user_code/access_token, D28 §5).
@@ -397,6 +407,7 @@ func (s *Server) startConnectFlow(w http.ResponseWriter, r *http.Request, surfac
 		ExpiresIn:               expiresIn,
 		Interval:                interval,
 	})
+	return rec
 }
 
 // advanceConnect performs at most ONE jtype token poll and returns the current
@@ -417,7 +428,7 @@ func (s *Server) advanceConnect(ctx context.Context, rec *connectRecord) kanbanC
 	}
 	// A base_url changed under the flow (console edit / delete) ⇒ a token minted
 	// against a now-stale instance must never be stored: expire the flow.
-	if cur, ok := s.currentBaseURL(ctx); !ok || cur != rec.baseURL {
+	if cur, ok := s.currentConnectBaseURL(ctx, rec); !ok || cur != rec.baseURL {
 		rec.terminal = connectExpired
 		return rec.statusViewLocked()
 	}
@@ -427,7 +438,7 @@ func (s *Server) advanceConnect(ctx context.Context, rec *connectRecord) kanbanC
 		return rec.statusViewLocked()
 	}
 
-	tok, st, err := s.oauthClientFor(rec.baseURL).PollToken(ctx, rec.deviceCode)
+	tok, st, err := rec.oauth.PollToken(ctx, rec.deviceCode)
 	rec.lastPolledAt = now
 	switch {
 	case errors.Is(err, jtypeoauth.ErrOAuthUnsupported):
@@ -459,7 +470,7 @@ func (s *Server) completeConnectLocked(ctx context.Context, rec *connectRecord, 
 	// Anti-TOCTOU: the base URL may have changed INSIDE the token poll's network
 	// window (after advanceConnect's guard read). A token minted against the
 	// now-stale instance must never be stored — re-check right before writing.
-	if cur, ok := s.currentBaseURL(ctx); !ok || cur != rec.baseURL {
+	if cur, ok := s.currentConnectBaseURL(ctx, rec); !ok || cur != rec.baseURL {
 		s.log.Warn("kanban connect: base URL changed during the completing poll; discarding the minted token",
 			"connect", rec.connectID)
 		rec.terminal = connectExpired
@@ -471,10 +482,21 @@ func (s *Server) completeConnectLocked(ctx context.Context, rec *connectRecord, 
 		rec.terminal = connectExpired
 		return
 	}
-	if err := s.validateJtypeToken(ctx, tok.AccessToken); err != nil {
+	var validationErr error
+	if rec.surface.kind == surfacePlugin {
+		f := jtype.NewFactory(rec.baseURL, 20*time.Second)
+		if f == nil {
+			validationErr = errors.New("jtype provider base URL is invalid")
+		} else {
+			_, validationErr = f.Client(tok.AccessToken).ListWorkspaces(ctx)
+		}
+	} else {
+		validationErr = s.validateJtypeToken(ctx, tok.AccessToken)
+	}
+	if validationErr != nil {
 		s.log.Warn("kanban connect: minted token failed capability validation",
 			"connect", rec.connectID, "surface", rec.surface.kind, "host", hostOf(rec.baseURL),
-			"err", err)
+			"err", validationErr)
 		rec.terminal = connectDenied
 		return
 	}
@@ -504,6 +526,23 @@ func (s *Server) completeConnectLocked(ctx context.Context, rec *connectRecord, 
 		// flow's starter can fetch it via the poll (status view) until the flow
 		// expires. Ciphertext only; the plaintext never leaves this function.
 		rec.tokenEnc = enc
+	case surfacePlugin:
+		in, err := s.st.GetPluginInstallation(ctx, rec.surface.installationID)
+		if err != nil || in.ProjectID != rec.surface.projectID {
+			rec.terminal = connectExpired
+			return
+		}
+		// Authorization is complete, but the project must explicitly select the
+		// one workspace this Installation owns before it becomes task-eligible.
+		// Device-flow responses carry no refresh token, so fully replace nullable
+		// credential fields rather than accidentally retaining an old OAuth grant.
+		in.AccessTokenEnc, in.RefreshTokenEnc, in.TokenExpiresAt = enc, nil, expPtr
+		in.Status, in.LastHealthError = domain.PluginStatusActionRequired, ""
+		if err := s.st.UpdatePluginInstallation(ctx, in); err != nil {
+			rec.terminal = connectExpired
+			return
+		}
+		_ = s.st.CreatePluginAuditEvent(ctx, &domain.PluginAuditEvent{ID: domain.NewID(), ProjectID: in.ProjectID, InstallationID: in.ID, EventType: "connected", Detail: "jtype device flow", CreatedAt: now})
 	}
 	rec.terminal = connectComplete
 	rec.tokenExpiresAt = expPtr
@@ -520,6 +559,17 @@ func (s *Server) currentBaseURL(ctx context.Context) (string, bool) {
 		return "", false
 	}
 	return eff.BaseURL, true
+}
+
+func (s *Server) currentConnectBaseURL(ctx context.Context, rec *connectRecord) (string, bool) {
+	if rec != nil && rec.surface.kind == surfacePlugin {
+		cfg, err := s.st.GetProviderConfig(ctx, domain.PluginJType)
+		if err != nil || !cfg.PluginEnabled || strings.TrimSpace(cfg.BaseURL) == "" {
+			return "", false
+		}
+		return strings.TrimRight(cfg.BaseURL, "/"), true
+	}
+	return s.currentBaseURL(ctx)
 }
 
 // principalIdentity is the opaque identity a connect flow is bound to, so a poll

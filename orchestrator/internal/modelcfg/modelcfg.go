@@ -114,7 +114,7 @@ func envConfigured(cfg *config.Config) bool {
 // adds the FIRST model now materialises to source="none" and setup_fails — rare
 // and visible, never a silent mock.
 //
-// A catalog model with an api_key_enc blob but no cipher (AUTH_TOKEN_KEY unset
+// A catalog model with an api_key_enc blob but no cipher (JCLOUD_MASTER_KEY unset
 // after a key was stored) is an operator error surfaced as an error rather than
 // silently dropping the key — the run should fail-visible, not act key-less.
 func resolveModel(ctx context.Context, st ConfigReader, cipher *auth.Cipher, cfg *config.Config, modelID string) (Resolved, error) {

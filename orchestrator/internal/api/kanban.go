@@ -141,7 +141,7 @@ func (s *Server) handleListProjectKanbanLinks(w http.ResponseWriter, r *http.Req
 
 // handleCreateProjectKanbanLink creates a kanban link on a project (owner only,
 // F6 / D25). It validates that the service belongs to this project, seals the
-// optional per-link jtype PAT (AES-256-GCM; a token without AUTH_TOKEN_KEY is a
+// optional per-link jtype PAT (AES-256-GCM; a token without JCLOUD_MASTER_KEY is a
 // typed 409, never stored in the clear), and — when the jtype integration is on
 // and a per-link token was supplied — fetches the board with that token to
 // confirm the trigger/done columns exist (fail-visible: a typo'd column would
@@ -200,7 +200,7 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 	// should not hide behind (or be masked by) a slow/failed board fetch.
 	if (token != "" || tokenEncInput != "") && s.cipher == nil {
 		writeError(w, http.StatusConflict, "cipher_not_configured",
-			"set AUTH_TOKEN_KEY on the orchestrator before storing a per-link jtype token")
+			"set JCLOUD_MASTER_KEY on the orchestrator before storing a per-link jtype token")
 		return
 	}
 
@@ -373,7 +373,7 @@ func (s *Server) handleUpdateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 	if token != "" {
 		if s.cipher == nil {
 			writeError(w, http.StatusConflict, "cipher_not_configured",
-				"set AUTH_TOKEN_KEY on the orchestrator before storing a per-link jtype token")
+				"set JCLOUD_MASTER_KEY on the orchestrator before storing a per-link jtype token")
 			return
 		}
 		enc, err := s.cipher.EncryptString(token)

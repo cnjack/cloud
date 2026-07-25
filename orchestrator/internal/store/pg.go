@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -209,6 +210,43 @@ func (s *PGStore) CreateService(ctx context.Context, svc *domain.Service) error 
 		svc.ProviderRepoID, svc.DefaultBranch, string(svc.GitMode), svc.DefaultModelID, svc.IntegrationID, svc.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) CreatePluginBoundService(ctx context.Context, svc *domain.Service, binding *domain.ServiceRepositoryBinding) error {
+	if svc == nil || binding == nil || svc.ID == "" || binding.ServiceID != svc.ID || binding.InstallationID == "" || binding.ProviderRepoID == "" {
+		return fmt.Errorf("create plugin-bound service: invalid aggregate")
+	}
+	if svc.GitMode == "" {
+		svc.GitMode = domain.GitModeReadonly
+	}
+	if svc.DefaultBranch == "" {
+		svc.DefaultBranch = "main"
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("create plugin-bound service: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO services (`+serviceCols+`)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		svc.ID, svc.ProjectID, svc.Name, string(svc.RepoKind),
+		nullStr(string(svc.Provider)), nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL),
+		svc.ProviderRepoID, svc.DefaultBranch, string(svc.GitMode), svc.DefaultModelID, svc.IntegrationID, svc.CreatedAt); err != nil {
+		return fmt.Errorf("create plugin-bound service: service: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO service_repository_bindings(`+repositoryBindingCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+		binding.ServiceID, binding.InstallationID, binding.ProviderRepoID, binding.RepositoryPath,
+		binding.CloneURL, binding.DefaultBranch, binding.CreatedAt, binding.UpdatedAt); err != nil {
+		if isUniqueViolation(err) {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("create plugin-bound service: binding: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("create plugin-bound service: commit: %w", err)
 	}
 	return nil
 }
@@ -698,6 +736,143 @@ func (s *PGStore) ScheduleRun(ctx context.Context, id, jobName, tokenHash, phase
 		`UPDATE runs SET status=$2, phase=$3, k8s_job_name=$4, token_hash=$5 WHERE id=$1`,
 		id, domain.StatusScheduling, phase, jobName, tokenHash); err != nil {
 		return nil, fmt.Errorf("schedule run: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+func (s *PGStore) ClaimRunDispatch(ctx context.Context, id, jobName, tokenHash, phase, requiredInstallationID string, snapshots []domain.RunPluginSnapshot) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if cur.Status != domain.StatusQueued {
+		return nil, fmt.Errorf("%w: %s is not queued", ErrInvalidTransition, id)
+	}
+	// Read the candidate providers, then acquire provider-config locks followed
+	// by installation locks.  That is the same order used by a cluster Provider
+	// reconfiguration (config first, then its installations), preventing a
+	// config-change/claim deadlock.  Both lock groups use stable ordering.
+	//
+	// The preliminary read is intentionally revalidated under the locks below:
+	// it only determines the fixed lock order and is never trusted for launch.
+	ordered := append([]domain.RunPluginSnapshot(nil), snapshots...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].InstallationID < ordered[j].InstallationID })
+	seen := map[string]struct{}{}
+	installationProviders := make(map[string]domain.ProviderKind, len(ordered))
+	requiredFound := requiredInstallationID == ""
+	for _, snap := range ordered {
+		if snap.RunID != id || snap.InstallationID == "" {
+			return nil, fmt.Errorf("%w: invalid snapshot", ErrDispatchClaimUnavailable)
+		}
+		if _, duplicate := seen[snap.InstallationID]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate snapshot", ErrDispatchClaimUnavailable)
+		}
+		seen[snap.InstallationID] = struct{}{}
+		var provider domain.ProviderKind
+		err = tx.QueryRow(ctx, `SELECT provider
+			FROM plugin_installations
+			WHERE id=$1 AND project_id=$2`, snap.InstallationID, cur.ProjectID).Scan(&provider)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: plugin %s", ErrDispatchClaimUnavailable, snap.InstallationID)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read dispatch plugin: %w", err)
+		}
+		installationProviders[snap.InstallationID] = provider
+		if snap.InstallationID == requiredInstallationID {
+			requiredFound = true
+		}
+	}
+	if !requiredFound {
+		return nil, fmt.Errorf("%w: required plugin missing", ErrDispatchClaimUnavailable)
+	}
+	providerSet := map[domain.ProviderKind]struct{}{}
+	for _, provider := range installationProviders {
+		providerSet[provider] = struct{}{}
+	}
+	providers := make([]domain.ProviderKind, 0, len(providerSet))
+	for provider := range providerSet {
+		providers = append(providers, provider)
+	}
+	sort.Slice(providers, func(i, j int) bool { return providers[i] < providers[j] })
+	configRevisions := make(map[domain.ProviderKind]int64, len(providers))
+	for _, provider := range providers {
+		var revision int64
+		var pluginEnabled bool
+		err = tx.QueryRow(ctx, `SELECT config_revision, plugin_enabled
+			FROM provider_configs WHERE provider=$1 FOR SHARE`, provider).Scan(&revision, &pluginEnabled)
+		if errors.Is(err, pgx.ErrNoRows) || !pluginEnabled {
+			return nil, fmt.Errorf("%w: provider %s", ErrDispatchClaimUnavailable, provider)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("lock provider config: %w", err)
+		}
+		configRevisions[provider] = revision
+	}
+	for _, snap := range ordered {
+		var lockedProvider domain.ProviderKind
+		var installationRevision int64
+		err = tx.QueryRow(ctx, `SELECT provider, config_revision
+			FROM plugin_installations
+			WHERE id=$1 AND project_id=$2
+			  AND status='enabled' AND last_health_error=''
+			  AND ((provider='github' AND github_installation_id<>'')
+			    OR (provider<>'github' AND access_token_enc IS NOT NULL))
+			FOR SHARE`, snap.InstallationID, cur.ProjectID).Scan(&lockedProvider, &installationRevision)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: plugin %s", ErrDispatchClaimUnavailable, snap.InstallationID)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("lock dispatch plugin: %w", err)
+		}
+		if lockedProvider != installationProviders[snap.InstallationID] || configRevisions[lockedProvider] != installationRevision {
+			return nil, fmt.Errorf("%w: plugin %s configuration changed", ErrDispatchClaimUnavailable, snap.InstallationID)
+		}
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM run_plugin_snapshots WHERE run_id=$1`, id); err != nil {
+		return nil, fmt.Errorf("clear provisional snapshots: %w", err)
+	}
+	for _, snap := range ordered {
+		createdAt := snap.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now().UTC()
+		}
+		tag, insertErr := tx.Exec(ctx, `
+			INSERT INTO run_plugin_snapshots(run_id,installation_id,provider,provider_config_revision,credential_version_id,created_at)
+			SELECT $1,pi.id,pi.provider,pi.config_revision,pi.credential_version_id,$3
+			FROM plugin_installations pi
+			JOIN provider_config_versions pv ON pv.provider=pi.provider AND pv.config_revision=pi.config_revision
+			JOIN plugin_credential_versions cv ON cv.id=pi.credential_version_id AND cv.installation_id=pi.id AND cv.provider=pi.provider
+			WHERE pi.id=$2 AND pi.project_id=$4`, id, snap.InstallationID, createdAt, cur.ProjectID)
+		if insertErr != nil {
+			err = insertErr
+			return nil, fmt.Errorf("persist dispatch snapshot: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return nil, fmt.Errorf("%w: immutable version unavailable for plugin %s", ErrDispatchClaimUnavailable, snap.InstallationID)
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE runs SET status=$2,phase=$3,k8s_job_name=$4,token_hash=$5 WHERE id=$1`, id, domain.StatusScheduling, phase, jobName, tokenHash); err != nil {
+		return nil, fmt.Errorf("claim run dispatch: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+func (s *PGStore) FailRunDispatch(ctx context.Context, id, jobName, phase, message string, finishedAt time.Time) (*domain.Run, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if cur.Status != domain.StatusScheduling || cur.K8sJobName != jobName {
+		return nil, fmt.Errorf("%w: dispatch claim no longer current", ErrInvalidTransition)
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM run_plugin_snapshots WHERE run_id=$1`, id); err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE runs SET status=$2,phase=$3,error=$4,failure_reason=$5,failure_message=$4,finished_at=COALESCE(finished_at,$6),token_hash='' WHERE id=$1`, id, domain.StatusFailed, phase, message, domain.FailureSetupFailed, finishedAt); err != nil {
+		return nil, fmt.Errorf("fail run dispatch: %w", err)
 	}
 	return s.commitAndReload(ctx, tx, id)
 }
@@ -2912,6 +3087,17 @@ func (s *PGStore) UpsertWebhookBinding(ctx context.Context, b *domain.WebhookBin
 func (s *PGStore) GetWebhookBinding(ctx context.Context, serviceID string) (*domain.WebhookBinding, error) {
 	return scanWebhookBinding(s.pool.QueryRow(ctx,
 		`SELECT `+webhookBindingCols+` FROM webhook_bindings WHERE service_id=$1`, serviceID))
+}
+
+func (s *PGStore) DeleteWebhookBinding(ctx context.Context, serviceID string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM webhook_bindings WHERE service_id=$1`, serviceID)
+	if err != nil {
+		return fmt.Errorf("delete webhook binding: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *PGStore) RecordWebhookDelivery(ctx context.Context, serviceID string, at time.Time, status, lastErr string) error {

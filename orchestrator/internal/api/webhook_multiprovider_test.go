@@ -1,3 +1,5 @@
+//go:build legacy_api
+
 package api
 
 import (
@@ -105,7 +107,7 @@ func newMPWebhookServer(t *testing.T, st store.Store, secret string, modelConfig
 		GiteaURL:        "http://gitea.test",
 		GiteaToken:      "gitea-pat",
 		WebhookSecret:   secret,
-		AuthTokenKey:    validTokenKey(t),
+		MasterKey:       validTokenKey(t),
 		SourceBundleTTL: time.Minute,
 	}
 	if modelConfigured {

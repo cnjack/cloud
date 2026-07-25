@@ -589,9 +589,8 @@ func TestReconcileUpdatePushNonFFRetries(t *testing.T) {
 	}
 }
 
-// TestWebhookTaskJobEnv proves a webhook @mention agent task builds ON the PR head
-// branch: BASE_BRANCH == BRANCH_NAME == the head branch (entrypoint then bundles
-// startSHA..HEAD onto that same branch).
+// TestWebhookTaskJobEnv proves a webhook @mention agent task builds on the PR
+// head while Cloud itself does not push or open/update a PR.
 func TestWebhookTaskJobEnv(t *testing.T) {
 	ctx := context.Background()
 	rec, st, _ := testRec(t, 4)
@@ -600,11 +599,11 @@ func TestWebhookTaskJobEnv(t *testing.T) {
 	if env["BASE_BRANCH"] != "feature-env" {
 		t.Errorf("BASE_BRANCH=%q want feature-env (PR head)", env["BASE_BRANCH"])
 	}
-	if env["BRANCH_NAME"] != "feature-env" {
-		t.Errorf("BRANCH_NAME=%q want feature-env (== BASE_BRANCH)", env["BRANCH_NAME"])
+	if _, ok := env["BRANCH_NAME"]; ok {
+		t.Errorf("BRANCH_NAME=%q want absent (no Cloud writeback)", env["BRANCH_NAME"])
 	}
-	if env["GIT_MODE"] != string(domain.GitModeDraftPR) {
-		t.Errorf("GIT_MODE=%q want draft_pr", env["GIT_MODE"])
+	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
+		t.Errorf("GIT_MODE=%q want readonly", env["GIT_MODE"])
 	}
 }
 

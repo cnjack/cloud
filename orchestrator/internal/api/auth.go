@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -9,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -48,9 +50,10 @@ var providerSortOrder = map[string]int{
 	"gitea":  2,
 }
 
-func (s *Server) handleAuthProviders(w http.ResponseWriter, _ *http.Request) {
-	out := make([]authProviderInfo, 0, len(s.oauth))
-	for id := range s.oauth {
+func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
+	ids := s.availableLoginProviderIDs(r.Context())
+	out := make([]authProviderInfo, 0, len(ids))
+	for _, id := range ids {
 		name := providerDisplayNames[id]
 		if name == "" {
 			name = string(id)
@@ -72,6 +75,69 @@ func (s *Server) handleAuthProviders(w http.ResponseWriter, _ *http.Request) {
 		return out[i].ID < out[j].ID
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"providers": out})
+}
+
+// Provider configuration stored in the database is authoritative.  The env
+// registry survives only as a no-row fallback for an upgraded cluster's tests
+// and a deliberate legacy migration window; it can never override a disabled
+// or incomplete DB row.
+func (s *Server) availableLoginProviderIDs(ctx context.Context) []domain.GitProvider {
+	configs, err := s.st.ListProviderConfigs(ctx)
+	if err == nil && len(configs) > 0 {
+		out := make([]domain.GitProvider, 0, len(configs))
+		for i := range configs {
+			cfg := &configs[i]
+			if cfg.Provider != domain.PluginJType && cfg.LoginEnabled && providerConfigComplete(cfg) {
+				out = append(out, domain.GitProvider(cfg.Provider))
+			}
+		}
+		return out
+	}
+	out := make([]domain.GitProvider, 0, len(s.oauth))
+	for id := range s.oauth {
+		out = append(out, id)
+	}
+	return out
+}
+
+func (s *Server) loginOAuthProvider(ctx context.Context, id domain.GitProvider) (provider.OAuthProvider, error) {
+	configs, listErr := s.st.ListProviderConfigs(ctx)
+	if listErr != nil {
+		return nil, listErr
+	}
+	hasDBConfig := len(configs) > 0
+	cfg, err := s.st.GetProviderConfig(ctx, domain.ProviderKind(id))
+	if err == nil {
+		if !cfg.LoginEnabled || !providerConfigComplete(cfg) {
+			return nil, errors.New("login provider is disabled or incomplete")
+		}
+		if s.cipher == nil {
+			return nil, errors.New("JCLOUD_MASTER_KEY is not configured")
+		}
+		secret, decErr := s.cipher.Decrypt(cfg.ClientSecretEnc)
+		if decErr != nil {
+			return nil, fmt.Errorf("decrypt login provider secret: %w", decErr)
+		}
+		oc := provider.OAuthConfig{ClientID: cfg.ClientID, ClientSecret: string(secret), ExternalURL: cfg.BaseURL, InternalURL: cfg.BaseURL}
+		switch id {
+		case domain.ProviderGitHub:
+			return provider.NewGitHubOAuth(oc), nil
+		case domain.ProviderGitLab:
+			return provider.NewGitLabOAuth(oc), nil
+		case domain.ProviderGitea:
+			return provider.NewGiteaOAuth(oc), nil
+		}
+	}
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+	if hasDBConfig {
+		return nil, errors.New("login provider is not configured")
+	}
+	if fallback, ok := s.oauth[id]; ok {
+		return fallback, nil
+	}
+	return nil, errors.New("unknown or unconfigured provider")
 }
 
 // --- state signing ----------------------------------------------------------
@@ -97,6 +163,7 @@ const (
 	oauthModeLogin       = "login"
 	oauthModeLink        = "link"
 	oauthModeIntegration = "integration"
+	oauthModePlugin      = "plugin"
 
 	integrationOAuthCookieName = "jcloud_integration_oauth"
 
@@ -206,7 +273,7 @@ func (s *Server) handleStartIntegrationOAuth(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if s.cipher == nil {
-		writeError(w, http.StatusConflict, "cipher_not_configured", "set AUTH_TOKEN_KEY on the orchestrator before authorizing an integration")
+		writeError(w, http.StatusConflict, "cipher_not_configured", "set JCLOUD_MASTER_KEY on the orchestrator before authorizing an integration")
 		return
 	}
 	nonce := randToken()
@@ -245,9 +312,16 @@ func (s *Server) handleStartIntegrationOAuth(w http.ResponseWriter, r *http.Requ
 // startOAuth issues the CSRF nonce cookie + signed state and 302s to the
 // provider authorize URL (built from the EXTERNAL host).
 func (s *Server) startOAuth(w http.ResponseWriter, r *http.Request, mode, userID string) {
-	providerID := r.PathValue("provider")
-	prov, ok := s.oauth[domain.GitProvider(providerID)]
-	if !ok {
+	providerID := strings.ToLower(strings.TrimSpace(r.PathValue("provider")))
+	if mode == oauthModeLogin {
+		settings, err := s.st.GetClusterSettings(r.Context())
+		if err != nil || !settings.SetupComplete {
+			writeError(w, http.StatusConflict, "setup_required", "complete cluster setup before signing in")
+			return
+		}
+	}
+	prov, err := s.loginOAuthProvider(r.Context(), domain.GitProvider(providerID))
+	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "unknown or unconfigured provider")
 		return
 	}
@@ -299,8 +373,10 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prov, ok := s.oauth[domain.GitProvider(providerID)]
+	prov, providerErr := s.loginOAuthProvider(r.Context(), domain.GitProvider(providerID))
+	ok := providerErr == nil
 	var pending *pendingIntegrationOAuth
+	var pluginPending *pendingPluginOAuth
 	if st.Mode == oauthModeIntegration {
 		decoded, err := s.readPendingIntegrationOAuth(r)
 		if err != nil || decoded.Nonce != st.Nonce || decoded.Provider != providerID || decoded.UserID != st.UserID {
@@ -309,6 +385,21 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		pending = decoded
 		prov = s.integrationOAuthProvider(domain.GitProvider(providerID), decoded.Host, decoded.ClientID, decoded.ClientSecret)
+		ok = true
+	}
+	if st.Mode == oauthModePlugin {
+		decoded, err := s.readPendingPluginOAuth(r)
+		if err != nil || decoded.Nonce != st.Nonce || decoded.Provider != providerID || decoded.UserID != st.UserID {
+			writeError(w, http.StatusBadRequest, "bad_request", "invalid or expired plugin oauth state")
+			return
+		}
+		pluginPending = decoded
+		pluginProv, pluginErr := s.pluginOAuthProvider(r.Context(), domain.ProviderKind(providerID))
+		if pluginErr != nil {
+			writeError(w, http.StatusConflict, "provider_not_configured", "plugin OAuth is not configured")
+			return
+		}
+		prov = pluginProv
 		ok = true
 	}
 	if !ok {
@@ -354,6 +445,10 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	if pending != nil {
 		s.completeIntegrationOAuth(w, r, pending, tok, ou, st.ReturnTo)
+		return
+	}
+	if pluginPending != nil {
+		s.completePluginOAuth(w, r, pluginPending, tok, ou)
 		return
 	}
 
@@ -734,6 +829,11 @@ func (s *Server) sessionTTL() time.Duration {
 // edge proxy chain does not forward X-Forwarded-Proto. Falls back to
 // request-based detection for direct-access / local-dev scenarios.
 func (s *Server) callbackRedirectURI(r *http.Request, providerID string) string {
+	if settings, err := s.st.GetClusterSettings(r.Context()); err == nil && settings.SetupComplete {
+		if u, parseErr := url.Parse(settings.PublicURL); parseErr == nil && u.Scheme != "" && u.Host != "" {
+			return u.Scheme + "://" + u.Host + "/auth/callback/" + providerID
+		}
+	}
 	if u, err := url.Parse(s.cfg.ConsoleURL); err == nil && u.Host != "" {
 		return u.Scheme + "://" + u.Host + "/auth/callback/" + providerID
 	}
@@ -775,6 +875,9 @@ func (s *Server) redirectConsole(w http.ResponseWriter, r *http.Request, params 
 // OAuth round trip without introducing an open redirect.
 func (s *Server) redirectConsoleTo(w http.ResponseWriter, r *http.Request, returnTo string, params map[string]string) {
 	base := s.cfg.ConsoleURL
+	if settings, err := s.st.GetClusterSettings(r.Context()); err == nil && settings.SetupComplete && settings.PublicURL != "" {
+		base = settings.PublicURL
+	}
 	if base == "" {
 		base = "http://localhost:5173"
 	}

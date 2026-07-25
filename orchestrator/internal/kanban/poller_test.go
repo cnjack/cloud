@@ -225,6 +225,52 @@ func TestPollerDispatchesTriggerCard(t *testing.T) {
 	}
 }
 
+func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: domain.NewID(), Name: "plugin-kanban", CreatedAt: time.Now()}
+	if err := st.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	service := &domain.Service{ID: domain.NewID(), ProjectID: project.ID, Name: "svc", RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea, RepoOwnerName: "acme/repo", DefaultBranch: "main", CreatedAt: time.Now()}
+	if err := st.CreateService(ctx, service); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginJType, BaseURL: "http://jtype.plugin", PluginEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	installation := &domain.PluginInstallation{ID: domain.NewID(), ProjectID: project.ID, Provider: domain.PluginJType, Status: domain.PluginStatusEnabled, WorkspaceID: "ws", AccessTokenEnc: []byte("PLUGINPAT"), ConsentedAt: time.Now(), CreatedAt: time.Now()}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	automation := &domain.PluginAutomation{ID: domain.NewID(), ServiceID: service.ID, InstallationID: installation.ID, Name: "board", TriggerKind: "kanban", PromptTemplate: "unused", Enabled: true, CreatedAt: time.Now()}
+	trigger := &domain.KanbanTrigger{AutomationID: automation.ID, InstallationID: installation.ID, BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done"}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	api := newFakeAPI()
+	api.addCardWithoutEvent("doc-plugin", "cards/plugin.md", "b", "ai", "Fix plugin", "keep constraints", 1)
+	clientFor := func(_ *jtype.Factory, token string) DocumentAPI {
+		api.tokens = append(api.tokens, token)
+		return api
+	}
+	poller := New(st, envResolver(st, "http://legacy-unused"), clientFor, testDecrypt, stubFor(true), testLogger(t), "http://console", time.Second)
+	poller.Tick(ctx)
+	poller.Tick(ctx)
+
+	runs, err := st.ListRunsByService(ctx, service.ID, 10)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs=%d err=%v", len(runs), err)
+	}
+	if runs[0].Origin != domain.RunOriginAutomation || runs[0].OriginAutomationID != automation.ID ||
+		runs[0].Prompt != "Fix plugin\n\nkeep constraints" {
+		t.Fatalf("run=%+v", runs[0])
+	}
+	if len(api.tokens) == 0 || api.tokens[0] != "PLAIN-PLUGINPAT" {
+		t.Fatalf("tokens=%v", api.tokens)
+	}
+}
+
 // A second tick must not re-dispatch (idempotent), and the durable cursor must suppress
 // the redundant GetDocument fetch entirely.
 func TestPollerIdempotentAndCursor(t *testing.T) {

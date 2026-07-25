@@ -70,8 +70,103 @@ func TestBuildJobWithPVC(t *testing.T) {
 	if m, ok := byPath["/workspace"]; !ok || m.SubPath != "work" {
 		t.Fatalf("/workspace mount missing or wrong subPath: %+v", m)
 	}
-	if m, ok := byPath["/root/.jcode"]; !ok || m.SubPath != "home" {
-		t.Fatalf("/root/.jcode mount missing or wrong subPath: %+v", m)
+	if m, ok := byPath["/home/jcode/.jcode"]; !ok || m.SubPath != "home" {
+		t.Fatalf("/home/jcode/.jcode mount missing or wrong subPath: %+v", m)
+	}
+}
+
+func TestBuildJobWithPluginCredentialsUsesReadOnlyTmpfsAndSidecar(t *testing.T) {
+	c := &Client{cfg: Config{
+		Namespace: "jcloud", RunnerImage: "runner:test",
+		CPULimit: "2", MemoryLimit: "4Gi", CPURequest: "500m", MemoryRequest: "1Gi",
+	}}
+	job := c.buildJob(JobSpec{
+		Name: "jcloud-run-x", RunID: "x", PluginCredentials: true,
+		Env: map[string]string{"RUN_ID": "x", "RUN_TOKEN": "run-token", "ORCH_BASE_URL": "https://cloud.test"},
+	})
+	pod := job.Spec.Template.Spec
+	if len(pod.Volumes) != 2 ||
+		pod.Volumes[0].Name != pluginCredentialsVolumeName ||
+		pod.Volumes[0].EmptyDir == nil ||
+		pod.Volumes[0].EmptyDir.Medium != corev1.StorageMediumMemory ||
+		pod.Volumes[1].Name != pluginLifecycleVolumeName ||
+		pod.Volumes[1].EmptyDir == nil ||
+		pod.Volumes[1].EmptyDir.Medium != corev1.StorageMediumMemory {
+		t.Fatalf("plugin volumes = %+v, want credential and lifecycle memory EmptyDirs", pod.Volumes)
+	}
+	if len(pod.Containers) != 2 {
+		t.Fatalf("containers=%d want runner plus Kubernetes 1.28-compatible sync companion", len(pod.Containers))
+	}
+	if len(pod.InitContainers) != 1 || pod.InitContainers[0].Name != "plugin-credential-initializer" || len(pod.InitContainers[0].Command) < 3 || pod.InitContainers[0].Command[2] != "--once" {
+		t.Fatalf("init containers=%+v, want one credential initializer", pod.InitContainers)
+	}
+	runner, sidecar := pod.Containers[0], pod.Containers[1]
+	if sidecar.Name != "plugin-credential-sync" || len(sidecar.Command) < 2 || sidecar.Command[1] != "sync-plugin-credentials" {
+		t.Fatalf("sidecar=%+v, want plugin credential sync", sidecar)
+	}
+	if sidecar.RestartPolicy != nil {
+		t.Fatalf("sidecar restart policy=%v, want normal Kubernetes 1.28 companion", sidecar.RestartPolicy)
+	}
+	if len(sidecar.Env) != 3 {
+		t.Fatalf("sidecar env=%+v, want only run endpoint auth vars", sidecar.Env)
+	}
+	var runnerReadOnly, sidecarWritable, jcodeMCPMounted, runnerLifecycleWritable, sidecarLifecycleWritable bool
+	for _, m := range runner.VolumeMounts {
+		if m.Name == pluginCredentialsVolumeName {
+			runnerReadOnly = m.ReadOnly
+			if m.MountPath == jcodeMCPConfigMountPath && m.SubPath == "jtype/mcp.json" {
+				jcodeMCPMounted = true
+			}
+		}
+		if m.Name == pluginLifecycleVolumeName {
+			runnerLifecycleWritable = !m.ReadOnly
+		}
+	}
+	for _, m := range sidecar.VolumeMounts {
+		if m.Name == pluginCredentialsVolumeName {
+			sidecarWritable = !m.ReadOnly
+		}
+		if m.Name == pluginLifecycleVolumeName {
+			sidecarLifecycleWritable = !m.ReadOnly
+		}
+	}
+	if !runnerReadOnly || !sidecarWritable || !jcodeMCPMounted || !runnerLifecycleWritable || !sidecarLifecycleWritable {
+		t.Fatalf("mounts runner_read_only=%v sidecar_writable=%v jcode_mcp=%v runner_lifecycle=%v sidecar_lifecycle=%v", runnerReadOnly, sidecarWritable, jcodeMCPMounted, runnerLifecycleWritable, sidecarLifecycleWritable)
+	}
+	values := map[string]string{}
+	for _, e := range runner.Env {
+		values[e.Name] = e.Value
+	}
+	if values["JCODE_PLUGIN_CREDENTIALS_DIR"] != pluginCredentialsMountPath ||
+		values["GIT_CONFIG_GLOBAL"] == "" ||
+		values["XDG_CONFIG_HOME"] != pluginCredentialsMountPath ||
+		values["PLUGIN_SYNC_STOP_FILE"] != pluginSyncStopFile {
+		t.Fatalf("runner plugin env=%v", values)
+	}
+	if pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
+		t.Fatal("runner Pod must not mount a Kubernetes service-account token")
+	}
+	if pod.SecurityContext == nil || pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot ||
+		pod.SecurityContext.RunAsUser == nil || *pod.SecurityContext.RunAsUser != 10001 ||
+		pod.SecurityContext.FSGroup == nil || *pod.SecurityContext.FSGroup != 10001 ||
+		pod.SecurityContext.SeccompProfile == nil ||
+		pod.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatalf("pod security context is not hardened: %+v", pod.SecurityContext)
+	}
+	assertHardened := func(name string, security *corev1.SecurityContext) {
+		t.Helper()
+		if security == nil || security.RunAsNonRoot == nil || !*security.RunAsNonRoot ||
+			security.AllowPrivilegeEscalation == nil || *security.AllowPrivilegeEscalation ||
+			security.SeccompProfile == nil || security.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault ||
+			security.Capabilities == nil || len(security.Capabilities.Drop) != 1 || security.Capabilities.Drop[0] != "ALL" {
+			t.Fatalf("%s security context is not hardened: %+v", name, security)
+		}
+	}
+	for i := range pod.InitContainers {
+		assertHardened(pod.InitContainers[i].Name, pod.InitContainers[i].SecurityContext)
+	}
+	for i := range pod.Containers {
+		assertHardened(pod.Containers[i].Name, pod.Containers[i].SecurityContext)
 	}
 }
 

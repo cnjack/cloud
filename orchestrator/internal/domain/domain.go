@@ -913,7 +913,7 @@ func ValidCredType(c CredType) bool {
 // so the credential survives an individual leaving and keeps a single audit
 // subject. The PR body annotates the real trigger for traceability (see the
 // reconciler). TokenEnc is the AES-256-GCM ciphertext of the service token
-// (nonce||ciphertext, AUTH_TOKEN_KEY); the plaintext is NEVER serialised to an API
+// (nonce||ciphertext, JCLOUD_MASTER_KEY); the plaintext is NEVER serialised to an API
 // client — hence json:"-" — and is decrypted only in the credentials resolver.
 type Integration struct {
 	// ID is the primary key (referenced by services.integration_id).
@@ -1001,7 +1001,7 @@ type KanbanLink struct {
 	// Internal synchronization state; it is not part of the public link payload.
 	EventSequence *int64 `json:"-"`
 	// TokenEnc is the per-link jtype PAT, AES-256-GCM sealed (nonce||ciphertext)
-	// with AUTH_TOKEN_KEY — the same scheme the model catalog uses (D25 / F6).
+	// with JCLOUD_MASTER_KEY — the same scheme the model catalog uses (D25 / F6).
 	// nil => the link has NO credential (credential_status "missing", D36): the
 	// poller/writeback skip it fail-visibly until the owner sets a token. Never
 	// serialized (write-only via the API; the view echoes only TokenSet()).

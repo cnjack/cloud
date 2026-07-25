@@ -225,15 +225,15 @@ func TestPermissionDecisionFourStates(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestPermissionDecisionTerminalRun410: a terminal run's decision endpoint
-// answers 410 (expired), not 204 — nothing will ever decide it.
-func TestPermissionDecisionTerminalRun410(t *testing.T) {
+// A terminal run loses its RUN_TOKEN capability before any handler-specific
+// response is considered.
+func TestPermissionDecisionTerminalRunTokenRevoked(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	rid, tok := makeApprovalRun(t, st, domain.StatusSucceeded)
 	_ = st
 	resp := do(t, "GET", ts.URL+"/internal/v1/runs/"+rid+"/permissions/req-x/decision", tok, nil)
-	if resp.StatusCode != http.StatusGone {
-		t.Fatalf("terminal run: status=%d want 410", resp.StatusCode)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("terminal run: status=%d want 409", resp.StatusCode)
 	}
 	resp.Body.Close()
 }

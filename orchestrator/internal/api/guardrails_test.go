@@ -239,7 +239,7 @@ func TestProviderAllowlistEnforcementRemoved(t *testing.T) {
 	pid := newProject(t, ts, "no-allowlist-gate")
 
 	// Service create is not gated by any per-project provider policy.
-	svc := createGiteaService(t, ts, pid, "default", "acme/x")
+	svc := seedPluginBoundService(t, st, pid, "default", "acme/x")
 
 	// Run dispatch is not gated either (the model env-fallback lets it queue).
 	resp := do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})

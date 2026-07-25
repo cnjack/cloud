@@ -29,6 +29,10 @@ var ErrAlreadyExists = errors.New("already exists")
 // longer holds (for example, a device key generation advanced concurrently).
 var ErrConflict = errors.New("conflict")
 
+// ErrDispatchClaimUnavailable means a queued run could not atomically reserve
+// the Plugin set it needs for launch (disabled, revoked, or reconfigured).
+var ErrDispatchClaimUnavailable = errors.New("dispatch claim unavailable")
+
 // EventInput is a single event to append. For AppendEvents the Seq is the
 // authoritative global seq (caller-assigned). For AppendRunnerEvents the Seq is
 // only the runner's client-side sequence number, used as a per-source
@@ -63,6 +67,10 @@ type Store interface {
 	// Services. A service is a repository configuration inside a project; runs
 	// are created against a service (multitenant blueprint §1).
 	CreateService(ctx context.Context, s *domain.Service) error
+	// CreatePluginBoundService atomically creates a Service and its mandatory
+	// Project Plugin repository binding. New API callers must use this method;
+	// CreateService remains for internal fixtures and migration-era code.
+	CreatePluginBoundService(ctx context.Context, s *domain.Service, binding *domain.ServiceRepositoryBinding) error
 	GetService(ctx context.Context, id string) (*domain.Service, error)
 	ListServices(ctx context.Context, projectID string) ([]domain.Service, error)
 	// GetDefaultService returns the project's service named "default" (the one
@@ -127,6 +135,13 @@ type Store interface {
 	// ScheduleRun moves a queued run to scheduling and is the ONLY method that
 	// writes k8s_job_name and token_hash. phase is set to the given value.
 	ScheduleRun(ctx context.Context, id, jobName, tokenHash, phase string) (*domain.Run, error)
+	// ClaimRunDispatch atomically freezes eligible Plugin snapshots and makes a
+	// queued run durable-scheduling with its runner token hash before a Job is
+	// created. requiredInstallationID may be empty for non-plugin Services.
+	ClaimRunDispatch(ctx context.Context, id, jobName, tokenHash, phase, requiredInstallationID string, snapshots []domain.RunPluginSnapshot) (*domain.Run, error)
+	// FailRunDispatch clears credentials and provisional snapshots only for the
+	// matching durable claim after Kubernetes Job creation fails.
+	FailRunDispatch(ctx context.Context, id, jobName, phase, message string, finishedAt time.Time) (*domain.Run, error)
 	// MarkRunning moves a scheduling run to running, stamping started_at only if
 	// it is currently null.
 	MarkRunning(ctx context.Context, id, phase string, startedAt time.Time) (*domain.Run, error)
@@ -449,6 +464,66 @@ type Store interface {
 	// integration (owner-facing "N services will fall back" confirmation on delete).
 	CountServicesUsingIntegration(ctx context.Context, integrationID string) (int, error)
 
+	// --- Project plugins (Plugin platform) -----------------------------------
+	GetClusterSettings(ctx context.Context) (*domain.ClusterSettings, error)
+	UpsertClusterSettings(ctx context.Context, settings *domain.ClusterSettings) error
+	GetProviderConfig(ctx context.Context, provider domain.ProviderKind) (*domain.ProviderConfig, error)
+	ListProviderConfigs(ctx context.Context) ([]domain.ProviderConfig, error)
+	UpsertProviderConfig(ctx context.Context, cfg *domain.ProviderConfig) error
+	// UpsertProviderConfigAndInvalidate atomically stores a cluster Provider
+	// configuration and reconciles every affected installation. Semantic
+	// configuration changes must set invalidate=true.
+	UpsertProviderConfigAndInvalidate(ctx context.Context, cfg *domain.ProviderConfig, invalidate bool, reason string) error
+	CountProviderConfigImpact(ctx context.Context, provider domain.ProviderKind) (int, error)
+
+	CreatePluginInstallation(ctx context.Context, installation *domain.PluginInstallation) error
+	GetPluginInstallation(ctx context.Context, id string) (*domain.PluginInstallation, error)
+	GetPluginInstallationForProject(ctx context.Context, projectID string, provider domain.ProviderKind) (*domain.PluginInstallation, error)
+	ListPluginInstallationsByProject(ctx context.Context, projectID string) ([]domain.PluginInstallation, error)
+	UpdatePluginInstallation(ctx context.Context, installation *domain.PluginInstallation) error
+	// RotatePluginCredentialVersion atomically updates encrypted token material
+	// for one immutable grant identity. It also synchronizes the live
+	// Installation only when it still points at that same version, so a durable
+	// run refresh can never overwrite a later reconnect's grant.
+	RotatePluginCredentialVersion(ctx context.Context, version *domain.PluginCredentialVersion) error
+	CountPluginInstallationImpact(ctx context.Context, installationID string) (services, automations int, err error)
+	// UninstallPlugin fences and removes every service bound to the installation,
+	// its runs and its v2 automations in one transaction. It retains immutable
+	// audit records through ON DELETE SET NULL.
+	UninstallPlugin(ctx context.Context, installationID string) error
+
+	GetServiceRepositoryBinding(ctx context.Context, serviceID string) (*domain.ServiceRepositoryBinding, error)
+	UpsertServiceRepositoryBinding(ctx context.Context, binding *domain.ServiceRepositoryBinding) error
+	DeleteServiceRepositoryBinding(ctx context.Context, serviceID string) error
+
+	CreatePluginAutomation(ctx context.Context, automation *domain.PluginAutomation, scm *domain.SCMTrigger, actions []domain.SCMAction, kanban *domain.KanbanTrigger, cron *domain.CronTrigger) error
+	GetPluginAutomation(ctx context.Context, id string) (*domain.PluginAutomation, error)
+	GetPluginAutomationSpec(ctx context.Context, id string) (*domain.PluginAutomationSpec, error)
+	ListPluginAutomationsByProject(ctx context.Context, projectID string) ([]domain.PluginAutomation, error)
+	ListPluginAutomationsForEvent(ctx context.Context, provider domain.ProviderKind, repositoryID string, family, action string) ([]domain.PluginAutomation, error)
+	UpdatePluginAutomation(ctx context.Context, automation *domain.PluginAutomation) error
+	ReplacePluginAutomationSpec(ctx context.Context, automation *domain.PluginAutomation, scm *domain.SCMTrigger, actions []domain.SCMAction, kanban *domain.KanbanTrigger, cron *domain.CronTrigger) error
+	DeletePluginAutomation(ctx context.Context, id string) error
+	ListEnabledCronAutomations(ctx context.Context) ([]domain.PluginAutomationSpec, error)
+	AdvancePluginCronAutomation(ctx context.Context, id string, previous, firedAt *time.Time, lastError string) (bool, error)
+	ListEnabledKanbanAutomations(ctx context.Context) ([]domain.PluginAutomationSpec, error)
+	EnsurePluginKanbanClaim(ctx context.Context, automationID, documentID, documentPath string) (*domain.PluginKanbanClaim, error)
+	SetPluginKanbanClaimRun(ctx context.Context, automationID, documentID, runID string) error
+	ListPluginKanbanRunsAwaitingWriteback(ctx context.Context) ([]PluginKanbanWriteback, error)
+	MarkPluginKanbanWriteback(ctx context.Context, automationID, documentID string, at time.Time) (bool, error)
+
+	ClaimWebhookReceipt(ctx context.Context, receipt *domain.WebhookReceipt) (claimed bool, err error)
+	CompleteWebhookReceipt(ctx context.Context, receipt *domain.WebhookReceipt) error
+	CreateRunPluginSnapshots(ctx context.Context, snapshots []domain.RunPluginSnapshot) error
+	// ClearQueuedRunPluginSnapshots removes only provisional snapshots.  A
+	// scheduling/running run has a durable launch snapshot and is deliberately
+	// untouched even when its Plugin is later disabled or reconnected.
+	ClearQueuedRunPluginSnapshots(ctx context.Context, runID string) error
+	ListRunPluginSnapshots(ctx context.Context, runID string) ([]domain.RunPluginSnapshot, error)
+	CreatePluginAuditEvent(ctx context.Context, event *domain.PluginAuditEvent) error
+	ListPluginAuditEvents(ctx context.Context, projectID string, limit int) ([]domain.PluginAuditEvent, error)
+	ListPluginInstallationAuditEvents(ctx context.Context, projectID, installationID string, limit int) ([]domain.PluginAuditEvent, error)
+
 	// --- Auth: users & identities (M2) ---------------------------------------
 	// CreateUserWithIdentity creates a new user together with its first identity
 	// in one transaction. It decides is_cluster_admin atomically: the user becomes
@@ -612,6 +687,10 @@ type Store interface {
 	// Service. The binding stores only inspectable state, never the hook secret.
 	UpsertWebhookBinding(ctx context.Context, b *domain.WebhookBinding) error
 	GetWebhookBinding(ctx context.Context, serviceID string) (*domain.WebhookBinding, error)
+	// DeleteWebhookBinding clears the local observation only after the
+	// corresponding provider hook has been removed. It is idempotent at the API
+	// layer; stores return ErrNotFound when no local observation remains.
+	DeleteWebhookBinding(ctx context.Context, serviceID string) error
 	RecordWebhookDelivery(ctx context.Context, serviceID string, at time.Time, status, lastErr string) error
 
 	// --- API keys (F12 / D24) --------------------------------------------------

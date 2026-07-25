@@ -52,14 +52,7 @@ func setupRBAC(t *testing.T) rbacFixture {
 	if pv.Role != "owner" {
 		t.Fatalf("creator role=%q want owner", pv.Role)
 	}
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pv.ID+"/services", tokens["owner"], map[string]any{
-		"name": "default", "repo_url": "https://git/x.git",
-	})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("owner create service: status=%d want 201", resp.StatusCode)
-	}
-	var svc domain.Service
-	decode(t, resp, &svc)
+	svc := seedPluginBoundService(t, st, pv.ID, "default", "test/rbac")
 
 	// Owner adds member + viewer.
 	for uid, role := range map[string]string{member.ID: "member", viewer.ID: "viewer"} {

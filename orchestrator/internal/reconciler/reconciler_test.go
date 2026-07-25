@@ -64,6 +64,101 @@ func seedProjectAndRun(t *testing.T, st *store.MemStore) domain.Run {
 	return *run
 }
 
+func TestSnapshotRunPluginsPinsEligibleInstallations(t *testing.T) {
+	r, st, _ := testRec(t, 1)
+	run := seedProjectAndRun(t, st)
+	ctx := context.Background()
+	enabled := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: run.ProjectID, Provider: domain.PluginGitLab,
+		Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("ciphertext"), ConfigRevision: 1, CreatedAt: time.Now().UTC(),
+	}
+	disabled := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: run.ProjectID, Provider: domain.PluginGitea,
+		Status: domain.PluginStatusDisabled, AccessTokenEnc: []byte("ciphertext"), CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreatePluginInstallation(ctx, enabled); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreatePluginInstallation(ctx, disabled); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{
+		Provider: domain.PluginGitLab, BaseURL: "https://gitlab.example.test",
+		PluginEnabled: true, ConfigRevision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.snapshotRunPlugins(ctx, &run)
+	if err != nil || !got {
+		t.Fatalf("snapshot=(%v,%v), want true,nil", got, err)
+	}
+	snapshots, err := st.ListRunPluginSnapshots(ctx, run.ID)
+	if err != nil || len(snapshots) != 1 || snapshots[0].InstallationID != enabled.ID {
+		t.Fatalf("snapshots=%+v err=%v, want enabled plugin only", snapshots, err)
+	}
+	// A later disable must not alter an already-running run's immutable snapshot.
+	if _, err := st.ScheduleRun(ctx, run.ID, "job", "token-hash", "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+	enabled.Status = domain.PluginStatusDisabled
+	if err := st.UpdatePluginInstallation(ctx, enabled); err != nil {
+		t.Fatal(err)
+	}
+	got, err = r.snapshotRunPlugins(ctx, &run)
+	if err != nil || !got {
+		t.Fatalf("resnapshot=(%v,%v), want existing snapshot", got, err)
+	}
+	snapshots, _ = st.ListRunPluginSnapshots(ctx, run.ID)
+	if len(snapshots) != 1 || snapshots[0].InstallationID != enabled.ID {
+		t.Fatalf("existing snapshot was changed: %+v", snapshots)
+	}
+}
+
+func TestPluginInstallationEligible(t *testing.T) {
+	base := &domain.PluginInstallation{Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("ciphertext")}
+	if !pluginInstallationEligible(base) {
+		t.Fatal("healthy enabled installation should be eligible")
+	}
+	base.LastHealthError = "revoked"
+	if pluginInstallationEligible(base) {
+		t.Fatal("unhealthy installation must not be eligible")
+	}
+}
+
+func TestQueuedRunProvisionalSnapshotsAreRevalidatedAfterDisable(t *testing.T) {
+	r, st, _ := testRec(t, 1)
+	run := seedProjectAndRun(t, st)
+	ctx := context.Background()
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: run.ProjectID, Provider: domain.PluginGitLab,
+		Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("ciphertext"),
+		ConfigRevision: 1, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{
+		Provider: domain.PluginGitLab, BaseURL: "https://gitlab.example.test",
+		PluginEnabled: true, ConfigRevision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.snapshotRunPlugins(ctx, &run); err != nil || !got {
+		t.Fatalf("initial snapshot=(%v,%v)", got, err)
+	}
+	installation.Status = domain.PluginStatusDisabled
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.snapshotRunPlugins(ctx, &run); err != nil || got {
+		t.Fatalf("queued resnapshot=(%v,%v), want false,nil", got, err)
+	}
+	snapshots, err := st.ListRunPluginSnapshots(ctx, run.ID)
+	if err != nil || len(snapshots) != 0 {
+		t.Fatalf("queued provisional snapshots=%+v err=%v, want none", snapshots, err)
+	}
+}
+
 // seedProjectServiceRunWithModel is seedProjectAndRun but stamps the run with a
 // catalog model id (D21) so the reconciler materialises it via GetModel.
 func seedProjectServiceRunWithModel(t *testing.T, st *store.MemStore, modelID *string) domain.Run {
@@ -241,7 +336,7 @@ func TestCreateJobRetriesOnModelResolveError(t *testing.T) {
 }
 
 // TestCreateJobFailsVisiblyOnCipherNotConfigured is P1: a model with a stored key
-// but no AUTH_TOKEN_KEY (nil cipher) is a PERMANENT operator misconfiguration —
+// but no JCLOUD_MASTER_KEY (nil cipher) is a PERMANENT operator misconfiguration —
 // the run must be failed VISIBLY (setup_failed), not left queued to retry forever.
 func TestCreateJobFailsVisiblyOnCipherNotConfigured(t *testing.T) {
 	ctx := context.Background()
@@ -275,18 +370,16 @@ func assertNoToken(t *testing.T, env map[string]string) {
 	}
 }
 
-// TestJobEnvProviderReadonlyUsesFetch is the M3 contract for a provider service:
-// SOURCE_MODE=fetch (the orchestrator serves a source bundle over the RUN_TOKEN
-// — no credential in the pod, and public/private is not guessed), GIT_MODE stays
-// readonly, and NO token is injected. REPO_URL is omitted (the runner fetches).
-func TestJobEnvProviderReadonlyUsesFetch(t *testing.T) {
+// TestJobEnvProviderReadonlyClonesWithCredentialHelper verifies the task gets
+// only the repository URL; the token remains in the tmpfs credential helper.
+func TestJobEnvProviderReadonlyClonesWithCredentialHelper(t *testing.T) {
 	env := jobEnvForService(t, domain.Service{
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
 		RepoOwnerName: "ai/priv", GitMode: domain.GitModeReadonly,
 	}, "secret-pat", "https://git.example.com")
 	assertNoToken(t, env)
-	if env["SOURCE_MODE"] != "fetch" {
-		t.Fatalf("SOURCE_MODE=%q want fetch (unified provider path)", env["SOURCE_MODE"])
+	if env["SOURCE_MODE"] != "clone" {
+		t.Fatalf("SOURCE_MODE=%q want clone (Plugin credential helper path)", env["SOURCE_MODE"])
 	}
 	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
 		t.Fatalf("GIT_MODE=%q want readonly", env["GIT_MODE"])
@@ -294,24 +387,24 @@ func TestJobEnvProviderReadonlyUsesFetch(t *testing.T) {
 	if env["BASE_BRANCH"] != "main" {
 		t.Fatalf("BASE_BRANCH=%q want main", env["BASE_BRANCH"])
 	}
-	if _, ok := env["REPO_URL"]; ok {
-		t.Fatalf("fetch mode must not set REPO_URL (runner fetches a bundle); got %q", env["REPO_URL"])
+	if env["REPO_URL"] != "https://git.example.com/ai/priv.git" {
+		t.Fatalf("REPO_URL=%q want provider clone URL", env["REPO_URL"])
 	}
 	if _, ok := env["BRANCH_NAME"]; ok {
 		t.Fatalf("readonly must not carry a push BRANCH_NAME; got %q", env["BRANCH_NAME"])
 	}
 }
 
-// TestJobEnvGithubProviderUsesFetchNoToken verifies a github provider service
-// also takes the unified fetch path and never receives a token.
-func TestJobEnvGithubProviderUsesFetchNoToken(t *testing.T) {
+// TestJobEnvGithubProviderClonesNoToken verifies GitHub follows the same
+// direct-clone/credential-helper contract.
+func TestJobEnvGithubProviderClonesNoToken(t *testing.T) {
 	env := jobEnvForService(t, domain.Service{
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitHub,
 		RepoOwnerName: "someone/other", GitMode: domain.GitModeReadonly,
 	}, "secret-pat", "https://git.example.com")
 	assertNoToken(t, env)
-	if env["SOURCE_MODE"] != "fetch" {
-		t.Fatalf("SOURCE_MODE=%q want fetch", env["SOURCE_MODE"])
+	if env["SOURCE_MODE"] != "clone" || env["REPO_URL"] == "" {
+		t.Fatalf("clone env=%v", env)
 	}
 }
 
@@ -331,43 +424,39 @@ func TestJobEnvRawRepoClonesDirectly(t *testing.T) {
 	}
 }
 
-// TestJobEnvDraftPRGiteaProducesBundle verifies draft_pr on a gitea provider
-// service tells the runner to produce a bundle: GIT_MODE=draft_pr + a
-// deterministic jcode/run-<8> BRANCH_NAME, fetch source, and NO token.
-func TestJobEnvDraftPRGiteaProducesBundle(t *testing.T) {
+// TestJobEnvLegacyDraftPRDoesNotTriggerCloudWriteback verifies the retired
+// Service flag cannot make Cloud commit, bundle, push, or open a PR.
+func TestJobEnvLegacyDraftPRDoesNotTriggerCloudWriteback(t *testing.T) {
 	env := jobEnvForService(t, domain.Service{
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
 		RepoOwnerName: "ai/priv", GitMode: domain.GitModeDraftPR,
 	}, "secret-pat", "https://git.example.com")
 	assertNoToken(t, env)
-	if env["GIT_MODE"] != string(domain.GitModeDraftPR) {
-		t.Fatalf("GIT_MODE=%q want draft_pr", env["GIT_MODE"])
+	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
+		t.Fatalf("GIT_MODE=%q want readonly", env["GIT_MODE"])
 	}
-	if env["SOURCE_MODE"] != "fetch" {
-		t.Fatalf("SOURCE_MODE=%q want fetch", env["SOURCE_MODE"])
+	if env["SOURCE_MODE"] != "clone" {
+		t.Fatalf("SOURCE_MODE=%q want clone", env["SOURCE_MODE"])
 	}
-	if !strings.HasPrefix(env["BRANCH_NAME"], "jcode/run-") {
-		t.Fatalf("BRANCH_NAME=%q want jcode/run-<id> prefix", env["BRANCH_NAME"])
+	if _, ok := env["BRANCH_NAME"]; ok {
+		t.Fatalf("Cloud writeback branch must be absent: %q", env["BRANCH_NAME"])
 	}
 	if env["BASE_BRANCH"] != "main" {
 		t.Fatalf("BASE_BRANCH=%q want main", env["BASE_BRANCH"])
 	}
 }
 
-// TestJobEnvDraftPRNonGiteaAlsoProducesBundle verifies draft_pr on ANY provider
-// (github here) also asks the runner to bundle — M3 no longer restricts the
-// push flow to gitea (the orchestrator pushes with the user's OAuth token).
-func TestJobEnvDraftPRNonGiteaAlsoProducesBundle(t *testing.T) {
+func TestJobEnvLegacyDraftPRGitHubDoesNotTriggerCloudWriteback(t *testing.T) {
 	env := jobEnvForService(t, domain.Service{
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitHub,
 		RepoOwnerName: "someone/other", GitMode: domain.GitModeDraftPR,
 	}, "secret-pat", "https://git.example.com")
 	assertNoToken(t, env)
-	if env["GIT_MODE"] != string(domain.GitModeDraftPR) {
-		t.Fatalf("GIT_MODE=%q want draft_pr (any provider produces a bundle in M3)", env["GIT_MODE"])
+	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
+		t.Fatalf("GIT_MODE=%q want readonly", env["GIT_MODE"])
 	}
-	if env["BRANCH_NAME"] == "" {
-		t.Fatalf("draft_pr must set BRANCH_NAME")
+	if _, ok := env["BRANCH_NAME"]; ok {
+		t.Fatal("Cloud writeback branch must be absent")
 	}
 }
 

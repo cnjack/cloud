@@ -10,7 +10,6 @@ package provider
 import (
 	"context"
 	"errors"
-	"net/http"
 	"strings"
 
 	"github.com/cnjack/jcloud/internal/domain"
@@ -92,6 +91,20 @@ type RepoLister interface {
 	ListRepos(ctx context.Context, query string, page, limit int) ([]Repo, error)
 }
 
+// SCMWebhookManager owns the provider-side hook used by the unified SCM
+// Automation ingress. It is intentionally separate from Provider: webhook
+// registration is a control-plane operation and must be performed only with a
+// Project Plugin installation credential, never with a run credential or a
+// legacy cluster token.
+//
+// GitHub deliberately does not implement this interface. GitHub App webhooks
+// are configured once for the App at cluster scope; GitLab and Gitea need a
+// repository hook for each Service that has enabled SCM Automations.
+type SCMWebhookManager interface {
+	EnsureSCMWebhook(ctx context.Context, owner, repo, hookURL, secret string) error
+	DeleteSCMWebhook(ctx context.Context, owner, repo, hookURL string) error
+}
+
 // CurrentUser reports the username the authenticated token acts as. It backs the
 // integration connectivity check + bot_username discovery (D19 / F5): an
 // integration create/rotate calls it with the supplied token, so a bad/expired
@@ -153,46 +166,29 @@ func (f *httpFactory) PRClient(prov domain.GitProvider, token, scheme string) (P
 // token internally. ErrNotConfigured when host/token is empty or the provider is
 // unknown.
 func IntegrationClient(prov domain.GitProvider, host, token string) (Provider, error) {
+	return IntegrationClientWithScheme(prov, host, token, "")
+}
+
+// IntegrationClientWithScheme is the Plugin-aware variant of IntegrationClient.
+// Gitea OAuth access tokens require Bearer authentication, while legacy PAT
+// integrations use the historical token scheme.
+func IntegrationClientWithScheme(prov domain.GitProvider, host, token, scheme string) (Provider, error) {
 	base := integrationBaseURL(host)
 	if base == "" || strings.TrimSpace(token) == "" {
 		return nil, ErrNotConfigured
 	}
 	switch prov {
 	case domain.ProviderGitea:
-		c, err := NewGiteaClientWithScheme(base, token, "token")
-		if err != nil {
-			return nil, err
+		if scheme == "" {
+			scheme = "token"
 		}
-		disableRedirects(c.http)
-		return c, nil
+		return NewGiteaClientWithScheme(base, token, scheme)
 	case domain.ProviderGitHub:
-		c, err := NewGitHubClient(githubAPIBase(base), token)
-		if err != nil {
-			return nil, err
-		}
-		disableRedirects(c.http)
-		return c, nil
+		return NewGitHubClient(githubAPIBase(base), token)
 	case domain.ProviderGitLab:
-		c, err := NewGitLabClient(base+"/api/v4", token)
-		if err != nil {
-			return nil, err
-		}
-		disableRedirects(c.http)
-		return c, nil
+		return NewGitLabClient(base+"/api/v4", token)
 	default:
 		return nil, ErrNotConfigured
-	}
-}
-
-// disableRedirects hardens an HTTP client against redirect-based SSRF (F5
-// security review C1①). Integration hosts are USER-SUPPLIED: a malicious host
-// could answer the connectivity probe / repo listing with a 30x aimed at an
-// internal address and bounce the orchestrator's authenticated request there.
-// Provider REST APIs never legitimately redirect, so refuse to follow ANY —
-// the 3xx surfaces as a visible error instead of a silent internal request.
-func disableRedirects(hc *http.Client) {
-	hc.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return errors.New("integration hosts must answer directly: redirects are not followed (SSRF hardening)")
 	}
 }
 

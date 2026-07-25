@@ -116,6 +116,8 @@ func (p *Poller) Run(ctx context.Context) {
 // configured the whole tick is a clean visible no-op (logged once), so a config
 // set in the console activates on the next tick without a restart.
 func (p *Poller) Tick(ctx context.Context) {
+	p.tickPluginAutomations(ctx)
+
 	f, ok := p.resolver.Factory(ctx)
 	if !ok {
 		// Unconfigured (or a broken config). Log once so the idle state is visible
@@ -135,6 +137,102 @@ func (p *Poller) Tick(ctx context.Context) {
 	}
 	for i := range links {
 		p.pollLink(ctx, f, &links[i])
+	}
+}
+
+// tickPluginAutomations is the clean-cut Project Plugin path. It deliberately
+// does not depend on the retired cluster_kanban_config/kanban_links tables:
+// instance URL and token come from provider_configs + plugin_installations.
+func (p *Poller) tickPluginAutomations(ctx context.Context) {
+	specs, err := p.st.ListEnabledKanbanAutomations(ctx)
+	if err != nil {
+		p.log.Error("Kanban Automation poll: list", "err", err)
+		return
+	}
+	if len(specs) == 0 {
+		return
+	}
+	cfg, err := p.st.GetProviderConfig(ctx, domain.PluginJType)
+	if err != nil || !cfg.PluginEnabled || strings.TrimSpace(cfg.BaseURL) == "" {
+		p.log.Warn("Kanban Automation poll: JType Provider is unavailable")
+		return
+	}
+	factory := jtype.NewFactory(cfg.BaseURL, 20*time.Second)
+	if factory == nil {
+		return
+	}
+	for i := range specs {
+		p.pollPluginAutomation(ctx, factory, &specs[i])
+	}
+}
+
+func (p *Poller) pollPluginAutomation(ctx context.Context, factory *jtype.Factory, spec *domain.PluginAutomationSpec) {
+	if spec == nil || spec.Kanban == nil {
+		return
+	}
+	installation, err := p.st.GetPluginInstallation(ctx, spec.Kanban.InstallationID)
+	if err != nil || installation.Provider != domain.PluginJType ||
+		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" ||
+		installation.WorkspaceID == "" {
+		return
+	}
+	token, _, err := jtype.ResolveToken(installation.AccessTokenEnc, p.decrypt)
+	if err != nil {
+		return
+	}
+	api := p.clientFor(factory, token)
+	docs, err := api.ListDocuments(ctx, installation.WorkspaceID)
+	if err != nil {
+		p.log.Warn("Kanban Automation poll: list documents", "automation", spec.Automation.ID, "err", err)
+		return
+	}
+	svc, err := p.st.GetService(ctx, spec.Automation.ServiceID)
+	if err != nil {
+		return
+	}
+	for _, doc := range docs {
+		if !isMarkdown(doc.Path) {
+			continue
+		}
+		full, err := api.GetDocument(ctx, installation.WorkspaceID, doc.ID)
+		if err != nil {
+			continue
+		}
+		card := jtype.ParseCard(full.Content)
+		if card.Board != spec.Kanban.BoardRef || card.Status != spec.Kanban.TriggerColumn {
+			continue
+		}
+		claim, err := p.st.EnsurePluginKanbanClaim(ctx, spec.Automation.ID, doc.ID, doc.Path)
+		if err != nil || claim.RunID != "" {
+			continue
+		}
+		sel, outcome, err := p.models.SelectModel(ctx, svc.ProjectID, derefStr(svc.DefaultModelID), "")
+		if err != nil || outcome != modelcfg.SelectOK {
+			continue
+		}
+		now := p.now()
+		run := &domain.Run{
+			ID: domain.NewID(), ProjectID: svc.ProjectID, ServiceID: svc.ID,
+			Prompt: buildPrompt(card), Status: domain.StatusQueued, Kind: domain.RunKindAgent,
+			Phase: "Queued", Origin: domain.RunOriginAutomation,
+			OriginAutomationID: spec.Automation.ID,
+			OriginEventKey:     "kanban:" + spec.Automation.ID + ":" + doc.ID,
+			Attempt:            1, CreatedAt: now, ModelName: sel.ModelName,
+		}
+		if sel.ModelID != "" {
+			modelID := sel.ModelID
+			run.ModelID = &modelID
+		}
+		if err := p.st.CreateRun(ctx, run); err != nil {
+			continue
+		}
+		if err := p.st.SetPluginKanbanClaimRun(ctx, spec.Automation.ID, doc.ID, run.ID); err != nil {
+			continue
+		}
+		spec.Automation.LastTriggeredAt = &now
+		spec.Automation.LastRunID = run.ID
+		spec.Automation.LastError = ""
+		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
 	}
 }
 

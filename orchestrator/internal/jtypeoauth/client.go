@@ -32,6 +32,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/cnjack/jcloud/internal/safehttp"
 )
 
 // Client talks to one jtype instance's OAuth device endpoints. The base URL is
@@ -49,7 +51,7 @@ type Client struct {
 // yields a default client with a 20s timeout (matching internal/jtype).
 func NewClient(baseURL string, hc *http.Client) *Client {
 	if hc == nil {
-		hc = &http.Client{Timeout: 20 * time.Second}
+		hc = safehttp.NewProviderClient(baseURL, 20*time.Second)
 	}
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),

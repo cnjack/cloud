@@ -386,7 +386,7 @@ func (s *Server) providerCredential(p *domain.ModelProvider) (string, error) {
 		return "", fmt.Errorf("credential is not configured")
 	}
 	if s.cipher == nil {
-		return "", fmt.Errorf("AUTH_TOKEN_KEY is not configured")
+		return "", fmt.Errorf("JCLOUD_MASTER_KEY is not configured")
 	}
 	return s.cipher.DecryptString(p.APIKeyEnc)
 }
@@ -400,7 +400,7 @@ func (s *Server) providerHeaders(p *domain.ModelProvider) (map[string]string, er
 		return nil, nil
 	}
 	if s.cipher == nil {
-		return nil, fmt.Errorf("AUTH_TOKEN_KEY is not configured")
+		return nil, fmt.Errorf("JCLOUD_MASTER_KEY is not configured")
 	}
 	raw, err := s.cipher.DecryptString(p.HeadersEnc)
 	if err != nil {

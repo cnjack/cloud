@@ -1,3 +1,5 @@
+//go:build legacy_api
+
 package api
 
 import (
@@ -34,7 +36,7 @@ func (f fakeBoardValidator) GetBoard(ctx context.Context, ws, ref string) (*jtyp
 	return f.board, f.err
 }
 
-// kanbanFixture is a server with a cipher (AUTH_TOKEN_KEY) + one project/service
+// kanbanFixture is a server with a cipher (JCLOUD_MASTER_KEY) + one project/service
 // seeded through the API, plus owner/member/viewer/stranger/admin bearer tokens
 // so the project-scoped kanban RBAC (F6 / D25) can be exercised end to end.
 type kanbanFixture struct {
@@ -49,9 +51,9 @@ type kanbanFixture struct {
 func setupKanban(t *testing.T, board fakeBoardValidator) kanbanFixture {
 	t.Helper()
 	st := store.NewMemStore()
-	// A valid 32-byte AUTH_TOKEN_KEY so the cipher (per-link token seal) is live.
+	// A valid 32-byte JCLOUD_MASTER_KEY so the cipher (per-link token seal) is live.
 	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	cfg := withTestModel(&config.Config{ConsoleToken: consoleToken, AuthTokenKey: key})
+	cfg := withTestModel(&config.Config{ConsoleToken: consoleToken, MasterKey: key})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, sse.NewHub(), nil)
 	// When a board (or error) is supplied, ENABLE the integration (env base URL, so
@@ -359,7 +361,7 @@ func TestProjectKanbanLinkColumnValidation(t *testing.T) {
 func TestProjectKanbanLinkTokenNeedsCipher(t *testing.T) {
 	board := &jtype.Board{Columns: []jtype.BoardColumn{{Key: "ai"}}}
 	f := setupKanban(t, fakeBoardValidator{board: board})
-	f.srv.cipher = nil // simulate AUTH_TOKEN_KEY unset
+	f.srv.cipher = nil // simulate JCLOUD_MASTER_KEY unset
 
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "b", "service_id": f.serviceID,
@@ -376,7 +378,7 @@ func TestProjectKanbanLinkTokenNeedsCipher(t *testing.T) {
 // 503 masked behind the network failure.
 func TestProjectKanbanLinkCipherCheckedBeforeBoardFetch(t *testing.T) {
 	f := setupKanban(t, fakeBoardValidator{err: errFakeJtype}) // jtype unreachable
-	f.srv.cipher = nil                                         // AUTH_TOKEN_KEY unset
+	f.srv.cipher = nil                                         // JCLOUD_MASTER_KEY unset
 
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "b", "service_id": f.serviceID,

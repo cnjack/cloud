@@ -3,12 +3,15 @@ package jtype
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/cnjack/jcloud/internal/safehttp"
 )
 
 // fakeJtype is a tiny stand-in for the jtype document API, exercising the
@@ -285,6 +288,46 @@ func TestClientTypedErrors(t *testing.T) {
 	}
 	if je.StatusCode != 404 || je.Code != "not_found" {
 		t.Fatalf("typed error = %+v", je)
+	}
+}
+
+func TestClientRefusesRedirectsAndDoesNotReflectBearerToken(t *testing.T) {
+	const token = "jtype-bearer-token-must-not-leak"
+	targetHits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	c := NewClient(redirector.URL, token, 0)
+	_, err := c.ListDocuments(context.Background(), "ws")
+	if !errors.Is(err, safehttp.ErrRedirectDenied) {
+		t.Fatalf("redirect error=%v want ErrRedirectDenied", err)
+	}
+	if targetHits != 0 {
+		t.Fatalf("redirect target received %d requests", targetHits)
+	}
+
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"Bearer ` + token + `","message":"Bearer ` + token + `"}`))
+	}))
+	defer failing.Close()
+	c = NewClient(failing.URL, token, 0)
+	_, err = c.ListDocuments(context.Background(), "ws")
+	if err == nil || strings.Contains(err.Error(), token) {
+		t.Fatalf("JType error reflected a bearer token: %v", err)
+	}
+	var typed *Error
+	if !errors.As(err, &typed) || typed.Code != "unauthorized" || typed.Message != http.StatusText(http.StatusUnauthorized) {
+		t.Fatalf("error=%T(%v), want sanitized unauthorized Error", err, err)
 	}
 }
 

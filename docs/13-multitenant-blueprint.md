@@ -29,7 +29,7 @@ user_identities(
   provider text not null check (provider in ('gitea','github','gitlab')),
   provider_uid text not null,
   username text not null,
-  access_token_enc bytea not null,      -- AES-256-GCM,密钥 env AUTH_TOKEN_KEY(32B base64)
+  access_token_enc bytea not null,      -- AES-256-GCM,密钥 env JCLOUD_MASTER_KEY(32B base64)
   refresh_token_enc bytea,
   token_expires_at timestamptz,
   created_at timestamptz not null default now(),
@@ -109,7 +109,7 @@ GET  /api/v1/me                 → {user:{id,display_name,avatar_url,is_cluster
 ### Provider 配置(env,dual-URL)
 
 ```
-AUTH_TOKEN_KEY                  32B base64,AES-GCM 加密 identity token(bootstrap 生成进 Secret)
+JCLOUD_MASTER_KEY                  32B base64,AES-GCM 加密 identity token(bootstrap 生成进 Secret)
 AUTH_{GITEA|GITHUB|GITLAB}_CLIENT_ID / _CLIENT_SECRET
 AUTH_{P}_EXTERNAL_URL           浏览器可达(gitea 本地= http://localhost:3000;github 固定 https://github.com)
 AUTH_{P}_INTERNAL_URL           服务端到服务端(gitea= http://gitea.jcloud.svc.cluster.local:3000)
@@ -137,7 +137,7 @@ SSE/下载的 `?access_token=` 同样接受 session token 或 CONSOLE_TOKEN。
 
 ### Gitea 本地闭环(deploy)
 
-- gitea-bootstrap Job 追加:用 admin 账号建 OAuth2 app(redirect: `http://localhost:8080/auth/callback/gitea`),把 client_id/secret + AUTH_TOKEN_KEY 写进 `gitea-orchestrator` Secret。
+- gitea-bootstrap Job 追加:用 admin 账号建 OAuth2 app(redirect: `http://localhost:8080/auth/callback/gitea`),把 client_id/secret + JCLOUD_MASTER_KEY 写进 `gitea-orchestrator` Secret。
 - Gitea `ROOT_URL=http://localhost:3000`(浏览器侧);集群内 API/git 仍走 svc DNS。
 - deploy Makefile:`make port-forward-gitea`(3000)+ `make port-forward` 说明同时开两个;README 更新。
 

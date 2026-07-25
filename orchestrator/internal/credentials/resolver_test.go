@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -158,6 +160,213 @@ func TestResolveRefreshesExpired(t *testing.T) {
 	id, _ := st.GetIdentityForUser(ctx, uid, domain.ProviderGitea)
 	if dec, _ := cipher.DecryptString(id.AccessTokenEnc); dec != "fresh-access" {
 		t.Fatalf("persisted access token=%q want fresh-access", dec)
+	}
+}
+
+func TestIssueRunPluginCredentialRefreshesInControlPlane(t *testing.T) {
+	var sawRefresh bool
+	oauthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/login/oauth/access_token" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		sawRefresh = r.Form.Get("grant_type") == "refresh_token" &&
+			r.Form.Get("refresh_token") == "refresh-old" &&
+			r.Form.Get("client_secret") == "oauth-secret"
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"access-new","refresh_token":"refresh-new","expires_in":3600}`))
+	}))
+	defer oauthServer.Close()
+
+	ctx := context.Background()
+	st := store.NewMemStore()
+	cipher := testCipher(t)
+	past := time.Now().Add(-time.Minute)
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: "p1", Provider: domain.PluginGitea,
+		Status:          domain.PluginStatusEnabled,
+		AccessTokenEnc:  mustEncrypt(t, cipher, "access-old"),
+		RefreshTokenEnc: mustEncrypt(t, cipher, "refresh-old"),
+		TokenExpiresAt:  &past, ConsentVersion: "v1", ConsentedAt: time.Now(), CreatedAt: time.Now(),
+		ConfigRevision: 1,
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &domain.ProviderConfig{
+		Provider: domain.PluginGitea, BaseURL: oauthServer.URL,
+		ClientID: "cloud", ClientSecretEnc: mustEncrypt(t, cipher, "oauth-secret"),
+		PluginEnabled: true, ConfigRevision: 1,
+	}
+	resolver := NewResolver(st, cipher, nil, "", nil)
+	credential, err := resolver.IssueRunPluginCredential(ctx, installation, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawRefresh || credential.AccessToken != "access-new" ||
+		credential.ExpiresAt == nil || !credential.ExpiresAt.After(time.Now()) {
+		t.Fatalf("sawRefresh=%v credential=%+v", sawRefresh, credential)
+	}
+	stored, err := st.GetPluginInstallation(ctx, installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, _ := cipher.DecryptString(stored.RefreshTokenEnc); token != "refresh-new" {
+		t.Fatalf("persisted refresh token=%q", token)
+	}
+	if stored.LastHealthyAt == nil || stored.Status != domain.PluginStatusEnabled {
+		t.Fatalf("stored installation=%+v", stored)
+	}
+}
+
+func TestIssueRunPluginCredentialMarksExpiredGrantActionRequired(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	cipher := testCipher(t)
+	past := time.Now().Add(-time.Hour)
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: "p1", Provider: domain.PluginGitLab,
+		Status: domain.PluginStatusEnabled, AccessTokenEnc: mustEncrypt(t, cipher, "expired"),
+		TokenExpiresAt: &past, ConsentVersion: "v1", ConsentedAt: time.Now(), CreatedAt: time.Now(),
+		ConfigRevision: 1,
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	resolver := NewResolver(st, cipher, nil, "", nil)
+	_, err := resolver.IssueRunPluginCredential(ctx, installation, &domain.ProviderConfig{Provider: domain.PluginGitLab, PluginEnabled: true, ConfigRevision: 1})
+	if !errors.Is(err, ErrPluginCredentialUnavailable) {
+		t.Fatalf("err=%v want ErrPluginCredentialUnavailable", err)
+	}
+	stored, _ := st.GetPluginInstallation(ctx, installation.ID)
+	if stored.Status != domain.PluginStatusActionRequired || stored.LastHealthError == "" {
+		t.Fatalf("expired grant did not become action_required: %+v", stored)
+	}
+}
+
+func TestRunSnapshotRefreshKeepsOldProviderAndGrantAfterReconnect(t *testing.T) {
+	var refreshes []string
+	oauthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/login/oauth/access_token" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		refresh := r.Form.Get("refresh_token")
+		refreshes = append(refreshes, refresh)
+		if r.Form.Get("client_secret") != "old-client-secret" {
+			t.Fatalf("refresh used a replacement Provider client secret")
+		}
+		response := `{"access_token":"old-access-1","refresh_token":"old-refresh-1","expires_in":60}`
+		if refresh == "old-refresh-1" {
+			response = `{"access_token":"old-access-2","refresh_token":"old-refresh-2","expires_in":60}`
+		} else if refresh == "old-refresh-2" {
+			response = `{"access_token":"old-access-3","refresh_token":"old-refresh-3","expires_in":60}`
+		}
+		_, _ = w.Write([]byte(response))
+	}))
+	defer oauthServer.Close()
+
+	ctx := context.Background()
+	st := store.NewMemStore()
+	cipher := testCipher(t)
+	if err := st.CreateProject(ctx, &domain.Project{ID: "p", Name: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateService(ctx, &domain.Service{ID: "s", ProjectID: "p", Name: "s", RepoKind: domain.RepoKindRaw}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateRun(ctx, &domain.Run{ID: "r", ProjectID: "p", ServiceID: "s", Status: domain.StatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+	oldCfg := &domain.ProviderConfig{
+		Provider: domain.PluginGitea, BaseURL: oauthServer.URL, PluginEnabled: true,
+		ClientID: "old-client", ClientSecretEnc: mustEncrypt(t, cipher, "old-client-secret"),
+	}
+	if err := st.UpsertProviderConfig(ctx, oldCfg); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	installation := &domain.PluginInstallation{
+		ID: "i", ProjectID: "p", Provider: domain.PluginGitea, Status: domain.PluginStatusEnabled,
+		AccessTokenEnc: mustEncrypt(t, cipher, "old-access"), RefreshTokenEnc: mustEncrypt(t, cipher, "old-refresh"),
+		TokenExpiresAt: &past, ConfigRevision: oldCfg.ConfigRevision, CreatedAt: time.Now(),
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateRunPluginSnapshots(ctx, []domain.RunPluginSnapshot{{RunID: "r", InstallationID: "i"}}); err != nil {
+		t.Fatal(err)
+	}
+	resolver := NewResolver(st, cipher, nil, "", nil)
+	launchSnapshots, err := st.ListRunPluginSnapshots(ctx, "r")
+	if err != nil || len(launchSnapshots) != 1 {
+		t.Fatalf("launch snapshots=%+v err=%v", launchSnapshots, err)
+	}
+	launchVersion := launchSnapshots[0].CredentialVersionID
+	// A normal current-installation refresh rotates v1 in place. That keeps the
+	// durable snapshot's grant chain valid when the Provider invalidates the old
+	// refresh token, rather than appending an unrelated v2.
+	current, err := resolver.IssueRunPluginCredential(ctx, installation, oldCfg)
+	if err != nil || current.AccessToken != "old-access-1" {
+		t.Fatalf("current grant refresh=%+v err=%v", current, err)
+	}
+	liveBeforeReconnect, err := st.GetPluginInstallation(ctx, installation.ID)
+	if err != nil || liveBeforeReconnect.CredentialVersionID != launchVersion {
+		t.Fatalf("current refresh changed launch credential version: %+v err=%v", liveBeforeReconnect, err)
+	}
+
+	// Cluster reconfiguration invalidates the live Installation. A later
+	// reconnect points the project at another endpoint/grant; the old run must
+	// still use only its frozen Provider/grant version.
+	newCfg := &domain.ProviderConfig{Provider: domain.PluginGitea, BaseURL: "https://new-gitea.invalid", PluginEnabled: true, ClientID: "new-client", ClientSecretEnc: mustEncrypt(t, cipher, "new-client-secret")}
+	if err := st.UpsertProviderConfigAndInvalidate(ctx, newCfg, true, "reconnect"); err != nil {
+		t.Fatal(err)
+	}
+	live, err := st.GetPluginInstallation(ctx, installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.Status, live.ConfigRevision = domain.PluginStatusEnabled, newCfg.ConfigRevision
+	live.AccessTokenEnc, live.RefreshTokenEnc = mustEncrypt(t, cipher, "new-access"), mustEncrypt(t, cipher, "new-refresh")
+	live.TokenExpiresAt = nil
+	if err := st.UpdatePluginInstallation(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+
+	firstSnapshots, err := st.ListRunPluginSnapshots(ctx, "r")
+	if err != nil || len(firstSnapshots) != 1 {
+		t.Fatalf("snapshots=%+v err=%v", firstSnapshots, err)
+	}
+	if firstSnapshots[0].ProviderBaseURL != oauthServer.URL {
+		t.Fatalf("snapshot base_url=%q want old URL", firstSnapshots[0].ProviderBaseURL)
+	}
+	first, err := resolver.IssueRunPluginSnapshotCredential(ctx, &firstSnapshots[0])
+	if err != nil || first.AccessToken != "old-access-2" {
+		t.Fatalf("first old snapshot refresh=%+v err=%v", first, err)
+	}
+	secondSnapshots, err := st.ListRunPluginSnapshots(ctx, "r")
+	if err != nil || len(secondSnapshots) != 1 {
+		t.Fatalf("snapshots after refresh=%+v err=%v", secondSnapshots, err)
+	}
+	second, err := resolver.IssueRunPluginSnapshotCredential(ctx, &secondSnapshots[0])
+	if err != nil || second.AccessToken != "old-access-3" {
+		t.Fatalf("second old snapshot refresh=%+v err=%v", second, err)
+	}
+	if got, want := refreshes, []string{"old-refresh", "old-refresh-1", "old-refresh-2"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("refresh chain=%v want %v", got, want)
+	}
+	live, err = st.GetPluginInstallation(ctx, installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := cipher.DecryptString(live.AccessTokenEnc); got != "new-access" {
+		t.Fatalf("old run refresh clobbered reconnect grant: %q", got)
 	}
 }
 

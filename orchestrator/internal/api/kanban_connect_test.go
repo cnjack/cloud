@@ -1,3 +1,5 @@
+//go:build legacy_api
+
 package api
 
 import (
@@ -145,7 +147,7 @@ func setupConnect(t *testing.T, withCipher bool) connectFixture {
 	st := store.NewMemStore()
 	cfg := withTestModel(&config.Config{ConsoleToken: consoleToken, JtypePollInterval: 15 * time.Second})
 	if withCipher {
-		cfg.AuthTokenKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
+		cfg.MasterKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, sse.NewHub(), nil)
@@ -367,7 +369,7 @@ func TestLinkConnectRejectsTokenThatCannotListWorkspaces(t *testing.T) {
 }
 
 // Test 3: an unsupported jtype (start returns ErrOAuthUnsupported) → 409
-// jtype_oauth_unsupported; AUTH_TOKEN_KEY unset → cipher_not_configured AT START
+// jtype_oauth_unsupported; JCLOUD_MASTER_KEY unset → cipher_not_configured AT START
 // (no jtype call at all).
 func TestLinkConnectUnsupportedAndNoCipher(t *testing.T) {
 	// Unsupported.

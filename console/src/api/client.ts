@@ -22,9 +22,11 @@ import type {
   AuthProvidersEnvelope,
   BoardEmbedLink,
   CatalogModel,
+  ClusterProviderConfig,
   CreateApiKeyInput,
   CreateApiKeyResponse,
   CreateAutomationInput,
+  CreateProjectAutomationInput,
   CreateKanbanLinkInput,
   CreateProjectInput,
   CreateIntegrationInput,
@@ -52,6 +54,21 @@ import type {
   ProviderModel,
   PrInfo,
   Project,
+  ProjectAutomationSpec,
+  ProjectPlugin,
+  PluginAuditEvent,
+  PluginConsentInput,
+  PluginInstallStart,
+  GitHubAppInstallation,
+  GitHubInstallationConsentPreview,
+  JTypePluginConnectStatus,
+  ProviderKind,
+  PluginRepositoryResource,
+  PluginWorkspaceResource,
+  PluginBoardResource,
+  ScmProviderCapabilities,
+  SetupStatus,
+  SetupInput,
   ProjectModels,
   ProjectsEnvelope,
   ProviderRepo,
@@ -70,6 +87,8 @@ import type {
   StreamFrame,
   SystemInfo,
   UpdateAutomationInput,
+  UpdateClusterProviderConfigInput,
+  UpdateProjectAutomationInput,
   UpdateIntegrationInput,
   UpdateKanbanConfigInput,
   UpdateModelInput,
@@ -103,6 +122,12 @@ export interface StreamCallbacks {
 }
 
 export interface ApiClient {
+  getSetupStatus(): Promise<SetupStatus>;
+  updateSetup(input: SetupInput): Promise<SetupStatus>;
+  getClusterProviderConfig(provider: ProviderKind): Promise<ClusterProviderConfig>;
+  updateClusterProviderConfig(provider: ProviderKind, input: UpdateClusterProviderConfigInput): Promise<ClusterProviderConfig>;
+  testClusterProviderConfig(provider: ProviderKind): Promise<ClusterProviderConfig>;
+  getClusterProviderImpact(provider: ProviderKind): Promise<{ affected_installations: number; affected_projects: number }>;
   /**
    * GET /api/v1/me — the current principal (user / identities / is_service).
    * 200 for every authenticated principal; only an unauthenticated request 401s.
@@ -428,6 +453,31 @@ export interface ApiClient {
   createServiceAutomation(serviceId: string, input: CreateAutomationInput): Promise<Automation>;
   updateAutomation(automationId: string, input: UpdateAutomationInput): Promise<Automation>;
   deleteAutomation(automationId: string): Promise<void>;
+  /* ---- unified project plugins (plugin-platform v1) --------------------- */
+  /** GET /projects/{id}/plugins — fixed Provider cards, member+ read. */
+  listProjectPlugins(projectId: string): Promise<ProjectPlugin[]>;
+  /** Starts consent-first installation; owner/admin only. */
+  startPluginInstall(projectId: string, provider: ProviderKind, input: PluginConsentInput): Promise<PluginInstallStart>;
+  listGitHubAppInstallations(projectId: string): Promise<GitHubAppInstallation[]>;
+  previewGitHubAppInstallationConsent(projectId: string, installationId: string): Promise<GitHubInstallationConsentPreview>;
+  selectGitHubAppInstallation(projectId: string, installationId: string, input: PluginConsentInput): Promise<ProjectPlugin>;
+  getJTypePluginConnectStatus(projectId: string, installationId: string, connectId: string): Promise<JTypePluginConnectStatus>;
+  setProjectPluginEnabled(installationId: string, enabled: boolean): Promise<ProjectPlugin>;
+  setProjectPluginWorkspace(installationId: string, workspaceId: string): Promise<ProjectPlugin>;
+  /** DELETE is intentionally destructive; the Console requires typed confirmation after loading its impact. */
+  getProjectPluginImpact(projectId: string, installationId: string): Promise<{ services: number; automations: number }>;
+  listProjectPluginAudit(projectId: string, installationId: string): Promise<PluginAuditEvent[]>;
+  uninstallProjectPlugin(installationId: string, force?: boolean): Promise<void>;
+  listPluginRepositories(projectId: string, installationId: string, q?: string): Promise<PluginRepositoryResource[]>;
+  listPluginWorkspaces(projectId: string, installationId: string): Promise<PluginWorkspaceResource[]>;
+  listPluginBoards(projectId: string, installationId: string, workspaceId?: string): Promise<PluginBoardResource[]>;
+  getProviderCapabilities(provider: ProviderKind): Promise<ScmProviderCapabilities>;
+  /** Generic Automation list; the editor is project-owned but every entry binds a Service. */
+  listProjectAutomations(projectId: string): Promise<ProjectAutomationSpec[]>;
+  getProjectAutomation(projectId: string, automationId: string): Promise<ProjectAutomationSpec>;
+  createProjectAutomation(projectId: string, input: CreateProjectAutomationInput): Promise<ProjectAutomationSpec>;
+  updateProjectAutomation(projectId: string, automationId: string, input: UpdateProjectAutomationInput): Promise<ProjectAutomationSpec>;
+  deleteProjectAutomation(projectId: string, automationId: string): Promise<void>;
   /** POST /api/v1/services/{id}/runs — dispatch a run against a specific service. */
   createServiceRun(serviceId: string, input: CreateRunInput): Promise<Run>;
   /**
@@ -522,6 +572,12 @@ export function createHttpClient(
   }
 
   return {
+    getSetupStatus: () => req<SetupStatus>('/setup'),
+    updateSetup: (input) => req<SetupStatus>('/setup', { method: 'PUT', body: JSON.stringify(input) }),
+    getClusterProviderConfig: (provider) => req<ClusterProviderConfig>(`/system/providers/${encodeURIComponent(provider)}`),
+    updateClusterProviderConfig: (provider, input) => req<ClusterProviderConfig>(`/system/providers/${encodeURIComponent(provider)}`, { method: 'PUT', body: JSON.stringify(input) }),
+    testClusterProviderConfig: (provider) => req<ClusterProviderConfig>(`/system/providers/${encodeURIComponent(provider)}/test`, { method: 'POST' }),
+    getClusterProviderImpact: (provider) => req<{ affected_installations: number; affected_projects: number }>(`/system/providers/${encodeURIComponent(provider)}/impact`),
     getMe: () => req<Me>('/me'),
 
     // Lists are wrapped in envelopes (11-api.md §2); unwrap to bare arrays.
@@ -993,6 +1049,53 @@ export function createHttpClient(
         body: JSON.stringify(input),
       }),
     deleteAutomation: (automationId) =>
+      req<void>(`/automations/${encodeURIComponent(automationId)}`, { method: 'DELETE' }),
+
+    listProjectPlugins: async (projectId) =>
+      (await req<{ plugins: ProjectPlugin[] }>(`/projects/${encodeURIComponent(projectId)}/plugins`)).plugins ?? [],
+    startPluginInstall: (projectId, provider, input) =>
+      req<PluginInstallStart>(`/projects/${encodeURIComponent(projectId)}/plugins/${encodeURIComponent(provider)}/connect`, {
+        method: 'POST', body: JSON.stringify(input),
+      }),
+    listGitHubAppInstallations: async (projectId) =>
+      (await req<{ installations: GitHubAppInstallation[] }>(`/projects/${encodeURIComponent(projectId)}/plugins/github/installations`)).installations ?? [],
+    previewGitHubAppInstallationConsent: (projectId, installationId) =>
+      req<GitHubInstallationConsentPreview>(`/projects/${encodeURIComponent(projectId)}/plugins/github/installations/${encodeURIComponent(installationId)}/consent`),
+    selectGitHubAppInstallation: (projectId, installationId, input) =>
+      req<ProjectPlugin>(`/projects/${encodeURIComponent(projectId)}/plugins/github/installations/${encodeURIComponent(installationId)}/select`, {
+        method: 'POST', body: JSON.stringify(input),
+      }),
+    getJTypePluginConnectStatus: (projectId, installationId, connectId) =>
+      req<JTypePluginConnectStatus>(`/projects/${encodeURIComponent(projectId)}/plugins/${encodeURIComponent(installationId)}/connect/${encodeURIComponent(connectId)}`),
+    setProjectPluginEnabled: (installationId, enabled) =>
+      req<ProjectPlugin>(`/plugins/${encodeURIComponent(installationId)}`, {
+        method: 'PATCH', body: JSON.stringify({ status: enabled ? 'enabled' : 'disabled' }),
+      }),
+    setProjectPluginWorkspace: (installationId, workspaceId) =>
+      req<ProjectPlugin>(`/plugins/${encodeURIComponent(installationId)}`, {
+        method: 'PATCH', body: JSON.stringify({ workspace_id: workspaceId }),
+      }),
+    getProjectPluginImpact: (projectId, installationId) => req<{ services: number; automations: number }>(`/projects/${encodeURIComponent(projectId)}/plugins/${encodeURIComponent(installationId)}/impact`),
+    listProjectPluginAudit: async (projectId, installationId) =>
+      (await req<{ audit_events: PluginAuditEvent[] }>(`/projects/${encodeURIComponent(projectId)}/plugins/${encodeURIComponent(installationId)}/audit`)).audit_events ?? [],
+    uninstallProjectPlugin: (installationId, force = false) => req<void>(`/plugins/${encodeURIComponent(installationId)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ confirmation: 'UNINSTALL', force }),
+    }),
+    listPluginRepositories: async (projectId, installationId, q) => (await req<{ repositories: PluginRepositoryResource[] }>(`/projects/${encodeURIComponent(projectId)}/plugins/${encodeURIComponent(installationId)}/repositories${q ? `?q=${encodeURIComponent(q)}` : ''}`)).repositories ?? [],
+    listPluginWorkspaces: async (projectId, installationId) => (await req<{ workspaces: PluginWorkspaceResource[] }>(`/projects/${encodeURIComponent(projectId)}/plugins/${encodeURIComponent(installationId)}/workspaces`)).workspaces ?? [],
+    listPluginBoards: async (projectId, installationId, workspaceId) => (await req<{ boards: PluginBoardResource[] }>(`/projects/${encodeURIComponent(projectId)}/plugins/${encodeURIComponent(installationId)}/boards${workspaceId ? `?workspace=${encodeURIComponent(workspaceId)}` : ''}`)).boards ?? [],
+    getProviderCapabilities: (provider) => req<ScmProviderCapabilities>(`/providers/${encodeURIComponent(provider)}/capabilities`),
+    listProjectAutomations: async (projectId) =>
+      (await req<{ automations: ProjectAutomationSpec[] }>(`/projects/${encodeURIComponent(projectId)}/automations`)).automations ?? [],
+    getProjectAutomation: (_projectId, automationId) => req<ProjectAutomationSpec>(`/automations/${encodeURIComponent(automationId)}`),
+    createProjectAutomation: (projectId, input) =>
+      req<ProjectAutomationSpec>(`/projects/${encodeURIComponent(projectId)}/automations`, { method: 'POST', body: JSON.stringify(input) }),
+    updateProjectAutomation: (_projectId, automationId, input) =>
+      req<ProjectAutomationSpec>(`/automations/${encodeURIComponent(automationId)}`, {
+        method: 'PATCH', body: JSON.stringify(input),
+      }),
+    deleteProjectAutomation: (_projectId, automationId) =>
       req<void>(`/automations/${encodeURIComponent(automationId)}`, { method: 'DELETE' }),
 
     createServiceRun: (serviceId, input) =>

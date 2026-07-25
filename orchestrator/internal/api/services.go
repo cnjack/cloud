@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -103,21 +104,11 @@ func validateServiceConstraints(svc *domain.Service) (string, string) {
 }
 
 type createServiceReq struct {
-	Name          string `json:"name"`
-	RepoURL       string `json:"repo_url"`
-	Provider      string `json:"provider"`
-	OwnerName     string `json:"owner_name"`
-	GitMode       string `json:"git_mode"`
-	DefaultBranch string `json:"default_branch"`
-	// ProviderRepoID is the provider's numeric repo id, sent by the repo picker
-	// (GET /providers/{p}/repos or .../integrations/{iid}/repos). Optional;
-	// rename-proof repo identity (0009).
-	ProviderRepoID *int64 `json:"provider_repo_id"`
-	// IntegrationID binds the new service to a project integration (D19 / F5). When
-	// present, a MEMBER (not just owner) may create the service, the repo must be
-	// reachable by the integration's bot token, and the service's provider is taken
-	// from the integration. Empty => the legacy owner-only bare create.
-	IntegrationID string `json:"integration_id"`
+	Name           string `json:"name"`
+	InstallationID string `json:"installation_id"`
+	ProviderRepoID string `json:"provider_repo_id"`
+	GitMode        string `json:"git_mode"`
+	DefaultModelID string `json:"default_model_id"`
 }
 
 func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
@@ -134,63 +125,136 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
 		return
 	}
-	integrationID := strings.TrimSpace(req.IntegrationID)
-	// RBAC (D19): adding a repo off an EXISTING integration is a member action; a
-	// bare create (hand-entered repo, no integration) stays owner-only.
-	requiredRole := domain.RoleOwner
-	if integrationID != "" {
-		requiredRole = domain.RoleMember
-	}
-	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, requiredRole) {
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleMember) {
 		return
 	}
-	svc, code, msg := resolveService(serviceInput{
-		Name:          req.Name,
-		RepoURL:       req.RepoURL,
-		Provider:      req.Provider,
-		OwnerName:     req.OwnerName,
-		GitMode:       req.GitMode,
-		DefaultBranch: req.DefaultBranch,
-	})
-	if svc == nil {
-		writeError(w, http.StatusBadRequest, code, msg)
+	installationID := strings.TrimSpace(req.InstallationID)
+	repositoryID := strings.TrimSpace(req.ProviderRepoID)
+	if installationID == "" || repositoryID == "" {
+		writeError(w, http.StatusBadRequest, "plugin_repository_required", "installation_id and provider_repo_id are required; bare Git URLs are not supported")
 		return
 	}
-	// The picker's numeric repo id (rename-proof identity) is populated BEFORE the
-	// integration bind (F5 review C3) so the bind's reachability match can key off
-	// the id, not just the owner/name string — a renamed repo still matches.
-	if req.ProviderRepoID != nil && svc.RepoKind == domain.RepoKindProvider {
-		svc.ProviderRepoID = req.ProviderRepoID
+	installation, err := s.st.GetPluginInstallation(r.Context(), installationID)
+	if errors.Is(err, store.ErrNotFound) || installation.ProjectID != projectID {
+		writeError(w, http.StatusNotFound, "not_found", "project plugin not found")
+		return
 	}
-	// Integration binding (D19 / F5): validate the integration belongs to this
-	// project, its host is still cluster-allowed (defence in depth — the allowlist
-	// may have tightened since it was created), and the repo is reachable by the
-	// bot token. The integration's provider is authoritative for the service.
-	if integrationID != "" {
-		if code, msg := s.bindServiceIntegration(r.Context(), projectID, integrationID, svc); code != "" {
-			writeError(w, integrationBindStatus(code), code, msg)
-			return
-		}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load project plugin")
+		return
+	}
+	if installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" || installation.Provider == domain.PluginJType {
+		writeError(w, http.StatusConflict, "plugin_unavailable", "an enabled, healthy Git provider plugin is required")
+		return
+	}
+	repo, cfg, err := s.resolvePluginRepository(r.Context(), installation, repositoryID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "repository_not_found", "the selected repository is not available to this plugin")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "provider_error", "could not verify the selected repository")
+		return
+	}
+	gitMode := domain.GitMode(strings.TrimSpace(req.GitMode))
+	if gitMode == "" {
+		gitMode = domain.GitModeReadonly
+	}
+	if !domain.ValidGitMode(gitMode) {
+		writeError(w, http.StatusBadRequest, "bad_request", "git_mode must be 'readonly' or 'draft_pr'")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		parts := strings.Split(repo.FullName, "/")
+		name = parts[len(parts)-1]
 	}
 	// Enforce the (project_id, name) uniqueness up-front for a friendly 409.
 	if existing, err := s.st.ListServices(r.Context(), projectID); err == nil {
 		for i := range existing {
-			if existing[i].Name == svc.Name {
-				writeError(w, http.StatusConflict, "conflict", "a service named '"+svc.Name+"' already exists in this project")
+			if existing[i].Name == name {
+				writeError(w, http.StatusConflict, "conflict", "a service named '"+name+"' already exists in this project")
 				return
 			}
 		}
 	}
-	svc.ID = domain.NewID()
-	svc.ProjectID = projectID
-	svc.CreatedAt = time.Now().UTC()
-	if err := s.st.CreateService(r.Context(), svc); err != nil {
+	repoID, err := strconv.ParseInt(repositoryID, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_repository_id", "provider_repo_id must be a provider numeric id")
+		return
+	}
+	now := time.Now().UTC()
+	branch := strings.TrimSpace(repo.DefaultBranch)
+	if branch == "" {
+		branch = "main"
+	}
+	cloneURL := strings.TrimRight(cfg.BaseURL, "/") + "/" + strings.Trim(repo.FullName, "/") + ".git"
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: projectID, Name: name,
+		RepoKind: domain.RepoKindProvider, Provider: domain.GitProvider(installation.Provider),
+		RepoOwnerName: repo.FullName, ProviderRepoID: &repoID, DefaultBranch: branch,
+		GitMode: gitMode, CreatedAt: now,
+	}
+	if strings.TrimSpace(req.DefaultModelID) != "" {
+		modelID := strings.TrimSpace(req.DefaultModelID)
+		svc.DefaultModelID = &modelID
+	}
+	binding := &domain.ServiceRepositoryBinding{
+		ServiceID: svc.ID, InstallationID: installation.ID, ProviderRepoID: repositoryID,
+		RepositoryPath: repo.FullName, CloneURL: cloneURL, DefaultBranch: branch,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.st.CreatePluginBoundService(r.Context(), svc, binding); err != nil {
+		if errors.Is(err, store.ErrAlreadyExists) {
+			writeError(w, http.StatusConflict, "repository_already_bound", "this plugin repository is already bound to a Service")
+			return
+		}
 		s.log.Error("create service", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create service")
 		return
 	}
-	svc.RepoHTMLURL = s.serviceRepoHTMLURL(r.Context(), svc)
+	svc.RepoHTMLURL = repo.HTMLURL
 	writeJSON(w, http.StatusCreated, svc)
+}
+
+func (s *Server) resolvePluginRepository(ctx context.Context, installation *domain.PluginInstallation, repositoryID string) (*provider.Repo, *domain.ProviderConfig, error) {
+	cfg, err := s.st.GetProviderConfig(ctx, installation.Provider)
+	if err != nil {
+		return nil, nil, err
+	}
+	if s.pluginCredentialIssuer == nil {
+		return nil, nil, errors.New("plugin credential issuer unavailable")
+	}
+	credential, err := s.pluginCredentialIssuer.IssueRunPluginCredential(ctx, installation, cfg)
+	if err != nil {
+		return nil, nil, errors.New("plugin credential unavailable")
+	}
+	client, err := provider.IntegrationClientWithScheme(
+		domain.GitProvider(installation.Provider), cfg.BaseURL,
+		credential.AccessToken, credential.Scheme,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	lister, ok := client.(provider.RepoLister)
+	if !ok {
+		return nil, nil, errors.New("provider repository listing unavailable")
+	}
+	for page := 1; page <= 20; page++ {
+		repos, listErr := lister.ListRepos(ctx, "", page, 50)
+		if listErr != nil {
+			return nil, nil, listErr
+		}
+		for i := range repos {
+			if strconv.FormatInt(repos[i].ID, 10) == repositoryID {
+				return &repos[i], cfg, nil
+			}
+		}
+		if len(repos) < 50 {
+			break
+		}
+	}
+	return nil, nil, store.ErrNotFound
 }
 
 // serviceRepoHTMLURL derives the browser destination from server-owned
@@ -553,6 +617,12 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
 		return
 	}
+	if strings.TrimSpace(req.RepoURL) != "" || strings.TrimSpace(req.Provider) != "" ||
+		strings.TrimSpace(req.OwnerName) != "" || req.IntegrationID != nil {
+		writeError(w, http.StatusBadRequest, "repository_binding_immutable",
+			"repository bindings cannot be changed through Service PATCH; create a new Service from the Project Plugin repository picker")
+		return
+	}
 	if code, msg := applyServicePatch(svc, servicePatch{
 		Name:          req.Name,
 		RepoURL:       req.RepoURL,
@@ -582,20 +652,6 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			svc.DefaultModelID = &id
-		}
-	}
-	// Integration binding (D19 / F5): omitted = unchanged; "" = unbind; an id = the
-	// FULL bind validation, symmetric with create (F5 review C3): project scoping,
-	// cluster host allowlist, provider repo shape AND the reachability check — a
-	// PATCH-bind must not skip the "repo is in the bot's reachable set" gate the
-	// create path enforces.
-	if req.IntegrationID != nil {
-		id := strings.TrimSpace(*req.IntegrationID)
-		if id == "" {
-			svc.IntegrationID = nil
-		} else if code, msg := s.bindServiceIntegration(r.Context(), svc.ProjectID, id, svc); code != "" {
-			writeError(w, integrationBindStatus(code), code, msg)
-			return
 		}
 	}
 	if err := s.st.UpdateService(r.Context(), svc); err != nil {

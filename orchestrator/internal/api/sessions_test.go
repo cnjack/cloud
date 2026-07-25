@@ -401,12 +401,9 @@ func TestTurnCompleteHealsFromScheduling(t *testing.T) {
 	}
 }
 
-// TestTurnCompleteHealsFromQueued exercises the full queued→scheduling→running→
-// awaiting_input heal chain. A queued run is normally unreachable through the
-// RUN_TOKEN gate (no token_hash yet), so we hand-build a queued run WITH a token
-// hash to drive the defensive branch and confirm it still converges rather than
-// hanging.
-func TestTurnCompleteHealsFromQueued(t *testing.T) {
+// Even a forged/stale token hash on a queued run is not an active task
+// capability and cannot mutate session state.
+func TestTurnCompleteRejectsQueuedRunToken(t *testing.T) {
 	_, ts, st := sessionTestServer(t)
 	ctx := context.Background()
 	p := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: time.Now()}
@@ -428,38 +425,27 @@ func TestTurnCompleteHealsFromQueued(t *testing.T) {
 	}
 
 	resp := do(t, "POST", ts.URL+"/internal/v1/runs/"+run.ID+"/turn-complete", tok, map[string]any{"turn": 1, "stop_reason": "end_turn"})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("turn-complete: status=%d want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("turn-complete: status=%d want 409", resp.StatusCode)
 	}
 	resp.Body.Close()
 
 	got, _ := st.GetRun(ctx, run.ID)
-	if got.Status != domain.StatusAwaitingInput {
-		t.Fatalf("after turn-complete from queued: status=%q want awaiting_input", got.Status)
-	}
-	// The token hash the run authenticated with must be intact (heal must never
-	// clobber it via ScheduleRun).
-	if got.TokenHash != auth.HashToken(tok) {
-		t.Fatalf("heal clobbered token_hash: %q", got.TokenHash)
-	}
-	chain := runStatusChain(t, st, run.ID)
-	if !hasSubsequence(chain, []string{"scheduling", "running", "awaiting_input"}) {
-		t.Fatalf("status chain %v missing the full heal chain", chain)
+	if got.Status != domain.StatusQueued {
+		t.Fatalf("queued run mutated: status=%q", got.Status)
 	}
 }
 
 // TestTurnCompleteTerminalConcurrentIsVisibleNoOp: a turn-complete that races a
-// concurrent terminal transition (cancel / dead pod) finds nothing to park. It
-// must be a tolerated 200 no-op (not a 4xx/5xx that kills the runner), and it
-// must NOT append a spurious awaiting_input — the run stays terminal.
-func TestTurnCompleteTerminalConcurrentIsVisibleNoOp(t *testing.T) {
+// concurrent terminal transition loses the RUN_TOKEN capability immediately.
+func TestTurnCompleteTerminalRunTokenRevoked(t *testing.T) {
 	_, ts, st := sessionTestServer(t)
 	ctx := context.Background()
 	rid, tok := makeSessionRun(t, st, domain.StatusSucceeded)
 
 	resp := do(t, "POST", ts.URL+"/internal/v1/runs/"+rid+"/turn-complete", tok, map[string]any{"turn": 1, "stop_reason": "end_turn"})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("turn-complete on terminal run: status=%d want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("turn-complete on terminal run: status=%d want 409", resp.StatusCode)
 	}
 	resp.Body.Close()
 
@@ -561,37 +547,17 @@ func TestFinishSetsFinalize(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestBundleUpsertBumpsRevForSession: uploading a bundle for a session run stores
-// it (upsert on re-upload) and bumps bundle_rev each time so the session-push
-// pass re-pushes.
-func TestBundleUpsertBumpsRevForSession(t *testing.T) {
+// Cloud no longer accepts runner bundles or pushes session branches. Sessions
+// use the same in-task Skill/CLI SCM contract as single-turn runs.
+func TestSessionBundleEndpointIsRetired(t *testing.T) {
 	_, ts, st := sessionTestServer(t)
-	ctx := context.Background()
 	rid, tok := makeSessionRun(t, st, domain.StatusRunning)
 
-	resp := postRaw(t, ts.URL+"/internal/v1/runs/"+rid+"/bundle", tok, "application/octet-stream", []byte("bundle-v1"))
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("bundle v1: status=%d want 201", resp.StatusCode)
+	resp := do(t, http.MethodPost, ts.URL+"/internal/v1/runs/"+rid+"/bundle", tok, map[string]any{"retired": true})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("bundle status=%d want 404", resp.StatusCode)
 	}
 	resp.Body.Close()
-	run, _ := st.GetRun(ctx, rid)
-	if run.BundleRev != 1 || run.GitBranch == "" {
-		t.Fatalf("after v1: bundle_rev=%d git_branch=%q", run.BundleRev, run.GitBranch)
-	}
-
-	resp = postRaw(t, ts.URL+"/internal/v1/runs/"+rid+"/bundle", tok, "application/octet-stream", []byte("bundle-v2-bigger"))
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("bundle v2: status=%d want 201", resp.StatusCode)
-	}
-	resp.Body.Close()
-	run, _ = st.GetRun(ctx, rid)
-	if run.BundleRev != 2 {
-		t.Fatalf("after v2: bundle_rev=%d want 2", run.BundleRev)
-	}
-	got, _ := st.GetRunBundle(ctx, rid)
-	if string(got) != "bundle-v2-bigger" {
-		t.Fatalf("bundle not upserted: %q", got)
-	}
 }
 
 // TestCreateRunWithSessionFlag: POST /services/{id}/runs {session:true} creates a

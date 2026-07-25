@@ -61,9 +61,7 @@ func unconfiguredProxyServer(t *testing.T) (*httptest.Server, *store.MemStore) {
 // credential the runner uses as MODEL_API_KEY against the proxy.
 func proxyRun(t *testing.T, st *store.MemStore) (string, string) {
 	t.Helper()
-	return scheduledRun(t, st, &domain.Service{
-		RepoKind: domain.RepoKindRaw, RawRepoURL: "git://x/y.git",
-	}, domain.RunKindAgent)
+	return createActiveInternalTestRun(t, st)
 }
 
 // proxyPost POSTs a JSON body to /internal/v1/<suffix> with the given bearer.
@@ -359,7 +357,7 @@ func TestLLMProxyAppliesCustomHeaders(t *testing.T) {
 	t.Cleanup(up.Close)
 
 	st := store.NewMemStore()
-	cfg := &config.Config{ConsoleToken: consoleToken, AuthTokenKey: validTokenKey(t)}
+	cfg := &config.Config{ConsoleToken: consoleToken, MasterKey: validTokenKey(t)}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(st, cfg, log, sse.NewHub(), nil)
 	ts := httptest.NewServer(srv.Handler())

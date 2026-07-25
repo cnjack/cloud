@@ -26,6 +26,7 @@ import { TextField } from '../components/Field';
 import { LoadingBlock } from '../components/States';
 import { CONSOLE_VERSION } from '../version';
 import styles from './OnboardingGate.module.css';
+import { SetupPage } from './SetupPage';
 
 /** The deploy README distilled to the three commands that fix "unreachable". */
 const SETUP_STEPS: Array<{ cmd: string; whatKey: string }> = [
@@ -350,6 +351,7 @@ function MobileConsentCard() {
 }
 
 export function OnboardingGate({ children }: { children: ReactNode }) {
+  if (window.location.pathname === '/setup') return <SetupPage />;
   const { t } = useTranslation();
   const { status, landing, welcome } = useAuth();
 

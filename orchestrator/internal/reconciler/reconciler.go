@@ -428,28 +428,10 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// cancel whose best-effort delete failed). See cleanupTerminalJobs.
 	r.cleanupTerminalJobs(ctx)
 
-	// Push branches + open draft PRs for succeeded draft_pr agent runs that
-	// uploaded a bundle but have no PR yet (M3). Idempotent: a run stays in the
-	// scan until pr_url is stamped.
-	r.reconcilePRs(ctx)
-
-	// Fast-forward push webhook @mention task bundles back onto their existing PR
-	// head branch (M7 update mode). Idempotent via commit_sha.
-	r.reconcileUpdatePushes(ctx)
-
-	// Post AI-review comments for succeeded review runs whose output has not been
-	// posted to their target PR yet (M3/M5). Idempotent via review_posted_at.
-	r.reconcileReviews(ctx)
-
 	// Feature E — write finished kanban-origin runs back to their cards (comment
 	// + optional move to the done column). Idempotent via writeback_at. No-op
 	// when the jtype client is not wired.
 	r.reconcileKanbanWriteback(ctx)
-
-	// Session (D22) — push each session run's per-turn bundle: open the draft PR
-	// on the first turn, ff-update the same branch on later turns. Idempotent via
-	// bundle_rev/pushed_rev. No-op when the draft-PR stack is not configured.
-	r.reconcileSessionPushes(ctx)
 
 	// Session (D22) — finalize awaiting_input runs that have sat idle past the
 	// effective session_idle_timeout (idle reclaim: sets the finalize flag so the
@@ -592,7 +574,7 @@ func (r *Reconciler) pushRunBundle(ctx context.Context, run *domain.Run, svc *do
 	}
 	f.Close()
 
-	rawURL := domain.ServiceCloneURL(*svc, r.cfg.GiteaURL)
+	rawURL := r.serviceCloneURL(ctx, svc)
 	if rawURL == "" {
 		return "", fmt.Errorf("could not derive push URL for service %s", svc.ID)
 	}
@@ -667,7 +649,7 @@ func (r *Reconciler) updatePushRun(ctx context.Context, run *domain.Run, svc *do
 	}
 	f.Close()
 
-	rawURL := domain.ServiceCloneURL(*svc, r.cfg.GiteaURL)
+	rawURL := r.serviceCloneURL(ctx, svc)
 	if rawURL == "" {
 		r.log.Warn("reconcile update: could not derive push URL", "run", run.ID)
 		return
@@ -693,6 +675,18 @@ func (r *Reconciler) updatePushRun(ctx context.Context, run *domain.Run, svc *do
 	}
 	run.CommitSHA = sha
 	r.emitStatus(ctx, run)
+}
+
+// serviceCloneURL prefers the immutable Project Plugin binding. The legacy
+// domain reconstruction remains only for internal migration-era fixtures.
+func (r *Reconciler) serviceCloneURL(ctx context.Context, svc *domain.Service) string {
+	if svc == nil {
+		return ""
+	}
+	if binding, err := r.st.GetServiceRepositoryBinding(ctx, svc.ID); err == nil {
+		return binding.CloneURL
+	}
+	return domain.ServiceCloneURL(*svc, r.cfg.GiteaURL)
 }
 
 // reconcileReviews posts the AI-review comment for each succeeded review run
@@ -777,7 +771,11 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 // is a DB error between AddComment and the marker, which mirrors the
 // reconcileReviews pattern and is rare).
 func (r *Reconciler) reconcileKanbanWriteback(ctx context.Context) {
-	if r.kanbanResolver == nil || r.kanbanFor == nil {
+	if r.kanbanFor == nil {
+		return
+	}
+	r.reconcilePluginKanbanWriteback(ctx)
+	if r.kanbanResolver == nil {
 		return
 	}
 	// Resolve the effective cluster jtype config ONCE per pass (D27; base URL
@@ -801,6 +799,46 @@ func (r *Reconciler) reconcileKanbanWriteback(ctx context.Context) {
 	for i := range pending {
 		wb := pending[i]
 		r.writebackCard(ctx, f, &wb)
+	}
+}
+
+func (r *Reconciler) reconcilePluginKanbanWriteback(ctx context.Context) {
+	if r.jtypeDecrypt == nil {
+		return
+	}
+	cfg, err := r.st.GetProviderConfig(ctx, domain.PluginJType)
+	if err != nil || !cfg.PluginEnabled || strings.TrimSpace(cfg.BaseURL) == "" {
+		return
+	}
+	factory := jtype.NewFactory(cfg.BaseURL, 20*time.Second)
+	if factory == nil {
+		return
+	}
+	pending, err := r.st.ListPluginKanbanRunsAwaitingWriteback(ctx)
+	if err != nil {
+		r.log.Error("reconcile Kanban Automation: list writebacks", "err", err)
+		return
+	}
+	for i := range pending {
+		wb := &pending[i]
+		installation, err := r.st.GetPluginInstallation(ctx, wb.Trigger.InstallationID)
+		if err != nil || installation.ProjectID != wb.Run.ProjectID {
+			continue
+		}
+		token, _, err := jtype.ResolveToken(installation.AccessTokenEnc, r.jtypeDecrypt)
+		if err != nil {
+			continue
+		}
+		writer := r.kanbanFor(factory, token)
+		if wb.Run.Status == domain.StatusSucceeded && wb.Trigger.DoneColumn != "" {
+			if err := writer.MoveCard(ctx, installation.WorkspaceID, wb.Claim.DocumentID, wb.Trigger.DoneColumn); err != nil {
+				continue
+			}
+		}
+		if err := writer.AddComment(ctx, installation.WorkspaceID, wb.Claim.DocumentID, kanbanCommentBody(&wb.Run, r.consoleURL)); err != nil {
+			continue
+		}
+		_, _ = r.st.MarkPluginKanbanWriteback(ctx, wb.Automation.ID, wb.Claim.DocumentID, r.now())
 	}
 }
 
@@ -1071,16 +1109,16 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 	model, err := r.models.ResolveModel(ctx, derefStr(run.ModelID))
 	if err != nil {
 		// A cipher-not-configured error (the model has a stored key but
-		// AUTH_TOKEN_KEY is unset) is a PERMANENT operator misconfiguration, not a
+		// JCLOUD_MASTER_KEY is unset) is a PERMANENT operator misconfiguration, not a
 		// transient blip — retrying every tick forever would leave the run stuck in
 		// queued invisibly. Fail it visibly (P1); every other resolve error stays
 		// transient (DB blip, key rotation mid-flight).
 		if errors.Is(err, auth.ErrCipherNotConfigured) {
-			msg := "the model's API key cannot be decrypted — the orchestrator's AUTH_TOKEN_KEY is not configured"
+			msg := "the model's API key cannot be decrypted — the orchestrator's JCLOUD_MASTER_KEY is not configured"
 			if committed, merr := r.st.MarkFailed(ctx, run.ID, "Failed", domain.FailureSetupFailed, msg, r.now()); merr != nil {
 				r.log.Error("reconcile: mark failed (cipher not configured)", "run", run.ID, "err", merr)
 			} else {
-				r.log.Error("reconcile: run failed — model key cannot be decrypted (AUTH_TOKEN_KEY unset)", "run", run.ID)
+				r.log.Error("reconcile: run failed — model key cannot be decrypted (JCLOUD_MASTER_KEY unset)", "run", run.ID)
 				r.emitStatus(ctx, committed)
 			}
 			return false
@@ -1106,6 +1144,30 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 	// an empty value when K8s is enabled); this guards dev/API-only shapes.
 	if r.cfg.OrchBaseURL == "" {
 		r.log.Warn("reconcile: ORCH_BASE_URL unset — cannot build LLM proxy URL; leaving run queued", "run", run.ID)
+		return false
+	}
+
+	// A service bound to a plugin repository cannot honestly run if that
+	// installation is no longer healthy. This is deliberately checked before a
+	// pod/token is created: a disabled/revoked plugin must fail visibly instead
+	// of producing a runner that discovers missing Git credentials halfway
+	// through its task.
+	var requiredPluginInstallationID string
+	if binding, berr := r.st.GetServiceRepositoryBinding(ctx, run.ServiceID); berr == nil {
+		requiredPluginInstallationID = binding.InstallationID
+		installation, ierr := r.st.GetPluginInstallation(ctx, binding.InstallationID)
+		if ierr != nil || !r.pluginInstallationEligibleNow(ctx, installation) {
+			msg := "the Service's project plugin is unavailable; reconnect or enable the plugin before starting a new run"
+			if committed, merr := r.st.MarkFailed(ctx, run.ID, "Failed", domain.FailureSetupFailed, msg, r.now()); merr != nil {
+				r.log.Error("reconcile: mark failed (plugin unavailable)", "run", run.ID, "err", merr)
+			} else {
+				r.log.Warn("reconcile: run failed — service plugin unavailable", "run", run.ID, "installation", binding.InstallationID)
+				r.emitStatus(ctx, committed)
+			}
+			return false
+		}
+	} else if !errors.Is(berr, store.ErrNotFound) {
+		r.log.Error("reconcile: load service plugin binding", "run", run.ID, "err", berr)
 		return false
 	}
 
@@ -1168,6 +1230,23 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		return false
 	}
 	jobName := k8s.JobName(run.ID)
+	snapshots, err := r.runPluginSnapshotCandidates(ctx, run)
+	if err != nil {
+		r.log.Error("reconcile: collect run plugins", "run", run.ID, "err", err)
+		return false
+	}
+	committed, err := r.st.ClaimRunDispatch(ctx, run.ID, jobName, auth.HashToken(token), "PreparingWorkspace", requiredPluginInstallationID, snapshots)
+	if err != nil {
+		msg := "the Service's project plugin changed while the run was being scheduled; retry after reconnecting or enabling the plugin"
+		if requiredPluginInstallationID != "" {
+			if failed, merr := r.st.MarkFailed(ctx, run.ID, "Failed", domain.FailureSetupFailed, msg, r.now()); merr == nil {
+				r.emitStatus(ctx, failed)
+			}
+		}
+		r.log.Error("reconcile: claim run dispatch", "run", run.ID, "err", err)
+		return false
+	}
+	pluginCredentials := len(snapshots) > 0
 
 	// Clear any leftover same-named Job from a prior failed-persist tick so the
 	// Job we create carries the token whose hash we persist below.
@@ -1212,25 +1291,17 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		env["RESTORE_ARCHIVE_URL"] = restoreURL
 	}
 	spec := k8s.JobSpec{
-		Name:           jobName,
-		RunID:          run.ID,
-		Env:            env,
-		TimeoutSeconds: jobDeadline,
-		WorkspacePVC:   workspacePVC,
+		Name:              jobName,
+		RunID:             run.ID,
+		Env:               env,
+		TimeoutSeconds:    jobDeadline,
+		WorkspacePVC:      workspacePVC,
+		PluginCredentials: pluginCredentials,
 	}
 	if err := r.launcher.CreateJob(ctx, spec); err != nil {
 		r.log.Error("reconcile: create job", "run", run.ID, "err", err)
-		return false
-	}
-	committed, err := r.st.ScheduleRun(ctx, run.ID, jobName, auth.HashToken(token), "PreparingWorkspace")
-	if err != nil {
-		// A concurrent cancel may have committed queued->canceled first; the Job
-		// we just created is now orphaned. Delete it so it does not run to
-		// completion unreferenced. The terminal-with-job cleanup path also covers
-		// this, but deleting eagerly is cheap and immediate.
-		r.log.Error("reconcile: schedule run", "run", run.ID, "err", err)
-		if delErr := r.launcher.DeleteJob(ctx, jobName); delErr != nil {
-			r.log.Warn("reconcile: delete orphaned job after schedule failure", "run", run.ID, "err", delErr)
+		if failed, ferr := r.st.FailRunDispatch(ctx, run.ID, jobName, "Failed", "could not create runner Job: "+err.Error(), r.now()); ferr == nil {
+			r.emitStatus(ctx, failed)
 		}
 		return false
 	}
@@ -1562,13 +1633,95 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 		r.log.Error("reconcile: get service for env", "run", run.ID, "err", err)
 		return env
 	}
-	r.addGitEnv(env, run, svc)
+	r.addGitEnv(ctx, env, run, svc)
 	// Feature B — project-scoped injected env, applied LAST (on top of the system
 	// contract). Reserved keys are refused at the PATCH API; jobEnv drops (and
 	// Warns on) any that slipped through a stale/legacy row so a system variable
 	// can never be overridden (double insurance; CLAUDE.md fail-visible).
 	r.applyInjectedEnv(env, run, proj)
 	return env
+}
+
+// pluginInstallationEligible is intentionally stricter than StatusEnabled:
+// handing a task an installation with a recorded health failure or no current
+// access credential would make the "all enabled plugins mount" promise look
+// successful while the runner cannot use it. A future GitHub App issuer may
+// treat an installation id as sufficient and widen this predicate alongside
+// its issuer; until then, no token is fabricated.
+func pluginInstallationEligible(in *domain.PluginInstallation) bool {
+	if in == nil || in.Status != domain.PluginStatusEnabled || in.LastHealthError != "" {
+		return false
+	}
+	// GitHub deliberately has no persisted OAuth/runtime access token: the
+	// internal issuer exchanges the installation id + encrypted App key for a
+	// short-lived token on each sync. Other providers need their encrypted
+	// project-scoped access token to be present before a run is snapshotted.
+	if in.Provider == domain.PluginGitHub {
+		return in.GitHubInstallID != ""
+	}
+	return in.TokenSet()
+}
+
+func (r *Reconciler) pluginInstallationEligibleNow(ctx context.Context, in *domain.PluginInstallation) bool {
+	if !pluginInstallationEligible(in) {
+		return false
+	}
+	cfg, err := r.st.GetProviderConfig(ctx, in.Provider)
+	return err == nil && cfg.PluginEnabled && cfg.ConfigRevision == in.ConfigRevision
+}
+
+// snapshotRunPlugins freezes the set of usable project installations before a
+// Job is created. Existing snapshots are never re-evaluated: this is what lets
+// a running Job refresh its short-lived access config after an administrator
+// disables the installation. New runs only receive currently healthy enabled
+// installations.
+func (r *Reconciler) snapshotRunPlugins(ctx context.Context, run *domain.Run) (bool, error) {
+	// Always read the authoritative run state: callers may hold a pre-schedule
+	// copy.  A durable snapshot of an already-claimed run is never revalidated;
+	// queued snapshots are merely provisional and are cleared when no Plugin
+	// remains eligible.
+	current, err := r.st.GetRun(ctx, run.ID)
+	if err != nil {
+		return false, err
+	}
+	if current.Status != domain.StatusQueued {
+		committed, err := r.st.ListRunPluginSnapshots(ctx, run.ID)
+		return len(committed) > 0, err
+	}
+	snapshots, err := r.runPluginSnapshotCandidates(ctx, current)
+	if err != nil {
+		return false, err
+	}
+	if len(snapshots) == 0 {
+		if err := r.st.ClearQueuedRunPluginSnapshots(ctx, run.ID); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if err := r.st.CreateRunPluginSnapshots(ctx, snapshots); err != nil {
+		return false, err
+	}
+	committed, err := r.st.ListRunPluginSnapshots(ctx, run.ID)
+	if err != nil {
+		return false, err
+	}
+	return len(committed) > 0, nil
+}
+
+func (r *Reconciler) runPluginSnapshotCandidates(ctx context.Context, run *domain.Run) ([]domain.RunPluginSnapshot, error) {
+	installations, err := r.st.ListPluginInstallationsByProject(ctx, run.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	snapshots := make([]domain.RunPluginSnapshot, 0, len(installations))
+	for i := range installations {
+		if r.pluginInstallationEligibleNow(ctx, &installations[i]) {
+			snapshots = append(snapshots, domain.RunPluginSnapshot{
+				RunID: run.ID, InstallationID: installations[i].ID, CreatedAt: r.now(),
+			})
+		}
+	}
+	return snapshots, nil
 }
 
 // llmProxyBaseURL is the runner-facing LLM endpoint: the in-process reverse
@@ -1683,21 +1836,20 @@ func (r *Reconciler) applyInjectedEnv(env map[string]string, run *domain.Run, pr
 	}
 }
 
-// addGitEnv injects the M3 clone/produce contract (blueprint §3). It sets:
+// addGitEnv injects the Plugin clone contract. Provider Services clone their
+// immutable binding directly using the run-scoped credential helper.
 //
 //   - BASE_BRANCH: the service default branch (checkout target / bundle base).
-//   - SOURCE_MODE: "fetch" for every PROVIDER service (a UNIFIED path — the
-//     orchestrator pre-clones and serves a source bundle over the RUN_TOKEN, so
-//     the runner never needs a git credential and public/private is not guessed);
-//     "clone" for RAW services (git://, file://, opaque http — the runner clones
-//     the raw URL directly, as J1-J3). REPO_URL is set only for clone mode.
-//   - GIT_MODE: "draft_pr" for a draft_pr provider service (the runner will
-//     produce a bundle after a good diff), else "readonly". BRANCH_NAME is the
-//     deterministic push branch for draft_pr.
+//   - SOURCE_MODE: always "clone".
+//   - REPO_URL: the immutable Service repository binding.
+//   - GIT_MODE: always "readonly"; Cloud never commits, pushes, opens a PR, or
+//     posts an SCM comment. The task may do those operations itself with the
+//     mounted Provider Skill and CLI.
 //   - PR_HEAD / PR_BASE: for a review run, the branches the runner diffs.
 //
-// NO provider token is injected — the runner is credential-free (blueprint §0).
-func (r *Reconciler) addGitEnv(env map[string]string, run *domain.Run, svc *domain.Service) {
+// No provider token is injected into the environment or URL. Git resolves it
+// from the tmpfs credential helper written by the sidecar.
+func (r *Reconciler) addGitEnv(ctx context.Context, env map[string]string, run *domain.Run, svc *domain.Service) {
 	env["BASE_BRANCH"] = svc.DefaultBranch
 	// M7 webhook @mention task: the baseline IS the PR head branch, so the agent
 	// builds on the existing PR and the produced branch pushes back to it (§8).
@@ -1705,25 +1857,10 @@ func (r *Reconciler) addGitEnv(env map[string]string, run *domain.Run, svc *doma
 		env["BASE_BRANCH"] = run.PRHeadBranch
 	}
 
-	if svc.RepoKind == domain.RepoKindProvider {
-		// Unified path: fetch a source bundle from the orchestrator (no token in pod).
-		env["SOURCE_MODE"] = "fetch"
-	} else {
-		// Raw repo: clone the opaque URL directly (anonymous / native protocol).
-		env["SOURCE_MODE"] = "clone"
-		env["REPO_URL"] = domain.ServiceCloneURL(*svc, r.cfg.GiteaURL)
-		env["REPO_BRANCH"] = env["BASE_BRANCH"]
-	}
-
-	// Produce a bundle only for a draft_pr PROVIDER service (raw can only be
-	// readonly by construction). readonly stays diff-only. For a webhook task the
-	// push branch is the PR head (BRANCH_NAME == BASE_BRANCH → the entrypoint
-	// bundles startSHA..HEAD onto that same branch); otherwise it is jcode/run-<id>.
+	env["SOURCE_MODE"] = "clone"
+	env["REPO_URL"] = r.serviceCloneURL(ctx, svc)
+	env["REPO_BRANCH"] = env["BASE_BRANCH"]
 	env["GIT_MODE"] = string(domain.GitModeReadonly)
-	if svc.GitMode == domain.GitModeDraftPR && svc.RepoKind == domain.RepoKindProvider {
-		env["GIT_MODE"] = string(domain.GitModeDraftPR)
-		env["BRANCH_NAME"] = domain.RunPushBranch(run)
-	}
 
 	// Review runs diff PR_BASE...PR_HEAD (blueprint §3). Empty for agent runs.
 	if run.Kind == domain.RunKindReview {

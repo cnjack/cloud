@@ -77,6 +77,10 @@ func (p *Poller) Run(ctx context.Context) {
 // Tick performs one scan over every enabled schedule. Exported so tests (and a
 // manual trigger) can drive a single deterministic pass.
 func (p *Poller) Tick(ctx context.Context) {
+	p.tickPluginAutomations(ctx)
+	// The legacy schedule scan is retained only for in-process migration-era
+	// callers. Migration 0043 clears the table and the public CRUD routes are
+	// gone, so production dispatch is exclusively the unified Automation path.
 	schedules, err := p.st.ListEnabledSchedules(ctx)
 	if err != nil {
 		p.log.Error("schedule poll: list schedules", "err", err)
@@ -85,6 +89,84 @@ func (p *Poller) Tick(ctx context.Context) {
 	for i := range schedules {
 		p.fire(ctx, &schedules[i])
 	}
+}
+
+func (p *Poller) tickPluginAutomations(ctx context.Context) {
+	specs, err := p.st.ListEnabledCronAutomations(ctx)
+	if err != nil {
+		p.log.Error("cron Automation poll: list", "err", err)
+		return
+	}
+	for i := range specs {
+		p.firePluginAutomation(ctx, &specs[i])
+	}
+}
+
+func (p *Poller) firePluginAutomation(ctx context.Context, spec *domain.PluginAutomationSpec) {
+	if spec == nil || spec.Cron == nil {
+		return
+	}
+	parsed, err := ParseCron(spec.Cron.CronExpr)
+	if err != nil {
+		automation := spec.Automation
+		automation.LastError = "invalid cron expression: " + spec.Cron.CronExpr
+		_ = p.st.UpdatePluginAutomation(ctx, &automation)
+		return
+	}
+	base := spec.Automation.CreatedAt
+	if spec.Cron.LastFiredAt != nil {
+		base = *spec.Cron.LastFiredAt
+	}
+	now := p.now().UTC()
+	if parsed.Next(base.UTC()).After(now) {
+		return
+	}
+	svc, err := p.st.GetService(ctx, spec.Automation.ServiceID)
+	if err != nil {
+		return
+	}
+	if binding, err := p.st.GetServiceRepositoryBinding(ctx, svc.ID); err == nil {
+		installation, loadErr := p.st.GetPluginInstallation(ctx, binding.InstallationID)
+		if loadErr != nil || installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" {
+			won, _ := p.st.AdvancePluginCronAutomation(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, "Service project plugin is unavailable.")
+			_ = won
+			return
+		}
+	}
+	sel, outcome, err := p.models.SelectModel(ctx, svc.ProjectID, derefStr(svc.DefaultModelID), "")
+	if err != nil {
+		return
+	}
+	if outcome != modelcfg.SelectOK {
+		_, _ = p.st.AdvancePluginCronAutomation(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, modelBlockReason(outcome))
+		return
+	}
+	won, err := p.st.AdvancePluginCronAutomation(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, "")
+	if err != nil || !won {
+		return
+	}
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: svc.ProjectID, ServiceID: svc.ID,
+		Prompt: spec.Automation.PromptTemplate, Status: domain.StatusQueued,
+		Kind: domain.RunKindAgent, Phase: "Queued", Origin: domain.RunOriginAutomation,
+		OriginAutomationID: spec.Automation.ID,
+		OriginEventKey:     "cron:" + spec.Automation.ID + ":" + now.Format(time.RFC3339Nano),
+		Attempt:            1, CreatedAt: now, ModelName: sel.ModelName,
+	}
+	if sel.ModelID != "" {
+		modelID := sel.ModelID
+		run.ModelID = &modelID
+	}
+	if err := p.st.CreateRun(ctx, run); err != nil {
+		automation := spec.Automation
+		automation.LastError = "dispatch failed"
+		_ = p.st.UpdatePluginAutomation(ctx, &automation)
+		return
+	}
+	spec.Automation.LastTriggeredAt = &now
+	spec.Automation.LastRunID = run.ID
+	spec.Automation.LastError = ""
+	_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
 }
 
 // fire evaluates one schedule: if its next fire is due it CLAIMS the window
