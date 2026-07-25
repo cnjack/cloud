@@ -520,3 +520,84 @@
   word-break: break-all;
   user-select: all;
 }
+
+/* --- jtype Kanban 集成:单卡三段式(approved kanban-link-flow design) ------- */
+.integrationCard {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.integrationHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.integrationTitle {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.integrationTitle small {
+  color: var(--color-text-faint);
+  font-size: var(--fs-tiny);
+}
+
+.integrationSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.integrationSection + .integrationSection {
+  border-top: 1px solid var(--color-border);
+}
+
+.integrationSection[data-dimmed] {
+  opacity: 0.55;
+  pointer-events: none;
+  user-select: none;
+}
+
+.integrationSectionTitle {
+  font-size: var(--fs-tiny);
+  font-weight: var(--fw-semibold);
+  color: var(--color-text-faint);
+}
+
+/* 看板设置 2×2 对齐栅格:服务 | 工作区 / 看板 | (触发列+完成列 同格对半) */
+.boardGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.boardPairCell {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .boardGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 行:身份行 / 当前看板行(无边框,卡片内的安静段落) */
+.boardRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}

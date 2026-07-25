@@ -28,6 +28,7 @@ import {
   useDeleteProject,
   useSystem,
   useProjectKanbanLinks,
+  useProjectBoardLinks,
   useCreateProjectKanbanLink,
   useUpdateProjectKanbanLinkToken,
   useDeleteProjectKanbanLink,
@@ -43,6 +44,7 @@ import {
 } from '../api/queries';
 import { useToast } from '../components/Toast';
 import { KanbanConnectFlow, expiryLabel } from '../components/KanbanConnect';
+import { KanbanBoardModal } from './KanbanBoardModal';
 import { ApiError } from '../api/client';
 import { isReservedEnvKey, isValidEnvKey } from '../lib/env';
 import { timeAgo } from '../lib/format';
@@ -906,24 +908,30 @@ export function ProjectSettingsModal({
 }
 
 /**
- * KanbanPanel — the project owner's jtype kanban links (F6 / D25). Lists the
- * project's board→service bindings with a token badge (own token vs missing, D36),
- * and an add form. The per-link jtype token is WRITE-ONLY: it is sent on create
- * and never returned (the badge is the only echo). Service is chosen from the
- * project's own services; workspace/board/columns live in jtype and are typed.
+ * KanbanPanel — the project owner's jtype Kanban integration (D37 + approved
+ * kanban-link-flow design). ONE card with three quiet sections:
  *
- * D27: links can't function until the cluster jtype config is set. When the
- * cluster integration is OFF (system.kanban.enabled === false) the add form is
- * disabled and a fail-visible notice points the owner at a cluster admin — rather
- * than letting them create a link that silently never fires.
+ *   1. 集成登录 — the jtype credential. Connected (a link carries a per-link
+ *      token, or a project-surface connect just minted a sealed blob held in
+ *      memory), not connected (the device-flow panel; paste-a-PAT stays as the
+ *      manual fallback), or expired (90-day device token lapsed → reconnect).
+ *   2. 看板设置 — visible only while the project has NO link (product model:
+ *      one board per project). Service comes from the project; workspace /
+ *      board / columns are ALL listed by jtype through the server proxy and
+ *      picked, never typed (manual entry stays as the escape hatch).
+ *   3. 当前看板 — the project's existing link(s) with a fail-visible status
+ *      (生效中 / 无凭据 / 已过期) and actions: open the embedded board,
+ *      connect/reconnect, remove.
  */
 function KanbanPanel({ project }: { project: Project }) {
   const { t } = useTranslation();
   const toast = useToast();
   const system = useSystem();
   const links = useProjectKanbanLinks(project.id);
+  const boardLinks = useProjectBoardLinks(project.id, (links.data ?? []).length > 0);
   const create = useCreateProjectKanbanLink(project.id);
   const del = useDeleteProjectKanbanLink(project.id);
+  const updateToken = useUpdateProjectKanbanLinkToken(project.id);
   const services = project.services ?? [];
   // Strictly false (an absent kanban block ⇒ don't block, we can't tell).
   const kanbanOff = system.data?.kanban?.enabled === false;
@@ -934,19 +942,26 @@ function KanbanPanel({ project }: { project: Project }) {
   const [triggerCol, setTriggerCol] = useState('');
   const [doneCol, setDoneCol] = useState('');
   const [token, setToken] = useState('');
-  // D29: default to the cascading discovery pickers; "Enter manually" (or an
-  // auto-fallback when discovery errors) swaps them for free-text fields. Manual
-  // entry is NOT a second create path — the server resolves + canonicalizes a
-  // typed board ref exactly like a picked one.
+  // Paste-a-PAT is the manual credential fallback inside the login section.
+  const [pasteMode, setPasteMode] = useState(false);
+  // Manual entry is the escape hatch for an unlistable workspace (D29): the
+  // server resolves a typed board ref exactly like a picked one.
   const [manual, setManual] = useState(false);
   const [discoveryError, setDiscoveryError] = useState('');
+  const [confirmRemove, setConfirmRemove] = useState<string | undefined>();
+  const [boardOpen, setBoardOpen] = useState(false);
 
-  // D37: CONNECT FIRST. Discovery needs a credential; a fresh project has none
-  // (D36: no cluster fallback). The project-surface "Connect with jtype" flow
-  // mints one WITHOUT requiring an existing link and returns the SEALED blob —
-  // held here in memory only (never plaintext), passed to discovery as
-  // X-Jtype-Token-Enc and submitted back with create-link.
-  const hasTokenedLink = (links.data ?? []).some((l) => l.token_set);
+  // ---- connection state -----------------------------------------------------
+  const linkList = links.data ?? [];
+  const tokenedLink = linkList.find((l) => l.token_set);
+  const expiredLink = linkList.find(
+    (l) => l.token_expires_at && new Date(l.token_expires_at).getTime() < Date.now(),
+  );
+
+  // D37: a project-surface "Connect with jtype" flow mints a token WITHOUT an
+  // existing link and returns the SEALED blob — held in memory only (never
+  // plaintext), passed to discovery as X-Jtype-Token-Enc and submitted back
+  // with the save. Dropped from memory once the board settings are saved.
   const [pendingTokenEnc, setPendingTokenEnc] = useState<string | undefined>();
   const [pendingTokenExpiry, setPendingTokenExpiry] = useState<string | undefined>();
   const startConnect = useStartProjectConnect(project.id);
@@ -961,25 +976,42 @@ function KanbanPanel({ project }: { project: Project }) {
       setPendingTokenExpiry(connectStatus.data?.token_expires_at);
       setConnectId(undefined);
       setDiscoveryError('');
+      setPasteMode(false);
     }
   }, [connectComplete, connectStatus.data]);
-  const hasCredential = hasTokenedLink || !!pendingTokenEnc;
 
-  // Discovery queries fire only in picker mode with the integration on AND a
-  // usable credential (D37). retry is off (in the hooks), so a typed 409/503/400
-  // surfaces at once → auto-fallback.
-  const pickerActive = !kanbanOff && !manual && hasCredential;
+  const hasCredential = !!tokenedLink || !!pendingTokenEnc;
+  const connected = hasCredential;
+
+  // Card-head status: fail-visible, never a bare "off".
+  const headStatus = kanbanOff
+    ? { tone: 'warning' as const, label: t('projectSettings.kanbanNotEnabled') }
+    : expiredLink && !tokenedLink
+      ? { tone: 'danger' as const, label: t('projectSettings.expiredReconnect') }
+      : tokenedLink
+        ? {
+            tone: 'success' as const,
+            label:
+              t('projectSettings.connectedLabel') +
+              (expiryLabel(tokenedLink.token_expires_at, t('projectSettings.expiredReconnect'))
+                ? ` · ${expiryLabel(tokenedLink.token_expires_at, t('projectSettings.expiredReconnect'))}`
+                : ''),
+          }
+        : pendingTokenEnc
+          ? { tone: 'success' as const, label: t('projectSettings.connectedPendingSave') }
+          : { tone: 'warning' as const, label: t('projectSettings.notConnectedYet') };
+
+  // ---- discovery pickers ----------------------------------------------------
+  const pickerActive = !kanbanOff && !manual && hasCredential && linkList.length === 0;
   const workspaces = useJtypeWorkspaces(project.id, pickerActive, pendingTokenEnc);
   const boards = useJtypeBoards(project.id, workspaceId, pickerActive && !!workspaceId, pendingTokenEnc);
   const boardList = boards.data ?? [];
   const selectedBoard = boardList.find((b) => b.ref === boardRef);
   const columnOptions = (selectedBoard?.columns ?? []).map((c) => ({ value: c.key, label: c.name }));
 
-  // Fail-visible auto-fallback: if EITHER discovery call errors (integration
-  // off/unreachable, bad token, or a workspace whose boards won't list), drop to
-  // manual entry and show the server's typed message — never a blank, spinning, or
-  // silently-empty picker. The `!isFetching` guard means a refetch in flight (e.g.
-  // right after the user switches back to the pickers) doesn't bounce to manual.
+  // Fail-visible auto-fallback: if EITHER discovery call errors, drop to manual
+  // entry and show the server's typed message — never a blank, spinning, or
+  // silently-empty picker.
   useEffect(() => {
     if (manual) return;
     const wsErr = workspaces.isError && !workspaces.isFetching;
@@ -1000,27 +1032,25 @@ function KanbanPanel({ project }: { project: Project }) {
     boards.isError,
     boards.isFetching,
     boards.error,
+    t,
   ]);
 
   const pickWorkspace = (id: string) => {
     setWorkspaceId(id);
-    // A new workspace invalidates the board + its columns.
     setBoardRef('');
     setTriggerCol('');
     setDoneCol('');
   };
   const pickBoard = (ref: string) => {
     setBoardRef(ref);
-    // A new board invalidates the column picks.
     setTriggerCol('');
     setDoneCol('');
   };
 
-  // Required-field gate (a link that can't function shouldn't be creatable). The
-  // values are the same in either mode, so this covers pickers and manual entry.
   const incomplete =
     !serviceId || !workspaceId.trim() || !boardRef.trim() || !triggerCol.trim();
 
+  // ---- save board settings (creates THE one link) ---------------------------
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const typedToken = token.trim();
@@ -1031,20 +1061,21 @@ function KanbanPanel({ project }: { project: Project }) {
         service_id: serviceId,
         trigger_column: triggerCol.trim(),
         done_column: doneCol.trim() || undefined,
-        // Exactly one credential source (D37): a typed PAT wins; otherwise the
-        // sealed blob from the project-surface connect rides along (with the
-        // device-flow expiry, so the link's 90-day badge works immediately).
+        // Exactly one credential source: a pasted PAT wins; otherwise the
+        // sealed blob from the project-surface connect rides along (D37).
         token: typedToken || undefined,
         token_enc: !typedToken && pendingTokenEnc ? pendingTokenEnc : undefined,
         token_expires_at: !typedToken && pendingTokenEnc ? pendingTokenExpiry : undefined,
       },
       {
         onSuccess: () => {
+          setServiceId('');
           setWorkspaceId('');
           setBoardRef('');
           setTriggerCol('');
           setDoneCol('');
           setToken('');
+          setPasteMode(false);
           setPendingTokenEnc(undefined);
           setPendingTokenExpiry(undefined);
           toast.push({ kind: 'success', message: t('projectSettings.kanbanLinkAdded') });
@@ -1058,9 +1089,12 @@ function KanbanPanel({ project }: { project: Project }) {
     );
   };
 
-  const remove = (id: string) => {
+  const removeLink = (id: string) => {
     del.mutate(id, {
-      onSuccess: () => toast.push({ kind: 'success', message: t('projectSettings.kanbanLinkRemoved') }),
+      onSuccess: () => {
+        setConfirmRemove(undefined);
+        toast.push({ kind: 'success', message: t('projectSettings.kanbanLinkRemoved') });
+      },
       onError: (err) =>
         toast.push({
           kind: 'error',
@@ -1069,11 +1103,32 @@ function KanbanPanel({ project }: { project: Project }) {
     });
   };
 
+  // Disconnect the project's credential: clear the tokened link's token
+  // (credential_status → missing, fail-visible) or drop the in-memory blob.
+  const disconnect = () => {
+    if (pendingTokenEnc) {
+      setPendingTokenEnc(undefined);
+      setPendingTokenExpiry(undefined);
+      return;
+    }
+    if (tokenedLink) {
+      updateToken.mutate(
+        { linkId: tokenedLink.id, token: '' },
+        {
+          onSuccess: () => toast.push({ kind: 'success', message: t('projectSettings.tokenCleared') }),
+          onError: (err) =>
+            toast.push({
+              kind: 'error',
+              message: err instanceof ApiError ? err.message : t('projectSettings.tokenUpdateFailed'),
+            }),
+        },
+      );
+    }
+  };
+
   return (
     <div className={styles.body} data-testid="kanban-panel">
-      <p className={styles.guardrailHint}>
-        {t('projectSettings.kanbanIntro')}
-      </p>
+      <p className={styles.guardrailHint}>{t('projectSettings.kanbanIntro')}</p>
 
       {kanbanOff && (
         <p className={styles.kanbanError} data-testid="kanban-disabled">
@@ -1081,272 +1136,334 @@ function KanbanPanel({ project }: { project: Project }) {
         </p>
       )}
 
-      {links.data && links.data.length > 0 ? (
-        <div className={styles.kanbanList} data-testid="kanban-links">
-          {links.data.map((l) => (
-            <KanbanLinkRow
-              key={l.id}
-              projectId={project.id}
-              link={l}
-              serviceName={services.find((s) => s.id === l.service_id)?.name ?? l.service_id}
-              deleting={del.isPending}
-              kanbanOff={kanbanOff}
-              onRemove={() => remove(l.id)}
-            />
-          ))}
-        </div>
-      ) : (
-        <p className={styles.guardrailHint} data-testid="kanban-empty">
-          {t('projectSettings.kanbanEmpty')}
-        </p>
-      )}
-
-      <form className={styles.kanbanForm} onSubmit={submit} noValidate data-testid="kanban-link-form">
-        <SelectField
-          label={t('projectSettings.service')}
-          required
-          value={serviceId}
-          onChange={setServiceId}
-          disabled={kanbanOff}
-          data-testid="kanban-link-service"
-          placeholder={t('projectSettings.selectService')}
-          options={services.map((s) => ({ value: s.id, label: s.name }))}
-        />
-
-        {/* Manual-entry fallback (an un-enumerable board, or jtype unreachable):
-            the server resolves a typed ref the same way it resolves a picked one. */}
-        {!kanbanOff && (
-          <div className={styles.kanbanModeRow}>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setManual((m) => {
-                  const next = !m;
-                  if (!next) {
-                    // Returning to the pickers: refetch so a stale discovery error
-                    // clears (the auto-fallback's !isFetching guard prevents a
-                    // bounce), letting the owner retry once jtype recovers.
-                    void workspaces.refetch();
-                    if (workspaceId) void boards.refetch();
-                  }
-                  return next;
-                });
-                setDiscoveryError('');
-              }}
-              data-testid="kanban-link-manual-toggle"
-            >
-              {manual ? t('projectSettings.usePickers') : t('projectSettings.enterManually')}
-            </Button>
-          </div>
-        )}
-        {discoveryError && (
-          <p className={styles.kanbanError} data-testid="kanban-link-discovery-error">
-            {discoveryError}
-          </p>
-        )}
-
-        {/* D37 — CONNECT FIRST: a fresh project has no credential for discovery
-            (D36: no cluster fallback). Offer the project-surface "Connect with
-            jtype" device flow; the sealed blob it returns drives the pickers and
-            rides along with create-link. Manual entry stays available behind the
-            toggle for an un-enumerable workspace. */}
-        {!kanbanOff && !hasCredential && !manual && (
-          <div className={styles.kanbanConnect} data-testid="kanban-project-connect-panel">
-            <p className={styles.guardrailHint}>{t('projectSettings.connectFirstHint')}</p>
-            <KanbanConnectFlow
-              idPrefix="kanban-project-connect"
-              disabled={false}
-              disabledHint=""
-              active={!!connectId}
-              starting={startConnect.isPending}
-              startError={startConnect.error}
-              connectStart={startConnect.data}
-              status={connectStatus.data}
-              statusError={connectStatus.error}
-              onStart={() => startConnect.mutate(undefined, { onSuccess: (s) => setConnectId(s.connect_id) })}
-              onReset={() => {
-                setConnectId(undefined);
-                startConnect.reset();
-              }}
-            />
-          </div>
-        )}
-
-        {/* A completed connect: the sealed blob will ride with create-link. Show
-            an honest badge (with the device-flow expiry when known) + a discard. */}
-        {pendingTokenEnc && (
-          <div className={styles.kanbanConnect} data-testid="kanban-pending-token">
-            <span className={styles.pill} data-on data-testid="kanban-pending-token-badge">
-              {t('projectSettings.connectedTokenPending')}
-              {pendingTokenExpiry ? ` · ${expiryLabel(pendingTokenExpiry, t('projectSettings.expiredReconnect'))}` : ''}
-            </span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setPendingTokenEnc(undefined);
-                setPendingTokenExpiry(undefined);
-              }}
-              data-testid="kanban-pending-token-discard"
-            >
-              {t('projectSettings.discardConnection')}
-            </Button>
-          </div>
-        )}
-
-        {manual ? (
-          <>
-            <TextField
-              label={t('projectSettings.jtypeWorkspaceId')}
-              placeholder="f006b727-…"
-              value={workspaceId}
-              onChange={(e) => setWorkspaceId(e.target.value)}
-              required
-              disabled={kanbanOff}
-              data-testid="kanban-link-workspace"
-              autoComplete="off"
-            />
-            <TextField
-              label={t('projectSettings.boardRef')}
-              placeholder="jtype.board"
-              value={boardRef}
-              onChange={(e) => setBoardRef(e.target.value)}
-              required
-              disabled={kanbanOff}
-              data-testid="kanban-link-board"
-              autoComplete="off"
-              hint={t('projectSettings.boardRefHint')}
-            />
-            <TextField
-              label={t('projectSettings.triggerColumn')}
-              placeholder="ai"
-              value={triggerCol}
-              onChange={(e) => setTriggerCol(e.target.value)}
-              required
-              disabled={kanbanOff}
-              data-testid="kanban-link-trigger"
-              autoComplete="off"
-            />
-            <TextField
-              label={t('projectSettings.doneColumnOptional')}
-              placeholder="done"
-              value={doneCol}
-              onChange={(e) => setDoneCol(e.target.value)}
-              disabled={kanbanOff}
-              data-testid="kanban-link-done"
-              autoComplete="off"
-            />
-          </>
-        ) : hasCredential || kanbanOff ? (
-          <>
-            <SelectField
-              label={t('projectSettings.jtypeWorkspace')}
-              required
-              value={workspaceId}
-              onChange={pickWorkspace}
-              disabled={kanbanOff || workspaces.isLoading}
-              data-testid="kanban-link-workspace-select"
-              placeholder={workspaces.isLoading ? t('projectSettings.loadingWorkspaces') : t('projectSettings.selectWorkspace')}
-              options={(workspaces.data ?? []).map((w) => ({ value: w.id, label: w.name }))}
-            />
-            <SelectField
-              label={t('projectSettings.board')}
-              required
-              value={boardRef}
-              onChange={pickBoard}
-              disabled={kanbanOff || !workspaceId || boards.isLoading}
-              data-testid="kanban-link-board-select"
-              placeholder={
-                !workspaceId
-                  ? t('projectSettings.pickWorkspaceFirst')
-                  : boards.isLoading
-                    ? t('projectSettings.loadingBoards')
-                    : t('projectSettings.selectBoard')
-              }
-              options={boardList.map((b) => ({ value: b.ref, label: b.title }))}
-            />
-            <SelectField
-              label={t('projectSettings.triggerColumn')}
-              required
-              value={triggerCol}
-              onChange={setTriggerCol}
-              disabled={kanbanOff || !boardRef}
-              data-testid="kanban-link-trigger-select"
-              placeholder={boardRef ? t('projectSettings.selectColumn') : t('projectSettings.pickBoardFirst')}
-              options={columnOptions}
-            />
-            <SelectField
-              label={t('projectSettings.doneColumnOptional')}
-              value={doneCol}
-              onChange={setDoneCol}
-              disabled={kanbanOff || !boardRef}
-              data-testid="kanban-link-done-select"
-              placeholder={boardRef ? t('projectSettings.noneOption') : t('projectSettings.pickBoardFirst')}
-              options={[{ value: '', label: t('projectSettings.noneOption') }, ...columnOptions]}
-            />
-          </>
-        ) : null}
-
-        <TextField
-          label={t('projectSettings.jtypeTokenOptional')}
-          type="password"
-          placeholder={t('projectSettings.tokenFallbackPlaceholder')}
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          disabled={kanbanOff}
-          data-testid="kanban-link-token"
-          autoComplete="off"
-          hint={t('projectSettings.tokenStoredHint')}
-        />
-        <div className={styles.kanbanFormActions}>
-          <Button
-            type="submit"
-            variant="primary"
-            loading={create.isPending}
-            disabled={kanbanOff || incomplete}
-            data-testid="kanban-link-add"
+      <section className={styles.integrationCard} data-testid="kanban-integration">
+        <header className={styles.integrationHead}>
+          <span className={styles.integrationTitle}>
+            <strong>{t('projectSettings.kanbanIntegrationTitle')}</strong>
+            <small>{t('projectSettings.kanbanIntegrationSub')}</small>
+          </span>
+          <span
+            className={styles.badge}
+            data-state={headStatus.tone === 'success' ? 'per_link' : headStatus.tone === 'danger' ? 'missing' : 'unvalidated'}
+            data-testid="kanban-head-status"
           >
-            {t('projectSettings.addLink')}
-          </Button>
+            {headStatus.label}
+          </span>
+        </header>
+
+        {/* ---- 集成登录 -------------------------------------------------- */}
+        <div className={styles.integrationSection} data-testid="kanban-login-section">
+          {connected ? (
+            <div className={styles.boardRow} data-testid="kanban-connected-identity">
+              <div className={styles.kanbanMeta}>
+                <div className={styles.kanbanTitle}>
+                  {tokenedLink
+                    ? tokenedLink.board_title || `${tokenedLink.workspace_id} / ${tokenedLink.board_ref}`
+                    : t('projectSettings.connectedPendingSave')}
+                </div>
+                <div className={styles.kanbanSub}>{t('projectSettings.sealedTokenNote')}</div>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={disconnect}
+                  loading={updateToken.isPending}
+                  data-testid="kanban-disconnect"
+                >
+                  {t('projectSettings.disconnect')}
+                </Button>
+              </div>
+            </div>
+          ) : pasteMode ? (
+            <div data-testid="kanban-paste-token">
+              <TextField
+                label={t('projectSettings.jtypeTokenOptional')}
+                type="password"
+                placeholder={t('projectSettings.tokenFallbackPlaceholder')}
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                disabled={kanbanOff}
+                data-testid="kanban-link-token"
+                autoComplete="off"
+                hint={t('projectSettings.tokenStoredHint')}
+              />
+              <div className={styles.kanbanFormActions}>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setPasteMode(false)}>
+                  {t('common.cancel')}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div data-testid="kanban-project-connect-panel">
+              <p className={styles.guardrailHint}>{t('projectSettings.connectFirstHint')}</p>
+              <KanbanConnectFlow
+                idPrefix="kanban-project-connect"
+                disabled={kanbanOff}
+                disabledHint={t('projectSettings.enableJtypeHint')}
+                active={!!connectId}
+                starting={startConnect.isPending}
+                startError={startConnect.error}
+                connectStart={startConnect.data}
+                status={connectStatus.data}
+                statusError={connectStatus.error}
+                onStart={() => startConnect.mutate(undefined, { onSuccess: (s) => setConnectId(s.connect_id) })}
+                onReset={() => {
+                  setConnectId(undefined);
+                  startConnect.reset();
+                }}
+              />
+              <div className={styles.kanbanFormActions}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPasteMode(true)}
+                  disabled={kanbanOff}
+                  data-testid="kanban-paste-instead"
+                >
+                  {t('projectSettings.pasteTokenInstead')}
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
-      </form>
+
+        {/* ---- 看板设置(仅未设置看板时;产品模型:一个项目一个看板)--------- */}
+        {linkList.length === 0 && (
+          <form
+            className={styles.integrationSection}
+            data-dimmed={!hasCredential || kanbanOff || undefined}
+            onSubmit={submit}
+            noValidate
+            data-testid="kanban-link-form"
+          >
+            <span className={styles.integrationSectionTitle}>
+              {hasCredential
+                ? t('projectSettings.boardSettingsHint')
+                : t('projectSettings.boardSettingsLockedHint')}
+            </span>
+            {!kanbanOff && hasCredential && (
+              <div className={styles.kanbanModeRow}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setManual((m) => {
+                      const next = !m;
+                      if (!next) {
+                        void workspaces.refetch();
+                        if (workspaceId) void boards.refetch();
+                      }
+                      return next;
+                    });
+                    setDiscoveryError('');
+                  }}
+                  data-testid="kanban-link-manual-toggle"
+                >
+                  {manual ? t('projectSettings.usePickers') : t('projectSettings.enterManually')}
+                </Button>
+              </div>
+            )}
+            {discoveryError && (
+              <p className={styles.kanbanError} data-testid="kanban-link-discovery-error">
+                {discoveryError}
+              </p>
+            )}
+
+            <div className={styles.boardGrid}>
+              <SelectField
+                label={t('projectSettings.service')}
+                required
+                value={serviceId}
+                onChange={setServiceId}
+                disabled={kanbanOff || !hasCredential}
+                data-testid="kanban-link-service"
+                placeholder={t('projectSettings.selectService')}
+                options={services.map((s) => ({ value: s.id, label: s.name }))}
+              />
+              {manual ? (
+                <TextField
+                  label={t('projectSettings.jtypeWorkspaceId')}
+                  placeholder="f006b727-…"
+                  value={workspaceId}
+                  onChange={(e) => setWorkspaceId(e.target.value)}
+                  required
+                  disabled={kanbanOff || !hasCredential}
+                  data-testid="kanban-link-workspace"
+                  autoComplete="off"
+                />
+              ) : (
+                <SelectField
+                  label={t('projectSettings.jtypeWorkspace')}
+                  required
+                  value={workspaceId}
+                  onChange={pickWorkspace}
+                  disabled={kanbanOff || !hasCredential || workspaces.isLoading}
+                  data-testid="kanban-link-workspace-select"
+                  placeholder={workspaces.isLoading ? t('projectSettings.loadingWorkspaces') : t('projectSettings.selectWorkspace')}
+                  options={(workspaces.data ?? []).map((w) => ({ value: w.id, label: w.name }))}
+                />
+              )}
+              {manual ? (
+                <TextField
+                  label={t('projectSettings.boardRef')}
+                  placeholder="jtype.board"
+                  value={boardRef}
+                  onChange={(e) => setBoardRef(e.target.value)}
+                  required
+                  disabled={kanbanOff || !hasCredential}
+                  data-testid="kanban-link-board"
+                  autoComplete="off"
+                  hint={t('projectSettings.boardRefHint')}
+                />
+              ) : (
+                <SelectField
+                  label={t('projectSettings.board')}
+                  required
+                  value={boardRef}
+                  onChange={pickBoard}
+                  disabled={kanbanOff || !hasCredential || !workspaceId || boards.isLoading}
+                  data-testid="kanban-link-board-select"
+                  placeholder={
+                    !workspaceId
+                      ? t('projectSettings.pickWorkspaceFirst')
+                      : boards.isLoading
+                        ? t('projectSettings.loadingBoards')
+                        : t('projectSettings.selectBoard')
+                  }
+                  options={boardList.map((b) => ({ value: b.ref, label: b.title }))}
+                />
+              )}
+              {manual ? (
+                <div className={styles.boardPairCell}>
+                  <TextField
+                    label={t('projectSettings.triggerColumn')}
+                    placeholder="ai"
+                    value={triggerCol}
+                    onChange={(e) => setTriggerCol(e.target.value)}
+                    required
+                    disabled={kanbanOff || !hasCredential}
+                    data-testid="kanban-link-trigger"
+                    autoComplete="off"
+                  />
+                  <TextField
+                    label={t('projectSettings.doneColumnOptional')}
+                    placeholder="done"
+                    value={doneCol}
+                    onChange={(e) => setDoneCol(e.target.value)}
+                    disabled={kanbanOff || !hasCredential}
+                    data-testid="kanban-link-done"
+                    autoComplete="off"
+                  />
+                </div>
+              ) : (
+                <div className={styles.boardPairCell}>
+                  <SelectField
+                    label={t('projectSettings.triggerColumn')}
+                    required
+                    value={triggerCol}
+                    onChange={setTriggerCol}
+                    disabled={kanbanOff || !hasCredential || !boardRef}
+                    data-testid="kanban-link-trigger-select"
+                    placeholder={boardRef ? t('projectSettings.selectColumn') : t('projectSettings.pickBoardFirst')}
+                    options={columnOptions}
+                  />
+                  <SelectField
+                    label={t('projectSettings.doneColumnOptional')}
+                    value={doneCol}
+                    onChange={setDoneCol}
+                    disabled={kanbanOff || !hasCredential || !boardRef}
+                    data-testid="kanban-link-done-select"
+                    placeholder={boardRef ? t('projectSettings.noneOption') : t('projectSettings.pickBoardFirst')}
+                    options={[{ value: '', label: t('projectSettings.noneOption') }, ...columnOptions]}
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className={styles.kanbanFormActions}>
+              <Button
+                type="submit"
+                variant="primary"
+                loading={create.isPending}
+                disabled={kanbanOff || !hasCredential || incomplete}
+                data-testid="kanban-link-add"
+              >
+                {t('projectSettings.saveBoardSettings')}
+              </Button>
+            </div>
+          </form>
+        )}
+
+        {/* ---- 当前看板 --------------------------------------------------- */}
+        {linkList.length > 0 && (
+          <div className={styles.integrationSection} data-testid="kanban-current-board">
+            <span className={styles.integrationSectionTitle}>{t('projectSettings.currentBoardTitle')}</span>
+            {linkList.map((l) => (
+              <CurrentBoardRow
+                key={l.id}
+                projectId={project.id}
+                link={l}
+                serviceName={services.find((s) => s.id === l.service_id)?.name ?? l.service_id}
+                kanbanOff={kanbanOff}
+                confirming={confirmRemove === l.id}
+                deleting={del.isPending}
+                onAskRemove={() => setConfirmRemove(l.id)}
+                onCancelRemove={() => setConfirmRemove(undefined)}
+                onConfirmRemove={() => removeLink(l.id)}
+                onOpenBoard={() => setBoardOpen(true)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {boardOpen && boardLinks.data && boardLinks.data.length > 0 && (
+        <KanbanBoardModal
+          projectId={project.id}
+          links={boardLinks.data}
+          onClose={() => setBoardOpen(false)}
+        />
+      )}
     </div>
   );
 }
 
 /**
- * KanbanLinkRow — one project kanban link: the board binding, a three-state
- * credential badge (P1 — "missing" is a loud error: the poller skips the link
- * until a token is set), a write-only "Update token" editor (P2 — rotate with a
- * value, clear with an empty submit; the token is never displayed), and Remove.
+ * CurrentBoardRow — the project's current board binding (one per project by
+ * product model; legacy rows all render). Status is fail-visible: 生效中 /
+ * 无凭据 / 已过期. Actions: open the embedded board, connect/reconnect the
+ * per-link token (D28 device flow), remove behind a confirm step.
  */
-function KanbanLinkRow({
+function CurrentBoardRow({
   projectId,
   link,
   serviceName,
-  deleting,
   kanbanOff,
-  onRemove,
+  confirming,
+  deleting,
+  onAskRemove,
+  onCancelRemove,
+  onConfirmRemove,
+  onOpenBoard,
 }: {
   projectId: string;
   link: KanbanLink;
   serviceName: string;
-  deleting: boolean;
   kanbanOff: boolean;
-  onRemove: () => void;
+  confirming: boolean;
+  deleting: boolean;
+  onAskRemove: () => void;
+  onCancelRemove: () => void;
+  onConfirmRemove: () => void;
+  onOpenBoard: () => void;
 }) {
   const { t } = useTranslation();
-  const toast = useToast();
-  const updateToken = useUpdateProjectKanbanLinkToken(projectId);
-  const [editing, setEditing] = useState(false);
-  const [token, setToken] = useState('');
-
-  // D28: per-link "Connect with jtype" device flow. The link already exists
-  // (create-then-connect), so we start a flow against it and poll to completion,
-  // which seals a per-link token server-side (credential_status → per_link).
+  // D28: per-link "Connect with jtype" device flow — the link already exists,
+  // so connect seals a per-link token onto it (credential_status → per_link).
   const startConnect = useStartLinkConnect(projectId);
   const [connectId, setConnectId] = useState<string | undefined>();
   const connectStatus = useLinkConnectStatus(projectId, link.id, connectId, !!connectId);
@@ -1357,95 +1474,91 @@ function KanbanLinkRow({
     startConnect.reset();
   };
 
-  const badge = {
-    per_link: t('projectSettings.credOwnToken'),
-    missing: t('projectSettings.credMissing'),
-  }[link.credential_status];
-
-  // D29: an absent board_status is a pre-D29 row backfilled to "ok" (validated).
-  const boardStatus = link.board_status ?? 'ok';
-  // The stored board_ref becomes the opaque b_… id after canonicalization, so
-  // prefer the captured title; keep the raw workspace/ref pair as a tooltip.
   const boardLabel = link.board_title || `${link.workspace_id} / ${link.board_ref}`;
-
-  // Expiry badge for a device-flow token (unknown for a manual PAT ⇒ no badge).
-  const linkExpiry = expiryLabel(link.token_expires_at, t('projectSettings.expiredReconnect'));
-
-  const saveToken = (e: React.FormEvent) => {
-    e.preventDefault();
-    updateToken.mutate(
-      { linkId: link.id, token: token.trim() },
-      {
-        onSuccess: (updated) => {
-          setToken('');
-          setEditing(false);
-          toast.push({
-            kind: 'success',
-            message: updated.token_set
-              ? t('projectSettings.tokenUpdated')
-              : t('projectSettings.tokenCleared'),
-          });
-        },
-        onError: (err) =>
-          toast.push({
-            kind: 'error',
-            message: err instanceof ApiError ? err.message : t('projectSettings.tokenUpdateFailed'),
-          }),
-      },
-    );
-  };
+  const expired =
+    !!link.token_expires_at && new Date(link.token_expires_at).getTime() < Date.now();
+  const boardStatus = link.board_status ?? 'ok';
+  const needsConnect = link.credential_status === 'missing' || expired;
+  const statusLabel = expired
+    ? t('projectSettings.expiredReconnect')
+    : link.credential_status === 'per_link'
+      ? t('projectSettings.boardActive')
+      : t('projectSettings.credMissing');
 
   return (
-    <div className={styles.kanbanRow} data-testid={`kanban-link-${link.id}`}>
-      <div className={styles.kanbanMeta}>
-        <div className={styles.kanbanTitle}>
-          <span title={`${link.workspace_id} / ${link.board_ref}`}>{boardLabel}</span>
-          <span
-            className={styles.badge}
-            data-state={link.credential_status}
-            data-testid={`kanban-cred-${link.id}`}
-          >
-            {badge}
-          </span>
-          {boardStatus !== 'ok' && (
+    <div data-testid={`kanban-link-${link.id}`}>
+      <div className={styles.boardRow}>
+        <div className={styles.kanbanMeta}>
+          <div className={styles.kanbanTitle}>
+            <span title={`${link.workspace_id} / ${link.board_ref}`}>{boardLabel}</span>
             <span
               className={styles.badge}
-              data-state={boardStatus === 'invalid' ? 'invalid' : 'unvalidated'}
-              data-testid={`kanban-board-status-${link.id}`}
+              data-state={needsConnect ? 'missing' : 'per_link'}
+              data-testid={`kanban-cred-${link.id}`}
             >
-              {boardStatus === 'invalid' ? t('projectSettings.boardColumnsInvalid') : t('projectSettings.columnsNotValidated')}
+              {statusLabel}
             </span>
+            {boardStatus !== 'ok' && (
+              <span
+                className={styles.badge}
+                data-state={boardStatus === 'invalid' ? 'invalid' : 'unvalidated'}
+                data-testid={`kanban-board-status-${link.id}`}
+              >
+                {boardStatus === 'invalid' ? t('projectSettings.boardColumnsInvalid') : t('projectSettings.columnsNotValidated')}
+              </span>
+            )}
+          </div>
+          <div className={styles.kanbanSub}>
+            {serviceName} · {link.trigger_column}
+            {link.done_column ? ` → ${link.done_column}` : ''}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {!needsConnect && (
+            <Button type="button" variant="ghost" size="sm" onClick={onOpenBoard} data-testid={`kanban-open-board-${link.id}`}>
+              {t('projectSettings.openBoard')}
+            </Button>
           )}
-          {linkExpiry && (
-            <span
-              className={styles.badge}
-              data-state={linkExpiry.startsWith('expired') ? 'missing' : 'per_link'}
-              data-testid={`kanban-link-expiry-${link.id}`}
+          {confirming ? (
+            <>
+              <Button type="button" variant="ghost" size="sm" onClick={onCancelRemove} disabled={deleting}>
+                {t('common.cancel')}
+              </Button>
+              <Button
+                type="button"
+                variant="danger"
+                size="sm"
+                onClick={onConfirmRemove}
+                loading={deleting}
+                data-testid={`kanban-link-delete-confirm-${link.id}`}
+              >
+                {t('projectSettings.removeBoardSetting')}
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onAskRemove}
+              data-testid={`kanban-link-delete-${link.id}`}
             >
-              {linkExpiry}
-            </span>
+              {t('projectSettings.removeBoardSetting')}
+            </Button>
           )}
         </div>
-        <div className={styles.kanbanSub}>
-          {serviceName} · {link.trigger_column}
-          {link.done_column ? ` → ${link.done_column}` : ''}
-        </div>
-        {boardStatus === 'unvalidated' && (
-          <p className={styles.kanbanBoardNotice} data-testid={`kanban-board-notice-${link.id}`}>
-            {t('projectSettings.boardUnvalidatedNotice')}
-          </p>
-        )}
-        {boardStatus === 'invalid' && (
-          <p
-            className={styles.kanbanError}
-            role="alert"
-            data-testid={`kanban-board-notice-${link.id}`}
-          >
-            {t('projectSettings.boardInvalidNotice')}
-          </p>
-        )}
-        {/* D28: one-click connect for this link's own token. Disabled while the
-            cluster integration is off (same gate as the add form). */}
+      </div>
+      {boardStatus === 'unvalidated' && (
+        <p className={styles.kanbanBoardNotice} data-testid={`kanban-board-notice-${link.id}`}>
+          {t('projectSettings.boardUnvalidatedNotice')}
+        </p>
+      )}
+      {boardStatus === 'invalid' && (
+        <p className={styles.kanbanError} role="alert" data-testid={`kanban-board-notice-${link.id}`}>
+          {t('projectSettings.boardInvalidNotice')}
+        </p>
+      )}
+      {needsConnect && (
         <div className={styles.kanbanConnect}>
           <KanbanConnectFlow
             idPrefix={`kanban-link-connect-${link.id}`}
@@ -1461,55 +1574,7 @@ function KanbanLinkRow({
             onReset={resetConnect}
           />
         </div>
-        {editing && (
-          <form className={styles.tokenEditor} onSubmit={saveToken} noValidate>
-            <TextField
-              label={t('projectSettings.newJtypeToken')}
-              type="password"
-              placeholder={t('projectSettings.tokenClearPlaceholder')}
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              data-testid={`kanban-token-input-${link.id}`}
-              autoComplete="off"
-            />
-            <Button
-              type="submit"
-              variant="primary"
-              size="sm"
-              loading={updateToken.isPending}
-              data-testid={`kanban-token-save-${link.id}`}
-            >
-              {t('common.save')}
-            </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(false)}>
-              {t('common.cancel')}
-            </Button>
-          </form>
-        )}
-      </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        {!editing && (
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => setEditing(true)}
-            data-testid={`kanban-token-edit-${link.id}`}
-          >
-            {t('projectSettings.updateToken')}
-          </Button>
-        )}
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          disabled={deleting}
-          onClick={onRemove}
-          data-testid={`kanban-link-delete-${link.id}`}
-        >
-          {t('common.remove')}
-        </Button>
-      </div>
+      )}
     </div>
   );
 }

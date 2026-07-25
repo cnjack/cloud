@@ -1,0 +1,33 @@
+/* kanban-link-flow prototypes — project kanban settings states (D37 UX).
+   Uses ONLY variables defined in prototype.css. */
+
+.kf-state-nav { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+.kf-state-nav a { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); text-decoration: none; }
+.kf-state-nav a[aria-current="page"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+
+/* One card, quiet internal sections (no nested card chrome). */
+.kf-section { display: grid; gap: 12px; padding: 16px; }
+.kf-section + .kf-section { border-top: 1px solid var(--border-soft); }
+.kf-section-title { font-size: 12px; font-weight: 600; color: var(--text-faint); }
+.kf-section[data-dimmed] { opacity: 0.55; pointer-events: none; user-select: none; }
+
+.kf-identity { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.kf-avatar { width: 26px; height: 26px; border-radius: 999px; background: var(--accent); color: var(--on-accent); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex: none; }
+.kf-spacer { flex: 1; }
+
+.kf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 720px) { .kf-grid { grid-template-columns: 1fr; } }
+
+.kf-device { display: grid; gap: 12px; border-radius: var(--radius-lg); padding: 16px; background: var(--surface-soft); border: 1px solid var(--border-soft); }
+.kf-device-head { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 13px; }
+.kf-device-main { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.kf-code-chip { display: inline-flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: 10px 16px; box-shadow: var(--shadow); }
+.kf-code { font-family: var(--font-mono); font-size: 24px; letter-spacing: 0.24em; font-weight: 700; }
+.kf-code-copy { display: inline-flex; align-items: center; gap: 6px; color: var(--text-faint); font-size: 12px; border: 0; background: none; cursor: pointer; padding: 4px 6px; border-radius: var(--radius-sm); }
+.kf-code-copy:hover { color: var(--accent); background: var(--accent-soft); }
+.kf-waiting { display: inline-flex; align-items: center; gap: 8px; color: var(--text-faint); font-size: 12px; }
+.kf-waiting::before { content: ""; width: 8px; height: 8px; border-radius: 999px; background: var(--warning); animation: kf-pulse 1.6s ease-in-out infinite; }
+@keyframes kf-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+.kf-device-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.kf-note { color: var(--text-faint); font-size: 12px; }
+.kf-row { display: flex; align-items: center; gap: 12px; }

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="项目 Kanban 设置:未连接 jtype 的状态原型。" />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>项目 Kanban 设置 · 未连接 — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/kanban-flow.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">跳到内容</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><img class="wordmark-icon" src="./assets/app-icon.svg" alt="" /><span class="wordmark-name">JCODE</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="rail-context"><span class="eyebrow">项目</span><strong>jack</strong><small>1 个服务</small></div>
+      <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./projects.html"><svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">3</span></a><a class="nav-item" href="./cluster-overview.html"><svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg><span>Cluster</span><span class="nav-count">admin</span></a></nav>
+      <section class="rail-section" aria-labelledby="svcLabel"><div class="rail-section-head"><span id="svcLabel">服务</span><span>1</span></div><nav class="recent-projects" aria-label="服务"><a class="recent-item" href="./project-workspace.html"><span class="project-mark">GT</span><span class="recent-item-copy"><strong>jcode-project</strong><small>Gitea · main</small></span></a></nav></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>namespace / jcode</span><span>v0.0.82</span></div><div class="identity-row"><span class="identity-mark">J</span><span class="identity-copy"><strong>Jack</strong><small>cluster admin</small></span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface" aria-label="项目设置 Kanban">
+      <header class="utility-bar"><div class="breadcrumbs"><a href="./projects.html">项目</a><span class="breadcrumb-separator">/</span><a href="./project-workspace.html">jack</a><span class="breadcrumb-separator">/</span><strong>项目设置</strong></div><div class="utility-actions"><span class="prototype-chip">state: 未连接</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <nav class="subnav" aria-label="项目设置"><a href="./project-settings-option-a.html">通用</a><a href="./project-settings-option-a.html">成员</a><a href="./project-settings-option-a.html">Git 集成</a><a href="./kanban-link-flow-connect.html" aria-current="page">Kanban</a><a href="./project-settings-option-a.html">模型访问</a><a href="./project-settings-option-a.html">API 密钥</a></nav>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <header class="page-header"><div class="page-heading"><span class="eyebrow">项目设置</span><h1>Kanban</h1><p>本项目使用一个 jtype 看板:卡片拖入触发列即派发一次 agent 运行,结果以卡片评论回写。先连接,再点选 — 不需要复制任何 ID。</p></div></header>
+
+          <nav class="kf-state-nav" aria-label="原型状态">
+            <a href="./kanban-link-flow-connect.html" aria-current="page">未连接</a>
+            <a href="./kanban-link-flow-pick.html">已连接 · 点选</a>
+            <a href="./kanban-link-flow-expired.html">凭据过期</a>
+          </nav>
+
+          <section class="connection-card" aria-labelledby="jtypeTitle">
+            <header class="connection-card-head"><span class="provider-mark" data-tone="accent"><svg class="icon"><use href="./assets/icons.svg#i-link" /></svg></span><span class="connection-card-copy"><strong id="jtypeTitle">jtype Kanban 集成</strong><small>设备流授权 · 令牌密封存储,明文永不进入浏览器</small></span><span class="status-label" data-tone="warning">未连接</span></header>
+
+            <div class="kf-section">
+              <div class="kf-device">
+                <div class="kf-device-head"><svg class="icon"><use href="./assets/icons.svg#i-key" /></svg><span>打开授权页后输入此代码,即可完成连接</span></div>
+                <div class="kf-device-main">
+                  <span class="kf-code-chip">
+                    <span class="kf-code">482913</span>
+                    <button class="kf-code-copy" type="button" data-prototype-action="Copy user code"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-copy" /></svg>复制</button>
+                  </span>
+                  <button class="button button-primary" type="button" data-prototype-action="Open jtype device page in a new tab">打开 jtype 授权页<svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></button>
+                </div>
+                <div class="kf-device-actions">
+                  <span class="kf-waiting">正在等待授权… 完成后此面板自动消失</span>
+                </div>
+              </div>
+              <div class="editor-actions">
+                <button class="button button-ghost" type="button" data-prototype-action="Paste a PAT instead (manual fallback)">改用手贴令牌</button>
+                <button class="button" type="button" data-prototype-action="Cancel this connect attempt">取消</button>
+              </div>
+            </div>
+
+            <div class="kf-section" data-dimmed>
+              <span class="kf-section-title">看板设置 · 完成连接后,这里的一切都由 jtype 列出供选择</span>
+              <div class="kf-grid">
+                <div class="field"><span class="field-label">服务</span><select class="select" disabled><option>完成连接后可选</option></select></div>
+                <div class="field"><span class="field-label">jtype 工作区</span><select class="select" disabled><option>由 jtype 列出</option></select></div>
+                <div class="field"><span class="field-label">看板</span><select class="select" disabled><option>先选工作区</option></select></div>
+                <div class="field"><span class="field-label">触发列 / 完成列</span><select class="select" disabled><option>先选看板</option></select></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

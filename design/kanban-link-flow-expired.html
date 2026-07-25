@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="项目 Kanban 设置:jtype 凭据过期,重新登录的状态原型。" />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>项目 Kanban 设置 · 凭据过期 — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/kanban-flow.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">跳到内容</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row"><a class="wordmark" href="./index.html"><img class="wordmark-icon" src="./assets/app-icon.svg" alt="" /><span class="wordmark-name">JCODE</span><span class="cloud-label">Cloud</span></a></div>
+      <div class="rail-context"><span class="eyebrow">项目</span><strong>jack</strong><small>1 个服务</small></div>
+      <nav class="rail-nav" aria-label="Primary"><a class="nav-item" href="./projects.html"><svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg><span>Projects</span><span class="nav-count">3</span></a><a class="nav-item" href="./cluster-overview.html"><svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg><span>Cluster</span><span class="nav-count">admin</span></a></nav>
+      <section class="rail-section" aria-labelledby="svcLabel"><div class="rail-section-head"><span id="svcLabel">服务</span><span>1</span></div><nav class="recent-projects" aria-label="服务"><a class="recent-item" href="./project-workspace.html"><span class="project-mark">GT</span><span class="recent-item-copy"><strong>jcode-project</strong><small>Gitea · main</small></span></a></nav></section>
+      <footer class="rail-footer"><div class="rail-environment"><span>namespace / jcode</span><span>v0.0.82</span></div><div class="identity-row"><span class="identity-mark">J</span><span class="identity-copy"><strong>Jack</strong><small>cluster admin</small></span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></footer>
+    </aside>
+
+    <section class="work-surface" aria-label="项目设置 Kanban">
+      <header class="utility-bar"><div class="breadcrumbs"><a href="./projects.html">项目</a><span class="breadcrumb-separator">/</span><a href="./project-workspace.html">jack</a><span class="breadcrumb-separator">/</span><strong>项目设置</strong></div><div class="utility-actions"><span class="prototype-chip">state: 凭据过期</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+      <nav class="subnav" aria-label="项目设置"><a href="./project-settings-option-a.html">通用</a><a href="./project-settings-option-a.html">成员</a><a href="./project-settings-option-a.html">Git 集成</a><a href="./kanban-link-flow-expired.html" aria-current="page">Kanban</a><a href="./project-settings-option-a.html">模型访问</a><a href="./project-settings-option-a.html">API 密钥</a></nav>
+      <main class="surface-scroll" id="mainContent">
+        <div class="surface-inner">
+          <header class="page-header"><div class="page-heading"><span class="eyebrow">项目设置</span><h1>Kanban</h1><p>jtype 令牌已过期,派发与回写已 fail-visible 暂停 — <strong>重新授权后自动恢复,事件游标不丢</strong>。</p></div></header>
+
+          <nav class="kf-state-nav" aria-label="原型状态">
+            <a href="./kanban-link-flow-connect.html">未连接</a>
+            <a href="./kanban-link-flow-pick.html">已连接 · 点选</a>
+            <a href="./kanban-link-flow-expired.html" aria-current="page">凭据过期</a>
+          </nav>
+
+          <section class="connection-card" aria-labelledby="jtypeTitle">
+            <header class="connection-card-head"><span class="provider-mark" data-tone="accent"><svg class="icon"><use href="./assets/icons.svg#i-link" /></svg></span><span class="connection-card-copy"><strong id="jtypeTitle">jtype Kanban 集成</strong><small>设备流令牌 90 天有效,过期需重新授权</small></span><span class="status-label" data-tone="danger">已过期 — 重新连接</span></header>
+
+            <div class="kf-section">
+              <div class="notice" data-tone="warning"><svg class="icon"><use href="./assets/icons.svg#i-warning" /></svg><span><strong>jtype 令牌已于 2026-07-21 过期。</strong>当前看板(My Board · AI)已暂停派发;重新授权后自动恢复,事件游标不丢。</span></div>
+              <div class="editor-actions">
+                <button class="button button-primary" type="button" data-prototype-action="Restart Connect with jtype device flow">重新连接 jtype</button>
+              </div>
+            </div>
+
+            <div class="kf-section" data-dimmed>
+              <span class="kf-section-title">看板设置 · 凭据失效期间不可修改</span>
+              <div class="kf-grid">
+                <div class="field"><span class="field-label">服务</span><select class="select" disabled><option>重新连接后可选</option></select></div>
+                <div class="field"><span class="field-label">jtype 工作区</span><select class="select" disabled><option>由 jtype 列出</option></select></div>
+              </div>
+            </div>
+
+            <div class="kf-section">
+              <span class="kf-section-title">当前看板</span>
+              <div class="kf-identity">
+                <svg class="icon"><use href="./assets/icons.svg#i-warning" /></svg>
+                <span style="flex:1"><strong>My Board · AI</strong><br /><small class="kf-note">jcode-project · 拖入 AI 列即派发(已暂停)</small></span>
+                <span class="status-label" data-tone="danger">已过期</span>
+                <button class="button button-ghost button-compact" type="button" data-prototype-action="Reconnect this link">连接</button>
+                <button class="button button-ghost button-compact" type="button" data-prototype-action="Remove the board binding">移除看板设置</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>
