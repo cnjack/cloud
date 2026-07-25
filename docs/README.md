@@ -22,6 +22,7 @@
 | [17-jcode-device-relay.md](17-jcode-device-relay.md) | Desktop ↔ Cloud outbound relay、E2EE、配对与移动端控制 |
 | [18-device-mesh-dispatch.md](18-device-mesh-dispatch.md) | 设备网格调度设计 |
 | [19-account-settings-sync.md](19-account-settings-sync.md) | 多 Desktop Provider 配置 E2EE 同步 + Cloud Provider Proxy |
+| [20-unified-connections.md](20-unified-connections.md) | 统一 Connection 概念(kanban/gitea/github/gitlab)需求分析与对抗审查 |
 
 可视化蓝图(v1,早于存储/BYOK 细化):<https://claude.ai/code/artifact/68743dc8-aa5c-48f1-b712-fb8d974a2902>
 
