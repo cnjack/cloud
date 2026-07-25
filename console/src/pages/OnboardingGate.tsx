@@ -323,14 +323,36 @@ function Landing() {
   );
 }
 
+function MobileConsentCard() {
+  const { t } = useTranslation();
+  const { me } = useAuth();
+  return (
+    <GateFrame variant="welcome">
+      <Card className={styles.card} data-testid="mobile-consent">
+        <h1 className={styles.title}>{t('onboarding.mobileConsentTitle')}</h1>
+        <p className={styles.lede}>
+          {t('onboarding.mobileConsentLede', { name: me?.user.display_name ?? '' })}
+        </p>
+        <div className={styles.footerRow}>
+          <span className={styles.autoNote}>{t('onboarding.signedInAs', { name: me?.user.display_name })}</span>
+          <Button
+            variant="primary"
+            autoFocus
+            data-testid="mobile-consent-continue"
+            onClick={() => { window.location.href = '/auth/mobile-handoff'; }}
+          >
+            {t('onboarding.mobileConsentContinue')}
+          </Button>
+        </div>
+      </Card>
+    </GateFrame>
+  );
+}
+
 export function OnboardingGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const { status, landing, welcome } = useAuth();
 
-  // Mobile handoff: the mobile app opened the console with ?client=mobile.
-  // If the browser already has a valid session, redirect to the orchestrator's
-  // /auth/mobile-handoff which mints a fresh token and 302s to the jcode://auth
-  // deep link — no extra tap needed from the user.
   const isMobileClient = new URLSearchParams(window.location.search).get('client') === 'mobile';
 
   switch (status) {
@@ -346,14 +368,7 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
       return <SignIn />;
     case 'ready':
       if (isMobileClient) {
-        // Full-page navigation (not client routing) so the orchestrator
-        // sees the session cookie and mints the deep-link token.
-        window.location.href = '/auth/mobile-handoff';
-        return (
-          <GateFrame variant="probing">
-            <LoadingBlock label={t('onboarding.mobileHandoff')} />
-          </GateFrame>
-        );
+        return <MobileConsentCard />;
       }
       if (welcome) return <WelcomeCard />;
       return landing ? <Landing /> : <>{children}</>;

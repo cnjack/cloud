@@ -830,6 +830,9 @@ export default {
     enterConsole: 'コンソールに入る',
     connecting: 'オーケストレーターに接続中…',
     mobileHandoff: 'スマホでサインインを完了しています…',
+    mobileConsentTitle: 'スマホでサインイン',
+    mobileConsentLede: '{name} としてサインイン済みです。下のボタンをタップしてモバイルアプリのサインインを完了してください。',
+    mobileConsentContinue: 'アプリへ進む',
   },
 
   notFound: {

@@ -1159,6 +1159,9 @@ export default {
     enterConsole: 'Enter console',
     connecting: 'Connecting to the orchestrator…',
     mobileHandoff: 'Signing you in on your phone…',
+    mobileConsentTitle: 'Sign in on your phone',
+    mobileConsentLede: 'You are already signed in as {name}. Tap below to complete sign-in on the mobile app.',
+    mobileConsentContinue: 'Continue to app',
   },
 
   notFound: {

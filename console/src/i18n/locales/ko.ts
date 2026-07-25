@@ -830,6 +830,9 @@ export default {
     enterConsole: '콘솔 진입',
     connecting: '오케스트레이터에 연결 중…',
     mobileHandoff: '휴대폰에서 로그인 완료 중…',
+    mobileConsentTitle: '휴대폰에서 로그인',
+    mobileConsentLede: '{name}(으)로 로그인되어 있습니다. 아래 버튼을 탭하여 모바일 앱 로그인을 완료하세요.',
+    mobileConsentContinue: '앱으로 계속',
   },
 
   notFound: {

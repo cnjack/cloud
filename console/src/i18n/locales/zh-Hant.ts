@@ -830,6 +830,9 @@ export default {
     enterConsole: '進入主控台',
     connecting: '正在連線到協調器…',
     mobileHandoff: '正在為手機完成登入…',
+    mobileConsentTitle: '在手機上登入',
+    mobileConsentLede: '你已以 {name} 身份登入。點擊下方按鈕完成手機 App 登入。',
+    mobileConsentContinue: '繼續到 App',
   },
 
   notFound: {
