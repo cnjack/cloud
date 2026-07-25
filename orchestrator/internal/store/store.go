@@ -407,32 +407,21 @@ type Store interface {
 	// RevokeModelFromAccount removes an account entitlement idempotently.
 	RevokeModelFromAccount(ctx context.Context, modelID, userID string) error
 
-	// --- Cluster kanban config (D27) -----------------------------------------
-	// The single-row cluster_kanban_config holds the cluster-level jtype base URL
-	// + optional encrypted fallback token a cluster admin sets from the console. It
-	// takes precedence over the JTYPE_* env fallback (see internal/kanbancfg). The
-	// token stays encrypted on every read — the plaintext is NEVER returned over
-	// the API and is decrypted only in the resolver.
+	// --- Cluster kanban config (D27, slimmed by D36) -----------------------------
+	// The single-row cluster_kanban_config holds ONLY the cluster-level jtype base
+	// URL a cluster admin sets from the console — an infrastructure fact, no secret
+	// material. It takes precedence over the JTYPE_BASE_URL env fallback (see
+	// internal/kanbancfg). Since D36 every kanban link carries its own per-link
+	// token; there is no cluster-level credential.
 
 	// GetClusterKanbanConfig returns the single-row config, or ErrNotFound when no
-	// row is present (the resolver then falls back to the JTYPE_* env).
+	// row is present (the resolver then falls back to the JTYPE_BASE_URL env).
 	GetClusterKanbanConfig(ctx context.Context) (*domain.KanbanConfig, error)
 	// UpsertClusterKanbanConfig writes the single-row config (INSERT … ON CONFLICT
-	// (id) DO UPDATE), stamping updated_at=now(). base_url/token_enc/token_expires_at/
-	// updated_by come from cfg; token_enc nil clears the fallback token and a nil
-	// TokenExpiresAt writes SQL NULL (unknown / manual-paste expiry, D28).
+	// (id) DO UPDATE), stamping updated_at=now(). base_url/updated_by come from cfg.
 	UpsertClusterKanbanConfig(ctx context.Context, cfg *domain.KanbanConfig) error
-	// SetClusterKanbanToken CONDITIONALLY seals a device-flow token onto the
-	// single-row config (D28): it updates ONLY token_enc/token_expires_at/
-	// updated_by (+updated_at) and ONLY where the row still carries the given
-	// base_url — never base_url itself. This closes the check-then-write window
-	// on the completing poll: an admin PUT that re-pointed the config mid-flow
-	// wins, and a token minted against the stale instance is never stored. A
-	// missing row or a changed base_url returns ErrNotFound (the caller expires
-	// the flow).
-	SetClusterKanbanToken(ctx context.Context, baseURL string, tokenEnc []byte, expiresAt *time.Time, updatedBy string) error
 	// DeleteClusterKanbanConfig removes the single-row config so the resolver falls
-	// back to the JTYPE_* env. Idempotent: a missing row is not an error.
+	// back to the JTYPE_BASE_URL env. Idempotent: a missing row is not an error.
 	DeleteClusterKanbanConfig(ctx context.Context) error
 
 	// --- Integrations (D19 / F5) ---------------------------------------------

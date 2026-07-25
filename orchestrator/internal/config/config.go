@@ -128,13 +128,9 @@ type Config struct {
 	// (e.g. http://127.0.0.1:13345 or https://jtype.example.com). Empty => the
 	// kanban integration is OFF (no poller, no writeback) — the system runs
 	// normally without it. NEVER defaults to a mock (fail-visible red line).
+	// (D36 removed the JTYPE_TOKEN cluster fallback: every kanban link carries
+	// its own per-link token, D25.)
 	JtypeBaseURL string
-	// JtypeToken is JTYPE_TOKEN: a jtype mcp-scope PAT (editor rights). Since F6 /
-	// D25 each kanban link carries its OWN encrypted PAT; this cluster token is now
-	// only a FALLBACK for links that have no per-link token. Optional — the
-	// integration is enabled by JtypeBaseURL alone (per-link tokens can authorise
-	// every read/write without a cluster token).
-	JtypeToken string
 	// JtypePollInterval is JTYPE_POLL_INTERVAL (default 15s): how often the
 	// poller pulls durable board events for enabled kanban_links. <=0 with a
 	// configured base/token disables the poller (writeback still runs).
@@ -259,7 +255,6 @@ func Load() (*Config, error) {
 		SessionTTL:             getdur("SESSION_TTL", 30*24*time.Hour),
 		OAuthProviders:         loadOAuthProviders(),
 		JtypeBaseURL:           os.Getenv("JTYPE_BASE_URL"),
-		JtypeToken:             os.Getenv("JTYPE_TOKEN"),
 		JtypePollInterval:      getdur("JTYPE_POLL_INTERVAL", 15*time.Second),
 		SchedulePollInterval:   getdur("SCHEDULE_POLL_INTERVAL", 30*time.Second),
 		DeviceHeartbeatTTL:     getdur("DEVICE_HEARTBEAT_TTL", 90*time.Second),

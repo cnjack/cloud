@@ -25,25 +25,16 @@ import {
   useKanbanConfig,
   useUpdateKanbanConfig,
   useDeleteKanbanConfig,
-  useStartKanbanConnect,
-  useKanbanConnectStatus,
 } from '../api/queries';
 import { useRole } from '../api/ApiProvider';
 import { ApiError } from '../api/client';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
-import { KanbanConnectFlow, expiryLabel } from '../components/KanbanConnect';
 import { TextField } from '../components/Field';
 import { LoadingBlock, ErrorBlock } from '../components/States';
 import { EmptyState } from '../components/EmptyState';
 import { useToast } from '../components/Toast';
-import type {
-  KanbanClusterConfig,
-  Model,
-  Project,
-  SystemInfo,
-  UpdateKanbanConfigInput,
-} from '../api/types';
+import type { KanbanClusterConfig, Model, Project, SystemInfo } from '../api/types';
 import styles from './SystemPage.module.css';
 
 export function SystemPage() {
@@ -523,21 +514,19 @@ function ModelAddForm() {
 }
 
 /**
- * KanbanCard — the jtype kanban integration (Feature E / D27). The cluster jtype
- * config (base_url + optional cluster fallback token) is now SETTABLE here by a
- * cluster admin, not only via orchestrator env: the card shows the effective
- * config + its SOURCE (DB override / JTYPE_BASE_URL env / off) as a badge, an
- * editable form (mirroring the Model card's write-only-secret UX), and a
- * "Clear cluster config" action that drops the DB override back to env/off. The
- * cross-project link overview below stays READ-ONLY — link management is the
- * project owner's (D25, Project settings → Kanban). The token is write-only
- * (never returned) and an unconfigured integration renders a fail-visible "off"
- * state, never a silent mock.
+ * KanbanCard — the jtype kanban integration (Feature E / D27, slimmed by D36).
+ * The cluster jtype config is now JUST the base URL — an infrastructure fact —
+ * settable here by a cluster admin, not only via orchestrator env: the card
+ * shows the effective config + its SOURCE (DB override / JTYPE_BASE_URL env /
+ * off) as a badge, an editable form, and a "Clear cluster config" action that
+ * drops the DB override back to env/off. Kanban credentials are entirely
+ * per-link (D25, Project settings → Kanban) — there is no cluster-level token
+ * to edit here any more. The cross-project link overview below stays READ-ONLY
+ * — link management is the project owner's. An unconfigured integration renders
+ * a fail-visible "off" state, never a silent mock.
  *
  * `systemReason` is the /system snapshot's kanban.reason (same resolver, same
- * failure); the config view's own `reason` wins when both are present. Either
- * way a BROKEN config (e.g. DB token without AUTH_TOKEN_KEY) renders a loud
- * error notice next to the badge — never a bare, unexplained "off".
+ * failure); the config view's own `reason` wins when both are present.
  */
 function KanbanCard({ systemReason }: { systemReason?: string }) {
   const { t } = useTranslation();
@@ -598,12 +587,10 @@ function KanbanCard({ systemReason }: { systemReason?: string }) {
 }
 
 /**
- * KanbanConfigEditor — the editable cluster jtype config + the read-only link
- * overview. The token field is write-only with three explicit states (D27 /
- * mirrors ModelRow): blank OMITS it (unchanged), a value ROTATES it, ticking
- * "Clear cluster token" sends token:"" (links then rely on their own tokens).
- * "Clear cluster config" DELETEs the whole DB override behind a confirm step
- * (only offered when a DB override exists — there is nothing to clear otherwise).
+ * KanbanConfigEditor — the editable cluster jtype base URL + the read-only link
+ * overview (D36: no cluster token to edit). "Clear cluster config" DELETEs the
+ * DB override behind a confirm step (only offered when a DB override exists —
+ * there is nothing to clear otherwise).
  */
 function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
   const { t } = useTranslation();
@@ -615,47 +602,23 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
   const projectName = (id: string) => projects.data?.find((p) => p.id === id)?.name ?? id;
 
   const [baseUrl, setBaseUrl] = useState(config.base_url);
-  const [token, setToken] = useState('');
-  const [clearToken, setClearToken] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
-
-  // D28: "Connect with jtype" device flow for the cluster fallback token. The
-  // flow requires a SAVED DB base_url (config.base_url, not the unsaved input —
-  // the orchestrator binds to the persisted row); until then the button is
-  // disabled with a visible reason. connectId drives the poll once launched.
-  const startConnect = useStartKanbanConnect();
-  const [connectId, setConnectId] = useState<string | undefined>();
-  const connectStatus = useKanbanConnectStatus(connectId, !!connectId);
-  const launchConnect = () =>
-    startConnect.mutate(undefined, { onSuccess: (s) => setConnectId(s.connect_id) });
-  const resetConnect = () => {
-    setConnectId(undefined);
-    startConnect.reset();
-  };
-  // The current fallback token's expiry, when known (device-flow tokens only).
-  const clusterExpiry = config.token_set ? expiryLabel(config.token_expires_at) : null;
 
   const save = (e: React.FormEvent) => {
     e.preventDefault();
-    const input: UpdateKanbanConfigInput = { base_url: baseUrl.trim() };
-    // Token: explicit clear (token:"") wins; otherwise rotate on a typed value;
-    // otherwise omit (leave the stored token unchanged). Trimmed BEFORE the
-    // decision — a whitespace-only entry is a keep, never an accidental clear.
-    const typedToken = token.trim();
-    if (clearToken) input.token = '';
-    else if (typedToken !== '') input.token = typedToken;
-    update.mutate(input, {
-      onSuccess: () => {
-        setToken('');
-        setClearToken(false);
-        toast.push({ kind: 'success', message: t('cluster.system.kanbanConfigSaved') });
+    update.mutate(
+      { base_url: baseUrl.trim() },
+      {
+        onSuccess: () => {
+          toast.push({ kind: 'success', message: t('cluster.system.kanbanConfigSaved') });
+        },
+        onError: (err) =>
+          toast.push({
+            kind: 'error',
+            message: err instanceof ApiError ? err.message : t('cluster.system.kanbanConfigSaveError'),
+          }),
       },
-      onError: (err) =>
-        toast.push({
-          kind: 'error',
-          message: err instanceof ApiError ? err.message : t('cluster.system.kanbanConfigSaveError'),
-        }),
-    });
+    );
   };
 
   const clearConfig = () => {
@@ -689,43 +652,14 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
           data-testid="kanban-config-base"
           autoComplete="off"
           required
+          hint={t('cluster.system.kanbanBaseUrlHint')}
         />
-        <TextField
-          label={t('cluster.system.kanbanTokenLabel')}
-          type="password"
-          placeholder={
-            clearToken
-              ? t('cluster.system.kanbanTokenPlaceholderClear')
-              : config.token_set
-                ? t('cluster.system.apiKeyPlaceholderRotate')
-                : t('cluster.system.kanbanTokenPlaceholderNew')
-          }
-          value={clearToken ? '' : token}
-          onChange={(e) => setToken(e.target.value)}
-          disabled={clearToken}
-          data-testid="kanban-config-token"
-          autoComplete="off"
-          hint={t('cluster.system.kanbanTokenHint')}
-        />
-        {config.token_set && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <input
-              type="checkbox"
-              checked={clearToken}
-              onChange={(e) => setClearToken(e.target.checked)}
-              data-testid="kanban-config-clear-token"
-            />
-            {t('cluster.system.kanbanClearTokenLabel')}
-          </label>
-        )}
         <div className={styles.modelActions}>
           <Button type="submit" variant="primary" loading={update.isPending} data-testid="kanban-config-save">
             {t('common.save')}
           </Button>
-          {/* Offered whenever a DB ROW exists — not gated on source: a broken row
-              (e.g. token without AUTH_TOKEN_KEY) resolves to source "none", and
-              deleting it is exactly the way out. */}
-          {(config.base_url !== '' || config.token_set) &&
+          {/* Offered whenever a DB ROW exists. */}
+          {config.base_url !== '' &&
             (confirmClear ? (
               <>
                 <span className={styles.cardHint}>{t('cluster.system.clearDbConfirm')}</span>
@@ -760,37 +694,6 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
         </div>
       </form>
 
-      {/* D28: one-click device flow for the cluster fallback token. Sits next to
-          the config form; the paste field above stays as the manual fallback. */}
-      <div className={styles.connectSection}>
-        <div className={styles.connectHead}>
-          <span className={styles.connectLabel}>{t('cluster.system.clusterFallbackToken')}</span>
-          {clusterExpiry && (
-            <span
-              className={styles.pill}
-              data-on={!clusterExpiry.startsWith('expired') || undefined}
-              data-err={clusterExpiry.startsWith('expired') || undefined}
-              data-testid="kanban-connect-expiry"
-            >
-              {clusterExpiry}
-            </span>
-          )}
-        </div>
-        <KanbanConnectFlow
-          idPrefix="kanban-connect"
-          disabled={config.base_url === ''}
-          disabledHint={t('cluster.system.connectDisabledHint')}
-          active={!!connectId}
-          starting={startConnect.isPending}
-          startError={startConnect.error}
-          connectStart={startConnect.data}
-          status={connectStatus.data}
-          statusError={connectStatus.error}
-          onStart={launchConnect}
-          onReset={resetConnect}
-        />
-      </div>
-
       {/* Read-only cross-project link overview (management stays with owners). */}
       {links.data && links.data.length > 0 ? (
         <div data-testid="kanban-links">
@@ -810,7 +713,6 @@ function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
                   >
                     {{
                       per_link: t('cluster.system.credOwnToken'),
-                      cluster_fallback: t('cluster.system.credClusterToken'),
                       missing: t('cluster.system.credMissing'),
                     }[l.credential_status]}
                   </span>

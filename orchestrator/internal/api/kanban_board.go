@@ -16,9 +16,9 @@ import (
 // D31 — embed the real jtype board in the console project page. The console
 // injects a board-react `client` whose every listDocuments/getDocument/
 // saveDocument call hits the proxy below; jcloud resolves the EFFECTIVE jtype
-// token server-side (identical resolution to the poller — per-link token > cluster
-// fallback) and forwards to jtype with a Bearer header, so the token NEVER reaches
-// the browser (red line #2). Responses are copied through VERBATIM (not
+// token server-side (identical resolution to the poller — the link's per-link
+// token, D36) and forwards to jtype with a Bearer header, so the token NEVER
+// reaches the browser (red line #2). Responses are copied through VERBATIM (not
 // re-serialized through the typed Doc/Document structs, which drop
 // isPublished/versionId/mergeStatus — a silent field-dropping degradation, red
 // line #1). See ProxyDocumentAPI in internal/jtype/client.go.
@@ -136,21 +136,21 @@ func (s *Server) resolveBoardProxy(w http.ResponseWriter, r *http.Request) (clie
 	}
 
 	// Effective jtype client + token — IDENTICAL resolution to the poller
-	// (kanban/poller.go): the tick's Factory + cluster fallback, then ResolveToken
-	// with the matched link's per-link token. Never a jtype call with an empty
-	// credential; every failure is a typed, visible error.
-	f, clusterToken, ok := s.kanban.Factory(r.Context())
+	// (kanban/poller.go): the tick's Factory, then ResolveToken with the matched
+	// link's per-link token (D36: no cluster fallback any more). Never a jtype
+	// call with an empty credential; every failure is a typed, visible error.
+	f, ok := s.kanban.Factory(r.Context())
 	if !ok {
 		writeError(w, http.StatusConflict, "kanban_not_configured",
 			"the jtype integration is not configured — ask a cluster admin")
 		return nil, "", false
 	}
-	token, _, terr := jtype.ResolveToken(match.TokenEnc, s.JtypeDecrypt(), clusterToken)
+	token, _, terr := jtype.ResolveToken(match.TokenEnc, s.JtypeDecrypt())
 	if terr != nil {
 		// ErrNoToken / ErrNoCipher / decrypt failure — visible, never a silent skip.
 		s.log.Warn("board proxy: no usable jtype credential", "link", match.ID, "err", terr)
 		writeError(w, http.StatusServiceUnavailable, "jtype_unreachable",
-			"no usable jtype credential for this board's link")
+			"no usable jtype credential for this board's link — set a per-link token (Project settings → Kanban)")
 		return nil, "", false
 	}
 	return s.boardProxyFor(f, token), workspace, true

@@ -15,20 +15,23 @@ import (
 	"github.com/cnjack/jcloud/internal/store"
 )
 
-// "Connect with jtype" OAuth device flow (D28). The console drives an RFC 8628
-// device flow to mint a kanban credential (cluster fallback token or per-link
-// token) without a hand-pasted PAT. jcloud is a stateless proxy over jtype's two
-// UNauthenticated OAuth endpoints (internal/jtypeoauth) plus an in-memory
-// registry of pending flows — there is NO background poller and NO DB
-// persistence of the device_code (a SECRET). The console (React Query) drives
-// the cadence; each console poll triggers at most ONE jtype token poll, gated by
-// the flow's `interval`. A restart drops in-flight flows → the next poll 404s
+// "Connect with jtype" OAuth device flow (D28, slimmed by D36). The console
+// drives an RFC 8628 device flow to mint a PER-LINK kanban token without a
+// hand-pasted PAT. jcloud is a stateless proxy over jtype's two UNauthenticated
+// OAuth endpoints (internal/jtypeoauth) plus an in-memory registry of pending
+// flows — there is NO background poller and NO DB persistence of the
+// device_code (a SECRET). The console (React Query) drives the cadence; each
+// console poll triggers at most ONE jtype token poll, gated by the flow's
+// `interval`. A restart drops in-flight flows → the next poll 404s
 // connect_expired and the user reconnects (a 10-minute window).
 //
+// D36 removed the cluster-surface flow (there is no cluster fallback token any
+// more): the only surface is an existing project's kanban link.
+//
 // Security (D28 §5): the device_code and the minted access_token NEVER reach the
-// browser and are NEVER logged; only connect_id / surface / base-URL host /
-// status are logged. On success the token is sealed server-side (AES-256-GCM,
-// AUTH_TOKEN_KEY) and written to the target row; the poll response carries only
+// browser and are NEVER logged; only connect_id / base-URL host / status are
+// logged. On success the token is sealed server-side (AES-256-GCM,
+// AUTH_TOKEN_KEY) and written to the link row; the poll response carries only
 // {status, token_set, token_expires_at} — the plaintext never leaves the server.
 
 // oauthClient is the slice of *jtypeoauth.Client the connect handlers need. It is
@@ -42,8 +45,10 @@ type oauthClient interface {
 // Connect surface kinds + poll status strings (the poll status enum the console
 // keys off — pending is the non-terminal state; the rest are terminal).
 const (
-	surfaceCluster = "cluster"
-	surfaceLink    = "link"
+	// surfaceLink is the only surface since D36: the minted token binds to a
+	// specific project's kanban link. (The cluster-surface flow went away with
+	// the cluster fallback token.)
+	surfaceLink = "link"
 
 	connectPending     = "pending"
 	connectComplete    = "complete"
@@ -57,12 +62,12 @@ const (
 // A create past the cap sweeps time-expired flows, then evicts the oldest.
 const maxConnectFlows = 128
 
-// connectSurface identifies what a flow's minted token binds to: the cluster
-// fallback token (cluster_kanban_config) or a specific project's kanban link.
+// connectSurface identifies what a flow's minted token binds to: a specific
+// project's kanban link (the only surface since D36).
 type connectSurface struct {
-	kind      string // surfaceCluster | surfaceLink
-	linkID    string // surfaceLink only
-	projectID string // surfaceLink only (authz + poll scoping)
+	kind      string // surfaceLink
+	linkID    string
+	projectID string // authz + poll scoping
 }
 
 // connectRecord is one in-flight device flow. It is keyed by an opaque 256-bit
@@ -82,7 +87,6 @@ type connectSurface struct {
 type connectRecord struct {
 	connectID               string
 	principal               string // principalIdentity of the starter (poll re-checks it)
-	updatedBy               string // user id recorded on the cluster row (audit)
 	surface                 connectSurface
 	baseURL                 string // the jtype base URL the flow authenticates against
 	deviceCode              string // SECRET — never serialized, never logged
@@ -197,54 +201,6 @@ type kanbanConnectStatusView struct {
 	TokenExpiresAt string `json:"token_expires_at,omitempty"`
 }
 
-// --- cluster fallback token (requireClusterAdmin) ---------------------------
-
-// handleStartKanbanConnect starts a device flow for the CLUSTER fallback token
-// (D28 §2.1). Preconditions, in order: cluster-admin; a cipher (checked AT START,
-// before any jtype call — a token we cannot seal is a config error); a DB
-// override row with a base_url (D27 same-source binding). ErrOAuthUnsupported ⇒
-// a typed 409 so the console falls back to the paste path (never a silent mock).
-func (s *Server) handleStartKanbanConnect(w http.ResponseWriter, r *http.Request) {
-	if !s.requireClusterAdmin(w, r) {
-		return
-	}
-	if s.cipher == nil {
-		writeError(w, http.StatusConflict, "cipher_not_configured",
-			"set AUTH_TOKEN_KEY on the orchestrator before connecting a cluster jtype token")
-		return
-	}
-	row, err := s.st.GetClusterKanbanConfig(r.Context())
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusConflict, "base_url_not_configured",
-			"Save the jtype base URL before connecting.")
-		return
-	}
-	if err != nil {
-		s.log.Error("kanban connect: read cluster config", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "could not read kanban config")
-		return
-	}
-	s.startConnectFlow(w, r, connectSurface{kind: surfaceCluster}, row.BaseURL)
-}
-
-// handlePollKanbanConnect polls a cluster flow (D28 §2.1). It RE-authorizes
-// (cluster-admin) and checks the record principal — a leaked connect_id is
-// unusable by another subject (surfaced as connect_expired, not an existence
-// leak). On complete the token is already sealed into cluster_kanban_config and
-// the resolver invalidated; this only reads the outcome.
-func (s *Server) handlePollKanbanConnect(w http.ResponseWriter, r *http.Request) {
-	if !s.requireClusterAdmin(w, r) {
-		return
-	}
-	rec := s.connects.get(r.PathValue("connectID"))
-	if rec == nil || rec.surface.kind != surfaceCluster ||
-		rec.principal != principalIdentity(principalFrom(r.Context())) {
-		writeError(w, http.StatusNotFound, "connect_expired", "Connection expired — click Connect again.")
-		return
-	}
-	writeJSON(w, http.StatusOK, s.advanceConnect(r.Context(), rec))
-}
-
 // --- per-link token (authorizeProject RoleOwner) ----------------------------
 
 // handleStartLinkConnect starts a device flow for an EXISTING project kanban
@@ -335,7 +291,6 @@ func (s *Server) startConnectFlow(w http.ResponseWriter, r *http.Request, surfac
 	rec := &connectRecord{
 		connectID:               newConnectID(),
 		principal:               principalIdentity(p),
-		updatedBy:               p.userID(),
 		surface:                 surface,
 		baseURL:                 baseURL,
 		deviceCode:              da.DeviceCode,
@@ -377,7 +332,7 @@ func (s *Server) advanceConnect(ctx context.Context, rec *connectRecord) kanbanC
 	}
 	// A base_url changed under the flow (console edit / delete) ⇒ a token minted
 	// against a now-stale instance must never be stored: expire the flow.
-	if cur, ok := s.currentBaseURL(ctx, rec.surface); !ok || cur != rec.baseURL {
+	if cur, ok := s.currentBaseURL(ctx); !ok || cur != rec.baseURL {
 		rec.terminal = connectExpired
 		return rec.statusViewLocked()
 	}
@@ -409,10 +364,19 @@ func (s *Server) advanceConnect(ctx context.Context, rec *connectRecord) kanbanC
 	return rec.statusViewLocked()
 }
 
-// completeConnectLocked seals the minted token and writes it to the flow's target
-// row, marking the record terminal-complete. Caller holds rec.mu. A seal/store
+// completeConnectLocked seals the minted token and writes it to the flow's
+// link, marking the record terminal-complete. Caller holds rec.mu. A seal/store
 // failure is fail-visible (mark expired + log) — NEVER a faked success.
 func (s *Server) completeConnectLocked(ctx context.Context, rec *connectRecord, tok *jtypeoauth.Token, now time.Time) {
+	// Anti-TOCTOU: the base URL may have changed INSIDE the token poll's network
+	// window (after advanceConnect's guard read). A token minted against the
+	// now-stale instance must never be stored — re-check right before writing.
+	if cur, ok := s.currentBaseURL(ctx); !ok || cur != rec.baseURL {
+		s.log.Warn("kanban connect: base URL changed during the completing poll; discarding the minted token",
+			"connect", rec.connectID)
+		rec.terminal = connectExpired
+		return
+	}
 	if s.cipher == nil {
 		// Pathological: cipher was verified at start and is immutable in production.
 		s.log.Error("kanban connect: minted token but no cipher to seal it", "connect", rec.connectID)
@@ -433,56 +397,26 @@ func (s *Server) completeConnectLocked(ctx context.Context, rec *connectRecord, 
 		expPtr = &exp
 	}
 
-	switch rec.surface.kind {
-	case surfaceCluster:
-		// CONDITIONAL token write (anti-TOCTOU): the store updates token_enc /
-		// token_expires_at ONLY where the row STILL carries the base URL this flow
-		// authenticated against — it NEVER writes base_url, so an admin PUT that
-		// re-pointed the config during the completing poll wins, and a token minted
-		// against the stale instance is never stored (ErrNotFound ⇒ the flow
-		// expires, matching the mid-flow-change contract).
-		err := s.st.SetClusterKanbanToken(ctx, rec.baseURL, enc, expPtr, rec.updatedBy)
-		if errors.Is(err, store.ErrNotFound) {
-			rec.terminal = connectExpired
-			return
-		}
-		if err != nil {
-			s.log.Error("kanban connect: store cluster token", "connect", rec.connectID, "err", err)
-			rec.terminal = connectExpired
-			return
-		}
-		s.kanban.Invalidate() // activate without a restart (fail-visible, D27)
-	case surfaceLink:
-		if err := s.st.SetKanbanLinkToken(ctx, rec.surface.linkID, enc, expPtr); err != nil {
-			s.log.Error("kanban connect: store link token", "connect", rec.connectID, "err", err)
-			rec.terminal = connectExpired
-			return
-		}
+	if err := s.st.SetKanbanLinkToken(ctx, rec.surface.linkID, enc, expPtr); err != nil {
+		s.log.Error("kanban connect: store link token", "connect", rec.connectID, "err", err)
+		rec.terminal = connectExpired
+		return
 	}
 	rec.terminal = connectComplete
 	rec.tokenExpiresAt = expPtr
 	s.log.Info("kanban connect complete", "connect", rec.connectID, "surface", rec.surface.kind)
 }
 
-// currentBaseURL re-resolves the base URL a flow's surface targets NOW, so the
-// poll can detect a base_url that changed under it. ok=false (row gone / config
-// off) is treated as "changed" by the caller.
-func (s *Server) currentBaseURL(ctx context.Context, surface connectSurface) (string, bool) {
-	switch surface.kind {
-	case surfaceCluster:
-		row, err := s.st.GetClusterKanbanConfig(ctx)
-		if err != nil {
-			return "", false
-		}
-		return row.BaseURL, true
-	case surfaceLink:
-		eff, err := s.kanban.Effective(ctx)
-		if err != nil || !eff.Enabled() {
-			return "", false
-		}
-		return eff.BaseURL, true
+// currentBaseURL re-resolves the base URL a flow targets NOW, so the poll can
+// detect a base_url that changed under it. ok=false (config off / resolver
+// error) is treated as "changed" by the caller. Since D36 the only surface is
+// per-link, so this is always the EFFECTIVE cluster base URL.
+func (s *Server) currentBaseURL(ctx context.Context) (string, bool) {
+	eff, err := s.kanban.Effective(ctx)
+	if err != nil || !eff.Enabled() {
+		return "", false
 	}
-	return "", false
+	return eff.BaseURL, true
 }
 
 // principalIdentity is the opaque identity a connect flow is bound to, so a poll

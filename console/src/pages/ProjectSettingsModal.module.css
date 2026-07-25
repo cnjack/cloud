@@ -408,9 +408,9 @@
   color: var(--color-text-faint);
 }
 
-/* Credential three-state (P1): per_link = healthy, cluster_fallback = neutral
-   (the .badge default above), missing = loud error — the link is dead until a
-   token is set (fail-visible, mirrors the server's credential_status). */
+/* Credential states (P1 / D36): per_link = healthy, missing = loud error — the
+   link is dead until a token is set (fail-visible, mirrors the server's
+   credential_status). There is no cluster fallback any more. */
 .badge[data-state='per_link'] {
   border-color: var(--status-succeeded-dot);
   color: var(--status-succeeded-fg);

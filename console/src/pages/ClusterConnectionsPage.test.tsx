@@ -19,8 +19,8 @@ const system: SystemInfo = {
 };
 
 const kanban: KanbanClusterConfig = {
-  base_url: 'https://jtype.example', token_set: true, source: 'db', effective_enabled: true,
-  effective_base_url: 'https://jtype.example', cluster_token_set: true, poll_interval: '15s',
+  base_url: 'https://jtype.example', source: 'db', effective_enabled: true,
+  effective_base_url: 'https://jtype.example', poll_interval: '15s',
 };
 
 describe('ClusterConnectionsPage', () => {

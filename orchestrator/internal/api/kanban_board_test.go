@@ -85,25 +85,33 @@ func (c *boardProxyConn) ProxyDocumentAPI(_ context.Context, method, path string
 }
 
 // boardFixture is a kanbanFixture with the jtype integration ON and a mutable
-// board-proxy stub wired behind the boardProxyFor seam. The distinctive cluster
+// board-proxy stub wired behind the boardProxyFor seam. The distinctive per-link
 // token lets the no-leak scan detect a serialized token.
 type boardFixture struct {
 	kanbanFixture
 	stub *boardProxyStub
 }
 
-const boardClusterToken = "cluster-secret-board-tok-DO-NOT-LEAK"
+const boardPerLinkToken = "per-link-secret-board-tok-DO-NOT-LEAK"
 
-// setupBoard builds the fixture. clusterToken=true sets the cluster fallback so a
-// tokenless link resolves a credential (the common path); pass false to exercise
-// the no-credential 503 edge.
-func setupBoard(t *testing.T, clusterToken bool) boardFixture {
+// sealedPerLink seals the fixture's distinctive per-link token (D36: the board
+// proxy authorises with the LINK's own token — there is no cluster fallback).
+func (f boardFixture) sealedPerLink(t *testing.T) []byte {
+	t.Helper()
+	enc, err := f.srv.Cipher().EncryptString(boardPerLinkToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return enc
+}
+
+// setupBoard builds the fixture with the integration ON (env base URL => Factory
+// ok). Success-path tests seed their links with sealedPerLink; a tokenless link
+// exercises the no-credential 503 edge (D36).
+func setupBoard(t *testing.T) boardFixture {
 	t.Helper()
 	// A board arg turns the integration ON (env base URL => Factory ok).
 	f := setupKanban(t, fakeBoardValidator{board: &jtype.Board{}})
-	if clusterToken {
-		f.setClusterToken(boardClusterToken)
-	}
 	stub := &boardProxyStub{status: http.StatusOK, body: "[]"}
 	f.srv.boardProxyFor = stub.proxyFor
 	return boardFixture{kanbanFixture: f, stub: stub}
@@ -143,8 +151,8 @@ func (f boardFixture) boardLinksURL() string {
 // body copied through byte-for-byte (including isPublished/versionId fidelity),
 // and the proxy issued exactly one GET to the server-built path.
 func TestBoardProxy_MemberReadsOwnWorkspace(t *testing.T) {
-	f := setupBoard(t, true)
-	f.seedLink(t, "ws-A", "b_a", nil, true)
+	f := setupBoard(t)
+	f.seedLink(t, "ws-A", "b_a", f.sealedPerLink(t), true)
 	f.stub.body = `[{"id":"d1","relativePath":"a.board","isPublished":true,"versionId":"v9"}]`
 
 	r := do(t, http.MethodGet, f.docsURL("ws-A"), f.tokens["member"], nil)
@@ -167,7 +175,7 @@ func TestBoardProxy_MemberReadsOwnWorkspace(t *testing.T) {
 
 // 2. A non-member (stranger) is 403'd BEFORE any jtype call.
 func TestBoardProxy_NonMember403(t *testing.T) {
-	f := setupBoard(t, true)
+	f := setupBoard(t)
 	f.seedLink(t, "ws-A", "b_a", nil, true)
 
 	r := do(t, http.MethodGet, f.docsURL("ws-A"), f.tokens["stranger"], nil)
@@ -182,7 +190,7 @@ func TestBoardProxy_NonMember403(t *testing.T) {
 
 // 3. A viewer is 403'd (read+write threshold is member+; viewers get no board).
 func TestBoardProxy_Viewer403(t *testing.T) {
-	f := setupBoard(t, true)
+	f := setupBoard(t)
 	f.seedLink(t, "ws-A", "b_a", nil, true)
 
 	r := do(t, http.MethodGet, f.docsURL("ws-A"), f.tokens["viewer"], nil)
@@ -200,7 +208,7 @@ func TestBoardProxy_Viewer403(t *testing.T) {
 // ws-B (it backs project B's own board), A's member is 403'd (workspace_not_linked)
 // and NOTHING is forwarded to jtype.
 func TestBoardProxy_WorkspaceNotInProjectLinks403(t *testing.T) {
-	f := setupBoard(t, true)
+	f := setupBoard(t)
 	f.seedLink(t, "ws-A", "b_a", nil, true) // A's only link
 
 	// A second project (owned by the stranger) with a link to ws-B. ws-B is a real,
@@ -232,7 +240,7 @@ func TestBoardProxy_WorkspaceNotInProjectLinks403(t *testing.T) {
 
 // 5. Missing ?workspace= is a typed 400 before any jtype call.
 func TestBoardProxy_MissingWorkspace400(t *testing.T) {
-	f := setupBoard(t, true)
+	f := setupBoard(t)
 	f.seedLink(t, "ws-A", "b_a", nil, true)
 
 	r := do(t, http.MethodGet, f.ts.URL+"/api/v1/projects/"+f.projectID+"/kanban/board/documents", f.tokens["member"], nil)
@@ -264,11 +272,11 @@ func TestBoardProxy_KanbanNotConfigured409(t *testing.T) {
 	}
 }
 
-// 7. A link with no per-link token and NO cluster fallback → 503 jtype_unreachable
-// (ResolveToken => ErrNoToken). Never a silent skip.
+// 7. A link with no per-link token (D36: no cluster fallback) → 503
+// jtype_unreachable (ResolveToken => ErrNoToken). Never a silent skip.
 func TestBoardProxy_NoCredential503(t *testing.T) {
-	f := setupBoard(t, false) // integration ON, but no cluster token
-	f.seedLink(t, "ws-A", "b_a", nil, true)
+	f := setupBoard(t) // integration ON
+	f.seedLink(t, "ws-A", "b_a", nil, true) // tokenless link
 
 	r := do(t, http.MethodGet, f.docsURL("ws-A"), f.tokens["member"], nil)
 	if r.StatusCode != http.StatusServiceUnavailable {
@@ -282,16 +290,16 @@ func TestBoardProxy_NoCredential503(t *testing.T) {
 	}
 }
 
-// 8. A per-link token is PREFERRED over the cluster fallback: the proxy resolves
-// and forwards the link's own token, not the cluster one.
-func TestBoardProxy_PerLinkTokenPreferred(t *testing.T) {
-	f := setupBoard(t, true) // cluster token set...
+// 8. The proxy resolves and forwards the link's OWN per-link token (D36: the
+// only credential source).
+func TestBoardProxy_PerLinkTokenUsed(t *testing.T) {
+	f := setupBoard(t)
 	const perLink = "per-link-secret-DO-NOT-LEAK"
 	enc, err := f.srv.Cipher().EncryptString(perLink)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.seedLink(t, "ws-A", "b_a", enc, true) // ...but the link has its own token
+	f.seedLink(t, "ws-A", "b_a", enc, true)
 
 	r := do(t, http.MethodGet, f.docsURL("ws-A"), f.tokens["member"], nil)
 	if r.StatusCode != http.StatusOK {
@@ -302,16 +310,13 @@ func TestBoardProxy_PerLinkTokenPreferred(t *testing.T) {
 	if c.token != perLink {
 		t.Fatalf("proxy used token %q want the per-link token", c.token)
 	}
-	if c.token == boardClusterToken {
-		t.Fatal("proxy used the cluster token instead of the per-link token")
-	}
 }
 
 // 9. saveDocument proxies POST …/documents/save with the body + resolved token; the
 // upstream save response (mergeStatus/contentHash) is copied through.
 func TestBoardProxy_SaveForwards(t *testing.T) {
-	f := setupBoard(t, true)
-	f.seedLink(t, "ws-A", "b_a", nil, true)
+	f := setupBoard(t)
+	f.seedLink(t, "ws-A", "b_a", f.sealedPerLink(t), true)
 	f.stub.body = `{"relativePath":"a.md","contentHash":"h2","updatedClock":8,"mergeStatus":"clean"}`
 
 	reqBody := map[string]any{"relativePath": "a.md", "content": "x", "baseContentHash": "h1"}
@@ -331,21 +336,21 @@ func TestBoardProxy_SaveForwards(t *testing.T) {
 	if !strings.Contains(c.body, `"relativePath":"a.md"`) || !strings.Contains(c.body, `"content":"x"`) {
 		t.Fatalf("save body not forwarded: %s", c.body)
 	}
-	if c.token != boardClusterToken {
-		t.Fatalf("save used token %q want cluster fallback", c.token)
+	if c.token != boardPerLinkToken {
+		t.Fatalf("save used token %q want the per-link token", c.token)
 	}
 }
 
 // 10. The resolved token appears in NO response body — across list/get/save AND a
 // transport-error (503) response — and the reduced link view has no token field.
 func TestBoardProxy_TokenNeverSerialized(t *testing.T) {
-	f := setupBoard(t, true)
-	f.seedLink(t, "ws-A", "b_a", nil, true)
+	f := setupBoard(t)
+	f.seedLink(t, "ws-A", "b_a", f.sealedPerLink(t), true)
 
 	scan := func(name string, r *http.Response) {
 		body, _ := io.ReadAll(r.Body)
 		r.Body.Close()
-		if strings.Contains(string(body), boardClusterToken) {
+		if strings.Contains(string(body), boardPerLinkToken) {
 			t.Fatalf("%s response leaked the token: %s", name, body)
 		}
 	}
@@ -375,7 +380,7 @@ func TestBoardProxy_TokenNeverSerialized(t *testing.T) {
 
 // 11. board/links is member+ and returns the reduced view; a non-member is 403'd.
 func TestBoardEmbedLinks_MemberOkNonMember403(t *testing.T) {
-	f := setupBoard(t, true)
+	f := setupBoard(t)
 	// Even a link WITH a per-link token must not leak credential posture.
 	enc, _ := f.srv.Cipher().EncryptString("secret")
 	f.seedLink(t, "ws-A", "b_a", enc, true)
@@ -405,8 +410,8 @@ func TestBoardEmbedLinks_MemberOkNonMember403(t *testing.T) {
 // .board config JSON or an arbitrary non-card doc in the linked workspace, and a
 // rejected save never reaches jtype.
 func TestBoardProxy_SaveRejectsNonCardPath(t *testing.T) {
-	f := setupBoard(t, true)
-	f.seedLink(t, "ws-A", "b_a", nil, true)
+	f := setupBoard(t)
+	f.seedLink(t, "ws-A", "b_a", f.sealedPerLink(t), true)
 
 	for _, bad := range []string{"my.board", "../secret.md", "notes/private.txt"} {
 		body := map[string]any{"relativePath": bad, "content": "x"}
@@ -426,7 +431,7 @@ func TestBoardProxy_SaveRejectsNonCardPath(t *testing.T) {
 // only enabled links): it is absent from board/links (→ no Kanban button) and its
 // workspace is rejected by the proxy before any jtype call.
 func TestBoardProxy_DisabledLinkNoAccess(t *testing.T) {
-	f := setupBoard(t, true)
+	f := setupBoard(t)
 	f.seedLink(t, "ws-A", "b_a", nil, false) // disabled
 
 	r := do(t, http.MethodGet, f.boardLinksURL(), f.tokens["member"], nil)

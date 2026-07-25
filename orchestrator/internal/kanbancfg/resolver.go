@@ -1,28 +1,22 @@
 // Package kanbancfg resolves the EFFECTIVE cluster-level jtype kanban
-// configuration — the jtype base URL + optional cluster fallback token the
-// poller, the reconciler writeback pass, the create-link column validation and
-// the console status all share (D27).
+// configuration — the jtype base URL the poller, the reconciler writeback pass,
+// the create-link column validation, the discovery pickers, the board embed
+// proxy and the console status all share (D27, slimmed by D36).
 //
 // Two sources, in precedence order (DB > env, mirroring modelcfg's catalog > env):
 //
 //   - DB: the single-row cluster_kanban_config a cluster admin sets from the
-//     console. Present ⇒ Source=db, base URL + (decrypted) cluster fallback token
-//     come from the row.
-//   - env: the JTYPE_BASE_URL/JTYPE_TOKEN environment fallback (retained for
-//     backward compatibility, D25). Applies ONLY when there is no DB row and
+//     console. Present ⇒ Source=db, the base URL comes from the row.
+//   - env: the JTYPE_BASE_URL environment fallback (retained for backward
+//     compatibility, D25). Applies ONLY when there is no DB row and
 //     JTYPE_BASE_URL is non-empty.
 //   - none: neither ⇒ the integration is OFF (a fail-visible clean no-op, never
 //     a mock — CLAUDE.md red line #1).
 //
-// CRITICAL — the cluster fallback token is SOURCE-COUPLED to the base URL: a DB
-// config never borrows the env JTYPE_TOKEN and an env config never borrows a DB
-// token. A PAT minted for one jtype instance must not silently authenticate
-// against another (D27).
-//
-// Cipher discipline (mirrors modelcfg.resolveModel): a DB row with a token_enc
-// blob but no cipher (AUTH_TOKEN_KEY unset after a token was stored) is surfaced
-// as an ERROR, never a silent fallback to the env token — the console then shows
-// an honest "kanban disabled: <reason>" rather than acting on the wrong instance.
+// D36 removed the cluster fallback token entirely: the config is now JUST the
+// base URL (an infrastructure-level fact), so this package holds no secret
+// material and needs no cipher. Every kanban link authorises with its own
+// per-link token (D25) via jtype.ResolveToken.
 package kanbancfg
 
 import (
@@ -31,7 +25,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/jtype"
@@ -52,26 +45,17 @@ type Source string
 const (
 	// SourceDB: the single-row cluster_kanban_config (console-managed, D27).
 	SourceDB Source = "db"
-	// SourceEnv: the JTYPE_BASE_URL/JTYPE_TOKEN environment fallback (D25).
+	// SourceEnv: the JTYPE_BASE_URL environment fallback (D25).
 	SourceEnv Source = "env"
 	// SourceNone: nothing usable — the integration is OFF (fail-visible no-op).
 	SourceNone Source = "none"
 )
 
-// Effective is the materialised cluster kanban config. ClusterToken is the
-// DECRYPTED cluster fallback token (empty when none); callers must NEVER
-// serialise it to API clients — expose only ClusterTokenSet.
+// Effective is the materialised cluster kanban config: just the base URL and
+// where it came from (D36 — no cluster credential any more).
 type Effective struct {
-	Source          Source
-	BaseURL         string
-	ClusterToken    string
-	ClusterTokenSet bool
-	// ClusterTokenExpiresAt is the wall-clock expiry of the effective cluster
-	// fallback token when it was minted by the "Connect with jtype" device flow
-	// (D28). Nil = unknown expiry (a DB/env manual-paste token, or no token). Set
-	// only for the DB source (the env fallback token is opaque). Surfaced as
-	// token_expires_at on the /system snapshot — never the token itself.
-	ClusterTokenExpiresAt *time.Time
+	Source  Source
+	BaseURL string
 }
 
 // Enabled reports whether a usable base URL was resolved (the integration is on).
@@ -84,17 +68,15 @@ type ConfigReader interface {
 }
 
 // Resolver resolves (and caches) the effective cluster kanban config so the hot
-// paths (every poll tick, every writeback pass) don't pay a DB read + AES
-// decryption each time. A successful resolution is cached for resolverTTL; errors
-// are NEVER cached (a transient DB blip or a config error must not stick). It
-// also pools ONE *jtype.Factory keyed by the resolved base URL, rebuilding only
-// when that URL changes so the shared HTTP connection pool survives. Safe for
-// concurrent use.
+// paths (every poll tick, every writeback pass) don't pay a DB read each time.
+// A successful resolution is cached for resolverTTL; errors are NEVER cached (a
+// transient DB blip must not stick). It also pools ONE *jtype.Factory keyed by
+// the resolved base URL, rebuilding only when that URL changes so the shared
+// HTTP connection pool survives. Safe for concurrent use.
 type Resolver struct {
-	st     ConfigReader
-	cipher *auth.Cipher
-	cfg    *config.Config
-	now    func() time.Time // injectable clock for tests
+	st  ConfigReader
+	cfg *config.Config
+	now func() time.Time // injectable clock for tests
 
 	mu       sync.Mutex
 	cached   *Effective // last successful resolution (nil = cold/invalidated)
@@ -106,11 +88,9 @@ type Resolver struct {
 	factoryBase string
 }
 
-// NewResolver builds a Resolver over the given store/cipher/config. cipher may be
-// nil (no AUTH_TOKEN_KEY): a config WITHOUT a token still resolves; one WITH a DB
-// token surfaces the decryption error (fail-visible), never a silent env fallback.
-func NewResolver(st ConfigReader, cipher *auth.Cipher, cfg *config.Config) *Resolver {
-	return &Resolver{st: st, cipher: cipher, cfg: cfg, now: time.Now}
+// NewResolver builds a Resolver over the given store/config.
+func NewResolver(st ConfigReader, cfg *config.Config) *Resolver {
+	return &Resolver{st: st, cfg: cfg, now: time.Now}
 }
 
 // Effective returns the materialised cluster kanban config, serving a cached
@@ -136,56 +116,35 @@ func (r *Resolver) Effective(ctx context.Context) (Effective, error) {
 	return v, nil
 }
 
-// resolve runs the DB > env > none chain once (uncached). See the package doc for
-// the source-coupling + cipher-discipline invariants.
+// resolve runs the DB > env > none chain once (uncached). See the package doc.
 func (r *Resolver) resolve(ctx context.Context) (Effective, error) {
 	row, err := r.st.GetClusterKanbanConfig(ctx)
 	switch {
 	case err == nil:
-		// DB source. The cluster fallback token, if any, comes ONLY from this row
-		// (source-coupled) — never the env JTYPE_TOKEN.
-		eff := Effective{Source: SourceDB, BaseURL: row.BaseURL}
-		if len(row.TokenEnc) > 0 {
-			// cipher==nil ⇒ DecryptString returns ErrCipherNotConfigured, surfaced
-			// as an error (never a silent env fallback). Mirrors modelcfg.
-			tok, derr := r.cipher.DecryptString(row.TokenEnc)
-			if derr != nil {
-				return Effective{}, derr
-			}
-			eff.ClusterToken = tok
-			eff.ClusterTokenSet = true
-			eff.ClusterTokenExpiresAt = row.TokenExpiresAt
-		}
-		return eff, nil
+		return Effective{Source: SourceDB, BaseURL: row.BaseURL}, nil
 	case errors.Is(err, store.ErrNotFound):
 		// No DB row — fall through to the env fallback.
 	default:
 		return Effective{}, err
 	}
 
-	// Env fallback (D25): only when JTYPE_BASE_URL is set. The cluster token, if
-	// any, comes ONLY from the env (source-coupled) — never a DB token.
+	// Env fallback (D25): only when JTYPE_BASE_URL is set.
 	if r.cfg != nil && r.cfg.JtypeBaseURL != "" {
-		return Effective{
-			Source:          SourceEnv,
-			BaseURL:         r.cfg.JtypeBaseURL,
-			ClusterToken:    r.cfg.JtypeToken,
-			ClusterTokenSet: r.cfg.JtypeToken != "",
-		}, nil
+		return Effective{Source: SourceEnv, BaseURL: r.cfg.JtypeBaseURL}, nil
 	}
 	return Effective{Source: SourceNone}, nil
 }
 
-// Factory returns the pooled *jtype.Factory for the resolved base URL, the
-// effective cluster fallback token (source-coupled), and ok=false when the
-// integration is OFF or the config errored (e.g. DB token + no cipher). The
-// caller builds a token-bound client with f.Client(token). off ⇒ (nil,"",false)
-// so the poller/writeback are a clean visible no-op. A base-URL change rebuilds
+// Factory returns the pooled *jtype.Factory for the resolved base URL and
+// ok=false when the integration is OFF or the config errored. The caller builds
+// a token-bound client with f.Client(token) where the token comes from the
+// link's per-link credential (jtype.ResolveToken, D36). off ⇒ (nil,false) so
+// the poller/writeback are a clean visible no-op. A base-URL change rebuilds
 // the factory (new HTTP pool); an unchanged URL reuses it.
-func (r *Resolver) Factory(ctx context.Context) (*jtype.Factory, string, bool) {
+func (r *Resolver) Factory(ctx context.Context) (*jtype.Factory, bool) {
 	eff, err := r.Effective(ctx)
 	if err != nil || !eff.Enabled() {
-		return nil, "", false
+		return nil, false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -194,9 +153,9 @@ func (r *Resolver) Factory(ctx context.Context) (*jtype.Factory, string, bool) {
 		r.factoryBase = eff.BaseURL
 	}
 	if r.factory == nil { // defensive: NewFactory only returns nil for an empty URL
-		return nil, "", false
+		return nil, false
 	}
-	return r.factory, eff.ClusterToken, true
+	return r.factory, true
 }
 
 // Invalidate drops the cached resolution so the next Effective/Factory re-reads

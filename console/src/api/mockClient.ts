@@ -293,47 +293,41 @@ export function createMockClient(): ApiClient {
       },
     ],
   };
-  // D27: the cluster jtype config, a single mutable DB-override "row" (null = no
-  // override). The demo rig has no JTYPE_* env fallback, so an absent row resolves
-  // to source=none / off — set one here and it becomes source=db / on (no restart),
+  // D27/D36: the cluster jtype config, a single mutable DB-override "row" (null =
+  // no override) holding ONLY the base URL — no cluster-level credential (D36).
+  // The demo rig has no JTYPE_BASE_URL env fallback, so an absent row resolves to
+  // source=none / off — set one here and it becomes source=db / on (no restart),
   // mirroring the resolver so the console edit flow roundtrips.
-  let kanbanCfg: { base_url: string; token_set: boolean; token_expires_at?: string } | null = null;
+  let kanbanCfg: { base_url: string } | null = null;
   function kanbanConfigView(): KanbanClusterConfig {
     if (kanbanCfg) {
       return {
         base_url: kanbanCfg.base_url,
-        token_set: kanbanCfg.token_set,
         source: 'db',
         effective_enabled: true,
         effective_base_url: kanbanCfg.base_url,
-        cluster_token_set: kanbanCfg.token_set,
         poll_interval: '15s',
-        // D28: present only when the fallback token was minted by the device flow.
-        ...(kanbanCfg.token_expires_at ? { token_expires_at: kanbanCfg.token_expires_at } : {}),
       };
     }
     // No DB row and no env fallback in the demo rig ⇒ off.
     return {
       base_url: '',
-      token_set: false,
       source: 'none',
       effective_enabled: false,
       effective_base_url: '',
-      cluster_token_set: false,
       poll_interval: '15s',
     };
   }
 
   // D28: the "Connect with jtype" device-flow registry, keyed by opaque
-  // connect_id. Each record remembers its target surface (cluster fallback token,
-  // or a specific link) and a poll counter: the demo/e2e roundtrip auto-approves
-  // on the SECOND poll (the first is `pending`), mirroring a user tapping Approve
-  // in jtype's browser page. On completion we seal a fake 90-day token into the
-  // target (token_set + token_expires_at) so the credential badge + expiry flip
+  // connect_id (per-link only since D36). Each record remembers its target link
+  // and a poll counter: the demo/e2e roundtrip auto-approves on the SECOND poll
+  // (the first is `pending`), mirroring a user tapping Approve in jtype's
+  // browser page. On completion we seal a fake 90-day token into the link
+  // (token_set + token_expires_at) so the credential badge + expiry flip
   // exactly as they would against a real orchestrator — no plaintext ever crosses.
-  type ConnectTarget = { kind: 'cluster' } | { kind: 'link'; projectId: string; linkId: string };
   interface ConnectRecord {
-    target: ConnectTarget;
+    target: { projectId: string; linkId: string };
     polls: number;
     tokenExpiresAt?: string;
   }
@@ -342,7 +336,7 @@ export function createMockClient(): ApiClient {
   function sixDigitCode(): string {
     return String(Math.floor(100000 + Math.random() * 900000));
   }
-  function startConnect(target: ConnectTarget, baseUrl: string): KanbanConnectStart {
+  function startConnect(target: { projectId: string; linkId: string }, baseUrl: string): KanbanConnectStart {
     const connectId = genId('kc');
     const userCode = sixDigitCode();
     connects.set(connectId, { target, polls: 0 });
@@ -365,22 +359,15 @@ export function createMockClient(): ApiClient {
     rec.polls += 1;
     // Still waiting for the user to approve in jtype's browser page.
     if (rec.polls < 2) return { status: 'pending', token_set: false };
-    // Approved: seal a fresh 90-day token into the target (idempotent across
+    // Approved: seal a fresh 90-day token into the link (idempotent across
     // repeat polls — the expiry is fixed on first completion).
     if (!rec.tokenExpiresAt) rec.tokenExpiresAt = nowISO(DEVICE_TOKEN_TTL_MS);
-    if (rec.target.kind === 'cluster') {
-      if (kanbanCfg) {
-        kanbanCfg.token_set = true;
-        kanbanCfg.token_expires_at = rec.tokenExpiresAt;
-      }
-    } else {
-      const l = kanbanLinks.get(rec.target.linkId);
-      if (l) {
-        l.token_set = true;
-        l.credential_status = 'per_link';
-        l.token_expires_at = rec.tokenExpiresAt;
-        kanbanLinks.set(l.id, l);
-      }
+    const l = kanbanLinks.get(rec.target.linkId);
+    if (l) {
+      l.token_set = true;
+      l.credential_status = 'per_link';
+      l.token_expires_at = rec.tokenExpiresAt;
+      kanbanLinks.set(l.id, l);
     }
     return { status: 'complete', token_set: true, token_expires_at: rec.tokenExpiresAt };
   }
@@ -1936,9 +1923,8 @@ export function createMockClient(): ApiClient {
         done_column: input.done_column?.trim() || undefined,
         enabled: true,
         token_set: hasToken,
-        // The demo rig has no cluster JTYPE_TOKEN, so a tokenless link is
-        // honestly "missing" (mirrors the server derivation; exercises the
-        // error badge in demo mode).
+        // A tokenless link is honestly "missing" (D36: no cluster fallback;
+        // mirrors the server derivation; exercises the error badge in demo mode).
         credential_status: hasToken ? 'per_link' : 'missing',
         // D29: with a credential we "hard validate" (ok); without one this is the
         // soft-create bootstrap path — a fail-visible "unvalidated" state.
@@ -1984,6 +1970,16 @@ export function createMockClient(): ApiClient {
           },
         });
       }
+      // D36: discovery borrows a per-link token from one of the project's
+      // existing links — none yet ⇒ typed 409, the form falls back to manual.
+      if (![...kanbanLinks.values()].some((l) => l.project_id === projectId && l.token_set)) {
+        throw new ApiError(409, 'discovery needs a jtype token', {
+          error: {
+            code: 'kanban_token_required',
+            message: 'Add a link with a token (paste or Connect) first, or enter the ids manually.',
+          },
+        });
+      }
       return delay(JTYPE_WORKSPACES.map((w) => ({ ...w })));
     },
     async listJtypeBoards(projectId: string, workspaceId: string): Promise<JtypeBoard[]> {
@@ -1993,6 +1989,14 @@ export function createMockClient(): ApiClient {
           error: {
             code: 'kanban_not_configured',
             message: 'Ask a cluster admin to configure jtype on the Cluster page first.',
+          },
+        });
+      }
+      if (![...kanbanLinks.values()].some((l) => l.project_id === projectId && l.token_set)) {
+        throw new ApiError(409, 'discovery needs a jtype token', {
+          error: {
+            code: 'kanban_token_required',
+            message: 'Add a link with a token (paste or Connect) first, or enter the ids manually.',
           },
         });
       }
@@ -2096,7 +2100,7 @@ export function createMockClient(): ApiClient {
       });
     },
 
-    /* ---- cluster kanban config (D27) -------------------------------------- */
+    /* ---- cluster kanban config (D27, slimmed by D36) ----------------------- */
     async getKanbanConfig(): Promise<KanbanClusterConfig> {
       return delay(kanbanConfigView());
     },
@@ -2104,12 +2108,7 @@ export function createMockClient(): ApiClient {
       // Mirror the orchestrator's validateBaseURL gate (400 on a non-http(s) URL).
       const base = input.base_url?.trim() ?? '';
       if (!/^https?:\/\/.+/i.test(base)) throw badRequest('base_url must be an http(s) URL');
-      // Three-state token: omitted keeps the stored token_set; "" clears; a value
-      // sets/rotates. The demo assumes AUTH_TOKEN_KEY is configured (so a token
-      // write never 409s here — that path is a real-cluster-only concern).
-      const prevTokenSet = kanbanCfg?.token_set ?? false;
-      const tokenSet = input.token !== undefined ? input.token !== '' : prevTokenSet;
-      kanbanCfg = { base_url: base, token_set: tokenSet };
+      kanbanCfg = { base_url: base };
       return delay(kanbanConfigView());
     },
     async deleteKanbanConfig(): Promise<KanbanClusterConfig> {
@@ -2117,23 +2116,7 @@ export function createMockClient(): ApiClient {
       return delay(kanbanConfigView());
     },
 
-    /* ---- kanban "Connect with jtype" device flow (D28) -------------------- */
-    async startKanbanConnect(): Promise<KanbanConnectStart> {
-      // Cluster connect requires a saved DB base_url (D27 same-source binding) —
-      // fail-visible, mirroring the orchestrator's 409 base_url_not_configured.
-      if (!kanbanCfg || !kanbanCfg.base_url) {
-        throw new ApiError(409, 'save the jtype base URL before connecting', {
-          error: {
-            code: 'base_url_not_configured',
-            message: 'Save the jtype base URL before connecting.',
-          },
-        });
-      }
-      return delay(startConnect({ kind: 'cluster' }, kanbanCfg.base_url));
-    },
-    async pollKanbanConnect(connectId: string): Promise<KanbanConnectStatus> {
-      return delay(pollConnect(connectId));
-    },
+    /* ---- kanban "Connect with jtype" device flow (D28; per-link only, D36) -- */
     async startLinkConnect(projectId: string, linkId: string): Promise<KanbanConnectStart> {
       const l = kanbanLinks.get(linkId);
       if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
@@ -2148,7 +2131,7 @@ export function createMockClient(): ApiClient {
           },
         });
       }
-      return delay(startConnect({ kind: 'link', projectId, linkId }, eff.effective_base_url));
+      return delay(startConnect({ projectId, linkId }, eff.effective_base_url));
     },
     async pollLinkConnect(
       projectId: string,

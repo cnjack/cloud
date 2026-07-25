@@ -2,7 +2,6 @@ package reconciler
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"io"
 	"log/slog"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/jtype"
@@ -20,26 +18,19 @@ import (
 )
 
 // testKanbanResolver builds a kanbancfg.Resolver over st. A non-empty baseURL
-// enables the integration via the env source (the DB-source tests seed a row and
-// pass an empty baseURL so the DB row wins).
-func testKanbanResolver(st store.Store, cipher *auth.Cipher, baseURL, clusterToken string) *kanbancfg.Resolver {
-	return kanbancfg.NewResolver(st, cipher, &config.Config{JtypeBaseURL: baseURL, JtypeToken: clusterToken})
+// enables the integration via the env source (DB-source tests seed a row and
+// pass an empty baseURL so the DB row wins). D36: base URL only — no cluster token.
+func testKanbanResolver(st store.Store, baseURL string) *kanbancfg.Resolver {
+	return kanbancfg.NewResolver(st, &config.Config{JtypeBaseURL: baseURL})
 }
 
-// testCipher builds a live AES-256-GCM cipher (all-zero 32-byte key) for the
-// DB-source token tests.
-func testCipher(t *testing.T) *auth.Cipher {
-	t.Helper()
-	c, err := auth.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
-	if err != nil {
-		t.Fatalf("cipher: %v", err)
-	}
-	return c
-}
+// testDecrypt opens the harness's fake sealed tokens: "PLAIN-"+blob, so a test
+// can assert the DECRYPTED per-link token (never anything else) reached jtype.
+func testDecrypt(b []byte) (string, error) { return "PLAIN-" + string(b), nil }
 
 // fakeKanbanWriter captures MoveCard + AddComment calls (and can fail on demand).
 // tokens records every PAT the token->writer factory was asked to bind, so the
-// per-link/fallback token-selection tests can assert which credential was used.
+// per-link token-selection tests can assert which credential was used.
 type fakeKanbanWriter struct {
 	comments   []commentCall
 	moves      []moveCall
@@ -57,11 +48,10 @@ func (fk *fakeKanbanWriter) writerFor() func(*jtype.Factory, string) KanbanWrite
 	}
 }
 
-// wire attaches fk to rec with an enabled env-source resolver carrying the default
-// cluster fallback token, so tokenless seeded links resolve via
-// TokenClusterFallback (the pre-F6 behavior).
+// wire attaches fk to rec with an enabled env-source resolver, so seeded links
+// (which carry the sealed "ENCPAT" per-link token) write back via testDecrypt.
 func wire(st store.Store, rec *Reconciler, fk *fakeKanbanWriter, consoleURL string) *Reconciler {
-	return rec.WithKanban(testKanbanResolver(st, nil, "http://jtype.test", "cluster-tok"), fk.writerFor(), nil, consoleURL)
+	return rec.WithKanban(testKanbanResolver(st, "http://jtype.test"), fk.writerFor(), testDecrypt, consoleURL)
 }
 
 type commentCall struct {
@@ -103,7 +93,10 @@ func seedKanbanTerminal(t *testing.T, st *store.MemStore, status domain.RunStatu
 	}
 	link := &domain.KanbanLink{ID: domain.NewID(), WorkspaceID: "ws", BoardRef: "b",
 		ProjectID: p.ID, ServiceID: svc.ID, TriggerColumn: "ai", DoneColumn: doneColumn,
-		Enabled: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		// D36: every working link needs its own per-link token (no cluster
+		// fallback); tests that exercise the no-credential path clear it.
+		TokenEnc: []byte("ENCPAT"),
+		Enabled:  true, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := st.CreateKanbanLink(ctx, link); err != nil {
 		t.Fatal(err)
 	}
@@ -254,34 +247,14 @@ func TestWritebackNilClientNoop(t *testing.T) {
 	rec.Tick(ctx)              // must not panic / error
 }
 
-// F6 / D25: a link with its own encrypted PAT writes back with the DECRYPTED
-// per-link token, not the cluster fallback.
+// F6 / D25 / D36: a link with its own encrypted PAT writes back with the
+// DECRYPTED per-link token.
 func TestWritebackUsesPerLinkToken(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemStore()
-	run, link, _ := seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
-	// Give the link a per-link (sealed) token by re-inserting it — the mem store
-	// keyed on id lets a fresh Create with the same board conflict, so mutate via a
-	// dedicated link id. Simplest: create a second project-less link is not needed;
-	// instead delete + recreate with TokenEnc.
-	if err := st.DeleteKanbanLink(ctx, link.ID); err != nil {
-		t.Fatal(err)
-	}
-	link.TokenEnc = []byte("ENCPAT")
-	if err := st.CreateKanbanLink(ctx, link); err != nil {
-		t.Fatal(err)
-	}
-	// Re-stamp the claim's run (cascade-deleted with the link above).
-	if _, err := st.EnsureKanbanClaim(ctx, link.ID, "doc1", "cards/x.md"); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.SetKanbanClaimRun(ctx, link.ID, "doc1", run.ID); err != nil {
-		t.Fatal(err)
-	}
-
+	seedKanbanTerminal(t, st, domain.StatusSucceeded, "done") // link carries ENCPAT
 	fk := &fakeKanbanWriter{}
-	decrypt := func(b []byte) (string, error) { return "PLAIN-" + string(b), nil }
-	rec := newWritebackRec(st).WithKanban(testKanbanResolver(st, nil, "http://jtype.test", "cluster-tok"), fk.writerFor(), decrypt, "http://console")
+	rec := wire(st, newWritebackRec(st), fk, "http://console")
 
 	rec.Tick(ctx)
 
@@ -293,17 +266,21 @@ func TestWritebackUsesPerLinkToken(t *testing.T) {
 	}
 }
 
-// F6 / D25: a link with neither a per-link token nor a cluster fallback is
-// fail-visible — no comment/move, and the claim stays PENDING so it resumes once
-// a token is configured (never silently dropped).
+// D36: a link without a per-link token has NO fallback — no comment/move, and
+// the claim stays PENDING so it resumes once a token is configured (never
+// silently dropped).
 func TestWritebackFailVisibleWhenNoToken(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemStore()
 	_, link, _ := seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
+	// Strip the per-link token: the link now has no credential at all.
+	if err := st.SetKanbanLinkToken(ctx, link.ID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	fk := &fakeKanbanWriter{}
-	// Integration ENABLED (base URL set) but NO effective cluster token + no decrypt
-	// → ResolveToken returns ErrNoToken for the tokenless link.
-	rec := newWritebackRec(st).WithKanban(testKanbanResolver(st, nil, "http://jtype.test", ""), fk.writerFor(), nil, "http://console")
+	// Integration ENABLED (base URL set), but the link has no token of its own →
+	// ResolveToken returns ErrNoToken (D36: no cluster fallback).
+	rec := wire(st, newWritebackRec(st), fk, "http://console")
 
 	rec.Tick(ctx)
 
@@ -319,21 +296,30 @@ func TestWritebackFailVisibleWhenNoToken(t *testing.T) {
 	if len(pending) != 1 || pending[0].Link.ID != link.ID {
 		t.Fatalf("writeback should remain pending for later retry, got %+v", pending)
 	}
+
+	// Recovery: set a per-link token → the next tick writes the pending card back.
+	if err := st.SetKanbanLinkToken(ctx, link.ID, []byte("ENCPAT"), nil); err != nil {
+		t.Fatal(err)
+	}
+	rec.Tick(ctx)
+	if len(fk.comments) != 1 || len(fk.moves) != 1 {
+		t.Fatalf("after setting a token want 1 comment + 1 move, got comments=%d moves=%d",
+			len(fk.comments), len(fk.moves))
+	}
 }
 
-// D27: the writeback pass activates at RUNTIME. With no cluster config it's a
-// clean no-op and the claim stays pending; once a base URL + encrypted cluster
-// token are stored in the DB and the resolver is invalidated, the next tick
-// resolves the DB cluster token (source-coupled) and writes back — no restart.
-func TestWritebackRuntimeActivationDBToken(t *testing.T) {
+// D27/D36: the writeback pass activates at RUNTIME. With no cluster config it's
+// a clean no-op and the claim stays pending; once a base URL is stored in the DB
+// and the resolver is invalidated, the next tick writes back with the link's
+// per-link token — no restart.
+func TestWritebackRuntimeActivation(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemStore()
-	seedKanbanTerminal(t, st, domain.StatusSucceeded, "done") // tokenless link
+	seedKanbanTerminal(t, st, domain.StatusSucceeded, "done") // link carries ENCPAT
 	fk := &fakeKanbanWriter{}
-	cipher := testCipher(t)
 	// Resolver starts OFF (no DB row, no env base URL).
-	resolver := kanbancfg.NewResolver(st, cipher, &config.Config{})
-	rec := newWritebackRec(st).WithKanban(resolver, fk.writerFor(), cipher.DecryptString, "http://console")
+	resolver := kanbancfg.NewResolver(st, &config.Config{})
+	rec := newWritebackRec(st).WithKanban(resolver, fk.writerFor(), testDecrypt, "http://console")
 
 	rec.Tick(ctx)
 	if len(fk.comments) != 0 || len(fk.moves) != 0 || len(fk.tokens) != 0 {
@@ -344,12 +330,8 @@ func TestWritebackRuntimeActivationDBToken(t *testing.T) {
 		t.Fatalf("off: claim must stay pending, got %d", len(pending))
 	}
 
-	// Flip on: DB row with base URL + encrypted cluster token, invalidate.
-	enc, err := cipher.EncryptString("db-cluster-tok")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.UpsertClusterKanbanConfig(ctx, &domain.KanbanConfig{BaseURL: "http://jtype.db", TokenEnc: enc, UpdatedBy: "admin"}); err != nil {
+	// Flip on: store a DB base URL, invalidate the shared resolver.
+	if err := st.UpsertClusterKanbanConfig(ctx, &domain.KanbanConfig{BaseURL: "http://jtype.db", UpdatedBy: "admin"}); err != nil {
 		t.Fatal(err)
 	}
 	resolver.Invalidate()
@@ -358,7 +340,7 @@ func TestWritebackRuntimeActivationDBToken(t *testing.T) {
 	if len(fk.comments) != 1 || len(fk.moves) != 1 {
 		t.Fatalf("after activation want 1 comment + 1 move, got comments=%d moves=%d", len(fk.comments), len(fk.moves))
 	}
-	if len(fk.tokens) == 0 || fk.tokens[len(fk.tokens)-1] != "db-cluster-tok" {
-		t.Fatalf("writeback used token %v, want the DB cluster token db-cluster-tok", fk.tokens)
+	if len(fk.tokens) == 0 || fk.tokens[len(fk.tokens)-1] != "PLAIN-ENCPAT" {
+		t.Fatalf("writeback used token %v, want per-link PLAIN-ENCPAT", fk.tokens)
 	}
 }

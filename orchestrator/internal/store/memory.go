@@ -1755,7 +1755,7 @@ func (m *MemStore) RevokeModelFromAccount(_ context.Context, modelID, userID str
 	return nil
 }
 
-// --- cluster kanban config (D27) ---
+// --- cluster kanban config (D27, slimmed by D36) ---
 
 func (m *MemStore) GetClusterKanbanConfig(_ context.Context) (*domain.KanbanConfig, error) {
 	m.mu.Lock()
@@ -1763,56 +1763,15 @@ func (m *MemStore) GetClusterKanbanConfig(_ context.Context) (*domain.KanbanConf
 	if m.kanbanConfig == nil {
 		return nil, ErrNotFound
 	}
-	// Clone (incl. the token blob + expiry) so a caller can't mutate the stored row.
+	// Clone so a caller can't mutate the stored row.
 	cp := *m.kanbanConfig
-	if m.kanbanConfig.TokenEnc != nil {
-		cp.TokenEnc = append([]byte(nil), m.kanbanConfig.TokenEnc...)
-	}
-	if m.kanbanConfig.TokenExpiresAt != nil {
-		t := *m.kanbanConfig.TokenExpiresAt
-		cp.TokenExpiresAt = &t
-	}
 	return &cp, nil
 }
 
 func (m *MemStore) UpsertClusterKanbanConfig(_ context.Context, cfg *domain.KanbanConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	stored := domain.KanbanConfig{BaseURL: cfg.BaseURL, UpdatedBy: cfg.UpdatedBy, UpdatedAt: time.Now().UTC()}
-	if cfg.TokenEnc != nil {
-		stored.TokenEnc = append([]byte(nil), cfg.TokenEnc...)
-	}
-	if cfg.TokenExpiresAt != nil {
-		t := *cfg.TokenExpiresAt
-		stored.TokenExpiresAt = &t
-	}
-	m.kanbanConfig = &stored
-	return nil
-}
-
-// SetClusterKanbanToken conditionally seals a device-flow token (D28): the
-// check (row present + same base_url) and the write happen atomically under the
-// store mutex — mirroring the pg conditional UPDATE. A missing row or a changed
-// base_url is ErrNotFound; base_url is never written.
-func (m *MemStore) SetClusterKanbanToken(_ context.Context, baseURL string, tokenEnc []byte, expiresAt *time.Time, updatedBy string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.kanbanConfig == nil || m.kanbanConfig.BaseURL != baseURL {
-		return ErrNotFound
-	}
-	if tokenEnc == nil {
-		m.kanbanConfig.TokenEnc = nil
-	} else {
-		m.kanbanConfig.TokenEnc = append([]byte(nil), tokenEnc...)
-	}
-	if expiresAt == nil {
-		m.kanbanConfig.TokenExpiresAt = nil
-	} else {
-		t := *expiresAt
-		m.kanbanConfig.TokenExpiresAt = &t
-	}
-	m.kanbanConfig.UpdatedBy = updatedBy
-	m.kanbanConfig.UpdatedAt = time.Now().UTC()
+	m.kanbanConfig = &domain.KanbanConfig{BaseURL: cfg.BaseURL, UpdatedBy: cfg.UpdatedBy, UpdatedAt: time.Now().UTC()}
 	return nil
 }
 

@@ -9,10 +9,10 @@ import (
 )
 
 // Factory builds jtype Clients that share ONE HTTP connection pool but bind
-// different PATs, so each kanban link authorises jtype reads/writes with its own
-// credential (the per-link encrypted token, or the cluster fallback) rather than
-// a single process-wide token (D25 / F6). The base URL and timeout are fixed at
-// construction; only the token varies per Client.
+// different PATs, so each kanban link authorises jtype reads/writes with its
+// own per-link credential (D25 / F6; the cluster fallback token was removed in
+// D36) rather than a single process-wide token. The base URL and timeout are
+// fixed at construction; only the token varies per Client.
 type Factory struct {
 	baseURL string
 	http    *http.Client
@@ -48,8 +48,7 @@ func (f *Factory) Client(token string) *Client {
 // only when the resolved base URL changes (D27).
 func (f *Factory) BaseURL() string { return f.baseURL }
 
-// TokenSource records which credential ResolveToken selected for a link, so the
-// caller can emit the one-time cluster-fallback deprecation notice (D25).
+// TokenSource records which credential ResolveToken selected for a link.
 type TokenSource int
 
 const (
@@ -57,32 +56,30 @@ const (
 	TokenNone TokenSource = iota
 	// TokenPerLink means the link's own encrypted PAT was decrypted and used.
 	TokenPerLink
-	// TokenClusterFallback means the link had no per-link PAT and fell back to the
-	// cluster JTYPE_TOKEN env (deprecated path).
-	TokenClusterFallback
 )
 
-// ErrNoToken is returned by ResolveToken when a link has neither a per-link token
-// nor a cluster fallback — the poller/writeback then skip it fail-visibly instead
-// of calling jtype with an empty credential.
-var ErrNoToken = errors.New("jtype: no credential for link (no per-link token and no cluster JTYPE_TOKEN fallback)")
+// ErrNoToken is returned by ResolveToken when a link has no per-link token —
+// the poller/writeback then skip it fail-visibly instead of calling jtype with
+// an empty credential. (The deprecated cluster fallback token was removed in
+// D36: every link must carry its own PAT.)
+var ErrNoToken = errors.New("jtype: no credential for link (no per-link token)")
 
 // ErrNoCipher is returned when a link carries an encrypted per-link token but no
 // cipher is configured (AUTH_TOKEN_KEY unset) to decrypt it — a visible config
-// error, never a silent fallback to the cluster token.
+// error, never a silent skip.
 var ErrNoCipher = errors.New("jtype: link has an encrypted token but AUTH_TOKEN_KEY is not configured")
 
-// ResolveToken selects the PAT for a link (D25 three-state selection, shared by
-// the poller, the writeback pass, and — for validation — the admin API):
+// ResolveToken selects the PAT for a link (D25, simplified by D36 — per-link
+// token only, no cluster fallback; shared by the poller, the writeback pass,
+// the board embed proxy, discovery, and — for validation — the admin API):
 //
 //	tokenEnc non-empty -> decrypt it (TokenPerLink); decrypt is the cipher's
 //	    DecryptString, or nil when no cipher is configured (=> ErrNoCipher).
-//	tokenEnc empty + clusterToken set -> the cluster fallback (TokenClusterFallback).
-//	both empty -> ErrNoToken (TokenNone).
+//	tokenEnc empty -> ErrNoToken (TokenNone).
 //
-// A decrypt failure (tampering / wrong key) bubbles up rather than falling back,
-// so a broken per-link token is loud, not silently downgraded.
-func ResolveToken(tokenEnc []byte, decrypt func([]byte) (string, error), clusterToken string) (string, TokenSource, error) {
+// A decrypt failure (tampering / wrong key) bubbles up rather than being
+// swallowed, so a broken per-link token is loud, not silently skipped.
+func ResolveToken(tokenEnc []byte, decrypt func([]byte) (string, error)) (string, TokenSource, error) {
 	if len(tokenEnc) > 0 {
 		if decrypt == nil {
 			return "", TokenNone, ErrNoCipher
@@ -92,9 +89,6 @@ func ResolveToken(tokenEnc []byte, decrypt func([]byte) (string, error), cluster
 			return "", TokenNone, fmt.Errorf("jtype: decrypt link token: %w", err)
 		}
 		return tok, TokenPerLink, nil
-	}
-	if clusterToken != "" {
-		return clusterToken, TokenClusterFallback, nil
 	}
 	return "", TokenNone, ErrNoToken
 }

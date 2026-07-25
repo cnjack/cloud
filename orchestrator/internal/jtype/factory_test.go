@@ -31,40 +31,36 @@ func TestNewFactoryNilOnEmptyBase(t *testing.T) {
 	}
 }
 
-// The three-state token selection (D25): per-link decrypt, cluster fallback, and
-// the double-empty fail-visible error — plus the decrypt-error and no-cipher edges.
-func TestResolveTokenThreeStates(t *testing.T) {
+// The two-state token selection (D25, simplified by D36 — per-link only, no
+// cluster fallback): per-link decrypt, and the empty-token fail-visible error —
+// plus the decrypt-error and no-cipher edges.
+func TestResolveTokenTwoStates(t *testing.T) {
 	// A trivial reversible "decrypt": prefix-strip so the test asserts the token
-	// actually flowed through decrypt (not the cluster fallback).
+	// actually flowed through decrypt.
 	decrypt := func(b []byte) (string, error) { return "dec:" + string(b), nil }
 
-	// 1) per-link token present -> decrypted, source=PerLink (cluster ignored).
-	tok, src, err := ResolveToken([]byte("ENC"), decrypt, "cluster-tok")
+	// 1) per-link token present -> decrypted, source=PerLink.
+	tok, src, err := ResolveToken([]byte("ENC"), decrypt)
 	if err != nil || tok != "dec:ENC" || src != TokenPerLink {
 		t.Fatalf("per-link: got %q src=%d err=%v", tok, src, err)
 	}
 
-	// 2) no per-link token, cluster set -> fallback, source=ClusterFallback.
-	tok, src, err = ResolveToken(nil, decrypt, "cluster-tok")
-	if err != nil || tok != "cluster-tok" || src != TokenClusterFallback {
-		t.Fatalf("fallback: got %q src=%d err=%v", tok, src, err)
-	}
-
-	// 3) neither -> ErrNoToken (fail-visible; the caller skips the link).
-	tok, src, err = ResolveToken(nil, decrypt, "")
+	// 2) no per-link token -> ErrNoToken (fail-visible; the caller skips the
+	// link — D36 removed the cluster fallback, so this is the only other state).
+	tok, src, err = ResolveToken(nil, decrypt)
 	if !errors.Is(err, ErrNoToken) || tok != "" || src != TokenNone {
-		t.Fatalf("double-empty: got %q src=%d err=%v, want ErrNoToken", tok, src, err)
+		t.Fatalf("empty: got %q src=%d err=%v, want ErrNoToken", tok, src, err)
 	}
 
-	// 4) encrypted token but no cipher -> ErrNoCipher (never a silent fallback).
-	_, _, err = ResolveToken([]byte("ENC"), nil, "cluster-tok")
+	// 3) encrypted token but no cipher -> ErrNoCipher (never a silent skip).
+	_, _, err = ResolveToken([]byte("ENC"), nil)
 	if !errors.Is(err, ErrNoCipher) {
 		t.Fatalf("no cipher: want ErrNoCipher, got %v", err)
 	}
 
-	// 5) decrypt failure bubbles up (not downgraded to the cluster token).
+	// 4) decrypt failure bubbles up (not swallowed).
 	boom := errors.New("bad key")
-	_, _, err = ResolveToken([]byte("ENC"), func([]byte) (string, error) { return "", boom }, "cluster-tok")
+	_, _, err = ResolveToken([]byte("ENC"), func([]byte) (string, error) { return "", boom })
 	if !errors.Is(err, boom) {
 		t.Fatalf("decrypt error: want boom, got %v", err)
 	}

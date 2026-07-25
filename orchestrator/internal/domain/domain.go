@@ -869,35 +869,20 @@ func (m *Model) APIKeySet() bool { return len(m.APIKeyEnc) > 0 }
 func (m *Model) HeadersSet() bool { return len(m.HeadersEnc) > 0 }
 
 // KanbanConfig is the single-row cluster-level jtype kanban configuration a
-// cluster admin sets from the console (D27): the jtype document API base URL
-// plus an OPTIONAL cluster fallback token. It takes precedence over the
-// JTYPE_BASE_URL/JTYPE_TOKEN env fallback (resolved by internal/kanbancfg).
-// TokenEnc is the AES-256-GCM ciphertext of the fallback token (nonce||ciphertext,
-// AUTH_TOKEN_KEY), or nil when no fallback token is set; the plaintext is NEVER
-// serialised to API clients — hence `json:"-"` — and is decrypted only in the
-// resolver. The cluster fallback token is SOURCE-COUPLED to this base URL: a DB
-// config never borrows the env JTYPE_TOKEN and vice versa (D27), so a PAT minted
-// for one jtype instance cannot silently authenticate against another.
+// cluster admin sets from the console (D27): ONLY the jtype document API base
+// URL — an infrastructure-level fact (which jtype instance this cluster talks
+// to). It takes precedence over the JTYPE_BASE_URL env fallback (resolved by
+// internal/kanbancfg). Since D36 there is NO cluster-level credential: every
+// kanban link authorises with its own per-link token (D25), so this row carries
+// no secret material at all.
 type KanbanConfig struct {
 	// BaseURL is the jtype document API root (http/https).
 	BaseURL string `json:"base_url"`
-	// TokenEnc is the encrypted cluster fallback token (nonce||ciphertext), or nil.
-	TokenEnc []byte `json:"-"`
-	// TokenExpiresAt is the wall-clock expiry of the fallback token when it was
-	// minted by the "Connect with jtype" OAuth device flow (D28: a 90-day scoped
-	// session, no refresh). Nil = unknown expiry — a hand-pasted PAT / env token /
-	// no token. Populated only by a successful device connect; the console renders
-	// "expires in N days / expired — reconnect" from it. Never the token itself.
-	TokenExpiresAt *time.Time `json:"token_expires_at,omitempty"`
 	// UpdatedAt / UpdatedBy record audit metadata (UpdatedBy is a user id or "" for
 	// the service principal).
 	UpdatedAt time.Time `json:"updated_at"`
 	UpdatedBy string    `json:"updated_by"`
 }
-
-// TokenSet reports whether the config carries an (encrypted) cluster fallback
-// token. Used to echo token_set to admins without ever exposing the plaintext.
-func (c *KanbanConfig) TokenSet() bool { return len(c.TokenEnc) > 0 }
 
 // CredType classifies an Integration's credential shape (D19). PAT and durable
 // OAuth access tokens are wired; GithubApp remains an inert expansion slot.
@@ -966,8 +951,9 @@ func (i *Integration) TokenSet() bool { return len(i.TokenEnc) > 0 }
 // set) a finished run's card is moved to DoneColumn after the result is written
 // back as a comment (Feature E / architecture "kanban = trigger + writeback").
 //
-// One cluster-wide jtype PAT (env JTYPE_TOKEN) authorises every link's reads &
-// writes; each link names its own WorkspaceID (jtype workspace id) and BoardRef
+// Each link authorises jtype reads & writes with its OWN per-link token
+// (TokenEnc below; D25 — the cluster JTYPE_TOKEN fallback was removed in D36);
+// each link names its own WorkspaceID (jtype workspace id) and BoardRef
 // (the board's id within `.board`). UNIQUE(WorkspaceID, BoardRef) — one link per
 // board; to trigger multiple columns off one board, widen TriggerColumn later.
 type KanbanLink struct {
@@ -1016,7 +1002,8 @@ type KanbanLink struct {
 	EventSequence *int64 `json:"-"`
 	// TokenEnc is the per-link jtype PAT, AES-256-GCM sealed (nonce||ciphertext)
 	// with AUTH_TOKEN_KEY — the same scheme the model catalog uses (D25 / F6).
-	// nil => the poller/writeback fall back to the cluster JTYPE_TOKEN env. Never
+	// nil => the link has NO credential (credential_status "missing", D36): the
+	// poller/writeback skip it fail-visibly until the owner sets a token. Never
 	// serialized (write-only via the API; the view echoes only TokenSet()).
 	TokenEnc []byte `json:"-"`
 	// TokenExpiresAt is the wall-clock expiry of the per-link token when it was
@@ -1031,7 +1018,7 @@ type KanbanLink struct {
 
 // TokenSet reports whether the link carries a per-link (encrypted) jtype PAT.
 // Used to echo token_set to owners without ever exposing the plaintext; false
-// means the link falls back to the cluster JTYPE_TOKEN env.
+// means the link has no credential (D36 — there is no cluster fallback).
 func (l KanbanLink) TokenSet() bool { return len(l.TokenEnc) > 0 }
 
 // KanbanLink.BoardStatus enum (D30). Persisted in kanban_links.board_status

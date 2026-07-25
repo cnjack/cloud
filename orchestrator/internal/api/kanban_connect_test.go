@@ -125,7 +125,7 @@ func (c *testClock) advance(d time.Duration) {
 
 // connectFixture is a server with a cipher, a cluster admin, a plain member, a
 // scoped API key, and a project owned by the admin — plus the injected fake
-// oauth client seam. It drives both the cluster and per-link connect surfaces.
+// oauth client seam. Since D36 the only connect surface is per-link.
 type connectFixture struct {
 	ts        *httptest.Server
 	srv       *Server
@@ -198,10 +198,13 @@ func (f connectFixture) seedLink(t *testing.T) *domain.KanbanLink {
 	return l
 }
 
-func (f connectFixture) clusterConnectURL() string { return f.ts.URL + "/api/v1/system/kanban/connect" }
+// linkConnectURL is the per-link connect base (POST start / GET poll).
+func (f connectFixture) linkConnectURL(linkID string) string {
+	return f.ts.URL + "/api/v1/projects/" + f.projectID + "/kanban/links/" + linkID + "/connect"
+}
 
-// setClusterBaseURL PUTs a DB base_url override (admin) so the cluster connect
-// precondition (base_url_not_configured) is satisfied.
+// setClusterBaseURL PUTs a DB base_url override (admin) so the per-link connect
+// precondition (integration enabled) is satisfied.
 func (f connectFixture) setClusterBaseURL(t *testing.T, base string) {
 	t.Helper()
 	r := do(t, http.MethodPut, f.ts.URL+"/api/v1/system/kanban", f.adminTok, map[string]any{"base_url": base})
@@ -211,26 +214,27 @@ func (f connectFixture) setClusterBaseURL(t *testing.T, base string) {
 	r.Body.Close()
 }
 
-// Test 1: cluster start — no DB base_url → 409 base_url_not_configured; with a
-// base_url → 200 carrying user_code + verification_uri_complete, device_code
+// Test 1: link start — no integration configured → 409 kanban_not_configured;
+// configured → 200 carrying user_code + verification_uri_complete, device_code
 // WITHHELD from the response.
-func TestClusterConnectStart(t *testing.T) {
+func TestLinkConnectStart(t *testing.T) {
 	f := setupConnect(t, true)
+	link := f.seedLink(t)
 
-	// No base_url yet.
-	resp := do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+	// Integration off.
+	resp := do(t, http.MethodPost, f.linkConnectURL(link.ID), f.adminTok, nil)
 	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("no base_url: status=%d want 409", resp.StatusCode)
+		t.Fatalf("no integration: status=%d want 409", resp.StatusCode)
 	}
 	var eb errorBody
 	decode(t, resp, &eb)
-	if eb.Error.Code != "base_url_not_configured" {
-		t.Fatalf("code=%q want base_url_not_configured", eb.Error.Code)
+	if eb.Error.Code != "kanban_not_configured" {
+		t.Fatalf("code=%q want kanban_not_configured", eb.Error.Code)
 	}
 
-	// With a base_url: 200 start view, no device_code leak.
+	// Integration on: 200 start view, no device_code leak.
 	f.setClusterBaseURL(t, "http://jtype.db")
-	resp = do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+	resp = do(t, http.MethodPost, f.linkConnectURL(link.ID), f.adminTok, nil)
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -250,18 +254,19 @@ func TestClusterConnectStart(t *testing.T) {
 	}
 }
 
-// Test 2: cluster poll pending → complete seals the token into
-// cluster_kanban_config (roundtrip), stamps token_expires_at ≈ now+90d,
-// invalidates the resolver (following /system/kanban shows token_set:true), and
-// the plaintext token NEVER appears in any response body.
-func TestClusterConnectPollToComplete(t *testing.T) {
+// Test 2: link poll pending → complete seals the token into kanban_links
+// (roundtrip), stamps token_expires_at ≈ now+90d, flips credential_status to
+// per_link, and the plaintext token NEVER appears in any response body. A
+// repeat poll is idempotent (single-use; no re-mint).
+func TestLinkConnectPollToComplete(t *testing.T) {
 	f := setupConnect(t, true)
 	f.setClusterBaseURL(t, "http://jtype.db")
+	link := f.seedLink(t)
 
 	var sv kanbanConnectStartView
-	start := do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+	start := do(t, http.MethodPost, f.linkConnectURL(link.ID), f.adminTok, nil)
 	decode(t, start, &sv)
-	pollURL := f.clusterConnectURL() + "/" + sv.ConnectID
+	pollURL := f.linkConnectURL(link.ID) + "/" + sv.ConnectID
 
 	// Pending first.
 	pr := do(t, http.MethodGet, pollURL, f.adminTok, nil)
@@ -279,8 +284,8 @@ func TestClusterConnectPollToComplete(t *testing.T) {
 	pr = do(t, http.MethodGet, pollURL, f.adminTok, nil)
 	raw, _ := io.ReadAll(pr.Body)
 	pr.Body.Close()
-	if strings.Contains(string(raw), "minted-mcp-token") {
-		t.Fatalf("SECRET LEAK: poll response contains the plaintext token: %s", raw)
+	if strings.Contains(string(raw), "minted-mcp-token") || strings.Contains(string(raw), "dev-secret") {
+		t.Fatalf("SECRET LEAK: poll response contains a secret: %s", raw)
 	}
 	var st2 kanbanConnectStatusView
 	mustJSON(t, raw, &st2)
@@ -295,33 +300,31 @@ func TestClusterConnectPollToComplete(t *testing.T) {
 		t.Fatalf("token_expires_at=%v not ≈ now+90d (%v)", exp, want)
 	}
 
-	// The token is sealed in the store, decrypts to the minted value, never plaintext.
-	row, err := f.st.GetClusterKanbanConfig(context.Background())
+	// The token is sealed on the link row, decrypts to the minted value, never plaintext.
+	stored, err := f.st.GetKanbanLink(context.Background(), link.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(row.TokenEnc) == 0 || string(row.TokenEnc) == "minted-mcp-token" {
-		t.Fatalf("token not sealed: %q", row.TokenEnc)
+	if !stored.TokenSet() || stored.TokenExpiresAt == nil {
+		t.Fatalf("per-link token/expiry not stored: %+v", stored)
 	}
-	if got, _ := f.srv.Cipher().DecryptString(row.TokenEnc); got != "minted-mcp-token" {
-		t.Fatalf("sealed token decrypts to %q want minted-mcp-token", got)
-	}
-	if row.TokenExpiresAt == nil {
-		t.Fatal("token_expires_at not stored on the row")
+	if got, _ := f.srv.Cipher().DecryptString(stored.TokenEnc); got != "minted-mcp-token" {
+		t.Fatalf("per-link token decrypts to %q", got)
 	}
 
-	// Resolver invalidated: /system/kanban now shows the cluster token set + expiry,
-	// never the plaintext.
-	sr := do(t, http.MethodGet, f.ts.URL+"/api/v1/system/kanban", f.adminTok, nil)
-	sraw, _ := io.ReadAll(sr.Body)
-	sr.Body.Close()
-	if strings.Contains(string(sraw), "minted-mcp-token") {
-		t.Fatalf("SECRET LEAK: /system/kanban contains the plaintext token: %s", sraw)
+	// The project links list flips credential_status → per_link (no secret leak).
+	lr := do(t, http.MethodGet, f.ts.URL+"/api/v1/projects/"+f.projectID+"/kanban/links", f.adminTok, nil)
+	lraw, _ := io.ReadAll(lr.Body)
+	lr.Body.Close()
+	if strings.Contains(string(lraw), "minted-mcp-token") || strings.Contains(string(lraw), "dev-secret") {
+		t.Fatalf("SECRET LEAK: links list contains a secret: %s", lraw)
 	}
-	var cv kanbanConfigView
-	mustJSON(t, sraw, &cv)
-	if !cv.ClusterTokenSet || !cv.TokenSet || cv.TokenExpiresAt == "" {
-		t.Fatalf("/system/kanban after complete = %+v", cv)
+	var list struct {
+		Links []kanbanLinkView `json:"links"`
+	}
+	mustJSON(t, lraw, &list)
+	if len(list.Links) != 1 || list.Links[0].CredentialStatus != "per_link" || list.Links[0].TokenExpiresAt == "" {
+		t.Fatalf("link view after connect = %+v", list.Links)
 	}
 
 	// A later poll is idempotent: still complete (single-use; no re-mint).
@@ -336,12 +339,13 @@ func TestClusterConnectPollToComplete(t *testing.T) {
 // Test 3: an unsupported jtype (start returns ErrOAuthUnsupported) → 409
 // jtype_oauth_unsupported; AUTH_TOKEN_KEY unset → cipher_not_configured AT START
 // (no jtype call at all).
-func TestClusterConnectUnsupportedAndNoCipher(t *testing.T) {
+func TestLinkConnectUnsupportedAndNoCipher(t *testing.T) {
 	// Unsupported.
 	f := setupConnect(t, true)
 	f.setClusterBaseURL(t, "http://jtype.db")
+	link := f.seedLink(t)
 	f.fake.startErr = jtypeoauth.ErrOAuthUnsupported
-	resp := do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+	resp := do(t, http.MethodPost, f.linkConnectURL(link.ID), f.adminTok, nil)
 	var eb errorBody
 	decode(t, resp, &eb)
 	if resp.StatusCode != http.StatusConflict || eb.Error.Code != "jtype_oauth_unsupported" {
@@ -351,7 +355,8 @@ func TestClusterConnectUnsupportedAndNoCipher(t *testing.T) {
 	// No cipher: 409 cipher_not_configured, and NO jtype call was made.
 	f2 := setupConnect(t, false)
 	f2.setClusterBaseURL(t, "http://jtype.db")
-	resp = do(t, http.MethodPost, f2.clusterConnectURL(), f2.adminTok, nil)
+	link2 := f2.seedLink(t)
+	resp = do(t, http.MethodPost, f2.linkConnectURL(link2.ID), f2.adminTok, nil)
 	var eb2 errorBody
 	decode(t, resp, &eb2)
 	if resp.StatusCode != http.StatusConflict || eb2.Error.Code != "cipher_not_configured" {
@@ -362,66 +367,12 @@ func TestClusterConnectUnsupportedAndNoCipher(t *testing.T) {
 	}
 }
 
-// Test 4: per-link — create a link with a blank token, connect it → the minted
-// token seals into kanban_links.token_enc and credential_status flips to
-// per_link; another project's link path → 404.
-func TestLinkConnectSealsPerLinkToken(t *testing.T) {
+// Test 4: a DIFFERENT project's link path → 404 (the link is not in that project).
+func TestLinkConnectCrossProject404(t *testing.T) {
 	f := setupConnect(t, true)
-	f.setClusterBaseURL(t, "http://jtype.db") // enables the integration (eff.Enabled)
-
-	// A blank (tokenless) link (create-then-connect: create is validated elsewhere).
-	linkURL := f.ts.URL + "/api/v1/projects/" + f.projectID + "/kanban/links"
+	f.setClusterBaseURL(t, "http://jtype.db")
 	link := f.seedLink(t)
 
-	connectBase := linkURL + "/" + link.ID + "/connect"
-	var sv kanbanConnectStartView
-	start := do(t, http.MethodPost, connectBase, f.adminTok, nil)
-	if start.StatusCode != http.StatusOK {
-		t.Fatalf("link start: %d", start.StatusCode)
-	}
-	decode(t, start, &sv)
-
-	f.fake.setMode(jtypeoauth.StatusComplete)
-	pr := do(t, http.MethodGet, connectBase+"/"+sv.ConnectID, f.adminTok, nil)
-	praw, _ := io.ReadAll(pr.Body)
-	pr.Body.Close()
-	// Raw-body no-leak scan on the PER-LINK poll (mirrors the cluster test).
-	if strings.Contains(string(praw), "minted-mcp-token") || strings.Contains(string(praw), "dev-secret") {
-		t.Fatalf("SECRET LEAK: link poll response contains a secret: %s", praw)
-	}
-	var st kanbanConnectStatusView
-	mustJSON(t, praw, &st)
-	if st.Status != "complete" || !st.TokenSet || st.TokenExpiresAt == "" {
-		t.Fatalf("link poll complete = %+v", st)
-	}
-
-	// The link now carries a sealed per-link token + expiry; credential_status per_link.
-	stored, err := f.st.GetKanbanLink(context.Background(), link.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stored.TokenSet() || stored.TokenExpiresAt == nil {
-		t.Fatalf("per-link token/expiry not stored: %+v", stored)
-	}
-	if got, _ := f.srv.Cipher().DecryptString(stored.TokenEnc); got != "minted-mcp-token" {
-		t.Fatalf("per-link token decrypts to %q", got)
-	}
-	lr := do(t, http.MethodGet, linkURL, f.adminTok, nil)
-	lraw, _ := io.ReadAll(lr.Body)
-	lr.Body.Close()
-	// Raw-body no-leak scan on the project links LIST as well.
-	if strings.Contains(string(lraw), "minted-mcp-token") || strings.Contains(string(lraw), "dev-secret") {
-		t.Fatalf("SECRET LEAK: links list contains a secret: %s", lraw)
-	}
-	var list struct {
-		Links []kanbanLinkView `json:"links"`
-	}
-	mustJSON(t, lraw, &list)
-	if len(list.Links) != 1 || list.Links[0].CredentialStatus != "per_link" || list.Links[0].TokenExpiresAt == "" {
-		t.Fatalf("link view after connect = %+v", list.Links)
-	}
-
-	// A DIFFERENT project's link path → 404 (the link is not in that project).
 	p2 := do(t, http.MethodPost, f.ts.URL+"/api/v1/projects", f.adminTok, map[string]any{"name": "p2"})
 	var pv2 projectView
 	decode(t, p2, &pv2)
@@ -433,71 +384,35 @@ func TestLinkConnectSealsPerLinkToken(t *testing.T) {
 	other.Body.Close()
 }
 
-// Test 4b: per-link connect requires the integration to be configured — with no
-// cluster base URL it is 409 kanban_not_configured.
-func TestLinkConnectRequiresKanbanConfigured(t *testing.T) {
-	f := setupConnect(t, true)
-	// A link cannot be created without the integration, so seed one directly.
-	link := &domain.KanbanLink{
-		ID: domain.NewID(), WorkspaceID: "ws", BoardRef: "b", ProjectID: f.projectID,
-		ServiceID: f.serviceID, TriggerColumn: "ai", Enabled: true,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	}
-	if err := f.st.CreateKanbanLink(context.Background(), link); err != nil {
-		t.Fatal(err)
-	}
-	// No cluster base URL set → kanban_not_configured.
-	resp := do(t, http.MethodPost,
-		f.ts.URL+"/api/v1/projects/"+f.projectID+"/kanban/links/"+link.ID+"/connect", f.adminTok, nil)
-	var eb errorBody
-	decode(t, resp, &eb)
-	if resp.StatusCode != http.StatusConflict || eb.Error.Code != "kanban_not_configured" {
-		t.Fatalf("link connect w/o config: status=%d code=%q", resp.StatusCode, eb.Error.Code)
-	}
-}
-
-// Test 5: the authz matrix — cluster connect: member 403, scoped key 403,
-// unauth 401; link connect: non-owner (member) 403.
+// Test 5: the authz matrix — link connect: a member (non-owner) is 403 on start
+// AND poll, a scoped API key (capped at RoleMember on its own project) is 403,
+// unauth is 401.
 func TestConnectAuthzMatrix(t *testing.T) {
 	f := setupConnect(t, true)
 	f.setClusterBaseURL(t, "http://jtype.db")
-
-	// Cluster start: member 403, scoped key 403, unauth 401.
-	for _, tc := range []struct {
-		tok  string
-		want int
-	}{
-		{f.memberTok, http.StatusForbidden},
-		{f.apiKey, http.StatusForbidden},
-		{"", http.StatusUnauthorized},
-	} {
-		r := do(t, http.MethodPost, f.clusterConnectURL(), tc.tok, nil)
-		if r.StatusCode != tc.want {
-			t.Errorf("cluster start tok=%q status=%d want %d", tc.tok, r.StatusCode, tc.want)
-		}
-		r.Body.Close()
-	}
-
-	// Link connect: a member (non-owner) is forbidden, and a scoped API key —
-	// capped at RoleMember on its OWN project — never reaches the RoleOwner gate
-	// on either start or poll.
 	link := f.seedLink(t)
-	linkConnect := f.ts.URL + "/api/v1/projects/" + f.projectID + "/kanban/links/" + link.ID + "/connect"
+	base := f.linkConnectURL(link.ID)
+
 	for _, tc := range []struct {
 		name string
 		tok  string
+		want int
 	}{
-		{"member", f.memberTok},
-		{"api-key", f.apiKey},
+		{"member", f.memberTok, http.StatusForbidden},
+		{"api-key", f.apiKey, http.StatusForbidden},
+		{"unauth", "", http.StatusUnauthorized},
 	} {
-		if r := do(t, http.MethodPost, linkConnect, tc.tok, nil); r.StatusCode != http.StatusForbidden {
-			t.Errorf("link start by %s want 403, got %d", tc.name, r.StatusCode)
+		if r := do(t, http.MethodPost, base, tc.tok, nil); r.StatusCode != tc.want {
+			t.Errorf("link start by %s status=%d want %d", tc.name, r.StatusCode, tc.want)
 			r.Body.Close()
 		} else {
 			r.Body.Close()
 		}
-		if r := do(t, http.MethodGet, linkConnect+"/deadbeef", tc.tok, nil); r.StatusCode != http.StatusForbidden {
-			t.Errorf("link poll by %s want 403, got %d", tc.name, r.StatusCode)
+		if tc.want == http.StatusUnauthorized {
+			continue // the poll route's auth middleware answers 401 the same way
+		}
+		if r := do(t, http.MethodGet, base+"/deadbeef", tc.tok, nil); r.StatusCode != tc.want {
+			t.Errorf("link poll by %s status=%d want %d", tc.name, r.StatusCode, tc.want)
 			r.Body.Close()
 		} else {
 			r.Body.Close()
@@ -506,33 +421,42 @@ func TestConnectAuthzMatrix(t *testing.T) {
 }
 
 // Test 6a: an unknown connect_id → 404 connect_expired (also the restart-drops
-// case), and a DIFFERENT principal (the service principal) cannot poll another
-// subject's flow (leaked connect_id is unusable).
+// case), and a DIFFERENT principal (another owner user) cannot poll someone
+// else's flow (a leaked connect_id is unusable).
 func TestConnectRegistryUnknownAndPrincipalMismatch(t *testing.T) {
 	f := setupConnect(t, true)
 	f.setClusterBaseURL(t, "http://jtype.db")
+	link := f.seedLink(t)
 
 	// Unknown id.
-	r := do(t, http.MethodGet, f.clusterConnectURL()+"/deadbeef", f.adminTok, nil)
+	r := do(t, http.MethodGet, f.linkConnectURL(link.ID)+"/deadbeef", f.adminTok, nil)
 	var eb errorBody
 	decode(t, r, &eb)
 	if r.StatusCode != http.StatusNotFound || eb.Error.Code != "connect_expired" {
 		t.Fatalf("unknown id: status=%d code=%q", r.StatusCode, eb.Error.Code)
 	}
 
-	// The admin (user) starts a flow; the service principal (also cluster-admin,
-	// but a DIFFERENT identity) must not be able to poll it.
+	// The admin (user) starts a flow; ANOTHER owner user (a DIFFERENT identity,
+	// same RoleOwner authority on the project) must not be able to poll it.
 	var sv kanbanConnectStartView
-	start := do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+	start := do(t, http.MethodPost, f.linkConnectURL(link.ID), f.adminTok, nil)
 	decode(t, start, &sv)
-	mism := do(t, http.MethodGet, f.clusterConnectURL()+"/"+sv.ConnectID, consoleToken, nil)
+	other := mkUser(t, f.st, "cn-other-owner")
+	if err := f.st.UpsertMember(context.Background(), &domain.ProjectMember{
+		ProjectID: f.projectID, UserID: other.ID, Role: domain.RoleOwner,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	otherTok := mkSession(t, f.st, other.ID)
+	mism := do(t, http.MethodGet, f.linkConnectURL(link.ID)+"/"+sv.ConnectID, otherTok, nil)
 	var eb2 errorBody
 	decode(t, mism, &eb2)
 	if mism.StatusCode != http.StatusNotFound || eb2.Error.Code != "connect_expired" {
 		t.Fatalf("principal mismatch: status=%d code=%q want 404 connect_expired", mism.StatusCode, eb2.Error.Code)
 	}
 	// The original principal still can (proves the record survived the mismatch poll).
-	ok := do(t, http.MethodGet, f.clusterConnectURL()+"/"+sv.ConnectID, f.adminTok, nil)
+	ok := do(t, http.MethodGet, f.linkConnectURL(link.ID)+"/"+sv.ConnectID, f.adminTok, nil)
 	if ok.StatusCode != http.StatusOK {
 		t.Fatalf("owner re-poll status=%d want 200", ok.StatusCode)
 	}
@@ -544,11 +468,12 @@ func TestConnectRegistryUnknownAndPrincipalMismatch(t *testing.T) {
 func TestConnectIntervalGate(t *testing.T) {
 	f := setupConnect(t, true)
 	f.setClusterBaseURL(t, "http://jtype.db")
+	link := f.seedLink(t)
 
 	var sv kanbanConnectStartView
-	start := do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+	start := do(t, http.MethodPost, f.linkConnectURL(link.ID), f.adminTok, nil)
 	decode(t, start, &sv)
-	pollURL := f.clusterConnectURL() + "/" + sv.ConnectID
+	pollURL := f.linkConnectURL(link.ID) + "/" + sv.ConnectID
 
 	// Two back-to-back polls, well within the 2s interval jtype returned.
 	do(t, http.MethodGet, pollURL, f.adminTok, nil).Body.Close()
@@ -563,27 +488,28 @@ func TestConnectIntervalGate(t *testing.T) {
 func TestConnectBaseURLChangedMidFlow(t *testing.T) {
 	f := setupConnect(t, true)
 	f.setClusterBaseURL(t, "http://jtype.a")
+	link := f.seedLink(t)
 
 	var sv kanbanConnectStartView
-	start := do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+	start := do(t, http.MethodPost, f.linkConnectURL(link.ID), f.adminTok, nil)
 	decode(t, start, &sv)
 
 	// The admin edits the base URL mid-flow, then jtype "approves".
 	f.setClusterBaseURL(t, "http://jtype.b")
 	f.fake.setMode(jtypeoauth.StatusComplete)
 
-	pr := do(t, http.MethodGet, f.clusterConnectURL()+"/"+sv.ConnectID, f.adminTok, nil)
+	pr := do(t, http.MethodGet, f.linkConnectURL(link.ID)+"/"+sv.ConnectID, f.adminTok, nil)
 	var st kanbanConnectStatusView
 	decode(t, pr, &st)
 	if st.Status != "expired" || st.TokenSet {
 		t.Fatalf("mid-flow base change poll = %+v want expired/no-token", st)
 	}
 	// No token was stored despite the "approval".
-	row, err := f.st.GetClusterKanbanConfig(context.Background())
+	stored, err := f.st.GetKanbanLink(context.Background(), link.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row.TokenSet() {
+	if stored.TokenSet() {
 		t.Fatal("a base_url change mid-flow must NOT store a token")
 	}
 	// jtype was never polled for the token (the mid-flow guard precedes the poll).
@@ -593,15 +519,15 @@ func TestConnectBaseURLChangedMidFlow(t *testing.T) {
 }
 
 // Test 6e (anti-TOCTOU): the base_url changes BETWEEN the guard read and
-// completion — i.e. INSIDE the token poll's network window. The conditional
-// store write (SetClusterKanbanToken) must refuse: status expired, the row keeps
-// the NEW base_url, and no token is stored.
+// completion — i.e. INSIDE the token poll's network window. The re-check in
+// completeConnectLocked must refuse: status expired and no token is stored.
 func TestConnectBaseURLChangedDuringCompletingPoll(t *testing.T) {
 	f := setupConnect(t, true)
 	f.setClusterBaseURL(t, "http://jtype.a")
+	link := f.seedLink(t)
 
 	var sv kanbanConnectStartView
-	start := do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+	start := do(t, http.MethodPost, f.linkConnectURL(link.ID), f.adminTok, nil)
 	decode(t, start, &sv)
 
 	// jtype "approves", and the admin's re-point lands INSIDE the poll (after the
@@ -612,24 +538,26 @@ func TestConnectBaseURLChangedDuringCompletingPoll(t *testing.T) {
 			&domain.KanbanConfig{BaseURL: "http://jtype.b", UpdatedBy: "admin"}); err != nil {
 			t.Errorf("mid-poll upsert: %v", err)
 		}
+		// The resolver caches; the mid-flow re-check must see the NEW base.
+		f.srv.kanban.Invalidate()
 	})
 
-	pr := do(t, http.MethodGet, f.clusterConnectURL()+"/"+sv.ConnectID, f.adminTok, nil)
+	pr := do(t, http.MethodGet, f.linkConnectURL(link.ID)+"/"+sv.ConnectID, f.adminTok, nil)
 	var st kanbanConnectStatusView
 	decode(t, pr, &st)
 	if st.Status != "expired" || st.TokenSet {
 		t.Fatalf("in-poll base change = %+v want expired/no-token", st)
 	}
-	// The guard passed (jtype WAS polled) — the conditional write is what refused.
+	// The guard passed (jtype WAS polled) — the completion-time re-check refused.
 	if f.fake.pollCount() != 1 {
 		t.Fatalf("guard should have passed (1 jtype poll), got %d", f.fake.pollCount())
 	}
-	row, err := f.st.GetClusterKanbanConfig(context.Background())
+	stored, err := f.st.GetKanbanLink(context.Background(), link.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row.BaseURL != "http://jtype.b" || row.TokenSet() || row.TokenExpiresAt != nil {
-		t.Fatalf("row after in-poll base change = %+v (want new base, no token)", row)
+	if stored.TokenSet() {
+		t.Fatal("a base_url change inside the completing poll must NOT store a token")
 	}
 }
 
@@ -638,11 +566,12 @@ func TestConnectBaseURLChangedDuringCompletingPoll(t *testing.T) {
 func TestConnectSlowDownBackoff(t *testing.T) {
 	f := setupConnect(t, true)
 	f.setClusterBaseURL(t, "http://jtype.db")
+	link := f.seedLink(t)
 
 	var sv kanbanConnectStartView
-	start := do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+	start := do(t, http.MethodPost, f.linkConnectURL(link.ID), f.adminTok, nil)
 	decode(t, start, &sv)
-	pollURL := f.clusterConnectURL() + "/" + sv.ConnectID
+	pollURL := f.linkConnectURL(link.ID) + "/" + sv.ConnectID
 
 	// First poll hits jtype and gets slow_down → interval 2s+5s=7s, still pending.
 	f.fake.setMode(jtypeoauth.StatusSlowDown)
@@ -711,6 +640,15 @@ func (b *blockingOAuthClient) PollToken(_ context.Context, deviceCode string) (*
 func TestConnectSlowPollDoesNotStallRegistry(t *testing.T) {
 	f := setupConnect(t, true)
 	f.setClusterBaseURL(t, "http://jtype.db")
+	linkA := f.seedLink(t)
+	linkB := &domain.KanbanLink{
+		ID: domain.NewID(), WorkspaceID: "ws", BoardRef: "b2", ProjectID: f.projectID,
+		ServiceID: f.serviceID, TriggerColumn: "ai", Enabled: true,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := f.st.CreateKanbanLink(context.Background(), linkB); err != nil {
+		t.Fatal(err)
+	}
 	block := &blockingOAuthClient{
 		blockOn: "dev-1", entered: make(chan struct{}), release: make(chan struct{}),
 	}
@@ -718,11 +656,11 @@ func TestConnectSlowPollDoesNotStallRegistry(t *testing.T) {
 
 	// Flow A starts (gets dev-1) and its poll blocks server-side.
 	var svA kanbanConnectStartView
-	startA := do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+	startA := do(t, http.MethodPost, f.linkConnectURL(linkA.ID), f.adminTok, nil)
 	decode(t, startA, &svA)
 	pollADone := make(chan error, 1)
 	go func() {
-		req, err := http.NewRequest(http.MethodGet, f.clusterConnectURL()+"/"+svA.ConnectID, nil)
+		req, err := http.NewRequest(http.MethodGet, f.linkConnectURL(linkA.ID)+"/"+svA.ConnectID, nil)
 		if err != nil {
 			pollADone <- err
 			return
@@ -742,18 +680,19 @@ func TestConnectSlowPollDoesNotStallRegistry(t *testing.T) {
 		t.Fatal("flow A's poll never reached the fake client")
 	}
 
-	// Flow B (start + poll) must complete promptly despite A being stuck.
+	// Flow B (start + poll, on ANOTHER link) must complete promptly despite A
+	// being stuck.
 	otherDone := make(chan struct{})
 	go func() {
 		defer close(otherDone)
 		var svB kanbanConnectStartView
-		startB := do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+		startB := do(t, http.MethodPost, f.linkConnectURL(linkB.ID), f.adminTok, nil)
 		if startB.StatusCode != http.StatusOK {
 			t.Errorf("flow B start status=%d want 200", startB.StatusCode)
 			return
 		}
 		decode(t, startB, &svB)
-		pollB := do(t, http.MethodGet, f.clusterConnectURL()+"/"+svB.ConnectID, f.adminTok, nil)
+		pollB := do(t, http.MethodGet, f.linkConnectURL(linkB.ID)+"/"+svB.ConnectID, f.adminTok, nil)
 		if pollB.StatusCode != http.StatusOK {
 			t.Errorf("flow B poll status=%d want 200", pollB.StatusCode)
 		}
@@ -790,12 +729,13 @@ func TestConnectTerminalStatuses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := setupConnect(t, true)
 			f.setClusterBaseURL(t, "http://jtype.db")
+			link := f.seedLink(t)
 			var sv kanbanConnectStartView
-			start := do(t, http.MethodPost, f.clusterConnectURL(), f.adminTok, nil)
+			start := do(t, http.MethodPost, f.linkConnectURL(link.ID), f.adminTok, nil)
 			decode(t, start, &sv)
 			f.fake.setMode(tc.mode)
 			f.fake.pollErr = tc.perr
-			pr := do(t, http.MethodGet, f.clusterConnectURL()+"/"+sv.ConnectID, f.adminTok, nil)
+			pr := do(t, http.MethodGet, f.linkConnectURL(link.ID)+"/"+sv.ConnectID, f.adminTok, nil)
 			var st kanbanConnectStatusView
 			decode(t, pr, &st)
 			if st.Status != tc.want || st.TokenSet {

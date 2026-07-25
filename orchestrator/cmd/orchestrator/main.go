@@ -162,16 +162,17 @@ func run(log *slog.Logger) error {
 			// F10 / D23 ③ — object-storage archiver (nil => archive pass no-op).
 			WithArchive(archiver)
 
-		// D27 — jtype kanban integration. The EFFECTIVE config (console-managed
-		// cluster_kanban_config DB row > JTYPE_* env) is resolved AT RUNTIME by the
-		// shared kanbancfg.Resolver, so a cluster admin can turn the integration on
-		// from the console WITHOUT a restart — the poller/writeback resolve per tick
-		// and a stored base URL takes effect on the next tick (fail-visible red line:
-		// never a silent no-op). So we ALWAYS wire the writeback resolver into the
-		// reconciler and start the poller; both are a clean visible no-op until a
-		// base URL is configured (each link with no credential is still skipped
-		// visibly). All three (API validation, poller, writeback) share ONE resolver
-		// + HTTP pool + token cipher.
+		// D27/D36 — jtype kanban integration. The EFFECTIVE base URL
+		// (console-managed cluster_kanban_config DB row > JTYPE_BASE_URL env) is
+		// resolved AT RUNTIME by the shared kanbancfg.Resolver, so a cluster admin
+		// can turn the integration on from the console WITHOUT a restart — the
+		// poller/writeback resolve per tick and a stored base URL takes effect on
+		// the next tick (fail-visible red line: never a silent no-op). So we
+		// ALWAYS wire the writeback resolver into the reconciler and start the
+		// poller; both are a clean visible no-op until a base URL is configured
+		// (each link with no per-link credential is still skipped visibly). All
+		// three (API validation, poller, writeback) share ONE resolver + HTTP
+		// pool + token cipher.
 		resolver := srv.Kanban()
 		decrypt := srv.JtypeDecrypt()
 		rec.WithKanban(resolver,

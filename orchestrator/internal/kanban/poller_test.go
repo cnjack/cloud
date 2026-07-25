@@ -2,14 +2,12 @@ package kanban
 
 import (
 	"context"
-	"encoding/base64"
 	"io"
 	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/jtype"
@@ -19,22 +17,15 @@ import (
 )
 
 // envResolver builds a kanbancfg.Resolver over st that is ENABLED via the env
-// source (JTYPE_BASE_URL set), with the given cluster fallback token — the
-// default "configured" state for poller tests that don't exercise the DB path.
-func envResolver(st kanbancfg.ConfigReader, baseURL, clusterToken string) *kanbancfg.Resolver {
-	return kanbancfg.NewResolver(st, nil, &config.Config{JtypeBaseURL: baseURL, JtypeToken: clusterToken})
+// source (JTYPE_BASE_URL set) — the default "configured" state for poller tests
+// that don't exercise the DB path. D36: base URL only; there is no cluster token.
+func envResolver(st kanbancfg.ConfigReader, baseURL string) *kanbancfg.Resolver {
+	return kanbancfg.NewResolver(st, &config.Config{JtypeBaseURL: baseURL})
 }
 
-// testCipher builds a live AES-256-GCM cipher from an all-zero 32-byte key, for
-// the DB-source token tests.
-func testCipher(t *testing.T) *auth.Cipher {
-	t.Helper()
-	c, err := auth.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
-	if err != nil {
-		t.Fatalf("cipher: %v", err)
-	}
-	return c
-}
+// testDecrypt opens the harness's fake sealed tokens: "PLAIN-"+blob, so a test
+// can assert the DECRYPTED per-link token (never anything else) reached jtype.
+func testDecrypt(b []byte) (string, error) { return "PLAIN-" + string(b), nil }
 
 // testLogger is a quiet slog logger for tests (discards output).
 func testLogger(t *testing.T) *slog.Logger {
@@ -194,16 +185,16 @@ func newPollerHarness(t *testing.T, configured bool) (*Poller, *store.MemStore, 
 	link := &domain.KanbanLink{ID: domain.NewID(), WorkspaceID: "ws", BoardRef: "b",
 		ProjectID: p.ID, ServiceID: svc.ID, TriggerColumn: "ai", Enabled: true,
 		EventSequence: int64Ptr(0),
+		TokenEnc:      []byte("ENCPAT"), // D36: every working link needs its own token
 		CreatedAt:     time.Now(), UpdatedAt: time.Now()}
 	_ = m.CreateKanbanLink(ctx, link)
 
 	api := newFakeAPI()
-	// The seeded link carries no per-link token, so it resolves via the effective
-	// cluster fallback "cluster-tok" (env source); the factory records each
-	// requested PAT and returns the one fake (ignoring the resolved factory).
+	// The factory records each requested PAT and returns the one fake (ignoring
+	// the resolved factory); testDecrypt opens the seeded per-link token.
 	clientFor := func(_ *jtype.Factory, tok string) DocumentAPI { api.tokens = append(api.tokens, tok); return api }
-	resolver := envResolver(m, "http://jtype.test", "cluster-tok")
-	poller := New(m, resolver, clientFor, nil, stubFor(configured), testLogger(t), "http://console", time.Second)
+	resolver := envResolver(m, "http://jtype.test")
+	poller := New(m, resolver, clientFor, testDecrypt, stubFor(configured), testLogger(t), "http://console", time.Second)
 	return poller, m, api, link, p, svc
 }
 
@@ -326,7 +317,7 @@ func TestPollerPersistsCursorAcrossRestart(t *testing.T) {
 		api.tokens = append(api.tokens, tok)
 		return api
 	}
-	restarted := New(m, envResolver(m, "http://jtype.test", "cluster-tok"), clientFor, nil,
+	restarted := New(m, envResolver(m, "http://jtype.test"), clientFor, testDecrypt,
 		stubFor(true), testLogger(t), "http://console", time.Second)
 	restarted.Tick(ctx)
 
@@ -581,14 +572,13 @@ func seedLinkedProject(t *testing.T, tokenEnc []byte) (*store.MemStore, *fakeAPI
 	return m, api, link
 }
 
-// F6 / D25: a link with its own encrypted PAT is polled with the DECRYPTED
-// per-link token, not the cluster fallback.
+// F6 / D25 / D36: a link with its own encrypted PAT is polled with the DECRYPTED
+// per-link token.
 func TestPollerUsesPerLinkToken(t *testing.T) {
 	m, api, link := seedLinkedProject(t, []byte("ENCPAT"))
 	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 5)
 	clientFor := func(_ *jtype.Factory, tok string) DocumentAPI { api.tokens = append(api.tokens, tok); return api }
-	decrypt := func(b []byte) (string, error) { return "PLAIN-" + string(b), nil }
-	poller := New(m, envResolver(m, "http://jtype.test", "cluster-tok"), clientFor, decrypt, stubFor(true), testLogger(t), "http://console", time.Second)
+	poller := New(m, envResolver(m, "http://jtype.test"), clientFor, testDecrypt, stubFor(true), testLogger(t), "http://console", time.Second)
 
 	poller.Tick(context.Background())
 
@@ -601,16 +591,16 @@ func TestPollerUsesPerLinkToken(t *testing.T) {
 	}
 }
 
-// F6 / D25: a link with neither a per-link token nor a cluster fallback is
-// fail-visible — the poller never builds a client (no empty-credential call) and
-// dispatches nothing.
+// D36: a link without a per-link token has NO fallback — the poller never
+// builds a client (no empty-credential call) and dispatches nothing
+// (fail-visible skip; the link lists as credential_status "missing").
 func TestPollerSkipsLinkWithoutToken(t *testing.T) {
 	m, api, link := seedLinkedProject(t, nil) // no per-link token
 	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 5)
 	clientFor := func(_ *jtype.Factory, tok string) DocumentAPI { api.tokens = append(api.tokens, tok); return api }
-	// Integration ENABLED (base URL set) but NO effective cluster token, and the
-	// link has none of its own + nil decrypt → ResolveToken returns ErrNoToken.
-	poller := New(m, envResolver(m, "http://jtype.test", ""), clientFor, nil, stubFor(true), testLogger(t), "http://console", time.Second)
+	// Integration ENABLED (base URL set) but the link has no token of its own →
+	// ResolveToken returns ErrNoToken (D36: no cluster fallback).
+	poller := New(m, envResolver(m, "http://jtype.test"), clientFor, testDecrypt, stubFor(true), testLogger(t), "http://console", time.Second)
 
 	poller.Tick(context.Background())
 
@@ -631,10 +621,9 @@ func TestPollerRuntimeActivation(t *testing.T) {
 	m, api, link := seedLinkedProject(t, []byte("ENCPAT")) // per-link token
 	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 5)
 	clientFor := func(_ *jtype.Factory, tok string) DocumentAPI { api.tokens = append(api.tokens, tok); return api }
-	decrypt := func(b []byte) (string, error) { return "PLAIN-" + string(b), nil }
 	// Resolver starts OFF: no DB row and no env JTYPE_BASE_URL.
-	resolver := kanbancfg.NewResolver(m, testCipher(t), &config.Config{})
-	poller := New(m, resolver, clientFor, decrypt, stubFor(true), testLogger(t), "http://console", time.Second)
+	resolver := kanbancfg.NewResolver(m, &config.Config{})
+	poller := New(m, resolver, clientFor, testDecrypt, stubFor(true), testLogger(t), "http://console", time.Second)
 
 	// Off => the whole tick is a no-op: no client built, no run dispatched.
 	poller.Tick(ctx)
@@ -661,33 +650,44 @@ func TestPollerRuntimeActivation(t *testing.T) {
 	}
 }
 
-// D27 source-coupling: a DB config's cluster fallback token comes ONLY from the DB
-// row (decrypted), never the env JTYPE_TOKEN. A tokenless link under a DB source
-// resolves to the DB cluster token even when a DIFFERENT env token is set.
-func TestPollerTokenOrderUnderDBSource(t *testing.T) {
+// D36: under a DB-sourced cluster config a tokenless link is SKIPPED — there is
+// no cluster fallback token to borrow, even though the integration itself is on.
+// (The pre-D36 behaviour would have used the DB cluster token.)
+func TestPollerNoFallbackUnderDBSource(t *testing.T) {
 	ctx := context.Background()
-	m, api, link := seedLinkedProject(t, nil) // tokenless link => cluster fallback
+	m, api, link := seedLinkedProject(t, nil) // tokenless link
 	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 5)
-	cipher := testCipher(t)
-	enc, err := cipher.EncryptString("db-cluster-tok")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := m.UpsertClusterKanbanConfig(ctx, &domain.KanbanConfig{BaseURL: "http://jtype.db", TokenEnc: enc, UpdatedBy: "admin"}); err != nil {
+	if err := m.UpsertClusterKanbanConfig(ctx, &domain.KanbanConfig{BaseURL: "http://jtype.db", UpdatedBy: "admin"}); err != nil {
 		t.Fatal(err)
 	}
 	clientFor := func(_ *jtype.Factory, tok string) DocumentAPI { api.tokens = append(api.tokens, tok); return api }
-	// A DIFFERENT env token is set — it must NOT be used (source is db).
-	resolver := kanbancfg.NewResolver(m, cipher, &config.Config{JtypeBaseURL: "http://jtype.env", JtypeToken: "env-should-not-be-used"})
-	poller := New(m, resolver, clientFor, cipher.DecryptString, stubFor(true), testLogger(t), "http://console", time.Second)
+	resolver := kanbancfg.NewResolver(m, &config.Config{})
+	poller := New(m, resolver, clientFor, testDecrypt, stubFor(true), testLogger(t), "http://console", time.Second)
 
 	poller.Tick(ctx)
 
-	if len(api.tokens) == 0 || api.tokens[0] != "db-cluster-tok" {
-		t.Fatalf("DB-source link used token %v, want the DB cluster token db-cluster-tok (never env)", api.tokens)
+	if len(api.tokens) != 0 {
+		t.Fatalf("tokenless link must not build a client (no fallback, D36), built %v", api.tokens)
 	}
+	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 0 {
+		t.Fatalf("tokenless link must dispatch nothing, got %d", len(runs))
+	}
+	// The cursor is untouched on skip, so the link resumes exactly where it
+	// stopped once a per-link token is set.
+	got, _ := m.GetKanbanLink(ctx, link.ID)
+	if got.EventSequence == nil || *got.EventSequence != 0 {
+		t.Fatalf("skip must not advance the cursor, got %v", got.EventSequence)
+	}
+	// Set a per-link token: the SAME card now dispatches (recovery path).
+	if err := m.SetKanbanLinkToken(ctx, link.ID, []byte("ENCPAT"), nil); err != nil {
+		t.Fatal(err)
+	}
+	poller.Tick(ctx)
 	if runs, _ := m.ListRunsByService(ctx, link.ServiceID, 10); len(runs) != 1 {
-		t.Fatalf("want 1 dispatched run, got %d", len(runs))
+		t.Fatalf("after setting a per-link token want 1 dispatched run, got %d", len(runs))
+	}
+	if len(api.tokens) == 0 || api.tokens[len(api.tokens)-1] != "PLAIN-ENCPAT" {
+		t.Fatalf("recovery tick used token %v, want per-link PLAIN-ENCPAT", api.tokens)
 	}
 }
 
@@ -700,13 +700,12 @@ func TestPollerBaseURLChangeBetweenTicks(t *testing.T) {
 	api.addCard("doc1", "cards/x.md", "b", "ai", "T", "body", 5)
 	var bases []string
 	clientFor := func(f *jtype.Factory, _ string) DocumentAPI { bases = append(bases, f.BaseURL()); return api }
-	decrypt := func(b []byte) (string, error) { return "PLAIN-" + string(b), nil }
-	resolver := kanbancfg.NewResolver(m, testCipher(t), &config.Config{})
+	resolver := kanbancfg.NewResolver(m, &config.Config{})
 
 	if err := m.UpsertClusterKanbanConfig(ctx, &domain.KanbanConfig{BaseURL: "http://jtype.one", UpdatedBy: "admin"}); err != nil {
 		t.Fatal(err)
 	}
-	poller := New(m, resolver, clientFor, decrypt, stubFor(true), testLogger(t), "http://console", time.Second)
+	poller := New(m, resolver, clientFor, testDecrypt, stubFor(true), testLogger(t), "http://console", time.Second)
 	poller.Tick(ctx)
 
 	if err := m.UpsertClusterKanbanConfig(ctx, &domain.KanbanConfig{BaseURL: "http://jtype.two", UpdatedBy: "admin"}); err != nil {

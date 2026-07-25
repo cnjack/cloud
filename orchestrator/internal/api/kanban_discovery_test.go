@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/jtype"
 )
 
@@ -44,18 +46,39 @@ func (f fakeDiscovery) GetBoardByDoc(ctx context.Context, ws, docID string) (*jt
 }
 
 // discoveryFixture wires a fake discovery client onto an owner-authorized kanban
-// fixture with the integration ON (base URL + cluster token). The distinctive
-// cluster token lets the no-leak test scan for it.
-const discoveryToken = "cluster-secret-tok-DO-NOT-LEAK"
+// fixture with the integration ON (base URL set) and ONE token-bearing link
+// seeded in the project — D36: discovery borrows a per-link token from the
+// project's existing links (there is no cluster token). The distinctive token
+// lets the no-leak test scan for it; lastToken records which credential the
+// server resolved for the discovery client.
+const discoveryToken = "per-link-secret-tok-DO-NOT-LEAK"
 
 func discoveryFixture(t *testing.T, fake fakeDiscovery) kanbanFixture {
 	t.Helper()
 	// A board arg turns the integration ON (sets JtypeBaseURL => Factory ok).
 	f := setupKanban(t, fakeBoardValidator{board: &jtype.Board{}})
-	f.setClusterToken(discoveryToken)
-	f.srv.jtypeDiscoveryFor = func(_ *jtype.Factory, _ string) jtypeDiscovery { return fake }
+	enc, err := f.srv.Cipher().EncryptString(discoveryToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := &domain.KanbanLink{
+		ID: domain.NewID(), WorkspaceID: "ws-1", BoardRef: "b1",
+		ProjectID: f.projectID, ServiceID: f.serviceID, TriggerColumn: "ai",
+		Enabled: true, TokenEnc: enc, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := f.st.CreateKanbanLink(context.Background(), link); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.jtypeDiscoveryFor = func(_ *jtype.Factory, token string) jtypeDiscovery {
+		lastDiscoveryToken = token
+		return fake
+	}
 	return f
 }
+
+// lastDiscoveryToken captures the token the server resolved for the discovery
+// client (set by the seam in discoveryFixture).
+var lastDiscoveryToken string
 
 func (f kanbanFixture) workspacesURL() string {
 	return f.ts.URL + "/api/v1/projects/" + f.projectID + "/kanban/jtype/workspaces"
@@ -161,17 +184,60 @@ func TestDiscovery_JtypeUnauthorized(t *testing.T) {
 	}
 }
 
-// C4: integration on but NO cluster token to read with → 503 jtype_unreachable
-// (fail-visible; the console then falls back to manual entry).
-func TestDiscovery_NoToken_503(t *testing.T) {
-	f := setupKanban(t, fakeBoardValidator{board: &jtype.Board{}}) // base URL set, but no cluster token
+// C4 / D36: integration on but the project has NO token-bearing link to borrow
+// → typed 409 kanban_token_required (fail-visible; the console then falls back
+// to manual entry — never a silent empty list).
+func TestDiscovery_NoToken_409(t *testing.T) {
+	f := setupKanban(t, fakeBoardValidator{board: &jtype.Board{}}) // base URL set; no links at all
 	f.srv.jtypeDiscoveryFor = func(_ *jtype.Factory, _ string) jtypeDiscovery {
 		return fakeDiscovery{workspaces: []jtype.Workspace{{ID: "ws-1"}}}
 	}
 	r := do(t, http.MethodGet, f.workspacesURL(), f.tokens["owner"], nil)
-	if r.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("no cluster token want 503, got %d", r.StatusCode)
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("no token-bearing link want 409, got %d", r.StatusCode)
 	}
+	if code := errorCode(t, r); code != "kanban_token_required" {
+		t.Fatalf("error code = %q want kanban_token_required", code)
+	}
+}
+
+// D36: discovery authorises jtype reads with a PER-LINK token borrowed from one
+// of the project's links — the same token the link itself would use.
+func TestDiscovery_BorrowsPerLinkToken(t *testing.T) {
+	f := discoveryFixture(t, fakeDiscovery{workspaces: []jtype.Workspace{{ID: "ws-1", Name: "My Team"}}})
+
+	lastDiscoveryToken = ""
+	r := do(t, http.MethodGet, f.workspacesURL(), f.tokens["owner"], nil)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("owner want 200, got %d", r.StatusCode)
+	}
+	r.Body.Close()
+	if lastDiscoveryToken != discoveryToken {
+		t.Fatalf("discovery client resolved token %q want the link's per-link token", lastDiscoveryToken)
+	}
+}
+
+// D36: a tokenless link does NOT unblock discovery, but a DISABLED link WITH a
+// token does (its credential is still valid; enabled links are preferred).
+func TestDiscovery_TokenlessLinksDontCount(t *testing.T) {
+	f := setupKanban(t, fakeBoardValidator{board: &jtype.Board{}})
+	// A tokenless enabled link: not borrowable.
+	link := &domain.KanbanLink{
+		ID: domain.NewID(), WorkspaceID: "ws-1", BoardRef: "b1",
+		ProjectID: f.projectID, ServiceID: f.serviceID, TriggerColumn: "ai",
+		Enabled: true, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := f.st.CreateKanbanLink(context.Background(), link); err != nil {
+		t.Fatal(err)
+	}
+	r := do(t, http.MethodGet, f.workspacesURL(), f.tokens["owner"], nil)
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("tokenless link must not unblock discovery: want 409, got %d", r.StatusCode)
+	}
+	if code := errorCode(t, r); code != "kanban_token_required" {
+		t.Fatalf("error code = %q want kanban_token_required", code)
+	}
+	r.Body.Close()
 }
 
 // C4: boards requires the ?workspace= query parameter.

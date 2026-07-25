@@ -2,12 +2,9 @@ package api
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"sort"
-	"time"
 
-	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/version"
@@ -89,25 +86,20 @@ type systemPrewarm struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// systemKanban is the jtype kanban integration snapshot (Feature E/F6; D27). It
-// reflects the EFFECTIVE config (the console-managed cluster_kanban_config DB row
-// if present, else the JTYPE_* env fallback), not just the raw env. Enabled is
-// true when a base URL resolves; Source is where it came from ("db"/"env"/"none")
-// so the console can render "DB (console)" / "env" / "off". ClusterTokenSet is the
-// effective fallback token flag per source (never the token itself). Reason is set
-// only when the config is broken (e.g. a DB fallback token stored but AUTH_TOKEN_KEY
-// unset) — surfaced honestly rather than silently falling back (D14 fail-visible).
+// systemKanban is the jtype kanban integration snapshot (Feature E/F6; D27,
+// slimmed by D36). It reflects the EFFECTIVE config (the console-managed
+// cluster_kanban_config DB row if present, else the JTYPE_BASE_URL env
+// fallback), not just the raw env. Enabled is true when a base URL resolves;
+// Source is where it came from ("db"/"env"/"none") so the console can render
+// "DB (console)" / "env" / "off". Reason is set only when the resolution
+// failed — surfaced honestly (D14 fail-visible). Since D36 there is no
+// cluster-level token, so the snapshot carries no credential fields.
 type systemKanban struct {
-	Enabled         bool   `json:"enabled"`
-	Source          string `json:"source"`
-	Reason          string `json:"reason,omitempty"` // why disabled/broken (empty when healthy)
-	BaseURL         string `json:"base_url,omitempty"`
-	PollInterval    string `json:"poll_interval,omitempty"`
-	ClusterTokenSet bool   `json:"cluster_token_set"`
-	// TokenExpiresAt is the effective cluster fallback token's expiry (RFC3339)
-	// when it was minted by the "Connect with jtype" device flow (D28); omitted for
-	// a hand-pasted / env token (unknown expiry). Never the token itself.
-	TokenExpiresAt string `json:"token_expires_at,omitempty"`
+	Enabled      bool   `json:"enabled"`
+	Source       string `json:"source"`
+	Reason       string `json:"reason,omitempty"` // why disabled/broken (empty when healthy)
+	BaseURL      string `json:"base_url,omitempty"`
+	PollInterval string `json:"poll_interval,omitempty"`
 }
 
 // systemArchive is the persistent-workspace object-storage archive snapshot
@@ -254,39 +246,29 @@ func (s *Server) archiveStatus() systemArchive {
 	}
 }
 
-// kanbanStatus builds the fail-visible jtype kanban snapshot (D27) from the
-// effective cluster config: the console-managed DB row if present, else the
-// JTYPE_* env fallback. A resolver error (e.g. a DB fallback token stored while
-// AUTH_TOKEN_KEY is unset) is reported as Enabled:false + Reason rather than a
-// silent env fallback (D14). PollInterval is env-only (informational). The
-// plaintext fallback token is NEVER serialized — only ClusterTokenSet.
+// kanbanStatus builds the fail-visible jtype kanban snapshot (D27, slimmed by
+// D36) from the effective cluster config: the console-managed DB row if
+// present, else the JTYPE_BASE_URL env fallback. A resolver error is reported
+// as Enabled:false + Reason rather than silently (D14). PollInterval is
+// env-only (informational). The snapshot carries no credential fields — there
+// is no cluster-level token (D36).
 func (s *Server) kanbanStatus(ctx context.Context) systemKanban {
 	pollInterval := s.cfg.JtypePollInterval.String()
 	eff, err := s.kanban.Effective(ctx)
 	if err != nil {
 		// /system is readable by any authenticated user (not just admins), so the
 		// reason is a CURATED message, never a raw store error (which could leak
-		// driver detail). The cipher sentinel's text is already non-secret and
-		// actionable; anything else collapses to a generic line — the full error
-		// stays admin-visible on GET /system/kanban and in the logs.
-		reason := "kanban configuration unavailable — see orchestrator logs"
-		if errors.Is(err, auth.ErrCipherNotConfigured) {
-			reason = auth.ErrCipherNotConfigured.Error()
-		}
+		// driver detail) — the full error stays in the logs.
 		s.log.Warn("system: kanban config resolve failed", "err", err)
-		return systemKanban{Enabled: false, Source: "none", Reason: reason, PollInterval: pollInterval}
+		return systemKanban{Enabled: false, Source: "none",
+			Reason: "kanban configuration unavailable — see orchestrator logs", PollInterval: pollInterval}
 	}
-	k := systemKanban{
-		Enabled:         eff.Enabled(),
-		Source:          string(eff.Source),
-		BaseURL:         eff.BaseURL,
-		PollInterval:    pollInterval,
-		ClusterTokenSet: eff.ClusterTokenSet,
+	return systemKanban{
+		Enabled:      eff.Enabled(),
+		Source:       string(eff.Source),
+		BaseURL:      eff.BaseURL,
+		PollInterval: pollInterval,
 	}
-	if eff.ClusterTokenExpiresAt != nil {
-		k.TokenExpiresAt = eff.ClusterTokenExpiresAt.UTC().Format(time.RFC3339)
-	}
-	return k
 }
 
 // nonNilStrings returns a non-nil slice so the JSON encodes [] not null for an

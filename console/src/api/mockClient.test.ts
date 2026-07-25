@@ -783,16 +783,15 @@ describe('mockClient — cluster kanban config (D27)', () => {
     await flush(200);
     expect((await s0).kanban?.enabled).toBe(false);
 
-    // PUT base_url + token ⇒ source flips to db, effective on.
-    const u1 = client.updateKanbanConfig({ base_url: 'http://jtype:13345', token: 'jt-pat' });
+    // PUT base_url ⇒ source flips to db, effective on (D36: base URL only — no
+    // cluster token fields on the view).
+    const u1 = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
     await flush(200);
     const c1 = await u1;
     expect(c1.source).toBe('db');
     expect(c1.base_url).toBe('http://jtype:13345');
-    expect(c1.token_set).toBe(true);
     expect(c1.effective_enabled).toBe(true);
-    // The token is never echoed back in the view.
-    expect(JSON.stringify(c1)).not.toContain('jt-pat');
+    expect(JSON.stringify(c1)).not.toContain('token');
 
     // getSystem now reflects the mutable config + its source (runtime activation).
     const s1 = client.getSystem();
@@ -802,17 +801,11 @@ describe('mockClient — cluster kanban config (D27)', () => {
     expect(sys1.kanban?.source).toBe('db');
     expect(sys1.kanban?.base_url).toBe('http://jtype:13345');
 
-    // Token OMITTED keeps token_set; base_url still updates.
+    // base_url updates.
     const u2 = client.updateKanbanConfig({ base_url: 'http://jtype2:13345' });
     await flush(200);
     const c2 = await u2;
     expect(c2.base_url).toBe('http://jtype2:13345');
-    expect(c2.token_set).toBe(true); // unchanged
-
-    // Explicit clear (token:"") drops the fallback token.
-    const u3 = client.updateKanbanConfig({ base_url: 'http://jtype2:13345', token: '' });
-    await flush(200);
-    expect((await u3).token_set).toBe(false);
 
     // An invalid base_url is a typed 400 and leaves state untouched.
     const bad = client
@@ -838,66 +831,7 @@ describe('mockClient — cluster kanban config (D27)', () => {
   });
 });
 
-describe('mockClient — kanban "Connect with jtype" device flow (D28)', () => {
-  it('cluster: requires a base_url, then roundtrips pending→complete sealing a 90d token', async () => {
-    const client = createMockClient();
-
-    // With no DB base_url the flow can't start — fail-visible 409, mirroring the
-    // orchestrator's base_url_not_configured (D27 same-source binding).
-    const noBase = client
-      .startKanbanConnect()
-      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
-    await flush(200);
-    const nb = await noBase;
-    expect(nb.ok).toBe(false);
-    if (!nb.ok) {
-      expect(nb.err).toBeInstanceOf(ApiError);
-      expect((nb.err as ApiError).status).toBe(409);
-    }
-
-    // Save a base URL, then start: a 6-digit user_code + a deep link carrying it,
-    // and NO device_code (the mint secret is withheld from the browser).
-    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
-    await flush(200);
-    await u;
-    const s = client.startKanbanConnect();
-    await flush(200);
-    const start = await s;
-    expect(start.user_code).toMatch(/^\d{6}$/);
-    expect(start.verification_uri_complete).toContain(start.user_code);
-    expect(JSON.stringify(start)).not.toContain('device_code');
-
-    // First poll is pending; the second flips to complete and seals the token.
-    const p1 = client.pollKanbanConnect(start.connect_id);
-    await flush(200);
-    expect((await p1).status).toBe('pending');
-    const p2 = client.pollKanbanConnect(start.connect_id);
-    await flush(200);
-    const done = await p2;
-    expect(done.status).toBe('complete');
-    expect(done.token_set).toBe(true);
-    expect(done.token_expires_at).toBeTruthy();
-    // ~90 days out (MCP_TOKEN_TTL_SECS), never a plaintext token in the body.
-    const days = Math.round((new Date(done.token_expires_at!).getTime() - Date.now()) / 86_400_000);
-    expect(days).toBe(90);
-
-    // getKanbanConfig now reflects the sealed fallback token + its expiry.
-    const g = client.getKanbanConfig();
-    await flush(200);
-    const cfg = await g;
-    expect(cfg.token_set).toBe(true);
-    expect(cfg.token_expires_at).toBe(done.token_expires_at);
-
-    // An unknown connect_id is 404 connect_expired (dropped/expired flow).
-    const unk = client
-      .pollKanbanConnect('kc_nope')
-      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
-    await flush(200);
-    const u2 = await unk;
-    expect(u2.ok).toBe(false);
-    if (!u2.ok) expect((u2.err as ApiError).status).toBe(404);
-  });
-
+describe('mockClient — kanban "Connect with jtype" device flow (D28; per-link only, D36)', () => {
   it('per-link: connect seals a token and flips credential_status to per_link', async () => {
     const client = createMockClient();
     // Cluster integration must be effective for a per-link connect.
@@ -960,7 +894,28 @@ describe('mockClient — kanban "Connect with jtype" device flow (D28)', () => {
 });
 
 describe('mockClient — kanban discovery pickers (D29)', () => {
-  it('lists workspaces + boards-with-columns once the integration is effective', async () => {
+  // D36: discovery borrows a per-link token from one of the project's existing
+  // links, so a project with no token-bearing link gets kanban_token_required.
+  async function seedTokenedLink(client: ReturnType<typeof createMockClient>, projectId: string) {
+    const cs = client.createService(projectId, {
+      name: 'default',
+      repo_url: 'https://gitea.local/acme/demo.git',
+      default_branch: 'main',
+    });
+    await flush(500);
+    const svc = await cs;
+    const cl = client.createProjectKanbanLink(projectId, {
+      workspace_id: 'ws_team',
+      board_ref: 'jtype.board',
+      service_id: svc.id,
+      trigger_column: 'ai',
+      token: 'pat',
+    });
+    await flush(200);
+    await cl;
+  }
+
+  it('lists workspaces + boards-with-columns once the integration is effective AND a link has a token', async () => {
     const client = createMockClient();
     const cp = client.createProject({ name: 'demo' });
     await flush(500);
@@ -978,10 +933,24 @@ describe('mockClient — kanban discovery pickers (D29)', () => {
       expect(apiErrorCode(offR.err)).toBe('kanban_not_configured');
     }
 
-    // Turn the cluster integration on.
+    // Turn the cluster integration on — but with NO token-bearing link yet,
+    // discovery is still a typed 409 (D36: kanban_token_required).
     const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
     await flush(200);
     await u;
+    const noTok = client
+      .listJtypeWorkspaces(project.id)
+      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
+    await flush(200);
+    const noTokR = await noTok;
+    expect(noTokR.ok).toBe(false);
+    if (!noTokR.ok) {
+      expect((noTokR.err as ApiError).status).toBe(409);
+      expect(apiErrorCode(noTokR.err)).toBe('kanban_token_required');
+    }
+
+    // A link with a per-link token unblocks discovery.
+    await seedTokenedLink(client, project.id);
 
     const ws = client.listJtypeWorkspaces(project.id);
     await flush(200);
@@ -1015,6 +984,7 @@ describe('mockClient — kanban discovery pickers (D29)', () => {
     const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
     await flush(200);
     await u;
+    await seedTokenedLink(client, project.id);
 
     const r = client
       .listJtypeBoards(project.id, 'ws_does_not_exist')

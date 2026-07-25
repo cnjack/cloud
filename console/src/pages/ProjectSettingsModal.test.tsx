@@ -636,7 +636,7 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     await waitFor(() => expect(kctl.deletes).toEqual([{ projectId: 'p1', linkId: 'kl-1' }]));
   });
 
-  it('renders the three credential states — missing is a loud error badge (P1)', async () => {
+  it('renders the credential states — missing is a loud error badge (P1 / D36)', async () => {
     const project = baseProject();
     const mk = (id: string, cred: KanbanLink['credential_status']): KanbanLink => ({
       id, workspace_id: 'ws-' + id, board_ref: 'b-' + id,
@@ -645,7 +645,7 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
       created_at: '2026-01-01T00:00:00Z',
     });
     const { client } = kanbanClient(project, [
-      mk('a', 'per_link'), mk('b', 'cluster_fallback'), mk('c', 'missing'),
+      mk('a', 'per_link'), mk('c', 'missing'),
     ]);
     renderModal(client, project);
 
@@ -653,8 +653,6 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     await waitFor(() => expect(screen.getByTestId('kanban-cred-a')).toBeTruthy());
     expect(screen.getByTestId('kanban-cred-a').textContent).toBe('own token');
     expect(screen.getByTestId('kanban-cred-a').getAttribute('data-state')).toBe('per_link');
-    expect(screen.getByTestId('kanban-cred-b').textContent).toBe('cluster token');
-    expect(screen.getByTestId('kanban-cred-b').getAttribute('data-state')).toBe('cluster_fallback');
     // The dead link screams: explicit error copy + the error-styled state attr.
     expect(screen.getByTestId('kanban-cred-c').textContent).toBe('no credential — set a token');
     expect(screen.getByTestId('kanban-cred-c').getAttribute('data-state')).toBe('missing');
@@ -677,7 +675,7 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     await waitFor(() => expect(kctl.updates).toHaveLength(1));
     expect(kctl.updates[0]).toEqual({ projectId: 'p1', linkId: 'kl-1', token: 'rotated-pat' });
 
-    // Clear: empty submit sends "" (server clears back to the cluster fallback).
+    // Clear: empty submit sends "" (server clears; the link then has no credential).
     await waitFor(() => expect(screen.getByTestId('kanban-token-edit-kl-1')).toBeTruthy());
     fireEvent.click(screen.getByTestId('kanban-token-edit-kl-1'));
     fireEvent.click(screen.getByTestId('kanban-token-save-kl-1'));

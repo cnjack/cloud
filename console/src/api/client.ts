@@ -247,13 +247,14 @@ export interface ApiClient {
   /**
    * POST /api/v1/projects/{id}/kanban/links — bind a board column to one of the
    * project's services (owner). `token` (optional, write-only) is the per-link
-   * jtype PAT; omit to fall back to the cluster JTYPE_TOKEN.
+   * jtype PAT; omit it to create the link without a credential (D36: there is
+   * no cluster fallback — set one later via PATCH or Connect).
    */
   createProjectKanbanLink(projectId: string, input: CreateKanbanLinkInput): Promise<KanbanLink>;
   /**
    * PATCH /api/v1/projects/{id}/kanban/links/{linkId} — rotate or clear ONLY the
-   * link's per-link jtype token (owner; claims retained). "" clears back to the
-   * cluster fallback; any other value rotates. Write-only, as on create.
+   * link's per-link jtype token (owner; claims retained). "" clears it (the link
+   * then has no credential); any other value rotates. Write-only, as on create.
    */
   updateProjectKanbanLinkToken(projectId: string, linkId: string, token: string): Promise<KanbanLink>;
   /** DELETE /api/v1/projects/{id}/kanban/links/{linkId} — remove a link (owner). */
@@ -262,10 +263,12 @@ export interface ApiClient {
   /* ---- kanban discovery pickers (D29) ----------------------------------- */
   /**
    * GET /api/v1/projects/{id}/kanban/jtype/workspaces — the caller's jtype
-   * workspaces for the create-link workspace picker (owner). Uses the effective
-   * token server-side (never serialized). 409 kanban_not_configured / 503
-   * jtype_unreachable when the integration is off / unreachable (fail-visible —
-   * the form falls back to manual entry); 400 jtype_unauthorized for a bad token.
+   * workspaces for the create-link workspace picker (owner). Uses a per-link
+   * token borrowed from one of the project's existing links, server-side (never
+   * serialized). 409 kanban_not_configured (integration off) or 409
+   * kanban_token_required (no token-bearing link yet) / 503 jtype_unreachable —
+   * all fail-visible: the form falls back to manual entry. 400
+   * jtype_unauthorized for a bad token.
    */
   listJtypeWorkspaces(projectId: string): Promise<JtypeWorkspace[]>;
   /**
@@ -312,17 +315,17 @@ export interface ApiClient {
     req: JTypeSaveDocumentRequest,
   ): Promise<JTypeSaveDocumentResponse>;
 
-  /* ---- cluster kanban config (D27) -------------------------------------- */
+  /* ---- cluster kanban config (D27, slimmed by D36) ----------------------- */
   /**
    * GET /api/v1/system/kanban — the cluster jtype config resolved DB › env › off
-   * (cluster-admin). Never carries the token — only token_set / cluster_token_set.
+   * (cluster-admin). The config is just the base URL; there are no credential
+   * fields (D36).
    */
   getKanbanConfig(): Promise<KanbanClusterConfig>;
   /**
-   * PUT /api/v1/system/kanban — set the DB override's base_url (required) and,
-   * with three-state presence, its optional cluster fallback token (cluster-admin).
-   * 400 for an invalid base_url; 409 cipher_not_configured for a token write with
-   * no AUTH_TOKEN_KEY. Returns the resolved config (the GET shape).
+   * PUT /api/v1/system/kanban — set the DB override's base_url (required, the
+   * only field; cluster-admin). 400 for an invalid base_url. Returns the
+   * resolved config (the GET shape).
    */
   updateKanbanConfig(input: UpdateKanbanConfigInput): Promise<KanbanClusterConfig>;
   /**
@@ -331,22 +334,7 @@ export interface ApiClient {
    */
   deleteKanbanConfig(): Promise<KanbanClusterConfig>;
 
-  /* ---- kanban "Connect with jtype" device flow (D28) -------------------- */
-  /**
-   * POST /api/v1/system/kanban/connect — start a device flow for the CLUSTER
-   * fallback token (cluster-admin). Requires a saved DB base_url (else 409
-   * base_url_not_configured) and a configured cipher (else 409
-   * cipher_not_configured); an old jtype without the OAuth routes yields 409
-   * jtype_oauth_unsupported (fall back to pasting a token). The device_code is
-   * withheld — poll with the returned connect_id.
-   */
-  startKanbanConnect(): Promise<KanbanConnectStart>;
-  /**
-   * GET /api/v1/system/kanban/connect/{connectID} — poll a cluster device flow.
-   * On `complete` the token is already sealed into the cluster config and the
-   * resolver invalidated. An unknown/expired connect_id is 404 connect_expired.
-   */
-  pollKanbanConnect(connectId: string): Promise<KanbanConnectStatus>;
+  /* ---- kanban "Connect with jtype" device flow (D28; per-link only, D36) -- */
   /**
    * POST /api/v1/projects/{id}/kanban/links/{linkID}/connect — start a device
    * flow for a PER-LINK token (owner). The link must already exist (create it
@@ -844,8 +832,8 @@ export function createHttpClient(
         { method: 'POST', body: JSON.stringify(body) },
       ),
 
-    // Cluster kanban config (D27). Cluster-admin — set/clear the DB override that
-    // supersedes the JTYPE_BASE_URL env fallback. The token is write-only.
+    // Cluster kanban config (D27/D36). Cluster-admin — set/clear the DB override
+    // (the jtype base URL) that supersedes the JTYPE_BASE_URL env fallback.
     getKanbanConfig: () => req<KanbanClusterConfig>('/system/kanban'),
     updateKanbanConfig: (input) =>
       req<KanbanClusterConfig>('/system/kanban', {
@@ -855,13 +843,9 @@ export function createHttpClient(
     deleteKanbanConfig: () =>
       req<KanbanClusterConfig>('/system/kanban', { method: 'DELETE' }),
 
-    // Kanban "Connect with jtype" device flow (D28). Start = POST (device_code
-    // withheld); the console then polls the GET with the opaque connect_id while
-    // the user authorises in jtype's browser page.
-    startKanbanConnect: () =>
-      req<KanbanConnectStart>('/system/kanban/connect', { method: 'POST' }),
-    pollKanbanConnect: (connectId) =>
-      req<KanbanConnectStatus>(`/system/kanban/connect/${encodeURIComponent(connectId)}`),
+    // Kanban "Connect with jtype" device flow (D28; per-link only, D36). Start =
+    // POST (device_code withheld); the console then polls the GET with the opaque
+    // connect_id while the user authorises in jtype's browser page.
     startLinkConnect: (projectId, linkId) =>
       req<KanbanConnectStart>(
         `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(linkId)}/connect`,

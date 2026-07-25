@@ -107,14 +107,6 @@ func (f kanbanFixture) linksURL() string {
 	return f.ts.URL + "/api/v1/projects/" + f.projectID + "/kanban/links"
 }
 
-// setClusterToken sets the env JTYPE_TOKEN fallback and invalidates the shared
-// resolver so the effective cluster-token change is visible on the next request
-// (the resolver caches for a few seconds; D27).
-func (f kanbanFixture) setClusterToken(tok string) {
-	f.srv.cfg.JtypeToken = tok
-	f.srv.Kanban().Invalidate()
-}
-
 // Owner CRUD on the project-scoped links, and the token is never echoed back.
 func TestProjectKanbanLinkCRUD(t *testing.T) {
 	f := setupKanban(t, fakeBoardValidator{}) // validation off (no board)
@@ -303,20 +295,20 @@ func TestProjectKanbanLinkServiceNotInProject(t *testing.T) {
 	}
 }
 
-// Column validation against a live board (F6: with the link's token or the
-// cluster fallback), plus the fail-visible edges.
+// Column validation against a live board (F6/D36: with the link's own token —
+// there is no cluster fallback), plus the fail-visible edges.
 func TestProjectKanbanLinkColumnValidation(t *testing.T) {
 	board := &jtype.Board{Columns: []jtype.BoardColumn{{Key: "ai"}, {Key: "done"}}}
 	f := setupKanban(t, fakeBoardValidator{board: board})
 
-	// No token supplied AND no cluster fallback → SOFT create (D30 deadlock break):
-	// the link is created board_status="unvalidated" (the bootstrap path), NOT
-	// rejected — an owner can then attach a per-link token via the device flow.
+	// No token supplied → SOFT create (D30 deadlock break): the link is created
+	// board_status="unvalidated" (the bootstrap path), NOT rejected — an owner can
+	// then attach a per-link token via the device flow (D36: no fallback to lean on).
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "b", "service_id": f.serviceID, "trigger_column": "ai",
 	})
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("no token & no fallback should soft-create (201), got %d", resp.StatusCode)
+		t.Fatalf("no token should soft-create (201), got %d", resp.StatusCode)
 	}
 	var soft kanbanLinkView
 	decode(t, resp, &soft)
@@ -337,26 +329,24 @@ func TestProjectKanbanLinkColumnValidation(t *testing.T) {
 	}
 	bad.Body.Close()
 
-	// Good columns via the CLUSTER FALLBACK token (no per-link token supplied).
-	f.setClusterToken("cluster-pat")
+	// Good columns via the supplied per-link token.
 	good := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "b", "service_id": f.serviceID,
-		"trigger_column": "ai", "done_column": "done",
+		"trigger_column": "ai", "done_column": "done", "token": "pat",
 	})
 	if good.StatusCode != http.StatusCreated {
-		t.Fatalf("good columns via fallback want 201, got %d", good.StatusCode)
+		t.Fatalf("good columns want 201, got %d", good.StatusCode)
 	}
 	var view kanbanLinkView
 	decode(t, good, &view)
-	if view.TokenSet {
-		t.Fatal("fallback link must report token_set=false")
+	if !view.TokenSet {
+		t.Fatal("tokened link must report token_set=true")
 	}
 
 	// jtype unreachable → 503 fail-visible.
 	f2 := setupKanban(t, fakeBoardValidator{err: errFakeJtype})
-	f2.setClusterToken("cluster-pat")
 	down := do(t, http.MethodPost, f2.linksURL(), f2.tokens["owner"], map[string]any{
-		"workspace_id": "ws", "board_ref": "b", "service_id": f2.serviceID, "trigger_column": "ai",
+		"workspace_id": "ws", "board_ref": "b", "service_id": f2.serviceID, "trigger_column": "ai", "token": "pat",
 	})
 	if down.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("jtype down want 503, got %d", down.StatusCode)
@@ -397,13 +387,14 @@ func TestProjectKanbanLinkCipherCheckedBeforeBoardFetch(t *testing.T) {
 	}
 }
 
-// P1: credential_status is derived per link — per_link / cluster_fallback /
-// missing — so an owner sees a dead link in the console, not in logs.
+// P1 / D36: credential_status is derived per link — per_link / missing (two
+// states; the cluster_fallback state is gone) — so an owner sees a dead link in
+// the console, not in logs.
 func TestProjectKanbanLinkCredentialStatus(t *testing.T) {
 	board := &jtype.Board{Columns: []jtype.BoardColumn{{Key: "ai"}}}
 	f := setupKanban(t, fakeBoardValidator{board: board})
 
-	// With a per-link token -> "per_link" (cluster fallback irrelevant).
+	// With a per-link token -> "per_link".
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws1", "board_ref": "b1", "service_id": f.serviceID,
 		"trigger_column": "ai", "token": "pat",
@@ -414,20 +405,18 @@ func TestProjectKanbanLinkCredentialStatus(t *testing.T) {
 		t.Fatalf("tokened link status=%q want per_link", withTok.CredentialStatus)
 	}
 
-	// Without a per-link token, cluster fallback SET -> "cluster_fallback".
-	f.setClusterToken("cluster-pat")
+	// Without a per-link token -> "missing" (D36: no cluster fallback).
 	resp = do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws2", "board_ref": "b2", "service_id": f.serviceID,
 		"trigger_column": "ai",
 	})
-	var fallback kanbanLinkView
-	decode(t, resp, &fallback)
-	if fallback.CredentialStatus != "cluster_fallback" {
-		t.Fatalf("fallback link status=%q want cluster_fallback", fallback.CredentialStatus)
+	var tokenless kanbanLinkView
+	decode(t, resp, &tokenless)
+	if tokenless.CredentialStatus != "missing" {
+		t.Fatalf("tokenless link status=%q want missing", tokenless.CredentialStatus)
 	}
 
-	// Cluster fallback UNSET -> the same tokenless link lists as "missing".
-	f.setClusterToken("")
+	// The list endpoint derives the same two states.
 	resp = do(t, http.MethodGet, f.linksURL(), f.tokens["owner"], nil)
 	var list struct {
 		Links []kanbanLinkView `json:"links"`
@@ -440,14 +429,14 @@ func TestProjectKanbanLinkCredentialStatus(t *testing.T) {
 	if byID[withTok.ID] != "per_link" {
 		t.Fatalf("tokened link listed as %q want per_link", byID[withTok.ID])
 	}
-	if byID[fallback.ID] != "missing" {
-		t.Fatalf("tokenless link without cluster fallback listed as %q want missing", byID[fallback.ID])
+	if byID[tokenless.ID] != "missing" {
+		t.Fatalf("tokenless link listed as %q want missing", byID[tokenless.ID])
 	}
 }
 
 // P2: PATCH rotates/clears ONLY the per-link token — claims are retained (no
-// re-dispatch), "" clears back to the cluster fallback, and the same RBAC /
-// project-scoping / cipher gates as create apply.
+// re-dispatch), "" clears it (the link then lists as "missing"), and the same
+// RBAC / project-scoping / cipher gates as create apply.
 func TestProjectKanbanLinkTokenRotation(t *testing.T) {
 	f := setupKanban(t, fakeBoardValidator{}) // validation off
 	ctx := context.Background()
@@ -585,9 +574,9 @@ func (e errString) Error() string { return string(e) }
 // NOT be a 503 that sends the owner to debug the network).
 func TestCreateLink_BoardNotFound_400(t *testing.T) {
 	f := setupKanban(t, fakeBoardValidator{err: jtype.ErrDocNotFound})
-	f.setClusterToken("cluster-pat") // a credential exists => HARD validate
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "ghost", "service_id": f.serviceID, "trigger_column": "ai",
+		"token": "pat", // a credential exists => HARD validate
 	})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("board not found want 400, got %d", resp.StatusCode)
@@ -601,9 +590,9 @@ func TestCreateLink_BoardNotFound_400(t *testing.T) {
 func TestCreateLink_BoardAmbiguous_400(t *testing.T) {
 	amb := &jtype.ErrBoardAmbiguousError{Ref: "jtype", Candidates: []string{"a/jtype.board", "b/jtype.board"}}
 	f := setupKanban(t, fakeBoardValidator{err: amb})
-	f.setClusterToken("cluster-pat")
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "jtype", "service_id": f.serviceID, "trigger_column": "ai",
+		"token": "pat",
 	})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("ambiguous want 400, got %d", resp.StatusCode)
@@ -616,9 +605,9 @@ func TestCreateLink_BoardAmbiguous_400(t *testing.T) {
 // An auth failure (jtype 401) is a CONFIG error → 400 jtype_unauthorized, not 503.
 func TestCreateLink_JtypeUnauthorized_400(t *testing.T) {
 	f := setupKanban(t, fakeBoardValidator{err: &jtype.Error{StatusCode: 401, Code: "unauthorized", Message: "bad token"}})
-	f.setClusterToken("cluster-pat")
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "b", "service_id": f.serviceID, "trigger_column": "ai",
+		"token": "pat",
 	})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unauthorized want 400, got %d", resp.StatusCode)
@@ -631,9 +620,9 @@ func TestCreateLink_JtypeUnauthorized_400(t *testing.T) {
 // A genuine 5xx keeps 503 jtype_unreachable (real network/instance-down).
 func TestCreateLink_JtypeDown_503(t *testing.T) {
 	f := setupKanban(t, fakeBoardValidator{err: &jtype.Error{StatusCode: 503, Code: "unavailable", Message: "down"}})
-	f.setClusterToken("cluster-pat")
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "b", "service_id": f.serviceID, "trigger_column": "ai",
+		"token": "pat",
 	})
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("jtype 5xx want 503, got %d", resp.StatusCode)
@@ -648,10 +637,9 @@ func TestCreateLink_JtypeDown_503(t *testing.T) {
 func TestCreateLink_CanonicalizesBoardRef(t *testing.T) {
 	board := &jtype.Board{ID: "b_ab12cd34", Title: "jtype", Columns: []jtype.BoardColumn{{Key: "ai"}, {Key: "done"}}}
 	f := setupKanban(t, fakeBoardValidator{board: board})
-	f.setClusterToken("cluster-pat")
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "jtype.board", "service_id": f.serviceID,
-		"trigger_column": "ai", "done_column": "done",
+		"trigger_column": "ai", "done_column": "done", "token": "pat",
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("canonical create want 201, got %d", resp.StatusCode)
@@ -677,13 +665,14 @@ func TestCreateLink_CanonicalizesBoardRef(t *testing.T) {
 	}
 }
 
-// RC4 deadlock break: integration ON but NO per-link and NO cluster token → the
-// link is SOFT-created (201, board_status=unvalidated) and the validator is NEVER
-// called (no network round-trip with an empty credential).
+// RC4 deadlock break: integration ON but NO per-link token (D36: no cluster
+// fallback either) → the link is SOFT-created (201, board_status=unvalidated)
+// and the validator is NEVER called (no network round-trip with an empty
+// credential).
 func TestCreateLink_SoftCreate_NoCredential(t *testing.T) {
 	var calls int32
 	board := &jtype.Board{ID: "b_x", Columns: []jtype.BoardColumn{{Key: "ai"}}}
-	f := setupKanban(t, fakeBoardValidator{board: board, calls: &calls}) // base URL set => Factory ok, but no cluster token
+	f := setupKanban(t, fakeBoardValidator{board: board, calls: &calls}) // base URL set => Factory ok
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "jtype", "service_id": f.serviceID, "trigger_column": "ai",
 	})
@@ -720,15 +709,15 @@ func TestCreateLink_SoftCreate_IntegrationOff(t *testing.T) {
 	}
 }
 
-// The predicate only SOFTENS when there is truly no credential: with a cluster
+// The predicate only SOFTENS when there is truly no credential: with a per-link
 // token, a not-found is a HARD 400 (not a soft create).
-func TestCreateLink_HardValidate_WithClusterToken(t *testing.T) {
+func TestCreateLink_HardValidate_WithToken(t *testing.T) {
 	f := setupKanban(t, fakeBoardValidator{err: jtype.ErrDocNotFound})
-	f.setClusterToken("cluster-pat")
 	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
 		"workspace_id": "ws", "board_ref": "ghost", "service_id": f.serviceID, "trigger_column": "ai",
+		"token": "pat",
 	})
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("with a cluster token a bad ref must HARD-fail 400, got %d", resp.StatusCode)
+		t.Fatalf("with a per-link token a bad ref must HARD-fail 400, got %d", resp.StatusCode)
 	}
 }

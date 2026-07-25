@@ -2,12 +2,10 @@ package kanbancfg
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"testing"
 	"time"
 
-	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/store"
@@ -33,81 +31,54 @@ func (f *fakeReader) GetClusterKanbanConfig(_ context.Context) (*domain.KanbanCo
 	return &cp, nil
 }
 
-func newTestCipher(t *testing.T) *auth.Cipher {
-	t.Helper()
-	c, err := auth.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
-	if err != nil {
-		t.Fatalf("cipher: %v", err)
-	}
-	return c
-}
-
-// Test 1: the DB > env > none resolution chain.
+// Test 1: the DB > env > none resolution chain (D36: base URL only — there is
+// no cluster credential to resolve).
 func TestResolverSource(t *testing.T) {
 	ctx := context.Background()
-	cipher := newTestCipher(t)
 
 	// DB source: a row present wins over the env fallback.
-	r := NewResolver(&fakeReader{cfg: &domain.KanbanConfig{BaseURL: "http://db"}}, cipher,
-		&config.Config{JtypeBaseURL: "http://env", JtypeToken: "envtok"})
+	r := NewResolver(&fakeReader{cfg: &domain.KanbanConfig{BaseURL: "http://db"}},
+		&config.Config{JtypeBaseURL: "http://env"})
 	eff, err := r.Effective(ctx)
 	if err != nil || eff.Source != SourceDB || eff.BaseURL != "http://db" || !eff.Enabled() {
 		t.Fatalf("db source = %+v err=%v", eff, err)
 	}
 
 	// env source: no DB row, JTYPE_BASE_URL set.
-	r = NewResolver(&fakeReader{}, cipher, &config.Config{JtypeBaseURL: "http://env", JtypeToken: "envtok"})
+	r = NewResolver(&fakeReader{}, &config.Config{JtypeBaseURL: "http://env"})
 	eff, err = r.Effective(ctx)
-	if err != nil || eff.Source != SourceEnv || eff.BaseURL != "http://env" ||
-		eff.ClusterToken != "envtok" || !eff.ClusterTokenSet {
+	if err != nil || eff.Source != SourceEnv || eff.BaseURL != "http://env" {
 		t.Fatalf("env source = %+v err=%v", eff, err)
 	}
 
 	// none: no DB row, no env base URL.
-	r = NewResolver(&fakeReader{}, cipher, &config.Config{})
+	r = NewResolver(&fakeReader{}, &config.Config{})
 	eff, err = r.Effective(ctx)
 	if err != nil || eff.Source != SourceNone || eff.Enabled() {
 		t.Fatalf("none source = %+v err=%v", eff, err)
 	}
 }
 
-// Test 2: the cluster fallback token is SOURCE-COUPLED — a DB base URL with NO DB
-// token must NOT borrow the env JTYPE_TOKEN (a PAT for one instance must never
-// authenticate against another).
-func TestResolverSourceIsolation(t *testing.T) {
+// Test 2: a store error propagates (never cached — see TestResolverErrorsNotCached)
+// and Factory reports off.
+func TestResolverStoreError(t *testing.T) {
 	ctx := context.Background()
-	r := NewResolver(&fakeReader{cfg: &domain.KanbanConfig{BaseURL: "http://db"}}, newTestCipher(t),
-		&config.Config{JtypeBaseURL: "http://env", JtypeToken: "envtok"})
-	eff, err := r.Effective(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if eff.Source != SourceDB || eff.ClusterToken != "" || eff.ClusterTokenSet {
-		t.Fatalf("db source must not borrow the env token: %+v", eff)
-	}
-}
-
-// Test 3: a DB token blob with no cipher (AUTH_TOKEN_KEY unset) is a surfaced
-// ERROR — never a silent env fallback — and Factory reports off.
-func TestResolverDBTokenNoCipher(t *testing.T) {
-	ctx := context.Background()
-	r := NewResolver(&fakeReader{cfg: &domain.KanbanConfig{BaseURL: "http://db", TokenEnc: []byte("blob")}}, nil,
-		&config.Config{JtypeBaseURL: "http://env", JtypeToken: "envtok"})
+	r := NewResolver(&fakeReader{err: errors.New("db down")}, &config.Config{JtypeBaseURL: "http://env"})
 	if _, err := r.Effective(ctx); err == nil {
-		t.Fatal("want an error when a DB token exists but no cipher is configured")
+		t.Fatal("want the store error to propagate")
 	}
-	if _, _, ok := r.Factory(ctx); ok {
+	if _, ok := r.Factory(ctx); ok {
 		t.Fatal("Factory must report off (ok=false) on a resolver error")
 	}
 }
 
-// Test 4a: a fresh resolution is cached for the TTL; Invalidate + TTL expiry both
+// Test 3a: a fresh resolution is cached for the TTL; Invalidate + TTL expiry both
 // force a re-read.
 func TestResolverTTLAndInvalidate(t *testing.T) {
 	ctx := context.Background()
 	fr := &fakeReader{cfg: &domain.KanbanConfig{BaseURL: "http://one"}}
 	now := time.Now()
-	r := NewResolver(fr, newTestCipher(t), &config.Config{})
+	r := NewResolver(fr, &config.Config{})
 	r.now = func() time.Time { return now }
 
 	if eff, _ := r.Effective(ctx); eff.BaseURL != "http://one" || fr.reads != 1 {
@@ -131,12 +102,12 @@ func TestResolverTTLAndInvalidate(t *testing.T) {
 	}
 }
 
-// Test 4b: errors are NEVER cached — a transient failure re-attempts on the next
+// Test 3b: errors are NEVER cached — a transient failure re-attempts on the next
 // call rather than sticking a cached error.
 func TestResolverErrorsNotCached(t *testing.T) {
 	ctx := context.Background()
 	fr := &fakeReader{err: errors.New("db down")}
-	r := NewResolver(fr, newTestCipher(t), &config.Config{})
+	r := NewResolver(fr, &config.Config{})
 
 	if _, err := r.Effective(ctx); err == nil || fr.reads != 1 {
 		t.Fatalf("first error resolve: err=%v reads=%d", err, fr.reads)
@@ -153,18 +124,18 @@ func TestResolverErrorsNotCached(t *testing.T) {
 	}
 }
 
-// Test 5: the factory pool is reused for an unchanged base URL, rebuilt when the
+// Test 4: the factory pool is reused for an unchanged base URL, rebuilt when the
 // base URL changes, and off => ok=false.
 func TestResolverFactoryPool(t *testing.T) {
 	ctx := context.Background()
 	fr := &fakeReader{cfg: &domain.KanbanConfig{BaseURL: "http://one"}}
-	r := NewResolver(fr, newTestCipher(t), &config.Config{})
+	r := NewResolver(fr, &config.Config{})
 
-	f1, _, ok := r.Factory(ctx)
+	f1, ok := r.Factory(ctx)
 	if !ok || f1 == nil || f1.BaseURL() != "http://one" {
 		t.Fatalf("factory1 ok=%v base=%v", ok, f1)
 	}
-	f2, _, ok := r.Factory(ctx)
+	f2, ok := r.Factory(ctx)
 	if !ok || f2 != f1 {
 		t.Fatal("factory pool must reuse the same *jtype.Factory for an unchanged base URL")
 	}
@@ -172,15 +143,15 @@ func TestResolverFactoryPool(t *testing.T) {
 	// Base URL change => rebuild (new pointer, new base).
 	fr.cfg.BaseURL = "http://two"
 	r.Invalidate()
-	f3, _, ok := r.Factory(ctx)
+	f3, ok := r.Factory(ctx)
 	if !ok || f3 == f1 || f3.BaseURL() != "http://two" {
 		t.Fatalf("factory must be rebuilt on a base-URL change: reused=%v base=%v", f3 == f1, f3.BaseURL())
 	}
 
-	// Off => (nil,"",false).
+	// Off => (nil,false).
 	fr.cfg = nil
 	r.Invalidate()
-	if f, tok, ok := r.Factory(ctx); ok || f != nil || tok != "" {
-		t.Fatalf("off must be (nil,\"\",false), got f=%v tok=%q ok=%v", f, tok, ok)
+	if f, ok := r.Factory(ctx); ok || f != nil {
+		t.Fatalf("off must be (nil,false), got f=%v ok=%v", f, ok)
 	}
 }

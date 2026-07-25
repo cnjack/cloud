@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -23,8 +22,10 @@ type kanbanLinkView struct {
 	TriggerColumn string `json:"trigger_column"`
 	DoneColumn    string `json:"done_column,omitempty"`
 	Enabled       bool   `json:"enabled"`
-	// TokenSet is true when the link carries its own encrypted jtype PAT; false
-	// means it falls back to the cluster JTYPE_TOKEN env. The token is never echoed.
+	// TokenSet is true when the link carries its own encrypted jtype PAT. Since
+	// D36 there is no cluster fallback: a link without token_set is dead
+	// (credential_status "missing") until its owner sets one. The token itself is
+	// never echoed.
 	TokenSet bool `json:"token_set"`
 	// TokenExpiresAt is the per-link token's expiry (RFC3339) when it was minted by
 	// the "Connect with jtype" device flow (D28); omitted for a hand-pasted token /
@@ -32,10 +33,9 @@ type kanbanLinkView struct {
 	TokenExpiresAt string `json:"token_expires_at,omitempty"`
 	// CredentialStatus is the DERIVED runtime credential state (P1 — an owner must
 	// see a dead link in the console, not in orchestrator logs):
-	//   "per_link"         — the link has its own token (token_set).
-	//   "cluster_fallback" — no per-link token; the cluster JTYPE_TOKEN covers it.
-	//   "missing"          — neither: the poller/writeback skip this link
-	//                        fail-visibly until a token is set.
+	//   "per_link" — the link has its own token (token_set).
+	//   "missing"  — no per-link token: the poller/writeback skip this link
+	//                fail-visibly until a token is set.
 	CredentialStatus string `json:"credential_status"`
 	// BoardStatus is the fail-visible board validation state (D30), independent of
 	// CredentialStatus (a link can be per_link yet invalid — token fine, board
@@ -47,37 +47,23 @@ type kanbanLinkView struct {
 	CreatedAt   string `json:"created_at"`
 }
 
-// credentialStatus derives the three-state credential label for a link given
-// whether the cluster JTYPE_TOKEN fallback is configured. Mirrors
-// jtype.ResolveToken's selection order exactly.
-func credentialStatus(l domain.KanbanLink, clusterTokenSet bool) string {
-	switch {
-	case l.TokenSet():
+// credentialStatus derives the two-state credential label for a link (D36: no
+// cluster fallback any more). Mirrors jtype.ResolveToken's selection exactly.
+func credentialStatus(l domain.KanbanLink) string {
+	if l.TokenSet() {
 		return "per_link"
-	case clusterTokenSet:
-		return "cluster_fallback"
-	default:
-		return "missing"
 	}
+	return "missing"
 }
 
-// linkView renders a link for the API. A Server method (not a free function)
-// because credential_status depends on the EFFECTIVE cluster fallback config
-// (D27: the console-managed DB row or the JTYPE_* env, resolved per request —
-// never the raw env alone). A resolver error (e.g. a DB token with no cipher)
-// resolves clusterTokenSet=false, so a link relying on that now-unusable fallback
-// honestly lists as "missing".
-func (s *Server) linkView(ctx context.Context, l domain.KanbanLink) kanbanLinkView {
-	clusterTokenSet := false
-	if eff, err := s.kanban.Effective(ctx); err == nil {
-		clusterTokenSet = eff.ClusterTokenSet
-	}
+// linkView renders a link for the API.
+func (s *Server) linkView(l domain.KanbanLink) kanbanLinkView {
 	v := kanbanLinkView{
 		ID: l.ID, WorkspaceID: l.WorkspaceID, BoardRef: l.BoardRef,
 		ProjectID: l.ProjectID, ServiceID: l.ServiceID,
 		TriggerColumn: l.TriggerColumn, DoneColumn: l.DoneColumn,
 		Enabled: l.Enabled, TokenSet: l.TokenSet(),
-		CredentialStatus: credentialStatus(l, clusterTokenSet),
+		CredentialStatus: credentialStatus(l),
 		BoardStatus:      boardStatusOrDefault(l.BoardStatus),
 		BoardTitle:       l.BoardTitle,
 		CreatedAt:        l.CreatedAt.UTC().Format(time.RFC3339),
@@ -90,8 +76,9 @@ func (s *Server) linkView(ctx context.Context, l domain.KanbanLink) kanbanLinkVi
 
 // createKanbanLinkReq is the POST /api/v1/projects/{id}/kanban/links body.
 // project_id comes from the path (not the body). token is the optional per-link
-// jtype PAT — write-only (plaintext in, never out); omit it to fall back to the
-// cluster JTYPE_TOKEN env.
+// jtype PAT — write-only (plaintext in, never out); omit it to create the link
+// without a credential (soft/unvalidated, D30 — set one later via PATCH or
+// "Connect with jtype").
 type createKanbanLinkReq struct {
 	WorkspaceID   string `json:"workspace_id"`
 	BoardRef      string `json:"board_ref"`
@@ -117,7 +104,7 @@ func (s *Server) handleListKanbanLinks(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]kanbanLinkView, 0, len(links))
 	for _, l := range links {
-		out = append(out, s.linkView(r.Context(), l))
+		out = append(out, s.linkView(l))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"links": out})
 }
@@ -137,7 +124,7 @@ func (s *Server) handleListProjectKanbanLinks(w http.ResponseWriter, r *http.Req
 	}
 	out := make([]kanbanLinkView, 0, len(links))
 	for _, l := range links {
-		out = append(out, s.linkView(r.Context(), l))
+		out = append(out, s.linkView(l))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"links": out})
 }
@@ -145,10 +132,10 @@ func (s *Server) handleListProjectKanbanLinks(w http.ResponseWriter, r *http.Req
 // handleCreateProjectKanbanLink creates a kanban link on a project (owner only,
 // F6 / D25). It validates that the service belongs to this project, seals the
 // optional per-link jtype PAT (AES-256-GCM; a token without AUTH_TOKEN_KEY is a
-// typed 409, never stored in the clear), and — when the jtype integration is on —
-// fetches the board with the link's token (or the cluster fallback) to confirm
-// the trigger/done columns exist (fail-visible: a typo'd column would otherwise
-// silently never trigger).
+// typed 409, never stored in the clear), and — when the jtype integration is on
+// and a per-link token was supplied — fetches the board with that token to
+// confirm the trigger/done columns exist (fail-visible: a typo'd column would
+// otherwise silently never trigger).
 func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleOwner) {
@@ -201,17 +188,19 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Board validation + canonicalization (D30). The predicate (using the EFFECTIVE
-	// jtype config — D27: DB row or JTYPE_* env, resolved per request so a base URL
-	// just set in the console validates without a restart):
+	// Board validation + canonicalization (D30, token rule simplified by D36).
+	// The predicate (using the EFFECTIVE jtype config — D27: DB row or
+	// JTYPE_BASE_URL env, resolved per request so a base URL just set in the
+	// console validates without a restart):
 	//
-	//   ok && validationToken != "" -> HARD validate: resolve the board by NAME at
-	//     any path, canonicalize board_ref to its config id (a "b_…" — the value the
-	//     poller matches on), and validate the trigger/done columns. A bad ref/column
-	//     is a typed 400 (board_not_found / board_ambiguous / jtype_unauthorized /
-	//     bad_request), a genuine 5xx/transport error stays 503. board_status = "ok".
+	//   integration on && per-link token supplied -> HARD validate: resolve the
+	//     board by NAME at any path, canonicalize board_ref to its config id (a
+	//     "b_…" — the value the poller matches on), and validate the trigger/done
+	//     columns. A bad ref/column is a typed 400 (board_not_found /
+	//     board_ambiguous / jtype_unauthorized / bad_request), a genuine
+	//     5xx/transport error stays 503. board_status = "ok".
 	//
-	//   otherwise (integration off, or on but NO per-link and NO cluster token) ->
+	//   otherwise (integration off, or no per-link token supplied) ->
 	//     SOFT create: store the raw ref, board_status = "unvalidated". This is the
 	//     bootstrap path (RC4 deadlock): the link must exist before the "Connect with
 	//     jtype" device flow (D28) can attach a per-link token, after which the poller
@@ -220,40 +209,35 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 	boardRef := req.BoardRef
 	boardTitle := ""
 	boardStatus := domain.KanbanBoardUnvalidated
-	if f, clusterToken, ok := s.kanban.Factory(r.Context()); ok {
-		validationToken := token
-		if validationToken == "" {
-			validationToken = clusterToken
+	if f, ok := s.kanban.Factory(r.Context()); ok && token != "" {
+		board, err := s.boardValidatorFor(f, token).GetBoard(r.Context(), req.WorkspaceID, req.BoardRef)
+		if err != nil {
+			s.writeBoardValidationError(w, req.WorkspaceID, req.BoardRef, err)
+			return
 		}
-		if validationToken != "" {
-			board, err := s.boardValidatorFor(f, validationToken).GetBoard(r.Context(), req.WorkspaceID, req.BoardRef)
-			if err != nil {
-				s.writeBoardValidationError(w, req.WorkspaceID, req.BoardRef, err)
-				return
-			}
-			if !boardHasColumn(board, req.TriggerColumn) {
-				writeError(w, http.StatusBadRequest, "bad_request",
-					"trigger_column '"+req.TriggerColumn+"' is not a column on board "+req.BoardRef)
-				return
-			}
-			if req.DoneColumn != "" && !boardHasColumn(board, req.DoneColumn) {
-				writeError(w, http.StatusBadRequest, "bad_request",
-					"done_column '"+req.DoneColumn+"' is not a column on board "+req.BoardRef)
-				return
-			}
-			// Canonicalize: persist the board's config id (what cards' frontmatter
-			// carries), not the user-typed name, so the poller matches (RC2). A board
-			// with no id (defensive) keeps the submitted ref.
-			if board.ID != "" {
-				boardRef = board.ID
-			}
-			boardTitle = board.Title
-			boardStatus = domain.KanbanBoardOK
+		if !boardHasColumn(board, req.TriggerColumn) {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"trigger_column '"+req.TriggerColumn+"' is not a column on board "+req.BoardRef)
+			return
 		}
+		if req.DoneColumn != "" && !boardHasColumn(board, req.DoneColumn) {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"done_column '"+req.DoneColumn+"' is not a column on board "+req.BoardRef)
+			return
+		}
+		// Canonicalize: persist the board's config id (what cards' frontmatter
+		// carries), not the user-typed name, so the poller matches (RC2). A board
+		// with no id (defensive) keeps the submitted ref.
+		if board.ID != "" {
+			boardRef = board.ID
+		}
+		boardTitle = board.Title
+		boardStatus = domain.KanbanBoardOK
 	}
 
-	// Seal the per-link token. Empty => nil (cluster fallback). The cipher was
-	// verified above (P3), so encryption here only fails on entropy errors.
+	// Seal the per-link token. Empty => nil (no credential until one is set, D36).
+	// The cipher was verified above (P3), so encryption here only fails on
+	// entropy errors.
 	var tokenEnc []byte
 	if token != "" {
 		enc, err := s.cipher.EncryptString(token)
@@ -283,14 +267,14 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "internal", "could not create kanban link")
 		return
 	}
-	writeJSON(w, http.StatusCreated, s.linkView(r.Context(), *link))
+	writeJSON(w, http.StatusCreated, s.linkView(*link))
 }
 
 // updateKanbanLinkReq is the PATCH /api/v1/projects/{id}/kanban/links/{linkID}
 // body (P2 — token rotation). Token is a pointer so "field absent" is a typed
 // 400 rather than an accidental clear: "" (explicit empty) CLEARS the per-link
-// token (back to the cluster fallback), any other value ROTATES it. Write-only,
-// as on create.
+// token (the link then shows credential_status "missing", D36), any other value
+// ROTATES it. Write-only, as on create.
 type updateKanbanLinkReq struct {
 	Token *string `json:"token"`
 }
@@ -323,7 +307,7 @@ func (s *Server) handleUpdateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 	}
 	if req.Token == nil {
 		writeError(w, http.StatusBadRequest, "bad_request",
-			`the "token" field is required: "" clears the per-link token (cluster fallback), any other value rotates it`)
+			`the "token" field is required: "" clears the per-link token (the link then has no credential), any other value rotates it`)
 		return
 	}
 	token := strings.TrimSpace(*req.Token)
@@ -359,7 +343,7 @@ func (s *Server) handleUpdateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 	}
 	link.TokenEnc = tokenEnc
 	link.TokenExpiresAt = nil // manual rotate/clear leaves the expiry unknown (D28)
-	writeJSON(w, http.StatusOK, s.linkView(r.Context(), *link))
+	writeJSON(w, http.StatusOK, s.linkView(*link))
 }
 
 // handleDeleteProjectKanbanLink deletes a project's kanban link (owner only,

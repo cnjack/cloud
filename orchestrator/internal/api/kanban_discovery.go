@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -14,9 +15,13 @@ import (
 // hand-typed workspace UUID + board ref + column keys (RC5).
 //
 // Both are OWNER-ONLY (mirror handleListProjectKanbanLinks) and resolve the
-// EFFECTIVE cluster jtype factory + token the create path uses (D27). The token
-// authorises the jtype reads but is NEVER serialized into a response (P0 privacy):
-// the shapes below carry only ids/names/columns.
+// EFFECTIVE cluster jtype factory (D27). The credential is a PER-LINK token
+// borrowed from one of the project's existing links (D36 — there is no cluster
+// fallback token any more): the token authorises the jtype reads but is NEVER
+// serialized into a response (P0 privacy): the shapes below carry only
+// ids/names/columns. A project with NO token-bearing link yet gets a typed 409
+// and the console falls back to manual entry (fail-visible, never a silent
+// empty list).
 
 // jtypeWorkspaceView is one workspace option for the picker. No token field.
 type jtypeWorkspaceView struct {
@@ -40,31 +45,68 @@ type jtypeBoardColumnView struct {
 	Name string `json:"name"`
 }
 
-// discoveryClient resolves the effective jtype factory + token and builds the
-// owner-authorized discovery client, or writes a typed fail-visible error and
-// returns ok=false. Shared by both discovery handlers so the "integration off"
-// and authz gates stay identical.
+// discoveryClient resolves the effective jtype factory + a per-link token from
+// one of the project's existing links and builds the owner-authorized discovery
+// client, or writes a typed fail-visible error and returns ok=false. Shared by
+// both discovery handlers so the "integration off" and authz gates stay
+// identical.
 func (s *Server) discoveryClient(w http.ResponseWriter, r *http.Request) (jtypeDiscovery, bool) {
 	projectID := r.PathValue("id")
 	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleOwner) {
 		return nil, false
 	}
-	f, clusterToken, ok := s.kanban.Factory(r.Context())
+	f, ok := s.kanban.Factory(r.Context())
 	if !ok {
 		// Integration off / config errored — fail-visible, not an empty 200.
 		writeError(w, http.StatusConflict, "kanban_not_configured",
-			"the jtype integration is not configured — set it on the Cluster page (ask a cluster admin)")
+			"the jtype integration is not configured — set the base URL on the Cluster page (ask a cluster admin)")
 		return nil, false
 	}
-	// The discovery reads use the effective cluster fallback token. A fresh cluster
-	// with no fallback token can't enumerate — surface it (the console then falls
-	// back to manual entry). Never a silent empty list.
-	if clusterToken == "" {
-		writeError(w, http.StatusServiceUnavailable, "jtype_unreachable",
-			"no jtype token is configured to list workspaces/boards — connect one or enter the ids manually")
-		return nil, false
+	// D36: there is no cluster token to enumerate with. Borrow the per-link
+	// token of one of the project's existing links (any of them authorises the
+	// same jtype instance; the pickers only list what THAT token can see). A
+	// project with no token-bearing link yet can't enumerate — surface a typed
+	// 409 so the console falls back to manual entry (never a silent empty list).
+	token, tokErr := s.projectDiscoveryToken(r.Context(), projectID)
+	switch {
+	case tokErr == nil:
+		return s.jtypeDiscoveryFor(f, token), true
+	case errors.Is(tokErr, jtype.ErrNoToken):
+		writeError(w, http.StatusConflict, "kanban_token_required",
+			"discovery needs a jtype token: add a link with a token (paste or Connect) first, or enter the ids manually")
+	default:
+		// A store error or a decrypt/cipher failure on an existing link token —
+		// a real server-side problem, not "no token yet": 500, logged.
+		s.log.Error("kanban discovery: resolve project token", "project", projectID, "err", tokErr)
+		writeError(w, http.StatusInternalServerError, "internal", "could not resolve a jtype credential for discovery")
 	}
-	return s.jtypeDiscoveryFor(f, clusterToken), true
+	return nil, false
+}
+
+// projectDiscoveryToken returns the decrypted per-link token of the project's
+// first link that carries one (enabled links first — a disabled link's token is
+// still a valid credential, but prefer the live ones). jtype.ResolveToken
+// errors (no token anywhere / no cipher / decrypt failure) bubble up so the
+// caller maps them to a typed, visible response.
+func (s *Server) projectDiscoveryToken(ctx context.Context, projectID string) (string, error) {
+	links, err := s.st.ListKanbanLinksByProject(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	// Enabled links first, then disabled ones.
+	for _, pass := range [2]bool{true, false} {
+		for i := range links {
+			if links[i].Enabled != pass || len(links[i].TokenEnc) == 0 {
+				continue
+			}
+			token, _, rerr := jtype.ResolveToken(links[i].TokenEnc, s.JtypeDecrypt())
+			if rerr != nil {
+				return "", rerr
+			}
+			return token, nil
+		}
+	}
+	return "", jtype.ErrNoToken
 }
 
 // handleListJtypeWorkspaces returns the caller's jtype workspaces for the picker

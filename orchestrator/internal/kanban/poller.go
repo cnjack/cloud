@@ -8,9 +8,9 @@
 // handled sequence; kanban_claims provide replay-safe dispatch idempotency. A
 // one-time level scan bootstraps links whose cursor predates the event feed.
 //
-// Each link authorises with its OWN jtype PAT (F6 / D25): the per-link encrypted
-// token when set, else the cluster JTYPE_TOKEN env fallback; a link with neither
-// is skipped fail-visibly (never a call with an empty credential).
+// Each link authorises with its OWN jtype PAT (F6 / D25; D36 removed the
+// cluster fallback token): a link without a per-link token is skipped
+// fail-visibly (never a call with an empty credential).
 package kanban
 
 import (
@@ -53,11 +53,11 @@ type ModelResolver interface {
 // resume without a lossy full-list watermark.
 type Poller struct {
 	st store.Store
-	// resolver resolves the EFFECTIVE cluster jtype config (base URL + cluster
-	// fallback token) once per tick (D27): the console-managed DB row or the
-	// JTYPE_* env. An unconfigured cluster is a clean visible no-op, and a config
-	// set in the console takes effect on the next tick — no restart, no silent
-	// no-op (fail-visible red line).
+	// resolver resolves the EFFECTIVE cluster jtype config (the base URL, D36)
+	// once per tick (D27): the console-managed DB row or the JTYPE_BASE_URL env.
+	// An unconfigured cluster is a clean visible no-op, and a config set in the
+	// console takes effect on the next tick — no restart, no silent no-op
+	// (fail-visible red line).
 	resolver *kanbancfg.Resolver
 	// clientFor builds a DocumentAPI bound to a resolved PAT off the tick's jtype
 	// Factory (F6 / D25). Production wraps *jtype.Factory.Client; tests inject a
@@ -70,8 +70,8 @@ type Poller struct {
 	interval   time.Duration
 	now        func() time.Time
 
-	// noted throttles the one-time notices (integration-off, per-link cluster-
-	// fallback deprecation, missing-credential) so the scan does not log every tick.
+	// noted throttles the one-time notices (integration-off, per-link missing-
+	// credential) so the scan does not log every tick.
 	noted sync.Map // key -> struct{}
 }
 
@@ -116,13 +116,13 @@ func (p *Poller) Run(ctx context.Context) {
 // configured the whole tick is a clean visible no-op (logged once), so a config
 // set in the console activates on the next tick without a restart.
 func (p *Poller) Tick(ctx context.Context) {
-	f, clusterToken, ok := p.resolver.Factory(ctx)
+	f, ok := p.resolver.Factory(ctx)
 	if !ok {
-		// Unconfigured (or a broken config, e.g. a DB fallback token with no cipher).
-		// Log once so the idle state is visible without spamming every tick; reset
-		// on the next configured tick below so a later disable logs again.
+		// Unconfigured (or a broken config). Log once so the idle state is visible
+		// without spamming every tick; reset on the next configured tick below so a
+		// later disable logs again.
 		if _, seen := p.noted.LoadOrStore("off", struct{}{}); !seen {
-			p.log.Info("kanban poll: jtype integration not configured; poller idle (set it on the Cluster page)")
+			p.log.Info("kanban poll: jtype integration not configured; poller idle (set the base URL on the Cluster page)")
 		}
 		return
 	}
@@ -134,32 +134,26 @@ func (p *Poller) Tick(ctx context.Context) {
 		return
 	}
 	for i := range links {
-		p.pollLink(ctx, f, clusterToken, &links[i])
+		p.pollLink(ctx, f, &links[i])
 	}
 }
 
 // pollLink pulls one link's durable board-event sequence. Errors reaching jtype
 // or handling an event leave the failed sequence uncommitted and retry it next
-// tick. f + clusterToken are the tick's resolved jtype Factory + effective
-// cluster fallback token (source-coupled; D27).
-func (p *Poller) pollLink(ctx context.Context, f *jtype.Factory, clusterToken string, link *domain.KanbanLink) {
-	// Resolve this link's PAT (D25 three-state): per-link encrypted token, else the
-	// cluster fallback, else fail-visibly skip (never a jtype call with an empty
-	// credential). The cursor is untouched on skip so the link resumes exactly
-	// where it stopped when a token is configured. Notices are throttled per link.
-	token, source, err := jtype.ResolveToken(link.TokenEnc, p.decrypt, clusterToken)
+// tick. f is the tick's resolved jtype Factory (D27/D36).
+func (p *Poller) pollLink(ctx context.Context, f *jtype.Factory, link *domain.KanbanLink) {
+	// Resolve this link's PAT (D25/D36): the per-link encrypted token, or
+	// fail-visibly skip (never a jtype call with an empty credential — the
+	// cluster fallback token was removed in D36). The cursor is untouched on
+	// skip so the link resumes exactly where it stopped when a token is
+	// configured. Notices are throttled per link.
+	token, _, err := jtype.ResolveToken(link.TokenEnc, p.decrypt)
 	if err != nil {
 		if _, seen := p.noted.LoadOrStore("err:"+link.ID, struct{}{}); !seen {
 			p.log.Error("kanban poll: no jtype credential for link; skipping",
 				"link", link.ID, "workspace", link.WorkspaceID, "err", err)
 		}
 		return
-	}
-	if source == jtype.TokenClusterFallback {
-		if _, seen := p.noted.LoadOrStore("dep:"+link.ID, struct{}{}); !seen {
-			p.log.Warn("kanban poll: link uses the deprecated cluster JTYPE_TOKEN fallback; set a per-link token",
-				"link", link.ID)
-		}
 	}
 	api := p.clientFor(f, token)
 

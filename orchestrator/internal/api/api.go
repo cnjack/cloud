@@ -87,11 +87,11 @@ type Server struct {
 	// tests exercise a real probe without the loopback block tripping.
 	allowPrivateModelHosts bool
 
-	// kanban resolves the EFFECTIVE cluster jtype kanban config (base URL +
-	// optional cluster fallback token) at REQUEST time from the console-managed DB
-	// row, falling back to the JTYPE_* env (D27). Shared with the reconciler +
-	// poller via Kanban() so a console PUT/DELETE's Invalidate() takes effect
-	// WITHOUT a restart and all three build clients from one HTTP pool. Never nil.
+	// kanban resolves the EFFECTIVE cluster jtype kanban config (the base URL
+	// only, D36) at REQUEST time from the console-managed DB row, falling back to
+	// the JTYPE_BASE_URL env (D27). Shared with the reconciler + poller via
+	// Kanban() so a console PUT/DELETE's Invalidate() takes effect WITHOUT a
+	// restart and all three build clients from one HTTP pool. Never nil.
 	kanban *kanbancfg.Resolver
 	// boardValidatorFor builds a board validator (column fetch) from a resolved
 	// jtype Factory + token, used to validate a kanban_link's trigger/done columns
@@ -212,10 +212,11 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 		},
 	}
 	// D27 — effective cluster jtype kanban config resolver (DB row set from the
-	// console > JTYPE_* env). One cached instance shared with the poller +
-	// reconciler via Kanban(); a console write Invalidate()s it so a stored base
-	// URL takes effect without a restart (fail-visible: never a silent no-op).
-	s.kanban = kanbancfg.NewResolver(st, s.cipher, cfg)
+	// console > JTYPE_BASE_URL env; base URL only, D36). One cached instance
+	// shared with the poller + reconciler via Kanban(); a console write
+	// Invalidate()s it so a stored base URL takes effect without a restart
+	// (fail-visible: never a silent no-op).
+	s.kanban = kanbancfg.NewResolver(st, cfg)
 	// Default board validator: build a token-bound jtype client off the resolved
 	// factory. Overridden by tests with a fake that ignores the factory.
 	s.boardValidatorFor = func(f *jtype.Factory, token string) boardValidator { return f.Client(token) }
@@ -249,8 +250,8 @@ func (s *Server) WithArchiveCleaner(cleaner ArchiveCleaner) *Server {
 func (s *Server) Cipher() *auth.Cipher { return s.cipher }
 
 // Kanban exposes the shared cluster-kanban-config resolver so the poller +
-// reconciler resolve the effective jtype config (base URL + fallback token)
-// through the SAME cache the API invalidates on a console PUT/DELETE (D27).
+// reconciler resolve the effective jtype config (base URL only, D36) through
+// the SAME cache the API invalidates on a console PUT/DELETE (D27).
 func (s *Server) Kanban() *kanbancfg.Resolver { return s.kanban }
 
 // JtypeDecrypt returns the per-link token decrypt function (the cipher's
@@ -368,21 +369,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/system/model-providers/{id}/catalog", s.authed(s.handleModelProviderCatalog))
 	mux.Handle("POST /api/v1/system/model-providers/{id}/models", s.authed(s.handleCreateProviderModel))
 
-	// D27 — cluster jtype kanban config (base URL + optional cluster fallback
-	// token) a cluster admin sets from the console. Precedence DB > env (see
-	// internal/kanbancfg). Cluster-admin only (enforced in the handlers); the
-	// fallback token is write-only (never echoed). A PUT/DELETE Invalidate()s the
-	// shared resolver so the change takes effect WITHOUT a restart.
+	// D27 — cluster jtype kanban config (the base URL ONLY, D36: no cluster-level
+	// token any more) a cluster admin sets from the console. Precedence DB > env
+	// (see internal/kanbancfg). Cluster-admin only (enforced in the handlers). A
+	// PUT/DELETE Invalidate()s the shared resolver so the change takes effect
+	// WITHOUT a restart.
 	mux.Handle("GET /api/v1/system/kanban", s.authed(s.handleGetKanbanConfig))
 	mux.Handle("PUT /api/v1/system/kanban", s.authed(s.handlePutKanbanConfig))
 	mux.Handle("DELETE /api/v1/system/kanban", s.authed(s.handleDeleteKanbanConfig))
-
-	// D28 — "Connect with jtype" device flow for the CLUSTER fallback token. POST
-	// starts a flow (device_code held server-side; user_code returned); GET polls
-	// it, sealing the minted token into cluster_kanban_config on complete.
-	// Cluster-admin only (enforced in the handlers).
-	mux.Handle("POST /api/v1/system/kanban/connect", s.authed(s.handleStartKanbanConnect))
-	mux.Handle("GET /api/v1/system/kanban/connect/{connectID}", s.authed(s.handlePollKanbanConnect))
 
 	// Feature E/F6 — jtype kanban links. Management (create/delete) is downshifted
 	// to the project OWNER via the project-scoped routes below (D25). The system

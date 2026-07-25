@@ -905,7 +905,7 @@ export function ProjectSettingsModal({
 
 /**
  * KanbanPanel — the project owner's jtype kanban links (F6 / D25). Lists the
- * project's board→service bindings with a token badge (own vs cluster fallback),
+ * project's board→service bindings with a token badge (own token vs missing, D36),
  * and an add form. The per-link jtype token is WRITE-ONLY: it is sent on create
  * and never returned (the badge is the only echo). Service is chosen from the
  * project's own services; workspace/board/columns live in jtype and are typed.
@@ -1274,7 +1274,6 @@ function KanbanLinkRow({
 
   const badge = {
     per_link: t('projectSettings.credOwnToken'),
-    cluster_fallback: t('projectSettings.credClusterToken'),
     missing: t('projectSettings.credMissing'),
   }[link.credential_status];
 
@@ -1284,7 +1283,7 @@ function KanbanLinkRow({
   // prefer the captured title; keep the raw workspace/ref pair as a tooltip.
   const boardLabel = link.board_title || `${link.workspace_id} / ${link.board_ref}`;
 
-  // Expiry badge for a device-flow token (unknown for manual/fallback ⇒ no badge).
+  // Expiry badge for a device-flow token (unknown for a manual PAT ⇒ no badge).
   const linkExpiry = expiryLabel(link.token_expires_at, t('projectSettings.expiredReconnect'));
 
   const saveToken = (e: React.FormEvent) => {

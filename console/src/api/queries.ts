@@ -71,9 +71,8 @@ export const qk = {
   jtypeWorkspaces: (projectId: string) => ['jtype-workspaces', projectId] as const,
   jtypeBoards: (projectId: string, workspaceId: string) =>
     ['jtype-boards', projectId, workspaceId] as const,
-  // D28: an in-flight "Connect with jtype" device flow, keyed by its opaque
-  // connect_id (cluster) or by (project, link, connect) for a per-link flow.
-  kanbanConnect: (connectId: string) => ['kanban-connect', connectId] as const,
+  // D28: an in-flight per-link "Connect with jtype" device flow, keyed by
+  // (project, link, connect_id). (The cluster-surface flow was removed in D36.)
   linkConnect: (projectId: string, linkId: string, connectId: string) =>
     ['link-connect', projectId, linkId, connectId] as const,
   serviceSchedules: (serviceId: string) => ['service-schedules', serviceId] as const,
@@ -822,7 +821,7 @@ export function useJtypeBoards(projectId: string, workspaceId: string, enabled: 
   });
 }
 
-/* ---- cluster kanban config (D27) ----------------------------------------- */
+/* ---- cluster kanban config (D27, slimmed by D36) --------------------------- */
 
 /**
  * The cluster jtype config (cluster-admin). Powers the Cluster page KanbanCard's
@@ -839,10 +838,10 @@ export function useKanbanConfig(enabled = true) {
 }
 
 /**
- * Set the cluster jtype config (base_url + optional token). Runtime-effective —
- * the resolver-backed poller/writeback pick it up without a restart (D27) — so we
- * invalidate the /system snapshot AND the link overview alongside the config:
- * flipping the integration on/off changes every link's effective credential state.
+ * Set the cluster jtype base URL (the only field, D36). Runtime-effective —
+ * the resolver-backed poller/writeback pick it up without a restart (D27) — so
+ * we invalidate the /system snapshot AND the link overview alongside the config:
+ * flipping the integration on/off changes every link's effective state.
  */
 export function useUpdateKanbanConfig() {
   const api = useApi();
@@ -853,8 +852,6 @@ export function useUpdateKanbanConfig() {
       qc.invalidateQueries({ queryKey: qk.system });
       qc.invalidateQueries({ queryKey: qk.kanbanConfig });
       qc.invalidateQueries({ queryKey: qk.kanbanLinks });
-      // Every project's link list is now stale too: per-link credential_status
-      // depends on the effective cluster token (prefix match — all project ids).
       qc.invalidateQueries({ queryKey: ['project-kanban-links'] });
     },
   });
@@ -870,24 +867,21 @@ export function useDeleteKanbanConfig() {
       qc.invalidateQueries({ queryKey: qk.system });
       qc.invalidateQueries({ queryKey: qk.kanbanConfig });
       qc.invalidateQueries({ queryKey: qk.kanbanLinks });
-      // See useUpdateKanbanConfig: credential_status is cluster-config-derived.
       qc.invalidateQueries({ queryKey: ['project-kanban-links'] });
     },
   });
 }
 
-/* ---- kanban "Connect with jtype" device flow (D28) ----------------------- */
+/* ---- kanban "Connect with jtype" device flow (D28; per-link only, D36) ----- */
 
 /**
- * The two credential views a completed device flow makes stale: the cluster
- * config (token_set + token_expires_at flip) and every kanban-link list (a
- * per-link connect flips credential_status → per_link). Both connect hooks
- * invalidate this set once, on the pending→complete edge.
+ * The credential views a completed per-link device flow makes stale: every
+ * kanban-link list (credential_status flips → per_link). Invalidated once, on
+ * the pending→complete edge.
  */
 function invalidateKanbanCredentials(qc: ReturnType<typeof useQueryClient>): void {
-  qc.invalidateQueries({ queryKey: qk.kanbanConfig });
   qc.invalidateQueries({ queryKey: qk.kanbanLinks });
-  // Prefix match — every project's link list (reuses D27's set).
+  // Prefix match — every project's link list.
   qc.invalidateQueries({ queryKey: ['project-kanban-links'] });
 }
 
@@ -900,29 +894,11 @@ function connectRefetchInterval(status: 'error' | 'pending' | 'success', data: u
 }
 
 /**
- * Poll a CLUSTER "Connect with jtype" flow while it is pending (every 2.5s),
+ * Poll a per-link "Connect with jtype" flow while it is pending (every 2.5s),
  * stopping on any terminal state (complete/expired/denied/unsupported) or a 404
- * connect_expired. On the complete edge, refresh the credential views so the
- * token_set badge + expiry flip without a manual reload.
+ * connect_expired. On the complete edge, refresh the link lists so the
+ * credential badge flips without a manual reload.
  */
-export function useKanbanConnectStatus(connectId: string | undefined, enabled: boolean) {
-  const api = useApi();
-  const qc = useQueryClient();
-  const query = useQuery({
-    queryKey: qk.kanbanConnect(connectId ?? ''),
-    queryFn: () => api.pollKanbanConnect(connectId!),
-    enabled: enabled && !!connectId,
-    retry: false,
-    refetchInterval: (q) => connectRefetchInterval(q.state.status, q.state.data),
-  });
-  const complete = query.data?.status === 'complete';
-  useEffect(() => {
-    if (complete) invalidateKanbanCredentials(qc);
-  }, [complete, qc]);
-  return query;
-}
-
-/** Per-link equivalent of {@link useKanbanConnectStatus}. */
 export function useLinkConnectStatus(
   projectId: string,
   linkId: string,
@@ -945,26 +921,7 @@ export function useLinkConnectStatus(
   return query;
 }
 
-/**
- * Start a cluster device flow. On success we seed the poll cache with a pending
- * status keyed by the new connect_id, so the flow panel shows the user_code +
- * live status the instant the caller flips on {@link useKanbanConnectStatus}.
- */
-export function useStartKanbanConnect() {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.startKanbanConnect(),
-    onSuccess: (start) => {
-      qc.setQueryData<KanbanConnectStatus>(qk.kanbanConnect(start.connect_id), {
-        status: 'pending',
-        token_set: false,
-      });
-    },
-  });
-}
-
-/** Start a per-link device flow (seeds the per-link poll cache; see above). */
+/** Start a per-link device flow (seeds the per-link poll cache). */
 export function useStartLinkConnect(projectId: string) {
   const api = useApi();
   const qc = useQueryClient();

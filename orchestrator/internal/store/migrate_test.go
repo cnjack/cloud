@@ -384,10 +384,11 @@ func TestPGKanbanLinkTokenMigration(t *testing.T) {
 	}
 }
 
-// TestPGKanbanConfigMigration is the D27 migration check: 0022 creates the
-// single-row cluster_kanban_config table (id pinned to 1, nullable token_enc) and
-// re-applying the full set is a clean no-op. Runs against real Postgres; needs
-// JCLOUD_PG_DSN and is skipped otherwise.
+// TestPGKanbanConfigMigration is the D27/D36 migration check: 0022 creates the
+// single-row cluster_kanban_config table (id pinned to 1), 0042 drops the
+// cluster token columns (D36 — the row is base-URL-only), and re-applying the
+// full set is a clean no-op. Runs against real Postgres; needs JCLOUD_PG_DSN
+// and is skipped otherwise.
 func TestPGKanbanConfigMigration(t *testing.T) {
 	dsn := os.Getenv("JCLOUD_PG_DSN")
 	if dsn == "" {
@@ -402,21 +403,35 @@ func TestPGKanbanConfigMigration(t *testing.T) {
 	if err := Migrate(ctx, st.Pool()); err != nil {
 		t.Fatalf("first migrate: %v", err)
 	}
-	// Re-apply: a clean no-op (schema_migrations gate + CREATE TABLE IF NOT EXISTS).
+	// Re-apply: a clean no-op (schema_migrations gate + CREATE TABLE IF NOT EXISTS
+	// + DROP COLUMN IF EXISTS).
 	if err := Migrate(ctx, st.Pool()); err != nil {
 		t.Fatalf("second migrate should be a no-op, got: %v", err)
 	}
 
-	// token_enc is bytea + nullable; id is a smallint pinned to 1 by a CHECK.
+	// D36: the cluster token columns are GONE (0042).
+	for _, col := range []string{"token_enc", "token_expires_at"} {
+		var n int
+		if err := st.Pool().QueryRow(ctx,
+			`SELECT count(*) FROM information_schema.columns
+			 WHERE table_name='cluster_kanban_config' AND column_name=$1`, col).
+			Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("cluster_kanban_config.%s should be dropped by 0042 (D36)", col)
+		}
+	}
+	// base_url survives, NOT NULL.
 	var dataType, nullable string
 	if err := st.Pool().QueryRow(ctx,
 		`SELECT data_type, is_nullable FROM information_schema.columns
-		 WHERE table_name='cluster_kanban_config' AND column_name='token_enc'`).
+		 WHERE table_name='cluster_kanban_config' AND column_name='base_url'`).
 		Scan(&dataType, &nullable); err != nil {
 		t.Fatal(err)
 	}
-	if dataType != "bytea" || nullable != "YES" {
-		t.Fatalf("token_enc type=%q nullable=%q want bytea/YES", dataType, nullable)
+	if dataType != "text" || nullable != "NO" {
+		t.Fatalf("base_url type=%q nullable=%q want text/NO", dataType, nullable)
 	}
 	// The id CHECK (id = 1) rejects any other id.
 	if _, err := st.Pool().Exec(ctx,
@@ -426,9 +441,10 @@ func TestPGKanbanConfigMigration(t *testing.T) {
 	}
 }
 
-// TestPGKanbanTokenExpiryMigration is the D28 migration check: 0023 adds a
-// nullable token_expires_at TIMESTAMPTZ to BOTH cluster_kanban_config and
-// kanban_links, and re-applying the full set is a clean no-op. Runs against real
+// TestPGKanbanTokenExpiryMigration is the D28/D36 migration check: 0023 adds a
+// nullable token_expires_at TIMESTAMPTZ to kanban_links (the per-link
+// credential, kept) and cluster_kanban_config (the cluster fallback, DROPPED by
+// 0042 in D36). Re-applying the full set is a clean no-op. Runs against real
 // Postgres; needs JCLOUD_PG_DSN and is skipped otherwise.
 func TestPGKanbanTokenExpiryMigration(t *testing.T) {
 	dsn := os.Getenv("JCLOUD_PG_DSN")
@@ -444,23 +460,32 @@ func TestPGKanbanTokenExpiryMigration(t *testing.T) {
 	if err := Migrate(ctx, st.Pool()); err != nil {
 		t.Fatalf("first migrate: %v", err)
 	}
-	// Re-apply: a clean no-op (schema_migrations gate + ADD COLUMN IF NOT EXISTS).
+	// Re-apply: a clean no-op (schema_migrations gate + ADD/DROP COLUMN IF [NOT] EXISTS).
 	if err := Migrate(ctx, st.Pool()); err != nil {
 		t.Fatalf("second migrate should be a no-op, got: %v", err)
 	}
 
-	// Both columns are timestamptz + nullable.
-	for _, table := range []string{"cluster_kanban_config", "kanban_links"} {
-		var dataType, nullable string
-		if err := st.Pool().QueryRow(ctx,
-			`SELECT data_type, is_nullable FROM information_schema.columns
-			 WHERE table_name=$1 AND column_name='token_expires_at'`, table).
-			Scan(&dataType, &nullable); err != nil {
-			t.Fatalf("%s.token_expires_at: %v", table, err)
-		}
-		if dataType != "timestamp with time zone" || nullable != "YES" {
-			t.Fatalf("%s.token_expires_at type=%q nullable=%q want timestamptz/YES", table, dataType, nullable)
-		}
+	// The PER-LINK expiry column stays: timestamptz + nullable.
+	var dataType, nullable string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT data_type, is_nullable FROM information_schema.columns
+		 WHERE table_name='kanban_links' AND column_name='token_expires_at'`).
+		Scan(&dataType, &nullable); err != nil {
+		t.Fatalf("kanban_links.token_expires_at: %v", err)
+	}
+	if dataType != "timestamp with time zone" || nullable != "YES" {
+		t.Fatalf("kanban_links.token_expires_at type=%q nullable=%q want timestamptz/YES", dataType, nullable)
+	}
+	// The CLUSTER expiry column is gone (0042 / D36).
+	var n int
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM information_schema.columns
+		 WHERE table_name='cluster_kanban_config' AND column_name='token_expires_at'`).
+		Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("cluster_kanban_config.token_expires_at should be dropped by 0042 (D36)")
 	}
 }
 

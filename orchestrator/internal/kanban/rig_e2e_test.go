@@ -54,17 +54,20 @@ func TestRigPollerDispatches(t *testing.T) {
 		// Start at sequence 0 so this live rig proves the durable event endpoint,
 		// rather than satisfying the assertion through the compatibility scan.
 		EventSequence: int64Ptr(0), Enabled: true,
+		// D36: the link must carry its own token (no cluster fallback); the
+		// decrypt stub below opens it to the rig PAT.
+		TokenEnc:  []byte("rig-token"),
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	if err := st.CreateKanbanLink(ctx, link); err != nil {
 		t.Fatal(err)
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	// The rig link has no per-link token; the poller resolves the rig PAT via the
-	// effective cluster fallback (env source) and returns the pre-built client
-	// (ignoring the resolved factory).
+	// The poller resolves the link's per-link token via the decrypt stub (the rig
+	// PAT) and returns the pre-built client (ignoring the resolved factory).
 	clientFor := func(*jtype.Factory, string) DocumentAPI { return client }
-	poller := New(st, envResolver(st, base, tok), clientFor, nil, stubFor(true), log, "http://console", time.Second)
+	decrypt := func([]byte) (string, error) { return tok, nil }
+	poller := New(st, envResolver(st, base), clientFor, decrypt, stubFor(true), log, "http://console", time.Second)
 	poller.Tick(ctx)
 
 	// Assert by THIS card's claim (robust to leftover test cards on the shared

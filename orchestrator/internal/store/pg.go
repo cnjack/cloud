@@ -1965,16 +1965,16 @@ func (s *PGStore) RevokeModelFromAccount(ctx context.Context, modelID, userID st
 	return nil
 }
 
-// --- Cluster kanban config (D27) --------------------------------------------
+// --- Cluster kanban config (D27, slimmed by D36) ------------------------------
 
 // GetClusterKanbanConfig returns the single-row config (id pinned to 1), or
-// ErrNotFound when absent. token_enc stays encrypted — decrypted only in the
-// resolver.
+// ErrNotFound when absent. The row carries only the base URL — no secret
+// material (D36).
 func (s *PGStore) GetClusterKanbanConfig(ctx context.Context) (*domain.KanbanConfig, error) {
 	var c domain.KanbanConfig
 	err := s.pool.QueryRow(ctx,
-		`SELECT base_url, token_enc, token_expires_at, updated_at, updated_by FROM cluster_kanban_config WHERE id=1`).
-		Scan(&c.BaseURL, &c.TokenEnc, &c.TokenExpiresAt, &c.UpdatedAt, &c.UpdatedBy)
+		`SELECT base_url, updated_at, updated_by FROM cluster_kanban_config WHERE id=1`).
+		Scan(&c.BaseURL, &c.UpdatedAt, &c.UpdatedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1985,46 +1985,22 @@ func (s *PGStore) GetClusterKanbanConfig(ctx context.Context) (*domain.KanbanCon
 }
 
 // UpsertClusterKanbanConfig writes the single-row config, stamping updated_at.
-// A nil TokenEnc encodes to SQL NULL (no cluster fallback token); a nil
-// TokenExpiresAt encodes to SQL NULL (unknown / manual-paste expiry, D28).
 func (s *PGStore) UpsertClusterKanbanConfig(ctx context.Context, cfg *domain.KanbanConfig) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO cluster_kanban_config (id, base_url, token_enc, token_expires_at, updated_at, updated_by)
-		 VALUES (1, $1, $2, $3, now(), $4)
+		`INSERT INTO cluster_kanban_config (id, base_url, updated_at, updated_by)
+		 VALUES (1, $1, now(), $2)
 		 ON CONFLICT (id) DO UPDATE
-		   SET base_url=EXCLUDED.base_url, token_enc=EXCLUDED.token_enc,
-		       token_expires_at=EXCLUDED.token_expires_at,
+		   SET base_url=EXCLUDED.base_url,
 		       updated_at=now(), updated_by=EXCLUDED.updated_by`,
-		cfg.BaseURL, cfg.TokenEnc, nullTime(cfg.TokenExpiresAt), cfg.UpdatedBy)
+		cfg.BaseURL, cfg.UpdatedBy)
 	if err != nil {
 		return fmt.Errorf("upsert cluster kanban config: %w", err)
 	}
 	return nil
 }
 
-// SetClusterKanbanToken conditionally seals a device-flow token onto the
-// single-row config (D28): ONLY token_enc/token_expires_at/updated_by change,
-// and ONLY where the row still carries baseURL — never base_url itself, so an
-// admin PUT racing the completing poll wins. rows==0 (missing row OR changed
-// base_url) is ErrNotFound; the caller expires the flow instead of storing a
-// token minted against a stale instance.
-func (s *PGStore) SetClusterKanbanToken(ctx context.Context, baseURL string, tokenEnc []byte, expiresAt *time.Time, updatedBy string) error {
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE cluster_kanban_config
-		    SET token_enc=$2, token_expires_at=$3, updated_at=now(), updated_by=$4
-		  WHERE id=1 AND base_url=$1`,
-		baseURL, tokenEnc, nullTime(expiresAt), updatedBy)
-	if err != nil {
-		return fmt.Errorf("set cluster kanban token: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
 // DeleteClusterKanbanConfig removes the single-row config (idempotent: a missing
-// row is not an error — the resolver simply falls back to the JTYPE_* env).
+// row is not an error — the resolver simply falls back to the JTYPE_BASE_URL env).
 func (s *PGStore) DeleteClusterKanbanConfig(ctx context.Context) error {
 	if _, err := s.pool.Exec(ctx, `DELETE FROM cluster_kanban_config WHERE id=1`); err != nil {
 		return fmt.Errorf("delete cluster kanban config: %w", err)

@@ -16,7 +16,5 @@
 .security svg { color: var(--color-success); }
 .callout strong, .warning strong { display: block; font-weight: var(--fw-semibold); }
 .actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
-.clearToken { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--color-text-dim); font-size: var(--fs-caption); cursor: pointer; }
-.clearToken input { accent-color: var(--color-accent); }
 @media (max-width: 1152px) { .layout { grid-template-columns: 1fr; } }
 @media (max-width: 608px) { .cardHead { grid-template-columns: auto minmax(0, 1fr); align-items: start; } .cardHead > :last-child { grid-column: 2; justify-self: start; } .actions { align-items: stretch; flex-direction: column; } }

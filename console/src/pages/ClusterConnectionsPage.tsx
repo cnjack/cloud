@@ -7,14 +7,11 @@ import { ApiError } from '../api/client';
 import {
   useDeleteKanbanConfig,
   useKanbanConfig,
-  useKanbanConnectStatus,
-  useStartKanbanConnect,
   useSystem,
   useUpdateKanbanConfig,
 } from '../api/queries';
 import { Button } from '../components/Button';
 import { TextField } from '../components/Field';
-import { expiryLabel, KanbanConnectFlow } from '../components/KanbanConnect';
 import { ClusterSubnav, DefinitionList, PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import { useToast } from '../components/Toast';
@@ -82,44 +79,39 @@ function ConnectionCard({ icon, title, subtitle, status, children }: { icon: Rea
   );
 }
 
+/**
+ * JtypeConnection — the cluster jtype base URL (D36: the only cluster-level
+ * kanban setting left; credentials are entirely per-link, managed by each
+ * project owner under Project settings → Kanban).
+ */
 function JtypeConnection({ config }: { config: import('../api/types').KanbanClusterConfig }) {
   const { t } = useTranslation();
   const [baseUrl, setBaseUrl] = useState(config.base_url || config.effective_base_url);
-  const [token, setToken] = useState('');
-  const [clearToken, setClearToken] = useState(false);
-  const [connectId, setConnectId] = useState<string>();
   const update = useUpdateKanbanConfig();
   const remove = useDeleteKanbanConfig();
-  const start = useStartKanbanConnect();
-  const poll = useKanbanConnectStatus(connectId, !!connectId);
   const toast = useToast();
 
   useEffect(() => setBaseUrl(config.base_url || config.effective_base_url), [config.base_url, config.effective_base_url]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const input: { base_url: string; token?: string } = { base_url: baseUrl.trim() };
-    if (clearToken) input.token = '';
-    else if (token) input.token = token;
-    update.mutate(input, {
-      onSuccess: () => { setToken(''); setClearToken(false); toast.push({ kind: 'success', message: t('cluster.connections.jtypeSaved') }); },
-      onError: (error) => toast.push({ kind: 'error', message: message(error, t('cluster.connections.jtypeSaveError')) }),
-    });
+    update.mutate(
+      { base_url: baseUrl.trim() },
+      {
+        onSuccess: () => toast.push({ kind: 'success', message: t('cluster.connections.jtypeSaved') }),
+        onError: (error) => toast.push({ kind: 'error', message: message(error, t('cluster.connections.jtypeSaveError')) }),
+      },
+    );
   };
   const clear = () => remove.mutate(undefined, {
     onSuccess: () => toast.push({ kind: 'success', message: t('cluster.connections.jtypeOverrideRemoved') }),
     onError: (error) => toast.push({ kind: 'error', message: message(error, t('cluster.connections.jtypeRemoveError')) }),
   });
-  const startConnect = () => start.mutate(undefined, { onSuccess: (result) => setConnectId(result.connect_id) });
   const source = config.source === 'db' ? t('cluster.connections.sourceDb') : config.source === 'env' ? t('cluster.connections.sourceEnv') : t('cluster.connections.sourceNone');
-  const expiry = expiryLabel(config.token_expires_at);
   return (
     <form className={styles.card} onSubmit={submit}>
       <header className={styles.cardHead}><span className={`${styles.providerMark} ${styles.accent}`}><Kanban size={18} /></span><span className={styles.cardCopy}><strong>{t('cluster.connections.jtypeKanban')}</strong><small>{source} · {t('cluster.connections.pollingEvery', { interval: config.poll_interval })}</small></span><StatusLabel tone={config.effective_enabled ? 'success' : config.reason ? 'danger' : 'warning'}>{config.effective_enabled ? t('cluster.connections.jtypeEffective') : config.reason ? t('cluster.connections.jtypeBroken') : t('cluster.connections.jtypeOff')}</StatusLabel></header>
       <div className={styles.cardBody}>
-        <TextField label={t('cluster.connections.baseUrlLabel')} value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://jtype.example.com" />
-        <TextField label={t('cluster.connections.rotateTokenLabel')} type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder={config.token_set ? t('cluster.connections.tokenPlaceholderKeep') : t('cluster.connections.tokenPlaceholderOptional')} hint={config.token_set ? `${t('cluster.connections.tokenHintSet')}${expiry ? ` · ${expiry}` : ''}` : t('cluster.connections.tokenHintNone')} />
-        {config.token_set && <label className={styles.clearToken}><input type="checkbox" checked={clearToken} onChange={(event) => setClearToken(event.target.checked)} />{t('cluster.connections.clearTokenLabel')}</label>}
-        <KanbanConnectFlow idPrefix="kanban-connect" disabled={!config.base_url} disabledHint={t('cluster.connections.connectDisabledHint')} active={!!connectId} starting={start.isPending} startError={start.error} connectStart={start.data} status={poll.data} statusError={poll.error} onStart={startConnect} onReset={() => { setConnectId(undefined); start.reset(); }} />
+        <TextField label={t('cluster.connections.baseUrlLabel')} value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://jtype.example.com" hint={t('cluster.connections.baseUrlHint')} />
         <div className={styles.security}><Lock size={14} aria-hidden="true" /><span>{t('cluster.connections.boardTrafficNote')}</span></div>
         {config.reason && <div className={styles.warning}><Warning size={16} aria-hidden="true" /><span><strong>{t('cluster.connections.jtypeUnavailableTitle')}</strong>{config.reason}</span></div>}
         <div className={styles.actions}>{config.source === 'db' && <Button type="button" variant="ghost" onClick={clear} loading={remove.isPending}>{t('cluster.connections.removeOverride')}</Button>}<Button type="submit" variant="primary" loading={update.isPending}>{t('cluster.connections.saveJtype')}</Button></div>
