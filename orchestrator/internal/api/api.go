@@ -345,6 +345,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /auth/link/{provider}", s.authed(s.handleAuthLink))
 	mux.Handle("POST /auth/integrations/{provider}", s.authed(s.handleStartIntegrationOAuth))
 	mux.Handle("POST /auth/logout", s.authed(s.handleAuthLogout))
+	mux.Handle("GET /auth/mobile-handoff", s.authed(s.handleAuthMobileHandoff))
 	mux.Handle("GET /api/v1/me", s.authed(s.handleMe))
 
 	// jcode device login (docs/17 §3 — RFC 8628 device-code flow). code/token

@@ -39,6 +39,15 @@ type authProviderInfo struct {
 // handleAuthProviders lists the configured OAuth providers (unauthenticated).
 // With none configured it returns an empty list — the console then shows only
 // the CONSOLE_TOKEN "advanced" path (backward compatible).
+// providerSortOrder defines the display order of OAuth providers on the
+// sign-in screen. Providers not in this list sort after the listed ones,
+// alphabetically. GitHub is first because it is the most common provider.
+var providerSortOrder = map[string]int{
+	"github": 0,
+	"gitlab": 1,
+	"gitea":  2,
+}
+
 func (s *Server) handleAuthProviders(w http.ResponseWriter, _ *http.Request) {
 	out := make([]authProviderInfo, 0, len(s.oauth))
 	for id := range s.oauth {
@@ -48,7 +57,20 @@ func (s *Server) handleAuthProviders(w http.ResponseWriter, _ *http.Request) {
 		}
 		out = append(out, authProviderInfo{ID: string(id), Name: name, LoginURL: "/auth/login/" + string(id)})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(out, func(i, j int) bool {
+		oi, okI := providerSortOrder[out[i].ID]
+		oj, okJ := providerSortOrder[out[j].ID]
+		if okI && okJ {
+			return oi < oj
+		}
+		if okI {
+			return true
+		}
+		if okJ {
+			return false
+		}
+		return out[i].ID < out[j].ID
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"providers": out})
 }
 
@@ -642,6 +664,26 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID str
 		MaxAge:   int(s.sessionTTL().Seconds()),
 	})
 	return nil
+}
+
+// handleAuthMobileHandoff mints a fresh session token for the already-
+// authenticated user and redirects to the jcode://auth deep link so the
+// mobile app receives the token without a full OAuth round trip. This
+// handles the case where the mobile app opens the console with
+// ?client=mobile but the browser already has a valid session cookie.
+func (s *Server) handleAuthMobileHandoff(w http.ResponseWriter, r *http.Request) {
+	p := principalFrom(r.Context())
+	if p == nil || p.user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "login required")
+		return
+	}
+	token, err := s.mintSession(r, p.user.ID)
+	if err != nil {
+		s.log.Error("mobile handoff mint session", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not create session")
+		return
+	}
+	http.Redirect(w, r, mobileAuthDeepLink+"#token="+url.QueryEscape(token), http.StatusFound)
 }
 
 // handleAuthLogout revokes the current session (if any) and clears the cookie.

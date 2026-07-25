@@ -1158,6 +1158,7 @@ export default {
     everythingHeadless: 'Everything runs headless in your cluster.',
     enterConsole: 'Enter console',
     connecting: 'Connecting to the orchestrator…',
+    mobileHandoff: 'Signing you in on your phone…',
   },
 
   notFound: {

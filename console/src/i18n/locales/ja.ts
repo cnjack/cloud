@@ -829,6 +829,7 @@ export default {
     everythingHeadless: 'すべてが Cluster 内でヘッドレスに実行されます。',
     enterConsole: 'コンソールに入る',
     connecting: 'オーケストレーターに接続中…',
+    mobileHandoff: 'スマホでサインインを完了しています…',
   },
 
   notFound: {

@@ -151,13 +151,19 @@ function ProviderButtons() {
   // of the default landing page. The orchestrator verifies it is a
   // same-console relative path (safeOAuthReturnTo).
   const returnTo = `${window.location.pathname}${window.location.search}`;
+  // When the mobile app opens the console with ?client=mobile, pass it through
+  // to the orchestrator login route so the callback returns the session token
+  // over the jcode://auth deep link instead of a console redirect.
+  const clientParam = new URLSearchParams(window.location.search).get('client');
   return (
     <div className={styles.providers} data-testid="provider-buttons">
       {providers.map((p) => {
         // A full navigation to the server route (NOT client routing) so the OAuth
         // round trip + Set-Cookie happen on the orchestrator.
         const sep = p.login_url.includes('?') ? '&' : '?';
-        const href = `${p.login_url}${sep}return_to=${encodeURIComponent(returnTo)}`;
+        const params = new URLSearchParams({ return_to: returnTo });
+        if (clientParam) params.set('client', clientParam);
+        const href = `${p.login_url}${sep}${params.toString()}`;
         return (
           <a key={p.id} href={href} className={styles.provider} data-provider={p.id}>
             <span className={styles.providerIcon} aria-hidden>{p.id.toLowerCase().includes('github') ? <GithubLogo size={18} weight="fill" /> : <GitBranch size={18} />}</span>
@@ -321,6 +327,12 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const { status, landing, welcome } = useAuth();
 
+  // Mobile handoff: the mobile app opened the console with ?client=mobile.
+  // If the browser already has a valid session, redirect to the orchestrator's
+  // /auth/mobile-handoff which mints a fresh token and 302s to the jcode://auth
+  // deep link — no extra tap needed from the user.
+  const isMobileClient = new URLSearchParams(window.location.search).get('client') === 'mobile';
+
   switch (status) {
     case 'probing':
       return (
@@ -333,6 +345,16 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
     case 'unauthenticated':
       return <SignIn />;
     case 'ready':
+      if (isMobileClient) {
+        // Full-page navigation (not client routing) so the orchestrator
+        // sees the session cookie and mints the deep-link token.
+        window.location.href = '/auth/mobile-handoff';
+        return (
+          <GateFrame variant="probing">
+            <LoadingBlock label={t('onboarding.mobileHandoff')} />
+          </GateFrame>
+        );
+      }
       if (welcome) return <WelcomeCard />;
       return landing ? <Landing /> : <>{children}</>;
   }

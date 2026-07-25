@@ -829,6 +829,7 @@ export default {
     everythingHeadless: '모든 작업이 클러스터에서 무인으로 실행됩니다.',
     enterConsole: '콘솔 진입',
     connecting: '오케스트레이터에 연결 중…',
+    mobileHandoff: '휴대폰에서 로그인 완료 중…',
   },
 
   notFound: {

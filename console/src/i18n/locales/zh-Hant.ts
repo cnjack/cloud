@@ -829,6 +829,7 @@ export default {
     everythingHeadless: '一切都在你的 Cluster 中以無介面方式執行。',
     enterConsole: '進入主控台',
     connecting: '正在連線到協調器…',
+    mobileHandoff: '正在為手機完成登入…',
   },
 
   notFound: {
