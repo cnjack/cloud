@@ -263,20 +263,22 @@ export interface ApiClient {
   /* ---- kanban discovery pickers (D29) ----------------------------------- */
   /**
    * GET /api/v1/projects/{id}/kanban/jtype/workspaces — the caller's jtype
-   * workspaces for the create-link workspace picker (owner). Uses a per-link
-   * token borrowed from one of the project's existing links, server-side (never
-   * serialized). 409 kanban_not_configured (integration off) or 409
-   * kanban_token_required (no token-bearing link yet) / 503 jtype_unreachable —
-   * all fail-visible: the form falls back to manual entry. 400
-   * jtype_unauthorized for a bad token.
+   * workspaces for the create-link workspace picker (owner). The credential is
+   * resolved server-side: an optional `tokenEnc` (D37 sealed blob from a
+   * project-surface connect, sent as X-Jtype-Token-Enc) takes precedence, else
+   * a per-link token borrowed from the project's existing links. 409
+   * kanban_not_configured (integration off) or 409 kanban_token_required (no
+   * credential at all) / 503 jtype_unreachable — all fail-visible: the form
+   * falls back to manual entry. 400 jtype_unauthorized / bad_token_enc for a
+   * bad credential.
    */
-  listJtypeWorkspaces(projectId: string): Promise<JtypeWorkspace[]>;
+  listJtypeWorkspaces(projectId: string, tokenEnc?: string): Promise<JtypeWorkspace[]>;
   /**
    * GET /api/v1/projects/{id}/kanban/jtype/boards?workspace=<id> — the boards
    * (with columns) in a workspace for the board + column pickers (owner). Typed
    * errors mirror listJtypeWorkspaces.
    */
-  listJtypeBoards(projectId: string, workspaceId: string): Promise<JtypeBoard[]>;
+  listJtypeBoards(projectId: string, workspaceId: string, tokenEnc?: string): Promise<JtypeBoard[]>;
 
   /* ---- kanban board embed (D31) ----------------------------------------- */
   /**
@@ -348,6 +350,19 @@ export interface ApiClient {
    * (credential_status flips to per_link). Unknown connect_id → 404 connect_expired.
    */
   pollLinkConnect(projectId: string, linkId: string, connectId: string): Promise<KanbanConnectStatus>;
+  /**
+   * POST /api/v1/projects/{id}/kanban/connect — start a PROJECT-surface device
+   * flow (owner, D37): connect BEFORE the first link exists. 409
+   * kanban_not_configured when the cluster integration is off.
+   */
+  startProjectConnect(projectId: string): Promise<KanbanConnectStart>;
+  /**
+   * GET /api/v1/projects/{id}/kanban/connect/{connectID} — poll a project-surface
+   * flow. On `complete` the response carries `token_enc` — the SEALED blob
+   * (ciphertext, never plaintext) the console uses for discovery + create-link.
+   * Unknown connect_id → 404 connect_expired.
+   */
+  pollProjectConnect(projectId: string, connectId: string): Promise<KanbanConnectStatus>;
 
   /* ---- schedules (F11 / D24) -------------------------------------------- */
   /** GET /api/v1/services/{id}/schedules — a service's cron triggers (member+). */
@@ -792,18 +807,22 @@ export function createHttpClient(
         { method: 'DELETE' },
       ),
 
-    // Kanban discovery pickers (D29). The effective token is used server-side and
-    // never crosses the wire — the responses carry only workspace/board metadata.
-    listJtypeWorkspaces: async (projectId) =>
+    // Kanban discovery pickers (D29). The credential is resolved server-side
+    // (D36: a borrowed per-link token; D37: an optional sealed blob riding as
+    // X-Jtype-Token-Enc) and never crosses the wire as plaintext — the responses
+    // carry only workspace/board metadata.
+    listJtypeWorkspaces: async (projectId, tokenEnc) =>
       (
         await req<{ workspaces: JtypeWorkspace[] }>(
           `/projects/${encodeURIComponent(projectId)}/kanban/jtype/workspaces`,
+          tokenEnc ? { headers: { 'X-Jtype-Token-Enc': tokenEnc } } : undefined,
         )
       ).workspaces ?? [],
-    listJtypeBoards: async (projectId, workspaceId) =>
+    listJtypeBoards: async (projectId, workspaceId, tokenEnc) =>
       (
         await req<{ boards: JtypeBoard[] }>(
           `/projects/${encodeURIComponent(projectId)}/kanban/jtype/boards?workspace=${encodeURIComponent(workspaceId)}`,
+          tokenEnc ? { headers: { 'X-Jtype-Token-Enc': tokenEnc } } : undefined,
         )
       ).boards ?? [],
 
@@ -856,6 +875,17 @@ export function createHttpClient(
         `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(
           linkId,
         )}/connect/${encodeURIComponent(connectId)}`,
+      ),
+    // D37: the PROJECT-surface flow (connect before the first link). On complete
+    // the poll carries token_enc (sealed blob) for discovery + create-link.
+    startProjectConnect: (projectId) =>
+      req<KanbanConnectStart>(
+        `/projects/${encodeURIComponent(projectId)}/kanban/connect`,
+        { method: 'POST' },
+      ),
+    pollProjectConnect: (projectId, connectId) =>
+      req<KanbanConnectStatus>(
+        `/projects/${encodeURIComponent(projectId)}/kanban/connect/${encodeURIComponent(connectId)}`,
       ),
 
     // Schedules (F11 / D24). Listing is service-scoped (member+); management is

@@ -796,6 +796,17 @@ export interface CreateKanbanLinkInput {
   trigger_column: string;
   done_column?: string;
   token?: string;
+  /**
+   * D37: the SEALED blob returned by a project-surface connect (ciphertext,
+   * never plaintext). The server verifies it decrypts and stores it verbatim.
+   * Exactly one of token / token_enc may be set.
+   */
+  token_enc?: string;
+  /**
+   * D37: the device-flow expiry reported by the project-surface connect
+   * (RFC3339, display metadata). Accepted only alongside token_enc.
+   */
+  token_expires_at?: string;
 }
 
 /* ---- kanban "Connect with jtype" OAuth device flow (D28) ------------------ */
@@ -841,6 +852,12 @@ export interface KanbanConnectStatus {
   status: 'pending' | 'complete' | 'expired' | 'denied' | 'unsupported';
   token_set: boolean;
   token_expires_at?: string;
+  /**
+   * D37: the SEALED (AES-256-GCM, base64) minted token, returned ONLY by the
+   * project-surface flow on complete — ciphertext, never plaintext. The console
+   * holds it in memory to drive discovery and submits it back with create-link.
+   */
+  token_enc?: string;
 }
 
 /* ---- schedules (F11 / D24) ------------------------------------------------ */

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
@@ -720,4 +721,89 @@ func TestCreateLink_HardValidate_WithToken(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("with a per-link token a bad ref must HARD-fail 400, got %d", resp.StatusCode)
 	}
+}
+
+// --- D37: create-link with a sealed token_enc blob ---------------------------
+
+// The project-surface connect's sealed blob creates a fully hard-validated link:
+// the server decrypts it for board validation, stores the blob VERBATIM (never
+// re-sealed), and persists the device-flow expiry. A garbage blob is a typed
+// 400, token+token_enc together is a 400, and an expiry without a blob is a 400.
+func TestCreateLink_WithSealedTokenEnc(t *testing.T) {
+	board := &jtype.Board{ID: "b_ab12cd34", Title: "jtype", Columns: []jtype.BoardColumn{{Key: "ai"}, {Key: "done"}}}
+	f := setupKanban(t, fakeBoardValidator{board: board})
+	ctx := context.Background()
+
+	enc, err := f.srv.Cipher().EncryptString("device-flow-pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := base64.StdEncoding.EncodeToString(enc)
+	expiry := time.Now().Add(90 * 24 * time.Hour).UTC().Truncate(time.Second)
+
+	resp := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws", "board_ref": "jtype.board", "service_id": f.serviceID,
+		"trigger_column": "ai", "done_column": "done",
+		"token_enc": blob, "token_expires_at": expiry.Format(time.RFC3339),
+	})
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create with token_enc want 201, got %d body=%s", resp.StatusCode, b)
+	}
+	var view kanbanLinkView
+	decode(t, resp, &view)
+	if !view.TokenSet || view.CredentialStatus != "per_link" || view.BoardStatus != domain.KanbanBoardOK {
+		t.Fatalf("view = %+v", view)
+	}
+	if view.TokenExpiresAt == "" {
+		t.Fatal("device-flow expiry should be echoed on the link view")
+	}
+
+	// Stored VERBATIM (same ciphertext bytes) and opens to the minted PAT.
+	link, err := f.st.GetKanbanLink(ctx, view.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base64.StdEncoding.EncodeToString(link.TokenEnc) != blob {
+		t.Fatal("the sealed blob must be stored verbatim, not re-sealed")
+	}
+	if got, _ := f.srv.Cipher().DecryptString(link.TokenEnc); got != "device-flow-pat" {
+		t.Fatalf("stored blob decrypts to %q", got)
+	}
+	if link.TokenExpiresAt == nil || !link.TokenExpiresAt.Equal(expiry) {
+		t.Fatalf("stored expiry = %v want %v", link.TokenExpiresAt, expiry)
+	}
+
+	// token + token_enc together → 400.
+	both := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws2", "board_ref": "b2", "service_id": f.serviceID,
+		"trigger_column": "ai", "token": "pat", "token_enc": blob,
+	})
+	if both.StatusCode != http.StatusBadRequest {
+		t.Fatalf("token+token_enc want 400, got %d", both.StatusCode)
+	}
+	both.Body.Close()
+
+	// Garbage blob → 400 bad_token_enc.
+	bad := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws3", "board_ref": "b3", "service_id": f.serviceID,
+		"trigger_column": "ai", "token_enc": "bm90LWEtYmxvYg==",
+	})
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("garbage blob want 400, got %d", bad.StatusCode)
+	}
+	if code := errorCode(t, bad); code != "bad_token_enc" {
+		t.Fatalf("error code = %q want bad_token_enc", code)
+	}
+
+	// Expiry WITHOUT a blob → 400.
+	lonely := do(t, http.MethodPost, f.linksURL(), f.tokens["owner"], map[string]any{
+		"workspace_id": "ws4", "board_ref": "b4", "service_id": f.serviceID,
+		"trigger_column": "ai", "token_expires_at": expiry.Format(time.RFC3339),
+	})
+	if lonely.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expiry without token_enc want 400, got %d", lonely.StatusCode)
+	}
+	lonely.Body.Close()
 }

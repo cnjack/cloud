@@ -467,13 +467,18 @@ func (s *Server) Handler() http.Handler {
 	// PATCH rotates/clears ONLY the link's per-link token (claims retained, P2).
 	mux.Handle("PATCH /api/v1/projects/{id}/kanban/links/{linkID}", s.authed(s.handleUpdateProjectKanbanLink))
 	mux.Handle("DELETE /api/v1/projects/{id}/kanban/links/{linkID}", s.authed(s.handleDeleteProjectKanbanLink))
-	// D28 — "Connect with jtype" device flow for a link's per-link token (create
-	// the link blank first, then connect). Owner only; POST starts, GET polls and
-	// seals the minted token into kanban_links.token_enc on complete.
+	// D28 — per-link "Connect with jtype" device flow (create-then-connect); the
+	// cluster-surface flow was removed in D36. D37 adds the PROJECT surface
+	// (connect before the first link exists; the sealed blob comes back to the
+	// console to drive discovery + create-link). Owner only; POST starts, GET polls.
 	mux.Handle("POST /api/v1/projects/{id}/kanban/links/{linkID}/connect", s.authed(s.handleStartLinkConnect))
 	mux.Handle("GET /api/v1/projects/{id}/kanban/links/{linkID}/connect/{connectID}", s.authed(s.handlePollLinkConnect))
-	// D29 — jtype discovery for the console's cascading pickers (owner only). Both
-	// use the EFFECTIVE cluster factory + token; the token is NEVER serialized.
+	mux.Handle("POST /api/v1/projects/{id}/kanban/connect", s.authed(s.handleStartProjectConnect))
+	mux.Handle("GET /api/v1/projects/{id}/kanban/connect/{connectID}", s.authed(s.handlePollProjectConnect))
+	// D29 — jtype discovery for the console's cascading pickers (owner only). The
+	// credential is a per-link token borrowed from one of the project's links
+	// (D36), or a sealed blob supplied via X-Jtype-Token-Enc (D37, from a
+	// project-surface connect). The token is NEVER serialized.
 	mux.Handle("GET /api/v1/projects/{id}/kanban/jtype/workspaces", s.authed(s.handleListJtypeWorkspaces))
 	mux.Handle("GET /api/v1/projects/{id}/kanban/jtype/boards", s.authed(s.handleListJtypeBoards))
 	// D31 — member+ board embed proxy: gate the console's Kanban button (board/links)

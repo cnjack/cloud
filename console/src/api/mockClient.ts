@@ -320,14 +320,17 @@ export function createMockClient(): ApiClient {
   }
 
   // D28: the "Connect with jtype" device-flow registry, keyed by opaque
-  // connect_id (per-link only since D36). Each record remembers its target link
+  // connect_id (per-link + project surfaces). Each record remembers its target
   // and a poll counter: the demo/e2e roundtrip auto-approves on the SECOND poll
   // (the first is `pending`), mirroring a user tapping Approve in jtype's
-  // browser page. On completion we seal a fake 90-day token into the link
-  // (token_set + token_expires_at) so the credential badge + expiry flip
-  // exactly as they would against a real orchestrator — no plaintext ever crosses.
+  // browser page. On completion we seal a fake 90-day token (token_set +
+  // token_expires_at) so the credential badge + expiry flip exactly as they
+  // would against a real orchestrator — no plaintext ever crosses. The PROJECT
+  // surface (D37) stores nothing: the poll returns a fake sealed token_enc blob
+  // the console can submit with create-link.
+  type ConnectTarget = { kind: 'link'; projectId: string; linkId: string } | { kind: 'project'; projectId: string };
   interface ConnectRecord {
-    target: { projectId: string; linkId: string };
+    target: ConnectTarget;
     polls: number;
     tokenExpiresAt?: string;
   }
@@ -336,7 +339,7 @@ export function createMockClient(): ApiClient {
   function sixDigitCode(): string {
     return String(Math.floor(100000 + Math.random() * 900000));
   }
-  function startConnect(target: { projectId: string; linkId: string }, baseUrl: string): KanbanConnectStart {
+  function startConnect(target: ConnectTarget, baseUrl: string): KanbanConnectStart {
     const connectId = genId('kc');
     const userCode = sixDigitCode();
     connects.set(connectId, { target, polls: 0 });
@@ -359,17 +362,27 @@ export function createMockClient(): ApiClient {
     rec.polls += 1;
     // Still waiting for the user to approve in jtype's browser page.
     if (rec.polls < 2) return { status: 'pending', token_set: false };
-    // Approved: seal a fresh 90-day token into the link (idempotent across
-    // repeat polls — the expiry is fixed on first completion).
+    // Approved: seal a fresh 90-day token (idempotent across repeat polls — the
+    // expiry is fixed on first completion).
     if (!rec.tokenExpiresAt) rec.tokenExpiresAt = nowISO(DEVICE_TOKEN_TTL_MS);
-    const l = kanbanLinks.get(rec.target.linkId);
-    if (l) {
-      l.token_set = true;
-      l.credential_status = 'per_link';
-      l.token_expires_at = rec.tokenExpiresAt;
-      kanbanLinks.set(l.id, l);
+    if (rec.target.kind === 'link') {
+      const l = kanbanLinks.get(rec.target.linkId);
+      if (l) {
+        l.token_set = true;
+        l.credential_status = 'per_link';
+        l.token_expires_at = rec.tokenExpiresAt;
+        kanbanLinks.set(l.id, l);
+      }
+      return { status: 'complete', token_set: true, token_expires_at: rec.tokenExpiresAt };
     }
-    return { status: 'complete', token_set: true, token_expires_at: rec.tokenExpiresAt };
+    // D37 project surface: nothing stored — the SEALED blob comes back to the
+    // console (ciphertext, never plaintext; the mock's blob is a fake).
+    return {
+      status: 'complete',
+      token_set: true,
+      token_expires_at: rec.tokenExpiresAt,
+      token_enc: `enc_${connectId}`,
+    };
   }
 
   // F11 / D24: schedules (service cron triggers), keyed by schedule id.
@@ -1909,7 +1922,7 @@ export function createMockClient(): ApiClient {
           });
         }
       }
-      const hasToken = !!input.token?.trim();
+      const hasToken = !!input.token?.trim() || !!input.token_enc?.trim();
       // D29: when a board with this ref is discoverable, capture its title so the
       // row shows a friendly name instead of the raw ref.
       const knownBoard = (JTYPE_BOARDS[ws] ?? []).find((b) => b.ref === board);
@@ -1929,6 +1942,8 @@ export function createMockClient(): ApiClient {
         // D29: with a credential we "hard validate" (ok); without one this is the
         // soft-create bootstrap path — a fail-visible "unvalidated" state.
         board_status: hasToken ? 'ok' : 'unvalidated',
+        // D37: a device-flow expiry rides along with a sealed token_enc.
+        ...(input.token_enc && input.token_expires_at ? { token_expires_at: input.token_expires_at } : {}),
         ...(hasToken && knownBoard ? { board_title: knownBoard.title } : {}),
         created_at: new Date().toISOString(),
       };
@@ -1957,7 +1972,7 @@ export function createMockClient(): ApiClient {
     },
 
     /* ---- kanban discovery pickers (D29) ----------------------------------- */
-    async listJtypeWorkspaces(projectId: string): Promise<JtypeWorkspace[]> {
+    async listJtypeWorkspaces(projectId: string, tokenEnc?: string): Promise<JtypeWorkspace[]> {
       if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
       // Fail-visible: the integration must be effective to reach jtype (else the
       // token/base URL to enumerate workspaces doesn't exist). Mirrors the
@@ -1970,19 +1985,20 @@ export function createMockClient(): ApiClient {
           },
         });
       }
-      // D36: discovery borrows a per-link token from one of the project's
-      // existing links — none yet ⇒ typed 409, the form falls back to manual.
-      if (![...kanbanLinks.values()].some((l) => l.project_id === projectId && l.token_set)) {
+      // D36/D37: discovery borrows a per-link token from one of the project's
+      // existing links — or uses the D37 sealed blob passed from a project
+      // connect. Neither ⇒ typed 409, the form falls back to manual.
+      if (!tokenEnc && ![...kanbanLinks.values()].some((l) => l.project_id === projectId && l.token_set)) {
         throw new ApiError(409, 'discovery needs a jtype token', {
           error: {
             code: 'kanban_token_required',
-            message: 'Add a link with a token (paste or Connect) first, or enter the ids manually.',
+            message: 'Connect with jtype (or add a link with a token) first, or enter the ids manually.',
           },
         });
       }
       return delay(JTYPE_WORKSPACES.map((w) => ({ ...w })));
     },
-    async listJtypeBoards(projectId: string, workspaceId: string): Promise<JtypeBoard[]> {
+    async listJtypeBoards(projectId: string, workspaceId: string, tokenEnc?: string): Promise<JtypeBoard[]> {
       if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
       if (!kanbanConfigView().effective_enabled) {
         throw new ApiError(409, 'the cluster jtype integration is not configured', {
@@ -1992,11 +2008,11 @@ export function createMockClient(): ApiClient {
           },
         });
       }
-      if (![...kanbanLinks.values()].some((l) => l.project_id === projectId && l.token_set)) {
+      if (!tokenEnc && ![...kanbanLinks.values()].some((l) => l.project_id === projectId && l.token_set)) {
         throw new ApiError(409, 'discovery needs a jtype token', {
           error: {
             code: 'kanban_token_required',
-            message: 'Add a link with a token (paste or Connect) first, or enter the ids manually.',
+            message: 'Connect with jtype (or add a link with a token) first, or enter the ids manually.',
           },
         });
       }
@@ -2116,7 +2132,7 @@ export function createMockClient(): ApiClient {
       return delay(kanbanConfigView());
     },
 
-    /* ---- kanban "Connect with jtype" device flow (D28; per-link only, D36) -- */
+    /* ---- kanban "Connect with jtype" device flow (D28; per-link + D37 project) */
     async startLinkConnect(projectId: string, linkId: string): Promise<KanbanConnectStart> {
       const l = kanbanLinks.get(linkId);
       if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
@@ -2131,7 +2147,24 @@ export function createMockClient(): ApiClient {
           },
         });
       }
-      return delay(startConnect({ projectId, linkId }, eff.effective_base_url));
+      return delay(startConnect({ kind: 'link', projectId, linkId }, eff.effective_base_url));
+    },
+    async startProjectConnect(projectId: string): Promise<KanbanConnectStart> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      const eff = kanbanConfigView();
+      if (!eff.effective_enabled) {
+        throw new ApiError(409, 'the cluster jtype integration is not configured', {
+          error: {
+            code: 'kanban_not_configured',
+            message: 'Ask a cluster admin to configure jtype on the Cluster page first.',
+          },
+        });
+      }
+      return delay(startConnect({ kind: 'project', projectId }, eff.effective_base_url));
+    },
+    async pollProjectConnect(projectId: string, connectId: string): Promise<KanbanConnectStatus> {
+      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      return delay(pollConnect(connectId));
     },
     async pollLinkConnect(
       projectId: string,

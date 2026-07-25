@@ -891,6 +891,58 @@ describe('mockClient — kanban "Connect with jtype" device flow (D28; per-link 
     expect(f.ok).toBe(false);
     if (!f.ok) expect((f.err as ApiError).status).toBe(404);
   });
+
+  it('project surface (D37): connect BEFORE the first link, then create with the sealed blob', async () => {
+    const client = createMockClient();
+    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
+    await flush(200);
+    await u;
+    const cp = client.createProject({ name: 'demo' });
+    await flush(500);
+    const project = await cp;
+    const cs = client.createService(project.id, {
+      name: 'default',
+      repo_url: 'https://gitea.local/acme/demo.git',
+      default_branch: 'main',
+    });
+    await flush(500);
+    const svc = await cs;
+
+    // Project-surface flow: pending → complete carries the SEALED blob + expiry.
+    const s = client.startProjectConnect(project.id);
+    await flush(200);
+    const start = await s;
+    expect(start.user_code).toMatch(/^\d{6}$/);
+    const p1 = client.pollProjectConnect(project.id, start.connect_id);
+    await flush(200);
+    expect((await p1).status).toBe('pending');
+    const p2 = client.pollProjectConnect(project.id, start.connect_id);
+    await flush(200);
+    const done = await p2;
+    expect(done.status).toBe('complete');
+    expect(done.token_enc).toBeTruthy();
+    expect(done.token_expires_at).toBeTruthy();
+
+    // The blob drives discovery with NO link in the project.
+    const ws = client.listJtypeWorkspaces(project.id, done.token_enc);
+    await flush(200);
+    expect((await ws).length).toBeGreaterThan(0);
+
+    // Create with the blob: the link is per_link + validated, with the expiry.
+    const cl = client.createProjectKanbanLink(project.id, {
+      workspace_id: 'ws_team',
+      board_ref: 'jtype.board',
+      service_id: svc.id,
+      trigger_column: 'ai',
+      token_enc: done.token_enc,
+      token_expires_at: done.token_expires_at,
+    });
+    await flush(200);
+    const link = await cl;
+    expect(link.credential_status).toBe('per_link');
+    expect(link.board_status).toBe('ok');
+    expect(link.token_expires_at).toBe(done.token_expires_at);
+  });
 });
 
 describe('mockClient — kanban discovery pickers (D29)', () => {

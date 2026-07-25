@@ -776,6 +776,14 @@ token 后自动恢复。
 `source`(`db`/`env`/`none`)、`reason`(解析失败时)。**不含任何凭据字段**
 (D36:集群级只有 base URL,没有 token)。
 
+**先连接再点选(D37)**:全新项目无凭据时,discovery 选择器返回
+`409 kanban_token_required`。project owner 可先走 **project 面设备流**
+`POST/GET /projects/{id}/kanban/connect[/id]`(不依附 link;完成后 token 不
+落库,服务端把**密封密文** `token_enc` 交给 console 暂存),随后:
+discovery 请求带 `X-Jtype-Token-Enc` 头即可枚举 workspace/board;建链接提交
+`token_enc`(+可选 `token_expires_at`)替代明文 `token`(二者互斥;
+`token_enc` 无法解密 → `400 bad_token_enc`)。明文 PAT 永不进浏览器。
+
 ### 2.5c Integrations(git 集成 · Feature F5 · D19+D20)
 
 **Integration 是 project 级实体**:一个 git host 绑定 + 一份**机器人服务凭据**

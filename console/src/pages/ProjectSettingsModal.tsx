@@ -35,6 +35,8 @@ import {
   useJtypeBoards,
   useStartLinkConnect,
   useLinkConnectStatus,
+  useStartProjectConnect,
+  useProjectConnectStatus,
   useApiKeys,
   useCreateApiKey,
   useRevokeApiKey,
@@ -939,11 +941,36 @@ function KanbanPanel({ project }: { project: Project }) {
   const [manual, setManual] = useState(false);
   const [discoveryError, setDiscoveryError] = useState('');
 
-  // Discovery queries fire only in picker mode with the integration on. retry is
-  // off (in the hooks), so a typed 409/503/400 surfaces at once → auto-fallback.
-  const pickerActive = !kanbanOff && !manual;
-  const workspaces = useJtypeWorkspaces(project.id, pickerActive);
-  const boards = useJtypeBoards(project.id, workspaceId, pickerActive && !!workspaceId);
+  // D37: CONNECT FIRST. Discovery needs a credential; a fresh project has none
+  // (D36: no cluster fallback). The project-surface "Connect with jtype" flow
+  // mints one WITHOUT requiring an existing link and returns the SEALED blob —
+  // held here in memory only (never plaintext), passed to discovery as
+  // X-Jtype-Token-Enc and submitted back with create-link.
+  const hasTokenedLink = (links.data ?? []).some((l) => l.token_set);
+  const [pendingTokenEnc, setPendingTokenEnc] = useState<string | undefined>();
+  const [pendingTokenExpiry, setPendingTokenExpiry] = useState<string | undefined>();
+  const startConnect = useStartProjectConnect(project.id);
+  const [connectId, setConnectId] = useState<string | undefined>();
+  const connectStatus = useProjectConnectStatus(project.id, connectId, !!connectId);
+  const connectComplete = connectStatus.data?.status === 'complete';
+  useEffect(() => {
+    if (!connectComplete) return;
+    const enc = connectStatus.data?.token_enc;
+    if (enc) {
+      setPendingTokenEnc(enc);
+      setPendingTokenExpiry(connectStatus.data?.token_expires_at);
+      setConnectId(undefined);
+      setDiscoveryError('');
+    }
+  }, [connectComplete, connectStatus.data]);
+  const hasCredential = hasTokenedLink || !!pendingTokenEnc;
+
+  // Discovery queries fire only in picker mode with the integration on AND a
+  // usable credential (D37). retry is off (in the hooks), so a typed 409/503/400
+  // surfaces at once → auto-fallback.
+  const pickerActive = !kanbanOff && !manual && hasCredential;
+  const workspaces = useJtypeWorkspaces(project.id, pickerActive, pendingTokenEnc);
+  const boards = useJtypeBoards(project.id, workspaceId, pickerActive && !!workspaceId, pendingTokenEnc);
   const boardList = boards.data ?? [];
   const selectedBoard = boardList.find((b) => b.ref === boardRef);
   const columnOptions = (selectedBoard?.columns ?? []).map((c) => ({ value: c.key, label: c.name }));
@@ -996,6 +1023,7 @@ function KanbanPanel({ project }: { project: Project }) {
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    const typedToken = token.trim();
     create.mutate(
       {
         workspace_id: workspaceId.trim(),
@@ -1003,7 +1031,12 @@ function KanbanPanel({ project }: { project: Project }) {
         service_id: serviceId,
         trigger_column: triggerCol.trim(),
         done_column: doneCol.trim() || undefined,
-        token: token.trim() || undefined,
+        // Exactly one credential source (D37): a typed PAT wins; otherwise the
+        // sealed blob from the project-surface connect rides along (with the
+        // device-flow expiry, so the link's 90-day badge works immediately).
+        token: typedToken || undefined,
+        token_enc: !typedToken && pendingTokenEnc ? pendingTokenEnc : undefined,
+        token_expires_at: !typedToken && pendingTokenEnc ? pendingTokenExpiry : undefined,
       },
       {
         onSuccess: () => {
@@ -1012,6 +1045,8 @@ function KanbanPanel({ project }: { project: Project }) {
           setTriggerCol('');
           setDoneCol('');
           setToken('');
+          setPendingTokenEnc(undefined);
+          setPendingTokenExpiry(undefined);
           toast.push({ kind: 'success', message: t('projectSettings.kanbanLinkAdded') });
         },
         onError: (err) =>
@@ -1112,6 +1147,56 @@ function KanbanPanel({ project }: { project: Project }) {
           </p>
         )}
 
+        {/* D37 — CONNECT FIRST: a fresh project has no credential for discovery
+            (D36: no cluster fallback). Offer the project-surface "Connect with
+            jtype" device flow; the sealed blob it returns drives the pickers and
+            rides along with create-link. Manual entry stays available behind the
+            toggle for an un-enumerable workspace. */}
+        {!kanbanOff && !hasCredential && !manual && (
+          <div className={styles.kanbanConnect} data-testid="kanban-project-connect-panel">
+            <p className={styles.guardrailHint}>{t('projectSettings.connectFirstHint')}</p>
+            <KanbanConnectFlow
+              idPrefix="kanban-project-connect"
+              disabled={false}
+              disabledHint=""
+              active={!!connectId}
+              starting={startConnect.isPending}
+              startError={startConnect.error}
+              connectStart={startConnect.data}
+              status={connectStatus.data}
+              statusError={connectStatus.error}
+              onStart={() => startConnect.mutate(undefined, { onSuccess: (s) => setConnectId(s.connect_id) })}
+              onReset={() => {
+                setConnectId(undefined);
+                startConnect.reset();
+              }}
+            />
+          </div>
+        )}
+
+        {/* A completed connect: the sealed blob will ride with create-link. Show
+            an honest badge (with the device-flow expiry when known) + a discard. */}
+        {pendingTokenEnc && (
+          <div className={styles.kanbanConnect} data-testid="kanban-pending-token">
+            <span className={styles.pill} data-on data-testid="kanban-pending-token-badge">
+              {t('projectSettings.connectedTokenPending')}
+              {pendingTokenExpiry ? ` · ${expiryLabel(pendingTokenExpiry, t('projectSettings.expiredReconnect'))}` : ''}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setPendingTokenEnc(undefined);
+                setPendingTokenExpiry(undefined);
+              }}
+              data-testid="kanban-pending-token-discard"
+            >
+              {t('projectSettings.discardConnection')}
+            </Button>
+          </div>
+        )}
+
         {manual ? (
           <>
             <TextField
@@ -1155,7 +1240,7 @@ function KanbanPanel({ project }: { project: Project }) {
               autoComplete="off"
             />
           </>
-        ) : (
+        ) : hasCredential || kanbanOff ? (
           <>
             <SelectField
               label={t('projectSettings.jtypeWorkspace')}
@@ -1203,7 +1288,7 @@ function KanbanPanel({ project }: { project: Project }) {
               options={[{ value: '', label: t('projectSettings.noneOption') }, ...columnOptions]}
             />
           </>
-        )}
+        ) : null}
 
         <TextField
           label={t('projectSettings.jtypeTokenOptional')}

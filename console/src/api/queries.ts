@@ -75,6 +75,9 @@ export const qk = {
   // (project, link, connect_id). (The cluster-surface flow was removed in D36.)
   linkConnect: (projectId: string, linkId: string, connectId: string) =>
     ['link-connect', projectId, linkId, connectId] as const,
+  // D37: an in-flight PROJECT-surface flow (connect before the first link).
+  projectConnect: (projectId: string, connectId: string) =>
+    ['project-connect', projectId, connectId] as const,
   serviceSchedules: (serviceId: string) => ['service-schedules', serviceId] as const,
   serviceAutomations: (serviceId: string) => ['service-automations', serviceId] as const,
   integrations: (projectId: string) => ['integrations', projectId] as const,
@@ -792,12 +795,14 @@ export function useDeleteProjectKanbanLink(projectId: string) {
  * false` so a typed 409/503/400 (integration off / unreachable / bad token)
  * surfaces at once as isError — the form auto-falls-back to manual entry and
  * shows the server message (fail-visible), never a spinner that never resolves.
+ * `tokenEnc` (D37: a sealed blob from a project-surface connect) rides as
+ * X-Jtype-Token-Enc and is part of the query key so a fresh connect refetches.
  */
-export function useJtypeWorkspaces(projectId: string, enabled: boolean) {
+export function useJtypeWorkspaces(projectId: string, enabled: boolean, tokenEnc?: string) {
   const api = useApi();
   return useQuery({
-    queryKey: qk.jtypeWorkspaces(projectId),
-    queryFn: () => api.listJtypeWorkspaces(projectId),
+    queryKey: [...qk.jtypeWorkspaces(projectId), tokenEnc ?? ''],
+    queryFn: () => api.listJtypeWorkspaces(projectId, tokenEnc),
     enabled: enabled && !!projectId,
     retry: false,
     staleTime: 30_000,
@@ -810,11 +815,11 @@ export function useJtypeWorkspaces(projectId: string, enabled: boolean) {
  * query. Each board carries its `columns`, so the column selects read from this
  * cache without a further request.
  */
-export function useJtypeBoards(projectId: string, workspaceId: string, enabled: boolean) {
+export function useJtypeBoards(projectId: string, workspaceId: string, enabled: boolean, tokenEnc?: string) {
   const api = useApi();
   return useQuery({
-    queryKey: qk.jtypeBoards(projectId, workspaceId),
-    queryFn: () => api.listJtypeBoards(projectId, workspaceId),
+    queryKey: [...qk.jtypeBoards(projectId, workspaceId), tokenEnc ?? ''],
+    queryFn: () => api.listJtypeBoards(projectId, workspaceId, tokenEnc),
     enabled: enabled && !!projectId && !!workspaceId,
     retry: false,
     staleTime: 30_000,
@@ -929,6 +934,43 @@ export function useStartLinkConnect(projectId: string) {
     mutationFn: (linkId: string) => api.startLinkConnect(projectId, linkId),
     onSuccess: (start, linkId) => {
       qc.setQueryData<KanbanConnectStatus>(qk.linkConnect(projectId, linkId, start.connect_id), {
+        status: 'pending',
+        token_set: false,
+      });
+    },
+  });
+}
+
+/* ---- kanban project-surface "Connect with jtype" (D37) --------------------- */
+
+/**
+ * Poll a PROJECT-surface connect flow (D37) while pending. On complete the poll
+ * payload carries `token_enc` (sealed blob) — NOTHING changed server-side, so
+ * there is nothing to invalidate; the caller reads token_enc from the data.
+ */
+export function useProjectConnectStatus(
+  projectId: string,
+  connectId: string | undefined,
+  enabled: boolean,
+) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.projectConnect(projectId, connectId ?? ''),
+    queryFn: () => api.pollProjectConnect(projectId, connectId!),
+    enabled: enabled && !!connectId,
+    retry: false,
+    refetchInterval: (q) => connectRefetchInterval(q.state.status, q.state.data),
+  });
+}
+
+/** Start a project-surface device flow (D37; seeds the poll cache). */
+export function useStartProjectConnect(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.startProjectConnect(projectId),
+    onSuccess: (start) => {
+      qc.setQueryData<KanbanConnectStatus>(qk.projectConnect(projectId, start.connect_id), {
         status: 'pending',
         token_set: false,
       });

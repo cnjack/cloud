@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -26,13 +27,23 @@ import (
 // connect_expired and the user reconnects (a 10-minute window).
 //
 // D36 removed the cluster-surface flow (there is no cluster fallback token any
-// more): the only surface is an existing project's kanban link.
+// more). Two surfaces remain:
+//
+//   - link:    the minted token is sealed onto an EXISTING project's kanban
+//              link (create-then-connect, D28 §2.2).
+//   - project: the minted token is NOT stored anywhere (D37). On complete the
+//              poll response carries the SEALED ciphertext (token_enc, AES-256-
+//              GCM — never the plaintext); the console holds it in memory to
+//              drive the discovery pickers and submits it back with the
+//              create-link request. This breaks the fresh-project deadlock (a
+//              connect needed a link; discovery needed a token).
 //
 // Security (D28 §5): the device_code and the minted access_token NEVER reach the
 // browser and are NEVER logged; only connect_id / base-URL host / status are
 // logged. On success the token is sealed server-side (AES-256-GCM,
-// AUTH_TOKEN_KEY) and written to the link row; the poll response carries only
-// {status, token_set, token_expires_at} — the plaintext never leaves the server.
+// AUTH_TOKEN_KEY); the poll response carries only {status, token_set,
+// token_expires_at} plus, for the project surface, the sealed token_enc blob
+// — the plaintext never leaves the server.
 
 // oauthClient is the slice of *jtypeoauth.Client the connect handlers need. It is
 // the seam a test injects a fake (with a poll spy) through; production wires
@@ -45,10 +56,13 @@ type oauthClient interface {
 // Connect surface kinds + poll status strings (the poll status enum the console
 // keys off — pending is the non-terminal state; the rest are terminal).
 const (
-	// surfaceLink is the only surface since D36: the minted token binds to a
-	// specific project's kanban link. (The cluster-surface flow went away with
-	// the cluster fallback token.)
+	// surfaceLink seals the minted token onto a specific project's kanban link
+	// (D28 §2.2).
 	surfaceLink = "link"
+	// surfaceProject (D37): the minted token is NOT stored — the sealed blob is
+	// returned to the console (the flow's starter only) to drive discovery and
+	// a subsequent create-link. Scoped to a project for authz.
+	surfaceProject = "project"
 
 	connectPending     = "pending"
 	connectComplete    = "complete"
@@ -63,10 +77,11 @@ const (
 const maxConnectFlows = 128
 
 // connectSurface identifies what a flow's minted token binds to: a specific
-// project's kanban link (the only surface since D36).
+// project's kanban link, or (D37) just the project — a not-yet-linked
+// credential the console drives discovery + create-link with.
 type connectSurface struct {
-	kind      string // surfaceLink
-	linkID    string
+	kind      string // surfaceLink | surfaceProject
+	linkID    string // surfaceLink only
 	projectID string // authz + poll scoping
 }
 
@@ -100,6 +115,11 @@ type connectRecord struct {
 	lastPolledAt   time.Time  // interval-gate cursor
 	terminal       string     // "" while pending; else a terminal status string
 	tokenExpiresAt *time.Time // set on complete (now + token TTL)
+	// tokenEnc is the SEALED minted token, held ONLY for the project surface
+	// (D37) so repeat polls can return it to the flow's starter until the flow
+	// expires. Ciphertext, never plaintext; a link-surface flow writes through
+	// to the link row instead and leaves this nil.
+	tokenEnc []byte
 }
 
 // statusViewLocked renders the poll response from the record; caller holds mu.
@@ -111,6 +131,11 @@ func (rec *connectRecord) statusViewLocked() kanbanConnectStatusView {
 	v := kanbanConnectStatusView{Status: status, TokenSet: rec.terminal == connectComplete}
 	if rec.tokenExpiresAt != nil {
 		v.TokenExpiresAt = rec.tokenExpiresAt.UTC().Format(time.RFC3339)
+	}
+	// D37: the project surface returns the SEALED blob on complete (ciphertext
+	// — never the plaintext), so the console can drive discovery + create-link.
+	if rec.terminal == connectComplete && rec.surface.kind == surfaceProject && len(rec.tokenEnc) > 0 {
+		v.TokenEnc = base64.StdEncoding.EncodeToString(rec.tokenEnc)
 	}
 	return v
 }
@@ -199,6 +224,10 @@ type kanbanConnectStatusView struct {
 	Status         string `json:"status"` // pending|complete|expired|denied|unsupported
 	TokenSet       bool   `json:"token_set"`
 	TokenExpiresAt string `json:"token_expires_at,omitempty"`
+	// TokenEnc is the SEALED (AES-256-GCM, base64) minted token, returned ONLY
+	// by the project-surface flow (D37) on complete — ciphertext, never the
+	// plaintext. The console submits it back with the create-link request.
+	TokenEnc string `json:"token_enc,omitempty"`
 }
 
 // --- per-link token (authorizeProject RoleOwner) ----------------------------
@@ -251,6 +280,52 @@ func (s *Server) handlePollLinkConnect(w http.ResponseWriter, r *http.Request) {
 	rec := s.connects.get(r.PathValue("connectID"))
 	if rec == nil || rec.surface.kind != surfaceLink ||
 		rec.surface.linkID != r.PathValue("linkID") || rec.surface.projectID != projectID ||
+		rec.principal != principalIdentity(principalFrom(r.Context())) {
+		writeError(w, http.StatusNotFound, "connect_expired", "Connection expired — click Connect again.")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.advanceConnect(r.Context(), rec))
+}
+
+// --- project-surface token (D37: connect BEFORE the first link exists) ------
+
+// handleStartProjectConnect starts a device flow for the PROJECT surface (D37):
+// the minted token is not bound to any link — on complete the poll returns the
+// sealed blob, which the console uses to drive the discovery pickers and
+// submits back with create-link. Preconditions: project owner; a cipher (AT
+// START); the effective cluster kanban config is enabled (the flow targets its
+// base URL).
+func (s *Server) handleStartProjectConnect(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleOwner) {
+		return
+	}
+	if s.cipher == nil {
+		writeError(w, http.StatusConflict, "cipher_not_configured",
+			"set AUTH_TOKEN_KEY on the orchestrator before connecting a jtype token")
+		return
+	}
+	eff, err := s.kanban.Effective(r.Context())
+	if err != nil || !eff.Enabled() {
+		writeError(w, http.StatusConflict, "kanban_not_configured",
+			"configure the cluster jtype base URL before connecting a jtype token")
+		return
+	}
+	s.startConnectFlow(w, r, connectSurface{kind: surfaceProject, projectID: projectID}, eff.BaseURL)
+}
+
+// handlePollProjectConnect polls a project-surface flow (D37). Re-authorizes
+// (project owner) and checks the record principal AND that the connect_id is
+// bound to exactly this project (else connect_expired). On complete the
+// response carries the sealed token_enc blob (ciphertext, never plaintext).
+func (s *Server) handlePollProjectConnect(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleOwner) {
+		return
+	}
+	rec := s.connects.get(r.PathValue("connectID"))
+	if rec == nil || rec.surface.kind != surfaceProject ||
+		rec.surface.projectID != projectID ||
 		rec.principal != principalIdentity(principalFrom(r.Context())) {
 		writeError(w, http.StatusNotFound, "connect_expired", "Connection expired — click Connect again.")
 		return
@@ -364,9 +439,10 @@ func (s *Server) advanceConnect(ctx context.Context, rec *connectRecord) kanbanC
 	return rec.statusViewLocked()
 }
 
-// completeConnectLocked seals the minted token and writes it to the flow's
-// link, marking the record terminal-complete. Caller holds rec.mu. A seal/store
-// failure is fail-visible (mark expired + log) — NEVER a faked success.
+// completeConnectLocked seals the minted token and delivers it to the flow's
+// surface, marking the record terminal-complete. Caller holds rec.mu. A
+// seal/store failure is fail-visible (mark expired + log) — NEVER a faked
+// success.
 func (s *Server) completeConnectLocked(ctx context.Context, rec *connectRecord, tok *jtypeoauth.Token, now time.Time) {
 	// Anti-TOCTOU: the base URL may have changed INSIDE the token poll's network
 	// window (after advanceConnect's guard read). A token minted against the
@@ -397,10 +473,18 @@ func (s *Server) completeConnectLocked(ctx context.Context, rec *connectRecord, 
 		expPtr = &exp
 	}
 
-	if err := s.st.SetKanbanLinkToken(ctx, rec.surface.linkID, enc, expPtr); err != nil {
-		s.log.Error("kanban connect: store link token", "connect", rec.connectID, "err", err)
-		rec.terminal = connectExpired
-		return
+	switch rec.surface.kind {
+	case surfaceLink:
+		if err := s.st.SetKanbanLinkToken(ctx, rec.surface.linkID, enc, expPtr); err != nil {
+			s.log.Error("kanban connect: store link token", "connect", rec.connectID, "err", err)
+			rec.terminal = connectExpired
+			return
+		}
+	case surfaceProject:
+		// D37: nothing is stored — the sealed blob is held on the record so the
+		// flow's starter can fetch it via the poll (status view) until the flow
+		// expires. Ciphertext only; the plaintext never leaves this function.
+		rec.tokenEnc = enc
 	}
 	rec.terminal = connectComplete
 	rec.tokenExpiresAt = expPtr

@@ -310,3 +310,13 @@ run 首次启动的冷拉取(数百 MB 镜像)由 **jcloud-runner-prewarm Daemon
 - **discovery 选择器的凭据来源**:原先用集群回退 token 枚举 workspace/board。D36 后改为**借用本项目任一已有 link 的 per-link token**(enabled 优先);项目还没有带 token 的 link → 类型化 `409 kanban_token_required`,console 自动回退手动录入(fail-visible,与既有 discovery 错误路径一致)。这保留了"第一个 link 之前能列出 workspace/board"的常用路径(先建一个软 link 或手贴 token 的 link 即可),不再需要集群凭据。
 - **console**:Cluster 页 SystemPage KanbanCard 与 Connections 页 JtypeConnection 瘦身成"只填 base URL"(token 字段、清除 token 复选框、cluster 设备流面板、expiry 徽标全删);link 徽标去掉 `cluster_fallback` 态;五种 locale 同步清理并新增 baseUrlHint。
 - **被否**:把 base URL 也下放 per-project(方案 B)——需要 link/project 级 base_url 列 + resolver 按 link 解析 + Factory 池改 map,只有"不同 project 连不同 jtype 实例"才值得,当前集群只有一个 jtype;保留 cluster fallback token 但只做弱化——留着就要继续维护同源绑定/cipher/expiry 全链路,收益为负。
+
+---
+### D37 · project 级"先连接再点选":kanban 建链接的 connect-before-create(修复 D36 的全新项目死锁)
+
+D36 砍掉集群凭据后暴露一个 UX 死锁:全新项目没有任何带 token 的 link → discovery 选择器枚举不了(409 kanban_token_required,只能手填 workspace UUID/看板引用);而 per-link Connect 又要求**先有 link**(D28 create-then-connect)——先连接要 link,要点选要 token,两头堵。本条把建链接流程改为产品上唯一合理的顺序:**① Connect 授权 → ② 选择器点选 → ③ 提交**。
+
+- **project surface 设备流**:新增 `POST/GET /projects/{id}/kanban/connect[/id]`(owner),不依附任何 link。完成后 token **不落库**——服务端 AES-256-GCM 密封后,把**密文 blob**(`token_enc`,base64)随 poll 响应交给 console(仅流程发起者,poll 复查 principal;明文永不进浏览器/日志)。console 只在内存里持有它。
+- **凭据即能力**:discovery 端点接受 `X-Jtype-Token-Enc` 头(优先于借用项目已有 link 的 token,D36 路径保留);建链接接受 `token_enc` 字段(与明文 `token` 互斥,服务端验证可解密后原样存储,`token_expires_at` 仅随 blob 接受,纯展示元数据)。blob 是不可解密于客户端的密文,持有即可用——与 token 本体同防护级,且可跨 orchestrator 重启存活。
+- **console KanbanPanel**:项目无带 token 的 link 且未连接时,表单区显示"先连接 jtype"面板(复用 KanbanConnectFlow);连接成功后出现"已连接(90 天到期)"徽标+放弃按钮,选择器即刻可用,提交时 blob 随表单发出、随即从内存清除。手动录入仍是 escape hatch。
+- **被否**:project 级常驻 jtype 凭据(新表 + link 回退顺序 per-link > project)——重新引入一层共享凭据及其轮换/失效语义,而 99% 场景首个 link 建完后 blob 即被消费;把 blob 存进 connect 记录并让 discovery 用 connect_id 换 token——重启即丢且 console 需持有两种句柄,不如密文 blob 直白。

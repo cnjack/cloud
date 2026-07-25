@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strings"
@@ -62,18 +63,25 @@ func (s *Server) discoveryClient(w http.ResponseWriter, r *http.Request) (jtypeD
 			"the jtype integration is not configured — set the base URL on the Cluster page (ask a cluster admin)")
 		return nil, false
 	}
-	// D36: there is no cluster token to enumerate with. Borrow the per-link
-	// token of one of the project's existing links (any of them authorises the
-	// same jtype instance; the pickers only list what THAT token can see). A
-	// project with no token-bearing link yet can't enumerate — surface a typed
-	// 409 so the console falls back to manual entry (never a silent empty list).
-	token, tokErr := s.projectDiscoveryToken(r.Context(), projectID)
+	// D36/D37: there is no cluster token to enumerate with. The credential comes
+	// from (in precedence order):
+	//   1. X-Jtype-Token-Enc — a sealed blob from a just-completed project-surface
+	//      connect (D37), held by the console in memory. Decryptable => use it.
+	//   2. A per-link token borrowed from one of the project's existing links
+	//      (any of them authorises the same jtype instance; the pickers only
+	//      list what THAT token can see).
+	// Neither => typed 409 so the console falls back to manual entry (never a
+	// silent empty list).
+	token, tokErr := s.requestDiscoveryToken(r, projectID)
 	switch {
 	case tokErr == nil:
 		return s.jtypeDiscoveryFor(f, token), true
+	case errors.Is(tokErr, errBadTokenEnc):
+		writeError(w, http.StatusBadRequest, "bad_token_enc",
+			"the supplied token_enc could not be decrypted — reconnect with jtype")
 	case errors.Is(tokErr, jtype.ErrNoToken):
 		writeError(w, http.StatusConflict, "kanban_token_required",
-			"discovery needs a jtype token: add a link with a token (paste or Connect) first, or enter the ids manually")
+			"discovery needs a jtype token: connect with jtype (or add a link with a token) first, or enter the ids manually")
 	default:
 		// A store error or a decrypt/cipher failure on an existing link token —
 		// a real server-side problem, not "no token yet": 500, logged.
@@ -81,6 +89,33 @@ func (s *Server) discoveryClient(w http.ResponseWriter, r *http.Request) (jtypeD
 		writeError(w, http.StatusInternalServerError, "internal", "could not resolve a jtype credential for discovery")
 	}
 	return nil, false
+}
+
+// errBadTokenEnc marks an X-Jtype-Token-Enc header that is not valid base64 or
+// does not decrypt under this orchestrator's cipher — a CLIENT error (400), not
+// "no token" (409) and not a server failure (500).
+var errBadTokenEnc = errors.New("jtype: bad token_enc")
+
+// requestDiscoveryToken resolves the discovery credential: the X-Jtype-Token-Enc
+// header blob first (D37), then a per-link token borrowed from the project's
+// links (D36). jtype.ErrNoToken when neither yields one; store/decrypt errors
+// on the LINK path bubble up as internal errors (mapped by the caller).
+func (s *Server) requestDiscoveryToken(r *http.Request, projectID string) (string, error) {
+	if hdr := strings.TrimSpace(r.Header.Get("X-Jtype-Token-Enc")); hdr != "" {
+		if s.cipher == nil {
+			return "", errBadTokenEnc
+		}
+		blob, err := base64.StdEncoding.DecodeString(hdr)
+		if err != nil {
+			return "", errBadTokenEnc
+		}
+		tok, err := s.cipher.DecryptString(blob)
+		if err != nil {
+			return "", errBadTokenEnc
+		}
+		return tok, nil
+	}
+	return s.projectDiscoveryToken(r.Context(), projectID)
 }
 
 // projectDiscoveryToken returns the decrypted per-link token of the project's

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strings"
@@ -78,7 +79,10 @@ func (s *Server) linkView(l domain.KanbanLink) kanbanLinkView {
 // project_id comes from the path (not the body). token is the optional per-link
 // jtype PAT — write-only (plaintext in, never out); omit it to create the link
 // without a credential (soft/unvalidated, D30 — set one later via PATCH or
-// "Connect with jtype").
+// "Connect with jtype"). token_enc (D37) is the SEALED blob alternative
+// returned by a project-surface connect — the server verifies it decrypts and
+// stores it verbatim; the plaintext never crosses the browser. Exactly one of
+// token / token_enc may be set.
 type createKanbanLinkReq struct {
 	WorkspaceID   string `json:"workspace_id"`
 	BoardRef      string `json:"board_ref"`
@@ -86,6 +90,12 @@ type createKanbanLinkReq struct {
 	TriggerColumn string `json:"trigger_column"`
 	DoneColumn    string `json:"done_column"`
 	Token         string `json:"token"`
+	TokenEnc      string `json:"token_enc"`
+	// TokenExpiresAt (D37) is the device-flow expiry reported by the
+	// project-surface connect, RFC3339. Accepted ONLY alongside token_enc (a
+	// hand-pasted token has unknown expiry); it is display metadata, never a
+	// credential.
+	TokenExpiresAt string `json:"token_expires_at,omitempty"`
 }
 
 // handleListKanbanLinks returns every kanban link across all projects. It is a
@@ -157,10 +167,16 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 	req.TriggerColumn = strings.TrimSpace(req.TriggerColumn)
 	req.DoneColumn = strings.TrimSpace(req.DoneColumn)
 	token := strings.TrimSpace(req.Token)
+	tokenEncInput := strings.TrimSpace(req.TokenEnc)
 
 	if req.WorkspaceID == "" || req.BoardRef == "" || req.ServiceID == "" || req.TriggerColumn == "" {
 		writeError(w, http.StatusBadRequest, "bad_request",
 			"workspace_id, board_ref, service_id and trigger_column are required")
+		return
+	}
+	if token != "" && tokenEncInput != "" {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"pass only one of token (plaintext) or token_enc (sealed blob)")
 		return
 	}
 
@@ -179,12 +195,50 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Cipher precondition FIRST (P3): a per-link token we cannot encrypt is a
-	// typed 409 before any jtype network round-trip — the config error should not
-	// hide behind (or be masked by) a slow/failed board fetch.
-	if token != "" && s.cipher == nil {
+	// Cipher precondition FIRST (P3): a per-link credential we cannot seal/open
+	// is a typed 409 before any jtype network round-trip — the config error
+	// should not hide behind (or be masked by) a slow/failed board fetch.
+	if (token != "" || tokenEncInput != "") && s.cipher == nil {
 		writeError(w, http.StatusConflict, "cipher_not_configured",
 			"set AUTH_TOKEN_KEY on the orchestrator before storing a per-link jtype token")
+		return
+	}
+
+	// D37: a sealed blob (from a project-surface connect) must decode + decrypt
+	// under THIS orchestrator's cipher; the decrypted value drives the board
+	// validation below and the blob is stored verbatim. A blob that does not
+	// decrypt is a CLIENT error (400 bad_token_enc — reconnect), never stored.
+	tokenEnc := []byte(nil)
+	var tokenExpiresAt *time.Time
+	if tokenEncInput != "" {
+		blob, derr := base64.StdEncoding.DecodeString(tokenEncInput)
+		if derr != nil {
+			writeError(w, http.StatusBadRequest, "bad_token_enc",
+				"token_enc is not valid base64 — reconnect with jtype")
+			return
+		}
+		plain, derr := s.cipher.DecryptString(blob)
+		if derr != nil {
+			writeError(w, http.StatusBadRequest, "bad_token_enc",
+				"token_enc could not be decrypted by this orchestrator — reconnect with jtype")
+			return
+		}
+		token = plain
+		tokenEnc = blob
+		// Optional device-flow expiry (display metadata; malformed is a 400, a
+		// silently dropped expiry would be a lying link row).
+		if exp := strings.TrimSpace(req.TokenExpiresAt); exp != "" {
+			parsed, perr := time.Parse(time.RFC3339, exp)
+			if perr != nil {
+				writeError(w, http.StatusBadRequest, "bad_request",
+					"token_expires_at must be RFC3339")
+				return
+			}
+			tokenExpiresAt = &parsed
+		}
+	} else if strings.TrimSpace(req.TokenExpiresAt) != "" {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"token_expires_at is only accepted together with token_enc")
 		return
 	}
 
@@ -235,11 +289,11 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		boardStatus = domain.KanbanBoardOK
 	}
 
-	// Seal the per-link token. Empty => nil (no credential until one is set, D36).
-	// The cipher was verified above (P3), so encryption here only fails on
-	// entropy errors.
-	var tokenEnc []byte
-	if token != "" {
+	// Seal the per-link token when it arrived as PLAINTEXT (a D37 sealed blob is
+	// already ciphertext and was stored verbatim above). Empty => nil (no
+	// credential until one is set, D36). The cipher was verified above (P3), so
+	// encryption here only fails on entropy errors.
+	if token != "" && tokenEnc == nil {
 		enc, err := s.cipher.EncryptString(token)
 		if err != nil {
 			s.log.Error("encrypt kanban link token", "err", err)
@@ -255,7 +309,8 @@ func (s *Server) handleCreateProjectKanbanLink(w http.ResponseWriter, r *http.Re
 		BoardTitle: boardTitle, BoardStatus: boardStatus,
 		ProjectID: projectID, ServiceID: req.ServiceID,
 		TriggerColumn: req.TriggerColumn, DoneColumn: req.DoneColumn,
-		Enabled: true, TokenEnc: tokenEnc, CreatedAt: now, UpdatedAt: now,
+		Enabled: true, TokenEnc: tokenEnc, TokenExpiresAt: tokenExpiresAt,
+		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.st.CreateKanbanLink(r.Context(), link); err != nil {
 		if errors.Is(err, store.ErrAlreadyExists) {

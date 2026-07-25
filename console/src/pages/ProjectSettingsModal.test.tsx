@@ -585,6 +585,64 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     await waitFor(() => expect(screen.getByTestId('kanban-link-board')).toBeTruthy());
   });
 
+  it('connect-first: a fresh project connects with jtype, then picks from the selectors (D37)', async () => {
+    const project = baseProject();
+    // NO links at all — the fresh-project deadlock D37 fixes: discovery has no
+    // credential to borrow, so the panel offers Connect FIRST.
+    const { client, kctl } = kanbanClient(project, []);
+    const startProjectConnect = vi.fn().mockResolvedValue({
+      connect_id: 'kc_p1', user_code: '482913',
+      verification_uri: 'http://jtype/oauth/device',
+      verification_uri_complete: 'http://jtype/oauth/device?code=482913',
+      expires_in: 600, interval: 2,
+    });
+    const pollProjectConnect = vi.fn().mockResolvedValue({
+      status: 'complete', token_set: true,
+      token_expires_at: '2026-10-23T00:00:00Z', token_enc: 'sealed-blob',
+    });
+    const listJtypeWorkspaces = vi.fn().mockResolvedValue(WORKSPACES.map((w) => ({ ...w })));
+    const full = Object.assign(client, { startProjectConnect, pollProjectConnect, listJtypeWorkspaces });
+    renderModal(full, project);
+
+    fireEvent.click(screen.getByTestId('tab-kanban'));
+
+    // CONNECT FIRST: the connect panel shows; the pickers are NOT rendered yet.
+    await waitFor(() => expect(screen.getByTestId('kanban-project-connect-panel')).toBeTruthy());
+    expect(screen.queryByTestId('kanban-link-workspace-select')).toBeNull();
+
+    // Connect → complete: the pending badge appears and the pickers activate,
+    // driven by the SEALED blob (never plaintext — asserted via the mock arg).
+    fireEvent.click(screen.getByTestId('kanban-project-connect-start'));
+    await waitFor(() => expect(screen.getByTestId('kanban-pending-token')).toBeTruthy());
+    await waitFor(() => expect(listJtypeWorkspaces).toHaveBeenCalledWith('p1', 'sealed-blob'));
+
+    // Pick service → workspace → board → column and submit: the blob + the
+    // device-flow expiry ride with create-link, then are dropped from memory.
+    await pickOption('kanban-link-service', 'default');
+    await pickOption('kanban-link-workspace-select', 'My Team');
+    await waitFor(() =>
+      expect((screen.getByTestId('kanban-link-board-select') as HTMLButtonElement).disabled).toBe(false),
+    );
+    await pickOption('kanban-link-board-select', 'jtype');
+    await waitFor(() =>
+      expect((screen.getByTestId('kanban-link-trigger-select') as HTMLButtonElement).disabled).toBe(false),
+    );
+    await pickOption('kanban-link-trigger-select', 'AI');
+    fireEvent.click(screen.getByTestId('kanban-link-add'));
+
+    await waitFor(() => expect(kctl.creates).toHaveLength(1));
+    expect(kctl.creates[0]).toEqual({
+      projectId: 'p1',
+      input: {
+        workspace_id: 'ws_team', board_ref: 'jtype.board', service_id: 'svc_default',
+        trigger_column: 'ai', done_column: undefined, token: undefined,
+        token_enc: 'sealed-blob', token_expires_at: '2026-10-23T00:00:00Z',
+      },
+    });
+    // The blob was consumed — nothing dangles in component state.
+    await waitFor(() => expect(screen.queryByTestId('kanban-pending-token')).toBeNull());
+  });
+
   it('surfaces board_status fail-visibly: unvalidated (amber) and invalid (loud) with board_title', async () => {
     const project = baseProject();
     const mk = (

@@ -16,6 +16,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/jtypeoauth"
 	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
@@ -743,4 +744,172 @@ func TestConnectTerminalStatuses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- D37: project-surface connect (connect BEFORE the first link exists) -----
+
+// Test D37-1: the project flow mints a token bound to NO link — the poll returns
+// the SEALED blob (decryptable server-side, plaintext never on the wire), repeat
+// polls keep returning it, and NO link row is created/touched.
+func TestProjectConnectSealedBlobRoundtrip(t *testing.T) {
+	f := setupConnect(t, true)
+
+	// Integration off → 409 kanban_not_configured.
+	linkless := do(t, http.MethodPost, f.ts.URL+"/api/v1/projects/"+f.projectID+"/kanban/connect", f.adminTok, nil)
+	var eb errorBody
+	decode(t, linkless, &eb)
+	if linkless.StatusCode != http.StatusConflict || eb.Error.Code != "kanban_not_configured" {
+		t.Fatalf("off: status=%d code=%q", linkless.StatusCode, eb.Error.Code)
+	}
+
+	f.setClusterBaseURL(t, "http://jtype.db")
+	base := f.ts.URL + "/api/v1/projects/" + f.projectID + "/kanban/connect"
+	var sv kanbanConnectStartView
+	start := do(t, http.MethodPost, base, f.adminTok, nil)
+	if start.StatusCode != http.StatusOK {
+		t.Fatalf("start: %d", start.StatusCode)
+	}
+	decode(t, start, &sv)
+
+	f.clock.advance(3 * time.Second)
+	f.fake.setMode(jtypeoauth.StatusComplete)
+	pr := do(t, http.MethodGet, base+"/"+sv.ConnectID, f.adminTok, nil)
+	raw, _ := io.ReadAll(pr.Body)
+	pr.Body.Close()
+	if strings.Contains(string(raw), "minted-mcp-token") || strings.Contains(string(raw), "dev-secret") {
+		t.Fatalf("SECRET LEAK: project poll response contains a secret: %s", raw)
+	}
+	var st kanbanConnectStatusView
+	mustJSON(t, raw, &st)
+	if st.Status != "complete" || !st.TokenSet || st.TokenExpiresAt == "" {
+		t.Fatalf("complete poll = %+v", st)
+	}
+	if st.TokenEnc == "" {
+		t.Fatal("D37: project-surface complete poll must carry token_enc")
+	}
+	// The blob is valid ciphertext under THIS orchestrator's cipher and opens to
+	// the minted token (the console never learns this — the test server does).
+	blob, err := base64.StdEncoding.DecodeString(st.TokenEnc)
+	if err != nil {
+		t.Fatalf("token_enc is not base64: %v", err)
+	}
+	if got, err := f.srv.Cipher().DecryptString(blob); err != nil || got != "minted-mcp-token" {
+		t.Fatalf("token_enc decrypts to %q err=%v, want minted-mcp-token", got, err)
+	}
+
+	// A repeat poll keeps returning the blob (idempotent; no re-mint).
+	pr = do(t, http.MethodGet, base+"/"+sv.ConnectID, f.adminTok, nil)
+	var st2 kanbanConnectStatusView
+	decode(t, pr, &st2)
+	if st2.TokenEnc != st.TokenEnc {
+		t.Fatal("repeat poll must return the same sealed blob")
+	}
+
+	// Nothing was stored: the project has no link rows at all.
+	if links, _ := f.st.ListKanbanLinksByProject(context.Background(), f.projectID); len(links) != 0 {
+		t.Fatalf("project-surface connect must not create/touch link rows: %+v", links)
+	}
+}
+
+// Test D37-2: the blob DRIVES discovery without any link in the project
+// (X-Jtype-Token-Enc), and a tampered/foreign blob is a typed 400 bad_token_enc.
+func TestProjectConnectBlobDrivesDiscovery(t *testing.T) {
+	f := setupConnect(t, true)
+	f.setClusterBaseURL(t, "http://jtype.db")
+	f.srv.jtypeDiscoveryFor = func(_ *jtype.Factory, token string) jtypeDiscovery {
+		if token != "minted-mcp-token" {
+			t.Errorf("discovery resolved token %q want minted-mcp-token", token)
+		}
+		return fakeDiscovery{workspaces: []jtype.Workspace{{ID: "ws-1", Name: "Team"}}}
+	}
+
+	base := f.ts.URL + "/api/v1/projects/" + f.projectID + "/kanban/connect"
+	var sv kanbanConnectStartView
+	start := do(t, http.MethodPost, base, f.adminTok, nil)
+	decode(t, start, &sv)
+	f.fake.setMode(jtypeoauth.StatusComplete)
+	pr := do(t, http.MethodGet, base+"/"+sv.ConnectID, f.adminTok, nil)
+	var st kanbanConnectStatusView
+	decode(t, pr, &st)
+
+	// No link exists (seedLink was never called) — without the header this is the
+	// D36 typed 409; with it, discovery lists.
+	wsURL := f.ts.URL + "/api/v1/projects/" + f.projectID + "/kanban/jtype/workspaces"
+	noHdr := do(t, http.MethodGet, wsURL, f.adminTok, nil)
+	if noHdr.StatusCode != http.StatusConflict {
+		t.Fatalf("no header want 409 kanban_token_required, got %d", noHdr.StatusCode)
+	}
+	noHdr.Body.Close()
+
+	req, err := http.NewRequest(http.MethodGet, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+f.adminTok)
+	req.Header.Set("X-Jtype-Token-Enc", st.TokenEnc)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("discovery with blob want 200, got %d body=%s", resp.StatusCode, b)
+	}
+
+	// A garbage blob → 400 bad_token_enc (never a silent empty list).
+	req2, _ := http.NewRequest(http.MethodGet, wsURL, nil)
+	req2.Header.Set("Authorization", "Bearer "+f.adminTok)
+	req2.Header.Set("X-Jtype-Token-Enc", "aW50ZWdyaXR5LXRhbXBlcmVk")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad blob want 400, got %d", resp2.StatusCode)
+	}
+	var eb errorBody
+	decode(t, resp2, &eb)
+	if eb.Error.Code != "bad_token_enc" {
+		t.Fatalf("code=%q want bad_token_enc", eb.Error.Code)
+	}
+}
+
+// Test D37-3: authz + scoping — a member/api-key is 403 on the project flow; a
+// flow started in project A cannot be polled via project B's path (404).
+func TestProjectConnectAuthzAndScoping(t *testing.T) {
+	f := setupConnect(t, true)
+	f.setClusterBaseURL(t, "http://jtype.db")
+	baseA := f.ts.URL + "/api/v1/projects/" + f.projectID + "/kanban/connect"
+
+	for _, tc := range []struct {
+		name string
+		tok  string
+		want int
+	}{
+		{"member", f.memberTok, http.StatusForbidden},
+		{"api-key", f.apiKey, http.StatusForbidden},
+		{"unauth", "", http.StatusUnauthorized},
+	} {
+		r := do(t, http.MethodPost, baseA, tc.tok, nil)
+		if r.StatusCode != tc.want {
+			t.Errorf("project connect start by %s status=%d want %d", tc.name, r.StatusCode, tc.want)
+		}
+		r.Body.Close()
+	}
+
+	// Cross-project poll path → 404 connect_expired (never an existence leak).
+	var sv kanbanConnectStartView
+	start := do(t, http.MethodPost, baseA, f.adminTok, nil)
+	decode(t, start, &sv)
+	p2 := do(t, http.MethodPost, f.ts.URL+"/api/v1/projects", f.adminTok, map[string]any{"name": "p2"})
+	var pv2 projectView
+	decode(t, p2, &pv2)
+	cross := do(t, http.MethodGet,
+		f.ts.URL+"/api/v1/projects/"+pv2.ID+"/kanban/connect/"+sv.ConnectID, f.adminTok, nil)
+	if cross.StatusCode != http.StatusNotFound {
+		t.Fatalf("cross-project poll want 404, got %d", cross.StatusCode)
+	}
+	cross.Body.Close()
 }
