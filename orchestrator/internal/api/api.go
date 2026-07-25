@@ -117,8 +117,11 @@ type Server struct {
 	// (docs/17 §3); same no-persistence rationale as connects.
 	deviceFlows *deviceFlowRegistry
 	// oauthClientFor builds a jtype OAuth device-flow client for a base URL.
-	// Production wires jtypeoauth.NewClient; a test injects a fake with a poll spy.
+	// Production wires the confidential full-scope client; tests inject a fake.
 	oauthClientFor func(baseURL string) oauthClient
+	// validateJtypeToken proves a newly minted full token can list the user's
+	// workspaces before the UI is allowed to call the connection complete.
+	validateJtypeToken func(ctx context.Context, token string) error
 
 	// Session next-prompt long-poll timings (D22). Zero => the package defaults
 	// (25s hold / 500ms poll). Overridable by tests that need a fast hold.
@@ -229,7 +232,22 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// D28 — "Connect with jtype" OAuth device flow: an in-memory registry of
 	// pending flows + the jtype OAuth device-flow client seam (overridden by tests).
 	s.connects = newConnectRegistry()
-	s.oauthClientFor = func(baseURL string) oauthClient { return jtypeoauth.NewClient(baseURL, nil) }
+	s.oauthClientFor = func(baseURL string) oauthClient {
+		return jtypeoauth.NewFullClient(
+			baseURL,
+			cfg.JtypeOAuthClientID,
+			cfg.JtypeOAuthClientSecret,
+			nil,
+		)
+	}
+	s.validateJtypeToken = func(ctx context.Context, token string) error {
+		f, ok := s.kanban.Factory(ctx)
+		if !ok {
+			return errors.New("jtype integration is not configured")
+		}
+		_, err := f.Client(token).ListWorkspaces(ctx)
+		return err
+	}
 	// docs/17 — jcode device login: pending RFC 8628 flows live in memory only.
 	s.deviceFlows = newDeviceFlowRegistry()
 	// docs/17 §4 — device relay: the device-level SSE fan-out hub (client stream).

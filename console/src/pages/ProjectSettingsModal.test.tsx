@@ -603,6 +603,39 @@ describe('ProjectSettingsModal — Kanban tab (F6 / D25)', () => {
     });
   });
 
+  it('keeps selectors visible when the connected jtype token is unauthorized', async () => {
+    const project = baseProject();
+    const err = new ApiError(400, 'the jtype token is invalid or lacks access', {
+      error: {
+        code: 'jtype_unauthorized',
+        message: 'the jtype token is invalid or lacks access',
+      },
+    });
+    const { client } = kanbanClient(project, [], true, { discoveryErr: err });
+    const startProjectConnect = vi.fn().mockResolvedValue({
+      connect_id: 'kc_auth', user_code: '111111',
+      verification_uri: 'http://jtype/oauth/device',
+      verification_uri_complete: 'http://jtype/oauth/device?code=111111',
+      expires_in: 600, interval: 2,
+    });
+    const pollProjectConnect = vi.fn().mockResolvedValue({
+      status: 'complete', token_set: true, token_enc: 'sealed-blob',
+    });
+    const full = Object.assign(client, { startProjectConnect, pollProjectConnect });
+    renderModal(full, project);
+
+    fireEvent.click(screen.getByTestId('tab-kanban'));
+    fireEvent.click(await screen.findByTestId('kanban-project-connect-start'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-link-discovery-error').textContent).toBe(
+        'the jtype token is invalid or lacks access',
+      ),
+    );
+    expect(screen.getByTestId('kanban-link-workspace-select')).toBeTruthy();
+    expect(screen.queryByTestId('kanban-link-workspace')).toBeNull();
+  });
+
   it('surfaces a BOARD-list discovery error (not just workspaces) and falls back to manual', async () => {
     const project = baseProject();
     const err = new ApiError(400, 'jtype workspace was not found', {

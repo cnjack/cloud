@@ -7,11 +7,11 @@
  * httpOnly `jcloud_session` cookie — see client.ts `req`). The jtype token is
  * resolved and applied server-side and NEVER reaches the browser.
  *
- * `subscribeBoardEvents` is intentionally ABSENT: post PR #45 the jtype live
- * WS/SSE surface rejects the mcp-scoped cluster/per-link token (403), so a proxy
- * would only relay a 403. Omitting the method makes `<JTypeBoard>` settle on
- * *visible* polling (the modal also passes `live={false}` to drop the misleading
- * "live unavailable" hint). No fake-live — fail-visible by construction.
+ * `subscribeBoardEvents` is intentionally ABSENT: the server-side proxy has no
+ * SSE endpoint and the credential must stay off the browser. Omitting the
+ * method makes `<JTypeBoard>` settle on *visible* polling (the modal also passes
+ * `live={false}` to drop the misleading "live unavailable" hint). No fake-live
+ * — fail-visible by construction.
  *
  * `deleteDocument` is likewise absent until the DELETE proxy endpoint ships (its
  * absence surfaces the board's card-delete action as a visible failure, not a

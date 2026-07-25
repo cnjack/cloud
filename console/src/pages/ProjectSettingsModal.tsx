@@ -45,7 +45,7 @@ import {
 import { useToast } from '../components/Toast';
 import { KanbanConnectFlow, expiryLabel } from '../components/KanbanConnect';
 import { KanbanBoardModal } from './KanbanBoardModal';
-import { ApiError } from '../api/client';
+import { ApiError, apiErrorCode } from '../api/client';
 import { isReservedEnvKey, isValidEnvKey } from '../lib/env';
 import { timeAgo } from '../lib/format';
 import { PageHeader, SurfaceInner, pageLayoutStyles } from '../components/PageLayout';
@@ -1009,16 +1009,20 @@ function KanbanPanel({ project }: { project: Project }) {
   const selectedBoard = boardList.find((b) => b.ref === boardRef);
   const columnOptions = (selectedBoard?.columns ?? []).map((c) => ({ value: c.key, label: c.name }));
 
-  // Fail-visible auto-fallback: if EITHER discovery call errors, drop to manual
-  // entry and show the server's typed message — never a blank, spinning, or
-  // silently-empty picker.
+  // Fail-visible fallback: data-shape/discovery failures may use manual entry,
+  // but an invalid credential cannot be fixed by typing IDs. Keep the pickers
+  // visible and ask the owner to reconnect instead of presenting unusable
+  // manual fields.
   useEffect(() => {
     if (manual) return;
     const wsErr = workspaces.isError && !workspaces.isFetching;
     const boardErr = boards.isError && !boards.isFetching;
     if (!wsErr && !boardErr) return;
     const err = wsErr ? workspaces.error : boards.error;
-    setManual(true);
+    const code = err instanceof ApiError ? apiErrorCode(err) : undefined;
+    if (code !== 'jtype_unauthorized' && code !== 'bad_token_enc') {
+      setManual(true);
+    }
     setDiscoveryError(
       err instanceof ApiError
         ? err.message

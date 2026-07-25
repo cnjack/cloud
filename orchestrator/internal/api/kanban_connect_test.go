@@ -80,7 +80,7 @@ func (f *fakeOAuthClient) PollToken(_ context.Context, deviceCode string) (*jtyp
 	}
 	if mode == jtypeoauth.StatusComplete {
 		if tok == nil {
-			tok = &jtypeoauth.Token{AccessToken: "minted-mcp-token", ExpiresIn: 7776000}
+			tok = &jtypeoauth.Token{AccessToken: "minted-full-token", ExpiresIn: 7776000, Scope: "full"}
 		}
 		return tok, jtypeoauth.StatusComplete, nil
 	}
@@ -151,6 +151,7 @@ func setupConnect(t *testing.T, withCipher bool) connectFixture {
 	srv := New(st, cfg, log, sse.NewHub(), nil)
 	fake := &fakeOAuthClient{mode: jtypeoauth.StatusPending}
 	srv.oauthClientFor = func(string) oauthClient { return fake }
+	srv.validateJtypeToken = func(context.Context, string) error { return nil }
 	clock := &testClock{t: time.Now().UTC()}
 	srv.connects.now = clock.now
 	ts := httptest.NewServer(srv.Handler())
@@ -285,7 +286,7 @@ func TestLinkConnectPollToComplete(t *testing.T) {
 	pr = do(t, http.MethodGet, pollURL, f.adminTok, nil)
 	raw, _ := io.ReadAll(pr.Body)
 	pr.Body.Close()
-	if strings.Contains(string(raw), "minted-mcp-token") || strings.Contains(string(raw), "dev-secret") {
+	if strings.Contains(string(raw), "minted-full-token") || strings.Contains(string(raw), "dev-secret") {
 		t.Fatalf("SECRET LEAK: poll response contains a secret: %s", raw)
 	}
 	var st2 kanbanConnectStatusView
@@ -309,7 +310,7 @@ func TestLinkConnectPollToComplete(t *testing.T) {
 	if !stored.TokenSet() || stored.TokenExpiresAt == nil {
 		t.Fatalf("per-link token/expiry not stored: %+v", stored)
 	}
-	if got, _ := f.srv.Cipher().DecryptString(stored.TokenEnc); got != "minted-mcp-token" {
+	if got, _ := f.srv.Cipher().DecryptString(stored.TokenEnc); got != "minted-full-token" {
 		t.Fatalf("per-link token decrypts to %q", got)
 	}
 
@@ -317,7 +318,7 @@ func TestLinkConnectPollToComplete(t *testing.T) {
 	lr := do(t, http.MethodGet, f.ts.URL+"/api/v1/projects/"+f.projectID+"/kanban/links", f.adminTok, nil)
 	lraw, _ := io.ReadAll(lr.Body)
 	lr.Body.Close()
-	if strings.Contains(string(lraw), "minted-mcp-token") || strings.Contains(string(lraw), "dev-secret") {
+	if strings.Contains(string(lraw), "minted-full-token") || strings.Contains(string(lraw), "dev-secret") {
 		t.Fatalf("SECRET LEAK: links list contains a secret: %s", lraw)
 	}
 	var list struct {
@@ -334,6 +335,34 @@ func TestLinkConnectPollToComplete(t *testing.T) {
 	decode(t, pr, &st3)
 	if st3.Status != "complete" || !st3.TokenSet {
 		t.Fatalf("repeat poll = %+v want complete", st3)
+	}
+}
+
+func TestLinkConnectRejectsTokenThatCannotListWorkspaces(t *testing.T) {
+	f := setupConnect(t, true)
+	f.setClusterBaseURL(t, "http://jtype.db")
+	link := f.seedLink(t)
+	f.srv.validateJtypeToken = func(context.Context, string) error {
+		return fmt.Errorf("forbidden")
+	}
+
+	var sv kanbanConnectStartView
+	start := do(t, http.MethodPost, f.linkConnectURL(link.ID), f.adminTok, nil)
+	decode(t, start, &sv)
+	f.fake.setMode(jtypeoauth.StatusComplete)
+
+	poll := do(t, http.MethodGet, f.linkConnectURL(link.ID)+"/"+sv.ConnectID, f.adminTok, nil)
+	var status kanbanConnectStatusView
+	decode(t, poll, &status)
+	if status.Status != "denied" || status.TokenSet {
+		t.Fatalf("status=%+v want denied without token", status)
+	}
+	stored, err := f.st.GetKanbanLink(context.Background(), link.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.TokenSet() {
+		t.Fatal("failed-capability token must not be stored")
 	}
 }
 
@@ -725,6 +754,7 @@ func TestConnectTerminalStatuses(t *testing.T) {
 	}{
 		{"expired", jtypeoauth.StatusExpired, nil, "expired"},
 		{"denied", jtypeoauth.StatusDenied, nil, "denied"},
+		{"scope_mismatch", 0, jtypeoauth.ErrOAuthScopeMismatch, "denied"},
 		{"unsupported", 0, jtypeoauth.ErrOAuthUnsupported, "unsupported"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -776,7 +806,7 @@ func TestProjectConnectSealedBlobRoundtrip(t *testing.T) {
 	pr := do(t, http.MethodGet, base+"/"+sv.ConnectID, f.adminTok, nil)
 	raw, _ := io.ReadAll(pr.Body)
 	pr.Body.Close()
-	if strings.Contains(string(raw), "minted-mcp-token") || strings.Contains(string(raw), "dev-secret") {
+	if strings.Contains(string(raw), "minted-full-token") || strings.Contains(string(raw), "dev-secret") {
 		t.Fatalf("SECRET LEAK: project poll response contains a secret: %s", raw)
 	}
 	var st kanbanConnectStatusView
@@ -793,8 +823,8 @@ func TestProjectConnectSealedBlobRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token_enc is not base64: %v", err)
 	}
-	if got, err := f.srv.Cipher().DecryptString(blob); err != nil || got != "minted-mcp-token" {
-		t.Fatalf("token_enc decrypts to %q err=%v, want minted-mcp-token", got, err)
+	if got, err := f.srv.Cipher().DecryptString(blob); err != nil || got != "minted-full-token" {
+		t.Fatalf("token_enc decrypts to %q err=%v, want minted-full-token", got, err)
 	}
 
 	// A repeat poll keeps returning the blob (idempotent; no re-mint).
@@ -817,8 +847,8 @@ func TestProjectConnectBlobDrivesDiscovery(t *testing.T) {
 	f := setupConnect(t, true)
 	f.setClusterBaseURL(t, "http://jtype.db")
 	f.srv.jtypeDiscoveryFor = func(_ *jtype.Factory, token string) jtypeDiscovery {
-		if token != "minted-mcp-token" {
-			t.Errorf("discovery resolved token %q want minted-mcp-token", token)
+		if token != "minted-full-token" {
+			t.Errorf("discovery resolved token %q want minted-full-token", token)
 		}
 		return fakeDiscovery{workspaces: []jtype.Workspace{{ID: "ws-1", Name: "Team"}}}
 	}

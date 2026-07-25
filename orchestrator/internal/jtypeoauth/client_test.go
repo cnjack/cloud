@@ -3,6 +3,7 @@ package jtypeoauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,10 +19,14 @@ import (
 type fakeJtypeOAuth struct {
 	mux *http.ServeMux
 
-	mu        sync.Mutex
-	tokenMode string // "pending" | "approved" | "expired" | "invalid_grant" | "slow_down" | "denied"
-	formOK    bool   // the last request decoded as a form (not JSON)
-	lastGrant string // grant_type of the last token poll
+	mu               sync.Mutex
+	tokenMode        string // "pending" | "approved" | "expired" | "invalid_grant" | "slow_down" | "denied"
+	formOK           bool   // the last request decoded as a form (not JSON)
+	lastGrant        string // grant_type of the last token poll
+	lastScope        string
+	lastClientID     string
+	lastClientSecret string
+	responseScope    string
 }
 
 func newFakeJtypeOAuth() *fakeJtypeOAuth {
@@ -38,9 +43,13 @@ func (f *fakeJtypeOAuth) setMode(mode string) {
 }
 
 func (f *fakeJtypeOAuth) handleDeviceAuth(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
 	// The client MUST send application/x-www-form-urlencoded, never JSON.
 	f.mu.Lock()
 	f.formOK = strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded")
+	f.lastScope = r.PostForm.Get("scope")
+	f.lastClientID = r.PostForm.Get("client_id")
+	f.lastClientSecret = r.PostForm.Get("client_secret")
 	f.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_code":               "dev-secret-123",
@@ -56,14 +65,20 @@ func (f *fakeJtypeOAuth) handleToken(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	f.mu.Lock()
 	f.lastGrant = r.PostForm.Get("grant_type")
+	f.lastClientID = r.PostForm.Get("client_id")
+	f.lastClientSecret = r.PostForm.Get("client_secret")
 	mode := f.tokenMode
 	f.mu.Unlock()
 
 	switch mode {
 	case "approved":
+		scope := f.responseScope
+		if scope == "" {
+			scope = "mcp"
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"access_token": "minted-mcp-token", "token_type": "Bearer",
-			"expires_in": 7776000, "scope": "mcp",
+			"access_token": "minted-token", "token_type": "Bearer",
+			"expires_in": 7776000, "scope": scope,
 		})
 	case "expired":
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "expired_token"})
@@ -130,8 +145,60 @@ func TestPollTokenPendingThenApproved(t *testing.T) {
 	if err != nil || st != StatusComplete {
 		t.Fatalf("approved poll: status=%v err=%v", st, err)
 	}
-	if tok.AccessToken != "minted-mcp-token" || tok.ExpiresIn != 7776000 {
+	if tok.AccessToken != "minted-token" || tok.ExpiresIn != 7776000 || tok.Scope != "mcp" {
 		t.Fatalf("token = %+v", tok)
+	}
+}
+
+func TestFullClientAuthenticatesStartAndExchange(t *testing.T) {
+	f := newFakeJtypeOAuth()
+	srv := httptest.NewServer(f.mux)
+	defer srv.Close()
+	c := NewFullClient(srv.URL, "jcode-cloud", "top-secret", nil)
+	if _, err := c.StartDeviceAuthorization(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if f.lastScope != "full" || f.lastClientID != "jcode-cloud" || f.lastClientSecret != "top-secret" {
+		t.Fatalf("start form scope=%q client=%q secret=%q", f.lastScope, f.lastClientID, f.lastClientSecret)
+	}
+
+	f.setMode("approved")
+	// The fake intentionally returns mcp first: a full client must reject a
+	// downgraded token rather than marking the connection complete.
+	if _, _, err := c.PollToken(context.Background(), "dev-secret-123"); !errors.Is(err, ErrOAuthScopeMismatch) {
+		t.Fatalf("downgraded token err=%v want ErrOAuthScopeMismatch", err)
+	}
+	if f.lastClientID != "jcode-cloud" || f.lastClientSecret != "top-secret" {
+		t.Fatalf("poll form client=%q secret=%q", f.lastClientID, f.lastClientSecret)
+	}
+
+	f.mu.Lock()
+	f.responseScope = "full"
+	f.mu.Unlock()
+	tok, status, err := c.PollToken(context.Background(), "dev-secret-123")
+	if err != nil || status != StatusComplete {
+		t.Fatalf("full token poll: status=%v err=%v", status, err)
+	}
+	if tok.AccessToken != "minted-token" || tok.Scope != "full" {
+		t.Fatalf("full token = %+v", tok)
+	}
+}
+
+func TestFullClientRequiresSecret(t *testing.T) {
+	c := NewFullClient("http://jtype.test", "jcode-cloud", "", nil)
+	if _, err := c.StartDeviceAuthorization(context.Background()); err != ErrOAuthClientNotConfigured {
+		t.Fatalf("err=%v want ErrOAuthClientNotConfigured", err)
+	}
+}
+
+func TestFullClientReportsRejectedCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_client"})
+	}))
+	defer srv.Close()
+	c := NewFullClient(srv.URL, "jcode-cloud", "wrong-secret", nil)
+	if _, err := c.StartDeviceAuthorization(context.Background()); !errors.Is(err, ErrOAuthClientRejected) {
+		t.Fatalf("err=%v want ErrOAuthClientRejected", err)
 	}
 }
 

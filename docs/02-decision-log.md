@@ -320,3 +320,32 @@ D36 砍掉集群凭据后暴露一个 UX 死锁:全新项目没有任何带 toke
 - **凭据即能力**:discovery 端点接受 `X-Jtype-Token-Enc` 头(优先于借用项目已有 link 的 token,D36 路径保留);建链接接受 `token_enc` 字段(与明文 `token` 互斥,服务端验证可解密后原样存储,`token_expires_at` 仅随 blob 接受,纯展示元数据)。blob 是不可解密于客户端的密文,持有即可用——与 token 本体同防护级,且可跨 orchestrator 重启存活。
 - **console KanbanPanel**:项目无带 token 的 link 且未连接时,表单区显示"先连接 jtype"面板(复用 KanbanConnectFlow);连接成功后出现"已连接(90 天到期)"徽标+放弃按钮,选择器即刻可用,提交时 blob 随表单发出、随即从内存清除。手动录入仍是 escape hatch。
 - **被否**:project 级常驻 jtype 凭据(新表 + link 回退顺序 per-link > project)——重新引入一层共享凭据及其轮换/失效语义,而 99% 场景首个 link 建完后 blob 即被消费;把 blob 存进 connect 记录并让 discovery 用 connect_id 换 token——重启即丢且 console 需持有两种句柄,不如密文 blob 直白。
+
+---
+### D38 · jtype Connect 使用受信 full scope + 明示同意，不再拿 MCP token 调全量 REST
+
+D28 复用了公开 MCP device flow，铸出的 `mcp` token 随后却被 orchestrator 用于
+workspace/board/document REST discovery；jtype 收紧 scope guard 后它正确返回
+`403`，console 于是显示 `the jtype token is invalid or lacks access`，四个级联
+选择器无法获得数据。这不是“已经登录却未生效”，而是**认证成功、授权 scope
+不足**。
+
+- **受信 confidential client**：orchestrator 以
+  `JTYPE_OAUTH_CLIENT_ID/JTYPE_OAUTH_CLIENT_SECRET` 请求 `scope=full`；jtype
+  配置同一 client 后才接受。缺 secret、错 secret、返回 scope 被降级都 fail-visible，
+  绝不回退 `mcp`。
+- **明示 consent**：jtype 的 device consent 页先读取服务端绑定的 verified client
+  名与 scope，展示 full 可做的事情，必须由用户点 Allow；填满 6 位码和已有登录态不
+  再自动批准。full 只继承该用户已有的 workspace/RBAC 权限，不提升用户本身角色。
+- **grant 绑定**：jtype 每个 device code 绑定 flow kind、scope、client ID/name；
+  desktop poll、公开 MCP token endpoint、jcode Cloud full exchange 不能互换授权码。
+  存量行迁移为保守的 `legacy/mcp`，不能被解释成 full。
+- **双重能力校验**：orchestrator 只接受 token 响应中的 `scope=full`，并在密封/落库
+  前用 token 调一次 workspace list；失败即 `denied` 且不保存。
+- **UI 纠偏**：认证错误不是“手输 ID”能修复的问题，所以
+  `jtype_unauthorized/bad_token_enc` 保持 picker 模式并显示错误；其他 discovery
+  结构/网络错误仍可人工录入作为 escape hatch。
+
+- **被否**：把公开 MCP client 直接放宽成 full（任何 MCP 客户端都获得管理面，权限面
+  失控）；继续使用 mcp token 并逐个给 REST endpoint 开洞（以后新增 API 继续漏配，
+  full 语义名存实亡）；只隐藏 403 或自动手填（认证问题未解决且制造“连接成功”的假象）。

@@ -13,9 +13,10 @@ import (
 	"time"
 )
 
-// Client talks to the jtype document REST API (Authorization: Bearer <PAT>).
-// It is the single seam the kanban poller + writeback use; one mcp-scope PAT
-// authorises every read/write across all workspaces on the instance.
+// Client talks to the jtype document REST API (Authorization: Bearer <token>).
+// It is the single seam the kanban poller + writeback use. OAuth Connect now
+// supplies a user-approved full-scope token; JType still enforces that user's
+// workspace membership and role on every request.
 type Client struct {
 	baseURL string // e.g. http://127.0.0.1:13345 (no trailing slash)
 	token   string

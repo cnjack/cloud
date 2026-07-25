@@ -784,6 +784,16 @@ discovery 请求带 `X-Jtype-Token-Enc` 头即可枚举 workspace/board;建链�
 `token_enc`(+可选 `token_expires_at`)替代明文 `token`(二者互斥;
 `token_enc` 无法解密 → `400 bad_token_enc`)。明文 PAT 永不进浏览器。
 
+**full scope 与同意页(D38)**:上述 Connect 固定使用受信的 confidential client
+向 jtype 请求 `scope=full`，配置为 `JTYPE_OAUTH_CLIENT_ID`（默认
+`jcode-cloud`）+ `JTYPE_OAUTH_CLIENT_SECRET`。jtype 侧必须配置相同的 client
+ID/secret；缺失时 start 返回 `409 jtype_oauth_client_not_configured`，绝不降级
+成 `mcp`。用户在 jtype 页面看到经服务端验证的 client 名称、`full` 权限说明并
+明确点击同意，页面不再因 6 位码填满而自动批准。换得 token 后 orchestrator 会先
+调用 workspace list 验证能力，验证失败则 flow 进入 `denied`，token 不密封、不
+落库。console 遇 `jtype_unauthorized` 时保持级联选择器和错误可见，不再切到实际上
+同样不可用的手填 ID 表单。
+
 ### 2.5c Integrations(git 集成 · Feature F5 · D19+D20)
 
 **Integration 是 project 级实体**:一个 git host 绑定 + 一份**机器人服务凭据**

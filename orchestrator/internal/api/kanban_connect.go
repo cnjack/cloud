@@ -340,6 +340,16 @@ func (s *Server) handlePollProjectConnect(w http.ResponseWriter, r *http.Request
 // response withholds it (D28 §1.2). All errors are typed + fail-visible.
 func (s *Server) startConnectFlow(w http.ResponseWriter, r *http.Request, surface connectSurface, baseURL string) {
 	da, err := s.oauthClientFor(baseURL).StartDeviceAuthorization(r.Context())
+	if errors.Is(err, jtypeoauth.ErrOAuthClientNotConfigured) {
+		writeError(w, http.StatusConflict, "jtype_oauth_client_not_configured",
+			"configure JTYPE_OAUTH_CLIENT_SECRET before connecting JType")
+		return
+	}
+	if errors.Is(err, jtypeoauth.ErrOAuthClientRejected) {
+		writeError(w, http.StatusConflict, "jtype_oauth_client_rejected",
+			"JType rejected the configured OAuth client credentials")
+		return
+	}
 	if errors.Is(err, jtypeoauth.ErrOAuthUnsupported) {
 		writeError(w, http.StatusConflict, "jtype_oauth_unsupported",
 			"This jtype deployment does not support Connect — paste a token instead.")
@@ -422,6 +432,8 @@ func (s *Server) advanceConnect(ctx context.Context, rec *connectRecord) kanbanC
 	switch {
 	case errors.Is(err, jtypeoauth.ErrOAuthUnsupported):
 		rec.terminal = connectUnsupported
+	case errors.Is(err, jtypeoauth.ErrOAuthScopeMismatch):
+		rec.terminal = connectDenied
 	case err != nil:
 		// Transient (5xx / transport / unexpected): stay pending, log non-secret ctx.
 		s.log.Warn("kanban connect: poll transient error", "connect", rec.connectID,
@@ -457,6 +469,13 @@ func (s *Server) completeConnectLocked(ctx context.Context, rec *connectRecord, 
 		// Pathological: cipher was verified at start and is immutable in production.
 		s.log.Error("kanban connect: minted token but no cipher to seal it", "connect", rec.connectID)
 		rec.terminal = connectExpired
+		return
+	}
+	if err := s.validateJtypeToken(ctx, tok.AccessToken); err != nil {
+		s.log.Warn("kanban connect: minted token failed capability validation",
+			"connect", rec.connectID, "surface", rec.surface.kind, "host", hostOf(rec.baseURL),
+			"err", err)
+		rec.terminal = connectDenied
 		return
 	}
 	enc, err := s.cipher.EncryptString(tok.AccessToken)

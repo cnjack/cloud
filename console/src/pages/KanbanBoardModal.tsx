@@ -11,8 +11,8 @@
  *  - the link's `board_ref` is a `config.id` (`b_…`), but `<JTypeBoard boardRef>`
  *    wants a name / `.board` relativePath — we resolve it via
  *    `resolveBoardPathById` (over the same proxy) before rendering.
- *  - `live={false}`: we do NOT proxy SSE (an mcp-scoped token is 403'd on the
- *    live surface), so the board settles on visible polling — no fake-live.
+ *  - `live={false}`: the server-side proxy does not expose SSE, so the board
+ *    settles on visible polling — no fake-live and no token in the browser.
  *
  * Fail-visible throughout (red line #1): a link that can't be resolved to a
  * board shows a clear panel, never a blank modal.

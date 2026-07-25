@@ -31,6 +31,24 @@ func TestLoadNoProvidersBackwardCompatible(t *testing.T) {
 	if len(c.OAuthProviders) != 0 {
 		t.Fatalf("expected 0 providers, got %d", len(c.OAuthProviders))
 	}
+	if c.JtypeOAuthClientID != "jcode-cloud" || c.JtypeOAuthClientSecret != "" {
+		t.Fatalf("unexpected default JType OAuth client: id=%q secret=%q",
+			c.JtypeOAuthClientID, c.JtypeOAuthClientSecret)
+	}
+}
+
+func TestLoadJtypeOAuthClient(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("JTYPE_OAUTH_CLIENT_ID", "cloud-test")
+	t.Setenv("JTYPE_OAUTH_CLIENT_SECRET", "shared-secret")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.JtypeOAuthClientID != "cloud-test" || c.JtypeOAuthClientSecret != "shared-secret" {
+		t.Fatalf("JType OAuth client config = id=%q secret=%q",
+			c.JtypeOAuthClientID, c.JtypeOAuthClientSecret)
+	}
 }
 
 // TestLoadProviderRequiresTokenKey: configuring a provider CLIENT_ID without

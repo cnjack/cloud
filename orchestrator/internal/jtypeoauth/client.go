@@ -14,9 +14,8 @@
 //
 // CRITICAL — transport is application/x-www-form-urlencoded (jtype's axum
 // `Form` extractor), NOT JSON, so the JSON-only internal/jtype.Client cannot be
-// reused (D28 §0). jtype's device grant ignores client_id/scope entirely
-// (oauth.rs:247-249,310-367), so this client registers no client and persists no
-// client_id.
+// reused (D28/D38). Public MCP flows request `mcp`; the jcode Cloud integration
+// authenticates as a configured confidential client and requests `full`.
 //
 // Security: this package NEVER logs — the device_code and access_token are
 // credentials (either can mint/be the token). Callers log only non-secret
@@ -39,8 +38,11 @@ import (
 // the SAME root as the document API (the resolved cluster/effective base URL —
 // no new config, D28 §1.1); only the two /api/oauth/* paths are exercised.
 type Client struct {
-	baseURL string // e.g. http://127.0.0.1:13345 (no trailing slash)
-	http    *http.Client
+	baseURL      string // e.g. http://127.0.0.1:13345 (no trailing slash)
+	http         *http.Client
+	clientID     string
+	clientSecret string
+	scope        string
 }
 
 // NewClient builds a Client. baseURL is trimmed of trailing slashes. A nil hc
@@ -49,7 +51,21 @@ func NewClient(baseURL string, hc *http.Client) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: 20 * time.Second}
 	}
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: hc}
+	return &Client{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		http:    hc,
+		scope:   "mcp",
+	}
+}
+
+// NewFullClient builds the confidential first-party client used by jcode
+// Cloud. The client secret is sent only server-to-server to JType.
+func NewFullClient(baseURL, clientID, clientSecret string, hc *http.Client) *Client {
+	c := NewClient(baseURL, hc)
+	c.clientID = strings.TrimSpace(clientID)
+	c.clientSecret = clientSecret
+	c.scope = "full"
+	return c
 }
 
 // DeviceAuth is the device_authorization response (RFC 8628 §3.2). DeviceCode is
@@ -63,12 +79,13 @@ type DeviceAuth struct {
 	Interval                int // minimum seconds between polls (jtype: 2)
 }
 
-// Token is a minted access token (device grant success). jtype mints a 90-day
-// scoped session (create_scoped_session, scope=mcp) with NO refresh_token
-// (MCP_TOKEN_TTL_SECS=90d); it works as a Bearer on the document API.
+// Token is a minted access token (device grant success). JType mints a 90-day
+// scoped session with no refresh token. The caller verifies the returned scope
+// before accepting the credential.
 type Token struct {
 	AccessToken string
 	ExpiresIn   int64 // seconds until the token expires (jtype: 7776000 = 90d)
+	Scope       string
 }
 
 // Status classifies a device-grant poll (a non-error terminal or interim state).
@@ -98,13 +115,27 @@ const (
 // or returns a non-JSON page. Callers surface it as a typed jtype_oauth_unsupported
 // and fall back to the hand-pasted-PAT path — never a silent mock (D28 §5).
 var ErrOAuthUnsupported = errors.New("jtype: OAuth device flow not supported at this base URL")
+var ErrOAuthClientNotConfigured = errors.New("jtype: full OAuth client secret is not configured")
+var ErrOAuthClientRejected = errors.New("jtype: full OAuth client credentials were rejected")
+var ErrOAuthScopeMismatch = errors.New("jtype: token response did not grant full scope")
 
-// StartDeviceAuthorization begins a device flow (form POST, no client_id). A
+// StartDeviceAuthorization begins a device flow (form POST). A
 // 404/405 (route absent) or a non-JSON / token-less body means an old jtype with
 // no OAuth support → ErrOAuthUnsupported. A 5xx or transport failure is a plain
 // (transient, non-terminal) error the caller can retry.
 func (c *Client) StartDeviceAuthorization(ctx context.Context) (*DeviceAuth, error) {
-	resp, err := c.postForm(ctx, "/api/oauth/device_authorization", url.Values{})
+	if c.scope == "full" && (c.clientID == "" || strings.TrimSpace(c.clientSecret) == "") {
+		return nil, ErrOAuthClientNotConfigured
+	}
+	form := url.Values{}
+	form.Set("scope", c.scope)
+	if c.clientID != "" {
+		form.Set("client_id", c.clientID)
+	}
+	if c.clientSecret != "" {
+		form.Set("client_secret", c.clientSecret)
+	}
+	resp, err := c.postForm(ctx, "/api/oauth/device_authorization", form)
 	if err != nil {
 		return nil, fmt.Errorf("jtype oauth: device_authorization: %w", err) // transient
 	}
@@ -115,6 +146,9 @@ func (c *Client) StartDeviceAuthorization(ctx context.Context) (*DeviceAuth, err
 	case resp.StatusCode >= 500:
 		return nil, fmt.Errorf("jtype oauth: device_authorization: server status %d", resp.StatusCode)
 	case resp.StatusCode >= 400:
+		if readErrorCode(resp) == "invalid_client" {
+			return nil, ErrOAuthClientRejected
+		}
 		// A 4xx here is not the RFC pending/slow_down loop (that is the token
 		// endpoint); an old jtype route may also answer 400 for an unknown path.
 		return nil, ErrOAuthUnsupported
@@ -159,6 +193,12 @@ func (c *Client) PollToken(ctx context.Context, deviceCode string) (*Token, Stat
 	form := url.Values{}
 	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
 	form.Set("device_code", deviceCode)
+	if c.clientID != "" {
+		form.Set("client_id", c.clientID)
+	}
+	if c.clientSecret != "" {
+		form.Set("client_secret", c.clientSecret)
+	}
 	resp, err := c.postForm(ctx, "/api/oauth/token", form)
 	if err != nil {
 		return nil, 0, fmt.Errorf("jtype oauth: token: %w", err) // transient (transport)
@@ -172,11 +212,19 @@ func (c *Client) PollToken(ctx context.Context, deviceCode string) (*Token, Stat
 		var raw struct {
 			AccessToken string `json:"access_token"`
 			ExpiresIn   int64  `json:"expires_in"`
+			Scope       string `json:"scope"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil || raw.AccessToken == "" {
 			return nil, 0, fmt.Errorf("jtype oauth: token: 200 without an access_token")
 		}
-		return &Token{AccessToken: raw.AccessToken, ExpiresIn: raw.ExpiresIn}, StatusComplete, nil
+		if c.scope == "full" && raw.Scope != "full" {
+			return nil, 0, fmt.Errorf("%w: got %q", ErrOAuthScopeMismatch, raw.Scope)
+		}
+		return &Token{
+			AccessToken: raw.AccessToken,
+			ExpiresIn:   raw.ExpiresIn,
+			Scope:       raw.Scope,
+		}, StatusComplete, nil
 	case resp.StatusCode >= 500:
 		return nil, 0, fmt.Errorf("jtype oauth: token: server status %d", resp.StatusCode) // transient
 	}
@@ -190,6 +238,8 @@ func (c *Client) PollToken(ctx context.Context, deviceCode string) (*Token, Stat
 	case "expired_token", "invalid_grant":
 		return nil, StatusExpired, nil
 	case "access_denied":
+		return nil, StatusDenied, nil
+	case "invalid_client":
 		return nil, StatusDenied, nil
 	default:
 		// invalid_request or any unrecognised code: our request should be
