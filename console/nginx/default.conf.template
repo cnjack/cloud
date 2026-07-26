@@ -47,6 +47,17 @@ server {
         proxy_read_timeout 120s;
     }
 
+    # Provider webhooks are public, signature-authenticated orchestrator
+    # endpoints. They must not fall through to the static SPA handler: nginx
+    # rejects POST requests to index.html with 405 before the orchestrator can
+    # verify the provider signature or record the delivery receipt.
+    location /webhooks/ {
+        proxy_pass ${ORCHESTRATOR_URL};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+    }
+
     # SPA fallback.
     location / {
         try_files $uri /index.html;
