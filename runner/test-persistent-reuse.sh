@@ -31,7 +31,11 @@ info() { printf '[reuse-test] %s\n' "$*"; }
 command -v git >/dev/null 2>&1 || fail "git is required"
 
 TMP="$(mktemp -d)"
-cleanup() { [ "${KEEP:-0}" = "1" ] && { info "KEEP=1, leaving $TMP"; return; }; rm -rf "$TMP"; }
+cleanup() {
+  [ "${KEEP:-0}" = "1" ] && { info "KEEP=1, leaving $TMP"; return; }
+  chmod -R u+w "$TMP" 2>/dev/null || true
+  rm -rf "$TMP"
+}
 trap cleanup EXIT
 
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
@@ -50,8 +54,27 @@ WS="$TMP/ws"
 HOME_DIR="$TMP/home"
 mkdir -p "$HOME_DIR"
 
+# Plugin-enabled production runs mount GIT_CONFIG_GLOBAL from a read-only tmpfs.
+# Pin a hostile external hooksPath there: entrypoint must override it through
+# protected command-scope config, without trying to mutate this file. A hook
+# firing during either clone or reuse proves the protection is ineffective.
+EXTERNAL_HOOKS="$TMP/external-hooks"
+mkdir -p "$EXTERNAL_HOOKS"
+cat > "$EXTERNAL_HOOKS/post-checkout" <<'HOOK'
+#!/usr/bin/env bash
+touch "$WORKSPACE/EXTERNAL_HOOK_FIRED"
+HOOK
+chmod +x "$EXTERNAL_HOOKS/post-checkout"
+RO_CONFIG_DIR="$TMP/read-only-git-config"
+RO_CONFIG="$RO_CONFIG_DIR/config"
+mkdir -p "$RO_CONFIG_DIR"
+printf '[core]\n\thooksPath = %s\n' "$EXTERNAL_HOOKS" > "$RO_CONFIG"
+chmod 0444 "$RO_CONFIG"
+chmod 0555 "$RO_CONFIG_DIR"
+
 run_prep() {
   env -i PATH="$PATH" HOME="$HOME_DIR" \
+    GIT_CONFIG_GLOBAL="$RO_CONFIG" \
     WORKSPACE="$WS" \
     PERSISTENT_WORKSPACE=1 \
     SOURCE_MODE=clone \
@@ -70,6 +93,7 @@ run_prep() {
 run_prep
 [ "$(git -C "$WS" rev-parse HEAD)" = "$COMMIT_A" ] || fail "run1 HEAD != commit A"
 grep -q '"enabled": true' "$HOME_DIR/.jcode/config.json" || fail "memory not enabled in persistent config.json"
+[ ! -f "$WS/EXTERNAL_HOOK_FIRED" ] || fail "SECURITY: external Git hook fired during fresh clone"
 pass "run 1: fresh clone at commit A, memory enabled"
 
 # Plant a .git marker (survives reuse, dies on re-clone), an untracked pollution
@@ -110,6 +134,7 @@ grep -q "^v2$" "$WS/file.txt" || fail "run2 did not reset dirty tracked change t
 [ -f "$HOME_DIR/.jcode/memory/project.md" ] || fail "run2 wiped jcode memory (must be preserved)"
 # Security: the planted hook must NOT have fired during the reuse git operations.
 [ ! -f "$WS/.git/HOOK_FIRED" ] || fail "SECURITY: git hook fired during reuse (hooks not disabled)"
+[ ! -f "$WS/EXTERNAL_HOOK_FIRED" ] || fail "SECURITY: external Git hook fired through read-only global config"
 # Session transcript scrubbed (D12 hygiene), memory preserved.
 [ ! -f "$HOME_DIR/.jcode/sessions/abc-123.json" ] || fail "prior run's session transcript leaked (sessions not scrubbed)"
 pass "run 2: reused checkout, fetched B, cleaned pollution, kept memory, hooks disabled, sessions scrubbed"

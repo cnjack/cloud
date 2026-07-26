@@ -235,14 +235,27 @@ MODEL_API_KEY="${MODEL_API_KEY:-dummy-key}"
 
 log "run_id=$RUN_ID kind=$RUN_KIND source_mode=$SOURCE_MODE git_mode=$GIT_MODE"
 
-# Defense in depth against cross-run hook execution (Feature C security). A
-# persistent workspace PVC can carry .git/hooks planted by a prior run's agent;
-# the next run's git checkout/fetch would then trigger that hook — executing
-# attacker-controlled code as the runner (which holds RUN_TOKEN). core.hooksPath
-# set to /dev/null makes git look for hooks in an empty directory: none can fire.
-# Set GLOBALLY (not per-call) so EVERY git invocation in this script AND the
-# agent's own git tool calls are covered.
-git config --global core.hooksPath /dev/null 2>/dev/null || true
+# Defense in depth against two persistent-PVC hazards:
+#
+#   1. kubelet creates the mounted $WORKSPACE root as root while the Runner is a
+#      fixed non-root uid. A clone can succeed (its .git belongs to the Runner)
+#      and the very next repository-local command can still be rejected by
+#      Git's safe.directory ownership check.
+#   2. a previous task can plant .git/hooks that a later task must never execute
+#      while it still holds a fresh RUN_TOKEN.
+#
+# Use Git's protected command-scope environment instead of `git config --global`.
+# Plugin-enabled runs point GIT_CONFIG_GLOBAL at a read-only tmpfs file owned by
+# the credential sidecar, so attempting to mutate that file silently failed and
+# left both protections inactive. These values apply to every Git child process
+# (including agent-invoked Git), trust only this fixed workspace rather than `*`,
+# and cannot be overridden through Project injected_env because the entire GIT_
+# namespace is reserved by the Orchestrator.
+export GIT_CONFIG_COUNT=2
+export GIT_CONFIG_KEY_0="safe.directory"
+export GIT_CONFIG_VALUE_0="$WORKSPACE"
+export GIT_CONFIG_KEY_1="core.hooksPath"
+export GIT_CONFIG_VALUE_1="/dev/null"
 
 # --- 0. Optional self-contained model: start the bundled mock LLM ------------
 MOCK_PID=""
