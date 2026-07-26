@@ -185,11 +185,13 @@ export function KanbanBoardModal({ projectId, serviceId = '', links, canManage =
               <div className={styles.failActions}>
                 <Button
                   type="button"
-                  disabled={!canManage || !jtypePlugin || !boardRef || putBinding.isPending}
+                  disabled={!canManage || !jtypePlugin || !previewBoard || putBinding.isPending}
                   loading={putBinding.isPending}
                   onClick={() => putBinding.mutate({
                     installation_id: jtypePlugin!.id!,
-                    board_ref: boardRef,
+                    // Submit the document path so the server can resolve and
+                    // validate the board, then persist its canonical config id.
+                    board_ref: previewBoard!.ref,
                     enabled: true,
                   })}
                   data-testid="kanban-enable"

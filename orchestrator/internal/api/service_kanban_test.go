@@ -18,9 +18,15 @@ import (
 	"github.com/cnjack/jcloud/internal/store"
 )
 
-type serviceKanbanBoardValidator struct{ board *jtype.Board }
+type serviceKanbanBoardValidator struct {
+	board *jtype.Board
+	calls *int
+}
 
 func (v serviceKanbanBoardValidator) GetBoard(context.Context, string, string) (*jtype.Board, error) {
+	if v.calls != nil {
+		*v.calls++
+	}
 	return v.board, nil
 }
 
@@ -64,6 +70,16 @@ func newServiceKanbanServer(t *testing.T) (*httptest.Server, *store.MemStore, *S
 
 func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	ts, st, srv := newServiceKanbanServer(t)
+	validatorCalls := 0
+	srv.boardValidatorFor = func(*jtype.Factory, string) boardValidator {
+		return serviceKanbanBoardValidator{
+			board: &jtype.Board{
+				ID:      "b_board",
+				Columns: []jtype.BoardColumn{{Key: "ai"}, {Key: "done"}},
+			},
+			calls: &validatorCalls,
+		}
+	}
 	ctx := context.Background()
 	now := time.Now().UTC()
 	project := &domain.Project{ID: domain.NewID(), Name: "service-kanban", CreatedAt: now}
@@ -98,7 +114,7 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 
 	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
 		"installation_id": installation.ID,
-		"board_ref":       "b_board",
+		"board_ref":       "delivery.board",
 		"enabled":         true,
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -108,6 +124,37 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	decode(t, resp, &created)
 	if created.Automation.TriggerKind != "kanban" || created.Kanban == nil || created.Kanban.BoardRef != "b_board" || created.Kanban.TriggerColumn != "ai" || created.Kanban.DoneColumn != "done" {
 		t.Fatalf("binding=%+v", created)
+	}
+	if validatorCalls != 1 {
+		t.Fatalf("initial path validation calls=%d want 1", validatorCalls)
+	}
+
+	// GET returns the canonical board id. Round-tripping that current id must
+	// work without scanning JType board documents again.
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
+		"installation_id": installation.ID,
+		"board_ref":       "b_board",
+		"enabled":         true,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("canonical round-trip status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if validatorCalls != 1 {
+		t.Fatalf("canonical round-trip triggered live scan: calls=%d", validatorCalls)
+	}
+
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
+		"installation_id": installation.ID,
+		"board_ref":       "b_untrusted",
+		"enabled":         true,
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("untrusted canonical id status=%d want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if validatorCalls != 1 {
+		t.Fatalf("untrusted canonical id triggered live scan: calls=%d", validatorCalls)
 	}
 
 	resp = do(t, http.MethodGet, ts.URL+"/api/v1/projects/"+project.ID+"/automations", consoleToken, nil)

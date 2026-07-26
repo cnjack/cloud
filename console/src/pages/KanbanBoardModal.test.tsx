@@ -112,7 +112,7 @@ function renderModal(api: ApiClient, links: BoardEmbedLink[]) {
 }
 
 describe('KanbanBoardModal', () => {
-  it('enables the current Service with the stable board id and default server columns', async () => {
+  it('enables the current Service by board path and leaves canonicalization to the server', async () => {
     const putServiceKanban = vi.fn(async (_serviceId: string, input: { installation_id: string; board_ref: string }) => ({
       automation: { id: 'a1', service_id: 'svc_1', name: 'Kanban', trigger_kind: 'kanban' as const, prompt_template: '', enabled: true, ignore_jcode: true, created_at: '', updated_at: '' },
       kanban: { installation_id: input.installation_id, board_ref: input.board_ref, trigger_column: 'ai', done_column: 'done' },
@@ -137,7 +137,7 @@ describe('KanbanBoardModal', () => {
     expect(within(preview).getByTestId('jtype-board').getAttribute('data-readonly')).toBe('true');
     fireEvent.click(screen.getByTestId('kanban-enable'));
     await waitFor(() => expect(putServiceKanban).toHaveBeenCalledWith('svc_1', {
-      installation_id: 'jtype-1', board_ref: 'b_stable', enabled: true,
+      installation_id: 'jtype-1', board_ref: 'delivery.board', enabled: true,
     }));
   });
 

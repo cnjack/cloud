@@ -110,19 +110,37 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 409, "plugin_unavailable", "reconnect the Project JType Plugin before enabling Kanban")
 		return
 	}
-	factory := jtype.NewFactory(cfg.BaseURL, 20*time.Second)
-	board, err := s.boardValidatorFor(factory, token).GetBoard(r.Context(), in.WorkspaceID, req.BoardRef)
-	if err != nil {
-		s.writeDiscoveryError(w, in.WorkspaceID, err)
-		return
-	}
-	if board.ID != req.BoardRef {
-		writeError(w, 400, "board_not_available", "the selected board is not available to this JType Plugin")
-		return
-	}
-	if !boardHasColumn(board, defaultKanbanTriggerColumn) || !boardHasColumn(board, defaultKanbanDoneColumn) {
-		writeError(w, 409, "default_columns_missing", "the board must contain the default ai and done columns")
-		return
+	canonicalBoardRef := ""
+	roundTripCurrent := current != nil && current.Kanban != nil &&
+		current.Kanban.InstallationID == req.InstallationID &&
+		current.Kanban.BoardRef == req.BoardRef
+	if roundTripCurrent {
+		// GET returns the persisted canonical board id. An enabled-only PUT may
+		// round-trip that value without performing an unbounded board-document
+		// scan; the poller remains responsible for detecting later board drift.
+		canonicalBoardRef = current.Kanban.BoardRef
+	} else {
+		// New or changed bindings use a document path/name. A canonical-looking
+		// b_* value is only accepted when it exactly matches the current binding.
+		if strings.HasPrefix(req.BoardRef, "b_") && !strings.HasSuffix(strings.ToLower(req.BoardRef), ".board") {
+			writeError(w, 400, "board_ref_requires_path", "select the board by its .board document path")
+			return
+		}
+		factory := jtype.NewFactory(cfg.BaseURL, 20*time.Second)
+		board, boardErr := s.boardValidatorFor(factory, token).GetBoard(r.Context(), in.WorkspaceID, req.BoardRef)
+		if boardErr != nil {
+			s.writeDiscoveryError(w, in.WorkspaceID, boardErr)
+			return
+		}
+		canonicalBoardRef = strings.TrimSpace(board.ID)
+		if canonicalBoardRef == "" {
+			writeError(w, 400, "board_not_available", "the selected board is not available to this JType Plugin")
+			return
+		}
+		if !boardHasColumn(board, defaultKanbanTriggerColumn) || !boardHasColumn(board, defaultKanbanDoneColumn) {
+			writeError(w, 409, "default_columns_missing", "the board must contain the default ai and done columns")
+			return
+		}
 	}
 	items, err := s.st.ListPluginAutomationsByProject(r.Context(), svc.ProjectID)
 	if err != nil {
@@ -134,7 +152,7 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		other, getErr := s.st.GetPluginAutomationSpec(r.Context(), item.ID)
-		if getErr == nil && other.Kanban != nil && other.Kanban.InstallationID == req.InstallationID && other.Kanban.BoardRef == req.BoardRef {
+		if getErr == nil && other.Kanban != nil && other.Kanban.InstallationID == req.InstallationID && other.Kanban.BoardRef == canonicalBoardRef {
 			writeError(w, 409, "board_already_bound", "this board is already enabled for another Service")
 			return
 		}
@@ -145,7 +163,7 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 	}
 	now := time.Now().UTC()
 	a := &domain.PluginAutomation{ID: domain.NewID(), ServiceID: svc.ID, InstallationID: req.InstallationID, Name: "Kanban", TriggerKind: "kanban", PromptTemplate: "Complete the task described by the JType card.", Enabled: enabled, IgnoreJCode: true, CreatedBy: principalFrom(r.Context()).userID(), CreatedAt: now}
-	trigger := &domain.KanbanTrigger{AutomationID: a.ID, InstallationID: req.InstallationID, BoardRef: req.BoardRef, TriggerColumn: defaultKanbanTriggerColumn, DoneColumn: defaultKanbanDoneColumn}
+	trigger := &domain.KanbanTrigger{AutomationID: a.ID, InstallationID: req.InstallationID, BoardRef: canonicalBoardRef, TriggerColumn: defaultKanbanTriggerColumn, DoneColumn: defaultKanbanDoneColumn}
 	if current == nil {
 		if err := s.st.CreatePluginAutomation(r.Context(), a, nil, nil, trigger, nil); err != nil {
 			if errors.Is(err, store.ErrAlreadyExists) {
