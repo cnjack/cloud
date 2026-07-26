@@ -455,7 +455,9 @@ describe('ProjectDetailPage — model selection (D21)', () => {
     await screen.findByTestId('composer-model-select');
     await pickOption('composer-model-select', 'GPT-4o');
     await pickOption('composer-effort-select', 'Effort · High');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Goal mode' }));
+    fireEvent.click(screen.getByTestId('composer-add-menu'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Goal mode · Enable' }));
+    expect(screen.getByTestId('composer-goal-active').textContent).toContain('Goal mode');
     const notes = new File(['acceptance criteria'], 'notes.txt', { type: 'text/plain' });
     fireEvent.change(screen.getByTestId('composer-attachment-input'), { target: { files: [notes] } });
     fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'ship it' } });

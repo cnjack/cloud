@@ -42,6 +42,7 @@ Status vocabulary:
 | Model effort | Choose `auto` or a model-supported reasoning effort and pass the resolved value at startup | automated verification passed | model capability validation, persistence/retry/resume, generated config, and Job assertions |
 | Goal mode | Initialize a concrete goal through jcode's native goal startup contract | automated verification passed | persistence/retry/resume and native `/goal` startup assertions |
 | Attachments | Upload Project-bound files safely and expose them read-only to only the target Run | automated verification passed | auth, filename/content-type/length limits, stage state machine, quota, lifecycle, retry/resume, read-only manifest, tmpfs and memory-accounting tests, including real-PG concurrent stage/quota/claim and last-reference GC coverage |
+| Composer parity | Keep the Cloud new-task composer visually and behaviorally aligned with jcode while preserving Cloud-specific Service, base-branch, staged-file, and one-shot Run semantics | automated verification passed | jcode-style composer with a unified `+` menu, visible Goal state, permission/branch/model/effort/send footer, Enter-to-send, Shift+Enter newline, IME protection, hidden-input focus discipline, attachment-limit keyboard handling, five locales, narrow-screen layout, and 545-test Console regression; production browser check remains |
 
 ## Known P2 follow-ups
 
@@ -63,14 +64,14 @@ Status vocabulary:
 - [x] Orchestrator full test suite passes.
 - [x] PostgreSQL-gated store suite passes.
 - [x] Console tests, typecheck, localization, and production build pass.
-- [ ] Kustomize targets render with exact release images.
+- [x] Kustomize targets render with exact release images.
 - [x] Generic Runner image contains no Provider CLI or Skill.
 - [x] Domain/data consistency review has no unresolved release blocker.
 - [x] Attacker-perspective review has no unresolved release blocker.
-- [ ] Branch is pushed and image workflow succeeds for GitHub Packages and
+- [x] Branch is pushed and image workflow succeeds for GitHub Packages and
       Aliyun Registry.
-- [ ] PostgreSQL backup is taken before deployment.
-- [ ] Production migrations, readiness, and rollout are healthy.
+- [x] PostgreSQL backup is taken before deployment.
+- [x] Production migrations, readiness, and rollout are healthy.
 - [ ] GitHub push and `@jcode` journeys pass with a configured model.
 - [ ] GitLab/Gitea journeys pass, or remain explicitly blocked with the exact
       external configuration still required.
