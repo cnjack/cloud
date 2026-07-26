@@ -32,16 +32,26 @@ func newSetupServer(t *testing.T) (*httptest.Server, *store.MemStore, *providerS
 func TestFirstVisitorSetupPersistsLoginProviderAndEnablesDynamicAuth(t *testing.T) {
 	ts, st, upstream := newSetupServer(t)
 
-	before := do(t, http.MethodGet, ts.URL+"/api/v1/setup", "", nil)
+	request, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/setup", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = "cloud.example.test"
+	request.Header.Set("X-Forwarded-Proto", "https")
+	before, err := ts.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if before.StatusCode != http.StatusOK {
 		t.Fatalf("GET setup status=%d", before.StatusCode)
 	}
 	var initial struct {
-		SetupRequired      bool `json:"setup_required"`
-		LoginProviderCount int  `json:"login_provider_count"`
+		SetupRequired      bool   `json:"setup_required"`
+		PublicURL          string `json:"public_url"`
+		LoginProviderCount int    `json:"login_provider_count"`
 	}
 	decode(t, before, &initial)
-	if !initial.SetupRequired || initial.LoginProviderCount != 0 {
+	if !initial.SetupRequired || initial.LoginProviderCount != 0 || initial.PublicURL != "https://cloud.example.test" {
 		t.Fatalf("initial setup=%+v", initial)
 	}
 

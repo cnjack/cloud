@@ -105,7 +105,7 @@ func (s *Server) handleListProviderConfigs(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleGetSetup(w http.ResponseWriter, r *http.Request) {
 	settings, err := s.st.GetClusterSettings(r.Context())
 	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusOK, map[string]any{"setup_required": true, "public_url": "", "login_provider_count": 0, "providers": []providerConfigView{}})
+		writeJSON(w, http.StatusOK, map[string]any{"setup_required": true, "public_url": setupRequestOrigin(r), "login_provider_count": 0, "providers": []providerConfigView{}})
 		return
 	}
 	if err != nil {
@@ -125,7 +125,26 @@ func (s *Server) handleGetSetup(w http.ResponseWriter, r *http.Request) {
 			loginCount++
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"setup_required": !settings.SetupComplete, "public_url": settings.PublicURL, "login_provider_count": loginCount, "providers": providers})
+	publicURL := settings.PublicURL
+	if !settings.SetupComplete && strings.TrimSpace(publicURL) == "" {
+		publicURL = setupRequestOrigin(r)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"setup_required": !settings.SetupComplete, "public_url": publicURL, "login_provider_count": loginCount, "providers": providers})
+}
+
+// setupRequestOrigin is only a suggestion shown in the editable setup form. It
+// preserves the browser-facing Host forwarded by the console proxy and accepts
+// only the two schemes the setup mutation itself permits.
+func setupRequestOrigin(r *http.Request) string {
+	scheme := requestScheme(r)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		return ""
+	}
+	return (&url.URL{Scheme: scheme, Host: host}).String()
 }
 
 type putSetupReq struct {

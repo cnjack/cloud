@@ -27,7 +27,7 @@ import {
 } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AuthProviderInfo, Me } from '../api/types';
+import type { AuthProviderInfo, Me, SetupStatus } from '../api/types';
 import { fetchAuthProviders, postLogout } from '../api/client';
 import {
   clearSignedOut,
@@ -39,7 +39,7 @@ import {
 } from '../api/config';
 import { readQueryParam, stripQueryParams } from '../lib/url';
 
-export type AuthStatus = 'probing' | 'unreachable' | 'unauthenticated' | 'ready';
+export type AuthStatus = 'probing' | 'setup_required' | 'unreachable' | 'unauthenticated' | 'ready';
 
 /** Why we are at the sign-in screen (drives the message shown). */
 export type UnauthReason = 'none' | 'rejected' | 'expired' | 'signed-out';
@@ -47,13 +47,36 @@ export type UnauthReason = 'none' | 'rejected' | 'expired' | 'signed-out';
 /** Post-login landing card variant, from the ?welcome= redirect param. */
 export type WelcomeKind = 'first-admin' | 'new';
 
-export type ProbeResult =
+export type MeProbeResult =
   | { kind: 'ok'; me: Me }
   | { kind: 'unauthorized' }
   | { kind: 'unreachable'; detail: string };
 
+export type ProbeResult = { kind: 'setup_required' } | MeProbeResult;
+
+/**
+ * Setup is the first public boundary of a fresh cluster. Probe it before `/me`
+ * so an expected 401 cannot make an unconfigured cluster look like a normal
+ * sign-in screen. The setup response carries no secret and is intentionally
+ * readable without a session.
+ */
+export async function probeCluster(token: string | undefined): Promise<ProbeResult> {
+  try {
+    const res = await fetch('/api/v1/setup', {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return { kind: 'unreachable', detail: `HTTP ${res.status}` };
+    const setup = (await res.json()) as SetupStatus;
+    if (setup.setup_required) return { kind: 'setup_required' };
+  } catch {
+    return { kind: 'unreachable', detail: 'network error' };
+  }
+  return probeMe(token);
+}
+
 /** Single source of truth for "who am I, with this (optional) token?". */
-export async function probeMe(token: string | undefined): Promise<ProbeResult> {
+export async function probeMe(token: string | undefined): Promise<MeProbeResult> {
   try {
     const res = await fetch('/api/v1/me', {
       credentials: 'same-origin',
@@ -160,6 +183,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (result: ProbeResult, epoch: number, hadToken: boolean) => {
       if (epoch !== epochRef.current) return; // stale probe — a newer action won
       switch (result.kind) {
+        case 'setup_required':
+          setMe(null);
+          setProviders([]);
+          setStatus('setup_required');
+          break;
         case 'ok':
           setMe(result.me);
           setStatus('ready');
@@ -189,15 +217,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const epoch = ++epochRef.current;
     const tok = tokenRef.current;
     setStatus('probing');
-    void probeMe(tok).then((r) => applyProbe(r, epoch, tok !== undefined));
+    void probeCluster(tok).then((r) => {
+      applyProbe(r, epoch, tok !== undefined);
+      if (r.kind !== 'setup_required' && r.kind !== 'unreachable') {
+        void fetchAuthProviders().then(setProviders);
+      }
+    });
   }, [applyProbe]);
 
-  // Boot: strip the flash params we own, fetch providers, then probe. Demo skips
-  // the network entirely (AuthProvider boots straight to 'ready').
+  // Boot: strip the flash params we own, then probe setup before auth. Demo
+  // skips the network entirely (AuthProvider boots straight to 'ready').
   useEffect(() => {
     stripQueryParams(['welcome', 'login_error']);
     if (demo) return;
-    void fetchAuthProviders().then(setProviders);
     runProbe();
   }, [demo, runProbe]);
 
@@ -207,11 +239,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const id = window.setInterval(() => {
       const epoch = ++epochRef.current;
       const tok = tokenRef.current;
-      void probeMe(tok).then((r) => {
+      void probeCluster(tok).then((r) => {
         if (r.kind === 'unreachable') return; // still down — stay put
         applyProbe(r, epoch, tok !== undefined);
         // Providers may not have loaded if boot raced the outage; refresh them.
-        void fetchAuthProviders().then(setProviders);
+        if (r.kind !== 'setup_required') void fetchAuthProviders().then(setProviders);
       });
     }, REPROBE_MS);
     return () => window.clearInterval(id);

@@ -13,9 +13,10 @@
  * straight to 'ready' with a synthetic principal.
  */
 import { ArrowRight, Check, GithubLogo, GitBranch, Key, Lock } from '@phosphor-icons/react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthProvider';
 import { Wordmark } from '../components/Wordmark';
 import { LanguageToggle } from '../components/LanguageToggle';
@@ -351,13 +352,31 @@ function MobileConsentCard() {
 }
 
 export function OnboardingGate({ children }: { children: ReactNode }) {
-  if (window.location.pathname === '/setup') return <SetupPage />;
   const { t } = useTranslation();
   const { status, landing, welcome } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // Keep the address bar truthful while the gate owns the whole screen. This
+  // also makes a deep link into an unconfigured cluster converge on /setup,
+  // while a stale /setup bookmark on a configured cluster returns home.
+  useEffect(() => {
+    if (status === 'setup_required' && location.pathname !== '/setup') {
+      navigate('/setup', { replace: true });
+    } else if (
+      status !== 'probing'
+      && status !== 'setup_required'
+      && location.pathname === '/setup'
+    ) {
+      navigate('/', { replace: true });
+    }
+  }, [location.pathname, navigate, status]);
 
   const isMobileClient = new URLSearchParams(window.location.search).get('client') === 'mobile';
 
   switch (status) {
+    case 'setup_required':
+      return <SetupPage />;
     case 'probing':
       return (
         <GateFrame variant="probing">

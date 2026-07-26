@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { AuthProvider, useAuth } from './AuthProvider';
+import { ApiProvider } from '../api/ApiProvider';
 import { OnboardingGate } from '../pages/OnboardingGate';
 import { TOKEN_STORAGE_KEY } from '../api/config';
 import type { AuthProviderInfo, Me } from '../api/types';
@@ -44,12 +45,18 @@ function jsonRes(status: number, body: unknown): Response {
  */
 function stubFetch(
   mode: { current: 'down' | 'up' },
-  opts: { providers?: AuthProviderInfo[]; cookieSession?: boolean } = {},
+  opts: { providers?: AuthProviderInfo[]; cookieSession?: boolean; setupRequired?: boolean } = {},
 ) {
   const providers = opts.providers ?? [];
   const fn = vi.fn(async (url: string, init?: RequestInit) => {
     if (mode.current === 'down') throw new TypeError('fetch failed');
     const u = String(url);
+    if (u.includes('/api/v1/setup')) return jsonRes(200, {
+      setup_required: opts.setupRequired ?? false,
+      public_url: opts.setupRequired ? '' : 'http://localhost:5173',
+      login_provider_count: opts.setupRequired ? 0 : providers.length,
+      providers: [],
+    });
     if (u.includes('/auth/providers')) return jsonRes(200, { providers });
     if (u.includes('/auth/logout')) return jsonRes(200, { ok: true });
     // /api/v1/me
@@ -93,12 +100,14 @@ function AuthProbe() {
 function renderGate() {
   return render(
     <AuthProvider>
-      <MemoryRouter>
-        <OnboardingGate>
-          <div data-testid="app">the console</div>
-          <AuthProbe />
-        </OnboardingGate>
-      </MemoryRouter>
+      <ApiProvider>
+        <MemoryRouter>
+          <OnboardingGate>
+            <div data-testid="app">the console</div>
+            <AuthProbe />
+          </OnboardingGate>
+        </MemoryRouter>
+      </ApiProvider>
     </AuthProvider>,
   );
 }
@@ -115,6 +124,15 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('OnboardingGate — environment layer', () => {
+  it('shows first-visitor setup before probing /me when the cluster is empty', async () => {
+    const fetchMock = stubFetch({ current: 'up' }, { setupRequired: true });
+    renderGate();
+
+    await waitFor(() => expect(screen.getByTestId('first-visitor-setup')).toBeTruthy());
+    expect((screen.getByLabelText(/Cloud public URL/) as HTMLInputElement).value).toBe(window.location.origin);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/v1/me'))).toBe(false);
+  });
+
   it('shows the setup guide while unreachable, then advances when the orchestrator answers', async () => {
     const mode = { current: 'down' as 'down' | 'up' };
     stubFetch(mode);
