@@ -90,8 +90,10 @@ export interface ClusterProviderConfig {
   client_id?: string;
   client_id_set?: boolean;
   client_secret_set?: boolean;
+  app_id?: string;
   app_id_set?: boolean;
   app_private_key_set?: boolean;
+  webhook_secret_set?: boolean;
 }
 export interface UpdateClusterProviderConfigInput {
   base_url: string;
@@ -101,6 +103,7 @@ export interface UpdateClusterProviderConfigInput {
   client_secret?: string;
   app_id?: string;
   app_private_key?: string;
+  webhook_secret?: string;
 }
 export type PluginStatus =
   | 'not_connected'

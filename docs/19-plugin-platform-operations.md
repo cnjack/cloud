@@ -79,6 +79,21 @@ Project Consent uses the actual App Installation permissions returned by a
 short-lived token, not only the desired App manifest. If permissions change
 between preview and submit, Cloud rejects the digest and requires a new review.
 
+After first-cluster setup, finish GitHub Plugin configuration under **Cluster →
+Connections → GitHub**:
+
+1. Copy the GitHub App ID from the App's General page.
+2. Generate one private key, download the PEM once, and paste the complete PEM
+   into the write-only private-key field.
+3. Enter the same webhook secret configured on the GitHub App. If the original
+   value is no longer available, rotate it in GitHub and Cloud together.
+4. Install the App on the intended account or organization and select the
+   repositories that Projects may use.
+
+The OAuth callback is `PUBLIC_URL/auth/callback/github`; the App webhook URL is
+`PUBLIC_URL/webhooks/github`. OAuth credentials alone support sign-in but are
+not sufficient to list or select GitHub App Installations.
+
 ### GitLab
 
 - Supported baseline: 17.11.

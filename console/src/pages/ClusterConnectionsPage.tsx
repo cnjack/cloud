@@ -1,52 +1,39 @@
-import { GitBranch, HardDrive, Kanban, Lock, Users, Warning } from '@phosphor-icons/react';
+import { GitBranch, HardDrive, Lock, Users, Warning } from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRole } from '../api/ApiProvider';
-import { ApiError } from '../api/client';
 import {
-  useDeleteKanbanConfig,
-  useKanbanConfig,
   useSystem,
-  useUpdateKanbanConfig,
   useClusterProviderConfig,
   useTestClusterProviderConfig,
   useUpdateClusterProviderConfig,
 } from '../api/queries';
 import { Button } from '../components/Button';
-import { TextField } from '../components/Field';
+import { TextAreaField, TextField } from '../components/Field';
 import { ClusterSubnav, DefinitionList, PageHeader, StatusLabel, SurfaceInner } from '../components/PageLayout';
 import { ErrorBlock, LoadingBlock } from '../components/States';
-import { useToast } from '../components/Toast';
 import { ClusterAccessDenied } from './ClusterAccessDenied';
 import styles from './ClusterConnectionsPage.module.css';
-
-function message(error: unknown, fallback: string): string {
-  return error instanceof ApiError ? error.message : fallback;
-}
 
 export function ClusterConnectionsPage() {
   const { t } = useTranslation();
   const isAdmin = useRole() === 'cluster-admin';
   const system = useSystem(isAdmin);
-  const config = useKanbanConfig(isAdmin);
   if (!isAdmin) return <ClusterAccessDenied />;
 
-  if (system.isLoading || config.isLoading) return <><ClusterSubnav /><SurfaceInner><LoadingBlock label={t('cluster.connections.loading')} /></SurfaceInner></>;
+  if (system.isLoading) return <><ClusterSubnav /><SurfaceInner><LoadingBlock label={t('cluster.connections.loading')} /></SurfaceInner></>;
   if (system.isError) return <><ClusterSubnav /><SurfaceInner><ErrorBlock error={system.error} onRetry={() => system.refetch()} title={t('cluster.connections.statusError')} /></SurfaceInner></>;
-  if (config.isError) return <><ClusterSubnav /><SurfaceInner><ErrorBlock error={config.error} onRetry={() => config.refetch()} title={t('cluster.connections.configError')} /></SurfaceInner></>;
-  if (!system.data || !config.data) return null;
+  if (!system.data) return null;
 
-  const configured = Number(config.data.effective_enabled) + Number(system.data.provider.gitea_enabled) + Number((system.data.auth?.providers.length ?? 0) > 0) + Number(system.data.archive?.enabled);
   return (
     <>
       <ClusterSubnav />
       <SurfaceInner>
-        <PageHeader eyebrow={t('cluster.connections.eyebrow')} title={t('cluster.connections.title')} description={t('cluster.connections.description')} actions={<StatusLabel tone="success">{t('cluster.connections.configuredCount', { count: configured })}</StatusLabel>} />
+        <PageHeader eyebrow={t('cluster.connections.eyebrow')} title={t('cluster.connections.title')} description={t('cluster.connections.description')} />
         <ProviderConfigs />
         <div className={styles.layout}>
           <div className={styles.stack}>
-            <JtypeConnection config={config.data} />
             <ConnectionCard icon={<GitBranch size={18} />} title={t('cluster.connections.gitPolicyTitle')} subtitle={t('cluster.connections.gitPolicySubtitle')} status={<StatusLabel tone={system.data.provider.gitea_enabled ? 'success' : 'warning'}>{system.data.provider.gitea_enabled ? t('cluster.connections.giteaEnabled') : t('cluster.connections.giteaDisabled')}</StatusLabel>}>
               <DefinitionList items={[
                 { label: t('cluster.connections.giteaUrlLabel'), value: <span className={styles.mono}>{system.data.provider.gitea_url || '—'}</span> },
@@ -80,14 +67,86 @@ function ProviderConfigs() {
   </div>;
 }
 function ProviderConfigCard({ provider }: { provider: import('../api/types').ProviderKind }) {
-  const query = useClusterProviderConfig(provider); const update = useUpdateClusterProviderConfig(provider); const test = useTestClusterProviderConfig(provider);
-  const [url, setUrl] = useState(''); const [clientID, setClientID] = useState(''); const [clientSecret, setClientSecret] = useState(''); const [loginEnabled, setLoginEnabled] = useState(false); const [pluginEnabled, setPluginEnabled] = useState(false);
-  useEffect(() => { if (query.data) { setUrl(query.data.base_url ?? ''); setClientID(query.data.client_id ?? ''); setLoginEnabled(query.data.login_enabled); setPluginEnabled(query.data.plugin_enabled); } }, [query.data]);
+  const query = useClusterProviderConfig(provider);
+  const update = useUpdateClusterProviderConfig(provider);
+  const test = useTestClusterProviderConfig(provider);
+  const [url, setUrl] = useState('');
+  const [clientID, setClientID] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [appID, setAppID] = useState('');
+  const [appPrivateKey, setAppPrivateKey] = useState('');
+  const [webhookSecret, setWebhookSecret] = useState('');
+  const [loginEnabled, setLoginEnabled] = useState(false);
+  const [pluginEnabled, setPluginEnabled] = useState(false);
+
+  useEffect(() => {
+    if (!query.data) return;
+    setUrl(query.data.base_url ?? '');
+    setClientID(query.data.client_id ?? '');
+    setAppID(query.data.app_id ?? '');
+    setLoginEnabled(query.data.login_enabled);
+    setPluginEnabled(query.data.plugin_enabled);
+  }, [query.data]);
+
   if (query.isLoading) return <section className={styles.card}><LoadingBlock /></section>;
   if (query.isError || !query.data) return <section className={styles.card}><ErrorBlock error={query.error} onRetry={() => void query.refetch()} /></section>;
+
   const item = query.data;
-  const save = () => update.mutate({ base_url: url, client_id: clientID, client_secret: clientSecret, login_enabled: loginEnabled, plugin_enabled: pluginEnabled });
-  return <section className={styles.card}><header className={styles.cardHead}><span className={styles.providerMark}>{provider}</span><span className={styles.cardCopy}><strong>{provider === 'jtype' ? 'JType Kanban' : provider}</strong><small>{item.health_message ?? item.health}</small></span><StatusLabel tone={item.health === 'healthy' ? 'success' : item.health === 'error' ? 'danger' : 'warning'}>{item.health}</StatusLabel></header><div className={styles.cardBody}><TextField label="Instance URL" value={url} disabled={provider === 'github'} onChange={(event) => setUrl(event.target.value)} placeholder={provider === 'github' ? 'https://github.com' : 'https://provider.example'} /><label className={styles.checkLabel}><input type="checkbox" checked={loginEnabled} disabled={provider === 'jtype'} onChange={(event) => setLoginEnabled(event.target.checked)} />Login enabled</label><label className={styles.checkLabel}><input type="checkbox" checked={pluginEnabled} onChange={(event) => setPluginEnabled(event.target.checked)} />Plugin enabled</label>{provider !== 'jtype' && <><TextField label="OAuth client ID" value={clientID} onChange={(event) => setClientID(event.target.value)} /><TextField label="OAuth client secret" type="password" value={clientSecret} placeholder={item.client_secret_set ? 'Configured — enter to replace' : 'Enter secret'} onChange={(event) => setClientSecret(event.target.value)} /></>}<div className={styles.actions}><Button type="button" variant="secondary" loading={test.isPending} onClick={() => test.mutate()}>Test connection</Button><Button type="button" loading={update.isPending} onClick={save}>Save</Button></div></div></section>;
+  const githubAppIncomplete = provider === 'github' && pluginEnabled && (
+    !appID.trim()
+    || (!item.app_private_key_set && !appPrivateKey.trim())
+    || (!item.webhook_secret_set && !webhookSecret.trim())
+  );
+  const status = githubAppIncomplete ? 'incomplete' : item.health;
+  const save = () => update.mutate({
+    base_url: url,
+    client_id: clientID,
+    client_secret: clientSecret,
+    login_enabled: loginEnabled,
+    plugin_enabled: pluginEnabled,
+    app_id: appID,
+    app_private_key: appPrivateKey,
+    webhook_secret: webhookSecret,
+  }, {
+    onSuccess: () => {
+      setClientSecret('');
+      setAppPrivateKey('');
+      setWebhookSecret('');
+    },
+  });
+
+  return (
+    <section className={styles.card}>
+      <header className={styles.cardHead}>
+        <span className={styles.providerMark}>{provider}</span>
+        <span className={styles.cardCopy}>
+          <strong>{provider === 'jtype' ? 'JType Kanban' : provider}</strong>
+          <small>{githubAppIncomplete ? 'GitHub App setup incomplete' : item.health_message ?? item.health}</small>
+        </span>
+        <StatusLabel tone={item.health === 'error' ? 'danger' : status === 'healthy' ? 'success' : 'warning'}>{status}</StatusLabel>
+      </header>
+      <div className={styles.cardBody}>
+        <TextField label="Instance URL" value={url} disabled={provider === 'github'} onChange={(event) => setUrl(event.target.value)} placeholder={provider === 'github' ? 'https://github.com' : 'https://provider.example'} />
+        <label className={styles.checkLabel}><input type="checkbox" checked={loginEnabled} disabled={provider === 'jtype'} onChange={(event) => setLoginEnabled(event.target.checked)} />Login enabled</label>
+        <label className={styles.checkLabel}><input type="checkbox" checked={pluginEnabled} onChange={(event) => setPluginEnabled(event.target.checked)} />Plugin enabled</label>
+        {provider !== 'jtype' && <>
+          <TextField label="OAuth client ID" value={clientID} onChange={(event) => setClientID(event.target.value)} />
+          <TextField label="OAuth client secret" type="password" autoComplete="new-password" value={clientSecret} placeholder={item.client_secret_set ? 'Configured — enter to replace' : 'Enter secret'} onChange={(event) => setClientSecret(event.target.value)} />
+        </>}
+        {provider === 'github' && <>
+          <div className={styles.sectionLabel}>GitHub App</div>
+          <TextField label="GitHub App ID" inputMode="numeric" value={appID} placeholder="GitHub App ID" onChange={(event) => setAppID(event.target.value)} />
+          <TextAreaField label="GitHub App private key" autoComplete="off" spellCheck={false} value={appPrivateKey} placeholder={item.app_private_key_set ? 'Configured — paste a PEM to replace' : 'Paste the complete private-key PEM'} hint="Write-only. Cloud encrypts the PEM and never returns it to the browser." onChange={(event) => setAppPrivateKey(event.target.value)} />
+          <TextField label="Webhook secret" type="password" autoComplete="new-password" value={webhookSecret} placeholder={item.webhook_secret_set ? 'Configured — enter to replace' : 'Enter the same secret configured in GitHub'} onChange={(event) => setWebhookSecret(event.target.value)} />
+          {githubAppIncomplete && <div className={styles.warning}><Warning size={16} aria-hidden="true" /><span><strong>GitHub App configuration is incomplete</strong>Add the App ID, private key, and matching webhook secret before Projects can list Installations.</span></div>}
+        </>}
+        <div className={styles.actions}>
+          <Button type="button" variant="secondary" loading={test.isPending} onClick={() => test.mutate()}>Test connection</Button>
+          <Button type="button" loading={update.isPending} onClick={save}>Save</Button>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function ConnectionCard({ icon, title, subtitle, status, children }: { icon: ReactNode; title: string; subtitle: string; status: ReactNode; children: ReactNode }) {
@@ -96,47 +155,6 @@ function ConnectionCard({ icon, title, subtitle, status, children }: { icon: Rea
       <header className={styles.cardHead}><span className={styles.providerMark}>{icon}</span><span className={styles.cardCopy}><strong>{title}</strong><small>{subtitle}</small></span>{status}</header>
       <div className={styles.cardBody}>{children}</div>
     </section>
-  );
-}
-
-/**
- * JtypeConnection — the cluster jtype base URL (D36: the only cluster-level
- * kanban setting left; credentials are entirely per-link, managed by each
- * project owner under Project settings → Kanban).
- */
-function JtypeConnection({ config }: { config: import('../api/types').KanbanClusterConfig }) {
-  const { t } = useTranslation();
-  const [baseUrl, setBaseUrl] = useState(config.base_url || config.effective_base_url);
-  const update = useUpdateKanbanConfig();
-  const remove = useDeleteKanbanConfig();
-  const toast = useToast();
-
-  useEffect(() => setBaseUrl(config.base_url || config.effective_base_url), [config.base_url, config.effective_base_url]);
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    update.mutate(
-      { base_url: baseUrl.trim() },
-      {
-        onSuccess: () => toast.push({ kind: 'success', message: t('cluster.connections.jtypeSaved') }),
-        onError: (error) => toast.push({ kind: 'error', message: message(error, t('cluster.connections.jtypeSaveError')) }),
-      },
-    );
-  };
-  const clear = () => remove.mutate(undefined, {
-    onSuccess: () => toast.push({ kind: 'success', message: t('cluster.connections.jtypeOverrideRemoved') }),
-    onError: (error) => toast.push({ kind: 'error', message: message(error, t('cluster.connections.jtypeRemoveError')) }),
-  });
-  const source = config.source === 'db' ? t('cluster.connections.sourceDb') : config.source === 'env' ? t('cluster.connections.sourceEnv') : t('cluster.connections.sourceNone');
-  return (
-    <form className={styles.card} onSubmit={submit}>
-      <header className={styles.cardHead}><span className={`${styles.providerMark} ${styles.accent}`}><Kanban size={18} /></span><span className={styles.cardCopy}><strong>{t('cluster.connections.jtypeKanban')}</strong><small>{source} · {t('cluster.connections.pollingEvery', { interval: config.poll_interval })}</small></span><StatusLabel tone={config.effective_enabled ? 'success' : config.reason ? 'danger' : 'warning'}>{config.effective_enabled ? t('cluster.connections.jtypeEffective') : config.reason ? t('cluster.connections.jtypeBroken') : t('cluster.connections.jtypeOff')}</StatusLabel></header>
-      <div className={styles.cardBody}>
-        <TextField label={t('cluster.connections.baseUrlLabel')} value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://jtype.example.com" hint={t('cluster.connections.baseUrlHint')} />
-        <div className={styles.security}><Lock size={14} aria-hidden="true" /><span>{t('cluster.connections.boardTrafficNote')}</span></div>
-        {config.reason && <div className={styles.warning}><Warning size={16} aria-hidden="true" /><span><strong>{t('cluster.connections.jtypeUnavailableTitle')}</strong>{config.reason}</span></div>}
-        <div className={styles.actions}>{config.source === 'db' && <Button type="button" variant="ghost" onClick={clear} loading={remove.isPending}>{t('cluster.connections.removeOverride')}</Button>}<Button type="submit" variant="primary" loading={update.isPending}>{t('cluster.connections.saveJtype')}</Button></div>
-      </div>
-    </form>
   );
 }
 
