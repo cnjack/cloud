@@ -608,9 +608,9 @@ export interface RunMessage {
 /**
  * How a run was triggered (blueprint §8). Absent is treated as `api`.
  *   'webhook'  — a Gitea PR comment `@jcode …` (carries origin_comment_url).
- *   'kanban'   — a jtype card dragged into a link's trigger column (Feature E).
- *   'schedule' — a service-level cron trigger came due (F11 / D24).
- *   'automation' — a saved provider PR-event policy dispatched a review Run.
+ *   'kanban'   — a jtype card entered a Kanban link or Plugin Automation column.
+ *   'schedule' — a legacy schedule or Plugin Cron Automation came due.
+ *   'automation' — an SCM provider-event Automation dispatched a Run.
  */
 export type RunOrigin = 'api' | 'webhook' | 'kanban' | 'schedule' | 'automation';
 

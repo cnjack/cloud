@@ -1716,11 +1716,13 @@ export default {
     kind: {
       codeReview: 'コードレビュー',
       session: 'セッション',
+      automatedTask: '自動タスク',
       manualTask: '手動タスク',
     },
     originLabel: {
       webhook: 'プロバイダー Webhook',
       schedule: 'スケジュール',
+      kanban: 'カンバン',
       prEvent: 'PR イベント',
       manual: '手動',
     },
@@ -1795,6 +1797,7 @@ export default {
     origin: {
       fromPrComment: 'PR コメントから',
       scheduled: 'スケジュール済み',
+      kanbanAutomation: 'カンバン自動化',
       prEventAutomation: 'PR イベント自動化',
     },
     diff: {

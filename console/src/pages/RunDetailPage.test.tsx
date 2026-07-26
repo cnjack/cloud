@@ -293,6 +293,23 @@ describe('RunDetailPage — resilient error states', () => {
     expect(screen.queryByTestId('origin-chip')).toBeNull();
   });
 
+  it('labels a Kanban Automation run without calling it manual or a PR event', async () => {
+    const kanbanRun = baseRun({
+      origin: 'kanban',
+      origin_automation_id: 'automation-kanban',
+    });
+    const { client, ctl } = makeClient();
+    ctl.getRun.mockResolvedValue(kanbanRun);
+    renderPage(client, kanbanRun);
+
+    const header = await screen.findByTestId('run-status-header');
+    expect(header.textContent).toContain('Automated task');
+    expect(header.textContent).toContain('Kanban');
+    expect(header.textContent).not.toContain('Manual task');
+    expect(header.textContent).not.toContain('PR event');
+    expect((await screen.findByTestId('origin-chip-kanban')).textContent).toContain('Kanban Automation');
+  });
+
   // No PR link when the run has no pr_url (readonly / diff-only run).
   it('does not render the draft-PR chip when pr_url is absent', async () => {
     const noPr = baseRun({ status: 'succeeded', finished_at: '2026-07-07T00:05:00Z' });

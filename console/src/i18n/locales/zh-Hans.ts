@@ -1724,11 +1724,13 @@ export default {
     kind: {
       codeReview: '代码审查',
       session: '会话',
+      automatedTask: '自动任务',
       manualTask: '手动任务',
     },
     originLabel: {
       webhook: '提供方 Webhook',
       schedule: '定时',
+      kanban: 'Kanban',
       prEvent: 'PR 事件',
       manual: '手动',
     },
@@ -1803,6 +1805,7 @@ export default {
     origin: {
       fromPrComment: '来自 PR 评论',
       scheduled: '定时',
+      kanbanAutomation: 'Kanban 自动化',
       prEventAutomation: 'PR 事件自动化',
     },
     diff: {

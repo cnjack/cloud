@@ -1716,11 +1716,13 @@ export default {
     kind: {
       codeReview: '코드 리뷰',
       session: '세션',
+      automatedTask: '자동화 작업',
       manualTask: '수동 작업',
     },
     originLabel: {
       webhook: '제공자 Webhook',
       schedule: '예약',
+      kanban: '칸반',
       prEvent: 'PR 이벤트',
       manual: '수동',
     },
@@ -1795,6 +1797,7 @@ export default {
     origin: {
       fromPrComment: 'PR 댓글에서',
       scheduled: '예약됨',
+      kanbanAutomation: '칸반 자동화',
       prEventAutomation: 'PR 이벤트 자동화',
     },
     diff: {

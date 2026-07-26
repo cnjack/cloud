@@ -148,7 +148,7 @@ func (p *Poller) firePluginAutomation(ctx context.Context, spec *domain.PluginAu
 	run := &domain.Run{
 		ID: domain.NewID(), ProjectID: svc.ProjectID, ServiceID: svc.ID,
 		Prompt: spec.Automation.PromptTemplate, Status: domain.StatusQueued,
-		Kind: domain.RunKindAgent, Phase: "Queued", Origin: domain.RunOriginAutomation,
+		Kind: domain.RunKindAgent, Phase: "Queued", Origin: domain.RunOriginSchedule,
 		OriginAutomationID: spec.Automation.ID,
 		OriginEventKey:     "cron:" + spec.Automation.ID + ":" + now.Format(time.RFC3339Nano),
 		Attempt:            1, CreatedAt: now, ModelName: sel.ModelName,

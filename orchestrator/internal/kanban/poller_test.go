@@ -263,7 +263,7 @@ func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs=%d err=%v", len(runs), err)
 	}
-	if runs[0].Origin != domain.RunOriginAutomation || runs[0].OriginAutomationID != automation.ID ||
+	if runs[0].Origin != domain.RunOriginKanban || runs[0].OriginAutomationID != automation.ID ||
 		runs[0].Prompt != "Fix plugin\n\nkeep constraints" {
 		t.Fatalf("run=%+v", runs[0])
 	}

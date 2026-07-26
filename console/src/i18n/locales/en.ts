@@ -1810,11 +1810,13 @@ export default {
     kind: {
       codeReview: 'Code review',
       session: 'Session',
+      automatedTask: 'Automated task',
       manualTask: 'Manual task',
     },
     originLabel: {
       webhook: 'Provider webhook',
       schedule: 'Schedule',
+      kanban: 'Kanban',
       prEvent: 'PR event',
       manual: 'Manual',
     },
@@ -1889,6 +1891,7 @@ export default {
     origin: {
       fromPrComment: 'from PR comment',
       scheduled: 'scheduled',
+      kanbanAutomation: 'Kanban Automation',
       prEventAutomation: 'PR event Automation',
     },
     diff: {

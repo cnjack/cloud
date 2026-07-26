@@ -219,18 +219,17 @@ const (
 	// runs carry the triggering comment id/url and (for agent tasks) push back onto
 	// the PR head branch instead of opening a new draft PR.
 	RunOriginWebhook RunOrigin = "webhook"
-	// RunOriginKanban: the run was dispatched by the kanban poller (Feature E)
-	// after a jtype card entered a kanban_link's trigger column. The triggering
-	// document id/path live on the kanban_claims row (not the run), and the
-	// reconciler's writeback pass posts the result back as a card comment (and
-	// optionally moves the card to the done column).
+	// RunOriginKanban: the run was dispatched by either the legacy kanban-link
+	// poller or a Plugin Kanban Automation after a jtype card entered its trigger
+	// column. Plugin runs also retain OriginAutomationID for audit and
+	// de-duplication. The reconciler posts the result back as a card comment and
+	// optionally moves the card to the done column.
 	RunOriginKanban RunOrigin = "kanban"
-	// RunOriginSchedule: the run was dispatched by the schedule poller (F11 / D24)
-	// when a service-level cron trigger came due. The triggering schedule id is
-	// recorded on the run's initial run.status event (schedule_id) — the runs table
-	// itself is untouched (no schedule_id column).
+	// RunOriginSchedule: the run was dispatched by either the legacy schedule
+	// poller or a Plugin Cron Automation when a service-level cron trigger came
+	// due. Plugin runs retain OriginAutomationID.
 	RunOriginSchedule RunOrigin = "schedule"
-	// RunOriginAutomation is a provider-event Automation run. It carries an
+	// RunOriginAutomation is an SCM provider-event Automation run. It carries an
 	// Automation id and a deterministic event key for delivery de-duplication.
 	RunOriginAutomation RunOrigin = "automation"
 )

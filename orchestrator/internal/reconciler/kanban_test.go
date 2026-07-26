@@ -176,7 +176,7 @@ func TestPluginKanbanWritebackUsesInstallationWorkspace(t *testing.T) {
 	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
 		t.Fatal(err)
 	}
-	run := &domain.Run{ID: domain.NewID(), ProjectID: project.ID, ServiceID: service.ID, Prompt: "p", Status: domain.StatusSucceeded, Origin: domain.RunOriginAutomation, OriginAutomationID: automation.ID, Attempt: 1, CreatedAt: time.Now()}
+	run := &domain.Run{ID: domain.NewID(), ProjectID: project.ID, ServiceID: service.ID, Prompt: "p", Status: domain.StatusSucceeded, Origin: domain.RunOriginKanban, OriginAutomationID: automation.ID, Attempt: 1, CreatedAt: time.Now()}
 	if err := st.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}

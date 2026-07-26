@@ -214,7 +214,7 @@ func (p *Poller) pollPluginAutomation(ctx context.Context, factory *jtype.Factor
 		run := &domain.Run{
 			ID: domain.NewID(), ProjectID: svc.ProjectID, ServiceID: svc.ID,
 			Prompt: buildPrompt(card), Status: domain.StatusQueued, Kind: domain.RunKindAgent,
-			Phase: "Queued", Origin: domain.RunOriginAutomation,
+			Phase: "Queued", Origin: domain.RunOriginKanban,
 			OriginAutomationID: spec.Automation.ID,
 			OriginEventKey:     "kanban:" + spec.Automation.ID + ":" + doc.ID,
 			Attempt:            1, CreatedAt: now, ModelName: sel.ModelName,

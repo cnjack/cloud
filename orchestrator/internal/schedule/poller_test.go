@@ -147,7 +147,7 @@ func TestPluginCronAutomationDispatchesExactlyOnce(t *testing.T) {
 	if len(runs) != 1 {
 		t.Fatalf("runs=%d want 1", len(runs))
 	}
-	if runs[0].Origin != domain.RunOriginAutomation || runs[0].OriginAutomationID != automation.ID || runs[0].Prompt != "run nightly" {
+	if runs[0].Origin != domain.RunOriginSchedule || runs[0].OriginAutomationID != automation.ID || runs[0].Prompt != "run nightly" {
 		t.Fatalf("run=%+v", runs[0])
 	}
 	spec, err := st.GetPluginAutomationSpec(ctx, automation.ID)

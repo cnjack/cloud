@@ -60,6 +60,25 @@ func TestServiceKanbanMigrationConvergesBeforeUniqueIndexes(t *testing.T) {
 	}
 }
 
+func TestPluginAutomationRunOriginsMigrationPreservesTriggerKind(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0047_run_automation_origins.sql")
+	if err != nil {
+		t.Fatalf("read 0047: %v", err)
+	}
+	migration := strings.Join(strings.Fields(string(sql)), " ")
+	for _, fragment := range []string{
+		"SET origin = 'kanban'",
+		"SET origin = 'schedule'",
+		"r.origin_automation_id = a.id",
+		"a.trigger_kind = 'kanban'",
+		"a.trigger_kind = 'cron'",
+	} {
+		if !strings.Contains(migration, fragment) {
+			t.Fatalf("0047 migration missing %q", fragment)
+		}
+	}
+}
+
 func TestModelProvidersMigrationContract(t *testing.T) {
 	sql, err := migrationsFS.ReadFile("migrations/0027_model_providers.sql")
 	if err != nil {

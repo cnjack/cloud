@@ -1716,11 +1716,13 @@ export default {
     kind: {
       codeReview: '程式碼審查',
       session: '工作階段',
+      automatedTask: '自動工作',
       manualTask: '手動工作',
     },
     originLabel: {
       webhook: '供應商 Webhook',
       schedule: '排程',
+      kanban: 'Kanban',
       prEvent: 'PR 事件',
       manual: '手動',
     },
@@ -1795,6 +1797,7 @@ export default {
     origin: {
       fromPrComment: '來自 PR 留言',
       scheduled: '已排程',
+      kanbanAutomation: 'Kanban 自動化',
       prEventAutomation: 'PR 事件自動化',
     },
     diff: {

@@ -799,6 +799,7 @@ function OriginReference({ run }: { run: Run }) {
     return <a className={styles.originRef} href={run.origin_comment_url} target="_blank" rel="noreferrer" data-testid="origin-chip"><span>{t('runDetail.origin.fromPrComment')}</span><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /></a>;
   }
   if (run.origin === 'schedule') return <span className={styles.originRef} data-testid="origin-chip-schedule">{t('runDetail.origin.scheduled')}</span>;
+  if (run.origin === 'kanban') return <span className={styles.originRef} data-testid="origin-chip-kanban">{t('runDetail.origin.kanbanAutomation')}</span>;
   if (run.origin === 'automation') return <span className={styles.originRef} data-testid="origin-chip-automation">{t('runDetail.origin.prEventAutomation')}</span>;
   return null;
 }
@@ -841,12 +842,16 @@ function FailedSubmissionNotice({ submission, onRetry }: { submission: FailedSub
 
 function runKindLabel(run: Run, t: TFunction): string {
   if (run.kind === 'review') return t('runDetail.kind.codeReview');
-  return run.session ? t('runDetail.kind.session') : t('runDetail.kind.manualTask');
+  if (run.session) return t('runDetail.kind.session');
+  return run.origin && run.origin !== 'api'
+    ? t('runDetail.kind.automatedTask')
+    : t('runDetail.kind.manualTask');
 }
 
 function runOriginLabel(run: Run, t: TFunction): string {
   if (run.origin === 'webhook') return t('runDetail.originLabel.webhook');
   if (run.origin === 'schedule') return t('runDetail.originLabel.schedule');
+  if (run.origin === 'kanban') return t('runDetail.originLabel.kanban');
   if (run.origin === 'automation') return t('runDetail.originLabel.prEvent');
   return t('runDetail.originLabel.manual');
 }
