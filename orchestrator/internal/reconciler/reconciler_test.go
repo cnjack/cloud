@@ -164,18 +164,23 @@ func TestRunPluginSnapshotCandidatesCarryProviderForRuntimeInjection(t *testing.
 	r, st, _ := testRec(t, 1)
 	run := seedProjectAndRun(t, st)
 	ctx := context.Background()
-	for _, provider := range []domain.ProviderKind{domain.PluginJType, domain.PluginGitLab} {
+	for _, provider := range []domain.ProviderKind{domain.PluginGitHub, domain.PluginGitLab, domain.PluginGitea, domain.PluginJType} {
 		if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{
 			Provider: provider, BaseURL: "https://provider.example.test",
 			PluginEnabled: true, ConfigRevision: 1,
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.CreatePluginInstallation(ctx, &domain.PluginInstallation{
+		installation := &domain.PluginInstallation{
 			ID: domain.NewID(), ProjectID: run.ProjectID, Provider: provider,
 			Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("ciphertext"),
 			ConfigRevision: 1, CreatedAt: time.Now().UTC(),
-		}); err != nil {
+		}
+		if provider == domain.PluginGitHub {
+			installation.AccessTokenEnc = nil
+			installation.GitHubInstallID = "12345"
+		}
+		if err := st.CreatePluginInstallation(ctx, installation); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -187,8 +192,46 @@ func TestRunPluginSnapshotCandidatesCarryProviderForRuntimeInjection(t *testing.
 	for i := range snapshots {
 		got[snapshots[i].Provider] = true
 	}
-	if len(snapshots) != 2 || !got[domain.PluginGitLab] || !got[domain.PluginJType] {
-		t.Fatalf("snapshot Providers=%v, want gitlab+jtype", got)
+	if len(snapshots) != 4 || !got[domain.PluginGitHub] || !got[domain.PluginGitLab] || !got[domain.PluginGitea] || !got[domain.PluginJType] {
+		t.Fatalf("snapshot Providers=%v, want all four healthy Providers", got)
+	}
+}
+
+func TestRunPluginSnapshotCandidatesExcludeUnavailableProviderSkills(t *testing.T) {
+	r, st, _ := testRec(t, 1)
+	run := seedProjectAndRun(t, st)
+	ctx := context.Background()
+	cases := []struct {
+		provider      domain.ProviderKind
+		providerOn    bool
+		status        domain.PluginStatus
+		healthError   string
+		githubInstall string
+		token         []byte
+	}{
+		{provider: domain.PluginGitHub, providerOn: true, status: domain.PluginStatusDisabled, githubInstall: "123"},
+		{provider: domain.PluginGitLab, providerOn: false, status: domain.PluginStatusEnabled, token: []byte("ciphertext")},
+		{provider: domain.PluginGitea, providerOn: true, status: domain.PluginStatusEnabled, healthError: "probe failed", token: []byte("ciphertext")},
+		{provider: domain.PluginJType, providerOn: true, status: domain.PluginStatusEnabled, token: []byte("ciphertext")},
+	}
+	for _, tc := range cases {
+		if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: tc.provider, BaseURL: "https://provider.example.test", PluginEnabled: tc.providerOn}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreatePluginInstallation(ctx, &domain.PluginInstallation{
+			ID: domain.NewID(), ProjectID: run.ProjectID, Provider: tc.provider,
+			Status: tc.status, LastHealthError: tc.healthError, GitHubInstallID: tc.githubInstall,
+			AccessTokenEnc: tc.token, ConfigRevision: 1, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshots, err := r.runPluginSnapshotCandidates(ctx, &run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 1 || snapshots[0].Provider != domain.PluginJType {
+		t.Fatalf("unavailable SCM Providers leaked into runtime snapshot: %+v", snapshots)
 	}
 }
 

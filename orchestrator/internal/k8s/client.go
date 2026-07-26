@@ -65,6 +65,8 @@ const (
 	pluginRuntimeVolumeName     = "plugin-runtime"
 	pluginRuntimeMountPath      = "/run/jcloud/runtime"
 	pluginRuntimeSkillsPath     = "/home/jcode/.jcode/skills"
+	managedSkillsDir            = pluginRuntimeMountPath + "/skills"
+	reservedSkills              = "github,gitlab,gitea"
 	jcodeMCPConfigMountPath     = "/home/jcode/.jcode/mcp.json"
 	pluginLifecycleVolumeName   = "plugin-lifecycle"
 	pluginLifecycleMountPath    = "/run/jcloud/lifecycle"
@@ -257,10 +259,19 @@ func (c *Client) DeleteJob(ctx context.Context, name string) error {
 }
 
 func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
+	pluginProviderSet := make(map[string]bool, len(spec.PluginProviders))
+	for _, provider := range spec.PluginProviders {
+		pluginProviderSet[provider] = true
+	}
 	env := make([]corev1.EnvVar, 0, len(spec.Env))
 	for k, v := range spec.Env {
 		env = append(env, corev1.EnvVar{Name: k, Value: v})
 	}
+	// jcode treats these names as Cloud-managed when the environment variable is
+	// present. Keep the reservation on every run, including a run with no Plugin
+	// snapshot, so repository or persistent user Skills cannot impersonate a
+	// Provider that Cloud did not authorize for this run.
+	env = append(env, corev1.EnvVar{Name: "JCODE_RESERVED_SKILLS", Value: reservedSkills})
 
 	backoffLimit := int32(0) // one attempt per Job; retries are new runs
 	ttl := c.cfg.TTLSeconds
@@ -331,17 +342,16 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name: pluginRuntimeVolumeName, MountPath: pluginRuntimeMountPath, ReadOnly: true,
 		})
-		for _, provider := range spec.PluginProviders {
-			switch provider {
-			case "github", "gitlab", "gitea":
-				// Mount each managed Skill independently so an existing persistent
-				// $HOME/.jcode/skills keeps unrelated user Skills visible.
-				mounts = append(mounts, corev1.VolumeMount{
-					Name:      pluginRuntimeVolumeName,
-					MountPath: pluginRuntimeSkillsPath + "/" + provider,
-					SubPath:   "skills/" + provider, ReadOnly: true,
-				})
-			}
+		// Always mask the three managed Provider Skill paths with run tmpfs.
+		// Selected Providers receive SKILL.md from the injector; unselected paths
+		// are empty, preventing a stale copy in persistent jcode HOME from falsely
+		// advertising a CLI that this run did not receive.
+		for _, provider := range []string{"github", "gitlab", "gitea"} {
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      pluginRuntimeVolumeName,
+				MountPath: pluginRuntimeSkillsPath + "/" + provider,
+				SubPath:   "skills/" + provider, ReadOnly: true,
+			})
 		}
 		// jcode discovers global MCP servers from ~/.jcode/mcp.json. Mount the
 		// initializer-created JType file over that one path so the credential
@@ -373,12 +383,21 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 		env = append(env,
 			corev1.EnvVar{Name: "PATH", Value: pluginRuntimeMountPath + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 			corev1.EnvVar{Name: "JCODE_PLUGIN_CREDENTIALS_DIR", Value: pluginCredentialsMountPath},
-			corev1.EnvVar{Name: "GH_CONFIG_DIR", Value: pluginCredentialsMountPath + "/gh"},
-			corev1.EnvVar{Name: "GLAB_CONFIG_DIR", Value: pluginCredentialsMountPath + "/glab"},
-			corev1.EnvVar{Name: "XDG_CONFIG_HOME", Value: pluginCredentialsMountPath},
-			corev1.EnvVar{Name: "GIT_CONFIG_GLOBAL", Value: pluginCredentialsMountPath + "/git/config"},
+			corev1.EnvVar{Name: "JCODE_MANAGED_SKILLS_DIR", Value: managedSkillsDir},
 			corev1.EnvVar{Name: "PLUGIN_SYNC_STOP_FILE", Value: pluginSyncStopFile},
 		)
+		if pluginProviderSet["github"] {
+			env = append(env, corev1.EnvVar{Name: "GH_CONFIG_DIR", Value: pluginCredentialsMountPath + "/gh"})
+		}
+		if pluginProviderSet["gitlab"] {
+			env = append(env, corev1.EnvVar{Name: "GLAB_CONFIG_DIR", Value: pluginCredentialsMountPath + "/glab"})
+		}
+		if pluginProviderSet["gitea"] {
+			env = append(env, corev1.EnvVar{Name: "XDG_CONFIG_HOME", Value: pluginCredentialsMountPath})
+		}
+		if pluginProviderSet["github"] || pluginProviderSet["gitlab"] || pluginProviderSet["gitea"] {
+			env = append(env, corev1.EnvVar{Name: "GIT_CONFIG_GLOBAL", Value: pluginCredentialsMountPath + "/git/config"})
+		}
 		mounts = append(mounts, corev1.VolumeMount{
 			Name: pluginLifecycleVolumeName, MountPath: pluginLifecycleMountPath,
 		})

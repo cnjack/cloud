@@ -116,6 +116,14 @@ func injectRuntime(assetsDir, dir, rawProviders string) error {
 	if err := os.MkdirAll(skillsDir, 0o700); err != nil {
 		return err
 	}
+	// Kubernetes masks these managed paths in persistent jcode HOME on every
+	// Plugin run. Unselected Providers therefore need empty directories, while a
+	// selected Provider gets the matching Skill and CLI below.
+	for _, provider := range []string{"github", "gitlab", "gitea"} {
+		if err := os.MkdirAll(filepath.Join(skillsDir, provider), 0o700); err != nil {
+			return err
+		}
+	}
 	for _, provider := range providers {
 		if provider == "jtype" {
 			continue // JType is MCP-only by product decision.
@@ -125,9 +133,6 @@ func injectRuntime(assetsDir, dir, rawProviders string) error {
 			return fmt.Errorf("inject %s CLI: %w", provider, err)
 		}
 		skillDir := filepath.Join(skillsDir, provider)
-		if err := os.MkdirAll(skillDir, 0o700); err != nil {
-			return err
-		}
 		if err := copyFile(filepath.Join(assetsDir, "skills", provider, "SKILL.md"), filepath.Join(skillDir, "SKILL.md"), 0o600); err != nil {
 			return fmt.Errorf("inject %s Skill: %w", provider, err)
 		}
@@ -277,7 +282,13 @@ func writePluginConfigs(dir string, credentials []pluginCredential) error {
 		if err != nil {
 			return err
 		}
-		if err := writeSecretFile(filepath.Join(dir, "gh", "hosts.yml"), []byte(host+":\n    user: jcloud\n    oauth_token: "+cred.AccessToken+"\n    git_protocol: https\n")); err != nil {
+		if err := writeSecretFile(filepath.Join(dir, "gh", "hosts.yml"), []byte(host+":\n    user: jcloud\n    oauth_token: "+cred.AccessToken+"\n    git_protocol: https\n    users:\n        jcloud:\n            oauth_token: "+cred.AccessToken+"\n")); err != nil {
+			return err
+		}
+		// gh 2.94+ uses this marker to distinguish current configuration from
+		// the legacy schema. Without it gh attempts an on-disk migration, which
+		// correctly fails because the runner receives credentials read-only.
+		if err := writeSecretFile(filepath.Join(dir, "gh", "config.yml"), []byte("version: \"1\"\n")); err != nil {
 			return err
 		}
 	} else if err := os.RemoveAll(filepath.Join(dir, "gh")); err != nil {

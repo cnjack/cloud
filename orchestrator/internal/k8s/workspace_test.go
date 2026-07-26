@@ -120,13 +120,17 @@ func TestBuildJobWithPluginCredentialsUsesReadOnlyTmpfsAndSidecar(t *testing.T) 
 	if len(sidecar.Env) != 3 {
 		t.Fatalf("sidecar env=%+v, want only run endpoint auth vars", sidecar.Env)
 	}
-	var runnerReadOnly, runtimeReadOnly, skillsReadOnly, sidecarWritable, jcodeMCPMounted, runnerLifecycleWritable, sidecarLifecycleWritable bool
+	var credentialRootReadOnly, runtimeReadOnly, sidecarWritable, jcodeMCPMounted, runnerLifecycleWritable, sidecarLifecycleWritable bool
+	managedSkillMasks := map[string]bool{}
 	for _, m := range runner.VolumeMounts {
-		if m.Name == pluginCredentialsVolumeName {
-			runnerReadOnly = m.ReadOnly
-			if m.MountPath == jcodeMCPConfigMountPath && m.SubPath == "jtype/mcp.json" {
-				jcodeMCPMounted = true
-			}
+		if m.Name == pluginCredentialsVolumeName && !m.ReadOnly {
+			t.Fatalf("runner credential mount must be read-only: %+v", m)
+		}
+		if m.Name == pluginCredentialsVolumeName && m.MountPath == pluginCredentialsMountPath {
+			credentialRootReadOnly = m.ReadOnly
+		}
+		if m.Name == pluginCredentialsVolumeName && m.MountPath == jcodeMCPConfigMountPath && m.SubPath == "jtype/mcp.json" {
+			jcodeMCPMounted = m.ReadOnly
 		}
 		if m.Name == pluginLifecycleVolumeName {
 			runnerLifecycleWritable = !m.ReadOnly
@@ -134,8 +138,10 @@ func TestBuildJobWithPluginCredentialsUsesReadOnlyTmpfsAndSidecar(t *testing.T) 
 		if m.Name == pluginRuntimeVolumeName && m.MountPath == pluginRuntimeMountPath {
 			runtimeReadOnly = m.ReadOnly
 		}
-		if m.Name == pluginRuntimeVolumeName && m.MountPath == pluginRuntimeSkillsPath+"/github" && m.SubPath == "skills/github" {
-			skillsReadOnly = m.ReadOnly
+		for _, provider := range []string{"github", "gitlab", "gitea"} {
+			if m.Name == pluginRuntimeVolumeName && m.MountPath == pluginRuntimeSkillsPath+"/"+provider && m.SubPath == "skills/"+provider {
+				managedSkillMasks[provider] = m.ReadOnly
+			}
 		}
 		if m.MountPath == pluginRuntimeSkillsPath+"/jtype" {
 			t.Fatal("JType must not receive a Skill mount")
@@ -149,17 +155,20 @@ func TestBuildJobWithPluginCredentialsUsesReadOnlyTmpfsAndSidecar(t *testing.T) 
 			sidecarLifecycleWritable = !m.ReadOnly
 		}
 	}
-	if !runnerReadOnly || !runtimeReadOnly || !skillsReadOnly || !sidecarWritable || !jcodeMCPMounted || !runnerLifecycleWritable || !sidecarLifecycleWritable {
-		t.Fatalf("mounts credentials_read_only=%v runtime_read_only=%v skills_read_only=%v sidecar_writable=%v jcode_mcp=%v runner_lifecycle=%v sidecar_lifecycle=%v", runnerReadOnly, runtimeReadOnly, skillsReadOnly, sidecarWritable, jcodeMCPMounted, runnerLifecycleWritable, sidecarLifecycleWritable)
+	if !credentialRootReadOnly || !runtimeReadOnly || !managedSkillMasks["github"] || !managedSkillMasks["gitlab"] || !managedSkillMasks["gitea"] || !sidecarWritable || !jcodeMCPMounted || !runnerLifecycleWritable || !sidecarLifecycleWritable {
+		t.Fatalf("mounts credentials_read_only=%v runtime_read_only=%v managed_skill_masks=%v sidecar_writable=%v jcode_mcp=%v runner_lifecycle=%v sidecar_lifecycle=%v", credentialRootReadOnly, runtimeReadOnly, managedSkillMasks, sidecarWritable, jcodeMCPMounted, runnerLifecycleWritable, sidecarLifecycleWritable)
 	}
 	values := map[string]string{}
 	for _, e := range runner.Env {
 		values[e.Name] = e.Value
 	}
 	if values["JCODE_PLUGIN_CREDENTIALS_DIR"] != pluginCredentialsMountPath ||
+		values["JCODE_MANAGED_SKILLS_DIR"] != managedSkillsDir ||
+		values["JCODE_RESERVED_SKILLS"] != reservedSkills ||
 		!strings.HasPrefix(values["PATH"], pluginRuntimeMountPath+"/bin:") ||
 		values["GIT_CONFIG_GLOBAL"] == "" ||
-		values["XDG_CONFIG_HOME"] != pluginCredentialsMountPath ||
+		values["GH_CONFIG_DIR"] != pluginCredentialsMountPath+"/gh" ||
+		values["GLAB_CONFIG_DIR"] != "" || values["XDG_CONFIG_HOME"] != "" ||
 		values["PLUGIN_SYNC_STOP_FILE"] != pluginSyncStopFile {
 		t.Fatalf("runner plugin env=%v", values)
 	}
@@ -187,6 +196,105 @@ func TestBuildJobWithPluginCredentialsUsesReadOnlyTmpfsAndSidecar(t *testing.T) 
 	}
 	for i := range pod.Containers {
 		assertHardened(pod.Containers[i].Name, pod.Containers[i].SecurityContext)
+	}
+}
+
+func TestBuildJobJTypeOnlyMasksSCMSkillsWithoutDeclaringCLIs(t *testing.T) {
+	c := &Client{cfg: Config{
+		Namespace: "jcloud", RunnerImage: "runner:test", PluginRuntimeImage: "orchestrator:test",
+		CPULimit: "2", MemoryLimit: "4Gi", CPURequest: "500m", MemoryRequest: "1Gi",
+	}}
+	job := c.buildJob(JobSpec{
+		Name: "jcloud-run-jtype", RunID: "jtype", PluginCredentials: true,
+		PluginProviders: []string{"jtype"},
+		Env:             map[string]string{"RUN_ID": "jtype", "RUN_TOKEN": "run-token", "ORCH_BASE_URL": "https://cloud.test"},
+	})
+	runner := job.Spec.Template.Spec.Containers[0]
+	env := map[string]string{}
+	for _, value := range runner.Env {
+		env[value.Name] = value.Value
+	}
+	for _, name := range []string{"GH_CONFIG_DIR", "GLAB_CONFIG_DIR", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"} {
+		if env[name] != "" {
+			t.Fatalf("JType-only snapshot declared %s=%q", name, env[name])
+		}
+	}
+	if env["JCODE_RESERVED_SKILLS"] != reservedSkills || env["JCODE_MANAGED_SKILLS_DIR"] != managedSkillsDir {
+		t.Fatalf("JType-only run missing managed Skill policy: %v", env)
+	}
+	managedMasks := map[string]bool{}
+	for _, mount := range runner.VolumeMounts {
+		for _, provider := range []string{"github", "gitlab", "gitea"} {
+			if mount.MountPath == pluginRuntimeSkillsPath+"/"+provider && mount.SubPath == "skills/"+provider && mount.ReadOnly {
+				managedMasks[provider] = true
+			}
+		}
+		if mount.MountPath == pluginRuntimeSkillsPath+"/jtype" {
+			t.Fatal("JType must remain MCP-only")
+		}
+	}
+	if len(managedMasks) != 3 {
+		t.Fatalf("JType-only snapshot did not mask all managed SCM Skill paths: %v", managedMasks)
+	}
+}
+
+func TestBuildJobScopesProviderCLIEnvironment(t *testing.T) {
+	c := &Client{cfg: Config{
+		Namespace: "jcloud", RunnerImage: "runner:test", PluginRuntimeImage: "orchestrator:test",
+		CPULimit: "2", MemoryLimit: "4Gi", CPURequest: "500m", MemoryRequest: "1Gi",
+	}}
+	tests := []struct {
+		provider string
+		present  []string
+		absent   []string
+	}{
+		{provider: "github", present: []string{"GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL"}, absent: []string{"GLAB_CONFIG_DIR", "XDG_CONFIG_HOME"}},
+		{provider: "gitlab", present: []string{"GLAB_CONFIG_DIR", "GIT_CONFIG_GLOBAL"}, absent: []string{"GH_CONFIG_DIR", "XDG_CONFIG_HOME"}},
+		{provider: "gitea", present: []string{"XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"}, absent: []string{"GH_CONFIG_DIR", "GLAB_CONFIG_DIR"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.provider, func(t *testing.T) {
+			job := c.buildJob(JobSpec{
+				Name: "jcloud-run-" + tc.provider, RunID: tc.provider, PluginCredentials: true,
+				PluginProviders: []string{tc.provider},
+				Env:             map[string]string{"RUN_ID": tc.provider, "RUN_TOKEN": "run-token", "ORCH_BASE_URL": "https://cloud.test"},
+			})
+			got := map[string]string{}
+			for _, value := range job.Spec.Template.Spec.Containers[0].Env {
+				got[value.Name] = value.Value
+			}
+			for _, name := range tc.present {
+				if got[name] == "" {
+					t.Fatalf("%s snapshot missing %s: %v", tc.provider, name, got)
+				}
+			}
+			for _, name := range tc.absent {
+				if got[name] != "" {
+					t.Fatalf("%s snapshot leaked %s=%q", tc.provider, name, got[name])
+				}
+			}
+			if got["JCODE_RESERVED_SKILLS"] != reservedSkills || got["JCODE_MANAGED_SKILLS_DIR"] != managedSkillsDir {
+				t.Fatalf("%s snapshot missing managed Skill policy: %v", tc.provider, got)
+			}
+		})
+	}
+}
+
+func TestBuildJobWithoutPluginsStillReservesManagedSkillNames(t *testing.T) {
+	c := &Client{cfg: Config{
+		Namespace: "jcloud", RunnerImage: "runner:test",
+		CPULimit: "2", MemoryLimit: "4Gi", CPURequest: "500m", MemoryRequest: "1Gi",
+	}}
+	job := c.buildJob(JobSpec{Name: "jcloud-run-plain", RunID: "plain"})
+	got := map[string]string{}
+	for _, value := range job.Spec.Template.Spec.Containers[0].Env {
+		got[value.Name] = value.Value
+	}
+	if got["JCODE_RESERVED_SKILLS"] != reservedSkills {
+		t.Fatalf("plain run did not reserve managed Skill names: %v", got)
+	}
+	if got["JCODE_MANAGED_SKILLS_DIR"] != "" {
+		t.Fatalf("plain run declared a managed Skill directory without runtime injection: %v", got)
 	}
 }
 
