@@ -236,12 +236,22 @@ func (s *Server) resolvePluginRepository(ctx context.Context, installation *doma
 	if err != nil {
 		return nil, nil, err
 	}
-	lister, ok := client.(provider.RepoLister)
-	if !ok {
-		return nil, nil, errors.New("provider repository listing unavailable")
-	}
 	for page := 1; page <= 20; page++ {
-		repos, listErr := lister.ListRepos(ctx, "", page, 50)
+		var repos []provider.Repo
+		var listErr error
+		if installation.Provider == domain.PluginGitHub {
+			lister, ok := client.(provider.InstallationRepoLister)
+			if !ok {
+				return nil, nil, errors.New("GitHub installation repository listing unavailable")
+			}
+			repos, listErr = lister.ListInstallationRepos(ctx, "", page, 50)
+		} else {
+			lister, ok := client.(provider.RepoLister)
+			if !ok {
+				return nil, nil, errors.New("provider repository listing unavailable")
+			}
+			repos, listErr = lister.ListRepos(ctx, "", page, 50)
+		}
 		if listErr != nil {
 			return nil, nil, listErr
 		}
