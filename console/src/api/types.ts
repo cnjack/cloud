@@ -292,7 +292,7 @@ export interface CreateProjectAutomationInput {
 
 export type UpdateProjectAutomationInput = Partial<CreateProjectAutomationInput>;
 
-export interface PluginRepositoryResource { id: string; full_name: string; clone_url?: string; html_url?: string; default_branch?: string; private?: boolean; }
+export interface PluginRepositoryResource { id: string | number; full_name: string; description?: string; clone_url?: string; html_url?: string; default_branch?: string; private?: boolean; }
 export interface PluginWorkspaceResource { id: string; name: string; }
 export interface PluginBoardResource { id: string; ref: string; title: string; columns: Array<{ key: string; name: string }> }
 
@@ -1546,24 +1546,22 @@ export interface UpdateServiceInput {
   default_model_id?: string;
 }
 
-/**
- * POST /projects/{id}/services (blueprint §4). repo_url is smart-parsed by the
- * server; git_mode defaults readonly. name defaults `default`.
- */
+/** POST /projects/{id}/services. Services are always bound to a Project Plugin repository. */
 export interface CreateServiceInput {
   name?: string;
-  repo_url?: string;
-  provider?: GitProvider;
-  owner_name?: string;
+  installation_id?: string;
+  provider_repo_id?: string | number;
   git_mode?: GitMode;
+  default_model_id?: string;
+  /** @deprecated Mock-only compatibility. The production API rejects bare Git URLs. */
+  repo_url?: string;
+  /** @deprecated Mock-only compatibility. */
+  provider?: GitProvider;
+  /** @deprecated Mock-only compatibility. */
+  owner_name?: string;
+  /** @deprecated Mock-only compatibility. */
   default_branch?: string;
-  /** The provider's numeric repo id (from the repo picker) — rename-proof identity. */
-  provider_repo_id?: number;
-  /**
-   * Bind the new service to a project integration (D19 / F5). When set, a MEMBER
-   * (not just owner) may create the service, the repo must be reachable by the
-   * integration's bot token, and the service's provider comes from the integration.
-   */
+  /** @deprecated Mock-only compatibility. */
   integration_id?: string;
 }
 

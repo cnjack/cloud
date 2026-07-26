@@ -1231,7 +1231,7 @@ export default {
     repositoryName: '仓库名称',
     repositoryUrl: '仓库 URL',
     addRepository: '添加仓库',
-    memberNeedsIntegration: '添加仓库需要 Git 集成 — 请让项目所有者在项目设置中连接一个。',
+    memberNeedsIntegration: '添加服务前，请先连接并启用 GitHub、GitLab 或 Gitea 项目插件。',
     automationsMembersTitle: '自动化对项目成员可用',
     automationsMembersDesc: '你可以查看任务历史，但只有项目成员才能管理定时任务和提供方事件。',
     automationsNeedServiceTitle: '自动化需要一个服务',

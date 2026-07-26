@@ -72,7 +72,7 @@ describe('httpClient — request shaping', () => {
     expect(project.name).toBe('demo');
   });
 
-  it('POSTs create-service with the git integration payload (draft_pr)', async () => {
+  it('POSTs create-service with the Project Plugin repository binding', async () => {
     const { calls } = mockFetch(({ init }) => ({
       status: 201,
       body: JSON.parse(init!.body as string),
@@ -80,19 +80,17 @@ describe('httpClient — request shaping', () => {
     const client = createHttpClient('t');
     await client.createService('p1', {
       name: 'default',
-      repo_url: 'https://gitea.local/jcloud/seed.git',
-      default_branch: 'main',
+      installation_id: 'plugin-github',
+      provider_repo_id: '12345',
       git_mode: 'draft_pr',
-      provider: 'gitea',
-      owner_name: 'jcloud/seed',
     });
     expect(calls[0]!.url).toBe('/api/v1/projects/p1/services');
     const body = JSON.parse(calls[0]!.init!.body as string);
-    expect(body).toMatchObject({
+    expect(body).toEqual({
+      name: 'default',
+      installation_id: 'plugin-github',
+      provider_repo_id: '12345',
       git_mode: 'draft_pr',
-      provider: 'gitea',
-      owner_name: 'jcloud/seed',
-      repo_url: 'https://gitea.local/jcloud/seed.git',
     });
   });
 
@@ -237,9 +235,20 @@ describe('httpClient — me / services / members (M4)', () => {
     expect(calls[0]!.url).toBe('/api/v1/projects/p1/services');
     expect(list[0]!.id).toBe('s1');
 
-    await client.createService('p1', { name: 'web', repo_url: 'https://github.com/a/b', git_mode: 'readonly' });
+    await client.createService('p1', {
+      name: 'web',
+      installation_id: 'plugin-github',
+      provider_repo_id: '12345',
+      git_mode: 'readonly',
+    });
     expect(calls[1]!.url).toBe('/api/v1/projects/p1/services');
     expect(calls[1]!.init!.method).toBe('POST');
+    expect(JSON.parse(calls[1]!.init!.body as string)).toEqual({
+      name: 'web',
+      installation_id: 'plugin-github',
+      provider_repo_id: '12345',
+      git_mode: 'readonly',
+    });
 
     await client.createServiceRun('s1', { prompt: 'go' });
     expect(calls[2]!.url).toBe('/api/v1/services/s1/runs');

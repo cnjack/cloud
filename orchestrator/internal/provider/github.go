@@ -147,6 +147,37 @@ func (c *GitHubClient) ListRepos(ctx context.Context, query string, page, limit 
 	return repos, nil
 }
 
+// ListInstallationRepos lists only repositories granted to the GitHub App
+// installation represented by c.token. Installation access tokens are not user
+// tokens and GitHub rejects them on /user/repos.
+func (c *GitHubClient) ListInstallationRepos(ctx context.Context, query string, page, limit int) ([]Repo, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 50
+	}
+	url := fmt.Sprintf("%s/installation/repositories?per_page=%d&page=%d", c.apiBase, limit, page)
+	var body struct {
+		Repositories []githubRepo `json:"repositories"`
+	}
+	if err := doJSON(ctx, c.http, http.MethodGet, url, c.auth(), c.accept(), nil, &body); err != nil {
+		return nil, err
+	}
+	q := strings.ToLower(strings.TrimSpace(query))
+	repos := make([]Repo, 0, len(body.Repositories))
+	for _, r := range body.Repositories {
+		if q != "" && !strings.Contains(strings.ToLower(r.FullName), q) {
+			continue
+		}
+		repos = append(repos, Repo{
+			ID: r.ID, FullName: r.FullName, Description: r.Description,
+			DefaultBranch: r.DefaultBranch, Private: r.Private, HTMLURL: r.HTMLURL,
+		})
+	}
+	return repos, nil
+}
+
 // EnsureCommentWebhook idempotently registers the @mention PR-comment webhook on
 // a repository (F13). It lists the repo's hooks and creates one only when no hook
 // with the same target URL exists (GitHub returns the target under config.url;

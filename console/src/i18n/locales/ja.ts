@@ -1231,7 +1231,7 @@ export default {
     repositoryName: 'リポジトリ名',
     repositoryUrl: 'リポジトリ URL',
     addRepository: 'リポジトリを追加',
-    memberNeedsIntegration: 'リポジトリの追加には git 連携が必要です — プロジェクト所有者にプロジェクト設定での接続を依頼してください。',
+    memberNeedsIntegration: 'Service を追加する前に、GitHub、GitLab、または Gitea の Project Plugin を接続して有効にしてください。',
     automationsMembersTitle: '自動化はプロジェクトメンバーが利用できます',
     automationsMembersDesc: 'タスク履歴は表示できますが、スケジュールとプロバイダーイベントの管理はプロジェクトメンバーが行う必要があります。',
     automationsNeedServiceTitle: '自動化にはサービスが必要です',

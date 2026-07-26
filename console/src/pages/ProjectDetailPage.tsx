@@ -14,12 +14,11 @@ import {
   useCreateService,
   useCreateServiceRun,
   useDeleteService,
-  useIntegrationRepos,
-  useIntegrations,
+  usePluginRepositories,
   useProject,
   useProjectBoardLinks,
   useProjectModels,
-  useProviderRepos,
+  useProjectPlugins,
   useRuns,
   useUpdateService,
 } from '../api/queries';
@@ -30,7 +29,6 @@ import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { TextField } from '../components/Field';
 import { GitModeBadge } from '../components/GitModeBadge';
-import { GitModeToggle } from '../components/GitModeToggle';
 import { useModelGate } from '../components/ModelGate';
 import { RailAccountFooter } from '../components/RailAccountFooter';
 import { Select } from '../components/Select';
@@ -39,8 +37,7 @@ import { LanguageToggle } from '../components/LanguageToggle';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { useToast } from '../components/Toast';
 import { Wordmark } from '../components/Wordmark';
-import { providerForRepoUrl } from '../lib/repo';
-import type { GitMode, GitProvider, ProviderRepo } from '../api/types';
+import type { PluginRepositoryResource } from '../api/types';
 import { resolveWorkspaceLocation, type WorkspaceTab } from '../project-workspace/location';
 import { ProjectWorkspaceShell } from '../project-workspace/ProjectWorkspaceShell';
 import { ProjectSettingsAction } from '../project-workspace/ProjectSettingsAction';
@@ -83,13 +80,8 @@ export function ProjectDetailPage() {
   const [kanbanOpen, setKanbanOpen] = useState(false);
 
   const [addOpen, setAddOpen] = useState(false);
-  const [repoName, setRepoName] = useState('');
-  const [repoUrl, setRepoUrl] = useState('');
-  const [repoMode, setRepoMode] = useState<GitMode>('readonly');
-  const [repoErr, setRepoErr] = useState<{ name?: string; url?: string }>({});
-  const [pickerProvider, setPickerProvider] = useState('gitea');
   const [repoQuery, setRepoQuery] = useState('');
-  const [pickerIntegrationId, setPickerIntegrationId] = useState('');
+  const [pickerInstallationId, setPickerInstallationId] = useState('');
   const deferredQuery = useDeferredValue(repoQuery);
 
   const p = project.data;
@@ -116,12 +108,8 @@ export function ProjectDetailPage() {
     setAskApproval(false);
     setRunFilter('all');
     setAddOpen(false);
-    setRepoName('');
-    setRepoUrl('');
-    setRepoMode('readonly');
-    setRepoErr({});
     setRepoQuery('');
-    setPickerIntegrationId('');
+    setPickerInstallationId('');
   }, [projectId]);
 
   // The Project URL is the source of truth for its durable navigation state.
@@ -148,33 +136,24 @@ export function ProjectDetailPage() {
   const hasServiceHeaderActions =
     hasBoardLinks || boardLinksUnavailable || activeService?.repo_kind === 'provider' || (canManage && !!activeService);
 
-  const integrationsQuery = useIntegrations(projectId, !!p && canRun);
-  const availableIntegrations = useMemo(
-    () => integrationsQuery.data ?? [],
-    [integrationsQuery.data],
+  const pluginsQuery = useProjectPlugins(projectId, !!p && canRun);
+  const availableGitPlugins = useMemo(
+    () => (pluginsQuery.data ?? []).filter((plugin) =>
+      plugin.id &&
+      plugin.status === 'enabled' &&
+      (plugin.provider === 'github' || plugin.provider === 'gitlab' || plugin.provider === 'gitea')),
+    [pluginsQuery.data],
   );
-  const effectiveIntegrationId =
-    pickerIntegrationId || (!canManage ? availableIntegrations[0]?.id ?? '' : '');
-  const integrationMode = effectiveIntegrationId !== '';
-  const canAddRepo = canManage || (canRun && availableIntegrations.length > 0);
-  const memberNeedsIntegration =
-    canRun && !canManage && integrationsQuery.isSuccess && availableIntegrations.length === 0;
-  const pickerProviders = useMemo(() => {
-    const providerIds = (auth?.providers ?? []).map((provider) => provider.id);
-    return providerIds.includes('gitea') ? providerIds : ['gitea', ...providerIds];
-  }, [auth]);
-  const providerRepos = useProviderRepos(
-    pickerProvider,
-    deferredQuery,
-    addOpen && !integrationMode && canManage,
-  );
-  const integrationRepos = useIntegrationRepos(
+  const effectiveInstallationId = pickerInstallationId || availableGitPlugins[0]?.id || '';
+  const selectedPlugin = availableGitPlugins.find((plugin) => plugin.id === effectiveInstallationId);
+  const canAddRepo = canRun && availableGitPlugins.length > 0;
+  const needsGitPlugin = canRun && pluginsQuery.isSuccess && availableGitPlugins.length === 0;
+  const repoList = usePluginRepositories(
     projectId,
-    effectiveIntegrationId,
+    effectiveInstallationId,
     deferredQuery,
-    addOpen && integrationMode,
+    addOpen && !!effectiveInstallationId,
   );
-  const repoList = integrationMode ? integrationRepos : providerRepos;
 
   const modelGate = useModelGate(projectId, canRun && services.length > 0);
   const projectModels = useProjectModels(projectId, canRun && services.length > 0);
@@ -308,26 +287,14 @@ export function ProjectDetailPage() {
     });
   };
 
-  const pickRepo = (repo: ProviderRepo) => {
+  const pickRepo = (repo: PluginRepositoryResource) => {
     const name = repo.full_name.split('/').pop() || repo.full_name;
-    const input = integrationMode
-      ? {
-          name,
-          owner_name: repo.full_name,
-          integration_id: effectiveIntegrationId,
-          default_branch: repo.default_branch || 'main',
-          git_mode: 'draft_pr' as GitMode,
-          provider_repo_id: repo.id,
-        }
-      : {
-          name,
-          provider: pickerProvider as GitProvider,
-          owner_name: repo.full_name,
-          default_branch: repo.default_branch || 'main',
-          git_mode: 'draft_pr' as GitMode,
-          provider_repo_id: repo.id,
-        };
-    createService.mutate(input, {
+    createService.mutate({
+      name,
+      installation_id: effectiveInstallationId,
+      provider_repo_id: repo.id,
+      git_mode: 'draft_pr',
+    }, {
       onSuccess: () => {
         toast.push({ kind: 'success', message: t('projectDetail.repoAdded', { name: repo.full_name }) });
         setAddOpen(false);
@@ -339,37 +306,6 @@ export function ProjectDetailPage() {
           message: error instanceof ApiError ? error.message : t('projectDetail.addRepoFailed'),
         }),
     });
-  };
-
-  const submitRepo = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const errors: { name?: string; url?: string } = {};
-    if (!repoName.trim()) errors.name = t('projectDetail.nameRequired');
-    if (!repoUrl.trim()) errors.url = t('projectDetail.repoUrlRequired');
-    else if (repoMode === 'draft_pr' && providerForRepoUrl(repoUrl) === null) {
-      errors.url = t('projectDetail.draftPrNeedsProviderUrl');
-    }
-    setRepoErr(errors);
-    if (Object.keys(errors).length > 0) return;
-
-    createService.mutate(
-      { name: repoName.trim(), repo_url: repoUrl.trim(), git_mode: repoMode },
-      {
-        onSuccess: () => {
-          toast.push({ kind: 'success', message: t('projectDetail.repoAdded', { name: repoName.trim() }) });
-          setAddOpen(false);
-          setRepoName('');
-          setRepoUrl('');
-          setRepoMode('readonly');
-          setRepoErr({});
-        },
-        onError: (error) =>
-          toast.push({
-            kind: 'error',
-            message: error instanceof ApiError ? error.message : t('projectDetail.addRepoFailed'),
-          }),
-      },
-    );
   };
 
   if (project.isLoading) return <LoadingBlock label={t('projectDetail.loadingProject')} />;
@@ -667,40 +603,20 @@ export function ProjectDetailPage() {
                 )}
                 <Card className={styles.addRepoCard}>
                   <div className={styles.repoPicker} data-testid="repo-picker">
-                    {(availableIntegrations.length > 0 || canManage) && (
+                    {availableGitPlugins.length > 0 && (
                       <label className={styles.pickerHint}>
-                        {t('projectDetail.source')}
+                        {t('plugins.projectPlugin')}
                         <Select
-                          value={effectiveIntegrationId}
-                          onChange={setPickerIntegrationId}
+                          value={effectiveInstallationId}
+                          onChange={setPickerInstallationId}
                           data-testid="repo-source-select"
                           className={styles.repoSourceSelect}
-                          options={[
-                            ...(canManage ? [{ value: '', label: t('projectDetail.directCredential') }] : []),
-                            ...availableIntegrations.map((integration) => ({
-                              value: integration.id,
-                              label: `${integration.name} · ${integration.provider} · @${integration.bot_username}`,
-                            })),
-                          ]}
+                          options={availableGitPlugins.map((plugin) => ({
+                            value: plugin.id!,
+                            label: `${plugin.provider === 'github' ? 'GitHub' : plugin.provider === 'gitlab' ? 'GitLab' : 'Gitea'} · ${plugin.external_account ?? plugin.external_account_id ?? plugin.provider}`,
+                          }))}
                         />
                       </label>
-                    )}
-                    {!integrationMode && pickerProviders.length > 1 && (
-                      <div className={styles.pickerTabs} role="tablist" aria-label={t('projectDetail.gitProvider')}>
-                        {pickerProviders.map((provider) => (
-                          <button
-                            key={provider}
-                            type="button"
-                            role="tab"
-                            aria-selected={pickerProvider === provider}
-                            className={styles.pickerTab}
-                            data-active={pickerProvider === provider || undefined}
-                            onClick={() => setPickerProvider(provider)}
-                          >
-                            {provider}
-                          </button>
-                        ))}
-                      </div>
                     )}
                     <TextField
                       label={t('projectDetail.pickRepository')}
@@ -716,8 +632,7 @@ export function ProjectDetailPage() {
                       <p className={styles.pickerHint} data-testid="repo-picker-error">
                         {repoList.error instanceof ApiError
                           ? repoList.error.message
-                          : t('projectDetail.listReposFailed', { source: integrationMode ? t('projectDetail.integrationSource') : pickerProvider })}
-                        {!integrationMode && t('projectDetail.addRepoByUrlInstead')}
+                          : t('projectDetail.listReposFailed', { source: selectedPlugin?.provider ?? 'Plugin' })}
                       </p>
                     ) : repoList.data && repoList.data.length === 0 ? (
                       <p className={styles.pickerHint}>{t('projectDetail.noRepositoriesMatch')}</p>
@@ -743,78 +658,27 @@ export function ProjectDetailPage() {
                         ))}
                       </ul>
                     )}
-                    {!integrationMode && canManage && <div className={styles.pickerDivider}>{t('projectDetail.orAddByUrl')}</div>}
                   </div>
 
-                  {!integrationMode && canManage && (
-                    <form onSubmit={submitRepo} noValidate className={styles.addRepoForm}>
-                      <TextField
-                        label={t('projectDetail.repositoryName')}
-                        required
-                        placeholder="frontend"
-                        value={repoName}
-                        onChange={(event) => setRepoName(event.target.value)}
-                        error={repoErr.name}
-                        data-testid="add-repo-name"
-                        autoComplete="off"
-                      />
-                      <TextField
-                        label={t('projectDetail.repositoryUrl')}
-                        required
-                        placeholder="https://github.com/acme/frontend"
-                        value={repoUrl}
-                        onChange={(event) => setRepoUrl(event.target.value)}
-                        error={repoErr.url}
-                        data-testid="add-repo-url"
-                        autoComplete="off"
-                      />
-                      <GitModeToggle value={repoMode} onChange={setRepoMode} />
-                      <div className={styles.addRepoActions}>
-                        {services.length > 0 && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setAddOpen(false)}
-                            disabled={createService.isPending}
-                          >
-                            {t('common.cancel')}
-                          </Button>
-                        )}
-                        <Button
-                          type="submit"
-                          variant="primary"
-                          size="sm"
-                          loading={createService.isPending}
-                          data-testid="add-repo-submit"
-                        >
-                          {t('projectDetail.addRepository')}
-                        </Button>
-                      </div>
-                    </form>
-                  )}
-
-                  {integrationMode && (
+                  {services.length > 0 && (
                     <div className={styles.addRepoActions}>
-                      {services.length > 0 && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setAddOpen(false)}
-                          disabled={createService.isPending}
-                        >
-                          {t('common.cancel')}
-                        </Button>
-                      )}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setAddOpen(false)}
+                        disabled={createService.isPending}
+                      >
+                        {t('common.cancel')}
+                      </Button>
                     </div>
                   )}
                 </Card>
               </section>
             )}
 
-            {memberNeedsIntegration && (
-              <p className={styles.addRepoNeedsIntegration} data-testid="add-repo-needs-integration">
+            {needsGitPlugin && (
+              <p className={styles.addRepoNeedsIntegration} data-testid="add-repo-needs-plugin">
                 {t('projectDetail.memberNeedsIntegration')}
               </p>
             )}

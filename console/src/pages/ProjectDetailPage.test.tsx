@@ -22,12 +22,12 @@ import type {
   BoardEmbedLink,
   CreateRunInput,
   CreateServiceInput,
-  Integration,
   MemberRole,
+  PluginRepositoryResource,
   Project,
   ProjectAutomationSpec,
   ProjectModel,
-  ProviderRepo,
+  ProjectPlugin,
   Run,
   Service,
   CreateAutomationInput,
@@ -96,9 +96,8 @@ function makeClient(
   opts: {
     modelConfigured?: boolean;
     models?: ProjectModel[];
-    // D19 / F5: the project's integrations + what their bot token can list.
-    integrations?: Integration[];
-    integrationRepos?: ProviderRepo[];
+    plugins?: ProjectPlugin[];
+    pluginRepos?: PluginRepositoryResource[];
     // D31: the member+ board-embed links that gate the "Kanban" header button.
     // Absent = the endpoint is treated as returning [] (no button).
     boardLinks?: BoardEmbedLink[];
@@ -110,9 +109,15 @@ function makeClient(
   const client: Partial<ApiClient> = {
     getProject: async () => p,
     listRuns: async () => [] as Run[],
-    // D19 / F5: loaded eagerly for member+ (the add-repo entry gates on it).
-    listIntegrations: async () => opts.integrations ?? [],
-    listIntegrationRepos: async () => opts.integrationRepos ?? [],
+    listProjectPlugins: async () => opts.plugins ?? [{
+      id: 'plugin-gitea',
+      project_id: p.id,
+      provider: 'gitea',
+      status: 'enabled',
+      external_account: 'acme',
+      scopes: ['repository:write'],
+    }],
+    listPluginRepositories: async () => opts.pluginRepos ?? [],
     // D31: the member+ board-link list gating the Kanban button.
     listProjectBoardLinks: async () => opts.boardLinks ?? [],
     // D21: the composer keys enable/disable off the project's models AND populates
@@ -738,10 +743,9 @@ describe('ProjectDetailPage — zero-repo empty state', () => {
   });
 
   it('activates a newly attached first service instead of remaining in the empty workspace', async () => {
-    const { client } = makeClient(project('owner', []));
-    (client as { listProviderRepos?: unknown }).listProviderRepos = async () => [
-      { id: 77, full_name: 'acme/frontend', description: 'SPA', default_branch: 'main', private: false },
-    ];
+    const { client } = makeClient(project('owner', []), {
+      pluginRepos: [{ id: '77', full_name: 'acme/frontend', description: 'SPA', default_branch: 'main', private: false }],
+    });
     renderPage(client);
 
     fireEvent.click(await screen.findByTestId('empty-add-service'));
@@ -791,199 +795,76 @@ describe('ProjectDetailPage — viewer gating', () => {
 });
 
 describe('ProjectDetailPage — add repository', () => {
-  it('opens the inline form and creates a service (owner)', async () => {
-    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
+  const githubPlugin: ProjectPlugin = {
+    id: 'plugin-github',
+    project_id: 'p1',
+    provider: 'github',
+    status: 'enabled',
+    external_account: 'cnjack',
+    scopes: ['contents:write'],
+  };
+  const repository: PluginRepositoryResource = {
+    id: '77',
+    full_name: 'cnjack/codespace_demo',
+    description: 'E2E repository',
+    default_branch: 'main',
+    private: false,
+  };
+
+  it('creates a Service from an enabled Project Plugin repository', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      plugins: [githubPlugin],
+      pluginRepos: [repository],
+    });
     renderPage(client);
 
-    await waitFor(() => expect(screen.getByTestId('add-repo-trigger')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('add-repo-trigger'));
-
-    fireEvent.change(screen.getByTestId('add-repo-name'), { target: { value: 'web' } });
-    fireEvent.change(screen.getByTestId('add-repo-url'), {
-      target: { value: 'https://github.com/acme/web' },
-    });
-    fireEvent.click(screen.getByTestId('add-repo-submit'));
+    fireEvent.click(await screen.findByTestId('add-repo-trigger'));
+    expect(screen.queryByTestId('add-repo-url')).toBeNull();
+    const pick = await screen.findByTestId('repo-pick');
+    expect(pick.getAttribute('data-repo')).toBe('cnjack/codespace_demo');
+    fireEvent.click(pick);
 
     await waitFor(() => expect(calls.services).toHaveLength(1));
     expect(calls.services[0]).toMatchObject({
       pid: 'p1',
-      input: { name: 'web', repo_url: 'https://github.com/acme/web', git_mode: 'readonly' },
+      input: {
+        name: 'codespace_demo',
+        installation_id: 'plugin-github',
+        provider_repo_id: '77',
+        git_mode: 'draft_pr',
+      },
     });
+    expect('repo_url' in calls.services[0]!.input).toBe(false);
   });
 
-  it('blocks a Draft PR against a raw (git://) repo before submit', async () => {
-    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
-    renderPage(client);
-
-    await waitFor(() => expect(screen.getByTestId('add-repo-trigger')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('add-repo-trigger'));
-
-    fireEvent.change(screen.getByTestId('add-repo-name'), { target: { value: 'seed' } });
-    fireEvent.change(screen.getByTestId('add-repo-url'), {
-      target: { value: 'git://seed.internal/seed.git' },
-    });
-    fireEvent.click(screen.getByTestId('git-mode-draft_pr'));
-    fireEvent.click(screen.getByTestId('add-repo-submit'));
-
-    await waitFor(() => expect(screen.getByText(/provider repository URL/i)).toBeTruthy());
-    expect(calls.services).toHaveLength(0);
-  });
-});
-
-describe('ProjectDetailPage — repo picker (Drone-style onboarding)', () => {
-  it('lists provider repos and one click attaches with draft_pr + provider_repo_id', async () => {
-    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
-    (client as { listProviderRepos?: unknown }).listProviderRepos = async () => [
-      { id: 77, full_name: 'acme/frontend', description: 'SPA', default_branch: 'dev', private: true },
-    ];
-    renderPage(client);
-
-    await waitFor(() => expect(screen.getByTestId('add-repo-trigger')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('add-repo-trigger'));
-
-    const pick = await screen.findByTestId('repo-pick');
-    expect(pick.getAttribute('data-repo')).toBe('acme/frontend');
-    fireEvent.click(pick);
-
-    await waitFor(() => expect(calls.services.length).toBe(1));
-    expect(calls.services[0]!.input).toMatchObject({
-      name: 'frontend',
-      provider: 'gitea',
-      owner_name: 'acme/frontend',
-      default_branch: 'dev',
-      git_mode: 'draft_pr',
-      provider_repo_id: 77,
-    });
-  });
-
-  it('falls back to manual URL entry when the listing 403s (unlinked account)', async () => {
-    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
-    (client as { listProviderRepos?: unknown }).listProviderRepos = async () => {
-      throw new Error('no gitea credential available — link your gitea account first');
-    };
-    renderPage(client);
-
-    await waitFor(() => expect(screen.getByTestId('add-repo-trigger')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('add-repo-trigger'));
-
-    await screen.findByTestId('repo-picker-error');
-    // The manual form is still there as the fallback path.
-    expect(screen.getByTestId('add-repo-url')).toBeTruthy();
-  });
-});
-
-describe('ProjectDetailPage — member builds via integration (D19 / F5)', () => {
-  const integ: Integration = {
-    id: 'integ1',
-    project_id: 'p1',
-    name: 'default',
-    provider: 'gitea',
-    host: 'gitea.example.com',
-    cred_type: 'pat',
-    bot_username: 'jcloud-bot',
-    token_set: true,
-    created_at: '',
-    updated_at: '',
-  };
-  const widgetRepo: ProviderRepo = {
-    id: 42,
-    full_name: 'acme/widget',
-    description: 'Widget service',
-    default_branch: 'main',
-    private: true,
-  };
-
-  it('member + integration: "+ Add repository" appears and a pick submits integration_id (deadlock regression)', async () => {
-    // Regression for the F5 review finding: the integrations query must load
-    // EAGERLY for a member — the old code enabled it only while the add-repo card
-    // was open, but the card's only entry button was itself gated on the loaded
-    // data, so a member could never see "+ Add repository" at all.
+  it('lets a Member use the same Project Plugin without a personal credential', async () => {
     const { client, calls } = makeClient(project('member', [svc('svc_default', 'default')]), {
-      integrations: [integ],
-      integrationRepos: [widgetRepo],
+      plugins: [githubPlugin],
+      pluginRepos: [repository],
     });
     renderPage(client);
 
-    // The entry renders once the integration list loads (never with the old gating).
-    const trigger = await screen.findByTestId('add-repo-trigger');
-    fireEvent.click(trigger);
-
-    // The picker lists the integration bot's repos; the member path has NO
-    // owner-only manual URL fallback.
-    const pick = await screen.findByTestId('repo-pick');
-    expect(pick.getAttribute('data-repo')).toBe('acme/widget');
-    expect(screen.queryByTestId('add-repo-url')).toBeNull();
-
-    fireEvent.click(pick);
+    fireEvent.click(await screen.findByTestId('add-repo-trigger'));
+    fireEvent.click(await screen.findByTestId('repo-pick'));
     await waitFor(() => expect(calls.services).toHaveLength(1));
-    expect(calls.services[0]!.input).toMatchObject({
-      name: 'widget',
-      owner_name: 'acme/widget',
-      integration_id: 'integ1',
-      default_branch: 'main',
-      git_mode: 'draft_pr',
-      provider_repo_id: 42,
-    });
-    // The provider is the integration's to decide server-side — never sent.
-    expect('provider' in calls.services[0]!.input).toBe(false);
+    expect(calls.services[0]!.input.installation_id).toBe('plugin-github');
   });
 
-  it('member + no integration: no entry, a fail-visible hint instead', async () => {
-    const { client } = makeClient(project('member', [svc('svc_default', 'default')]), {
-      integrations: [],
-    });
-    renderPage(client);
-
-    await screen.findByTestId('add-repo-needs-integration');
-    expect(screen.queryByTestId('add-repo-trigger')).toBeNull();
-    expect(
-      screen.getByTestId('add-repo-needs-integration').textContent,
-    ).toMatch(/integration/i);
-  });
-
-  it('owner regression: entry shows with zero integrations and Direct source keeps the manual URL form', async () => {
-    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
-      integrations: [],
-    });
-    renderPage(client);
-
-    // Owner entry never depends on integrations existing.
-    await waitFor(() => expect(screen.getByTestId('add-repo-trigger')).toBeTruthy());
-    expect(screen.queryByTestId('add-repo-needs-integration')).toBeNull();
-    fireEvent.click(screen.getByTestId('add-repo-trigger'));
-
-    // Direct (owner-credential) mode: the manual URL fallback is present and works.
-    fireEvent.change(screen.getByTestId('add-repo-name'), { target: { value: 'web' } });
-    fireEvent.change(screen.getByTestId('add-repo-url'), {
-      target: { value: 'https://github.com/acme/web' },
-    });
-    fireEvent.click(screen.getByTestId('add-repo-submit'));
-    await waitFor(() => expect(calls.services).toHaveLength(1));
-    expect('integration_id' in calls.services[0]!.input).toBe(false);
-  });
-
-  it('owner + integration: the Source select offers Direct plus the integration', async () => {
+  it('shows a fail-visible Plugin requirement when none is enabled', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]), {
-      integrations: [integ],
+      plugins: [],
     });
     renderPage(client);
 
-    await waitFor(() => expect(screen.getByTestId('add-repo-trigger')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('add-repo-trigger'));
-
-    const source = await screen.findByTestId('repo-source-select');
-    // Direct + the one integration; the owner defaults to Direct.
-    expect(source.textContent).toBe('Direct (your credential)');
-    fireEvent.click(source);
-    const options = await screen.findAllByRole('option');
-    expect(options).toHaveLength(2);
-    expect(options[1]!.textContent).toContain('jcloud-bot');
+    expect(await screen.findByTestId('add-repo-needs-plugin')).toBeTruthy();
+    expect(screen.queryByTestId('add-repo-trigger')).toBeNull();
+    expect(screen.getByTestId('add-repo-needs-plugin').textContent).toMatch(/Project Plugin/i);
   });
 
-  it('does not fetch integrations for a viewer (enabled gating)', async () => {
+  it('does not fetch Project Plugins for a viewer', async () => {
     const { client } = makeClient(project('viewer', [svc('svc_default', 'default')]));
-    const spy = vi.fn(async () => [] as Integration[]);
-    (client as { listIntegrations?: unknown }).listIntegrations = spy;
+    const spy = vi.fn(async () => [] as ProjectPlugin[]);
+    (client as { listProjectPlugins?: unknown }).listProjectPlugins = spy;
     renderPage(client);
 
     await waitFor(() => expect(screen.getByTestId('runs-empty')).toBeTruthy());

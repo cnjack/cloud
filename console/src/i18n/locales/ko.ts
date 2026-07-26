@@ -1231,7 +1231,7 @@ export default {
     repositoryName: '리포지토리 이름',
     repositoryUrl: '리포지토리 URL',
     addRepository: '리포지토리 추가',
-    memberNeedsIntegration: '리포지토리를 추가하려면 git 통합이 필요합니다 — 프로젝트 소유자에게 프로젝트 설정에서 연결을 요청하세요.',
+    memberNeedsIntegration: 'Service를 추가하기 전에 GitHub, GitLab 또는 Gitea Project Plugin을 연결하고 활성화하세요.',
     automationsMembersTitle: '자동화는 프로젝트 멤버가 사용할 수 있습니다',
     automationsMembersDesc: '작업 기록은 볼 수 있지만, 예약과 제공자 이벤트는 프로젝트 멤버가 관리해야 합니다.',
     automationsNeedServiceTitle: '자동화에는 서비스가 필요합니다',

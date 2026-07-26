@@ -1231,7 +1231,7 @@ export default {
     repositoryName: '儲存庫名稱',
     repositoryUrl: '儲存庫 URL',
     addRepository: '新增儲存庫',
-    memberNeedsIntegration: '新增儲存庫需要 git 整合 — 請專案擁有者在專案設定中連接一個。',
+    memberNeedsIntegration: '新增服務前，請先連接並啟用 GitHub、GitLab 或 Gitea 專案外掛。',
     automationsMembersTitle: '自動化開放給專案成員使用',
     automationsMembersDesc: '你可以檢視工作歷史，但排程與供應商事件必須由專案成員管理。',
     automationsNeedServiceTitle: '自動化需要服務',

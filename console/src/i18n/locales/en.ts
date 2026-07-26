@@ -1234,7 +1234,7 @@ export default {
     repositoryName: 'Repository name',
     repositoryUrl: 'Repository URL',
     addRepository: 'Add repository',
-    memberNeedsIntegration: 'Adding a repository needs a git integration — ask a project owner to connect one under Project settings.',
+    memberNeedsIntegration: 'Connect an enabled GitHub, GitLab, or Gitea Project Plugin before adding a Service.',
     automationsMembersTitle: 'Automations are available to project members',
     automationsMembersDesc: 'You can view task history, but a project member must manage schedules and provider events.',
     automationsNeedServiceTitle: 'Automations need a service',

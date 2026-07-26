@@ -903,11 +903,15 @@ func (s *Server) listGitHubInstallationRepositories(w http.ResponseWriter, r *ht
 		writeError(w, 500, "internal", "could not create GitHub client")
 		return
 	}
-	lister := client.(provider.RepoLister)
+	lister, ok := client.(provider.InstallationRepoLister)
+	if !ok {
+		writeError(w, 500, "internal", "GitHub client cannot list installation repositories")
+		return
+	}
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	repos, err := lister.ListRepos(r.Context(), r.URL.Query().Get("q"), page, 50)
+	repos, err := lister.ListInstallationRepos(r.Context(), r.URL.Query().Get("q"), page, 50)
 	if err != nil {
-		writeError(w, 502, "provider_error", "listing repositories failed")
+		writeError(w, 502, "provider_error", "listing repositories failed: "+summarizeProviderErr(err))
 		return
 	}
 	writeJSON(w, 200, map[string]any{"repositories": repos})

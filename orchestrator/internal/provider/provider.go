@@ -91,6 +91,13 @@ type RepoLister interface {
 	ListRepos(ctx context.Context, query string, page, limit int) ([]Repo, error)
 }
 
+// InstallationRepoLister lists the repositories granted to an App
+// installation. GitHub installation access tokens cannot call /user/repos, so
+// their repository picker must use the installation-scoped API instead.
+type InstallationRepoLister interface {
+	ListInstallationRepos(ctx context.Context, query string, page, limit int) ([]Repo, error)
+}
+
 // SCMWebhookManager owns the provider-side hook used by the unified SCM
 // Automation ingress. It is intentionally separate from Provider: webhook
 // registration is a control-plane operation and must be performed only with a
