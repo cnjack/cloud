@@ -1647,6 +1647,25 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 	if r.cfg.PersistentWorkspace {
 		env["PERSISTENT_WORKSPACE"] = "1"
 	}
+	// Cluster-managed runner egress is injected at Job launch, never compiled
+	// into the runner image. Keep both conventional casings because Git/libcurl
+	// and task tools do not all consult the same variant. Project injected_env
+	// cannot replace a configured cluster proxy because applyInjectedEnv rejects
+	// collisions with system-provided values below.
+	for _, proxy := range []struct {
+		upper string
+		lower string
+		value string
+	}{
+		{upper: "HTTP_PROXY", lower: "http_proxy", value: strings.TrimSpace(r.cfg.RunnerHTTPProxy)},
+		{upper: "HTTPS_PROXY", lower: "https_proxy", value: strings.TrimSpace(r.cfg.RunnerHTTPSProxy)},
+		{upper: "NO_PROXY", lower: "no_proxy", value: strings.TrimSpace(r.cfg.RunnerNoProxy)},
+	} {
+		if proxy.value != "" {
+			env[proxy.upper] = proxy.value
+			env[proxy.lower] = proxy.value
+		}
+	}
 	svc, err := r.st.GetService(ctx, run.ServiceID)
 	if err != nil {
 		r.log.Error("reconcile: get service for env", "run", run.ID, "err", err)

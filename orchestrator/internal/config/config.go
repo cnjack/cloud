@@ -53,6 +53,9 @@ type Config struct {
 	CPURequest         string            // RUNNER_CPU_REQUEST, default "500m"
 	MemoryRequest      string            // RUNNER_MEMORY_REQUEST, default "1Gi"
 	ServiceAccount     string            // RUNNER_SERVICE_ACCOUNT (optional)
+	RunnerHTTPProxy    string            // RUNNER_HTTP_PROXY — trusted egress proxy injected into runner Jobs
+	RunnerHTTPSProxy   string            // RUNNER_HTTPS_PROXY — trusted TLS egress proxy injected into runner Jobs
+	RunnerNoProxy      string            // RUNNER_NO_PROXY — destinations runner Jobs must reach directly
 	ExtraJobLabels     map[string]string // (reserved) not env-driven yet
 	DisableK8s         bool              // DISABLE_K8S=1 — run without a cluster (API-only/dev)
 
@@ -244,6 +247,9 @@ func Load() (*Config, error) {
 		CPURequest:             getenv("RUNNER_CPU_REQUEST", "500m"),
 		MemoryRequest:          getenv("RUNNER_MEMORY_REQUEST", "1Gi"),
 		ServiceAccount:         os.Getenv("RUNNER_SERVICE_ACCOUNT"),
+		RunnerHTTPProxy:        os.Getenv("RUNNER_HTTP_PROXY"),
+		RunnerHTTPSProxy:       os.Getenv("RUNNER_HTTPS_PROXY"),
+		RunnerNoProxy:          os.Getenv("RUNNER_NO_PROXY"),
 		DisableK8s:             getbool("DISABLE_K8S", false),
 		PersistentWorkspace:    getbool("PERSISTENT_WORKSPACE", false),
 		WorkspacePVCSize:       getenv("WORKSPACE_PVC_SIZE", "10Gi"),

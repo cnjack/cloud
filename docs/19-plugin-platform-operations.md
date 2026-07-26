@@ -63,6 +63,16 @@ direct. The proxy is part of the credential trust boundary: it receives target
 host metadata and controls routing, so configure it only at cluster scope.
 These variables are not injected into task Runner containers.
 
+Runner network egress is configured independently with `RUNNER_HTTP_PROXY`,
+`RUNNER_HTTPS_PROXY`, and `RUNNER_NO_PROXY`. The Orchestrator copies non-empty
+values into each new Job as both uppercase and lowercase conventional proxy
+variables, so Git clone and Provider CLI traffic use the same cluster-selected
+route without baking an address into the runner image. `RUNNER_NO_PROXY` must
+keep `.svc`, `.svc.cluster.local`, localhost, and the cluster's service CIDRs
+direct so run-scoped model, Plugin credential, and artifact calls never leave
+the cluster. A configured cluster runner proxy takes precedence over
+Project-level injected environment values with the same keys.
+
 ### GitHub
 
 - Instance: github.com only.

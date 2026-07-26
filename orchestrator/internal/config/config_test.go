@@ -38,6 +38,23 @@ func TestLoadNoProvidersBackwardCompatible(t *testing.T) {
 	}
 }
 
+func TestLoadRunnerProxy(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("RUNNER_HTTP_PROXY", "http://proxy.internal:7890")
+	t.Setenv("RUNNER_HTTPS_PROXY", "http://proxy.internal:7890")
+	t.Setenv("RUNNER_NO_PROXY", ".svc,localhost")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RunnerHTTPProxy != "http://proxy.internal:7890" ||
+		c.RunnerHTTPSProxy != "http://proxy.internal:7890" ||
+		c.RunnerNoProxy != ".svc,localhost" {
+		t.Fatalf("runner proxy config = http=%q https=%q no_proxy=%q",
+			c.RunnerHTTPProxy, c.RunnerHTTPSProxy, c.RunnerNoProxy)
+	}
+}
+
 func TestLoadKubernetesRequiresPluginRuntimeImage(t *testing.T) {
 	t.Setenv("CONSOLE_TOKEN", "tok")
 	t.Setenv("DATABASE_URL", "postgres://x")

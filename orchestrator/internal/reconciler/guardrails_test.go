@@ -269,6 +269,34 @@ func TestInjectedEnvApplied(t *testing.T) {
 	}
 }
 
+func TestClusterRunnerProxyAppliedAndCannotBeOverridden(t *testing.T) {
+	ctx := context.Background()
+	rec, st, fake := testRec(t, 10)
+	rec.cfg.RunnerHTTPProxy = "http://cluster-proxy:7890"
+	rec.cfg.RunnerHTTPSProxy = "http://cluster-proxy:7890"
+	rec.cfg.RunnerNoProxy = ".svc,localhost"
+	_, _ = seedGuardrailProject(t, st, &domain.Project{
+		InjectedEnv: map[string]string{
+			"HTTP_PROXY":  "http://project-proxy:9999",
+			"https_proxy": "http://project-proxy:9999",
+		},
+	}, 1)
+
+	rec.Tick(ctx)
+
+	env := fake.Created[0].Env
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
+		if env[key] != "http://cluster-proxy:7890" {
+			t.Fatalf("%s=%q want cluster proxy", key, env[key])
+		}
+	}
+	for _, key := range []string{"NO_PROXY", "no_proxy"} {
+		if env[key] != ".svc,localhost" {
+			t.Fatalf("%s=%q want cluster no-proxy list", key, env[key])
+		}
+	}
+}
+
 // TestInjectedEnvReservedKeysFilteredDefensively: a stale/legacy injected_env row
 // carrying reserved system keys (which the API would reject) must NOT override the
 // real system variables at Job launch — jobEnv drops them. A non-reserved key in

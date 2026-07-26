@@ -44,6 +44,12 @@ data:
   RUNNER_CPU_REQUEST: "500m"
   RUNNER_MEMORY_REQUEST: "1Gi"
 
+  # Optional trusted egress for runner Jobs (git clone and task tools). The
+  # Orchestrator injects these at Job creation; runner images stay generic.
+  RUNNER_HTTP_PROXY: ""
+  RUNNER_HTTPS_PROXY: ""
+  RUNNER_NO_PROXY: ".svc,.svc.cluster.local,localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
   # Provider/OAuth/JType traffic ignores generic HTTP_PROXY variables. A
   # cluster operator may explicitly opt in to a trusted egress proxy here.
   # Keep private/self-hosted Provider destinations direct with
