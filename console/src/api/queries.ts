@@ -1304,7 +1304,10 @@ export function useClusterProviderConfig(provider: ProviderKind, enabled = true)
 }
 export function useUpdateClusterProviderConfig(provider: ProviderKind) {
   const api = useApi(); const qc = useQueryClient();
-  return useMutation({ mutationFn: (input: UpdateClusterProviderConfigInput) => api.updateClusterProviderConfig(provider, input), onSuccess: () => qc.invalidateQueries({ queryKey: qk.clusterProvider(provider) }) });
+  return useMutation({
+    mutationFn: (input: UpdateClusterProviderConfigInput) => api.updateClusterProviderConfig(provider, input),
+    onSuccess: (saved) => qc.setQueryData(qk.clusterProvider(provider), saved),
+  });
 }
 export function useTestClusterProviderConfig(provider: ProviderKind) {
   const api = useApi(); const qc = useQueryClient();

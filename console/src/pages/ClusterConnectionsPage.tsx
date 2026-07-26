@@ -78,15 +78,16 @@ function ProviderConfigCard({ provider }: { provider: import('../api/types').Pro
   const [webhookSecret, setWebhookSecret] = useState('');
   const [loginEnabled, setLoginEnabled] = useState(false);
   const [pluginEnabled, setPluginEnabled] = useState(false);
+  const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    if (!query.data) return;
+    if (!query.data || dirty) return;
     setUrl(query.data.base_url ?? '');
     setClientID(query.data.client_id ?? '');
     setAppID(query.data.app_id ?? '');
     setLoginEnabled(query.data.login_enabled);
     setPluginEnabled(query.data.plugin_enabled);
-  }, [query.data]);
+  }, [dirty, query.data]);
 
   if (query.isLoading) return <section className={styles.card}><LoadingBlock /></section>;
   if (query.isError || !query.data) return <section className={styles.card}><ErrorBlock error={query.error} onRetry={() => void query.refetch()} /></section>;
@@ -108,10 +109,16 @@ function ProviderConfigCard({ provider }: { provider: import('../api/types').Pro
     app_private_key: appPrivateKey,
     webhook_secret: webhookSecret,
   }, {
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      setUrl(saved.base_url ?? '');
+      setClientID(saved.client_id ?? '');
+      setAppID(saved.app_id ?? '');
+      setLoginEnabled(saved.login_enabled);
+      setPluginEnabled(saved.plugin_enabled);
       setClientSecret('');
       setAppPrivateKey('');
       setWebhookSecret('');
+      setDirty(false);
     },
   });
 
@@ -126,18 +133,27 @@ function ProviderConfigCard({ provider }: { provider: import('../api/types').Pro
         <StatusLabel tone={item.health === 'error' ? 'danger' : status === 'healthy' ? 'success' : 'warning'}>{status}</StatusLabel>
       </header>
       <div className={styles.cardBody}>
-        <TextField label="Instance URL" value={url} disabled={provider === 'github'} onChange={(event) => setUrl(event.target.value)} placeholder={provider === 'github' ? 'https://github.com' : 'https://provider.example'} />
-        <label className={styles.checkLabel}><input type="checkbox" checked={loginEnabled} disabled={provider === 'jtype'} onChange={(event) => setLoginEnabled(event.target.checked)} />Login enabled</label>
-        <label className={styles.checkLabel}><input type="checkbox" checked={pluginEnabled} onChange={(event) => setPluginEnabled(event.target.checked)} />Plugin enabled</label>
+        <TextField label="Instance URL" value={url} disabled={provider === 'github'} onChange={(event) => { setUrl(event.target.value); setDirty(true); }} placeholder={provider === 'github' ? 'https://github.com' : 'https://provider.example'} />
+        <fieldset className={styles.capabilityFields}>
+          <legend>Provider capabilities</legend>
+          <label className={styles.checkLabel}>
+            <input aria-label="Login enabled" type="checkbox" checked={loginEnabled} disabled={provider === 'jtype'} onChange={(event) => { setLoginEnabled(event.target.checked); setDirty(true); }} />
+            <span className={styles.checkCopy}><strong>Login</strong><small>Allow this Provider for Cloud sign-in.</small></span>
+          </label>
+          <label className={styles.checkLabel}>
+            <input aria-label="Plugin enabled" type="checkbox" checked={pluginEnabled} onChange={(event) => { setPluginEnabled(event.target.checked); setDirty(true); }} />
+            <span className={styles.checkCopy}><strong>Plugin</strong><small>Allow Projects to connect and use it.</small></span>
+          </label>
+        </fieldset>
         {provider !== 'jtype' && <>
-          <TextField label="OAuth client ID" value={clientID} onChange={(event) => setClientID(event.target.value)} />
-          <TextField label="OAuth client secret" type="password" autoComplete="new-password" value={clientSecret} placeholder={item.client_secret_set ? 'Configured — enter to replace' : 'Enter secret'} onChange={(event) => setClientSecret(event.target.value)} />
+          <TextField label="OAuth client ID" value={clientID} onChange={(event) => { setClientID(event.target.value); setDirty(true); }} />
+          <TextField label="OAuth client secret" type="password" autoComplete="new-password" value={clientSecret} placeholder={item.client_secret_set ? 'Configured — enter to replace' : 'Enter secret'} onChange={(event) => { setClientSecret(event.target.value); setDirty(true); }} />
         </>}
         {provider === 'github' && <>
           <div className={styles.sectionLabel}>GitHub App</div>
-          <TextField label="GitHub App ID" inputMode="numeric" value={appID} placeholder="GitHub App ID" onChange={(event) => setAppID(event.target.value)} />
-          <TextAreaField label="GitHub App private key" autoComplete="off" spellCheck={false} value={appPrivateKey} placeholder={item.app_private_key_set ? 'Configured — paste a PEM to replace' : 'Paste the complete private-key PEM'} hint="Write-only. Cloud encrypts the PEM and never returns it to the browser." onChange={(event) => setAppPrivateKey(event.target.value)} />
-          <TextField label="Webhook secret" type="password" autoComplete="new-password" value={webhookSecret} placeholder={item.webhook_secret_set ? 'Configured — enter to replace' : 'Enter the same secret configured in GitHub'} onChange={(event) => setWebhookSecret(event.target.value)} />
+          <TextField label="GitHub App ID" inputMode="numeric" value={appID} placeholder="GitHub App ID" onChange={(event) => { setAppID(event.target.value); setDirty(true); }} />
+          <TextAreaField label="GitHub App private key" autoComplete="off" spellCheck={false} value={appPrivateKey} placeholder={item.app_private_key_set ? 'Configured — paste a PEM to replace' : 'Paste the complete private-key PEM'} hint="Write-only. Cloud encrypts the PEM and never returns it to the browser." onChange={(event) => { setAppPrivateKey(event.target.value); setDirty(true); }} />
+          <TextField label="Webhook secret" type="password" autoComplete="new-password" value={webhookSecret} placeholder={item.webhook_secret_set ? 'Configured — enter to replace' : 'Enter the same secret configured in GitHub'} onChange={(event) => { setWebhookSecret(event.target.value); setDirty(true); }} />
           {githubAppIncomplete && <div className={styles.warning}><Warning size={16} aria-hidden="true" /><span><strong>GitHub App configuration is incomplete</strong>Add the App ID, private key, and matching webhook secret before Projects can list Installations.</span></div>}
         </>}
         <div className={styles.actions}>

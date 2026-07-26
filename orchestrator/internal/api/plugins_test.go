@@ -16,6 +16,26 @@ import (
 	"github.com/cnjack/jcloud/internal/store"
 )
 
+func TestProviderConfigCompleteRequiresEveryEnabledGitHubCapability(t *testing.T) {
+	cfg := &domain.ProviderConfig{
+		Provider: domain.PluginGitHub, BaseURL: "https://github.com",
+		LoginEnabled: true, PluginEnabled: true,
+		ClientID: "oauth-client", ClientSecretEnc: []byte("encrypted"),
+	}
+	if providerConfigComplete(cfg) {
+		t.Fatal("GitHub login credentials alone must not mark the App plugin configured")
+	}
+	cfg.AppID = "4395162"
+	cfg.AppPrivateKeyEnc = []byte("encrypted")
+	if providerConfigComplete(cfg) {
+		t.Fatal("GitHub App without a webhook secret must remain incomplete")
+	}
+	cfg.WebhookSecretEnc = []byte("encrypted")
+	if !providerConfigComplete(cfg) {
+		t.Fatal("complete GitHub OAuth and App credentials should be configured")
+	}
+}
+
 func TestProjectPluginConsentLifecycle(t *testing.T) {
 	ts, _, _ := newCipherServer(t, nil, "")
 

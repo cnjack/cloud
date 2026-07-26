@@ -74,13 +74,26 @@ func providerConfigComplete(cfg *domain.ProviderConfig) bool {
 	if cfg == nil || strings.TrimSpace(cfg.BaseURL) == "" {
 		return false
 	}
+	if !cfg.LoginEnabled && !cfg.PluginEnabled {
+		return false
+	}
 	// A login-capable SCM provider needs a complete confidential OAuth client.
 	// JType currently uses its own device/MCP authorization, so a cluster JType
 	// plugin is configured by a base URL alone.
 	if cfg.LoginEnabled && cfg.Provider != domain.PluginJType {
-		return strings.TrimSpace(cfg.ClientID) != "" && len(cfg.ClientSecretEnc) > 0
+		if strings.TrimSpace(cfg.ClientID) == "" || len(cfg.ClientSecretEnc) == 0 {
+			return false
+		}
 	}
-	return cfg.PluginEnabled
+	// GitHub's Project Plugin uses App installation credentials, independently
+	// of the OAuth client used for Cloud login. Both capabilities must be
+	// complete when they are enabled together.
+	if cfg.PluginEnabled && cfg.Provider == domain.PluginGitHub {
+		return strings.TrimSpace(cfg.AppID) != "" &&
+			len(cfg.AppPrivateKeyEnc) > 0 &&
+			len(cfg.WebhookSecretEnc) > 0
+	}
+	return true
 }
 
 func (s *Server) handleListProviderConfigs(w http.ResponseWriter, r *http.Request) {

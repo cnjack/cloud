@@ -49,6 +49,7 @@ describe('ClusterConnectionsPage', () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByText('JType Kanban')).toBeTruthy();
+    expect(screen.getAllByRole('group', { name: 'Provider capabilities' })).toHaveLength(4);
     expect(getKanbanConfig).not.toHaveBeenCalled();
     expect(screen.getByText('S3_ARCHIVE_BUCKET is not configured')).toBeTruthy();
     expect(screen.getByText('Gitea OAuth')).toBeTruthy();
@@ -81,5 +82,35 @@ describe('ClusterConnectionsPage', () => {
       app_private_key: expect.stringContaining('BEGIN RSA PRIVATE KEY'),
       webhook_secret: 'hook-secret',
     })));
+  });
+
+  it('does not overwrite unsaved GitHub App fields when the Provider query refreshes', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const github = { ...providers.github, app_id: '' };
+    const updateClusterProviderConfig = vi.fn(async () => ({ ...github, app_id: '4395162', app_id_set: true }));
+    const client = {
+      getSystem: async () => system,
+      getClusterProviderConfig: async (provider: ProviderKind) => provider === 'github' ? github : providers[provider],
+      updateClusterProviderConfig,
+      testClusterProviderConfig: async (provider: ProviderKind) => providers[provider],
+    } as unknown as ApiClient;
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ApiProvider client={client} role="cluster-admin">
+          <ToastProvider><MemoryRouter><ClusterConnectionsPage /></MemoryRouter></ToastProvider>
+        </ApiProvider>
+      </QueryClientProvider>,
+    );
+
+    const appID = await screen.findByLabelText('GitHub App ID');
+    fireEvent.change(appID, { target: { value: '4395162' } });
+    queryClient.setQueryData(['cluster-provider', 'github'], { ...github, config_revision: 2 });
+
+    await waitFor(() => expect((appID as HTMLInputElement).value).toBe('4395162'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[0]!);
+    await waitFor(() => expect(updateClusterProviderConfig).toHaveBeenCalledWith(
+      'github',
+      expect.objectContaining({ app_id: '4395162' }),
+    ));
   });
 });
