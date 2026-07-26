@@ -104,6 +104,16 @@ func TestFirstVisitorSetupPersistsLoginProviderAndEnablesDynamicAuth(t *testing.
 	}
 }
 
+func TestSetupRequestOriginUsesConfiguredHTTPSAcrossInternalHTTPProxy(t *testing.T) {
+	srv := &Server{cfg: &config.Config{ConsoleURL: "https://cloud.example.test"}}
+	req := httptest.NewRequest(http.MethodGet, "http://orchestrator.internal/api/v1/setup", nil)
+	req.Host = "cloud.example.test"
+	req.Header.Set("X-Forwarded-Proto", "http")
+	if got := srv.setupRequestOrigin(req); got != "https://cloud.example.test" {
+		t.Fatalf("setup origin=%q want https browser entry", got)
+	}
+}
+
 func TestSetupEndpointIsClosedAfterCompletion(t *testing.T) {
 	ts, _, upstream := newSetupServer(t)
 	request := map[string]any{"public_url": "http://localhost:5173", "provider": map[string]any{"provider": "gitea", "base_url": upstream.baseURL, "login_enabled": true, "plugin_enabled": true, "client_id": "id", "client_secret": "secret"}}

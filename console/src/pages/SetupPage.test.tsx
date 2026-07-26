@@ -20,6 +20,15 @@ describe('SetupPage', () => {
     expect(screen.getByText(`${window.location.origin}/auth/callback/github`)).toBeTruthy();
   });
 
+  it('keeps the browser origin authoritative while setup is open', async () => {
+    const client = {
+      getSetupStatus: async () => ({ setup_required: true, public_url: 'http://proxy-internal.example', login_provider_count: 0 }),
+    } as unknown as ApiClient;
+    renderSetup(client);
+    const input = await screen.findByLabelText(/Cloud public URL/);
+    expect((input as HTMLInputElement).value).toBe(window.location.origin);
+  });
+
   it('submits public URL and one encrypted-login-provider configuration together', async () => {
     const updateSetup = vi.fn(() => new Promise<never>(() => {}));
     const client = {
@@ -32,7 +41,7 @@ describe('SetupPage', () => {
     fireEvent.change(screen.getByLabelText(/OAuth client secret/), { target: { value: 'client-secret' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
     expect(updateSetup).toHaveBeenCalledWith(expect.objectContaining({
-      public_url: 'http://localhost:5173',
+      public_url: window.location.origin,
       provider: expect.objectContaining({ provider: 'github', base_url: 'https://github.com', login_enabled: true, client_secret: 'client-secret' }),
     }));
   });

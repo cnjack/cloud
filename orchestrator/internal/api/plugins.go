@@ -105,7 +105,7 @@ func (s *Server) handleListProviderConfigs(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleGetSetup(w http.ResponseWriter, r *http.Request) {
 	settings, err := s.st.GetClusterSettings(r.Context())
 	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusOK, map[string]any{"setup_required": true, "public_url": setupRequestOrigin(r), "login_provider_count": 0, "providers": []providerConfigView{}})
+		writeJSON(w, http.StatusOK, map[string]any{"setup_required": true, "public_url": s.setupRequestOrigin(r), "login_provider_count": 0, "providers": []providerConfigView{}})
 		return
 	}
 	if err != nil {
@@ -127,7 +127,7 @@ func (s *Server) handleGetSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	publicURL := settings.PublicURL
 	if !settings.SetupComplete && strings.TrimSpace(publicURL) == "" {
-		publicURL = setupRequestOrigin(r)
+		publicURL = s.setupRequestOrigin(r)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"setup_required": !settings.SetupComplete, "public_url": publicURL, "login_provider_count": loginCount, "providers": providers})
 }
@@ -135,8 +135,14 @@ func (s *Server) handleGetSetup(w http.ResponseWriter, r *http.Request) {
 // setupRequestOrigin is only a suggestion shown in the editable setup form. It
 // preserves the browser-facing Host forwarded by the console proxy and accepts
 // only the two schemes the setup mutation itself permits.
-func setupRequestOrigin(r *http.Request) string {
+func (s *Server) setupRequestOrigin(r *http.Request) string {
 	scheme := requestScheme(r)
+	// Some TLS stacks terminate HTTPS before Kong and only forward `http` to
+	// the console. When the configured console entry names this same Host, its
+	// scheme is a stronger signal than the final proxy hop.
+	if configured, err := url.Parse(strings.TrimSpace(s.cfg.ConsoleURL)); err == nil && configured.Host != "" && strings.EqualFold(configured.Host, r.Host) {
+		scheme = configured.Scheme
+	}
 	if scheme != "http" && scheme != "https" {
 		return ""
 	}

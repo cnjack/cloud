@@ -38,7 +38,7 @@ export function SetupPage() {
     // An empty string means setup has no stored value yet. In that case the
     // browser origin is the most accurate public entry, including scheme and
     // any non-default port used by a local deployment.
-    setUrl(next.public_url?.trim() || window.location.origin);
+    setUrl(next.setup_required ? window.location.origin : (next.public_url?.trim() || window.location.origin));
     setError('');
   }).catch((reason) => setError(reason instanceof Error ? reason.message : 'Could not load setup status.'));
   useEffect(load, []);
