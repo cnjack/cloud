@@ -81,6 +81,9 @@ func TestFirstVisitorSetupPersistsLoginProviderAndEnablesDynamicAuth(t *testing.
 	if err != nil || len(cfg.ClientSecretEnc) == 0 {
 		t.Fatalf("provider config was not encrypted/persisted: cfg=%+v err=%v", cfg, err)
 	}
+	if cfg.Capabilities == nil || len(cfg.Capabilities) != 0 {
+		t.Fatalf("setup must persist an empty capability array, got %#v", cfg.Capabilities)
+	}
 
 	providers := do(t, http.MethodGet, ts.URL+"/auth/providers", "", nil)
 	var listed struct {

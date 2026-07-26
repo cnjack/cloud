@@ -87,6 +87,13 @@ func (s *PGStore) UpsertProviderConfigAndInvalidate(ctx context.Context, cfg *do
 	if cfg == nil || !domain.ValidProviderKind(cfg.Provider) {
 		return fmt.Errorf("upsert provider config: invalid provider")
 	}
+	// PostgreSQL arrays distinguish NULL from an empty array. Provider
+	// capability discovery is optional during bootstrap, so callers commonly
+	// supply a nil slice; persist that state as the schema's NOT NULL empty
+	// array instead of failing the entire setup transaction.
+	if cfg.Capabilities == nil {
+		cfg.Capabilities = []string{}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("upsert provider config: begin: %w", err)

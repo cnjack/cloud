@@ -317,7 +317,7 @@ func buildOAuthProviders(cfgs []config.OAuthProviderConfig) map[domain.GitProvid
 		case domain.ProviderGitea:
 			out[domain.ProviderGitea] = provider.NewGiteaOAuth(oc)
 		case domain.ProviderGitHub:
-			out[domain.ProviderGitHub] = provider.NewGitHubOAuth(oc)
+			out[domain.ProviderGitHub] = provider.NewGitHubAppOAuth(oc)
 		case domain.ProviderGitLab:
 			out[domain.ProviderGitLab] = provider.NewGitLabOAuth(oc)
 		}

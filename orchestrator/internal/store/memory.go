@@ -2083,7 +2083,7 @@ func clonePluginInstallation(in domain.PluginInstallation) domain.PluginInstalla
 
 func clonePluginProviderConfig(in domain.ProviderConfig) domain.ProviderConfig {
 	cp := in
-	cp.Capabilities = append([]string(nil), in.Capabilities...)
+	cp.Capabilities = append([]string{}, in.Capabilities...)
 	cp.ClientSecretEnc = append([]byte(nil), in.ClientSecretEnc...)
 	cp.AppPrivateKeyEnc = append([]byte(nil), in.AppPrivateKeyEnc...)
 	cp.WebhookSecretEnc = append([]byte(nil), in.WebhookSecretEnc...)

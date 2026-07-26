@@ -121,7 +121,7 @@ func (s *Server) loginOAuthProvider(ctx context.Context, id domain.GitProvider) 
 		oc := provider.OAuthConfig{ClientID: cfg.ClientID, ClientSecret: string(secret), ExternalURL: cfg.BaseURL, InternalURL: cfg.BaseURL}
 		switch id {
 		case domain.ProviderGitHub:
-			return provider.NewGitHubOAuth(oc), nil
+			return provider.NewGitHubAppOAuth(oc), nil
 		case domain.ProviderGitLab:
 			return provider.NewGitLabOAuth(oc), nil
 		case domain.ProviderGitea:

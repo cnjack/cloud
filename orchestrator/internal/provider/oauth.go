@@ -284,11 +284,27 @@ func NewGiteaOAuth(cfg OAuthConfig) OAuthProvider {
 	}
 }
 
-// NewGitHubOAuth builds an OAuthProvider for GitHub (or GHE). Endpoints:
+// NewGitHubOAuth builds an OAuth App provider for GitHub (or GHE). It retains
+// repository scopes for the legacy per-integration flow, which uses the
+// person's token to manage repository webhooks.
+func NewGitHubOAuth(cfg OAuthConfig) OAuthProvider {
+	return newGitHubOAuth(cfg, "read:user repo")
+}
+
+// NewGitHubAppOAuth builds the user-to-server authorization flow for the
+// cluster GitHub App. GitHub App user access tokens do not use OAuth scopes;
+// their effective permissions are the intersection of the App installation
+// and the user. Supplying OAuth App scopes here is semantically invalid and can
+// make the consent screen misrepresent the credential.
+func NewGitHubAppOAuth(cfg OAuthConfig) OAuthProvider {
+	return newGitHubOAuth(cfg, "")
+}
+
+// newGitHubOAuth builds an OAuthProvider for GitHub (or GHE). Endpoints:
 // authorize /login/oauth/authorize, token /login/oauth/access_token on the login
 // host; user /user on the API host (api.github.com for github.com, else the
 // internal root — good enough for the httptest unit path).
-func NewGitHubOAuth(cfg OAuthConfig) OAuthProvider {
+func newGitHubOAuth(cfg OAuthConfig, scope string) OAuthProvider {
 	ext := trimBase(orDefault(cfg.ExternalURL, "https://github.com"))
 	in := trimBase(orDefault(cfg.InternalURL, "https://github.com"))
 	apiBase := in
@@ -302,7 +318,7 @@ func NewGitHubOAuth(cfg OAuthConfig) OAuthProvider {
 		authorizeURL: ext + "/login/oauth/authorize",
 		tokenURL:     in + "/login/oauth/access_token",
 		userURL:      apiBase + "/user",
-		scope:        "read:user repo",
+		scope:        scope,
 		http:         oauthHTTPClient(in),
 		parseUser: func(m map[string]any) *OAuthUser {
 			return &OAuthUser{

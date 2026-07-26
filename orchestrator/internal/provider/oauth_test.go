@@ -99,6 +99,20 @@ func TestOAuthAuthorizeURLRequestsRepositoryWebhookScopes(t *testing.T) {
 	}
 }
 
+func TestGitHubAppAuthorizeURLDoesNotRequestOAuthAppScopes(t *testing.T) {
+	p := NewGitHubAppOAuth(OAuthConfig{
+		ClientID: "cid", ClientSecret: "sec",
+		ExternalURL: "https://github.com", InternalURL: "https://github.com",
+	})
+	u, err := url.Parse(p.AuthorizeURL("state", "https://cloud.example/auth/callback/github"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope, ok := u.Query()["scope"]; ok {
+		t.Fatalf("GitHub App authorization must omit OAuth App scope; got %v", scope)
+	}
+}
+
 func TestGiteaOAuthExchangeAndUser(t *testing.T) {
 	stub := &oauthStub{
 		tokenPath: "/login/oauth/access_token",

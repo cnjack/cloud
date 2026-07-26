@@ -221,6 +221,7 @@ func (s *Server) handlePutSetup(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	cfg.LastCapabilityCheck, cfg.LastHealthError = &now, ""
 	if err := s.st.UpsertProviderConfig(r.Context(), cfg); err != nil {
+		s.log.Error("save setup provider config", "provider", providerKind, "err", err)
 		writeError(w, 500, "internal", "could not save login provider configuration")
 		return
 	}
@@ -437,7 +438,9 @@ func (s *Server) buildProviderConfig(ctx context.Context, provider domain.Provid
 	}
 	cfg.Provider, cfg.BaseURL, cfg.LoginEnabled, cfg.PluginEnabled = provider, base, req.LoginEnabled, req.PluginEnabled
 	cfg.ClientID, cfg.AppID = strings.TrimSpace(req.ClientID), strings.TrimSpace(req.AppID)
-	cfg.CapabilityVersion, cfg.Capabilities = strings.TrimSpace(req.CapabilityVersion), append([]string(nil), req.Capabilities...)
+	cfg.CapabilityVersion = strings.TrimSpace(req.CapabilityVersion)
+	cfg.Capabilities = []string{}
+	cfg.Capabilities = append(cfg.Capabilities, req.Capabilities...)
 	if req.ClientSecret != "" || req.AppPrivateKey != "" || req.WebhookSecret != "" {
 		if s.cipher == nil {
 			return nil, fmt.Errorf("set JCLOUD_MASTER_KEY before storing provider secrets")
