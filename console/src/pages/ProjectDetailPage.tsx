@@ -16,7 +16,6 @@ import {
   useDeleteService,
   usePluginRepositories,
   useProject,
-  useProjectBoardLinks,
   useProjectModels,
   useProjectPlugins,
   useRuns,
@@ -46,7 +45,6 @@ import { SettingsPanel } from '../project-workspace/SettingsPanel';
 import { TaskComposer } from '../project-workspace/TaskComposer';
 import { ProjectAutomationsPanel } from '../project-workspace/ProjectAutomationsPanel';
 import { serviceMark, serviceProviderLabel, serviceSource } from '../project-workspace/presentation';
-import { KanbanBoardModal } from './KanbanBoardModal';
 import {
   ProjectSettingsPage,
   ProjectSettingsSubnav,
@@ -77,8 +75,6 @@ export function ProjectDetailPage() {
   const [selectedModel, setSelectedModel] = useState('');
   const [askApproval, setAskApproval] = useState(false);
   const [runFilter, setRunFilter] = useState<RunFilter>('all');
-  const [kanbanOpen, setKanbanOpen] = useState(false);
-
   const [addOpen, setAddOpen] = useState(false);
   const [repoQuery, setRepoQuery] = useState('');
   const [pickerInstallationId, setPickerInstallationId] = useState('');
@@ -130,11 +126,8 @@ export function ProjectDetailPage() {
     setSearchParams(next, { replace: true });
   }, [p, projectSettingsOpen, projectSettingsSection, searchParams, setSearchParams, workspaceLocation]);
 
-  const boardLinks = useProjectBoardLinks(projectId, !!p && canRun);
-  const hasBoardLinks = (boardLinks.data?.length ?? 0) > 0;
-  const boardLinksUnavailable = canRun && boardLinks.isError;
   const hasServiceHeaderActions =
-    hasBoardLinks || boardLinksUnavailable || activeService?.repo_kind === 'provider' || (canManage && !!activeService);
+    activeService?.repo_kind === 'provider' || (canManage && !!activeService);
 
   const pluginsQuery = useProjectPlugins(projectId, !!p && canRun);
   const availableGitPlugins = useMemo(
@@ -456,28 +449,6 @@ export function ProjectDetailPage() {
             </div>
             {hasServiceHeaderActions && (
               <div className={styles.workspaceServiceActions} data-testid="workspace-service-actions">
-                {hasBoardLinks && (
-                  <button
-                    type="button"
-                    className={styles.workspaceServiceAction}
-                    onClick={() => setKanbanOpen(true)}
-                    data-testid="project-kanban-btn"
-                  >
-                    {t('projectDetail.kanban')}
-                  </button>
-                )}
-                {boardLinksUnavailable && !hasBoardLinks && (
-                  <button
-                    type="button"
-                    className={styles.workspaceServiceAction}
-                    onClick={() => void boardLinks.refetch()}
-                    disabled={boardLinks.isFetching}
-                    title={t('projectDetail.kanbanRetryTitle')}
-                    data-testid="project-kanban-retry"
-                  >
-                    {boardLinks.isFetching ? t('projectDetail.loadingKanban') : t('projectDetail.kanbanUnavailableRetry')}
-                  </button>
-                )}
                 {activeService && activeService.repo_kind === 'provider' && (
                   activeService.repo_html_url ? (
                     <a
@@ -708,13 +679,6 @@ export function ProjectDetailPage() {
         )}
       </ProjectWorkspaceShell>
 
-      {kanbanOpen && hasBoardLinks && (
-        <KanbanBoardModal
-          projectId={projectId}
-          links={boardLinks.data!}
-          onClose={() => setKanbanOpen(false)}
-        />
-      )}
     </>
   );
 }

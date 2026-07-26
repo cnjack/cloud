@@ -15,11 +15,10 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-rou
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
-import { ApiError, type ApiClient } from '../api/client';
+import type { ApiClient } from '../api/client';
 import type {
   Automation,
   AutomationList,
-  BoardEmbedLink,
   CreateRunInput,
   CreateServiceInput,
   MemberRole,
@@ -35,25 +34,6 @@ import type {
   UpdateAutomationInput,
 } from '../api/types';
 import { pickOption } from '../test/select';
-
-// D31: the Kanban modal renders the heavy real board; stub the package so the
-// button/modal-gating tests never mount BoardSurface. JTypeApiError is needed by
-// the modal's proxy client + resolver.
-vi.mock('jtype-board-react', () => ({
-  JTypeBoard: (p: { workspaceId: string; boardRef: string }) => (
-    <div data-testid="jtype-board" data-workspace={p.workspaceId} data-boardref={p.boardRef} />
-  ),
-  JTypeApiError: class extends Error {
-    status: number;
-    code: string;
-    constructor(status: number, code: string) {
-      super(code);
-      this.status = status;
-      this.code = code;
-    }
-  },
-}));
-vi.mock('jtype-board-react/style.css', () => ({}));
 
 import { ProjectDetailPage } from './ProjectDetailPage';
 
@@ -98,9 +78,6 @@ function makeClient(
     models?: ProjectModel[];
     plugins?: ProjectPlugin[];
     pluginRepos?: PluginRepositoryResource[];
-    // D31: the member+ board-embed links that gate the "Kanban" header button.
-    // Absent = the endpoint is treated as returning [] (no button).
-    boardLinks?: BoardEmbedLink[];
     automationList?: AutomationList;
     projectAutomations?: ProjectAutomationSpec[];
   } = {},
@@ -118,8 +95,6 @@ function makeClient(
       scopes: ['repository:write'],
     }],
     listPluginRepositories: async () => opts.pluginRepos ?? [],
-    // D31: the member+ board-link list gating the Kanban button.
-    listProjectBoardLinks: async () => opts.boardLinks ?? [],
     // D21: the composer keys enable/disable off the project's models AND populates
     // its model select. Default configured via the env fallback (empty catalog).
     listProjectModels: async () => ({
@@ -637,21 +612,18 @@ describe('ProjectDetailPage — workspace sections', () => {
     expect(schedules).not.toHaveBeenCalled();
   });
 
-  it('keeps a failed Kanban-link lookup visible instead of pretending there are no boards', async () => {
+  it('does not request the retired Kanban link API from the Service workspace', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
-    (client as { listProjectBoardLinks?: unknown }).listProjectBoardLinks = async () => {
-      throw new ApiError(503, 'Kanban links are unavailable', {
-        error: { code: 'jtype_unreachable', message: 'Kanban links are unavailable' },
-      });
-    };
+    const retiredLinks = vi.fn(async () => []);
+    (client as { listProjectBoardLinks?: unknown }).listProjectBoardLinks = retiredLinks;
     renderPage(client);
 
-    const retry = await screen.findByTestId('project-kanban-retry');
-    expect(retry.textContent).toContain('Kanban unavailable');
-    expect(within(screen.getByTestId('workspace-service-actions')).getByTestId('project-kanban-retry')).toBe(retry);
-    expect(within(screen.getByTestId('project-utility-actions')).queryByTestId('project-kanban-retry')).toBeNull();
+    await screen.findByTestId('run-input');
+    expect(retiredLinks).not.toHaveBeenCalled();
     expect(screen.queryByTestId('project-kanban-btn')).toBeNull();
+    expect(screen.queryByTestId('project-kanban-retry')).toBeNull();
   });
+
 });
 
 describe('ProjectDetailPage — model not configured (Feature A)', () => {
@@ -868,59 +840,6 @@ describe('ProjectDetailPage — add repository', () => {
     renderPage(client);
 
     await waitFor(() => expect(screen.getByTestId('runs-empty')).toBeTruthy());
-    expect(spy).not.toHaveBeenCalled();
-  });
-});
-
-describe('ProjectDetailPage — Kanban button gating (D31)', () => {
-  const boardLink = (over: Partial<BoardEmbedLink> = {}): BoardEmbedLink => ({
-    id: 'kl_1',
-    workspace_id: 'ws_team',
-    board_ref: 'b_123',
-    board_title: 'jtype',
-    service_id: 'svc_default',
-    trigger_column: 'ai',
-    enabled: true,
-    ...over,
-  });
-
-  it('hides the Kanban button when the project has no board links', async () => {
-    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]), {
-      boardLinks: [],
-    });
-    renderPage(client);
-
-    await waitFor(() => expect(screen.getByTestId('run-input')).toBeTruthy());
-    expect(screen.queryByTestId('project-kanban-btn')).toBeNull();
-  });
-
-  it('shows the Kanban button beside the repository action and opens the modal on click', async () => {
-    const { client } = makeClient(project('member', [svc('svc_default', 'default')]), {
-      boardLinks: [boardLink()],
-    });
-    renderPage(client);
-
-    const btn = await screen.findByTestId('project-kanban-btn');
-    const serviceActions = screen.getByTestId('workspace-service-actions');
-    expect(within(serviceActions).getByTestId('project-kanban-btn')).toBe(btn);
-    expect(within(serviceActions).getByRole('link', { name: 'Open Gitea' })).toBeTruthy();
-    expect(within(screen.getByTestId('project-utility-actions')).queryByTestId('project-kanban-btn')).toBeNull();
-    fireEvent.click(btn);
-    expect(await screen.findByTestId('kanban-board-modal')).toBeTruthy();
-  });
-
-  it('hides the Kanban button for a viewer (member+ endpoint yields no links)', async () => {
-    // A viewer's board-link query is disabled (canRun=false) → no data → no button.
-    const { client } = makeClient(project('viewer', [svc('svc_default', 'default')]), {
-      boardLinks: [boardLink()],
-    });
-    const spy = vi.fn(async () => [] as BoardEmbedLink[]);
-    (client as { listProjectBoardLinks?: unknown }).listProjectBoardLinks = spy;
-    renderPage(client);
-
-    await waitFor(() => expect(screen.getByTestId('runs-empty')).toBeTruthy());
-    expect(screen.queryByTestId('project-kanban-btn')).toBeNull();
-    // The member+ query is never even issued for a viewer.
     expect(spy).not.toHaveBeenCalled();
   });
 });
