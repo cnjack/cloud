@@ -388,7 +388,8 @@ func scanPluginAutomation(row pgx.Row) (*domain.PluginAutomation, error) {
 	var a domain.PluginAutomation
 	var createdBy *string
 	var installationID *string
-	err := row.Scan(&a.ID, &a.ServiceID, &installationID, &a.Name, &a.TriggerKind, &a.PromptTemplate, &a.Enabled, &a.IgnoreJCode, &a.LastTriggeredAt, &a.LastRunID, &a.LastError, &createdBy, &a.CreatedAt, &a.UpdatedAt)
+	var lastRunID *string
+	err := row.Scan(&a.ID, &a.ServiceID, &installationID, &a.Name, &a.TriggerKind, &a.PromptTemplate, &a.Enabled, &a.IgnoreJCode, &a.LastTriggeredAt, &lastRunID, &a.LastError, &createdBy, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -400,6 +401,9 @@ func scanPluginAutomation(row pgx.Row) (*domain.PluginAutomation, error) {
 	}
 	if installationID != nil {
 		a.InstallationID = *installationID
+	}
+	if lastRunID != nil {
+		a.LastRunID = *lastRunID
 	}
 	return &a, nil
 }
