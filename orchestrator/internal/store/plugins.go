@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -375,6 +376,14 @@ func (s *PGStore) DeleteServiceRepositoryBinding(ctx context.Context, serviceID 
 
 const pluginAutomationCols = `id,service_id,installation_id,name,trigger_kind,prompt_template,enabled,ignore_jcode,last_triggered_at,last_run_id,last_error,created_by,created_at,updated_at`
 
+func qualifiedPluginAutomationCols(alias string) string {
+	columns := strings.Split(pluginAutomationCols, ",")
+	for i := range columns {
+		columns[i] = alias + "." + strings.TrimSpace(columns[i])
+	}
+	return strings.Join(columns, ",")
+}
+
 func scanPluginAutomation(row pgx.Row) (*domain.PluginAutomation, error) {
 	var a domain.PluginAutomation
 	var createdBy *string
@@ -629,7 +638,7 @@ func (s *PGStore) MarkPluginKanbanWriteback(ctx context.Context, automationID, d
 	return tag.RowsAffected() == 1, nil
 }
 func (s *PGStore) ListPluginAutomationsByProject(ctx context.Context, projectID string) ([]domain.PluginAutomation, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+pluginAutomationCols+` FROM automations_v2 a JOIN services s ON s.id=a.service_id WHERE s.project_id=$1 ORDER BY a.created_at DESC`, projectID)
+	rows, err := s.pool.Query(ctx, `SELECT `+qualifiedPluginAutomationCols("a")+` FROM automations_v2 a JOIN services s ON s.id=a.service_id WHERE s.project_id=$1 ORDER BY a.created_at DESC`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list plugin automations: %w", err)
 	}
@@ -648,7 +657,7 @@ func (s *PGStore) ListPluginAutomationsByProject(ctx context.Context, projectID 
 // ListPluginAutomationsForEvent intentionally matches stable provider repository
 // ids, not a mutable URL/path supplied by a webhook.
 func (s *PGStore) ListPluginAutomationsForEvent(ctx context.Context, provider domain.ProviderKind, repositoryID string, family, action string) ([]domain.PluginAutomation, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+pluginAutomationCols+` FROM automations_v2 a JOIN automation_scm_actions x ON x.automation_id=a.id JOIN service_repository_bindings b ON b.service_id=a.service_id JOIN plugin_installations i ON i.id=b.installation_id WHERE i.provider=$1 AND i.status='enabled' AND b.provider_repo_id=$2 AND a.enabled=TRUE AND a.trigger_kind='scm' AND x.event_family=$3 AND x.action=$4 ORDER BY a.created_at`, provider, repositoryID, family, action)
+	rows, err := s.pool.Query(ctx, `SELECT `+qualifiedPluginAutomationCols("a")+` FROM automations_v2 a JOIN automation_scm_actions x ON x.automation_id=a.id JOIN service_repository_bindings b ON b.service_id=a.service_id JOIN plugin_installations i ON i.id=b.installation_id WHERE i.provider=$1 AND i.status='enabled' AND b.provider_repo_id=$2 AND a.enabled=TRUE AND a.trigger_kind='scm' AND x.event_family=$3 AND x.action=$4 ORDER BY a.created_at`, provider, repositoryID, family, action)
 	if err != nil {
 		return nil, fmt.Errorf("list plugin automations for event: %w", err)
 	}

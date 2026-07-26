@@ -3,11 +3,25 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
 )
+
+func TestQualifiedPluginAutomationColsQualifiesEveryJoinedColumn(t *testing.T) {
+	got := qualifiedPluginAutomationCols("a")
+	columns := strings.Split(got, ",")
+	if len(columns) != 14 {
+		t.Fatalf("qualified columns=%d want 14: %q", len(columns), got)
+	}
+	for _, column := range columns {
+		if !strings.HasPrefix(column, "a.") {
+			t.Fatalf("joined Automation column is ambiguous: %q", column)
+		}
+	}
+}
 
 func TestPluginInstallationIsUniqueAndUninstallCascadesBoundService(t *testing.T) {
 	ctx, st := context.Background(), NewMemStore()
