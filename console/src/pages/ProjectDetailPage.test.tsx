@@ -804,7 +804,7 @@ describe('ProjectDetailPage — add repository', () => {
     scopes: ['contents:write'],
   };
   const repository: PluginRepositoryResource = {
-    id: '77',
+    id: 77,
     full_name: 'cnjack/codespace_demo',
     description: 'E2E repository',
     default_branch: 'main',

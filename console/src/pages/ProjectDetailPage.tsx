@@ -292,7 +292,7 @@ export function ProjectDetailPage() {
     createService.mutate({
       name,
       installation_id: effectiveInstallationId,
-      provider_repo_id: repo.id,
+      provider_repo_id: String(repo.id),
       git_mode: 'draft_pr',
     }, {
       onSuccess: () => {

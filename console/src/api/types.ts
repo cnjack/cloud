@@ -1550,7 +1550,7 @@ export interface UpdateServiceInput {
 export interface CreateServiceInput {
   name?: string;
   installation_id?: string;
-  provider_repo_id?: string | number;
+  provider_repo_id?: string;
   git_mode?: GitMode;
   default_model_id?: string;
   /** @deprecated Mock-only compatibility. The production API rejects bare Git URLs. */
