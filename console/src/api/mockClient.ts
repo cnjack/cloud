@@ -2558,6 +2558,39 @@ export function createMockClient(): ApiClient {
       projectAutomations.delete(automationId);
       return delay(undefined);
     },
+    async getServiceKanban(serviceId: string): Promise<ProjectAutomationSpec> {
+      const spec = [...projectAutomations.values()].find((item) =>
+        item.automation.service_id === serviceId && item.automation.trigger_kind === 'kanban');
+      if (!spec) throw new ApiError(404, 'Kanban is not enabled');
+      return delay(structuredClone(spec));
+    },
+    async putServiceKanban(serviceId, input): Promise<ProjectAutomationSpec> {
+      const projectEntry = [...services.entries()].find(([, list]) => list.some((service) => service.id === serviceId));
+      if (!projectEntry) throw new ApiError(404, 'service not found');
+      const existing = [...projectAutomations.values()].find((item) =>
+        item.automation.service_id === serviceId && item.automation.trigger_kind === 'kanban');
+      const spec = automationFromInput({
+        service_id: serviceId,
+        name: 'Kanban',
+        prompt_template: 'Complete the task described by the JType card.',
+        enabled: input.enabled ?? true,
+        ignore_jcode: true,
+        kanban: {
+          installation_id: input.installation_id,
+          board_ref: input.board_ref,
+          trigger_column: 'ai',
+          done_column: 'done',
+        },
+      }, existing);
+      projectAutomations.set(spec.automation.id, spec);
+      return delay(structuredClone(spec));
+    },
+    async deleteServiceKanban(serviceId: string): Promise<void> {
+      const existing = [...projectAutomations.values()].find((item) =>
+        item.automation.service_id === serviceId && item.automation.trigger_kind === 'kanban');
+      if (existing) projectAutomations.delete(existing.automation.id);
+      return delay(undefined);
+    },
 
     /* ---- integrations (D19 / F5) ------------------------------------------ */
     async listIntegrations(projectId: string): Promise<Integration[]> {

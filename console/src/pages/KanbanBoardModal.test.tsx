@@ -20,12 +20,14 @@ vi.mock('jtype-board-react', () => ({
     workspaceId: string;
     boardRef: string;
     live?: boolean;
+    readOnly?: boolean;
   }) => (
     <div
       data-testid="jtype-board"
       data-workspace={p.workspaceId}
       data-boardref={p.boardRef}
       data-live={String(p.live)}
+      data-readonly={String(p.readOnly)}
     />
   ),
   JTypeApiError: class extends Error {
@@ -110,6 +112,35 @@ function renderModal(api: ApiClient, links: BoardEmbedLink[]) {
 }
 
 describe('KanbanBoardModal', () => {
+  it('enables the current Service with the stable board id and default server columns', async () => {
+    const putServiceKanban = vi.fn(async (_serviceId: string, input: { installation_id: string; board_ref: string }) => ({
+      automation: { id: 'a1', service_id: 'svc_1', name: 'Kanban', trigger_kind: 'kanban' as const, prompt_template: '', enabled: true, ignore_jcode: true, created_at: '', updated_at: '' },
+      kanban: { installation_id: input.installation_id, board_ref: input.board_ref, trigger_column: 'ai', done_column: 'done' },
+    }));
+    const api = {
+      ...makeApi({}),
+      listProjectPlugins: async () => [{ id: 'jtype-1', project_id: 'p1', provider: 'jtype' as const, status: 'enabled' as const, workspace_id: 'ws_team', scopes: [] }],
+      listPluginBoards: async () => [{ id: 'b_stable', ref: 'delivery.board', title: 'Delivery', columns: [{ key: 'ai', name: 'AI' }, { key: 'done', name: 'Done' }] }],
+      putServiceKanban,
+      deleteServiceKanban: async () => undefined,
+    } as unknown as ApiClient;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ApiProvider client={api}>
+          <KanbanBoardModal projectId="p1" serviceId="svc_1" links={[]} canManage onClose={() => {}} />
+        </ApiProvider>
+      </QueryClientProvider>,
+    );
+    await screen.findByText('Delivery');
+    const preview = await screen.findByTestId('kanban-readonly-preview');
+    expect(within(preview).getByTestId('jtype-board').getAttribute('data-readonly')).toBe('true');
+    fireEvent.click(screen.getByTestId('kanban-enable'));
+    await waitFor(() => expect(putServiceKanban).toHaveBeenCalledWith('svc_1', {
+      installation_id: 'jtype-1', board_ref: 'b_stable', enabled: true,
+    }));
+  });
+
   it('single link: renders the board with the workspace and live=false', async () => {
     const api = makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] });
     renderModal(api, [link()]);

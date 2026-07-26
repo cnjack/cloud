@@ -26,6 +26,40 @@ func TestPRReviewAutomationMigrationUsesModelCatalog(t *testing.T) {
 	}
 }
 
+func TestServiceKanbanMigrationConvergesBeforeUniqueIndexes(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0046_service_kanban_binding.sql")
+	if err != nil {
+		t.Fatalf("read 0046: %v", err)
+	}
+	migration := strings.Join(strings.Fields(string(sql)), " ")
+	required := []string{
+		"row_number() OVER ( PARTITION BY service_id ORDER BY created_at, id )",
+		"PARTITION BY t.installation_id, t.board_ref",
+		"DELETE FROM automations_v2 a USING ranked r",
+		"CREATE UNIQUE INDEX IF NOT EXISTS automations_v2_one_kanban_per_service",
+		"CREATE UNIQUE INDEX IF NOT EXISTS automation_kanban_one_service_per_board",
+		"ADD COLUMN IF NOT EXISTS installation_id TEXT NOT NULL DEFAULT ''",
+		"ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT ''",
+		"ADD COLUMN IF NOT EXISTS done_column TEXT NOT NULL DEFAULT ''",
+		"DROP CONSTRAINT IF EXISTS automation_kanban_claims_automation_id_fkey",
+		"DELETE FROM automation_kanban_claims WHERE run_id IS NULL",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(migration, fragment) {
+			t.Fatalf("0046 migration missing %q", fragment)
+		}
+	}
+	firstDelete := strings.Index(migration, "DELETE FROM automations_v2 a USING ranked r")
+	firstIndex := strings.Index(migration, "CREATE UNIQUE INDEX")
+	if firstDelete < 0 || firstIndex < 0 || firstDelete > firstIndex {
+		t.Fatal("0046 must converge existing rows before creating unique indexes")
+	}
+	backfill := strings.Index(migration, "UPDATE automation_kanban_claims c")
+	if backfill < 0 || backfill > firstDelete {
+		t.Fatal("0046 must freeze claim targets before deleting duplicate aggregates")
+	}
+}
+
 func TestModelProvidersMigrationContract(t *testing.T) {
 	sql, err := migrationsFS.ReadFile("migrations/0027_model_providers.sql")
 	if err != nil {

@@ -192,7 +192,8 @@ step:
   the Project rail and opens a separate route rather than appearing inside a
   service surface.
 - Recent tasks read as activity rows rather than an administrative table.
-- Kanban remains the real server-proxied board; PR review Automations use
-  OAuth-backed registration, persist event policies and report only observed
-  binding/delivery state.
+- Kanban remains the real server-proxied board in the active Service header. It
+  is enabled once per Service with the conventional `ai` → `done` flow and is
+  not presented as an Automation; SCM Automations use Plugin-backed webhook
+  registration and persist event policies.
 - The implementation has no dependency on static data in `design/` at runtime.

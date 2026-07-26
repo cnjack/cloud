@@ -162,18 +162,18 @@ func (p *Poller) tickPluginAutomations(ctx context.Context) {
 		return
 	}
 	for i := range specs {
-		p.pollPluginAutomation(ctx, factory, &specs[i])
+		p.pollPluginAutomation(ctx, factory, &specs[i], cfg.ConfigRevision)
 	}
 }
 
-func (p *Poller) pollPluginAutomation(ctx context.Context, factory *jtype.Factory, spec *domain.PluginAutomationSpec) {
+func (p *Poller) pollPluginAutomation(ctx context.Context, factory *jtype.Factory, spec *domain.PluginAutomationSpec, configRevision int64) {
 	if spec == nil || spec.Kanban == nil {
 		return
 	}
 	installation, err := p.st.GetPluginInstallation(ctx, spec.Kanban.InstallationID)
 	if err != nil || installation.Provider != domain.PluginJType ||
 		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" ||
-		installation.WorkspaceID == "" {
+		installation.WorkspaceID == "" || installation.ConfigRevision != configRevision {
 		return
 	}
 	token, _, err := jtype.ResolveToken(installation.AccessTokenEnc, p.decrypt)
@@ -202,7 +202,7 @@ func (p *Poller) pollPluginAutomation(ctx context.Context, factory *jtype.Factor
 		if card.Board != spec.Kanban.BoardRef || card.Status != spec.Kanban.TriggerColumn {
 			continue
 		}
-		claim, err := p.st.EnsurePluginKanbanClaim(ctx, spec.Automation.ID, doc.ID, doc.Path)
+		claim, err := p.st.EnsurePluginKanbanClaim(ctx, spec.Automation.ID, doc.ID, doc.Path, installation.WorkspaceID, spec.Kanban.DoneColumn)
 		if err != nil || claim.RunID != "" {
 			continue
 		}

@@ -2398,8 +2398,9 @@ func (m *MemStore) UninstallPlugin(_ context.Context, installationID string) err
 	return nil
 }
 
-// deletePluginAutomationLocked mirrors automations_v2's FK cascades and its
-// SET NULL references from runs/webhook receipts. Caller must hold m.mu.
+// deletePluginAutomationLocked mirrors the post-0046 schema: run-bound Kanban
+// claims retain their frozen writeback target after the aggregate is removed.
+// Caller must hold m.mu.
 func (m *MemStore) deletePluginAutomationLocked(automationID string) {
 	delete(m.pluginAutomations, automationID)
 	delete(m.pluginSCMTriggers, automationID)
@@ -2411,7 +2412,7 @@ func (m *MemStore) deletePluginAutomationLocked(automationID string) {
 		}
 	}
 	for key, claim := range m.pluginKanbanClaims {
-		if claim.AutomationID == automationID {
+		if claim.AutomationID == automationID && claim.RunID == "" {
 			delete(m.pluginKanbanClaims, key)
 		}
 	}
@@ -2515,6 +2516,9 @@ func (m *MemStore) CreatePluginAutomation(_ context.Context, a *domain.PluginAut
 		return err
 	}
 	if err := m.validatePluginAutomationInstallationLocked(a, &svc, kanban); err != nil {
+		return err
+	}
+	if err := m.validatePluginKanbanUniquenessLocked(a, kanban, ""); err != nil {
 		return err
 	}
 	for _, action := range actions {
@@ -2667,6 +2671,9 @@ func (m *MemStore) ReplacePluginAutomationSpec(_ context.Context, a *domain.Plug
 	if err := m.validatePluginAutomationInstallationLocked(a, &svc, kanban); err != nil {
 		return err
 	}
+	if err := m.validatePluginKanbanUniquenessLocked(a, kanban, a.ID); err != nil {
+		return err
+	}
 	for _, x := range actions {
 		key := x.ServiceID + "|" + x.EventFamily + "|" + x.Action
 		if current, ok := m.pluginSCMActions[key]; ok && current.AutomationID != a.ID {
@@ -2695,6 +2702,25 @@ func (m *MemStore) ReplacePluginAutomationSpec(_ context.Context, a *domain.Plug
 	}
 	if cron != nil {
 		m.pluginCronTriggers[a.ID] = *cron
+	}
+	return nil
+}
+
+func (m *MemStore) validatePluginKanbanUniquenessLocked(a *domain.PluginAutomation, kanban *domain.KanbanTrigger, ignoreAutomationID string) error {
+	if a == nil || kanban == nil || a.TriggerKind != "kanban" {
+		return nil
+	}
+	for id, existing := range m.pluginAutomations {
+		if id == ignoreAutomationID || existing.TriggerKind != "kanban" {
+			continue
+		}
+		if existing.ServiceID == a.ServiceID {
+			return ErrAlreadyExists
+		}
+		trigger, ok := m.pluginKanbanTriggers[id]
+		if ok && trigger.InstallationID == kanban.InstallationID && trigger.BoardRef == kanban.BoardRef {
+			return ErrAlreadyExists
+		}
 	}
 	return nil
 }
@@ -2789,13 +2815,17 @@ func pluginKanbanClaimKey(automationID, documentID string) string {
 	return automationID + "|" + documentID
 }
 
-func (m *MemStore) EnsurePluginKanbanClaim(_ context.Context, automationID, documentID, documentPath string) (*domain.PluginKanbanClaim, error) {
+func (m *MemStore) EnsurePluginKanbanClaim(_ context.Context, automationID, documentID, documentPath, workspaceID, doneColumn string) (*domain.PluginKanbanClaim, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := pluginKanbanClaimKey(automationID, documentID)
 	claim, ok := m.pluginKanbanClaims[key]
 	if !ok {
-		claim = domain.PluginKanbanClaim{AutomationID: automationID, DocumentID: documentID, DocumentPath: documentPath, CreatedAt: time.Now().UTC()}
+		trigger, exists := m.pluginKanbanTriggers[automationID]
+		if !exists {
+			return nil, ErrNotFound
+		}
+		claim = domain.PluginKanbanClaim{AutomationID: automationID, InstallationID: trigger.InstallationID, DocumentID: documentID, DocumentPath: documentPath, WorkspaceID: workspaceID, DoneColumn: doneColumn, CreatedAt: time.Now().UTC()}
 		m.pluginKanbanClaims[key] = claim
 	}
 	copy := claim
@@ -2830,15 +2860,7 @@ func (m *MemStore) ListPluginKanbanRunsAwaitingWriteback(_ context.Context) ([]P
 		if !ok || !run.Status.Terminal() {
 			continue
 		}
-		automation, ok := m.pluginAutomations[claim.AutomationID]
-		if !ok {
-			continue
-		}
-		trigger, ok := m.pluginKanbanTriggers[claim.AutomationID]
-		if !ok {
-			continue
-		}
-		out = append(out, PluginKanbanWriteback{Automation: automation, Trigger: trigger, Claim: claim, Run: run})
+		out = append(out, PluginKanbanWriteback{Claim: claim, Run: run})
 	}
 	return out, nil
 }

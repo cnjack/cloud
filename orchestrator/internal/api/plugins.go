@@ -1443,6 +1443,14 @@ func (s *Server) handleUpdateProjectPlugin(w http.ResponseWriter, r *http.Reques
 			writeError(w, 409, "workspace_required", "select the JType workspace before enabling this plugin")
 			return
 		}
+		if status == domain.PluginStatusEnabled && in.Provider == domain.PluginJType {
+			cfg, err := s.st.GetProviderConfig(r.Context(), domain.PluginJType)
+			if err != nil || !cfg.PluginEnabled || strings.TrimSpace(cfg.BaseURL) == "" ||
+				cfg.ConfigRevision != in.ConfigRevision || in.LastHealthError != "" || !in.TokenSet() {
+				writeError(w, 409, "reconnect_required", "reconnect JType before enabling this Plugin")
+				return
+			}
+		}
 		in.Status = status
 	}
 	if workspaceID == "" && strings.TrimSpace(req.Status) == "" {

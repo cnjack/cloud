@@ -722,6 +722,14 @@ export default {
   },
 
   kanban: {
+    enableTitle: '为当前服务启用 Kanban',
+    enableBody: '选择一次看板即可。创建卡片或把卡片移入“ai”列会启动任务；完成后写回评论并移入“done”列。',
+    pluginRequired: '请先启用 JType Kanban 项目插件并选择工作区。',
+    loadingBoards: '正在加载看板…',
+    boardsUnavailable: '无法加载看板，请检查 JType 插件连接。',
+    enable: '启用 Kanban',
+    disable: '停用',
+    defaultColumns: '触发列：ai · 完成列：done',
     notConfiguredTitle: 'Kanban 尚未配置',
     notConfiguredMsg: '在此看板可以打开之前，Cluster 管理员需要配置 jtype 集成。',
     unavailableTitle: 'Kanban 不可用',

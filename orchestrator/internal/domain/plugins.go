@@ -308,10 +308,13 @@ type PluginAuditEvent struct {
 }
 
 type PluginKanbanClaim struct {
-	AutomationID string     `json:"automation_id"`
-	DocumentID   string     `json:"document_id"`
-	DocumentPath string     `json:"document_path"`
-	RunID        string     `json:"run_id,omitempty"`
-	WritebackAt  *time.Time `json:"writeback_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
+	AutomationID   string     `json:"automation_id"`
+	InstallationID string     `json:"installation_id"`
+	DocumentID     string     `json:"document_id"`
+	DocumentPath   string     `json:"document_path"`
+	WorkspaceID    string     `json:"workspace_id"`
+	DoneColumn     string     `json:"done_column,omitempty"`
+	RunID          string     `json:"run_id,omitempty"`
+	WritebackAt    *time.Time `json:"writeback_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
 }

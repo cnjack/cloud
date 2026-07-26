@@ -612,14 +612,14 @@ describe('ProjectDetailPage — workspace sections', () => {
     expect(schedules).not.toHaveBeenCalled();
   });
 
-  it('does not request the retired Kanban link API from the Service workspace', async () => {
+  it('loads Service Kanban bindings but hides the action without an enabled JType Plugin', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
     const retiredLinks = vi.fn(async () => []);
     (client as { listProjectBoardLinks?: unknown }).listProjectBoardLinks = retiredLinks;
     renderPage(client);
 
     await screen.findByTestId('run-input');
-    expect(retiredLinks).not.toHaveBeenCalled();
+    expect(retiredLinks).toHaveBeenCalledWith('p1');
     expect(screen.queryByTestId('project-kanban-btn')).toBeNull();
     expect(screen.queryByTestId('project-kanban-retry')).toBeNull();
   });

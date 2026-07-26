@@ -261,6 +261,12 @@ export interface ProjectAutomationSpec {
   kanban?: { automation_id?: string; installation_id: string; board_ref: string; trigger_column: string; done_column?: string };
   cron?: { automation_id?: string; cron_expr: string };
 }
+export type ServiceKanbanBinding = ProjectAutomationSpec;
+export interface PutServiceKanbanInput {
+  installation_id: string;
+  board_ref: string;
+  enabled?: boolean;
+}
 /** @deprecated Transitional alias used only by the old mock; new UI uses ProjectAutomationSpec. */
 export interface ProjectAutomation {
   id: string;

@@ -81,6 +81,9 @@ func (s *Server) handleListPluginAutomations(w http.ResponseWriter, r *http.Requ
 	}
 	out := make([]domain.PluginAutomationSpec, 0, len(items))
 	for _, a := range items {
+		if a.TriggerKind == "kanban" {
+			continue // Kanban is surfaced as a Service capability, not an Automation.
+		}
 		spec, err := s.st.GetPluginAutomationSpec(r.Context(), a.ID)
 		if err != nil {
 			writeError(w, 500, "internal", "could not load Automation trigger")
@@ -99,6 +102,10 @@ func (s *Server) handleCreatePluginAutomation(w http.ResponseWriter, r *http.Req
 	var req pluginAutomationReq
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, 400, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Kanban != nil {
+		writeError(w, 400, "bad_request", "Kanban is enabled from the Service header, not created as an Automation")
 		return
 	}
 	a, scm, actions, kanban, cron, err := pluginAutomationFromReq(req, "")
@@ -165,6 +172,10 @@ func (s *Server) handleGetPluginAutomation(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	if spec.Automation.TriggerKind == "kanban" {
+		writeError(w, 404, "not_found", "Automation not found")
+		return
+	}
 	_ = svc
 	writeJSON(w, 200, spec)
 }
@@ -172,6 +183,10 @@ func (s *Server) handleGetPluginAutomation(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleUpdatePluginAutomation(w http.ResponseWriter, r *http.Request) {
 	spec, svc, ok := s.loadPluginAutomationForMember(w, r, domain.RoleMember)
 	if !ok {
+		return
+	}
+	if spec.Automation.TriggerKind == "kanban" {
+		writeError(w, 404, "not_found", "Automation not found")
 		return
 	}
 	var req pluginAutomationReq
@@ -257,6 +272,10 @@ func (s *Server) handleUpdatePluginAutomation(w http.ResponseWriter, r *http.Req
 func (s *Server) handleDeletePluginAutomation(w http.ResponseWriter, r *http.Request) {
 	spec, svc, ok := s.loadPluginAutomationForMember(w, r, domain.RoleMember)
 	if !ok {
+		return
+	}
+	if spec.Automation.TriggerKind == "kanban" {
+		writeError(w, 404, "not_found", "Automation not found")
 		return
 	}
 	if err := s.st.DeletePluginAutomation(r.Context(), r.PathValue("aid")); err != nil {

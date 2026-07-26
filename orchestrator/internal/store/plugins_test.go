@@ -174,7 +174,7 @@ func TestUninstallPluginCascadesPluginAggregateButKeepsUnrelatedRun(t *testing.T
 	if err := st.CreatePluginAutomation(ctx, &domain.PluginAutomation{ID: "kanban", ServiceID: svc.ID, InstallationID: jtype.ID, Name: "kanban", TriggerKind: "kanban", PromptTemplate: "x"}, nil, nil, &domain.KanbanTrigger{AutomationID: "kanban", InstallationID: jtype.ID, BoardRef: "b", TriggerColumn: "todo"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.EnsurePluginKanbanClaim(ctx, "kanban", "card", "card"); err != nil {
+	if _, err := st.EnsurePluginKanbanClaim(ctx, "kanban", "card", "card", "workspace", "done"); err != nil {
 		t.Fatal(err)
 	}
 	boundRun := &domain.Run{ID: "bound", ProjectID: "p1", ServiceID: svc.ID}

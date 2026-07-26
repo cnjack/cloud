@@ -72,6 +72,7 @@ export const qk = {
   // button + feeds the embed modal's selector (distinct from the owner-only
   // projectKanbanLinks above).
   projectBoardLinks: (projectId: string) => ['project-board-links', projectId] as const,
+  serviceKanban: (serviceId: string) => ['service-kanban', serviceId] as const,
   // D29: kanban discovery pickers — the caller's jtype workspaces, and a
   // workspace's boards (with columns), scoped to the project.
   jtypeWorkspaces: (projectId: string) => ['jtype-workspaces', projectId] as const,
@@ -765,6 +766,32 @@ export function useProjectBoardLinks(projectId: string, enabled = true) {
     queryFn: () => api.listProjectBoardLinks(projectId),
     enabled: enabled && !!projectId,
     retry: false,
+  });
+}
+
+export function usePutServiceKanban(projectId: string, serviceId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: import('./types').PutServiceKanbanInput) => api.putServiceKanban(serviceId, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) });
+      qc.invalidateQueries({ queryKey: qk.projectAutomations(projectId) });
+      qc.invalidateQueries({ queryKey: qk.serviceKanban(serviceId) });
+    },
+  });
+}
+
+export function useDeleteServiceKanban(projectId: string, serviceId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteServiceKanban(serviceId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) });
+      qc.invalidateQueries({ queryKey: qk.projectAutomations(projectId) });
+      qc.invalidateQueries({ queryKey: qk.serviceKanban(serviceId) });
+    },
   });
 }
 

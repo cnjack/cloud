@@ -114,52 +114,12 @@ describe('AutomationEditorPage', () => {
     });
   });
 
-  it('uses JType resource APIs for workspace, board, and column selectors', async () => {
-    const { create } = renderEditor({
-      listProjectPlugins: async () => [{
-        id: 'plugin-jtype',
-        project_id: 'p1',
-        provider: 'jtype',
-        status: 'enabled',
-        external_account: 'Docs team',
-        workspace_id: 'ws-1',
-        scopes: ['full'],
-      }],
-      listPluginWorkspaces: async () => [{ id: 'ws-1', name: 'Docs workspace' }],
-      listPluginBoards: async () => [{
-        id: 'board-1',
-        ref: 'docs.delivery',
-        title: 'Delivery',
-        columns: [
-          { key: 'ai', name: 'AI' },
-          { key: 'done', name: 'Done' },
-        ],
-      }],
-    });
+  it('keeps JType Kanban out of the Automation editor', async () => {
+    const { create } = renderEditor();
     await screen.findByRole('heading', { name: 'Create Automation' });
-    fireEvent.click(screen.getByRole('button', { name: 'JType Kanban' }));
-    await screen.findByRole('option', { name: 'Delivery' });
-
-    fireEvent.change(screen.getByLabelText('Board'), { target: { value: 'docs.delivery' } });
-    fireEvent.change(screen.getByLabelText('Trigger column'), { target: { value: 'ai' } });
-    fireEvent.change(screen.getByLabelText('Completion column (optional)'), { target: { value: 'done' } });
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Kanban dispatch' } });
-    fireEvent.change(screen.getByLabelText('Prompt template'), { target: { value: 'Implement this card.' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create Automation' }));
-
-    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    expect(create.mock.calls[0]?.[1]).toEqual({
-      service_id: 'svc-1',
-      name: 'Kanban dispatch',
-      prompt_template: 'Implement this card.',
-      enabled: true,
-      ignore_jcode: true,
-      kanban: {
-        installation_id: 'plugin-jtype',
-        board_ref: 'docs.delivery',
-        trigger_column: 'ai',
-        done_column: 'done',
-      },
-    });
+    expect(screen.queryByRole('button', { name: 'JType Kanban' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'SCM' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Cron' })).toBeTruthy();
+    expect(create).not.toHaveBeenCalled();
   });
 });

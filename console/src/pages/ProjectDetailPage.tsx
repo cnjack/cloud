@@ -16,6 +16,7 @@ import {
   useDeleteService,
   usePluginRepositories,
   useProject,
+  useProjectBoardLinks,
   useProjectModels,
   useProjectPlugins,
   useRuns,
@@ -45,6 +46,7 @@ import { SettingsPanel } from '../project-workspace/SettingsPanel';
 import { TaskComposer } from '../project-workspace/TaskComposer';
 import { ProjectAutomationsPanel } from '../project-workspace/ProjectAutomationsPanel';
 import { serviceMark, serviceProviderLabel, serviceSource } from '../project-workspace/presentation';
+import { KanbanBoardModal } from './KanbanBoardModal';
 import {
   ProjectSettingsPage,
   ProjectSettingsSubnav,
@@ -75,6 +77,7 @@ export function ProjectDetailPage() {
   const [selectedModel, setSelectedModel] = useState('');
   const [askApproval, setAskApproval] = useState(false);
   const [runFilter, setRunFilter] = useState<RunFilter>('all');
+  const [kanbanOpen, setKanbanOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [repoQuery, setRepoQuery] = useState('');
   const [pickerInstallationId, setPickerInstallationId] = useState('');
@@ -126,10 +129,14 @@ export function ProjectDetailPage() {
     setSearchParams(next, { replace: true });
   }, [p, projectSettingsOpen, projectSettingsSection, searchParams, setSearchParams, workspaceLocation]);
 
-  const hasServiceHeaderActions =
-    activeService?.repo_kind === 'provider' || (canManage && !!activeService);
-
   const pluginsQuery = useProjectPlugins(projectId, !!p && canRun);
+  const boardLinks = useProjectBoardLinks(projectId, !!p && canRun);
+  const activeBoardLinks = (boardLinks.data ?? []).filter((link) => link.service_id === activeService?.id);
+  const jtypePluginEnabled = (pluginsQuery.data ?? []).some((plugin) =>
+    plugin.provider === 'jtype' && plugin.status === 'enabled' && !!plugin.workspace_id);
+  const canOpenKanban = !!activeService && canRun && (jtypePluginEnabled || activeBoardLinks.length > 0);
+  const hasServiceHeaderActions = canOpenKanban ||
+    activeService?.repo_kind === 'provider' || (canManage && !!activeService);
   const availableGitPlugins = useMemo(
     () => (pluginsQuery.data ?? []).filter((plugin) =>
       plugin.id &&
@@ -449,6 +456,16 @@ export function ProjectDetailPage() {
             </div>
             {hasServiceHeaderActions && (
               <div className={styles.workspaceServiceActions} data-testid="workspace-service-actions">
+                {canOpenKanban && (
+                  <button
+                    type="button"
+                    className={styles.workspaceServiceAction}
+                    onClick={() => setKanbanOpen(true)}
+                    data-testid="project-kanban-btn"
+                  >
+                    {t('projectDetail.kanban')}
+                  </button>
+                )}
                 {activeService && activeService.repo_kind === 'provider' && (
                   activeService.repo_html_url ? (
                     <a
@@ -678,6 +695,16 @@ export function ProjectDetailPage() {
           />
         )}
       </ProjectWorkspaceShell>
+
+      {kanbanOpen && activeService && (
+        <KanbanBoardModal
+          projectId={projectId}
+          serviceId={activeService.id}
+          links={activeBoardLinks}
+          canManage={canRun}
+          onClose={() => setKanbanOpen(false)}
+        />
+      )}
 
     </>
   );

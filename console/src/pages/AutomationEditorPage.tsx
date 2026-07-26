@@ -5,11 +5,8 @@ import { Button } from '../components/Button';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import {
   useCreateProjectAutomation,
-  usePluginBoards,
-  usePluginWorkspaces,
   useProject,
   useProjectAutomation,
-  useProjectPlugins,
   useProviderCapabilities,
   useUpdateProjectAutomation,
 } from '../api/queries';
@@ -70,7 +67,6 @@ export function AutomationEditorPage() {
   const navigate = useNavigate();
   const editing = !!automationId;
   const project = useProject(projectId);
-  const plugins = useProjectPlugins(projectId);
   const existing = useProjectAutomation(projectId, automationId, editing);
   const create = useCreateProjectAutomation(projectId);
   const update = useUpdateProjectAutomation(projectId);
@@ -79,7 +75,7 @@ export function AutomationEditorPage() {
   const initialService = searchParams.get('service') ?? services[0]?.id ?? '';
   const [name, setName] = useState('');
   const [serviceId, setServiceId] = useState(initialService);
-  const [kind, setKind] = useState<AutomationTriggerKind>('scm');
+  const [kind, setKind] = useState<Exclude<AutomationTriggerKind, 'kanban'>>('scm');
   const [prompt, setPrompt] = useState('');
   const [enabled, setEnabled] = useState(true);
   const [ignoreJcode, setIgnoreJcode] = useState(true);
@@ -88,20 +84,9 @@ export function AutomationEditorPage() {
   const [conclusion, setConclusion] = useState('');
   const [actions, setActions] = useState<NormalizedScmAction[]>(['push.updated']);
   const [cronExpr, setCronExpr] = useState('0 9 * * 1-5');
-  const [installationId, setInstallationId] = useState('');
-  const [workspaceId, setWorkspaceId] = useState('');
-  const [boardRef, setBoardRef] = useState('');
-  const [triggerColumn, setTriggerColumn] = useState('');
-  const [doneColumn, setDoneColumn] = useState('');
   const [formError, setFormError] = useState('');
 
-  const jtypeInstallations = (plugins.data ?? []).filter((plugin) =>
-    plugin.provider === 'jtype' && plugin.status === 'enabled' && plugin.id);
-  const selectedJTypeInstallation = jtypeInstallations.find((plugin) => plugin.id === installationId);
-  const workspaces = usePluginWorkspaces(projectId, installationId, kind === 'kanban');
-  const boards = usePluginBoards(projectId, installationId, workspaceId, kind === 'kanban');
   const selectedService = services.find((service) => service.id === serviceId);
-  const selectedBoard = boards.data?.find((board) => board.ref === boardRef);
   const scmProvider = (
     selectedService?.provider === 'github' ||
     selectedService?.provider === 'gitlab' ||
@@ -131,27 +116,11 @@ export function AutomationEditorPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existing.data]);
 
-  useEffect(() => {
-    if (kind !== 'kanban' || installationId || !jtypeInstallations[0]?.id) return;
-    setInstallationId(jtypeInstallations[0].id);
-  }, [installationId, jtypeInstallations, kind]);
-
-  useEffect(() => {
-    if (kind !== 'kanban') return;
-    const boundWorkspace = selectedJTypeInstallation?.workspace_id ?? '';
-    if (workspaceId !== boundWorkspace) {
-      setWorkspaceId(boundWorkspace);
-      setBoardRef('');
-      setTriggerColumn('');
-      setDoneColumn('');
-    }
-  }, [kind, selectedJTypeInstallation?.workspace_id, workspaceId]);
-
   function hydrate(spec: ProjectAutomationSpec) {
     const automation = spec.automation;
     setName(automation.name);
     setServiceId(automation.service_id);
-    setKind(automation.trigger_kind);
+    setKind(automation.trigger_kind === 'cron' ? 'cron' : 'scm');
     setPrompt(automation.prompt_template);
     setEnabled(automation.enabled);
     setIgnoreJcode(automation.ignore_jcode);
@@ -160,10 +129,6 @@ export function AutomationEditorPage() {
     setConclusion(spec.scm?.conclusion ?? '');
     setActions((spec.actions ?? []).map(actionName));
     setCronExpr(spec.cron?.cron_expr ?? '0 9 * * 1-5');
-    setInstallationId(spec.kanban?.installation_id ?? '');
-    setBoardRef(spec.kanban?.board_ref ?? '');
-    setTriggerColumn(spec.kanban?.trigger_column ?? '');
-    setDoneColumn(spec.kanban?.done_column ?? '');
   }
 
   function toggleAction(action: NormalizedScmAction) {
@@ -192,10 +157,6 @@ export function AutomationEditorPage() {
       setFormError('Select at least one event supported by this Service provider.');
       return;
     }
-    if (kind === 'kanban' && (!installationId || !boardRef || !triggerColumn)) {
-      setFormError('Select a JType workspace, board, and trigger column.');
-      return;
-    }
     if (kind === 'cron' && !cronExpr.trim()) {
       setFormError('Cron expression is required.');
       return;
@@ -214,14 +175,6 @@ export function AutomationEditorPage() {
           actions: actions.filter((action) => supported.has(action)).map(actionParts),
         },
       } : {}),
-      ...(kind === 'kanban' ? {
-        kanban: {
-          installation_id: installationId,
-          board_ref: boardRef,
-          trigger_column: triggerColumn,
-          done_column: doneColumn,
-        },
-      } : {}),
       ...(kind === 'cron' ? { cron: { cron_expr: cronExpr.trim() } } : {}),
     };
     const onSuccess = () => navigate(`/projects/${encodeURIComponent(projectId)}?tab=automations&service=${encodeURIComponent(serviceId)}`);
@@ -229,11 +182,11 @@ export function AutomationEditorPage() {
     else create.mutate(input, { onSuccess });
   }
 
-  if (project.isLoading || plugins.isLoading || (editing && existing.isLoading)) {
+  if (project.isLoading || (editing && existing.isLoading)) {
     return <LoadingBlock label="Loading Automation…" />;
   }
-  if (project.isError || plugins.isError || (editing && existing.isError)) {
-    return <ErrorBlock error={project.error ?? plugins.error ?? existing.error} title="Could not load Automation" />;
+  if (project.isError || (editing && existing.isError)) {
+    return <ErrorBlock error={project.error ?? existing.error} title="Could not load Automation" />;
   }
 
   return (
@@ -273,9 +226,9 @@ export function AutomationEditorPage() {
         <section>
           <h2>Trigger</h2>
           <div className={styles.triggerTabs}>
-            {(['scm', 'kanban', 'cron'] as const).map((value) => (
+            {(['scm', 'cron'] as const).map((value) => (
               <button key={value} type="button" aria-pressed={kind === value} onClick={() => setKind(value)}>
-                {value === 'scm' ? 'SCM' : value === 'kanban' ? 'JType Kanban' : 'Cron'}
+                {value === 'scm' ? 'SCM' : 'Cron'}
               </button>
             ))}
           </div>
@@ -312,53 +265,6 @@ export function AutomationEditorPage() {
                   );
                 })}
               </fieldset>
-            </div>
-          )}
-
-          {kind === 'kanban' && (
-            <div className={styles.triggerBody}>
-              {!jtypeInstallations.length && <div className={styles.warning}><Warning size={18} />Enable the JType Kanban Plugin before creating this trigger.</div>}
-              <div className={styles.grid}>
-                <label>JType connection
-                  <select value={installationId} onChange={(event) => {
-                    setInstallationId(event.target.value);
-                    setBoardRef('');
-                  }}>
-                    <option value="">Select connection…</option>
-                    {jtypeInstallations.map((plugin) => <option key={plugin.id} value={plugin.id}>{plugin.external_account ?? plugin.workspace_id ?? 'JType'}</option>)}
-                  </select>
-                </label>
-                <label>Workspace
-                  <select value={workspaceId} disabled>
-                    <option value="">Select workspace…</option>
-                    {(workspaces.data ?? []).map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-                  </select>
-                  <small>The workspace is fixed by this Project Plugin. Change it on the Plugin detail page.</small>
-                </label>
-                <label>Board
-                  <select value={boardRef} onChange={(event) => {
-                    setBoardRef(event.target.value);
-                    setTriggerColumn('');
-                    setDoneColumn('');
-                  }} disabled={!workspaceId || boards.isLoading}>
-                    <option value="">Select board…</option>
-                    {(boards.data ?? []).map((board) => <option key={board.id} value={board.ref}>{board.title}</option>)}
-                  </select>
-                </label>
-                <label>Trigger column
-                  <select value={triggerColumn} onChange={(event) => setTriggerColumn(event.target.value)} disabled={!selectedBoard}>
-                    <option value="">Select column…</option>
-                    {(selectedBoard?.columns ?? []).map((column) => <option key={column.key} value={column.key}>{column.name}</option>)}
-                  </select>
-                </label>
-                <label>Completion column (optional)
-                  <select value={doneColumn} onChange={(event) => setDoneColumn(event.target.value)} disabled={!selectedBoard}>
-                    <option value="">None</option>
-                    {(selectedBoard?.columns ?? []).map((column) => <option key={column.key} value={column.key}>{column.name}</option>)}
-                  </select>
-                </label>
-              </div>
-              {(workspaces.isError || boards.isError) && <ErrorBlock error={workspaces.error ?? boards.error} title="JType resources could not be listed" />}
             </div>
           )}
 

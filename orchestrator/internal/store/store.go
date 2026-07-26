@@ -507,7 +507,7 @@ type Store interface {
 	ListEnabledCronAutomations(ctx context.Context) ([]domain.PluginAutomationSpec, error)
 	AdvancePluginCronAutomation(ctx context.Context, id string, previous, firedAt *time.Time, lastError string) (bool, error)
 	ListEnabledKanbanAutomations(ctx context.Context) ([]domain.PluginAutomationSpec, error)
-	EnsurePluginKanbanClaim(ctx context.Context, automationID, documentID, documentPath string) (*domain.PluginKanbanClaim, error)
+	EnsurePluginKanbanClaim(ctx context.Context, automationID, documentID, documentPath, workspaceID, doneColumn string) (*domain.PluginKanbanClaim, error)
 	SetPluginKanbanClaimRun(ctx context.Context, automationID, documentID, runID string) error
 	ListPluginKanbanRunsAwaitingWriteback(ctx context.Context) ([]PluginKanbanWriteback, error)
 	MarkPluginKanbanWriteback(ctx context.Context, automationID, documentID string, at time.Time) (bool, error)

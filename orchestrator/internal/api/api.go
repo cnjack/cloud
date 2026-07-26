@@ -458,13 +458,20 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/plugins/{installation}", s.authed(s.handleDeleteProjectPlugin))
 	mux.Handle("GET /api/v1/providers/{provider}/capabilities", s.authed(s.handleProviderCapabilities))
 
-	// Unified Project Automations. SCM, Kanban and Cron all use this aggregate;
-	// the retired service schedule/automation resources are intentionally absent.
+	// Project Automations are explicit SCM and Cron policies. JType Kanban is a
+	// service affordance with an implicit, default trigger managed below.
 	mux.Handle("GET /api/v1/projects/{id}/automations", s.authed(s.handleListPluginAutomations))
 	mux.Handle("POST /api/v1/projects/{id}/automations", s.authed(s.handleCreatePluginAutomation))
 	mux.Handle("GET /api/v1/automations/{aid}", s.authed(s.handleGetPluginAutomation))
 	mux.Handle("PATCH /api/v1/automations/{aid}", s.authed(s.handleUpdatePluginAutomation))
 	mux.Handle("DELETE /api/v1/automations/{aid}", s.authed(s.handleDeletePluginAutomation))
+	mux.Handle("GET /api/v1/services/{id}/kanban", s.authed(s.handleGetServiceKanban))
+	mux.Handle("PUT /api/v1/services/{id}/kanban", s.authed(s.handlePutServiceKanban))
+	mux.Handle("DELETE /api/v1/services/{id}/kanban", s.authed(s.handleDeleteServiceKanban))
+	mux.Handle("GET /api/v1/projects/{id}/kanban/board/links", s.authed(s.handleListBoardEmbedLinks))
+	mux.Handle("GET /api/v1/projects/{id}/kanban/board/documents", s.authed(s.handleBoardListDocuments))
+	mux.Handle("GET /api/v1/projects/{id}/kanban/board/documents/{docID}", s.authed(s.handleBoardGetDocument))
+	mux.Handle("POST /api/v1/projects/{id}/kanban/board/documents/save", s.authed(s.handleBoardSaveDocument))
 
 	// Models a project is granted (D21). Member+; returns only id/name/model_name
 	// (never the base_url or key) plus an env_fallback flag for the ModelGate.

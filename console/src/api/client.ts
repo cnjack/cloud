@@ -89,6 +89,8 @@ import type {
   UpdateAutomationInput,
   UpdateClusterProviderConfigInput,
   UpdateProjectAutomationInput,
+  PutServiceKanbanInput,
+  ServiceKanbanBinding,
   UpdateIntegrationInput,
   UpdateKanbanConfigInput,
   UpdateModelInput,
@@ -478,6 +480,9 @@ export interface ApiClient {
   createProjectAutomation(projectId: string, input: CreateProjectAutomationInput): Promise<ProjectAutomationSpec>;
   updateProjectAutomation(projectId: string, automationId: string, input: UpdateProjectAutomationInput): Promise<ProjectAutomationSpec>;
   deleteProjectAutomation(projectId: string, automationId: string): Promise<void>;
+  getServiceKanban(serviceId: string): Promise<ServiceKanbanBinding>;
+  putServiceKanban(serviceId: string, input: PutServiceKanbanInput): Promise<ServiceKanbanBinding>;
+  deleteServiceKanban(serviceId: string): Promise<void>;
   /** POST /api/v1/services/{id}/runs — dispatch a run against a specific service. */
   createServiceRun(serviceId: string, input: CreateRunInput): Promise<Run>;
   /**
@@ -1097,6 +1102,11 @@ export function createHttpClient(
       }),
     deleteProjectAutomation: (_projectId, automationId) =>
       req<void>(`/automations/${encodeURIComponent(automationId)}`, { method: 'DELETE' }),
+    getServiceKanban: (serviceId) => req<ServiceKanbanBinding>(`/services/${encodeURIComponent(serviceId)}/kanban`),
+    putServiceKanban: (serviceId, input) => req<ServiceKanbanBinding>(`/services/${encodeURIComponent(serviceId)}/kanban`, {
+      method: 'PUT', body: JSON.stringify(input),
+    }),
+    deleteServiceKanban: (serviceId) => req<void>(`/services/${encodeURIComponent(serviceId)}/kanban`, { method: 'DELETE' }),
 
     createServiceRun: (serviceId, input) =>
       req<Run>(`/services/${encodeURIComponent(serviceId)}/runs`, {

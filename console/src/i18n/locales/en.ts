@@ -1057,6 +1057,14 @@ export default {
   },
 
   kanban: {
+    enableTitle: 'Enable Kanban for this Service',
+    enableBody: 'Choose a board once. Cards created or moved into “ai” start a task; completed tasks are commented on and moved to “done”.',
+    pluginRequired: 'Enable the JType Kanban Project Plugin and select its workspace first.',
+    loadingBoards: 'Loading boards…',
+    boardsUnavailable: 'Boards could not be loaded. Check the JType Plugin connection.',
+    enable: 'Enable Kanban',
+    disable: 'Disable',
+    defaultColumns: 'Trigger: ai · Complete: done',
     notConfiguredTitle: 'Kanban is not configured',
     notConfiguredMsg: 'A cluster administrator needs to configure the jtype integration before this board can open.',
     unavailableTitle: 'Kanban is unavailable',
@@ -1492,7 +1500,7 @@ export default {
   projectAutomations: {
     eyebrow: 'Project automation',
     title: 'Automations',
-    subtitle: 'Create SCM, Kanban, and scheduled work against any Service in this Project.',
+    subtitle: 'Create SCM and scheduled work against any Service in this Project. Kanban is enabled from the Service header.',
     loading: 'Loading Automations…',
     loadError: 'Could not load Automations.',
     new: 'New automation',

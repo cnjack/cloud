@@ -236,10 +236,11 @@ func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
 	if err := st.CreateService(ctx, service); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginJType, BaseURL: "http://jtype.plugin", PluginEnabled: true}); err != nil {
+	cfg := &domain.ProviderConfig{Provider: domain.PluginJType, BaseURL: "http://jtype.plugin", PluginEnabled: true}
+	if err := st.UpsertProviderConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	installation := &domain.PluginInstallation{ID: domain.NewID(), ProjectID: project.ID, Provider: domain.PluginJType, Status: domain.PluginStatusEnabled, WorkspaceID: "ws", AccessTokenEnc: []byte("PLUGINPAT"), ConsentedAt: time.Now(), CreatedAt: time.Now()}
+	installation := &domain.PluginInstallation{ID: domain.NewID(), ProjectID: project.ID, Provider: domain.PluginJType, Status: domain.PluginStatusEnabled, WorkspaceID: "ws", AccessTokenEnc: []byte("PLUGINPAT"), ConfigRevision: cfg.ConfigRevision, ConsentedAt: time.Now(), CreatedAt: time.Now()}
 	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
 		t.Fatal(err)
 	}

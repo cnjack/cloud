@@ -73,7 +73,7 @@ export function ProjectAutomationsPanel({
         </div>
       )}
       <div className={styles.filters} aria-label={t('projectAutomations.filters')}>
-        {(['all', 'scm', 'kanban', 'cron'] as const).map((kind) => (
+        {(['all', 'scm', 'cron'] as const).map((kind) => (
           <button key={kind} type="button" aria-pressed={filter === kind} onClick={() => setFilter(kind)}>
             {kind === 'all' ? t('projectAutomations.all') : triggerLabel(kind, t)}
           </button>
@@ -137,6 +137,5 @@ export function ProjectAutomationsPanel({
 
 function triggerSummary(item: ProjectAutomationSpec): string {
   if (item.scm) return (item.actions ?? []).map((action) => `${action.event_family}.${action.action}`).join(', ');
-  if (item.kanban) return `${item.kanban.board_ref} · ${item.kanban.trigger_column}`;
   return item.cron?.cron_expr ?? '';
 }

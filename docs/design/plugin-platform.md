@@ -14,10 +14,14 @@ Plugin. Raw Git URL Services are not part of the Plugin platform. One Git
 installation can back many Services and each Service binds one repository.
 
 A JType installation binds one workspace. Projects can browse all boards in the
-workspace without creating a trigger. A Kanban Automation chooses its board,
-trigger column, optional completion column, and target Service.
+workspace without creating an Automation. Kanban is enabled from the current
+Service header: the user chooses one board once, then card creation or movement
+into the conventional `ai` column starts a task for that Service. Results are
+written back as card comments and, when available, the card moves to `done`.
 
-SCM, Kanban, and Cron use one Automation aggregate with typed trigger records.
+SCM and Cron are the public Automation types. Internally the Service Kanban
+binding reuses the strongly typed Kanban aggregate, claims, poller, and
+writeback records; it is never listed or edited as an Automation.
 SCM writes are never performed automatically by jcloud. jcode decides whether
 to use the installed Skill and CLI to comment, push, open a PR or MR, or perform
 another provider action. JType retains its existing result comment and optional
@@ -108,10 +112,37 @@ Installation statuses are `connecting`, `enabled`, `disabled`,
 `action_required`, `uninstalling`, and `error`. The unconnected card is a UI
 projection, not a stored installation status.
 
-Automations have a list route and an independent create/edit route. The editor
+Automations have a list route and an independent create/edit route for SCM and
+Cron. The editor
 contains Trigger, Filters, and Task sections. It has no SCM result writeback
 section. Provider capability gaps are disabled with an explanation instead of
 being hidden.
+
+The active Service header has a right-aligned Kanban action whenever the JType
+Plugin is healthy or that Service already has a binding. First use selects a
+board and enables the binding; later use opens the real server-proxied board.
+Disable removes the binding. A Project can bind a JType board to only one
+Service, preventing one card from launching duplicate tasks against different
+repositories. Disable keeps the binding and outstanding claims but stops new
+polling, so a run already in progress can still write back from its frozen
+snapshot.
+
+## Service Kanban contract
+
+`GET|PUT|DELETE /api/v1/services/{id}/kanban` is the only mutation surface.
+Owner and Member may enable or disable it; Viewer is read-only. `PUT` accepts
+the enabled Project JType Installation and the selected board's stable `b_…`
+ID. The server supplies `trigger_column=ai` and `done_column=done`; the browser
+does not offer per-Service column policy.
+
+The board embed remains member-only because it is a read/write component. Its
+document proxy accepts only the workspace of the healthy, enabled Project JType
+Plugin, independent of whether a Service trigger has been enabled. Reads may
+therefore browse the granted workspace before a trigger exists. Writes require
+an enabled Service board and are restricted to parsed card frontmatter under
+`cards/*.md`; arbitrary Markdown and foreign-board cards are rejected. Upstream
+error bodies and any response reflecting the server-held bearer token are never
+forwarded. Legacy `kanban_links` credentials are not a fallback.
 
 The UI follows the existing Cloud tokens, typography, component library, dark
 mode, focus treatment, and density. It adds no new design system and no
@@ -201,6 +232,13 @@ Provider URL/config changes and reconnects append new live versions; existing
 snapshots continue resolving their launch versions. Refresh-token rotation is
 persisted only within the frozen grant version and can never overwrite a later
 reconnect's version.
+Kanban claims additionally freeze the workspace and completion column at
+dispatch. Result comments and the optional move use that claim plus the run's
+immutable JType Provider/grant snapshot, never the Installation or Provider
+configuration that happens to be current when the run finishes. Once a claim
+owns a run it is intentionally independent of the mutable Automation aggregate,
+so disabling, deduplicating, or uninstalling configuration cannot erase the
+pending writeback target.
 Every RUN_TOKEN endpoint rejects queued and terminal runs, including the model
 proxy and artifact/event inputs. Uninstalling an unrelated snapshotted Plugin
 removes its managed CLI/Git files on the next successful sync without blocking
@@ -257,8 +295,13 @@ test data while preserving users, Projects, memberships, model configuration,
 devices, and API keys. It creates the Plugin aggregates and typed trigger
 tables. Append-only migration `0044_plugin_store_integrity.sql` adds database
 guards for same-project/same-Provider Service bindings and for exactly-one,
-correctly typed Automation trigger aggregates. There is no legacy API
-compatibility period.
+correctly typed Automation trigger aggregates. Append-only migration `0046`
+deterministically keeps the oldest historical Kanban aggregate for each Service
+and board, freezes all existing claim targets, preserves run-bound claims,
+removes duplicate aggregates, then adds one-Kanban-per-Service and
+one-Service-per-board uniqueness. It also detaches frozen writeback claims from
+the mutable Automation foreign key. There is no legacy API compatibility
+period.
 
 Orchestrator, Console, runner image, and migration ship in one release. The
 database is backed up first. A failed migration keeps readiness unhealthy and
@@ -267,6 +310,18 @@ must not allow a mixed Console and Orchestrator version.
 Supported baselines are github.com, GitLab 17.11+, Gitea 1.25+, and JType 0.2+.
 Lower self-hosted versions can connect if their basic APIs work, but capability
 probing disables unsupported triggers.
+
+## Provider trust boundary
+
+A Cluster Admin configures each Provider instance as a trusted credential
+recipient and content authority. Cloud never serializes a credential from its
+own state, redacts upstream error bodies, and rejects common direct, JSON,
+Base64, URL, and hex reflections as defense in depth. A malicious Provider that
+has already received a valid bearer token can nevertheless encode that token
+inside otherwise valid repository, issue, or board content; no transparent
+content proxy can detect every reversible encoding while still returning
+Provider data. Only Provider instances controlled by a trusted operator may be
+configured.
 
 ## Accepted security exceptions
 

@@ -17,14 +17,20 @@
  * Fail-visible throughout (red line #1): a link that can't be resolved to a
  * board shows a clear panel, never a blank modal.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useQuery } from '@tanstack/react-query';
 import { JTypeApiError, JTypeBoard, type BoardLocale } from 'jtype-board-react';
 import 'jtype-board-react/style.css';
 import { useApi } from '../api/ApiProvider';
-import { qk } from '../api/queries';
+import {
+  qk,
+  useDeleteServiceKanban,
+  usePluginBoards,
+  useProjectPlugins,
+  usePutServiceKanban,
+} from '../api/queries';
 import { Button } from '../components/Button';
 import { Modal } from '../components/Modal';
 import { SelectField } from '../components/Field';
@@ -100,11 +106,13 @@ function boardOpenErrorCopy(error: unknown, t: TFunction): BoardOpenErrorCopy {
 
 interface Props {
   projectId: string;
+  serviceId?: string;
   links: BoardEmbedLink[];
+  canManage?: boolean;
   onClose: () => void;
 }
 
-export function KanbanBoardModal({ projectId, links, onClose }: Props) {
+export function KanbanBoardModal({ projectId, serviceId = '', links, canManage = false, onClose }: Props) {
   const { t } = useTranslation();
   const api = useApi();
   // Memoize the injected client: a new identity per render restarts the board.
@@ -115,6 +123,23 @@ export function KanbanBoardModal({ projectId, links, onClose }: Props) {
 
   const [selectedId, setSelectedId] = useState(() => initialLinkId(links));
   const link = links.find((l) => l.id === selectedId) ?? links[0];
+  const plugins = useProjectPlugins(projectId);
+  const jtypePlugin = (plugins.data ?? []).find((item) =>
+    item.provider === 'jtype' && item.status === 'enabled' && item.workspace_id && item.id);
+  const boards = usePluginBoards(
+    projectId,
+    jtypePlugin?.id ?? '',
+    jtypePlugin?.workspace_id ?? '',
+    !link && !!jtypePlugin,
+  );
+  const putBinding = usePutServiceKanban(projectId, serviceId);
+  const deleteBinding = useDeleteServiceKanban(projectId, serviceId);
+  const [boardRef, setBoardRef] = useState('');
+  const previewBoard = (boards.data ?? []).find((board) => board.id === boardRef);
+
+  useEffect(() => {
+    if (!boardRef && boards.data?.[0]?.id) setBoardRef(boards.data[0].id);
+  }, [boardRef, boards.data]);
 
   // Resolve the link's board_ref (config id) → the board's relativePath, over
   // the member+ proxy. Keyed on the selected link so switching boards refetches.
@@ -137,6 +162,57 @@ export function KanbanBoardModal({ projectId, links, onClose }: Props) {
       data-testid="kanban-board-modal"
     >
       <div className={styles.wrap}>
+        {!link && (
+          <>
+            <div className={styles.failPanel} data-testid="kanban-enable-panel">
+              <div className={styles.failTitle}>{t('kanban.enableTitle')}</div>
+              <div className={styles.failMsg}>{t('kanban.enableBody')}</div>
+              {!jtypePlugin ? (
+                <div className={styles.failDetail}>{t('kanban.pluginRequired')}</div>
+              ) : boards.isLoading ? (
+                <LoadingBlock label={t('kanban.loadingBoards')} />
+              ) : boards.isError ? (
+                <div className={styles.failDetail} role="alert">{t('kanban.boardsUnavailable')}</div>
+              ) : (
+                <SelectField
+                  label={t('kanban.boardLabel')}
+                  value={boardRef}
+                  onChange={setBoardRef}
+                  options={(boards.data ?? []).map((board) => ({ value: board.id, label: board.title }))}
+                  data-testid="kanban-enable-board"
+                />
+              )}
+              <div className={styles.failActions}>
+                <Button
+                  type="button"
+                  disabled={!canManage || !jtypePlugin || !boardRef || putBinding.isPending}
+                  loading={putBinding.isPending}
+                  onClick={() => putBinding.mutate({
+                    installation_id: jtypePlugin!.id!,
+                    board_ref: boardRef,
+                    enabled: true,
+                  })}
+                  data-testid="kanban-enable"
+                >
+                  {t('kanban.enable')}
+                </Button>
+              </div>
+              {putBinding.isError && <div className={styles.failDetail} role="alert">{(putBinding.error as Error).message}</div>}
+            </div>
+            {jtypePlugin && previewBoard && (
+              <div className={styles.board} data-testid="kanban-readonly-preview">
+                <JTypeBoard
+                  client={proxyClient}
+                  workspaceId={jtypePlugin.workspace_id!}
+                  boardRef={previewBoard.ref}
+                  readOnly
+                  live={false}
+                  locale={boardLocale()}
+                />
+              </div>
+            )}
+          </>
+        )}
         {links.length > 1 && (
           <div className={styles.selectorRow}>
             <SelectField
@@ -177,6 +253,20 @@ export function KanbanBoardModal({ projectId, links, onClose }: Props) {
           </div>
         ) : (
           <>
+            {canManage && (
+              <div className={styles.selectorRow}>
+                <span>{t('kanban.defaultColumns')}</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  loading={deleteBinding.isPending}
+                  onClick={() => deleteBinding.mutate(undefined, { onSuccess: onClose })}
+                >
+                  {t('kanban.disable')}
+                </Button>
+              </div>
+            )}
             {link.board_status === 'invalid' && (
               <div
                 className={styles.linkNotice}

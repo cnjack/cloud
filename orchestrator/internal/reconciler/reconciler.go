@@ -807,14 +807,6 @@ func (r *Reconciler) reconcilePluginKanbanWriteback(ctx context.Context) {
 	if r.jtypeDecrypt == nil {
 		return
 	}
-	cfg, err := r.st.GetProviderConfig(ctx, domain.PluginJType)
-	if err != nil || !cfg.PluginEnabled || strings.TrimSpace(cfg.BaseURL) == "" {
-		return
-	}
-	factory := jtype.NewFactory(cfg.BaseURL, 20*time.Second)
-	if factory == nil {
-		return
-	}
 	pending, err := r.st.ListPluginKanbanRunsAwaitingWriteback(ctx)
 	if err != nil {
 		r.log.Error("reconcile Kanban Automation: list writebacks", "err", err)
@@ -822,24 +814,40 @@ func (r *Reconciler) reconcilePluginKanbanWriteback(ctx context.Context) {
 	}
 	for i := range pending {
 		wb := &pending[i]
-		installation, err := r.st.GetPluginInstallation(ctx, wb.Trigger.InstallationID)
-		if err != nil || installation.ProjectID != wb.Run.ProjectID {
-			continue
-		}
-		token, _, err := jtype.ResolveToken(installation.AccessTokenEnc, r.jtypeDecrypt)
+		snapshots, err := r.st.ListRunPluginSnapshots(ctx, wb.Run.ID)
 		if err != nil {
 			continue
 		}
+		var snapshot *domain.RunPluginSnapshot
+		for j := range snapshots {
+			if snapshots[j].InstallationID == wb.Claim.InstallationID &&
+				snapshots[j].Provider == domain.PluginJType &&
+				snapshots[j].HasFrozenRuntimeMaterial() {
+				snapshot = &snapshots[j]
+				break
+			}
+		}
+		if snapshot == nil || wb.Claim.WorkspaceID == "" {
+			continue
+		}
+		token, _, err := jtype.ResolveToken(snapshot.AccessTokenEnc, r.jtypeDecrypt)
+		if err != nil {
+			continue
+		}
+		factory := jtype.NewFactory(snapshot.ProviderBaseURL, 20*time.Second)
+		if factory == nil {
+			continue
+		}
 		writer := r.kanbanFor(factory, token)
-		if wb.Run.Status == domain.StatusSucceeded && wb.Trigger.DoneColumn != "" {
-			if err := writer.MoveCard(ctx, installation.WorkspaceID, wb.Claim.DocumentID, wb.Trigger.DoneColumn); err != nil {
+		if wb.Run.Status == domain.StatusSucceeded && wb.Claim.DoneColumn != "" {
+			if err := writer.MoveCard(ctx, wb.Claim.WorkspaceID, wb.Claim.DocumentID, wb.Claim.DoneColumn); err != nil {
 				continue
 			}
 		}
-		if err := writer.AddComment(ctx, installation.WorkspaceID, wb.Claim.DocumentID, kanbanCommentBody(&wb.Run, r.consoleURL)); err != nil {
+		if err := writer.AddComment(ctx, wb.Claim.WorkspaceID, wb.Claim.DocumentID, kanbanCommentBody(&wb.Run, r.consoleURL)); err != nil {
 			continue
 		}
-		_, _ = r.st.MarkPluginKanbanWriteback(ctx, wb.Automation.ID, wb.Claim.DocumentID, r.now())
+		_, _ = r.st.MarkPluginKanbanWriteback(ctx, wb.Claim.AutomationID, wb.Claim.DocumentID, r.now())
 	}
 }
 
