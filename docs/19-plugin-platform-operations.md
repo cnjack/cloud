@@ -46,14 +46,22 @@ database recovery procedure instead of reopening first-visitor setup.
 
 ## Provider configuration
 
-All Provider and JType control-plane HTTP traffic uses the same direct
-connection policy: environment proxies and redirects are disabled, and the
-resolved dial address is rejected when it is loopback, link-local/metadata,
-unspecified, or multicast. RFC1918 and IPv6 ULA addresses remain available for
-self-hosted instances. Only an explicit `http://localhost`, `127.0.0.1`, or
-`[::1]` URL enables loopback for local development. Non-success responses are
-reported by status only; upstream bodies are never returned or logged because
-they may reflect an Authorization header.
+All Provider and JType control-plane HTTP traffic uses the same guarded
+connection policy: generic `HTTP_PROXY`/`HTTPS_PROXY` variables and redirects
+are disabled, and the resolved dial address is rejected when it is loopback,
+link-local/metadata, unspecified, or multicast. RFC1918 and IPv6 ULA addresses
+remain available for self-hosted instances. Only an explicit
+`http://localhost`, `127.0.0.1`, or `[::1]` URL enables loopback for local
+development. Non-success responses are reported by status only; upstream bodies
+are never returned or logged because they may reflect an Authorization header.
+
+A cluster operator may deliberately route this traffic through one trusted
+egress proxy by setting `PROVIDER_HTTP_PROXY` and
+`PROVIDER_HTTPS_PROXY`. `PROVIDER_NO_PROXY` supports host, suffix, IP, and CIDR
+exclusions and should keep cluster-local and self-hosted Provider destinations
+direct. The proxy is part of the credential trust boundary: it receives target
+host metadata and controls routing, so configure it only at cluster scope.
+These variables are not injected into task Runner containers.
 
 ### GitHub
 

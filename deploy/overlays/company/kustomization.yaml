@@ -75,6 +75,12 @@ patches:
         ORCH_BASE_URL: http://orchestrator.jcode.svc.cluster.local:8080
         CONSOLE_URL: https://cloud.j-code.net
         WEBHOOK_URL: http://orchestrator.jcode.svc.cluster.local:8080/webhooks/gitea
+        # Explicit trusted egress for Provider control-plane traffic. Generic
+        # HTTP_PROXY variables remain ignored by safehttp, and private/in-cluster
+        # Provider instances stay direct.
+        PROVIDER_HTTP_PROXY: http://192.168.10.236:7890
+        PROVIDER_HTTPS_PROXY: http://192.168.10.236:7890
+        PROVIDER_NO_PROXY: ".svc,.svc.cluster.local,localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
         # F5 / D20 — cluster git-host allowlist for project integrations. Mirrors
         # this deployment's real gitea (GITEA_URL in the replayed secret =
         # https://git.scgzyun.com). Comparison is host:port-sensitive

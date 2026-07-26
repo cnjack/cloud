@@ -13,9 +13,12 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/http/httpproxy"
 )
 
 // ErrRedirectDenied deliberately contains no target URL. Returning it from
@@ -36,10 +39,13 @@ var ErrBlockedDestination = errors.New("provider destination is not allowed")
 func NewProviderClient(baseURL string, timeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	// Provider requests are authenticated and must be dial-guarded end to end.
-	// ProxyFromEnvironment would move the dial boundary to an arbitrary proxy,
-	// allowing that proxy to reach metadata/internal destinations with our
-	// Authorization header. These requests deliberately go direct.
-	transport.Proxy = nil
+	// Generic HTTP_PROXY/HTTPS_PROXY variables are deliberately ignored: a
+	// project-injected or ambient process variable must never redirect Provider
+	// credentials. A cluster operator may opt in to one explicit, trusted
+	// egress proxy through the PROVIDER_* variables. The guarded dialer still
+	// validates the actual proxy address, while PROVIDER_NO_PROXY preserves
+	// direct access to self-hosted/internal instances.
+	transport.Proxy = configuredProviderProxy()
 	transport.DialContext = guardedDialContext(allowLoopbackDevelopmentURL(baseURL))
 	return &http.Client{
 		Timeout:   timeout,
@@ -47,6 +53,22 @@ func NewProviderClient(baseURL string, timeout time.Duration) *http.Client {
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return ErrRedirectDenied
 		},
+	}
+}
+
+func configuredProviderProxy() func(*http.Request) (*url.URL, error) {
+	httpProxy := strings.TrimSpace(os.Getenv("PROVIDER_HTTP_PROXY"))
+	httpsProxy := strings.TrimSpace(os.Getenv("PROVIDER_HTTPS_PROXY"))
+	if httpProxy == "" && httpsProxy == "" {
+		return nil
+	}
+	proxyForURL := (&httpproxy.Config{
+		HTTPProxy:  httpProxy,
+		HTTPSProxy: httpsProxy,
+		NoProxy:    strings.TrimSpace(os.Getenv("PROVIDER_NO_PROXY")),
+	}).ProxyFunc()
+	return func(req *http.Request) (*url.URL, error) {
+		return proxyForURL(req.URL)
 	}
 }
 

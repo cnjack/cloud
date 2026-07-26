@@ -46,7 +46,11 @@ func TestProviderClientAllowsOnlyExplicitHTTPLocalhostLoopback(t *testing.T) {
 	}
 }
 
-func TestProviderClientDisablesEnvironmentProxy(t *testing.T) {
+func TestProviderClientIgnoresGenericEnvironmentProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://192.168.10.10:3128")
+	t.Setenv("HTTPS_PROXY", "http://192.168.10.10:3128")
+	t.Setenv("PROVIDER_HTTP_PROXY", "")
+	t.Setenv("PROVIDER_HTTPS_PROXY", "")
 	client := NewProviderClient("https://provider.example", time.Second)
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
@@ -54,6 +58,30 @@ func TestProviderClientDisablesEnvironmentProxy(t *testing.T) {
 	}
 	if transport.Proxy != nil {
 		t.Fatal("provider traffic must not use an environment proxy that bypasses the dial guard")
+	}
+}
+
+func TestProviderClientUsesOnlyExplicitTrustedProxyWithNoProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://ignored.example:8080")
+	t.Setenv("HTTPS_PROXY", "http://ignored.example:8080")
+	t.Setenv("PROVIDER_HTTP_PROXY", "http://192.168.10.236:7890")
+	t.Setenv("PROVIDER_HTTPS_PROXY", "http://192.168.10.236:7890")
+	t.Setenv("PROVIDER_NO_PROXY", ".svc.cluster.local,10.0.0.0/8")
+
+	client := NewProviderClient("https://api.github.com", time.Second)
+	transport := client.Transport.(*http.Transport)
+	if transport.Proxy == nil {
+		t.Fatal("explicit Provider proxy was not configured")
+	}
+	githubReq, _ := http.NewRequest(http.MethodGet, "https://api.github.com/user", nil)
+	proxyURL, err := transport.Proxy(githubReq)
+	if err != nil || proxyURL == nil || proxyURL.String() != "http://192.168.10.236:7890" {
+		t.Fatalf("GitHub proxy=(%v,%v), want configured Provider proxy", proxyURL, err)
+	}
+	internalReq, _ := http.NewRequest(http.MethodGet, "https://jtype.jcode.svc.cluster.local/api", nil)
+	proxyURL, err = transport.Proxy(internalReq)
+	if err != nil || proxyURL != nil {
+		t.Fatalf("internal Provider proxy=(%v,%v), want direct", proxyURL, err)
 	}
 }
 

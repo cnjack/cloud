@@ -43,6 +43,15 @@ data:
   RUNNER_CPU_REQUEST: "500m"
   RUNNER_MEMORY_REQUEST: "1Gi"
 
+  # Provider/OAuth/JType traffic ignores generic HTTP_PROXY variables. A
+  # cluster operator may explicitly opt in to a trusted egress proxy here.
+  # Keep private/self-hosted Provider destinations direct with
+  # PROVIDER_NO_PROXY. Proxy credentials, when required, belong in the Secret
+  # rather than this ConfigMap.
+  PROVIDER_HTTP_PROXY: ""
+  PROVIDER_HTTPS_PROXY: ""
+  PROVIDER_NO_PROXY: ".svc,.svc.cluster.local,localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
   # Persistent workspace (Feature C / D05). OFF by default: every run clones fresh
   # and there is no per-service serialization — today's behaviour, and what the
   # local e2e rig expects. Turn on to give each service a long-lived RWO PVC
