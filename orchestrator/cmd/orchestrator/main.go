@@ -93,6 +93,7 @@ func run(log *slog.Logger) error {
 			Kubeconfig:            cfg.Kubeconfig,
 			Namespace:             cfg.Namespace,
 			RunnerImage:           cfg.RunnerImage,
+			PluginRuntimeImage:    cfg.PluginRuntimeImage,
 			ServiceAccount:        cfg.ServiceAccount,
 			TTLSeconds:            cfg.JobTTLSeconds,
 			CPULimit:              cfg.CPULimit,

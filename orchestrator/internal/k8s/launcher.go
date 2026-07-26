@@ -94,11 +94,14 @@ type JobSpec struct {
 	// exactly the pre-Feature-C behaviour.
 	WorkspacePVC string
 
-	// PluginCredentials turns on the per-run credential sidecar. The sidecar
-	// writes short-lived CLI/Git/MCP config into a memory-backed shared volume;
-	// the runner receives that volume read-only. Kept false for credential-free
-	// runs so their pod shape remains exactly as it was before plugins.
+	// PluginCredentials turns on Orchestrator-owned per-run runtime injection
+	// and credential refresh. The generic Runner receives both tmpfs volumes
+	// read-only and contains no Provider implementation itself.
 	PluginCredentials bool
+	// PluginProviders is the sorted, deduplicated Provider set captured in the
+	// immutable RunPluginSnapshot. Only this exact set gets a CLI/Skill; JType
+	// gets MCP configuration but intentionally has no Skill.
+	PluginProviders []string
 }
 
 // JobLauncher is the cluster-facing seam the reconciler depends on.

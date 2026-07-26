@@ -54,7 +54,9 @@ This directory (`cloud/deploy/`) is self-contained: it does not modify
 Runner Jobs themselves are **not** part of the base manifests — they are
 created dynamically by the orchestrator's reconciler (`internal/k8s/client.go`)
 whenever a run transitions `queued → scheduling`, using `RUNNER_IMAGE=jcloud/runner:dev`
-from `orchestrator-config`.
+from `orchestrator-config`. Plugin-enabled Jobs additionally use
+`PLUGIN_RUNTIME_IMAGE=jcloud/orchestrator:dev` for the snapshot-scoped runtime
+injector and credential companion; the Runner image remains Provider-agnostic.
 
 ### Why a git-seed server instead of pointing at localhost?
 
@@ -101,6 +103,7 @@ together mirror every variable read by
 |---|---|---|
 | `DATABASE_URL` | `postgres://jcloud:jcloud@localhost:5432/jcloud` | `postgres://jcloud:jcloud@postgres:5432/jcloud` (Service DNS) |
 | `RUNNER_IMAGE` | `ghcr.io/cnjack/jcloud-runner:latest` | `jcloud/runner:dev` (local) |
+| `PLUGIN_RUNTIME_IMAGE` | `ghcr.io/cnjack/jcloud-orchestrator:latest` | `jcloud/orchestrator:dev` (local) |
 | `ORCH_BASE_URL` | n/a | `http://orchestrator.jcloud.svc.cluster.local:8080` (for future runner→orchestrator callbacks) |
 | `MODEL_BASE_URL` | real provider | `http://mockllm.jcloud.svc.cluster.local:8081/v1` |
 | `MODEL_API_KEY` | real key | `dummy-mock-key` (mockllm does not validate it) |
@@ -299,7 +302,7 @@ Check `kubectl -n jcloud logs deploy/orchestrator` (or the `migrate` init
 container: `kubectl -n jcloud logs deploy/orchestrator -c migrate` /
 `kubectl -n jcloud logs -l app.kubernetes.io/name=orchestrator --all-containers`).
 `config.Load()` requires `CONSOLE_TOKEN`, `DATABASE_URL`, and (unless
-`DISABLE_K8S=1`) `RUNNER_IMAGE` + `ORCH_BASE_URL` — all provided by
+`DISABLE_K8S=1`) `RUNNER_IMAGE` + `PLUGIN_RUNTIME_IMAGE` + `ORCH_BASE_URL` — all provided by
 `base/orchestrator/configmap.yaml` + `secret.yaml`; if you edited either,
 re-`kubectl apply -k .`.
 

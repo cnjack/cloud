@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1247,6 +1248,15 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		return false
 	}
 	pluginCredentials := len(snapshots) > 0
+	providerSet := make(map[string]struct{}, len(snapshots))
+	for i := range snapshots {
+		providerSet[string(snapshots[i].Provider)] = struct{}{}
+	}
+	pluginProviders := make([]string, 0, len(providerSet))
+	for provider := range providerSet {
+		pluginProviders = append(pluginProviders, provider)
+	}
+	sort.Strings(pluginProviders)
 
 	// Clear any leftover same-named Job from a prior failed-persist tick so the
 	// Job we create carries the token whose hash we persist below.
@@ -1297,6 +1307,7 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		TimeoutSeconds:    jobDeadline,
 		WorkspacePVC:      workspacePVC,
 		PluginCredentials: pluginCredentials,
+		PluginProviders:   pluginProviders,
 	}
 	if err := r.launcher.CreateJob(ctx, spec); err != nil {
 		r.log.Error("reconcile: create job", "run", run.ID, "err", err)
@@ -1717,7 +1728,8 @@ func (r *Reconciler) runPluginSnapshotCandidates(ctx context.Context, run *domai
 	for i := range installations {
 		if r.pluginInstallationEligibleNow(ctx, &installations[i]) {
 			snapshots = append(snapshots, domain.RunPluginSnapshot{
-				RunID: run.ID, InstallationID: installations[i].ID, CreatedAt: r.now(),
+				RunID: run.ID, InstallationID: installations[i].ID,
+				Provider: installations[i].Provider, CreatedAt: r.now(),
 			})
 		}
 	}

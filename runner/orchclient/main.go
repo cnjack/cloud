@@ -56,7 +56,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: orchclient <report-failure|report-git|report-result|upload-artifact|fetch-source|upload-bundle|post-review|sync-plugin-credentials> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: orchclient <report-failure|report-git|report-result|upload-artifact|fetch-source|upload-bundle|post-review> [flags]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -93,29 +93,6 @@ func main() {
 	)
 
 	switch cmd {
-	case "sync-plugin-credentials":
-		fs := flag.NewFlagSet("sync-plugin-credentials", flag.ExitOnError)
-		dir := fs.String("dir", "", "shared tmpfs directory for plugin CLI/MCP configuration")
-		interval := fs.Duration("interval", 5*time.Minute, "credential refresh interval")
-		once := fs.Bool("once", false, "sync once and exit (test/debug only)")
-		stopFile := fs.String("stop-file", "", "exit when this runner lifecycle file appears")
-		_ = fs.Parse(args)
-		if *dir == "" {
-			fmt.Fprintln(os.Stderr, "[orchclient] sync-plugin-credentials: --dir is required")
-			os.Exit(2)
-		}
-		if *interval <= 0 {
-			fmt.Fprintln(os.Stderr, "[orchclient] sync-plugin-credentials: --interval must be positive")
-			os.Exit(2)
-		}
-		if err := c.syncPluginCredentials(*dir, *interval, *once, *stopFile); err != nil {
-			// The sidecar must be visibly unhealthy when its first sync cannot
-			// establish a usable config. Kubernetes will record the failed
-			// container; it must never continue with a fake/empty credential set.
-			fmt.Fprintln(os.Stderr, "[orchclient] sync-plugin-credentials:", err)
-			os.Exit(1)
-		}
-
 	case "report-failure":
 		fs := flag.NewFlagSet("report-failure", flag.ExitOnError)
 		reason := fs.String("reason", "agent_error", "failure reason (clone_failed|setup_failed|agent_error|timeout|push_failed)")

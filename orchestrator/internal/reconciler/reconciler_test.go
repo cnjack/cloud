@@ -114,6 +114,38 @@ func TestSnapshotRunPluginsPinsEligibleInstallations(t *testing.T) {
 	}
 }
 
+func TestRunPluginSnapshotCandidatesCarryProviderForRuntimeInjection(t *testing.T) {
+	r, st, _ := testRec(t, 1)
+	run := seedProjectAndRun(t, st)
+	ctx := context.Background()
+	for _, provider := range []domain.ProviderKind{domain.PluginJType, domain.PluginGitLab} {
+		if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{
+			Provider: provider, BaseURL: "https://provider.example.test",
+			PluginEnabled: true, ConfigRevision: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreatePluginInstallation(ctx, &domain.PluginInstallation{
+			ID: domain.NewID(), ProjectID: run.ProjectID, Provider: provider,
+			Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("ciphertext"),
+			ConfigRevision: 1, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshots, err := r.runPluginSnapshotCandidates(ctx, &run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[domain.ProviderKind]bool{}
+	for i := range snapshots {
+		got[snapshots[i].Provider] = true
+	}
+	if len(snapshots) != 2 || !got[domain.PluginGitLab] || !got[domain.PluginJType] {
+		t.Fatalf("snapshot Providers=%v, want gitlab+jtype", got)
+	}
+}
+
 func TestPluginInstallationEligible(t *testing.T) {
 	base := &domain.PluginInstallation{Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("ciphertext")}
 	if !pluginInstallationEligible(base) {

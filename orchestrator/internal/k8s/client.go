@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -16,15 +17,16 @@ import (
 
 // Config configures the client-go JobLauncher.
 type Config struct {
-	Kubeconfig     string // path; empty => in-cluster
-	Namespace      string
-	RunnerImage    string
-	ServiceAccount string
-	TTLSeconds     int32
-	CPULimit       string
-	MemoryLimit    string
-	CPURequest     string
-	MemoryRequest  string
+	Kubeconfig         string // path; empty => in-cluster
+	Namespace          string
+	RunnerImage        string
+	PluginRuntimeImage string
+	ServiceAccount     string
+	TTLSeconds         int32
+	CPULimit           string
+	MemoryLimit        string
+	CPURequest         string
+	MemoryRequest      string
 
 	// Persistent workspace (Feature C / D05). WorkspacePVCSize is the requested
 	// size of a per-service PVC (e.g. "10Gi"); WorkspaceStorageClass is optional
@@ -57,6 +59,9 @@ const (
 	jcodeHomeSubPath            = "home"
 	pluginCredentialsVolumeName = "plugin-credentials"
 	pluginCredentialsMountPath  = "/run/jcloud/plugins"
+	pluginRuntimeVolumeName     = "plugin-runtime"
+	pluginRuntimeMountPath      = "/run/jcloud/runtime"
+	pluginRuntimeSkillsPath     = "/home/jcode/.jcode/skills"
 	jcodeMCPConfigMountPath     = "/home/jcode/.jcode/mcp.json"
 	pluginLifecycleVolumeName   = "plugin-lifecycle"
 	pluginLifecycleMountPath    = "/run/jcloud/lifecycle"
@@ -309,9 +314,28 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 			Name:         pluginLifecycleVolumeName,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: medium}},
 		})
+		volumes = append(volumes, corev1.Volume{
+			Name:         pluginRuntimeVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: medium}},
+		})
 		mounts = append(mounts, corev1.VolumeMount{
 			Name: pluginCredentialsVolumeName, MountPath: pluginCredentialsMountPath, ReadOnly: true,
 		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name: pluginRuntimeVolumeName, MountPath: pluginRuntimeMountPath, ReadOnly: true,
+		})
+		for _, provider := range spec.PluginProviders {
+			switch provider {
+			case "github", "gitlab", "gitea":
+				// Mount each managed Skill independently so an existing persistent
+				// $HOME/.jcode/skills keeps unrelated user Skills visible.
+				mounts = append(mounts, corev1.VolumeMount{
+					Name:      pluginRuntimeVolumeName,
+					MountPath: pluginRuntimeSkillsPath + "/" + provider,
+					SubPath:   "skills/" + provider, ReadOnly: true,
+				})
+			}
+		}
 		// jcode discovers global MCP servers from ~/.jcode/mcp.json. Mount the
 		// initializer-created JType file over that one path so the credential
 		// remains on tmpfs instead of the persistent jcode HOME volume.
@@ -323,6 +347,7 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 
 	if spec.PluginCredentials {
 		env = append(env,
+			corev1.EnvVar{Name: "PATH", Value: pluginRuntimeMountPath + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 			corev1.EnvVar{Name: "JCODE_PLUGIN_CREDENTIALS_DIR", Value: pluginCredentialsMountPath},
 			corev1.EnvVar{Name: "GH_CONFIG_DIR", Value: pluginCredentialsMountPath + "/gh"},
 			corev1.EnvVar{Name: "GLAB_CONFIG_DIR", Value: pluginCredentialsMountPath + "/glab"},
@@ -361,13 +386,23 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 			{Name: "RUN_TOKEN", Value: spec.Env["RUN_TOKEN"]},
 		}
 		credentialMount := []corev1.VolumeMount{{Name: pluginCredentialsVolumeName, MountPath: pluginCredentialsMountPath}}
+		runtimeMount := []corev1.VolumeMount{{Name: pluginRuntimeVolumeName, MountPath: pluginRuntimeMountPath}}
 		lifecycleMount := corev1.VolumeMount{Name: pluginLifecycleVolumeName, MountPath: pluginLifecycleMountPath}
+		// The release-pinned Orchestrator image owns the complete Provider bundle,
+		// but this init container copies only the Providers present in the immutable
+		// run snapshot. Unknown providers or missing assets fail the Job closed.
+		initContainers = append(initContainers, corev1.Container{
+			Name: "plugin-runtime-injector", Image: c.cfg.PluginRuntimeImage,
+			Command:         []string{"/plugin-runtime", "inject", "--providers", strings.Join(spec.PluginProviders, ","), "--dir", pluginRuntimeMountPath},
+			VolumeMounts:    runtimeMount,
+			SecurityContext: containerSecurityContext.DeepCopy(),
+		})
 		// An init pass prevents the task from racing the long-lived sidecar on
 		// startup. The sidecar then refreshes this same tmpfs config while the
 		// task runs.
 		initContainers = append(initContainers, corev1.Container{
-			Name: "plugin-credential-initializer", Image: c.cfg.RunnerImage,
-			Command: []string{"/usr/local/bin/orchclient", "sync-plugin-credentials", "--once", "--dir", pluginCredentialsMountPath},
+			Name: "plugin-credential-initializer", Image: c.cfg.PluginRuntimeImage,
+			Command: []string{"/plugin-runtime", "sync-credentials", "--providers", strings.Join(spec.PluginProviders, ","), "--once", "--dir", pluginCredentialsMountPath},
 			Env:     sidecarEnv, VolumeMounts: credentialMount,
 			SecurityContext: containerSecurityContext.DeepCopy(),
 		})
@@ -376,8 +411,8 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 		// by entrypoint's EXIT trap and terminates promptly with the runner.
 		containers = append(containers, corev1.Container{
 			Name:            "plugin-credential-sync",
-			Image:           c.cfg.RunnerImage,
-			Command:         []string{"/usr/local/bin/orchclient", "sync-plugin-credentials", "--dir", pluginCredentialsMountPath, "--stop-file", pluginSyncStopFile},
+			Image:           c.cfg.PluginRuntimeImage,
+			Command:         []string{"/plugin-runtime", "sync-credentials", "--providers", strings.Join(spec.PluginProviders, ","), "--dir", pluginCredentialsMountPath, "--stop-file", pluginSyncStopFile},
 			Env:             sidecarEnv,
 			VolumeMounts:    append(credentialMount, lifecycleMount),
 			SecurityContext: containerSecurityContext.DeepCopy(),

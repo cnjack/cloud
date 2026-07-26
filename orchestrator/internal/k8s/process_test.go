@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +98,17 @@ func TestProcessLauncherLifecycle(t *testing.T) {
 	// Delete.
 	if err := p.DeleteJob(ctx, spec.Name); err != nil {
 		t.Fatalf("delete: %v", err)
+	}
+}
+
+func TestProcessLauncherFailsClosedForPluginRuntime(t *testing.T) {
+	p := NewProcessLauncher(ProcessConfig{Image: "runner:test"})
+	err := p.CreateJob(context.Background(), JobSpec{
+		Name: "jcloud-run-plugin", RunID: "plugin", PluginCredentials: true,
+		PluginProviders: []string{"github"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not support Project Plugin runtime injection") {
+		t.Fatalf("CreateJob error=%v, want fail-closed Plugin runtime error", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -34,6 +35,18 @@ func TestLoadNoProvidersBackwardCompatible(t *testing.T) {
 	if c.JtypeOAuthClientID != "jcode-cloud" || c.JtypeOAuthClientSecret != "" {
 		t.Fatalf("unexpected default JType OAuth client: id=%q secret=%q",
 			c.JtypeOAuthClientID, c.JtypeOAuthClientSecret)
+	}
+}
+
+func TestLoadKubernetesRequiresPluginRuntimeImage(t *testing.T) {
+	t.Setenv("CONSOLE_TOKEN", "tok")
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("DISABLE_K8S", "0")
+	t.Setenv("RUNNER_IMAGE", "runner:test")
+	t.Setenv("ORCH_BASE_URL", "http://orchestrator")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "PLUGIN_RUNTIME_IMAGE") {
+		t.Fatalf("Load error=%v, want missing PLUGIN_RUNTIME_IMAGE", err)
 	}
 }
 

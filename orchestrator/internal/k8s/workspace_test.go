@@ -77,31 +77,41 @@ func TestBuildJobWithPVC(t *testing.T) {
 
 func TestBuildJobWithPluginCredentialsUsesReadOnlyTmpfsAndSidecar(t *testing.T) {
 	c := &Client{cfg: Config{
-		Namespace: "jcloud", RunnerImage: "runner:test",
+		Namespace: "jcloud", RunnerImage: "runner:test", PluginRuntimeImage: "orchestrator:test",
 		CPULimit: "2", MemoryLimit: "4Gi", CPURequest: "500m", MemoryRequest: "1Gi",
 	}}
 	job := c.buildJob(JobSpec{
 		Name: "jcloud-run-x", RunID: "x", PluginCredentials: true,
-		Env: map[string]string{"RUN_ID": "x", "RUN_TOKEN": "run-token", "ORCH_BASE_URL": "https://cloud.test"},
+		PluginProviders: []string{"github", "jtype"},
+		Env:             map[string]string{"RUN_ID": "x", "RUN_TOKEN": "run-token", "ORCH_BASE_URL": "https://cloud.test"},
 	})
 	pod := job.Spec.Template.Spec
-	if len(pod.Volumes) != 2 ||
+	if len(pod.Volumes) != 3 ||
 		pod.Volumes[0].Name != pluginCredentialsVolumeName ||
 		pod.Volumes[0].EmptyDir == nil ||
 		pod.Volumes[0].EmptyDir.Medium != corev1.StorageMediumMemory ||
 		pod.Volumes[1].Name != pluginLifecycleVolumeName ||
 		pod.Volumes[1].EmptyDir == nil ||
-		pod.Volumes[1].EmptyDir.Medium != corev1.StorageMediumMemory {
-		t.Fatalf("plugin volumes = %+v, want credential and lifecycle memory EmptyDirs", pod.Volumes)
+		pod.Volumes[1].EmptyDir.Medium != corev1.StorageMediumMemory ||
+		pod.Volumes[2].Name != pluginRuntimeVolumeName ||
+		pod.Volumes[2].EmptyDir == nil ||
+		pod.Volumes[2].EmptyDir.Medium != corev1.StorageMediumMemory {
+		t.Fatalf("plugin volumes = %+v, want credential, lifecycle, and runtime memory EmptyDirs", pod.Volumes)
 	}
 	if len(pod.Containers) != 2 {
 		t.Fatalf("containers=%d want runner plus Kubernetes 1.28-compatible sync companion", len(pod.Containers))
 	}
-	if len(pod.InitContainers) != 1 || pod.InitContainers[0].Name != "plugin-credential-initializer" || len(pod.InitContainers[0].Command) < 3 || pod.InitContainers[0].Command[2] != "--once" {
-		t.Fatalf("init containers=%+v, want one credential initializer", pod.InitContainers)
+	if len(pod.InitContainers) != 2 ||
+		pod.InitContainers[0].Name != "plugin-runtime-injector" ||
+		pod.InitContainers[0].Image != "orchestrator:test" ||
+		strings.Join(pod.InitContainers[0].Command, " ") != "/plugin-runtime inject --providers github,jtype --dir "+pluginRuntimeMountPath ||
+		pod.InitContainers[1].Name != "plugin-credential-initializer" ||
+		pod.InitContainers[1].Image != "orchestrator:test" ||
+		strings.Join(pod.InitContainers[1].Command, " ") != "/plugin-runtime sync-credentials --providers github,jtype --once --dir "+pluginCredentialsMountPath {
+		t.Fatalf("init containers=%+v, want snapshot-scoped runtime injector then credential initializer", pod.InitContainers)
 	}
 	runner, sidecar := pod.Containers[0], pod.Containers[1]
-	if sidecar.Name != "plugin-credential-sync" || len(sidecar.Command) < 2 || sidecar.Command[1] != "sync-plugin-credentials" {
+	if sidecar.Name != "plugin-credential-sync" || sidecar.Image != "orchestrator:test" || len(sidecar.Command) < 2 || sidecar.Command[1] != "sync-credentials" {
 		t.Fatalf("sidecar=%+v, want plugin credential sync", sidecar)
 	}
 	if sidecar.RestartPolicy != nil {
@@ -110,7 +120,7 @@ func TestBuildJobWithPluginCredentialsUsesReadOnlyTmpfsAndSidecar(t *testing.T) 
 	if len(sidecar.Env) != 3 {
 		t.Fatalf("sidecar env=%+v, want only run endpoint auth vars", sidecar.Env)
 	}
-	var runnerReadOnly, sidecarWritable, jcodeMCPMounted, runnerLifecycleWritable, sidecarLifecycleWritable bool
+	var runnerReadOnly, runtimeReadOnly, skillsReadOnly, sidecarWritable, jcodeMCPMounted, runnerLifecycleWritable, sidecarLifecycleWritable bool
 	for _, m := range runner.VolumeMounts {
 		if m.Name == pluginCredentialsVolumeName {
 			runnerReadOnly = m.ReadOnly
@@ -121,6 +131,15 @@ func TestBuildJobWithPluginCredentialsUsesReadOnlyTmpfsAndSidecar(t *testing.T) 
 		if m.Name == pluginLifecycleVolumeName {
 			runnerLifecycleWritable = !m.ReadOnly
 		}
+		if m.Name == pluginRuntimeVolumeName && m.MountPath == pluginRuntimeMountPath {
+			runtimeReadOnly = m.ReadOnly
+		}
+		if m.Name == pluginRuntimeVolumeName && m.MountPath == pluginRuntimeSkillsPath+"/github" && m.SubPath == "skills/github" {
+			skillsReadOnly = m.ReadOnly
+		}
+		if m.MountPath == pluginRuntimeSkillsPath+"/jtype" {
+			t.Fatal("JType must not receive a Skill mount")
+		}
 	}
 	for _, m := range sidecar.VolumeMounts {
 		if m.Name == pluginCredentialsVolumeName {
@@ -130,14 +149,15 @@ func TestBuildJobWithPluginCredentialsUsesReadOnlyTmpfsAndSidecar(t *testing.T) 
 			sidecarLifecycleWritable = !m.ReadOnly
 		}
 	}
-	if !runnerReadOnly || !sidecarWritable || !jcodeMCPMounted || !runnerLifecycleWritable || !sidecarLifecycleWritable {
-		t.Fatalf("mounts runner_read_only=%v sidecar_writable=%v jcode_mcp=%v runner_lifecycle=%v sidecar_lifecycle=%v", runnerReadOnly, sidecarWritable, jcodeMCPMounted, runnerLifecycleWritable, sidecarLifecycleWritable)
+	if !runnerReadOnly || !runtimeReadOnly || !skillsReadOnly || !sidecarWritable || !jcodeMCPMounted || !runnerLifecycleWritable || !sidecarLifecycleWritable {
+		t.Fatalf("mounts credentials_read_only=%v runtime_read_only=%v skills_read_only=%v sidecar_writable=%v jcode_mcp=%v runner_lifecycle=%v sidecar_lifecycle=%v", runnerReadOnly, runtimeReadOnly, skillsReadOnly, sidecarWritable, jcodeMCPMounted, runnerLifecycleWritable, sidecarLifecycleWritable)
 	}
 	values := map[string]string{}
 	for _, e := range runner.Env {
 		values[e.Name] = e.Value
 	}
 	if values["JCODE_PLUGIN_CREDENTIALS_DIR"] != pluginCredentialsMountPath ||
+		!strings.HasPrefix(values["PATH"], pluginRuntimeMountPath+"/bin:") ||
 		values["GIT_CONFIG_GLOBAL"] == "" ||
 		values["XDG_CONFIG_HOME"] != pluginCredentialsMountPath ||
 		values["PLUGIN_SYNC_STOP_FILE"] != pluginSyncStopFile {

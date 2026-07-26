@@ -38,22 +38,23 @@ type Config struct {
 	BackoffMaxMs  int64 // BACKOFF_MAX_MS, default 300000
 
 	// Kubernetes
-	Kubeconfig     string            // KUBECONFIG (empty => in-cluster)
-	Namespace      string            // K8S_NAMESPACE, default "jcloud"
-	RunnerImage    string            // RUNNER_IMAGE (required)
-	OrchBaseURL    string            // ORCH_BASE_URL (required) — reachable from runner pods
-	ModelBaseURL   string            // MODEL_BASE_URL — env fallback for the effective model config (see internal/modelcfg)
-	ModelAPIKey    string            // MODEL_API_KEY — env fallback for the effective model config
-	ModelName      string            // MODEL_NAME — "provider/model" env fallback; NO silent mock default (fail-visible red line)
-	JobTTLSeconds  int32             // JOB_TTL_SECONDS, default 3600
-	RunTimeoutSecs int64             // RUN_TIMEOUT_SECONDS, default 1800 (Job activeDeadlineSeconds)
-	CPULimit       string            // RUNNER_CPU_LIMIT, default "2"
-	MemoryLimit    string            // RUNNER_MEMORY_LIMIT, default "4Gi"
-	CPURequest     string            // RUNNER_CPU_REQUEST, default "500m"
-	MemoryRequest  string            // RUNNER_MEMORY_REQUEST, default "1Gi"
-	ServiceAccount string            // RUNNER_SERVICE_ACCOUNT (optional)
-	ExtraJobLabels map[string]string // (reserved) not env-driven yet
-	DisableK8s     bool              // DISABLE_K8S=1 — run without a cluster (API-only/dev)
+	Kubeconfig         string            // KUBECONFIG (empty => in-cluster)
+	Namespace          string            // K8S_NAMESPACE, default "jcloud"
+	RunnerImage        string            // RUNNER_IMAGE (required)
+	PluginRuntimeImage string            // PLUGIN_RUNTIME_IMAGE (required; Orchestrator release image used for per-run Plugin injection)
+	OrchBaseURL        string            // ORCH_BASE_URL (required) — reachable from runner pods
+	ModelBaseURL       string            // MODEL_BASE_URL — env fallback for the effective model config (see internal/modelcfg)
+	ModelAPIKey        string            // MODEL_API_KEY — env fallback for the effective model config
+	ModelName          string            // MODEL_NAME — "provider/model" env fallback; NO silent mock default (fail-visible red line)
+	JobTTLSeconds      int32             // JOB_TTL_SECONDS, default 3600
+	RunTimeoutSecs     int64             // RUN_TIMEOUT_SECONDS, default 1800 (Job activeDeadlineSeconds)
+	CPULimit           string            // RUNNER_CPU_LIMIT, default "2"
+	MemoryLimit        string            // RUNNER_MEMORY_LIMIT, default "4Gi"
+	CPURequest         string            // RUNNER_CPU_REQUEST, default "500m"
+	MemoryRequest      string            // RUNNER_MEMORY_REQUEST, default "1Gi"
+	ServiceAccount     string            // RUNNER_SERVICE_ACCOUNT (optional)
+	ExtraJobLabels     map[string]string // (reserved) not env-driven yet
+	DisableK8s         bool              // DISABLE_K8S=1 — run without a cluster (API-only/dev)
 
 	// Persistent workspace (Feature C; decision D05). When PersistentWorkspace is
 	// on, each service gets a long-lived RWO PVC (ws-<serviceID>) mounted at
@@ -231,6 +232,7 @@ func Load() (*Config, error) {
 		Kubeconfig:             os.Getenv("KUBECONFIG"),
 		Namespace:              getenv("K8S_NAMESPACE", "jcloud"),
 		RunnerImage:            os.Getenv("RUNNER_IMAGE"),
+		PluginRuntimeImage:     os.Getenv("PLUGIN_RUNTIME_IMAGE"),
 		OrchBaseURL:            os.Getenv("ORCH_BASE_URL"),
 		ModelBaseURL:           os.Getenv("MODEL_BASE_URL"),
 		ModelAPIKey:            os.Getenv("MODEL_API_KEY"),
@@ -284,6 +286,9 @@ func Load() (*Config, error) {
 	if !c.DisableK8s {
 		if c.RunnerImage == "" {
 			missing = append(missing, "RUNNER_IMAGE")
+		}
+		if c.JobLauncher != "process" && c.PluginRuntimeImage == "" {
+			missing = append(missing, "PLUGIN_RUNTIME_IMAGE")
 		}
 		if c.OrchBaseURL == "" {
 			missing = append(missing, "ORCH_BASE_URL")

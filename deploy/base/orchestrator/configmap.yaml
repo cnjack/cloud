@@ -28,6 +28,7 @@ data:
   # via the mounted ServiceAccount token. Do NOT set this key here.
   K8S_NAMESPACE: "jcloud"
   RUNNER_IMAGE: "jcloud/runner:dev"
+  PLUGIN_RUNTIME_IMAGE: "jcloud/orchestrator:dev"
   # Reachable from runner Pods for future ingest callbacks
   # (POST /internal/v1/runs/{id}/events|artifact); Service DNS, in-namespace.
   ORCH_BASE_URL: "http://orchestrator.jcloud.svc.cluster.local:8080"

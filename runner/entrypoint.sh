@@ -235,14 +235,6 @@ MODEL_API_KEY="${MODEL_API_KEY:-dummy-key}"
 
 log "run_id=$RUN_ID kind=$RUN_KIND source_mode=$SOURCE_MODE git_mode=$GIT_MODE"
 
-# Persistent workspace mounts intentionally cover $HOME/.jcode, so image files
-# placed there would be hidden. Install the release-pinned Git provider Skills
-# from the image's read-only template on every task.
-if [ -d "${JCODE_BUNDLED_SKILLS_DIR:-/usr/local/share/jcloud/skills}" ]; then
-  /usr/local/bin/install-bundled-skills.sh \
-    || die setup_failed "could not install bundled Git provider Skills"
-fi
-
 # Defense in depth against cross-run hook execution (Feature C security). A
 # persistent workspace PVC can carry .git/hooks planted by a prior run's agent;
 # the next run's git checkout/fetch would then trigger that hook — executing

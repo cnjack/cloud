@@ -53,6 +53,9 @@ func NewProcessLauncher(cfg ProcessConfig) *ProcessLauncher {
 // CreateJob starts a detached runner container named spec.Name. Idempotent: if a
 // container with that name already exists (running or exited) it returns nil.
 func (p *ProcessLauncher) CreateJob(ctx context.Context, spec JobSpec) error {
+	if spec.PluginCredentials {
+		return fmt.Errorf("process launcher does not support Project Plugin runtime injection; use the Kubernetes launcher")
+	}
 	// Idempotency: skip if a container with this name already exists. Propagate a
 	// transient inspect error instead of swallowing it — otherwise a docker
 	// hiccup (JobUnknown, err) would be treated as "exists" and we'd return nil

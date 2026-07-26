@@ -216,18 +216,24 @@ token, disable privilege escalation, drop every Linux capability, and use the
 runtime-default seccomp profile. The Pod fsGroup makes PVC and tmpfs mounts
 writable without root.
 
-The release-pinned runner bundle contains:
+The release-pinned Orchestrator image owns the canonical Plugin runtime bundle:
 
 - GitHub built-in jcode skills and `gh`, without a GitHub MCP server;
 - a GitLab skill and `glab`, without a GitLab MCP server;
 - a jcloud-owned Gitea skill and official `tea`, without a Gitea MCP server;
-- the existing JType MCP configuration, without a JType skill;
-- Git credential configuration for clone, fetch, and push.
+- the JType MCP adapter contract, without a JType skill;
+- the credential writer for Git clone, fetch, and push.
 
-The image owns canonical Skill copies under `/usr/local/share/jcloud/skills`.
-Each task installs managed GitHub/GitLab/Gitea copies into the current
-`$HOME/.jcode/skills`, including when a persistent HOME PVC hides image
-contents. Unrelated user Skills are preserved.
+At dispatch, an Orchestrator-owned init container copies only the CLI and Skill
+assets named by the immutable `RunPluginSnapshot` into a memory-backed runtime
+volume. GitHub, GitLab, and Gitea receive their matching CLI and Skill; JType
+receives MCP configuration only. The generic Runner image contains no Provider
+CLI, Skill, command, or credential-format implementation. It mounts the runtime
+and credential volumes read-only. Console controls installation enablement;
+Orchestrator is the sole authority that translates the resulting run snapshot
+into injected assets. Missing or unknown runtime assets fail the run closed.
+Each managed Skill is mounted at its own Provider directory, preserving
+unrelated Skills already present in a persistent task HOME.
 
 ## Disable and uninstall
 

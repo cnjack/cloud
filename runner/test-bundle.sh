@@ -120,7 +120,7 @@ pass "runner (draft_pr) exited 0"
 
 # === 4. the orchestrator received a valid bundle; the runner did NOT push ===
 [ -s "$OUT/received.bundle" ] || fail "orchestrator did not receive a bundle"
-git bundle verify "$OUT/received.bundle" >/dev/null 2>&1 || fail "received bundle is not a valid git bundle"
+git -C "$SEED" bundle verify "$OUT/received.bundle" >/dev/null 2>&1 || fail "received bundle is not valid against the seed prerequisite"
 if ! git bundle list-heads "$OUT/received.bundle" | grep -q "refs/heads/$BR"; then
   echo "----- bundle heads -----"; git bundle list-heads "$OUT/received.bundle"
   fail "bundle does not carry branch $BR"
@@ -184,7 +184,7 @@ set -e
 cat "$TMP/up.out"
 [ "$UP_RC" -eq 0 ] || fail "update-mode run exited $UP_RC (want 0)"
 [ -s "$OUT/received.bundle" ] || fail "update-mode run did not POST a bundle"
-git bundle verify "$OUT/received.bundle" >/dev/null 2>&1 || fail "update-mode bundle is not valid"
+git -C "$SEED" bundle verify "$OUT/received.bundle" >/dev/null 2>&1 || fail "update-mode bundle is not valid against the seed prerequisite"
 if ! git bundle list-heads "$OUT/received.bundle" | grep -q "refs/heads/main"; then
   echo "----- bundle heads -----"; git bundle list-heads "$OUT/received.bundle"
   fail "update-mode bundle does not carry refs/heads/main (BRANCH_NAME==BASE_BRANCH)"

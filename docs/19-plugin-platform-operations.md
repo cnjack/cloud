@@ -199,8 +199,8 @@ the client secret. Use the Provider UI.
 ## Release checklist
 
 1. Back up PostgreSQL.
-2. Build Orchestrator, Console, and runner from the same commit.
-3. Verify pinned `gh`, `glab`, and `tea` checksums during the runner build.
+2. Build Orchestrator, Console, and Runner from the same commit.
+3. Verify pinned `gh`, `glab`, and `tea` checksums during the Orchestrator build.
 4. Run Go, Console, runner, migration, Kustomize render, and end-to-end tests.
 5. Deploy Orchestrator before Console.
 6. Verify migration history and readiness.
@@ -213,7 +213,10 @@ the client secret. Use the Provider UI.
 ## Kubernetes compatibility
 
 Plugin credentials use a one-shot initializer followed by a normal sync
-companion container. The runner writes a completion marker from its `EXIT`
+companion container, both using `PLUGIN_RUNTIME_IMAGE`. Set that variable to the
+same immutable Orchestrator release deployed as the control plane. An earlier
+Orchestrator-owned init container copies only the Provider CLI/Skill assets in
+the run snapshot into a separate tmpfs volume. The Runner writes a completion marker from its `EXIT`
 trap; the sync container observes that marker and exits so the Job can finish.
 This shape is compatible with the production Kubernetes 1.28 API and does not
 require the native-sidecar feature gate. `activeDeadlineSeconds` remains the
@@ -227,7 +230,11 @@ Runner Pods are required to pass these security checks:
 - every Linux capability dropped;
 - `seccompProfile: RuntimeDefault`.
 
-The runner image stores canonical Skills in
-`/usr/local/share/jcloud/skills`; the entrypoint copies the managed
-GitHub/GitLab/Gitea Skills into `$HOME/.jcode/skills` on every task so a
-persistent HOME PVC cannot hide them.
+The generic Runner image must not contain `gh`, `glab`, `tea`, any Provider
+Skill, or the Provider credential writer. It mounts the Orchestrator-injected
+runtime at `/run/jcloud/runtime` and the injected Skills at
+`$HOME/.jcode/skills/<provider>`, both read-only. Each managed Provider uses an
+independent subPath mount, so unrelated user Skills remain visible when a
+persistent HOME PVC is present.
+The local `JOB_LAUNCHER=process` development path fails closed for runs with
+Project Plugins; runtime injection is supported by the Kubernetes launcher.
