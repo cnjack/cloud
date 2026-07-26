@@ -145,10 +145,8 @@ function ProviderConfigCard({ provider }: { provider: import('../api/types').Pro
             <span className={styles.checkCopy}><strong>Plugin</strong><small>Allow Projects to connect and use it.</small></span>
           </label>
         </fieldset>
-        {provider !== 'jtype' && <>
-          <TextField label="OAuth client ID" value={clientID} onChange={(event) => { setClientID(event.target.value); setDirty(true); }} />
-          <TextField label="OAuth client secret" type="password" autoComplete="new-password" value={clientSecret} placeholder={item.client_secret_set ? 'Configured — enter to replace' : 'Enter secret'} onChange={(event) => { setClientSecret(event.target.value); setDirty(true); }} />
-        </>}
+        <TextField label="OAuth client ID" value={clientID} onChange={(event) => { setClientID(event.target.value); setDirty(true); }} />
+        <TextField label="OAuth client secret" type="password" autoComplete="new-password" value={clientSecret} placeholder={item.client_secret_set ? 'Configured — enter to replace' : 'Enter secret'} onChange={(event) => { setClientSecret(event.target.value); setDirty(true); }} />
         {provider === 'github' && <>
           <div className={styles.sectionLabel}>GitHub App</div>
           <TextField label="GitHub App ID" inputMode="numeric" value={appID} placeholder="GitHub App ID" onChange={(event) => { setAppID(event.target.value); setDirty(true); }} />

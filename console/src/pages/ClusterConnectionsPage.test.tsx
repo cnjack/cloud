@@ -27,7 +27,11 @@ const providers: Record<ProviderKind, ClusterProviderConfig> = {
   },
   gitlab: { provider: 'gitlab', base_url: '', login_enabled: false, plugin_enabled: false, configured: false, health: 'unknown' },
   gitea: { provider: 'gitea', base_url: 'https://gitea.example', login_enabled: true, plugin_enabled: true, configured: true, health: 'healthy' },
-  jtype: { provider: 'jtype', base_url: 'https://jtype.example', login_enabled: false, plugin_enabled: true, configured: true, health: 'healthy' },
+  jtype: {
+    provider: 'jtype', base_url: 'https://jtype.example', login_enabled: false,
+    plugin_enabled: true, configured: true, health: 'healthy',
+    client_id: 'jcode-cloud', client_secret_set: true,
+  },
 };
 
 describe('ClusterConnectionsPage', () => {
@@ -111,6 +115,46 @@ describe('ClusterConnectionsPage', () => {
     await waitFor(() => expect(updateClusterProviderConfig).toHaveBeenCalledWith(
       'github',
       expect.objectContaining({ app_id: '4395162' }),
+    ));
+  });
+
+  it('shows and saves JType OAuth fields while keeping login disabled', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const updateClusterProviderConfig = vi.fn(async (provider: ProviderKind) => providers[provider]);
+    const client = {
+      getSystem: async () => system,
+      getClusterProviderConfig: async (provider: ProviderKind) => providers[provider],
+      updateClusterProviderConfig,
+      testClusterProviderConfig: async (provider: ProviderKind) => providers[provider],
+    } as unknown as ApiClient;
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ApiProvider client={client} role="cluster-admin">
+          <ToastProvider><MemoryRouter><ClusterConnectionsPage /></MemoryRouter></ToastProvider>
+        </ApiProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getAllByLabelText('OAuth client ID')).toHaveLength(4));
+    const clientIDs = screen.getAllByLabelText('OAuth client ID');
+    const clientSecrets = screen.getAllByLabelText('OAuth client secret');
+    const loginToggles = screen.getAllByLabelText('Login enabled');
+    expect(clientIDs).toHaveLength(4);
+    expect((clientIDs[3] as HTMLInputElement).value).toBe('jcode-cloud');
+    expect((clientSecrets[3] as HTMLInputElement).placeholder).toContain('Configured');
+    expect(loginToggles[3]?.getAttribute('disabled')).not.toBeNull();
+
+    fireEvent.change(clientSecrets[3]!, { target: { value: 'replacement-secret' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[3]!);
+    await waitFor(() => expect(updateClusterProviderConfig).toHaveBeenCalledWith(
+      'jtype',
+      expect.objectContaining({
+        base_url: 'https://jtype.example',
+        client_id: 'jcode-cloud',
+        client_secret: 'replacement-secret',
+        login_enabled: false,
+        plugin_enabled: true,
+      }),
     ));
   });
 });
