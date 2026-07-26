@@ -12,16 +12,18 @@ import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { CheckCircle, XCircle } from '@phosphor-icons/react';
+import { CheckCircle, ShieldCheck, WarningCircle, XCircle } from '@phosphor-icons/react';
 import { postDeviceAuthorize, getDeviceAuthorizeState, apiErrorCode } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { readQueryParam } from '../lib/url';
-import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { CodeInput, sanitizeCode } from '../components/CodeInput';
+import { LanguageToggle } from '../components/LanguageToggle';
+import { ThemeToggle } from '../components/ThemeToggle';
+import { Wordmark } from '../components/Wordmark';
 import styles from './DeviceAuthorizePage.module.css';
 
-type Stage = 'enter' | 'confirm' | 'done';
+type Stage = 'enter' | 'confirm' | 'done' | 'unavailable';
 
 const CODE_LENGTH = 8;
 /** Beat between the last cell filling and the auto-move to confirm. */
@@ -36,6 +38,7 @@ export function DeviceAuthorizePage() {
   const [approved, setApproved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [unavailableMessage, setUnavailableMessage] = useState<string | undefined>();
 
   const complete = code.length === CODE_LENGTH;
   const normalized = complete ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
@@ -87,93 +90,105 @@ export function DeviceAuthorizePage() {
       setStage('done');
     } catch (err) {
       const errCode = apiErrorCode(err);
-      setError(
-        errCode === 'not_found'
-          ? t('device.errorNotFound')
-          : errCode === 'already_decided'
-            ? t('device.errorAlreadyDecided')
-            : err instanceof Error
-              ? err.message
-              : t('device.errorGeneric'),
-      );
-      setStage('enter');
+      if (errCode === 'not_found' || errCode === 'already_decided') {
+        setUnavailableMessage(errCode === 'not_found' ? t('device.errorNotFound') : t('device.errorAlreadyDecided'));
+        setStage('unavailable');
+      } else {
+        setError(err instanceof Error ? err.message : t('device.errorGeneric'));
+        setStage('enter');
+      }
     } finally {
       setBusy(false);
     }
   };
 
+  const reset = () => {
+    setCode('');
+    setError(undefined);
+    setUnavailableMessage(undefined);
+    setApproved(false);
+    setStage('enter');
+  };
+
   return (
-    <section className={styles.stage}>
-      <Card className={styles.card}>
-        {stage === 'done' ? (
-          <div className={styles.result} data-testid="device-result" data-approved={approved}>
-            {approved ? (
-              <CheckCircle size={32} weight="fill" aria-hidden="true" />
+    <div className={styles.page} data-testid="device-authorization-page">
+      <a className={styles.skipLink} href="#device-authorization">{t('shell.skipToContent')}</a>
+      <header className={styles.topbar}>
+        <Wordmark />
+        <div className={styles.utilities}><LanguageToggle /><ThemeToggle /></div>
+      </header>
+      <main className={styles.main} id="device-authorization">
+        <section className={styles.panel}>
+          <aside className={styles.intro}>
+            <span className={styles.eyebrow}>{t('device.securityEyebrow')}</span>
+            <h1 className={styles.pageTitle}>{t('device.title')}</h1>
+            <p className={styles.pageLede}>{t('device.lede')}</p>
+            <div className={styles.securityNote}>
+              <ShieldCheck size={21} aria-hidden="true" />
+              <div>
+                <strong>{t('device.safetyTitle')}</strong>
+                <span>{t('device.confirmBody')}</span>
+              </div>
+            </div>
+          </aside>
+
+          <section className={styles.flow}>
+            {stage === 'unavailable' ? (
+              <div className={styles.result} data-testid="device-unavailable" aria-live="polite">
+                <span className={`${styles.statusIcon} ${styles.warningIcon}`}><WarningCircle size={26} weight="fill" aria-hidden="true" /></span>
+                <h2 className={styles.flowTitle}>{t('device.unavailableTitle')}</h2>
+                <p className={styles.flowLede}>{unavailableMessage}</p>
+                <div className={styles.resultActions}>
+                  <Button variant="primary" onClick={reset}>{t('device.tryAnotherCode')}</Button>
+                  <Button variant="ghost" onClick={() => navigate('/devices')}>{t('device.backToDevices')}</Button>
+                </div>
+              </div>
+            ) : stage === 'done' ? (
+              <div className={styles.result} data-testid="device-result" data-approved={approved} aria-live="polite">
+                <span className={`${styles.statusIcon} ${approved ? styles.successIcon : styles.dangerIcon}`}>
+                  {approved ? <CheckCircle size={26} weight="fill" aria-hidden="true" /> : <XCircle size={26} weight="fill" aria-hidden="true" />}
+                </span>
+                <h2 className={styles.flowTitle}>{approved ? t('device.approvedTitle') : t('device.deniedTitle')}</h2>
+                <p className={styles.flowLede}>{approved ? t('device.approvedBody') : t('device.deniedBody')}</p>
+                <Button variant="secondary" onClick={reset}>{t('device.another')}</Button>
+              </div>
+            ) : stage === 'confirm' ? (
+              <div className={styles.result} data-testid="device-confirm">
+                <span className={styles.stepLabel}>{t('device.codeLabel')}</span>
+                <h2 className={styles.flowTitle}>{t('device.confirmTitle')}</h2>
+                <p className={styles.flowLede}>{t('device.confirmBody')}</p>
+                <code className={styles.code} data-testid="device-code">{normalized}</code>
+                <div className={styles.actions}>
+                  <Button variant="primary" loading={busy} onClick={() => decide(true)} data-testid="device-approve">{t('device.approve')}</Button>
+                  <Button variant="secondary" disabled={busy} onClick={() => decide(false)} data-testid="device-deny">{t('device.deny')}</Button>
+                  <Button className={styles.backAction} variant="ghost" disabled={busy} onClick={() => setStage('enter')}>{t('common.back')}</Button>
+                </div>
+              </div>
             ) : (
-              <XCircle size={32} weight="fill" aria-hidden="true" />
+              <form onSubmit={toConfirm} className={styles.form} data-testid="device-enter">
+                <span className={styles.stepLabel}>{t('device.codeLabel')}</span>
+                <h2 className={styles.flowTitle}>{t('device.enterTitle')}</h2>
+                <div className={styles.codeField}>
+                  <CodeInput
+                    value={code}
+                    onChange={(v) => {
+                      setCode(v);
+                      setError(undefined);
+                      setUnavailableMessage(undefined);
+                    }}
+                    error={!!error}
+                    autoFocus
+                    ariaLabel={t('device.codeLabel')}
+                    cellAriaLabel={(idx, total) => t('device.codeCell', { n: idx + 1, total })}
+                  />
+                  {error ? <span className={styles.codeError} role="alert">{error}</span> : <span className={styles.codeHint}>{t('device.codeHint')}</span>}
+                </div>
+                <Button className={styles.submit} type="submit" variant="primary" disabled={!complete}>{t('device.continue')}</Button>
+              </form>
             )}
-            <h1 className={styles.title}>
-              {approved ? t('device.approvedTitle') : t('device.deniedTitle')}
-            </h1>
-            <p className={styles.lede}>
-              {approved ? t('device.approvedBody') : t('device.deniedBody')}
-            </p>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setCode('');
-                setStage('enter');
-              }}
-            >
-              {t('device.another')}
-            </Button>
-          </div>
-        ) : stage === 'confirm' ? (
-          <div className={styles.result} data-testid="device-confirm">
-            <h1 className={styles.title}>{t('device.confirmTitle')}</h1>
-            <p className={styles.lede}>{t('device.confirmBody')}</p>
-            <code className={styles.code} data-testid="device-code">{normalized}</code>
-            <div className={styles.actions}>
-              <Button variant="primary" loading={busy} onClick={() => decide(true)} data-testid="device-approve">
-                {t('device.approve')}
-              </Button>
-              <Button variant="ghost" disabled={busy} onClick={() => decide(false)} data-testid="device-deny">
-                {t('device.deny')}
-              </Button>
-              <Button variant="ghost" disabled={busy} onClick={() => setStage('enter')}>
-                {t('common.back')}
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <form onSubmit={toConfirm} className={styles.form} data-testid="device-enter">
-            <h1 className={styles.title}>{t('device.title')}</h1>
-            <p className={styles.lede}>{t('device.lede')}</p>
-            <div className={styles.codeField}>
-              <span className={styles.codeLabel}>{t('device.codeLabel')}</span>
-              <CodeInput
-                value={code}
-                onChange={(v) => {
-                  setCode(v);
-                  setError(undefined);
-                }}
-                error={!!error}
-                autoFocus
-                ariaLabel={t('device.codeLabel')}
-                cellAriaLabel={(idx, total) => t('device.codeCell', { n: idx + 1, total })}
-              />
-              {error ? (
-                <span className={styles.codeError}>{error}</span>
-              ) : (
-                <span className={styles.codeHint}>{t('device.codeHint')}</span>
-              )}
-            </div>
-            <Button type="submit" variant="primary" disabled={!complete}>
-              {t('device.continue')}
-            </Button>
-          </form>
-        )}
-      </Card>
-    </section>
+          </section>
+        </section>
+      </main>
+    </div>
   );
 }

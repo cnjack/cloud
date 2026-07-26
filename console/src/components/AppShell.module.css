@@ -169,6 +169,7 @@
 
 .workspaceShell { display: flex; width: 100%; min-height: 100%; height: 100%; flex: 1; }
 .workspaceContent { width: 100%; max-width: none; height: 100dvh; min-height: 0; margin: 0; padding: 0; overflow: hidden; background: var(--color-bg); }
+.standaloneAuth { width: 100%; min-height: 100dvh; background: var(--color-bg); }
 
 @media (max-width: 860px) {
   .shell { display: flex; min-height: 100dvh; height: auto; flex-direction: column; overflow: visible; background: var(--color-bg); }

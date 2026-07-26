@@ -61,6 +61,22 @@ function renderRunShell(role: Role) {
   );
 }
 
+function renderDeviceAuthorizationShell(role: Role) {
+  const qc = new QueryClient();
+  const client = { listProjects: async () => [] } as unknown as ApiClient;
+  return render(
+    <QueryClientProvider client={qc}>
+      <ApiProvider client={client} role={role}>
+        <MemoryRouter initialEntries={['/device?user_code=HTTP-1921']}>
+          <AppShell>
+            <div>device authorization</div>
+          </AppShell>
+        </MemoryRouter>
+      </ApiProvider>
+    </QueryClientProvider>,
+  );
+}
+
 describe('AppShell — identity + role gating', () => {
   it('shows the Cluster nav and a cluster-admin identity chip for a cluster-admin', () => {
     renderShell('cluster-admin');
@@ -90,5 +106,13 @@ describe('AppShell — identity + role gating', () => {
     expect(screen.queryByTestId('cluster-nav')).toBeNull();
     expect(screen.queryByTestId('identity-chip')).toBeNull();
     expect(container.querySelector('[data-run-workspace="true"]')).toBeTruthy();
+  });
+
+  it('renders device authorization outside the workspace shell', () => {
+    const { container } = renderDeviceAuthorizationShell('cluster-admin');
+    expect(screen.getByText('device authorization')).toBeTruthy();
+    expect(screen.queryByTestId('cluster-nav')).toBeNull();
+    expect(screen.queryByTestId('identity-chip')).toBeNull();
+    expect(container.querySelector('[data-device-authorization="true"]')).toBeTruthy();
   });
 });

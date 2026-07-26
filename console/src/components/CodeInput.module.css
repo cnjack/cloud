@@ -61,9 +61,13 @@
 }
 
 @media (max-width: 420px) {
+  .group { gap: var(--space-1); }
   .cell {
-    width: 36px;
-    height: 46px;
-    font-size: 20px;
+    width: 31px;
+    height: 44px;
+    border-radius: var(--radius-md);
+    font-size: 19px;
   }
+
+  .sep { width: var(--space-1); }
 }

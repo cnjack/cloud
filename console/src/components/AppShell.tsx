@@ -79,7 +79,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const isProjectWorkspace = !!activeProjectId;
   const isRunWorkspace = !!runMatch;
   const isRouteWorkspace = isProjectWorkspace || isRunWorkspace;
-  const projects = useProjects(!isRouteWorkspace);
+  const isDeviceAuthorization = location.pathname === '/device';
+  const projects = useProjects(!isRouteWorkspace && !isDeviceAuthorization);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -103,6 +104,13 @@ export function AppShell({ children }: { children: ReactNode }) {
         <main className={styles.workspaceContent}>{children}</main>
       </div>
     );
+  }
+
+  // Device-code authorization is a security boundary, not a workspace page.
+  // Keep it inside OnboardingGate (so an unauthenticated visitor still signs
+  // in and returns here), but never surround it with project navigation.
+  if (isDeviceAuthorization) {
+    return <div className={styles.standaloneAuth} data-device-authorization="true">{children}</div>;
   }
 
   const isCluster = location.pathname.startsWith('/cluster');
