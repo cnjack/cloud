@@ -91,6 +91,23 @@ func TestWritePluginConfigsAlwaysCreatesEmptyJTypeMCPFile(t *testing.T) {
 	}
 }
 
+func TestWritePluginConfigsPreservesKubernetesMountPointMode(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePluginConfigs(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o770 {
+		t.Fatalf("credential mount mode=%o want 0770", got)
+	}
+}
+
 func TestWritePluginConfigsRemovesUninstalledProviderFiles(t *testing.T) {
 	dir := t.TempDir()
 	if err := writePluginConfigs(dir, []pluginCredential{

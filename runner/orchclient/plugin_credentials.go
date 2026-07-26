@@ -111,13 +111,12 @@ func (c *client) syncPluginCredentialsOnce(dir string) error {
 
 // writePluginConfigs writes each file through temp+rename. The runner only sees
 // the shared volume read-only, so it cannot race or modify these files. Files
-// containing tokens use 0600 and all directories use 0700.
+// containing tokens use 0600 and child directories use 0700. The root is a
+// Kubernetes-managed tmpfs mount whose ownership and group-write permissions
+// come from fsGroup; a non-root init container must not chmod the mount point.
 func writePluginConfigs(dir string, credentials []pluginCredential) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create credential dir: %w", err)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return fmt.Errorf("chmod credential dir: %w", err)
 	}
 	byProvider := map[string]pluginCredential{}
 	for _, credential := range credentials {
