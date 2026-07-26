@@ -178,6 +178,33 @@ func (c *GitHubClient) ListInstallationRepos(ctx context.Context, query string, 
 	return repos, nil
 }
 
+// ListBranches lists repository branches visible to this credential. GitHub's
+// endpoint is paginated and has no useful search filter, so callers own any
+// UI-side filtering without ever expanding the credential's repository scope.
+func (c *GitHubClient) ListBranches(ctx context.Context, owner, repo string, page, limit int) ([]Branch, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 100
+	}
+	u := fmt.Sprintf("%s/repos/%s/%s/branches?per_page=%d&page=%d", c.apiBase, owner, repo, limit, page)
+	var raw []struct {
+		Name      string `json:"name"`
+		Protected bool   `json:"protected"`
+	}
+	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), c.accept(), nil, &raw); err != nil {
+		return nil, err
+	}
+	branches := make([]Branch, 0, len(raw))
+	for _, branch := range raw {
+		if strings.TrimSpace(branch.Name) != "" {
+			branches = append(branches, Branch{Name: branch.Name, Protected: branch.Protected})
+		}
+	}
+	return branches, nil
+}
+
 // EnsureCommentWebhook idempotently registers the @mention PR-comment webhook on
 // a repository (F13). It lists the repo's hooks and creates one only when no hook
 // with the same target URL exists (GitHub returns the target under config.url;
@@ -227,4 +254,5 @@ func (c *GitHubClient) CurrentUser(ctx context.Context) (string, error) {
 
 var _ Provider = (*GitHubClient)(nil)
 var _ RepoLister = (*GitHubClient)(nil)
+var _ BranchLister = (*GitHubClient)(nil)
 var _ CurrentUser = (*GitHubClient)(nil)

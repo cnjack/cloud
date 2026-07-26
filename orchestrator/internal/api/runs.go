@@ -30,6 +30,12 @@ type createRunReq struct {
 	// interactive user approval. Only valid together with session: true (a
 	// headless single-shot has nobody watching to answer), else 400.
 	PermissionMode string `json:"permission_mode"`
+	// BaseBranch overrides the Service default branch for this API-created task.
+	BaseBranch string `json:"base_branch"`
+	// ModelEffort is the per-run reasoning depth. Empty retains the model default.
+	ModelEffort        string   `json:"model_effort"`
+	GoalMode           bool     `json:"goal_mode"`
+	AttachmentStageIDs []string `json:"attachment_stage_ids"`
 }
 
 // handleCreateServiceRun is the run-creation endpoint: POST /services/{id}/runs.
@@ -70,6 +76,49 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 		writeError(w, http.StatusBadRequest, "bad_request", "prompt is required")
 		return
 	}
+	req.BaseBranch = strings.TrimSpace(req.BaseBranch)
+	if strings.ContainsAny(req.BaseBranch, " \t\r\n~^:?*[\\") || strings.HasPrefix(req.BaseBranch, "-") || strings.HasSuffix(req.BaseBranch, ".") || strings.Contains(req.BaseBranch, "..") {
+		writeError(w, http.StatusBadRequest, "bad_request", "branch must be a valid git branch name")
+		return
+	}
+	// A browser-selected branch is only a hint until the bound Plugin confirms it
+	// against the live repository. Do not silently fall back to Service default:
+	// a deleted/typoed branch must be visible before a task is queued.
+	if req.BaseBranch != "" {
+		branches, branchErr := s.listBoundServiceBranches(r.Context(), svc)
+		if branchErr != nil {
+			s.writeServiceBranchError(w, branchErr)
+			return
+		}
+		found := false
+		for _, branch := range branches {
+			if branch.Name == req.BaseBranch {
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeError(w, http.StatusBadRequest, "invalid_base_branch", "the selected base branch is not available in this Service repository")
+			return
+		}
+	}
+	req.ModelEffort = strings.TrimSpace(req.ModelEffort)
+	if !domain.ValidModelEffort(req.ModelEffort) {
+		writeError(w, http.StatusBadRequest, "bad_request", "model_effort must be one of low, medium, or high")
+		return
+	}
+	if req.ModelEffort == "auto" {
+		req.ModelEffort = ""
+	}
+	if err := s.finalizeRunAttachmentStages(r, svc, req.AttachmentStageIDs); err != nil {
+		if ae, ok := err.(*attachmentHTTPError); ok {
+			writeError(w, ae.status, ae.code, ae.message)
+		} else {
+			s.log.Error("finalize attachments", "err", err)
+			writeError(w, 500, "internal", "could not finalize attachments")
+		}
+		return
+	}
 	// Permission mode (F8b): only "" / "approval", and approval only rides on a
 	// session run — validated up front so an invalid combination never queues.
 	req.PermissionMode = strings.TrimSpace(req.PermissionMode)
@@ -96,6 +145,9 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 	if !ok {
 		return
 	}
+	if !s.validateModelEffortForRun(w, r, modelID, req.ModelEffort) {
+		return
+	}
 	// Dispatch-time integration host gate (D20 / F5 adjudication A): a tightened
 	// cluster allowlist stops EXISTING integrations immediately — a 403, not a run
 	// that quietly ignores policy.
@@ -111,9 +163,20 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 	run.Session = req.Session
 	// Permission mode (F8b) rides only on session runs (validated above).
 	run.PermissionMode = req.PermissionMode
+	run.BaseBranch = req.BaseBranch
+	run.ModelEffort = req.ModelEffort
+	run.GoalMode = req.GoalMode
+	run.AttachmentStageIDs = append([]string(nil), req.AttachmentStageIDs...)
 	if err := s.st.CreateRun(r.Context(), run); err != nil {
 		if errors.Is(err, store.ErrServiceDeleting) {
 			writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
+			return
+		}
+		if len(req.AttachmentStageIDs) > 0 && errors.Is(err, store.ErrNotFound) {
+			// The preflight and transactional consume intentionally remain two
+			// separate operations. If another request consumed/expired a stage in
+			// between, surface a stable conflict instead of an internal error.
+			writeError(w, http.StatusConflict, "attachment_stage_unavailable", "one or more attachment stages are no longer available")
 			return
 		}
 		s.log.Error("create run", "err", err)
@@ -360,6 +423,9 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.validateModelEffortForRun(w, r, modelID, orig.ModelEffort) {
+		return
+	}
 	// Dispatch-time integration host gate (D20 / F5 adjudication A): a retry is a
 	// fresh dispatch, so a since-tightened allowlist blocks it too.
 	if !s.integrationDispatchAllowed(w, r, svc) {
@@ -384,6 +450,12 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	// approval session — silently degrading it to full_access would drop the
 	// user's guardrail.
 	retry.PermissionMode = orig.PermissionMode
+	// Launch inputs are immutable run identity too. Retrying must not silently
+	// fall back to the Service default branch, model effort, or plain prompt.
+	retry.BaseBranch = orig.BaseBranch
+	retry.ModelEffort = orig.ModelEffort
+	retry.GoalMode = orig.GoalMode
+	retry.CopyAttachmentsFrom = orig.ID
 	if err := s.st.CreateRun(r.Context(), retry); err != nil {
 		s.log.Error("retry run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create retry run")
@@ -502,6 +574,9 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.validateModelEffortForRun(w, r, modelID, orig.ModelEffort) {
+		return
+	}
 	// Dispatch-time integration host gate (D20 / F5 adjudication A), as on create.
 	if !s.integrationDispatchAllowed(w, r, svc) {
 		return
@@ -515,6 +590,13 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// or preserves the original one when the composer left it unchanged.
 	resume.Session = true
 	resume.PermissionMode = permissionMode
+	// A resumed session keeps the original launch context. In particular, a
+	// durable goal must remain a goal after session/load rather than turning the
+	// continuation into an ordinary prompt.
+	resume.BaseBranch = orig.BaseBranch
+	resume.ModelEffort = orig.ModelEffort
+	resume.GoalMode = orig.GoalMode
+	resume.CopyAttachmentsFrom = orig.ID
 	// Copy the original's ACP session id onto the new run NOW so the reconciler can
 	// inject RESUME_SESSION_ID at Job-launch, BEFORE this run has emitted its own
 	// run.session. The runner then re-emits the SAME id (resumed=true) and the
@@ -588,6 +670,38 @@ func (s *Server) selectModelForRun(w http.ResponseWriter, r *http.Request, svc *
 		writeError(w, http.StatusConflict, "model_not_configured", modelcfg.NotConfiguredMessage(""))
 	}
 	return nil, "", false
+}
+
+// validateModelEffortForRun is the single capability gate shared by every path
+// that creates or recreates an autonomous run. Effort is immutable run identity:
+// retry/resume must revalidate it against the model selected at the new
+// dispatch, because grants and service defaults may have changed meanwhile.
+func (s *Server) validateModelEffortForRun(w http.ResponseWriter, r *http.Request, modelID *string, effort string) bool {
+	effort = strings.TrimSpace(effort)
+	if !domain.ValidModelEffort(effort) || effort == "auto" {
+		writeError(w, http.StatusBadRequest, "bad_request", "model_effort must be one of low, medium, or high")
+		return false
+	}
+	if effort == "" {
+		return true
+	}
+	// The legacy environment fallback has no durable capability declaration, so
+	// accepting an effort would be a guess.
+	if modelID == nil {
+		writeError(w, http.StatusConflict, "model_effort_unsupported", "the environment fallback model does not declare reasoning support")
+		return false
+	}
+	selectedModel, err := s.st.GetModel(r.Context(), *modelID)
+	if err != nil {
+		s.log.Error("load selected model capabilities", "model", *modelID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not verify model capabilities")
+		return false
+	}
+	if !selectedModel.Capabilities.Reasoning {
+		writeError(w, http.StatusBadRequest, "model_effort_unsupported", "the selected model does not support reasoning effort")
+		return false
+	}
+	return true
 }
 
 func queryInt(r *http.Request, key string, def int) int {

@@ -164,6 +164,33 @@ func (c *GitLabClient) ListRepos(ctx context.Context, query string, page, limit 
 	return repos, nil
 }
 
+// ListBranches lists GitLab repository branches. GitLab identifies projects by
+// their URL-escaped full path, so projectPath is used rather than relying on a
+// mutable numeric ID in a Service's display configuration.
+func (c *GitLabClient) ListBranches(ctx context.Context, owner, repo string, page, limit int) ([]Branch, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 100
+	}
+	u := fmt.Sprintf("%s/projects/%s/repository/branches?per_page=%d&page=%d", c.apiBase, projectPath(owner, repo), limit, page)
+	var raw []struct {
+		Name      string `json:"name"`
+		Protected bool   `json:"protected"`
+	}
+	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &raw); err != nil {
+		return nil, err
+	}
+	branches := make([]Branch, 0, len(raw))
+	for _, branch := range raw {
+		if strings.TrimSpace(branch.Name) != "" {
+			branches = append(branches, Branch{Name: branch.Name, Protected: branch.Protected})
+		}
+	}
+	return branches, nil
+}
+
 // EnsureCommentWebhook idempotently registers the @mention MR-comment webhook on
 // a project (F13). It lists the project's hooks and creates one only when no hook
 // with the same target URL exists (GitLab returns the target under url; the token
@@ -263,5 +290,6 @@ func (c *GitLabClient) CurrentUser(ctx context.Context) (string, error) {
 
 var _ Provider = (*GitLabClient)(nil)
 var _ RepoLister = (*GitLabClient)(nil)
+var _ BranchLister = (*GitLabClient)(nil)
 var _ CurrentUser = (*GitLabClient)(nil)
 var _ SCMWebhookManager = (*GitLabClient)(nil)

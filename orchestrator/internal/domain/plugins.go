@@ -203,19 +203,24 @@ type CronTrigger struct {
 // WebhookReceipt contains only the normalized and whitelisted delivery facts;
 // raw provider payloads and request headers are intentionally never persisted.
 type WebhookReceipt struct {
-	ID                  string       `json:"id"`
-	Provider            ProviderKind `json:"provider"`
-	DeliveryID          string       `json:"delivery_id"`
-	InstallationID      string       `json:"installation_id,omitempty"`
-	EventFamily         string       `json:"event_family"`
-	Action              string       `json:"action"`
-	ExternalActorID     string       `json:"external_actor_id,omitempty"`
-	ExternalActor       string       `json:"external_actor,omitempty"`
-	ObjectRef           string       `json:"object_ref,omitempty"`
-	Status              string       `json:"status"`
-	MatchedAutomationID string       `json:"matched_automation_id,omitempty"`
-	Error               string       `json:"error,omitempty"`
-	ReceivedAt          time.Time    `json:"received_at"`
+	ID         string       `json:"id"`
+	Provider   ProviderKind `json:"provider"`
+	DeliveryID string       `json:"delivery_id"`
+	// PayloadDigest is a SHA-256 derivation of an already-verified GitHub/Gitea
+	// body HMAC. It prevents replay by changing the unsigned delivery-id header,
+	// scopes Gitea duplicates to their per-binding secret, and never retains the
+	// Provider's raw payload or signature.
+	PayloadDigest       string    `json:"-"`
+	InstallationID      string    `json:"installation_id,omitempty"`
+	EventFamily         string    `json:"event_family"`
+	Action              string    `json:"action"`
+	ExternalActorID     string    `json:"external_actor_id,omitempty"`
+	ExternalActor       string    `json:"external_actor,omitempty"`
+	ObjectRef           string    `json:"object_ref,omitempty"`
+	Status              string    `json:"status"`
+	MatchedAutomationID string    `json:"matched_automation_id,omitempty"`
+	Error               string    `json:"error,omitempty"`
+	ReceivedAt          time.Time `json:"received_at"`
 }
 
 type RunPluginSnapshot struct {

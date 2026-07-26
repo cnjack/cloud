@@ -102,6 +102,21 @@ type JobSpec struct {
 	// immutable RunPluginSnapshot. Only this exact set gets a CLI/Skill; JType
 	// gets MCP configuration but intentionally has no Skill.
 	PluginProviders []string
+	// ModelEffort writes a per-run jcode config overlay before launch.
+	ModelEffort string
+	// ModelConfigBase64 is an Orchestrator-marshaled, opaque config document.
+	// The init container only decodes it; it never interpolates model secrets in
+	// shell source.
+	ModelConfigBase64 string
+	Attachments       []RunAttachmentDownload
+}
+
+// RunAttachmentDownload contains only a run-scoped GET URL and server-created
+// stage id. DisplayName is manifest metadata, never a filesystem path.
+type RunAttachmentDownload struct {
+	StageID, URL             string
+	DisplayName, ContentType string
+	SizeBytes                int64
 }
 
 // JobLauncher is the cluster-facing seam the reconciler depends on.

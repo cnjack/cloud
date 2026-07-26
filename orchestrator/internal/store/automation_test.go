@@ -45,7 +45,10 @@ func TestAutomationAndWebhookBindingRoundTrip(t *testing.T) {
 
 	binding := &domain.WebhookBinding{
 		ServiceID: a.ServiceID, Provider: domain.ProviderGitea,
-		Endpoint: "https://cloud.example/webhooks/gitea", Status: domain.WebhookBindingActive,
+		Endpoint:     "https://cloud.example/webhooks/gitea/hook-1",
+		HookID:       "hook-1",
+		SecretEnc:    []byte("encrypted-secret"),
+		Status:       domain.WebhookBindingActive,
 		LastSyncedAt: &now, UpdatedAt: now,
 	}
 	if err := st.UpsertWebhookBinding(ctx, binding); err != nil {
@@ -63,7 +66,8 @@ func TestAutomationAndWebhookBindingRoundTrip(t *testing.T) {
 	}
 	resynced := &domain.WebhookBinding{
 		ServiceID: a.ServiceID, Provider: domain.ProviderGitea,
-		Endpoint: binding.Endpoint, Status: domain.WebhookBindingActive,
+		Endpoint: binding.Endpoint, HookID: binding.HookID, SecretEnc: binding.SecretEnc,
+		Status:       domain.WebhookBindingActive,
 		LastSyncedAt: &triggered, UpdatedAt: triggered,
 	}
 	if err := st.UpsertWebhookBinding(ctx, resynced); err != nil {

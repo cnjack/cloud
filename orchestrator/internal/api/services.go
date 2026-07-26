@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -109,6 +111,142 @@ type createServiceReq struct {
 	ProviderRepoID string `json:"provider_repo_id"`
 	GitMode        string `json:"git_mode"`
 	DefaultModelID string `json:"default_model_id"`
+}
+
+// serviceBranchView is deliberately smaller than a provider's branch resource.
+// Branch commit metadata is neither useful to the composer nor safe to retain in
+// the control plane; the selected name is the only value sent on to a run.
+type serviceBranchView struct {
+	Name      string `json:"name"`
+	Protected bool   `json:"protected,omitempty"`
+	Default   bool   `json:"default"`
+}
+
+var (
+	errServiceBranchPluginUnavailable   = errors.New("service branch plugin unavailable")
+	errServiceBranchProviderUnavailable = errors.New("service branch provider unavailable")
+)
+
+// handleListServiceBranches lists repository branches for an existing,
+// plugin-bound Service. It issues a short-lived plugin credential server-side;
+// no persistent or run credential is returned to the browser.
+func (s *Server) handleListServiceBranches(w http.ResponseWriter, r *http.Request) {
+	svc, err := s.st.GetService(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "service not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		return
+	}
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), svc.ProjectID, domain.RoleMember) {
+		return
+	}
+	branches, err := s.listBoundServiceBranches(r.Context(), svc)
+	if err != nil {
+		s.writeServiceBranchError(w, err)
+		return
+	}
+	defaultBranch := strings.TrimSpace(svc.DefaultBranch)
+	seen := make(map[string]bool, len(branches))
+	views := make([]serviceBranchView, 0, len(branches))
+	for _, branch := range branches {
+		name := strings.TrimSpace(branch.Name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		views = append(views, serviceBranchView{Name: name, Protected: branch.Protected, Default: name == defaultBranch})
+	}
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].Default != views[j].Default {
+			return views[i].Default
+		}
+		return strings.ToLower(views[i].Name) < strings.ToLower(views[j].Name)
+	})
+	confirmedDefault := ""
+	if seen[defaultBranch] {
+		confirmedDefault = defaultBranch
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"branches": views, "default_branch": confirmedDefault})
+}
+
+// listBoundServiceBranches is the single credentialed branch discovery path.
+// Both the picker and POST runs use it so a branch accepted by the UI is
+// verified again at dispatch time rather than trusted from browser state.
+func (s *Server) listBoundServiceBranches(ctx context.Context, svc *domain.Service) ([]provider.Branch, error) {
+	if svc == nil || svc.RepoKind != domain.RepoKindProvider || !domain.ValidProvider(svc.Provider) {
+		return nil, fmt.Errorf("%w: a plugin-bound Git service is required", errServiceBranchPluginUnavailable)
+	}
+	binding, err := s.st.GetServiceRepositoryBinding(ctx, svc.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, fmt.Errorf("%w: service has no repository plugin binding", errServiceBranchPluginUnavailable)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load service repository binding: %w", err)
+	}
+	installation, err := s.st.GetPluginInstallation(ctx, binding.InstallationID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && (installation.ProjectID != svc.ProjectID || installation.Provider != domain.ProviderKind(svc.Provider))) {
+		return nil, fmt.Errorf("%w: service repository plugin is unavailable", errServiceBranchPluginUnavailable)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load service repository plugin: %w", err)
+	}
+	if installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" {
+		return nil, fmt.Errorf("%w: repository plugin is disabled or needs attention", errServiceBranchPluginUnavailable)
+	}
+	cfg, err := s.st.GetProviderConfig(ctx, installation.Provider)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && (!cfg.PluginEnabled || cfg.LastHealthError != "")) {
+		return nil, fmt.Errorf("%w: provider configuration is disabled or needs attention", errServiceBranchPluginUnavailable)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load provider configuration: %w", err)
+	}
+	if s.pluginCredentialIssuer == nil {
+		return nil, fmt.Errorf("%w: repository credentials are unavailable", errServiceBranchPluginUnavailable)
+	}
+	credential, err := s.pluginCredentialIssuer.IssueRunPluginCredential(ctx, installation, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("%w: repository credentials are unavailable", errServiceBranchPluginUnavailable)
+	}
+	client, err := provider.IntegrationClientWithScheme(domain.GitProvider(installation.Provider), cfg.BaseURL, credential.AccessToken, credential.Scheme)
+	if err != nil {
+		return nil, fmt.Errorf("%w: repository credentials are unavailable", errServiceBranchPluginUnavailable)
+	}
+	lister, ok := client.(provider.BranchLister)
+	if !ok {
+		return nil, fmt.Errorf("%w: provider cannot list branches", errServiceBranchPluginUnavailable)
+	}
+	owner, repo, ok := provider.SplitRepo(binding.RepositoryPath)
+	if !ok {
+		return nil, fmt.Errorf("%w: bound repository path is invalid", errServiceBranchPluginUnavailable)
+	}
+	branches := make([]provider.Branch, 0)
+	for page := 1; page <= 20; page++ {
+		pageBranches, listErr := lister.ListBranches(ctx, owner, repo, page, 100)
+		if listErr != nil {
+			s.log.Warn("list service repository branches", "service_id", svc.ID, "provider", installation.Provider, "err", listErr)
+			return nil, fmt.Errorf("%w: could not list repository branches", errServiceBranchProviderUnavailable)
+		}
+		branches = append(branches, pageBranches...)
+		if len(pageBranches) < 100 {
+			break
+		}
+	}
+	return branches, nil
+}
+
+func (s *Server) writeServiceBranchError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errServiceBranchPluginUnavailable):
+		writeError(w, http.StatusConflict, "plugin_unavailable", "the repository plugin is unavailable; reconnect it or resolve its health check")
+	case errors.Is(err, errServiceBranchProviderUnavailable):
+		writeError(w, http.StatusBadGateway, "provider_error", "could not list repository branches")
+	default:
+		s.log.Error("list service repository branches", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not load repository branches")
+	}
 }
 
 func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {

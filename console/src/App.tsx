@@ -38,8 +38,6 @@ function useLinkFlash() {
     fired.current = true;
     const linked = readQueryParam('linked');
     const linkError = readQueryParam('link_error');
-    const integrationConnected = readQueryParam('integration_connected');
-    const integrationError = readQueryParam('integration_error');
     if (linked) {
       toast.push({ kind: 'success', message: t('app.linked', { provider: linked }) });
     } else if (linkError === 'taken') {
@@ -49,18 +47,9 @@ function useLinkFlash() {
       });
     } else if (linkError) {
       toast.push({ kind: 'error', message: t('app.linkError') });
-    } else if (integrationConnected) {
-      toast.push({ kind: 'success', message: t('app.integrationConnected', { provider: integrationConnected }) });
-    } else if (integrationError) {
-      const message = integrationError === 'conflict'
-        ? t('app.integrationConflict')
-        : integrationError === 'expiring_token_unsupported'
-          ? t('app.integrationExpiringToken')
-          : t('app.integrationError');
-      toast.push({ kind: 'error', message });
     }
-    if (linked || linkError || integrationConnected || integrationError) {
-      stripQueryParams(['linked', 'link_error', 'integration_connected', 'integration_error']);
+    if (linked || linkError) {
+      stripQueryParams(['linked', 'link_error']);
     }
   }, [toast, t]);
 }

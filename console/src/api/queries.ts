@@ -2,7 +2,6 @@
  * queries.ts — TanStack Query hooks over the ApiClient. Query keys are
  * centralised so SSE/status changes can invalidate precisely.
  */
-import { useEffect } from 'react';
 import {
   useMutation,
   useQuery,
@@ -11,21 +10,16 @@ import {
 import { useApi } from './ApiProvider';
 import type {
   AddMemberInput,
-  CreateAutomationInput,
   CreateProjectAutomationInput,
   CreateApiKeyInput,
   CreateApiKeyResponse,
-  CreateIntegrationInput,
-  CreateKanbanLinkInput,
   CreateModelInput,
   CreateModelProviderInput,
   CreateProviderModelInput,
   CreateProjectInput,
   CreateRunInput,
-  CreateScheduleInput,
   CreateServiceInput,
-  Integration,
-  KanbanConnectStatus,
+	ServiceBranch,
   Member,
   Model,
   Project,
@@ -37,14 +31,10 @@ import type {
   ResumeSessionOptions,
   Run,
   ServiceWebhookSetup,
-  UpdateIntegrationInput,
-  UpdateAutomationInput,
-  UpdateKanbanConfigInput,
   UpdateModelInput,
   UpdateModelProviderInput,
   UpdateProjectInput,
   UpdateProviderModelInput,
-  UpdateScheduleInput,
   UpdateServiceInput,
 } from './types';
 import { isTerminal } from './types';
@@ -65,29 +55,11 @@ export const qk = {
   projectModelProviderCatalog: (projectId: string, providerId: string) =>
     ['project-model-provider-catalog', projectId, providerId] as const,
   projectModels: (projectId: string) => ['project-models', projectId] as const,
-  kanbanLinks: ['kanban-links'] as const,
-  kanbanConfig: ['kanban-config'] as const,
-  projectKanbanLinks: (projectId: string) => ['project-kanban-links', projectId] as const,
   // D31: the member+ reduced board-link list that gates the "Kanban" header
-  // button + feeds the embed modal's selector (distinct from the owner-only
-  // projectKanbanLinks above).
+  // button + feeds the embed modal's selector.
   projectBoardLinks: (projectId: string) => ['project-board-links', projectId] as const,
   serviceKanban: (serviceId: string) => ['service-kanban', serviceId] as const,
-  // D29: kanban discovery pickers — the caller's jtype workspaces, and a
-  // workspace's boards (with columns), scoped to the project.
-  jtypeWorkspaces: (projectId: string) => ['jtype-workspaces', projectId] as const,
-  jtypeBoards: (projectId: string, workspaceId: string) =>
-    ['jtype-boards', projectId, workspaceId] as const,
-  // D28: an in-flight per-link "Connect with jtype" device flow, keyed by
-  // (project, link, connect_id). (The cluster-surface flow was removed in D36.)
-  linkConnect: (projectId: string, linkId: string, connectId: string) =>
-    ['link-connect', projectId, linkId, connectId] as const,
-  // D37: an in-flight PROJECT-surface flow (connect before the first link).
-  projectConnect: (projectId: string, connectId: string) =>
-    ['project-connect', projectId, connectId] as const,
-  serviceSchedules: (serviceId: string) => ['service-schedules', serviceId] as const,
-  serviceAutomations: (serviceId: string) => ['service-automations', serviceId] as const,
-  integrations: (projectId: string) => ['integrations', projectId] as const,
+  serviceBranches: (serviceId: string) => ['service-branches', serviceId] as const,
   projectPlugins: (projectId: string) => ['project-plugins', projectId] as const,
   projectPluginImpact: (projectId: string, installationId: string) =>
     ['project-plugin-impact', projectId, installationId] as const,
@@ -230,6 +202,22 @@ export function useProviderRepos(provider: string, q: string, enabled: boolean) 
     staleTime: 30_000,
     retry: false,
   });
+}
+
+/**
+ * Branches are resolved from the selected Service's repository binding. The
+ * provider error is intentionally surfaced to the composer rather than falling
+ * back to an unverified arbitrary branch list.
+ */
+export function useServiceBranches(serviceId: string, enabled: boolean) {
+	const api = useApi();
+	return useQuery<ServiceBranch[]>({
+		queryKey: qk.serviceBranches(serviceId),
+		queryFn: () => api.listServiceBranches(serviceId),
+		enabled: enabled && !!serviceId,
+		staleTime: 30_000,
+		retry: false,
+	});
 }
 
 /** Add a repository (service) to a project. Refreshes the project + its services. */
@@ -727,34 +715,10 @@ export function useEnsureServiceWebhook() {
   });
 }
 
-/* ---- kanban links (Feature E / F6) --------------------------------------- */
-
-/** Cluster-admin READ-ONLY overview of every kanban link across all projects. */
-export function useKanbanLinks(enabled = true) {
-  const api = useApi();
-  return useQuery({
-    queryKey: qk.kanbanLinks,
-    queryFn: () => api.listKanbanLinks(),
-    enabled,
-  });
-}
-
-/** A project's kanban links (owner-managed, F6 / D25). */
-export function useProjectKanbanLinks(projectId: string, enabled = true) {
-  const api = useApi();
-  return useQuery({
-    queryKey: qk.projectKanbanLinks(projectId),
-    queryFn: () => api.listProjectKanbanLinks(projectId),
-    enabled: enabled && !!projectId,
-  });
-}
-
 /**
  * D31: the member+ board-embed link list — gates the project header's "Kanban"
- * button and populates the modal's link selector. Distinct from
- * {@link useProjectKanbanLinks} (owner-only, leaks credential posture): this
- * endpoint is member+ and returns no credential fields, so a viewer / non-member
- * gets a 403 → empty data → no button.
+ * button and populates the modal's link selector. It is member+ and returns no
+ * credential fields, so a viewer / non-member gets a 403 → empty data → no button.
  *
  * `retry: false` so a 403/409/503 surfaces at once (no button) instead of
  * spinning through retries — fail-visible, and the button simply stays hidden.
@@ -792,320 +756,6 @@ export function useDeleteServiceKanban(projectId: string, serviceId: string) {
       qc.invalidateQueries({ queryKey: qk.projectAutomations(projectId) });
       qc.invalidateQueries({ queryKey: qk.serviceKanban(serviceId) });
     },
-  });
-}
-
-export function useCreateProjectKanbanLink(projectId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: CreateKanbanLinkInput) => api.createProjectKanbanLink(projectId, input),
-    onSuccess: () => {
-      // Owner management and the member+ embed list are deliberately separate
-      // endpoints. Refresh both so the Project header never keeps a stale
-      // Kanban button after a link is added.
-      qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) });
-      qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) });
-      qc.invalidateQueries({ queryKey: qk.kanbanLinks });
-    },
-  });
-}
-
-export function useUpdateProjectKanbanLinkToken(projectId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ linkId, token }: { linkId: string; token: string }) =>
-      api.updateProjectKanbanLinkToken(projectId, linkId, token),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) });
-      qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) });
-      qc.invalidateQueries({ queryKey: qk.kanbanLinks });
-    },
-  });
-}
-
-export function useDeleteProjectKanbanLink(projectId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (linkId: string) => api.deleteProjectKanbanLink(projectId, linkId),
-    onSuccess: () => {
-      // Deleting the final enabled link must hide the member+ embed affordance
-      // immediately rather than leaving a button that opens an empty modal.
-      qc.invalidateQueries({ queryKey: qk.projectKanbanLinks(projectId) });
-      qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) });
-      qc.invalidateQueries({ queryKey: qk.kanbanLinks });
-    },
-  });
-}
-
-/* ---- kanban discovery pickers (D29) -------------------------------------- */
-
-/**
- * The caller's jtype workspaces for the create-link workspace picker. `retry:
- * false` so a typed 409/503/400 (integration off / unreachable / bad token)
- * surfaces at once as isError — the form auto-falls-back to manual entry and
- * shows the server message (fail-visible), never a spinner that never resolves.
- * `tokenEnc` (D37: a sealed blob from a project-surface connect) rides as
- * X-Jtype-Token-Enc and is part of the query key so a fresh connect refetches.
- */
-export function useJtypeWorkspaces(projectId: string, enabled: boolean, tokenEnc?: string) {
-  const api = useApi();
-  return useQuery({
-    queryKey: [...qk.jtypeWorkspaces(projectId), tokenEnc ?? ''],
-    queryFn: () => api.listJtypeWorkspaces(projectId, tokenEnc),
-    enabled: enabled && !!projectId,
-    retry: false,
-    staleTime: 30_000,
-  });
-}
-
-/**
- * A workspace's boards (with columns) for the board + column pickers. Only fires
- * once a workspace is chosen; same fail-visible retry:false as the workspaces
- * query. Each board carries its `columns`, so the column selects read from this
- * cache without a further request.
- */
-export function useJtypeBoards(projectId: string, workspaceId: string, enabled: boolean, tokenEnc?: string) {
-  const api = useApi();
-  return useQuery({
-    queryKey: [...qk.jtypeBoards(projectId, workspaceId), tokenEnc ?? ''],
-    queryFn: () => api.listJtypeBoards(projectId, workspaceId, tokenEnc),
-    enabled: enabled && !!projectId && !!workspaceId,
-    retry: false,
-    staleTime: 30_000,
-  });
-}
-
-/* ---- cluster kanban config (D27, slimmed by D36) --------------------------- */
-
-/**
- * The cluster jtype config (cluster-admin). Powers the Cluster page KanbanCard's
- * editable form + source badge. `enabled` gates the fetch (the whole Cluster page
- * is cluster-admin only, so the default suffices there).
- */
-export function useKanbanConfig(enabled = true) {
-  const api = useApi();
-  return useQuery({
-    queryKey: qk.kanbanConfig,
-    queryFn: () => api.getKanbanConfig(),
-    enabled,
-  });
-}
-
-/**
- * Set the cluster jtype base URL (the only field, D36). Runtime-effective —
- * the resolver-backed poller/writeback pick it up without a restart (D27) — so
- * we invalidate the /system snapshot AND the link overview alongside the config:
- * flipping the integration on/off changes every link's effective state.
- */
-export function useUpdateKanbanConfig() {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: UpdateKanbanConfigInput) => api.updateKanbanConfig(input),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.system });
-      qc.invalidateQueries({ queryKey: qk.kanbanConfig });
-      qc.invalidateQueries({ queryKey: qk.kanbanLinks });
-      qc.invalidateQueries({ queryKey: ['project-kanban-links'] });
-    },
-  });
-}
-
-/** Clear the cluster jtype DB override, falling back to env/off (D27). */
-export function useDeleteKanbanConfig() {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.deleteKanbanConfig(),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.system });
-      qc.invalidateQueries({ queryKey: qk.kanbanConfig });
-      qc.invalidateQueries({ queryKey: qk.kanbanLinks });
-      qc.invalidateQueries({ queryKey: ['project-kanban-links'] });
-    },
-  });
-}
-
-/* ---- kanban "Connect with jtype" device flow (D28; per-link only, D36) ----- */
-
-/**
- * The credential views a completed per-link device flow makes stale: every
- * kanban-link list (credential_status flips → per_link). Invalidated once, on
- * the pending→complete edge.
- */
-function invalidateKanbanCredentials(qc: ReturnType<typeof useQueryClient>): void {
-  qc.invalidateQueries({ queryKey: qk.kanbanLinks });
-  // Prefix match — every project's link list.
-  qc.invalidateQueries({ queryKey: ['project-kanban-links'] });
-}
-
-/** Should a device-flow poll keep going? Only while the last result was pending. */
-function connectRefetchInterval(status: 'error' | 'pending' | 'success', data: unknown): number | false {
-  // A 404 connect_expired (or any poll error) is terminal — stop, the UI treats
-  // it as "expired, reconnect". `retry:false` keeps that a single request.
-  if (status === 'error') return false;
-  return (data as KanbanConnectStatus | undefined)?.status === 'pending' ? 2500 : false;
-}
-
-/**
- * Poll a per-link "Connect with jtype" flow while it is pending (every 2.5s),
- * stopping on any terminal state (complete/expired/denied/unsupported) or a 404
- * connect_expired. On the complete edge, refresh the link lists so the
- * credential badge flips without a manual reload.
- */
-export function useLinkConnectStatus(
-  projectId: string,
-  linkId: string,
-  connectId: string | undefined,
-  enabled: boolean,
-) {
-  const api = useApi();
-  const qc = useQueryClient();
-  const query = useQuery({
-    queryKey: qk.linkConnect(projectId, linkId, connectId ?? ''),
-    queryFn: () => api.pollLinkConnect(projectId, linkId, connectId!),
-    enabled: enabled && !!connectId,
-    retry: false,
-    refetchInterval: (q) => connectRefetchInterval(q.state.status, q.state.data),
-  });
-  const complete = query.data?.status === 'complete';
-  useEffect(() => {
-    if (complete) invalidateKanbanCredentials(qc);
-  }, [complete, qc]);
-  return query;
-}
-
-/** Start a per-link device flow (seeds the per-link poll cache). */
-export function useStartLinkConnect(projectId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (linkId: string) => api.startLinkConnect(projectId, linkId),
-    onSuccess: (start, linkId) => {
-      qc.setQueryData<KanbanConnectStatus>(qk.linkConnect(projectId, linkId, start.connect_id), {
-        status: 'pending',
-        token_set: false,
-      });
-    },
-  });
-}
-
-/* ---- kanban project-surface "Connect with jtype" (D37) --------------------- */
-
-/**
- * Poll a PROJECT-surface connect flow (D37) while pending. On complete the poll
- * payload carries `token_enc` (sealed blob) — NOTHING changed server-side, so
- * there is nothing to invalidate; the caller reads token_enc from the data.
- */
-export function useProjectConnectStatus(
-  projectId: string,
-  connectId: string | undefined,
-  enabled: boolean,
-) {
-  const api = useApi();
-  return useQuery({
-    queryKey: qk.projectConnect(projectId, connectId ?? ''),
-    queryFn: () => api.pollProjectConnect(projectId, connectId!),
-    enabled: enabled && !!connectId,
-    retry: false,
-    refetchInterval: (q) => connectRefetchInterval(q.state.status, q.state.data),
-  });
-}
-
-/** Start a project-surface device flow (D37; seeds the poll cache). */
-export function useStartProjectConnect(projectId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.startProjectConnect(projectId),
-    onSuccess: (start) => {
-      qc.setQueryData<KanbanConnectStatus>(qk.projectConnect(projectId, start.connect_id), {
-        status: 'pending',
-        token_set: false,
-      });
-    },
-  });
-}
-
-/* ---- schedules (F11 / D24) ----------------------------------------------- */
-
-/** A service's cron triggers (member+ read). */
-export function useServiceSchedules(serviceId: string, enabled = true) {
-  const api = useApi();
-  return useQuery({
-    queryKey: qk.serviceSchedules(serviceId),
-    queryFn: () => api.listServiceSchedules(serviceId),
-    enabled: enabled && !!serviceId,
-  });
-}
-
-export function useCreateServiceSchedule(serviceId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: CreateScheduleInput) => api.createServiceSchedule(serviceId, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceSchedules(serviceId) }),
-  });
-}
-
-export function useUpdateSchedule(serviceId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ scheduleId, input }: { scheduleId: string; input: UpdateScheduleInput }) =>
-      api.updateSchedule(scheduleId, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceSchedules(serviceId) }),
-  });
-}
-
-export function useDeleteSchedule(serviceId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (scheduleId: string) => api.deleteSchedule(scheduleId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceSchedules(serviceId) }),
-  });
-}
-
-/* ---- provider-event Automations ----------------------------------------- */
-
-export function useServiceAutomations(serviceId: string, enabled = true) {
-  const api = useApi();
-  return useQuery({
-    queryKey: qk.serviceAutomations(serviceId),
-    queryFn: () => api.listServiceAutomations(serviceId),
-    enabled: enabled && !!serviceId,
-  });
-}
-
-export function useCreateServiceAutomation(serviceId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: CreateAutomationInput) => api.createServiceAutomation(serviceId, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceAutomations(serviceId) }),
-  });
-}
-
-export function useUpdateAutomation(serviceId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ automationId, input }: { automationId: string; input: UpdateAutomationInput }) =>
-      api.updateAutomation(automationId, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceAutomations(serviceId) }),
-  });
-}
-
-export function useDeleteAutomation(serviceId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (automationId: string) => api.deleteAutomation(automationId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceAutomations(serviceId) }),
   });
 }
 
@@ -1339,62 +989,6 @@ export function useUpdateClusterProviderConfig(provider: ProviderKind) {
 export function useTestClusterProviderConfig(provider: ProviderKind) {
   const api = useApi(); const qc = useQueryClient();
   return useMutation({ mutationFn: () => api.testClusterProviderConfig(provider), onSuccess: () => qc.invalidateQueries({ queryKey: qk.clusterProvider(provider) }) });
-}
-
-/* ---- integrations (D19 / F5) --------------------------------------------- */
-
-/** A project's git integrations (member+ read). */
-export function useIntegrations(projectId: string, enabled = true) {
-  const api = useApi();
-  return useQuery({
-    queryKey: qk.integrations(projectId),
-    queryFn: () => api.listIntegrations(projectId),
-    enabled: enabled && !!projectId,
-  });
-}
-
-export function useCreateIntegration(projectId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: CreateIntegrationInput) => api.createIntegration(projectId, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.integrations(projectId) }),
-  });
-}
-
-export function useUpdateIntegration(projectId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ integrationId, input }: { integrationId: string; input: UpdateIntegrationInput }): Promise<Integration> =>
-      api.updateIntegration(integrationId, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.integrations(projectId) }),
-  });
-}
-
-export function useDeleteIntegration(projectId: string) {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (integrationId: string) => api.deleteIntegration(integrationId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.integrations(projectId) });
-      qc.invalidateQueries({ queryKey: qk.project(projectId) });
-      qc.invalidateQueries({ queryKey: qk.services(projectId) });
-    },
-  });
-}
-
-/** Repos the integration's bot token can see (for the service repo picker). */
-export function useIntegrationRepos(projectId: string, integrationId: string, q: string, enabled: boolean) {
-  const api = useApi();
-  return useQuery({
-    queryKey: ['integration-repos', projectId, integrationId, q],
-    queryFn: () => api.listIntegrationRepos(projectId, integrationId, q),
-    enabled: enabled && !!projectId && !!integrationId,
-    staleTime: 30_000,
-    retry: false,
-  });
 }
 
 /* ---- project-scoped API keys (F12 / D24) --------------------------------- */

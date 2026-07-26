@@ -2,6 +2,8 @@ package reconciler
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -114,6 +116,50 @@ func TestSnapshotRunPluginsPinsEligibleInstallations(t *testing.T) {
 	}
 }
 
+func TestReconcilerReclaimsTerminalPluginSnapshotSecrets(t *testing.T) {
+	r, st, _ := testRec(t, 1)
+	ctx := context.Background()
+	run := seedProjectAndRun(t, st)
+	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{
+		Provider: domain.PluginGitLab, BaseURL: "https://gitlab.one", PluginEnabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := st.GetProviderConfig(ctx, domain.PluginGitLab)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: run.ProjectID, Provider: domain.PluginGitLab,
+		Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("v1"), ConfigRevision: cfg.ConfigRevision,
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateRunPluginSnapshots(ctx, []domain.RunPluginSnapshot{{RunID: run.ID, InstallationID: installation.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	installation.AccessTokenEnc = []byte("v2")
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ScheduleRun(ctx, run.ID, "job", "token", "launch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkSucceeded(ctx, run.ID, "done", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	r.secretVersionCleanupInterval = 0
+	r.Tick(ctx)
+	snapshots, err := st.ListRunPluginSnapshots(ctx, run.ID)
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("snapshots=%+v err=%v", snapshots, err)
+	}
+	if len(snapshots[0].AccessTokenEnc) != 0 || snapshots[0].CredentialVersionID == "" {
+		t.Fatalf("terminal snapshot must keep audit ID but not secret: %+v", snapshots[0])
+	}
+}
+
 func TestRunPluginSnapshotCandidatesCarryProviderForRuntimeInjection(t *testing.T) {
 	r, st, _ := testRec(t, 1)
 	run := seedProjectAndRun(t, st)
@@ -154,6 +200,63 @@ func TestPluginInstallationEligible(t *testing.T) {
 	base.LastHealthError = "revoked"
 	if pluginInstallationEligible(base) {
 		t.Fatal("unhealthy installation must not be eligible")
+	}
+}
+
+func TestAutonomousRunLaunchContract(t *testing.T) {
+	rec, st, _ := testRec(t, 1)
+	run := seedProjectAndRun(t, st)
+	run.BaseBranch = "release/2026.07"
+	run.ModelEffort = "high"
+	run.GoalMode = true
+	env := rec.jobEnv(context.Background(), &run, "token-with-\"quote", envModel(), nil, rec.cfg.RunTimeoutSecs)
+	if env["BASE_BRANCH"] != run.BaseBranch {
+		t.Fatalf("BASE_BRANCH=%q want %q", env["BASE_BRANCH"], run.BaseBranch)
+	}
+	if env["TASK_PROMPT"] != "/goal "+run.Prompt {
+		t.Fatalf("goal launch prompt=%q", env["TASK_PROMPT"])
+	}
+	if _, ok := env["MODEL_REASONING_EFFORT"]; ok {
+		t.Fatal("MODEL_REASONING_EFFORT has no runner consumer; effort must only be in JCODE_CONFIG")
+	}
+	encoded, err := jcodeEffortConfigBase64(env, run.ModelEffort, true)
+	if err != nil || encoded == "" {
+		t.Fatalf("missing marshaled effort config: %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(decoded, &cfg); err != nil {
+		t.Fatalf("invalid effort JSON: %v", err)
+	}
+	providerCfg := cfg["providers"].(map[string]any)["mock"].(map[string]any)
+	if got := providerCfg["api_key"]; got != `token-with-"quote` {
+		t.Fatalf("api key was not JSON-preserved: %#v", got)
+	}
+	if got := providerCfg["base_url"]; got != rec.llmProxyBaseURL(run.ID)+"/v1" {
+		t.Fatalf("base URL=%q want proxy /v1", got)
+	}
+	if got := cfg["default_mode"]; got != "full_access" {
+		t.Fatalf("default_mode=%q", got)
+	}
+	if got := cfg["memory"].(map[string]any)["enabled"]; got != true {
+		t.Fatalf("memory.enabled=%v want true", got)
+	}
+}
+
+func TestAttachmentPromptInstructionPreservesGoalCommandAndNeverUsesFilename(t *testing.T) {
+	env := map[string]string{"TASK_PROMPT": "/goal Ship the import"}
+	appendAttachmentPromptInstruction(env)
+	if !strings.HasPrefix(env["TASK_PROMPT"], "/goal ") {
+		t.Fatalf("goal command lost: %q", env["TASK_PROMPT"])
+	}
+	if !strings.Contains(env["TASK_PROMPT"], "/run/jcloud/attachments/manifest.json") {
+		t.Fatalf("missing manifest path: %q", env["TASK_PROMPT"])
+	}
+	if strings.Contains(env["TASK_PROMPT"], "../../not-a-path.txt") {
+		t.Fatalf("filename entered prompt: %q", env["TASK_PROMPT"])
 	}
 }
 
@@ -316,6 +419,64 @@ func (e *erroringModelStore) GetModel(context.Context, string) (*domain.Model, e
 }
 
 var errTransientModel = errors.New("transient db error")
+
+func TestTickReapsExpiredWebhookReceiptsWithoutRuns(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	now := time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC)
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &domain.WebhookReceipt{
+		ID: "expired", Provider: domain.PluginGitHub, DeliveryID: "expired", ReceivedAt: now.Add(-31 * 24 * time.Hour),
+	}); err != nil || !claimed {
+		t.Fatalf("seed receipt = %v, %v", claimed, err)
+	}
+	rec := New(st, k8s.NewFakeLauncher(), &config.Config{MaxConcurrentRuns: 1}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	rec.now = func() time.Time { return now }
+	rec.Tick(ctx)
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &domain.WebhookReceipt{
+		ID: "replacement", Provider: domain.PluginGitHub, DeliveryID: "expired", ReceivedAt: now,
+	}); err != nil || !claimed {
+		t.Fatalf("expired webhook receipt survives reconciler tick: claimed=%v err=%v", claimed, err)
+	}
+}
+
+type fakeAttachmentStore struct {
+	deleted   []string
+	deleteErr error
+}
+
+func (f *fakeAttachmentStore) PresignGet(key string, _ time.Duration) (string, error) {
+	return "https://object.test/" + key, nil
+}
+func (f *fakeAttachmentStore) Delete(_ context.Context, key string) error {
+	f.deleted = append(f.deleted, key)
+	return f.deleteErr
+}
+
+func TestTickReclaimsExpiredAttachmentOnlyAfterObjectDelete(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 1)
+	now := time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC)
+	rec.now = func() time.Time { return now }
+	rec.attachmentCleanupInterval = 0
+	stage := &domain.AttachmentStage{ID: "expired", ProjectID: "p", CreatedBy: "u", ObjectKey: "run-inputs/p/expired", DisplayName: "x", SizeBytes: 1, CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(-time.Minute)}
+	if err := st.CreateAttachmentStage(ctx, stage); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeAttachmentStore{deleteErr: errors.New("s3 down")}
+	rec.attachmentStore = f
+	rec.Tick(ctx)
+	if _, err := st.GetAttachmentStage(ctx, stage.ID); err != nil {
+		t.Fatalf("failed object delete must keep stage: %v", err)
+	}
+	f.deleteErr = nil
+	rec.Tick(ctx)
+	if _, err := st.GetAttachmentStage(ctx, stage.ID); err != store.ErrNotFound {
+		t.Fatalf("successful delete must remove stage: %v", err)
+	}
+	if len(f.deleted) != 2 {
+		t.Fatalf("delete attempts=%v", f.deleted)
+	}
+}
 
 // TestCreateJobRetriesOnModelResolveError: a TRANSIENT model resolve error must
 // NOT permanently fail the run — the tick logs and skips (run stays queued, no

@@ -29,6 +29,10 @@ var ErrAlreadyExists = errors.New("already exists")
 // longer holds (for example, a device key generation advanced concurrently).
 var ErrConflict = errors.New("conflict")
 
+// ErrAttachmentQuotaExceeded is returned atomically when a project/user has
+// too many or too many bytes of unconsumed staged uploads.
+var ErrAttachmentQuotaExceeded = errors.New("attachment staging quota exceeded")
+
 // ErrDispatchClaimUnavailable means a queued run could not atomically reserve
 // the Plugin set it needs for launch (disabled, revoked, or reconfigured).
 var ErrDispatchClaimUnavailable = errors.New("dispatch claim unavailable")
@@ -110,6 +114,30 @@ type Store interface {
 
 	// Runs
 	CreateRun(ctx context.Context, r *domain.Run) error
+	// CreateCoalescedRun atomically supersedes every queued Run with the same
+	// non-empty coalesce key and creates r as the new sole queued Run. Running or
+	// scheduling Runs are left untouched. If creation fails, prior queued Runs
+	// remain unchanged. Concurrent calls are ordered by the Store transaction;
+	// the last successfully committed call wins.
+	CreateCoalescedRun(ctx context.Context, coalesceKey string, r *domain.Run) error
+	// Attachment stages are finalized by object-store Stat before CreateRun. A
+	// CreateRun carrying AttachmentStageIDs atomically consumes those stages and
+	// creates immutable bindings; it rejects foreign, expired, or unuploaded ids.
+	CreateAttachmentStage(ctx context.Context, stage *domain.AttachmentStage) error
+	GetAttachmentStage(ctx context.Context, id string) (*domain.AttachmentStage, error)
+	ClaimAttachmentStageUpload(ctx context.Context, id, projectID, userID string, at time.Time) (*domain.AttachmentStage, error)
+	MarkAttachmentStageUploaded(ctx context.Context, id string, size int64, at time.Time) error
+	ReleaseAttachmentStageUpload(ctx context.Context, id string) bool
+	ListRunAttachments(ctx context.Context, runID string) ([]domain.RunAttachment, error)
+	// Expired unbound stages are reclaimed by the reconciler. The caller must
+	// delete the object FIRST; DeleteAttachmentStage only removes the row after a
+	// successful object delete, preserving its key for retries on failures.
+	ListExpiredAttachmentStages(ctx context.Context, before time.Time, limit int) ([]domain.AttachmentStage, error)
+	DeleteAttachmentStage(ctx context.Context, id string, before time.Time) error
+	// Run attachment bindings intentionally outlive deleted Run rows until object
+	// GC succeeds. These methods find/delete only objects with no live Run ref.
+	ListOrphanedRunAttachmentObjects(ctx context.Context, limit int) ([]string, error)
+	DeleteOrphanedRunAttachmentObject(ctx context.Context, objectKey string) error
 	GetRun(ctx context.Context, id string) (*domain.Run, error)
 	GetRunByTokenHash(ctx context.Context, tokenHash string) (*domain.Run, error)
 	// GetRunByOriginCommentID returns the run a webhook comment already triggered
@@ -474,6 +502,13 @@ type Store interface {
 	// configuration and reconciles every affected installation. Semantic
 	// configuration changes must set invalidate=true.
 	UpsertProviderConfigAndInvalidate(ctx context.Context, cfg *domain.ProviderConfig, invalidate bool, reason string) error
+	// RecordProviderCapabilities updates only observed health/capability data.
+	// It must not create a new configuration revision or invalidate grants.
+	RecordProviderCapabilities(ctx context.Context, provider domain.ProviderKind, version string, capabilities []string, checkedAt time.Time) error
+	// RecordProviderHealthError updates only the latest probe observation. It
+	// must preserve the configured identity, revision, and last known capability
+	// version so a transient failure cannot invalidate otherwise valid grants.
+	RecordProviderHealthError(ctx context.Context, provider domain.ProviderKind, message string, checkedAt time.Time) error
 	CountProviderConfigImpact(ctx context.Context, provider domain.ProviderKind) (int, error)
 
 	CreatePluginInstallation(ctx context.Context, installation *domain.PluginInstallation) error
@@ -514,12 +549,21 @@ type Store interface {
 
 	ClaimWebhookReceipt(ctx context.Context, receipt *domain.WebhookReceipt) (claimed bool, err error)
 	CompleteWebhookReceipt(ctx context.Context, receipt *domain.WebhookReceipt) error
+	// DeleteExpiredWebhookReceipts removes normalized webhook delivery summaries
+	// whose fixed 30-day retention window has elapsed. It never touches raw
+	// payloads because those are deliberately not persisted.
+	DeleteExpiredWebhookReceipts(ctx context.Context, before time.Time) (int64, error)
 	CreateRunPluginSnapshots(ctx context.Context, snapshots []domain.RunPluginSnapshot) error
 	// ClearQueuedRunPluginSnapshots removes only provisional snapshots.  A
 	// scheduling/running run has a durable launch snapshot and is deliberately
 	// untouched even when its Plugin is later disabled or reconnected.
 	ClearQueuedRunPluginSnapshots(ctx context.Context, runID string) error
 	ListRunPluginSnapshots(ctx context.Context, runID string) ([]domain.RunPluginSnapshot, error)
+	// DeleteUnreferencedPluginSecretVersions removes a bounded number of
+	// historical encrypted Provider/grant rows. The immutable IDs in terminal
+	// run snapshots remain for audit, while every live Installation and every
+	// non-terminal Run keeps the runtime material it may still need.
+	DeleteUnreferencedPluginSecretVersions(ctx context.Context, limit int) (credentialVersions, providerVersions int64, err error)
 	CreatePluginAuditEvent(ctx context.Context, event *domain.PluginAuditEvent) error
 	ListPluginAuditEvents(ctx context.Context, projectID string, limit int) ([]domain.PluginAuditEvent, error)
 	ListPluginInstallationAuditEvents(ctx context.Context, projectID, installationID string, limit int) ([]domain.PluginAuditEvent, error)
@@ -684,9 +728,11 @@ type Store interface {
 	RecordAutomationDispatch(ctx context.Context, id string, at time.Time, runID, lastErr string) error
 
 	// One provider hook is shared by comment commands and every Automation on a
-	// Service. The binding stores only inspectable state, never the hook secret.
+	// Service. GitLab/Gitea persist an opaque route id and encrypted per-binding
+	// secret; neither field is serialized by the domain type.
 	UpsertWebhookBinding(ctx context.Context, b *domain.WebhookBinding) error
 	GetWebhookBinding(ctx context.Context, serviceID string) (*domain.WebhookBinding, error)
+	GetWebhookBindingByHookID(ctx context.Context, hookID string) (*domain.WebhookBinding, error)
 	// DeleteWebhookBinding clears the local observation only after the
 	// corresponding provider hook has been removed. It is idempotent at the API
 	// layer; stores return ErrNotFound when no local observation remains.

@@ -21,33 +21,20 @@ import type {
 } from 'jtype-board-react';
 import type {
   AddMemberInput,
-  Automation,
-  AutomationList,
   ApiKey,
   BoardEmbedLink,
   CatalogModel,
   ClusterProviderConfig,
   CreateApiKeyInput,
   CreateApiKeyResponse,
-  CreateAutomationInput,
   CreateProjectAutomationInput,
-  CreateKanbanLinkInput,
   CreateProjectInput,
   CreateRunInput,
-  CreateScheduleInput,
   CreateServiceInput,
   FailureReason,
   CreateModelInput,
   CreateModelProviderInput,
   CreateProviderModelInput,
-  CreateIntegrationInput,
-  Integration,
-  JtypeBoard,
-  JtypeWorkspace,
-  KanbanClusterConfig,
-  KanbanConnectStart,
-  KanbanConnectStatus,
-  KanbanLink,
   Me,
   Member,
   MemberRole,
@@ -78,19 +65,15 @@ import type {
   RunnerPrewarm,
   ResumeSessionOptions,
   RunStatus,
-  Schedule,
   Service,
+	ServiceBranch,
   SystemInfo,
-  UpdateIntegrationInput,
-  UpdateAutomationInput,
   UpdateClusterProviderConfigInput,
   UpdateProjectAutomationInput,
-  UpdateKanbanConfigInput,
   UpdateModelInput,
   UpdateModelProviderInput,
   UpdateProjectInput,
   UpdateProviderModelInput,
-  UpdateScheduleInput,
   UpdateServiceInput,
   UserSearchResult,
 } from './types';
@@ -121,36 +104,6 @@ function badRequest(message: string): ApiError {
   return new ApiError(400, message, {
     error: { code: 'bad_request', message },
   });
-}
-
-/**
- * cronError mirrors the orchestrator's schedule cron gate (F11 / D24) closely
- * enough for demo/e2e: it throws a typed `invalid_cron` / `cron_too_frequent`
- * ApiError so the UI exercises the fail-visible path. It is a LIGHTWEIGHT check
- * (5 fields, and a crude minute-cadence guard for the common every-minute and
- * step patterns) — the authoritative validation is the Go robfig/cron parser.
- */
-function cronError(expr: string): void {
-  const fields = expr.trim().split(/\s+/);
-  const invalid = (message: string): ApiError =>
-    new ApiError(400, message, { error: { code: 'invalid_cron', message } });
-  if (fields.length !== 5) {
-    throw invalid('cron_expr must be a valid 5-field cron expression');
-  }
-  const minute = fields[0] ?? '';
-  // Reject expressions that would fire more than once every 5 minutes (the
-  // server's min-interval guard). Only the obvious minute-field cases are caught
-  // here; the real parser is exhaustive.
-  const stepMatch = minute.match(/^\*\/(\d+)$/);
-  const tooFrequent =
-    minute === '*' ||
-    (stepMatch && Number(stepMatch[1] ?? '0') < 5) ||
-    /^(\d+,)+\d+$/.test(minute); // an explicit list like "0,1" can be sub-5-minutes
-  if (tooFrequent) {
-    const message =
-      'cron fires too frequently: the minimum interval between scheduled runs is 5 minutes';
-    throw new ApiError(400, message, { error: { code: 'cron_too_frequent', message } });
-  }
 }
 
 interface StoredRun extends Run {
@@ -262,17 +215,16 @@ export function createMockClient(): ApiClient {
   // with a single 'default' service — the "one repo = one project" simple UX.
   const services = new Map<string, Service[]>();
   const members = new Map<string, Member[]>();
-  // Feature E: kanban links (board→service bindings), keyed by link id.
-  const kanbanLinks = new Map<string, KanbanLink>();
-  // D29: fake jtype discovery data for the cascading pickers — a couple of
-  // workspaces, each with a board or two carrying columns. This is test-only
-  // scaffolding (red line #1 allows a mock here) so the picker flow is demoable
-  // and e2e-testable offline; a real orchestrator lists these from live jtype.
-  const JTYPE_WORKSPACES: JtypeWorkspace[] = [
-    { id: 'ws_team', name: 'My Team' },
-    { id: 'ws_solo', name: 'Personal' },
-  ];
-  const JTYPE_BOARDS: Record<string, JtypeBoard[]> = {
+  // The board proxy has fixture documents for offline embed tests. Service
+  // Kanban Automations, not these fixtures, decide which boards a project can
+  // open; plugin resource pickers are backed by their own current API below.
+  type EmbeddedBoard = {
+    id: string;
+    ref: string;
+    title: string;
+    columns: Array<{ key: string; name: string }>;
+  };
+  const embeddedBoards: Record<string, EmbeddedBoard[]> = {
     ws_team: [
       {
         id: 'b_ab12cd34',
@@ -307,101 +259,6 @@ export function createMockClient(): ApiClient {
       },
     ],
   };
-  // D27/D36: the cluster jtype config, a single mutable DB-override "row" (null =
-  // no override) holding ONLY the base URL — no cluster-level credential (D36).
-  // The demo rig has no JTYPE_BASE_URL env fallback, so an absent row resolves to
-  // source=none / off — set one here and it becomes source=db / on (no restart),
-  // mirroring the resolver so the console edit flow roundtrips.
-  let kanbanCfg: { base_url: string } | null = null;
-  function kanbanConfigView(): KanbanClusterConfig {
-    if (kanbanCfg) {
-      return {
-        base_url: kanbanCfg.base_url,
-        source: 'db',
-        effective_enabled: true,
-        effective_base_url: kanbanCfg.base_url,
-        poll_interval: '15s',
-      };
-    }
-    // No DB row and no env fallback in the demo rig ⇒ off.
-    return {
-      base_url: '',
-      source: 'none',
-      effective_enabled: false,
-      effective_base_url: '',
-      poll_interval: '15s',
-    };
-  }
-
-  // D28: the "Connect with jtype" device-flow registry, keyed by opaque
-  // connect_id (per-link + project surfaces). Each record remembers its target
-  // and a poll counter: the demo/e2e roundtrip auto-approves on the SECOND poll
-  // (the first is `pending`), mirroring a user tapping Approve in jtype's
-  // browser page. On completion we seal a fake 90-day token (token_set +
-  // token_expires_at) so the credential badge + expiry flip exactly as they
-  // would against a real orchestrator — no plaintext ever crosses. The PROJECT
-  // surface (D37) stores nothing: the poll returns a fake sealed token_enc blob
-  // the console can submit with create-link.
-  type ConnectTarget = { kind: 'link'; projectId: string; linkId: string } | { kind: 'project'; projectId: string };
-  interface ConnectRecord {
-    target: ConnectTarget;
-    polls: number;
-    tokenExpiresAt?: string;
-  }
-  const connects = new Map<string, ConnectRecord>();
-  const DEVICE_TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000; // MCP_TOKEN_TTL_SECS = 90d
-  function sixDigitCode(): string {
-    return String(Math.floor(100000 + Math.random() * 900000));
-  }
-  function startConnect(target: ConnectTarget, baseUrl: string): KanbanConnectStart {
-    const connectId = genId('kc');
-    const userCode = sixDigitCode();
-    connects.set(connectId, { target, polls: 0 });
-    return {
-      connect_id: connectId,
-      user_code: userCode,
-      verification_uri: `${baseUrl}/oauth/device`,
-      verification_uri_complete: `${baseUrl}/oauth/device?code=${userCode}`,
-      expires_in: 600,
-      interval: 2,
-    };
-  }
-  function pollConnect(connectId: string): KanbanConnectStatus {
-    const rec = connects.get(connectId);
-    if (!rec) {
-      throw new ApiError(404, 'connect flow expired', {
-        error: { code: 'connect_expired', message: 'connect flow expired or unknown' },
-      });
-    }
-    rec.polls += 1;
-    // Still waiting for the user to approve in jtype's browser page.
-    if (rec.polls < 2) return { status: 'pending', token_set: false };
-    // Approved: seal a fresh 90-day token (idempotent across repeat polls — the
-    // expiry is fixed on first completion).
-    if (!rec.tokenExpiresAt) rec.tokenExpiresAt = nowISO(DEVICE_TOKEN_TTL_MS);
-    if (rec.target.kind === 'link') {
-      const l = kanbanLinks.get(rec.target.linkId);
-      if (l) {
-        l.token_set = true;
-        l.credential_status = 'per_link';
-        l.token_expires_at = rec.tokenExpiresAt;
-        kanbanLinks.set(l.id, l);
-      }
-      return { status: 'complete', token_set: true, token_expires_at: rec.tokenExpiresAt };
-    }
-    // D37 project surface: nothing stored — the SEALED blob comes back to the
-    // console (ciphertext, never plaintext; the mock's blob is a fake).
-    return {
-      status: 'complete',
-      token_set: true,
-      token_expires_at: rec.tokenExpiresAt,
-      token_enc: `enc_${connectId}`,
-    };
-  }
-
-  // F11 / D24: schedules (service cron triggers), keyed by schedule id.
-  const schedules = new Map<string, Schedule>();
-  const automations = new Map<string, Automation>();
   const projectAutomations = new Map<string, ProjectAutomationSpec>();
   const projectPlugins = new Map<string, Map<ProviderKind, ProjectPlugin>>();
   const clusterProviders = new Map<ProviderKind, ClusterProviderConfig>((['github', 'gitlab', 'gitea', 'jtype'] as const).map((provider): [ProviderKind, ClusterProviderConfig] => [provider, { provider, base_url: provider === 'github' ? 'https://github.com' : '', login_enabled: provider !== 'jtype', plugin_enabled: true, configured: false, health: 'unknown' }]));
@@ -464,7 +321,6 @@ export function createMockClient(): ApiClient {
     };
   }
   // D19 / F5: project integrations, keyed by project id.
-  const integrations = new Map<string, Integration[]>();
   // F12 / D24: project-scoped API keys, keyed by project id. The plaintext is
   // never stored here beyond the create call's return value — only the safe
   // ApiKey fields persist, mirroring the orchestrator's hash-only storage.
@@ -1536,17 +1392,6 @@ export function createMockClient(): ApiClient {
           enabled: false,
           reason: 'S3_ARCHIVE_BUCKET and object-storage credentials are not configured',
         },
-        kanban: (() => {
-          // D27: reflect the mutable cluster config + its source so the demo edit
-          // flow roundtrips (set base_url on the Cluster page → snapshot flips on).
-          const kc = kanbanConfigView();
-          return {
-            enabled: kc.effective_enabled,
-            base_url: kc.effective_base_url,
-            poll_interval: kc.poll_interval,
-            source: kc.source,
-          };
-        })(),
       };
       return delay(info);
     },
@@ -1966,173 +1811,46 @@ export function createMockClient(): ApiClient {
       const owned = projectProvidersOf(projectId)
         .flatMap((p) => p.models)
         .filter((m) => m.enabled !== false)
-        .map((m) => ({ id: m.id, name: m.name, model_name: m.runtime_model_name }));
+        .map((m) => ({
+          id: m.id, name: m.name, model_name: m.runtime_model_name,
+          capabilities: m.capabilities,
+        }));
       const granted = [...models.values()]
         .filter((m) => modelGrants.get(m.id)?.has(projectId))
-        .map((m) => ({ id: m.id, name: m.name, model_name: m.model_name }));
+        .map((m) => ({
+          id: m.id, name: m.name, model_name: m.model_name,
+          // Legacy cluster-catalog rows predate explicit capability metadata.
+          capabilities: { reasoning: false, tools: true, image: false },
+        }));
       return delay({ models: [...owned, ...granted], env_fallback: false });
     },
 
-    /* ---- kanban links (Feature E / F6) ------------------------------------ */
-    // Cluster-admin READ-ONLY overview across all projects.
-    async listKanbanLinks(): Promise<KanbanLink[]> {
-      return delay([...kanbanLinks.values()]);
-    },
-    // A project's links (owner-managed).
-    async listProjectKanbanLinks(projectId: string): Promise<KanbanLink[]> {
-      return delay([...kanbanLinks.values()].filter((l) => l.project_id === projectId));
-    },
-    async createProjectKanbanLink(
-      projectId: string,
-      input: CreateKanbanLinkInput,
-    ): Promise<KanbanLink> {
-      const ws = input.workspace_id?.trim();
-      const board = input.board_ref?.trim();
-      if (!ws || !board || !input.service_id || !input.trigger_column?.trim()) {
-        throw badRequest('workspace_id, board_ref, service_id and trigger_column are required');
-      }
-      // The service must belong to this project.
-      const svcs = services.get(projectId) ?? [];
-      if (!svcs.some((s) => s.id === input.service_id)) {
-        throw badRequest('service does not belong to this project');
-      }
-      for (const l of kanbanLinks.values()) {
-        if (l.workspace_id === ws && l.board_ref === board) {
-          throw new ApiError(409, 'link exists', {
-            error: { code: 'already_exists', message: 'a link for this board already exists' },
-          });
-        }
-      }
-      const hasToken = !!input.token?.trim() || !!input.token_enc?.trim();
-      // D29: when a board with this ref is discoverable, capture its title so the
-      // row shows a friendly name instead of the raw ref.
-      const knownBoard = (JTYPE_BOARDS[ws] ?? []).find((b) => b.ref === board);
-      const link: KanbanLink = {
-        id: 'kl-' + Math.random().toString(36).slice(2, 10),
-        workspace_id: ws,
-        board_ref: board,
-        project_id: projectId,
-        service_id: input.service_id,
-        trigger_column: input.trigger_column.trim(),
-        done_column: input.done_column?.trim() || undefined,
-        enabled: true,
-        token_set: hasToken,
-        // A tokenless link is honestly "missing" (D36: no cluster fallback;
-        // mirrors the server derivation; exercises the error badge in demo mode).
-        credential_status: hasToken ? 'per_link' : 'missing',
-        // D29: with a credential we "hard validate" (ok); without one this is the
-        // soft-create bootstrap path — a fail-visible "unvalidated" state.
-        board_status: hasToken ? 'ok' : 'unvalidated',
-        // D37: a device-flow expiry rides along with a sealed token_enc.
-        ...(input.token_enc && input.token_expires_at ? { token_expires_at: input.token_expires_at } : {}),
-        ...(hasToken && knownBoard ? { board_title: knownBoard.title } : {}),
-        created_at: new Date().toISOString(),
-      };
-      kanbanLinks.set(link.id, link);
-      return delay(link);
-    },
-    async updateProjectKanbanLinkToken(
-      projectId: string,
-      linkId: string,
-      token: string,
-    ): Promise<KanbanLink> {
-      const l = kanbanLinks.get(linkId);
-      if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
-      l.token_set = !!token.trim();
-      l.credential_status = token.trim() ? 'per_link' : 'missing';
-      // A manual PAT (or a clear) has unknown expiry — drop any device-flow expiry.
-      l.token_expires_at = undefined;
-      kanbanLinks.set(linkId, l);
-      return delay({ ...l });
-    },
-    async deleteProjectKanbanLink(projectId: string, linkId: string): Promise<void> {
-      const l = kanbanLinks.get(linkId);
-      if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
-      kanbanLinks.delete(linkId);
-      return delay(undefined);
-    },
-
-    /* ---- kanban discovery pickers (D29) ----------------------------------- */
-    async listJtypeWorkspaces(projectId: string, tokenEnc?: string): Promise<JtypeWorkspace[]> {
-      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
-      // Fail-visible: the integration must be effective to reach jtype (else the
-      // token/base URL to enumerate workspaces doesn't exist). Mirrors the
-      // orchestrator's typed 409 so the picker falls back to manual entry.
-      if (!kanbanConfigView().effective_enabled) {
-        throw new ApiError(409, 'the cluster jtype integration is not configured', {
-          error: {
-            code: 'kanban_not_configured',
-            message: 'Ask a cluster admin to configure jtype on the Cluster page first.',
-          },
-        });
-      }
-      // D36/D37: discovery borrows a per-link token from one of the project's
-      // existing links — or uses the D37 sealed blob passed from a project
-      // connect. Neither ⇒ typed 409, the form falls back to manual.
-      if (!tokenEnc && ![...kanbanLinks.values()].some((l) => l.project_id === projectId && l.token_set)) {
-        throw new ApiError(409, 'discovery needs a jtype token', {
-          error: {
-            code: 'kanban_token_required',
-            message: 'Connect with jtype (or add a link with a token) first, or enter the ids manually.',
-          },
-        });
-      }
-      return delay(JTYPE_WORKSPACES.map((w) => ({ ...w })));
-    },
-    async listJtypeBoards(projectId: string, workspaceId: string, tokenEnc?: string): Promise<JtypeBoard[]> {
-      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
-      if (!kanbanConfigView().effective_enabled) {
-        throw new ApiError(409, 'the cluster jtype integration is not configured', {
-          error: {
-            code: 'kanban_not_configured',
-            message: 'Ask a cluster admin to configure jtype on the Cluster page first.',
-          },
-        });
-      }
-      if (!tokenEnc && ![...kanbanLinks.values()].some((l) => l.project_id === projectId && l.token_set)) {
-        throw new ApiError(409, 'discovery needs a jtype token', {
-          error: {
-            code: 'kanban_token_required',
-            message: 'Connect with jtype (or add a link with a token) first, or enter the ids manually.',
-          },
-        });
-      }
-      const boards = JTYPE_BOARDS[workspaceId];
-      if (!boards) {
-        // An unknown workspace id is a fail-visible typed error (mirrors the
-        // orchestrator's workspace_not_found), not a silent empty list.
-        throw new ApiError(400, `no jtype workspace '${workspaceId}'`, {
-          error: { code: 'workspace_not_found', message: `no jtype workspace '${workspaceId}'` },
-        });
-      }
-      return delay(boards.map((b) => ({ ...b, columns: b.columns.map((c) => ({ ...c })) })));
-    },
-
     /* ---- kanban board embed (D31) ----------------------------------------- */
-    // The member+ reduced link list (no credential fields) that gates the header
-    // button + feeds the modal selector. The stored board_ref is the ref in this
-    // mock; the real server stores the canonical config id, so we surface the
-    // discoverable board's config id here to keep the embed flow self-consistent
-    // (resolveBoardPathById matches on config.id).
+    // The member+ reduced link list is derived from current Service Kanban
+    // Automations. It has no legacy credential/link state.
     async listProjectBoardLinks(projectId: string): Promise<BoardEmbedLink[]> {
       if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
+      const serviceIds = new Set((services.get(projectId) ?? []).map((service) => service.id));
       return delay(
-        [...kanbanLinks.values()]
-          .filter((l) => l.project_id === projectId)
-          .map((l) => {
-            const board = (JTYPE_BOARDS[l.workspace_id] ?? []).find(
-              (b) => b.ref === l.board_ref,
+        [...projectAutomations.values()]
+          .filter((spec) => spec.automation.trigger_kind === 'kanban' && serviceIds.has(spec.automation.service_id) && !!spec.kanban)
+          .map((spec) => {
+            const installation = [...pluginList(projectId).values()].find(
+              (plugin) => plugin.id === spec.kanban!.installation_id,
+            );
+            const workspaceId = installation?.workspace_id ?? 'ws_team';
+            const board = (embeddedBoards[workspaceId] ?? []).find(
+              (candidate) => candidate.ref === spec.kanban!.board_ref || candidate.id === spec.kanban!.board_ref,
             );
             return {
-              id: l.id,
-              workspace_id: l.workspace_id,
-              board_ref: board?.id ?? l.board_ref,
-              board_title: l.board_title,
-              board_status: l.board_status,
-              service_id: l.service_id,
-              trigger_column: l.trigger_column,
-              done_column: l.done_column,
-              enabled: l.enabled,
+              id: spec.automation.id,
+              workspace_id: workspaceId,
+              board_ref: board?.id ?? spec.kanban!.board_ref,
+              board_title: board?.title,
+              service_id: spec.automation.service_id,
+              trigger_column: spec.kanban!.trigger_column,
+              done_column: spec.kanban!.done_column,
+              enabled: spec.automation.enabled,
             } satisfies BoardEmbedLink;
           }),
       );
@@ -2142,7 +1860,7 @@ export function createMockClient(): ApiClient {
       workspaceId: string,
     ): Promise<JTypeDocumentListItem[]> {
       if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
-      const boards = JTYPE_BOARDS[workspaceId] ?? [];
+      const boards = embeddedBoards[workspaceId] ?? [];
       return delay(
         boards.map((b) => ({
           id: `doc_${b.id}`,
@@ -2161,7 +1879,7 @@ export function createMockClient(): ApiClient {
       docId: string,
     ): Promise<JTypeCloudDocument> {
       if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
-      const board = (JTYPE_BOARDS[workspaceId] ?? []).find(
+      const board = (embeddedBoards[workspaceId] ?? []).find(
         (b) => `doc_${b.id}` === docId,
       );
       if (!board) {
@@ -2195,158 +1913,6 @@ export function createMockClient(): ApiClient {
         updatedClock: 2,
         mergeStatus: 'accepted',
       });
-    },
-
-    /* ---- cluster kanban config (D27, slimmed by D36) ----------------------- */
-    async getKanbanConfig(): Promise<KanbanClusterConfig> {
-      return delay(kanbanConfigView());
-    },
-    async updateKanbanConfig(input: UpdateKanbanConfigInput): Promise<KanbanClusterConfig> {
-      // Mirror the orchestrator's validateBaseURL gate (400 on a non-http(s) URL).
-      const base = input.base_url?.trim() ?? '';
-      if (!/^https?:\/\/.+/i.test(base)) throw badRequest('base_url must be an http(s) URL');
-      kanbanCfg = { base_url: base };
-      return delay(kanbanConfigView());
-    },
-    async deleteKanbanConfig(): Promise<KanbanClusterConfig> {
-      kanbanCfg = null;
-      return delay(kanbanConfigView());
-    },
-
-    /* ---- kanban "Connect with jtype" device flow (D28; per-link + D37 project) */
-    async startLinkConnect(projectId: string, linkId: string): Promise<KanbanConnectStart> {
-      const l = kanbanLinks.get(linkId);
-      if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
-      // Per-link connect needs the cluster integration effective (else the minted
-      // token has no jtype to talk to) — 409 kanban_not_configured, fail-visible.
-      const eff = kanbanConfigView();
-      if (!eff.effective_enabled) {
-        throw new ApiError(409, 'the cluster jtype integration is not configured', {
-          error: {
-            code: 'kanban_not_configured',
-            message: 'Ask a cluster admin to configure jtype on the Cluster page first.',
-          },
-        });
-      }
-      return delay(startConnect({ kind: 'link', projectId, linkId }, eff.effective_base_url));
-    },
-    async startProjectConnect(projectId: string): Promise<KanbanConnectStart> {
-      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
-      const eff = kanbanConfigView();
-      if (!eff.effective_enabled) {
-        throw new ApiError(409, 'the cluster jtype integration is not configured', {
-          error: {
-            code: 'kanban_not_configured',
-            message: 'Ask a cluster admin to configure jtype on the Cluster page first.',
-          },
-        });
-      }
-      return delay(startConnect({ kind: 'project', projectId }, eff.effective_base_url));
-    },
-    async pollProjectConnect(projectId: string, connectId: string): Promise<KanbanConnectStatus> {
-      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
-      return delay(pollConnect(connectId));
-    },
-    async pollLinkConnect(
-      projectId: string,
-      linkId: string,
-      connectId: string,
-    ): Promise<KanbanConnectStatus> {
-      const l = kanbanLinks.get(linkId);
-      if (!l || l.project_id !== projectId) throw new ApiError(404, 'kanban link not found');
-      return delay(pollConnect(connectId));
-    },
-
-    /* ---- schedules (F11 / D24) -------------------------------------------- */
-    async listServiceSchedules(serviceId: string): Promise<Schedule[]> {
-      return delay(
-        [...schedules.values()]
-          .filter((sc) => sc.service_id === serviceId)
-          .sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
-      );
-    },
-    async createServiceSchedule(
-      serviceId: string,
-      input: CreateScheduleInput,
-    ): Promise<Schedule> {
-      // The service must exist somewhere in the demo store.
-      let found = false;
-      for (const list of services.values()) if (list.some((s) => s.id === serviceId)) found = true;
-      if (!found) throw new ApiError(404, 'service not found');
-      const cron = input.cron_expr?.trim();
-      const prompt = input.prompt?.trim();
-      if (!cron || !prompt) throw badRequest('cron_expr and prompt are required');
-      cronError(cron); // throws invalid_cron / cron_too_frequent, mirroring the server
-      const now = new Date().toISOString();
-      const sc: Schedule = {
-        id: 'sc-' + Math.random().toString(36).slice(2, 10),
-        service_id: serviceId,
-        cron_expr: cron,
-        prompt,
-        enabled: input.enabled ?? true,
-        last_fired_at: null,
-        last_error: '',
-        created_at: now,
-        updated_at: now,
-      };
-      schedules.set(sc.id, sc);
-      return delay(sc);
-    },
-    async updateSchedule(scheduleId: string, input: UpdateScheduleInput): Promise<Schedule> {
-      const sc = schedules.get(scheduleId);
-      if (!sc) throw new ApiError(404, 'schedule not found');
-      if (input.cron_expr !== undefined) {
-        const cron = input.cron_expr.trim();
-        if (!cron) throw badRequest('cron_expr cannot be empty');
-        cronError(cron);
-        sc.cron_expr = cron;
-      }
-      if (input.prompt !== undefined) {
-        const prompt = input.prompt.trim();
-        if (!prompt) throw badRequest('prompt cannot be empty');
-        sc.prompt = prompt;
-      }
-      if (input.enabled !== undefined) sc.enabled = input.enabled;
-      sc.updated_at = new Date().toISOString();
-      schedules.set(scheduleId, sc);
-      return delay({ ...sc });
-    },
-    async deleteSchedule(scheduleId: string): Promise<void> {
-      if (!schedules.delete(scheduleId)) throw new ApiError(404, 'schedule not found');
-      return delay(undefined);
-    },
-
-    async listServiceAutomations(serviceId: string): Promise<AutomationList> {
-      return delay({
-        automations: [...automations.values()]
-          .filter((automation) => automation.service_id === serviceId)
-          .sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
-        webhook_binding: null,
-      });
-    },
-    async createServiceAutomation(serviceId: string, input: CreateAutomationInput): Promise<Automation> {
-      const now = nowISO();
-      const automation: Automation = {
-        id: genId('auto'),
-        service_id: serviceId,
-        ...input,
-        enabled: input.enabled ?? true,
-        created_at: now,
-        updated_at: now,
-      };
-      automations.set(automation.id, automation);
-      return delay({ ...automation });
-    },
-    async updateAutomation(automationId: string, input: UpdateAutomationInput): Promise<Automation> {
-      const automation = automations.get(automationId);
-      if (!automation) throw new ApiError(404, 'automation not found');
-      const updated = { ...automation, ...input, updated_at: nowISO() };
-      automations.set(automationId, updated);
-      return delay({ ...updated });
-    },
-    async deleteAutomation(automationId: string): Promise<void> {
-      if (!automations.delete(automationId)) throw new ApiError(404, 'automation not found');
-      return delay(undefined);
     },
 
     async listProjectPlugins(projectId: string): Promise<ProjectPlugin[]> {
@@ -2593,79 +2159,6 @@ export function createMockClient(): ApiClient {
     },
 
     /* ---- integrations (D19 / F5) ------------------------------------------ */
-    async listIntegrations(projectId: string): Promise<Integration[]> {
-      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
-      return delay([...(integrations.get(projectId) ?? [])]);
-    },
-    async createIntegration(projectId: string, input: CreateIntegrationInput): Promise<Integration> {
-      if (!projects.has(projectId)) throw new ApiError(404, 'project not found');
-      const name = input.name?.trim() || 'default';
-      const list = integrations.get(projectId) ?? [];
-      if (list.some((i) => i.name === name)) {
-        throw new ApiError(409, `an integration named '${name}' already exists`, {
-          error: { code: 'conflict', message: 'integration name exists' },
-        });
-      }
-      if (!input.host?.trim()) throw badRequest('host is required');
-      if (!input.token?.trim()) throw badRequest('token is required');
-      const integ: Integration = {
-        id: genId('integ'),
-        project_id: projectId,
-        name,
-        provider: input.provider,
-        host: input.host.trim(),
-        cred_type: input.cred_type || 'pat',
-        // Demo: derive a plausible bot username from the host + provider.
-        bot_username: `${input.provider}-bot`,
-        token_set: true,
-        created_at: nowISO(),
-        updated_at: nowISO(),
-      };
-      list.push(integ);
-      integrations.set(projectId, list);
-      return delay(integ);
-    },
-    async updateIntegration(integrationId: string, input: UpdateIntegrationInput): Promise<Integration> {
-      for (const [, list] of integrations) {
-        const integ = list.find((i) => i.id === integrationId);
-        if (!integ) continue;
-        if (input.name?.trim()) integ.name = input.name.trim();
-        if (input.token !== undefined) {
-          if (!input.token.trim()) throw badRequest('token cannot be empty');
-          integ.token_set = true;
-          integ.bot_username = `${integ.provider}-bot`; // refreshed on rotation
-        }
-        integ.updated_at = nowISO();
-        return delay({ ...integ });
-      }
-      throw new ApiError(404, 'integration not found');
-    },
-    async deleteIntegration(integrationId: string): Promise<void> {
-      for (const [pid, list] of integrations) {
-        const idx = list.findIndex((i) => i.id === integrationId);
-        if (idx >= 0) {
-          list.splice(idx, 1);
-          integrations.set(pid, list);
-          // Unbind any service that referenced it.
-          for (const svc of services.get(pid) ?? []) {
-            if (svc.integration_id === integrationId) svc.integration_id = null;
-          }
-          return delay(undefined);
-        }
-      }
-      throw new ApiError(404, 'integration not found');
-    },
-    async listIntegrationRepos(projectId: string, integrationId: string, q?: string) {
-      const integ = (integrations.get(projectId) ?? []).find((i) => i.id === integrationId);
-      if (!integ) throw new ApiError(404, 'integration not found');
-      const all = [
-        { id: 201, full_name: 'acme/demo', description: 'Demo web app', default_branch: 'main', private: false },
-        { id: 202, full_name: 'acme/api', description: 'Backend API', default_branch: 'main', private: true },
-        { id: 203, full_name: 'acme/infra', description: 'Infra as code', default_branch: 'main', private: true },
-      ];
-      const needle = (q ?? '').trim().toLowerCase();
-      return delay(needle ? all.filter((r) => r.full_name.toLowerCase().includes(needle)) : all);
-    },
 
     /* ---- project-scoped API keys (F12 / D24) ------------------------------- */
     async listApiKeys(projectId: string): Promise<ApiKey[]> {
@@ -2731,14 +2224,7 @@ export function createMockClient(): ApiClient {
           "git_mode 'draft_pr' requires a provider repository (owner/name); raw repos are read-only",
         );
       }
-      // Integration binding (D19 / F5): the provider comes from the integration.
-      const integrationId = input.integration_id?.trim() || undefined;
-      let boundProvider = prov;
-      if (integrationId) {
-        const integ = (integrations.get(projectId) ?? []).find((i) => i.id === integrationId);
-        if (!integ) throw badRequest('integration not found in this project');
-        boundProvider = integ.provider;
-      }
+      const boundProvider = prov;
       const svc: Service = {
         id: genId('svc'),
         project_id: projectId,
@@ -2758,7 +2244,7 @@ export function createMockClient(): ApiClient {
         raw_repo_url: boundProvider ? undefined : repoUrl,
         default_branch: input.default_branch?.trim() || 'main',
         git_mode: gitMode,
-        integration_id: integrationId ?? null,
+        integration_id: null,
         created_at: nowISO(),
       };
       list.push(svc);
@@ -2839,6 +2325,21 @@ export function createMockClient(): ApiClient {
       return delay(needle ? all.filter((r) => r.full_name.toLowerCase().includes(needle)) : all);
     },
 
+    async listServiceBranches(serviceId: string): Promise<ServiceBranch[]> {
+		let service: Service | undefined;
+		for (const list of services.values()) {
+			service = list.find((candidate) => candidate.id === serviceId);
+			if (service) break;
+		}
+		if (!service) throw new ApiError(404, 'service not found');
+		const defaultBranch = service.default_branch || 'main';
+		return delay([
+			{ name: defaultBranch, default: true, protected: true },
+			{ name: 'develop', default: false },
+			{ name: 'feature/demo', default: false },
+		]);
+	},
+
     async createServiceRun(serviceId: string, input: CreateRunInput) {
       let projectId: string | undefined;
       let svc: Service | undefined;
@@ -2870,6 +2371,26 @@ export function createMockClient(): ApiClient {
       run.model_id = modelId ?? undefined;
       run.model_name = modelId ? models.get(modelId)?.model_name : undefined;
       return delay(publicRun(run));
+    },
+
+    async uploadRunAttachment(serviceId: string, file: File) {
+      const service = [...services.values()].flat().find((candidate) => candidate.id === serviceId);
+      if (!service) throw new ApiError(404, 'service not found');
+      const now = new Date();
+      const expires = new Date(now.getTime() + 10 * 60_000);
+      return {
+        stage: {
+          id: genId('att'),
+          project_id: service.project_id,
+          display_name: file.name,
+          content_type: file.type || 'application/octet-stream',
+          size_bytes: file.size,
+          created_at: now.toISOString(),
+          expires_at: expires.toISOString(),
+        },
+        upload_url: '/api/v1/demo/attachment',
+        expires_at: expires.toISOString(),
+      };
     },
 
     /* ---- members (blueprint §2) ------------------------------------------- */

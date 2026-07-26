@@ -148,6 +148,56 @@ describe('httpClient — request shaping', () => {
     expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ prompt: 'do it' });
   });
 
+  it('stages an attachment as JSON and uploads its raw body through Cloud', async () => {
+    const { calls } = mockFetch(({ url }) => {
+      if (url.endsWith('/attachments/intents')) {
+        return {
+          status: 201,
+          body: {
+            stage: {
+              id: 'stage-1',
+              project_id: 'p1',
+              display_name: 'notes.txt',
+              content_type: 'text/plain',
+              size_bytes: 5,
+              created_at: '2026-07-26T00:00:00Z',
+              expires_at: '2026-07-26T00:10:00Z',
+            },
+            upload_url: '/api/v1/services/s1/attachments/stage-1/content',
+            expires_at: '2026-07-26T00:10:00Z',
+          },
+        };
+      }
+      return { status: 204 };
+    });
+    const client = createHttpClient('t');
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+
+    await expect(client.uploadRunAttachment('s1', file)).resolves.toMatchObject({
+      stage: { id: 'stage-1', display_name: 'notes.txt' },
+    });
+    expect(calls[0]!.url).toBe('/api/v1/services/s1/attachments/intents');
+    expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({
+      name: 'notes.txt',
+      content_type: 'text/plain',
+      size_bytes: 5,
+    });
+    expect(calls[1]!.url).toBe('/api/v1/services/s1/attachments/stage-1/content');
+    expect(calls[1]!.init).toMatchObject({ method: 'PUT', body: file, credentials: 'same-origin' });
+    expect((calls[1]!.init!.headers as Record<string, string>).Authorization).toBe('Bearer t');
+  });
+
+	it('lists browser-safe branches through the bound Service endpoint', async () => {
+		const { calls } = mockFetch(() => ({
+			body: { branches: [{ name: 'main', default: true, protected: true }] },
+		}));
+		const client = createHttpClient('t');
+		await expect(client.listServiceBranches('s1')).resolves.toEqual([
+			{ name: 'main', default: true, protected: true },
+		]);
+		expect(calls[0]!.url).toBe('/api/v1/services/s1/branches');
+	});
+
   it('POSTs to cancel and retry endpoints', async () => {
     const { calls } = mockFetch(() => ({ body: { id: 'r', status: 'canceled' } }));
     const client = createHttpClient('t');

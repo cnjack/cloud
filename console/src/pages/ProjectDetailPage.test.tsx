@@ -17,8 +17,6 @@ import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
 import type { ApiClient } from '../api/client';
 import type {
-  Automation,
-  AutomationList,
   CreateRunInput,
   CreateServiceInput,
   MemberRole,
@@ -29,9 +27,8 @@ import type {
   ProjectPlugin,
   Run,
   Service,
-  CreateAutomationInput,
+	ServiceBranch,
   UpdateServiceInput,
-  UpdateAutomationInput,
 } from '../api/types';
 import { pickOption } from '../test/select';
 
@@ -67,8 +64,7 @@ interface Calls {
   services: { pid: string; input: CreateServiceInput }[];
   serviceUpdates: { sid: string; input: UpdateServiceInput }[];
   serviceDeletes: string[];
-  automations: { sid: string; input: CreateAutomationInput }[];
-  automationUpdates: { id: string; input: UpdateAutomationInput }[];
+  attachmentUploads: File[];
 }
 
 function makeClient(
@@ -78,11 +74,17 @@ function makeClient(
     models?: ProjectModel[];
     plugins?: ProjectPlugin[];
     pluginRepos?: PluginRepositoryResource[];
-    automationList?: AutomationList;
     projectAutomations?: ProjectAutomationSpec[];
+	branches?: ServiceBranch[];
   } = {},
 ): { client: ApiClient; calls: Calls } {
-  const calls: Calls = { serviceRuns: [], services: [], serviceUpdates: [], serviceDeletes: [], automations: [], automationUpdates: [] };
+  const calls: Calls = {
+    serviceRuns: [],
+    services: [],
+    serviceUpdates: [],
+    serviceDeletes: [],
+    attachmentUploads: [],
+  };
   const client: Partial<ApiClient> = {
     getProject: async () => p,
     listRuns: async () => [] as Run[],
@@ -101,23 +103,30 @@ function makeClient(
       models: opts.models ?? [],
       env_fallback: opts.models ? false : (opts.modelConfigured ?? true),
     }),
-    listServiceAutomations: async () => opts.automationList ?? { automations: [], webhook_binding: null },
     listProjectAutomations: async () => opts.projectAutomations ?? [],
-    createServiceAutomation: async (sid, input) => {
-      calls.automations.push({ sid, input });
-      return {
-        id: 'auto-new', service_id: sid, created_at: '', updated_at: '',
-        last_error: '', last_run_id: '', ...input,
-      } as Automation;
-    },
-    updateAutomation: async (id, input) => {
-      calls.automationUpdates.push({ id, input });
-      return { id, service_id: 'svc_default', created_at: '', updated_at: '', name: 'PR review', instructions: 'Review', trigger_type: 'pr_review', model_id: 'm1', events: ['opened'], base_branch: 'main', include_drafts: false, enabled: true, ...input } as Automation;
-    },
-    deleteAutomation: async () => undefined,
+	listServiceBranches: async () => opts.branches ?? [
+		{ name: 'main', default: true, protected: true },
+		{ name: 'release/2026.07', default: false },
+	],
     createServiceRun: async (sid, input) => {
       calls.serviceRuns.push({ sid, input });
       return { id: 'r2', project_id: 'p1', service_id: sid, prompt: input.prompt, status: 'queued', created_at: '' } as Run;
+    },
+    uploadRunAttachment: async (_sid, file) => {
+      calls.attachmentUploads.push(file);
+      return {
+        stage: {
+          id: `stage-${calls.attachmentUploads.length}`,
+          project_id: p.id,
+          display_name: file.name,
+          content_type: file.type,
+          size_bytes: file.size,
+          created_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 60_000).toISOString(),
+        },
+        upload_url: `/upload/${calls.attachmentUploads.length}`,
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+      };
     },
     createService: async (pid, input) => {
       calls.services.push({ pid, input });
@@ -225,6 +234,23 @@ describe('ProjectDetailPage — single-repo composer', () => {
 
     await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
     expect(calls.serviceRuns[0]).toMatchObject({ sid: 'svc_default', input: { prompt: 'do a thing' } });
+  });
+
+  it('defaults to the Service branch and submits a selected discovered branch as base_branch', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(client);
+
+    const branch = await screen.findByTestId('composer-branch-select');
+    await waitFor(() => expect(branch.textContent).toContain('main'));
+    await pickOption('composer-branch-select', 'release/2026.07');
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'ship release' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect(calls.serviceRuns[0]!.input).toMatchObject({
+      prompt: 'ship release',
+      base_branch: 'release/2026.07',
+    });
   });
 });
 
@@ -380,8 +406,8 @@ describe('ProjectDetailPage — permission mode (F8b)', () => {
 
 describe('ProjectDetailPage — model selection (D21)', () => {
   const grantedModels: ProjectModel[] = [
-    { id: 'm_gpt', name: 'GPT-4o', model_name: 'openai/gpt-4o' },
-    { id: 'm_claude', name: 'Claude', model_name: 'anthropic/claude' },
+    { id: 'm_gpt', name: 'GPT-4o', model_name: 'openai/gpt-4o', capabilities: { reasoning: true, tools: true, image: false } },
+    { id: 'm_claude', name: 'Claude', model_name: 'anthropic/claude', capabilities: { reasoning: false, tools: true, image: false } },
   ];
 
   it('renders a model select from granted models and dispatches with the picked model_id', async () => {
@@ -418,6 +444,72 @@ describe('ProjectDetailPage — model selection (D21)', () => {
 
     await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
     expect(calls.serviceRuns[0]!.input.model_id).toBeUndefined();
+  });
+
+  it('uploads attachments and dispatches branch, reasoning effort, and native goal mode together', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      models: grantedModels,
+    });
+    renderPage(client);
+
+    await screen.findByTestId('composer-model-select');
+    await pickOption('composer-model-select', 'GPT-4o');
+    await pickOption('composer-effort-select', 'Effort · High');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Goal mode' }));
+    const notes = new File(['acceptance criteria'], 'notes.txt', { type: 'text/plain' });
+    fireEvent.change(screen.getByTestId('composer-attachment-input'), { target: { files: [notes] } });
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'ship it' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect(calls.attachmentUploads).toEqual([notes]);
+    expect(calls.serviceRuns[0]!.input).toMatchObject({
+      prompt: 'ship it',
+      base_branch: 'main',
+      model_id: 'm_gpt',
+      model_effort: 'high',
+      goal_mode: true,
+      attachment_stage_ids: ['stage-1'],
+    });
+  });
+
+  it('rejects attachments that would push one Run over 100 MiB before upload', async () => {
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      models: grantedModels,
+    });
+    renderPage(client);
+
+    await screen.findByTestId('composer-attachment-input');
+    const sizedFile = (name: string, size: number) => {
+      const file = new File(['x'], name, { type: 'application/octet-stream' });
+      Object.defineProperty(file, 'size', { value: size });
+      return file;
+    };
+    const twentyFiveMiB = 25 * 1024 * 1024;
+    const firstBatch = [0, 1, 2, 3].map((index) => sizedFile(`part-${index}.bin`, twentyFiveMiB));
+    fireEvent.change(screen.getByTestId('composer-attachment-input'), { target: { files: firstBatch } });
+    expect(screen.getAllByText(/part-\d\.bin/)).toHaveLength(4);
+
+    const overflow = sizedFile('overflow.bin', 1);
+    fireEvent.change(screen.getByTestId('composer-attachment-input'), { target: { files: [overflow] } });
+    expect((await screen.findByRole('alert')).textContent).toContain('Attachments can total at most 100 MiB per Run.');
+    expect(screen.queryByTitle('overflow.bin')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'ship it' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect(calls.attachmentUploads).toEqual(firstBatch);
+  });
+
+  it('does not offer a reasoning effort for a model that lacks the capability', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      models: grantedModels,
+    });
+    renderPage(client);
+
+    await screen.findByTestId('composer-model-select');
+    await pickOption('composer-model-select', 'Claude');
+    expect(screen.queryByTestId('composer-effort-select')).toBeNull();
   });
 
   it('keeps the service default-model editor in Settings and PATCHes on change', async () => {
@@ -474,6 +566,7 @@ describe('ProjectDetailPage — multi-repo workspace', () => {
 
     fireEvent.click(screen.getByTestId('service-rail-svc_web'));
 
+    await waitFor(() => expect((screen.getByTestId('run-submit') as HTMLButtonElement).disabled).toBe(false));
     fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'ship it' } });
     fireEvent.click(screen.getByTestId('run-submit'));
 
@@ -516,8 +609,8 @@ describe('ProjectDetailPage — multi-repo workspace', () => {
     const models = vi.fn(async (id: string) => ({
       models:
         id === 'p2'
-          ? [{ id: 'm_p2', name: 'P2 model', model_name: 'provider/p2' }]
-          : [{ id: 'm_p1', name: 'P1 model', model_name: 'provider/p1' }],
+          ? [{ id: 'm_p2', name: 'P2 model', model_name: 'provider/p2', capabilities: { reasoning: false, tools: true, image: false } }]
+          : [{ id: 'm_p1', name: 'P1 model', model_name: 'provider/p1', capabilities: { reasoning: false, tools: true, image: false } }],
       env_fallback: false,
     }));
     (client as { getProject?: unknown }).getProject = async (id: string) => (id === 'p2' ? p2 : p1);
@@ -556,8 +649,6 @@ describe('ProjectDetailPage — workspace sections', () => {
         actions: [{ event_family: 'pull_request', action: 'opened' }],
       }],
     });
-    const schedules = vi.fn(async () => []);
-    (client as { listServiceSchedules?: unknown }).listServiceSchedules = schedules;
     renderPage(client);
 
     await screen.findByTestId('run-input');
@@ -565,8 +656,6 @@ describe('ProjectDetailPage — workspace sections', () => {
 
     expect(await screen.findByText('Gitea PR automatic review')).toBeTruthy();
     expect(screen.getByText('Review security and regressions.')).toBeTruthy();
-    expect(screen.queryByTestId('schedules-panel')).toBeNull();
-    expect(schedules).not.toHaveBeenCalled();
   });
 
   it('links the Automation primary action to the independent editor route', async () => {
@@ -598,8 +687,6 @@ describe('ProjectDetailPage — workspace sections', () => {
   it('keeps Automations active while changing the selected service', async () => {
     const services = [svc('svc_default', 'default'), svc('svc_web', 'web')];
     const { client } = makeClient(project('owner', services));
-    const schedules = vi.fn(async () => []);
-    (client as { listServiceSchedules?: unknown }).listServiceSchedules = schedules;
     renderPage(client);
 
     await screen.findByTestId('run-input');
@@ -609,7 +696,6 @@ describe('ProjectDetailPage — workspace sections', () => {
 
     expect(screen.getByRole('tab', { name: 'Automations' }).getAttribute('aria-selected')).toBe('true');
     expect(screen.getByRole('heading', { name: 'web' })).toBeTruthy();
-    expect(schedules).not.toHaveBeenCalled();
   });
 
   it('loads Service Kanban bindings but hides the action without an enabled JType Plugin', async () => {
@@ -696,7 +782,7 @@ describe('ProjectDetailPage — zero-repo empty state', () => {
     expect(screen.queryByTestId('runs-empty')).toBeNull();
     expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.queryByTestId('add-repo-trigger')).toBeNull();
-    expect(screen.getByTestId('empty-add-service')).toBeTruthy();
+    expect(await screen.findByTestId('empty-add-service')).toBeTruthy();
   });
 
   it('replaces onboarding with a focused first-service setup instead of appending it below activity', async () => {
@@ -753,8 +839,6 @@ describe('ProjectDetailPage — viewer gating', () => {
 
   it('does not query or misrepresent service automations for a viewer', async () => {
     const { client } = makeClient(project('viewer', [svc('svc_default', 'default')]));
-    const schedules = vi.fn(async () => []);
-    (client as { listServiceSchedules?: unknown }).listServiceSchedules = schedules;
     renderPage(client);
 
     await screen.findByTestId('runs-empty');
@@ -762,7 +846,6 @@ describe('ProjectDetailPage — viewer gating', () => {
 
     expect(await screen.findByTestId('project-automations-panel')).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'New Automation' })).toBeNull();
-    expect(schedules).not.toHaveBeenCalled();
   });
 });
 

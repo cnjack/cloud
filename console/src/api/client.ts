@@ -14,8 +14,6 @@ import type {
 } from 'jtype-board-react';
 import type {
   AddMemberInput,
-  Automation,
-  AutomationList,
   ApiKey,
   ApiKeysEnvelope,
   AuthProviderInfo,
@@ -25,26 +23,14 @@ import type {
   ClusterProviderConfig,
   CreateApiKeyInput,
   CreateApiKeyResponse,
-  CreateAutomationInput,
   CreateProjectAutomationInput,
-  CreateKanbanLinkInput,
   CreateProjectInput,
-  CreateIntegrationInput,
   CreateModelInput,
   CreateModelProviderInput,
   CreateProviderModelInput,
   CreateRunInput,
-  CreateScheduleInput,
   CreateServiceInput,
   EventsEnvelope,
-  Integration,
-  IntegrationsEnvelope,
-  JtypeBoard,
-  JtypeWorkspace,
-  KanbanClusterConfig,
-  KanbanConnectStart,
-  KanbanConnectStatus,
-  KanbanLink,
   Me,
   Member,
   MembersEnvelope,
@@ -73,6 +59,7 @@ import type {
   ProjectsEnvelope,
   ProviderRepo,
   Run,
+  RunAttachmentIntent,
   RunArtifact,
   RunEvent,
   RunMessage,
@@ -80,24 +67,20 @@ import type {
   RunnerPrewarm,
   ResumeSessionOptions,
   RunsEnvelope,
-  Schedule,
   Service,
+  ServiceBranch,
   ServiceWebhookSetup,
   ServicesEnvelope,
   StreamFrame,
   SystemInfo,
-  UpdateAutomationInput,
   UpdateClusterProviderConfigInput,
   UpdateProjectAutomationInput,
   PutServiceKanbanInput,
   ServiceKanbanBinding,
-  UpdateIntegrationInput,
-  UpdateKanbanConfigInput,
   UpdateModelInput,
   UpdateModelProviderInput,
   UpdateProjectInput,
   UpdateProviderModelInput,
-  UpdateScheduleInput,
   UpdateServiceInput,
   UserSearchResult,
   UsersEnvelope,
@@ -263,57 +246,13 @@ export interface ApiClient {
    */
   listProjectModels(projectId: string): Promise<ProjectModels>;
 
-  /* ---- kanban links (Feature E / F6) ------------------------------------ */
-  /**
-   * GET /api/v1/system/kanban/links — cluster-admin READ-ONLY overview of every
-   * board→service binding across all projects (each carries project_id).
-   */
-  listKanbanLinks(): Promise<KanbanLink[]>;
-  /** GET /api/v1/projects/{id}/kanban/links — a project's links (owner). */
-  listProjectKanbanLinks(projectId: string): Promise<KanbanLink[]>;
-  /**
-   * POST /api/v1/projects/{id}/kanban/links — bind a board column to one of the
-   * project's services (owner). `token` (optional, write-only) is the per-link
-   * jtype PAT; omit it to create the link without a credential (D36: there is
-   * no cluster fallback — set one later via PATCH or Connect).
-   */
-  createProjectKanbanLink(projectId: string, input: CreateKanbanLinkInput): Promise<KanbanLink>;
-  /**
-   * PATCH /api/v1/projects/{id}/kanban/links/{linkId} — rotate or clear ONLY the
-   * link's per-link jtype token (owner; claims retained). "" clears it (the link
-   * then has no credential); any other value rotates. Write-only, as on create.
-   */
-  updateProjectKanbanLinkToken(projectId: string, linkId: string, token: string): Promise<KanbanLink>;
-  /** DELETE /api/v1/projects/{id}/kanban/links/{linkId} — remove a link (owner). */
-  deleteProjectKanbanLink(projectId: string, linkId: string): Promise<void>;
-
-  /* ---- kanban discovery pickers (D29) ----------------------------------- */
-  /**
-   * GET /api/v1/projects/{id}/kanban/jtype/workspaces — the caller's jtype
-   * workspaces for the create-link workspace picker (owner). The credential is
-   * resolved server-side: an optional `tokenEnc` (D37 sealed blob from a
-   * project-surface connect, sent as X-Jtype-Token-Enc) takes precedence, else
-   * a per-link token borrowed from the project's existing links. 409
-   * kanban_not_configured (integration off) or 409 kanban_token_required (no
-   * credential at all) / 503 jtype_unreachable — all fail-visible: the form
-   * falls back to manual entry. 400 jtype_unauthorized / bad_token_enc for a
-   * bad credential.
-   */
-  listJtypeWorkspaces(projectId: string, tokenEnc?: string): Promise<JtypeWorkspace[]>;
-  /**
-   * GET /api/v1/projects/{id}/kanban/jtype/boards?workspace=<id> — the boards
-   * (with columns) in a workspace for the board + column pickers (owner). Typed
-   * errors mirror listJtypeWorkspaces.
-   */
-  listJtypeBoards(projectId: string, workspaceId: string, tokenEnc?: string): Promise<JtypeBoard[]>;
-
   /* ---- kanban board embed (D31) ----------------------------------------- */
   /**
    * GET /api/v1/projects/{id}/kanban/board/links — the reduced, member+ list of
    * the project's kanban links (no credential fields). Gates the "Kanban" header
    * button and feeds the board-embed modal's link selector. 403 for a viewer /
-   * non-member (→ empty list → no button); this is NOT the owner-only
-   * `listProjectKanbanLinks`.
+   * non-member (→ empty list → no button). Links are derived from current
+   * Service Kanban Automations, never from a separately managed credential row.
    */
   listProjectBoardLinks(projectId: string): Promise<BoardEmbedLink[]>;
   /**
@@ -344,86 +283,6 @@ export interface ApiClient {
     req: JTypeSaveDocumentRequest,
   ): Promise<JTypeSaveDocumentResponse>;
 
-  /* ---- cluster kanban config (D27, slimmed by D36) ----------------------- */
-  /**
-   * GET /api/v1/system/kanban — the cluster jtype config resolved DB › env › off
-   * (cluster-admin). The config is just the base URL; there are no credential
-   * fields (D36).
-   */
-  getKanbanConfig(): Promise<KanbanClusterConfig>;
-  /**
-   * PUT /api/v1/system/kanban — set the DB override's base_url (required, the
-   * only field; cluster-admin). 400 for an invalid base_url. Returns the
-   * resolved config (the GET shape).
-   */
-  updateKanbanConfig(input: UpdateKanbanConfigInput): Promise<KanbanClusterConfig>;
-  /**
-   * DELETE /api/v1/system/kanban — drop the DB override, falling back to env/off
-   * (cluster-admin). Returns the new resolved config (the GET shape).
-   */
-  deleteKanbanConfig(): Promise<KanbanClusterConfig>;
-
-  /* ---- kanban "Connect with jtype" device flow (D28; per-link only, D36) -- */
-  /**
-   * POST /api/v1/projects/{id}/kanban/links/{linkID}/connect — start a device
-   * flow for a PER-LINK token (owner). The link must already exist (create it
-   * with a blank token first). 409 kanban_not_configured when the cluster
-   * integration is off; 404 for a link that isn't this project's.
-   */
-  startLinkConnect(projectId: string, linkId: string): Promise<KanbanConnectStart>;
-  /**
-   * GET /api/v1/projects/{id}/kanban/links/{linkID}/connect/{connectID} — poll a
-   * per-link device flow. On `complete` the token is sealed into the link's row
-   * (credential_status flips to per_link). Unknown connect_id → 404 connect_expired.
-   */
-  pollLinkConnect(projectId: string, linkId: string, connectId: string): Promise<KanbanConnectStatus>;
-  /**
-   * POST /api/v1/projects/{id}/kanban/connect — start a PROJECT-surface device
-   * flow (owner, D37): connect BEFORE the first link exists. 409
-   * kanban_not_configured when the cluster integration is off.
-   */
-  startProjectConnect(projectId: string): Promise<KanbanConnectStart>;
-  /**
-   * GET /api/v1/projects/{id}/kanban/connect/{connectID} — poll a project-surface
-   * flow. On `complete` the response carries `token_enc` — the SEALED blob
-   * (ciphertext, never plaintext) the console uses for discovery + create-link.
-   * Unknown connect_id → 404 connect_expired.
-   */
-  pollProjectConnect(projectId: string, connectId: string): Promise<KanbanConnectStatus>;
-
-  /* ---- schedules (F11 / D24) -------------------------------------------- */
-  /** GET /api/v1/services/{id}/schedules — a service's cron triggers (member+). */
-  listServiceSchedules(serviceId: string): Promise<Schedule[]>;
-  /** POST /api/v1/services/{id}/schedules — create a cron trigger (owner). */
-  createServiceSchedule(serviceId: string, input: CreateScheduleInput): Promise<Schedule>;
-  /** PATCH /api/v1/schedules/{id} — edit cron_expr/prompt/enabled (owner). */
-  updateSchedule(scheduleId: string, input: UpdateScheduleInput): Promise<Schedule>;
-  /** DELETE /api/v1/schedules/{id} — remove a cron trigger (owner). */
-  deleteSchedule(scheduleId: string): Promise<void>;
-
-  /* ---- integrations (D19 / F5) ------------------------------------------ */
-  /** GET /api/v1/projects/{id}/integrations — the project's integrations (member+). */
-  listIntegrations(projectId: string): Promise<Integration[]>;
-  /**
-   * POST /api/v1/projects/{id}/integrations — add a git integration (owner). The
-   * server verifies the token against the provider (400 integration_unreachable),
-   * validates the host against the cluster allowlist (400 host_not_allowed), and
-   * discovers bot_username. `token` is write-only.
-   */
-  createIntegration(projectId: string, input: CreateIntegrationInput): Promise<Integration>;
-  /**
-   * PATCH /api/v1/integrations/{id} — rename and/or rotate the token (owner). A
-   * rotation re-verifies and refreshes bot_username. token is write-only.
-   */
-  updateIntegration(integrationId: string, input: UpdateIntegrationInput): Promise<Integration>;
-  /** DELETE /api/v1/integrations/{id} — remove an integration (owner). Bound services unbind. */
-  deleteIntegration(integrationId: string): Promise<void>;
-  /**
-   * GET /api/v1/projects/{id}/integrations/{iid}/repos?q= — repos the integration's
-   * bot token can see (member+), for the service-onboarding repo picker.
-   */
-  listIntegrationRepos(projectId: string, integrationId: string, q?: string): Promise<ProviderRepo[]>;
-
   /* ---- project-scoped API keys (F12 / D24) ------------------------------- */
   /** GET /api/v1/projects/{id}/apikeys — the project's keys, owner only. */
   listApiKeys(projectId: string): Promise<ApiKey[]>;
@@ -451,10 +310,6 @@ export interface ApiClient {
    * visible to the Automation page.
    */
   ensureServiceWebhook(serviceId: string): Promise<ServiceWebhookSetup>;
-  listServiceAutomations(serviceId: string): Promise<AutomationList>;
-  createServiceAutomation(serviceId: string, input: CreateAutomationInput): Promise<Automation>;
-  updateAutomation(automationId: string, input: UpdateAutomationInput): Promise<Automation>;
-  deleteAutomation(automationId: string): Promise<void>;
   /* ---- unified project plugins (plugin-platform v1) --------------------- */
   /** GET /projects/{id}/plugins — fixed Provider cards, member+ read. */
   listProjectPlugins(projectId: string): Promise<ProjectPlugin[]>;
@@ -483,8 +338,12 @@ export interface ApiClient {
   getServiceKanban(serviceId: string): Promise<ServiceKanbanBinding>;
   putServiceKanban(serviceId: string, input: PutServiceKanbanInput): Promise<ServiceKanbanBinding>;
   deleteServiceKanban(serviceId: string): Promise<void>;
+  /** Lists branches through the Service's bound Plugin; never exposes a Git credential. */
+  listServiceBranches(serviceId: string): Promise<ServiceBranch[]>;
   /** POST /api/v1/services/{id}/runs — dispatch a run against a specific service. */
   createServiceRun(serviceId: string, input: CreateRunInput): Promise<Run>;
+  /** Stages one bounded Project attachment through Cloud; no object-store URL is exposed. */
+  uploadRunAttachment(serviceId: string, file: File): Promise<RunAttachmentIntent>;
   /**
    * GET /providers/{id}/repos?q= — the Drone-style onboarding picker: repos the
    * caller's provider credential can see. 403 when no credential is linked.
@@ -845,48 +704,6 @@ export function createHttpClient(
     listProjectModels: (projectId) =>
       req<ProjectModels>(`/projects/${encodeURIComponent(projectId)}/models`),
 
-    // Kanban links (Feature E / F6). Management is project-scoped (owner); the
-    // system list is a cluster-admin read-only overview.
-    listKanbanLinks: async () =>
-      (await req<{ links: KanbanLink[] }>('/system/kanban/links')).links ?? [],
-    listProjectKanbanLinks: async (projectId) =>
-      (await req<{ links: KanbanLink[] }>(`/projects/${encodeURIComponent(projectId)}/kanban/links`))
-        .links ?? [],
-    createProjectKanbanLink: (projectId, input) =>
-      req<KanbanLink>(`/projects/${encodeURIComponent(projectId)}/kanban/links`, {
-        method: 'POST',
-        body: JSON.stringify(input),
-      }),
-    updateProjectKanbanLinkToken: (projectId, linkId, token) =>
-      req<KanbanLink>(
-        `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(linkId)}`,
-        { method: 'PATCH', body: JSON.stringify({ token }) },
-      ),
-    deleteProjectKanbanLink: (projectId, linkId) =>
-      req<void>(
-        `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(linkId)}`,
-        { method: 'DELETE' },
-      ),
-
-    // Kanban discovery pickers (D29). The credential is resolved server-side
-    // (D36: a borrowed per-link token; D37: an optional sealed blob riding as
-    // X-Jtype-Token-Enc) and never crosses the wire as plaintext — the responses
-    // carry only workspace/board metadata.
-    listJtypeWorkspaces: async (projectId, tokenEnc) =>
-      (
-        await req<{ workspaces: JtypeWorkspace[] }>(
-          `/projects/${encodeURIComponent(projectId)}/kanban/jtype/workspaces`,
-          tokenEnc ? { headers: { 'X-Jtype-Token-Enc': tokenEnc } } : undefined,
-        )
-      ).workspaces ?? [],
-    listJtypeBoards: async (projectId, workspaceId, tokenEnc) =>
-      (
-        await req<{ boards: JtypeBoard[] }>(
-          `/projects/${encodeURIComponent(projectId)}/kanban/jtype/boards?workspace=${encodeURIComponent(workspaceId)}`,
-          tokenEnc ? { headers: { 'X-Jtype-Token-Enc': tokenEnc } } : undefined,
-        )
-      ).boards ?? [],
-
     // Kanban board embed (D31). The member+ board proxy: `board/links` gates the
     // header button + selector (reduced view, no credential fields); the
     // documents/* routes proxy jtype's document API with the effective token
@@ -911,90 +728,6 @@ export function createHttpClient(
         `/projects/${encodeURIComponent(projectId)}/kanban/board/documents/save?workspace=${encodeURIComponent(workspaceId)}`,
         { method: 'POST', body: JSON.stringify(body) },
       ),
-
-    // Cluster kanban config (D27/D36). Cluster-admin — set/clear the DB override
-    // (the jtype base URL) that supersedes the JTYPE_BASE_URL env fallback.
-    getKanbanConfig: () => req<KanbanClusterConfig>('/system/kanban'),
-    updateKanbanConfig: (input) =>
-      req<KanbanClusterConfig>('/system/kanban', {
-        method: 'PUT',
-        body: JSON.stringify(input),
-      }),
-    deleteKanbanConfig: () =>
-      req<KanbanClusterConfig>('/system/kanban', { method: 'DELETE' }),
-
-    // Kanban "Connect with jtype" device flow (D28; per-link only, D36). Start =
-    // POST (device_code withheld); the console then polls the GET with the opaque
-    // connect_id while the user authorises in jtype's browser page.
-    startLinkConnect: (projectId, linkId) =>
-      req<KanbanConnectStart>(
-        `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(linkId)}/connect`,
-        { method: 'POST' },
-      ),
-    pollLinkConnect: (projectId, linkId, connectId) =>
-      req<KanbanConnectStatus>(
-        `/projects/${encodeURIComponent(projectId)}/kanban/links/${encodeURIComponent(
-          linkId,
-        )}/connect/${encodeURIComponent(connectId)}`,
-      ),
-    // D37: the PROJECT-surface flow (connect before the first link). On complete
-    // the poll carries token_enc (sealed blob) for discovery + create-link.
-    startProjectConnect: (projectId) =>
-      req<KanbanConnectStart>(
-        `/projects/${encodeURIComponent(projectId)}/kanban/connect`,
-        { method: 'POST' },
-      ),
-    pollProjectConnect: (projectId, connectId) =>
-      req<KanbanConnectStatus>(
-        `/projects/${encodeURIComponent(projectId)}/kanban/connect/${encodeURIComponent(connectId)}`,
-      ),
-
-    // Schedules (F11 / D24). Listing is service-scoped (member+); management is
-    // owner-only and keyed off the bare schedule id.
-    listServiceSchedules: async (serviceId) =>
-      (
-        await req<{ schedules: Schedule[] }>(
-          `/services/${encodeURIComponent(serviceId)}/schedules`,
-        )
-      ).schedules ?? [],
-    createServiceSchedule: (serviceId, input) =>
-      req<Schedule>(`/services/${encodeURIComponent(serviceId)}/schedules`, {
-        method: 'POST',
-        body: JSON.stringify(input),
-      }),
-    updateSchedule: (scheduleId, input) =>
-      req<Schedule>(`/schedules/${encodeURIComponent(scheduleId)}`, {
-        method: 'PATCH',
-        body: JSON.stringify(input),
-      }),
-    deleteSchedule: (scheduleId) =>
-      req<void>(`/schedules/${encodeURIComponent(scheduleId)}`, { method: 'DELETE' }),
-
-    // Integrations (D19 / F5).
-    listIntegrations: async (projectId) =>
-      (
-        await req<IntegrationsEnvelope>(
-          `/projects/${encodeURIComponent(projectId)}/integrations`,
-        )
-      ).integrations ?? [],
-    createIntegration: (projectId, input) =>
-      req<Integration>(`/projects/${encodeURIComponent(projectId)}/integrations`, {
-        method: 'POST',
-        body: JSON.stringify(input),
-      }),
-    updateIntegration: (integrationId, input) =>
-      req<Integration>(`/integrations/${encodeURIComponent(integrationId)}`, {
-        method: 'PATCH',
-        body: JSON.stringify(input),
-      }),
-    deleteIntegration: (integrationId) =>
-      req<void>(`/integrations/${encodeURIComponent(integrationId)}`, { method: 'DELETE' }),
-    listIntegrationRepos: async (projectId, integrationId, q) =>
-      (
-        await req<{ repos: ProviderRepo[] }>(
-          `/projects/${encodeURIComponent(projectId)}/integrations/${encodeURIComponent(integrationId)}/repos${q ? `?q=${encodeURIComponent(q)}` : ''}`,
-        )
-      ).repos ?? [],
 
     // Project-scoped API keys (F12 / D24).
     listApiKeys: async (projectId) =>
@@ -1040,21 +773,6 @@ export function createHttpClient(
       req<ServiceWebhookSetup>(`/services/${encodeURIComponent(serviceId)}/webhook`, {
         method: 'POST',
       }),
-
-    listServiceAutomations: (serviceId) =>
-      req<AutomationList>(`/services/${encodeURIComponent(serviceId)}/automations`),
-    createServiceAutomation: (serviceId, input) =>
-      req<Automation>(`/services/${encodeURIComponent(serviceId)}/automations`, {
-        method: 'POST',
-        body: JSON.stringify(input),
-      }),
-    updateAutomation: (automationId, input) =>
-      req<Automation>(`/automations/${encodeURIComponent(automationId)}`, {
-        method: 'PATCH',
-        body: JSON.stringify(input),
-      }),
-    deleteAutomation: (automationId) =>
-      req<void>(`/automations/${encodeURIComponent(automationId)}`, { method: 'DELETE' }),
 
     listProjectPlugins: async (projectId) =>
       (await req<{ plugins: ProjectPlugin[] }>(`/projects/${encodeURIComponent(projectId)}/plugins`)).plugins ?? [],
@@ -1108,11 +826,39 @@ export function createHttpClient(
     }),
     deleteServiceKanban: (serviceId) => req<void>(`/services/${encodeURIComponent(serviceId)}/kanban`, { method: 'DELETE' }),
 
+    listServiceBranches: async (serviceId) =>
+      (await req<{ branches: ServiceBranch[] }>(`/services/${encodeURIComponent(serviceId)}/branches`)).branches ?? [],
+
     createServiceRun: (serviceId, input) =>
       req<Run>(`/services/${encodeURIComponent(serviceId)}/runs`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
+    uploadRunAttachment: async (serviceId, file) => {
+      const intent = await req<RunAttachmentIntent>(
+        `/services/${encodeURIComponent(serviceId)}/attachments/intents`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: file.name,
+            content_type: file.type || 'application/octet-stream',
+            size_bytes: file.size,
+          }),
+        },
+      );
+      const res = await fetch(intent.upload_url, {
+        method: 'PUT',
+        body: file,
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': file.type || 'application/octet-stream',
+          ...authHeaders(getToken()),
+        },
+      });
+      if (res.status === 401) opts.onUnauthorized?.();
+      if (!res.ok) return parseError(res);
+      return intent;
+    },
 
     listProviderRepos: async (provider, q) =>
       (

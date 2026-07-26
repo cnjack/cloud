@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,314 @@ func TestQualifiedPluginAutomationColsQualifiesEveryJoinedColumn(t *testing.T) {
 		if !strings.HasPrefix(column, "a.") {
 			t.Fatalf("joined Automation column is ambiguous: %q", column)
 		}
+	}
+}
+
+func TestDeleteExpiredWebhookReceiptsHonorsThirtyDayCutoff(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	now := time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC)
+	old := &domain.WebhookReceipt{ID: "old", Provider: domain.PluginGitHub, DeliveryID: "old", ReceivedAt: now.Add(-31 * 24 * time.Hour)}
+	fresh := &domain.WebhookReceipt{ID: "fresh", Provider: domain.PluginGitHub, DeliveryID: "fresh", ReceivedAt: now.Add(-29 * 24 * time.Hour)}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, old); err != nil || !claimed {
+		t.Fatalf("claim old receipt = %v, %v", claimed, err)
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, fresh); err != nil || !claimed {
+		t.Fatalf("claim fresh receipt = %v, %v", claimed, err)
+	}
+	deleted, err := st.DeleteExpiredWebhookReceipts(ctx, now)
+	if err != nil || deleted != 1 {
+		t.Fatalf("delete expired = %d, %v; want 1, nil", deleted, err)
+	}
+	if _, ok := st.webhookReceipts[string(domain.PluginGitHub)+"|old"]; ok {
+		t.Fatal("expired receipt was retained")
+	}
+	if _, ok := st.webhookReceipts[string(domain.PluginGitHub)+"|fresh"]; !ok {
+		t.Fatal("fresh receipt was deleted")
+	}
+}
+
+func TestDeleteExpiredWebhookReceiptsUsesBoundedBatch(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	now := time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < webhookReceiptDeleteBatchSize+1; i++ {
+		delivery := "old-" + strconv.Itoa(i)
+		claimed, err := st.ClaimWebhookReceipt(ctx, &domain.WebhookReceipt{
+			ID: delivery, Provider: domain.PluginGitHub, DeliveryID: delivery, ReceivedAt: now.Add(-31 * 24 * time.Hour),
+		})
+		if err != nil || !claimed {
+			t.Fatalf("seed %d: claimed=%v err=%v", i, claimed, err)
+		}
+	}
+	deleted, err := st.DeleteExpiredWebhookReceipts(ctx, now)
+	if err != nil || deleted != webhookReceiptDeleteBatchSize {
+		t.Fatalf("first batch=%d,%v want %d,nil", deleted, err, webhookReceiptDeleteBatchSize)
+	}
+	deleted, err = st.DeleteExpiredWebhookReceipts(ctx, now)
+	if err != nil || deleted != 1 {
+		t.Fatalf("second batch=%d,%v want 1,nil", deleted, err)
+	}
+}
+
+func TestUpdatePluginInstallationDoesNotAppendCredentialVersionForMetadataOnlyChange(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	installation := &domain.PluginInstallation{
+		ID: "i", ProjectID: "p", Provider: domain.PluginGitLab, Status: domain.PluginStatusEnabled,
+		AccessTokenEnc: []byte("access"), RefreshTokenEnc: []byte("refresh"), CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	originalVersion := installation.CredentialVersionID
+	installation.Status = domain.PluginStatusActionRequired
+	installation.LastHealthError = "provider unavailable"
+	installation.ConsentVersion = "2026-07"
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if installation.CredentialVersionID != originalVersion || len(st.pluginCredentialVersions) != 1 {
+		t.Fatalf("metadata update rotated credential version: installation=%q versions=%d", installation.CredentialVersionID, len(st.pluginCredentialVersions))
+	}
+	installation.AccessTokenEnc = []byte("new-access")
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if installation.CredentialVersionID == originalVersion || len(st.pluginCredentialVersions) != 2 {
+		t.Fatalf("credential change did not append immutable version: installation=%q versions=%d", installation.CredentialVersionID, len(st.pluginCredentialVersions))
+	}
+}
+
+func seedPluginSecretRetentionRun(t *testing.T, st *MemStore, runID string) (*domain.PluginInstallation, domain.Run) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := st.GetProject(ctx, "p"); errors.Is(err, ErrNotFound) {
+		if err := st.CreateProject(ctx, &domain.Project{ID: "p", Name: "p"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	serviceID := "s-" + runID
+	if err := st.CreateService(ctx, &domain.Service{ID: serviceID, ProjectID: "p", Name: serviceID, RepoKind: domain.RepoKindRaw}); err != nil {
+		t.Fatal(err)
+	}
+	run := domain.Run{ID: runID, ProjectID: "p", ServiceID: serviceID, Status: domain.StatusQueued}
+	if err := st.CreateRun(ctx, &run); err != nil {
+		t.Fatal(err)
+	}
+	installation, err := st.GetPluginInstallation(ctx, "i")
+	if errors.Is(err, ErrNotFound) {
+		if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginGitLab, PluginEnabled: true, BaseURL: "https://gitlab.one"}); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := st.GetProviderConfig(ctx, domain.PluginGitLab)
+		if err != nil {
+			t.Fatal(err)
+		}
+		installation = &domain.PluginInstallation{ID: "i", ProjectID: "p", Provider: domain.PluginGitLab, Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("v1"), ConfigRevision: cfg.ConfigRevision}
+		if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.CreateRunPluginSnapshots(ctx, []domain.RunPluginSnapshot{{RunID: run.ID, InstallationID: installation.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	return installation, run
+}
+
+func TestPluginSecretVersionGCRetainsActiveRunAndTerminalSnapshotAudit(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	installation, run := seedPluginSecretRetentionRun(t, st, "r")
+	originalCredentialVersion := installation.CredentialVersionID
+	originalProviderKey := providerConfigVersionKey(domain.PluginGitLab, installation.ConfigRevision)
+	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginGitLab, PluginEnabled: true, BaseURL: "https://gitlab.two"}); err != nil {
+		t.Fatal(err)
+	}
+	installation, _ = st.GetPluginInstallation(ctx, installation.ID)
+	installation.AccessTokenEnc = []byte("v2")
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if credentials, providers, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil || credentials != 0 || providers != 0 {
+		t.Fatalf("active run GC=(%d,%d,%v), want 0,0,nil", credentials, providers, err)
+	}
+	if _, ok := st.pluginCredentialVersions[originalCredentialVersion]; !ok {
+		t.Fatal("active run lost its credential version")
+	}
+	if _, ok := st.providerConfigVersions[originalProviderKey]; !ok {
+		t.Fatal("active run lost its provider configuration version")
+	}
+	st.runs[run.ID] = domain.Run{ID: run.ID, ProjectID: run.ProjectID, ServiceID: run.ServiceID, Status: domain.StatusSucceeded}
+	pendingClaim := domain.PluginKanbanClaim{AutomationID: "kanban", DocumentID: "card", RunID: run.ID}
+	st.pluginKanbanClaims[pluginKanbanClaimKey(pendingClaim.AutomationID, pendingClaim.DocumentID)] = pendingClaim
+	if credentials, providers, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil || credentials != 0 || providers != 0 {
+		t.Fatalf("pending writeback GC=(%d,%d,%v), want 0,0,nil", credentials, providers, err)
+	}
+	if _, ok := st.pluginCredentialVersions[originalCredentialVersion]; !ok {
+		t.Fatal("pending Kanban writeback lost its credential version")
+	}
+	if _, ok := st.providerConfigVersions[originalProviderKey]; !ok {
+		t.Fatal("pending Kanban writeback lost its provider configuration version")
+	}
+	if wrote, err := st.MarkPluginKanbanWriteback(ctx, pendingClaim.AutomationID, pendingClaim.DocumentID, time.Now().UTC()); err != nil || !wrote {
+		t.Fatalf("mark writeback wrote=%v err=%v", wrote, err)
+	}
+	if credentials, providers, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil || credentials != 1 || providers != 1 {
+		t.Fatalf("completed writeback GC=(%d,%d,%v), want 1,1,nil", credentials, providers, err)
+	}
+	snapshots, err := st.ListRunPluginSnapshots(ctx, run.ID)
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("terminal snapshot=%+v err=%v", snapshots, err)
+	}
+	snapshot := snapshots[0]
+	if snapshot.CredentialVersionID != originalCredentialVersion || snapshot.ProviderConfigRevision != 1 || len(snapshot.AccessTokenEnc) != 0 || snapshot.ProviderBaseURL != "" {
+		t.Fatalf("terminal snapshot did not retain only audit identifiers: %+v", snapshot)
+	}
+}
+
+func TestPluginSecretVersionGCWaitsForLastActiveSnapshotReference(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	installation, first := seedPluginSecretRetentionRun(t, st, "r1")
+	originalVersion := installation.CredentialVersionID
+	_, second := seedPluginSecretRetentionRun(t, st, "r2")
+	installation, _ = st.GetPluginInstallation(ctx, installation.ID)
+	installation.AccessTokenEnc = []byte("v2")
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	st.runs[first.ID] = domain.Run{ID: first.ID, ProjectID: first.ProjectID, ServiceID: first.ServiceID, Status: domain.StatusSucceeded}
+	if _, _, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := st.pluginCredentialVersions[originalVersion]; !ok {
+		t.Fatal("shared credential version was deleted while second run remained active")
+	}
+	st.runs[second.ID] = domain.Run{ID: second.ID, ProjectID: second.ProjectID, ServiceID: second.ServiceID, Status: domain.StatusSucceeded}
+	if credentials, _, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil || credentials != 1 {
+		t.Fatalf("last reference GC credentials=%d err=%v, want 1,nil", credentials, err)
+	}
+	if _, ok := st.pluginCredentialVersions[originalVersion]; ok {
+		t.Fatal("shared credential version survived after its final active reference ended")
+	}
+}
+
+func TestPGPluginSecretVersionGCAndSnapshotFKMigration(t *testing.T) {
+	ctx := context.Background()
+	st, runID := pgTestStore(t)
+	var snapshotFKs int
+	if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE conname IN ('run_plugin_snapshots_provider_version_fk','run_plugin_snapshots_credential_version_fk')`).Scan(&snapshotFKs); err != nil {
+		t.Fatal(err)
+	}
+	if snapshotFKs != 0 {
+		t.Fatalf("0052 left %d terminal snapshot secret FKs", snapshotFKs)
+	}
+	run, err := st.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := &domain.ProviderConfig{Provider: domain.PluginGitLab, PluginEnabled: true, BaseURL: "https://gitlab.one"}
+	if err := st.UpsertProviderConfig(ctx, config); err != nil {
+		t.Fatal(err)
+	}
+	installation := &domain.PluginInstallation{ID: domain.NewID(), ProjectID: run.ProjectID, Provider: domain.PluginGitLab, Status: domain.PluginStatusEnabled, Scopes: []string{}, AccessTokenEnc: []byte("v1"), ConfigRevision: config.ConfigRevision}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	originalVersion := installation.CredentialVersionID
+	installation.LastHealthError = "transient health observation"
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if installation.CredentialVersionID != originalVersion {
+		t.Fatalf("metadata-only PG update rotated credential: got %q want %q", installation.CredentialVersionID, originalVersion)
+	}
+	installation.LastHealthError = ""
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateRunPluginSnapshots(ctx, []domain.RunPluginSnapshot{{RunID: run.ID, InstallationID: installation.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	snapshotProviderRevision := config.ConfigRevision
+	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginGitLab, PluginEnabled: true, BaseURL: "https://gitlab.two"}); err != nil {
+		t.Fatal(err)
+	}
+	installation, err = st.GetPluginInstallation(ctx, installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation.AccessTokenEnc = []byte("v2")
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil {
+		t.Fatalf("active PG run GC: %v", err)
+	}
+	var originalStillPinned int
+	if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM plugin_credential_versions WHERE id=$1`, originalVersion).Scan(&originalStillPinned); err != nil || originalStillPinned != 1 {
+		t.Fatalf("active snapshot credential retained=%d err=%v, want 1,nil", originalStillPinned, err)
+	}
+	if _, err := st.ScheduleRun(ctx, run.ID, "job", "token", "launch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkSucceeded(ctx, run.ID, "done", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	automationID, documentID := "pending-writeback-"+domain.NewID(), "card-"+domain.NewID()
+	if _, err := st.Pool().Exec(ctx, `INSERT INTO automation_kanban_claims(automation_id,installation_id,document_id,run_id) VALUES($1,$2,$3,$4)`, automationID, installation.ID, documentID, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil {
+		t.Fatalf("pending PG writeback GC: %v", err)
+	}
+	var originalStillPinnedByWriteback, providerStillPinnedByWriteback int
+	if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM plugin_credential_versions WHERE id=$1`, originalVersion).Scan(&originalStillPinnedByWriteback); err != nil || originalStillPinnedByWriteback != 1 {
+		t.Fatalf("pending writeback credential retained=%d err=%v, want 1,nil", originalStillPinnedByWriteback, err)
+	}
+	if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM provider_config_versions WHERE provider=$1 AND config_revision=$2`, domain.PluginGitLab, snapshotProviderRevision).Scan(&providerStillPinnedByWriteback); err != nil || providerStillPinnedByWriteback != 1 {
+		t.Fatalf("pending writeback provider version retained=%d err=%v, want 1,nil", providerStillPinnedByWriteback, err)
+	}
+	if wrote, err := st.MarkPluginKanbanWriteback(ctx, automationID, documentID, time.Now().UTC()); err != nil || !wrote {
+		t.Fatalf("mark PG writeback wrote=%v err=%v", wrote, err)
+	}
+	if _, _, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil {
+		t.Fatalf("completed PG writeback GC: %v", err)
+	}
+	var originalReclaimed, providerReclaimed int
+	if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM plugin_credential_versions WHERE id=$1`, originalVersion).Scan(&originalReclaimed); err != nil || originalReclaimed != 0 {
+		t.Fatalf("completed writeback credential retained=%d err=%v, want 0,nil", originalReclaimed, err)
+	}
+	if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM provider_config_versions WHERE provider=$1 AND config_revision=$2`, domain.PluginGitLab, snapshotProviderRevision).Scan(&providerReclaimed); err != nil || providerReclaimed != 0 {
+		t.Fatalf("completed writeback provider version retained=%d err=%v, want 0,nil", providerReclaimed, err)
+	}
+	snapshots, err := st.ListRunPluginSnapshots(ctx, run.ID)
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("terminal PG snapshots=%+v err=%v", snapshots, err)
+	}
+	if snapshots[0].CredentialVersionID != originalVersion || len(snapshots[0].AccessTokenEnc) != 0 {
+		t.Fatalf("terminal PG snapshot lost audit or retained secret: %+v", snapshots[0])
+	}
+}
+
+func TestWebhookReceiptAuthenticatedPayloadDigestDeduplicatesAndExpires(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	now := time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC)
+	first := &domain.WebhookReceipt{
+		ID: "first", Provider: domain.PluginGitea, DeliveryID: "delivery-1",
+		PayloadDigest: "authenticated-body", ReceivedAt: now.Add(-31 * 24 * time.Hour),
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, first); err != nil || !claimed {
+		t.Fatalf("claim first = %v, %v", claimed, err)
+	}
+	replay := *first
+	replay.ID = "replay"
+	replay.DeliveryID = "forged-delivery-id"
+	replay.ReceivedAt = now
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || claimed {
+		t.Fatalf("claim replay = %v, %v; want duplicate", claimed, err)
+	}
+	if deleted, err := st.DeleteExpiredWebhookReceipts(ctx, now); err != nil || deleted != 1 {
+		t.Fatalf("delete expired = %d, %v", deleted, err)
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || !claimed {
+		t.Fatalf("digest was not released after 30-day cleanup: %v, %v", claimed, err)
 	}
 }
 
@@ -61,6 +370,9 @@ func TestPluginInstallationIsUniqueAndUninstallCascadesBoundService(t *testing.T
 	}
 	if _, err := st.GetPluginInstallation(ctx, installation.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("installation remains: %v", err)
+	}
+	if len(st.pluginCredentialVersions) != 0 {
+		t.Fatalf("uninstall retained unreferenced credential ciphertext: %d versions", len(st.pluginCredentialVersions))
 	}
 }
 

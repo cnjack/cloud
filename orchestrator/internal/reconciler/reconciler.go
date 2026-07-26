@@ -2,6 +2,8 @@ package reconciler
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -97,8 +99,22 @@ type Reconciler struct {
 	// state is surfaced fail-visibly at GET /api/v1/system, not here). archiveNoted
 	// throttles the one-time-per-service archive-failure warning so a repeatedly
 	// failing archive Job does not log every tick.
-	archiver     Archiver
-	archiveNoted sync.Map // serviceID -> struct{}
+	archiver        Archiver
+	attachmentStore AttachmentStore
+	archiveNoted    sync.Map // serviceID -> struct{}
+
+	// webhook receipt summaries are intentionally retained for only 30 days.
+	// Keep the cleanup cadence independent from the normal reconcile interval so
+	// a short polling interval does not turn this into a write-heavy loop.
+	receiptCleanupMu             sync.Mutex
+	lastReceiptCleanup           time.Time
+	receiptCleanupInterval       time.Duration
+	attachmentCleanupMu          sync.Mutex
+	lastAttachmentCleanup        time.Time
+	attachmentCleanupInterval    time.Duration
+	secretVersionCleanupMu       sync.Mutex
+	lastSecretVersionCleanup     time.Time
+	secretVersionCleanupInterval time.Duration
 }
 
 // Archiver signs short-lived, single-object presigned URLs for the workspace
@@ -109,6 +125,15 @@ type Archiver interface {
 	PresignPut(key string, expiry time.Duration) (string, error)
 	PresignGet(key string, expiry time.Duration) (string, error)
 }
+
+type AttachmentStore interface {
+	PresignGet(key string, expiry time.Duration) (string, error)
+	Delete(ctx context.Context, key string) error
+}
+
+const attachmentPresignTTL = 30 * time.Minute
+
+const attachmentCleanupBatchSize = 100
 
 const (
 	// archivePresignTTL bounds how long an archive PUT / restore GET URL is valid.
@@ -138,13 +163,16 @@ type KanbanWriter interface {
 // separately via WithPRStack so existing callers/tests are unaffected.
 func New(st store.Store, launcher k8s.JobLauncher, cfg *config.Config, log *slog.Logger, pub Publisher) *Reconciler {
 	return &Reconciler{
-		st:       st,
-		launcher: launcher,
-		cfg:      cfg,
-		log:      log,
-		pub:      pub,
-		now:      func() time.Time { return time.Now().UTC() },
-		models:   modelcfg.NewResolver(st, nil, cfg),
+		st:                           st,
+		launcher:                     launcher,
+		cfg:                          cfg,
+		log:                          log,
+		pub:                          pub,
+		now:                          func() time.Time { return time.Now().UTC() },
+		models:                       modelcfg.NewResolver(st, nil, cfg),
+		receiptCleanupInterval:       time.Hour,
+		attachmentCleanupInterval:    time.Minute,
+		secretVersionCleanupInterval: time.Hour,
 	}
 }
 
@@ -210,6 +238,11 @@ func (r *Reconciler) WithArchive(a Archiver) *Reconciler {
 	return r
 }
 
+func (r *Reconciler) WithAttachmentStore(objectStore AttachmentStore) *Reconciler {
+	r.attachmentStore = objectStore
+	return r
+}
+
 // WithModelResolver replaces the default model-config resolver with a shared
 // instance (the API server's, in main.go) so catalog-write cache invalidation is
 // visible to Job scheduling immediately (D21). Returns r for chaining.
@@ -256,6 +289,9 @@ func (r *Reconciler) Run(ctx context.Context) {
 // Tick performs one reconcile pass over all non-terminal runs. Exported so tests
 // (and the integration test) can drive a single deterministic pass.
 func (r *Reconciler) Tick(ctx context.Context) {
+	r.reconcileWebhookReceiptRetention(ctx)
+	r.reconcileExpiredAttachmentStages(ctx)
+	r.reconcilePluginSecretVersionRetention(ctx)
 	runs, err := r.st.ListRunsByStatus(ctx,
 		domain.StatusQueued, domain.StatusScheduling, domain.StatusRunning,
 		// Session (D22): awaiting_input runs still own a pod, so the loop must
@@ -443,6 +479,124 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// object storage and delete the PVC. No-op unless object storage is configured
 	// AND persistent workspace is on AND ARCHIVE_IDLE_DAYS>0.
 	r.reconcileArchive(ctx)
+}
+
+const webhookReceiptCleanupMaxBatches = 10
+const pluginSecretVersionCleanupBatchSize = 1000
+const pluginSecretVersionCleanupMaxBatches = 10
+
+// reconcileExpiredAttachmentStages uses delete-object THEN delete-row ordering.
+// If object storage is unavailable the stage row — and therefore its opaque key
+// — remains for the next bounded pass. This avoids orphaning objects merely
+// because a transient delete failed.
+func (r *Reconciler) reconcileExpiredAttachmentStages(ctx context.Context) {
+	if r.attachmentStore == nil {
+		return
+	}
+	now := r.now().UTC()
+	r.attachmentCleanupMu.Lock()
+	if !r.lastAttachmentCleanup.IsZero() && r.attachmentCleanupInterval > 0 && now.Sub(r.lastAttachmentCleanup) < r.attachmentCleanupInterval {
+		r.attachmentCleanupMu.Unlock()
+		return
+	}
+	r.lastAttachmentCleanup = now
+	r.attachmentCleanupMu.Unlock()
+	stages, err := r.st.ListExpiredAttachmentStages(ctx, now, attachmentCleanupBatchSize)
+	if err != nil {
+		r.log.Warn("reconcile: list expired attachment stages", "err", err)
+		return
+	}
+	for _, stage := range stages {
+		if err := r.attachmentStore.Delete(ctx, stage.ObjectKey); err != nil {
+			r.log.Warn("reconcile: delete expired attachment object", "stage", stage.ID, "err", err)
+			continue
+		}
+		if err := r.st.DeleteAttachmentStage(ctx, stage.ID, now); err != nil && !errors.Is(err, store.ErrNotFound) {
+			r.log.Warn("reconcile: delete expired attachment stage", "stage", stage.ID, "err", err)
+		}
+	}
+	// Bindings deliberately survive run/project/user deletion until the backing
+	// object is removed. A shared retry/resume object is eligible only after its
+	// final live Run reference is gone.
+	keys, err := r.st.ListOrphanedRunAttachmentObjects(ctx, attachmentCleanupBatchSize)
+	if err != nil {
+		r.log.Warn("reconcile: list orphaned attachment objects", "err", err)
+		return
+	}
+	for _, key := range keys {
+		if err := r.attachmentStore.Delete(ctx, key); err != nil {
+			r.log.Warn("reconcile: delete orphaned attachment object", "err", err)
+			continue
+		}
+		if err := r.st.DeleteOrphanedRunAttachmentObject(ctx, key); err != nil && !errors.Is(err, store.ErrNotFound) {
+			r.log.Warn("reconcile: delete orphaned attachment bindings", "err", err)
+		}
+	}
+}
+
+// reconcileWebhookReceiptRetention enforces the privacy/operational retention
+// contract for normalized webhook receipts. A failure is logged and retried on
+// the next scheduled cleanup; it must never block task reconciliation.
+func (r *Reconciler) reconcileWebhookReceiptRetention(ctx context.Context) {
+	now := r.now().UTC()
+	r.receiptCleanupMu.Lock()
+	if !r.lastReceiptCleanup.IsZero() && r.receiptCleanupInterval > 0 && now.Sub(r.lastReceiptCleanup) < r.receiptCleanupInterval {
+		r.receiptCleanupMu.Unlock()
+		return
+	}
+	r.lastReceiptCleanup = now
+	r.receiptCleanupMu.Unlock()
+
+	var total int64
+	for batch := 0; batch < webhookReceiptCleanupMaxBatches; batch++ {
+		// The store parameter is the expiry timestamp, not a received_at cutoff:
+		// webhook_receipts.expires_at already includes the 30-day retention window.
+		deleted, err := r.st.DeleteExpiredWebhookReceipts(ctx, now)
+		if err != nil {
+			r.log.Warn("reconcile: delete expired webhook receipts", "err", err)
+			return
+		}
+		total += deleted
+		if deleted < 1000 {
+			break
+		}
+	}
+	if total > 0 {
+		r.log.Info("reconcile: deleted expired webhook receipts", "count", total)
+	}
+}
+
+// reconcilePluginSecretVersionRetention bounds historical credential/config
+// ciphertext while preserving every version pinned by a live Installation or a
+// non-terminal run. Terminal snapshots retain audit IDs after their secrets are
+// reclaimed. Errors are intentionally non-fatal to scheduling and retried on
+// the next retention interval.
+func (r *Reconciler) reconcilePluginSecretVersionRetention(ctx context.Context) {
+	now := r.now().UTC()
+	r.secretVersionCleanupMu.Lock()
+	if !r.lastSecretVersionCleanup.IsZero() && r.secretVersionCleanupInterval > 0 && now.Sub(r.lastSecretVersionCleanup) < r.secretVersionCleanupInterval {
+		r.secretVersionCleanupMu.Unlock()
+		return
+	}
+	r.lastSecretVersionCleanup = now
+	r.secretVersionCleanupMu.Unlock()
+
+	var credentials, providers int64
+	for batch := 0; batch < pluginSecretVersionCleanupMaxBatches; batch++ {
+		deletedCredentials, deletedProviders, err := r.st.DeleteUnreferencedPluginSecretVersions(ctx, pluginSecretVersionCleanupBatchSize)
+		if err != nil {
+			r.log.Warn("reconcile: delete unreferenced plugin secret versions", "err", err)
+			return
+		}
+		credentials += deletedCredentials
+		providers += deletedProviders
+		if deletedCredentials < pluginSecretVersionCleanupBatchSize && deletedProviders < pluginSecretVersionCleanupBatchSize {
+			break
+		}
+	}
+	if credentials > 0 || providers > 0 {
+		r.log.Info("reconcile: deleted unreferenced plugin secret versions", "credential_versions", credentials, "provider_versions", providers)
+	}
 }
 
 // reconcilePRs pushes the branch and opens a draft PR for each succeeded
@@ -1308,6 +1462,25 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 	if restoreURL != "" {
 		env["RESTORE_ARCHIVE_URL"] = restoreURL
 	}
+	modelConfigBase64, err := jcodeEffortConfigBase64(env, run.ModelEffort, r.cfg.PersistentWorkspace)
+	if err != nil {
+		r.log.Error("reconcile: marshal reasoning effort config", "run", run.ID, "err", err)
+		if failed, ferr := r.st.FailRunDispatch(ctx, run.ID, jobName, "Failed", "could not prepare reasoning effort config: "+err.Error(), r.now()); ferr == nil {
+			r.emitStatus(ctx, failed)
+		}
+		return false
+	}
+	attachments, err := r.runAttachmentDownloads(ctx, run.ID)
+	if err != nil {
+		r.log.Error("reconcile: prepare attachments", "run", run.ID, "err", err)
+		if failed, ferr := r.st.FailRunDispatch(ctx, run.ID, jobName, "Failed", "could not prepare run attachments: "+err.Error(), r.now()); ferr == nil {
+			r.emitStatus(ctx, failed)
+		}
+		return false
+	}
+	if len(attachments) > 0 {
+		appendAttachmentPromptInstruction(env)
+	}
 	spec := k8s.JobSpec{
 		Name:              jobName,
 		RunID:             run.ID,
@@ -1316,6 +1489,9 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		WorkspacePVC:      workspacePVC,
 		PluginCredentials: pluginCredentials,
 		PluginProviders:   pluginProviders,
+		ModelEffort:       run.ModelEffort,
+		ModelConfigBase64: modelConfigBase64,
+		Attachments:       attachments,
 	}
 	if err := r.launcher.CreateJob(ctx, spec); err != nil {
 		r.log.Error("reconcile: create job", "run", run.ID, "err", err)
@@ -1338,6 +1514,16 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 	}
 	r.emitStatus(ctx, committed)
 	return true
+}
+
+const attachmentPromptInstruction = "\n\nSystem attachment context: Uploaded attachments are read-only. Read /run/jcloud/attachments/manifest.json to map each original filename to its opaque local path under /run/jcloud/attachments before using it."
+
+// appendAttachmentPromptInstruction never receives attachment metadata. In
+// particular display names are intentionally absent so a filename cannot steer
+// the agent's instruction stream. Appending preserves a GoalMode prompt's
+// leading native /goal command; the text becomes part of that goal objective.
+func appendAttachmentPromptInstruction(env map[string]string) {
+	env["TASK_PROMPT"] += attachmentPromptInstruction
 }
 
 // archiveJobBlocking reports whether a service's archive Job must delay
@@ -1574,6 +1760,25 @@ func (r *Reconciler) emit(ctx context.Context, runID, typ string, payload map[st
 	}
 }
 
+func (r *Reconciler) runAttachmentDownloads(ctx context.Context, runID string) ([]k8s.RunAttachmentDownload, error) {
+	attachments, err := r.st.ListRunAttachments(ctx, runID)
+	if err != nil || len(attachments) == 0 {
+		return nil, err
+	}
+	if r.attachmentStore == nil {
+		return nil, errors.New("attachment object storage is unavailable")
+	}
+	out := make([]k8s.RunAttachmentDownload, 0, len(attachments))
+	for _, attachment := range attachments {
+		u, err := r.attachmentStore.PresignGet(attachment.ObjectKey, attachmentPresignTTL)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, k8s.RunAttachmentDownload{StageID: attachment.StageID, URL: u, DisplayName: attachment.DisplayName, ContentType: attachment.ContentType, SizeBytes: attachment.SizeBytes})
+	}
+	return out, nil
+}
+
 // jobEnv assembles the runner container environment per the M3 runner contract
 // (blueprint §3). token is the freshly-minted plaintext RUN_TOKEN; model is the
 // EFFECTIVE model config resolved at Job-launch (Feature A) — its name still
@@ -1640,6 +1845,13 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 			env["PERMISSION_TIMEOUT_SECONDS"] = strconv.FormatInt(permissionTimeoutSecs(timeoutSecs), 10)
 		}
 	}
+	if run.GoalMode {
+		// jcode ACP consumes its native first-turn /goal command, persists it in
+		// GoalStore, emits goal_update, and then uses GoalKickoffPrompt. Do not
+		// replace this with natural-language instruction: that would only suggest
+		// goal behavior and would not establish a durable goal.
+		env["TASK_PROMPT"] = "/goal " + run.Prompt
+	}
 	// Feature C — tell the runner to reuse the persistent workspace: with the PVC
 	// mounted at /workspace + $HOME/.jcode, entrypoint.sh fetches + hard-resets an
 	// existing checkout instead of re-cloning, and enables jcode memory. Set only
@@ -1678,6 +1890,44 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 	// can never be overridden (double insurance; CLAUDE.md fail-visible).
 	r.applyInjectedEnv(env, run, proj)
 	return env
+}
+
+// jcodeEffortConfigBase64 builds the small JCODE_CONFIG overlay used only when
+// a task selected a non-auto reasoning effort. JSON is marshaled in the control
+// plane and carried as base64 so the Kubernetes init shell never interpolates a
+// model URL or RUN_TOKEN (both may legally contain quote/newline characters).
+func jcodeEffortConfigBase64(env map[string]string, effort string, persistentWorkspace bool) (string, error) {
+	if effort == "" {
+		return "", nil
+	}
+	modelName := env["MODEL_NAME"]
+	provider, modelID, ok := strings.Cut(modelName, "/")
+	if !ok || provider == "" || modelID == "" {
+		return "", fmt.Errorf("invalid model name %q for reasoning effort", modelName)
+	}
+	// Keep the overlay semantically identical to runner/entrypoint.sh's normal
+	// config. JCODE_CONFIG replaces (rather than merges with) the default path,
+	// so omitting memory/default_mode here would silently change task behavior.
+	baseURL := strings.TrimRight(env["MODEL_BASE_URL"], "/")
+	if !strings.HasSuffix(baseURL, "/v1") {
+		baseURL += "/v1"
+	}
+	if baseURL == "/v1" {
+		return "", errors.New("model base URL is required for reasoning effort")
+	}
+	config := map[string]any{
+		"providers": map[string]any{provider: map[string]any{
+			"api_key": env["MODEL_API_KEY"], "base_url": baseURL, "reasoning_effort": effort,
+			"custom_models": []map[string]any{{"id": modelID, "name": modelID, "tool_call": true, "context": 128000}},
+		}},
+		"model": modelName, "default_mode": "full_access",
+		"memory": map[string]any{"enabled": persistentWorkspace},
+	}
+	b, err := json.Marshal(config)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
 }
 
 // pluginInstallationEligible is intentionally stricter than StatusEnabled:
@@ -1890,6 +2140,9 @@ func (r *Reconciler) applyInjectedEnv(env map[string]string, run *domain.Run, pr
 // from the tmpfs credential helper written by the sidecar.
 func (r *Reconciler) addGitEnv(ctx context.Context, env map[string]string, run *domain.Run, svc *domain.Service) {
 	env["BASE_BRANCH"] = svc.DefaultBranch
+	if run.BaseBranch != "" {
+		env["BASE_BRANCH"] = run.BaseBranch
+	}
 	// M7 webhook @mention task: the baseline IS the PR head branch, so the agent
 	// builds on the existing PR and the produced branch pushes back to it (§8).
 	if run.Kind == domain.RunKindAgent && run.PRHeadBranch != "" {

@@ -3,6 +3,7 @@ package keyrotate
 import (
 	"bytes"
 	"encoding/base64"
+	"slices"
 	"testing"
 
 	"github.com/cnjack/jcloud/internal/auth"
@@ -10,6 +11,14 @@ import (
 
 func rotationKey(fill byte) string {
 	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{fill}, 32))
+}
+
+func TestRotationIncludesPerBindingWebhookSecrets(t *testing.T) {
+	if !slices.Contains(encryptedColumns, (encryptedColumn{
+		table: "webhook_bindings", key: "service_id", column: "secret_enc",
+	})) {
+		t.Fatal("per-binding webhook secrets would be stranded by master-key rotation")
+	}
 }
 
 func TestReencryptMovesCiphertextToNewKey(t *testing.T) {

@@ -300,7 +300,7 @@ func TestRetryLinksRetriedFrom(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
 	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
-		map[string]string{"prompt": "task"})
+		map[string]any{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
 

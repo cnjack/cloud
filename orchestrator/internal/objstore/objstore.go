@@ -110,6 +110,32 @@ func (c *Client) PresignGet(key string, expiry time.Duration) (string, error) {
 	return c.presign(http.MethodGet, key, expiry, time.Now().UTC())
 }
 
+// Stat performs a signed HEAD request for one key without exposing storage
+// credentials. Archive diagnostics may use it; attachment uploads instead pass
+// through the Cloud bounded streaming endpoint before an object is created.
+func (c *Client) Stat(ctx context.Context, key string) (int64, string, error) {
+	u, err := c.presign(http.MethodHead, key, 5*time.Minute, time.Now().UTC())
+	if err != nil {
+		return 0, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, u, nil)
+	if err != nil {
+		return 0, "", fmt.Errorf("objstore: build head request: %w", err)
+	}
+	resp, err := (&http.Client{Timeout: deleteTimeout}).Do(req)
+	if err != nil {
+		return 0, "", fmt.Errorf("objstore: head %q: %w", key, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, "", fmt.Errorf("objstore: head %q: status %s", key, resp.Status)
+	}
+	if resp.ContentLength < 0 {
+		return 0, "", fmt.Errorf("objstore: head %q: missing Content-Length", key)
+	}
+	return resp.ContentLength, resp.Header.Get("Content-Type"), nil
+}
+
 // Delete removes one archived workspace object. Unlike archive/restore Jobs,
 // this runs in the control plane where the S3 credential already lives. A 404
 // is success so service-deletion retries are idempotent.

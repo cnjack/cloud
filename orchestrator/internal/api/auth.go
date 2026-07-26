@@ -101,43 +101,59 @@ func (s *Server) availableLoginProviderIDs(ctx context.Context) []domain.GitProv
 }
 
 func (s *Server) loginOAuthProvider(ctx context.Context, id domain.GitProvider) (provider.OAuthProvider, error) {
+	prov, _, _, err := s.loginOAuthProviderBound(ctx, id)
+	return prov, err
+}
+
+type oauthConfigBinding struct {
+	ConfigRevision int64
+	BaseOrigin     string
+	ClientID       string
+}
+
+func (s *Server) loginOAuthProviderBound(ctx context.Context, id domain.GitProvider) (provider.OAuthProvider, oauthConfigBinding, bool, error) {
 	configs, listErr := s.st.ListProviderConfigs(ctx)
 	if listErr != nil {
-		return nil, listErr
+		return nil, oauthConfigBinding{}, false, listErr
 	}
 	hasDBConfig := len(configs) > 0
 	cfg, err := s.st.GetProviderConfig(ctx, domain.ProviderKind(id))
 	if err == nil {
 		if !cfg.LoginEnabled || !providerConfigComplete(cfg) {
-			return nil, errors.New("login provider is disabled or incomplete")
+			return nil, oauthConfigBinding{}, true, errors.New("login provider is disabled or incomplete")
 		}
 		if s.cipher == nil {
-			return nil, errors.New("JCLOUD_MASTER_KEY is not configured")
+			return nil, oauthConfigBinding{}, true, errors.New("JCLOUD_MASTER_KEY is not configured")
 		}
 		secret, decErr := s.cipher.Decrypt(cfg.ClientSecretEnc)
 		if decErr != nil {
-			return nil, fmt.Errorf("decrypt login provider secret: %w", decErr)
+			return nil, oauthConfigBinding{}, true, fmt.Errorf("decrypt login provider secret: %w", decErr)
+		}
+		origin, originErr := canonicalProviderOrigin(cfg.BaseURL)
+		if originErr != nil {
+			return nil, oauthConfigBinding{}, true, originErr
 		}
 		oc := provider.OAuthConfig{ClientID: cfg.ClientID, ClientSecret: string(secret), ExternalURL: cfg.BaseURL, InternalURL: cfg.BaseURL}
+		binding := oauthConfigBinding{ConfigRevision: cfg.ConfigRevision, BaseOrigin: origin, ClientID: cfg.ClientID}
 		switch id {
 		case domain.ProviderGitHub:
-			return provider.NewGitHubAppOAuth(oc), nil
+			return provider.NewGitHubAppOAuth(oc), binding, true, nil
 		case domain.ProviderGitLab:
-			return provider.NewGitLabOAuth(oc), nil
+			return provider.NewGitLabOAuth(oc), binding, true, nil
 		case domain.ProviderGitea:
-			return provider.NewGiteaOAuth(oc), nil
+			return provider.NewGiteaOAuth(oc), binding, true, nil
 		}
 	}
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return nil, err
+		return nil, oauthConfigBinding{}, false, err
 	}
 	if hasDBConfig {
-		return nil, errors.New("login provider is not configured")
+		return nil, oauthConfigBinding{}, false, errors.New("login provider is not configured")
 	}
 	if fallback, ok := s.oauth[id]; ok {
-		return fallback, nil
+		return fallback, oauthConfigBinding{}, false, nil
 	}
-	return nil, errors.New("unknown or unconfigured provider")
+	return nil, oauthConfigBinding{}, false, errors.New("unknown or unconfigured provider")
 }
 
 // --- state signing ----------------------------------------------------------
@@ -157,6 +173,12 @@ type oauthState struct {
 	// ReturnTo is a verified same-console relative path. It is signed together
 	// with the rest of state so a post-OAuth redirect cannot be forged.
 	ReturnTo string `json:"r,omitempty"`
+	// DB-backed login/link flows bind the callback to the exact Provider
+	// configuration that produced the authorize URL. Legacy env-only providers
+	// are process-static and leave these fields empty.
+	ConfigRevision int64  `json:"v,omitempty"`
+	BaseOrigin     string `json:"o,omitempty"`
+	ClientID       string `json:"i,omitempty"`
 }
 
 const (
@@ -320,7 +342,7 @@ func (s *Server) startOAuth(w http.ResponseWriter, r *http.Request, mode, userID
 			return
 		}
 	}
-	prov, err := s.loginOAuthProvider(r.Context(), domain.GitProvider(providerID))
+	prov, binding, dbBacked, err := s.loginOAuthProviderBound(r.Context(), domain.GitProvider(providerID))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "unknown or unconfigured provider")
 		return
@@ -343,10 +365,16 @@ func (s *Server) startOAuth(w http.ResponseWriter, r *http.Request, mode, userID
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   600, // 10 minutes to complete the round trip
 	})
-	state := s.signState(oauthState{
+	statePayload := oauthState{
 		Nonce: nonce, Provider: providerID, Mode: mode, UserID: userID, Client: client,
 		ReturnTo: safeOAuthReturnTo(r.URL.Query().Get("return_to")),
-	})
+	}
+	if dbBacked {
+		statePayload.ConfigRevision = binding.ConfigRevision
+		statePayload.BaseOrigin = binding.BaseOrigin
+		statePayload.ClientID = binding.ClientID
+	}
+	state := s.signState(statePayload)
 	redirectURI := s.callbackRedirectURI(r, providerID)
 	http.Redirect(w, r, prov.AuthorizeURL(state, redirectURI), http.StatusFound)
 }
@@ -358,6 +386,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	// Always clear the state cookie: the round trip is over either way.
 	s.clearStateCookie(w, r)
 	s.clearIntegrationOAuthCookie(w, r)
+	s.clearPluginOAuthCookie(w, r)
 
 	if s.cipher == nil {
 		s.redirectConsole(w, r, map[string]string{"login_error": "server_misconfigured"})
@@ -373,8 +402,19 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prov, providerErr := s.loginOAuthProvider(r.Context(), domain.GitProvider(providerID))
-	ok := providerErr == nil
+	var prov provider.OAuthProvider
+	ok := false
+	if st.Mode == oauthModeLogin || st.Mode == oauthModeLink {
+		current, binding, dbBacked, providerErr := s.loginOAuthProviderBound(r.Context(), domain.GitProvider(providerID))
+		if providerErr != nil ||
+			(dbBacked && (st.ConfigRevision != binding.ConfigRevision ||
+				st.BaseOrigin != binding.BaseOrigin || st.ClientID != binding.ClientID)) ||
+			(!dbBacked && (st.ConfigRevision != 0 || st.BaseOrigin != "" || st.ClientID != "")) {
+			writeError(w, http.StatusConflict, "oauth_config_changed", "OAuth provider configuration changed; start sign-in again")
+			return
+		}
+		prov, ok = current, true
+	}
 	var pending *pendingIntegrationOAuth
 	var pluginPending *pendingPluginOAuth
 	if st.Mode == oauthModeIntegration {
@@ -394,9 +434,9 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pluginPending = decoded
-		pluginProv, pluginErr := s.pluginOAuthProvider(r.Context(), domain.ProviderKind(providerID))
+		pluginProv, pluginErr := s.pluginOAuthProviderForPending(r.Context(), decoded)
 		if pluginErr != nil {
-			writeError(w, http.StatusConflict, "provider_not_configured", "plugin OAuth is not configured")
+			writeError(w, http.StatusConflict, "oauth_config_changed", "Plugin OAuth configuration changed; start the connection again")
 			return
 		}
 		prov = pluginProv
@@ -861,6 +901,14 @@ func (s *Server) clearIntegrationOAuthCookie(w http.ResponseWriter, r *http.Requ
 		Secure:   requestScheme(r) == "https",
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
+	})
+}
+
+func (s *Server) clearPluginOAuthCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name: pluginOAuthCookieName, Value: "", Path: "/auth", HttpOnly: true,
+		Secure: requestScheme(r) == "https", SameSite: http.SameSiteLaxMode,
+		MaxAge: -1, Expires: time.Unix(1, 0),
 	})
 }
 

@@ -108,7 +108,7 @@ export function ProjectPluginDetailPage() {
         )}
         {canManage && connected && installationId && (
           <Button type="button" variant="secondary" size="sm" onClick={() => setConsentOpen(true)}>
-            Reconnect
+            {t('plugins.reconnect')}
           </Button>
         )}
       </header>
@@ -117,8 +117,8 @@ export function ProjectPluginDetailPage() {
       <section className={styles.section}>
         <h2>{t('plugins.identity')}</h2>
         <p>{item.external_account ?? item.workspace_id ?? t('plugins.notConnected')}</p>
-        {item.external_account_id && <small>Stable ID: {item.external_account_id}</small>}
-        {item.consented_at && <small>Consent {item.consent_version ?? 'unknown'} · {new Date(item.consented_at).toLocaleString()}</small>}
+        {item.external_account_id && <small>{t('plugins.stableId', { id: item.external_account_id })}</small>}
+        {item.consented_at && <small>{t('plugins.consentRecorded', { version: item.consent_version ?? t('plugins.unknown'), time: new Date(item.consented_at).toLocaleString() })}</small>}
       </section>
 
       <section className={styles.section}>
@@ -131,13 +131,13 @@ export function ProjectPluginDetailPage() {
       <section className={styles.section}>
         <h2>{t('plugins.resources')}</h2>
         {(repositories.isError || workspaces.isError || boards.isError) && (
-          <ErrorBlock error={repositories.error ?? workspaces.error ?? boards.error} title="Provider resources could not be listed" />
+          <ErrorBlock error={repositories.error ?? workspaces.error ?? boards.error} title={t('plugins.resourcesLoadError')} />
         )}
         {provider === 'jtype' ? (
           <>
             {canManage && connected && installationId && (
               <label className={styles.workspacePicker}>
-                <span>Bound workspace</span>
+                <span>{t('plugins.boundWorkspace')}</span>
                 <select
                   value={item.workspace_id ?? ''}
                   disabled={workspaces.isLoading || setWorkspace.isPending}
@@ -148,18 +148,18 @@ export function ProjectPluginDetailPage() {
                     }
                   }}
                 >
-                  <option value="">Select a workspace…</option>
+                  <option value="">{t('plugins.selectWorkspace')}</option>
                   {(workspaces.data ?? []).map((workspace) => (
                     <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
                   ))}
                 </select>
-                {!item.workspace_id && <small>Selecting a workspace finishes the JType Plugin setup and enables it.</small>}
+                {!item.workspace_id && <small>{t('plugins.workspaceSetupHint')}</small>}
                 {setWorkspace.error && <small className={styles.fieldError}>{(setWorkspace.error as Error).message}</small>}
               </label>
             )}
-            {(workspaces.data ?? []).map((workspace) => <p key={workspace.id}><strong>{workspace.name}</strong> · workspace</p>)}
+            {(workspaces.data ?? []).map((workspace) => <p key={workspace.id}><strong>{workspace.name}</strong> · {t('plugins.workspace')}</p>)}
             <ul className={styles.resources}>
-              {(boards.data ?? []).map((board) => <li key={board.id}><strong>{board.title}</strong><small>{board.ref} · {board.columns.length} columns</small></li>)}
+              {(boards.data ?? []).map((board) => <li key={board.id}><strong>{board.title}</strong><small>{board.ref} · {t('plugins.columns', { count: board.columns.length })}</small></li>)}
             </ul>
             {!workspaces.isLoading && !boards.isLoading && !(workspaces.data?.length || boards.data?.length) && <p>{t('plugins.noResources')}</p>}
           </>
@@ -169,7 +169,7 @@ export function ProjectPluginDetailPage() {
               {(repositories.data ?? []).map((repository) => (
                 <li key={repository.id}>
                   <strong>{repository.full_name}</strong>
-                  <small>{repository.private ? 'private' : 'public'} · {repository.default_branch ?? 'default branch unknown'}</small>
+                  <small>{repository.private ? t('plugins.private') : t('plugins.public')} · {repository.default_branch ?? t('plugins.defaultBranchUnknown')}</small>
                 </li>
               ))}
             </ul>
@@ -179,28 +179,28 @@ export function ProjectPluginDetailPage() {
       </section>
 
       <section className={styles.section}>
-        <h2>Services</h2>
+        <h2>{t('plugins.services')}</h2>
         {services.length ? (
           <ul className={styles.resources}>
             {services.map((service) => <li key={service.id}><strong>{service.name}</strong><small>{service.repo_owner_name ?? service.default_branch}</small></li>)}
           </ul>
-        ) : <p>No Services are bound to this Plugin.</p>}
+        ) : <p>{t('plugins.noServices')}</p>}
       </section>
 
       <section className={styles.section}>
         <h2>{t('plugins.automationSummary')}</h2>
         {relatedAutomations.length ? (
           <ul className={styles.resources}>
-            {relatedAutomations.map((spec) => <li key={spec.automation.id}><strong>{spec.automation.name}</strong><small>{spec.automation.trigger_kind}</small></li>)}
+            {relatedAutomations.map((spec) => <li key={spec.automation.id}><strong>{spec.automation.name}</strong><small>{t(`plugins.trigger.${spec.automation.trigger_kind}`)}</small></li>)}
           </ul>
-        ) : <p>No Automations depend on this Plugin.</p>}
+        ) : <p>{t('plugins.noAutomations')}</p>}
         <Link to={`/projects/${encodeURIComponent(projectId)}?tab=automations`}>{t('plugins.openAutomations')}</Link>
       </section>
 
       <section className={styles.section}>
         <h2>{t('plugins.audit')}</h2>
-        {audit.isError && <ErrorBlock error={audit.error} title="Plugin audit history could not be loaded" />}
-        {audit.isLoading && <p role="status">Loading audit history…</p>}
+        {audit.isError && <ErrorBlock error={audit.error} title={t('plugins.auditLoadError')} />}
+        {audit.isLoading && <p role="status">{t('plugins.auditLoading')}</p>}
         {audit.data?.length ? (
           <ul className={styles.resources}>
             {audit.data.map((event) => (
@@ -210,7 +210,7 @@ export function ProjectPluginDetailPage() {
               </li>
             ))}
           </ul>
-        ) : (!audit.isLoading && !audit.isError && <p>No audit events have been recorded.</p>)}
+        ) : (!audit.isLoading && !audit.isError && <p>{t('plugins.noAudit')}</p>)}
       </section>
 
       {canManage && connected && installationId && (
@@ -254,9 +254,9 @@ export function ProjectPluginDetailPage() {
       >
         <div className={styles.confirm}>
           <p>{t('plugins.uninstallConfirm')}</p>
-          {impact.isLoading && <p>Loading impact…</p>}
-          {impact.isError && <ErrorBlock error={impact.error} title="Impact could not be loaded" />}
-          {impact.data && <p><strong>{impact.data.services}</strong> Services and <strong>{impact.data.automations}</strong> Automations will be permanently deleted.</p>}
+          {impact.isLoading && <p>{t('plugins.impactLoading')}</p>}
+          {impact.isError && <ErrorBlock error={impact.error} title={t('plugins.impactLoadError')} />}
+          {impact.data && <p>{t('plugins.impactSummary', { services: impact.data.services, automations: impact.data.automations })}</p>}
           <label>
             {t('plugins.uninstallType')}
             <input value={acknowledgement} onChange={(event) => setAcknowledgement(event.target.value)} autoComplete="off" />
@@ -264,7 +264,7 @@ export function ProjectPluginDetailPage() {
           {uninstall.isError && (
             <label>
               <input type="checkbox" checked={forceUninstall} onChange={(event) => setForceUninstall(event.target.checked)} />
-              Force local removal if only Provider webhook cleanup is failing. This may leave an external hook behind.
+              {t('plugins.forceUninstall')}
             </label>
           )}
           {uninstall.error && <p className={styles.error} role="alert">{(uninstall.error as Error).message}</p>}

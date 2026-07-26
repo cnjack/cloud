@@ -23,9 +23,14 @@ the task runner.
 
 1. Keep the ingress unavailable to untrusted networks.
 2. Deploy PostgreSQL and the new Orchestrator.
-3. Confirm migrations `0043_plugin_platform`,
-   `0044_plugin_store_integrity`, and
-   `0045_run_plugin_snapshot_credentials` completed.
+3. Confirm the append-only migration history completed through
+   `0054_run_coalesce_key`. In particular, `0048` adds Run options,
+   `0049`/`0050` add attachment staging and retry/resume bindings, `0051`
+   upgrades per-Service webhook authentication, and `0052` permits bounded
+   ciphertext-version reclamation while preserving snapshot audit IDs. `0053`
+   safely backfills attachment upload state for databases that had already
+   recorded an earlier `0049`; `0054` enforces one queued SCM Run per
+   Automation/Service/ref coalescing key.
 4. Open `/setup`.
 5. Set the externally reachable Cloud Public URL.
 6. In that same unauthenticated screen, choose GitHub, GitLab, or Gitea and
@@ -33,7 +38,11 @@ the task runner.
    origin is reachable before it marks the cluster ready.
 7. Sign in. The first authenticated account becomes Cluster Admin.
 8. As Cluster Admin, use Connections to test, rotate, enable, or disable
-   Provider configuration and configure Project Plugin modes.
+   Provider configuration and configure Project Plugin modes. The result must
+   state exactly what was proven: GitHub App identity is authenticated,
+   GitLab/Gitea record an observed version (and later repeat discovery with a
+   Project grant), while JType proves its health endpoint and later its Project
+   workspace grant.
 9. Only then expose the ingress.
 
 There is no bootstrap token. An exposed unfinished setup can be taken over by
@@ -142,6 +151,30 @@ Current Project Plugin OAuth scopes are exactly
 - The Project grant requests JType's `full` scope and Consent states that it
   applies to every supported read/write operation in the selected workspace.
 
+### Connection tests and capability state
+
+Connection tests use the strongest identity the cluster actually owns:
+
+- GitHub signs an App JWT and verifies the configured App identity.
+- GitLab reads `/api/v4/version`; a protected `401` is recorded as a partial
+  result, not falsely presented as authenticated success. A connected Project
+  grant performs authenticated version discovery.
+- Gitea reads `/api/v1/version`; a connected Project grant repeats discovery
+  with its access token.
+- JType checks `/health`; workspace discovery and MCP initialization prove the
+  Project grant separately.
+
+The observed version, capability keys, check time, and sanitized health error
+are persisted. GitLab and Gitea fail closed: until a successful probe supplies
+a parseable version at or above the supported baseline, the Automation API
+advertises no SCM actions and rejects action creation. Saving Provider identity
+configuration clears the old observation so a new origin cannot inherit the
+previous instance's matrix.
+
+Probe credentials and upstream response bodies are never persisted or returned.
+After rollout, run the test from Cluster Connections and confirm the observed
+version and expected enabled/disabled actions against the actual instance.
+
 ## Master-key rotation
 
 Rotation is an offline maintenance operation:
@@ -173,6 +206,13 @@ shows an impact preview. On confirmation, all affected Project installations
 move to `action_required`. Existing runs finish. New dependent runs stop until
 an Owner or Cluster Admin reconnects.
 
+An OAuth round trip is bound to the Provider configuration revision, canonical
+origin, and client ID that existed when it began. After any of those values
+changes, an old callback is rejected with `oauth_config_changed`; restart the
+flow. A GitLab/Gitea origin change, JType base-URL change, or OAuth client-ID
+change must include a new client secret. A GitHub App-ID change must include a
+new App private key.
+
 At durable dispatch, a run records only references to append-only Provider
 configuration and encrypted grant versions. The control plane resolves those
 versions when refreshing the run; it never combines an old grant with the
@@ -187,10 +227,12 @@ incomplete JType `action_required` Installation may list workspaces only for
 the initial selection state (empty workspace, no health error, and current
 enabled Provider revision). Any other `action_required` state must reconnect.
 
-Changing only capability metadata or rotating the webhook secret advances the
-Provider revision without invalidating healthy grants; their revision is
-updated transactionally. Disabling Plugin capability always requires Project
-reconnect before it can be used again.
+A capability probe updates only observed version/health metadata and does not
+advance the Provider identity revision or invalidate healthy grants. Rotating
+the GitHub webhook secret does advance the revision but transactionally moves
+healthy Installations to that revision without requiring reconnect. Disabling
+Plugin capability always requires Project reconnect before it can be used
+again.
 
 Do not change a Gitea OAuth redirect URI through an API PATCH. Gitea may rotate
 the client secret. Use the Provider UI.
@@ -198,13 +240,67 @@ the client secret. Use the Provider UI.
 ## Failure and cleanup
 
 - A failed webhook is visible in the Automation and receipt views.
+- GitLab/Gitea use one random encrypted webhook secret and one opaque
+  `/webhooks/{provider}/{hook_id}` URL per Service. The ingress additionally
+  compares the normalized repository stable ID with the immutable Service
+  binding. Do not configure a shared Provider webhook secret for them.
+- Automation writes commit before the Provider hook operation. If external
+  reconciliation fails, the API returns `502 webhook_reconcile_failed`, but
+  the Automation and binding remain with a sanitized `last_error`. Correct the
+  Provider permission/connectivity problem and save or enable the Automation
+  again to retry. This release does not yet include a continuous background
+  reconciler for failed external hooks.
 - There is no Replay and no automatic processing retry.
-- Normalized webhook receipts expire after 30 days.
+- Normalized webhook receipts expire after 30 days. Orchestrator replicas
+  delete expired rows in bounded, idempotent batches; cleanup errors are logged
+  and retried on the next interval without making the API unready.
+- GitHub/Gitea receipts also keep a digest derived from the authenticated body,
+  so replaying the same signed body under a forged delivery ID remains a
+  duplicate. The digest expires with its 30-day receipt.
+- Historical encrypted Provider/grant versions are deleted in bounded batches
+  only after no live Installation, non-terminal Run, or terminal JType Run with
+  `automation_kanban_claims.writeback_at IS NULL` references them. A pending
+  card comment/move therefore keeps the frozen JType versions until writeback
+  succeeds. Terminal Run snapshots subsequently retain only immutable audit
+  identifiers. Monitor cleanup warnings; failures are retried and do not make
+  readiness fail.
 - Uninstall permanently deletes dependent Services and Automations.
 - If Provider hook cleanup fails, the installation remains `uninstalling`.
 - Force local uninstall can leave a Provider hook behind and requires an
   explicit warning confirmation.
 - If every login Provider is broken, recovery requires direct PostgreSQL access.
+
+## Manual task inputs and attachment operations
+
+Manual Runs accept a live Provider branch, optional model effort, goal mode, and
+uploaded attachments. Branch creation validates the branch name and current
+Provider catalog, but stores only the name. Clone resolves that ref later, so a
+branch update between creation and Job start changes the checked-out commit.
+Treat commit-SHA pinning as a known P2 when reproducibility matters.
+
+Attachments use Cloud-proxied object-storage staging:
+
+- one file: 1 byte–25 MiB;
+- one Run: at most 10 files and 100 MiB total;
+- one Project/user staging window: at most 20 unexpired stages and 250 MiB;
+- intent lifetime: 10 minutes;
+- accepted content types: text, image, JSON, PDF, ZIP, gzip, tar, or opaque
+  binary.
+
+The proxy enforces the declared `Content-Length` and drives
+`pending → uploading → uploaded`. A Run can consume only an uploaded,
+unexpired stage created by the same user in the same Project. Reconciliation
+deletes expired staged objects and objects whose final retry/resume Run
+reference has disappeared; object deletion happens before the database loses
+the opaque key, so transient storage errors are retryable.
+
+At Job startup, init containers download each object to an opaque filename,
+verify its byte length, and write `manifest.json` with display-name metadata.
+The task mounts `/run/jcloud/attachments` read-only. The attachment tmpfs size
+and both Pod memory request and limit include the total attachment bytes plus
+manifest overhead. The generic Runner image remains unchanged; Plugin
+Skills/CLIs are copied from the release-pinned Orchestrator runtime image at Run
+start and are never compiled into the Runner.
 
 ## Release checklist
 
@@ -220,6 +316,19 @@ the client secret. Use the Provider UI.
 9. Complete first setup before exposing ingress.
 10. Test Provider connection, Project Consent, repository selection, one manual
     run, one webhook Automation, one Cron Automation, and one JType board read.
+11. For GitHub, create one real push and one new `@jcode` comment after the
+    Project has a usable model. Confirm both create Automation-origin Runs,
+    duplicate delivery IDs do not create a second Run, and Cloud performs no
+    automatic SCM writeback.
+12. For each enabled Git Provider, start a task that invokes its injected Skill
+    and CLI, then exercise Git credential-helper fetch and push. Disable the
+    Plugin and confirm a new Run no longer receives those runtime assets.
+
+GitLab and Gitea release verification additionally requires the configured
+external instance, OAuth application, a disposable repository, and permission
+to create and delete repository webhooks. If any of those are unavailable,
+record the corresponding journey as blocked; do not substitute a static
+fixture and report it as production-verified.
 
 ## Kubernetes compatibility
 

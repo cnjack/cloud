@@ -22,6 +22,7 @@ import (
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/safehttp"
+	"github.com/cnjack/jcloud/internal/scmevent"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -56,10 +57,20 @@ func providerConfigViewOf(cfg *domain.ProviderConfig) providerConfigView {
 		health = "error"
 	} else if cfg.LastCapabilityCheck != nil {
 		health = "healthy"
+		// GitLab/Gitea OAuth applications and JType's public-client device flow
+		// have no cluster-owned token. Their config probe establishes only
+		// instance/version reachability; each Project grant is authenticated when
+		// it connects and discovers its resources.
+		if cfg.Provider != domain.PluginGitHub {
+			health = "partial"
+		}
 	}
 	v := providerConfigView{Provider: string(cfg.Provider), BaseURL: cfg.BaseURL, LoginEnabled: cfg.LoginEnabled,
 		PluginEnabled: cfg.PluginEnabled, ClientID: cfg.ClientID, ClientSecretSet: len(cfg.ClientSecretEnc) > 0,
-		AppID: cfg.AppID, AppPrivateKeySet: len(cfg.AppPrivateKeyEnc) > 0, WebhookSecretSet: len(cfg.WebhookSecretEnc) > 0,
+		AppID: cfg.AppID, AppPrivateKeySet: len(cfg.AppPrivateKeyEnc) > 0,
+		// GitLab/Gitea hooks use per-Service random secrets. This field only
+		// describes the cluster-scoped GitHub App webhook credential.
+		WebhookSecretSet:  cfg.Provider == domain.PluginGitHub && len(cfg.WebhookSecretEnc) > 0,
 		CapabilityVersion: cfg.CapabilityVersion, Capabilities: append([]string(nil), cfg.Capabilities...),
 		ConfigRevision: cfg.ConfigRevision, LastHealthError: cfg.LastHealthError,
 		Configured: providerConfigComplete(cfg), Health: health, HealthMessage: cfg.LastHealthError,
@@ -77,10 +88,15 @@ func providerConfigComplete(cfg *domain.ProviderConfig) bool {
 	if !cfg.LoginEnabled && !cfg.PluginEnabled {
 		return false
 	}
-	// A login-capable SCM provider needs a complete confidential OAuth client.
-	// JType currently uses its own device/MCP authorization, so a cluster JType
-	// plugin is configured by a base URL alone.
+	// Login requires a confidential OAuth client. GitLab/Gitea Project Plugins
+	// use the same OAuth flow, while JType device authorization also requires
+	// the cluster client ID/secret even when login is disabled.
 	if cfg.LoginEnabled && cfg.Provider != domain.PluginJType {
+		if strings.TrimSpace(cfg.ClientID) == "" || len(cfg.ClientSecretEnc) == 0 {
+			return false
+		}
+	}
+	if cfg.PluginEnabled && cfg.Provider != domain.PluginGitHub {
 		if strings.TrimSpace(cfg.ClientID) == "" || len(cfg.ClientSecretEnc) == 0 {
 			return false
 		}
@@ -294,27 +310,30 @@ func (s *Server) handleTestProviderConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := validateProviderConfig(provider, cfg); err != nil {
-		cfg.LastHealthError = err.Error()
 		now := time.Now().UTC()
-		cfg.LastCapabilityCheck = &now
-		_ = s.st.UpsertProviderConfig(r.Context(), cfg)
+		if recordErr := s.st.RecordProviderHealthError(r.Context(), provider, err.Error(), now); recordErr != nil {
+			s.log.Error("record provider validation failure", "provider", provider, "err", recordErr)
+		}
 		writeProviderConfigError(w, err)
 		return
 	}
-	if err := probeProviderReachability(r.Context(), cfg.BaseURL); err != nil {
-		cfg.LastHealthError = err.Error()
+	result, err := s.probeProviderConfig(r.Context(), cfg)
+	if err != nil {
 		now := time.Now().UTC()
-		cfg.LastCapabilityCheck = &now
-		_ = s.st.UpsertProviderConfig(r.Context(), cfg)
-		writeError(w, http.StatusBadGateway, "provider_unreachable", err.Error())
+		if recordErr := s.st.RecordProviderHealthError(r.Context(), provider, err.Error(), now); recordErr != nil {
+			s.log.Error("record provider probe failure", "provider", provider, "err", recordErr)
+		}
+		writeError(w, http.StatusBadGateway, "provider_probe_failed", err.Error())
 		return
 	}
-	// Credential validation happens at OAuth consent time; this verifies the
-	// configured origin and records the capability-check timestamp.
+	// GitHub's App JWT is authenticated here. GitLab/Gitea OAuth client secrets
+	// cannot be honestly validated without a human authorization-code exchange;
+	// their Project grant is verified when it is connected and lists resources.
+	// JType has no cluster-owned credential, so its device/MCP grant is similarly
+	// verified per Project. Record the observed server version for capability
+	// gating rather than trusting user-entered configuration metadata.
 	now := time.Now().UTC()
-	cfg.LastCapabilityCheck = &now
-	cfg.LastHealthError = ""
-	if err := s.st.UpsertProviderConfig(r.Context(), cfg); err != nil {
+	if err := s.st.RecordProviderCapabilities(r.Context(), provider, result.Version, providerCapabilityKeys(provider, result.Version), now); err != nil {
 		writeError(w, 500, "internal", "could not record provider capability check")
 		return
 	}
@@ -324,6 +343,34 @@ func (s *Server) handleTestProviderConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, providerConfigViewOf(stored))
+}
+
+func (s *Server) probeProviderConfiguration(ctx context.Context, cfg *domain.ProviderConfig) (provider.ConfigProbeResult, error) {
+	in := provider.ConfigProbeInput{
+		Provider: cfg.Provider, BaseURL: cfg.BaseURL, AppID: cfg.AppID,
+	}
+	if cfg.Provider == domain.PluginGitHub {
+		if s.cipher == nil {
+			return provider.ConfigProbeResult{}, auth.ErrCipherNotConfigured
+		}
+		key, err := s.cipher.DecryptString(cfg.AppPrivateKeyEnc)
+		if err != nil {
+			return provider.ConfigProbeResult{}, fmt.Errorf("decrypt GitHub App private key: %w", err)
+		}
+		in.AppPrivateKey = key
+	}
+	return provider.ProbeConfiguration(ctx, in)
+}
+
+func providerCapabilityKeys(kind domain.ProviderKind, version string) []string {
+	capabilities := scmevent.CapabilitiesForVersion(scmevent.ProviderKind(kind), version)
+	keys := make([]string, 0)
+	for _, family := range capabilities.Capabilities {
+		for _, action := range family.Actions {
+			keys = append(keys, string(family.Family)+"."+string(action))
+		}
+	}
+	return keys
 }
 
 func (s *Server) handleProviderConfigImpact(w http.ResponseWriter, r *http.Request) {
@@ -344,17 +391,15 @@ func (s *Server) handleProviderConfigImpact(w http.ResponseWriter, r *http.Reque
 }
 
 type putProviderConfigReq struct {
-	Provider          string   `json:"provider,omitempty"`
-	BaseURL           string   `json:"base_url"`
-	LoginEnabled      bool     `json:"login_enabled"`
-	PluginEnabled     bool     `json:"plugin_enabled"`
-	ClientID          string   `json:"client_id"`
-	ClientSecret      string   `json:"client_secret"`
-	AppID             string   `json:"app_id"`
-	AppPrivateKey     string   `json:"app_private_key"`
-	WebhookSecret     string   `json:"webhook_secret"`
-	CapabilityVersion string   `json:"capability_version"`
-	Capabilities      []string `json:"capabilities"`
+	Provider      string `json:"provider,omitempty"`
+	BaseURL       string `json:"base_url"`
+	LoginEnabled  bool   `json:"login_enabled"`
+	PluginEnabled bool   `json:"plugin_enabled"`
+	ClientID      string `json:"client_id"`
+	ClientSecret  string `json:"client_secret"`
+	AppID         string `json:"app_id"`
+	AppPrivateKey string `json:"app_private_key"`
+	WebhookSecret string `json:"webhook_secret"`
 }
 
 func providerKindFromString(raw string) (domain.ProviderKind, error) {
@@ -383,6 +428,26 @@ func normalizeProviderURL(raw string, provider domain.ProviderKind) (string, err
 	return base, nil
 }
 
+func canonicalProviderOrigin(base string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid provider origin")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return scheme + "://" + host, nil
+}
+
 func validateProviderConfig(provider domain.ProviderKind, cfg *domain.ProviderConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("provider configuration is required")
@@ -395,6 +460,10 @@ func validateProviderConfig(provider domain.ProviderKind, cfg *domain.ProviderCo
 	}
 	if cfg.LoginEnabled && (strings.TrimSpace(cfg.ClientID) == "" || len(cfg.ClientSecretEnc) == 0) {
 		return fmt.Errorf("a login provider requires client_id and client_secret")
+	}
+	if cfg.PluginEnabled && provider != domain.PluginGitHub &&
+		(strings.TrimSpace(cfg.ClientID) == "" || len(cfg.ClientSecretEnc) == 0) {
+		return fmt.Errorf("this project plugin requires client_id and client_secret")
 	}
 	if !cfg.LoginEnabled && !cfg.PluginEnabled {
 		return fmt.Errorf("enable login or plugin capability before saving a provider")
@@ -440,7 +509,7 @@ func writeProviderConfigError(w http.ResponseWriter, err error) {
 func (s *Server) buildProviderConfig(ctx context.Context, provider domain.ProviderKind, req putProviderConfigReq, updatedBy string) (*domain.ProviderConfig, error) {
 	var cfg domain.ProviderConfig
 	existing, err := s.st.GetProviderConfig(ctx, provider)
-	if err == nil {
+	if existing != nil {
 		cfg = *existing
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, fmt.Errorf("could not load existing provider configuration: %w", err)
@@ -449,26 +518,57 @@ func (s *Server) buildProviderConfig(ctx context.Context, provider domain.Provid
 	if err != nil {
 		return nil, err
 	}
+	if existing != nil {
+		oldOrigin, oldOriginErr := canonicalProviderOrigin(existing.BaseURL)
+		newOrigin, newOriginErr := canonicalProviderOrigin(base)
+		clientChanged := strings.TrimSpace(existing.ClientID) != strings.TrimSpace(req.ClientID)
+		baseRequiresNewSecret := false
+		switch provider {
+		case domain.PluginGitLab, domain.PluginGitea:
+			baseRequiresNewSecret = oldOriginErr == nil && newOriginErr == nil && oldOrigin != newOrigin
+		case domain.PluginJType:
+			baseRequiresNewSecret = existing.BaseURL != "" && existing.BaseURL != base
+		}
+		if len(existing.ClientSecretEnc) > 0 && (clientChanged || baseRequiresNewSecret) &&
+			strings.TrimSpace(req.ClientSecret) == "" {
+			return nil, fmt.Errorf("changing provider URL or client_id requires a new client_secret")
+		}
+		if provider == domain.PluginGitHub && len(existing.AppPrivateKeyEnc) > 0 &&
+			strings.TrimSpace(existing.AppID) != strings.TrimSpace(req.AppID) &&
+			strings.TrimSpace(req.AppPrivateKey) == "" {
+			return nil, fmt.Errorf("changing GitHub App ID requires a new private key")
+		}
+	}
 	cfg.Provider, cfg.BaseURL, cfg.LoginEnabled, cfg.PluginEnabled = provider, base, req.LoginEnabled, req.PluginEnabled
 	cfg.ClientID, cfg.AppID = strings.TrimSpace(req.ClientID), strings.TrimSpace(req.AppID)
-	cfg.CapabilityVersion = strings.TrimSpace(req.CapabilityVersion)
+	// Capability metadata is observation-only. A cluster administrator cannot
+	// claim a version or event set through the config API; saving configuration
+	// clears the prior observation until an authenticated probe records it.
+	cfg.CapabilityVersion = ""
 	cfg.Capabilities = []string{}
-	cfg.Capabilities = append(cfg.Capabilities, req.Capabilities...)
-	if req.ClientSecret != "" || req.AppPrivateKey != "" || req.WebhookSecret != "" {
+	cfg.LastCapabilityCheck = nil
+	cfg.LastHealthError = ""
+	if provider != domain.PluginGitHub && strings.TrimSpace(req.WebhookSecret) != "" {
+		return nil, fmt.Errorf("webhook_secret is only used by the cluster GitHub App; GitLab and Gitea hooks use managed per-Service secrets")
+	}
+	if provider != domain.PluginGitHub {
+		cfg.WebhookSecretEnc = nil
+	}
+	if strings.TrimSpace(req.ClientSecret) != "" || strings.TrimSpace(req.AppPrivateKey) != "" || strings.TrimSpace(req.WebhookSecret) != "" {
 		if s.cipher == nil {
 			return nil, fmt.Errorf("set JCLOUD_MASTER_KEY before storing provider secrets")
 		}
-		if req.ClientSecret != "" {
+		if strings.TrimSpace(req.ClientSecret) != "" {
 			if cfg.ClientSecretEnc, err = s.cipher.EncryptString(req.ClientSecret); err != nil {
 				return nil, fmt.Errorf("could not encrypt provider client secret: %w", err)
 			}
 		}
-		if req.AppPrivateKey != "" {
+		if strings.TrimSpace(req.AppPrivateKey) != "" {
 			if cfg.AppPrivateKeyEnc, err = s.cipher.EncryptString(req.AppPrivateKey); err != nil {
 				return nil, fmt.Errorf("could not encrypt GitHub App private key: %w", err)
 			}
 		}
-		if req.WebhookSecret != "" {
+		if strings.TrimSpace(req.WebhookSecret) != "" {
 			if cfg.WebhookSecretEnc, err = s.cipher.EncryptString(req.WebhookSecret); err != nil {
 				return nil, fmt.Errorf("could not encrypt webhook secret: %w", err)
 			}
@@ -508,12 +608,36 @@ func (s *Server) handlePutProviderConfig(w http.ResponseWriter, r *http.Request)
 		writeProviderConfigError(w, err)
 		return
 	}
+	changed := previousErr != nil ||
+		previous.BaseURL != cfg.BaseURL ||
+		previous.LoginEnabled != cfg.LoginEnabled ||
+		previous.PluginEnabled != cfg.PluginEnabled ||
+		previous.ClientID != cfg.ClientID ||
+		previous.AppID != cfg.AppID ||
+		strings.TrimSpace(req.ClientSecret) != "" ||
+		strings.TrimSpace(req.AppPrivateKey) != "" ||
+		strings.TrimSpace(req.WebhookSecret) != ""
+	if previousErr == nil && !changed {
+		// A byte-for-byte semantic no-op is observation-neutral and must not
+		// allocate a new configuration revision or touch Installation identity.
+		writeJSON(w, http.StatusOK, providerConfigViewOf(previous))
+		return
+	}
 	invalidate := previousErr == nil && (previous.BaseURL != cfg.BaseURL ||
 		previous.ClientID != cfg.ClientID ||
 		previous.AppID != cfg.AppID ||
 		strings.TrimSpace(req.ClientSecret) != "" ||
 		strings.TrimSpace(req.AppPrivateKey) != "" ||
 		(previous.PluginEnabled && !cfg.PluginEnabled))
+	if previousErr == nil && !invalidate {
+		// A no-op/read-modify-save must not erase a real probe. buildProviderConfig
+		// clears observation fields by default so a changed provider identity can
+		// never inherit stale capabilities.
+		cfg.CapabilityVersion = previous.CapabilityVersion
+		cfg.Capabilities = append([]string(nil), previous.Capabilities...)
+		cfg.LastCapabilityCheck = previous.LastCapabilityCheck
+		cfg.LastHealthError = previous.LastHealthError
+	}
 	reason := ""
 	if invalidate {
 		reason = "Cluster Provider identity, URL, credentials, or Plugin availability changed; reconnect this Project Plugin"
@@ -1042,6 +1166,9 @@ type pendingPluginOAuth struct {
 	InstallationID string `json:"installation_id"`
 	ProjectID      string `json:"project_id"`
 	UserID         string `json:"user_id"`
+	ConfigRevision int64  `json:"config_revision"`
+	BaseOrigin     string `json:"base_origin"`
+	ClientID       string `json:"client_id"`
 }
 
 func (s *Server) pluginOAuthProvider(ctx context.Context, kind domain.ProviderKind) (provider.OAuthProvider, error) {
@@ -1063,6 +1190,43 @@ func (s *Server) pluginOAuthProvider(ctx context.Context, kind domain.ProviderKi
 		return nil, err
 	}
 	oauthCfg := provider.OAuthConfig{ClientID: cfg.ClientID, ClientSecret: string(secret), ExternalURL: cfg.BaseURL, InternalURL: cfg.BaseURL}
+	if kind == domain.PluginGitLab {
+		return provider.NewGitLabOAuth(oauthCfg), nil
+	}
+	return provider.NewGiteaOAuth(oauthCfg), nil
+}
+
+// pluginOAuthProviderForPending validates the sealed start-time configuration
+// and constructs the Provider client from that same DB snapshot. No token
+// endpoint request is possible when the Provider identity changed mid-flight.
+func (s *Server) pluginOAuthProviderForPending(ctx context.Context, pending *pendingPluginOAuth) (provider.OAuthProvider, error) {
+	if pending == nil || s.cipher == nil {
+		return nil, errors.New("plugin OAuth state is unavailable")
+	}
+	kind := domain.ProviderKind(pending.Provider)
+	if kind != domain.PluginGitLab && kind != domain.PluginGitea {
+		return nil, errors.New("provider OAuth installation is not implemented")
+	}
+	cfg, err := s.st.GetProviderConfig(ctx, kind)
+	if err != nil || !cfg.PluginEnabled || cfg.ClientID == "" ||
+		len(cfg.ClientSecretEnc) == 0 || cfg.BaseURL == "" {
+		return nil, errors.New("provider plugin OAuth is not configured")
+	}
+	origin, err := canonicalProviderOrigin(cfg.BaseURL)
+	if err != nil || pending.ConfigRevision <= 0 ||
+		cfg.ConfigRevision != pending.ConfigRevision ||
+		origin != pending.BaseOrigin ||
+		cfg.ClientID != pending.ClientID {
+		return nil, errors.New("provider plugin OAuth configuration changed")
+	}
+	secret, err := s.cipher.Decrypt(cfg.ClientSecretEnc)
+	if err != nil {
+		return nil, err
+	}
+	oauthCfg := provider.OAuthConfig{
+		ClientID: cfg.ClientID, ClientSecret: string(secret),
+		ExternalURL: cfg.BaseURL, InternalURL: cfg.BaseURL,
+	}
 	if kind == domain.PluginGitLab {
 		return provider.NewGitLabOAuth(oauthCfg), nil
 	}
@@ -1149,7 +1313,16 @@ func (s *Server) handleConnectProjectPlugin(w http.ResponseWriter, r *http.Reque
 	}
 	_ = s.st.CreatePluginAuditEvent(r.Context(), &domain.PluginAuditEvent{ID: domain.NewID(), ProjectID: projectID, InstallationID: in.ID, ActorUserID: in.ConsentedBy, EventType: eventType, Detail: in.ConsentVersion, CreatedAt: now})
 	nonce := randToken()
-	pending := pendingPluginOAuth{Nonce: nonce, Provider: string(provider), InstallationID: in.ID, ProjectID: projectID, UserID: in.ConsentedBy}
+	origin, originErr := canonicalProviderOrigin(cfg.BaseURL)
+	if originErr != nil {
+		writeError(w, http.StatusConflict, "provider_not_configured", "Provider OAuth origin is invalid")
+		return
+	}
+	pending := pendingPluginOAuth{
+		Nonce: nonce, Provider: string(provider), InstallationID: in.ID,
+		ProjectID: projectID, UserID: in.ConsentedBy,
+		ConfigRevision: cfg.ConfigRevision, BaseOrigin: origin, ClientID: cfg.ClientID,
+	}
 	raw, _ := json.Marshal(pending)
 	sealed, err := s.cipher.Encrypt(raw)
 	if err != nil {
@@ -1325,8 +1498,32 @@ func (s *Server) completePluginOAuth(w http.ResponseWriter, r *http.Request, pen
 		s.redirectConsole(w, r, map[string]string{"plugin_error": "persist_failed"})
 		return
 	}
+	// An anonymous GitLab /version probe may be intentionally partial (401).
+	// Once this Project OAuth grant has proven itself, discover the real release
+	// with that ephemeral access token and persist the corresponding capability
+	// matrix. Discovery failure never invalidates a successful user grant and
+	// never erases a previously known-good version.
+	s.refreshProviderCapabilitiesFromPluginGrant(r.Context(), installation, token.AccessToken)
 	_ = s.st.CreatePluginAuditEvent(r.Context(), &domain.PluginAuditEvent{ID: domain.NewID(), ProjectID: installation.ProjectID, InstallationID: installation.ID, ActorUserID: pending.UserID, EventType: "connected", Detail: string(installation.Provider), CreatedAt: time.Now().UTC()})
 	s.redirectConsole(w, r, map[string]string{"plugin_connected": installation.ID})
+}
+
+func (s *Server) refreshProviderCapabilitiesFromPluginGrant(ctx context.Context, installation *domain.PluginInstallation, accessToken string) {
+	if installation == nil || (installation.Provider != domain.PluginGitLab && installation.Provider != domain.PluginGitea) {
+		return
+	}
+	cfg, err := s.st.GetProviderConfig(ctx, installation.Provider)
+	if err != nil || !cfg.PluginEnabled || cfg.ConfigRevision != installation.ConfigRevision {
+		return
+	}
+	version, err := provider.ProbeAuthenticatedVersion(ctx, installation.Provider, cfg.BaseURL, accessToken, "Bearer")
+	if err != nil {
+		s.log.Warn("authenticated provider capability discovery failed", "provider", installation.Provider, "installation_id", installation.ID, "err", err)
+		return
+	}
+	if err := s.st.RecordProviderCapabilities(ctx, cfg.Provider, version, providerCapabilityKeys(cfg.Provider, version), time.Now().UTC()); err != nil {
+		s.log.Error("persist authenticated provider capability discovery", "provider", installation.Provider, "err", err)
+	}
 }
 
 func (s *Server) pluginOwner(w http.ResponseWriter, r *http.Request, installationID string) (*domain.PluginInstallation, bool) {

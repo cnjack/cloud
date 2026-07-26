@@ -349,9 +349,10 @@ func grant(t *testing.T, ts *httptest.Server, modelID, projectID string) {
 
 // runModelView decodes a run's model_id + model_name (D21 audit fields).
 type runModelView struct {
-	ID        string  `json:"id"`
-	ModelID   *string `json:"model_id"`
-	ModelName string  `json:"model_name"`
+	ID          string  `json:"id"`
+	ModelID     *string `json:"model_id"`
+	ModelName   string  `json:"model_name"`
+	ModelEffort string  `json:"model_effort"`
 }
 
 // createRunBody POSTs a run and returns (status, decoded run, error body).
@@ -403,6 +404,138 @@ func TestRunModelSelectionChain(t *testing.T) {
 	status, _, eb = createRunBody(t, ts, p.ServiceID, map[string]any{"prompt": "hi", "model_id": other.ID})
 	if status != http.StatusForbidden || eb.Error.Code != "model_not_granted" {
 		t.Fatalf("pick ungranted: status=%d code=%q want 403/model_not_granted", status, eb.Error.Code)
+	}
+}
+
+func TestRunModelEffortRequiresDeclaredReasoningCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		reasoning  bool
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "unsupported", reasoning: false, wantStatus: http.StatusBadRequest, wantCode: "model_effort_unsupported"},
+		{name: "supported", reasoning: true, wantStatus: http.StatusCreated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, st := catalogServer(t, true)
+			p := createProject(t, ts)
+			view := createModel(t, ts, "reasoning-"+tc.name, "http://model/v1", "openai/reasoner", "")
+			model, err := st.GetModel(context.Background(), view.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			model.Capabilities.Reasoning = tc.reasoning
+			if err := st.UpdateModel(context.Background(), model); err != nil {
+				t.Fatal(err)
+			}
+			grant(t, ts, view.ID, p.ID)
+
+			status, run, body := createRunBody(t, ts, p.ServiceID, map[string]any{
+				"prompt": "reason carefully", "model_id": view.ID, "model_effort": "high",
+			})
+			if status != tc.wantStatus {
+				t.Fatalf("status=%d want %d (body=%+v)", status, tc.wantStatus, body)
+			}
+			if tc.wantCode != "" && body.Error.Code != tc.wantCode {
+				t.Fatalf("error code=%q want %q", body.Error.Code, tc.wantCode)
+			}
+			if tc.reasoning && run.ModelEffort != "high" {
+				t.Fatalf("model_effort=%q want high", run.ModelEffort)
+			}
+		})
+	}
+}
+
+func TestEnvironmentFallbackRejectsModelEffort(t *testing.T) {
+	st := store.NewMemStore()
+	cfg := withTestModel(&config.Config{ConsoleToken: consoleToken})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(st, cfg, log, sse.NewHub(), nil)
+	ts := httptest.NewServer(srv.Handler())
+	registerTestServerStore(t, ts, st)
+	t.Cleanup(ts.Close)
+	p := createProject(t, ts)
+
+	status, _, body := createRunBody(t, ts, p.ServiceID, map[string]any{
+		"prompt": "reason carefully", "model_effort": "medium",
+	})
+	if status != http.StatusConflict || body.Error.Code != "model_effort_unsupported" {
+		t.Fatalf("status=%d code=%q want 409 model_effort_unsupported", status, body.Error.Code)
+	}
+}
+
+func TestRetryRevalidatesPreservedModelEffort(t *testing.T) {
+	ts, st := catalogServer(t, true)
+	p := createProject(t, ts)
+	view := createModel(t, ts, "retry-reasoner", "http://model/v1", "openai/reasoner", "")
+	model, _ := st.GetModel(context.Background(), view.ID)
+	model.Capabilities.Reasoning = true
+	if err := st.UpdateModel(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+	grant(t, ts, view.ID, p.ID)
+	status, run, body := createRunBody(t, ts, p.ServiceID, map[string]any{
+		"prompt": "reason", "model_id": view.ID, "model_effort": "high",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create status=%d body=%+v", status, body)
+	}
+	ctx := context.Background()
+	original, _ := st.GetRun(ctx, run.ID)
+	_, _ = st.ScheduleRun(ctx, original.ID, "j", "h", "PreparingWorkspace")
+	_, _ = st.MarkRunning(ctx, original.ID, "Running", original.CreatedAt)
+	_, _ = st.MarkSucceeded(ctx, original.ID, "Succeeded", original.CreatedAt)
+
+	model.Capabilities.Reasoning = false
+	if err := st.UpdateModel(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	resp := do(t, http.MethodPost, ts.URL+"/api/v1/runs/"+run.ID+"/retry", consoleToken, nil)
+	var errBody errorBody
+	decode(t, resp, &errBody)
+	if resp.StatusCode != http.StatusBadRequest || errBody.Error.Code != "model_effort_unsupported" {
+		t.Fatalf("retry status=%d code=%q want 400/model_effort_unsupported", resp.StatusCode, errBody.Error.Code)
+	}
+}
+
+func TestResumeRevalidatesPreservedModelEffort(t *testing.T) {
+	st := store.NewMemStore()
+	cfg := &config.Config{ConsoleToken: consoleToken, MasterKey: validTokenKey(t), PersistentWorkspace: true}
+	srv := New(st, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), sse.NewHub(), nil)
+	ts := httptest.NewServer(srv.Handler())
+	registerTestServerStore(t, ts, st)
+	t.Cleanup(ts.Close)
+	p := createProject(t, ts)
+	view := createModel(t, ts, "resume-reasoner", "http://model/v1", "openai/reasoner", "")
+	model, _ := st.GetModel(context.Background(), view.ID)
+	model.Capabilities.Reasoning = true
+	if err := st.UpdateModel(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+	grant(t, ts, view.ID, p.ID)
+	status, run, body := createRunBody(t, ts, p.ServiceID, map[string]any{
+		"prompt": "reason", "model_id": view.ID, "model_effort": "medium", "session": true,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create status=%d body=%+v", status, body)
+	}
+	ctx := context.Background()
+	original, _ := st.GetRun(ctx, run.ID)
+	_, _ = st.ScheduleRun(ctx, original.ID, "j", "h", "PreparingWorkspace")
+	_, _ = st.MarkRunning(ctx, original.ID, "Running", original.CreatedAt)
+	_, _ = st.SetRunACPSession(ctx, original.ID, "acp-model-effort")
+	_, _ = st.MarkSucceeded(ctx, original.ID, "Succeeded", original.CreatedAt)
+
+	model.Capabilities.Reasoning = false
+	if err := st.UpdateModel(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	resp := do(t, http.MethodPost, ts.URL+"/api/v1/runs/"+run.ID+"/resume", consoleToken, map[string]string{"prompt": "continue"})
+	var errBody errorBody
+	decode(t, resp, &errBody)
+	if resp.StatusCode != http.StatusBadRequest || errBody.Error.Code != "model_effort_unsupported" {
+		t.Fatalf("resume status=%d code=%q want 400/model_effort_unsupported", resp.StatusCode, errBody.Error.Code)
 	}
 }
 

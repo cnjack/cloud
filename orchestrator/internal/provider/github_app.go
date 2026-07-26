@@ -142,6 +142,42 @@ type GitHubAppIssuer struct {
 	now        func() time.Time
 }
 
+// Verify proves that the configured App id and private key can authenticate to
+// GitHub. It deliberately only reads the App metadata and never creates an
+// installation token or changes GitHub state.
+func (i *GitHubAppIssuer) Verify(ctx context.Context) error {
+	jwt, err := i.signedJWT()
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(i.apiBase, "/")+"/app", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := i.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("verify GitHub App: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("verify GitHub App: GitHub returned %s", resp.Status)
+	}
+	var body struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return fmt.Errorf("decode GitHub App verification: %w", err)
+	}
+	configuredID, err := strconv.ParseInt(i.appID, 10, 64)
+	if err != nil || body.ID != configuredID {
+		return errors.New("GitHub App identity does not match the configured App ID")
+	}
+	return nil
+}
+
 func NewGitHubAppIssuer(appID string, privateKeyPEM []byte) (*GitHubAppIssuer, error) {
 	appID = strings.TrimSpace(appID)
 	if appID == "" {

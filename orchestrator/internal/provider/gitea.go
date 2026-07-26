@@ -194,6 +194,33 @@ func (c *GiteaClient) ListRepos(ctx context.Context, query string, page, limit i
 	return repos, nil
 }
 
+// ListBranches lists branches from Gitea's repository API. The token is the
+// installation/run-scoped credential supplied by the control plane, never a
+// browser-provided PAT.
+func (c *GiteaClient) ListBranches(ctx context.Context, owner, repo string, page, limit int) ([]Branch, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 100
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/branches?page=%d&limit=%d", owner, repo, page, limit)
+	var raw []struct {
+		Name      string `json:"name"`
+		Protected bool   `json:"protected"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &raw); err != nil {
+		return nil, err
+	}
+	branches := make([]Branch, 0, len(raw))
+	for _, branch := range raw {
+		if strings.TrimSpace(branch.Name) != "" {
+			branches = append(branches, Branch{Name: branch.Name, Protected: branch.Protected})
+		}
+	}
+	return branches, nil
+}
+
 // EnsureCommentWebhook idempotently registers the @mention PR-comment webhook on
 // a repository: it lists the repo's hooks and creates one only when no hook with
 // the same target URL exists (Gitea masks hook secrets on read, so the URL is
@@ -382,5 +409,6 @@ func (c *GiteaClient) do(ctx context.Context, method, path string, body any, out
 
 var _ Provider = (*GiteaClient)(nil)
 var _ RepoLister = (*GiteaClient)(nil)
+var _ BranchLister = (*GiteaClient)(nil)
 var _ CurrentUser = (*GiteaClient)(nil)
 var _ SCMWebhookManager = (*GiteaClient)(nil)

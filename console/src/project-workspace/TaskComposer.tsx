@@ -1,9 +1,9 @@
 import type { FormEvent, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { PaperPlaneTilt } from '@phosphor-icons/react';
+import { Paperclip, PaperPlaneTilt, X } from '@phosphor-icons/react';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
-import type { ProjectModel, Service } from '../api/types';
+import type { ProjectModel, Service, ServiceBranch } from '../api/types';
 import { serviceSource } from './presentation';
 import styles from './TaskComposer.module.css';
 
@@ -17,6 +17,20 @@ export function TaskComposer({
   models,
   selectedModel,
   onSelectedModelChange,
+  effortEnabled,
+  modelEffort,
+  onModelEffortChange,
+  goalMode,
+  onGoalModeChange,
+  attachments,
+  attachmentError,
+  onAttachmentsAdd,
+  onAttachmentRemove,
+  branches,
+  branchesLoading,
+  branchesError,
+  selectedBranch,
+  onSelectedBranchChange,
   askApproval,
   onAskApprovalChange,
   onSubmit,
@@ -31,6 +45,20 @@ export function TaskComposer({
   models: readonly ProjectModel[];
   selectedModel: string;
   onSelectedModelChange: (id: string) => void;
+  effortEnabled: boolean;
+  modelEffort: 'auto' | 'low' | 'medium' | 'high';
+  onModelEffortChange: (effort: 'auto' | 'low' | 'medium' | 'high') => void;
+  goalMode: boolean;
+  onGoalModeChange: (enabled: boolean) => void;
+  attachments: readonly File[];
+  attachmentError?: string;
+  onAttachmentsAdd: (files: File[]) => void;
+  onAttachmentRemove: (index: number) => void;
+  branches: readonly ServiceBranch[];
+  branchesLoading: boolean;
+  branchesError: boolean;
+  selectedBranch: string;
+  onSelectedBranchChange: (name: string) => void;
   askApproval: boolean;
   onAskApprovalChange: (enabled: boolean) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -64,7 +92,44 @@ export function TaskComposer({
           disabled={!configured}
         />
         {promptError && <p className={styles.error}>{promptError}</p>}
+        {attachments.length > 0 && (
+          <div className={styles.attachments} aria-label={t('taskComposer.attachments')}>
+            {attachments.map((file, index) => (
+              <span className={styles.attachment} key={`${file.name}-${file.size}-${file.lastModified}-${index}`}>
+                <span title={file.name}>{file.name}</span>
+                <button
+                  type="button"
+                  title={t('taskComposer.removeAttachment', { name: file.name })}
+                  aria-label={t('taskComposer.removeAttachment', { name: file.name })}
+                  onClick={() => onAttachmentRemove(index)}
+                  disabled={busy}
+                >
+                  <X size={13} aria-hidden="true" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        {attachmentError && <p className={styles.error} role="alert">{attachmentError}</p>}
         <div className={styles.controls}>
+          <label
+            className={styles.attachButton}
+            title={t('taskComposer.addAttachments')}
+            aria-label={t('taskComposer.addAttachments')}
+          >
+            <Paperclip size={16} aria-hidden="true" />
+            <input
+              type="file"
+              multiple
+              aria-label={t('taskComposer.addAttachments')}
+              data-testid="composer-attachment-input"
+              disabled={!configured || busy || attachments.length >= 10}
+              onChange={(event) => {
+                onAttachmentsAdd(Array.from(event.currentTarget.files ?? []));
+                event.currentTarget.value = '';
+              }}
+            />
+          </label>
           <Select
             className={styles.pill}
             aria-label={t('taskComposer.permissionModeAria')}
@@ -79,7 +144,30 @@ export function TaskComposer({
             ]}
           />
           <span className={styles.controlHint}>{t('taskComposer.session')}</span>
+          <label className={styles.goalToggle}>
+            <input
+              type="checkbox"
+              checked={goalMode}
+              onChange={(event) => onGoalModeChange(event.target.checked)}
+              disabled={!configured || busy}
+            />
+            <span>{t('taskComposer.goalMode')}</span>
+          </label>
           <div className={styles.controlsEnd}>
+			<Select
+				className={styles.pill}
+				aria-label={t('taskComposer.branchAria')}
+				title={t('taskComposer.branchAria')}
+				value={selectedBranch}
+				onChange={onSelectedBranchChange}
+				disabled={!configured || branchesLoading || branches.length === 0}
+				data-testid="composer-branch-select"
+				placeholder={branchesLoading ? t('taskComposer.branchLoading') : t('taskComposer.branchUnavailable')}
+				options={branches.map((branch) => ({
+					value: branch.name,
+					label: branch.default ? `${branch.name} · ${t('taskComposer.branchDefault')}` : branch.name,
+				}))}
+			/>
             {models.length > 0 && (
               <Select
                 className={styles.pill}
@@ -94,13 +182,29 @@ export function TaskComposer({
                 ]}
               />
             )}
+            {effortEnabled && (
+              <Select
+                className={styles.pill}
+                aria-label={t('taskComposer.effortAria')}
+                value={modelEffort}
+                onChange={(value) => onModelEffortChange(value as 'auto' | 'low' | 'medium' | 'high')}
+                disabled={!configured || busy}
+                data-testid="composer-effort-select"
+                options={[
+                  { value: 'auto', label: t('taskComposer.effortAuto') },
+                  { value: 'low', label: t('taskComposer.effortLow') },
+                  { value: 'medium', label: t('taskComposer.effortMedium') },
+                  { value: 'high', label: t('taskComposer.effortHigh') },
+                ]}
+              />
+            )}
             <Button
               type="submit"
               variant="primary"
               size="sm"
               className={styles.send}
               loading={busy}
-              disabled={!configured}
+              disabled={!configured || busy || branchesLoading || branchesError || branches.length === 0}
               data-testid="run-submit"
             >
               <PaperPlaneTilt size={16} weight="regular" aria-hidden="true" />
@@ -108,6 +212,7 @@ export function TaskComposer({
             </Button>
           </div>
         </div>
+		{branchesError && <p className={styles.error} role="status">{t('taskComposer.branchUnavailable')}</p>}
       </form>
     </section>
   );

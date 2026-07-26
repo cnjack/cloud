@@ -26,6 +26,32 @@ func TestPRReviewAutomationMigrationUsesModelCatalog(t *testing.T) {
 	}
 }
 
+func TestWebhookBindingSecretMigrationFailsLegacyHooksClosed(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0051_webhook_binding_secrets.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := strings.Join(strings.Fields(string(sql)), " ")
+	for _, fragment := range []string{
+		"ADD COLUMN IF NOT EXISTS hook_id TEXT NOT NULL DEFAULT ''",
+		"ADD COLUMN IF NOT EXISTS secret_enc BYTEA",
+		"CREATE UNIQUE INDEX IF NOT EXISTS webhook_bindings_hook_id_uq",
+		"status = 'error'",
+		"status = 'action_required'",
+		"ADD COLUMN IF NOT EXISTS payload_digest TEXT NOT NULL DEFAULT ''",
+		"CREATE UNIQUE INDEX IF NOT EXISTS webhook_receipts_authenticated_payload_uq",
+	} {
+		if !strings.Contains(migration, fragment) {
+			t.Fatalf("0051 migration missing %q", fragment)
+		}
+	}
+	legacyUpdate := strings.Index(migration, "UPDATE webhook_bindings SET status = 'error'")
+	activeConstraint := strings.Index(migration, "ADD CONSTRAINT webhook_bindings_active_secret_check")
+	if legacyUpdate < 0 || activeConstraint < 0 || legacyUpdate > activeConstraint {
+		t.Fatal("0051 must fail legacy shared-secret bindings closed before enforcing the active-secret constraint")
+	}
+}
+
 func TestServiceKanbanMigrationConvergesBeforeUniqueIndexes(t *testing.T) {
 	sql, err := migrationsFS.ReadFile("migrations/0046_service_kanban_binding.sql")
 	if err != nil {
@@ -75,6 +101,23 @@ func TestPluginAutomationRunOriginsMigrationPreservesTriggerKind(t *testing.T) {
 	} {
 		if !strings.Contains(migration, fragment) {
 			t.Fatalf("0047 migration missing %q", fragment)
+		}
+	}
+}
+
+func TestRunCoalesceKeyMigrationContract(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0054_run_coalesce_key.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := strings.Join(strings.Fields(string(sql)), " ")
+	for _, fragment := range []string{
+		"ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT ''",
+		"CREATE UNIQUE INDEX IF NOT EXISTS runs_one_queued_per_coalesce_key_uq",
+		"WHERE coalesce_key <> '' AND status = 'queued'",
+	} {
+		if !strings.Contains(migration, fragment) {
+			t.Fatalf("0054 migration missing %q", fragment)
 		}
 	}
 }

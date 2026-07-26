@@ -222,7 +222,7 @@ func Normalize(provider ProviderKind, eventType, deliveryID string, payload []by
 		}
 		event.Family, event.Action = FamilyCheck, ActionCompleted
 		event.Object = Object{ID: anyID(p.ID), Title: p.Context, URL: p.TargetURL}
-		event.HeadSHA = p.SHA
+		event.Ref, event.HeadSHA = p.Ref, p.SHA
 	case "create", "delete":
 		if !strings.EqualFold(p.RefType, "tag") {
 			return NormalizedSCMEvent{}, ErrIgnored

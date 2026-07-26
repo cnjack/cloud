@@ -44,6 +44,12 @@ func TestPluginAutomationTypedFiltersRejectIncompatibleActions(t *testing.T) {
 				Actions: []pluginSCMActionReq{{EventFamily: "comment", Action: "created"}}},
 			message: "only for push, pull_request, and check",
 		},
+		{
+			name: "invalid branch glob",
+			scm: pluginSCMReq{Branch: "release/[",
+				Actions: []pluginSCMActionReq{{EventFamily: "push", Action: "updated"}}},
+			message: "invalid glob pattern",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -428,7 +428,9 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id,
 	review_posted_at, pr_head_branch, pr_base_branch,
 	origin, origin_comment_id, origin_comment_url, origin_automation_id, origin_event_key,
+	coalesce_key,
 	result, model_id, model_name,
+	base_branch, model_effort, goal_mode,
 	session, awaiting_since, session_finalizing, bundle_rev, pushed_rev, permission_mode,
 	acp_session_id, resumed_from`
 
@@ -441,7 +443,8 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt,
 		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID,
 		&r.ReviewPostedAt, &r.PRHeadBranch, &r.PRBaseBranch,
-		&r.Origin, &commentID, &commentURL, &automationID, &eventKey, &result, &r.ModelID, &r.ModelName,
+		&r.Origin, &commentID, &commentURL, &automationID, &eventKey, &r.CoalesceKey, &result, &r.ModelID, &r.ModelName,
+		&r.BaseBranch, &r.ModelEffort, &r.GoalMode,
 		&r.Session, &r.AwaitingSince, &r.SessionFinalizing, &r.BundleRev, &r.PushedRev, &r.PermissionMode,
 		&r.AcpSessionID, &r.ResumedFrom)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -470,12 +473,7 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 }
 
 func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
-	if r.Kind == "" {
-		r.Kind = domain.RunKindAgent
-	}
-	if r.Origin == "" {
-		r.Origin = domain.RunOriginAPI
-	}
+	normalizeRunForCreate(r)
 	// Hold a shared lock on the service through the insert. MarkServiceDeleting's
 	// UPDATE needs the conflicting row lock, so either this run commits before the
 	// deletion fence (and the deleter will list/cancel it), or the fence wins and
@@ -485,6 +483,53 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 		return fmt.Errorf("create run: begin: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := s.createRunTx(ctx, tx, r); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("create run: commit: %w", err)
+	}
+	return nil
+}
+
+// CreateCoalescedRun uses a transaction-scoped advisory lock so every
+// orchestrator replica serializes the same coalesce key. Canceling the previous
+// queued Run and inserting the new one happen in one transaction; a failed
+// insert rolls the cancellation back.
+func (s *PGStore) CreateCoalescedRun(ctx context.Context, coalesceKey string, r *domain.Run) error {
+	coalesceKey = strings.TrimSpace(coalesceKey)
+	if coalesceKey == "" {
+		return errors.New("coalesce key is required")
+	}
+	if r.Status != domain.StatusQueued {
+		return errors.New("coalesced run must be queued")
+	}
+	normalizeRunForCreate(r)
+	r.CoalesceKey = coalesceKey
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("create coalesced run: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, coalesceKey); err != nil {
+		return fmt.Errorf("create coalesced run: lock: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE runs
+		SET status=$2, phase='Superseded', finished_at=COALESCE(finished_at,$3)
+		WHERE coalesce_key=$1 AND status=$4`,
+		coalesceKey, domain.StatusCanceled, time.Now().UTC(), domain.StatusQueued); err != nil {
+		return fmt.Errorf("create coalesced run: supersede queued: %w", err)
+	}
+	if err := s.createRunTx(ctx, tx, r); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("create coalesced run: commit: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) createRunTx(ctx context.Context, tx pgx.Tx, r *domain.Run) error {
 	var deletingAt *time.Time
 	if err := tx.QueryRow(ctx, `SELECT deleting_at FROM services WHERE id=$1 FOR SHARE`, r.ServiceID).Scan(&deletingAt); errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
@@ -494,23 +539,190 @@ func (s *PGStore) CreateRun(ctx context.Context, r *domain.Run) error {
 	if deletingAt != nil {
 		return ErrServiceDeleting
 	}
-	_, err = tx.Exec(ctx,
+	_, err := tx.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
 		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID,
 		r.ReviewPostedAt, r.PRHeadBranch, r.PRBaseBranch,
-		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullStr(r.OriginAutomationID), nullStr(r.OriginEventKey),
+		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullStr(r.OriginAutomationID), nullStr(r.OriginEventKey), r.CoalesceKey,
 		nullRunResult(r.Result), r.ModelID, r.ModelName,
+		r.BaseBranch, r.ModelEffort, r.GoalMode,
 		r.Session, r.AwaitingSince, r.SessionFinalizing, r.BundleRev, r.PushedRev, r.PermissionMode,
 		r.AcpSessionID, r.ResumedFrom)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
+	for _, stageID := range r.AttachmentStageIDs {
+		var stage domain.AttachmentStage
+		if err := tx.QueryRow(ctx, `DELETE FROM run_attachment_stages
+			WHERE id=$1 AND project_id=$2 AND created_by_user_id=$3
+			  AND upload_state='uploaded' AND expires_at > now()
+			RETURNING id,project_id,created_by_user_id,object_key,display_name,content_type,size_bytes,upload_state,uploaded_at,expires_at,created_at`,
+			stageID, r.ProjectID, r.TriggeredByUserID).Scan(&stage.ID, &stage.ProjectID, &stage.CreatedBy, &stage.ObjectKey, &stage.DisplayName, &stage.ContentType, &stage.SizeBytes, &stage.UploadState, &stage.UploadedAt, &stage.ExpiresAt, &stage.CreatedAt); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("create run: consume attachment stage: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO run_attachment_bindings(run_id,stage_id,object_key,display_name,content_type,size_bytes) VALUES($1,$2,$3,$4,$5,$6)`, r.ID, stage.ID, stage.ObjectKey, stage.DisplayName, stage.ContentType, stage.SizeBytes); err != nil {
+			return fmt.Errorf("create run: bind attachment: %w", err)
+		}
+	}
+	if r.CopyAttachmentsFrom != "" {
+		if _, err := tx.Exec(ctx, `INSERT INTO run_attachment_bindings(run_id,stage_id,object_key,display_name,content_type,size_bytes)
+			SELECT $1,stage_id,object_key,display_name,content_type,size_bytes FROM run_attachment_bindings WHERE run_id=$2`, r.ID, r.CopyAttachmentsFrom); err != nil {
+			return fmt.Errorf("create run: clone attachments: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *PGStore) CreateAttachmentStage(ctx context.Context, stage *domain.AttachmentStage) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("create attachment stage: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	// Per (project,user) transaction advisory lock makes count+bytes quota
+	// atomic across API replicas without locking unrelated uploaders.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))`, stage.ProjectID, stage.CreatedBy); err != nil {
+		return fmt.Errorf("create attachment stage: quota lock: %w", err)
+	}
+	var count int
+	var bytes int64
+	if err := tx.QueryRow(ctx, `SELECT count(*),COALESCE(sum(size_bytes),0) FROM run_attachment_stages WHERE project_id=$1 AND created_by_user_id=$2 AND expires_at>now()`, stage.ProjectID, stage.CreatedBy).Scan(&count, &bytes); err != nil {
+		return fmt.Errorf("create attachment stage: quota read: %w", err)
+	}
+	if count >= 20 || bytes+stage.SizeBytes > 250<<20 {
+		return ErrAttachmentQuotaExceeded
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO run_attachment_stages(id,project_id,created_by_user_id,object_key,display_name,content_type,size_bytes,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, stage.ID, stage.ProjectID, stage.CreatedBy, stage.ObjectKey, stage.DisplayName, stage.ContentType, stage.SizeBytes, stage.ExpiresAt, stage.CreatedAt); err != nil {
+		return fmt.Errorf("create attachment stage: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("create run: commit: %w", err)
+		return fmt.Errorf("create attachment stage: commit: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStore) GetAttachmentStage(ctx context.Context, id string) (*domain.AttachmentStage, error) {
+	var stage domain.AttachmentStage
+	err := s.pool.QueryRow(ctx, `SELECT id,project_id,created_by_user_id,object_key,display_name,content_type,size_bytes,upload_state,uploaded_at,expires_at,created_at FROM run_attachment_stages WHERE id=$1`, id).Scan(&stage.ID, &stage.ProjectID, &stage.CreatedBy, &stage.ObjectKey, &stage.DisplayName, &stage.ContentType, &stage.SizeBytes, &stage.UploadState, &stage.UploadedAt, &stage.ExpiresAt, &stage.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get attachment stage: %w", err)
+	}
+	return &stage, nil
+}
+
+func (s *PGStore) ClaimAttachmentStageUpload(ctx context.Context, id, projectID, userID string, at time.Time) (*domain.AttachmentStage, error) {
+	var stage domain.AttachmentStage
+	err := s.pool.QueryRow(ctx, `UPDATE run_attachment_stages SET upload_state='uploading' WHERE id=$1 AND project_id=$2 AND created_by_user_id=$3 AND upload_state='pending' AND expires_at>$4 RETURNING id,project_id,created_by_user_id,object_key,display_name,content_type,size_bytes,upload_state,uploaded_at,expires_at,created_at`, id, projectID, userID, at).Scan(&stage.ID, &stage.ProjectID, &stage.CreatedBy, &stage.ObjectKey, &stage.DisplayName, &stage.ContentType, &stage.SizeBytes, &stage.UploadState, &stage.UploadedAt, &stage.ExpiresAt, &stage.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrConflict
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claim attachment stage upload: %w", err)
+	}
+	return &stage, nil
+}
+
+func (s *PGStore) MarkAttachmentStageUploaded(ctx context.Context, id string, size int64, at time.Time) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE run_attachment_stages SET upload_state='uploaded', uploaded_at=$3 WHERE id=$1 AND upload_state='uploading' AND size_bytes=$2 AND expires_at>$3`, id, size, at)
+	if err != nil {
+		return fmt.Errorf("mark attachment stage uploaded: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (s *PGStore) ReleaseAttachmentStageUpload(ctx context.Context, id string) bool {
+	tag, err := s.pool.Exec(ctx, `UPDATE run_attachment_stages SET upload_state='pending' WHERE id=$1 AND upload_state='uploading'`, id)
+	return err == nil && tag.RowsAffected() == 1
+}
+
+func (s *PGStore) ListRunAttachments(ctx context.Context, runID string) ([]domain.RunAttachment, error) {
+	rows, err := s.pool.Query(ctx, `SELECT run_id,stage_id,object_key,display_name,content_type,size_bytes FROM run_attachment_bindings WHERE run_id=$1 ORDER BY stage_id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list run attachments: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.RunAttachment
+	for rows.Next() {
+		var a domain.RunAttachment
+		if err := rows.Scan(&a.RunID, &a.StageID, &a.ObjectKey, &a.DisplayName, &a.ContentType, &a.SizeBytes); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) ListExpiredAttachmentStages(ctx context.Context, before time.Time, limit int) ([]domain.AttachmentStage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id,project_id,created_by_user_id,object_key,display_name,content_type,size_bytes,upload_state,uploaded_at,expires_at,created_at FROM run_attachment_stages WHERE expires_at <= $1 ORDER BY expires_at,id LIMIT $2`, before, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list expired attachment stages: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.AttachmentStage
+	for rows.Next() {
+		var stage domain.AttachmentStage
+		if err := rows.Scan(&stage.ID, &stage.ProjectID, &stage.CreatedBy, &stage.ObjectKey, &stage.DisplayName, &stage.ContentType, &stage.SizeBytes, &stage.UploadState, &stage.UploadedAt, &stage.ExpiresAt, &stage.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, stage)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) DeleteAttachmentStage(ctx context.Context, id string, before time.Time) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM run_attachment_stages WHERE id=$1 AND expires_at <= $2`, id, before)
+	if err != nil {
+		return fmt.Errorf("delete attachment stage: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) ListOrphanedRunAttachmentObjects(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `SELECT b.object_key FROM run_attachment_bindings b LEFT JOIN runs r ON r.id=b.run_id GROUP BY b.object_key HAVING count(r.id)=0 ORDER BY b.object_key LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list orphaned attachment objects: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		out = append(out, key)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) DeleteOrphanedRunAttachmentObject(ctx context.Context, objectKey string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM run_attachment_bindings b WHERE b.object_key=$1 AND NOT EXISTS (SELECT 1 FROM run_attachment_bindings b2 JOIN runs r ON r.id=b2.run_id WHERE b2.object_key=$1)`, objectKey)
+	if err != nil {
+		return fmt.Errorf("delete orphaned attachment bindings: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -3052,12 +3264,12 @@ func (s *PGStore) RecordAutomationDispatch(ctx context.Context, id string, at ti
 	return nil
 }
 
-const webhookBindingCols = `service_id, provider, endpoint, status, last_synced_at,
+const webhookBindingCols = `service_id, provider, endpoint, hook_id, secret_enc, status, last_synced_at,
 	last_delivery_at, last_delivery_status, last_error, updated_at`
 
 func scanWebhookBinding(row pgx.Row) (*domain.WebhookBinding, error) {
 	var b domain.WebhookBinding
-	err := row.Scan(&b.ServiceID, &b.Provider, &b.Endpoint, &b.Status, &b.LastSyncedAt,
+	err := row.Scan(&b.ServiceID, &b.Provider, &b.Endpoint, &b.HookID, &b.SecretEnc, &b.Status, &b.LastSyncedAt,
 		&b.LastDeliveryAt, &b.LastDeliveryStatus, &b.LastError, &b.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -3071,12 +3283,13 @@ func scanWebhookBinding(row pgx.Row) (*domain.WebhookBinding, error) {
 func (s *PGStore) UpsertWebhookBinding(ctx context.Context, b *domain.WebhookBinding) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO webhook_bindings (`+webhookBindingCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		 ON CONFLICT (service_id) DO UPDATE SET
-		   provider=EXCLUDED.provider, endpoint=EXCLUDED.endpoint, status=EXCLUDED.status,
+		   provider=EXCLUDED.provider, endpoint=EXCLUDED.endpoint,
+		   hook_id=EXCLUDED.hook_id, secret_enc=EXCLUDED.secret_enc, status=EXCLUDED.status,
 		   last_synced_at=EXCLUDED.last_synced_at, last_error=EXCLUDED.last_error,
 		   updated_at=EXCLUDED.updated_at`,
-		b.ServiceID, string(b.Provider), b.Endpoint, string(b.Status), b.LastSyncedAt,
+		b.ServiceID, string(b.Provider), b.Endpoint, b.HookID, b.SecretEnc, string(b.Status), b.LastSyncedAt,
 		b.LastDeliveryAt, b.LastDeliveryStatus, b.LastError, b.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("upsert webhook binding: %w", err)
@@ -3087,6 +3300,14 @@ func (s *PGStore) UpsertWebhookBinding(ctx context.Context, b *domain.WebhookBin
 func (s *PGStore) GetWebhookBinding(ctx context.Context, serviceID string) (*domain.WebhookBinding, error) {
 	return scanWebhookBinding(s.pool.QueryRow(ctx,
 		`SELECT `+webhookBindingCols+` FROM webhook_bindings WHERE service_id=$1`, serviceID))
+}
+
+func (s *PGStore) GetWebhookBindingByHookID(ctx context.Context, hookID string) (*domain.WebhookBinding, error) {
+	if strings.TrimSpace(hookID) == "" {
+		return nil, ErrNotFound
+	}
+	return scanWebhookBinding(s.pool.QueryRow(ctx,
+		`SELECT `+webhookBindingCols+` FROM webhook_bindings WHERE hook_id=$1`, hookID))
 }
 
 func (s *PGStore) DeleteWebhookBinding(ctx context.Context, serviceID string) error {

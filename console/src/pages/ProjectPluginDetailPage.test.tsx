@@ -6,6 +6,7 @@ import { ApiProvider } from '../api/ApiProvider';
 import type { ApiClient } from '../api/client';
 import type { ProjectPlugin } from '../api/types';
 import { ToastProvider } from '../components/Toast';
+import { i18n } from '../i18n';
 import { ProjectPluginDetailPage } from './ProjectPluginDetailPage';
 
 function renderDetail(plugin: ProjectPlugin, overrides: Partial<ApiClient> = {}) {
@@ -86,5 +87,42 @@ describe('ProjectPluginDetailPage', () => {
     fireEvent.change(screen.getByLabelText('Type UNINSTALL to confirm'), { target: { value: 'UNINSTALL' } });
     fireEvent.click(confirm);
     await waitFor(() => expect(uninstallProjectPlugin).toHaveBeenCalledWith('plugin-jtype', false));
+  });
+
+  it('localizes Plugin details and shows a human-readable Automation trigger', async () => {
+    await i18n.changeLanguage('zh-Hans');
+    try {
+      renderDetail({
+        id: 'plugin-jtype',
+        provider: 'jtype',
+        status: 'enabled',
+        workspace_id: 'ws-1',
+        external_account_id: 'account-1',
+        scopes: ['full'],
+        token_set: true,
+      }, {
+        getProject: async () => ({
+          id: 'p1', name: 'Demo', created_at: '', role: 'owner' as const,
+          services: [{
+            id: 'svc-1', project_id: 'p1', name: 'Docs', repo_kind: 'provider', provider: 'jtype',
+            default_branch: 'main', git_mode: 'readonly', created_at: '',
+          }],
+        }),
+        listProjectAutomations: async () => [{
+          automation: {
+            id: 'a1', service_id: 'svc-1', name: 'Daily docs', trigger_kind: 'cron' as const,
+            prompt_template: 'Review', enabled: true, ignore_jcode: true, created_at: '', updated_at: '',
+          },
+          cron: { cron_expr: '0 9 * * 1-5' },
+        }],
+      });
+
+      expect(await screen.findByText('关联服务')).toBeTruthy();
+      expect(screen.getByText('定时任务')).toBeTruthy();
+      expect(screen.getByText('稳定 ID：account-1')).toBeTruthy();
+      expect(screen.queryByText('Services')).toBeNull();
+    } finally {
+      await i18n.changeLanguage('en');
+    }
   });
 });

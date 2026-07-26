@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -252,6 +253,73 @@ func TestAuthProvidersEmptyWhenUnconfigured(t *testing.T) {
 		t.Fatalf("console token path: status=%d want 200", r2.StatusCode)
 	}
 	r2.Body.Close()
+}
+
+func TestLoginOAuthCallbackRejectsMidFlightConfigChangeBeforeExchange(t *testing.T) {
+	var replacementTokenHits atomic.Int32
+	replacement := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login/oauth/access_token" {
+			replacementTokenHits.Add(1)
+		}
+		http.Error(w, "must not be reached", http.StatusTeapot)
+	}))
+	defer replacement.Close()
+	original := httptest.NewServer(http.NotFoundHandler())
+	defer original.Close()
+
+	ts, st, _ := newCipherServer(t, nil, "")
+	if err := st.UpsertClusterSettings(context.Background(), &domain.ClusterSettings{
+		PublicURL: ts.URL, SetupComplete: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	configure := do(t, http.MethodPut, ts.URL+"/api/v1/system/providers/gitea", consoleToken, map[string]any{
+		"base_url": original.URL, "login_enabled": true,
+		"client_id": "client-a", "client_secret": "secret-a",
+	})
+	if configure.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(configure.Body)
+		t.Fatalf("initial login provider=%d body=%s", configure.StatusCode, body)
+	}
+	configure.Body.Close()
+
+	startReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/auth/login/gitea", nil)
+	start, err := noRedirectClient().Do(startReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start.Body.Close()
+	if start.StatusCode != http.StatusFound {
+		t.Fatalf("login start=%d want 302", start.StatusCode)
+	}
+	stateCookie := findCookie(start, stateCookieName)
+	state := redirectQuery(t, start).Get("state")
+	if stateCookie == nil || state == "" {
+		t.Fatal("login start did not return state and cookie")
+	}
+
+	changed := do(t, http.MethodPut, ts.URL+"/api/v1/system/providers/gitea", consoleToken, map[string]any{
+		"base_url": replacement.URL, "login_enabled": true,
+		"client_id": "client-b", "client_secret": "secret-b",
+	})
+	if changed.StatusCode != http.StatusOK {
+		t.Fatalf("replacement login provider=%d", changed.StatusCode)
+	}
+	changed.Body.Close()
+
+	callbackReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/auth/callback/gitea?code=stolen&state="+url.QueryEscape(state), nil)
+	callbackReq.AddCookie(stateCookie)
+	callback, err := noRedirectClient().Do(callbackReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callback.Body.Close()
+	if callback.StatusCode != http.StatusConflict {
+		t.Fatalf("mid-flight login callback=%d want 409", callback.StatusCode)
+	}
+	if replacementTokenHits.Load() != 0 {
+		t.Fatalf("login callback contacted replacement token endpoint %d times", replacementTokenHits.Load())
+	}
 }
 
 // TestOAuthFirstUserBecomesAdmin covers the full callback flow: first user =>

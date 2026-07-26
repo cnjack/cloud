@@ -1,6 +1,9 @@
 package api
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,24 +20,59 @@ import (
 // authenticates with the DB-backed Provider config, immediately normalizes the
 // payload, and never persists or logs the raw body.
 func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
-	provider, eventType, deliveryID := pluginWebhookHeaders(r)
+	provider, eventType, deliveryID, hookID := pluginWebhookHeaders(r)
 	if !provider.Valid() {
 		writeError(w, http.StatusNotFound, "not_found", "unknown webhook provider")
 		return
 	}
 	cfg, err := s.st.GetProviderConfig(r.Context(), domain.ProviderKind(provider))
-	if errors.Is(err, store.ErrNotFound) || !cfg.PluginEnabled {
+	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusServiceUnavailable, "provider_unavailable", "provider webhook is not configured")
 		return
 	}
-	if err != nil || s.cipher == nil || len(cfg.WebhookSecretEnc) == 0 {
-		writeError(w, http.StatusServiceUnavailable, "provider_unavailable", "provider webhook secret is unavailable")
+	if err != nil || cfg == nil || !cfg.PluginEnabled {
+		writeError(w, http.StatusServiceUnavailable, "provider_unavailable", "provider webhook is not configured")
 		return
 	}
-	rawSecret, err := s.cipher.Decrypt(cfg.WebhookSecretEnc)
+	if s.cipher == nil {
+		writeError(w, http.StatusServiceUnavailable, "provider_unavailable", "provider webhook credential is unavailable")
+		return
+	}
+
+	var (
+		rawSecret      []byte
+		routeBinding   *domain.WebhookBinding
+		repoBinding    *domain.ServiceRepositoryBinding
+		boundService   *domain.Service
+		boundInstallID string
+	)
+	if provider == scmevent.ProviderGitHub {
+		if len(cfg.WebhookSecretEnc) == 0 {
+			writeError(w, http.StatusServiceUnavailable, "provider_unavailable", "provider webhook secret is unavailable")
+			return
+		}
+		rawSecret, err = s.cipher.Decrypt(cfg.WebhookSecretEnc)
+	} else {
+		if strings.TrimSpace(hookID) == "" {
+			writeError(w, http.StatusNotFound, "not_found", "unknown webhook binding")
+			return
+		}
+		routeBinding, err = s.st.GetWebhookBindingByHookID(r.Context(), hookID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusServiceUnavailable, "provider_unavailable", "webhook binding could not be loaded")
+			return
+		}
+		if err != nil || routeBinding.Provider != domain.GitProvider(provider) ||
+			(routeBinding.Status != domain.WebhookBindingPending && routeBinding.Status != domain.WebhookBindingActive) ||
+			len(routeBinding.SecretEnc) == 0 {
+			writeError(w, http.StatusNotFound, "not_found", "unknown webhook binding")
+			return
+		}
+		rawSecret, err = s.cipher.Decrypt(routeBinding.SecretEnc)
+	}
 	if err != nil {
-		s.log.Error("decrypt provider webhook secret", "provider", provider)
-		writeError(w, http.StatusServiceUnavailable, "provider_unavailable", "provider webhook secret is unavailable")
+		s.log.Error("decrypt webhook credential", "provider", provider)
+		writeError(w, http.StatusServiceUnavailable, "provider_unavailable", "provider webhook credential is unavailable")
 		return
 	}
 	body, ok := readWebhookBody(w, r)
@@ -52,6 +90,9 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		authenticated = validGitLabToken(secret, r.Header.Get("X-Gitlab-Token"))
 	}
 	if !authenticated {
+		if routeBinding != nil {
+			_ = s.st.RecordWebhookDelivery(r.Context(), routeBinding.ServiceID, time.Now().UTC(), "rejected", "invalid signature")
+		}
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid webhook signature")
 		return
 	}
@@ -61,6 +102,17 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
+	payloadDigest := ""
+	if provider == scmevent.ProviderGitHub || provider == scmevent.ProviderGitea {
+		// Canonicalize the already-verified body through its per-authentication
+		// HMAC before hashing again for storage. For Gitea this scopes identical
+		// payloads to their random binding secret, while a replay that only
+		// changes the unsigned delivery header still collides.
+		mac := hmac.New(sha256.New, rawSecret)
+		_, _ = mac.Write(body)
+		sum := sha256.Sum256(mac.Sum(nil))
+		payloadDigest = hex.EncodeToString(sum[:])
+	}
 	event, err := scmevent.Normalize(provider, eventType, deliveryID, body, now)
 	// Do not retain the provider payload beyond normalization/authentication.
 	body = nil
@@ -72,10 +124,32 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_event", "webhook event could not be normalized")
 		return
 	}
+	if routeBinding != nil {
+		repoBinding, err = s.st.GetServiceRepositoryBinding(r.Context(), routeBinding.ServiceID)
+		if err == nil {
+			boundService, err = s.st.GetService(r.Context(), routeBinding.ServiceID)
+		}
+		var installation *domain.PluginInstallation
+		if err == nil {
+			installation, err = s.st.GetPluginInstallation(r.Context(), repoBinding.InstallationID)
+		}
+		if err != nil || boundService.DeletingAt != nil ||
+			boundService.Provider != domain.GitProvider(provider) ||
+			installation.Provider != domain.ProviderKind(provider) ||
+			installation.ProjectID != boundService.ProjectID ||
+			repoBinding.ProviderRepoID != event.Repository.ID {
+			_ = s.st.RecordWebhookDelivery(r.Context(), routeBinding.ServiceID, now, "rejected", "repository mismatch")
+			writeError(w, http.StatusUnauthorized, "repository_mismatch", "webhook repository does not match its Service binding")
+			return
+		}
+		boundInstallID = repoBinding.InstallationID
+	}
 	receipt := &domain.WebhookReceipt{
 		ID:              domain.NewID(),
 		Provider:        domain.ProviderKind(provider),
 		DeliveryID:      event.DeliveryID,
+		PayloadDigest:   payloadDigest,
+		InstallationID:  boundInstallID,
 		EventFamily:     string(event.Family),
 		Action:          string(event.Action),
 		ExternalActorID: event.Actor.ID,
@@ -90,6 +164,9 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !claimed {
+		if routeBinding != nil {
+			_ = s.st.RecordWebhookDelivery(r.Context(), routeBinding.ServiceID, now, "duplicate", "")
+		}
 		writeWebhookOK(w, "duplicate")
 		return
 	}
@@ -106,6 +183,9 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 	dispatched := 0
 	for i := range automations {
 		a := &automations[i]
+		if routeBinding != nil && a.ServiceID != routeBinding.ServiceID {
+			continue
+		}
 		spec, specErr := s.st.GetPluginAutomationSpec(r.Context(), a.ID)
 		if specErr != nil || spec.SCM == nil {
 			s.recordPluginAutomationError(r, a, "Automation trigger configuration is unavailable.")
@@ -157,8 +237,16 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		run.OriginEventKey = pluginEventKey(a.ID, svc.ID, event)
 		run.ModelName = sel.ModelName
 		run.PRNumber = int(event.Object.Number)
-		run.PRHeadBranch = event.Ref
-		run.PRBaseBranch = event.BaseRef
+		// A normalized push ref can be "refs/heads/<name>", while the runner's
+		// BASE_BRANCH contract requires the repository branch name accepted by
+		// git clone --branch. Persist the resolved baseline independently from
+		// PR metadata so push/check Automations do not accidentally enter the
+		// PR-head update path.
+		run.BaseBranch = automationRunBranch(event)
+		if event.Family == scmevent.FamilyPullRequest {
+			run.PRHeadBranch = automationRunBranch(event)
+			run.PRBaseBranch = strings.TrimPrefix(event.BaseRef, "refs/heads/")
+		}
 		if event.Object.URL != "" {
 			run.PRURL = event.Object.URL
 		}
@@ -166,8 +254,13 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 			modelID := sel.ModelID
 			run.ModelID = &modelID
 		}
-		s.supersedeQueuedPluginRun(r, svc.ID, a.ID, event)
-		if createErr := s.st.CreateRun(r.Context(), run); createErr != nil {
+		var createErr error
+		if coalesceKey := pluginRunCoalesceKey(a.ID, svc.ID, event); coalesceKey != "" {
+			createErr = s.st.CreateCoalescedRun(r.Context(), coalesceKey, run)
+		} else {
+			createErr = s.st.CreateRun(r.Context(), run)
+		}
+		if createErr != nil {
 			if _, duplicateErr := s.st.GetRunByOriginEventKey(r.Context(), run.OriginEventKey); duplicateErr == nil {
 				continue
 			}
@@ -186,33 +279,59 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		dispatched++
 	}
 	if dispatched == 0 {
+		if routeBinding != nil {
+			_ = s.st.RecordWebhookDelivery(r.Context(), routeBinding.ServiceID, now, "ignored", "")
+		}
 		s.completePluginReceipt(r, receipt, "ignored", "", "")
 		writeWebhookOK(w, "ignored")
 		return
 	}
 	s.completePluginReceipt(r, receipt, "matched", receipt.MatchedAutomationID, "")
+	if routeBinding != nil {
+		_ = s.st.RecordWebhookDelivery(r.Context(), routeBinding.ServiceID, now, "accepted", "")
+	}
 	writeWebhookOK(w, "accepted")
 }
 
-func pluginWebhookHeaders(r *http.Request) (scmevent.ProviderKind, string, string) {
+func automationRunBranch(event scmevent.NormalizedSCMEvent) string {
+	branch := strings.TrimSpace(strings.TrimPrefix(event.Ref, "refs/heads/"))
+	if branch == "" {
+		branch = strings.TrimSpace(strings.TrimPrefix(event.BaseRef, "refs/heads/"))
+	}
+	return branch
+}
+
+func pluginWebhookHeaders(r *http.Request) (scmevent.ProviderKind, string, string, string) {
 	switch r.URL.Path {
 	case "/webhooks/github":
-		return scmevent.ProviderGitHub, r.Header.Get("X-GitHub-Event"), r.Header.Get("X-GitHub-Delivery")
-	case "/webhooks/gitlab":
+		return scmevent.ProviderGitHub, r.Header.Get("X-GitHub-Event"), r.Header.Get("X-GitHub-Delivery"), ""
+	}
+	if hookID := webhookBindingPathValue(r, "/webhooks/gitlab/"); hookID != "" {
 		delivery := r.Header.Get("X-Gitlab-Event-UUID")
 		if delivery == "" {
 			delivery = r.Header.Get("X-Gitlab-Webhook-UUID")
 		}
-		return scmevent.ProviderGitLab, r.Header.Get("X-Gitlab-Event"), delivery
-	case "/webhooks/gitea":
+		return scmevent.ProviderGitLab, r.Header.Get("X-Gitlab-Event"), delivery, hookID
+	}
+	if hookID := webhookBindingPathValue(r, "/webhooks/gitea/"); hookID != "" {
 		eventType := r.Header.Get("X-Gitea-Event-Type")
 		if eventType == "" {
 			eventType = r.Header.Get("X-Gitea-Event")
 		}
-		return scmevent.ProviderGitea, eventType, r.Header.Get("X-Gitea-Delivery")
-	default:
-		return "", "", ""
+		return scmevent.ProviderGitea, eventType, r.Header.Get("X-Gitea-Delivery"), hookID
 	}
+	return "", "", "", ""
+}
+
+func webhookBindingPathValue(r *http.Request, prefix string) string {
+	hookID := strings.TrimSpace(r.PathValue("binding"))
+	if hookID == "" {
+		hookID = strings.TrimSpace(strings.TrimPrefix(r.URL.Path, prefix))
+	}
+	if hookID == "" || strings.Contains(hookID, "/") || r.URL.Path != prefix+hookID {
+		return ""
+	}
+	return hookID
 }
 
 func normalizedObjectRef(event scmevent.NormalizedSCMEvent) string {
@@ -230,6 +349,14 @@ func pluginEventKey(automationID, serviceID string, event scmevent.NormalizedSCM
 		return fmt.Sprintf("plugin-coalesce:%s:%s:%s", automationID, key, event.DeliveryID)
 	}
 	return fmt.Sprintf("plugin:%s:%s:%s", automationID, event.Provider, event.DeliveryID)
+}
+
+func pluginRunCoalesceKey(automationID, serviceID string, event scmevent.NormalizedSCMEvent) string {
+	key := scmevent.CoalesceKey(serviceID, event)
+	if key == "" {
+		return ""
+	}
+	return "plugin:" + automationID + ":" + key
 }
 
 func splitFilterValues(value string) []string {
@@ -253,25 +380,6 @@ func renderPluginPrompt(template string, event scmevent.NormalizedSCMEvent) stri
 		"{{object_url}}", event.Object.URL,
 		"{{actor}}", event.Actor.Login,
 	).Replace(template)
-}
-
-func (s *Server) supersedeQueuedPluginRun(r *http.Request, serviceID, automationID string, event scmevent.NormalizedSCMEvent) {
-	key := scmevent.CoalesceKey(serviceID, event)
-	if key == "" {
-		return
-	}
-	runs, err := s.st.ListRunsByService(r.Context(), serviceID, 100)
-	if err != nil {
-		return
-	}
-	prefix := "plugin-coalesce:" + automationID + ":" + key + ":"
-	for i := range runs {
-		if runs[i].Status == domain.StatusQueued && strings.HasPrefix(runs[i].OriginEventKey, prefix) {
-			_, _ = s.st.CancelRun(r.Context(), runs[i].ID, "Superseded", time.Now().UTC())
-		}
-	}
-	// The new run still has a delivery-unique suffix for exactly-once de-dupe.
-	// Change its key at the caller by encoding the coalescing prefix there.
 }
 
 func (s *Server) recordPluginAutomationError(r *http.Request, a *domain.PluginAutomation, message string) {

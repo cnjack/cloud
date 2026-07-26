@@ -21,10 +21,6 @@ import {
   useDeleteModel,
   useSetModelGrant,
   useProjects,
-  useKanbanLinks,
-  useKanbanConfig,
-  useUpdateKanbanConfig,
-  useDeleteKanbanConfig,
 } from '../api/queries';
 import { useRole } from '../api/ApiProvider';
 import { ApiError } from '../api/client';
@@ -34,7 +30,7 @@ import { TextField } from '../components/Field';
 import { LoadingBlock, ErrorBlock } from '../components/States';
 import { EmptyState } from '../components/EmptyState';
 import { useToast } from '../components/Toast';
-import type { KanbanClusterConfig, Model, Project, SystemInfo } from '../api/types';
+import type { Model, Project, SystemInfo } from '../api/types';
 import styles from './SystemPage.module.css';
 
 export function SystemPage() {
@@ -103,9 +99,6 @@ function SystemCards({ data }: { data: SystemInfo }) {
     <div className={styles.grid} data-testid="system-cards">
       {/* Model (Feature A) — configured status + admin form. */}
       <ModelCard />
-
-      {/* Kanban (Feature E / D27) — editable cluster jtype config + link wiring. */}
-      <KanbanCard systemReason={data.kanban?.reason} />
 
       {/* Capacity */}
       <Card className={styles.card}>
@@ -510,237 +503,6 @@ function ModelAddForm() {
         </Button>
       </div>
     </form>
-  );
-}
-
-/**
- * KanbanCard — the jtype kanban integration (Feature E / D27, slimmed by D36).
- * The cluster jtype config is now JUST the base URL — an infrastructure fact —
- * settable here by a cluster admin, not only via orchestrator env: the card
- * shows the effective config + its SOURCE (DB override / JTYPE_BASE_URL env /
- * off) as a badge, an editable form, and a "Clear cluster config" action that
- * drops the DB override back to env/off. Kanban credentials are entirely
- * per-link (D25, Project settings → Kanban) — there is no cluster-level token
- * to edit here any more. The cross-project link overview below stays READ-ONLY
- * — link management is the project owner's. An unconfigured integration renders
- * a fail-visible "off" state, never a silent mock.
- *
- * `systemReason` is the /system snapshot's kanban.reason (same resolver, same
- * failure); the config view's own `reason` wins when both are present.
- */
-function KanbanCard({ systemReason }: { systemReason?: string }) {
-  const { t } = useTranslation();
-  const config = useKanbanConfig();
-  // Fail-visible (D27): why the resolver refused to produce an effective config.
-  const reason = config.data?.reason || systemReason;
-
-  return (
-    <Card className={[styles.card, styles.modelCard].join(' ')} data-testid="kanban-card">
-      <div className={styles.cardHead}>
-        <h2 className={styles.cardTitle}>{t('cluster.system.kanbanTitle')}</h2>
-        {config.data && (
-          <span
-            className={styles.pill}
-            data-on={config.data.effective_enabled || undefined}
-            data-err={(!config.data.effective_enabled && !!reason) || undefined}
-            data-testid="kanban-status"
-          >
-            {config.data.source === 'db'
-              ? t('cluster.system.kanbanSourceDb')
-              : config.data.source === 'env'
-                ? t('cluster.system.kanbanSourceEnv')
-                : t('cluster.system.kanbanSourceOff')}
-          </span>
-        )}
-      </div>
-
-      {reason && (
-        <p className={styles.errorNotice} role="alert" data-testid="kanban-config-reason">
-          {reason}
-        </p>
-      )}
-
-      {config.isLoading ? (
-        <LoadingBlock label={t('cluster.system.loadingKanban')} />
-      ) : config.isError ? (
-        <ErrorBlock
-          error={config.error}
-          onRetry={() => config.refetch()}
-          title={t('cluster.system.kanbanError')}
-        />
-      ) : config.data ? (
-        // Re-key on the resolved config's identity so a Save (env→db) or a Clear
-        // (db→env/off) re-seeds the form fields from the fresh server state.
-        // token_set is deliberately NOT part of the key (D28): a completed
-        // device flow flips it false→true via invalidation, and a remount here
-        // would tear down the in-flight connect panel one refetch tick after it
-        // shows "Connected". token_set-driven UI (the token field's placeholder,
-        // the clear-token checkbox) reads it reactively as a prop, and the save
-        // handler already clears the typed token itself on success.
-        <KanbanConfigEditor
-          key={`${config.data.source}:${config.data.base_url}`}
-          config={config.data}
-        />
-      ) : null}
-    </Card>
-  );
-}
-
-/**
- * KanbanConfigEditor — the editable cluster jtype base URL + the read-only link
- * overview (D36: no cluster token to edit). "Clear cluster config" DELETEs the
- * DB override behind a confirm step (only offered when a DB override exists —
- * there is nothing to clear otherwise).
- */
-function KanbanConfigEditor({ config }: { config: KanbanClusterConfig }) {
-  const { t } = useTranslation();
-  const toast = useToast();
-  const update = useUpdateKanbanConfig();
-  const del = useDeleteKanbanConfig();
-  const links = useKanbanLinks(config.effective_enabled);
-  const projects = useProjects();
-  const projectName = (id: string) => projects.data?.find((p) => p.id === id)?.name ?? id;
-
-  const [baseUrl, setBaseUrl] = useState(config.base_url);
-  const [confirmClear, setConfirmClear] = useState(false);
-
-  const save = (e: React.FormEvent) => {
-    e.preventDefault();
-    update.mutate(
-      { base_url: baseUrl.trim() },
-      {
-        onSuccess: () => {
-          toast.push({ kind: 'success', message: t('cluster.system.kanbanConfigSaved') });
-        },
-        onError: (err) =>
-          toast.push({
-            kind: 'error',
-            message: err instanceof ApiError ? err.message : t('cluster.system.kanbanConfigSaveError'),
-          }),
-      },
-    );
-  };
-
-  const clearConfig = () => {
-    del.mutate(undefined, {
-      onSuccess: () => {
-        setConfirmClear(false);
-        toast.push({ kind: 'success', message: t('cluster.system.kanbanConfigCleared') });
-      },
-      onError: (err) =>
-        toast.push({
-          kind: 'error',
-          message: err instanceof ApiError ? err.message : t('cluster.system.kanbanConfigClearError'),
-        }),
-    });
-  };
-
-  return (
-    <>
-      <p className={styles.modelHint} data-testid="kanban-hint">
-        {config.effective_enabled
-          ? t('cluster.system.kanbanHintEnabled', { base: config.effective_base_url || '—', source: config.source })
-          : t('cluster.system.kanbanHintDisabled')}
-      </p>
-
-      <form className={styles.modelForm} onSubmit={save} noValidate data-testid="kanban-config-form">
-        <TextField
-          label={t('cluster.system.kanbanBaseUrlLabel')}
-          placeholder="http://jtype.jcloud.svc.cluster.local:13345"
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          data-testid="kanban-config-base"
-          autoComplete="off"
-          required
-          hint={t('cluster.system.kanbanBaseUrlHint')}
-        />
-        <div className={styles.modelActions}>
-          <Button type="submit" variant="primary" loading={update.isPending} data-testid="kanban-config-save">
-            {t('common.save')}
-          </Button>
-          {/* Offered whenever a DB ROW exists. */}
-          {config.base_url !== '' &&
-            (confirmClear ? (
-              <>
-                <span className={styles.cardHint}>{t('cluster.system.clearDbConfirm')}</span>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => setConfirmClear(false)}
-                  disabled={del.isPending}
-                >
-                  {t('cluster.system.keep')}
-                </Button>
-                <Button
-                  type="button"
-                  variant="danger"
-                  onClick={clearConfig}
-                  loading={del.isPending}
-                  data-testid="kanban-config-clear-confirm"
-                >
-                  {t('cluster.system.clearClusterConfig')}
-                </Button>
-              </>
-            ) : (
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setConfirmClear(true)}
-                data-testid="kanban-config-clear"
-              >
-                {t('cluster.system.clearClusterConfig')}
-              </Button>
-            ))}
-        </div>
-      </form>
-
-      {/* Read-only cross-project link overview (management stays with owners). */}
-      {links.data && links.data.length > 0 ? (
-        <div data-testid="kanban-links">
-          {links.data.map((l) => (
-            <div className={styles.kanbanLinkRow} key={l.id}>
-              <div className={styles.kanbanLinkMeta}>
-                <div className={styles.kanbanLinkTitle}>
-                  <span title={`${l.workspace_id} / ${l.board_ref}`}>
-                    {l.board_title || `${l.workspace_id} / ${l.board_ref}`}
-                  </span>
-                  <span
-                    className={styles.pill}
-                    data-on={l.credential_status === 'per_link' || undefined}
-                    data-err={l.credential_status === 'missing' || undefined}
-                    style={{ marginLeft: 8 }}
-                    data-testid={`kanban-cred-${l.id}`}
-                  >
-                    {{
-                      per_link: t('cluster.system.credOwnToken'),
-                      missing: t('cluster.system.credMissing'),
-                    }[l.credential_status]}
-                  </span>
-                  {/* D29: a fail-visible board-validation pill (absent board_status
-                      is a pre-D29 row, treated as validated). */}
-                  {(l.board_status ?? 'ok') !== 'ok' && (
-                    <span
-                      className={styles.pill}
-                      data-err={l.board_status === 'invalid' || undefined}
-                      style={{ marginLeft: 8 }}
-                      data-testid={`kanban-board-status-${l.id}`}
-                    >
-                      {l.board_status === 'invalid' ? t('cluster.system.boardInvalid') : t('cluster.system.boardNotValidated')}
-                    </span>
-                  )}
-                </div>
-                <div className={styles.kanbanLinkSub}>
-                  {projectName(l.project_id)} · {l.trigger_column}
-                  {l.done_column ? ` → ${l.done_column}` : ''}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className={styles.modelHint}>{t('cluster.system.noKanbanLinks')}</p>
-      )}
-    </>
   );
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -47,6 +48,117 @@ func pgTestStore(t *testing.T) (*PGStore, string) {
 	}
 	t.Cleanup(func() { _ = st.DeleteProject(ctx, p.ID) }) // cascades runs/events
 	return st, r.ID
+}
+
+func TestPGCreateCoalescedRunConcurrentLatestWins(t *testing.T) {
+	ctx := context.Background()
+	st, seedID := pgTestStore(t)
+	seed, err := st.GetRun(ctx, seedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "plugin:auto:" + seed.ServiceID + ":push:refs/heads/main:" + domain.NewID()
+	const concurrent = 16
+	start := make(chan struct{})
+	errs := make(chan error, concurrent)
+	for i := 0; i < concurrent; i++ {
+		i := i
+		go func() {
+			<-start
+			errs <- st.CreateCoalescedRun(ctx, key, &domain.Run{
+				ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+				Prompt: "concurrent", Status: domain.StatusQueued, Attempt: 1,
+				OriginEventKey: "pg-delivery-" + domain.NewID() + "-" + strconv.Itoa(i),
+				CreatedAt:      time.Now().UTC(),
+			})
+		}()
+	}
+	close(start)
+	for i := 0; i < concurrent; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent create: %v", err)
+		}
+	}
+	runs, err := st.ListRunsByService(ctx, seed.ServiceID, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCoalescedRunState(t, runs, key, concurrent, "", 1, concurrent-1)
+
+	latest := &domain.Run{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "latest", Status: domain.StatusQueued, Attempt: 1,
+		OriginEventKey: "pg-delivery-latest-" + domain.NewID(), CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateCoalescedRun(ctx, key, latest); err != nil {
+		t.Fatal(err)
+	}
+	runs, err = st.ListRunsByService(ctx, seed.ServiceID, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCoalescedRunState(t, runs, key, concurrent+1, latest.ID, 1, concurrent)
+
+	// The UPDATE that supersedes latest must roll back when the following INSERT
+	// violates delivery de-duplication.
+	duplicate := &domain.Run{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "must fail", Status: domain.StatusQueued, Attempt: 1,
+		OriginEventKey: latest.OriginEventKey, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateCoalescedRun(ctx, key, duplicate); err == nil {
+		t.Fatal("duplicate origin event unexpectedly created a Run")
+	}
+	got, err := st.GetRun(ctx, latest.ID)
+	if err != nil || got.Status != domain.StatusQueued {
+		t.Fatalf("failed create changed previous winner: run=%+v err=%v", got, err)
+	}
+}
+
+func TestPGWebhookBindingSecretAndAuthenticatedDigest(t *testing.T) {
+	ctx := context.Background()
+	st, runID := pgTestStore(t)
+	run, err := st.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &domain.Service{
+		ID: domain.NewID(), ProjectID: run.ProjectID, Name: "webhook-bound",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "acme/repo", DefaultBranch: "main", CreatedAt: time.Now(),
+	}
+	if err := st.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	binding := &domain.WebhookBinding{
+		ServiceID: svc.ID, Provider: domain.ProviderGitea,
+		Endpoint: "https://cloud.example/webhooks/gitea/opaque-hook",
+		HookID:   "opaque-hook-" + domain.NewID(), SecretEnc: []byte("encrypted-secret"),
+		Status: domain.WebhookBindingActive, LastSyncedAt: &now, UpdatedAt: now,
+	}
+	binding.Endpoint = "https://cloud.example/webhooks/gitea/" + binding.HookID
+	if err := st.UpsertWebhookBinding(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetWebhookBindingByHookID(ctx, binding.HookID)
+	if err != nil || got.ServiceID != svc.ID || string(got.SecretEnc) != "encrypted-secret" {
+		t.Fatalf("binding=%+v err=%v", got, err)
+	}
+
+	first := &domain.WebhookReceipt{
+		ID: domain.NewID(), Provider: domain.PluginGitHub, DeliveryID: domain.NewID(),
+		PayloadDigest: "pg-authenticated-payload-" + domain.NewID(), Status: "received", ReceivedAt: now,
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, first); err != nil || !claimed {
+		t.Fatalf("claim first=%v err=%v", claimed, err)
+	}
+	replay := *first
+	replay.ID = domain.NewID()
+	replay.DeliveryID = domain.NewID()
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || claimed {
+		t.Fatalf("claim replay=%v err=%v; want duplicate", claimed, err)
+	}
 }
 
 // TestPGKanbanClaimNullableAndWritebackScan covers two PostgreSQL-only contracts
@@ -106,6 +218,38 @@ func TestPGKanbanClaimNullableAndWritebackScan(t *testing.T) {
 	}
 	if pending[0].Link.EventSequence == nil || *pending[0].Link.EventSequence != 7 {
 		t.Fatalf("writeback link cursor = %v, want 7", pending[0].Link.EventSequence)
+	}
+}
+
+func TestPGDeleteExpiredWebhookReceipts(t *testing.T) {
+	ctx := context.Background()
+	st, _ := pgTestStore(t)
+	now := time.Now().UTC()
+	expiredID, freshID := domain.NewID(), domain.NewID()
+	for _, row := range []struct {
+		id, delivery string
+		expires      time.Time
+	}{
+		{expiredID, "expired-" + expiredID, now.Add(-time.Minute)},
+		{freshID, "fresh-" + freshID, now.Add(time.Minute)},
+	} {
+		if _, err := st.Pool().Exec(ctx, `INSERT INTO webhook_receipts(id,provider,delivery_id,event_family,action,received_at,expires_at) VALUES($1,'github',$2,'push','updated',$3,$4)`, row.id, row.delivery, now, row.expires); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = st.Pool().Exec(context.Background(), `DELETE FROM webhook_receipts WHERE id = ANY($1)`, []string{expiredID, freshID})
+	})
+	deleted, err := st.DeleteExpiredWebhookReceipts(ctx, now)
+	if err != nil || deleted < 1 {
+		t.Fatalf("delete expired receipts = %d, %v", deleted, err)
+	}
+	var remaining int
+	if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM webhook_receipts WHERE id=$1`, freshID).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 {
+		t.Fatalf("fresh receipt count=%d want 1", remaining)
 	}
 }
 

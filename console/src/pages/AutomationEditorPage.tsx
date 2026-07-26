@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Warning } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
+import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import { Button } from '../components/Button';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import {
@@ -33,7 +35,25 @@ const ALL_ACTIONS: readonly NormalizedScmAction[] = [
   'release.published', 'release.updated', 'release.deleted',
 ];
 
-const GITHUB_ACTIONS = new Set(ALL_ACTIONS);
+// Keep the creation surface focused on the workflows people configure most
+// often. The complete normalized event contract remains available on demand,
+// and an existing low-frequency selection always keeps that section visible.
+const COMMON_ACTIONS = new Set<NormalizedScmAction>([
+  'push.updated',
+  'pull_request.opened',
+  'pull_request.synchronized',
+  'pull_request.ready',
+  'pull_request.merged',
+  'review.approved',
+  'comment.created',
+  'issue.opened',
+  'issue.updated',
+  'check.completed',
+]);
+
+const GITHUB_ACTIONS = new Set<NormalizedScmAction>(ALL_ACTIONS.filter((action) =>
+  action !== 'review.approval_removed'
+));
 const GITLAB_ACTIONS = new Set<NormalizedScmAction>(ALL_ACTIONS.filter((action) =>
   action !== 'pull_request.ready' &&
   action !== 'review.changes_requested' &&
@@ -62,6 +82,7 @@ function supportedActions(provider: string | undefined): ReadonlySet<NormalizedS
 }
 
 export function AutomationEditorPage() {
+  const { t } = useTranslation();
   const { projectId = '', automationId = '' } = useParams();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -83,6 +104,7 @@ export function AutomationEditorPage() {
   const [pathPattern, setPathPattern] = useState('');
   const [conclusion, setConclusion] = useState('');
   const [actions, setActions] = useState<NormalizedScmAction[]>(['push.updated']);
+  const [showMoreActions, setShowMoreActions] = useState(false);
   const [cronExpr, setCronExpr] = useState('0 9 * * 1-5');
   const [formError, setFormError] = useState('');
 
@@ -103,6 +125,7 @@ export function AutomationEditorPage() {
   const branchFilterAllowed = actions.length > 0 && actions.every((action) =>
     action.startsWith('push.') || action.startsWith('pull_request.') || action.startsWith('check.'));
   const canEdit = project.data?.role !== 'viewer';
+  const moreActionsOpen = showMoreActions || actions.some((action) => !COMMON_ACTIONS.has(action));
 
   useEffect(() => {
     if (!serviceId && initialService) setServiceId(initialService);
@@ -243,8 +266,8 @@ export function AutomationEditorPage() {
                 <label>CI conclusion<input aria-label="CI conclusion" value={conclusion} disabled={!conclusionFilterAllowed} onChange={(event) => setConclusion(event.target.value)} placeholder="success" /><small>Available only when every selected event is check.completed.</small></label>
               </div>
               <fieldset className={styles.actionGrid}>
-                <legend>Events</legend>
-                {ALL_ACTIONS.map((action) => {
+                <legend>{t('automationEditor.events')}</legend>
+                {ALL_ACTIONS.filter((action) => COMMON_ACTIONS.has(action)).map((action) => {
                   const available = supported.has(action);
                   return (
                     <label key={action} data-disabled={!available}>
@@ -265,6 +288,44 @@ export function AutomationEditorPage() {
                   );
                 })}
               </fieldset>
+              <Disclosure as="div" className={styles.moreEvents} defaultOpen={moreActionsOpen} key={moreActionsOpen ? 'more-open' : 'more-closed'}>
+                {({ open }) => <>
+                  <DisclosureButton onClick={() => {
+                    if (!actions.some((action) => !COMMON_ACTIONS.has(action))) setShowMoreActions(!open);
+                  }}>
+                    {t('automationEditor.moreEvents')}
+                  </DisclosureButton>
+                  <DisclosurePanel>
+                    <fieldset className={styles.actionGrid}>
+                  <legend className={styles.srOnly}>{t('automationEditor.moreEvents')}</legend>
+                  {ALL_ACTIONS.filter((action) => !COMMON_ACTIONS.has(action)).map((action) => {
+                    const available = supported.has(action);
+                    return (
+                      <label key={action} data-disabled={!available}>
+                        <input
+                          type="checkbox"
+                          checked={actions.includes(action) && available}
+                          disabled={!available}
+                          onChange={() => toggleAction(action)}
+                        />
+                        <span>{action}</span>
+                        {!available && (
+                          <small>
+                            {t('automationEditor.eventUnavailable', {
+                              provider: selectedService?.provider ?? t('automationEditor.thisProvider'),
+                              version: capabilities.data?.minimum_version
+                                ? ` ${capabilities.data.minimum_version}+`
+                                : '',
+                            })}
+                          </small>
+                        )}
+                      </label>
+                    );
+                  })}
+                    </fieldset>
+                  </DisclosurePanel>
+                </>}
+              </Disclosure>
             </div>
           )}
 

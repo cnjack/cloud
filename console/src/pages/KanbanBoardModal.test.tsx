@@ -9,10 +9,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
 import { ApiError, type ApiClient } from '../api/client';
-import type {
-  BoardEmbedLink,
-  JtypeBoardColumn,
-} from '../api/types';
+import type { BoardEmbedLink } from '../api/types';
 import { pickOption } from '../test/select';
 
 vi.mock('jtype-board-react', () => ({
@@ -59,7 +56,7 @@ function link(over: Partial<BoardEmbedLink> = {}): BoardEmbedLink {
   };
 }
 
-const COLS: JtypeBoardColumn[] = [{ key: 'ai', name: 'AI' }];
+const COLS = [{ key: 'ai', name: 'AI' }];
 
 /**
  * A fake ApiClient whose board proxy serves `.board` docs from an in-memory
@@ -248,12 +245,4 @@ describe('KanbanBoardModal', () => {
     expect(within(panel).getByTestId('kanban-board-retry')).toBeTruthy();
   });
 
-  it('keeps an invalid automation link visibly marked while its board remains viewable', async () => {
-    const api = makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] });
-    renderModal(api, [link({ board_status: 'invalid' })]);
-
-    const notice = await screen.findByTestId('kanban-board-link-invalid');
-    expect(notice.textContent).toMatch(/Card-triggered runs and writeback are stopped/);
-    expect(await screen.findByTestId('jtype-board')).toBeTruthy();
-  });
 });

@@ -2,7 +2,10 @@ package k8s
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -66,6 +69,10 @@ const (
 	pluginLifecycleVolumeName   = "plugin-lifecycle"
 	pluginLifecycleMountPath    = "/run/jcloud/lifecycle"
 	pluginSyncStopFile          = pluginLifecycleMountPath + "/runner-finished"
+	runtimeConfigVolumeName     = "run-runtime-config"
+	runtimeConfigMountPath      = "/run/jcloud/config"
+	attachmentsVolumeName       = "run-attachments"
+	attachmentsMountPath        = "/run/jcloud/attachments"
 )
 
 // Client is the client-go-backed JobLauncher.
@@ -344,6 +351,23 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 			SubPath: "jtype/mcp.json", ReadOnly: true,
 		})
 	}
+	if spec.ModelConfigBase64 != "" {
+		medium := corev1.StorageMediumMemory
+		volumes = append(volumes, corev1.Volume{Name: runtimeConfigVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: medium}}})
+		mounts = append(mounts, corev1.VolumeMount{Name: runtimeConfigVolumeName, MountPath: runtimeConfigMountPath, ReadOnly: true})
+		env = append(env, corev1.EnvVar{Name: "JCODE_CONFIG", Value: runtimeConfigMountPath + "/config.json"})
+	}
+	var attachmentBytes int64
+	if len(spec.Attachments) > 0 {
+		medium := corev1.StorageMediumMemory
+		attachmentBytes = 64 << 10 // manifest + filesystem metadata
+		for _, attachment := range spec.Attachments {
+			attachmentBytes += attachment.SizeBytes
+		}
+		volumes = append(volumes, corev1.Volume{Name: attachmentsVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: medium, SizeLimit: resource.NewQuantity(attachmentBytes, resource.BinarySI)}}})
+		mounts = append(mounts, corev1.VolumeMount{Name: attachmentsVolumeName, MountPath: attachmentsMountPath, ReadOnly: true})
+		env = append(env, corev1.EnvVar{Name: "JCODE_ATTACHMENTS_DIR", Value: attachmentsMountPath})
+	}
 
 	if spec.PluginCredentials {
 		env = append(env,
@@ -360,6 +384,13 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 		})
 	}
 
+	memoryLimit := resource.MustParse(c.cfg.MemoryLimit)
+	memoryRequest := resource.MustParse(c.cfg.MemoryRequest)
+	if attachmentBytes > 0 {
+		addition := *resource.NewQuantity(attachmentBytes, resource.BinarySI)
+		memoryLimit.Add(addition)
+		memoryRequest.Add(addition)
+	}
 	runner := corev1.Container{
 		Name:            "runner",
 		Image:           c.cfg.RunnerImage,
@@ -369,16 +400,53 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 		Resources: corev1.ResourceRequirements{
 			Limits: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse(c.cfg.CPULimit),
-				corev1.ResourceMemory: resource.MustParse(c.cfg.MemoryLimit),
+				corev1.ResourceMemory: memoryLimit,
 			},
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse(c.cfg.CPURequest),
-				corev1.ResourceMemory: resource.MustParse(c.cfg.MemoryRequest),
+				corev1.ResourceMemory: memoryRequest,
 			},
 		},
 	}
 	containers := []corev1.Container{runner}
 	var initContainers []corev1.Container
+	if spec.ModelConfigBase64 != "" {
+		initContainers = append(initContainers, corev1.Container{Name: "run-model-effort-config", Image: c.cfg.RunnerImage,
+			Command:      []string{"/bin/sh", "-ec", `printf %s "$RUN_MODEL_CONFIG_B64" | base64 -d > /run/jcloud/config/config.json`},
+			Env:          []corev1.EnvVar{{Name: "RUN_MODEL_CONFIG_B64", Value: spec.ModelConfigBase64}},
+			VolumeMounts: []corev1.VolumeMount{{Name: runtimeConfigVolumeName, MountPath: runtimeConfigMountPath}}, SecurityContext: containerSecurityContext.DeepCopy()})
+	}
+	for index, attachment := range spec.Attachments {
+		// Index is part of the name, so two long ids with a shared prefix cannot
+		// collide after Kubernetes' 63-character name limit is applied.
+		initContainers = append(initContainers, corev1.Container{Name: fmt.Sprintf("run-attachment-%02d", index+1), Image: c.cfg.RunnerImage,
+			Command:      []string{"/bin/sh", "-ec", `tmp="${ATTACHMENT_DEST}.partial"; trap 'rm -f "$tmp"' EXIT; curl --fail --silent --show-error --location "$ATTACHMENT_URL" --output "$tmp"; actual="$(wc -c < "$tmp" | tr -d ' ')"; [ "$actual" = "$ATTACHMENT_SIZE_BYTES" ] || { echo "attachment size mismatch" >&2; exit 1; }; mv "$tmp" "$ATTACHMENT_DEST"`},
+			Env:          []corev1.EnvVar{{Name: "ATTACHMENT_URL", Value: attachment.URL}, {Name: "ATTACHMENT_DEST", Value: attachmentsMountPath + "/" + attachment.StageID}, {Name: "ATTACHMENT_SIZE_BYTES", Value: strconv.FormatInt(attachment.SizeBytes, 10)}},
+			VolumeMounts: []corev1.VolumeMount{{Name: attachmentsVolumeName, MountPath: attachmentsMountPath}}, SecurityContext: containerSecurityContext.DeepCopy()})
+	}
+	if len(spec.Attachments) > 0 {
+		type manifestAttachment struct {
+			StageID     string `json:"stage_id"`
+			DisplayName string `json:"display_name"`
+			ContentType string `json:"content_type,omitempty"`
+			SizeBytes   int64  `json:"size_bytes"`
+			Path        string `json:"path"`
+		}
+		manifest := make([]manifestAttachment, 0, len(spec.Attachments))
+		for _, a := range spec.Attachments {
+			manifest = append(manifest, manifestAttachment{StageID: a.StageID, DisplayName: a.DisplayName, ContentType: a.ContentType, SizeBytes: a.SizeBytes, Path: attachmentsMountPath + "/" + a.StageID})
+		}
+		// All fields came from the control plane. Marshal/base64 keeps arbitrary
+		// display names out of shell source and makes the manifest read-only.
+		b, err := json.Marshal(manifest)
+		if err != nil {
+			panic("attachment manifest marshal: " + err.Error())
+		}
+		initContainers = append(initContainers, corev1.Container{Name: "run-attachments-manifest", Image: c.cfg.RunnerImage,
+			Command:      []string{"/bin/sh", "-ec", `printf %s "$ATTACHMENTS_MANIFEST_B64" | base64 -d > /run/jcloud/attachments/manifest.json`},
+			Env:          []corev1.EnvVar{{Name: "ATTACHMENTS_MANIFEST_B64", Value: base64.StdEncoding.EncodeToString(b)}},
+			VolumeMounts: []corev1.VolumeMount{{Name: attachmentsVolumeName, MountPath: attachmentsMountPath}}, SecurityContext: containerSecurityContext.DeepCopy()})
+	}
 	if spec.PluginCredentials {
 		sidecarEnv := []corev1.EnvVar{
 			{Name: "ORCH_BASE_URL", Value: spec.Env["ORCH_BASE_URL"]},

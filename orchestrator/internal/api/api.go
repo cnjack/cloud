@@ -38,6 +38,15 @@ type ArchiveCleaner interface {
 	Delete(context.Context, string) error
 }
 
+// AttachmentObjectStore is the narrow object-store seam for staged run inputs.
+// It deliberately exposes no bucket credentials or generic object listing.
+type AttachmentObjectStore interface {
+	PresignPut(key string, expiry time.Duration) (string, error)
+	PresignGet(key string, expiry time.Duration) (string, error)
+	Stat(ctx context.Context, key string) (size int64, contentType string, err error)
+	Delete(ctx context.Context, key string) error
+}
+
 // Server holds the API dependencies.
 type Server struct {
 	st       store.Store
@@ -47,7 +56,8 @@ type Server struct {
 	launcher k8s.JobLauncher // used to delete Jobs on cancel; may be nil in API-only mode
 	// archiveCleaner removes the deterministic workspace tarball when a service
 	// is destructively deleted. Nil when object storage is disabled.
-	archiveCleaner ArchiveCleaner
+	archiveCleaner  ArchiveCleaner
+	attachmentStore AttachmentObjectStore
 
 	// Auth (M2). cipher encrypts identity tokens; oauth is the set of configured
 	// login providers keyed by id; stateKey signs the OAuth CSRF state. All are
@@ -115,6 +125,10 @@ type Server struct {
 	// effective token is applied as a Bearer header inside ProxyDocumentAPI but is
 	// NEVER serialized to the caller.
 	boardProxyFor func(f *jtype.Factory, token string) jtypeBoardProxy
+	// probeProviderConfig verifies a cluster Provider's real external boundary.
+	// Tests replace it with a local upstream; production decrypts only the
+	// GitHub App private key required for the App-JWT check.
+	probeProviderConfig func(context.Context, *domain.ProviderConfig) (provider.ConfigProbeResult, error)
 
 	// connects is the in-memory registry of pending "Connect with jtype" OAuth
 	// device flows (D28); no DB persistence — a restart drops in-flight flows.
@@ -236,6 +250,7 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Default board embed proxy (D31): the same token-bound client, which carries
 	// ProxyDocumentAPI; tests override with a fake.
 	s.boardProxyFor = func(f *jtype.Factory, token string) jtypeBoardProxy { return f.Client(token) }
+	s.probeProviderConfig = s.probeProviderConfiguration
 	// D28 — "Connect with jtype" OAuth device flow: an in-memory registry of
 	// pending flows + the jtype OAuth device-flow client seam (overridden by tests).
 	s.connects = newConnectRegistry()
@@ -267,6 +282,11 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 // both the API and reconciler.
 func (s *Server) WithArchiveCleaner(cleaner ArchiveCleaner) *Server {
 	s.archiveCleaner = cleaner
+	return s
+}
+
+func (s *Server) WithAttachmentObjectStore(objectStore AttachmentObjectStore) *Server {
+	s.attachmentStore = objectStore
 	return s
 }
 
@@ -335,9 +355,9 @@ func (s *Server) Handler() http.Handler {
 	// Provider webhooks are always present and authenticate against the
 	// DB-backed cluster Provider config. A missing/invalid config is fail-visible;
 	// the legacy process-wide WEBHOOK_SECRET is not consulted.
-	mux.HandleFunc("POST /webhooks/gitea", s.handlePluginWebhook)
 	mux.HandleFunc("POST /webhooks/github", s.handlePluginWebhook)
-	mux.HandleFunc("POST /webhooks/gitlab", s.handlePluginWebhook)
+	mux.HandleFunc("POST /webhooks/gitea/{binding}", s.handlePluginWebhook)
+	mux.HandleFunc("POST /webhooks/gitlab/{binding}", s.handlePluginWebhook)
 
 	// Auth endpoints (multitenant blueprint §2). Provider list + login start +
 	// callback are unauthenticated (they establish the session); link/logout/me
@@ -516,7 +536,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/projects/{id}/services", s.authed(s.handleListServices))
 	mux.Handle("PATCH /api/v1/services/{id}", s.authed(s.handleUpdateService))
 	mux.Handle("DELETE /api/v1/services/{id}", s.authed(s.handleDeleteService))
+	// Branches are discovered from the Service's bound project plugin with a
+	// server-issued credential; the browser never receives a Git token.
+	mux.Handle("GET /api/v1/services/{id}/branches", s.authed(s.handleListServiceBranches))
 	mux.Handle("POST /api/v1/services/{id}/runs", s.authed(s.handleCreateServiceRun))
+	mux.Handle("POST /api/v1/services/{id}/attachments/intents", s.authed(s.handleCreateAttachmentIntent))
+	mux.Handle("PUT /api/v1/services/{id}/attachments/{stage}/content", s.authed(s.handleUploadAttachmentContent))
 	mux.Handle("GET /api/v1/services/{id}/runs", s.authed(s.handleListServiceRuns))
 
 	// Run creation is service-scoped only (above); listing stays project-scoped.

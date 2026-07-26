@@ -12,7 +12,7 @@ import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
 import { ApiError, type ApiClient } from '../api/client';
 import type { Role } from '../api/config';
-import type { KanbanClusterConfig, KanbanLink, Model, Project, SystemInfo } from '../api/types';
+import type { Model, Project, SystemInfo } from '../api/types';
 import { SystemPage } from './SystemPage';
 
 function snapshot(overrides: Partial<SystemInfo> = {}): SystemInfo {
@@ -28,29 +28,14 @@ function snapshot(overrides: Partial<SystemInfo> = {}): SystemInfo {
   };
 }
 
-/** GET /api/v1/system/kanban shape (D27/D36: base URL only, no token fields). Defaults to the off (source=none) case. */
-function kanbanConfig(overrides: Partial<KanbanClusterConfig> = {}): KanbanClusterConfig {
-  return {
-    base_url: '',
-    source: 'none',
-    effective_enabled: false,
-    effective_base_url: '',
-    poll_interval: '15s',
-    ...overrides,
-  };
-}
-
 function renderPage(client: Partial<ApiClient>, role: Role) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  // Benign defaults so the Model catalog card (useModels + useProjects) and the
-  // Kanban card (useKanbanConfig) resolve; tests that exercise those cards override
-  // these. The default kanban config is the off (source=none) case.
+  // Benign defaults so the Model catalog card (useModels + useProjects) resolves.
   const full: Partial<ApiClient> = {
     listModels: async (): Promise<Model[]> => [],
     listProjects: async () => [],
-    getKanbanConfig: async () => kanbanConfig(),
     ...client,
   };
   return render(
@@ -307,222 +292,4 @@ describe('SystemPage', () => {
     expect(screen.queryByRole('progressbar')).toBeNull();
   });
 
-  // ---- Feature E / D27: editable cluster kanban config card ---------------
-
-  it('kanban card shows the "off" source + an editable config form for a cluster admin', async () => {
-    const client = {
-      getSystem: vi.fn().mockResolvedValue(snapshot()),
-      getKanbanConfig: vi.fn().mockResolvedValue(kanbanConfig({ source: 'none' })),
-    };
-    renderPage(client, 'cluster-admin');
-    // Source badge reads "off" when nothing is configured.
-    await waitFor(() => expect(screen.getByTestId('kanban-status').textContent).toBe('off'));
-    // The admin now gets an editable config form (D27/D36) — base URL only.
-    expect(screen.getByTestId('kanban-config-base')).toBeTruthy();
-    expect(screen.getByTestId('kanban-config-save')).toBeTruthy();
-    // No DB override to clear, so no "Clear cluster config" action.
-    expect(screen.queryByTestId('kanban-config-clear')).toBeNull();
-    // Link MANAGEMENT still doesn't live here (owner-only, Project settings).
-    expect(screen.queryByTestId('kanban-link-form')).toBeNull();
-  });
-
-  it('kanban card: source badge reflects db / env / off', async () => {
-    const cases: [KanbanClusterConfig['source'], string, Partial<KanbanClusterConfig>][] = [
-      ['db', 'DB (console)', { source: 'db', base_url: 'http://jtype:13345', effective_enabled: true, effective_base_url: 'http://jtype:13345' }],
-      ['env', 'env (JTYPE_BASE_URL)', { source: 'env', base_url: '', effective_enabled: true, effective_base_url: 'http://env-jtype:13345' }],
-      ['none', 'off', { source: 'none' }],
-    ];
-    for (const [, label, overrides] of cases) {
-      const client = {
-        getSystem: vi.fn().mockResolvedValue(snapshot()),
-        getKanbanConfig: vi.fn().mockResolvedValue(kanbanConfig(overrides)),
-        listKanbanLinks: vi.fn().mockResolvedValue([]),
-      };
-      const { unmount } = renderPage(client, 'cluster-admin');
-      await waitFor(() => expect(screen.getByTestId('kanban-status').textContent).toBe(label));
-      unmount();
-    }
-  });
-
-  it('kanban card: a DB-config admin sees the base URL prefilled + the read-only link overview (F6)', async () => {
-    const withTok: KanbanLink = {
-      id: 'kl-1', workspace_id: 'ws', board_ref: 'jcloud-dev',
-      project_id: 'p1', service_id: 's1', trigger_column: 'ai', done_column: 'done',
-      enabled: true, token_set: true, credential_status: 'per_link',
-      created_at: '2026-01-01T00:00:00Z',
-    };
-    const noTok: KanbanLink = {
-      id: 'kl-2', workspace_id: 'ws2', board_ref: 'b_ef56gh78',
-      project_id: 'p1', service_id: 's1', trigger_column: 'ai',
-      enabled: true, token_set: false, credential_status: 'missing',
-      // D29: a canonicalized link shows its captured board_title, not the b_… ref.
-      board_status: 'ok', board_title: 'My Board',
-      created_at: '2026-01-02T00:00:00Z',
-    };
-    const dead: KanbanLink = {
-      id: 'kl-3', workspace_id: 'ws3', board_ref: 'b3',
-      project_id: 'p1', service_id: 's1', trigger_column: 'ai',
-      enabled: true, token_set: false, credential_status: 'missing',
-      // D29: a runtime check failed — the poller is skipping it (fail-visible).
-      board_status: 'invalid',
-      created_at: '2026-01-03T00:00:00Z',
-    };
-    const project: Project = {
-      id: 'p1', name: 'kanban-proj', created_at: '2026-01-01T00:00:00Z', services: [],
-    };
-    const client = {
-      getSystem: vi.fn().mockResolvedValue(snapshot()),
-      getKanbanConfig: vi.fn().mockResolvedValue(
-        kanbanConfig({
-          source: 'db', base_url: 'http://jtype:13345',
-          effective_enabled: true, effective_base_url: 'http://jtype:13345',
-        }),
-      ),
-      listKanbanLinks: vi.fn().mockResolvedValue([withTok, noTok, dead]),
-      listProjects: vi.fn().mockResolvedValue([project]),
-    };
-    renderPage(client, 'cluster-admin');
-
-    await screen.findByText('ws / jcloud-dev');
-    expect(screen.getByTestId('kanban-status').textContent).toBe('DB (console)');
-    // The editable base URL field is prefilled with the DB override's base_url.
-    expect((screen.getByTestId('kanban-config-base') as HTMLInputElement).value).toBe('http://jtype:13345');
-    // Project name resolved (shown per link) and the two credential badges (D36:
-    // per_link / missing — no cluster_fallback any more).
-    await waitFor(() => expect(screen.getAllByText(/kanban-proj/).length).toBeGreaterThan(0));
-    expect(screen.getByText('own token')).toBeTruthy();
-    expect(screen.getAllByText('no credential').length).toBe(2);
-    expect(screen.queryByText('cluster token')).toBeNull();
-    expect(screen.getByTestId('kanban-cred-kl-3').getAttribute('data-err')).toBe('true');
-    // D29: board_title replaces the raw b_… ref, and a failed link shows a loud
-    // "board/columns invalid" pill; a validated link shows no board-status pill.
-    expect(screen.getByText('My Board')).toBeTruthy();
-    expect(screen.queryByTestId('kanban-board-status-kl-2')).toBeNull();
-    expect(screen.getByTestId('kanban-board-status-kl-3').textContent).toBe('board/columns invalid');
-    expect(screen.getByTestId('kanban-board-status-kl-3').getAttribute('data-err')).toBe('true');
-    // Read-only link overview: no per-link add/delete management here.
-    expect(screen.queryByTestId('kanban-link-form')).toBeNull();
-    expect(screen.queryByTestId('kanban-link-add')).toBeNull();
-    expect(screen.queryByTestId('kanban-link-delete-kl-1')).toBeNull();
-  });
-
-  it('kanban card: edits the config and PUTs the base URL only (D36: no token field)', async () => {
-    const updateKanbanConfig = vi.fn().mockResolvedValue(
-      kanbanConfig({ source: 'none' }), // fixed so the editor key stays stable
-    );
-    const client = {
-      getSystem: vi.fn().mockResolvedValue(snapshot()),
-      getKanbanConfig: vi.fn().mockResolvedValue(kanbanConfig({ source: 'none' })),
-      updateKanbanConfig,
-      listKanbanLinks: vi.fn().mockResolvedValue([]),
-    };
-    renderPage(client, 'cluster-admin');
-
-    fireEvent.change(await screen.findByTestId('kanban-config-base'), {
-      target: { value: 'http://jtype:13345' },
-    });
-    fireEvent.click(screen.getByTestId('kanban-config-save'));
-
-    await waitFor(() =>
-      expect(updateKanbanConfig).toHaveBeenCalledWith({ base_url: 'http://jtype:13345' }),
-    );
-    await waitFor(() => expect(screen.getByText('Kanban config saved.')).toBeTruthy());
-    // D36: there is no cluster token field in the form at all.
-    expect(screen.queryByTestId('kanban-config-token')).toBeNull();
-  });
-
-  it('kanban card: renders the resolver reason loudly and keeps Clear for a BROKEN DB row', async () => {
-    // A DB row whose effective resolution failed renders source "none" + a
-    // reason. The admin must see WHY it's off — and must still be offered
-    // "Clear cluster config" (the way out), even though source≠db.
-    const broken = kanbanConfig({
-      source: 'none', base_url: 'http://jtype:13345',
-      reason: 'kanban configuration unavailable — see orchestrator logs',
-    });
-    const deleteKanbanConfig = vi.fn().mockResolvedValue(kanbanConfig({ source: 'none' }));
-    const client = {
-      getSystem: vi.fn().mockResolvedValue(snapshot()),
-      getKanbanConfig: vi.fn().mockResolvedValue(broken),
-      deleteKanbanConfig,
-      listKanbanLinks: vi.fn().mockResolvedValue([]),
-    };
-    renderPage(client, 'cluster-admin');
-
-    // The fail-visible reason notice renders (never a bare, unexplained "off").
-    await waitFor(() =>
-      expect(screen.getByTestId('kanban-config-reason').textContent).toBe(
-        'kanban configuration unavailable — see orchestrator logs',
-      ),
-    );
-    expect(screen.getByTestId('kanban-status').textContent).toBe('off');
-    expect(screen.getByTestId('kanban-status').getAttribute('data-err')).toBe('true');
-    // Clear is gated on DB-ROW EXISTENCE, not on source: the broken row is
-    // deletable right here.
-    fireEvent.click(screen.getByTestId('kanban-config-clear'));
-    fireEvent.click(screen.getByTestId('kanban-config-clear-confirm'));
-    await waitFor(() => expect(deleteKanbanConfig).toHaveBeenCalledTimes(1));
-  });
-
-  it('kanban card: falls back to system.kanban.reason when the config view carries none', async () => {
-    const client = {
-      getSystem: vi.fn().mockResolvedValue(
-        snapshot({ kanban: { enabled: false, reason: 'kanban resolver: token cipher unavailable' } }),
-      ),
-      getKanbanConfig: vi.fn().mockResolvedValue(kanbanConfig({ source: 'none' })),
-      listKanbanLinks: vi.fn().mockResolvedValue([]),
-    };
-    renderPage(client, 'cluster-admin');
-
-    await waitFor(() =>
-      expect(screen.getByTestId('kanban-config-reason').textContent).toBe(
-        'kanban resolver: token cipher unavailable',
-      ),
-    );
-  });
-
-  it('kanban card: surfaces a save failure via toast (fail-visible)', async () => {
-    const err = new ApiError(500, 'could not save kanban config', {
-      error: { code: 'internal', message: 'could not save kanban config' },
-    });
-    const client = {
-      getSystem: vi.fn().mockResolvedValue(snapshot()),
-      getKanbanConfig: vi.fn().mockResolvedValue(kanbanConfig({ source: 'none' })),
-      updateKanbanConfig: vi.fn().mockRejectedValue(err),
-      listKanbanLinks: vi.fn().mockResolvedValue([]),
-    };
-    renderPage(client, 'cluster-admin');
-
-    fireEvent.change(await screen.findByTestId('kanban-config-base'), {
-      target: { value: 'http://jtype:13345' },
-    });
-    fireEvent.click(screen.getByTestId('kanban-config-save'));
-
-    await waitFor(() =>
-      expect(screen.getByText('could not save kanban config')).toBeTruthy(),
-    );
-  });
-
-  it('kanban card: clears the cluster config (DELETE) behind a confirm step', async () => {
-    const deleteKanbanConfig = vi.fn().mockResolvedValue(kanbanConfig({ source: 'none' }));
-    const client = {
-      getSystem: vi.fn().mockResolvedValue(snapshot()),
-      getKanbanConfig: vi.fn().mockResolvedValue(
-        kanbanConfig({
-          source: 'db', base_url: 'http://jtype:13345',
-          effective_enabled: true, effective_base_url: 'http://jtype:13345',
-        }),
-      ),
-      deleteKanbanConfig,
-      listKanbanLinks: vi.fn().mockResolvedValue([]),
-    };
-    renderPage(client, 'cluster-admin');
-
-    // First click reveals the confirm step; no DELETE yet.
-    fireEvent.click(await screen.findByTestId('kanban-config-clear'));
-    expect(deleteKanbanConfig).not.toHaveBeenCalled();
-    // Confirming issues the DELETE.
-    fireEvent.click(screen.getByTestId('kanban-config-clear-confirm'));
-    await waitFor(() => expect(deleteKanbanConfig).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByText('Cluster kanban config cleared.')).toBeTruthy());
-  });
 });

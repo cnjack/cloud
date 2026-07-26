@@ -35,12 +35,10 @@ const providers: Record<ProviderKind, ClusterProviderConfig> = {
 };
 
 describe('ClusterConnectionsPage', () => {
-  it('uses the unified Provider API and does not request the removed Kanban endpoint', async () => {
+  it('uses the unified Provider API for all configured providers', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const getKanbanConfig = vi.fn();
     const client = {
       getSystem: async () => system,
-      getKanbanConfig,
       getClusterProviderConfig: async (provider: ProviderKind) => providers[provider],
       updateClusterProviderConfig: async (provider: ProviderKind) => providers[provider],
       testClusterProviderConfig: async (provider: ProviderKind) => providers[provider],
@@ -54,7 +52,6 @@ describe('ClusterConnectionsPage', () => {
     );
     expect(await screen.findByText('JType Kanban')).toBeTruthy();
     expect(screen.getAllByRole('group', { name: 'Provider capabilities' })).toHaveLength(4);
-    expect(getKanbanConfig).not.toHaveBeenCalled();
     expect(screen.getByText('S3_ARCHIVE_BUCKET is not configured')).toBeTruthy();
     expect(screen.getByText('Gitea OAuth')).toBeTruthy();
   });

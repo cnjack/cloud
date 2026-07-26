@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ type giteaHookUpstream struct {
 	deleteCount int
 	lastAuth    string
 	lastBody    map[string]any
+	hookURL     string
 	failCreate  bool
 }
 
@@ -39,13 +41,16 @@ func newGiteaHookUpstream(t *testing.T) (*httptest.Server, *giteaHookUpstream) {
 				_, _ = w.Write([]byte("[]"))
 				return
 			}
-			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 19, "active": true, "events": []string{"push", "pull_request", "pull_request_sync", "pull_request_review", "issues", "issue_comment", "pull_request_comment", "status", "create", "delete", "release"}, "config": map[string]string{"url": "https://cloud.example/webhooks/gitea"}}})
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 19, "active": true, "events": []string{"push", "pull_request", "pull_request_sync", "pull_request_review", "issues", "issue_comment", "pull_request_comment", "status", "create", "delete", "release"}, "config": map[string]string{"url": state.hookURL}}})
 		case http.MethodPost:
 			if state.failCreate {
 				http.Error(w, "provider rejected hook", http.StatusForbidden)
 				return
 			}
 			_ = json.NewDecoder(r.Body).Decode(&state.lastBody)
+			if config, ok := state.lastBody["config"].(map[string]any); ok {
+				state.hookURL, _ = config["url"].(string)
+			}
 			state.hook = true
 			state.postCount++
 			w.WriteHeader(http.StatusCreated)
@@ -96,6 +101,13 @@ func seedGiteaLifecycle(t *testing.T, upstreamURL string) (*httptest.Server, *st
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := st.RecordProviderCapabilities(ctx, domain.PluginGitea, "1.25.1", []string{"push.updated"}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	providerConfig, err = st.GetProviderConfig(ctx, domain.PluginGitea)
+	if err != nil {
+		t.Fatal(err)
+	}
 	projectID := newProject(t, ts, "scm-webhook-lifecycle")
 	now := time.Now().UTC()
 	installation := &domain.PluginInstallation{ID: domain.NewID(), ProjectID: projectID, Provider: domain.PluginGitea, Status: domain.PluginStatusEnabled, AccessTokenEnc: access, ConsentVersion: "v1", ConsentedAt: now, ConfigRevision: providerConfig.ConfigRevision, CreatedAt: now}
@@ -109,6 +121,23 @@ func seedGiteaLifecycle(t *testing.T, upstreamURL string) (*httptest.Server, *st
 		t.Fatal(err)
 	}
 	return ts, st, projectID, svc.ID
+}
+
+func TestPluginAutomationRejectsActionOutsideObservedProviderMatrix(t *testing.T) {
+	upstream, _ := newGiteaHookUpstream(t)
+	ts, _, projectID, serviceID := seedGiteaLifecycle(t, upstream.URL)
+	resp := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/automations", consoleToken, map[string]any{
+		"service_id": serviceID, "name": "unsupported ready", "prompt_template": "handle event",
+		"scm": map[string]any{"actions": []map[string]string{{"event_family": "pull_request", "action": "ready"}}},
+	})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("unsupported provider action status=%d want 409", resp.StatusCode)
+	}
+	var body errorBody
+	decode(t, resp, &body)
+	if body.Error.Code != "plugin_unavailable" {
+		t.Fatalf("unsupported provider action code=%q want plugin_unavailable", body.Error.Code)
+	}
 }
 
 func createSCMAutomation(t *testing.T, ts *httptest.Server, projectID, serviceID, family, action string) domain.PluginAutomationSpec {
@@ -134,19 +163,30 @@ func TestPluginSCMWebhookLifecycleGitea(t *testing.T) {
 		t.Fatalf("hook create=%d auth=%q", hook.postCount, hook.lastAuth)
 	}
 	config, _ := hook.lastBody["config"].(map[string]any)
-	if config["secret"] != "cluster-hook-secret" {
-		t.Fatalf("expected DB-backed webhook secret, body=%v", hook.lastBody)
+	perBindingSecret, _ := config["secret"].(string)
+	perBindingURL, _ := config["url"].(string)
+	if perBindingSecret == "" || perBindingSecret == "cluster-hook-secret" {
+		t.Fatalf("expected random per-binding webhook secret, body=%v", hook.lastBody)
+	}
+	if !strings.HasPrefix(perBindingURL, "https://cloud.example/webhooks/gitea/") ||
+		strings.TrimPrefix(perBindingURL, "https://cloud.example/webhooks/gitea/") == "" {
+		t.Fatalf("expected opaque per-binding URL, body=%v", hook.lastBody)
 	}
 	hook.mu.Unlock()
 	bound, err := st.GetWebhookBinding(context.Background(), serviceID)
 	if err != nil || bound.Status != domain.WebhookBindingActive {
 		t.Fatalf("binding=%+v err=%v", bound, err)
 	}
-
+	if bound.HookID == "" || len(bound.SecretEnc) == 0 || bound.Endpoint != perBindingURL {
+		t.Fatalf("binding did not persist opaque route and encrypted secret: %+v", bound)
+	}
 	second := createSCMAutomation(t, ts, projectID, serviceID, "pull_request", "opened")
 	hook.mu.Lock()
 	if hook.postCount != 1 { // the second enabled SCM Automation reuses the hook
 		t.Fatalf("hook created %d times", hook.postCount)
+	}
+	if hook.hookURL != perBindingURL {
+		t.Fatalf("reconcile changed webhook URL from %q to %q", perBindingURL, hook.hookURL)
 	}
 	hook.mu.Unlock()
 
@@ -199,5 +239,39 @@ func TestPluginSCMWebhookCreateFailureIsVisible(t *testing.T) {
 	binding, err := st.GetWebhookBinding(context.Background(), serviceID)
 	if err != nil || binding.Status != domain.WebhookBindingError || binding.LastError != pluginWebhookLifecycleError {
 		t.Fatalf("webhook failure not visible: binding=%+v err=%v", binding, err)
+	}
+	if binding.HookID == "" || len(binding.SecretEnc) == 0 {
+		t.Fatalf("failed reconciliation erased per-binding credential: %+v", binding)
+	}
+}
+
+func TestPluginSCMWebhookReplacesLegacySharedSecretBinding(t *testing.T) {
+	upstream, hook := newGiteaHookUpstream(t)
+	ts, st, projectID, serviceID := seedGiteaLifecycle(t, upstream.URL)
+	const legacyURL = "https://cloud.example/webhooks/gitea"
+	hook.mu.Lock()
+	hook.hook = true
+	hook.hookURL = legacyURL
+	hook.mu.Unlock()
+	if err := st.UpsertWebhookBinding(context.Background(), &domain.WebhookBinding{
+		ServiceID: serviceID, Provider: domain.ProviderGitea, Endpoint: legacyURL,
+		Status: domain.WebhookBindingError, LastError: "security upgrade required", UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = createSCMAutomation(t, ts, projectID, serviceID, "push", "updated")
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+	if hook.deleteCount != 1 || hook.postCount != 1 {
+		t.Fatalf("legacy replacement delete=%d create=%d", hook.deleteCount, hook.postCount)
+	}
+	if hook.hookURL == legacyURL || !strings.HasPrefix(hook.hookURL, legacyURL+"/") {
+		t.Fatalf("legacy URL was not replaced with opaque binding URL: %q", hook.hookURL)
+	}
+	binding, err := st.GetWebhookBinding(context.Background(), serviceID)
+	if err != nil || binding.Status != domain.WebhookBindingActive ||
+		binding.HookID == "" || len(binding.SecretEnc) == 0 {
+		t.Fatalf("replacement binding=%+v err=%v", binding, err)
 	}
 }

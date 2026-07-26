@@ -19,10 +19,11 @@ import {
   useProjectBoardLinks,
   useProjectModels,
   useProjectPlugins,
+	useServiceBranches,
   useRuns,
   useUpdateService,
 } from '../api/queries';
-import { useDemoMode, useRole } from '../api/ApiProvider';
+import { useApi, useDemoMode, useRole } from '../api/ApiProvider';
 import { useOptionalAuth } from '../auth/AuthProvider';
 import { ApiError } from '../api/client';
 import { Button } from '../components/Button';
@@ -55,6 +56,11 @@ import {
 } from './ProjectSettingsModal';
 import styles from './ProjectDetailPage.module.css';
 
+const MAX_RUN_ATTACHMENTS = 10;
+const MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024;
+const MAX_RUN_ATTACHMENTS_SIZE_MIB = 100;
+const MAX_RUN_ATTACHMENTS_SIZE_BYTES = MAX_RUN_ATTACHMENTS_SIZE_MIB * 1024 * 1024;
+
 export function ProjectDetailPage() {
   const { t } = useTranslation();
   const { projectId = '' } = useParams();
@@ -64,6 +70,7 @@ export function ProjectDetailPage() {
   const auth = useOptionalAuth();
   const appRole = useRole();
   const demo = useDemoMode();
+  const api = useApi();
 
   const project = useProject(projectId);
   const runs = useRuns(projectId);
@@ -75,6 +82,12 @@ export function ProjectDetailPage() {
   const [prompt, setPrompt] = useState('');
   const [promptError, setPromptError] = useState<string>();
   const [selectedModel, setSelectedModel] = useState('');
+  const [selectedBranch, setSelectedBranch] = useState('');
+  const [modelEffort, setModelEffort] = useState<'auto' | 'low' | 'medium' | 'high'>('auto');
+  const [goalMode, setGoalMode] = useState(false);
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string>();
+  const [attachmentsUploading, setAttachmentsUploading] = useState(false);
   const [askApproval, setAskApproval] = useState(false);
   const [runFilter, setRunFilter] = useState<RunFilter>('all');
   const [kanbanOpen, setKanbanOpen] = useState(false);
@@ -95,6 +108,7 @@ export function ProjectDetailPage() {
   const workspaceLocation = resolveWorkspaceLocation(services, searchParams, canManage);
   const activeServiceId = workspaceLocation.serviceId;
   const activeService = services.find((service) => service.id === activeServiceId);
+  const serviceBranches = useServiceBranches(activeServiceId, canRun && !!activeService);
   const workspaceTab = workspaceLocation.tab;
   const projectSettingsOpen = canManage && searchParams.get('view') === 'project-settings';
   const projectSettingsSection = resolveProjectSettingsSection(searchParams.get('settings'), canManage);
@@ -104,12 +118,36 @@ export function ProjectDetailPage() {
     setPrompt('');
     setPromptError(undefined);
     setSelectedModel('');
+    setSelectedBranch('');
+    setModelEffort('auto');
+    setGoalMode(false);
+    setAttachments([]);
+    setAttachmentError(undefined);
     setAskApproval(false);
     setRunFilter('all');
     setAddOpen(false);
     setRepoQuery('');
     setPickerInstallationId('');
   }, [projectId]);
+
+  // Services are independently bound repositories. Switching services must
+  // never retain a branch from the preceding repository; start from its stored
+  // default and let branch discovery refine the selectable list.
+  useEffect(() => {
+    setSelectedBranch(activeService?.default_branch ?? '');
+    setAttachments([]);
+    setAttachmentError(undefined);
+  }, [activeService?.id, activeService?.default_branch]);
+
+	// Only offer branches confirmed by the repository Plugin. If its stored
+	// default branch has disappeared upstream, choose the provider's marked
+	// default (or first returned ref) instead of submitting a stale guess.
+	useEffect(() => {
+		const branches = serviceBranches.data;
+		if (!branches || branches.length === 0) return;
+		if (branches.some((branch) => branch.name === selectedBranch)) return;
+		setSelectedBranch(branches.find((branch) => branch.default)?.name ?? branches[0]!.name);
+	}, [selectedBranch, serviceBranches.data]);
 
   // The Project URL is the source of truth for its durable navigation state.
   useEffect(() => {
@@ -166,6 +204,14 @@ export function ProjectDetailPage() {
   const effectiveSelectedModel = grantedModels.some((model) => model.id === selectedModel)
     ? selectedModel
     : '';
+  const effectiveModel = grantedModels.find((model) =>
+    model.id === (effectiveSelectedModel || activeService?.default_model_id))
+    ?? (grantedModels.length === 1 ? grantedModels[0] : undefined);
+  const effortEnabled = effectiveModel?.capabilities.reasoning === true;
+
+  useEffect(() => {
+    if (!effortEnabled) setModelEffort('auto');
+  }, [effortEnabled]);
 
   const scopedRuns = useMemo(() => {
     const allRuns = runs.data ?? [];
@@ -229,12 +275,33 @@ export function ProjectDetailPage() {
       return;
     }
     setPromptError(undefined);
-    createServiceRun.mutate(
+    setAttachmentError(undefined);
+    const baseBranch = selectedBranch || activeService?.default_branch;
+    void (async () => {
+      setAttachmentsUploading(true);
+      let attachmentStageIDs: string[] = [];
+      try {
+        const staged = [];
+        for (const file of attachments) {
+          staged.push(await api.uploadRunAttachment(activeServiceId, file));
+        }
+        attachmentStageIDs = staged.map((intent) => intent.stage.id);
+      } catch (error) {
+        setAttachmentError(error instanceof ApiError ? error.message : t('taskComposer.attachmentUploadFailed'));
+        setAttachmentsUploading(false);
+        return;
+      }
+      setAttachmentsUploading(false);
+      createServiceRun.mutate(
       {
         serviceId: activeServiceId,
         input: {
           prompt: prompt.trim(),
+          ...(baseBranch ? { base_branch: baseBranch } : {}),
           ...(effectiveSelectedModel ? { model_id: effectiveSelectedModel } : {}),
+          ...(modelEffort !== 'auto' ? { model_effort: modelEffort } : {}),
+          ...(goalMode ? { goal_mode: true } : {}),
+          ...(attachmentStageIDs.length ? { attachment_stage_ids: attachmentStageIDs } : {}),
           session: true,
           ...(askApproval ? { permission_mode: 'approval' as const } : {}),
         },
@@ -242,6 +309,9 @@ export function ProjectDetailPage() {
       {
         onSuccess: (run) => {
           setPrompt('');
+          setAttachments([]);
+          setGoalMode(false);
+          setModelEffort('auto');
           toast.push({ kind: 'success', message: t('projectDetail.sessionStarted') });
           navigate(`/runs/${run.id}`);
         },
@@ -252,7 +322,29 @@ export function ProjectDetailPage() {
           });
         },
       },
-    );
+      );
+    })();
+  };
+
+  const addAttachments = (files: File[]) => {
+    setAttachmentError(undefined);
+    const room = MAX_RUN_ATTACHMENTS - attachments.length;
+    if (files.length > room) {
+      setAttachmentError(t('taskComposer.attachmentTooMany', { max: MAX_RUN_ATTACHMENTS }));
+      return;
+    }
+    const invalid = files.find((file) => file.size <= 0 || file.size > MAX_ATTACHMENT_SIZE_BYTES);
+    if (invalid) {
+      setAttachmentError(t('taskComposer.attachmentTooLarge', { name: invalid.name }));
+      return;
+    }
+    const selectedBytes = attachments.reduce((total, file) => total + file.size, 0);
+    const addedBytes = files.reduce((total, file) => total + file.size, 0);
+    if (selectedBytes + addedBytes > MAX_RUN_ATTACHMENTS_SIZE_BYTES) {
+      setAttachmentError(t('taskComposer.attachmentTotalTooLarge', { max: MAX_RUN_ATTACHMENTS_SIZE_MIB }));
+      return;
+    }
+    setAttachments((current) => [...current, ...files]);
   };
 
   const updateDefaultModel = (modelId: string) => {
@@ -538,17 +630,34 @@ export function ProjectDetailPage() {
               <TaskComposer
                 service={activeService}
                 notice={modelGate.notice}
-                configured={modelGate.configured}
+                configured={modelGate.configured && !serviceBranches.isError}
                 prompt={prompt}
                 promptError={promptError}
                 onPromptChange={setPrompt}
                 models={grantedModels}
                 selectedModel={effectiveSelectedModel}
-                onSelectedModelChange={setSelectedModel}
+                onSelectedModelChange={(modelID) => {
+                  setSelectedModel(modelID);
+                  setModelEffort('auto');
+                }}
+                effortEnabled={effortEnabled}
+                modelEffort={modelEffort}
+                onModelEffortChange={setModelEffort}
+                goalMode={goalMode}
+                onGoalModeChange={setGoalMode}
+                attachments={attachments}
+                attachmentError={attachmentError}
+                onAttachmentsAdd={addAttachments}
+                onAttachmentRemove={(index) => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                branches={serviceBranches.data ?? []}
+                branchesLoading={serviceBranches.isLoading}
+                branchesError={serviceBranches.isError}
+                selectedBranch={selectedBranch}
+                onSelectedBranchChange={setSelectedBranch}
                 askApproval={askApproval}
                 onAskApprovalChange={setAskApproval}
                 onSubmit={submit}
-                busy={createServiceRun.isPending}
+                busy={attachmentsUploading || createServiceRun.isPending}
               />
             )}
 

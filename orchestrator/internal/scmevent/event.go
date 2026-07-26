@@ -196,11 +196,18 @@ type Filter struct {
 // them; include-path filters fail closed when no path information is available.
 func (f Filter) Matches(e NormalizedSCMEvent, changedPaths []string) bool {
 	if f.Branch != "" {
-		branch := strings.TrimPrefix(e.Ref, "refs/heads/")
-		if branch == "" {
+		var branch string
+		switch e.Family {
+		case FamilyPush, FamilyCheck:
+			branch = e.Ref
+		case FamilyPullRequest:
+			// Pull-request Automations are scoped to the destination branch;
+			// source branches are contributor-controlled and are not the branch
+			// the change will land in.
 			branch = e.BaseRef
 		}
-		if branch != f.Branch {
+		branch = strings.TrimPrefix(branch, "refs/heads/")
+		if branch == "" || !matchesAny([]string{f.Branch}, branch) {
 			return false
 		}
 	}

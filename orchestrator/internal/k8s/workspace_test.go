@@ -190,6 +190,108 @@ func TestBuildJobWithPluginCredentialsUsesReadOnlyTmpfsAndSidecar(t *testing.T) 
 	}
 }
 
+func TestBuildJobModelEffortConfigIsOpaqueAndMountedReadOnly(t *testing.T) {
+	c := &Client{cfg: Config{
+		Namespace: "jcloud", RunnerImage: "runner:test",
+		CPULimit: "2", MemoryLimit: "4Gi", CPURequest: "500m", MemoryRequest: "1Gi",
+	}}
+	job := c.buildJob(JobSpec{Name: "jcloud-run-x", RunID: "x", Env: map[string]string{"RUN_ID": "x"},
+		ModelEffort: "high", ModelConfigBase64: "eyJvayI6dHJ1ZX0="})
+	pod := job.Spec.Template.Spec
+	if len(pod.Volumes) != 1 || pod.Volumes[0].Name != runtimeConfigVolumeName || pod.Volumes[0].EmptyDir == nil || pod.Volumes[0].EmptyDir.Medium != corev1.StorageMediumMemory {
+		t.Fatalf("runtime config volume=%+v, want tmpfs config volume", pod.Volumes)
+	}
+	if len(pod.InitContainers) != 1 || pod.InitContainers[0].Name != "run-model-effort-config" {
+		t.Fatalf("init containers=%+v", pod.InitContainers)
+	}
+	init := pod.InitContainers[0]
+	if got := init.Env[0]; got.Name != "RUN_MODEL_CONFIG_B64" || got.Value != "eyJvayI6dHJ1ZX0=" {
+		t.Fatalf("init env=%+v", init.Env)
+	}
+	if strings.Contains(strings.Join(init.Command, " "), "MODEL_API_KEY") || strings.Contains(strings.Join(init.Command, " "), "MODEL_BASE_URL") {
+		t.Fatalf("init shell must not interpolate model secrets: %q", init.Command)
+	}
+	var mounted bool
+	for _, mount := range pod.Containers[0].VolumeMounts {
+		if mount.Name == runtimeConfigVolumeName && mount.MountPath == runtimeConfigMountPath && mount.ReadOnly {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("runner mounts=%+v, want readonly runtime config", pod.Containers[0].VolumeMounts)
+	}
+	var configEnv bool
+	for _, e := range pod.Containers[0].Env {
+		if e.Name == "JCODE_CONFIG" && e.Value == runtimeConfigMountPath+"/config.json" {
+			configEnv = true
+		}
+	}
+	if !configEnv {
+		t.Fatal("runner missing JCODE_CONFIG")
+	}
+}
+
+func TestBuildJobAttachmentsUseOpaquePathsAndReadOnlyManifest(t *testing.T) {
+	c := &Client{cfg: Config{Namespace: "jcloud", RunnerImage: "runner:test", CPULimit: "2", MemoryLimit: "4Gi", CPURequest: "500m", MemoryRequest: "1Gi"}}
+	job := c.buildJob(JobSpec{Name: "jcloud-run-x", RunID: "x", Env: map[string]string{"RUN_ID": "x"}, Attachments: []RunAttachmentDownload{{StageID: "safe-stage-id", URL: "https://signed.test/get", DisplayName: "../../not-a-path.txt", ContentType: "text/plain", SizeBytes: 12}}})
+	pod := job.Spec.Template.Spec
+	var attachmentVolume corev1.Volume
+	for _, volume := range pod.Volumes {
+		if volume.Name == attachmentsVolumeName {
+			attachmentVolume = volume
+		}
+	}
+	if attachmentVolume.EmptyDir == nil || attachmentVolume.EmptyDir.SizeLimit == nil || attachmentVolume.EmptyDir.SizeLimit.Value() != (64<<10)+12 {
+		t.Fatalf("attachment tmpfs limit=%v want %d", attachmentVolume.EmptyDir, (64<<10)+12)
+	}
+	baseLimit := resource.MustParse("4Gi")
+	baseRequest := resource.MustParse("1Gi")
+	if got := pod.Containers[0].Resources.Limits.Memory().Value(); got != baseLimit.Value()+(64<<10)+12 {
+		t.Fatalf("runner memory limit=%d does not include attachment tmpfs", got)
+	}
+	if got := pod.Containers[0].Resources.Requests.Memory().Value(); got != baseRequest.Value()+(64<<10)+12 {
+		t.Fatalf("runner memory request=%d does not include attachment tmpfs", got)
+	}
+	if len(pod.InitContainers) != 2 || pod.InitContainers[0].Name != "run-attachment-01" || pod.InitContainers[1].Name != "run-attachments-manifest" {
+		t.Fatalf("attachment init containers=%+v", pod.InitContainers)
+	}
+	if strings.Contains(strings.Join(pod.InitContainers[0].Command, " "), "not-a-path") {
+		t.Fatal("display name must not become an init shell path")
+	}
+	command := strings.Join(pod.InitContainers[0].Command, " ")
+	if !strings.Contains(command, "wc -c") || !strings.Contains(command, "mv \"$tmp\" \"$ATTACHMENT_DEST\"") {
+		t.Fatalf("attachment init must verify length then atomically rename: %q", command)
+	}
+	var sizeEnv bool
+	for _, e := range pod.InitContainers[0].Env {
+		if e.Name == "ATTACHMENT_SIZE_BYTES" && e.Value == "12" {
+			sizeEnv = true
+		}
+	}
+	if !sizeEnv {
+		t.Fatalf("attachment init env=%+v, want server size", pod.InitContainers[0].Env)
+	}
+	var readonly, dir, manifest bool
+	for _, m := range pod.Containers[0].VolumeMounts {
+		if m.Name == attachmentsVolumeName && m.MountPath == attachmentsMountPath && m.ReadOnly {
+			readonly = true
+		}
+	}
+	for _, e := range pod.Containers[0].Env {
+		if e.Name == "JCODE_ATTACHMENTS_DIR" && e.Value == attachmentsMountPath {
+			dir = true
+		}
+	}
+	for _, e := range pod.InitContainers[1].Env {
+		if e.Name == "ATTACHMENTS_MANIFEST_B64" && e.Value != "" {
+			manifest = true
+		}
+	}
+	if !readonly || !dir || !manifest {
+		t.Fatalf("attachment contract readonly=%v dir=%v manifest=%v", readonly, dir, manifest)
+	}
+}
+
 // TestEnsureWorkspacePVCCreatesRWO checks the created PVC is RWO, sized from
 // config, carries the service/project labels, and (given a storage class) sets
 // it. Uses the client-go fake clientset.

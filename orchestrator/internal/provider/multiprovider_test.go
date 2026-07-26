@@ -126,6 +126,69 @@ func TestGitLabClient(t *testing.T) {
 	}
 }
 
+func TestProviderBranchListersUseBoundRepositoryAndCredential(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		newClient func(base string) (BranchLister, error)
+		path      string
+		auth      string
+	}{
+		{
+			name:      "github",
+			newClient: func(base string) (BranchLister, error) { return NewGitHubClient(base, "token") },
+			path:      "/repos/acme/platform/branches", auth: "Bearer token",
+		},
+		{
+			name:      "gitlab",
+			newClient: func(base string) (BranchLister, error) { return NewGitLabClient(base, "token") },
+			path:      "/projects/acme%2Fplatform/repository/branches", auth: "Bearer token",
+		},
+		{
+			name:      "gitea",
+			newClient: func(base string) (BranchLister, error) { return NewGiteaClientWithScheme(base, "token", "Bearer") },
+			path:      "/api/v1/repos/acme/platform/branches", auth: "Bearer token",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.URL.EscapedPath(); got != tt.path {
+					t.Fatalf("path=%q want %q", got, tt.path)
+				}
+				if got := r.Header.Get("Authorization"); got != tt.auth {
+					t.Fatalf("authorization=%q want %q", got, tt.auth)
+				}
+				if got := r.URL.Query().Get("page"); got != "2" {
+					t.Fatalf("page=%q want 2", got)
+				}
+				if got := r.URL.Query().Get("per_page"); tt.name != "gitea" && got != "100" {
+					t.Fatalf("per_page=%q want 100", got)
+				}
+				if got := r.URL.Query().Get("limit"); tt.name == "gitea" && got != "100" {
+					t.Fatalf("limit=%q want 100", got)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`[{"name":"main","protected":true},{"name":"feature/x","protected":false}]`))
+			}))
+			defer srv.Close()
+			client, err := tt.newClient(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			branches, err := client.ListBranches(context.Background(), "acme", "platform", 2, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(branches) != 2 || branches[0].Name != "main" || !branches[0].Protected || branches[1].Name != "feature/x" {
+				t.Fatalf("branches=%+v", branches)
+			}
+		})
+	}
+}
+
 // TestOAuthRefresh proves Refresh trades a refresh token for a fresh access
 // token via the token endpoint (grant_type=refresh_token).
 func TestOAuthRefresh(t *testing.T) {

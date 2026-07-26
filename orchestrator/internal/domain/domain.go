@@ -422,6 +422,10 @@ type Run struct {
 	OriginCommentURL   string    `json:"origin_comment_url,omitempty"`
 	OriginAutomationID string    `json:"origin_automation_id,omitempty"`
 	OriginEventKey     string    `json:"origin_event_key,omitempty"`
+	// CoalesceKey is internal scheduling metadata for bursty SCM events. The
+	// Store uses it to atomically keep at most one queued Run for the same
+	// Automation + Service + ref/object; it is never exposed through the API.
+	CoalesceKey string `json:"-"`
 
 	// Session marks a multi-turn SESSION run (D22): the runner keeps one ACP
 	// session alive across turns (RUN_SESSION=1), the run parks in awaiting_input
@@ -466,6 +470,20 @@ type Run struct {
 	// snapshot survives model deletion so a run stays traceable to what it ran on.
 	// Empty for legacy runs that predate the catalog.
 	ModelName string `json:"model_name,omitempty"`
+	// BaseBranch is the immutable repository baseline for this run. Manual tasks
+	// select it through the service branch picker; SCM Automations derive it
+	// from the normalized event ref. Empty retains the Service default.
+	BaseBranch string `json:"base_branch,omitempty"`
+	// ModelEffort is the per-run OpenAI-compatible reasoning depth. Empty keeps
+	// the selected model/provider default.
+	ModelEffort string `json:"model_effort,omitempty"`
+	// GoalMode asks jcode to establish the prompt as a persistent objective at
+	// the beginning of this run.
+	GoalMode bool `json:"goal_mode,omitempty"`
+	// AttachmentStageIDs is an API-only creation input. It is never serialized
+	// with a Run; durable metadata lives in run_attachment_bindings.
+	AttachmentStageIDs  []string `json:"-"`
+	CopyAttachmentsFrom string   `json:"-"`
 
 	// AcpSessionID is the ACP session id this run drives (F9b / D23 ①②). It is
 	// reported by the runner via the run.session event (first-writer-wins in the
@@ -481,6 +499,41 @@ type Run struct {
 	// TokenHash is the SHA-256 (hex) of the per-run bearer token injected into
 	// the Job. Never serialised to API clients.
 	TokenHash string `json:"-"`
+}
+
+// AttachmentStage is a short-lived, user-owned object-storage upload intent.
+// ObjectKey is generated exclusively by Cloud and is never derived from Name.
+type AttachmentStage struct {
+	ID          string     `json:"id"`
+	ProjectID   string     `json:"project_id"`
+	CreatedBy   string     `json:"created_by"`
+	ObjectKey   string     `json:"-"`
+	DisplayName string     `json:"display_name"`
+	ContentType string     `json:"content_type,omitempty"`
+	SizeBytes   int64      `json:"size_bytes"`
+	UploadedAt  *time.Time `json:"uploaded_at,omitempty"`
+	UploadState string     `json:"-"` // pending|uploading|uploaded; never API-controlled
+	ExpiresAt   time.Time  `json:"expires_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+// RunAttachment is immutable attachment metadata bound to a Run. It carries no
+// object URL: the reconciler mints a short-lived URL only at launch.
+type RunAttachment struct {
+	RunID       string `json:"run_id"`
+	StageID     string `json:"stage_id"`
+	ObjectKey   string `json:"-"`
+	DisplayName string `json:"display_name"`
+	ContentType string `json:"content_type,omitempty"`
+	SizeBytes   int64  `json:"size_bytes"`
+}
+
+func ValidModelEffort(v string) bool {
+	switch v {
+	case "", "auto", "low", "medium", "high":
+		return true
+	}
+	return false
 }
 
 // RunPushBranch is the branch the orchestrator pushes for a draft_pr AGENT run.
@@ -1174,11 +1227,16 @@ const (
 )
 
 // WebhookBinding is the inspectable service-level connection to a provider
-// webhook. It stores no secret: only synchronization and last-delivery state.
+// webhook. GitLab/Gitea bindings carry a server-generated opaque route id and
+// an encrypted, per-binding secret; both remain write-only on every public API.
+// GitHub continues to use its cluster-scoped App webhook and leaves these fields
+// empty.
 type WebhookBinding struct {
 	ServiceID          string               `json:"service_id"`
 	Provider           GitProvider          `json:"provider"`
 	Endpoint           string               `json:"endpoint"`
+	HookID             string               `json:"-"`
+	SecretEnc          []byte               `json:"-"`
 	Status             WebhookBindingStatus `json:"status"`
 	LastSyncedAt       *time.Time           `json:"last_synced_at,omitempty"`
 	LastDeliveryAt     *time.Time           `json:"last_delivery_at,omitempty"`

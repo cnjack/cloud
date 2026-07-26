@@ -28,13 +28,14 @@ type modelAdminView struct {
 	GrantedAccountIDs []string  `json:"granted_account_ids"`
 }
 
-// modelMemberView is the member-facing projection of a granted model: id/name/
-// model_name ONLY — a member NEVER sees the base_url or key (fail-visible red
-// line: the endpoint/key are cluster-admin-only detail).
+// modelMemberView is the member-facing projection of a granted model. Runtime
+// capabilities are public product metadata used to render valid composer
+// controls; a member NEVER sees the base_url or key.
 type modelMemberView struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	ModelName string `json:"model_name"`
+	ID           string                   `json:"id"`
+	Name         string                   `json:"name"`
+	ModelName    string                   `json:"model_name"`
+	Capabilities domain.ModelCapabilities `json:"capabilities"`
 }
 
 // adminModel builds the admin view, fetching the model's grants.
@@ -425,7 +426,10 @@ func (s *Server) handleListProjectModels(w http.ResponseWriter, r *http.Request)
 	}
 	out := make([]modelMemberView, 0, len(granted))
 	for i := range granted {
-		out = append(out, modelMemberView{ID: granted[i].ID, Name: granted[i].Name, ModelName: granted[i].ModelName})
+		out = append(out, modelMemberView{
+			ID: granted[i].ID, Name: granted[i].Name, ModelName: granted[i].ModelName,
+			Capabilities: granted[i].Capabilities,
+		})
 	}
 	writeJSON(w, http.StatusOK, projectModelsView{Models: out, EnvFallback: s.envFallbackActive(r)})
 }

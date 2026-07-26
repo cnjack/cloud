@@ -7,6 +7,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ func (s *Server) handleProviderCapabilities(w http.ResponseWriter, r *http.Reque
 	instanceURL := ""
 	if cfg, err := s.st.GetProviderConfig(r.Context(), domain.ProviderKind(provider)); err == nil {
 		instanceURL = cfg.BaseURL
+		capabilities = providerCapabilitiesForConfig(provider, cfg)
 	}
 	if provider == scmevent.ProviderGitHub && instanceURL == "" {
 		instanceURL = "https://github.com"
@@ -37,6 +39,24 @@ func (s *Server) handleProviderCapabilities(w http.ResponseWriter, r *http.Reque
 		"instance_url":    instanceURL,
 		"oauth_scopes":    canonicalPluginConsentScopes(domain.ProviderKind(provider)),
 	})
+}
+
+func providerCapabilitiesForConfig(provider scmevent.ProviderKind, cfg *domain.ProviderConfig) scmevent.ProviderCapabilities {
+	capabilities := scmevent.Capabilities(provider)
+	if cfg == nil || !cfg.PluginEnabled || cfg.LastHealthError != "" {
+		capabilities.Capabilities = []scmevent.Capability{}
+		return capabilities
+	}
+	if cfg.LastCapabilityCheck != nil {
+		return scmevent.CapabilitiesForVersion(provider, cfg.CapabilityVersion)
+	}
+	if provider == scmevent.ProviderGitLab || provider == scmevent.ProviderGitea {
+		// Self-hosted event support is version-dependent. Until a real
+		// instance/grant probe succeeds, showing the optimistic catalog would
+		// allow an Automation that can never fire.
+		capabilities.Capabilities = []scmevent.Capability{}
+	}
+	return capabilities
 }
 
 type pluginAutomationReq struct {
@@ -122,7 +142,7 @@ func (s *Server) handleCreatePluginAutomation(w http.ResponseWriter, r *http.Req
 		writeError(w, 500, "internal", "could not load service")
 		return
 	}
-	installationID, msg := s.validatePluginAutomationTarget(r, svc, scm, kanban)
+	installationID, msg := s.validatePluginAutomationTarget(r, svc, scm, actions, kanban)
 	if msg != "" {
 		writeError(w, 409, "plugin_unavailable", msg)
 		return
@@ -228,7 +248,7 @@ func (s *Server) handleUpdatePluginAutomation(w http.ResponseWriter, r *http.Req
 	a.CreatedAt = spec.Automation.CreatedAt
 	a.CreatedBy = spec.Automation.CreatedBy
 	a.LastError = spec.Automation.LastError
-	installationID, msg := s.validatePluginAutomationTarget(r, svc, scm, kanban)
+	installationID, msg := s.validatePluginAutomationTarget(r, svc, scm, actions, kanban)
 	if msg != "" {
 		writeError(w, 409, "plugin_unavailable", msg)
 		return
@@ -377,6 +397,9 @@ func pluginAutomationFromReq(req pluginAutomationReq, id string) (*domain.Plugin
 			}
 		}
 		if scm.Branch != "" {
+			if _, err := path.Match(scm.Branch, ""); err != nil {
+				return nil, nil, nil, nil, nil, "scm.branch contains an invalid glob pattern"
+			}
 			for _, action := range actions {
 				switch action.EventFamily {
 				case string(scmevent.FamilyPush), string(scmevent.FamilyPullRequest), string(scmevent.FamilyCheck):
@@ -408,15 +431,27 @@ func pluginAutomationFromReq(req pluginAutomationReq, id string) (*domain.Plugin
 	return a, nil, nil, nil, &domain.CronTrigger{CronExpr: expr}, ""
 }
 
-func (s *Server) validatePluginAutomationTarget(r *http.Request, svc *domain.Service, scm *domain.SCMTrigger, kanban *domain.KanbanTrigger) (string, string) {
+func (s *Server) validatePluginAutomationTarget(r *http.Request, svc *domain.Service, scm *domain.SCMTrigger, actions []domain.SCMAction, kanban *domain.KanbanTrigger) (string, string) {
 	if scm != nil {
 		b, err := s.st.GetServiceRepositoryBinding(r.Context(), svc.ID)
 		if err != nil {
 			return "", "this Service is not bound to an enabled SCM Plugin"
 		}
 		in, err := s.st.GetPluginInstallation(r.Context(), b.InstallationID)
-		if err != nil || in.Status != domain.PluginStatusEnabled {
+		if err != nil || in.Status != domain.PluginStatusEnabled || scmevent.ProviderKind(in.Provider) != scmevent.ProviderKind(svc.Provider) {
 			return "", "the SCM Plugin must be enabled before this Automation can run"
+		}
+		cfg, err := s.st.GetProviderConfig(r.Context(), in.Provider)
+		if err != nil || cfg.ConfigRevision != in.ConfigRevision {
+			return "", "the SCM Plugin must be reconnected to the current cluster Provider configuration"
+		}
+		capabilities := providerCapabilitiesForConfig(scmevent.ProviderKind(in.Provider), cfg)
+		for _, action := range actions {
+			family := scmevent.Family(action.EventFamily)
+			providerAction := scmevent.Action(action.Action)
+			if !capabilities.Supports(family, providerAction) {
+				return "", "the selected SCM action is not supported by this Provider and its observed version"
+			}
 		}
 		return in.ID, ""
 	}

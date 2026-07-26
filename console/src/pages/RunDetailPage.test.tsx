@@ -562,8 +562,8 @@ describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
     const run = terminalSession({ model_id: 'm_gpt', model_name: 'GPT-4o', permission_mode: 'approval' });
     const { client, ctl } = makeClient('member', {
       models: [
-        { id: 'm_gpt', name: 'GPT-4o', model_name: 'openai/gpt-4o' },
-        { id: 'm_claude', name: 'Claude', model_name: 'anthropic/claude' },
+        { id: 'm_gpt', name: 'GPT-4o', model_name: 'openai/gpt-4o', capabilities: { reasoning: true, tools: true, image: false } },
+        { id: 'm_claude', name: 'Claude', model_name: 'anthropic/claude', capabilities: { reasoning: false, tools: true, image: false } },
       ],
     });
     ctl.getRun.mockResolvedValue(run);

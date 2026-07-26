@@ -236,11 +236,6 @@ export function KanbanBoardModal({ projectId, serviceId = '', links, canManage =
             <div className={styles.failMsg}>
               <strong>{linkLabel(link)}</strong> — {failure?.message}
             </div>
-            {link.board_status === 'invalid' && (
-              <div className={styles.failDetail}>
-                {t('kanban.linkMarkedInvalid')}
-              </div>
-            )}
             <div className={styles.failActions}>
               <Button
                 type="button"
@@ -267,26 +262,6 @@ export function KanbanBoardModal({ projectId, serviceId = '', links, canManage =
                 >
                   {t('kanban.disable')}
                 </Button>
-              </div>
-            )}
-            {link.board_status === 'invalid' && (
-              <div
-                className={styles.linkNotice}
-                role="alert"
-                data-state="invalid"
-                data-testid="kanban-board-link-invalid"
-              >
-                <strong>{t('kanban.linkInvalidTitle')}</strong> {t('kanban.linkInvalidBody')}
-              </div>
-            )}
-            {link.board_status === 'unvalidated' && (
-              <div
-                className={styles.linkNotice}
-                role="status"
-                data-state="unvalidated"
-                data-testid="kanban-board-link-unvalidated"
-              >
-                <strong>{t('kanban.linkUnvalidatedTitle')}</strong> {t('kanban.linkUnvalidatedBody')}
               </div>
             )}
             {!link.enabled && (

@@ -53,6 +53,14 @@ moves related installations to `action_required`. Existing runs continue. New
 dependent runs and Automation dispatches stop until an Owner or Cluster Admin
 reconnects and accepts the current Consent.
 
+Database-backed OAuth state is signed and bound to the configuration revision,
+canonical Provider origin, and client ID that generated the authorize URL. A
+callback after any of those values changes fails with
+`oauth_config_changed`; the user must start the flow again. Changing a
+GitLab/Gitea origin, a JType base URL, or any OAuth client ID requires a new
+client secret in the same Provider update. Changing the GitHub App ID similarly
+requires a new private key.
+
 ## Installation and Consent
 
 Only a Project Owner or Cluster Admin can connect, reconnect, enable, disable,
@@ -185,6 +193,11 @@ change task permissions.
 Comments always run individually. Push, pull request synchronization, and check
 completion use one running event plus the newest queued event for the same
 Service and ref or object. Replaced queued events are marked `superseded`.
+The supersede-and-create operation is atomic at the Store boundary: PostgreSQL
+serializes a stable Automation + Service + ref/object key with a
+transaction-scoped advisory lock, while the memory Store uses one mutex. The
+last successfully committed delivery is the sole queued Run; if its insert
+fails, the previous queued Run remains unchanged.
 
 jcode-generated branches, actors, correlation markers, and comments are ignored
 by default. Automation authors may disable that filter.
@@ -195,14 +208,30 @@ Webhook authentication and a 1 MiB request limit are applied before
 normalization. The provider payload is decoded once and discarded. jcloud does
 not store raw bodies or request headers.
 
-`webhook_receipts` stores only the delivery ID, normalized family and action,
-external actor, object reference, matching outcome, and sanitized error. Rows
-expire after 30 days. Delivery IDs are unique per Provider. jcloud performs no
-automatic processing retry and exposes no Replay action.
+`webhook_receipts` stores only the delivery ID, an authenticated-payload digest
+where the Provider signs the body, normalized family and action, external
+actor, object reference, matching outcome, and sanitized error. It never stores
+the raw payload. Delivery IDs are unique per Provider. For GitHub and Gitea,
+the digest also rejects an authenticated-body replay whose unsigned delivery
+header was changed. Rows expire after 30 days and are deleted in bounded,
+multi-replica-safe batches. jcloud performs no automatic processing retry and
+exposes no Replay action.
 
 GitHub receives events through its cluster App webhook. GitLab and Gitea create
 a repository webhook when the first SCM Automation for a Service is enabled and
-remove it when the last one is disabled or deleted.
+remove it when the last one is disabled or deleted. Each GitLab/Gitea Service
+binding owns an opaque `/webhooks/{provider}/{hook_id}` URL and an independent
+random encrypted secret. Ingress resolves that URL to exactly one Service,
+authenticates with the binding secret, and rejects the event unless its
+Provider repository stable ID matches the immutable Service repository
+binding. Provider configuration contains no shared GitLab/Gitea webhook secret.
+
+Automation database changes commit before the external hook is reconciled. A
+Provider failure returns `webhook_reconcile_failed` but does not roll the
+Automation back: `automations_v2.last_error` and
+`webhook_bindings.last_error` retain sanitized retry guidance, and saving or
+re-enabling the Automation retries the operation. This is an intentional
+visible-failure boundary, not an atomic cross-system transaction.
 
 Consent, configuration, connection, status, uninstall, forced cleanup, and
 master-key operations create immutable audit records.
@@ -232,6 +261,13 @@ Provider URL/config changes and reconnects append new live versions; existing
 snapshots continue resolving their launch versions. Refresh-token rotation is
 persisted only within the frozen grant version and can never overwrite a later
 reconnect's version.
+Historical Provider configuration and grant versions are retained while a live
+Installation, a non-terminal Run, or a terminal JType Run with an unfinished
+Kanban writeback can still use them. Bounded reconciliation reclaims
+unreferenced encrypted rows only after the final runtime/writeback reference
+ends. Terminal `run_plugin_snapshots` then remain as immutable audit records
+containing only Provider, Installation, configuration-revision, and
+credential-version identifiers; they do not retain historical ciphertext.
 Kanban claims additionally freeze the workspace and completion column at
 dispatch. Result comments and the optional move use that claim plus the run's
 immutable JType Provider/grant snapshot, never the Installation or Provider
@@ -300,8 +336,15 @@ deterministically keeps the oldest historical Kanban aggregate for each Service
 and board, freezes all existing claim targets, preserves run-bound claims,
 removes duplicate aggregates, then adds one-Kanban-per-Service and
 one-Service-per-board uniqueness. It also detaches frozen writeback claims from
-the mutable Automation foreign key. There is no legacy API compatibility
-period.
+the mutable Automation foreign key. Append-only migration `0047` records
+Automation-origin Run identity; `0048` adds branch/effort/goal inputs;
+`0049`/`0050` add attachment stages plus retry/resume bindings; `0051` replaces
+shared self-hosted webhook credentials with per-Service opaque routes and
+encrypted secrets; and `0052` allows historical ciphertext versions to be
+reclaimed while snapshot audit IDs remain. `0053` repairs attachment upload
+state for databases that had already recorded an earlier form of `0049`; `0054`
+persists the SCM coalescing key and enforces at most one queued Run for that key.
+There is no legacy API compatibility period.
 
 Orchestrator, Console, runner image, and migration ship in one release. The
 database is backed up first. A failed migration keeps readiness unhealthy and
@@ -339,3 +382,144 @@ The following are product decisions, not implementation omissions:
 Security review must report these risks clearly. It must not silently change
 the accepted behavior. A reviewer may still mark them as a release blocker for
 an explicit product decision.
+
+## Completion tranche: provider operations and task composition
+
+Status: approved for implementation on 2026-07-26.
+
+This tranche closes the remaining operational gaps discovered during the first
+production exercise. An item is complete only when its durable behavior,
+failure state, tests, operator documentation, and production verification are
+all present. A feature that exists only in a fixture or static capability table
+is not considered production-verified.
+
+### Receipt retention
+
+`webhook_receipts.expires_at` is an enforced retention boundary, not metadata.
+The Orchestrator periodically deletes expired receipts in bounded batches.
+Cleanup is idempotent, observable, safe under multiple replicas, and never
+deletes unexpired rows. PostgreSQL and memory stores share the same contract.
+The cleanup loop records failures without making the API unready and retries on
+the next interval.
+
+### Provider probing and capability degradation
+
+“Test connection” performs the strongest provider-specific cluster probe that
+can be proven without inventing an end-user grant:
+
+- GitHub validates the App identity and App credentials, while OAuth identity
+  and Installation access remain separately visible;
+- GitLab and Gitea validate instance reachability and read the server version
+  when the instance exposes it; their OAuth client and Project grant are proven
+  by the real authorization and resource-discovery flow;
+- JType validates its public health endpoint; its Project grant and server
+  access are proven by workspace discovery and MCP initialization. Cloud does
+  not invent a JType version when the instance exposes no version endpoint.
+
+The probe persists the observed version, capability revision, timestamp, and a
+sanitized health error. It must not persist or return probe credentials.
+Provider capability responses combine the normalized event catalog with the
+observed Provider version and API feature evidence. Unsupported actions remain
+visible but disabled with a reason. A reachability-only response must not be
+presented as a successful authenticated connection test.
+
+### SCM verification and event presentation
+
+The production verification matrix includes a real GitHub push and a newly
+created `@jcode` comment after a model is configured. Both must create Runs with
+the correct Automation origin, complete comment prompt, actor attribution,
+delivery deduplication, and no Cloud-generated SCM writeback.
+
+The full normalized catalog remains supported and testable. The Automation UI
+promotes the common actions—push, pull request open/update/merge, `@jcode`
+comment, issue open/update, and check completion—and places less common review,
+tag, release, reopen, close, and deletion actions under an explicit “More
+events” disclosure. Collapsing the disclosure never clears selected actions.
+Provider capability gaps remain visible and explained.
+
+GitLab and Gitea are complete only after a configured-instance journey covers
+OAuth, Project Installation, repository selection, Service clone, webhook
+create/delete, normalized dispatch, CLI use, disable/reconnect, and uninstall.
+When an external instance is unavailable, these journeys remain a documented
+production-verification dependency rather than being reported as passing.
+
+### Runtime Skills and CLIs
+
+Runtime assets are injected at Run start by Console/Orchestrator policy and the
+immutable Plugin snapshot. They are never compiled into the generic Runner.
+Verification executes the matching Skill and CLI (`gh`, `glab`, or `tea`) in a
+real task, exercises Git credential-helper fetch/push, and proves that disabling
+a Plugin removes its assets from new Runs without altering already-started
+Runs. JType continues to receive MCP configuration and no Skill.
+
+### Task composition
+
+Manual task creation uses one task-options contract. SCM-triggered Runs derive
+their branch from the normalized event, but Automation templates do not accept
+manual attachment stages:
+
+- **Branch:** a Service repository branch can be selected. Manual tasks clone
+  the selected branch. SCM-triggered Runs use the event ref/object branch when
+  present and otherwise the configured Automation branch filter or Service
+  default branch. The selected branch is validated against the live Provider
+  catalog and persisted on the Run for audit. The current contract stores the
+  branch name, not the observed commit SHA: if the branch advances between Run
+  creation and clone, the Job checks out the newer ref. Commit pinning remains
+  a known P2 consistency follow-up.
+- **Model effort:** when the selected model supports reasoning effort, the user
+  can choose an allowed effort or `auto`. The Orchestrator validates the choice
+  against model capabilities and passes the resolved value to jcode at Run
+  start. Unsupported values fail visibly.
+- **Goal mode:** a task may start in goal mode with a concrete goal statement.
+  Goal state is initialized through the
+  task startup contract and remains observable in the task event stream.
+- **Attachments:** a user can attach files before dispatch. Uploads use the
+  existing object-storage security boundary through a Cloud proxy. Each file is
+  at most 25 MiB; a Run accepts at most 10 files and 100 MiB total. One
+  Project/user may hold at most 20 unexpired stages and 250 MiB of staged data.
+  Upload intents expire after 10 minutes and move atomically through
+  `pending → uploading → uploaded`; the declared and received lengths must
+  match before a Run can consume the stage. Stages are bound to the creating
+  Project and user, then transactionally bound to the target Run. User
+  filenames are display metadata only and cannot choose the object key or
+  filesystem path. Init containers verify each download length, write an
+  opaque-path manifest, and the task mounts the attachment tmpfs read-only.
+  Attachment bytes plus manifest overhead are added to the Pod memory request,
+  limit, and tmpfs size. Retry and resume reuse immutable bindings;
+  Automation-created Runs do not inherit unrelated manual-task attachments.
+
+All four options must survive API validation, persistence, dispatch retries,
+and task rendering. The Console disables unavailable choices with an actionable
+explanation instead of silently dropping them.
+
+### Console cleanup and localization
+
+The obsolete Git Integration, Project Kanban-link, paste-a-PAT, and legacy
+Project Settings modal branches are removed together with unreachable hooks,
+types, mocks, and tests. Current Plugin and Service Kanban surfaces remain the
+only supported paths.
+
+Every user-facing Plugin detail string uses the locale catalog, including
+health errors, resource failures, consent metadata, stable identity labels,
+workspace binding, Service and Automation empty states, audit history, and
+trigger names. Provider identifiers, scope identifiers, repository names, and
+external error codes remain untranslated data.
+
+### Verification gates
+
+The tranche requires:
+
+1. PostgreSQL and memory-store retention tests, including concurrent cleanup.
+2. Provider probe fixtures for success, invalid credentials, unsupported
+   versions, malformed version responses, timeouts, and secret redaction.
+3. Webhook normalization, capability filtering, event disclosure, branch
+   filtering, deduplication, and coalescing tests.
+4. Task option API/store/dispatch tests for branch, effort, goal, and
+   attachments, including authorization and path traversal cases.
+5. Runtime snapshot tests proving correct assets and removal on disable.
+6. Console unit, accessibility, localization, typecheck, and production build.
+7. Full Orchestrator tests and PostgreSQL-gated store tests.
+8. Independent domain/data-consistency and attacker-perspective reviews before
+   release.
+9. A database backup before applying the release migration and a production
+   smoke test after rollout.

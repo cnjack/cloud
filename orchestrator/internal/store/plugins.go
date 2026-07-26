@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -124,6 +125,37 @@ func (s *PGStore) UpsertProviderConfigAndInvalidate(ctx context.Context, cfg *do
 	return nil
 }
 
+func (s *PGStore) RecordProviderCapabilities(ctx context.Context, provider domain.ProviderKind, version string, capabilities []string, checkedAt time.Time) error {
+	if !domain.ValidProviderKind(provider) {
+		return fmt.Errorf("record provider capabilities: invalid provider")
+	}
+	if capabilities == nil {
+		capabilities = []string{}
+	}
+	result, err := s.pool.Exec(ctx, `UPDATE provider_configs SET capability_version=$2,capabilities=$3,last_health_error='',last_capability_check=$4,updated_at=now() WHERE provider=$1`, provider, version, capabilities, checkedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("record provider capabilities: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) RecordProviderHealthError(ctx context.Context, provider domain.ProviderKind, message string, checkedAt time.Time) error {
+	if !domain.ValidProviderKind(provider) {
+		return fmt.Errorf("record provider health error: invalid provider")
+	}
+	result, err := s.pool.Exec(ctx, `UPDATE provider_configs SET last_health_error=$2,last_capability_check=$3,updated_at=now() WHERE provider=$1`, provider, message, checkedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("record provider health error: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *PGStore) CountProviderConfigImpact(ctx context.Context, provider domain.ProviderKind) (int, error) {
 	var count int
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM plugin_installations WHERE provider=$1`, provider).Scan(&count); err != nil {
@@ -198,13 +230,28 @@ func (s *PGStore) ListPluginInstallationsByProject(ctx context.Context, projectI
 	return out, rows.Err()
 }
 func (s *PGStore) UpdatePluginInstallation(ctx context.Context, in *domain.PluginInstallation) error {
+	if in == nil || in.ID == "" {
+		return fmt.Errorf("update plugin installation: invalid installation")
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("update plugin installation: begin: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-	if err = appendPluginCredentialVersion(ctx, tx, in); err != nil {
-		return err
+	current, err := scanPluginInstallation(tx.QueryRow(ctx, `SELECT `+pluginInstallationCols+` FROM plugin_installations WHERE id=$1 FOR UPDATE`, in.ID))
+	if errors.Is(err, ErrNotFound) {
+		return ErrNotFound
+	} else if err != nil {
+		return fmt.Errorf("update plugin installation: lock current: %w", err)
+	}
+	if pluginCredentialMaterialChanged(*current, *in) {
+		if err = appendPluginCredentialVersion(ctx, tx, in); err != nil {
+			return err
+		}
+	} else {
+		// Status, health and consent changes do not mint another encrypted grant
+		// row. Keep the live installation pinned to its existing immutable grant.
+		in.CredentialVersionID = current.CredentialVersionID
 	}
 	tag, err := tx.Exec(ctx, `UPDATE plugin_installations SET status=$2,external_account_id=$3,external_account=$4,github_installation_id=$5,workspace_id=$6,scopes=$7,access_token_enc=$8,refresh_token_enc=$9,token_expires_at=$10,credential_version_id=$11,consent_version=$12,consented_by=$13,consented_at=$14,config_revision=$15,last_health_error=$16,last_healthy_at=$17,updated_at=now() WHERE id=$1`, in.ID, in.Status, in.ExternalAccountID, in.ExternalAccount, in.GitHubInstallID, in.WorkspaceID, in.Scopes, in.AccessTokenEnc, in.RefreshTokenEnc, in.TokenExpiresAt, in.CredentialVersionID, in.ConsentVersion, nullStr(in.ConsentedBy), in.ConsentedAt, in.ConfigRevision, in.LastHealthError, in.LastHealthyAt)
 	if err != nil {
@@ -217,6 +264,20 @@ func (s *PGStore) UpdatePluginInstallation(ctx context.Context, in *domain.Plugi
 		return fmt.Errorf("update plugin installation: commit: %w", err)
 	}
 	return nil
+}
+
+func pluginCredentialMaterialChanged(current, next domain.PluginInstallation) bool {
+	return current.GitHubInstallID != next.GitHubInstallID ||
+		!bytes.Equal(current.AccessTokenEnc, next.AccessTokenEnc) ||
+		!bytes.Equal(current.RefreshTokenEnc, next.RefreshTokenEnc) ||
+		!sameOptionalTime(current.TokenExpiresAt, next.TokenExpiresAt)
+}
+
+func sameOptionalTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
 
 // RotatePluginCredentialVersion keeps a durable run on its own launch-time
@@ -330,6 +391,12 @@ func (s *PGStore) UninstallPlugin(ctx context.Context, installationID string) er
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM plugin_installations WHERE id=$1`, installationID); err != nil {
 		return fmt.Errorf("delete plugin installation: %w", err)
+	}
+	// The Installation's live credential reference has now been removed. Reclaim
+	// only history that is not pinned by another Installation or a non-terminal
+	// run snapshot; audit events and terminal snapshot identifiers are retained.
+	if _, _, err = deleteUnreferencedPluginSecretVersionsTx(ctx, tx, pluginSecretVersionDeleteBatchSize); err != nil {
+		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit plugin uninstall: %w", err)
@@ -764,7 +831,7 @@ func (s *PGStore) DeletePluginAutomation(ctx context.Context, id string) error {
 }
 
 func (s *PGStore) ClaimWebhookReceipt(ctx context.Context, r *domain.WebhookReceipt) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `INSERT INTO webhook_receipts(id,provider,delivery_id,installation_id,event_family,action,external_actor_id,external_actor,object_ref,status,matched_automation_id,error,received_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(provider,delivery_id) DO NOTHING`, r.ID, r.Provider, r.DeliveryID, nullStr(r.InstallationID), r.EventFamily, r.Action, r.ExternalActorID, r.ExternalActor, r.ObjectRef, r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt)
+	tag, err := s.pool.Exec(ctx, `INSERT INTO webhook_receipts(id,provider,delivery_id,payload_digest,installation_id,event_family,action,external_actor_id,external_actor,object_ref,status,matched_automation_id,error,received_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING`, r.ID, r.Provider, r.DeliveryID, r.PayloadDigest, nullStr(r.InstallationID), r.EventFamily, r.Action, r.ExternalActorID, r.ExternalActor, r.ObjectRef, r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt)
 	if err != nil {
 		return false, fmt.Errorf("claim webhook receipt: %w", err)
 	}
@@ -779,6 +846,28 @@ func (s *PGStore) CompleteWebhookReceipt(ctx context.Context, r *domain.WebhookR
 		return ErrNotFound
 	}
 	return nil
+}
+
+const webhookReceiptDeleteBatchSize = 1000
+const pluginSecretVersionDeleteBatchSize = 1000
+
+func (s *PGStore) DeleteExpiredWebhookReceipts(ctx context.Context, before time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		WITH expired AS (
+			SELECT id
+			FROM webhook_receipts
+			WHERE expires_at <= $1
+			ORDER BY expires_at, id
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)
+		DELETE FROM webhook_receipts r
+		USING expired e
+		WHERE r.id = e.id`, before.UTC(), webhookReceiptDeleteBatchSize)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired webhook receipts: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 func (s *PGStore) CreateRunPluginSnapshots(ctx context.Context, snapshots []domain.RunPluginSnapshot) error {
 	if len(snapshots) == 0 {
@@ -886,6 +975,99 @@ func (s *PGStore) ListRunPluginSnapshots(ctx context.Context, runID string) ([]d
 	}
 	return out, rows.Err()
 }
+
+// DeleteUnreferencedPluginSecretVersions retains exactly the encrypted history
+// needed to launch or continue a non-terminal run. Terminal snapshots retain
+// their immutable audit identifiers after their historical ciphertext is gone.
+func (s *PGStore) DeleteUnreferencedPluginSecretVersions(ctx context.Context, limit int) (credentialVersions, providerVersions int64, err error) {
+	if limit <= 0 {
+		return 0, 0, nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("delete unreferenced plugin secret versions: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	credentialVersions, providerVersions, err = deleteUnreferencedPluginSecretVersionsTx(ctx, tx, limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return 0, 0, fmt.Errorf("delete unreferenced plugin secret versions: commit: %w", err)
+	}
+	return credentialVersions, providerVersions, nil
+}
+
+func deleteUnreferencedPluginSecretVersionsTx(ctx context.Context, tx pgx.Tx, limit int) (credentialVersions, providerVersions int64, err error) {
+	credentialTag, err := tx.Exec(ctx, `
+		WITH candidates AS (
+			SELECT cv.id
+			FROM plugin_credential_versions cv
+			WHERE NOT EXISTS (
+				SELECT 1 FROM plugin_installations pi
+				WHERE pi.credential_version_id=cv.id
+			)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM run_plugin_snapshots s
+				JOIN runs r ON r.id=s.run_id
+				WHERE s.credential_version_id=cv.id
+				  AND (
+					r.status NOT IN ('succeeded','failed','canceled')
+					OR EXISTS (
+						SELECT 1
+						FROM automation_kanban_claims c
+						WHERE c.run_id=r.id AND c.writeback_at IS NULL
+					)
+				  )
+			)
+			ORDER BY cv.created_at,cv.id
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		DELETE FROM plugin_credential_versions cv
+		USING candidates c
+		WHERE cv.id=c.id`, limit)
+	if err != nil {
+		return 0, 0, fmt.Errorf("delete unreferenced plugin credential versions: %w", err)
+	}
+
+	providerTag, err := tx.Exec(ctx, `
+		WITH candidates AS (
+			SELECT pv.provider,pv.config_revision
+			FROM provider_config_versions pv
+			WHERE NOT EXISTS (
+				SELECT 1 FROM provider_configs pc
+				WHERE pc.provider=pv.provider AND pc.config_revision=pv.config_revision
+			)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM run_plugin_snapshots s
+				JOIN runs r ON r.id=s.run_id
+				WHERE s.provider=pv.provider
+				  AND s.provider_config_revision=pv.config_revision
+				  AND (
+					r.status NOT IN ('succeeded','failed','canceled')
+					OR EXISTS (
+						SELECT 1
+						FROM automation_kanban_claims c
+						WHERE c.run_id=r.id AND c.writeback_at IS NULL
+					)
+				  )
+			)
+			ORDER BY pv.provider,pv.config_revision
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		DELETE FROM provider_config_versions pv
+		USING candidates c
+		WHERE pv.provider=c.provider AND pv.config_revision=c.config_revision`, limit)
+	if err != nil {
+		return 0, 0, fmt.Errorf("delete unreferenced provider config versions: %w", err)
+	}
+	return credentialTag.RowsAffected(), providerTag.RowsAffected(), nil
+}
+
 func (s *PGStore) CreatePluginAuditEvent(ctx context.Context, event *domain.PluginAuditEvent) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO plugin_audit_events(id,project_id,installation_id,actor_user_id,event_type,detail,created_at)VALUES($1,$2,$3,$4,$5,$6,$7)`, event.ID, event.ProjectID, nullStr(event.InstallationID), nullStr(event.ActorUserID), event.EventType, event.Detail, event.CreatedAt)
 	if err != nil {

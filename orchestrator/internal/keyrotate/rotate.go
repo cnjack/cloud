@@ -29,6 +29,7 @@ var encryptedColumns = []encryptedColumn{
 	{table: "provider_configs", key: "provider", column: "webhook_secret_enc"},
 	{table: "plugin_installations", key: "id", column: "access_token_enc"},
 	{table: "plugin_installations", key: "id", column: "refresh_token_enc"},
+	{table: "webhook_bindings", key: "service_id", column: "secret_enc"},
 }
 
 type Result struct {

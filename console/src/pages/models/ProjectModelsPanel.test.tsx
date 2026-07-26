@@ -44,7 +44,12 @@ function makeClient(seed: ModelProvider[] = [seedProvider]): { client: ApiClient
     listProjectModelProviders: async () => providers.map(clone),
     listProjectModels: async () => ({
       models: providers.flatMap((p) => p.models).filter((m) => m.enabled !== false)
-        .map((m) => ({ id: m.id, name: m.name, model_name: m.runtime_model_name })),
+        .map((m) => ({
+          id: m.id,
+          name: m.name,
+          model_name: m.runtime_model_name,
+          capabilities: m.capabilities,
+        })),
       env_fallback: false,
     }),
     createProjectModelProvider: async (_pid, input) => {

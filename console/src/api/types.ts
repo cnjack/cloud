@@ -348,6 +348,29 @@ export interface Service {
   created_at: string;
 }
 
+/** A browser-safe branch option from a Service's bound repository plugin. */
+export interface ServiceBranch {
+  name: string;
+  protected?: boolean;
+  default: boolean;
+}
+
+export interface RunAttachmentStage {
+  id: string;
+  project_id: string;
+  display_name: string;
+  content_type?: string;
+  size_bytes: number;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface RunAttachmentIntent {
+  stage: RunAttachmentStage;
+  upload_url: string;
+  expires_at: string;
+}
+
 /** Result of an explicit OAuth-backed provider webhook synchronization. The
  * endpoint is returned for operator visibility; no credential or secret is ever
  * exposed to the browser. */
@@ -355,66 +378,6 @@ export interface ServiceWebhookSetup {
   provider: string;
   endpoint: string;
   status: 'synced';
-}
-
-export type AutomationEvent = 'opened' | 'ready' | 'synchronize' | 'reopened';
-
-/** A persisted, service-scoped provider-event PR review policy. */
-export interface Automation {
-  id: string;
-  service_id: string;
-  name: string;
-  instructions: string;
-  trigger_type: 'pr_review';
-  model_id: string;
-  events: AutomationEvent[];
-  base_branch: string;
-  include_drafts: boolean;
-  enabled: boolean;
-  last_triggered_at?: string;
-  last_run_id?: string;
-  last_error?: string;
-  created_by?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WebhookBinding {
-  service_id: string;
-  provider: GitProvider;
-  endpoint: string;
-  status: 'pending' | 'active' | 'error';
-  last_synced_at?: string;
-  last_delivery_at?: string;
-  last_delivery_status?: 'accepted' | 'duplicate' | 'ignored' | 'error' | string;
-  last_error?: string;
-  updated_at: string;
-}
-
-export interface AutomationList {
-  automations: Automation[];
-  webhook_binding: WebhookBinding | null;
-}
-
-export interface CreateAutomationInput {
-  name: string;
-  instructions: string;
-  trigger_type: 'pr_review';
-  model_id: string;
-  events: AutomationEvent[];
-  base_branch: string;
-  include_drafts: boolean;
-  enabled?: boolean;
-}
-
-export interface UpdateAutomationInput {
-  name?: string;
-  instructions?: string;
-  model_id?: string;
-  events?: AutomationEvent[];
-  base_branch?: string;
-  include_drafts?: boolean;
-  enabled?: boolean;
 }
 
 export interface Project {
@@ -861,108 +824,6 @@ export interface SystemInfo {
   };
 }
 
-/* ---- kanban links (Feature E) --------------------------------------------- */
-
-/**
- * One binding of a jtype board column to a project/service. A card dragged into
- * `trigger_column` dispatches an agent run; a finished run is written back as a
- * card comment and (when `done_column` is set) the card is moved there. Mirrors
- * the orchestrator kanbanLinkView.
- *
- * `token_set` (F6 / D25) reports whether the link carries its own encrypted jtype
- * PAT; since D36 there is no cluster fallback, so false means the link is dead
- * until its owner sets a token. The token itself is never returned.
- * `credential_status` is the server-derived runtime credential state (P1):
- * "missing" means the poller/writeback skip this link fail-visibly until a
- * token is set — the UI must surface it as an error.
- */
-export type KanbanCredentialStatus = 'per_link' | 'missing';
-
-/**
- * D29 board-validation state (independent of credential_status): whether the
- * link's board_ref/columns have been checked against a live jtype board.
- *  - `ok`          — resolved + columns validated (at create, or by the poller's
- *                    first runtime check). No board is dead-linked.
- *  - `unvalidated` — created without a credential (the bootstrap "soft create"),
- *                    so it has never been checked. The console shows a loud
- *                    "columns not validated" state prompting a token connect.
- *  - `invalid`     — a runtime check RAN and FAILED (board gone/renamed, columns
- *                    changed). The poller is skipping the link — surfaced loudly.
- * Optional so pre-D29 fixtures/rows (which backfill to `ok`) still type-check;
- * the UI treats an absent value as `ok`.
- */
-export type KanbanBoardStatus = 'ok' | 'unvalidated' | 'invalid';
-
-export interface KanbanLink {
-  id: string;
-  workspace_id: string;
-  board_ref: string;
-  project_id: string;
-  service_id: string;
-  trigger_column: string;
-  done_column?: string;
-  enabled: boolean;
-  token_set: boolean;
-  credential_status: KanbanCredentialStatus;
-  /**
-   * D29: the board-validation state (see KanbanBoardStatus). Absent = `ok` (a
-   * pre-D29 row backfilled by the 0024 migration). Independent of
-   * credential_status: a link can be `per_link` yet `invalid` (token fine, board
-   * renamed), or `unvalidated` with no credential at all.
-   */
-  board_status?: KanbanBoardStatus;
-  /**
-   * D29: the board's human title, captured server-side at validation (the stored
-   * board_ref is the opaque `b_…` config id after canonicalization, so the row
-   * shows this instead). Absent for a soft-created/unvalidated link whose board
-   * hasn't been resolved yet.
-   */
-  board_title?: string;
-  /**
-   * D28: when this link's token was minted by the "Connect with jtype" device
-   * flow, its 90-day expiry (device-flow tokens carry no refresh). NULL/omitted
-   * for a manual PAT / no credential (unknown expiry) — the UI shows an expiry
-   * badge only when this is set.
-   */
-  token_expires_at?: string;
-  created_at: string;
-}
-
-/* ---- kanban discovery pickers (D29) --------------------------------------- */
-
-/**
- * GET /api/v1/projects/{id}/kanban/jtype/workspaces — one of the caller's jtype
- * workspaces, for the create-link workspace picker. The effective token is used
- * server-side and NEVER serialized here.
- */
-export interface JtypeWorkspace {
-  id: string;
-  name: string;
-}
-
-/** One column of a jtype board (its stable key + human name). */
-export interface JtypeBoardColumn {
-  key: string;
-  name: string;
-}
-
-/**
- * GET /api/v1/projects/{id}/kanban/jtype/boards?workspace=<id> — one `.board`
- * document in a workspace, for the board picker.
- *  - `id`   — the board's `config.id` (`b_…`), the value the server persists as
- *             board_ref after canonicalization (the console never submits it).
- *  - `ref`  — the board document's relativePath (e.g. `jtype.board`) — what the
- *             create request submits; the server resolves + canonicalizes it.
- *  - `title`— the friendly board name shown in the picker.
- *  - `columns` — the board's columns, powering the trigger/done column selects.
- */
-export interface JtypeBoard {
-  id: string;
-  ref: string;
-  title: string;
-  columns: JtypeBoardColumn[];
-}
-
 /* ---- kanban board embed (D31) --------------------------------------------- */
 
 /**
@@ -970,11 +831,8 @@ export interface JtypeBoard {
  * of a project's kanban links that gates the "Kanban" header button and feeds
  * the board-embed modal's link selector.
  *
- * Deliberately NOT the owner-only `KanbanLink` (which serializes credential
- * posture — `token_set`, `credential_status`, `token_expires_at`): a
- * member-visible button must not 403 for members nor leak credential state to
- * non-owners. This view therefore carries NO token/credential fields — only the
- * metadata the embed needs to open a board.
+ * This is derived from the enabled Service Kanban Automation. It carries only
+ * board metadata; plugin credentials remain server-side.
  */
 export interface BoardEmbedLink {
   id: string;
@@ -984,223 +842,13 @@ export interface BoardEmbedLink {
    * canonicalization — NOT a relativePath. The modal resolves this to the
    * board's `.board` relativePath (via the member+ document proxy) before
    * handing it to `<JTypeBoard boardRef>` (which resolves by name/path).
-   */
+  */
   board_ref: string;
   board_title?: string;
-  board_status?: KanbanBoardStatus;
   service_id: string;
   trigger_column: string;
   done_column?: string;
   enabled: boolean;
-}
-
-/* ---- cluster kanban config (D27, slimmed by D36) ---------------------------- */
-
-/**
- * GET /api/v1/system/kanban — the cluster-admin view of the cluster jtype
- * config. Since D36 the config is JUST the jtype base URL (an infrastructure
- * fact): there is no cluster-level token, so the view carries no credential
- * fields. Kanban credentials are entirely per-link (D25).
- *
- * `base_url` describes the DB OVERRIDE row ("" when there is no DB row);
- * `source` names which layer is effective; the `effective_*` fields describe
- * the RESOLVED config the poller/writeback actually use.
- * Mirrors the orchestrator kanbanConfigView.
- */
-export interface KanbanClusterConfig {
-  /** The DB override's base URL ("" when there is no DB row). */
-  base_url: string;
-  source: 'db' | 'env' | 'none';
-  effective_enabled: boolean;
-  effective_base_url: string;
-  poll_interval: string;
-  /**
-   * D27, fail-visible: set (omitempty) only when the resolution FAILED. The UI
-   * must surface it loudly, never render a bare "off" for a misconfiguration.
-   */
-  reason?: string;
-}
-
-/**
- * PUT /api/v1/system/kanban body (cluster-admin). `base_url` is required
- * (validated http(s); 400 otherwise) and is the ONLY field (D36).
- */
-export interface UpdateKanbanConfigInput {
-  base_url: string;
-}
-
-/**
- * POST /api/v1/projects/{id}/kanban/links body (owner). project_id comes from the
- * path. `token` is the optional per-link jtype PAT — write-only (never echoed);
- * omit it to create the link without a credential (soft/unvalidated, D30 — set
- * one later via PATCH or "Connect with jtype").
- */
-export interface CreateKanbanLinkInput {
-  workspace_id: string;
-  board_ref: string;
-  service_id: string;
-  trigger_column: string;
-  done_column?: string;
-  token?: string;
-  /**
-   * D37: the SEALED blob returned by a project-surface connect (ciphertext,
-   * never plaintext). The server verifies it decrypts and stores it verbatim.
-   * Exactly one of token / token_enc may be set.
-   */
-  token_enc?: string;
-  /**
-   * D37: the device-flow expiry reported by the project-surface connect
-   * (RFC3339, display metadata). Accepted only alongside token_enc.
-   */
-  token_expires_at?: string;
-}
-
-/* ---- kanban "Connect with jtype" OAuth device flow (D28) ------------------ */
-
-/**
- * The start of a "Connect with jtype" device flow (RFC 8628). Returned by
- * POST …/kanban/links/{id}/connect (per-link; the cluster-surface flow was
- * removed in D36).
- *
- * `user_code` is the short 6-digit code the user confirms in jtype's browser
- * page; `verification_uri_complete` deep-links there with the code prefilled.
- * The `device_code` (the SECRET that can mint the token) is DELIBERATELY WITHHELD
- * — the orchestrator holds it in-memory keyed by the opaque `connect_id`, and the
- * console only ever polls with `connect_id`. `expires_in` / `interval` are the
- * jtype-advertised flow lifetime and minimum poll cadence (seconds).
- */
-export interface KanbanConnectStart {
-  connect_id: string;
-  user_code: string;
-  verification_uri: string;
-  verification_uri_complete: string;
-  expires_in: number;
-  interval: number;
-}
-
-/**
- * The state of an in-flight (or just-finished) device flow, returned by
- * GET …/kanban/connect/{connectID}. The console polls this while `pending` and
- * stops on any terminal state:
- *   - `complete`   — the token was minted, sealed server-side into the target
- *                    row, and `token_set` is now true (`token_expires_at` gives
- *                    its 90-day expiry). The plaintext token is NEVER returned.
- *   - `expired`    — the flow lapsed (also how a user *denial* eventually reads,
- *                    since jtype's device page has no explicit Deny) — reconnect.
- *   - `denied`     — defensive: jtype never emits access_denied today, but the
- *                    contract carries it so the console can surface it if it does.
- *   - `unsupported`— this jtype deployment lacks the OAuth device routes; the
- *                    user must paste a token instead (fail-visible fallback).
- * A 404 `connect_expired` on poll (e.g. after an orchestrator restart dropped the
- * in-memory flow) is treated by the UI exactly like `expired`.
- */
-export interface KanbanConnectStatus {
-  status: 'pending' | 'complete' | 'expired' | 'denied' | 'unsupported';
-  token_set: boolean;
-  token_expires_at?: string;
-  /**
-   * D37: the SEALED (AES-256-GCM, base64) minted token, returned ONLY by the
-   * project-surface flow on complete — ciphertext, never plaintext. The console
-   * holds it in memory to drive discovery and submits it back with create-link.
-   */
-  token_enc?: string;
-}
-
-/* ---- schedules (F11 / D24) ------------------------------------------------ */
-
-/**
- * A service-level cron trigger. On each matching tick the schedule poller
- * dispatches a headless agent run (origin=schedule) against the service, using
- * the service's default model. Mirrors the orchestrator domain.Schedule.
- *
- * `cron_expr` is a standard 5-field expression (minute hour dom month dow).
- * `last_fired_at` is when the poller last claimed a window (null = never).
- * `last_error` (fail-visible, P1) is why the most recent due window was ABANDONED
- * without dispatching — no/ambiguous model, or a git host no longer allowed. The
- * UI surfaces it as a loud badge; it clears on the next successful dispatch.
- */
-export interface Schedule {
-  id: string;
-  service_id: string;
-  cron_expr: string;
-  prompt: string;
-  enabled: boolean;
-  last_fired_at?: string | null;
-  last_error?: string;
-  created_by?: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-/** POST /api/v1/services/{id}/schedules body (owner). enabled defaults to true. */
-export interface CreateScheduleInput {
-  cron_expr: string;
-  prompt: string;
-  enabled?: boolean;
-}
-
-/**
- * PATCH /api/v1/schedules/{id} body (owner). Every field optional — omitted =
- * unchanged; a supplied cron_expr is re-validated server-side.
- */
-export interface UpdateScheduleInput {
-  cron_expr?: string;
-  prompt?: string;
-  enabled?: boolean;
-}
-
-/* ---- integrations (D19 / F5) ---------------------------------------------- */
-
-/**
- * A project-level git host binding with a BOT service credential. A service bound
- * to it performs every git operation as this bot identity (the PR body annotates
- * the real trigger). `token_set` reports whether a sealed token is stored — the
- * token itself is NEVER returned. `bot_username` is the token's account, discovered
- * from the provider at create/rotate time. Mirrors the orchestrator integrationView.
- */
-export interface Integration {
-  id: string;
-  project_id: string;
-  name: string;
-  provider: GitProvider;
-  host: string;
-  cred_type: 'pat' | 'oauth' | 'github_app';
-  bot_username: string;
-  token_set: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-/**
- * POST /api/v1/projects/{id}/integrations body (owner). `token` is the write-only
- * bot credential (never echoed). The server verifies it against the provider
- * (discovering bot_username) and validates `host` against the cluster allowlist
- * (400 host_not_allowed). cred_type defaults to "pat".
- */
-export interface CreateIntegrationInput {
-  name?: string;
-  provider: GitProvider;
-  host: string;
-  cred_type?: Integration['cred_type'];
-  token: string;
-}
-
-/**
- * PATCH /api/v1/integrations/{id} body (owner). `name` renames; `token` rotates
- * the credential (re-verified; refreshes bot_username). host/provider are
- * immutable. token is write-only and cannot be cleared (delete to remove).
- */
-export interface UpdateIntegrationInput {
-  name?: string;
-  token?: string;
-}
-
-export interface IntegrationsEnvelope {
-  integrations: Integration[];
-}
-
-export interface ProviderReposEnvelope {
-  repos: ProviderRepo[];
 }
 
 /* ---- project-scoped API keys (F12 / D24) ---------------------------------- */
@@ -1412,6 +1060,7 @@ export interface ProjectModel {
   id: string;
   name: string;
   model_name: string;
+  capabilities: ModelCapabilities;
 }
 
 /**
@@ -1507,6 +1156,8 @@ export interface UpdateProjectInput {
 
 export interface CreateRunInput {
   prompt: string;
+  /** Optional git base branch for this autonomous run. */
+  base_branch?: string;
   /**
    * The composer's optional model pick (D21). Omitted => the server resolves via
    * the service default / the project's sole granted model. Must be in the
@@ -1524,6 +1175,12 @@ export interface CreateRunInput {
    * with session: true (the server 400s otherwise). Omitted = full_access.
    */
   permission_mode?: 'approval';
+	/** Per-run OpenAI-compatible reasoning depth. */
+	model_effort?: 'auto' | 'low' | 'medium' | 'high';
+	/** Establish the task prompt as jcode's persistent goal at launch. */
+	goal_mode?: boolean;
+  /** Opaque, already-uploaded attachment stages consumed by this Run. */
+  attachment_stage_ids?: string[];
 }
 
 /**

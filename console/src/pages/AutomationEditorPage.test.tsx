@@ -88,6 +88,7 @@ describe('AutomationEditorPage', () => {
     const { create } = renderEditor();
     await screen.findByRole('heading', { name: 'Create Automation' });
 
+    fireEvent.click(screen.getByText('More events'));
     const unsupported = screen.getByLabelText(/pull_request.ready/i) as HTMLInputElement;
     expect(unsupported.disabled).toBe(true);
     expect((screen.getByLabelText('Path pattern') as HTMLInputElement).disabled).toBe(false);
@@ -121,5 +122,20 @@ describe('AutomationEditorPage', () => {
     expect(screen.getByRole('button', { name: 'SCM' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Cron' })).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('keeps common SCM events visible and places the complete low-frequency matrix behind More events', async () => {
+    renderEditor();
+    await screen.findByRole('heading', { name: 'Create Automation' });
+
+    expect(screen.getByLabelText('push.updated')).toBeTruthy();
+    expect(screen.getByLabelText('pull_request.opened')).toBeTruthy();
+    expect(screen.getByLabelText('issue.opened')).toBeTruthy();
+    expect(screen.getByLabelText('issue.updated')).toBeTruthy();
+    expect(screen.queryByLabelText('release.deleted')).toBeNull();
+
+    fireEvent.click(screen.getByText('More events'));
+    expect(screen.getByLabelText('release.deleted')).toBeTruthy();
+    expect(screen.getByLabelText('issue.closed')).toBeTruthy();
   });
 });

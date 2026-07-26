@@ -766,291 +766,9 @@ describe('mockClient — project guardrails (Feature B)', () => {
   });
 });
 
-describe('mockClient — cluster kanban config (D27)', () => {
-  it('roundtrips GET/PUT/DELETE and reflects the effective config into getSystem', async () => {
-    const client = createMockClient();
 
-    // Initially off: no DB row and no env fallback in the demo rig ⇒ source none.
-    const g0 = client.getKanbanConfig();
-    await flush(200);
-    const c0 = await g0;
-    expect(c0.source).toBe('none');
-    expect(c0.effective_enabled).toBe(false);
-    expect(c0.base_url).toBe('');
-
-    // getSystem agrees the integration is off.
-    const s0 = client.getSystem();
-    await flush(200);
-    expect((await s0).kanban?.enabled).toBe(false);
-
-    // PUT base_url ⇒ source flips to db, effective on (D36: base URL only — no
-    // cluster token fields on the view).
-    const u1 = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
-    await flush(200);
-    const c1 = await u1;
-    expect(c1.source).toBe('db');
-    expect(c1.base_url).toBe('http://jtype:13345');
-    expect(c1.effective_enabled).toBe(true);
-    expect(JSON.stringify(c1)).not.toContain('token');
-
-    // getSystem now reflects the mutable config + its source (runtime activation).
-    const s1 = client.getSystem();
-    await flush(200);
-    const sys1 = await s1;
-    expect(sys1.kanban?.enabled).toBe(true);
-    expect(sys1.kanban?.source).toBe('db');
-    expect(sys1.kanban?.base_url).toBe('http://jtype:13345');
-
-    // base_url updates.
-    const u2 = client.updateKanbanConfig({ base_url: 'http://jtype2:13345' });
-    await flush(200);
-    const c2 = await u2;
-    expect(c2.base_url).toBe('http://jtype2:13345');
-
-    // An invalid base_url is a typed 400 and leaves state untouched.
-    const bad = client
-      .updateKanbanConfig({ base_url: 'not-a-url' })
-      .then(() => ({ ok: true as const }), (e) => ({ ok: false as const, err: e }));
-    await flush(200);
-    const badRes = await bad;
-    expect(badRes.ok).toBe(false);
-    if (!badRes.ok) {
-      expect(badRes.err).toBeInstanceOf(ApiError);
-      expect((badRes.err as ApiError).status).toBe(400);
-    }
-
-    // DELETE drops the override ⇒ back to source none / off.
-    const d = client.deleteKanbanConfig();
-    await flush(200);
-    const c4 = await d;
-    expect(c4.source).toBe('none');
-    expect(c4.effective_enabled).toBe(false);
-    const s2 = client.getSystem();
-    await flush(200);
-    expect((await s2).kanban?.enabled).toBe(false);
-  });
-});
-
-describe('mockClient — kanban "Connect with jtype" device flow (D28; per-link only, D36)', () => {
-  it('per-link: connect seals a token and flips credential_status to per_link', async () => {
-    const client = createMockClient();
-    // Cluster integration must be effective for a per-link connect.
-    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
-    await flush(200);
-    await u;
-
-    const cp = client.createProject({ name: 'demo' });
-    await flush(500);
-    const project = await cp;
-    const cs = client.createService(project.id, {
-      name: 'default',
-      repo_url: 'https://gitea.local/acme/demo.git',
-      default_branch: 'main',
-    });
-    await flush(500);
-    const svc = await cs;
-
-    // Create the link with a BLANK token (create-then-connect) ⇒ missing.
-    const cl = client.createProjectKanbanLink(project.id, {
-      workspace_id: 'ws',
-      board_ref: 'b',
-      service_id: svc.id,
-      trigger_column: 'ai',
-    });
-    await flush(200);
-    const link = await cl;
-    expect(link.credential_status).toBe('missing');
-
-    // Connect and poll to completion.
-    const s = client.startLinkConnect(project.id, link.id);
-    await flush(200);
-    const start = await s;
-    expect(start.user_code).toMatch(/^\d{6}$/);
-    const first = client.pollLinkConnect(project.id, link.id, start.connect_id);
-    await flush(200);
-    expect((await first).status).toBe('pending');
-    const second = client.pollLinkConnect(project.id, link.id, start.connect_id);
-    await flush(200);
-    const done = await second;
-    expect(done.status).toBe('complete');
-
-    // The link now owns its token, with the device-flow expiry.
-    const ll = client.listProjectKanbanLinks(project.id);
-    await flush(200);
-    const links = await ll;
-    expect(links[0]!.credential_status).toBe('per_link');
-    expect(links[0]!.token_set).toBe(true);
-    expect(links[0]!.token_expires_at).toBe(done.token_expires_at);
-
-    // A link that isn't this project's ⇒ 404.
-    const foreign = client
-      .startLinkConnect('other-project', link.id)
-      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
-    await flush(200);
-    const f = await foreign;
-    expect(f.ok).toBe(false);
-    if (!f.ok) expect((f.err as ApiError).status).toBe(404);
-  });
-
-  it('project surface (D37): connect BEFORE the first link, then create with the sealed blob', async () => {
-    const client = createMockClient();
-    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
-    await flush(200);
-    await u;
-    const cp = client.createProject({ name: 'demo' });
-    await flush(500);
-    const project = await cp;
-    const cs = client.createService(project.id, {
-      name: 'default',
-      repo_url: 'https://gitea.local/acme/demo.git',
-      default_branch: 'main',
-    });
-    await flush(500);
-    const svc = await cs;
-
-    // Project-surface flow: pending → complete carries the SEALED blob + expiry.
-    const s = client.startProjectConnect(project.id);
-    await flush(200);
-    const start = await s;
-    expect(start.user_code).toMatch(/^\d{6}$/);
-    const p1 = client.pollProjectConnect(project.id, start.connect_id);
-    await flush(200);
-    expect((await p1).status).toBe('pending');
-    const p2 = client.pollProjectConnect(project.id, start.connect_id);
-    await flush(200);
-    const done = await p2;
-    expect(done.status).toBe('complete');
-    expect(done.token_enc).toBeTruthy();
-    expect(done.token_expires_at).toBeTruthy();
-
-    // The blob drives discovery with NO link in the project.
-    const ws = client.listJtypeWorkspaces(project.id, done.token_enc);
-    await flush(200);
-    expect((await ws).length).toBeGreaterThan(0);
-
-    // Create with the blob: the link is per_link + validated, with the expiry.
-    const cl = client.createProjectKanbanLink(project.id, {
-      workspace_id: 'ws_team',
-      board_ref: 'jtype.board',
-      service_id: svc.id,
-      trigger_column: 'ai',
-      token_enc: done.token_enc,
-      token_expires_at: done.token_expires_at,
-    });
-    await flush(200);
-    const link = await cl;
-    expect(link.credential_status).toBe('per_link');
-    expect(link.board_status).toBe('ok');
-    expect(link.token_expires_at).toBe(done.token_expires_at);
-  });
-});
-
-describe('mockClient — kanban discovery pickers (D29)', () => {
-  // D36: discovery borrows a per-link token from one of the project's existing
-  // links, so a project with no token-bearing link gets kanban_token_required.
-  async function seedTokenedLink(client: ReturnType<typeof createMockClient>, projectId: string) {
-    const cs = client.createService(projectId, {
-      name: 'default',
-      repo_url: 'https://gitea.local/acme/demo.git',
-      default_branch: 'main',
-    });
-    await flush(500);
-    const svc = await cs;
-    const cl = client.createProjectKanbanLink(projectId, {
-      workspace_id: 'ws_team',
-      board_ref: 'jtype.board',
-      service_id: svc.id,
-      trigger_column: 'ai',
-      token: 'pat',
-    });
-    await flush(200);
-    await cl;
-  }
-
-  it('lists workspaces + boards-with-columns once the integration is effective AND a link has a token', async () => {
-    const client = createMockClient();
-    const cp = client.createProject({ name: 'demo' });
-    await flush(500);
-    const project = await cp;
-
-    // Integration off ⇒ discovery is fail-visible (typed 409), never an empty 200.
-    const off = client
-      .listJtypeWorkspaces(project.id)
-      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
-    await flush(200);
-    const offR = await off;
-    expect(offR.ok).toBe(false);
-    if (!offR.ok) {
-      expect((offR.err as ApiError).status).toBe(409);
-      expect(apiErrorCode(offR.err)).toBe('kanban_not_configured');
-    }
-
-    // Turn the cluster integration on — but with NO token-bearing link yet,
-    // discovery is still a typed 409 (D36: kanban_token_required).
-    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
-    await flush(200);
-    await u;
-    const noTok = client
-      .listJtypeWorkspaces(project.id)
-      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
-    await flush(200);
-    const noTokR = await noTok;
-    expect(noTokR.ok).toBe(false);
-    if (!noTokR.ok) {
-      expect((noTokR.err as ApiError).status).toBe(409);
-      expect(apiErrorCode(noTokR.err)).toBe('kanban_token_required');
-    }
-
-    // A link with a per-link token unblocks discovery.
-    await seedTokenedLink(client, project.id);
-
-    const ws = client.listJtypeWorkspaces(project.id);
-    await flush(200);
-    const workspaces = await ws;
-    expect(workspaces.length).toBeGreaterThan(0);
-    expect(workspaces[0]).toHaveProperty('id');
-    expect(workspaces[0]).toHaveProperty('name');
-
-    const bs = client.listJtypeBoards(project.id, workspaces[0]!.id);
-    await flush(200);
-    const boards = await bs;
-    expect(boards.length).toBeGreaterThan(0);
-    const board = boards[0]!;
-    // A board carries its config id, submittable ref, title, and columns.
-    expect(board.id).toMatch(/^b_/);
-    expect(board.ref).toMatch(/\.board$/);
-    expect(board.columns.length).toBeGreaterThan(0);
-    expect(board.columns[0]).toHaveProperty('key');
-    expect(board.columns[0]).toHaveProperty('name');
-
-    // No token ever crosses the wire in a discovery response.
-    expect(JSON.stringify(workspaces)).not.toContain('token');
-    expect(JSON.stringify(boards)).not.toContain('token');
-  });
-
-  it('an unknown workspace id is a typed workspace_not_found (not a silent empty list)', async () => {
-    const client = createMockClient();
-    const cp = client.createProject({ name: 'demo' });
-    await flush(500);
-    const project = await cp;
-    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
-    await flush(200);
-    await u;
-    await seedTokenedLink(client, project.id);
-
-    const r = client
-      .listJtypeBoards(project.id, 'ws_does_not_exist')
-      .then(() => ({ ok: true as const }), (err) => ({ ok: false as const, err }));
-    await flush(200);
-    const res = await r;
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect((res.err as ApiError).status).toBe(400);
-      expect(apiErrorCode(res.err)).toBe('workspace_not_found');
-    }
-  });
-
-  it('a soft-created (tokenless) link is board_status "unvalidated"; a tokened link is "ok"', async () => {
+describe('mockClient — kanban board embed (Service Kanban)', () => {
+  async function projectWithServiceKanban() {
     const client = createMockClient();
     const cp = client.createProject({ name: 'demo' });
     await flush(500);
@@ -1062,62 +780,29 @@ describe('mockClient — kanban discovery pickers (D29)', () => {
     });
     await flush(500);
     const svc = await cs;
-
-    const soft = client.createProjectKanbanLink(project.id, {
-      workspace_id: 'ws_team',
+    const install = client.startPluginInstall(project.id, 'jtype', {
+      consent_accepted: true,
+      consent_version: 'v1',
+      scopes: ['kanban:read', 'kanban:write'],
+    });
+    await flush(200);
+    await install;
+    const plugins = client.listProjectPlugins(project.id);
+    await flush(200);
+    const plugin = (await plugins).find((item) => item.provider === 'jtype');
+    expect(plugin?.id).toBeTruthy();
+    const binding = client.putServiceKanban(svc.id, {
+      installation_id: plugin!.id!,
       board_ref: 'jtype.board',
-      service_id: svc.id,
-      trigger_column: 'ai',
+      enabled: true,
     });
     await flush(200);
-    expect((await soft).board_status).toBe('unvalidated');
-
-    const hard = client.createProjectKanbanLink(project.id, {
-      workspace_id: 'ws_team',
-      board_ref: 'Jcode.board',
-      service_id: svc.id,
-      trigger_column: 'agent',
-      token: 'jtype-pat',
-    });
-    await flush(200);
-    const link = await hard;
-    expect(link.board_status).toBe('ok');
-    // The discoverable board's title is captured for a friendly row label.
-    expect(link.board_title).toBe('Jcode');
-  });
-});
-
-describe('mockClient — kanban board embed (D31)', () => {
-  async function projectWithTokenedLink() {
-    const client = createMockClient();
-    const u = client.updateKanbanConfig({ base_url: 'http://jtype:13345' });
-    await flush(200);
-    await u;
-    const cp = client.createProject({ name: 'demo' });
-    await flush(500);
-    const project = await cp;
-    const cs = client.createService(project.id, {
-      name: 'default',
-      repo_url: 'https://gitea.local/acme/demo.git',
-      default_branch: 'main',
-    });
-    await flush(500);
-    const svc = await cs;
-    // A tokened link over the discoverable 'jtype.board' (config id b_ab12cd34).
-    const cl = client.createProjectKanbanLink(project.id, {
-      workspace_id: 'ws_team',
-      board_ref: 'jtype.board',
-      service_id: svc.id,
-      trigger_column: 'ai',
-      token: 'jtype-pat',
-    });
-    await flush(200);
-    await cl;
+    await binding;
     return { client, project };
   }
 
-  it('listProjectBoardLinks returns the reduced view (config-id board_ref, no credential fields)', async () => {
-    const { client, project } = await projectWithTokenedLink();
+  it('listProjectBoardLinks derives its reduced view from Service Kanban', async () => {
+    const { client, project } = await projectWithServiceKanban();
     const p = client.listProjectBoardLinks(project.id);
     await flush(200);
     const links = await p;
@@ -1136,7 +821,7 @@ describe('mockClient — kanban board embed (D31)', () => {
   });
 
   it('board document proxy round-trips: the .board doc content carries the config id', async () => {
-    const { client, project } = await projectWithTokenedLink();
+    const { client, project } = await projectWithServiceKanban();
     const dl = client.boardListDocuments(project.id, 'ws_team');
     await flush(200);
     const docs = await dl;
@@ -1153,7 +838,7 @@ describe('mockClient — kanban board embed (D31)', () => {
   });
 
   it('boardSaveDocument acknowledges with a merge status', async () => {
-    const { client, project } = await projectWithTokenedLink();
+    const { client, project } = await projectWithServiceKanban();
     const sd = client.boardSaveDocument(project.id, 'ws_team', {
       relativePath: 'cards/x.md',
       content: '---\nstatus: done\n---\n',
@@ -1162,49 +847,5 @@ describe('mockClient — kanban board embed (D31)', () => {
     const res = await sd;
     expect(res.relativePath).toBe('cards/x.md');
     expect(res.mergeStatus).toBe('accepted');
-  });
-});
-
-describe('mockClient integrations (D19 / F5)', () => {
-  it('creates, lists, rotates and deletes integrations; token is never echoed', async () => {
-    const client = createMockClient();
-    const cp = client.createProject({ name: 'demo' });
-    await flush(500);
-    const project = await cp;
-
-    const ci = client.createIntegration(project.id, {
-      provider: 'gitea',
-      host: 'gitea.example.com',
-      token: 'secret-pat',
-    });
-    await flush(500);
-    const integ = await ci;
-    expect(integ.token_set).toBe(true);
-    expect(integ.bot_username).toBe('gitea-bot');
-    expect(JSON.stringify(integ)).not.toContain('secret-pat');
-
-    const li = client.listIntegrations(project.id);
-    await flush(500);
-    expect((await li).length).toBe(1);
-
-    // A member can build a service off the integration (integration_id set).
-    const cs = client.createService(project.id, {
-      name: 'widget',
-      owner_name: 'acme/widget',
-      integration_id: integ.id,
-      git_mode: 'draft_pr',
-    });
-    await flush(500);
-    const svc = await cs;
-    expect(svc.integration_id).toBe(integ.id);
-    expect(svc.provider).toBe('gitea');
-
-    // Delete unbinds the service.
-    const di = client.deleteIntegration(integ.id);
-    await flush(500);
-    await di;
-    const ls = client.listServices(project.id);
-    await flush(500);
-    expect((await ls).find((s) => s.id === svc.id)?.integration_id ?? null).toBeNull();
   });
 });

@@ -22,6 +22,18 @@ func TestCapabilitiesExposeOnlyProviderSupportedActions(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesForVersionDisablesUnsupportedSelfHostedProvider(t *testing.T) {
+	if got := CapabilitiesForVersion(ProviderGitLab, "17.10.9"); len(got.Capabilities) != 0 {
+		t.Fatalf("old GitLab advertised %d capability families", len(got.Capabilities))
+	}
+	if got := CapabilitiesForVersion(ProviderGitea, "v1.25.0+gitea"); len(got.Capabilities) == 0 {
+		t.Fatal("supported Gitea release lost all capabilities")
+	}
+	if got := CapabilitiesForVersion(ProviderGitea, "not-a-version"); len(got.Capabilities) != 0 {
+		t.Fatal("unparseable self-hosted version must fail closed")
+	}
+}
+
 func TestNormalizeGitHubCommentKeepsWholeBody(t *testing.T) {
 	body := []byte(`{
 	  "action":"created",
@@ -250,7 +262,7 @@ func TestFilterMatchesBranchPathsAndConclusion(t *testing.T) {
 		ExcludePaths: []string{"src/generated/**"},
 		Conclusions:  []string{"failure"},
 	}
-	event := NormalizedSCMEvent{Ref: "refs/heads/main", Conclusion: "failure"}
+	event := NormalizedSCMEvent{Family: FamilyPush, Ref: "refs/heads/main", Conclusion: "failure"}
 	if !filter.Matches(event, []string{"README.md", "src/api/handler.go"}) {
 		t.Fatal("expected matching branch/path/conclusion")
 	}
@@ -260,6 +272,48 @@ func TestFilterMatchesBranchPathsAndConclusion(t *testing.T) {
 	event.Ref = "refs/heads/release"
 	if filter.Matches(event, []string{"src/api/handler.go"}) {
 		t.Fatal("wrong branch matched")
+	}
+}
+
+func TestFilterBranchUsesFamilySpecificTargetAndSafeGlob(t *testing.T) {
+	tests := []struct {
+		name  string
+		event NormalizedSCMEvent
+		match bool
+	}{
+		{
+			name:  "push head matches glob",
+			event: NormalizedSCMEvent{Family: FamilyPush, Ref: "refs/heads/release/2026"},
+			match: true,
+		},
+		{
+			name:  "pull request target matches regardless of source",
+			event: NormalizedSCMEvent{Family: FamilyPullRequest, Ref: "contributor/topic", BaseRef: "release/2026"},
+			match: true,
+		},
+		{
+			name:  "pull request source alone does not match",
+			event: NormalizedSCMEvent{Family: FamilyPullRequest, Ref: "release/2026", BaseRef: "main"},
+			match: false,
+		},
+		{
+			name:  "check head matches",
+			event: NormalizedSCMEvent{Family: FamilyCheck, Ref: "release/2026"},
+			match: true,
+		},
+		{
+			name:  "family without branch fails closed",
+			event: NormalizedSCMEvent{Family: FamilyIssue, Ref: "release/2026"},
+			match: false,
+		},
+	}
+	filter := Filter{Branch: "release/*"}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := filter.Matches(tt.event, nil); got != tt.match {
+				t.Fatalf("Matches=%v want %v for %+v", got, tt.match, tt.event)
+			}
+		})
 	}
 }
 

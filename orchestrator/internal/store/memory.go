@@ -45,6 +45,7 @@ type MemStore struct {
 	pluginKanbanClaims       map[string]domain.PluginKanbanClaim
 	pluginCronTriggers       map[string]domain.CronTrigger
 	webhookReceipts          map[string]domain.WebhookReceipt // provider|delivery id
+	webhookReceiptDigests    map[string]string                // provider|authenticated payload digest -> receipt key
 	runPluginSnapshots       map[string]map[string]domain.RunPluginSnapshot
 	pluginAuditEvents        map[string]domain.PluginAuditEvent
 	clusterSettings          *domain.ClusterSettings
@@ -68,6 +69,8 @@ type MemStore struct {
 	deviceCommands           map[string]domain.DeviceCommand         // keyed by command id
 	devicePairings           map[string]domain.DevicePairing         // keyed by pairing id
 	deviceOffers             map[string]domain.DevicePairingOffer    // keyed by offer id
+	attachmentStages         map[string]domain.AttachmentStage
+	runAttachments           map[string][]domain.RunAttachment
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -100,6 +103,7 @@ func NewMemStore() *MemStore {
 		pluginKanbanClaims:       map[string]domain.PluginKanbanClaim{},
 		pluginCronTriggers:       map[string]domain.CronTrigger{},
 		webhookReceipts:          map[string]domain.WebhookReceipt{},
+		webhookReceiptDigests:    map[string]string{},
 		runPluginSnapshots:       map[string]map[string]domain.RunPluginSnapshot{},
 		pluginAuditEvents:        map[string]domain.PluginAuditEvent{},
 		kanbanLinks:              map[string]domain.KanbanLink{},
@@ -121,6 +125,8 @@ func NewMemStore() *MemStore {
 		deviceCommands:           map[string]domain.DeviceCommand{},
 		devicePairings:           map[string]domain.DevicePairing{},
 		deviceOffers:             map[string]domain.DevicePairingOffer{},
+		attachmentStages:         map[string]domain.AttachmentStage{},
+		runAttachments:           map[string][]domain.RunAttachment{},
 	}
 }
 
@@ -515,17 +521,66 @@ func (m *MemStore) ClearServiceArchive(_ context.Context, serviceID string) erro
 func (m *MemStore) CreateRun(_ context.Context, r *domain.Run) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// Older focused store tests seed standalone runs directly; preserve that
-	// convenience while still enforcing the deletion fence whenever the service
-	// aggregate is present (production PG always has the FK).
-	if svc, ok := m.services[r.ServiceID]; ok && svc.DeletingAt != nil {
-		return ErrServiceDeleting
+	normalizeRunForCreate(r)
+	if err := m.validateRunForCreateLocked(r); err != nil {
+		return err
 	}
+	m.insertRunLocked(r)
+	return nil
+}
+
+// CreateCoalescedRun serializes the supersede+create operation under the same
+// mutex. Validation happens before any old queued Run is changed, matching the
+// rollback behavior of the PG transaction when creation fails.
+func (m *MemStore) CreateCoalescedRun(_ context.Context, coalesceKey string, r *domain.Run) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	coalesceKey = strings.TrimSpace(coalesceKey)
+	if coalesceKey == "" {
+		return errors.New("coalesce key is required")
+	}
+	if r.Status != domain.StatusQueued {
+		return errors.New("coalesced run must be queued")
+	}
+	normalizeRunForCreate(r)
+	r.CoalesceKey = coalesceKey
+	if err := m.validateRunForCreateLocked(r); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for id, existing := range m.runs {
+		if existing.CoalesceKey != coalesceKey || existing.Status != domain.StatusQueued {
+			continue
+		}
+		existing.Status = domain.StatusCanceled
+		existing.Phase = "Superseded"
+		if existing.FinishedAt == nil {
+			finishedAt := now
+			existing.FinishedAt = &finishedAt
+		}
+		m.runs[id] = existing
+	}
+	m.insertRunLocked(r)
+	return nil
+}
+
+func normalizeRunForCreate(r *domain.Run) {
 	if r.Kind == "" {
 		r.Kind = domain.RunKindAgent
 	}
 	if r.Origin == "" {
 		r.Origin = domain.RunOriginAPI
+	}
+}
+
+// validateRunForCreateLocked performs every fallible check before insertion.
+// The caller holds m.mu.
+func (m *MemStore) validateRunForCreateLocked(r *domain.Run) error {
+	// Older focused store tests seed standalone runs directly; preserve that
+	// convenience while still enforcing the deletion fence whenever the service
+	// aggregate is present (production PG always has the FK).
+	if svc, ok := m.services[r.ServiceID]; ok && svc.DeletingAt != nil {
+		return ErrServiceDeleting
 	}
 	// Mirror the PG partial-unique index on origin_comment_id: a redelivered
 	// webhook comment cannot create a second run.
@@ -543,7 +598,217 @@ func (m *MemStore) CreateRun(_ context.Context, r *domain.Run) error {
 			}
 		}
 	}
+	// Preflight all stages before touching either map, keeping the memory store's
+	// behavior atomic like the PG transaction below.
+	for _, id := range r.AttachmentStageIDs {
+		stage, ok := m.attachmentStages[id]
+		if !ok || stage.ProjectID != r.ProjectID || r.TriggeredByUserID == nil || stage.CreatedBy != *r.TriggeredByUserID || stage.UploadState != "uploaded" || !stage.ExpiresAt.After(time.Now().UTC()) {
+			return ErrNotFound
+		}
+	}
+	return nil
+}
+
+// insertRunLocked applies the already-validated mutation. The caller holds
+// m.mu and must have called validateRunForCreateLocked first.
+func (m *MemStore) insertRunLocked(r *domain.Run) {
 	m.runs[r.ID] = *r
+	for _, id := range r.AttachmentStageIDs {
+		stage := m.attachmentStages[id]
+		m.runAttachments[r.ID] = append(m.runAttachments[r.ID], domain.RunAttachment{RunID: r.ID, StageID: stage.ID, ObjectKey: stage.ObjectKey, DisplayName: stage.DisplayName, ContentType: stage.ContentType, SizeBytes: stage.SizeBytes})
+		delete(m.attachmentStages, id)
+	}
+	if r.CopyAttachmentsFrom != "" {
+		for _, attachment := range m.runAttachments[r.CopyAttachmentsFrom] {
+			attachment.RunID = r.ID
+			m.runAttachments[r.ID] = append(m.runAttachments[r.ID], attachment)
+		}
+	}
+}
+
+func (m *MemStore) CreateAttachmentStage(_ context.Context, stage *domain.AttachmentStage) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.attachmentStages[stage.ID]; ok {
+		return ErrAlreadyExists
+	}
+	if stage.UploadState == "" {
+		stage.UploadState = "pending"
+	}
+	var count int
+	var bytes int64
+	now := time.Now().UTC()
+	for _, existing := range m.attachmentStages {
+		if existing.ProjectID == stage.ProjectID && existing.CreatedBy == stage.CreatedBy && existing.ExpiresAt.After(now) {
+			count++
+			bytes += existing.SizeBytes
+		}
+	}
+	if count >= 20 || bytes+stage.SizeBytes > 250<<20 {
+		return ErrAttachmentQuotaExceeded
+	}
+	m.attachmentStages[stage.ID] = *stage
+	return nil
+}
+
+func (m *MemStore) GetAttachmentStage(_ context.Context, id string) (*domain.AttachmentStage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stage, ok := m.attachmentStages[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := stage
+	return &cp, nil
+}
+
+func (m *MemStore) ClaimAttachmentStageUpload(_ context.Context, id, projectID, userID string, at time.Time) (*domain.AttachmentStage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stage, ok := m.attachmentStages[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if stage.ProjectID != projectID || stage.CreatedBy != userID || stage.UploadState != "pending" || !stage.ExpiresAt.After(at) {
+		return nil, ErrConflict
+	}
+	stage.UploadState = "uploading"
+	m.attachmentStages[id] = stage
+	return &stage, nil
+}
+
+func (m *MemStore) MarkAttachmentStageUploaded(_ context.Context, id string, size int64, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stage, ok := m.attachmentStages[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if !stage.ExpiresAt.After(at) || size != stage.SizeBytes || stage.UploadState != "uploading" {
+		return ErrConflict
+	}
+	stage.UploadedAt = &at
+	stage.UploadState = "uploaded"
+	m.attachmentStages[id] = stage
+	return nil
+}
+
+func (m *MemStore) ReleaseAttachmentStageUpload(_ context.Context, id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stage, ok := m.attachmentStages[id]
+	if !ok || stage.UploadState != "uploading" {
+		return false
+	}
+	stage.UploadState = "pending"
+	m.attachmentStages[id] = stage
+	return true
+}
+
+func (m *MemStore) ListRunAttachments(_ context.Context, runID string) ([]domain.RunAttachment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := append([]domain.RunAttachment(nil), m.runAttachments[runID]...)
+	return out, nil
+}
+
+func (m *MemStore) ListExpiredAttachmentStages(_ context.Context, before time.Time, limit int) ([]domain.AttachmentStage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]domain.AttachmentStage, 0, limit)
+	for _, stage := range m.attachmentStages {
+		if !stage.ExpiresAt.After(before) {
+			out = append(out, stage)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ExpiresAt.Before(out[j].ExpiresAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *MemStore) DeleteAttachmentStage(_ context.Context, id string, before time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stage, ok := m.attachmentStages[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if stage.ExpiresAt.After(before) {
+		return ErrConflict
+	}
+	delete(m.attachmentStages, id)
+	return nil
+}
+
+func (m *MemStore) ListOrphanedRunAttachmentObjects(_ context.Context, limit int) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, attachments := range m.runAttachments {
+		for _, attachment := range attachments {
+			if seen[attachment.ObjectKey] {
+				continue
+			}
+			seen[attachment.ObjectKey] = true
+			live := false
+			for runID, refs := range m.runAttachments {
+				if _, ok := m.runs[runID]; !ok {
+					continue
+				}
+				for _, ref := range refs {
+					if ref.ObjectKey == attachment.ObjectKey {
+						live = true
+						break
+					}
+				}
+				if live {
+					break
+				}
+			}
+			if !live {
+				out = append(out, attachment.ObjectKey)
+			}
+		}
+	}
+	sort.Strings(out)
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *MemStore) DeleteOrphanedRunAttachmentObject(_ context.Context, objectKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for runID, refs := range m.runAttachments {
+		if _, ok := m.runs[runID]; ok {
+			for _, ref := range refs {
+				if ref.ObjectKey == objectKey {
+					return ErrConflict
+				}
+			}
+		}
+		kept := refs[:0]
+		for _, ref := range refs {
+			if ref.ObjectKey != objectKey {
+				kept = append(kept, ref)
+			}
+		}
+		if len(kept) == 0 {
+			delete(m.runAttachments, runID)
+		} else {
+			m.runAttachments[runID] = kept
+		}
+	}
 	return nil
 }
 
@@ -2227,6 +2492,38 @@ func (m *MemStore) upsertProviderConfigAndInvalidate(cfg *domain.ProviderConfig,
 	return nil
 }
 
+func (m *MemStore) RecordProviderCapabilities(_ context.Context, provider domain.ProviderKind, version string, capabilities []string, checkedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfg, ok := m.providerConfigs[provider]
+	if !ok {
+		return ErrNotFound
+	}
+	cfg.CapabilityVersion = version
+	cfg.Capabilities = append([]string(nil), capabilities...)
+	cfg.LastHealthError = ""
+	checkedAt = checkedAt.UTC()
+	cfg.LastCapabilityCheck = &checkedAt
+	cfg.UpdatedAt = time.Now().UTC()
+	m.providerConfigs[provider] = cfg
+	return nil
+}
+
+func (m *MemStore) RecordProviderHealthError(_ context.Context, provider domain.ProviderKind, message string, checkedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfg, ok := m.providerConfigs[provider]
+	if !ok {
+		return ErrNotFound
+	}
+	cfg.LastHealthError = message
+	checkedAt = checkedAt.UTC()
+	cfg.LastCapabilityCheck = &checkedAt
+	cfg.UpdatedAt = time.Now().UTC()
+	m.providerConfigs[provider] = cfg
+	return nil
+}
+
 func (m *MemStore) CountProviderConfigImpact(_ context.Context, provider domain.ProviderKind) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2297,12 +2594,17 @@ func (m *MemStore) ListPluginInstallationsByProject(_ context.Context, projectID
 func (m *MemStore) UpdatePluginInstallation(_ context.Context, in *domain.PluginInstallation) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.pluginInstallations[in.ID]; !ok {
+	current, ok := m.pluginInstallations[in.ID]
+	if !ok {
 		return ErrNotFound
 	}
 	cp := clonePluginInstallation(*in)
 	cp.UpdatedAt = time.Now().UTC()
-	m.appendPluginCredentialVersionLocked(&cp)
+	if pluginCredentialMaterialChanged(current, cp) {
+		m.appendPluginCredentialVersionLocked(&cp)
+	} else {
+		cp.CredentialVersionID = current.CredentialVersionID
+	}
 	m.pluginInstallations[in.ID] = cp
 	in.CredentialVersionID = cp.CredentialVersionID
 	return nil
@@ -2395,6 +2697,9 @@ func (m *MemStore) UninstallPlugin(_ context.Context, installationID string) err
 	}
 	m.clearPluginInstallationReferencesLocked(installationID)
 	delete(m.pluginInstallations, installationID)
+	// Mirror the transactional Postgres uninstall cleanup. Active snapshots keep
+	// their launch-time ciphertext; terminal snapshots retain audit IDs only.
+	m.deleteUnreferencedPluginSecretVersionsLocked(pluginSecretVersionDeleteBatchSize)
 	return nil
 }
 
@@ -2888,11 +3193,21 @@ func (m *MemStore) ClaimWebhookReceipt(_ context.Context, r *domain.WebhookRecei
 	if _, ok := m.webhookReceipts[key]; ok {
 		return false, nil
 	}
+	digestKey := ""
+	if r.PayloadDigest != "" && (r.Provider == domain.PluginGitHub || r.Provider == domain.PluginGitea) {
+		digestKey = string(r.Provider) + "|" + r.PayloadDigest
+		if _, ok := m.webhookReceiptDigests[digestKey]; ok {
+			return false, nil
+		}
+	}
 	cp := *r
 	if cp.ReceivedAt.IsZero() {
 		cp.ReceivedAt = time.Now().UTC()
 	}
 	m.webhookReceipts[key] = cp
+	if digestKey != "" {
+		m.webhookReceiptDigests[digestKey] = key
+	}
 	return true, nil
 }
 
@@ -2905,6 +3220,42 @@ func (m *MemStore) CompleteWebhookReceipt(_ context.Context, r *domain.WebhookRe
 	}
 	m.webhookReceipts[key] = *r
 	return nil
+}
+
+// DeleteExpiredWebhookReceipts mirrors the database's expires_at column. The
+// memory store does not materialize that derived column, so it derives expiry
+// from received_at and removes at most the same bounded batch as PostgreSQL.
+func (m *MemStore) DeleteExpiredWebhookReceipts(_ context.Context, before time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	type candidate struct {
+		key     string
+		expires time.Time
+	}
+	candidates := make([]candidate, 0)
+	for key, receipt := range m.webhookReceipts {
+		expires := receipt.ReceivedAt.Add(30 * 24 * time.Hour)
+		if !expires.After(before) {
+			candidates = append(candidates, candidate{key: key, expires: expires})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].expires.Equal(candidates[j].expires) {
+			return candidates[i].key < candidates[j].key
+		}
+		return candidates[i].expires.Before(candidates[j].expires)
+	})
+	if len(candidates) > webhookReceiptDeleteBatchSize {
+		candidates = candidates[:webhookReceiptDeleteBatchSize]
+	}
+	for _, candidate := range candidates {
+		receipt := m.webhookReceipts[candidate.key]
+		if receipt.PayloadDigest != "" && (receipt.Provider == domain.PluginGitHub || receipt.Provider == domain.PluginGitea) {
+			delete(m.webhookReceiptDigests, string(receipt.Provider)+"|"+receipt.PayloadDigest)
+		}
+		delete(m.webhookReceipts, candidate.key)
+	}
+	return int64(len(candidates)), nil
 }
 
 func (m *MemStore) CreateRunPluginSnapshots(_ context.Context, snapshots []domain.RunPluginSnapshot) error {
@@ -3007,6 +3358,67 @@ func (m *MemStore) ListRunPluginSnapshots(_ context.Context, runID string) ([]do
 		out = append(out, m.hydrateRunPluginSnapshotLocked(snap))
 	}
 	return out, nil
+}
+
+func (m *MemStore) DeleteUnreferencedPluginSecretVersions(_ context.Context, limit int) (credentialVersions, providerVersions int64, err error) {
+	if limit <= 0 {
+		return 0, 0, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.deleteUnreferencedPluginSecretVersionsLocked(limit)
+}
+
+func (m *MemStore) deleteUnreferencedPluginSecretVersionsLocked(limit int) (credentialVersions, providerVersions int64, err error) {
+
+	usedCredentials := make(map[string]struct{}, len(m.pluginInstallations))
+	usedProviderVersions := make(map[string]struct{}, len(m.providerConfigs))
+	for _, installation := range m.pluginInstallations {
+		usedCredentials[installation.CredentialVersionID] = struct{}{}
+	}
+	for provider, config := range m.providerConfigs {
+		usedProviderVersions[providerConfigVersionKey(provider, config.ConfigRevision)] = struct{}{}
+	}
+	pendingKanbanWritebackRuns := make(map[string]struct{})
+	for _, claim := range m.pluginKanbanClaims {
+		if claim.RunID != "" && claim.WritebackAt == nil {
+			pendingKanbanWritebackRuns[claim.RunID] = struct{}{}
+		}
+	}
+	for runID, snapshots := range m.runPluginSnapshots {
+		run, ok := m.runs[runID]
+		if !ok {
+			continue
+		}
+		if _, awaitingWriteback := pendingKanbanWritebackRuns[runID]; run.Status.Terminal() && !awaitingWriteback {
+			continue
+		}
+		for _, snapshot := range snapshots {
+			usedCredentials[snapshot.CredentialVersionID] = struct{}{}
+			usedProviderVersions[providerConfigVersionKey(snapshot.Provider, snapshot.ProviderConfigRevision)] = struct{}{}
+		}
+	}
+	for id := range m.pluginCredentialVersions {
+		if credentialVersions >= int64(limit) {
+			break
+		}
+		if _, used := usedCredentials[id]; used {
+			continue
+		}
+		delete(m.pluginCredentialVersions, id)
+		credentialVersions++
+	}
+	for key := range m.providerConfigVersions {
+		if providerVersions >= int64(limit) {
+			break
+		}
+		if _, used := usedProviderVersions[key]; used {
+			continue
+		}
+		delete(m.providerConfigVersions, key)
+		providerVersions++
+	}
+	return credentialVersions, providerVersions, nil
 }
 
 func (m *MemStore) CreatePluginAuditEvent(_ context.Context, event *domain.PluginAuditEvent) error {
@@ -3513,7 +3925,13 @@ func (m *MemStore) RecordAutomationDispatch(_ context.Context, id string, at tim
 func (m *MemStore) UpsertWebhookBinding(_ context.Context, b *domain.WebhookBinding) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if (b.Provider == domain.ProviderGitLab || b.Provider == domain.ProviderGitea) &&
+		b.Status == domain.WebhookBindingActive &&
+		(strings.TrimSpace(b.HookID) == "" || len(b.SecretEnc) == 0) {
+		return errors.New("active self-hosted webhook binding requires route id and encrypted secret")
+	}
 	next := *b
+	next.SecretEnc = append([]byte(nil), b.SecretEnc...)
 	if current, ok := m.webhookBindings[b.ServiceID]; ok {
 		// Match the Postgres upsert: reconciling the provider hook updates sync
 		// state without erasing the last delivery observation.
@@ -3531,7 +3949,23 @@ func (m *MemStore) GetWebhookBinding(_ context.Context, serviceID string) (*doma
 	if !ok {
 		return nil, ErrNotFound
 	}
+	b.SecretEnc = append([]byte(nil), b.SecretEnc...)
 	return &b, nil
+}
+
+func (m *MemStore) GetWebhookBindingByHookID(_ context.Context, hookID string) (*domain.WebhookBinding, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if strings.TrimSpace(hookID) == "" {
+		return nil, ErrNotFound
+	}
+	for _, b := range m.webhookBindings {
+		if b.HookID == hookID {
+			b.SecretEnc = append([]byte(nil), b.SecretEnc...)
+			return &b, nil
+		}
+	}
+	return nil, ErrNotFound
 }
 
 func (m *MemStore) DeleteWebhookBinding(_ context.Context, serviceID string) error {

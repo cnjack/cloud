@@ -91,6 +91,21 @@ type RepoLister interface {
 	ListRepos(ctx context.Context, query string, page, limit int) ([]Repo, error)
 }
 
+// Branch is one repository branch available to the authenticated credential.
+// It deliberately omits provider-specific commit metadata: the task composer
+// only needs a stable ref name and the protection hint for display.
+type Branch struct {
+	Name      string `json:"name"`
+	Protected bool   `json:"protected,omitempty"`
+}
+
+// BranchLister lists branches of a repository that is already bound to a
+// Service. It is separate from RepoLister so the service creation picker and
+// task-time branch selector stay read-only, narrowly scoped operations.
+type BranchLister interface {
+	ListBranches(ctx context.Context, owner, repo string, page, limit int) ([]Branch, error)
+}
+
 // InstallationRepoLister lists the repositories granted to an App
 // installation. GitHub installation access tokens cannot call /user/repos, so
 // their repository picker must use the installation-scoped API instead.

@@ -94,6 +94,82 @@
   font-size: var(--fs-caption);
 }
 
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) 0;
+}
+
+.attachment {
+  display: inline-flex;
+  max-width: 260px;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-bg-inset);
+  color: var(--color-text-muted);
+  font-size: var(--fs-caption);
+}
+
+.attachment > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment button,
+.attachButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.attachment button {
+  padding: 0;
+}
+
+.attachButton {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 50%;
+  background: var(--color-panel-raised);
+}
+
+.attachButton:hover {
+  color: var(--color-text);
+}
+
+.attachButton:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.attachButton input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.goalToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+}
+
 .controls {
   display: flex;
   align-items: center;

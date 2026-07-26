@@ -125,6 +125,7 @@ func run(log *slog.Logger) error {
 	// than silently disabling a feature the admin plainly intended to enable.
 	var archiver reconciler.Archiver
 	var archiveCleaner api.ArchiveCleaner
+	var attachmentStore api.AttachmentObjectStore
 	if cfg.ArchiveEnabled() {
 		ac, err := objstore.New(objstore.Config{
 			Endpoint:       cfg.S3Endpoint,
@@ -139,6 +140,7 @@ func run(log *slog.Logger) error {
 		}
 		archiver = ac
 		archiveCleaner = ac
+		attachmentStore = ac
 		log.Info("workspace archive enabled (F10)",
 			"endpoint", cfg.S3Endpoint, "bucket", cfg.S3Bucket, "idle_days", cfg.ArchiveIdleDays,
 			"persistent_workspace", cfg.PersistentWorkspace)
@@ -146,6 +148,7 @@ func run(log *slog.Logger) error {
 		log.Info("workspace archive disabled (F10)", "reason", cfg.ArchiveDisabledReason())
 	}
 	srv.WithArchiveCleaner(archiveCleaner)
+	srv.WithAttachmentObjectStore(attachmentStore)
 
 	// --- reconciler ---
 	// The draft-PR / review passes push branches + open PRs + post reviews on the
@@ -161,7 +164,8 @@ func run(log *slog.Logger) error {
 			// the SAME cache the scheduler resolves through (Feature A).
 			WithModelResolver(srv.Models()).
 			// F10 / D23 ③ — object-storage archiver (nil => archive pass no-op).
-			WithArchive(archiver)
+			WithArchive(archiver).
+			WithAttachmentStore(attachmentStore)
 
 		// D27/D36 — jtype kanban integration. The EFFECTIVE base URL
 		// (console-managed cluster_kanban_config DB row > JTYPE_BASE_URL env) is

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,97 @@ func seedRun(t *testing.T, m *MemStore) string {
 		t.Fatal(err)
 	}
 	return r.ID
+}
+
+func TestMemCreateCoalescedRunConcurrentLatestWins(t *testing.T) {
+	ctx := context.Background()
+	st := NewMemStore()
+	seedID := seedRun(t, st)
+	seed, err := st.GetRun(ctx, seedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "plugin:auto:" + seed.ServiceID + ":push:refs/heads/main"
+	const concurrent = 24
+	start := make(chan struct{})
+	errs := make(chan error, concurrent)
+	for i := 0; i < concurrent; i++ {
+		i := i
+		go func() {
+			<-start
+			errs <- st.CreateCoalescedRun(ctx, key, &domain.Run{
+				ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+				Prompt: "concurrent", Status: domain.StatusQueued, Attempt: 1,
+				OriginEventKey: "delivery-" + strconv.Itoa(i), CreatedAt: time.Now().UTC(),
+			})
+		}()
+	}
+	close(start)
+	for i := 0; i < concurrent; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent create: %v", err)
+		}
+	}
+	runs, err := st.ListRunsByService(ctx, seed.ServiceID, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCoalescedRunState(t, runs, key, concurrent, "", 1, concurrent-1)
+
+	// A call made after the concurrent batch is unambiguously the latest
+	// successful Store transaction and must become the sole queued Run.
+	latest := &domain.Run{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "latest", Status: domain.StatusQueued, Attempt: 1,
+		OriginEventKey: "delivery-latest", CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateCoalescedRun(ctx, key, latest); err != nil {
+		t.Fatal(err)
+	}
+	runs, err = st.ListRunsByService(ctx, seed.ServiceID, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCoalescedRunState(t, runs, key, concurrent+1, latest.ID, 1, concurrent)
+
+	// Validation failure is atomic: the previous winner remains queued.
+	duplicate := &domain.Run{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "must fail", Status: domain.StatusQueued, Attempt: 1,
+		OriginEventKey: latest.OriginEventKey, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateCoalescedRun(ctx, key, duplicate); err == nil {
+		t.Fatal("duplicate origin event unexpectedly created a Run")
+	}
+	got, err := st.GetRun(ctx, latest.ID)
+	if err != nil || got.Status != domain.StatusQueued {
+		t.Fatalf("failed create changed previous winner: run=%+v err=%v", got, err)
+	}
+}
+
+func assertCoalescedRunState(t *testing.T, runs []domain.Run, key string, total int, queuedID string, wantQueued, wantSuperseded int) {
+	t.Helper()
+	var matched, queued, superseded int
+	for i := range runs {
+		if runs[i].CoalesceKey != key {
+			continue
+		}
+		matched++
+		switch {
+		case runs[i].Status == domain.StatusQueued:
+			queued++
+			if queuedID != "" && runs[i].ID != queuedID {
+				t.Errorf("queued Run=%s want latest=%s", runs[i].ID, queuedID)
+			}
+		case runs[i].Status == domain.StatusCanceled && runs[i].Phase == "Superseded" && runs[i].FinishedAt != nil:
+			superseded++
+		default:
+			t.Errorf("unexpected coalesced Run state: %+v", runs[i])
+		}
+	}
+	if matched != total || queued != wantQueued || superseded != wantSuperseded {
+		t.Fatalf("coalesced state matched=%d queued=%d superseded=%d; want %d/%d/%d", matched, queued, superseded, total, wantQueued, wantSuperseded)
+	}
 }
 
 // TestIntegrationStoreCRUD covers the D19/F5 integration store contract: create +

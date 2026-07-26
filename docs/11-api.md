@@ -7,8 +7,8 @@
 > 范围锁定见 [10-prd.md](10-prd.md);状态机语义源自 Symphony,见
 > [05-symphony-and-references.md](05-symphony-and-references.md)。
 >
-> _最后更新:2026-07-07(runner↔orchestrator 事件流水线接线:服务端 seq 分配、
-> MODEL_NAME、SSE access_token)_
+> _最后更新:2026-07-26（Plugin Run 输入：分支、model effort、goal mode、Cloud
+> 代理附件 staging；Plugin webhook 与 OAuth 增量契约见 §6c）_
 
 ---
 
@@ -162,6 +162,11 @@
   - `resumed_from`:若本 run 由 `POST /runs/{id}/resume` 生成,指向被续聊的原
     (终态)session run 的 id(语义仿 `retried_from`);否则 `null`。console 展示
     「resumed from <短 id>」链接回原 run。
+- **`base_branch` / `model_effort` / `goal_mode`（迁移 `0048`）**：
+  `base_branch` 是本次 Run 的仓库分支名；`model_effort` 为
+  `"" | low | medium | high`（`auto` 请求会规范化为空）；`goal_mode=true`
+  表示启动时使用 jcode 原生 `/goal <prompt>`。三者由 retry/resume 继承。
+  `base_branch` 只固定名称，不固定创建时观察到的 SHA；Job clone 时分支可能已前移。
 - 服务器**从不**把 run token 序列化给 console 客户端。
 
 ### 1.3 Run 状态徽章体系(单一事实源)
@@ -324,6 +329,73 @@ orchestrator 的兜底分类**不覆盖**它。
 
 ### 2.2 Runs
 
+#### `GET /api/v1/services/{id}/branches` — 列出可选分支
+
+权限：Project `viewer+`。Service 必须绑定健康且启用的 Git Provider Plugin。
+Orchestrator 使用该 Installation 的凭据实时分页读取 Provider，不从用户请求拼接
+仓库地址。
+
+响应 `200`：
+
+```json
+{
+  "branches": [
+    { "name": "main", "protected": true, "default": true },
+    { "name": "release/2026.07", "default": false }
+  ],
+  "default_branch": "main"
+}
+```
+
+Provider/Plugin 不可用返回类型化 `409` 或 `502`。Run 创建会再次确认选择的分支
+仍在 Provider 列表中；它不会在分支消失时静默回退到 Service 默认值。
+
+#### 附件 staging
+
+`POST /api/v1/services/{id}/attachments/intents` 创建十分钟有效的上传 stage。
+权限为 Project `member+`，且必须是登录用户（Service principal/API key 不能创建
+用户附件）。
+
+请求：
+
+```json
+{
+  "name": "trace.txt",
+  "content_type": "text/plain",
+  "size_bytes": 1048576
+}
+```
+
+响应 `201`：
+
+```json
+{
+  "stage": {
+    "id": "…",
+    "project_id": "…",
+    "created_by": "…",
+    "display_name": "trace.txt",
+    "content_type": "text/plain",
+    "size_bytes": 1048576,
+    "expires_at": "2026-07-26T12:10:00Z",
+    "created_at": "2026-07-26T12:00:00Z"
+  },
+  "upload_url": "/api/v1/services/{id}/attachments/{stage}/content",
+  "expires_at": "2026-07-26T12:10:00Z"
+}
+```
+
+文件名只作显示元数据，必须是单一 basename，最长 180 字符；object key 永远由
+Cloud 生成。单文件为 1 byte–25 MiB。一个 Project/user 最多保留 20 个、合计
+250 MiB 的未过期 stages。允许 `text/*`、`image/*`、JSON、PDF、ZIP、gzip、tar
+和 `application/octet-stream`。
+
+客户端随后对 `upload_url` 执行认证的
+`PUT /api/v1/services/{id}/attachments/{stage}/content`。此端点由 Cloud 代理到
+对象存储，要求 HTTP `Content-Length` 与 intent 完全相等，并原子驱动
+`pending → uploading → uploaded`。失败时 stage 回到可重试的 `pending`（若仍未
+过期），成功返回 `204`。不存在直接暴露给浏览器的 presigned PUT。
+
 #### `POST /api/v1/services/{id}/runs` — 创建并入队 run
 
 Run 一律**按 service 派发**(旧的项目级 `POST /projects/{id}/runs`——解析
@@ -332,7 +404,16 @@ default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `4
 请求:
 
 ```json
-{ "prompt": "在 README 末尾加一行 Hello", "model_id": "…可选…", "session": false, "permission_mode": "" }
+{
+  "prompt": "在 README 末尾加一行 Hello",
+  "model_id": "…可选…",
+  "session": false,
+  "permission_mode": "",
+  "base_branch": "release/2026.07",
+  "model_effort": "high",
+  "goal_mode": true,
+  "attachment_stage_ids": ["stage-a", "stage-b"]
+}
 ```
 
 - `prompt`(必填,非空白)。
@@ -345,10 +426,23 @@ default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `4
   转发(§4),等用户经 permission-response(下)决议。**仅与 `session: true`
   搭配合法**(单发 headless run 无人值守可审批),否则 `400`;取值仅
   `""`/`"approval"`,其余 `400`。缺省 = full_access(现状,自动放行)。
+- `base_branch`（可选）：必须是合法 Git ref 名，并且仍存在于该 Service 的实时
+  Provider 分支目录。空值使用 Service 默认分支。这里只持久化分支名；创建与 clone
+  之间若该 ref 前移，Job 使用 clone 时的最新提交（已知 P2，尚未 pin SHA）。
+- `model_effort`（可选）：`auto | low | medium | high`。`auto` 规范化为模型默认；
+  显式 effort 只有在选中模型声明 reasoning 支持时才接受，否则
+  `400/409 model_effort_unsupported`。
+- `goal_mode`（可选，默认 `false`）：为真时以 jcode 原生 `/goal` 启动，不是追加
+  一段自然语言提示。
+- `attachment_stage_ids`（可选）：最多 10 个互异 stage，合计最多 100 MiB；每个
+  stage 必须已上传、未过期，且属于当前用户和同一 Project。创建 Run 与消费 stages
+  在同一数据库事务内完成。附件元数据不直接出现在 Run JSON 中；retry/resume
+  复制原 Run 的不可变 bindings。
 
 响应 `201 Created`:完整 Run 对象,`status` = `queued`(`permission_mode` 回显)。
-错误:`400`(空 prompt / 非法 `permission_mode` / `approval` 无 `session`)、
-`404`(service 不存在)。
+错误:`400`(空 prompt / 非法选项 / 分支或附件限制)、`403`(附件非登录用户或
+项目权限)、`404`(service 不存在)、`409`(Plugin/模型/对象存储/stage 不可用)、
+`502`(Provider 分支读取失败)。
 
 > 创建即入队;reconciler 下一 tick(默认 3s 内)按并发上限起 K8s Job。
 > session run 额外受 project 护栏 `max_live_sessions` 闸(见 §2.1 PATCH 字段):
@@ -1389,6 +1483,85 @@ provider_url/provider_repo`;runs 加 `git_branch/commit_sha/pr_url/pr_number`);
   非 PR/MR 评论忽略、两种 kind、身份映射不上、member 校验拒绝、去重(前缀键)、model
   gate 回帖、注册幂等、payload 字段差异(github `full_name` / gitlab `iid`)。gitea 仍走
   e2e `j6-webhook.sh`(§8 验收)。
+
+---
+
+## 6c · Project Plugin 增量契约（替代 §6b 的 legacy Integration webhook）
+
+迁移 `0043+` 的 Project Plugin 客户端必须使用本节。§6b 仅描述已经移除的
+Integration/PAT 流程，不得再据其创建新 UI 或调用旧 webhook sync API。
+
+### Provider / Plugin / Automation 端点
+
+- Cluster Admin：`GET/PUT /api/v1/system/providers[/{provider}]`、
+  `POST /api/v1/system/providers/{provider}/test`、
+  `GET /api/v1/system/providers/{provider}/impact`。
+- Project Plugin：`GET /api/v1/projects/{id}/plugins`、
+  `POST /api/v1/projects/{id}/plugins/{provider}/connect`、GitHub
+  Installation 显式选择端点，以及 Installation 的 repositories/workspaces/
+  boards/impact/audit 子资源。
+- 状态变更：`PATCH /api/v1/plugins/{installation}`；
+  `DELETE /api/v1/plugins/{installation}` 是带影响预览和强确认的破坏性卸载。
+- 能力：`GET /api/v1/providers/{provider}/capabilities` 返回实际观察版本过滤后的
+  event/action matrix。GitLab/Gitea 未探测、版本不可解析、低于基线、Plugin
+  disabled 或 health error 时 fail closed，返回空 actions；Automation 创建也会
+  再次拒绝未支持动作。
+- Automation：`GET/POST /api/v1/projects/{id}/automations` 和
+  `GET/PATCH/DELETE /api/v1/automations/{aid}`。正文必须恰有一个 `scm` 或 `cron`
+  typed trigger；JType Kanban 改由
+  `GET/PUT/DELETE /api/v1/services/{id}/kanban` 管理默认触发，不在 Automation
+  列表中重复展示。
+
+### OAuth state 与 Provider 配置
+
+登录/Link 的签名 state 绑定 nonce、Provider、mode、配置 revision、canonical
+origin 和 client ID；Plugin connect 的加密 HttpOnly pending cookie绑定相同配置
+身份。callback 时任何一项不一致返回 `409 oauth_config_changed`，不得使用当前
+配置去交换旧 authorization code。
+
+GitLab/Gitea origin、JType base URL 或任一 OAuth client ID 变化时，`PUT` 必须同时
+提交新的 `client_secret`；GitHub App ID 变化必须提交新的 private key。密钥字段
+write-only，空值只在 Provider 身份不变时表示保留。
+
+### Plugin webhook ingress
+
+- GitHub：`POST /webhooks/github`，使用 cluster GitHub App webhook secret。
+- GitLab/Gitea：`POST /webhooks/{provider}/{hook_id}`。`hook_id` 是每个 Service
+  binding 的不透明路由，secret 也是每个 binding 独立随机生成并加密保存。
+
+所有入口先执行 1 MiB 限制和签名/token 校验，再 normalize，一次解码后丢弃 raw
+payload。GitLab/Gitea 路由还必须满足：binding 为 `pending|active`、Provider
+一致、Service/Installation 同 Project，且 event repository stable ID 与
+`service_repository_bindings.provider_repo_id` 完全相等。
+
+receipt 以 `(provider, delivery_id)` 去重。GitHub/Gitea 另存从已认证 body 和该
+签名 secret 派生的 `payload_digest`，因此只伪造 delivery ID 不能重放同一 signed
+body。receipt 只含标准摘要并在 30 天后由 bounded GC 删除；无 raw payload、
+processing retry 或 Replay。
+
+首次启用 Service 的 SCM Automation 时创建 GitLab/Gitea hook；最后一个停用/删除
+时清理。Automation 的数据库 mutation 先提交，外部 reconcile 后执行。外部失败时
+响应 `502 webhook_reconcile_failed`，但资源不会回滚；
+Automation 与 `webhook_bindings.last_error` 保存可重试的稳定错误。再次保存或启用
+会重试。当前没有持续后台 external-hook reconciler，这是已知 P2。
+
+### Run runtime
+
+调度 claim 把 Project 全部健康、启用的 Installations 固定为
+`run_plugin_snapshots`。当前 Installation、非终态 Run，以及仍有
+`automation_kanban_claims.writeback_at IS NULL` 的终态 JType Run 所需历史
+Provider/grant 密文版本不可被 GC；卡片回写完成且最后一个运行时引用消失后，
+bounded GC 才可删除密文版本，但 snapshot 仍保留 Provider、Installation、config
+revision、credential version 等审计 ID。
+
+`GET /internal/v1/runs/{id}/plugins/credentials` 只接受该非 queued、非终态 Run 的
+`RUN_TOKEN`，只返回其 snapshot 的短期访问材料。GitHub App private key、OAuth
+refresh token、Provider client secret 和 `JCLOUD_MASTER_KEY` 永不进入 runner。
+
+Provider CLI/Skill 不编译进 generic Runner。Orchestrator 的 release-pinned runtime
+image 在 Job init 时按 snapshot 注入 `gh`/GitHub Skill、`glab`/GitLab Skill、
+`tea`/Gitea Skill；JType 只注入 MCP。任务只读挂载 runtime/credentials，未知或缺失
+资产 fail closed。
 
 ---
 
