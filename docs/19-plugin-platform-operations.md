@@ -204,7 +204,8 @@ the client secret. Use the Provider UI.
 4. Run Go, Console, runner, migration, Kustomize render, and end-to-end tests.
 5. Deploy Orchestrator before Console.
 6. Verify migration history and readiness.
-7. Deploy the runner image and prewarm it.
+7. Deploy the Runner image and sync prewarm; the DaemonSet pins both Runner and
+   `PLUGIN_RUNTIME_IMAGE` on every eligible node.
 8. Deploy Console.
 9. Complete first setup before exposing ingress.
 10. Test Provider connection, Project Consent, repository selection, one manual

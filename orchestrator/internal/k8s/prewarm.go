@@ -59,14 +59,12 @@ func (c *Client) PrewarmRunnerImage(ctx context.Context) error {
 		return fmt.Errorf("get prewarm daemonset: %w", err)
 	}
 
-	// Image drift (RUNNER_IMAGE changed since the last sync): update the
-	// template — the DaemonSet controller rolls fresh pods on its own. The pod
-	// delete below is still required for the unchanged-template case, where no
-	// rollout would happen by itself.
-	if len(existing.Spec.Template.Spec.Containers) > 0 &&
-		existing.Spec.Template.Spec.Containers[0].Image != c.cfg.RunnerImage {
-		existing.Spec.Template.Spec.Containers[0].Image = c.cfg.RunnerImage
-	}
+	// Reconcile the complete template so clusters upgrading from the old
+	// Runner-only prewarmer also pin the Orchestrator-owned Plugin runtime image.
+	// The pod delete below remains required for unchanged tags re-pushed to a new
+	// digest, because an identical template would not roll by itself.
+	desired := c.buildPrewarmDaemonSet(now)
+	existing.Spec.Template.Spec = desired.Spec.Template.Spec
 	if existing.Annotations == nil {
 		existing.Annotations = map[string]string{}
 	}
@@ -91,8 +89,11 @@ func (c *Client) RunnerImagePrewarmStatus(ctx context.Context) (PrewarmStatus, e
 	}
 	st.Desired = ds.Status.DesiredNumberScheduled
 	st.Ready = ds.Status.NumberReady
-	if len(ds.Spec.Template.Spec.Containers) > 0 {
-		st.Image = ds.Spec.Template.Spec.Containers[0].Image
+	for i := range ds.Spec.Template.Spec.Containers {
+		if ds.Spec.Template.Spec.Containers[i].Name == "prewarm" {
+			st.Image = ds.Spec.Template.Spec.Containers[i].Image
+			break
+		}
 	}
 	st.LastSync = ds.Annotations[prewarmLastSyncAnnotation]
 	return st, nil
@@ -119,6 +120,23 @@ func (c *Client) deletePrewarmPods(ctx context.Context) error {
 
 func (c *Client) buildPrewarmDaemonSet(lastSync string) *appsv1.DaemonSet {
 	labels := map[string]string{prewarmComponentLabel: prewarmComponentValue}
+	falseValue := false
+	nonRoot := true
+	allowPrivilegeEscalation := false
+	containerSecurity := &corev1.SecurityContext{
+		RunAsNonRoot:             &nonRoot,
+		AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+	resources := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse("1m"), corev1.ResourceMemory: resource.MustParse("16Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+	}
 	return &appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      PrewarmName,
@@ -134,24 +152,23 @@ func (c *Client) buildPrewarmDaemonSet(lastSync string) *appsv1.DaemonSet {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					// A sleeper whose only job is to pin the image on the node.
-					// No ServiceAccount: it never talks to the API. Requests are
-					// kept at the floor so the DaemonSet is effectively free.
+					AutomountServiceAccountToken: &falseValue,
+					// Two sleepers pin both images needed by a Plugin-enabled Job.
+					// Neither talks to the API; requests stay at the resource floor.
 					Containers: []corev1.Container{{
 						Name:            "prewarm",
 						Image:           c.cfg.RunnerImage,
 						ImagePullPolicy: corev1.PullAlways,
 						Command:         []string{"/bin/bash", "-c", "sleep infinity"},
-						Resources: corev1.ResourceRequirements{
-							Requests: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("1m"),
-								corev1.ResourceMemory: resource.MustParse("16Mi"),
-							},
-							Limits: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("50m"),
-								corev1.ResourceMemory: resource.MustParse("64Mi"),
-							},
-						},
+						Resources:       resources,
+						SecurityContext: containerSecurity.DeepCopy(),
+					}, {
+						Name:            "plugin-runtime-prewarm",
+						Image:           c.cfg.PluginRuntimeImage,
+						ImagePullPolicy: corev1.PullAlways,
+						Command:         []string{"/bin/sh", "-c", "sleep infinity"},
+						Resources:       resources,
+						SecurityContext: containerSecurity.DeepCopy(),
 					}},
 				},
 			},

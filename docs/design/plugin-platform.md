@@ -234,6 +234,8 @@ Orchestrator is the sole authority that translates the resulting run snapshot
 into injected assets. Missing or unknown runtime assets fail the run closed.
 Each managed Skill is mounted at its own Provider directory, preserving
 unrelated Skills already present in a persistent task HOME.
+The prewarm DaemonSet pins both the generic Runner and Orchestrator Plugin
+runtime images on every task node so runtime injection does not add a cold pull.
 
 ## Disable and uninstall
 

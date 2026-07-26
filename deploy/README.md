@@ -102,8 +102,8 @@ together mirror every variable read by
 | Var | Local dev (compose) | This deployment |
 |---|---|---|
 | `DATABASE_URL` | `postgres://jcloud:jcloud@localhost:5432/jcloud` | `postgres://jcloud:jcloud@postgres:5432/jcloud` (Service DNS) |
-| `RUNNER_IMAGE` | `ghcr.io/cnjack/jcloud-runner:latest` | `jcloud/runner:dev` (local) |
-| `PLUGIN_RUNTIME_IMAGE` | `ghcr.io/cnjack/jcloud-orchestrator:latest` | `jcloud/orchestrator:dev` (local) |
+| `RUNNER_IMAGE` | `registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner:latest` | `jcloud/runner:dev` (local) |
+| `PLUGIN_RUNTIME_IMAGE` | `registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-orchestrator:latest` | `jcloud/orchestrator:dev` (local) |
 | `ORCH_BASE_URL` | n/a | `http://orchestrator.jcloud.svc.cluster.local:8080` (for future runner→orchestrator callbacks) |
 | `MODEL_BASE_URL` | real provider | `http://mockllm.jcloud.svc.cluster.local:8081/v1` |
 | `MODEL_API_KEY` | real key | `dummy-mock-key` (mockllm does not validate it) |

@@ -12,7 +12,7 @@ import (
 func newPrewarmTestClient(image string) *Client {
 	return &Client{
 		cs:  fake.NewSimpleClientset(),
-		cfg: Config{Namespace: "jcloud", RunnerImage: image},
+		cfg: Config{Namespace: "jcloud", RunnerImage: image, PluginRuntimeImage: "ghcr.io/acme/orchestrator:v1"},
 	}
 }
 
@@ -30,12 +30,22 @@ func TestPrewarmFirstSyncCreatesDaemonSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("daemonset not created: %v", err)
 	}
+	if len(ds.Spec.Template.Spec.Containers) != 2 {
+		t.Fatalf("containers=%d want runner and Plugin runtime prewarm", len(ds.Spec.Template.Spec.Containers))
+	}
 	container := ds.Spec.Template.Spec.Containers[0]
 	if container.Image != "ghcr.io/acme/runner:v1" {
 		t.Fatalf("image=%q want ghcr.io/acme/runner:v1", container.Image)
 	}
 	if container.ImagePullPolicy != corev1.PullAlways {
 		t.Fatalf("pullPolicy=%q want Always (pod restart must re-pull :latest)", container.ImagePullPolicy)
+	}
+	runtime := ds.Spec.Template.Spec.Containers[1]
+	if runtime.Name != "plugin-runtime-prewarm" || runtime.Image != "ghcr.io/acme/orchestrator:v1" || runtime.ImagePullPolicy != corev1.PullAlways {
+		t.Fatalf("runtime prewarm=%+v", runtime)
+	}
+	if ds.Spec.Template.Spec.AutomountServiceAccountToken == nil || *ds.Spec.Template.Spec.AutomountServiceAccountToken {
+		t.Fatal("prewarm Pod must not mount a ServiceAccount token")
 	}
 	if ds.Annotations[prewarmLastSyncAnnotation] == "" {
 		t.Fatal("last-sync annotation not stamped")
@@ -60,6 +70,7 @@ func TestPrewarmSyncFollowsConfiguredImage(t *testing.T) {
 	}
 
 	c.cfg.RunnerImage = "ghcr.io/acme/runner:v2"
+	c.cfg.PluginRuntimeImage = "ghcr.io/acme/orchestrator:v2"
 	if err := c.PrewarmRunnerImage(ctx); err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
@@ -70,6 +81,10 @@ func TestPrewarmSyncFollowsConfiguredImage(t *testing.T) {
 	}
 	if st.Image != "ghcr.io/acme/runner:v2" {
 		t.Fatalf("status.image=%q want v2 after RUNNER_IMAGE change", st.Image)
+	}
+	ds, err := c.cs.AppsV1().DaemonSets("jcloud").Get(ctx, PrewarmName, metav1.GetOptions{})
+	if err != nil || len(ds.Spec.Template.Spec.Containers) != 2 || ds.Spec.Template.Spec.Containers[1].Image != "ghcr.io/acme/orchestrator:v2" {
+		t.Fatalf("runtime prewarm did not follow configured image: ds=%+v err=%v", ds, err)
 	}
 }
 

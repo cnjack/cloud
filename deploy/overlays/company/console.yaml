@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: console
-          image: ghcr.io/cnjack/jcloud-console:latest
+          image: registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-console:latest
           imagePullPolicy: Always
           env:
             - name: ORCHESTRATOR_URL

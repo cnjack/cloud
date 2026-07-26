@@ -1,11 +1,17 @@
-# Build + push the jcloud images to GitHub Packages (ghcr.io), and cut a release.
+# Build and push jcloud images to GHCR plus the Shanghai Aliyun ACR mirror, then
+# cut a release.
 #
 # Every push to main is a release. The version is auto-derived from git tags:
 # the latest v<X.Y.Z> tag's patch number is bumped, so there is no VERSION file
-# in the repo. All four images push `v<version>` + `latest` (+ the commit SHA
-# for traceability), and the final job creates the same `v<version>` Git tag.
+# in the repo. All four images push to GHCR; Orchestrator, Runner, and Console
+# also push to Aliyun ACR. Both registries receive identical `v<version>`,
+# `latest`, and commit-SHA tags, and the final job creates the same `v<version>`
+# Git tag.
 # The tag is created only after every image has been pushed, so a failed build
 # never leaves a dangling release tag.
+# Required repository settings for the Aliyun mirror:
+#   variable ALIYUN_DOCKER_REGISTRY_USERNAME = ACR login username
+#   secret   ALIYUN_DOCKER_REGISTRY_SECRET   = ACR login password
 #
 # Images (all linux/amd64 — the target company cluster is amd64-only):
 #   ghcr.io/<owner>/jcloud-orchestrator   from orchestrator/
@@ -27,6 +33,8 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
+  ALIYUN_REGISTRY: registry.cn-shanghai.aliyuncs.com
+  ALIYUN_NAMESPACE: jcode-cloud
 
 jobs:
   version:
@@ -76,10 +84,18 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ vars.ALIYUN_DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_REGISTRY_SECRET }}
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-orchestrator
+          images: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-orchestrator
+            ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/jcloud-orchestrator
           tags: |
             type=raw,value=v${{ needs.version.outputs.version }}
             type=raw,value=latest
@@ -126,10 +142,18 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ vars.ALIYUN_DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_REGISTRY_SECRET }}
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-runner
+          images: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-runner
+            ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/jcloud-runner
           tags: |
             type=raw,value=v${{ needs.version.outputs.version }}
             type=raw,value=latest
@@ -176,10 +200,18 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ vars.ALIYUN_DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_REGISTRY_SECRET }}
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-console
+          images: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-console
+            ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/jcloud-console
           tags: |
             type=raw,value=v${{ needs.version.outputs.version }}
             type=raw,value=latest

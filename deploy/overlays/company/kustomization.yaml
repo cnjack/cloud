@@ -1,5 +1,5 @@
 # Company-cluster overlay: the jcloud stack in namespace `jcode` on the on-prem
-# cluster (context wangwenhui@local), consuming the ghcr.io images CI publishes.
+# cluster (context wangwenhui@local), consuming the Shanghai Aliyun ACR mirror.
 #
 # Differences vs the local base:
 #   - namespace jcode (namespace.yaml here; base's jcloud namespace not used)
@@ -8,7 +8,7 @@
 #   - NO mockllm (fail-visible red line #1): a real cluster must NOT default to a
 #     mock LLM. A cluster admin sets the model from the console (stored encrypted
 #     in cluster_model_config); until then runs surface as "not configured".
-#   - images come from ghcr.io (pullPolicy Always via patch; base uses Never)
+#   - images come from Aliyun ACR (pullPolicy Always via patch; base uses Never)
 #   - console Deployment/Service (NodePort 30080) — nginx serving the SPA and
 #     proxying /api + /auth to the orchestrator
 #   - REAL credentials are applied out-of-band from the gitignored
@@ -26,7 +26,7 @@ resources:
 
 images:
   - name: jcloud/orchestrator
-    newName: ghcr.io/cnjack/jcloud-orchestrator
+    newName: registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-orchestrator
     newTag: latest
 
 patches:
@@ -44,7 +44,7 @@ patches:
       metadata:
         name: orchestrator-secret
 
-  # ghcr images must actually be pulled (base pins Never for the local store).
+  # Remote images must actually be pulled (base pins Never for the local store).
   - target:
       kind: Deployment
       name: orchestrator
@@ -71,8 +71,8 @@ patches:
         name: orchestrator-config
       data:
         K8S_NAMESPACE: jcode
-        RUNNER_IMAGE: ghcr.io/cnjack/jcloud-runner:latest
-        PLUGIN_RUNTIME_IMAGE: ghcr.io/cnjack/jcloud-orchestrator:latest
+        RUNNER_IMAGE: registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner:latest
+        PLUGIN_RUNTIME_IMAGE: registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-orchestrator:latest
         ORCH_BASE_URL: http://orchestrator.jcode.svc.cluster.local:8080
         CONSOLE_URL: https://cloud.j-code.net
         WEBHOOK_URL: http://orchestrator.jcode.svc.cluster.local:8080/webhooks/gitea
