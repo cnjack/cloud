@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -48,5 +49,56 @@ func TestGitHubListInstallationReposUsesInstallationEndpoint(t *testing.T) {
 	if got := repos[0]; got.ID != 77 || got.FullName != "cnjack/codespace_demo" ||
 		got.DefaultBranch != "main" || got.Private || got.HTMLURL == "" {
 		t.Fatalf("repo = %#v", got)
+	}
+}
+
+func TestGitHubListInstallationReposHandlesFullRepositoryPayloads(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// GitHub returns full Repository objects even though the picker consumes
+		// only a few fields. A multi-repository response easily exceeds 64 KiB.
+		_, _ = w.Write([]byte(`{"repositories":[{
+			"id":77,
+			"full_name":"cnjack/codespace_demo",
+			"default_branch":"main",
+			"private":false,
+			"html_url":"https://github.com/cnjack/codespace_demo",
+			"unused_full_repository_payload":"` + strings.Repeat("x", 96<<10) + `"
+		}]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewGitHubClient(server.URL, "installation-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos, err := client.ListInstallationRepos(context.Background(), "", 1, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 1 || repos[0].FullName != "cnjack/codespace_demo" {
+		t.Fatalf("repos = %#v", repos)
+	}
+}
+
+func TestGitHubListInstallationReposRejectsOversizedPayloads(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"repositories":[],"padding":"` +
+			strings.Repeat("x", maxProviderJSONResponseBytes+1) + `"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewGitHubClient(server.URL, "installation-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.ListInstallationRepos(context.Background(), "", 1, 50)
+	if err == nil || !strings.Contains(err.Error(), "provider response exceeds") {
+		t.Fatalf("error = %v, want bounded response error", err)
 	}
 }

@@ -1011,6 +1011,44 @@ func (s *Server) handleSelectGitHubAppInstallation(w http.ResponseWriter, r *htt
 	}
 	writeJSON(w, 201, pluginInstallationViewOf(in))
 }
+
+const (
+	githubInstallationRepoPageSize = 100
+	githubInstallationRepoMaxPages = 50
+)
+
+func listGitHubInstallationRepositoryCatalog(
+	ctx context.Context,
+	lister provider.InstallationRepoLister,
+	query string,
+) ([]provider.Repo, error) {
+	all := make([]provider.Repo, 0, githubInstallationRepoPageSize)
+	for page := 1; page <= githubInstallationRepoMaxPages; page++ {
+		repos, err := lister.ListInstallationRepos(ctx, "", page, githubInstallationRepoPageSize)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, repos...)
+		if len(repos) < githubInstallationRepoPageSize {
+			q := strings.ToLower(strings.TrimSpace(query))
+			if q == "" {
+				return all, nil
+			}
+			filtered := make([]provider.Repo, 0, len(all))
+			for _, repo := range all {
+				if strings.Contains(strings.ToLower(repo.FullName), q) {
+					filtered = append(filtered, repo)
+				}
+			}
+			return filtered, nil
+		}
+	}
+	return nil, fmt.Errorf(
+		"GitHub installation repository catalog exceeds %d entries",
+		githubInstallationRepoPageSize*githubInstallationRepoMaxPages,
+	)
+}
+
 func (s *Server) listGitHubInstallationRepositories(w http.ResponseWriter, r *http.Request, in *domain.PluginInstallation) {
 	issuer, err := s.githubAppIssuer(r.Context())
 	if err != nil {
@@ -1033,7 +1071,21 @@ func (s *Server) listGitHubInstallationRepositories(w http.ResponseWriter, r *ht
 		return
 	}
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	repos, err := lister.ListInstallationRepos(r.Context(), r.URL.Query().Get("q"), page, 50)
+	var repos []provider.Repo
+	if page > 0 {
+		repos, err = lister.ListInstallationRepos(
+			r.Context(),
+			r.URL.Query().Get("q"),
+			page,
+			githubInstallationRepoPageSize,
+		)
+	} else {
+		repos, err = listGitHubInstallationRepositoryCatalog(
+			r.Context(),
+			lister,
+			r.URL.Query().Get("q"),
+		)
+	}
 	if err != nil {
 		writeError(w, 502, "provider_error", "listing repositories failed: "+summarizeProviderErr(err))
 		return

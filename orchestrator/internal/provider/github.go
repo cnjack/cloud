@@ -154,8 +154,8 @@ func (c *GitHubClient) ListInstallationRepos(ctx context.Context, query string, 
 	if page < 1 {
 		page = 1
 	}
-	if limit < 1 || limit > 50 {
-		limit = 50
+	if limit < 1 || limit > 100 {
+		limit = 100
 	}
 	url := fmt.Sprintf("%s/installation/repositories?per_page=%d&page=%d", c.apiBase, limit, page)
 	var body struct {

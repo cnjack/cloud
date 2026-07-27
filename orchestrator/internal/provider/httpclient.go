@@ -10,6 +10,11 @@ import (
 	"net/http"
 )
 
+// GitHub's repository endpoints return full Repository objects even when a
+// caller needs only a handful of fields. Fifty ordinary repositories can
+// exceed the former 64 KiB cap, so keep a larger but still bounded allowance.
+const maxProviderJSONResponseBytes = 4 << 20
+
 // HTTPStatusError is the only upstream detail surfaced from a failed Provider
 // REST request. In particular, it intentionally excludes the response body:
 // an upstream proxy or compromised provider can reflect Authorization headers,
@@ -68,7 +73,13 @@ func doJSON(ctx context.Context, hc *http.Client, method, url, authHeader, accep
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &HTTPStatusError{Method: method, StatusCode: resp.StatusCode}
 	}
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderJSONResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read %s %s: %w", method, url, err)
+	}
+	if len(respBody) > maxProviderJSONResponseBytes {
+		return fmt.Errorf("read %s %s: provider response exceeds %d bytes", method, url, maxProviderJSONResponseBytes)
+	}
 	if out != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, out); err != nil {
 			return fmt.Errorf("decode %s %s: %w", method, url, err)
