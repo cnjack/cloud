@@ -37,6 +37,7 @@ import { formatDateTime, formatDuration, shortId } from '../lib/format';
 import { ProjectWorkspaceShell } from '../project-workspace/ProjectWorkspaceShell';
 import { ProjectSettingsAction } from '../project-workspace/ProjectSettingsAction';
 import { Timeline, type PermissionControls } from '../runview';
+import { followConversationScroll } from '../runview/conversationScroll';
 import styles from './RunDetailPage.module.css';
 
 function failureLabel(reason: FailureReason, t: TFunction): string {
@@ -62,7 +63,9 @@ export function RunDetailPage() {
   const [view, setView] = useState<View>('conversation');
   const [failedSubmission, setFailedSubmission] = useState<FailedSubmission | null>(null);
   const conversationRef = useRef<HTMLElement>(null);
+  const conversationContentRef = useRef<HTMLDivElement>(null);
   const followConversationRef = useRef(true);
+  const programmaticConversationScrollRef = useRef(false);
 
   useEffect(() => {
     setFailedSubmission(null);
@@ -99,7 +102,36 @@ export function RunDetailPage() {
   useEffect(() => {
     if (view !== 'conversation' || !followConversationRef.current) return;
     const conversation = conversationRef.current;
-    if (conversation) conversation.scrollTop = conversation.scrollHeight;
+    const content = conversationContentRef.current;
+    if (!conversation || !content) return;
+
+    let followFrame = 0;
+    let releaseFrame = 0;
+    const scheduleFollow = () => {
+      if (!followConversationRef.current) return;
+      cancelAnimationFrame(followFrame);
+      followFrame = requestAnimationFrame(() => {
+        if (!followConversationRef.current) return;
+        programmaticConversationScrollRef.current = true;
+        followConversationScroll(conversation, status);
+        cancelAnimationFrame(releaseFrame);
+        releaseFrame = requestAnimationFrame(() => {
+          programmaticConversationScrollRef.current = false;
+        });
+      });
+    };
+
+    scheduleFollow();
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(scheduleFollow);
+    observer?.observe(content);
+    return () => {
+      observer?.disconnect();
+      cancelAnimationFrame(followFrame);
+      cancelAnimationFrame(releaseFrame);
+      programmaticConversationScrollRef.current = false;
+    };
   }, [runId, status, stream.events.length, view]);
 
   const permissionControls: PermissionControls = {
@@ -276,11 +308,12 @@ export function RunDetailPage() {
                     data-testid="conversation-scroll"
                     data-scrollbar="hidden"
                     onScroll={(event) => {
+                      if (programmaticConversationScrollRef.current) return;
                       const target = event.currentTarget;
                       followConversationRef.current = target.scrollHeight - target.scrollTop - target.clientHeight < 80;
                     }}
                   >
-                    <div className={styles.conversationContent}>
+                    <div ref={conversationContentRef} className={styles.conversationContent}>
                       {terminalRun && canAct && modelGate.notice}
                       {failed && (
                         <div className={styles.failBanner} role="alert" data-testid="failure-banner">
