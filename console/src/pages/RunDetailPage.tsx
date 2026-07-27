@@ -105,34 +105,37 @@ export function RunDetailPage() {
     const content = conversationContentRef.current;
     if (!conversation || !content) return;
 
-    let followFrame = 0;
-    let releaseFrame = 0;
-    const scheduleFollow = () => {
+    let releaseTimer = 0;
+    const applyFollow = () => {
       if (!followConversationRef.current) return;
-      cancelAnimationFrame(followFrame);
-      followFrame = requestAnimationFrame(() => {
-        if (!followConversationRef.current) return;
-        programmaticConversationScrollRef.current = true;
-        followConversationScroll(conversation, status);
-        cancelAnimationFrame(releaseFrame);
-        releaseFrame = requestAnimationFrame(() => {
-          programmaticConversationScrollRef.current = false;
-        });
-      });
+      programmaticConversationScrollRef.current = true;
+      followConversationScroll(conversation, status);
+      window.clearTimeout(releaseTimer);
+      releaseTimer = window.setTimeout(() => {
+        programmaticConversationScrollRef.current = false;
+      }, 100);
     };
 
-    scheduleFollow();
-    const observer = typeof ResizeObserver === 'undefined'
+    // The historical event backlog can land before this scroll container
+    // mounts, while rich Markdown may change its height after the first paint.
+    // Cover both DOM restoration and later layout without depending solely on
+    // requestAnimationFrame (background tabs can pause it indefinitely).
+    applyFollow();
+    const resizeObserver = typeof ResizeObserver === 'undefined'
       ? null
-      : new ResizeObserver(scheduleFollow);
-    observer?.observe(content);
+      : new ResizeObserver(applyFollow);
+    const mutationObserver = typeof MutationObserver === 'undefined'
+      ? null
+      : new MutationObserver(applyFollow);
+    resizeObserver?.observe(content);
+    mutationObserver?.observe(content, { childList: true, subtree: true, characterData: true });
     return () => {
-      observer?.disconnect();
-      cancelAnimationFrame(followFrame);
-      cancelAnimationFrame(releaseFrame);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      window.clearTimeout(releaseTimer);
       programmaticConversationScrollRef.current = false;
     };
-  }, [runId, status, stream.events.length, view]);
+  }, [project.data?.id, runId, status, stream.events.length, view]);
 
   const permissionControls: PermissionControls = {
     disabled: !canAct,

@@ -14,7 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
 import { ToastProvider } from '../components/Toast';
 import { ApiError, type ApiClient, type StreamCallbacks, type StreamHandle } from '../api/client';
-import type { MemberRole, PrInfo, Project, ProjectModel, Run } from '../api/types';
+import type { MemberRole, PrInfo, Project, ProjectModel, Run, RunEvent } from '../api/types';
 import { qk } from '../api/queries';
 import { RunDetailPage } from './RunDetailPage';
 
@@ -112,6 +112,65 @@ function renderPage(client: ApiClient, seed?: Run) {
 }
 
 describe('RunDetailPage — resilient error states', () => {
+  it('repositions a restored long response when its DOM content lands after mount', async () => {
+    const mutationObservers: { callback: MutationCallback; target?: Node }[] = [];
+    class TestMutationObserver {
+      private readonly record: { callback: MutationCallback; target?: Node };
+      constructor(callback: MutationCallback) {
+        this.record = { callback };
+        mutationObservers.push(this.record);
+      }
+      observe(target: Node) { this.record.target = target; }
+      disconnect() {}
+      takeRecords(): MutationRecord[] { return []; }
+    }
+    vi.stubGlobal('MutationObserver', TestMutationObserver);
+
+    const restored: RunEvent[] = [{
+      seq: 1,
+      ts: '2026-07-07T00:00:02Z',
+      type: 'agent.text',
+      payload: { text: '## Available skills\n\n- github\n- review-pr\n- submit-pr' },
+    }];
+    const { client, ctl } = makeClient('member');
+    const run = baseRun({ status: 'awaiting_input', session: true });
+    ctl.getRun.mockResolvedValue(run);
+    client.listEvents = async () => restored;
+    const view = renderPage(client, run);
+
+    try {
+      const conversation = await screen.findByTestId('conversation-scroll');
+      const message = await screen.findByTestId('thread-message-assistant');
+      const content = conversation.firstElementChild;
+      await waitFor(() =>
+        expect(mutationObservers.some((observer) => observer.target === content)).toBe(true),
+      );
+      Object.defineProperties(conversation, {
+        clientHeight: { configurable: true, value: 500 },
+        scrollHeight: { configurable: true, value: 1_400 },
+      });
+      conversation.scrollTop = 25;
+      vi.spyOn(conversation, 'getBoundingClientRect').mockReturnValue({
+        top: 100,
+        bottom: 600,
+        height: 500,
+      } as DOMRect);
+      vi.spyOn(message, 'getBoundingClientRect').mockReturnValue({
+        top: 760,
+        bottom: 1_380,
+        height: 620,
+      } as DOMRect);
+
+      const observer = mutationObservers.find((candidate) => candidate.target === content);
+      act(() => observer?.callback([], {} as MutationObserver));
+
+      expect(conversation.scrollTop).toBe(685);
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('uses the shared Project shell and the design task-detail hierarchy', async () => {
     const { client, ctl } = makeClient('member');
     const run = baseRun({ service_id: 'svc-1' });
