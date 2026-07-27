@@ -65,6 +65,22 @@ func TestGitHubClient(t *testing.T) {
 	if reviewBody["event"] != "COMMENT" || reviewBody["body"] != "looks good" {
 		t.Errorf("review body = %+v", reviewBody)
 	}
+	if err := c.CreatePRReviewBatch(ctx, "o", "r", 11, PRReview{
+		Body: "One finding",
+		Comments: []PRReviewComment{{
+			Path: "ledger.py", Line: 7, Body: "**P1 · Reversed guard**",
+		}},
+	}); err != nil {
+		t.Fatalf("batch review: %v", err)
+	}
+	comments, ok := reviewBody["comments"].([]any)
+	if reviewBody["event"] != "COMMENT" || !ok || len(comments) != 1 {
+		t.Fatalf("batch review body=%+v", reviewBody)
+	}
+	comment, _ := comments[0].(map[string]any)
+	if comment["path"] != "ledger.py" || comment["line"] != float64(7) || comment["side"] != "RIGHT" {
+		t.Fatalf("batch inline comment=%+v", comment)
+	}
 
 	st, err := c.PRStatus(ctx, "o", "r", 11)
 	if err != nil || st.State != "merged" {

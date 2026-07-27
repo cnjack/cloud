@@ -56,7 +56,7 @@ func TestNormalizeGitHubSupportedEventMatrix(t *testing.T) {
 		{"review dismissed", "pull_request_review", reviewPayload(repo, sender, "dismissed", "approved"), FamilyReview, ActionDismissed},
 		{"comment created", "issue_comment", map[string]any{
 			"action": "created", "repository": repo, "sender": sender,
-			"issue":   map[string]any{"number": 7},
+			"issue":   map[string]any{"number": 7, "pull_request": map[string]any{"url": "https://api.github.test/repos/acme/widget/pulls/7"}},
 			"comment": map[string]any{"id": 40, "body": "please @jcode investigate", "user": sender},
 		}, FamilyComment, ActionCreated},
 		{"issue opened", "issues", issue("opened"), FamilyIssue, ActionOpened},

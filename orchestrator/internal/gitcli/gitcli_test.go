@@ -105,6 +105,44 @@ func TestCreateSourceBundleAndPush(t *testing.T) {
 	}
 }
 
+func TestCreatePullRequestSourceBundleIncludesSyntheticForkHead(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	g := New()
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	runGit(t, "-C", mkdir(t, work), "init", "-q", "-b", "main")
+	writeFile(t, filepath.Join(work, "README.md"), "# seed\n")
+	runGit(t, "-C", work, "add", "-A")
+	runGit(t, "-C", work, "commit", "-q", "-m", "init")
+	runGit(t, "-C", work, "checkout", "-q", "-b", "fork-topic")
+	writeFile(t, filepath.Join(work, "FORK.txt"), "fork change\n")
+	runGit(t, "-C", work, "add", "-A")
+	runGit(t, "-C", work, "commit", "-q", "-m", "fork")
+	forkSHA, err := exec.Command("git", "-C", work, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := filepath.Join(dir, "origin.git")
+	runGit(t, "clone", "--bare", "--quiet", work, origin)
+	runGit(t, "-C", origin, "update-ref", "refs/pull/7/head", strings.TrimSpace(string(forkSHA)))
+	runGit(t, "-C", origin, "update-ref", "-d", "refs/heads/fork-topic")
+
+	bundle := filepath.Join(dir, "pr.bundle")
+	if err := g.CreatePullRequestSourceBundle(ctx, "file://"+origin, bundle, 7, "fork-topic"); err != nil {
+		t.Fatalf("CreatePullRequestSourceBundle: %v", err)
+	}
+	out, err := exec.Command("git", "bundle", "list-heads", bundle, "refs/heads/fork-topic").CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), strings.TrimSpace(string(forkSHA))) {
+		t.Fatalf("bundle head=%q want fork sha %q", out, forkSHA)
+	}
+}
+
 // TestPushBundleBranchFFOnly is the M7 webhook update-mode roundtrip: a runner
 // commits onto an existing PR head branch and bundles startSHA..HEAD; the control
 // plane ff-only pushes it back onto that branch. It then proves the idempotent

@@ -137,14 +137,14 @@ var scenarios = map[string]Scenario{
 		ToolArgs:  `{"command":"printf 'written by jcode via bash\\n' > HELLO_FROM_BASH.txt","description":"create a file"}`,
 		FinalText: "Done. I created HELLO_FROM_BASH.txt using a shell command.",
 	},
-	// Review: the M3 review channel. Turn 1 writes a fixed, reasonable review to
-	// REVIEW.md (conclusion + bulleted findings, markdown); turn 2 finishes. This
+	// Review: the review channel. Turn 1 writes provider-neutral structured
+	// output to REVIEW.json; turn 2 finishes. This
 	// scenario is selected automatically when a request's messages contain the
 	// "[review]" marker (see scenarioForRequest), regardless of MOCK_SCENARIO.
 	"review": {
 		ToolName:  "write",
-		ToolArgs:  `{"file_path":"REVIEW.md","content":"needs-work\n\n- The change is missing test coverage for the new branch.\n- Consider handling the empty-input edge case explicitly.\n- Overall the diff is focused and the naming is clear.\n"}`,
-		FinalText: "Review complete. I wrote my findings to REVIEW.md.",
+		ToolArgs:  `{"file_path":"REVIEW.json","content":"{\"summary\":\"One high-confidence defect was found.\",\"findings\":[{\"path\":\"ledger.py\",\"line\":7,\"severity\":\"P2\",\"confidence\":92,\"title\":\"Missing empty-input handling\",\"body\":\"The new branch accepts an empty input and reaches an invalid state.\"}],\"checks\":[\"Inspected the changed branch\"]}\n"}`,
+		FinalText: "Review complete. I wrote validated findings to REVIEW.json.",
 	},
 }
 

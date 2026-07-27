@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -165,6 +168,10 @@ func (s *Server) handleGetSource(w http.ResponseWriter, r *http.Request, runID s
 	authed := tok.AuthedURL(rawURL, svc.Provider)
 
 	data, err := s.srcCache.Get(runID, func(dst string) error {
+		if run.Kind == domain.RunKindReview && svc.Provider == domain.ProviderGitHub &&
+			run.PRNumber > 0 && run.PRHeadBranch != "" {
+			return s.git.CreatePullRequestSourceBundle(r.Context(), authed, dst, run.PRNumber, run.PRHeadBranch)
+		}
 		return s.git.CreateSourceBundle(r.Context(), authed, dst)
 	})
 	if err != nil {
@@ -232,8 +239,10 @@ func (s *Server) handleIngestBundle(w http.ResponseWriter, r *http.Request, runI
 	writeJSON(w, http.StatusCreated, map[string]any{"kind": string(domain.ArtifactBundle), "bytes": len(data)})
 }
 
-// handleIngestReview stores a review run's markdown output (text/plain body).
-// The reconcile review pass posts it to the PR (blueprint §3).
+const structuredReviewMediaType = "application/vnd.jcode.review+json"
+
+// handleIngestReview accepts validated structured review output from new
+// runners while retaining text/plain for rolling-upgrade compatibility.
 func (s *Server) handleIngestReview(w http.ResponseWriter, r *http.Request, runID string) {
 	data, err := io.ReadAll(io.LimitReader(r.Body, maxReviewBytes+1))
 	if err != nil {
@@ -244,22 +253,56 @@ func (s *Server) handleIngestReview(w http.ResponseWriter, r *http.Request, runI
 		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "review exceeds the size limit")
 		return
 	}
-	md := string(data)
-	if len(md) == 0 {
+	if len(data) == 0 {
 		writeError(w, http.StatusBadRequest, "bad_request", "empty review output")
 		return
 	}
-	if _, err := s.st.SetReviewOutput(r.Context(), runID, md); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not_found", "run not found")
+	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mediaType == structuredReviewMediaType {
+		var result domain.ReviewResult
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&result); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_review_result", "review output is not valid structured JSON")
 			return
 		}
-		s.log.Error("ingest review", "run", runID, "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "could not store review output")
+		if decoder.Decode(&struct{}{}) != io.EOF {
+			writeError(w, http.StatusBadRequest, "invalid_review_result", "review output must contain exactly one JSON object")
+			return
+		}
+		if err := result.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_review_result", err.Error())
+			return
+		}
+		if _, err := s.st.SetReviewResult(r.Context(), runID, result); err != nil {
+			s.writeReviewStoreError(w, runID, err)
+			return
+		}
+		// Keep the existing Console/read API useful during a rolling upgrade.
+		if _, err := s.st.SetReviewOutput(r.Context(), runID, result.RenderSummary(false)); err != nil {
+			s.writeReviewStoreError(w, runID, err)
+			return
+		}
+		s.emitArtifactEvent(r.Context(), runID, "review", len(data))
+		writeJSON(w, http.StatusCreated, map[string]any{"kind": "review", "format": "structured", "bytes": len(data)})
+		return
+	}
+	md := string(data)
+	if _, err := s.st.SetReviewOutput(r.Context(), runID, md); err != nil {
+		s.writeReviewStoreError(w, runID, err)
 		return
 	}
 	s.emitArtifactEvent(r.Context(), runID, "review", len(md))
-	writeJSON(w, http.StatusCreated, map[string]any{"kind": "review", "bytes": len(md)})
+	writeJSON(w, http.StatusCreated, map[string]any{"kind": "review", "format": "markdown", "bytes": len(md)})
+}
+
+func (s *Server) writeReviewStoreError(w http.ResponseWriter, runID string, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	s.log.Error("ingest review", "run", runID, "err", err)
+	writeError(w, http.StatusInternalServerError, "internal", "could not store review output")
 }
 
 // emitArtifactEvent appends a run.artifact event so a live stream signals the

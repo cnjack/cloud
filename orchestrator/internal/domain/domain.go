@@ -398,6 +398,9 @@ type Run struct {
 	// ReviewOutput is the markdown a review run (Kind == review) produced (M5).
 	// Empty for agent runs. Reported by the runner via POST /internal/.../review.
 	ReviewOutput string `json:"review_output,omitempty"`
+	// ReviewResult is validated provider-neutral output. ReviewOutput remains
+	// readable for legacy runners and providers during the transition.
+	ReviewResult *ReviewResult `json:"review_result,omitempty"`
 	// ReviewPostedAt is stamped once the orchestrator has posted a review run's
 	// output as a PR review comment on the provider (idempotency marker; M3
 	// reconcile review pass). Nil until posted / for agent runs.

@@ -74,10 +74,13 @@ type commonPayload struct {
 	Commits    []commonCommit `json:"commits"`
 	Project    commonRepo     `json:"project"`
 	Issue      struct {
-		ID      any    `json:"id"`
-		Number  int64  `json:"number"`
-		Title   string `json:"title"`
-		HTMLURL string `json:"html_url"`
+		ID          any    `json:"id"`
+		Number      int64  `json:"number"`
+		Title       string `json:"title"`
+		HTMLURL     string `json:"html_url"`
+		PullRequest struct {
+			URL string `json:"url"`
+		} `json:"pull_request"`
 	} `json:"issue"`
 	PullRequest struct {
 		ID      any    `json:"id"`
@@ -85,6 +88,7 @@ type commonPayload struct {
 		Title   string `json:"title"`
 		HTMLURL string `json:"html_url"`
 		Merged  bool   `json:"merged"`
+		Draft   bool   `json:"draft"`
 		Head    struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
@@ -136,8 +140,14 @@ type commonPayload struct {
 // contract. Callers authenticate the webhook before invoking this function.
 // The original payload must be discarded after this call.
 func Normalize(provider ProviderKind, eventType, deliveryID string, payload []byte, receivedAt time.Time) (NormalizedSCMEvent, error) {
+	return NormalizeForApp(provider, eventType, deliveryID, payload, receivedAt, "jcode-cloud-app")
+}
+
+// NormalizeForApp recognizes the provider-observed GitHub App slug while
+// retaining @jcode as a compatibility alias.
+func NormalizeForApp(provider ProviderKind, eventType, deliveryID string, payload []byte, receivedAt time.Time, appSlug string) (NormalizedSCMEvent, error) {
 	if provider == ProviderGitLab {
-		return normalizeGitLab(eventType, deliveryID, payload, receivedAt)
+		return normalizeGitLab(eventType, deliveryID, payload, receivedAt, appSlug)
 	}
 	if provider != ProviderGitHub && provider != ProviderGitea {
 		return NormalizedSCMEvent{}, ErrUnsupported
@@ -168,6 +178,7 @@ func Normalize(provider ProviderKind, eventType, deliveryID string, payload []by
 		event.Action = normalizePullRequestAction(p.Action, p.PullRequest.Merged, kind == "pull_request_sync")
 		event.Object = Object{ID: anyID(p.PullRequest.ID), Number: p.PullRequest.Number, Title: p.PullRequest.Title, URL: p.PullRequest.HTMLURL}
 		event.Ref, event.BaseRef, event.HeadSHA = p.PullRequest.Head.Ref, p.PullRequest.Base.Ref, p.PullRequest.Head.SHA
+		event.Draft = p.PullRequest.Draft
 	case "pull_request_review":
 		event.Family = FamilyReview
 		event.Action = normalizeReviewAction(p.Action, firstNonEmpty(p.Review.State, p.Review.Type))
@@ -190,11 +201,16 @@ func Normalize(provider ProviderKind, eventType, deliveryID string, payload []by
 			event.Actor = reviewActor
 		}
 	case "issue_comment", "pull_request_comment":
-		if !strings.EqualFold(p.Action, "created") || !ContainsJCodeMention(p.Comment.Body) {
+		if !strings.EqualFold(p.Action, "created") || !ContainsJCodeMentionForApp(p.Comment.Body, appSlug) {
+			return NormalizedSCMEvent{}, ErrIgnored
+		}
+		isPRComment := kind == "pull_request_comment" || strings.TrimSpace(p.Issue.PullRequest.URL) != ""
+		if provider == ProviderGitHub && !isPRComment {
 			return NormalizedSCMEvent{}, ErrIgnored
 		}
 		event.Family, event.Action, event.Body = FamilyComment, ActionCreated, p.Comment.Body
 		event.Object = Object{ID: anyID(p.Comment.ID), Number: p.Issue.Number, URL: p.Comment.HTMLURL}
+		event.IsPullRequestComment = isPRComment
 		if commentActor := p.Comment.User.actor(); commentActor.ID != "" {
 			event.Actor = commentActor
 		}
@@ -287,7 +303,7 @@ type gitLabPayload struct {
 	} `json:"merge_request"`
 }
 
-func normalizeGitLab(eventType, deliveryID string, payload []byte, receivedAt time.Time) (NormalizedSCMEvent, error) {
+func normalizeGitLab(eventType, deliveryID string, payload []byte, receivedAt time.Time, appSlug string) (NormalizedSCMEvent, error) {
 	var p gitLabPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return NormalizedSCMEvent{}, fmt.Errorf("decode webhook: %w", err)
@@ -326,7 +342,7 @@ func normalizeGitLab(eventType, deliveryID string, payload []byte, receivedAt ti
 		if action := strings.ToLower(strings.TrimSpace(p.ObjectAttributes.Action)); action != "create" && action != "created" {
 			return NormalizedSCMEvent{}, ErrIgnored
 		}
-		if !ContainsJCodeMention(p.ObjectAttributes.Note) {
+		if !ContainsJCodeMentionForApp(p.ObjectAttributes.Note, appSlug) {
 			return NormalizedSCMEvent{}, ErrIgnored
 		}
 		event.Family, event.Action, event.Body = FamilyComment, ActionCreated, p.ObjectAttributes.Note

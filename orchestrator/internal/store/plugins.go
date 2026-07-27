@@ -13,14 +13,14 @@ import (
 	"github.com/cnjack/jcloud/internal/domain"
 )
 
-const providerConfigCols = `provider,base_url,login_enabled,plugin_enabled,client_id,client_secret_enc,app_id,app_private_key_enc,webhook_secret_enc,capability_version,capabilities,config_revision,last_health_error,last_capability_check,updated_by,updated_at`
+const providerConfigCols = `provider,base_url,login_enabled,plugin_enabled,client_id,client_secret_enc,app_id,app_slug,app_private_key_enc,webhook_secret_enc,capability_version,capabilities,config_revision,last_health_error,last_capability_check,updated_by,updated_at`
 
 func scanProviderConfig(row pgx.Row) (*domain.ProviderConfig, error) {
 	var cfg domain.ProviderConfig
 	var checkedAt *time.Time
 	var updatedBy *string
 	err := row.Scan(&cfg.Provider, &cfg.BaseURL, &cfg.LoginEnabled, &cfg.PluginEnabled, &cfg.ClientID,
-		&cfg.ClientSecretEnc, &cfg.AppID, &cfg.AppPrivateKeyEnc, &cfg.WebhookSecretEnc,
+		&cfg.ClientSecretEnc, &cfg.AppID, &cfg.AppSlug, &cfg.AppPrivateKeyEnc, &cfg.WebhookSecretEnc,
 		&cfg.CapabilityVersion, &cfg.Capabilities, &cfg.ConfigRevision, &cfg.LastHealthError,
 		&checkedAt, &updatedBy, &cfg.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -102,7 +102,7 @@ func (s *PGStore) UpsertProviderConfigAndInvalidate(ctx context.Context, cfg *do
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	var revision int64
-	err = tx.QueryRow(ctx, `INSERT INTO provider_configs (`+providerConfigCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$13,$14,now()) ON CONFLICT(provider) DO UPDATE SET base_url=EXCLUDED.base_url,login_enabled=EXCLUDED.login_enabled,plugin_enabled=EXCLUDED.plugin_enabled,client_id=EXCLUDED.client_id,client_secret_enc=EXCLUDED.client_secret_enc,app_id=EXCLUDED.app_id,app_private_key_enc=EXCLUDED.app_private_key_enc,webhook_secret_enc=EXCLUDED.webhook_secret_enc,capability_version=EXCLUDED.capability_version,capabilities=EXCLUDED.capabilities,last_health_error=EXCLUDED.last_health_error,last_capability_check=EXCLUDED.last_capability_check,updated_by=EXCLUDED.updated_by,updated_at=now(),config_revision=provider_configs.config_revision+1 RETURNING config_revision`, cfg.Provider, cfg.BaseURL, cfg.LoginEnabled, cfg.PluginEnabled, cfg.ClientID, cfg.ClientSecretEnc, cfg.AppID, cfg.AppPrivateKeyEnc, cfg.WebhookSecretEnc, cfg.CapabilityVersion, cfg.Capabilities, cfg.LastHealthError, cfg.LastCapabilityCheck, nullStr(cfg.UpdatedBy)).Scan(&revision)
+	err = tx.QueryRow(ctx, `INSERT INTO provider_configs (`+providerConfigCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1,$13,$14,$15,now()) ON CONFLICT(provider) DO UPDATE SET base_url=EXCLUDED.base_url,login_enabled=EXCLUDED.login_enabled,plugin_enabled=EXCLUDED.plugin_enabled,client_id=EXCLUDED.client_id,client_secret_enc=EXCLUDED.client_secret_enc,app_id=EXCLUDED.app_id,app_slug=EXCLUDED.app_slug,app_private_key_enc=EXCLUDED.app_private_key_enc,webhook_secret_enc=EXCLUDED.webhook_secret_enc,capability_version=EXCLUDED.capability_version,capabilities=EXCLUDED.capabilities,last_health_error=EXCLUDED.last_health_error,last_capability_check=EXCLUDED.last_capability_check,updated_by=EXCLUDED.updated_by,updated_at=now(),config_revision=provider_configs.config_revision+1 RETURNING config_revision`, cfg.Provider, cfg.BaseURL, cfg.LoginEnabled, cfg.PluginEnabled, cfg.ClientID, cfg.ClientSecretEnc, cfg.AppID, cfg.AppSlug, cfg.AppPrivateKeyEnc, cfg.WebhookSecretEnc, cfg.CapabilityVersion, cfg.Capabilities, cfg.LastHealthError, cfg.LastCapabilityCheck, nullStr(cfg.UpdatedBy)).Scan(&revision)
 	if err != nil {
 		return fmt.Errorf("upsert provider config: %w", err)
 	}
@@ -135,6 +135,20 @@ func (s *PGStore) RecordProviderCapabilities(ctx context.Context, provider domai
 	result, err := s.pool.Exec(ctx, `UPDATE provider_configs SET capability_version=$2,capabilities=$3,last_health_error='',last_capability_check=$4,updated_at=now() WHERE provider=$1`, provider, version, capabilities, checkedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("record provider capabilities: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStore) RecordProviderAppSlug(ctx context.Context, provider domain.ProviderKind, appSlug string) error {
+	if provider != domain.PluginGitHub {
+		return fmt.Errorf("record provider App slug: provider must be github")
+	}
+	result, err := s.pool.Exec(ctx, `UPDATE provider_configs SET app_slug=$2,updated_at=now() WHERE provider=$1`, provider, strings.TrimSpace(appSlug))
+	if err != nil {
+		return fmt.Errorf("record provider App slug: %w", err)
 	}
 	if result.RowsAffected() == 0 {
 		return ErrNotFound
@@ -441,7 +455,7 @@ func (s *PGStore) DeleteServiceRepositoryBinding(ctx context.Context, serviceID 
 	return nil
 }
 
-const pluginAutomationCols = `id,service_id,installation_id,name,trigger_kind,prompt_template,model_id,model_effort,enabled,ignore_jcode,last_triggered_at,last_run_id,last_error,created_by,created_at,updated_at`
+const pluginAutomationCols = `id,service_id,installation_id,name,trigger_kind,run_kind,prompt_template,model_id,model_effort,enabled,ignore_jcode,last_triggered_at,last_run_id,last_error,created_by,created_at,updated_at`
 
 func qualifiedPluginAutomationCols(alias string) string {
 	columns := strings.Split(pluginAutomationCols, ",")
@@ -457,7 +471,7 @@ func scanPluginAutomation(row pgx.Row) (*domain.PluginAutomation, error) {
 	var installationID *string
 	var modelID *string
 	var lastRunID *string
-	err := row.Scan(&a.ID, &a.ServiceID, &installationID, &a.Name, &a.TriggerKind, &a.PromptTemplate, &modelID, &a.ModelEffort, &a.Enabled, &a.IgnoreJCode, &a.LastTriggeredAt, &lastRunID, &a.LastError, &createdBy, &a.CreatedAt, &a.UpdatedAt)
+	err := row.Scan(&a.ID, &a.ServiceID, &installationID, &a.Name, &a.TriggerKind, &a.RunKind, &a.PromptTemplate, &modelID, &a.ModelEffort, &a.Enabled, &a.IgnoreJCode, &a.LastTriggeredAt, &lastRunID, &a.LastError, &createdBy, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -487,14 +501,14 @@ func (s *PGStore) CreatePluginAutomation(ctx context.Context, a *domain.PluginAu
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `INSERT INTO automations_v2(id,service_id,installation_id,name,trigger_kind,prompt_template,model_id,model_effort,enabled,ignore_jcode,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())`, a.ID, a.ServiceID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, nullStr(a.CreatedBy), a.CreatedAt); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO automations_v2(id,service_id,installation_id,name,trigger_kind,run_kind,prompt_template,model_id,model_effort,enabled,ignore_jcode,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now())`, a.ID, a.ServiceID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.RunKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, nullStr(a.CreatedBy), a.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			return ErrAlreadyExists
 		}
 		return fmt.Errorf("create plugin automation: %w", err)
 	}
 	if scm != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO automation_scm_triggers(automation_id,branch,path_pattern,conclusion)VALUES($1,$2,$3,$4)`, a.ID, scm.Branch, scm.PathPattern, scm.Conclusion); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO automation_scm_triggers(automation_id,branch,path_pattern,conclusion,include_drafts)VALUES($1,$2,$3,$4,$5)`, a.ID, scm.Branch, scm.PathPattern, scm.Conclusion, scm.IncludeDrafts); err != nil {
 			return err
 		}
 		for _, action := range actions {
@@ -533,7 +547,7 @@ func (s *PGStore) GetPluginAutomationSpec(ctx context.Context, id string) (*doma
 	switch a.TriggerKind {
 	case "scm":
 		var scm domain.SCMTrigger
-		if err := s.pool.QueryRow(ctx, `SELECT automation_id,branch,path_pattern,conclusion FROM automation_scm_triggers WHERE automation_id=$1`, id).Scan(&scm.AutomationID, &scm.Branch, &scm.PathPattern, &scm.Conclusion); err != nil {
+		if err := s.pool.QueryRow(ctx, `SELECT automation_id,branch,path_pattern,conclusion,include_drafts FROM automation_scm_triggers WHERE automation_id=$1`, id).Scan(&scm.AutomationID, &scm.Branch, &scm.PathPattern, &scm.Conclusion, &scm.IncludeDrafts); err != nil {
 			return nil, fmt.Errorf("get scm trigger: %w", err)
 		}
 		spec.SCM = &scm
@@ -746,8 +760,24 @@ func (s *PGStore) ListPluginAutomationsForEvent(ctx context.Context, provider do
 	}
 	return out, rows.Err()
 }
+func (s *PGStore) ListPluginReviewAutomationsForRepository(ctx context.Context, provider domain.ProviderKind, repositoryID string) ([]domain.PluginAutomation, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+qualifiedPluginAutomationCols("a")+` FROM automations_v2 a JOIN service_repository_bindings b ON b.service_id=a.service_id JOIN plugin_installations i ON i.id=b.installation_id WHERE i.provider=$1 AND i.status='enabled' AND b.provider_repo_id=$2 AND a.enabled=TRUE AND a.trigger_kind='scm' AND a.run_kind='review' ORDER BY a.created_at`, provider, repositoryID)
+	if err != nil {
+		return nil, fmt.Errorf("list review automations for repository: %w", err)
+	}
+	defer rows.Close()
+	out := []domain.PluginAutomation{}
+	for rows.Next() {
+		a, err := scanPluginAutomation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
 func (s *PGStore) UpdatePluginAutomation(ctx context.Context, a *domain.PluginAutomation) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE automations_v2 SET name=$2,prompt_template=$3,model_id=$4,model_effort=$5,enabled=$6,ignore_jcode=$7,last_triggered_at=$8,last_run_id=$9,last_error=$10,updated_at=now() WHERE id=$1`, a.ID, a.Name, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, a.LastTriggeredAt, a.LastRunID, a.LastError)
+	tag, err := s.pool.Exec(ctx, `UPDATE automations_v2 SET name=$2,run_kind=$3,prompt_template=$4,model_id=$5,model_effort=$6,enabled=$7,ignore_jcode=$8,last_triggered_at=$9,last_run_id=$10,last_error=$11,updated_at=now() WHERE id=$1`, a.ID, a.Name, a.RunKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, a.LastTriggeredAt, a.LastRunID, a.LastError)
 	if err != nil {
 		return fmt.Errorf("update plugin automation: %w", err)
 	}
@@ -780,7 +810,7 @@ func (s *PGStore) ReplacePluginAutomationSpec(ctx context.Context, a *domain.Plu
 	if _, err = tx.Exec(ctx, `DELETE FROM automation_scm_actions WHERE automation_id=$1`, a.ID); err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `UPDATE automations_v2 SET installation_id=$2,name=$3,trigger_kind=$4,prompt_template=$5,model_id=$6,model_effort=$7,enabled=$8,ignore_jcode=$9,last_error=$10,updated_at=now() WHERE id=$1`, a.ID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, a.LastError)
+	tag, err := tx.Exec(ctx, `UPDATE automations_v2 SET installation_id=$2,name=$3,trigger_kind=$4,run_kind=$5,prompt_template=$6,model_id=$7,model_effort=$8,enabled=$9,ignore_jcode=$10,last_error=$11,updated_at=now() WHERE id=$1`, a.ID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.RunKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, a.LastError)
 	if err != nil {
 		return err
 	}
@@ -788,7 +818,7 @@ func (s *PGStore) ReplacePluginAutomationSpec(ctx context.Context, a *domain.Plu
 		return ErrNotFound
 	}
 	if scm != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO automation_scm_triggers(automation_id,branch,path_pattern,conclusion)VALUES($1,$2,$3,$4)`, a.ID, scm.Branch, scm.PathPattern, scm.Conclusion); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO automation_scm_triggers(automation_id,branch,path_pattern,conclusion,include_drafts)VALUES($1,$2,$3,$4,$5)`, a.ID, scm.Branch, scm.PathPattern, scm.Conclusion, scm.IncludeDrafts); err != nil {
 			return err
 		}
 		for _, x := range actions {

@@ -81,6 +81,24 @@ func (c *GitHubClient) CreatePRReview(ctx context.Context, owner, repo string, p
 		map[string]any{"event": "COMMENT", "body": body}, nil)
 }
 
+func (c *GitHubClient) CreatePRReviewBatch(ctx context.Context, owner, repo string, prNumber int, review PRReview) error {
+	comments := make([]map[string]any, 0, len(review.Comments))
+	for _, comment := range review.Comments {
+		item := map[string]any{
+			"path": comment.Path, "line": comment.Line, "side": "RIGHT", "body": comment.Body,
+		}
+		if comment.EndLine > comment.Line {
+			item["start_line"] = comment.Line
+			item["start_side"] = "RIGHT"
+			item["line"] = comment.EndLine
+		}
+		comments = append(comments, item)
+	}
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/reviews", c.apiBase, owner, repo, prNumber)
+	return doJSON(ctx, c.http, http.MethodPost, url, c.auth(), c.accept(),
+		map[string]any{"event": "COMMENT", "body": review.Body, "comments": comments}, nil)
+}
+
 func (c *GitHubClient) PRStatus(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.apiBase, owner, repo, prNumber)
 	var pr githubPR
@@ -103,6 +121,11 @@ func (c *GitHubClient) PRByNumber(ctx context.Context, owner, repo string, prNum
 func (c *GitHubClient) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error {
 	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments", c.apiBase, owner, repo, issueNumber)
 	return doJSON(ctx, c.http, http.MethodPost, url, c.auth(), c.accept(), map[string]any{"body": body}, nil)
+}
+
+func (c *GitHubClient) CreateIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, content string) error {
+	url := fmt.Sprintf("%s/repos/%s/%s/issues/comments/%d/reactions", c.apiBase, owner, repo, commentID)
+	return doJSON(ctx, c.http, http.MethodPost, url, c.auth(), c.accept(), map[string]any{"content": content}, nil)
 }
 
 // githubRepo is the subset of GitHub's Repository JSON the repo picker consumes.

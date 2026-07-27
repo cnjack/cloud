@@ -8,11 +8,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +104,7 @@ func seedPluginWebhookAutomation(t *testing.T, kind, action string) (*testPlugin
 	return &testPluginWebhookFixture{
 		tsURL: ts.URL, st: st, projectID: projectID, installationID: installation.ID,
 		serviceID: svc.ID, modelID: modelID, hookID: hookID, hookSecret: hookSecret,
+		masterKey: cfg.MasterKey,
 	}, automation.ID
 }
 
@@ -114,6 +117,7 @@ type testPluginWebhookFixture struct {
 	modelID        string
 	hookID         string
 	hookSecret     string
+	masterKey      string
 }
 
 func (f *testPluginWebhookFixture) postGitea(t *testing.T, event, delivery string, payload map[string]any) *http.Response {
@@ -325,6 +329,139 @@ func TestPluginWebhookCoalescesQueuedPushToLatest(t *testing.T) {
 	}
 	if queued != 1 || superseded != 1 {
 		t.Fatalf("queued=%d superseded=%d runs=%+v", queued, superseded, runs)
+	}
+}
+
+func TestPluginReviewAutomationCreatesReviewRunAndSkipsDrafts(t *testing.T) {
+	f, automationID := seedPluginWebhookAutomation(t, "pull_request", "synchronized")
+	automation, err := f.st.GetPluginAutomation(context.Background(), automationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := f.st.GetPluginAutomationSpec(context.Background(), automationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	automation.RunKind = domain.RunKindReview
+	spec.SCM.IncludeDrafts = false
+	if err := f.st.ReplacePluginAutomationSpec(context.Background(), automation, spec.SCM, spec.Actions, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	payload := func(draft bool, sha string) map[string]any {
+		return map[string]any{
+			"action": "synchronize", "sender": map[string]any{"id": 8, "login": "dev"},
+			"repository": map[string]any{"id": 42, "full_name": "acme/repo", "default_branch": "main"},
+			"pull_request": map[string]any{
+				"id": 7, "number": 7, "draft": draft, "html_url": "https://gitea.example/acme/repo/pulls/7",
+				"head": map[string]any{"ref": "feature", "sha": sha},
+				"base": map[string]any{"ref": "main"},
+			},
+		}
+	}
+	draft := f.postGitea(t, "pull_request", "draft-review", payload(true, "sha-draft"))
+	draft.Body.Close()
+	runs, _ := f.st.ListRunsByService(context.Background(), f.serviceID, 10)
+	if len(runs) != 0 {
+		t.Fatalf("draft review created %d runs", len(runs))
+	}
+	ready := f.postGitea(t, "pull_request", "ready-review", payload(false, "sha-ready"))
+	ready.Body.Close()
+	runs, err = f.st.ListRunsByService(context.Background(), f.serviceID, 10)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs=%d err=%v", len(runs), err)
+	}
+	if runs[0].Kind != domain.RunKindReview || runs[0].PRHeadBranch != "feature" ||
+		runs[0].PRBaseBranch != "main" || runs[0].PRNumber != 7 {
+		t.Fatalf("review run=%+v", runs[0])
+	}
+}
+
+func TestPluginReviewMentionIsAuthorizedAndRepeatable(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/acme/repo/pulls/7":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"number":7,"html_url":"https://gitea.example/acme/repo/pulls/7","state":"open","head":{"ref":"feature"},"base":{"ref":"main"}}`))
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	f, automationID := seedPluginWebhookAutomation(t, "pull_request", "synchronized")
+	ctx := context.Background()
+	cfg, err := f.st.GetProviderConfig(ctx, domain.PluginGitea)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.BaseURL = upstream.URL
+	if err := f.st.UpsertProviderConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := auth.NewCipher(f.masterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation, err := f.st.GetPluginInstallation(ctx, f.installationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation.AccessTokenEnc, err = cipher.EncryptString("gitea-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	user := &domain.User{ID: domain.NewID(), DisplayName: "reviewer", CreatedAt: time.Now().UTC()}
+	identity := &domain.UserIdentity{
+		ID: domain.NewID(), UserID: user.ID, Provider: domain.ProviderGitea,
+		ProviderUID: "9001", Username: "reviewer", CreatedAt: time.Now().UTC(),
+	}
+	if _, err := f.st.CreateUserWithIdentity(ctx, user, identity); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.UpsertMember(ctx, &domain.ProjectMember{ProjectID: f.projectID, UserID: user.ID, Role: domain.RoleMember, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	automation, _ := f.st.GetPluginAutomation(ctx, automationID)
+	spec, _ := f.st.GetPluginAutomationSpec(ctx, automationID)
+	automation.RunKind = domain.RunKindReview
+	spec.Actions = []domain.SCMAction{{
+		AutomationID: automationID, ServiceID: f.serviceID,
+		EventFamily: "pull_request", Action: "synchronized",
+	}}
+	if err := f.st.ReplacePluginAutomationSpec(ctx, automation, spec.SCM, spec.Actions, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	payload := func(commentID int) map[string]any {
+		return map[string]any{
+			"action":     "created",
+			"sender":     map[string]any{"id": 9001, "login": "reviewer"},
+			"repository": map[string]any{"id": 42, "full_name": "acme/repo", "default_branch": "main"},
+			"issue":      map[string]any{"id": 7, "number": 7},
+			"comment": map[string]any{
+				"id": commentID, "body": "@jcode review transaction boundaries",
+				"html_url": "https://gitea.example/acme/repo/issues/7#issuecomment",
+			},
+		}
+	}
+	for _, commentID := range []int{101, 102} {
+		resp := f.postGitea(t, "issue_comment", fmt.Sprintf("manual-%d", commentID), payload(commentID))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("comment %d status=%d", commentID, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	runs, err := f.st.ListRunsByService(ctx, f.serviceID, 10)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("repeat review runs=%d err=%v", len(runs), err)
+	}
+	for _, run := range runs {
+		if run.Kind != domain.RunKindReview || run.Origin != domain.RunOriginWebhook ||
+			run.PRHeadBranch != "feature" || run.PRBaseBranch != "main" ||
+			!strings.Contains(run.Prompt, "transaction boundaries") {
+			t.Fatalf("manual review run=%+v", run)
+		}
 	}
 }
 

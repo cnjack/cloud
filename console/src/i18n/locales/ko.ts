@@ -1280,6 +1280,17 @@ export default {
     events: '이벤트', moreEvents: '추가 이벤트', thisProvider: '이 공급자', eventUnavailable: '{provider}{version}에서 지원하지 않습니다.',
     cronExpression: 'Cron 표현식', cronHint: '5개 필드 Cron 표현식을 사용합니다. 최소 간격은 서버에서 적용됩니다.',
     create: '자동화 만들기', save: '자동화 저장',
+    review: {
+      eyebrow: 'GitHub 코드 리뷰', title: 'Pull Request 리뷰', subtitle: '팀이 새 흐름을 배우지 않아도 GitHub 네이티브 리뷰를 켤 수 있습니다.',
+      defaultName: 'Pull Request 리뷰', setup: '리뷰 설정',
+      automaticTitle: '기본 자동 리뷰', automaticBody: 'Pull Request가 준비될 때와 새 커밋마다 App이 리뷰합니다.',
+      repeatTitle: 'GitHub에서 다시 실행', repeatBody: '다시 확인하려면 Pull Request 댓글에서 App을 멘션하세요.',
+      focus: '리뷰 중점 사항(선택)', focusPlaceholder: '예: 권한 경계를 특히 확인하세요.', focusHint: '정확성, 보안, 신뢰성, 데이터 손실, 회귀는 항상 확인합니다.',
+      when: '리뷰 시점', readyTitle: '준비된 Pull Request', readyBody: '새 Pull Request와 Draft 해제 시 리뷰합니다.',
+      updatesTitle: '새 커밋', updatesBody: 'Pull Request의 최신 커밋이 바뀌면 다시 리뷰합니다.',
+      draftsTitle: 'Draft 포함', draftsBody: '보통 끄고 작성자의 첫 검토가 끝날 때까지 기다립니다.',
+      create: '리뷰 켜기', save: '리뷰 설정 저장',
+    },
     validation: { noPermission: '자동화를 편집할 권한이 없습니다.', required: '이름, 서비스, 모델 및 작업 프롬프트는 필수입니다.', eventRequired: '이 서비스 공급자가 지원하는 이벤트를 하나 이상 선택하세요.', cronRequired: 'Cron 표현식은 필수입니다.' },
     apiError: {
       overlap: '선택한 SCM 이벤트 중 하나 이상을 이 서비스의 다른 자동화가 이미 사용하고 있습니다.',
@@ -1300,6 +1311,7 @@ export default {
     cron: 'Cron 표현식', action: 'SCM 이벤트', column: '트리거 열', prompt: '작업 지침', incomplete: '저장하기 전에 모든 필수 항목을 입력하세요.',
     create: '자동화 만들기', save: '변경 사항 저장', trigger: { scm: 'SCM 이벤트', kanban: 'Kanban 열', cron: 'Cron 일정' },
     enabled: '활성화됨', disabled: '비활성화됨', toggleLabel: '{name}: {status}',
+    review: { turnOn: 'Pull Request 리뷰', manage: '리뷰 설정', rowSummary: 'GitHub App이 변경된 줄에 신뢰도 높은 문제를 게시합니다.', native: 'GitHub 네이티브 리뷰' },
     error: {
       modelUnavailable: '이 이벤트를 받았을 때 사용할 모델을 선택할 수 없었습니다. 프로젝트에 모델을 허용하고, 여러 모델이 있다면 서비스 기본 모델을 설정하세요. 다음 성공적인 트리거에서 이 기록 오류가 지워집니다.',
       modelNotSelected: '여러 모델을 사용할 수 있지만 이 서비스에 기본 모델이 없습니다. 서비스 설정에서 하나를 선택하세요.',

@@ -68,6 +68,29 @@ type Provider interface {
 	CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error
 }
 
+type PRReview struct {
+	Body     string
+	Comments []PRReviewComment
+}
+
+type PRReviewComment struct {
+	Path    string
+	Line    int
+	EndLine int
+	Body    string
+}
+
+// BatchReviewProvider posts one comment-only review with inline findings.
+// Providers without this optional capability keep the top-level renderer.
+type BatchReviewProvider interface {
+	CreatePRReviewBatch(ctx context.Context, owner, repo string, prNumber int, review PRReview) error
+}
+
+// IssueCommentReactor provides low-noise acknowledgement for mention commands.
+type IssueCommentReactor interface {
+	CreateIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, content string) error
+}
+
 // Repo is one entry in a provider repository listing (the Drone-style
 // service-onboarding picker). ID is the provider's numeric repo id — stored on
 // a service as its rename-proof identity (provider_repo_id).

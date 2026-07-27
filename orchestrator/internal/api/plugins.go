@@ -34,6 +34,7 @@ type providerConfigView struct {
 	ClientID            string   `json:"client_id,omitempty"`
 	ClientSecretSet     bool     `json:"client_secret_set"`
 	AppID               string   `json:"app_id,omitempty"`
+	AppSlug             string   `json:"app_slug,omitempty"`
 	AppPrivateKeySet    bool     `json:"app_private_key_set"`
 	WebhookSecretSet    bool     `json:"webhook_secret_set"`
 	CapabilityVersion   string   `json:"capability_version,omitempty"`
@@ -67,7 +68,7 @@ func providerConfigViewOf(cfg *domain.ProviderConfig) providerConfigView {
 	}
 	v := providerConfigView{Provider: string(cfg.Provider), BaseURL: cfg.BaseURL, LoginEnabled: cfg.LoginEnabled,
 		PluginEnabled: cfg.PluginEnabled, ClientID: cfg.ClientID, ClientSecretSet: len(cfg.ClientSecretEnc) > 0,
-		AppID: cfg.AppID, AppPrivateKeySet: len(cfg.AppPrivateKeyEnc) > 0,
+		AppID: cfg.AppID, AppSlug: cfg.AppSlug, AppPrivateKeySet: len(cfg.AppPrivateKeyEnc) > 0,
 		// GitLab/Gitea hooks use per-Service random secrets. This field only
 		// describes the cluster-scoped GitHub App webhook credential.
 		WebhookSecretSet:  cfg.Provider == domain.PluginGitHub && len(cfg.WebhookSecretEnc) > 0,
@@ -336,6 +337,12 @@ func (s *Server) handleTestProviderConfig(w http.ResponseWriter, r *http.Request
 	if err := s.st.RecordProviderCapabilities(r.Context(), provider, result.Version, providerCapabilityKeys(provider, result.Version), now); err != nil {
 		writeError(w, 500, "internal", "could not record provider capability check")
 		return
+	}
+	if provider == domain.PluginGitHub && strings.TrimSpace(result.AppSlug) != "" {
+		if err := s.st.RecordProviderAppSlug(r.Context(), provider, result.AppSlug); err != nil {
+			writeError(w, 500, "internal", "could not record GitHub App identity")
+			return
+		}
 	}
 	stored, err := s.st.GetProviderConfig(r.Context(), provider)
 	if err != nil {
@@ -635,6 +642,7 @@ func (s *Server) handlePutProviderConfig(w http.ResponseWriter, r *http.Request)
 		// never inherit stale capabilities.
 		cfg.CapabilityVersion = previous.CapabilityVersion
 		cfg.Capabilities = append([]string(nil), previous.Capabilities...)
+		cfg.AppSlug = previous.AppSlug
 		cfg.LastCapabilityCheck = previous.LastCapabilityCheck
 		cfg.LastHealthError = previous.LastHealthError
 	}

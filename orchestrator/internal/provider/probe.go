@@ -27,6 +27,7 @@ type ConfigProbeInput struct {
 // therefore reports its pinned API revision instead of a server release.
 type ConfigProbeResult struct {
 	Version string
+	AppSlug string
 }
 
 // ProbeConfiguration verifies the configured origin plus the strongest
@@ -157,10 +158,11 @@ func probeGitHubApp(ctx context.Context, in ConfigProbeInput) (ConfigProbeResult
 	if err != nil {
 		return ConfigProbeResult{}, err
 	}
-	if err := issuer.Verify(ctx); err != nil {
+	metadata, err := issuer.VerifyMetadata(ctx)
+	if err != nil {
 		return ConfigProbeResult{}, err
 	}
-	return ConfigProbeResult{Version: "2022-11-28"}, nil
+	return ConfigProbeResult{Version: "2022-11-28", AppSlug: metadata.Slug}, nil
 }
 
 func probeJSONVersion(ctx context.Context, endpoint, baseURL, field string) (string, error) {

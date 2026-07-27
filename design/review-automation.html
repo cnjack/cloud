@@ -1,0 +1,118 @@
+<!doctype html>
+<!-- Target state for docs/21-github-native-code-review.md. Sample data only. -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud GitHub-native pull request review automation." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <title>jcode Cloud — Pull request reviews</title>
+  <style>
+    .shell { min-height: 100dvh; display: grid; grid-template-columns: 16rem minmax(0, 1fr); }
+    .rail { padding: 1.25rem 1rem; border-right: 1px solid var(--border); }
+    .brand { display: flex; align-items: center; gap: .6rem; font: 650 .875rem var(--font-mono); }
+    .brand img { width: 1.5rem; height: 1.5rem; }
+    .project { margin-top: 2rem; }
+    .project h2 { margin-top: .3rem; font-size: .9375rem; }
+    .nav { display: grid; gap: .25rem; margin-top: 1.5rem; }
+    .nav a { padding: .48rem .6rem; border-radius: var(--radius-md); color: var(--text-dim); }
+    .nav a[aria-current="page"] { background: var(--surface-inset); color: var(--text); font-weight: 600; }
+    main { min-width: 0; padding: 2.2rem clamp(1.25rem, 4vw, 4rem); }
+    .page { width: min(100%, 66rem); margin-inline: auto; }
+    .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 2rem; }
+    h1 { font-size: clamp(1.35rem, 2.2vw, 1.75rem); letter-spacing: -.035em; }
+    .lede { max-width: 42rem; margin-top: .45rem; color: var(--text-dim); }
+    .setup { margin-top: 1.5rem; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(18rem, .7fr); border: 1px solid var(--border-strong); border-radius: var(--radius-xl); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+    .setup-main, .setup-aside { padding: 1.5rem; }
+    .setup-main h2 { font-size: 1.05rem; letter-spacing: -.02em; }
+    .setup-main > p { margin-top: .3rem; color: var(--text-dim); }
+    .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.4rem; }
+    .field { display: grid; gap: .35rem; }
+    .field label, .field legend { font-weight: 600; font-size: .75rem; }
+    select, textarea { width: 100%; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-raised); padding: .55rem .65rem; }
+    textarea { min-height: 5.4rem; resize: vertical; }
+    fieldset { border: 0; }
+    .checks { display: grid; gap: .6rem; margin-top: .55rem; }
+    .check { display: flex; gap: .55rem; align-items: flex-start; color: var(--text-dim); }
+    .check input { margin-top: .2rem; accent-color: var(--accent); }
+    .check strong, .check span { display: block; }
+    .check strong { color: var(--text); font-size: .75rem; }
+    .check span { font-size: .7rem; }
+    .setup-footer { margin-top: 1.4rem; display: flex; justify-content: flex-end; }
+    .setup-aside { border-left: 1px solid var(--border); background: var(--surface-soft); }
+    .aside-title { font-weight: 650; }
+    .command { margin-top: .65rem; display: flex; align-items: center; justify-content: space-between; gap: .75rem; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface); padding: .65rem .7rem; }
+    .command code { overflow-wrap: anywhere; font-size: .72rem; }
+    .copy { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; }
+    .hint { margin-top: .7rem; color: var(--text-muted); font-size: .72rem; }
+    .flow { display: grid; gap: .8rem; margin-top: 1.3rem; }
+    .flow-row { display: grid; grid-template-columns: 1.2rem 1fr; gap: .6rem; }
+    .flow-dot { width: 1.15rem; height: 1.15rem; border-radius: 50%; display: grid; place-items: center; background: var(--surface-inset); font: 650 .6rem var(--font-mono); }
+    .flow-row strong, .flow-row span { display: block; }
+    .flow-row strong { font-size: .75rem; }
+    .flow-row span { color: var(--text-muted); font-size: .7rem; }
+    .existing { margin-top: 2rem; }
+    .section-head { display: flex; align-items: center; justify-content: space-between; }
+    .section-head h2 { font-size: .95rem; }
+    .automation { margin-top: .75rem; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem; padding: 1rem 1.1rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+    .automation-title { display: flex; align-items: center; gap: .55rem; font-weight: 650; }
+    .status { width: .5rem; height: .5rem; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px var(--success-bg); }
+    .meta, .last { margin-top: .35rem; color: var(--text-muted); font-size: .72rem; }
+    .last { text-align: right; }
+    .last strong { display: block; color: var(--success); font-size: .75rem; }
+    @media (max-width: 52rem) { .shell { grid-template-columns: 1fr; } .rail { display: none; } .setup { grid-template-columns: 1fr; } .setup-aside { border-left: 0; border-top: 1px solid var(--border); } }
+    @media (max-width: 36rem) { main { padding: 1.25rem 1rem; } .header { display: grid; } .field-grid { grid-template-columns: 1fr; } .automation { grid-template-columns: 1fr; } .last { text-align: left; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail" aria-label="项目导航">
+      <div class="brand"><img src="./assets/app-icon.svg" alt="" /> jcode <span class="eyebrow">Cloud</span></div>
+      <div class="project"><span class="eyebrow">Project</span><h2>jack</h2></div>
+      <nav class="nav"><a href="#">Services</a><a href="#">Runs</a><a href="#" aria-current="page">Automations</a><a href="#">Settings</a></nav>
+    </aside>
+    <main>
+      <div class="page">
+        <header class="header">
+          <div><span class="eyebrow">Automations</span><h1>让每个 Pull Request 都得到认真审查</h1><p class="lede">连接一次，jcode 会在新提交到来时检查真实风险。需要时，也可以直接在 GitHub 里 @机器人再审一次。</p></div>
+          <button class="button">Custom automation</button>
+        </header>
+        <section class="setup" aria-labelledby="setup-title">
+          <div class="setup-main">
+            <h2 id="setup-title">Review pull requests</h2>
+            <p>不需要配置 webhook、事件名或 prompt。下面的默认值适合大多数仓库。</p>
+            <div class="field-grid">
+              <div class="field"><label for="repository">Repository</label><select id="repository"><option>cnjack/jcode-review-lab</option></select></div>
+              <div class="field"><label for="model">Model</label><select id="model"><option>Claude Sonnet · Medium effort</option></select></div>
+            </div>
+            <div class="field-grid">
+              <fieldset class="field"><legend>Automatic reviews</legend><div class="checks">
+                <label class="check"><input type="checkbox" checked /><span><strong>Ready for review</strong><span>草稿转为可审查时运行</span></span></label>
+                <label class="check"><input type="checkbox" checked /><span><strong>New commits</strong><span>有新提交时重新检查当前变更</span></span></label>
+                <label class="check"><input type="checkbox" /><span><strong>Include drafts</strong><span>默认不打扰仍在编辑的 PR</span></span></label>
+              </div></fieldset>
+              <div class="field"><label for="focus">Review focus <span class="eyebrow">Optional</span></label><textarea id="focus" placeholder="例如：重点检查事务边界、权限和数据迁移。"></textarea></div>
+            </div>
+            <div class="setup-footer"><button class="button button-primary">Enable pull request reviews</button></div>
+          </div>
+          <aside class="setup-aside">
+            <div class="aside-title">在 GitHub 里随时叫它</div>
+            <div class="command"><code>@jcode-cloud-app review</code><button class="copy" aria-label="复制命令">Copy</button></div>
+            <p class="hint">这是已安装 GitHub App 的真实账号。重复发送会创建一次新的审查。</p>
+            <div class="flow">
+              <div class="flow-row"><div class="flow-dot">1</div><div><strong>👀 确认收到</strong><span>机器人只在成功排队后响应</span></div></div>
+              <div class="flow-row"><div class="flow-dot">2</div><div><strong>检查变更和上下文</strong><span>遵循仓库规则，并验证高置信问题</span></div></div>
+              <div class="flow-row"><div class="flow-dot">3</div><div><strong>原生 GitHub review</strong><span>行内意见；无问题时也有明确结论</span></div></div>
+            </div>
+          </aside>
+        </section>
+        <section class="existing">
+          <div class="section-head"><h2>Active</h2><span class="eyebrow">1 automation</span></div>
+          <article class="automation"><div><div class="automation-title"><span class="status"></span> Pull request reviews</div><div class="meta">cnjack/jcode-review-lab · Ready + new commits · Drafts excluded · Claude Sonnet</div></div><div class="last"><strong>Clean</strong>PR #1 · 2 minutes ago</div></article>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

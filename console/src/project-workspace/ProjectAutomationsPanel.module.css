@@ -3,8 +3,11 @@
 .head span { color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); text-transform: uppercase; letter-spacing: var(--tracking-label); }
 .head h2 { margin: var(--space-1) 0; color: var(--color-text); font-size: var(--fs-h1); }
 .head p { max-width: 640px; margin: 0; color: var(--color-text-dim); font-size: var(--fs-sm); }
-.primaryLink { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 34px; padding: 0 var(--space-3); border-radius: var(--radius-md); background: var(--color-text); color: var(--color-bg); text-decoration: none; font-size: var(--fs-caption); font-weight: 600; }
-.primaryLink[aria-disabled='true'] { opacity: .45; }
+.headActions { display: flex; align-items: center; gap: var(--space-2); }
+.primaryLink, .secondaryLink { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 34px; padding: 0 var(--space-3); border-radius: var(--radius-md); text-decoration: none; font-size: var(--fs-caption); font-weight: 600; }
+.primaryLink { background: var(--color-text); color: var(--color-bg); }
+.secondaryLink { border: 1px solid var(--color-border); background: var(--color-panel); color: var(--color-text-muted); }
+.primaryLink[aria-disabled='true'], .secondaryLink[aria-disabled='true'] { opacity: .45; }
 .filters { display: flex; gap: 2px; width: max-content; padding: 2px; border-radius: var(--radius-lg); background: var(--color-bg-inset); }
 .filters button, .actions button { border: 0; background: transparent; color: var(--color-text-muted); cursor: pointer; font: inherit; font-size: var(--fs-caption); }
 .filters button { min-height: 30px; padding: 0 var(--space-3); border-radius: var(--radius-md); }
@@ -25,4 +28,4 @@
 .actions [role='switch'][aria-checked='true'] span { transform: translateX(14px); }
 .empty { color: var(--color-text-faint); font-size: var(--fs-sm); }
 .warning { display: flex; gap: var(--space-2); padding: var(--space-3); border-left: 2px solid var(--color-accent); color: var(--color-text-dim); font-size: var(--fs-sm); }
-@media (max-width: 700px) { .head { align-items: flex-start; flex-direction: column; } .row { grid-template-columns: 1fr; } .actions { justify-content: flex-start; } }
+@media (max-width: 700px) { .head { align-items: flex-start; flex-direction: column; } .headActions { flex-wrap: wrap; } .row { grid-template-columns: 1fr; } .actions { justify-content: flex-start; } }

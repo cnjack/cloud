@@ -18,8 +18,8 @@ func TestScenarioForRequestReview(t *testing.T) {
 	if name != "review" {
 		t.Fatalf("scenario=%q want review", name)
 	}
-	if !strings.Contains(sc.ToolArgs, "REVIEW.md") {
-		t.Fatalf("review scenario must write REVIEW.md; args=%q", sc.ToolArgs)
+	if !strings.Contains(sc.ToolArgs, "REVIEW.json") {
+		t.Fatalf("review scenario must write REVIEW.json; args=%q", sc.ToolArgs)
 	}
 
 	// Array-of-parts content with the marker → review scenario.
@@ -42,21 +42,19 @@ func TestScenarioForRequestReview(t *testing.T) {
 	}
 }
 
-// TestReviewScenarioTwoTurns proves the review scenario writes REVIEW.md on turn
-// 1 (tool call) and finishes on turn 2 (after a tool result), and that the fixed
-// review markdown carries a conclusion.
+// TestReviewScenarioTwoTurns proves the review scenario writes REVIEW.json on
+// turn 1 and finishes on turn 2 with structured findings.
 func TestReviewScenarioTwoTurns(t *testing.T) {
 	msgsTurn1 := []message{{Role: "user", Content: "[review] the diff"}}
 	_, sc := scenarioForRequest(msgsTurn1)
 	if hasToolResult(msgsTurn1) {
 		t.Fatal("turn 1 must not see a tool result")
 	}
-	if sc.ToolName != "write" || !strings.Contains(sc.ToolArgs, "REVIEW.md") {
-		t.Fatalf("turn 1 must write REVIEW.md; got tool=%q args=%q", sc.ToolName, sc.ToolArgs)
+	if sc.ToolName != "write" || !strings.Contains(sc.ToolArgs, "REVIEW.json") {
+		t.Fatalf("turn 1 must write REVIEW.json; got tool=%q args=%q", sc.ToolName, sc.ToolArgs)
 	}
-	// The review body must lead with a conclusion (approve|needs-work).
-	if !strings.Contains(sc.ToolArgs, "needs-work") && !strings.Contains(sc.ToolArgs, "approve") {
-		t.Fatalf("review body must state a conclusion; args=%q", sc.ToolArgs)
+	if !strings.Contains(sc.ToolArgs, `\"findings\"`) || !strings.Contains(sc.ToolArgs, `\"confidence\"`) {
+		t.Fatalf("review body must carry structured findings; args=%q", sc.ToolArgs)
 	}
 
 	msgsTurn2 := append(msgsTurn1, message{Role: "tool", ToolCallID: "call_mock_1", Content: "ok"})

@@ -45,7 +45,7 @@ function result(input: CreateProjectAutomationInput): ProjectAutomationSpec {
   };
 }
 
-function renderEditor(overrides: Partial<ApiClient> = {}) {
+function renderEditor(overrides: Partial<ApiClient> = {}, initialEntry = '/projects/p1/automations/new?service=svc-1') {
   const create = vi.fn(async (_projectId: string, input: CreateProjectAutomationInput) => result(input));
   const client = {
     getProject: async () => project,
@@ -86,7 +86,7 @@ function renderEditor(overrides: Partial<ApiClient> = {}) {
   } as unknown as ApiClient;
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(
-    <MemoryRouter initialEntries={['/projects/p1/automations/new?service=svc-1']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={queryClient}>
         <ApiProvider client={client}>
           <Routes>
@@ -167,5 +167,52 @@ describe('AutomationEditorPage', () => {
     fireEvent.click(screen.getByText('More events'));
     expect(screen.getByLabelText('release.deleted')).toBeTruthy();
     expect(screen.getByLabelText('issue.closed')).toBeTruthy();
+  });
+
+  it('creates a GitHub-native review from the guided preset and exposes the repeat mention', async () => {
+    const githubProject: Project = {
+      ...project,
+      services: [{ ...project.services![0]!, provider: 'github', repo_owner_name: 'cnjack/jcode-review-lab' }],
+    };
+    const { create } = renderEditor({
+      getProject: async () => githubProject,
+      getProviderCapabilities: async () => ({
+        provider: 'github',
+        mention_handle: '@jcode-cloud-app',
+        inline_pull_request_reviews: true,
+        capabilities: [{
+          family: 'pull_request',
+          actions: ['opened', 'reopened', 'synchronized', 'ready'],
+        }],
+      }),
+    }, '/projects/p1/automations/new?service=svc-1&preset=review');
+
+    await screen.findByRole('heading', { name: 'Review pull requests' });
+    expect(screen.getByText('@jcode-cloud-app review')).toBeTruthy();
+    expect(screen.queryByText('More events')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-52' } });
+    fireEvent.change(screen.getByLabelText('Review focus (optional)'), {
+      target: { value: 'Pay special attention to money movement.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Turn on reviews' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create.mock.calls[0]?.[1]).toMatchObject({
+      service_id: 'svc-1',
+      name: 'Pull request review',
+      run_kind: 'review',
+      model_id: 'glm-52',
+      enabled: true,
+      scm: {
+        include_drafts: false,
+        actions: [
+          { event_family: 'pull_request', action: 'opened' },
+          { event_family: 'pull_request', action: 'ready' },
+          { event_family: 'pull_request', action: 'synchronized' },
+          { event_family: 'pull_request', action: 'reopened' },
+        ],
+      },
+    });
+    expect(create.mock.calls[0]?.[1].prompt_template).toContain('Pay special attention to money movement.');
   });
 });

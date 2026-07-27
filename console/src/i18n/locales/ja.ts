@@ -1280,6 +1280,17 @@ export default {
     events: 'イベント', moreEvents: 'その他のイベント', thisProvider: 'このプロバイダー', eventUnavailable: '{provider}{version} ではサポートされていません。',
     cronExpression: 'Cron 式', cronHint: '5 フィールドの Cron 式を使用します。最小間隔はサーバーで強制されます。',
     create: '自動化を作成', save: '自動化を保存',
+    review: {
+      eyebrow: 'GitHub コードレビュー', title: 'Pull Request をレビュー', subtitle: '新しい手順を覚えなくても、GitHub ネイティブのレビューを有効にできます。',
+      defaultName: 'Pull Request レビュー', setup: 'レビュー設定',
+      automaticTitle: 'デフォルトで自動', automaticBody: 'Pull Request の準備が整った時と、新しいコミットごとに App がレビューします。',
+      repeatTitle: 'GitHub から再実行', repeatBody: 'もう一度確認したい時は、Pull Request のコメントで App をメンションします。',
+      focus: 'レビューの重点（任意）', focusPlaceholder: '例：認可境界を特に確認する。', focusHint: '正確性、セキュリティ、信頼性、データ損失、回帰は常に確認します。',
+      when: 'レビューするタイミング', readyTitle: '準備済みの Pull Request', readyBody: '新規 Pull Request と Draft 解除時にレビューします。',
+      updatesTitle: '新しいコミット', updatesBody: 'Pull Request の先頭が変わると再レビューします。',
+      draftsTitle: 'Draft を含める', draftsBody: '通常はオフにして、作者の最初の確認を待ちます。',
+      create: 'レビューを有効化', save: 'レビュー設定を保存',
+    },
     validation: { noPermission: '自動化を編集する権限がありません。', required: '名前、サービス、モデル、タスクプロンプトは必須です。', eventRequired: 'このサービスのプロバイダーがサポートするイベントを 1 つ以上選択してください。', cronRequired: 'Cron 式は必須です。' },
     apiError: {
       overlap: '選択した SCM イベントのいずれかを、このサービスの別の自動化がすでに使用しています。',
@@ -1300,6 +1311,7 @@ export default {
     cron: 'Cron 式', action: 'SCM イベント', column: 'トリガー列', prompt: 'タスク指示', incomplete: '保存する前に必須項目をすべて入力してください。',
     create: '自動化を作成', save: '変更を保存', trigger: { scm: 'SCM イベント', kanban: 'Kanban 列', cron: 'Cron スケジュール' },
     enabled: '有効', disabled: '無効', toggleLabel: '{name}: {status}',
+    review: { turnOn: 'Pull Request をレビュー', manage: 'レビュー設定', rowSummary: 'GitHub App が変更行に確度の高い問題を投稿します。', native: 'GitHub ネイティブレビュー' },
     error: {
       modelUnavailable: 'このイベントを受信した時点で使用可能なモデルを選択できませんでした。プロジェクトにモデルを許可し、複数ある場合はサービスのデフォルトモデルを設定してください。次回の正常なトリガーでこの履歴エラーは消去されます。',
       modelNotSelected: '複数のモデルを使用できますが、このサービスにデフォルトモデルがありません。サービス設定で選択してください。',

@@ -678,6 +678,19 @@ describe('ProjectDetailPage — workspace sections', () => {
     expect(link.getAttribute('href')).toBe('/projects/p1/automations/new?service=svc_default');
   });
 
+  it('makes the guided PR review setup the primary GitHub Automation entry', async () => {
+    const github = { ...svc('svc_github', 'review-lab'), provider: 'github' as const };
+    const { client } = makeClient(project('owner', [github]));
+    renderPage(client);
+
+    await screen.findByTestId('run-input');
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+    const link = await screen.findByRole('link', { name: 'Review pull requests' });
+    expect(link.getAttribute('href')).toBe(
+      '/projects/p1/automations/new?service=svc_github&preset=review',
+    );
+  });
+
   it('resets the workspace scroll when moving between Tasks and Automations', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
     renderPage(client);

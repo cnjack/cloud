@@ -101,6 +101,38 @@ func TestPluginAutomationCarriesModelAndReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestPluginReviewAutomationAcceptsOnlyPullRequestTriggers(t *testing.T) {
+	review := "review"
+	req := pluginAutomationReq{
+		ServiceID: "service", Name: "Pull request reviews",
+		PromptTemplate: "Focus on correctness.", RunKind: &review,
+		SCM: &pluginSCMReq{
+			IncludeDrafts: false,
+			Actions: []pluginSCMActionReq{
+				{EventFamily: "pull_request", Action: "ready"},
+				{EventFamily: "pull_request", Action: "synchronized"},
+			},
+		},
+	}
+	automation, scm, _, _, _, message := pluginAutomationFromReq(req, "automation")
+	if message != "" {
+		t.Fatalf("valid review Automation rejected: %q", message)
+	}
+	if automation.RunKind != domain.RunKindReview || scm == nil || scm.IncludeDrafts {
+		t.Fatalf("review Automation=%+v scm=%+v", automation, scm)
+	}
+
+	req.SCM.Actions = []pluginSCMActionReq{{EventFamily: "push", Action: "updated"}}
+	if _, _, _, _, _, message = pluginAutomationFromReq(req, "automation"); !strings.Contains(message, "review Automations support only pull_request") {
+		t.Fatalf("push review validation message=%q", message)
+	}
+	req.SCM = nil
+	req.Cron = &pluginCronReq{CronExpr: "0 9 * * *"}
+	if _, _, _, _, _, message = pluginAutomationFromReq(req, "automation"); !strings.Contains(message, "review Automations require an scm trigger") {
+		t.Fatalf("cron review validation message=%q", message)
+	}
+}
+
 func TestPluginAutomationModelPatchClearsOnlyHistoricalModelErrors(t *testing.T) {
 	if !shouldClearPluginAutomationModelError(true, "Automation model is unavailable.") {
 		t.Fatal("an explicitly saved model must clear the stale model-selection error")

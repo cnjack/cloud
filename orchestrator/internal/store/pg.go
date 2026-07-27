@@ -426,7 +426,7 @@ func (s *PGStore) ClearServiceArchive(ctx context.Context, serviceID string) err
 const runCols = `id, project_id, service_id, prompt, status, kind, phase, error, k8s_job_name,
 	retried_from, failure_reason, failure_message, attempt, token_hash,
 	created_at, started_at, finished_at, job_cleaned_at,
-	git_branch, commit_sha, pr_url, pr_number, review_output, triggered_by_user_id,
+	git_branch, commit_sha, pr_url, pr_number, review_output, review_result, triggered_by_user_id,
 	review_posted_at, pr_head_branch, pr_base_branch,
 	origin, origin_comment_id, origin_comment_url, origin_automation_id, origin_event_key,
 	coalesce_key,
@@ -438,11 +438,12 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
 	var commentID, commentURL, automationID, eventKey, result *string
+	var reviewResult []byte
 	err := row.Scan(&r.ID, &r.ProjectID, &r.ServiceID, &r.Prompt, &r.Status, &r.Kind, &r.Phase, &r.Error,
 		&r.K8sJobName, &r.RetriedFrom, &r.FailureReason, &r.FailureMessage,
 		&r.Attempt, &r.TokenHash,
 		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.JobCleanedAt,
-		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &r.TriggeredByUserID,
+		&r.GitBranch, &r.CommitSHA, &r.PRURL, &r.PRNumber, &r.ReviewOutput, &reviewResult, &r.TriggeredByUserID,
 		&r.ReviewPostedAt, &r.PRHeadBranch, &r.PRBaseBranch,
 		&r.Origin, &commentID, &commentURL, &automationID, &eventKey, &r.CoalesceKey, &result, &r.ModelID, &r.ModelName,
 		&r.BaseBranch, &r.ModelEffort, &r.GoalMode,
@@ -469,6 +470,13 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 	if result != nil {
 		rr := domain.RunResult(*result)
 		r.Result = &rr
+	}
+	if len(reviewResult) > 0 {
+		var parsed domain.ReviewResult
+		if err := json.Unmarshal(reviewResult, &parsed); err != nil {
+			return nil, fmt.Errorf("scan run review result: %w", err)
+		}
+		r.ReviewResult = &parsed
 	}
 	return &r, nil
 }
@@ -542,11 +550,11 @@ func (s *PGStore) createRunTx(ctx context.Context, tx pgx.Tx, r *domain.Run) err
 	}
 	_, err := tx.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
-		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, r.TriggeredByUserID,
+		r.GitBranch, r.CommitSHA, r.PRURL, r.PRNumber, r.ReviewOutput, reviewResultJSON(r.ReviewResult), r.TriggeredByUserID,
 		r.ReviewPostedAt, r.PRHeadBranch, r.PRBaseBranch,
 		string(r.Origin), nullStr(r.OriginCommentID), nullStr(r.OriginCommentURL), nullStr(r.OriginAutomationID), nullStr(r.OriginEventKey), r.CoalesceKey,
 		nullRunResult(r.Result), r.ModelID, r.ModelName,
@@ -579,6 +587,17 @@ func (s *PGStore) createRunTx(ctx context.Context, tx pgx.Tx, r *domain.Run) err
 		}
 	}
 	return nil
+}
+
+func reviewResultJSON(result *domain.ReviewResult) any {
+	if result == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 func (s *PGStore) CreateAttachmentStage(ctx context.Context, stage *domain.AttachmentStage) error {
@@ -1723,7 +1742,7 @@ func (s *PGStore) ListRunsAwaitingPR(ctx context.Context) ([]domain.Run, error) 
 func (s *PGStore) ListReviewRunsAwaitingPost(ctx context.Context) ([]domain.Run, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+runCols+` FROM runs
-		 WHERE status=$1 AND kind='review' AND review_output <> '' AND review_posted_at IS NULL
+		 WHERE status=$1 AND kind='review' AND (review_output <> '' OR review_result IS NOT NULL) AND review_posted_at IS NULL
 		 ORDER BY created_at ASC`,
 		string(domain.StatusSucceeded))
 	if err != nil {
@@ -1780,6 +1799,24 @@ func (s *PGStore) SetReviewOutput(ctx context.Context, id, md string) (*domain.R
 		`UPDATE runs SET review_output = CASE WHEN review_output='' THEN $2 ELSE review_output END
 		 WHERE id=$1`, id, md); err != nil {
 		return nil, fmt.Errorf("set review output: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+func (s *PGStore) SetReviewResult(ctx context.Context, id string, result domain.ReviewResult) (*domain.Run, error) {
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("marshal review result: %w", err)
+	}
+	tx, _, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET review_result = CASE WHEN review_result IS NULL THEN $2::jsonb ELSE review_result END
+		 WHERE id=$1`, id, encoded); err != nil {
+		return nil, fmt.Errorf("set review result: %w", err)
 	}
 	return s.commitAndReload(ctx, tx, id)
 }

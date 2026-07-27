@@ -1,17 +1,20 @@
 package api
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/modelcfg"
+	gitprovider "github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/scmevent"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -113,7 +116,7 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		sum := sha256.Sum256(mac.Sum(nil))
 		payloadDigest = hex.EncodeToString(sum[:])
 	}
-	event, err := scmevent.Normalize(provider, eventType, deliveryID, body, now)
+	event, err := scmevent.NormalizeForApp(provider, eventType, deliveryID, body, now, cfg.AppSlug)
 	// Do not retain the provider payload beyond normalization/authentication.
 	body = nil
 	if errors.Is(err, scmevent.ErrIgnored) || errors.Is(err, scmevent.ErrUnsupported) {
@@ -171,10 +174,25 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	automations, err := s.st.ListPluginAutomationsForEvent(
-		r.Context(), domain.ProviderKind(provider), event.Repository.ID,
-		string(event.Family), string(event.Action),
-	)
+	var reviewCommand scmevent.ReviewCommand
+	manualReview := false
+	if event.Family == scmevent.FamilyComment {
+		reviewCommand, manualReview = scmevent.ParseReviewCommand(event.Body, cfg.AppSlug)
+	}
+	var automations []domain.PluginAutomation
+	if manualReview {
+		automations, err = s.st.ListPluginReviewAutomationsForRepository(
+			r.Context(), domain.ProviderKind(provider), event.Repository.ID,
+		)
+		if len(automations) > 1 {
+			automations = automations[:1]
+		}
+	} else {
+		automations, err = s.st.ListPluginAutomationsForEvent(
+			r.Context(), domain.ProviderKind(provider), event.Repository.ID,
+			string(event.Family), string(event.Action),
+		)
+	}
 	if err != nil {
 		s.completePluginReceipt(r, receipt, "error", "", "could not match Automation")
 		writeError(w, http.StatusInternalServerError, "match_failed", "could not match webhook Automation")
@@ -189,6 +207,10 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		spec, specErr := s.st.GetPluginAutomationSpec(r.Context(), a.ID)
 		if specErr != nil || spec.SCM == nil {
 			s.recordPluginAutomationError(r, a, "Automation trigger configuration is unavailable.")
+			continue
+		}
+		if a.RunKind == domain.RunKindReview && event.Family == scmevent.FamilyPullRequest &&
+			event.Draft && !spec.SCM.IncludeDrafts {
 			continue
 		}
 		if a.IgnoreJCode && event.GeneratedByJCode {
@@ -217,28 +239,96 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		if receipt.InstallationID == "" {
 			receipt.InstallationID = binding.InstallationID
 		}
+		var (
+			manualClient     gitprovider.Provider
+			manualOwner      string
+			manualRepo       string
+			manualUserID     *string
+			manualCommentURL = event.Object.URL
+			manualReply      = func(string) {}
+		)
+		if manualReview {
+			manualClient, bindErr = s.pluginProviderClient(r.Context(), binding)
+			manualOwner, manualRepo, _ = gitprovider.SplitRepo(svc.RepoOwnerName)
+			manualReply = func(message string) {
+				if manualClient != nil && manualOwner != "" && manualRepo != "" {
+					_ = manualClient.CreateIssueComment(r.Context(), manualOwner, manualRepo, int(event.Object.Number), message)
+				}
+			}
+			if bindErr != nil || manualClient == nil || manualOwner == "" || manualRepo == "" {
+				s.recordPluginAutomationError(r, a, "GitHub App credential is unavailable for review acknowledgement.")
+				continue
+			}
+			identity, identityErr := s.st.GetIdentity(r.Context(), domain.GitProvider(provider), event.Actor.ID)
+			if identityErr != nil {
+				manualReply("jcode couldn't find a linked Cloud account for this GitHub user. Sign in to jcode Cloud with GitHub first.")
+				continue
+			}
+			user, userErr := s.st.GetUser(r.Context(), identity.UserID)
+			member, memberErr := s.st.GetMember(r.Context(), svc.ProjectID, identity.UserID)
+			if userErr != nil || (!user.IsClusterAdmin && (memberErr != nil || !member.Role.AtLeast(domain.RoleMember))) {
+				manualReply("jcode can't start a review for this account. Ask a project owner to add you as a member.")
+				continue
+			}
+			userID := identity.UserID
+			manualUserID = &userID
+			pr, prErr := manualClient.PRByNumber(r.Context(), manualOwner, manualRepo, int(event.Object.Number))
+			if prErr != nil || pr == nil || pr.HeadRef == "" || pr.BaseRef == "" {
+				manualReply("jcode couldn't read this pull request. Check that the App still has Pull requests: read and write permission.")
+				continue
+			}
+			event.Ref, event.BaseRef = pr.HeadRef, pr.BaseRef
+			event.Object.URL = pr.URL
+		}
 		sel, outcome, selectErr := s.models.SelectModel(r.Context(), svc.ProjectID, deref(svc.DefaultModelID), a.ModelID)
 		if selectErr != nil || outcome != modelcfg.SelectOK {
 			s.recordPluginAutomationError(r, a, pluginAutomationModelError(outcome, selectErr))
+			if manualReview {
+				manualReply("jcode couldn't start this review because no usable model is configured. Ask a project owner to check the review settings.")
+			}
 			continue
 		}
 		if !sel.SupportsEffort(a.ModelEffort) {
 			s.recordPluginAutomationError(r, a, "The selected Automation model no longer supports reasoning effort.")
+			if manualReview {
+				manualReply("jcode couldn't start this review because the selected model no longer supports its configured reasoning effort.")
+			}
 			continue
 		}
 		prompt := renderPluginPrompt(a.PromptTemplate, event)
 		if event.Family == scmevent.FamilyComment {
-			prompt = event.Body
+			if manualReview {
+				prompt = a.PromptTemplate
+				if reviewCommand.Full {
+					prompt += "\nReview mode: full base-to-head review."
+				}
+				if reviewCommand.Focus != "" {
+					prompt += "\nReviewer focus: " + reviewCommand.Focus
+				}
+			} else {
+				prompt = event.Body
+			}
 		}
 		var triggeredBy *string
-		if identity, identityErr := s.st.GetIdentity(r.Context(), domain.GitProvider(provider), event.Actor.ID); identityErr == nil {
+		if manualUserID != nil {
+			triggeredBy = manualUserID
+		} else if identity, identityErr := s.st.GetIdentity(r.Context(), domain.GitProvider(provider), event.Actor.ID); identityErr == nil {
 			id := identity.UserID
 			triggeredBy = &id
 		}
 		run := newQueuedRun(svc.ProjectID, svc.ID, prompt, nil, triggeredBy)
+		run.Kind = a.RunKind
+		if run.Kind == "" {
+			run.Kind = domain.RunKindAgent
+		}
 		run.Origin = domain.RunOriginAutomation
 		run.OriginAutomationID = a.ID
-		run.OriginEventKey = pluginEventKey(a.ID, svc.ID, event)
+		run.OriginEventKey = pluginEventKey(a, svc.ID, event)
+		if manualReview {
+			run.Origin = domain.RunOriginWebhook
+			run.OriginCommentID = originCommentKey(domain.GitProvider(provider), event.Object.ID)
+			run.OriginCommentURL = manualCommentURL
+		}
 		run.ModelName = sel.ModelName
 		run.ModelEffort = a.ModelEffort
 		run.PRNumber = int(event.Object.Number)
@@ -248,7 +338,7 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		// PR metadata so push/check Automations do not accidentally enter the
 		// PR-head update path.
 		run.BaseBranch = automationRunBranch(event)
-		if event.Family == scmevent.FamilyPullRequest {
+		if event.Family == scmevent.FamilyPullRequest || manualReview {
 			run.PRHeadBranch = automationRunBranch(event)
 			run.PRBaseBranch = strings.TrimPrefix(event.BaseRef, "refs/heads/")
 		}
@@ -260,7 +350,7 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 			run.ModelID = &modelID
 		}
 		var createErr error
-		if coalesceKey := pluginRunCoalesceKey(a.ID, svc.ID, event); coalesceKey != "" {
+		if coalesceKey := pluginRunCoalesceKey(a.ID, svc.ID, event); coalesceKey != "" && !manualReview {
 			createErr = s.st.CreateCoalescedRun(r.Context(), coalesceKey, run)
 		} else {
 			createErr = s.st.CreateRun(r.Context(), run)
@@ -270,6 +360,9 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			s.recordPluginAutomationError(r, a, "Automation Run could not be created.")
+			if manualReview {
+				manualReply("jcode couldn't queue this review. Try again; if it continues, ask a project owner to check the Automation status.")
+			}
 			continue
 		}
 		nowTriggered := time.Now().UTC()
@@ -278,6 +371,13 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		a.LastError = ""
 		_ = s.st.UpdatePluginAutomation(r.Context(), a)
 		s.emitStatus(r.Context(), run)
+		if manualReview {
+			if reactor, ok := manualClient.(gitprovider.IssueCommentReactor); ok {
+				if commentID, parseErr := strconv.ParseInt(event.Object.ID, 10, 64); parseErr == nil {
+					_ = reactor.CreateIssueCommentReaction(r.Context(), manualOwner, manualRepo, commentID, "eyes")
+				}
+			}
+		}
 		if receipt.MatchedAutomationID == "" {
 			receipt.MatchedAutomationID = a.ID
 		}
@@ -363,11 +463,37 @@ func normalizedObjectRef(event scmevent.NormalizedSCMEvent) string {
 	return event.Repository.FullName
 }
 
-func pluginEventKey(automationID, serviceID string, event scmevent.NormalizedSCMEvent) string {
+func pluginEventKey(automation *domain.PluginAutomation, serviceID string, event scmevent.NormalizedSCMEvent) string {
+	automationID := automation.ID
+	if automation.RunKind == domain.RunKindReview && event.Family == scmevent.FamilyPullRequest &&
+		event.Object.Number > 0 && strings.TrimSpace(event.HeadSHA) != "" {
+		return fmt.Sprintf("plugin-review:%s:%s:%d:%s", automationID, event.Repository.ID, event.Object.Number, event.HeadSHA)
+	}
 	if key := scmevent.CoalesceKey(serviceID, event); key != "" {
 		return fmt.Sprintf("plugin-coalesce:%s:%s:%s", automationID, key, event.DeliveryID)
 	}
 	return fmt.Sprintf("plugin:%s:%s:%s", automationID, event.Provider, event.DeliveryID)
+}
+
+func (s *Server) pluginProviderClient(ctx context.Context, binding *domain.ServiceRepositoryBinding) (gitprovider.Provider, error) {
+	if binding == nil || s.pluginCredentialIssuer == nil {
+		return nil, errors.New("Plugin credential issuer is unavailable")
+	}
+	installation, err := s.st.GetPluginInstallation(ctx, binding.InstallationID)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := s.st.GetProviderConfig(ctx, installation.Provider)
+	if err != nil {
+		return nil, err
+	}
+	credential, err := s.pluginCredentialIssuer.IssueRunPluginCredential(ctx, installation, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return gitprovider.IntegrationClientWithScheme(
+		domain.GitProvider(installation.Provider), cfg.BaseURL, credential.AccessToken, credential.Scheme,
+	)
 }
 
 func pluginRunCoalesceKey(automationID, serviceID string, event scmevent.NormalizedSCMEvent) string {

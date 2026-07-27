@@ -1586,7 +1586,7 @@ func (m *MemStore) ListReviewRunsAwaitingPost(_ context.Context) ([]domain.Run, 
 	var out []domain.Run
 	for _, r := range m.runs {
 		if r.Status == domain.StatusSucceeded && r.Kind == domain.RunKindReview &&
-			r.ReviewOutput != "" && r.ReviewPostedAt == nil {
+			(r.ReviewOutput != "" || r.ReviewResult != nil) && r.ReviewPostedAt == nil {
 			out = append(out, r)
 		}
 	}
@@ -1622,6 +1622,24 @@ func (m *MemStore) SetReviewOutput(_ context.Context, id, md string) (*domain.Ru
 	m.runs[id] = cur
 	cp := cur
 	return &cp, nil
+}
+
+func (m *MemStore) SetReviewResult(_ context.Context, id string, result domain.ReviewResult) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if cur.ReviewResult == nil {
+		cp := result
+		cp.Findings = append([]domain.ReviewFinding(nil), result.Findings...)
+		cp.Checks = append([]string(nil), result.Checks...)
+		cur.ReviewResult = &cp
+		m.runs[id] = cur
+	}
+	out := cur
+	return &out, nil
 }
 
 // MarkReviewPosted stamps review_posted_at idempotently, returning true only for
@@ -2543,6 +2561,22 @@ func (m *MemStore) RecordProviderCapabilities(_ context.Context, provider domain
 	return nil
 }
 
+func (m *MemStore) RecordProviderAppSlug(_ context.Context, provider domain.ProviderKind, appSlug string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfg, ok := m.providerConfigs[provider]
+	if !ok {
+		return ErrNotFound
+	}
+	if provider != domain.PluginGitHub {
+		return fmt.Errorf("record provider App slug: provider must be github")
+	}
+	cfg.AppSlug = strings.TrimSpace(appSlug)
+	cfg.UpdatedAt = time.Now().UTC()
+	m.providerConfigs[provider] = cfg
+	return nil
+}
+
 func (m *MemStore) RecordProviderHealthError(_ context.Context, provider domain.ProviderKind, message string, checkedAt time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2860,6 +2894,13 @@ func (m *MemStore) CreatePluginAutomation(_ context.Context, a *domain.PluginAut
 	if err := m.validatePluginKanbanUniquenessLocked(a, kanban, ""); err != nil {
 		return err
 	}
+	if a.RunKind == domain.RunKindReview {
+		for _, existing := range m.pluginAutomations {
+			if existing.ServiceID == a.ServiceID && existing.RunKind == domain.RunKindReview {
+				return ErrAlreadyExists
+			}
+		}
+	}
 	for _, action := range actions {
 		key := action.ServiceID + "|" + action.EventFamily + "|" + action.Action
 		if _, exists := m.pluginSCMActions[key]; exists {
@@ -2964,6 +3005,28 @@ func (m *MemStore) ListPluginAutomationsForEvent(_ context.Context, provider dom
 	return out, nil
 }
 
+func (m *MemStore) ListPluginReviewAutomationsForRepository(_ context.Context, provider domain.ProviderKind, repositoryID string) ([]domain.PluginAutomation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []domain.PluginAutomation{}
+	for _, a := range m.pluginAutomations {
+		if !a.Enabled || a.TriggerKind != "scm" || a.RunKind != domain.RunKindReview {
+			continue
+		}
+		b, ok := m.serviceRepoBindings[a.ServiceID]
+		if !ok || b.ProviderRepoID != repositoryID {
+			continue
+		}
+		in, ok := m.pluginInstallations[b.InstallationID]
+		if !ok || in.Provider != provider || in.Status != domain.PluginStatusEnabled {
+			continue
+		}
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
 func (m *MemStore) UpdatePluginAutomation(_ context.Context, a *domain.PluginAutomation) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2974,6 +3037,7 @@ func (m *MemStore) UpdatePluginAutomation(_ context.Context, a *domain.PluginAut
 	// Mirror PG: this lightweight update deliberately cannot mutate aggregate
 	// identity (Service, Installation, trigger kind, creator, created time).
 	current.Name = a.Name
+	current.RunKind = a.RunKind
 	current.PromptTemplate = a.PromptTemplate
 	current.ModelID = a.ModelID
 	current.ModelEffort = a.ModelEffort
@@ -3014,6 +3078,13 @@ func (m *MemStore) ReplacePluginAutomationSpec(_ context.Context, a *domain.Plug
 	}
 	if err := m.validatePluginKanbanUniquenessLocked(a, kanban, a.ID); err != nil {
 		return err
+	}
+	if a.RunKind == domain.RunKindReview {
+		for _, existing := range m.pluginAutomations {
+			if existing.ID != a.ID && existing.ServiceID == a.ServiceID && existing.RunKind == domain.RunKindReview {
+				return ErrAlreadyExists
+			}
+		}
 	}
 	for _, x := range actions {
 		key := x.ServiceID + "|" + x.EventFamily + "|" + x.Action

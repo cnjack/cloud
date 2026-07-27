@@ -26,19 +26,25 @@ func (s *Server) handleProviderCapabilities(w http.ResponseWriter, r *http.Reque
 	}
 	capabilities := scmevent.Capabilities(provider)
 	instanceURL := ""
+	mentionHandle := ""
 	if cfg, err := s.st.GetProviderConfig(r.Context(), domain.ProviderKind(provider)); err == nil {
 		instanceURL = cfg.BaseURL
 		capabilities = providerCapabilitiesForConfig(provider, cfg)
+		if provider == scmevent.ProviderGitHub && strings.TrimSpace(cfg.AppSlug) != "" {
+			mentionHandle = "@" + strings.TrimPrefix(strings.TrimSpace(cfg.AppSlug), "@")
+		}
 	}
 	if provider == scmevent.ProviderGitHub && instanceURL == "" {
 		instanceURL = "https://github.com"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"provider":        capabilities.Provider,
-		"minimum_version": capabilities.MinimumVersion,
-		"capabilities":    capabilities.Capabilities,
-		"instance_url":    instanceURL,
-		"oauth_scopes":    canonicalPluginConsentScopes(domain.ProviderKind(provider)),
+		"provider":                    capabilities.Provider,
+		"minimum_version":             capabilities.MinimumVersion,
+		"capabilities":                capabilities.Capabilities,
+		"instance_url":                instanceURL,
+		"oauth_scopes":                canonicalPluginConsentScopes(domain.ProviderKind(provider)),
+		"mention_handle":              mentionHandle,
+		"inline_pull_request_reviews": provider == scmevent.ProviderGitHub,
 	})
 }
 
@@ -66,6 +72,7 @@ type pluginAutomationReq struct {
 	PromptTemplate string           `json:"prompt_template"`
 	ModelID        *string          `json:"model_id"`
 	ModelEffort    *string          `json:"model_effort"`
+	RunKind        *string          `json:"run_kind"`
 	Enabled        *bool            `json:"enabled"`
 	IgnoreJCode    *bool            `json:"ignore_jcode"`
 	SCM            *pluginSCMReq    `json:"scm"`
@@ -73,10 +80,11 @@ type pluginAutomationReq struct {
 	Cron           *pluginCronReq   `json:"cron"`
 }
 type pluginSCMReq struct {
-	Branch      string               `json:"branch"`
-	PathPattern string               `json:"path_pattern"`
-	Conclusion  string               `json:"conclusion"`
-	Actions     []pluginSCMActionReq `json:"actions"`
+	Branch        string               `json:"branch"`
+	PathPattern   string               `json:"path_pattern"`
+	Conclusion    string               `json:"conclusion"`
+	IncludeDrafts bool                 `json:"include_drafts"`
+	Actions       []pluginSCMActionReq `json:"actions"`
 }
 type pluginSCMActionReq struct {
 	EventFamily string `json:"event_family"`
@@ -250,6 +258,10 @@ func (s *Server) handleUpdatePluginAutomation(w http.ResponseWriter, r *http.Req
 		value := spec.Automation.ModelEffort
 		req.ModelEffort = &value
 	}
+	if req.RunKind == nil {
+		value := string(spec.Automation.RunKind)
+		req.RunKind = &value
+	}
 	req.ServiceID = svc.ID
 	if req.SCM == nil && req.Kanban == nil && req.Cron == nil {
 		req.SCM = specToSCM(spec)
@@ -403,15 +415,22 @@ func pluginAutomationFromReq(req pluginAutomationReq, id string) (*domain.Plugin
 	if !domain.ValidModelEffort(modelEffort) {
 		return nil, nil, nil, nil, nil, "model_effort must be one of low, medium, or high"
 	}
+	runKind := domain.RunKindAgent
+	if req.RunKind != nil && strings.TrimSpace(*req.RunKind) != "" {
+		runKind = domain.RunKind(strings.TrimSpace(*req.RunKind))
+	}
+	if !domain.ValidRunKind(runKind) {
+		return nil, nil, nil, nil, nil, "run_kind must be agent or review"
+	}
 	a := &domain.PluginAutomation{
 		ID: id, ServiceID: strings.TrimSpace(req.ServiceID), Name: name,
 		PromptTemplate: prompt, ModelID: modelID, ModelEffort: modelEffort,
-		Enabled: enabled, IgnoreJCode: ignore,
+		RunKind: runKind, Enabled: enabled, IgnoreJCode: ignore,
 	}
 	if req.SCM != nil {
 		a.TriggerKind = "scm"
 		x := req.SCM
-		scm := &domain.SCMTrigger{Branch: strings.TrimSpace(x.Branch), PathPattern: strings.TrimSpace(x.PathPattern), Conclusion: strings.TrimSpace(x.Conclusion)}
+		scm := &domain.SCMTrigger{Branch: strings.TrimSpace(x.Branch), PathPattern: strings.TrimSpace(x.PathPattern), Conclusion: strings.TrimSpace(x.Conclusion), IncludeDrafts: x.IncludeDrafts}
 		if len(x.Actions) == 0 {
 			return nil, nil, nil, nil, nil, "scm.actions is required"
 		}
@@ -429,6 +448,13 @@ func pluginAutomationFromReq(req pluginAutomationReq, id string) (*domain.Plugin
 			}
 			seen[key] = true
 			actions = append(actions, domain.SCMAction{EventFamily: string(family), Action: string(action)})
+		}
+		if runKind == domain.RunKindReview {
+			for _, action := range actions {
+				if action.EventFamily != string(scmevent.FamilyPullRequest) {
+					return nil, nil, nil, nil, nil, "review Automations support only pull_request actions"
+				}
+			}
 		}
 		if scm.PathPattern != "" {
 			for _, action := range actions {
@@ -460,6 +486,9 @@ func pluginAutomationFromReq(req pluginAutomationReq, id string) (*domain.Plugin
 		return a, scm, actions, nil, nil, ""
 	}
 	if req.Kanban != nil {
+		if runKind == domain.RunKindReview {
+			return nil, nil, nil, nil, nil, "review Automations require an scm trigger"
+		}
 		a.TriggerKind = "kanban"
 		x := req.Kanban
 		k := &domain.KanbanTrigger{InstallationID: strings.TrimSpace(x.InstallationID), BoardRef: strings.TrimSpace(x.BoardRef), TriggerColumn: strings.TrimSpace(x.TriggerColumn), DoneColumn: strings.TrimSpace(x.DoneColumn)}
@@ -469,6 +498,9 @@ func pluginAutomationFromReq(req pluginAutomationReq, id string) (*domain.Plugin
 		return a, nil, nil, k, nil, ""
 	}
 	a.TriggerKind = "cron"
+	if runKind == domain.RunKindReview {
+		return nil, nil, nil, nil, nil, "review Automations require an scm trigger"
+	}
 	expr := strings.TrimSpace(req.Cron.CronExpr)
 	if expr == "" {
 		return nil, nil, nil, nil, nil, "cron.cron_expr is required"
@@ -553,7 +585,7 @@ func specToSCM(s *domain.PluginAutomationSpec) *pluginSCMReq {
 	if s.SCM == nil {
 		return nil
 	}
-	v := &pluginSCMReq{Branch: s.SCM.Branch, PathPattern: s.SCM.PathPattern, Conclusion: s.SCM.Conclusion}
+	v := &pluginSCMReq{Branch: s.SCM.Branch, PathPattern: s.SCM.PathPattern, Conclusion: s.SCM.Conclusion, IncludeDrafts: s.SCM.IncludeDrafts}
 	for _, x := range s.Actions {
 		v.Actions = append(v.Actions, pluginSCMActionReq{EventFamily: x.EventFamily, Action: x.Action})
 	}

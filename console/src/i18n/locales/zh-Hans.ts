@@ -1286,6 +1286,17 @@ export default {
     events: '事件', moreEvents: '更多事件', thisProvider: '当前提供方', eventUnavailable: '{provider}{version} 不支持此事件。',
     cronExpression: 'Cron 表达式', cronHint: '使用五段式 Cron 表达式；服务器会强制执行最小时间间隔。',
     create: '创建自动化', save: '保存自动化',
+    review: {
+      eyebrow: 'GitHub 代码评审', title: '评审 Pull Request', subtitle: '无需让团队学习新流程，即可启用实用的 GitHub 原生评审。',
+      defaultName: 'Pull Request 评审', setup: '评审设置',
+      automaticTitle: '默认自动评审', automaticBody: 'Pull Request 准备好后，App 会自动评审；后续每次提交新代码也会再次评审。',
+      repeatTitle: '直接从 GitHub 重复评审', repeatBody: '需要再看一遍时，在任意 Pull Request 评论中提及 App 即可。',
+      focus: '评审关注点（可选）', focusPlaceholder: '例如：特别关注授权边界。', focusHint: '评审器始终会检查正确性、安全性、可靠性、数据丢失和回归。',
+      when: '何时评审', readyTitle: '已准备好的 Pull Request', readyBody: '评审新建的 Pull Request，以及从草稿转为准备好的 Pull Request。',
+      updatesTitle: '有新提交时', updatesBody: 'Pull Request 的最新提交发生变化时重新评审。',
+      draftsTitle: '包含草稿', draftsBody: '通常保持关闭，让作者先完成自己的第一轮检查。',
+      create: '开启评审', save: '保存评审设置',
+    },
     validation: {
       noPermission: '你没有编辑自动化的权限。',
       required: '名称、服务、模型和任务提示词均为必填项。',
@@ -1311,6 +1322,7 @@ export default {
     cron: 'Cron 表达式', action: 'SCM 事件', column: '触发列', prompt: '任务说明', incomplete: '保存前请填写所有必填项。',
     create: '创建自动化', save: '保存更改', trigger: { scm: 'SCM 事件', kanban: 'Kanban 列', cron: '定时任务' },
     enabled: '已启用', disabled: '已停用', toggleLabel: '{name}：{status}',
+    review: { turnOn: '评审 Pull Request', manage: '评审设置', rowSummary: '由 GitHub App 在变更行上发布高置信度问题。', native: 'GitHub 原生评审' },
     error: {
       modelUnavailable: '收到此事件时无法选择可用模型。请为项目授权模型；如果授权了多个模型，请设置服务默认模型。下一次成功触发后会自动清除此历史错误。',
       modelNotSelected: '项目有多个可用模型，但此服务没有默认模型。请在服务设置中选择一个。',

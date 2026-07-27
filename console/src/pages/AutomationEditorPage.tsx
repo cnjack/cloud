@@ -53,6 +53,15 @@ const COMMON_ACTIONS = new Set<NormalizedScmAction>([
   'check.completed',
 ]);
 
+const REVIEW_ACTIONS: NormalizedScmAction[] = [
+  'pull_request.opened',
+  'pull_request.ready',
+  'pull_request.synchronized',
+  'pull_request.reopened',
+];
+const DEFAULT_REVIEW_PROMPT =
+  'Review correctness, security, reliability, data loss, and regressions. Follow repository instructions and report only verified, actionable defects.';
+
 const GITHUB_ACTIONS = new Set<NormalizedScmAction>(ALL_ACTIONS.filter((action) =>
   action !== 'review.approval_removed'
 ));
@@ -89,6 +98,7 @@ export function AutomationEditorPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const editing = !!automationId;
+  const reviewPreset = !editing && searchParams.get('preset') === 'review';
   const project = useProject(projectId);
   const existing = useProjectAutomation(projectId, automationId, editing);
   const projectModels = useProjectModels(projectId);
@@ -97,10 +107,12 @@ export function AutomationEditorPage() {
 
   const services = project.data?.services ?? [];
   const initialService = searchParams.get('service') ?? '';
-  const [name, setName] = useState('');
+  const [name, setName] = useState(reviewPreset ? t('automationEditor.review.defaultName') : '');
   const [serviceId, setServiceId] = useState(initialService);
   const [kind, setKind] = useState<Exclude<AutomationTriggerKind, 'kanban'>>('scm');
-  const [prompt, setPrompt] = useState('');
+  const [runKind, setRunKind] = useState<'agent' | 'review'>(reviewPreset ? 'review' : 'agent');
+  const [prompt, setPrompt] = useState(reviewPreset ? DEFAULT_REVIEW_PROMPT : '');
+  const [reviewFocus, setReviewFocus] = useState('');
   const [modelId, setModelId] = useState('');
   const [modelEffort, setModelEffort] = useState<'auto' | 'low' | 'medium' | 'high'>('auto');
   const [enabled, setEnabled] = useState(true);
@@ -108,7 +120,8 @@ export function AutomationEditorPage() {
   const [branch, setBranch] = useState('');
   const [pathPattern, setPathPattern] = useState('');
   const [conclusion, setConclusion] = useState('');
-  const [actions, setActions] = useState<NormalizedScmAction[]>(['push.updated']);
+  const [actions, setActions] = useState<NormalizedScmAction[]>(reviewPreset ? REVIEW_ACTIONS : ['push.updated']);
+  const [includeDrafts, setIncludeDrafts] = useState(false);
   const [showMoreActions, setShowMoreActions] = useState(false);
   const [cronExpr, setCronExpr] = useState('0 9 * * 1-5');
   const [formError, setFormError] = useState('');
@@ -134,10 +147,17 @@ export function AutomationEditorPage() {
     action.startsWith('push.') || action.startsWith('pull_request.') || action.startsWith('check.'));
   const canEdit = project.data?.role !== 'viewer';
   const moreActionsOpen = showMoreActions || actions.some((action) => !COMMON_ACTIONS.has(action));
+  const reviewMode = reviewPreset || runKind === 'review';
+  const mentionHandle = capabilities.data?.mention_handle || '@jcode';
 
   useEffect(() => {
     if (!serviceId && initialService) setServiceId(initialService);
   }, [initialService, serviceId]);
+
+  useEffect(() => {
+    const onlyService = services.length === 1 ? services[0] : undefined;
+    if (!serviceId && onlyService) setServiceId(onlyService.id);
+  }, [serviceId, services]);
 
   useEffect(() => {
     if (editing || modelId || !selectedService || !models.length) return;
@@ -164,7 +184,13 @@ export function AutomationEditorPage() {
     setName(automation.name);
     setServiceId(automation.service_id);
     setKind(automation.trigger_kind === 'cron' ? 'cron' : 'scm');
+    setRunKind(automation.run_kind ?? 'agent');
     setPrompt(automation.prompt_template);
+    if (automation.run_kind === 'review') {
+      setReviewFocus(automation.prompt_template === DEFAULT_REVIEW_PROMPT
+        ? ''
+        : automation.prompt_template.replace(`${DEFAULT_REVIEW_PROMPT}\n\nAdditional focus: `, ''));
+    }
     setModelId(automation.model_id ?? '');
     setModelEffort(automation.model_effort ?? 'auto');
     setEnabled(automation.enabled);
@@ -172,6 +198,7 @@ export function AutomationEditorPage() {
     setBranch(spec.scm?.branch ?? '');
     setPathPattern(spec.scm?.path_pattern ?? '');
     setConclusion(spec.scm?.conclusion ?? '');
+    setIncludeDrafts(spec.scm?.include_drafts ?? false);
     setActions((spec.actions ?? []).map(actionName));
     setCronExpr(spec.cron?.cron_expr ?? '0 9 * * 1-5');
   }
@@ -187,6 +214,21 @@ export function AutomationEditorPage() {
     });
   }
 
+  function setReviewReady(selected: boolean) {
+    const readyActions: NormalizedScmAction[] = [
+      'pull_request.opened', 'pull_request.ready', 'pull_request.reopened',
+    ];
+    setActions((current) => selected
+      ? [...readyActions, ...current.filter((action) => !readyActions.includes(action))]
+      : current.filter((action) => !readyActions.includes(action)));
+  }
+
+  function setReviewUpdates(selected: boolean) {
+    setActions((current) => selected
+      ? [...current.filter((action) => action !== 'pull_request.synchronized'), 'pull_request.synchronized']
+      : current.filter((action) => action !== 'pull_request.synchronized'));
+  }
+
   function submit(event: React.FormEvent) {
     event.preventDefault();
     setFormError('');
@@ -194,7 +236,7 @@ export function AutomationEditorPage() {
       setFormError(t('automationEditor.validation.noPermission'));
       return;
     }
-    if (!name.trim() || !serviceId || !prompt.trim() || !modelId) {
+    if (!name.trim() || !serviceId || (!reviewMode && !prompt.trim()) || !modelId) {
       setFormError(t('automationEditor.validation.required'));
       return;
     }
@@ -209,7 +251,10 @@ export function AutomationEditorPage() {
     const input: CreateProjectAutomationInput = {
       service_id: serviceId,
       name: name.trim(),
-      prompt_template: prompt.trim(),
+      prompt_template: reviewMode
+        ? `${DEFAULT_REVIEW_PROMPT}${reviewFocus.trim() ? `\n\nAdditional focus: ${reviewFocus.trim()}` : ''}`
+        : prompt.trim(),
+      ...(reviewMode ? { run_kind: 'review' as const } : {}),
       model_id: modelId,
       model_effort: modelEffort,
       enabled,
@@ -219,6 +264,7 @@ export function AutomationEditorPage() {
           branch: branch.trim(),
           path_pattern: pathPattern.trim(),
           conclusion: conclusion.trim(),
+          ...(reviewMode ? { include_drafts: includeDrafts } : {}),
           actions: actions.filter((action) => supported.has(action)).map(actionParts),
         },
       } : {}),
@@ -243,16 +289,31 @@ export function AutomationEditorPage() {
         {t('projectAutomations.title')}
       </Link>
       <header>
-        <p>{t('automationEditor.eyebrow')}</p>
-        <h1>{editing ? t('automationEditor.editTitle') : t('automationEditor.createTitle')}</h1>
-        <span>{t('automationEditor.subtitle')}</span>
+        <p>{reviewMode ? t('automationEditor.review.eyebrow') : t('automationEditor.eyebrow')}</p>
+        <h1>{reviewMode
+          ? t('automationEditor.review.title')
+          : editing ? t('automationEditor.editTitle') : t('automationEditor.createTitle')}</h1>
+        <span>{reviewMode ? t('automationEditor.review.subtitle') : t('automationEditor.subtitle')}</span>
       </header>
       {!canEdit && <div className={styles.warning}><Warning size={18} />{t('automationEditor.viewerWarning')}</div>}
       <form onSubmit={submit} className={styles.form}>
         <section>
-          <h2>{t('automationEditor.task')}</h2>
+          <h2>{reviewMode ? t('automationEditor.review.setup') : t('automationEditor.task')}</h2>
+          {reviewMode && (
+            <div className={styles.reviewIntro}>
+              <div>
+                <strong>{t('automationEditor.review.automaticTitle')}</strong>
+                <span>{t('automationEditor.review.automaticBody')}</span>
+              </div>
+              <div>
+                <strong>{t('automationEditor.review.repeatTitle')}</strong>
+                <span>{t('automationEditor.review.repeatBody')}</span>
+                <code>{mentionHandle} review</code>
+              </div>
+            </div>
+          )}
           <div className={styles.grid}>
-            <label>{t('automationEditor.name')}<input value={name} onChange={(event) => setName(event.target.value)} required /></label>
+            {!reviewMode && <label>{t('automationEditor.name')}<input value={name} onChange={(event) => setName(event.target.value)} required /></label>}
             <div className={styles.fixedService}>
               <span>{t('automationEditor.service')}</span>
               <div className={styles.fixedServiceControl}>
@@ -281,14 +342,63 @@ export function AutomationEditorPage() {
               </label>
             )}
           </div>
-          <label>{t('automationEditor.promptTemplate')}<textarea rows={6} value={prompt} onChange={(event) => setPrompt(event.target.value)} required /></label>
+          {reviewMode ? (
+            <label>
+              {t('automationEditor.review.focus')}
+              <textarea
+                aria-label={t('automationEditor.review.focus')}
+                rows={3}
+                value={reviewFocus}
+                onChange={(event) => setReviewFocus(event.target.value)}
+                placeholder={t('automationEditor.review.focusPlaceholder')}
+              />
+              <small>{t('automationEditor.review.focusHint')}</small>
+            </label>
+          ) : (
+            <label>{t('automationEditor.promptTemplate')}<textarea rows={6} value={prompt} onChange={(event) => setPrompt(event.target.value)} required /></label>
+          )}
           <div className={styles.inline}>
             <label><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />{t('automationEditor.enabled')}</label>
-            <label><input type="checkbox" checked={ignoreJcode} onChange={(event) => setIgnoreJcode(event.target.checked)} />{t('automationEditor.ignoreJcode')}</label>
+            {!reviewMode && <label><input type="checkbox" checked={ignoreJcode} onChange={(event) => setIgnoreJcode(event.target.checked)} />{t('automationEditor.ignoreJcode')}</label>}
           </div>
         </section>
 
-        <section>
+        {reviewMode ? (
+          <section>
+            <h2>{t('automationEditor.review.when')}</h2>
+            <div className={styles.reviewOptions}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={actions.includes('pull_request.opened')}
+                  onChange={(event) => setReviewReady(event.target.checked)}
+                />
+                <span>
+                  <strong>{t('automationEditor.review.readyTitle')}</strong>
+                  <small>{t('automationEditor.review.readyBody')}</small>
+                </span>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={actions.includes('pull_request.synchronized')}
+                  onChange={(event) => setReviewUpdates(event.target.checked)}
+                />
+                <span>
+                  <strong>{t('automationEditor.review.updatesTitle')}</strong>
+                  <small>{t('automationEditor.review.updatesBody')}</small>
+                </span>
+              </label>
+              <label>
+                <input type="checkbox" checked={includeDrafts} onChange={(event) => setIncludeDrafts(event.target.checked)} />
+                <span>
+                  <strong>{t('automationEditor.review.draftsTitle')}</strong>
+                  <small>{t('automationEditor.review.draftsBody')}</small>
+                </span>
+              </label>
+            </div>
+          </section>
+        ) : <section>
           <h2>{t('automationEditor.trigger')}</h2>
           <div className={styles.triggerTabs}>
             {(['scm', 'cron'] as const).map((value) => (
@@ -381,7 +491,7 @@ export function AutomationEditorPage() {
               <small>{t('automationEditor.cronHint')}</small>
             </div>
           )}
-        </section>
+        </section>}
         {(formError || create.error || update.error) && (
           <p className={styles.error} role="alert">
             {formError || automationMutationError(create.error ?? update.error, t)}
@@ -390,7 +500,9 @@ export function AutomationEditorPage() {
         <footer>
           <Button type="button" variant="ghost" onClick={() => navigate(-1)}>{t('common.cancel')}</Button>
           <Button type="submit" loading={create.isPending || update.isPending} disabled={!canEdit}>
-            {editing ? t('automationEditor.save') : t('automationEditor.create')}
+            {reviewMode
+              ? editing ? t('automationEditor.review.save') : t('automationEditor.review.create')
+              : editing ? t('automationEditor.save') : t('automationEditor.create')}
           </Button>
         </footer>
       </form>

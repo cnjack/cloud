@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -412,6 +413,65 @@ func TestReconcileReviewPost(t *testing.T) {
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.ReviewPostedAt == nil {
 		t.Fatal("review_posted_at not stamped")
+	}
+}
+
+func TestReconcileReviewUsesCapturedPRNumberForForkHeads(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	wirePRStack(rec, st, fake)
+	run := seedReviewRun(t, st, "fork-owner:topic", "No findings.")
+	if _, err := st.MarkPRCreated(ctx, run.ID, "https://github.test/jcloud/seed/pull/42", 42); err != nil {
+		t.Fatal(err)
+	}
+
+	rec.reconcileReviews(ctx)
+
+	if fake.ReviewCount() != 1 || fake.Reviews[0].Number != 42 {
+		t.Fatalf("review=%+v; captured PR number should avoid a same-repository head lookup", fake.Reviews)
+	}
+}
+
+func TestReconcileStructuredReviewPostsInlineAndFallsBackOnInvalidAnchor(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	wirePRStack(rec, st, fake)
+	fake.Seed("jcloud", "seed", "jcode/run-structured", provider.PR{Number: 13})
+	run := seedReviewRun(t, st, "jcode/run-structured", "legacy")
+	result := domain.ReviewResult{
+		Summary: "One defect found.",
+		Findings: []domain.ReviewFinding{{
+			Path: "ledger.py", Line: 7, Severity: "P1", Confidence: 99,
+			Title: "Reversed guard", Body: "Valid transfers are rejected.",
+		}},
+	}
+	if _, err := st.SetReviewResult(ctx, run.ID, result); err != nil {
+		t.Fatal(err)
+	}
+	rec.reconcileReviews(ctx)
+	if fake.ReviewCount() != 1 || len(fake.Reviews[0].Comments) != 1 {
+		t.Fatalf("structured reviews=%+v", fake.Reviews)
+	}
+	if fake.Reviews[0].Comments[0].Path != "ledger.py" ||
+		!strings.Contains(fake.Reviews[0].Comments[0].Body, "99% confidence") {
+		t.Fatalf("inline review=%+v", fake.Reviews[0])
+	}
+
+	fake.Seed("jcloud", "seed", "jcode/run-fallback", provider.PR{Number: 14})
+	fallbackRun := seedReviewRun(t, st, "jcode/run-fallback", "legacy")
+	if _, err := st.SetReviewResult(ctx, fallbackRun.ID, result); err != nil {
+		t.Fatal(err)
+	}
+	fake.BatchReviewErr = &provider.HTTPStatusError{Method: "POST", StatusCode: http.StatusUnprocessableEntity}
+	rec.reconcileReviews(ctx)
+	if fake.ReviewCount() != 2 {
+		t.Fatalf("reviews after fallback=%+v", fake.Reviews)
+	}
+	if len(fake.Reviews[1].Comments) != 0 || !strings.Contains(fake.Reviews[1].Body, "inline placement was unavailable") ||
+		!strings.Contains(fake.Reviews[1].Body, "ledger.py:7") {
+		t.Fatalf("fallback review=%+v", fake.Reviews[1])
 	}
 }
 

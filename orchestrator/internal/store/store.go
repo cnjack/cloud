@@ -350,6 +350,8 @@ type Store interface {
 	// SetReviewOutput records a review run's markdown output (runner POST
 	// .../review) without changing status, first-writer-wins. Returns the row.
 	SetReviewOutput(ctx context.Context, id, md string) (*domain.Run, error)
+	// SetReviewResult records a validated structured result, first-writer-wins.
+	SetReviewResult(ctx context.Context, id string, result domain.ReviewResult) (*domain.Run, error)
 	// MarkReviewPosted stamps review_posted_at once the review comment is posted.
 	// Idempotent + first-writer-wins: returns posted=true only for the tick that
 	// stamped it, so two ticks never double-post.
@@ -505,6 +507,7 @@ type Store interface {
 	// RecordProviderCapabilities updates only observed health/capability data.
 	// It must not create a new configuration revision or invalidate grants.
 	RecordProviderCapabilities(ctx context.Context, provider domain.ProviderKind, version string, capabilities []string, checkedAt time.Time) error
+	RecordProviderAppSlug(ctx context.Context, provider domain.ProviderKind, appSlug string) error
 	// RecordProviderHealthError updates only the latest probe observation. It
 	// must preserve the configured identity, revision, and last known capability
 	// version so a transient failure cannot invalidate otherwise valid grants.
@@ -536,6 +539,7 @@ type Store interface {
 	GetPluginAutomationSpec(ctx context.Context, id string) (*domain.PluginAutomationSpec, error)
 	ListPluginAutomationsByProject(ctx context.Context, projectID string) ([]domain.PluginAutomation, error)
 	ListPluginAutomationsForEvent(ctx context.Context, provider domain.ProviderKind, repositoryID string, family, action string) ([]domain.PluginAutomation, error)
+	ListPluginReviewAutomationsForRepository(ctx context.Context, provider domain.ProviderKind, repositoryID string) ([]domain.PluginAutomation, error)
 	UpdatePluginAutomation(ctx context.Context, automation *domain.PluginAutomation) error
 	ReplacePluginAutomationSpec(ctx context.Context, automation *domain.PluginAutomation, scm *domain.SCMTrigger, actions []domain.SCMAction, kanban *domain.KanbanTrigger, cron *domain.CronTrigger) error
 	DeletePluginAutomation(ctx context.Context, id string) error

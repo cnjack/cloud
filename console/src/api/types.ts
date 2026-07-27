@@ -151,6 +151,8 @@ export interface ScmProviderCapabilities {
   minimum_version?: string;
   instance_url?: string;
   oauth_scopes?: string[];
+  mention_handle?: string;
+  inline_pull_request_reviews?: boolean;
   capabilities: Array<{ family: string; actions: string[] }>;
 }
 
@@ -244,6 +246,7 @@ export interface ProjectAutomationAggregate {
   name: string;
   trigger_kind: AutomationTriggerKind;
   prompt_template: string;
+  run_kind?: RunKind;
   model_id?: string;
   model_effort?: 'low' | 'medium' | 'high';
   enabled: boolean;
@@ -258,7 +261,7 @@ export interface ProjectAutomationAggregate {
 export interface ScmAutomationAction { event_family: string; action: string; }
 export interface ProjectAutomationSpec {
   automation: ProjectAutomationAggregate;
-  scm?: { automation_id?: string; branch?: string; path_pattern?: string; conclusion?: string };
+  scm?: { automation_id?: string; branch?: string; path_pattern?: string; conclusion?: string; include_drafts?: boolean };
   actions?: ScmAutomationAction[];
   kanban?: { automation_id?: string; installation_id: string; board_ref: string; trigger_column: string; done_column?: string };
   cron?: { automation_id?: string; cron_expr: string };
@@ -293,11 +296,12 @@ export interface CreateProjectAutomationInput {
   service_id: string;
   name: string;
   prompt_template: string;
+  run_kind?: RunKind;
   model_id?: string;
   model_effort?: 'auto' | 'low' | 'medium' | 'high';
   enabled?: boolean;
   ignore_jcode?: boolean;
-  scm?: { branch?: string; path_pattern?: string; conclusion?: string; actions: ScmAutomationAction[] };
+  scm?: { branch?: string; path_pattern?: string; conclusion?: string; include_drafts?: boolean; actions: ScmAutomationAction[] };
   kanban?: { installation_id: string; board_ref: string; trigger_column: string; done_column?: string };
   cron?: { cron_expr: string };
 }

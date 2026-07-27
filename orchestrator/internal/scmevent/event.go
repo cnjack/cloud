@@ -101,6 +101,10 @@ type NormalizedSCMEvent struct {
 	OccurredAt       time.Time    `json:"occurred_at"`
 	Correlation      string       `json:"correlation,omitempty"`
 	GeneratedByJCode bool         `json:"generated_by_jcode,omitempty"`
+	Draft            bool         `json:"draft,omitempty"`
+	// IsPullRequestComment prevents GitHub's shared issue_comment event from
+	// turning an ordinary issue mention into a pull-request review request.
+	IsPullRequestComment bool `json:"is_pull_request_comment,omitempty"`
 	// ChangedPaths is used only while matching Automations. It is intentionally
 	// excluded from the persisted receipt and prompt-safe JSON contract.
 	ChangedPaths []string `json:"-"`
@@ -123,8 +127,8 @@ func (e NormalizedSCMEvent) Validate() error {
 		return errors.New("occurred_at is required")
 	}
 	if e.Family == FamilyComment {
-		if e.Action != ActionCreated || !ContainsJCodeMention(e.Body) {
-			return errors.New("comment events require a newly-created @jcode comment")
+		if e.Action != ActionCreated || strings.TrimSpace(e.Body) == "" {
+			return errors.New("comment events require a newly-created App mention comment")
 		}
 	} else if e.Body != "" {
 		return errors.New("body is only allowed for @jcode comments")
@@ -156,9 +160,49 @@ func ValidAction(f Family, a Action) bool {
 	return false
 }
 
-var jcodeMentionPattern = regexp.MustCompile(`(?i)(^|[^[:alnum:]_.-])@jcode([^[:alnum:]_-]|$)`)
+var jcodeMentionPattern = regexp.MustCompile(`(?i)(^|[^[:alnum:]_.-])@(jcode|jcode-cloud-app)([^[:alnum:]_-]|$)`)
 
 func ContainsJCodeMention(body string) bool { return jcodeMentionPattern.MatchString(body) }
+
+func ContainsJCodeMentionForApp(body, appSlug string) bool {
+	if ContainsJCodeMention(body) {
+		return true
+	}
+	appSlug = strings.TrimPrefix(strings.TrimSpace(appSlug), "@")
+	if appSlug == "" {
+		return false
+	}
+	pattern := regexp.MustCompile(`(?i)(^|[^[:alnum:]_.-])@` + regexp.QuoteMeta(appSlug) + `([^[:alnum:]_-]|$)`)
+	return pattern.MatchString(body)
+}
+
+type ReviewCommand struct {
+	Full  bool
+	Focus string
+}
+
+// ParseReviewCommand recognizes only the intentionally small review command
+// grammar. appSlug is provider-observed public metadata; @jcode remains a
+// compatibility alias.
+func ParseReviewCommand(body, appSlug string) (ReviewCommand, bool) {
+	handles := []string{"jcode"}
+	appSlug = strings.TrimPrefix(strings.TrimSpace(appSlug), "@")
+	if appSlug != "" && !strings.EqualFold(appSlug, "jcode") {
+		handles = append(handles, appSlug)
+	}
+	for _, handle := range handles {
+		pattern := regexp.MustCompile(`(?i)(^|[^[:alnum:]_.-])@` + regexp.QuoteMeta(handle) + `(?:[ \t]+)(?:(full)[ \t]+)?review(?:[ \t]+([^\r\n]+))?(?:\r?\n|$)`)
+		match := pattern.FindStringSubmatch(body)
+		if len(match) == 0 {
+			continue
+		}
+		return ReviewCommand{
+			Full:  strings.EqualFold(strings.TrimSpace(match[2]), "full"),
+			Focus: strings.TrimSpace(match[3]),
+		}, true
+	}
+	return ReviewCommand{}, false
+}
 
 // CoalesceKey is empty for events that must run individually. Push, pull
 // request synchronization and check completion retain one running event plus

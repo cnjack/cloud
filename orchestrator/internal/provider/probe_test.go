@@ -105,11 +105,15 @@ func TestGitHubAppIssuerVerifyChecksAppIdentity(t *testing.T) {
 			t.Fatalf("unexpected GitHub App verification request: %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":1234}`))
+		_, _ = w.Write([]byte(`{"id":1234,"slug":"jcode-cloud-app"}`))
 	}))
 	defer srv.Close()
 	issuer.apiBase, issuer.http = srv.URL, srv.Client()
 	if err := issuer.Verify(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	metadata, err := issuer.VerifyMetadata(context.Background())
+	if err != nil || metadata.Slug != "jcode-cloud-app" {
+		t.Fatalf("metadata=%+v err=%v", metadata, err)
 	}
 }

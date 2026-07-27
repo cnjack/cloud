@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Warning } from '@phosphor-icons/react';
+import { CodeBlock, Plus, Warning } from '@phosphor-icons/react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { ErrorBlock, LoadingBlock } from '../components/States';
@@ -61,6 +61,13 @@ export function ProjectAutomationsPanel({
   const createHref = `/projects/${encodeURIComponent(projectId)}/automations/new${
     initialServiceId ? `?service=${encodeURIComponent(initialServiceId)}` : ''
   }`;
+  const githubService = services.find((service) =>
+    service.provider === 'github' && (!initialServiceId || service.id === initialServiceId));
+  const reviewAutomation = (query.data ?? []).find((item) =>
+    item.automation.run_kind === 'review' && item.automation.service_id === githubService?.id);
+  const reviewHref = reviewAutomation
+    ? `/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(reviewAutomation.automation.id)}/edit?service=${encodeURIComponent(reviewAutomation.automation.service_id)}`
+    : `/projects/${encodeURIComponent(projectId)}/automations/new?service=${encodeURIComponent(githubService?.id ?? '')}&preset=review`;
 
   if (query.isLoading) return <LoadingBlock label={t('projectAutomations.loading')} />;
   if (query.isError) {
@@ -76,17 +83,25 @@ export function ProjectAutomationsPanel({
           <p>{t('projectAutomations.subtitle')}</p>
         </div>
         {canManage && (
-          services.length ? (
-            <Link className={styles.primaryLink} to={createHref}>
-              <Plus size={16} aria-hidden />
-              {t('projectAutomations.new')}
-            </Link>
-          ) : (
-            <span className={styles.primaryLink} aria-disabled="true">
-              <Plus size={16} aria-hidden />
-              {t('projectAutomations.new')}
-            </span>
-          )
+          <div className={styles.headActions}>
+            {githubService && (
+              <Link className={styles.primaryLink} to={reviewHref}>
+                <CodeBlock size={16} aria-hidden />
+                {reviewAutomation ? t('projectAutomations.review.manage') : t('projectAutomations.review.turnOn')}
+              </Link>
+            )}
+            {services.length ? (
+              <Link className={styles.secondaryLink} to={createHref}>
+                <Plus size={16} aria-hidden />
+                {t('projectAutomations.new')}
+              </Link>
+            ) : (
+              <span className={styles.secondaryLink} aria-disabled="true">
+                <Plus size={16} aria-hidden />
+                {t('projectAutomations.new')}
+              </span>
+            )}
+          </div>
         )}
       </header>
       {!services.length && (
@@ -112,10 +127,14 @@ export function ProjectAutomationsPanel({
               <li key={automation.id} className={styles.row}>
                 <div>
                   <strong>{automation.name}</strong>
-                  <p>{automation.prompt_template}</p>
+                  <p>{automation.run_kind === 'review'
+                    ? t('projectAutomations.review.rowSummary')
+                    : automation.prompt_template}</p>
                 </div>
                 <div className={styles.meta}>
-                  <span>{triggerLabel(automation.trigger_kind, t)}</span>
+                  <span>{automation.run_kind === 'review'
+                    ? t('projectAutomations.review.native')
+                    : triggerLabel(automation.trigger_kind, t)}</span>
                   <small>{triggerSummary(item)}</small>
                   {automation.last_error && <em>{automationErrorLabel(automation.last_error, t)}</em>}
                 </div>

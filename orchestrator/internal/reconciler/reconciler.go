@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
@@ -883,38 +884,102 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 		r.log.Warn("reconcile review: bad repo_owner_name", "run", run.ID)
 		return
 	}
-	tok, err := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
+	prov, credentialSource, usedPlugin, err := r.pluginReviewClient(ctx, run, svc)
 	if err != nil {
-		if errors.Is(err, credentials.ErrIntegrationCredential) {
-			r.noteIntegrationCredentialFailure(ctx, run.ID, "review post", err)
+		r.log.Warn("reconcile review: Plugin credential", "run", run.ID, "provider", svc.Provider, "err", err)
+		return
+	}
+	if !usedPlugin {
+		tok, resolveErr := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
+		if resolveErr != nil {
+			if errors.Is(resolveErr, credentials.ErrIntegrationCredential) {
+				r.noteIntegrationCredentialFailure(ctx, run.ID, "review post", resolveErr)
+				return
+			}
+			r.log.Warn("reconcile review: no credential", "run", run.ID, "provider", svc.Provider, "err", resolveErr)
 			return
 		}
-		r.log.Warn("reconcile review: no credential", "run", run.ID, "provider", svc.Provider, "err", err)
-		return
+		prov, err = r.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
+		credentialSource = tok.Source
+		if err != nil {
+			r.log.Warn("reconcile review: build client", "run", run.ID, "err", err)
+			return
+		}
 	}
-	prov, err := r.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
-	if err != nil {
-		r.log.Warn("reconcile review: build client", "run", run.ID, "err", err)
-		return
+	prNumber := run.PRNumber
+	if prNumber <= 0 {
+		pr, findErr := prov.FindOpenPRByHead(ctx, owner, repo, run.PRHeadBranch)
+		if findErr != nil {
+			r.log.Warn("reconcile review: find target PR", "run", run.ID, "err", findErr)
+			return
+		}
+		if pr == nil {
+			r.log.Warn("reconcile review: target PR not found (closed?)", "run", run.ID, "head", run.PRHeadBranch)
+			return // retry next tick; PR may reopen or this stays unposted
+		}
+		prNumber = pr.Number
 	}
-	pr, err := prov.FindOpenPRByHead(ctx, owner, repo, run.PRHeadBranch)
-	if err != nil {
-		r.log.Warn("reconcile review: find target PR", "run", run.ID, "err", err)
-		return
-	}
-	if pr == nil {
-		r.log.Warn("reconcile review: target PR not found (closed?)", "run", run.ID, "head", run.PRHeadBranch)
-		return // retry next tick; PR may reopen or this stays unposted
-	}
-	if err := prov.CreatePRReview(ctx, owner, repo, pr.Number, run.ReviewOutput); err != nil {
-		r.log.Warn("reconcile review: post comment", "run", run.ID, "pr", pr.Number, "err", err)
+	if err := postProviderReview(ctx, prov, owner, repo, prNumber, run); err != nil {
+		r.log.Warn("reconcile review: post comment", "run", run.ID, "pr", prNumber, "err", err)
 		return
 	}
 	if _, err := r.st.MarkReviewPosted(ctx, run.ID); err != nil {
 		r.log.Warn("reconcile review: mark posted", "run", run.ID, "err", err)
 		return
 	}
-	r.log.Info("reconcile review: posted review comment", "run", run.ID, "pr", pr.Number, "src", tok.Source)
+	r.log.Info("reconcile review: posted review comment", "run", run.ID, "pr", prNumber, "src", credentialSource)
+}
+
+func (r *Reconciler) pluginReviewClient(ctx context.Context, run *domain.Run, svc *domain.Service) (provider.Provider, string, bool, error) {
+	if run.OriginAutomationID == "" || r.creds == nil {
+		return nil, "", false, nil
+	}
+	binding, err := r.st.GetServiceRepositoryBinding(ctx, svc.ID)
+	if err != nil {
+		return nil, "", true, err
+	}
+	snapshots, err := r.st.ListRunPluginSnapshots(ctx, run.ID)
+	if err != nil {
+		return nil, "", true, err
+	}
+	for i := range snapshots {
+		snapshot := &snapshots[i]
+		if snapshot.InstallationID != binding.InstallationID {
+			continue
+		}
+		credential, issueErr := r.creds.IssueRunPluginSnapshotCredential(ctx, snapshot)
+		if issueErr != nil {
+			return nil, "", true, issueErr
+		}
+		client, clientErr := provider.IntegrationClientWithScheme(
+			svc.Provider, credential.BaseURL, credential.AccessToken, credential.Scheme,
+		)
+		return client, "plugin_snapshot", true, clientErr
+	}
+	return nil, "", true, errors.New("review Run has no matching Plugin credential snapshot")
+}
+
+func postProviderReview(ctx context.Context, prov provider.Provider, owner, repo string, prNumber int, run *domain.Run) error {
+	if run.ReviewResult == nil {
+		return prov.CreatePRReview(ctx, owner, repo, prNumber, run.ReviewOutput)
+	}
+	result := *run.ReviewResult
+	if batch, ok := prov.(provider.BatchReviewProvider); ok {
+		review := provider.PRReview{Body: result.RenderSummary(false)}
+		for _, finding := range result.Findings {
+			review.Comments = append(review.Comments, provider.PRReviewComment{
+				Path: finding.Path, Line: finding.Line, EndLine: finding.EndLine, Body: finding.RenderInline(),
+			})
+		}
+		if err := batch.CreatePRReviewBatch(ctx, owner, repo, prNumber, review); err != nil {
+			if status, ok := provider.IsProviderHTTPStatusError(err); !ok || status != http.StatusUnprocessableEntity {
+				return err
+			}
+			return prov.CreatePRReview(ctx, owner, repo, prNumber, result.RenderSummary(true))
+		}
+		return nil
+	}
+	return prov.CreatePRReview(ctx, owner, repo, prNumber, result.RenderSummary(true))
 }
 
 // reconcileKanbanWriteback posts the result of each finished kanban-origin run

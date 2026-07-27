@@ -13,7 +13,7 @@
 #   3. AGENT/fetch: run the runner with SOURCE_MODE=fetch (no REPO_URL). Assert it
 #      downloads the bundle, clones it, runs, and produces a diff — no token used.
 #   4. REVIEW: run the runner with RUN_KIND=review, PR_HEAD=feature, PR_BASE=main.
-#      The mockllm auto-detects the "[review]" prompt and writes REVIEW.md; assert
+#      The mockllm auto-detects the "[review]" prompt and writes REVIEW.json; assert
 #      the orchestrator receives the review markdown.
 #
 # Env: IMAGE (default jcode-runner:local), TARGETARCH (host arch), KEEP=1.
@@ -123,7 +123,7 @@ grep -q "fetching source bundle" "$TMP/run.out" || fail "[A] runner did not fetc
 grep -q "===JCODE_DIFF_BEGIN" "$TMP/run.out" || fail "[A] runner produced no diff"
 pass "[A] runner fetched the source bundle (no token) and produced a diff"
 
-# === 4. REVIEW run: PR_HEAD=feature PR_BASE=main → REVIEW.md posted ===
+# === 4. REVIEW run: PR_HEAD=feature PR_BASE=main → REVIEW.json posted ===
 R_ID="review-$RANDOM"
 info "[B] runner review run_id=$R_ID (PR_BASE=main PR_HEAD=feature)"
 docker rm -f "$RUN_CTR" >/dev/null 2>&1 || true
@@ -146,17 +146,17 @@ set -e
 cat "$TMP/review.out"
 [ "$R_RC" -eq 0 ] || fail "[B] review run exited $R_RC (want 0)"
 [ -s "$OUT/received.review" ] || fail "[B] orchestrator did not receive a review"
-if ! grep -qiE 'approve|needs-work' "$OUT/received.review"; then
+if ! grep -q '"findings"' "$OUT/received.review"; then
   echo "----- received review -----"; cat "$OUT/received.review"
-  fail "[B] review output has no conclusion (approve|needs-work)"
+  fail "[B] review output is not structured JSON"
 fi
 # A review run must NOT produce a bundle.
 [ ! -s "$OUT/received.bundle" ] || fail "[B] review run POSTed a bundle (must skip diff/bundle)"
-pass "[B] review run posted REVIEW.md with a conclusion and produced no bundle"
+pass "[B] review run posted REVIEW.json with findings and produced no bundle"
 
 echo
 printf '\033[32m===========================================================\033[0m\n'
 printf '\033[32m  PROVEN (M3): the runner READS a provider repo via a source \033[0m\n'
 printf '\033[32m  bundle (no token in the pod) and the review channel posts  \033[0m\n'
-printf '\033[32m  REVIEW.md to the orchestrator.                              \033[0m\n'
+printf '\033[32m  REVIEW.json to the orchestrator.                            \033[0m\n'
 printf '\033[32m===========================================================\033[0m\n'

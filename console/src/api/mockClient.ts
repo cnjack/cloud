@@ -303,6 +303,11 @@ export function createMockClient(): ApiClient {
         name: input.name,
         trigger_kind: triggerKind,
         prompt_template: input.prompt_template,
+        run_kind: input.run_kind ?? existing?.automation.run_kind ?? 'agent',
+        model_id: input.model_id ?? existing?.automation.model_id,
+        model_effort: input.model_effort === 'auto'
+          ? undefined
+          : input.model_effort ?? existing?.automation.model_effort,
         enabled: input.enabled ?? existing?.automation.enabled ?? true,
         ignore_jcode: input.ignore_jcode ?? existing?.automation.ignore_jcode ?? true,
         created_by: existing?.automation.created_by ?? 'u_ada',
@@ -314,6 +319,7 @@ export function createMockClient(): ApiClient {
         branch: input.scm.branch,
         path_pattern: input.scm.path_pattern,
         conclusion: input.scm.conclusion,
+        include_drafts: input.scm.include_drafts,
       } : undefined,
       actions: input.scm?.actions.map((action) => ({ ...action })),
       kanban: input.kanban ? { automation_id: existing?.automation.id, ...input.kanban } : undefined,
@@ -2106,6 +2112,8 @@ export function createMockClient(): ApiClient {
       return delay({
         provider,
         minimum_version: provider === 'gitlab' ? '17.11' : provider === 'gitea' ? '1.25' : undefined,
+        mention_handle: provider === 'github' ? '@jcode-cloud-app' : '@jcode',
+        inline_pull_request_reviews: provider === 'github',
         capabilities: actions.map(([family, supported]) => ({
           family: family as string,
           actions: supported as string[],
@@ -2138,6 +2146,7 @@ export function createMockClient(): ApiClient {
         service_id: input.service_id ?? existing.automation.service_id,
         name: input.name ?? existing.automation.name,
         prompt_template: input.prompt_template ?? existing.automation.prompt_template,
+        run_kind: input.run_kind ?? existing.automation.run_kind,
         model_id: input.model_id ?? existing.automation.model_id,
         model_effort: input.model_effort ?? existing.automation.model_effort,
         enabled: input.enabled ?? existing.automation.enabled,

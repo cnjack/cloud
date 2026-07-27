@@ -1280,6 +1280,17 @@ export default {
     events: '事件', moreEvents: '更多事件', thisProvider: '目前供應商', eventUnavailable: '{provider}{version} 不支援此事件。',
     cronExpression: 'Cron 表達式', cronHint: '使用五段式 Cron 表達式；伺服器會強制執行最小時間間隔。',
     create: '建立自動化', save: '儲存自動化',
+    review: {
+      eyebrow: 'GitHub 程式碼審查', title: '審查 Pull Request', subtitle: '無需讓團隊學習新流程，即可啟用實用的 GitHub 原生審查。',
+      defaultName: 'Pull Request 審查', setup: '審查設定',
+      automaticTitle: '預設自動審查', automaticBody: 'Pull Request 準備好後，App 會自動審查；後續每次提交新程式碼也會再次審查。',
+      repeatTitle: '直接從 GitHub 重複審查', repeatBody: '需要再看一次時，在任意 Pull Request 留言中提及 App 即可。',
+      focus: '審查重點（選填）', focusPlaceholder: '例如：特別留意授權邊界。', focusHint: '審查器始終會檢查正確性、安全性、可靠性、資料遺失和回歸。',
+      when: '何時審查', readyTitle: '已準備好的 Pull Request', readyBody: '審查新建的 Pull Request，以及從草稿轉為準備好的 Pull Request。',
+      updatesTitle: '有新提交時', updatesBody: 'Pull Request 的最新提交發生變化時重新審查。',
+      draftsTitle: '包含草稿', draftsBody: '通常保持關閉，讓作者先完成自己的第一輪檢查。',
+      create: '開啟審查', save: '儲存審查設定',
+    },
     validation: { noPermission: '你沒有編輯自動化的權限。', required: '名稱、服務、模型與任務提示詞都是必填項目。', eventRequired: '請至少選擇一個此服務供應商支援的事件。', cronRequired: 'Cron 表達式為必填項目。' },
     apiError: {
       overlap: '此服務的另一個自動化已使用所選 SCM 事件中的至少一個。',
@@ -1300,6 +1311,7 @@ export default {
     cron: 'Cron 表達式', action: 'SCM 事件', column: '觸發欄', prompt: '任務說明', incomplete: '儲存前請填寫所有必填項目。',
     create: '建立自動化', save: '儲存變更', trigger: { scm: 'SCM 事件', kanban: 'Kanban 欄', cron: '排程任務' },
     enabled: '已啟用', disabled: '已停用', toggleLabel: '{name}：{status}',
+    review: { turnOn: '審查 Pull Request', manage: '審查設定', rowSummary: '由 GitHub App 在變更行上發布高可信度問題。', native: 'GitHub 原生審查' },
     error: {
       modelUnavailable: '收到此事件時無法選擇可用模型。請為專案授權模型；若授權多個模型，請設定服務預設模型。下次成功觸發後會自動清除此歷史錯誤。',
       modelNotSelected: '專案有多個可用模型，但此服務沒有預設模型。請在服務設定中選擇一個。',

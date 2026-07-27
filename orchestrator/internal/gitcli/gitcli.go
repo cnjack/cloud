@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -86,6 +87,25 @@ func tail(s string, n int) string {
 // bundlePath. remoteURL must carry any auth in its userinfo. The bundle lets a
 // runner reconstruct the repo (git clone <bundle>) without ever seeing a token.
 func (g *Git) CreateSourceBundle(ctx context.Context, remoteURL, bundlePath string) error {
+	return g.createSourceBundle(ctx, remoteURL, bundlePath, "", "")
+}
+
+// CreatePullRequestSourceBundle includes GitHub's synthetic pull ref under the
+// exact head branch name expected by the review runner. This makes fork PRs
+// reviewable without giving the runner a provider token.
+func (g *Git) CreatePullRequestSourceBundle(ctx context.Context, remoteURL, bundlePath string, prNumber int, headBranch string) error {
+	if prNumber <= 0 || strings.TrimSpace(headBranch) == "" {
+		return fmt.Errorf("pull request number and head branch are required")
+	}
+	headRef := "refs/heads/" + headBranch
+	if _, err := g.run(ctx, "check-ref-format", headRef); err != nil {
+		return fmt.Errorf("invalid pull request head branch: %w", err)
+	}
+	pullRef := "refs/pull/" + strconv.Itoa(prNumber) + "/head"
+	return g.createSourceBundle(ctx, remoteURL, bundlePath, pullRef, headRef)
+}
+
+func (g *Git) createSourceBundle(ctx context.Context, remoteURL, bundlePath, sourceRef, destinationRef string) error {
 	work, err := os.MkdirTemp("", "jcloud-src-")
 	if err != nil {
 		return fmt.Errorf("mktemp: %w", err)
@@ -94,6 +114,11 @@ func (g *Git) CreateSourceBundle(ctx context.Context, remoteURL, bundlePath stri
 	bare := filepath.Join(work, "repo.git")
 	if _, err := g.run(ctx, "clone", "--bare", "--quiet", remoteURL, bare); err != nil {
 		return err
+	}
+	if sourceRef != "" {
+		if _, err := g.run(ctx, "-C", bare, "fetch", "--quiet", "origin", "+"+sourceRef+":"+destinationRef); err != nil {
+			return err
+		}
 	}
 	if _, err := g.run(ctx, "-C", bare, "bundle", "create", bundlePath, "--all"); err != nil {
 		return err

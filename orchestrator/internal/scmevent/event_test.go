@@ -38,7 +38,7 @@ func TestNormalizeGitHubCommentKeepsWholeBody(t *testing.T) {
 	body := []byte(`{
 	  "action":"created",
 	  "comment":{"id":44,"body":"context before @jcode please inspect this whole report","html_url":"https://github.com/a/r/issues/7#issuecomment-44","user":{"id":9,"login":"outside-contributor"}},
-	  "issue":{"number":7},
+	  "issue":{"number":7,"pull_request":{"url":"https://api.github.test/repos/a/r/pulls/7"}},
 	  "repository":{"id":12,"full_name":"a/r","default_branch":"main","html_url":"https://github.com/a/r"},
 	  "sender":{"id":9,"login":"outside-contributor"}
 	}`)
@@ -54,6 +54,17 @@ func TestNormalizeGitHubCommentKeepsWholeBody(t *testing.T) {
 	}
 	if event.Actor.ID != "9" || event.Actor.Login != "outside-contributor" {
 		t.Fatalf("actor = %+v", event.Actor)
+	}
+}
+
+func TestNormalizeGitHubCommentUsesObservedAppSlug(t *testing.T) {
+	body := []byte(`{"action":"created","repository":{"id":1,"full_name":"acme/repo"},"sender":{"id":2,"login":"alice"},"issue":{"number":7,"pull_request":{"url":"https://api.github.test/pulls/7"}},"comment":{"id":9,"body":"@acme-review-bot review","html_url":"https://github.test/comment/9","user":{"id":2,"login":"alice"}}}`)
+	event, err := NormalizeForApp(ProviderGitHub, "issue_comment", "custom-app", body, time.Unix(100, 0), "acme-review-bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Body != "@acme-review-bot review" {
+		t.Fatalf("body=%q", event.Body)
 	}
 }
 
@@ -75,6 +86,7 @@ func TestContainsJCodeMentionRequiresTokenBoundaries(t *testing.T) {
 	tests := map[string]bool{
 		"@jcode please review":       true,
 		"hello (@JCODE), ship this":  true,
+		"@jcode-cloud-app review":    true,
 		"foo@jcodeevil.example":      false,
 		"@jcode_bot do something":    false,
 		"prefix-@jcode is not a tag": false,
@@ -84,6 +96,73 @@ func TestContainsJCodeMentionRequiresTokenBoundaries(t *testing.T) {
 		if got := ContainsJCodeMention(body); got != want {
 			t.Errorf("ContainsJCodeMention(%q)=%v want %v", body, got, want)
 		}
+	}
+}
+
+func TestParseReviewCommandUsesRealAppHandleAndCompatibilityAlias(t *testing.T) {
+	tests := []struct {
+		body      string
+		wantOK    bool
+		wantFull  bool
+		wantFocus string
+	}{
+		{"@jcode-cloud-app review", true, false, ""},
+		{"please @JCODE-CLOUD-APP full review", true, true, ""},
+		{"@jcode-cloud-app review security and concurrency", true, false, "security and concurrency"},
+		{"@jcode review the transaction boundary", true, false, "the transaction boundary"},
+		{"@jcode-cloud-app investigate this", false, false, ""},
+		{"email@jcode-cloud-app review", false, false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.body, func(t *testing.T) {
+			got, ok := ParseReviewCommand(tt.body, "jcode-cloud-app")
+			if ok != tt.wantOK || got.Full != tt.wantFull || got.Focus != tt.wantFocus {
+				t.Fatalf("ParseReviewCommand()=(%+v,%v), want ok=%v full=%v focus=%q", got, ok, tt.wantOK, tt.wantFull, tt.wantFocus)
+			}
+		})
+	}
+}
+
+func TestNormalizeGitHubCommentRequiresPullRequestMarker(t *testing.T) {
+	issueOnly := []byte(`{
+	  "action":"created",
+	  "comment":{"id":44,"body":"@jcode-cloud-app review","user":{"id":9,"login":"contributor"}},
+	  "issue":{"id":7,"number":7},
+	  "repository":{"id":12,"full_name":"a/r"},
+	  "sender":{"id":9,"login":"contributor"}
+	}`)
+	if _, err := Normalize(ProviderGitHub, "issue_comment", "issue", issueOnly, time.Now()); !errors.Is(err, ErrIgnored) {
+		t.Fatalf("ordinary issue comment error=%v, want ErrIgnored", err)
+	}
+	prComment := []byte(`{
+	  "action":"created",
+	  "comment":{"id":45,"body":"@jcode-cloud-app review","user":{"id":9,"login":"contributor"}},
+	  "issue":{"id":7,"number":7,"pull_request":{"url":"https://api.github.test/repos/a/r/pulls/7"}},
+	  "repository":{"id":12,"full_name":"a/r"},
+	  "sender":{"id":9,"login":"contributor"}
+	}`)
+	event, err := Normalize(ProviderGitHub, "issue_comment", "pr", prComment, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !event.IsPullRequestComment || event.Object.ID != "45" || event.Object.Number != 7 {
+		t.Fatalf("normalized PR comment=%+v", event)
+	}
+}
+
+func TestNormalizePullRequestCarriesDraftState(t *testing.T) {
+	body := []byte(`{
+	  "action":"opened",
+	  "pull_request":{"id":8,"number":4,"draft":true,"head":{"ref":"feat","sha":"abc"},"base":{"ref":"main"}},
+	  "repository":{"id":1,"full_name":"a/r"},
+	  "sender":{"id":2,"login":"maintainer"}
+	}`)
+	event, err := Normalize(ProviderGitHub, "pull_request", "draft", body, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !event.Draft {
+		t.Fatal("draft pull request lost its draft state")
 	}
 }
 

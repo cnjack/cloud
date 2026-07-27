@@ -63,6 +63,7 @@ type ProviderConfig struct {
 	ClientID            string       `json:"client_id,omitempty"`
 	ClientSecretEnc     []byte       `json:"-"`
 	AppID               string       `json:"app_id,omitempty"`
+	AppSlug             string       `json:"app_slug,omitempty"`
 	AppPrivateKeyEnc    []byte       `json:"-"`
 	WebhookSecretEnc    []byte       `json:"-"`
 	CapabilityVersion   string       `json:"capability_version,omitempty"`
@@ -144,6 +145,7 @@ type PluginAutomation struct {
 	InstallationID  string     `json:"installation_id,omitempty"`
 	Name            string     `json:"name"`
 	TriggerKind     string     `json:"trigger_kind"` // scm | kanban | cron
+	RunKind         RunKind    `json:"run_kind"`     // agent | review
 	PromptTemplate  string     `json:"prompt_template"`
 	ModelID         string     `json:"model_id,omitempty"`
 	ModelEffort     string     `json:"model_effort,omitempty"`
@@ -174,10 +176,11 @@ func ValidPluginAutomationTrigger(v string) bool {
 }
 
 type SCMTrigger struct {
-	AutomationID string `json:"automation_id"`
-	Branch       string `json:"branch,omitempty"`
-	PathPattern  string `json:"path_pattern,omitempty"`
-	Conclusion   string `json:"conclusion,omitempty"`
+	AutomationID  string `json:"automation_id"`
+	Branch        string `json:"branch,omitempty"`
+	PathPattern   string `json:"path_pattern,omitempty"`
+	Conclusion    string `json:"conclusion,omitempty"`
+	IncludeDrafts bool   `json:"include_drafts"`
 }
 
 type SCMAction struct {

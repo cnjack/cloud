@@ -21,15 +21,17 @@ type FakeProvider struct {
 	// Reviews records CreatePRReview call bodies keyed by owner/repo|prNumber.
 	Reviews []FakeReview
 	// Comments records CreateIssueComment call bodies in order (M7 receipts).
-	Comments []FakeComment
+	Comments  []FakeComment
+	Reactions []FakeReaction
 	// nextNum assigns PR numbers.
 	nextNum int
 
 	// CreateErr / FindErr / ReviewErr / CommentErr let tests inject failures.
-	CreateErr  error
-	FindErr    error
-	ReviewErr  error
-	CommentErr error
+	CreateErr      error
+	FindErr        error
+	ReviewErr      error
+	BatchReviewErr error
+	CommentErr     error
 }
 
 // FakeReview records one CreatePRReview call.
@@ -37,6 +39,7 @@ type FakeReview struct {
 	Owner, Repo string
 	Number      int
 	Body        string
+	Comments    []PRReviewComment
 }
 
 // FakeComment records one CreateIssueComment call.
@@ -44,6 +47,12 @@ type FakeComment struct {
 	Owner, Repo string
 	Number      int
 	Body        string
+}
+
+type FakeReaction struct {
+	Owner, Repo string
+	CommentID   int64
+	Content     string
 }
 
 // NewFakeProvider returns a ready FakeProvider.
@@ -111,6 +120,20 @@ func (f *FakeProvider) CreatePRReview(_ context.Context, owner, repo string, prN
 	return nil
 }
 
+func (f *FakeProvider) CreatePRReviewBatch(_ context.Context, owner, repo string, prNumber int, review PRReview) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.BatchReviewErr != nil {
+		return f.BatchReviewErr
+	}
+	if f.ReviewErr != nil {
+		return f.ReviewErr
+	}
+	comments := append([]PRReviewComment(nil), review.Comments...)
+	f.Reviews = append(f.Reviews, FakeReview{Owner: owner, Repo: repo, Number: prNumber, Body: review.Body, Comments: comments})
+	return nil
+}
+
 // PRStatus returns a synthetic open PR (or the seeded one) for tests.
 func (f *FakeProvider) PRStatus(_ context.Context, owner, repo string, prNumber int) (*PR, error) {
 	f.mu.Lock()
@@ -141,6 +164,13 @@ func (f *FakeProvider) CreateIssueComment(_ context.Context, owner, repo string,
 	return nil
 }
 
+func (f *FakeProvider) CreateIssueCommentReaction(_ context.Context, owner, repo string, commentID int64, content string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Reactions = append(f.Reactions, FakeReaction{Owner: owner, Repo: repo, CommentID: commentID, Content: content})
+	return nil
+}
+
 // CommentCount returns how many issue comments were posted (test helper).
 func (f *FakeProvider) CommentCount() int {
 	f.mu.Lock()
@@ -163,3 +193,5 @@ func (f *FakeProvider) ReviewCount() int {
 }
 
 var _ Provider = (*FakeProvider)(nil)
+var _ BatchReviewProvider = (*FakeProvider)(nil)
+var _ IssueCommentReactor = (*FakeProvider)(nil)

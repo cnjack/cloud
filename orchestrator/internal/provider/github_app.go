@@ -38,6 +38,11 @@ type AppInstallation struct {
 	RepositorySelection string `json:"repository_selection"`
 }
 
+type GitHubAppMetadata struct {
+	ID   string
+	Slug string
+}
+
 func (i *GitHubAppIssuer) ListInstallations(ctx context.Context) ([]AppInstallation, error) {
 	jwt, err := i.signedJWT()
 	if err != nil {
@@ -146,36 +151,42 @@ type GitHubAppIssuer struct {
 // GitHub. It deliberately only reads the App metadata and never creates an
 // installation token or changes GitHub state.
 func (i *GitHubAppIssuer) Verify(ctx context.Context) error {
+	_, err := i.VerifyMetadata(ctx)
+	return err
+}
+
+func (i *GitHubAppIssuer) VerifyMetadata(ctx context.Context) (GitHubAppMetadata, error) {
 	jwt, err := i.signedJWT()
 	if err != nil {
-		return err
+		return GitHubAppMetadata{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(i.apiBase, "/")+"/app", nil)
 	if err != nil {
-		return err
+		return GitHubAppMetadata{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := i.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("verify GitHub App: %w", err)
+		return GitHubAppMetadata{}, fmt.Errorf("verify GitHub App: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("verify GitHub App: GitHub returned %s", resp.Status)
+		return GitHubAppMetadata{}, fmt.Errorf("verify GitHub App: GitHub returned %s", resp.Status)
 	}
 	var body struct {
-		ID int64 `json:"id"`
+		ID   int64  `json:"id"`
+		Slug string `json:"slug"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return fmt.Errorf("decode GitHub App verification: %w", err)
+		return GitHubAppMetadata{}, fmt.Errorf("decode GitHub App verification: %w", err)
 	}
 	configuredID, err := strconv.ParseInt(i.appID, 10, 64)
 	if err != nil || body.ID != configuredID {
-		return errors.New("GitHub App identity does not match the configured App ID")
+		return GitHubAppMetadata{}, errors.New("GitHub App identity does not match the configured App ID")
 	}
-	return nil
+	return GitHubAppMetadata{ID: strconv.FormatInt(body.ID, 10), Slug: strings.TrimSpace(body.Slug)}, nil
 }
 
 func NewGitHubAppIssuer(appID string, privateKeyPEM []byte) (*GitHubAppIssuer, error) {

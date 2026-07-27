@@ -14,6 +14,12 @@ func validatePluginAutomationAggregate(a *domain.PluginAutomation, scm *domain.S
 	if a == nil || !domain.ValidPluginAutomationTrigger(a.TriggerKind) {
 		return fmt.Errorf("invalid plugin automation trigger")
 	}
+	if a.RunKind == "" {
+		a.RunKind = domain.RunKindAgent
+	}
+	if !domain.ValidRunKind(a.RunKind) {
+		return fmt.Errorf("invalid plugin automation run kind")
+	}
 	switch a.ModelEffort {
 	case "":
 	case "low", "medium", "high":
@@ -45,12 +51,21 @@ func validatePluginAutomationAggregate(a *domain.PluginAutomation, scm *domain.S
 			if action.AutomationID != a.ID || action.ServiceID != a.ServiceID {
 				return fmt.Errorf("scm action aggregate mismatch")
 			}
+			if a.RunKind == domain.RunKindReview && action.EventFamily != "pull_request" {
+				return fmt.Errorf("review automation requires pull request actions")
+			}
 		}
 	case "kanban":
+		if a.RunKind == domain.RunKindReview {
+			return fmt.Errorf("review automation requires an scm trigger")
+		}
 		if kanban == nil || kanban.AutomationID != a.ID {
 			return fmt.Errorf("kanban automation needs exactly one trigger")
 		}
 	case "cron":
+		if a.RunKind == domain.RunKindReview {
+			return fmt.Errorf("review automation requires an scm trigger")
+		}
 		if cron == nil || cron.AutomationID != a.ID {
 			return fmt.Errorf("cron automation needs exactly one trigger")
 		}

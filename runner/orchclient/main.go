@@ -171,14 +171,14 @@ func main() {
 
 	case "post-review":
 		fs := flag.NewFlagSet("post-review", flag.ExitOnError)
-		file := fs.String("file", "", "path to the review markdown to post")
+		file := fs.String("file", "", "path to the structured review JSON to post")
 		_ = fs.Parse(args)
 		data, err := os.ReadFile(*file)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[orchclient] post-review: read %s: %v\n", *file, err)
 			os.Exit(1)
 		}
-		if !c.uploadRaw("/internal/v1/runs/"+c.runID+"/review", "text/plain; charset=utf-8", data, "post-review") {
+		if !c.uploadRaw("/internal/v1/runs/"+c.runID+"/review", "application/vnd.jcode.review+json", data, "post-review") {
 			os.Exit(1)
 		}
 
