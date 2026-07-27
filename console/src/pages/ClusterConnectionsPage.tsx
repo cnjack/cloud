@@ -67,6 +67,7 @@ function ProviderConfigs() {
   </div>;
 }
 function ProviderConfigCard({ provider }: { provider: import('../api/types').ProviderKind }) {
+  const { t } = useTranslation();
   const query = useClusterProviderConfig(provider);
   const update = useUpdateClusterProviderConfig(provider);
   const test = useTestClusterProviderConfig(provider);
@@ -99,6 +100,12 @@ function ProviderConfigCard({ provider }: { provider: import('../api/types').Pro
     || (!item.webhook_secret_set && !webhookSecret.trim())
   );
   const status = githubAppIncomplete ? 'incomplete' : item.health;
+  const statusText = t(`cluster.connections.providerHealth.${status}`);
+  const healthText = githubAppIncomplete
+    ? t('cluster.connections.githubAppSetupIncomplete')
+    : item.health_message
+      ? t('cluster.connections.providerHealthError', { message: item.health_message })
+      : t(`cluster.connections.providerHealth.${item.health}`);
   const save = () => update.mutate({
     base_url: url,
     client_id: clientID,
@@ -128,35 +135,35 @@ function ProviderConfigCard({ provider }: { provider: import('../api/types').Pro
         <span className={styles.providerMark}>{provider}</span>
         <span className={styles.cardCopy}>
           <strong>{provider === 'jtype' ? 'JType Kanban' : provider}</strong>
-          <small>{githubAppIncomplete ? 'GitHub App setup incomplete' : item.health_message ?? item.health}</small>
+          <small>{healthText}</small>
         </span>
-        <StatusLabel tone={item.health === 'error' ? 'danger' : status === 'healthy' ? 'success' : 'warning'}>{status}</StatusLabel>
+        <StatusLabel tone={item.health === 'error' ? 'danger' : status === 'healthy' ? 'success' : 'warning'}>{statusText}</StatusLabel>
       </header>
       <div className={styles.cardBody}>
-        <TextField label="Instance URL" value={url} disabled={provider === 'github'} onChange={(event) => { setUrl(event.target.value); setDirty(true); }} placeholder={provider === 'github' ? 'https://github.com' : 'https://provider.example'} />
+        <TextField label={t('cluster.connections.instanceUrl')} value={url} disabled={provider === 'github'} onChange={(event) => { setUrl(event.target.value); setDirty(true); }} placeholder={provider === 'github' ? 'https://github.com' : 'https://provider.example'} />
         <fieldset className={styles.capabilityFields}>
-          <legend>Provider capabilities</legend>
+          <legend>{t('cluster.connections.providerCapabilities')}</legend>
           <label className={styles.checkLabel}>
-            <input aria-label="Login enabled" type="checkbox" checked={loginEnabled} disabled={provider === 'jtype'} onChange={(event) => { setLoginEnabled(event.target.checked); setDirty(true); }} />
-            <span className={styles.checkCopy}><strong>Login</strong><small>Allow this Provider for Cloud sign-in.</small></span>
+            <input aria-label={t('cluster.connections.loginEnabled')} type="checkbox" checked={loginEnabled} disabled={provider === 'jtype'} onChange={(event) => { setLoginEnabled(event.target.checked); setDirty(true); }} />
+            <span className={styles.checkCopy}><strong>{t('cluster.connections.loginCapability')}</strong><small>{t('cluster.connections.loginCapabilityHint')}</small></span>
           </label>
           <label className={styles.checkLabel}>
-            <input aria-label="Plugin enabled" type="checkbox" checked={pluginEnabled} onChange={(event) => { setPluginEnabled(event.target.checked); setDirty(true); }} />
-            <span className={styles.checkCopy}><strong>Plugin</strong><small>Allow Projects to connect and use it.</small></span>
+            <input aria-label={t('cluster.connections.pluginEnabled')} type="checkbox" checked={pluginEnabled} onChange={(event) => { setPluginEnabled(event.target.checked); setDirty(true); }} />
+            <span className={styles.checkCopy}><strong>{t('cluster.connections.pluginCapability')}</strong><small>{t('cluster.connections.pluginCapabilityHint')}</small></span>
           </label>
         </fieldset>
-        <TextField label="OAuth client ID" value={clientID} onChange={(event) => { setClientID(event.target.value); setDirty(true); }} />
-        <TextField label="OAuth client secret" type="password" autoComplete="new-password" value={clientSecret} placeholder={item.client_secret_set ? 'Configured — enter to replace' : 'Enter secret'} onChange={(event) => { setClientSecret(event.target.value); setDirty(true); }} />
+        <TextField label={t('cluster.connections.oauthClientId')} value={clientID} onChange={(event) => { setClientID(event.target.value); setDirty(true); }} />
+        <TextField label={t('cluster.connections.oauthClientSecret')} type="password" autoComplete="new-password" value={clientSecret} placeholder={item.client_secret_set ? t('cluster.connections.configuredReplace') : t('cluster.connections.enterSecret')} onChange={(event) => { setClientSecret(event.target.value); setDirty(true); }} />
         {provider === 'github' && <>
           <div className={styles.sectionLabel}>GitHub App</div>
-          <TextField label="GitHub App ID" inputMode="numeric" value={appID} placeholder="GitHub App ID" onChange={(event) => { setAppID(event.target.value); setDirty(true); }} />
-          <TextAreaField label="GitHub App private key" autoComplete="off" spellCheck={false} value={appPrivateKey} placeholder={item.app_private_key_set ? 'Configured — paste a PEM to replace' : 'Paste the complete private-key PEM'} hint="Write-only. Cloud encrypts the PEM and never returns it to the browser." onChange={(event) => { setAppPrivateKey(event.target.value); setDirty(true); }} />
-          <TextField label="Webhook secret" type="password" autoComplete="new-password" value={webhookSecret} placeholder={item.webhook_secret_set ? 'Configured — enter to replace' : 'Enter the same secret configured in GitHub'} onChange={(event) => { setWebhookSecret(event.target.value); setDirty(true); }} />
-          {githubAppIncomplete && <div className={styles.warning}><Warning size={16} aria-hidden="true" /><span><strong>GitHub App configuration is incomplete</strong>Add the App ID, private key, and matching webhook secret before Projects can list Installations.</span></div>}
+          <TextField label={t('cluster.connections.githubAppId')} inputMode="numeric" value={appID} placeholder={t('cluster.connections.githubAppId')} onChange={(event) => { setAppID(event.target.value); setDirty(true); }} />
+          <TextAreaField label={t('cluster.connections.githubAppPrivateKey')} autoComplete="off" spellCheck={false} value={appPrivateKey} placeholder={item.app_private_key_set ? t('cluster.connections.configuredPemReplace') : t('cluster.connections.pastePrivateKeyPem')} hint={t('cluster.connections.privateKeyHint')} onChange={(event) => { setAppPrivateKey(event.target.value); setDirty(true); }} />
+          <TextField label={t('cluster.connections.webhookSecret')} type="password" autoComplete="new-password" value={webhookSecret} placeholder={item.webhook_secret_set ? t('cluster.connections.configuredReplace') : t('cluster.connections.webhookSecretPlaceholder')} onChange={(event) => { setWebhookSecret(event.target.value); setDirty(true); }} />
+          {githubAppIncomplete && <div className={styles.warning}><Warning size={16} aria-hidden="true" /><span><strong>{t('cluster.connections.githubAppConfigurationIncomplete')}</strong>{t('cluster.connections.githubAppConfigurationIncompleteHint')}</span></div>}
         </>}
         <div className={styles.actions}>
-          <Button type="button" variant="secondary" loading={test.isPending} onClick={() => test.mutate()}>Test connection</Button>
-          <Button type="button" loading={update.isPending} onClick={save}>Save</Button>
+          <Button type="button" variant="secondary" loading={test.isPending} onClick={() => test.mutate()}>{t('cluster.connections.testConnection')}</Button>
+          <Button type="button" loading={update.isPending} onClick={save}>{t('common.save')}</Button>
         </div>
       </div>
     </section>

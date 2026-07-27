@@ -20,7 +20,7 @@ function leaves(value: unknown, prefix = ''): Map<string, string> {
 }
 
 describe('Plugin and Automation locale completeness', () => {
-  for (const section of ['plugins', 'automationEditor', 'projectAutomations'] as const) {
+  for (const section of ['plugins', 'automationEditor', 'projectAutomations', 'projectSettings'] as const) {
     it(`keeps ${section} keys complete in all supported locales`, () => {
       const expected = leaves(en[section]);
       for (const [locale, resource] of Object.entries({ 'zh-Hans': zhHans, 'zh-Hant': zhHant, ja, ko })) {
@@ -32,4 +32,15 @@ describe('Plugin and Automation locale completeness', () => {
       }
     });
   }
+
+  it('keeps Cluster Provider connection keys complete in all supported locales', () => {
+    const expected = leaves(en.cluster.connections);
+    for (const [locale, resource] of Object.entries({ 'zh-Hans': zhHans, 'zh-Hant': zhHant, ja, ko })) {
+      const actual = leaves(resource.cluster.connections);
+      expect([...actual.keys()].sort(), `${locale}.cluster.connections key shape`).toEqual([...expected.keys()].sort());
+      for (const [key, text] of actual) {
+        expect(text.trim().length, `${locale}.cluster.connections.${key} is empty`).toBeGreaterThan(0);
+      }
+    }
+  });
 });

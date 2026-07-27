@@ -84,7 +84,7 @@ export interface ClusterProviderConfig {
   login_enabled: boolean;
   plugin_enabled: boolean;
   configured: boolean;
-  health: 'unknown' | 'healthy' | 'error';
+  health: 'unknown' | 'healthy' | 'partial' | 'error';
   health_message?: string;
   config_revision?: number;
   client_id?: string;
