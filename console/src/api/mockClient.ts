@@ -459,10 +459,19 @@ export function createMockClient(): ApiClient {
     return [...models.keys()].filter((id) => modelGrants.get(id)?.has(projectId));
   }
 
+  function usableProjectModelIds(projectId: string): string[] {
+    return [...new Set([
+      ...grantedModelIds(projectId),
+      ...projectProvidersOf(projectId).flatMap((provider) =>
+        provider.models.filter((model) => model.enabled !== false).map((model) => model.id)),
+    ])];
+  }
+
   /**
    * resolveModelForRun mirrors the orchestrator's D21 chain: a composer pick must
    * be granted (else 403 model_not_granted); otherwise the service default, then
-   * the sole grant; several grants + no default is 409 model_not_selected; zero
+   * the project default and sole grant; several grants + no default is
+   * 409 model_not_selected; zero
    * grants is 409 model_not_configured. Returns the chosen id (null never occurs
    * in the demo — the catalog is always populated).
    */
@@ -471,7 +480,7 @@ export function createMockClient(): ApiClient {
     svc: Service,
     requested?: string,
   ): string | null {
-    const granted = grantedModelIds(projectId);
+    const granted = usableProjectModelIds(projectId);
     const grantedSet = new Set(granted);
     if (requested) {
       if (!grantedSet.has(requested)) {
@@ -483,6 +492,10 @@ export function createMockClient(): ApiClient {
     }
     if (svc.default_model_id && grantedSet.has(svc.default_model_id)) {
       return svc.default_model_id;
+    }
+    const projectDefault = projects.get(projectId)?.default_model_id;
+    if (projectDefault && grantedSet.has(projectDefault)) {
+      return projectDefault;
     }
     if (granted.length === 1) return granted[0]!;
     if (granted.length >= 2) {
@@ -980,6 +993,14 @@ export function createMockClient(): ApiClient {
       if ('run_timeout_secs' in input) {
         const n = input.run_timeout_secs;
         next.run_timeout_secs = n != null && n > 0 ? n : undefined;
+      }
+      if ('default_model_id' in input) {
+        const id = input.default_model_id?.trim() ?? '';
+        const available = await this.listProjectModels(existing.id);
+        if (id && !available.models.some((model) => model.id === id)) {
+          throw new ApiError(403, 'the default model is not authorized for this project');
+        }
+        next.default_model_id = id || null;
       }
       if ('provider_allowlist' in input) {
         // Deprecated (D20 / F5): git-host policy is a cluster allowlist +
@@ -2114,6 +2135,8 @@ export function createMockClient(): ApiClient {
         service_id: input.service_id ?? existing.automation.service_id,
         name: input.name ?? existing.automation.name,
         prompt_template: input.prompt_template ?? existing.automation.prompt_template,
+        model_id: input.model_id ?? existing.automation.model_id,
+        model_effort: input.model_effort ?? existing.automation.model_effort,
         enabled: input.enabled ?? existing.automation.enabled,
         ignore_jcode: input.ignore_jcode ?? existing.automation.ignore_jcode,
         scm: input.scm ?? (existing.scm ? { ...existing.scm, actions: existing.actions ?? [] } : undefined),
@@ -2121,6 +2144,9 @@ export function createMockClient(): ApiClient {
         cron: input.cron ?? existing.cron,
       };
       const updated = automationFromInput(merged, existing);
+      if (input.model_id !== undefined && existing.automation.last_error?.toLowerCase().includes('model')) {
+        updated.automation.last_error = undefined;
+      }
       projectAutomations.set(automationId, updated);
       return delay(structuredClone(updated));
     },
@@ -2251,6 +2277,7 @@ export function createMockClient(): ApiClient {
         raw_repo_url: boundProvider ? undefined : repoUrl,
         default_branch: input.default_branch?.trim() || 'main',
         git_mode: gitMode,
+        default_model_id: projects.get(projectId)?.default_model_id ?? null,
         integration_id: null,
         created_at: nowISO(),
       };
@@ -2268,7 +2295,7 @@ export function createMockClient(): ApiClient {
           if (id === '') {
             svc.default_model_id = null;
           } else {
-            if (!modelGrants.get(id)?.has(pid)) {
+            if (!usableProjectModelIds(pid).includes(id)) {
               throw new ApiError(400, 'that model is not authorized for this project', {
                 error: { code: 'model_not_granted', message: 'model not granted to project' },
               });
@@ -2360,7 +2387,7 @@ export function createMockClient(): ApiClient {
       }
       if (!projectId || !svc) throw new ApiError(404, 'service not found');
       // D21 resolution chain (mirrors orchestrator selectModel): composer pick →
-      // service default → the project's sole granted model → typed errors.
+      // service default → project default → the project's sole granted model → typed errors.
       const modelId = resolveModelForRun(projectId, svc, input.model_id);
       // F8b (mirrors the orchestrator gate): "approval" only rides on a session.
       if (input.permission_mode === 'approval' && input.session !== true) {

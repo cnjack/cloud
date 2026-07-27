@@ -475,3 +475,28 @@ func TestMessages(t *testing.T) {
 		t.Fatalf("not-granted msg wrong: %q", m)
 	}
 }
+
+func TestSelectModelUsesProjectDefaultAfterServiceDefault(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: "project-default", Name: "project", CreatedAt: time.Now().UTC()}
+	if err := st.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	first := seedModel(t, st, "first", "http://models/v1", "provider/first", nil)
+	glm := seedModel(t, st, "glm-5.2", "http://models/v1", "zhipuai-coding-plan/glm-5.2", nil)
+	for _, id := range []string{first, glm} {
+		if err := st.GrantModel(ctx, id, project.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project, err := st.GetProject(ctx, project.ID)
+	if err != nil || project.DefaultModelID == nil || *project.DefaultModelID != glm {
+		t.Fatalf("GLM-5.2 grant did not establish project default: project=%+v err=%v", project, err)
+	}
+
+	selected, outcome, err := selectModel(ctx, st, &config.Config{}, project.ID, "", "")
+	if err != nil || outcome != SelectOK || selected.ModelID != glm {
+		t.Fatalf("selection=%+v outcome=%v err=%v, want project default %s", selected, outcome, err, glm)
+	}
+}

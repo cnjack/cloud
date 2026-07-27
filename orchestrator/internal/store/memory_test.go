@@ -784,6 +784,10 @@ func TestMemStoreModelGrants(t *testing.T) {
 	if got, _ := m.ListProjectIDsForModel(ctx, "m1"); len(got) != 1 || got[0] != "p1" {
 		t.Fatalf("ListProjectIDsForModel mismatch: %+v", got)
 	}
+	proj.DefaultModelID = strp("m1")
+	if err := m.UpdateProject(ctx, proj); err != nil {
+		t.Fatal(err)
+	}
 
 	// An explicit Automation pin blocks deletion rather than silently falling
 	// back to another Project model.
@@ -808,6 +812,10 @@ func TestMemStoreModelGrants(t *testing.T) {
 	gotRun, _ := m.GetRun(ctx, "r1")
 	if gotRun.ModelID != nil {
 		t.Fatalf("run model ref should be nulled on model delete: %+v", gotRun.ModelID)
+	}
+	gotProject, _ := m.GetProject(ctx, "p1")
+	if gotProject.DefaultModelID != nil {
+		t.Fatalf("project default should be nulled on model delete: %+v", gotProject.DefaultModelID)
 	}
 
 	// Revoke is idempotent (no-op when absent).

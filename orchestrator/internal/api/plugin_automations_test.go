@@ -101,6 +101,18 @@ func TestPluginAutomationCarriesModelAndReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestPluginAutomationModelPatchClearsOnlyHistoricalModelErrors(t *testing.T) {
+	if !shouldClearPluginAutomationModelError(true, "Automation model is unavailable.") {
+		t.Fatal("an explicitly saved model must clear the stale model-selection error")
+	}
+	if shouldClearPluginAutomationModelError(false, "Automation model is unavailable.") {
+		t.Fatal("an unrelated edit must preserve the historical model-selection error")
+	}
+	if shouldClearPluginAutomationModelError(true, "SCM webhook could not be reconciled.") {
+		t.Fatal("saving a model must not hide an unrelated webhook error")
+	}
+}
+
 func TestPluginAutomationEffortRequiresReasoningCapability(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemStore()

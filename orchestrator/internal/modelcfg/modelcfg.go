@@ -195,8 +195,8 @@ func (s Selection) SupportsEffort(effort string) bool {
 
 // selectModel runs the resolution chain to CHOOSE a model for a new run:
 //
-//	requested (composer pick) → defaultModelID (service default) → the project's
-//	sole granted model → typed outcome.
+//	requested (composer pick) → defaultModelID (service default) → project
+//	default → the project's sole granted model → typed outcome.
 //
 // The returned Selection.ModelID is "" when the run resolves to the env fallback
 // (an empty catalog). requested/defaultModelID must be granted to the project to
@@ -230,7 +230,22 @@ func selectModel(ctx context.Context, st ConfigReader, cfg *config.Config, proje
 	if _, ok := byID[defaultModelID]; ok && defaultModelID != "" {
 		return pick(defaultModelID), SelectOK, nil
 	}
-	// 3) The project's granted set.
+	// 3) Project default. The optional interface keeps narrow test stubs valid;
+	// the production Store always supplies GetProject.
+	if projects, ok := st.(interface {
+		GetProject(context.Context, string) (*domain.Project, error)
+	}); ok {
+		project, projectErr := projects.GetProject(ctx, projectID)
+		if projectErr != nil && !errors.Is(projectErr, store.ErrNotFound) {
+			return Selection{}, SelectOK, projectErr
+		}
+		if project != nil && project.DefaultModelID != nil {
+			if _, granted := byID[*project.DefaultModelID]; granted {
+				return pick(*project.DefaultModelID), SelectOK, nil
+			}
+		}
+	}
+	// 4) The project's granted set.
 	switch {
 	case len(grants) == 1:
 		return pick(grants[0].ID), SelectOK, nil

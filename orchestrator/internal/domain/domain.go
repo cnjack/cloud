@@ -274,6 +274,9 @@ type Project struct {
 	// OwnerUserID is the user who created/owns the project (M2). Empty for a
 	// project created by a service principal (CONSOLE_TOKEN), which has no user.
 	OwnerUserID string `json:"owner_user_id,omitempty"`
+	// DefaultModelID is the project-wide fallback after a Service default and
+	// before the sole-grant fallback. Nil means no project default.
+	DefaultModelID *string `json:"default_model_id,omitempty"`
 }
 
 // Service is a single repository configuration inside a project. Runs are
@@ -460,7 +463,7 @@ type Run struct {
 
 	// ModelID is the catalog model this run was dispatched with (D21), chosen by
 	// the resolution chain at create time (composer pick → service default →
-	// project's sole grant). Nil when the run resolved to the env MODEL_* fallback
+	// project default → project's sole grant). Nil when the run resolved to the env MODEL_* fallback
 	// (empty catalog / local rig) or predates the catalog. Recorded for audit and
 	// so the reconciler + LLM reverse proxy materialise the SAME model the
 	// composer picked, without re-running the chain.

@@ -241,6 +241,7 @@ func (s *Server) handleUpdatePluginAutomation(w http.ResponseWriter, r *http.Req
 		v := spec.Automation.IgnoreJCode
 		req.IgnoreJCode = &v
 	}
+	modelWasPatched := req.ModelID != nil
 	if req.ModelID == nil {
 		value := spec.Automation.ModelID
 		req.ModelID = &value
@@ -263,6 +264,12 @@ func (s *Server) handleUpdatePluginAutomation(w http.ResponseWriter, r *http.Req
 	a.CreatedAt = spec.Automation.CreatedAt
 	a.CreatedBy = spec.Automation.CreatedBy
 	a.LastError = spec.Automation.LastError
+	// A successfully validated model change makes a prior model-selection error
+	// stale immediately. Do not keep warning the owner until another webhook
+	// happens to arrive.
+	if shouldClearPluginAutomationModelError(modelWasPatched, spec.Automation.LastError) {
+		a.LastError = ""
+	}
 	if modelErr := s.validatePluginAutomationModel(r, svc, a, false); modelErr != nil {
 		writeError(w, modelErr.status, modelErr.code, modelErr.msg)
 		return
@@ -306,6 +313,10 @@ func (s *Server) handleUpdatePluginAutomation(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, 200, updated)
+}
+
+func shouldClearPluginAutomationModelError(modelWasPatched bool, lastError string) bool {
+	return modelWasPatched && strings.Contains(strings.ToLower(lastError), "model")
 }
 
 func (s *Server) handleDeletePluginAutomation(w http.ResponseWriter, r *http.Request) {

@@ -12,12 +12,13 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus } from '@phosphor-icons/react';
 import { Button } from '../../components/Button';
-import { useProjectModels } from '../../api/queries';
-import type { ModelProvider } from '../../api/types';
+import { Select } from '../../components/Select';
+import { useProjectModels, useUpdateProject } from '../../api/queries';
+import type { ModelProvider, Project } from '../../api/types';
 import { GrantedModelsList, ModelsCatalog } from './ModelsCatalog';
 import styles from './ModelsCatalog.module.css';
 
-export function ProjectModelsPanel({ projectId, canManage }: { projectId: string; canManage: boolean }) {
+export function ProjectModelsPanel({ projectId, canManage, project }: { projectId: string; canManage: boolean; project?: Project }) {
   const { t } = useTranslation();
   const [editor, setEditor] = useState<ModelProvider | 'new' | null>(null);
 
@@ -43,7 +44,7 @@ export function ProjectModelsPanel({ projectId, canManage }: { projectId: string
         </section>
       )}
 
-      <ClusterGrantedModels projectId={projectId} canManage={canManage} />
+      <ClusterGrantedModels projectId={projectId} canManage={canManage} project={project} />
     </div>
   );
 }
@@ -53,9 +54,10 @@ export function ProjectModelsPanel({ projectId, canManage }: { projectId: string
  * secondary "everything usable, incl. cluster-granted" view under the manager;
  * for a member it is the whole section.
  */
-function ClusterGrantedModels({ projectId, canManage }: { projectId: string; canManage: boolean }) {
+function ClusterGrantedModels({ projectId, canManage, project }: { projectId: string; canManage: boolean; project?: Project }) {
   const { t } = useTranslation();
   const models = useProjectModels(projectId);
+  const update = useUpdateProject();
 
   if (models.isLoading) return <p className={styles.panelState}>{t('projectSettings.loadingModelAccess')}</p>;
   if (models.isError) return <p className={styles.panelState} role="alert">{t('projectSettings.modelAccessLoadError')}</p>;
@@ -69,6 +71,27 @@ function ClusterGrantedModels({ projectId, canManage }: { projectId: string; can
           <p>{canManage ? t('projectSettings.models.availableOwnerHint') : t('projectSettings.models.availableMemberHint')}</p>
         </div>
       </div>
+      {canManage && project && data.models.length > 0 && (
+        <div className={styles.defaultModel}>
+          <label htmlFor="project-default-model">{t('projectSettings.models.defaultTitle')}</label>
+          <p>{t('projectSettings.models.defaultDescription')}</p>
+          <Select
+            id="project-default-model"
+            aria-label={t('projectSettings.models.defaultTitle')}
+            data-testid="project-default-model-select"
+            value={project.default_model_id ?? ''}
+            disabled={update.isPending}
+            onChange={(defaultModelId) => update.mutate({
+              id: projectId,
+              input: { default_model_id: defaultModelId || null },
+            })}
+            options={[
+              { value: '', label: t('projectSettings.models.noDefault') },
+              ...data.models.map((model) => ({ value: model.id, label: model.name })),
+            ]}
+          />
+        </div>
+      )}
       <GrantedModelsList models={data.models} envFallback={data.env_fallback} />
     </section>
   );

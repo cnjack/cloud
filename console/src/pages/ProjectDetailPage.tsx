@@ -205,7 +205,7 @@ export function ProjectDetailPage() {
     ? selectedModel
     : '';
   const effectiveModel = grantedModels.find((model) =>
-    model.id === (effectiveSelectedModel || activeService?.default_model_id))
+    model.id === (effectiveSelectedModel || activeService?.default_model_id || p?.default_model_id))
     ?? (grantedModels.length === 1 ? grantedModels[0] : undefined);
   const effortEnabled = effectiveModel?.capabilities.reasoning === true;
 
@@ -460,7 +460,7 @@ export function ProjectDetailPage() {
           />
         }
         railAction={
-          canAddRepo && services.length > 0 ? (
+          canRun && services.length > 0 ? (
             <button
               type="button"
               className={styles.railAddService}
@@ -481,7 +481,7 @@ export function ProjectDetailPage() {
           ) : undefined
         }
         mobileActions={
-          canAddRepo && services.length > 0 ? (
+          canRun && services.length > 0 ? (
             <button type="button" className={styles.mobileAddService} onClick={openAddService}>
               <Plus size={16} weight="regular" aria-hidden="true" />
               <span>{t('common.add')}</span>
@@ -635,7 +635,7 @@ export function ProjectDetailPage() {
                     ? t('projectDetail.addRepoEmptyManage')
                     : t('projectDetail.addRepoEmptyMember')}
                 </p>
-                {canAddRepo && (
+                {canRun && (
                   <Button data-testid="empty-add-service" onClick={openAddService}>
                     <Plus size={14} aria-hidden="true" />
                     {t('projectDetail.firstServiceAction')}
@@ -654,6 +654,7 @@ export function ProjectDetailPage() {
                 onPromptChange={setPrompt}
                 models={grantedModels}
                 selectedModel={effectiveSelectedModel}
+                effectiveDefaultModelName={effectiveModel?.name}
                 onSelectedModelChange={(modelID) => {
                   setSelectedModel(modelID);
                   setModelEffort('auto');
@@ -691,7 +692,7 @@ export function ProjectDetailPage() {
               />
             )}
 
-            {canAddRepo && addOpen && (
+            {canRun && addOpen && (
               <section
                 className={`${styles.addRepo} ${services.length === 0 ? styles.firstServiceSetup : ''}`}
                 aria-label={t('projectDetail.addService')}
@@ -717,7 +718,7 @@ export function ProjectDetailPage() {
                   </header>
                 )}
                 <Card className={styles.addRepoCard}>
-                  <div className={styles.repoPicker} data-testid="repo-picker">
+                  {canAddRepo ? <div className={styles.repoPicker} data-testid="repo-picker">
                     {availableGitPlugins.length > 0 && (
                       <label className={styles.pickerHint}>
                         {t('plugins.projectPlugin')}
@@ -773,7 +774,16 @@ export function ProjectDetailPage() {
                         ))}
                       </ul>
                     )}
-                  </div>
+                  </div> : (
+                    <div className={styles.addRepoNeedsIntegration} data-testid="add-repo-needs-plugin">
+                      <p>{t('projectDetail.memberNeedsIntegration')}</p>
+                      {canManage && (
+                        <Link to={`/projects/${encodeURIComponent(projectId)}?view=project-settings&settings=plugins`}>
+                          {t('projectDetail.configureProjectPlugins')}
+                        </Link>
+                      )}
+                    </div>
+                  )}
 
                   {services.length > 0 && (
                     <div className={styles.addRepoActions}>
@@ -792,7 +802,7 @@ export function ProjectDetailPage() {
               </section>
             )}
 
-            {needsGitPlugin && (
+            {needsGitPlugin && !addOpen && services.length > 0 && (
               <p className={styles.addRepoNeedsIntegration} data-testid="add-repo-needs-plugin">
                 {t('projectDetail.memberNeedsIntegration')}
               </p>

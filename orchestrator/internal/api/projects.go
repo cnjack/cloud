@@ -158,12 +158,38 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), id, domain.RoleOwner) {
 		return
 	}
+	previousDefaultModelID := ""
+	if existing.DefaultModelID != nil {
+		previousDefaultModelID = *existing.DefaultModelID
+	}
 	if code, msg := applyProjectPatch(r, existing); code != "" {
 		// All guardrail validation failures are 400. A reserved injected_env key is
 		// a first-class typed code (reserved_env_key) so the console can point at the
 		// offending key (fail-visible; CLAUDE.md red line #1).
 		writeError(w, http.StatusBadRequest, code, msg)
 		return
+	}
+	nextDefaultModelID := ""
+	if existing.DefaultModelID != nil {
+		nextDefaultModelID = *existing.DefaultModelID
+	}
+	if existing.DefaultModelID != nil && nextDefaultModelID != previousDefaultModelID {
+		models, modelErr := s.st.ListModelsForProject(r.Context(), existing.ID)
+		if modelErr != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "could not validate project default model")
+			return
+		}
+		granted := false
+		for i := range models {
+			if models[i].ID == *existing.DefaultModelID {
+				granted = true
+				break
+			}
+		}
+		if !granted {
+			writeError(w, http.StatusForbidden, "model_not_granted", "the default model is not authorized for this project")
+			return
+		}
 	}
 	if err := s.st.UpdateProject(r.Context(), existing); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not update project")
@@ -194,6 +220,7 @@ var patchProjectKeys = map[string]bool{
 	"max_live_sessions":         true,
 	"session_idle_timeout_secs": true,
 	"session_ttl_secs":          true,
+	"default_model_id":          true,
 }
 
 // applyProjectPatch mutates p in place from the PATCH body. It uses PRESENCE
@@ -228,6 +255,21 @@ func applyProjectPatch(r *http.Request, p *domain.Project) (string, string) {
 		if t := strings.TrimSpace(name); t != "" {
 			p.Name = t // an empty/whitespace name is ignored (a project must keep a name)
 		}
+	}
+
+	if v, ok := raw["default_model_id"]; ok {
+		var modelID *string
+		if string(v) != "null" {
+			var value string
+			if err := json.Unmarshal(v, &value); err != nil {
+				return "bad_request", "default_model_id must be a string or null"
+			}
+			value = strings.TrimSpace(value)
+			if value != "" {
+				modelID = &value
+			}
+		}
+		p.DefaultModelID = modelID
 	}
 
 	if v, ok := raw["max_concurrent_runs"]; ok {
@@ -413,9 +455,10 @@ type projectView struct {
 	ProviderAllowlist []string `json:"provider_allowlist,omitempty"`
 	// Session guardrails (D22). Absent => the project inherits the cluster default
 	// (the console shows a "cluster default" placeholder).
-	MaxLiveSessions        *int   `json:"max_live_sessions,omitempty"`
-	SessionIdleTimeoutSecs *int64 `json:"session_idle_timeout_secs,omitempty"`
-	SessionTTLSecs         *int64 `json:"session_ttl_secs,omitempty"`
+	MaxLiveSessions        *int    `json:"max_live_sessions,omitempty"`
+	SessionIdleTimeoutSecs *int64  `json:"session_idle_timeout_secs,omitempty"`
+	SessionTTLSecs         *int64  `json:"session_ttl_secs,omitempty"`
+	DefaultModelID         *string `json:"default_model_id,omitempty"`
 	// InjectedEnv values can hold secrets (tokens, proxy creds). They are returned
 	// ONLY to an owner/cluster-admin — the same role that may edit them. For a
 	// member/viewer this is omitted entirely (not just masked): they never need the
@@ -449,6 +492,7 @@ func (s *Server) projectViewOf(ctx context.Context, p *domain.Project, role doma
 		MaxLiveSessions:        p.MaxLiveSessions,
 		SessionIdleTimeoutSecs: p.SessionIdleTimeoutSecs,
 		SessionTTLSecs:         p.SessionTTLSecs,
+		DefaultModelID:         p.DefaultModelID,
 		Services:               services,
 	}
 	// Only an owner (cluster-admin / service principal report "owner") sees the

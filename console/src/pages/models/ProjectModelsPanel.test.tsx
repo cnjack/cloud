@@ -9,7 +9,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiProvider } from '../../api/ApiProvider';
 import { ApiError, type ApiClient } from '../../api/client';
-import type { ModelProvider, ProviderModel } from '../../api/types';
+import type { ModelProvider, Project, ProviderModel } from '../../api/types';
 import { ToastProvider } from '../../components/Toast';
 import { ProjectModelsPanel } from './ProjectModelsPanel';
 
@@ -31,6 +31,7 @@ interface Ctl {
   createdModels: { providerId: string; input: unknown }[];
   updated: { providerId: string; modelId: string; input: { enabled?: boolean } }[];
   deleted: { providerId: string; modelId: string }[];
+  projectUpdates: unknown[];
 }
 
 function clone(p: ModelProvider): ModelProvider {
@@ -39,7 +40,7 @@ function clone(p: ModelProvider): ModelProvider {
 
 function makeClient(seed: ModelProvider[] = [seedProvider]): { client: ApiClient; ctl: Ctl } {
   const providers = seed.map(clone);
-  const ctl: Ctl = { createdProviders: [], createdModels: [], updated: [], deleted: [] };
+  const ctl: Ctl = { createdProviders: [], createdModels: [], updated: [], deleted: [], projectUpdates: [] };
   const client: Partial<ApiClient> = {
     listProjectModelProviders: async () => providers.map(clone),
     listProjectModels: async () => ({
@@ -52,6 +53,10 @@ function makeClient(seed: ModelProvider[] = [seedProvider]): { client: ApiClient
         })),
       env_fallback: false,
     }),
+    updateProject: async (_id, input) => {
+      ctl.projectUpdates.push(input);
+      return { id: 'p1', name: 'Project', created_at: '', role: 'owner', ...input } as Project;
+    },
     createProjectModelProvider: async (_pid, input) => {
       ctl.createdProviders.push(input);
       const np: ModelProvider = { ...seedProvider, id: 'prv-new', name: input.name, models: [] };
@@ -93,7 +98,11 @@ function renderPanel(canManage: boolean, client: ApiClient) {
     <QueryClientProvider client={qc}>
       <ApiProvider client={client}>
         <ToastProvider>
-          <ProjectModelsPanel projectId="p1" canManage={canManage} />
+          <ProjectModelsPanel
+            projectId="p1"
+            canManage={canManage}
+            project={{ id: 'p1', name: 'Project', created_at: '', role: canManage ? 'owner' : 'member' }}
+          />
         </ToastProvider>
       </ApiProvider>
     </QueryClientProvider>,
@@ -112,6 +121,16 @@ describe('ProjectModelsPanel', () => {
     // The enabled model shows in the read-only available list.
     const available = screen.getByTestId('project-available-models');
     await waitFor(() => expect(within(available).getByText('openai/plan')).toBeTruthy());
+  });
+
+  it('owner can set the project default model', async () => {
+    const { client, ctl } = makeClient();
+    renderPanel(true, client);
+
+    fireEvent.click(await screen.findByTestId('project-default-model-select'));
+    fireEvent.click(await screen.findByRole('option', { name: 'Plan' }));
+
+    await waitFor(() => expect(ctl.projectUpdates).toEqual([{ default_model_id: 'mdl-1' }]));
   });
 
   it('owner adds a project provider', async () => {

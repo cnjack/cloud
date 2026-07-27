@@ -18,6 +18,7 @@ import styles from './ClusterConnectionsPage.module.css';
 
 export function ClusterConnectionsPage() {
   const { t } = useTranslation();
+  const [tab, setTab] = useState<'integrations' | 'login'>('integrations');
   const isAdmin = useRole() === 'cluster-admin';
   const system = useSystem(isAdmin);
   if (!isAdmin) return <ClusterAccessDenied />;
@@ -31,7 +32,22 @@ export function ClusterConnectionsPage() {
       <ClusterSubnav />
       <SurfaceInner>
         <PageHeader eyebrow={t('cluster.connections.eyebrow')} title={t('cluster.connections.title')} description={t('cluster.connections.description')} />
-        <ProviderConfigs />
+        <div className={styles.tabs} role="tablist" aria-label={t('cluster.connections.configurationTabs')}>
+          <button type="button" role="tab" aria-selected={tab === 'integrations'} onClick={() => setTab('integrations')}>
+            {t('cluster.connections.integrationsTab')}
+          </button>
+          <button type="button" role="tab" aria-selected={tab === 'login'} onClick={() => setTab('login')}>
+            {t('cluster.connections.loginTab')}
+          </button>
+        </div>
+        <section className={styles.configuration} role="tabpanel">
+          <ProviderConfigs mode={tab} />
+        </section>
+        <div className={styles.statusHead}>
+          <span>{t('cluster.connections.statusEyebrow')}</span>
+          <h2>{t('cluster.connections.statusTitle')}</h2>
+          <p>{t('cluster.connections.statusDescription')}</p>
+        </div>
         <div className={styles.layout}>
           <div className={styles.stack}>
             <ConnectionCard icon={<GitBranch size={18} />} title={t('cluster.connections.gitPolicyTitle')} subtitle={t('cluster.connections.gitPolicySubtitle')} status={<StatusLabel tone={system.data.provider.gitea_enabled ? 'success' : 'warning'}>{system.data.provider.gitea_enabled ? t('cluster.connections.giteaEnabled') : t('cluster.connections.giteaDisabled')}</StatusLabel>}>
@@ -61,12 +77,15 @@ export function ClusterConnectionsPage() {
   );
 }
 
-function ProviderConfigs() {
+function ProviderConfigs({ mode }: { mode: 'integrations' | 'login' }) {
+  const providers = mode === 'login'
+    ? (['github', 'gitlab', 'gitea'] as const)
+    : (['github', 'gitlab', 'gitea', 'jtype'] as const);
   return <div className={styles.layout} data-testid="cluster-provider-configs">
-    {(['github', 'gitlab', 'gitea', 'jtype'] as const).map((provider) => <ProviderConfigCard key={provider} provider={provider} />)}
+    {providers.map((provider) => <ProviderConfigCard key={provider} provider={provider} mode={mode} />)}
   </div>;
 }
-function ProviderConfigCard({ provider }: { provider: import('../api/types').ProviderKind }) {
+function ProviderConfigCard({ provider, mode }: { provider: import('../api/types').ProviderKind; mode: 'integrations' | 'login' }) {
   const { t } = useTranslation();
   const query = useClusterProviderConfig(provider);
   const update = useUpdateClusterProviderConfig(provider);
@@ -94,18 +113,11 @@ function ProviderConfigCard({ provider }: { provider: import('../api/types').Pro
   if (query.isError || !query.data) return <section className={styles.card}><ErrorBlock error={query.error} onRetry={() => void query.refetch()} /></section>;
 
   const item = query.data;
-  const githubAppIncomplete = provider === 'github' && pluginEnabled && (
+  const githubAppIncomplete = mode === 'integrations' && provider === 'github' && pluginEnabled && (
     !appID.trim()
     || (!item.app_private_key_set && !appPrivateKey.trim())
     || (!item.webhook_secret_set && !webhookSecret.trim())
   );
-  const status = githubAppIncomplete ? 'incomplete' : item.health;
-  const statusText = t(`cluster.connections.providerHealth.${status}`);
-  const healthText = githubAppIncomplete
-    ? t('cluster.connections.githubAppSetupIncomplete')
-    : item.health_message
-      ? t('cluster.connections.providerHealthError', { message: item.health_message })
-      : t(`cluster.connections.providerHealth.${item.health}`);
   const save = () => update.mutate({
     base_url: url,
     client_id: clientID,
@@ -135,26 +147,32 @@ function ProviderConfigCard({ provider }: { provider: import('../api/types').Pro
         <span className={styles.providerMark}>{provider}</span>
         <span className={styles.cardCopy}>
           <strong>{provider === 'jtype' ? 'JType Kanban' : provider}</strong>
-          <small>{healthText}</small>
         </span>
-        <StatusLabel tone={item.health === 'error' ? 'danger' : status === 'healthy' ? 'success' : 'warning'}>{statusText}</StatusLabel>
       </header>
       <div className={styles.cardBody}>
-        <TextField label={t('cluster.connections.instanceUrl')} value={url} disabled={provider === 'github'} onChange={(event) => { setUrl(event.target.value); setDirty(true); }} placeholder={provider === 'github' ? 'https://github.com' : 'https://provider.example'} />
-        <fieldset className={styles.capabilityFields}>
-          <legend>{t('cluster.connections.providerCapabilities')}</legend>
+        {mode === 'integrations' && (
+          <>
+            <TextField label={t('cluster.connections.instanceUrl')} value={url} disabled={provider === 'github'} onChange={(event) => { setUrl(event.target.value); setDirty(true); }} placeholder={provider === 'github' ? 'https://github.com' : 'https://provider.example'} />
+            <fieldset className={styles.capabilityFields}>
+              <legend>{t('cluster.connections.providerCapabilities')}</legend>
+              <label className={styles.checkLabel}>
+                <input aria-label={t('cluster.connections.pluginEnabled')} type="checkbox" checked={pluginEnabled} onChange={(event) => { setPluginEnabled(event.target.checked); setDirty(true); }} />
+                <span className={styles.checkCopy}><strong>{t('cluster.connections.pluginCapability')}</strong><small>{t('cluster.connections.pluginCapabilityHint')}</small></span>
+              </label>
+            </fieldset>
+          </>
+        )}
+        {mode === 'login' && (
           <label className={styles.checkLabel}>
-            <input aria-label={t('cluster.connections.loginEnabled')} type="checkbox" checked={loginEnabled} disabled={provider === 'jtype'} onChange={(event) => { setLoginEnabled(event.target.checked); setDirty(true); }} />
+            <input aria-label={t('cluster.connections.loginEnabled')} type="checkbox" checked={loginEnabled} onChange={(event) => { setLoginEnabled(event.target.checked); setDirty(true); }} />
             <span className={styles.checkCopy}><strong>{t('cluster.connections.loginCapability')}</strong><small>{t('cluster.connections.loginCapabilityHint')}</small></span>
           </label>
-          <label className={styles.checkLabel}>
-            <input aria-label={t('cluster.connections.pluginEnabled')} type="checkbox" checked={pluginEnabled} onChange={(event) => { setPluginEnabled(event.target.checked); setDirty(true); }} />
-            <span className={styles.checkCopy}><strong>{t('cluster.connections.pluginCapability')}</strong><small>{t('cluster.connections.pluginCapabilityHint')}</small></span>
-          </label>
-        </fieldset>
-        <TextField label={t('cluster.connections.oauthClientId')} value={clientID} onChange={(event) => { setClientID(event.target.value); setDirty(true); }} />
-        <TextField label={t('cluster.connections.oauthClientSecret')} type="password" autoComplete="new-password" value={clientSecret} placeholder={item.client_secret_set ? t('cluster.connections.configuredReplace') : t('cluster.connections.enterSecret')} onChange={(event) => { setClientSecret(event.target.value); setDirty(true); }} />
-        {provider === 'github' && <>
+        )}
+        {(mode === 'login' || provider === 'jtype') && <>
+          <TextField label={t('cluster.connections.oauthClientId')} value={clientID} onChange={(event) => { setClientID(event.target.value); setDirty(true); }} />
+          <TextField label={t('cluster.connections.oauthClientSecret')} type="password" autoComplete="new-password" value={clientSecret} placeholder={item.client_secret_set ? t('cluster.connections.configuredReplace') : t('cluster.connections.enterSecret')} onChange={(event) => { setClientSecret(event.target.value); setDirty(true); }} />
+        </>}
+        {mode === 'integrations' && provider === 'github' && <>
           <div className={styles.sectionLabel}>GitHub App</div>
           <TextField label={t('cluster.connections.githubAppId')} inputMode="numeric" value={appID} placeholder={t('cluster.connections.githubAppId')} onChange={(event) => { setAppID(event.target.value); setDirty(true); }} />
           <TextAreaField label={t('cluster.connections.githubAppPrivateKey')} autoComplete="off" spellCheck={false} value={appPrivateKey} placeholder={item.app_private_key_set ? t('cluster.connections.configuredPemReplace') : t('cluster.connections.pastePrivateKeyPem')} hint={t('cluster.connections.privateKeyHint')} onChange={(event) => { setAppPrivateKey(event.target.value); setDirty(true); }} />
@@ -162,7 +180,7 @@ function ProviderConfigCard({ provider }: { provider: import('../api/types').Pro
           {githubAppIncomplete && <div className={styles.warning}><Warning size={16} aria-hidden="true" /><span><strong>{t('cluster.connections.githubAppConfigurationIncomplete')}</strong>{t('cluster.connections.githubAppConfigurationIncompleteHint')}</span></div>}
         </>}
         <div className={styles.actions}>
-          <Button type="button" variant="secondary" loading={test.isPending} onClick={() => test.mutate()}>{t('cluster.connections.testConnection')}</Button>
+          {mode === 'integrations' && <Button type="button" variant="secondary" loading={test.isPending} onClick={() => test.mutate()}>{t('cluster.connections.testConnection')}</Button>}
           <Button type="button" loading={update.isPending} onClick={save}>{t('common.save')}</Button>
         </div>
       </div>

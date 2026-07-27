@@ -17,6 +17,7 @@ export function TaskComposer({
   onPromptChange,
   models,
   selectedModel,
+  effectiveDefaultModelName,
   onSelectedModelChange,
   effortEnabled,
   modelEffort,
@@ -45,6 +46,7 @@ export function TaskComposer({
   onPromptChange: (prompt: string) => void;
   models: readonly ProjectModel[];
   selectedModel: string;
+  effectiveDefaultModelName?: string;
   onSelectedModelChange: (id: string) => void;
   effortEnabled: boolean;
   modelEffort: 'auto' | 'low' | 'medium' | 'high';
@@ -256,7 +258,12 @@ export function TaskComposer({
                   disabled={!configured}
                   data-testid="composer-model-select"
                   options={[
-                    { value: '', label: t('taskComposer.serviceDefault') },
+                    {
+                      value: '',
+                      label: effectiveDefaultModelName
+                        ? t('taskComposer.serviceDefaultWithModel', { model: effectiveDefaultModelName })
+                        : t('taskComposer.serviceDefault'),
+                    },
                     ...models.map((model) => ({ value: model.id, label: model.name })),
                   ]}
                 />

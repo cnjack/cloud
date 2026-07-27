@@ -795,6 +795,17 @@ describe('ProjectDetailPage — zero-repo empty state', () => {
     expect(await screen.findByTestId('empty-add-service')).toBeTruthy();
   });
 
+  it('keeps Add service actionable when no Git plugin is connected', async () => {
+    const { client } = makeClient(project('owner', []), { plugins: [] });
+    renderPage(client);
+
+    fireEvent.click(await screen.findByTestId('empty-add-service'));
+
+    expect(await screen.findByTestId('first-service-setup')).toBeTruthy();
+    expect(screen.getByTestId('add-repo-needs-plugin')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Configure project plugins' })).toBeTruthy();
+  });
+
   it('replaces onboarding with a focused first-service setup instead of appending it below activity', async () => {
     const { client } = makeClient(project('owner', []));
     renderPage(client);
@@ -949,7 +960,7 @@ describe('ProjectDetailPage — add repository', () => {
     renderPage(client);
 
     expect(await screen.findByTestId('add-repo-needs-plugin')).toBeTruthy();
-    expect(screen.queryByTestId('add-repo-trigger')).toBeNull();
+    expect(screen.getByTestId('add-repo-trigger')).toBeTruthy();
     expect(screen.getByTestId('add-repo-needs-plugin').textContent).toMatch(/Project Plugin/i);
   });
 

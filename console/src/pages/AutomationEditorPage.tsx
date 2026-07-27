@@ -142,9 +142,10 @@ export function AutomationEditorPage() {
   useEffect(() => {
     if (editing || modelId || !selectedService || !models.length) return;
     const preferred = models.find((model) => model.id === selectedService.default_model_id)
+      ?? models.find((model) => model.id === project.data?.default_model_id)
       ?? (models.length === 1 ? models[0] : undefined);
     if (preferred) setModelId(preferred.id);
-  }, [editing, modelId, models, selectedService]);
+  }, [editing, modelId, models, project.data?.default_model_id, selectedService]);
 
   useEffect(() => {
     if (!effortEnabled) setModelEffort('auto');
@@ -254,8 +255,10 @@ export function AutomationEditorPage() {
             <label>{t('automationEditor.name')}<input value={name} onChange={(event) => setName(event.target.value)} required /></label>
             <div className={styles.fixedService}>
               <span>{t('automationEditor.service')}</span>
-              <strong>{selectedService?.name ?? t('automationEditor.serviceUnavailable')}</strong>
-              {selectedService?.repo_owner_name && <small>{selectedService.repo_owner_name}</small>}
+              <div className={styles.fixedServiceControl}>
+                <strong>{selectedService?.name ?? t('automationEditor.serviceUnavailable')}</strong>
+                {selectedService?.repo_owner_name && <small>{selectedService.repo_owner_name}</small>}
+              </div>
             </div>
             <label>{t('automationEditor.model')}
               <select aria-label={t('automationEditor.model')} value={modelId} onChange={(event) => {

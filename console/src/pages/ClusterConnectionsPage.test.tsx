@@ -51,7 +51,12 @@ describe('ClusterConnectionsPage', () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByText('JType Kanban')).toBeTruthy();
-    expect(screen.getAllByRole('group', { name: 'Provider capabilities' })).toHaveLength(4);
+    expect(screen.getByRole('tab', { name: 'Integration configuration' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Login settings' })).toBeTruthy();
+    expect(screen.queryByLabelText('Login enabled')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'Login settings' }));
+    expect(await screen.findAllByLabelText('Login enabled')).toHaveLength(3);
+    expect(screen.queryByText('JType Kanban')).toBeNull();
     expect(screen.getByText('S3_ARCHIVE_BUCKET is not configured')).toBeTruthy();
     expect(screen.getByText('Gitea OAuth')).toBeTruthy();
   });
@@ -115,7 +120,7 @@ describe('ClusterConnectionsPage', () => {
     ));
   });
 
-  it('shows and saves JType OAuth fields while keeping login disabled', async () => {
+  it('keeps JType out of the login-only tab', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const updateClusterProviderConfig = vi.fn(async (provider: ProviderKind) => providers[provider]);
     const client = {
@@ -132,26 +137,12 @@ describe('ClusterConnectionsPage', () => {
       </QueryClientProvider>,
     );
 
-    await waitFor(() => expect(screen.getAllByLabelText('OAuth client ID')).toHaveLength(4));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Login settings' }));
+    await waitFor(() => expect(screen.getAllByLabelText('OAuth client ID')).toHaveLength(3));
     const clientIDs = screen.getAllByLabelText('OAuth client ID');
-    const clientSecrets = screen.getAllByLabelText('OAuth client secret');
     const loginToggles = screen.getAllByLabelText('Login enabled');
-    expect(clientIDs).toHaveLength(4);
-    expect((clientIDs[3] as HTMLInputElement).value).toBe('jcode-cloud');
-    expect((clientSecrets[3] as HTMLInputElement).placeholder).toContain('Configured');
-    expect(loginToggles[3]?.getAttribute('disabled')).not.toBeNull();
-
-    fireEvent.change(clientSecrets[3]!, { target: { value: 'replacement-secret' } });
-    fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[3]!);
-    await waitFor(() => expect(updateClusterProviderConfig).toHaveBeenCalledWith(
-      'jtype',
-      expect.objectContaining({
-        base_url: 'https://jtype.example',
-        client_id: 'jcode-cloud',
-        client_secret: 'replacement-secret',
-        login_enabled: false,
-        plugin_enabled: true,
-      }),
-    ));
+    expect(clientIDs).toHaveLength(3);
+    expect(loginToggles).toHaveLength(3);
+    expect(screen.queryByDisplayValue('jcode-cloud')).toBeNull();
   });
 });

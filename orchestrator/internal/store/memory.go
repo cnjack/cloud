@@ -1905,6 +1905,12 @@ func (m *MemStore) deleteModelLocked(id string) error {
 			delete(m.modelAccountGrants, k)
 		}
 	}
+	for projectID, project := range m.projects {
+		if project.DefaultModelID != nil && *project.DefaultModelID == id {
+			project.DefaultModelID = nil
+			m.projects[projectID] = project
+		}
+	}
 	for sid, svc := range m.services {
 		if svc.DefaultModelID != nil && *svc.DefaultModelID == id {
 			svc.DefaultModelID = nil
@@ -2161,6 +2167,14 @@ func (m *MemStore) GrantModel(_ context.Context, modelID, projectID string) erro
 		return ErrNotFound
 	}
 	m.modelGrants[grantKey(modelID, projectID)] = true
+	project := m.projects[projectID]
+	model := m.models[modelID]
+	if project.DefaultModelID == nil &&
+		(strings.EqualFold(model.ModelID, "glm-5.2") || strings.HasSuffix(strings.ToLower(model.ModelName), "/glm-5.2")) {
+		id := modelID
+		project.DefaultModelID = &id
+		m.projects[projectID] = project
+	}
 	return nil
 }
 
@@ -2169,6 +2183,10 @@ func (m *MemStore) RevokeModel(_ context.Context, modelID, projectID string) err
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.modelGrants, grantKey(modelID, projectID))
+	if project, ok := m.projects[projectID]; ok && project.DefaultModelID != nil && *project.DefaultModelID == modelID {
+		project.DefaultModelID = nil
+		m.projects[projectID] = project
+	}
 	return nil
 }
 

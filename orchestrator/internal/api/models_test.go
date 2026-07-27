@@ -606,6 +606,45 @@ func TestServiceDefaultModel(t *testing.T) {
 	}
 }
 
+// TestProjectDefaultModel covers the owner-editable Project fallback: it must
+// accept only usable models, disambiguate headless runs, and be clearable.
+func TestProjectDefaultModel(t *testing.T) {
+	ts, _ := catalogServer(t, true)
+	p := createProject(t, ts)
+	a := createModel(t, ts, "project-default-a", "http://a/v1", "p/a", "")
+	b := createModel(t, ts, "project-default-b", "http://b/v1", "p/b", "")
+	grant(t, ts, a.ID, p.ID)
+	grant(t, ts, b.ID, p.ID)
+
+	resp := do(t, "PATCH", ts.URL+"/api/v1/projects/"+p.ID, consoleToken, map[string]any{"default_model_id": b.ID})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set project default: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	status, run, _ := createRunBody(t, ts, p.ServiceID, map[string]any{"prompt": "project default"})
+	if status != http.StatusCreated || run.ModelID == nil || *run.ModelID != b.ID {
+		t.Fatalf("project default: status=%d model_id=%v want %s", status, run.ModelID, b.ID)
+	}
+
+	ungranted := createModel(t, ts, "project-default-ungranted", "http://c/v1", "p/c", "")
+	resp = do(t, "PATCH", ts.URL+"/api/v1/projects/"+p.ID, consoleToken, map[string]any{"default_model_id": ungranted.ID})
+	var eb errorBody
+	decode(t, resp, &eb)
+	if resp.StatusCode != http.StatusForbidden || eb.Error.Code != "model_not_granted" {
+		t.Fatalf("ungranted project default: status=%d code=%q want 403/model_not_granted", resp.StatusCode, eb.Error.Code)
+	}
+
+	resp = do(t, "PATCH", ts.URL+"/api/v1/projects/"+p.ID, consoleToken, map[string]any{"default_model_id": nil})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clear project default: status=%d want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	status, _, eb = createRunBody(t, ts, p.ServiceID, map[string]any{"prompt": "ambiguous again"})
+	if status != http.StatusConflict || eb.Error.Code != "model_not_selected" {
+		t.Fatalf("after clear: status=%d code=%q want 409/model_not_selected", status, eb.Error.Code)
+	}
+}
+
 // TestRunModelNameSurvivesModelDeletion is the C1-companion audit: after a run's
 // model is deleted, its model_id is FK-nulled but the model_name snapshot stays,
 // so the run is still traceable to what it ran on.

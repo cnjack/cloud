@@ -251,7 +251,8 @@ func (s *Server) writeServiceBranchError(w http.ResponseWriter, err error) {
 
 func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
-	if _, err := s.st.GetProject(r.Context(), projectID); errors.Is(err, store.ErrNotFound) {
+	project, err := s.st.GetProject(r.Context(), projectID)
+	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "project not found")
 		return
 	} else if err != nil {
@@ -335,6 +336,25 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.DefaultModelID) != "" {
 		modelID := strings.TrimSpace(req.DefaultModelID)
+		models, modelErr := s.st.ListModelsForProject(r.Context(), projectID)
+		if modelErr != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "could not validate service default model")
+			return
+		}
+		granted := false
+		for i := range models {
+			if models[i].ID == modelID {
+				granted = true
+				break
+			}
+		}
+		if !granted {
+			writeError(w, http.StatusForbidden, "model_not_granted", "the default model is not authorized for this project")
+			return
+		}
+		svc.DefaultModelID = &modelID
+	} else if project.DefaultModelID != nil {
+		modelID := *project.DefaultModelID
 		svc.DefaultModelID = &modelID
 	}
 	binding := &domain.ServiceRepositoryBinding{

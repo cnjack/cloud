@@ -45,14 +45,14 @@ func (s *PGStore) Close() { s.pool.Close() }
 
 const projectCols = `id, name, created_at,
 	max_concurrent_runs, run_timeout_secs, provider_allowlist, injected_env, owner_user_id,
-	max_live_sessions, session_idle_timeout_secs, session_ttl_secs`
+	max_live_sessions, session_idle_timeout_secs, session_ttl_secs, default_model_id`
 
 func scanProject(row pgx.Row) (*domain.Project, error) {
 	var p domain.Project
 	var ownerUserID *string
 	err := row.Scan(&p.ID, &p.Name, &p.CreatedAt,
 		&p.MaxConcurrentRuns, &p.RunTimeoutSecs, &p.ProviderAllowlist, &p.InjectedEnv, &ownerUserID,
-		&p.MaxLiveSessions, &p.SessionIdleTimeoutSecs, &p.SessionTTLSecs)
+		&p.MaxLiveSessions, &p.SessionIdleTimeoutSecs, &p.SessionTTLSecs, &p.DefaultModelID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -72,10 +72,10 @@ func (s *PGStore) CreateProject(ctx context.Context, p *domain.Project) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO projects (`+projectCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		p.ID, p.Name, p.CreatedAt,
 		p.MaxConcurrentRuns, p.RunTimeoutSecs, p.ProviderAllowlist, env, nullStr(p.OwnerUserID),
-		p.MaxLiveSessions, p.SessionIdleTimeoutSecs, p.SessionTTLSecs)
+		p.MaxLiveSessions, p.SessionIdleTimeoutSecs, p.SessionTTLSecs, p.DefaultModelID)
 	if err != nil {
 		return fmt.Errorf("create project: %w", err)
 	}
@@ -113,10 +113,11 @@ func (s *PGStore) UpdateProject(ctx context.Context, p *domain.Project) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE projects SET name=$2, max_concurrent_runs=$3, run_timeout_secs=$4,
 		    provider_allowlist=$5, injected_env=$6,
-		    max_live_sessions=$7, session_idle_timeout_secs=$8, session_ttl_secs=$9
+		    max_live_sessions=$7, session_idle_timeout_secs=$8, session_ttl_secs=$9,
+		    default_model_id=$10
 		 WHERE id=$1`,
 		p.ID, p.Name, p.MaxConcurrentRuns, p.RunTimeoutSecs, p.ProviderAllowlist, env,
-		p.MaxLiveSessions, p.SessionIdleTimeoutSecs, p.SessionTTLSecs)
+		p.MaxLiveSessions, p.SessionIdleTimeoutSecs, p.SessionTTLSecs, p.DefaultModelID)
 	if err != nil {
 		return fmt.Errorf("update project: %w", err)
 	}
@@ -2256,8 +2257,14 @@ func (s *PGStore) ListProjectIDsForModel(ctx context.Context, modelID string) ([
 // project id trips the FK and is normalised to ErrNotFound.
 func (s *PGStore) GrantModel(ctx context.Context, modelID, projectID string) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO model_grants (model_id, project_id) VALUES ($1,$2)
-		 ON CONFLICT (model_id, project_id) DO NOTHING`,
+		`WITH granted AS (
+		   INSERT INTO model_grants (model_id, project_id) VALUES ($1,$2)
+		   ON CONFLICT (model_id, project_id) DO NOTHING
+		 )
+		 UPDATE projects p SET default_model_id=$1
+		 FROM model_configs mc
+		 WHERE p.id=$2 AND p.default_model_id IS NULL AND mc.id=$1
+		   AND (lower(mc.model_id)='glm-5.2' OR lower(mc.model_name) LIKE '%/glm-5.2')`,
 		modelID, projectID)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -2272,7 +2279,11 @@ func (s *PGStore) GrantModel(ctx context.Context, modelID, projectID string) err
 // RevokeModel removes a project's grant (idempotent no-op when absent).
 func (s *PGStore) RevokeModel(ctx context.Context, modelID, projectID string) error {
 	if _, err := s.pool.Exec(ctx,
-		`DELETE FROM model_grants WHERE model_id=$1 AND project_id=$2`, modelID, projectID); err != nil {
+		`WITH revoked AS (
+		   DELETE FROM model_grants WHERE model_id=$1 AND project_id=$2
+		 )
+		 UPDATE projects SET default_model_id=NULL
+		 WHERE id=$2 AND default_model_id=$1`, modelID, projectID); err != nil {
 		return fmt.Errorf("revoke model: %w", err)
 	}
 	return nil

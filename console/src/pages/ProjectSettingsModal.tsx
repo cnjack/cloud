@@ -452,7 +452,7 @@ export function ProjectSettingsPage({
 
           {section === 'members' && <MembersPanel projectId={project.id} canManage={canManage} />}
           {section === 'plugins' && <ProjectPluginsPanel project={project} />}
-          {section === 'models' && <ProjectModelsPanel projectId={project.id} canManage={canManage} />}
+          {section === 'models' && <ProjectModelsPanel projectId={project.id} canManage={canManage} project={project} />}
           {section === 'apikeys' && canManage && <ApiKeysPanel project={project} />}
         </div>
       </div>

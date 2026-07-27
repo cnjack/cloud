@@ -125,6 +125,10 @@
 .grantedRow code, .grantedRow small { color: var(--color-text-faint); font-size: var(--fs-tiny); }
 .grantedMark { display: grid; width: 32px; height: 32px; place-items: center; border-radius: var(--radius-md); background: var(--color-panel-raised); color: var(--color-text-dim); font-family: var(--font-mono); font-size: var(--fs-tiny); }
 .panelState { margin: 0; padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); color: var(--color-text-dim); font-size: var(--fs-sm); }
+.defaultModel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 24rem); align-items: end; gap: var(--space-2) var(--space-6); padding: var(--space-4); border-radius: var(--radius-lg); background: var(--color-bg-inset); }
+.defaultModel label { color: var(--color-text); font-weight: var(--fw-semibold); }
+.defaultModel p { grid-column: 1; margin: 0; color: var(--color-text-muted); font-size: var(--fs-caption); }
+.defaultModel > :last-child { grid-column: 2; grid-row: 1 / span 2; }
 
 @media (max-width: 608px) {
   .toolbar { align-items: stretch; flex-direction: column; gap: 10px; }
@@ -140,4 +144,6 @@
   .capabilities { grid-column: 1; grid-row: 2; justify-content: flex-start; }
   .modelRow > button, .modelRow .modelControls { grid-column: 2; grid-row: 2; justify-self: end; }
   .modelRowProject { grid-template-columns: minmax(0, 1fr) auto; }
+  .defaultModel { grid-template-columns: 1fr; }
+  .defaultModel > :last-child { grid-column: 1; grid-row: auto; }
 }

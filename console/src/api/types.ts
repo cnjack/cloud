@@ -396,6 +396,8 @@ export interface Project {
   role?: MemberRole;
   /** The project's owner user id (empty for a service-principal-created project). */
   owner_user_id?: string;
+  /** Project-wide fallback used when a Service has no more specific default. */
+  default_model_id?: string | null;
   /**
    * Guardrails (blueprint §1). Absent/empty means "inherit the cluster default":
    *  - max_concurrent_runs — cap on this project's simultaneously-active runs.
@@ -1153,6 +1155,8 @@ export interface CreateProjectInput {
  */
 export interface UpdateProjectInput {
   name?: string;
+  /** Empty/null clears the project-wide model fallback. */
+  default_model_id?: string | null;
   max_concurrent_runs?: number | null;
   run_timeout_secs?: number | null;
   injected_env?: Record<string, string>;
@@ -1168,7 +1172,7 @@ export interface CreateRunInput {
   base_branch?: string;
   /**
    * The composer's optional model pick (D21). Omitted => the server resolves via
-   * the service default / the project's sole granted model. Must be in the
+   * the service default / project default / the project's sole granted model. Must be in the
    * project's grant set (else 403 model_not_granted).
    */
   model_id?: string;
@@ -1198,7 +1202,7 @@ export interface CreateRunInput {
  * fields preserve the original run's settings.
  */
 export interface ResumeSessionOptions {
-  /** Explicitly empty means resolve from the service default / sole grant. */
+  /** Explicitly empty means resolve from the service default / project default / sole grant. */
   model_id?: string;
   /** `full_access` is explicit so an approval-mode original can be relaxed. */
   permission_mode?: 'approval' | 'full_access';
