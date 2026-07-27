@@ -130,7 +130,9 @@ being hidden.
 
 The active Service header has a right-aligned Kanban action whenever the JType
 Plugin is healthy or that Service already has a binding. First use selects a
-board and enables the binding; later use opens the real server-proxied board.
+board plus its trigger and completion columns, then enables the binding. This
+setup state does not render a duplicate read-only board preview. Later use opens
+the real server-proxied board with compact inline column controls above it.
 Disable removes the binding. A Project can bind a JType board to only one
 Service, preventing one card from launching duplicate tasks against different
 repositories. Disable keeps the binding and outstanding claims but stops new
@@ -141,9 +143,14 @@ snapshot.
 
 `GET|PUT|DELETE /api/v1/services/{id}/kanban` is the only mutation surface.
 Owner and Member may enable or disable it; Viewer is read-only. `PUT` accepts
-the enabled Project JType Installation and the selected board's stable `b_…`
-ID. The server supplies `trigger_column=ai` and `done_column=done`; the browser
-does not offer per-Service column policy.
+the enabled Project JType Installation, the selected board path for a new or
+changed binding, and optional `trigger_column` / `done_column` values. The
+server resolves the path to the stable `b_…` ID and validates both requested
+columns against the live board schema before persistence. Omitted values retain
+the existing binding's policy, or default to `ai` / `done` for a new binding.
+An unchanged binding may round-trip its canonical `b_…` ID without a discovery
+scan; a column change must submit the board path so validation cannot be
+bypassed.
 
 The board embed remains member-only because it is a read/write component. Its
 document proxy accepts only the workspace of the healthy, enabled Project JType

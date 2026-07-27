@@ -64,6 +64,36 @@ export function Timeline({
   );
 }
 
+async function copyRenderedCode(
+  event: React.MouseEvent<HTMLDivElement>,
+  t: TFunction,
+): Promise<void> {
+  const target = event.target instanceof Element ? event.target : null;
+  const button = target?.closest<HTMLButtonElement>('.jcode-codeblock__copy');
+  if (!button || !event.currentTarget.contains(button) || !navigator.clipboard?.writeText) return;
+  const encoded = button.getAttribute('data-code');
+  if (encoded == null) return;
+  let code = encoded;
+  try {
+    code = decodeURIComponent(encoded);
+  } catch {
+    // Keep the original payload if an older renderer did not URI-encode it.
+  }
+  try {
+    await navigator.clipboard.writeText(code);
+  } catch {
+    return;
+  }
+  if (button.dataset.copied === '1') return;
+  const previous = button.textContent;
+  button.dataset.copied = '1';
+  button.textContent = t('common.copied');
+  window.setTimeout(() => {
+    button.textContent = previous;
+    delete button.dataset.copied;
+  }, 1_500);
+}
+
 function isTool(item: GroupedTimelineItem): item is ToolCardItem {
   return item.kind === 'tool_card';
 }
@@ -87,7 +117,12 @@ function TimelineRow({
           <span className={styles.author}>jcode</span>
           <time>{timeLabel(item.ts)}</time>
         </div>
-        <div className={styles.prose} dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }} />
+        <div
+          className={`${styles.prose} jcode-prose`}
+          data-jcode-ui=""
+          onClick={(event) => void copyRenderedCode(event, t)}
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }}
+        />
       </article>
     );
   }

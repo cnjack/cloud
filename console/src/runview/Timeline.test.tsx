@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { RuntimeProvider } from 'jcode-ui';
 import type { ChatRuntime, RuntimeActions } from 'jcode-ui-core/runtime';
 import { Timeline } from './Timeline';
@@ -55,6 +55,29 @@ describe('Timeline — task conversation rendering', () => {
     expect(screen.getAllByTestId('thread-message-assistant')).toHaveLength(1);
     expect(container.querySelector('[data-testid="thread-message-assistant"] strong')?.textContent).toBe('world');
     expect(screen.getByText('jcode')).toBeTruthy();
+  });
+
+  it('keeps fenced code chrome scoped and copies from the header action', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const { container } = renderTimeline([
+      ev(1, 'agent.text', { text: '```sh\npnpm test\n```' }),
+    ]);
+
+    const prose = container.querySelector<HTMLElement>('[data-testid="thread-message-assistant"] > div:last-child');
+    expect(prose?.getAttribute('data-jcode-ui')).toBe('');
+    expect(prose?.classList.contains('jcode-prose')).toBe(true);
+    const copy = screen.getByRole('button', { name: 'Copy code' });
+    expect(copy.parentElement?.classList.contains('jcode-codeblock__bar')).toBe(true);
+
+    fireEvent.click(copy);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('pnpm test'));
+    expect(copy.textContent).toBe('Copied');
   });
 
   it('groups paired tools into the compact progress rail from the design', () => {

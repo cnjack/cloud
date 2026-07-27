@@ -672,7 +672,19 @@ export default {
 
 
   kanban: {
+    enableTitle: '為目前服務啟用 Kanban',
+    enableBody: '選擇一個看板，並設定啟動與完成自動化任務所使用的欄。',
+    pluginRequired: '請先啟用 JType Kanban 專案外掛並選擇工作區。',
     loadingBoards: '正在載入看板…',
+    boardsUnavailable: '無法載入看板，請檢查 JType 外掛連線。',
+    enable: '啟用 Kanban',
+    disable: '停用',
+    triggerColumn: '觸發欄',
+    doneColumn: '完成欄',
+    noDoneColumn: '完成後不移動卡片',
+    columnSettings: '自動化欄',
+    columnSettingsHint: '就地編輯卡片如何啟動任務，以及完成後移動到哪裡。',
+    columnsUnavailable: '無法載入欄選項，請檢查 JType 外掛連線。',
     notConfiguredTitle: 'Kanban 尚未設定',
     notConfiguredMsg: 'Cluster 管理員需先設定 jtype 整合，才能開啟此看板。',
     unavailableTitle: 'Kanban 無法使用',

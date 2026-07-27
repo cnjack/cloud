@@ -798,8 +798,47 @@ describe('mockClient — kanban board embed (Service Kanban)', () => {
     });
     await flush(200);
     await binding;
-    return { client, project };
+    return { client, project, service: svc, plugin: plugin! };
   }
+
+  it('binds a board returned by the picker and resolves the same board for embed', async () => {
+    const { client, project, service, plugin } = await projectWithServiceKanban();
+    const deletePromise = client.deleteServiceKanban(service.id);
+    await flush(200);
+    await deletePromise;
+
+    const boardsPromise = client.listPluginBoards(project.id, plugin.id!, plugin.workspace_id);
+    await flush(200);
+    const boards = await boardsPromise;
+    const selected = boards[1]!;
+    expect(selected).toMatchObject({
+      id: 'b_ef56gh78',
+      ref: 'Jcode.board',
+      title: 'Jcode',
+    });
+
+    const bindPromise = client.putServiceKanban(service.id, {
+      installation_id: plugin.id!,
+      board_ref: selected.ref,
+      trigger_column: 'agent',
+      done_column: 'shipped',
+      enabled: true,
+    });
+    await flush(200);
+    await bindPromise;
+
+    const linksPromise = client.listProjectBoardLinks(project.id);
+    await flush(200);
+    const links = await linksPromise;
+    expect(links).toEqual([
+      expect.objectContaining({
+        board_ref: selected.id,
+        board_title: selected.title,
+        trigger_column: 'agent',
+        done_column: 'shipped',
+      }),
+    ]);
+  });
 
   it('listProjectBoardLinks derives its reduced view from Service Kanban', async () => {
     const { client, project } = await projectWithServiceKanban();

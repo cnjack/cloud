@@ -75,7 +75,7 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 		return serviceKanbanBoardValidator{
 			board: &jtype.Board{
 				ID:      "b_board",
-				Columns: []jtype.BoardColumn{{Key: "ai"}, {Key: "done"}},
+				Columns: []jtype.BoardColumn{{Key: "ai"}, {Key: "review"}, {Key: "done"}},
 			},
 			calls: &validatorCalls,
 		}
@@ -146,6 +146,57 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 
 	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
 		"installation_id": installation.ID,
+		"board_ref":       "delivery.board",
+		"trigger_column":  "review",
+		"done_column":     "done",
+		"enabled":         true,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("column update status=%d", resp.StatusCode)
+	}
+	var updated domain.PluginAutomationSpec
+	decode(t, resp, &updated)
+	if updated.Kanban == nil || updated.Kanban.TriggerColumn != "review" || updated.Kanban.DoneColumn != "done" {
+		t.Fatalf("updated columns=%+v", updated.Kanban)
+	}
+	if validatorCalls != 2 {
+		t.Fatalf("column update validation calls=%d want 2", validatorCalls)
+	}
+
+	// A canonical board id may only round-trip unchanged. Column edits need the
+	// board path so the server can fetch and validate the board schema.
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
+		"installation_id": installation.ID,
+		"board_ref":       "b_board",
+		"trigger_column":  "ai",
+		"done_column":     "done",
+		"enabled":         true,
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unvalidated canonical column update status=%d want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if validatorCalls != 2 {
+		t.Fatalf("canonical column update triggered live scan: calls=%d", validatorCalls)
+	}
+
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
+		"installation_id": installation.ID,
+		"board_ref":       "delivery.board",
+		"trigger_column":  "missing",
+		"done_column":     "done",
+		"enabled":         true,
+	})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("invalid trigger column status=%d want 409", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if validatorCalls != 3 {
+		t.Fatalf("invalid column validation calls=%d want 3", validatorCalls)
+	}
+
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
+		"installation_id": installation.ID,
 		"board_ref":       "b_untrusted",
 		"enabled":         true,
 	})
@@ -153,7 +204,7 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 		t.Fatalf("untrusted canonical id status=%d want 400", resp.StatusCode)
 	}
 	resp.Body.Close()
-	if validatorCalls != 1 {
+	if validatorCalls != 3 {
 		t.Fatalf("untrusted canonical id triggered live scan: calls=%d", validatorCalls)
 	}
 

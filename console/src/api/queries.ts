@@ -742,10 +742,12 @@ export function usePutServiceKanban(projectId: string, serviceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: import('./types').PutServiceKanbanInput) => api.putServiceKanban(serviceId, input),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) });
-      qc.invalidateQueries({ queryKey: qk.projectAutomations(projectId) });
-      qc.invalidateQueries({ queryKey: qk.serviceKanban(serviceId) });
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) }),
+        qc.invalidateQueries({ queryKey: qk.projectAutomations(projectId) }),
+        qc.invalidateQueries({ queryKey: qk.serviceKanban(serviceId) }),
+      ]);
     },
   });
 }
@@ -755,10 +757,12 @@ export function useDeleteServiceKanban(projectId: string, serviceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => api.deleteServiceKanban(serviceId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) });
-      qc.invalidateQueries({ queryKey: qk.projectAutomations(projectId) });
-      qc.invalidateQueries({ queryKey: qk.serviceKanban(serviceId) });
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: qk.projectBoardLinks(projectId) }),
+        qc.invalidateQueries({ queryKey: qk.projectAutomations(projectId) }),
+        qc.invalidateQueries({ queryKey: qk.serviceKanban(serviceId) }),
+      ]);
     },
   });
 }

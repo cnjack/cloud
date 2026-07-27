@@ -2078,9 +2078,12 @@ export function createMockClient(): ApiClient {
       const plugin = [...pluginList(projectId).values()].find((item) => item.id === installationId);
       if (!plugin) throw new ApiError(404, 'plugin installation not found');
       if (!workspaceId) return delay([]);
-      return delay([{ id: 'board-1', ref: 'team.delivery', title: 'Delivery', columns: [
-        { key: 'todo', name: 'Todo' }, { key: 'ai', name: 'AI' }, { key: 'done', name: 'Done' },
-      ] }]);
+      return delay((embeddedBoards[workspaceId] ?? []).map((board) => ({
+        id: board.id,
+        ref: board.ref,
+        title: board.title,
+        columns: board.columns.map((column) => ({ ...column })),
+      })));
     },
     async getProviderCapabilities(provider: ProviderKind) {
       const actions = provider === 'github' ? [
@@ -2177,8 +2180,8 @@ export function createMockClient(): ApiClient {
         kanban: {
           installation_id: input.installation_id,
           board_ref: input.board_ref,
-          trigger_column: 'ai',
-          done_column: 'done',
+          trigger_column: input.trigger_column ?? existing?.kanban?.trigger_column ?? 'ai',
+          done_column: input.done_column ?? existing?.kanban?.done_column ?? 'done',
         },
       }, existing);
       projectAutomations.set(spec.automation.id, spec);

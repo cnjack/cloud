@@ -17,9 +17,11 @@ const (
 )
 
 type serviceKanbanReq struct {
-	InstallationID string `json:"installation_id"`
-	BoardRef       string `json:"board_ref"`
-	Enabled        *bool  `json:"enabled"`
+	InstallationID string  `json:"installation_id"`
+	BoardRef       string  `json:"board_ref"`
+	TriggerColumn  *string `json:"trigger_column"`
+	DoneColumn     *string `json:"done_column"`
+	Enabled        *bool   `json:"enabled"`
 }
 
 func (s *Server) serviceKanbanSpec(ctxReq *http.Request, svc *domain.Service) (*domain.PluginAutomationSpec, error) {
@@ -95,6 +97,22 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 400, "bad_request", "installation_id and board_ref are required")
 		return
 	}
+	triggerColumn := defaultKanbanTriggerColumn
+	doneColumn := defaultKanbanDoneColumn
+	if current != nil && current.Kanban != nil {
+		triggerColumn = current.Kanban.TriggerColumn
+		doneColumn = current.Kanban.DoneColumn
+	}
+	if req.TriggerColumn != nil {
+		triggerColumn = strings.TrimSpace(*req.TriggerColumn)
+	}
+	if req.DoneColumn != nil {
+		doneColumn = strings.TrimSpace(*req.DoneColumn)
+	}
+	if triggerColumn == "" {
+		writeError(w, 400, "bad_request", "trigger_column is required")
+		return
+	}
 	in, err := s.st.GetPluginInstallation(r.Context(), req.InstallationID)
 	if err != nil || in.ProjectID != svc.ProjectID || in.Provider != domain.PluginJType || in.Status != domain.PluginStatusEnabled || in.LastHealthError != "" || in.WorkspaceID == "" {
 		writeError(w, 409, "plugin_unavailable", "enable and configure the Project JType Plugin first")
@@ -113,7 +131,9 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 	canonicalBoardRef := ""
 	roundTripCurrent := current != nil && current.Kanban != nil &&
 		current.Kanban.InstallationID == req.InstallationID &&
-		current.Kanban.BoardRef == req.BoardRef
+		current.Kanban.BoardRef == req.BoardRef &&
+		current.Kanban.TriggerColumn == triggerColumn &&
+		current.Kanban.DoneColumn == doneColumn
 	if roundTripCurrent {
 		// GET returns the persisted canonical board id. An enabled-only PUT may
 		// round-trip that value without performing an unbounded board-document
@@ -137,8 +157,12 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 			writeError(w, 400, "board_not_available", "the selected board is not available to this JType Plugin")
 			return
 		}
-		if !boardHasColumn(board, defaultKanbanTriggerColumn) || !boardHasColumn(board, defaultKanbanDoneColumn) {
-			writeError(w, 409, "default_columns_missing", "the board must contain the default ai and done columns")
+		if !boardHasColumn(board, triggerColumn) {
+			writeError(w, 409, "column_not_found", "trigger_column '"+triggerColumn+"' is not a column on board "+req.BoardRef)
+			return
+		}
+		if doneColumn != "" && !boardHasColumn(board, doneColumn) {
+			writeError(w, 409, "column_not_found", "done_column '"+doneColumn+"' is not a column on board "+req.BoardRef)
 			return
 		}
 	}
@@ -163,7 +187,7 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 	}
 	now := time.Now().UTC()
 	a := &domain.PluginAutomation{ID: domain.NewID(), ServiceID: svc.ID, InstallationID: req.InstallationID, Name: "Kanban", TriggerKind: "kanban", PromptTemplate: "Complete the task described by the JType card.", Enabled: enabled, IgnoreJCode: true, CreatedBy: principalFrom(r.Context()).userID(), CreatedAt: now}
-	trigger := &domain.KanbanTrigger{AutomationID: a.ID, InstallationID: req.InstallationID, BoardRef: canonicalBoardRef, TriggerColumn: defaultKanbanTriggerColumn, DoneColumn: defaultKanbanDoneColumn}
+	trigger := &domain.KanbanTrigger{AutomationID: a.ID, InstallationID: req.InstallationID, BoardRef: canonicalBoardRef, TriggerColumn: triggerColumn, DoneColumn: doneColumn}
 	if current == nil {
 		if err := s.st.CreatePluginAutomation(r.Context(), a, nil, nil, trigger, nil); err != nil {
 			if errors.Is(err, store.ErrAlreadyExists) {

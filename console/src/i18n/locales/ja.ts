@@ -672,7 +672,19 @@ export default {
 
 
   kanban: {
+    enableTitle: 'このサービスで Kanban を有効化',
+    enableBody: 'ボードと、自動タスクを開始・完了する列を選択します。',
+    pluginRequired: '先に JType Kanban プロジェクトプラグインを有効化し、ワークスペースを選択してください。',
     loadingBoards: 'ボードを読み込み中…',
+    boardsUnavailable: 'ボードを読み込めませんでした。JType プラグイン接続を確認してください。',
+    enable: 'Kanban を有効化',
+    disable: '無効化',
+    triggerColumn: '開始列',
+    doneColumn: '完了列',
+    noDoneColumn: '完了後にカードを移動しない',
+    columnSettings: '自動化列',
+    columnSettingsHint: 'カードがタスクを開始する列と、完了後の移動先をインラインで編集します。',
+    columnsUnavailable: '列を読み込めませんでした。JType プラグイン接続を確認してください。',
     notConfiguredTitle: 'Kanban が設定されていません',
     notConfiguredMsg: 'このボードを開く前に、Cluster 管理者が jtype 連携を設定する必要があります。',
     unavailableTitle: 'Kanban は利用できません',

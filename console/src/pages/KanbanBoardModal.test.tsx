@@ -109,15 +109,20 @@ function renderModal(api: ApiClient, links: BoardEmbedLink[]) {
 }
 
 describe('KanbanBoardModal', () => {
-  it('enables the current Service by board path and leaves canonicalization to the server', async () => {
-    const putServiceKanban = vi.fn(async (_serviceId: string, input: { installation_id: string; board_ref: string }) => ({
+  it('shows setup without a duplicate board preview and saves the selected columns', async () => {
+    const putServiceKanban = vi.fn(async (_serviceId: string, input: { installation_id: string; board_ref: string; trigger_column?: string; done_column?: string }) => ({
       automation: { id: 'a1', service_id: 'svc_1', name: 'Kanban', trigger_kind: 'kanban' as const, prompt_template: '', enabled: true, ignore_jcode: true, created_at: '', updated_at: '' },
-      kanban: { installation_id: input.installation_id, board_ref: input.board_ref, trigger_column: 'ai', done_column: 'done' },
+      kanban: { installation_id: input.installation_id, board_ref: input.board_ref, trigger_column: input.trigger_column ?? 'ai', done_column: input.done_column ?? 'done' },
     }));
     const api = {
       ...makeApi({}),
       listProjectPlugins: async () => [{ id: 'jtype-1', project_id: 'p1', provider: 'jtype' as const, status: 'enabled' as const, workspace_id: 'ws_team', scopes: [] }],
-      listPluginBoards: async () => [{ id: 'b_stable', ref: 'delivery.board', title: 'Delivery', columns: [{ key: 'ai', name: 'AI' }, { key: 'done', name: 'Done' }] }],
+      listPluginBoards: async () => [{
+        id: 'b_stable',
+        ref: 'delivery.board',
+        title: 'Delivery',
+        columns: [{ key: 'ai', name: 'AI' }, { key: 'review', name: 'Review' }, { key: 'done', name: 'Done' }],
+      }],
       putServiceKanban,
       deleteServiceKanban: async () => undefined,
     } as unknown as ApiClient;
@@ -130,11 +135,16 @@ describe('KanbanBoardModal', () => {
       </QueryClientProvider>,
     );
     await screen.findByText('Delivery');
-    const preview = await screen.findByTestId('kanban-readonly-preview');
-    expect(within(preview).getByTestId('jtype-board').getAttribute('data-readonly')).toBe('true');
+    expect(screen.queryByTestId('kanban-readonly-preview')).toBeNull();
+    expect(screen.queryByTestId('jtype-board')).toBeNull();
+    await pickOption('kanban-trigger-column', 'Review');
     fireEvent.click(screen.getByTestId('kanban-enable'));
     await waitFor(() => expect(putServiceKanban).toHaveBeenCalledWith('svc_1', {
-      installation_id: 'jtype-1', board_ref: 'delivery.board', enabled: true,
+      installation_id: 'jtype-1',
+      board_ref: 'delivery.board',
+      trigger_column: 'review',
+      done_column: 'done',
+      enabled: true,
     }));
   });
 
@@ -189,6 +199,63 @@ describe('KanbanBoardModal', () => {
       expect(b.getAttribute('data-workspace')).toBe('ws_solo');
       expect(b.getAttribute('data-boardref')).toBe('personal.board');
     });
+  });
+
+  it('keeps the bound board visible while editing trigger and completion columns inline', async () => {
+    const putServiceKanban = vi.fn(async (_serviceId: string, input: {
+      installation_id: string;
+      board_ref: string;
+      trigger_column?: string;
+      done_column?: string;
+    }) => ({
+      automation: { id: 'a1', service_id: 'svc_1', name: 'Kanban', trigger_kind: 'kanban' as const, prompt_template: '', enabled: true, ignore_jcode: true, created_at: '', updated_at: '' },
+      kanban: {
+        installation_id: input.installation_id,
+        board_ref: 'b_123',
+        trigger_column: input.trigger_column ?? 'ai',
+        done_column: input.done_column ?? 'done',
+      },
+    }));
+    const api = {
+      ...makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] }),
+      listProjectPlugins: async () => [{ id: 'jtype-1', project_id: 'p1', provider: 'jtype' as const, status: 'enabled' as const, workspace_id: 'ws_team', scopes: [] }],
+      listPluginBoards: async () => [{
+        id: 'b_123',
+        ref: 'jtype.board',
+        title: 'jtype',
+        columns: [{ key: 'ai', name: 'AI' }, { key: 'review', name: 'Review' }, { key: 'done', name: 'Done' }],
+      }],
+      putServiceKanban,
+      deleteServiceKanban: async () => undefined,
+    } as unknown as ApiClient;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ApiProvider client={api}>
+          <KanbanBoardModal
+            projectId="p1"
+            serviceId="svc_1"
+            links={[link({ done_column: 'done' })]}
+            canManage
+            onClose={() => {}}
+          />
+        </ApiProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByTestId('jtype-board')).toBeTruthy();
+    expect(screen.queryByTestId('kanban-enable-panel')).toBeNull();
+    await pickOption('kanban-trigger-column', 'Review');
+    fireEvent.click(screen.getByTestId('kanban-columns-save'));
+
+    await waitFor(() => expect(putServiceKanban).toHaveBeenCalledWith('svc_1', {
+      installation_id: 'jtype-1',
+      board_ref: 'jtype.board',
+      trigger_column: 'review',
+      done_column: 'done',
+      enabled: true,
+    }));
+    expect(screen.getByTestId('jtype-board')).toBeTruthy();
   });
 
   it('keeps Tab from the opened board selector inside the Kanban dialog', async () => {

@@ -672,7 +672,19 @@ export default {
 
 
   kanban: {
+    enableTitle: '이 서비스에 Kanban 활성화',
+    enableBody: '보드와 자동 작업을 시작하고 완료하는 열을 선택하세요.',
+    pluginRequired: '먼저 JType Kanban 프로젝트 플러그인을 활성화하고 워크스페이스를 선택하세요.',
     loadingBoards: '보드 불러오는 중…',
+    boardsUnavailable: '보드를 불러올 수 없습니다. JType 플러그인 연결을 확인하세요.',
+    enable: 'Kanban 활성화',
+    disable: '비활성화',
+    triggerColumn: '트리거 열',
+    doneColumn: '완료 열',
+    noDoneColumn: '완료 후 카드를 이동하지 않음',
+    columnSettings: '자동화 열',
+    columnSettingsHint: '카드가 작업을 시작하는 열과 완료 후 이동할 위치를 인라인으로 편집합니다.',
+    columnsUnavailable: '열 옵션을 불러올 수 없습니다. JType 플러그인 연결을 확인하세요.',
     notConfiguredTitle: 'Kanban이 구성되어 있지 않습니다',
     notConfiguredMsg: '이 보드를 열려면 Cluster 관리자가 jtype 통합을 구성해야 합니다.',
     unavailableTitle: 'Kanban을 사용할 수 없습니다',

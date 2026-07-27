@@ -19,6 +19,92 @@
   min-width: 16rem;
 }
 
+.setupPanel {
+  display: grid;
+  width: min(100%, 46rem);
+  gap: var(--space-4);
+  align-self: center;
+  margin: auto 0;
+  padding: var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-panel-raised);
+  box-shadow: var(--shadow-sm);
+}
+
+.setupHeading {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.setupTitle {
+  color: var(--color-text);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+}
+
+.setupBody {
+  max-width: 42rem;
+  color: var(--color-text-muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+
+.columnGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.setupActions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border);
+}
+
+.columnEditor {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(10rem, 14rem) minmax(10rem, 14rem) auto;
+  align-items: end;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-panel-raised);
+}
+
+.columnEditorIntro {
+  display: grid;
+  align-self: center;
+  gap: 2px;
+}
+
+.columnEditorIntro strong {
+  color: var(--color-text);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+.columnEditorIntro span,
+.columnStatus {
+  color: var(--color-text-dim);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-normal);
+}
+
+.columnActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 38px;
+}
+
+.columnStatus {
+  grid-column: 2 / -1;
+  align-self: center;
+}
+
 /* The board host — a bounded, scrollable region so a tall board doesn't blow
    out the modal. `.jtb-scope` (the package's own class) keeps board chrome from
    bleeding into the console shell. */
@@ -44,6 +130,19 @@
   .selector {
     min-width: 0;
     width: 100%;
+  }
+
+  .setupPanel {
+    padding: var(--space-4);
+  }
+
+  .columnGrid,
+  .columnEditor {
+    grid-template-columns: 1fr;
+  }
+
+  .columnStatus {
+    grid-column: auto;
   }
 }
 

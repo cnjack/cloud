@@ -267,6 +267,8 @@ export type ServiceKanbanBinding = ProjectAutomationSpec;
 export interface PutServiceKanbanInput {
   installation_id: string;
   board_ref: string;
+  trigger_column?: string;
+  done_column?: string;
   enabled?: boolean;
 }
 /** @deprecated Transitional alias used only by the old mock; new UI uses ProjectAutomationSpec. */

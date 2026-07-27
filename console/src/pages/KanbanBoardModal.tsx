@@ -37,7 +37,7 @@ import { SelectField } from '../components/Field';
 import { LoadingBlock } from '../components/States';
 import { makeBoardProxyClient } from '../kanban/boardProxyClient';
 import { resolveBoardPathById } from '../kanban/resolveBoardPathById';
-import type { BoardEmbedLink } from '../api/types';
+import type { BoardEmbedLink, PluginBoardResource } from '../api/types';
 import styles from './KanbanBoardModal.module.css';
 
 /** Map the browser locale to a board-supported one; default 'en'. */
@@ -50,6 +50,23 @@ function boardLocale(): BoardLocale {
 
 function linkLabel(link: BoardEmbedLink): string {
   return link.board_title ?? link.board_ref;
+}
+
+function columnOptions(board?: PluginBoardResource) {
+  return (board?.columns ?? []).map((column) => ({
+    value: column.key,
+    label: column.name || column.key,
+  }));
+}
+
+function initialTriggerColumn(board?: PluginBoardResource): string {
+  return board?.columns.find((column) => column.key === 'ai')?.key
+    ?? board?.columns[0]?.key
+    ?? '';
+}
+
+function initialDoneColumn(board?: PluginBoardResource): string {
+  return board?.columns.find((column) => column.key === 'done')?.key ?? '';
 }
 
 /** Pick the initial link: the first enabled one, else the first. */
@@ -124,22 +141,51 @@ export function KanbanBoardModal({ projectId, serviceId = '', links, canManage =
   const [selectedId, setSelectedId] = useState(() => initialLinkId(links));
   const link = links.find((l) => l.id === selectedId) ?? links[0];
   const plugins = useProjectPlugins(projectId);
-  const jtypePlugin = (plugins.data ?? []).find((item) =>
+  const jtypePlugins = (plugins.data ?? []).filter((item) =>
     item.provider === 'jtype' && item.status === 'enabled' && item.workspace_id && item.id);
+  const jtypePlugin = jtypePlugins.find((item) => !link || item.workspace_id === link.workspace_id)
+    ?? jtypePlugins[0];
   const boards = usePluginBoards(
     projectId,
     jtypePlugin?.id ?? '',
     jtypePlugin?.workspace_id ?? '',
-    !link && !!jtypePlugin,
+    !!jtypePlugin && (!link || canManage),
   );
   const putBinding = usePutServiceKanban(projectId, serviceId);
   const deleteBinding = useDeleteServiceKanban(projectId, serviceId);
   const [boardRef, setBoardRef] = useState('');
+  const [triggerColumn, setTriggerColumn] = useState('');
+  const [doneColumn, setDoneColumn] = useState('');
   const previewBoard = (boards.data ?? []).find((board) => board.id === boardRef);
+  const linkedBoard = link
+    ? (boards.data ?? []).find((board) => board.id === link.board_ref)
+    : undefined;
 
   useEffect(() => {
     if (!boardRef && boards.data?.[0]?.id) setBoardRef(boards.data[0].id);
   }, [boardRef, boards.data]);
+
+  useEffect(() => {
+    if (links.length === 0) {
+      if (selectedId) setSelectedId('');
+      return;
+    }
+    if (!links.some((candidate) => candidate.id === selectedId)) {
+      setSelectedId(initialLinkId(links));
+    }
+  }, [links, selectedId]);
+
+  useEffect(() => {
+    const board = link ? linkedBoard : previewBoard;
+    if (!board) return;
+    if (link) {
+      setTriggerColumn(link.trigger_column || initialTriggerColumn(board));
+      setDoneColumn(link.done_column ?? '');
+      return;
+    }
+    setTriggerColumn(initialTriggerColumn(board));
+    setDoneColumn(initialDoneColumn(board));
+  }, [link, linkedBoard, previewBoard]);
 
   // Resolve the link's board_ref (config id) → the board's relativePath, over
   // the member+ proxy. Keyed on the selected link so switching boards refetches.
@@ -163,17 +209,19 @@ export function KanbanBoardModal({ projectId, serviceId = '', links, canManage =
     >
       <div className={styles.wrap}>
         {!link && (
-          <>
-            <div className={styles.failPanel} data-testid="kanban-enable-panel">
-              <div className={styles.failTitle}>{t('kanban.enableTitle')}</div>
-              <div className={styles.failMsg}>{t('kanban.enableBody')}</div>
-              {!jtypePlugin ? (
-                <div className={styles.failDetail}>{t('kanban.pluginRequired')}</div>
-              ) : boards.isLoading ? (
-                <LoadingBlock label={t('kanban.loadingBoards')} />
-              ) : boards.isError ? (
-                <div className={styles.failDetail} role="alert">{t('kanban.boardsUnavailable')}</div>
-              ) : (
+          <div className={styles.setupPanel} data-testid="kanban-enable-panel">
+            <div className={styles.setupHeading}>
+              <div className={styles.setupTitle}>{t('kanban.enableTitle')}</div>
+              <div className={styles.setupBody}>{t('kanban.enableBody')}</div>
+            </div>
+            {!jtypePlugin ? (
+              <div className={styles.failDetail}>{t('kanban.pluginRequired')}</div>
+            ) : boards.isLoading ? (
+              <LoadingBlock label={t('kanban.loadingBoards')} />
+            ) : boards.isError ? (
+              <div className={styles.failDetail} role="alert">{t('kanban.boardsUnavailable')}</div>
+            ) : (
+              <>
                 <SelectField
                   label={t('kanban.boardLabel')}
                   value={boardRef}
@@ -181,39 +229,54 @@ export function KanbanBoardModal({ projectId, serviceId = '', links, canManage =
                   options={(boards.data ?? []).map((board) => ({ value: board.id, label: board.title }))}
                   data-testid="kanban-enable-board"
                 />
-              )}
-              <div className={styles.failActions}>
-                <Button
-                  type="button"
-                  disabled={!canManage || !jtypePlugin || !previewBoard || putBinding.isPending}
-                  loading={putBinding.isPending}
-                  onClick={() => putBinding.mutate({
-                    installation_id: jtypePlugin!.id!,
-                    // Submit the document path so the server can resolve and
-                    // validate the board, then persist its canonical config id.
-                    board_ref: previewBoard!.ref,
-                    enabled: true,
-                  })}
-                  data-testid="kanban-enable"
-                >
-                  {t('kanban.enable')}
-                </Button>
-              </div>
-              {putBinding.isError && <div className={styles.failDetail} role="alert">{(putBinding.error as Error).message}</div>}
+                {previewBoard && (
+                  <div className={styles.columnGrid}>
+                    <SelectField
+                      label={t('kanban.triggerColumn')}
+                      value={triggerColumn}
+                      onChange={setTriggerColumn}
+                      options={columnOptions(previewBoard)}
+                      data-testid="kanban-trigger-column"
+                    />
+                    <SelectField
+                      label={t('kanban.doneColumn')}
+                      value={doneColumn}
+                      onChange={setDoneColumn}
+                      options={[
+                        { value: '', label: t('kanban.noDoneColumn') },
+                        ...columnOptions(previewBoard),
+                      ]}
+                      data-testid="kanban-done-column"
+                    />
+                  </div>
+                )}
+              </>
+            )}
+            <div className={styles.setupActions}>
+              <Button
+                type="button"
+                disabled={!canManage || !jtypePlugin || !previewBoard || !triggerColumn || putBinding.isPending}
+                loading={putBinding.isPending}
+                onClick={() => putBinding.mutate({
+                  installation_id: jtypePlugin!.id!,
+                  // Submit the document path so the server can resolve and
+                  // validate the board, then persist its canonical config id.
+                  board_ref: previewBoard!.ref,
+                  trigger_column: triggerColumn,
+                  done_column: doneColumn,
+                  enabled: true,
+                })}
+                data-testid="kanban-enable"
+              >
+                {t('kanban.enable')}
+              </Button>
             </div>
-            {jtypePlugin && previewBoard && (
-              <div className={styles.board} data-testid="kanban-readonly-preview">
-                <JTypeBoard
-                  client={proxyClient}
-                  workspaceId={jtypePlugin.workspace_id!}
-                  boardRef={previewBoard.ref}
-                  readOnly
-                  live={false}
-                  locale={boardLocale()}
-                />
+            {putBinding.isError && (
+              <div className={styles.failDetail} role="alert">
+                {(putBinding.error as Error).message}
               </div>
             )}
-          </>
+          </div>
         )}
         {links.length > 1 && (
           <div className={styles.selectorRow}>
@@ -251,17 +314,75 @@ export function KanbanBoardModal({ projectId, serviceId = '', links, canManage =
         ) : (
           <>
             {canManage && (
-              <div className={styles.selectorRow}>
-                <span>{t('kanban.defaultColumns')}</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  loading={deleteBinding.isPending}
-                  onClick={() => deleteBinding.mutate(undefined, { onSuccess: onClose })}
-                >
-                  {t('kanban.disable')}
-                </Button>
+              <div className={styles.columnEditor} data-testid="kanban-column-editor">
+                <div className={styles.columnEditorIntro}>
+                  <strong>{t('kanban.columnSettings')}</strong>
+                  <span>{t('kanban.columnSettingsHint')}</span>
+                </div>
+                {boards.isLoading ? (
+                  <span className={styles.columnStatus}>{t('kanban.loadingBoards')}</span>
+                ) : boards.isError || !jtypePlugin || !linkedBoard ? (
+                  <span className={styles.columnStatus} role="alert">{t('kanban.columnsUnavailable')}</span>
+                ) : (
+                  <>
+                    <SelectField
+                      label={t('kanban.triggerColumn')}
+                      value={triggerColumn}
+                      onChange={setTriggerColumn}
+                      options={columnOptions(linkedBoard)}
+                      data-testid="kanban-trigger-column"
+                    />
+                    <SelectField
+                      label={t('kanban.doneColumn')}
+                      value={doneColumn}
+                      onChange={setDoneColumn}
+                      options={[
+                        { value: '', label: t('kanban.noDoneColumn') },
+                        ...columnOptions(linkedBoard),
+                      ]}
+                      data-testid="kanban-done-column"
+                    />
+                    <div className={styles.columnActions}>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={
+                          !triggerColumn
+                          || (
+                            triggerColumn === link.trigger_column
+                            && doneColumn === (link.done_column ?? '')
+                          )
+                          || putBinding.isPending
+                        }
+                        loading={putBinding.isPending}
+                        onClick={() => putBinding.mutate({
+                          installation_id: jtypePlugin.id!,
+                          board_ref: linkedBoard.ref,
+                          trigger_column: triggerColumn,
+                          done_column: doneColumn,
+                          enabled: true,
+                        })}
+                        data-testid="kanban-columns-save"
+                      >
+                        {t('common.save')}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        loading={deleteBinding.isPending}
+                        onClick={() => deleteBinding.mutate(undefined, { onSuccess: onClose })}
+                      >
+                        {t('kanban.disable')}
+                      </Button>
+                    </div>
+                  </>
+                )}
+                {putBinding.isError && (
+                  <span className={styles.columnStatus} role="alert">
+                    {(putBinding.error as Error).message}
+                  </span>
+                )}
               </div>
             )}
             {!link.enabled && (
