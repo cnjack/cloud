@@ -27,9 +27,9 @@ import { useApi, useDemoMode, useRole } from '../api/ApiProvider';
 import { useOptionalAuth } from '../auth/AuthProvider';
 import { ApiError } from '../api/client';
 import { Button } from '../components/Button';
-import { Card } from '../components/Card';
 import { TextField } from '../components/Field';
 import { GitModeBadge } from '../components/GitModeBadge';
+import { Modal } from '../components/Modal';
 import { useModelGate } from '../components/ModelGate';
 import { RailAccountFooter } from '../components/RailAccountFooter';
 import { Select } from '../components/Select';
@@ -264,15 +264,12 @@ export function ProjectDetailPage() {
 
   const openAddService = () => {
     const next = new URLSearchParams(searchParams);
-    next.delete('view');
-    next.delete('settings');
-    if (activeServiceId) next.set('service', activeServiceId);
-    next.set('tab', 'tasks');
     next.set('add', 'service');
     setSearchParams(next);
   };
 
   const closeAddService = () => {
+    if (createService.isPending) return;
     const next = new URLSearchParams(searchParams);
     next.delete('add');
     setSearchParams(next, { replace: true });
@@ -616,7 +613,7 @@ export function ProjectDetailPage() {
           />
         ) : workspaceTab === 'tasks' && (
           <>
-            {services.length === 0 && !addOpen && (
+            {services.length === 0 && (
               <section className={styles.firstServiceEmpty} data-testid="no-repo-empty">
                 <span className={styles.firstServiceIcon} aria-hidden="true">
                   <GitBranch size={22} weight="regular" />
@@ -685,116 +682,6 @@ export function ProjectDetailPage() {
               />
             )}
 
-            {canRun && addOpen && (
-              <section
-                className={`${styles.addRepo} ${services.length === 0 ? styles.firstServiceSetup : ''}`}
-                aria-label={t('projectDetail.addService')}
-                data-testid={services.length === 0 ? 'first-service-setup' : undefined}
-              >
-                {services.length === 0 && (
-                  <header className={styles.firstServiceSetupHeader}>
-                    <div>
-                      <span>{t('projectDetail.firstServiceEyebrow')}</span>
-                      <h2>{t('projectDetail.firstServiceSetupTitle')}</h2>
-                      <p>{t('projectDetail.firstServiceSetupDescription')}</p>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={closeAddService}
-                      disabled={createService.isPending}
-                      data-testid="first-service-cancel"
-                    >
-                      {t('common.cancel')}
-                    </Button>
-                  </header>
-                )}
-                <Card className={styles.addRepoCard}>
-                  {canAddRepo ? <div className={styles.repoPicker} data-testid="repo-picker">
-                    {availableGitPlugins.length > 0 && (
-                      <label className={styles.pickerHint}>
-                        {t('plugins.projectPlugin')}
-                        <Select
-                          value={effectiveInstallationId}
-                          onChange={setPickerInstallationId}
-                          data-testid="repo-source-select"
-                          className={styles.repoSourceSelect}
-                          options={availableGitPlugins.map((plugin) => ({
-                            value: plugin.id!,
-                            label: `${plugin.provider === 'github' ? 'GitHub' : plugin.provider === 'gitlab' ? 'GitLab' : 'Gitea'} · ${plugin.external_account ?? plugin.external_account_id ?? plugin.provider}`,
-                          }))}
-                        />
-                      </label>
-                    )}
-                    <TextField
-                      label={t('projectDetail.pickRepository')}
-                      placeholder={t('projectDetail.searchRepositories')}
-                      value={repoQuery}
-                      onChange={(event) => setRepoQuery(event.target.value)}
-                      data-testid="repo-picker-search"
-                      autoComplete="off"
-                    />
-                    {repoList.isLoading ? (
-                      <p className={styles.pickerHint}>{t('projectDetail.loadingRepositories')}</p>
-                    ) : repoList.isError ? (
-                      <p className={styles.pickerHint} data-testid="repo-picker-error">
-                        {repoList.error instanceof ApiError
-                          ? repoList.error.message
-                          : t('projectDetail.listReposFailed', { source: selectedPlugin?.provider ?? 'Plugin' })}
-                      </p>
-                    ) : repoList.data && repoList.data.length === 0 ? (
-                      <p className={styles.pickerHint}>{t('projectDetail.noRepositoriesMatch')}</p>
-                    ) : (
-                      <ul className={styles.pickerList}>
-                        {(repoList.data ?? []).map((repo) => (
-                          <li key={repo.id}>
-                            <button
-                              type="button"
-                              className={styles.pickerItem}
-                              onClick={() => pickRepo(repo)}
-                              disabled={createService.isPending}
-                              data-testid="repo-pick"
-                              data-repo={repo.full_name}
-                            >
-                              <span className={styles.pickerRepoName}>
-                                {repo.full_name}
-                                {repo.private && <span className={styles.pickerPrivate}>{t('projectDetail.private')}</span>}
-                              </span>
-                              {repo.description && <span className={styles.pickerRepoDesc}>{repo.description}</span>}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div> : (
-                    <div className={styles.addRepoNeedsIntegration} data-testid="add-repo-needs-plugin">
-                      <p>{t('projectDetail.memberNeedsIntegration')}</p>
-                      {canManage && (
-                        <Link to={`/projects/${encodeURIComponent(projectId)}?view=project-settings&settings=plugins`}>
-                          {t('projectDetail.configureProjectPlugins')}
-                        </Link>
-                      )}
-                    </div>
-                  )}
-
-                  {services.length > 0 && (
-                    <div className={styles.addRepoActions}>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={closeAddService}
-                        disabled={createService.isPending}
-                      >
-                        {t('common.cancel')}
-                      </Button>
-                    </div>
-                  )}
-                </Card>
-              </section>
-            )}
-
             {needsGitPlugin && !addOpen && services.length > 0 && (
               <p className={styles.addRepoNeedsIntegration} data-testid="add-repo-needs-plugin">
                 {t('projectDetail.memberNeedsIntegration')}
@@ -825,6 +712,99 @@ export function ProjectDetailPage() {
           />
         )}
       </ProjectWorkspaceShell>
+
+      <Modal
+        open={canRun && addOpen}
+        onClose={closeAddService}
+        title={t('projectDetail.addService')}
+        data-testid="add-service-dialog"
+        footer={
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={closeAddService}
+            disabled={createService.isPending}
+          >
+            {t('common.cancel')}
+          </Button>
+        }
+      >
+        <div className={styles.addServiceDialogBody}>
+          {services.length === 0 && (
+            <p className={styles.addServiceDialogDescription}>
+              {t('projectDetail.firstServiceSetupDescription')}
+            </p>
+          )}
+          {canAddRepo ? (
+            <div className={styles.repoPicker} data-testid="repo-picker">
+              {availableGitPlugins.length > 0 && (
+                <label className={styles.pickerHint}>
+                  {t('plugins.projectPlugin')}
+                  <Select
+                    value={effectiveInstallationId}
+                    onChange={setPickerInstallationId}
+                    data-testid="repo-source-select"
+                    className={styles.repoSourceSelect}
+                    options={availableGitPlugins.map((plugin) => ({
+                      value: plugin.id!,
+                      label: `${plugin.provider === 'github' ? 'GitHub' : plugin.provider === 'gitlab' ? 'GitLab' : 'Gitea'} · ${plugin.external_account ?? plugin.external_account_id ?? plugin.provider}`,
+                    }))}
+                  />
+                </label>
+              )}
+              <TextField
+                label={t('projectDetail.pickRepository')}
+                placeholder={t('projectDetail.searchRepositories')}
+                value={repoQuery}
+                onChange={(event) => setRepoQuery(event.target.value)}
+                data-testid="repo-picker-search"
+                autoComplete="off"
+              />
+              {repoList.isLoading ? (
+                <p className={styles.pickerHint}>{t('projectDetail.loadingRepositories')}</p>
+              ) : repoList.isError ? (
+                <p className={styles.pickerHint} data-testid="repo-picker-error">
+                  {repoList.error instanceof ApiError
+                    ? repoList.error.message
+                    : t('projectDetail.listReposFailed', { source: selectedPlugin?.provider ?? 'Plugin' })}
+                </p>
+              ) : repoList.data && repoList.data.length === 0 ? (
+                <p className={styles.pickerHint}>{t('projectDetail.noRepositoriesMatch')}</p>
+              ) : (
+                <ul className={styles.pickerList}>
+                  {(repoList.data ?? []).map((repo) => (
+                    <li key={repo.id}>
+                      <button
+                        type="button"
+                        className={styles.pickerItem}
+                        onClick={() => pickRepo(repo)}
+                        disabled={createService.isPending}
+                        data-testid="repo-pick"
+                        data-repo={repo.full_name}
+                      >
+                        <span className={styles.pickerRepoName}>
+                          {repo.full_name}
+                          {repo.private && <span className={styles.pickerPrivate}>{t('projectDetail.private')}</span>}
+                        </span>
+                        {repo.description && <span className={styles.pickerRepoDesc}>{repo.description}</span>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : (
+            <div className={styles.addRepoNeedsIntegration} data-testid="add-repo-needs-plugin">
+              <p>{t('projectDetail.memberNeedsIntegration')}</p>
+              {canManage && (
+                <Link to={`/projects/${encodeURIComponent(projectId)}?view=project-settings&settings=plugins`}>
+                  {t('projectDetail.configureProjectPlugins')}
+                </Link>
+              )}
+            </div>
+          )}
+        </div>
+      </Modal>
 
       {kanbanOpen && activeService && (
         <KanbanBoardModal

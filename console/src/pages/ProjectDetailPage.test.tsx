@@ -6,7 +6,7 @@
  *    against the selected service
  *  - zero-repo project: an empty state replaces the composer
  *  - viewer: no composer, no Settings, no "+ Add repository"
- *  - owner: "+ Add repository" opens a form that creates a service, with the
+ *  - owner: "+ Add repository" opens a dialog that creates a service, with the
  *    draft_pr-needs-a-provider-repo validation inline
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -801,31 +801,34 @@ describe('ProjectDetailPage — zero-repo empty state', () => {
 
     fireEvent.click(await screen.findByTestId('empty-add-service'));
 
-    expect(await screen.findByTestId('first-service-setup')).toBeTruthy();
+    expect(await screen.findByRole('dialog', { name: 'Add service' })).toBeTruthy();
     expect(screen.getByTestId('add-repo-needs-plugin')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Configure project plugins' })).toBeTruthy();
   });
 
-  it('renders Add service directly from the URL without waiting for duplicate local state', async () => {
+  it('renders Add service as a dialog directly from the URL', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
     renderPage(client, undefined, '/projects/p1?service=svc_default&tab=tasks&add=service');
 
+    expect(await screen.findByRole('dialog', { name: 'Add service' })).toBeTruthy();
     expect(await screen.findByTestId('repo-picker')).toBeTruthy();
   });
 
-  it('replaces onboarding with a focused first-service setup instead of appending it below activity', async () => {
+  it('opens first-service setup as a dialog over the focused onboarding state', async () => {
     const { client } = makeClient(project('owner', []));
     renderPage(client);
 
     fireEvent.click(await screen.findByTestId('empty-add-service'));
 
-    expect(await screen.findByTestId('first-service-setup')).toBeTruthy();
-    expect(screen.queryByTestId('no-repo-empty')).toBeNull();
+    expect(await screen.findByRole('dialog', { name: 'Add service' })).toBeTruthy();
+    expect(screen.getByTestId('add-service-dialog')).toBeTruthy();
+    expect(screen.getByTestId('no-repo-empty')).toBeTruthy();
     expect(screen.queryByTestId('runs-empty')).toBeNull();
     expect(screen.getByTestId('repo-picker')).toBeTruthy();
 
-    fireEvent.click(screen.getByTestId('first-service-cancel'));
+    fireEvent.click(within(screen.getByTestId('add-service-dialog')).getByRole('button', { name: 'Cancel' }));
     expect(await screen.findByTestId('no-repo-empty')).toBeTruthy();
+    expect(screen.queryByRole('dialog', { name: 'Add service' })).toBeNull();
   });
 
   it('activates a newly attached first service instead of remaining in the empty workspace', async () => {
@@ -920,7 +923,7 @@ describe('ProjectDetailPage — add repository', () => {
     expect('repo_url' in calls.services[0]!.input).toBe(false);
   });
 
-  it('opens Add Service from the Automation workspace and moves to Tasks visibly', async () => {
+  it('opens Add Service as a dialog without leaving the Automation workspace', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]), {
       plugins: [githubPlugin],
       pluginRepos: [repository],
@@ -928,8 +931,9 @@ describe('ProjectDetailPage — add repository', () => {
     renderPage(client, undefined, '/projects/p1?service=svc_default&tab=automations');
 
     fireEvent.click(await screen.findByTestId('add-repo-trigger'));
+    expect(await screen.findByRole('dialog', { name: 'Add service' })).toBeTruthy();
     expect(await screen.findByTestId('repo-picker')).toBeTruthy();
-    await waitFor(() => expect(screen.getByTestId('workspace-location').textContent).toContain('tab=tasks'));
+    await waitFor(() => expect(screen.getByTestId('workspace-location').textContent).toContain('tab=automations'));
   });
 
   it('closes Add Service when browser history removes the add URL state', async () => {

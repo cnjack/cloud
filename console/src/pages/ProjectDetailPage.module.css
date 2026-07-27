@@ -1261,8 +1261,7 @@ li:last-child > .pickerItem {
   color: var(--color-accent-dim);
 }
 
-.firstServiceEyebrow,
-.firstServiceSetupHeader span {
+.firstServiceEyebrow {
   color: var(--color-text-faint);
   font-size: var(--fs-tiny);
   font-weight: var(--fw-semibold);
@@ -1270,8 +1269,7 @@ li:last-child > .pickerItem {
   text-transform: uppercase;
 }
 
-.firstServiceEmpty h2,
-.firstServiceSetupHeader h2 {
+.firstServiceEmpty h2 {
   margin: var(--space-2) 0 0;
   color: var(--color-text);
   font-size: clamp(1.7rem, 3vw, 2.35rem);
@@ -1281,8 +1279,7 @@ li:last-child > .pickerItem {
   text-wrap: balance;
 }
 
-.firstServiceEmpty p,
-.firstServiceSetupHeader p {
+.firstServiceEmpty p {
   max-width: 56ch;
   margin: var(--space-4) 0 0;
   color: var(--color-text-muted);
@@ -1295,30 +1292,26 @@ li:last-child > .pickerItem {
   margin-top: var(--space-6);
 }
 
-.firstServiceSetup {
-  width: min(100%, 760px);
-  margin: 0 auto;
-}
-
-.firstServiceSetupHeader {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-6);
-  padding: var(--space-4) 0 var(--space-6);
-}
-
-.firstServiceSetupHeader > div {
+.addServiceDialogBody {
+  display: grid;
   min-width: 0;
+  gap: var(--space-4);
 }
 
-.firstServiceSetupHeader h2 {
-  font-size: clamp(1.45rem, 2.2vw, 1.9rem);
+.addServiceDialogDescription {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-relaxed);
 }
 
-.firstServiceSetup .addRepoCard {
-  padding: clamp(16px, 3vw, 28px);
-  box-shadow: none;
+.addServiceDialogBody .repoPicker {
+  margin-bottom: 0;
+}
+
+.addServiceDialogBody .addRepoNeedsIntegration {
+  max-width: none;
+  margin: 0;
 }
 
 .repoSourceSelect {
@@ -1362,11 +1355,6 @@ li:last-child > .pickerItem {
   .firstServiceEmpty {
     min-height: 360px;
     padding: 48px 8px 56px;
-  }
-
-  .firstServiceSetupHeader {
-    padding-top: 0;
-    gap: var(--space-3);
   }
 
   .workspaceCapability {
