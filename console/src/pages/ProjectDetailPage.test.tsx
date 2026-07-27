@@ -806,6 +806,13 @@ describe('ProjectDetailPage — zero-repo empty state', () => {
     expect(screen.getByRole('link', { name: 'Configure project plugins' })).toBeTruthy();
   });
 
+  it('renders Add service directly from the URL without waiting for duplicate local state', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    renderPage(client, undefined, '/projects/p1?service=svc_default&tab=tasks&add=service');
+
+    expect(await screen.findByTestId('repo-picker')).toBeTruthy();
+  });
+
   it('replaces onboarding with a focused first-service setup instead of appending it below activity', async () => {
     const { client } = makeClient(project('owner', []));
     renderPage(client);

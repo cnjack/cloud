@@ -91,7 +91,6 @@ export function ProjectDetailPage() {
   const [askApproval, setAskApproval] = useState(false);
   const [runFilter, setRunFilter] = useState<RunFilter>('all');
   const [kanbanOpen, setKanbanOpen] = useState(false);
-  const [addOpen, setAddOpen] = useState(false);
   const [repoQuery, setRepoQuery] = useState('');
   const [pickerInstallationId, setPickerInstallationId] = useState('');
   const deferredQuery = useDeferredValue(repoQuery);
@@ -110,6 +109,7 @@ export function ProjectDetailPage() {
   const activeService = services.find((service) => service.id === activeServiceId);
   const serviceBranches = useServiceBranches(activeServiceId, canRun && !!activeService);
   const workspaceTab = workspaceLocation.tab;
+  const addOpen = searchParams.get('add') === 'service';
   const projectSettingsOpen = canManage && searchParams.get('view') === 'project-settings';
   const projectSettingsSection = resolveProjectSettingsSection(searchParams.get('settings'), canManage);
 
@@ -125,7 +125,6 @@ export function ProjectDetailPage() {
     setAttachmentError(undefined);
     setAskApproval(false);
     setRunFilter('all');
-    setAddOpen(false);
     setRepoQuery('');
     setPickerInstallationId('');
   }, [projectId]);
@@ -271,19 +270,13 @@ export function ProjectDetailPage() {
     next.set('tab', 'tasks');
     next.set('add', 'service');
     setSearchParams(next);
-    setAddOpen(true);
   };
 
   const closeAddService = () => {
     const next = new URLSearchParams(searchParams);
     next.delete('add');
     setSearchParams(next, { replace: true });
-    setAddOpen(false);
   };
-
-  useEffect(() => {
-    setAddOpen(searchParams.get('add') === 'service');
-  }, [searchParams]);
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
