@@ -253,7 +253,9 @@ function ModelRow({ api, provider, model }: { api: ModelsAdminApi; provider: Mod
           <span><b>{projectGrantCount}</b><small>{t('cluster.models.projectGrants', { count: projectGrantCount })}</small></span>
         </span>
         <Button size="sm" variant="ghost" onClick={() => setGrantsOpen(true)}>{t('cluster.models.manageAccess')}</Button>
+        <button className={styles.iconButton} type="button" aria-label={t('projectSettings.models.editModelAria', { name: model.name })} onClick={() => setEditOpen(true)}><PencilSimple size={16} aria-hidden="true" /></button>
         <AccessDialog model={model} open={grantsOpen} onClose={() => setGrantsOpen(false)} />
+        <CustomModelDialog api={api} provider={provider} model={model} open={editOpen} onClose={() => setEditOpen(false)} />
       </div>
     );
   }
@@ -335,10 +337,16 @@ function CustomModelDialog({ api, provider, open, onClose, model }: { api: Model
     if (!name.trim() || (!editing && !modelId.trim())) { setError(t('cluster.models.customValidationRequired')); return; }
     if (!Number.isFinite(parsedContext) || parsedContext < 0) { setError(t('cluster.models.customValidationContext')); return; }
     if (editing && model) {
-      api.updateModel?.mutate({ providerId: provider.id, modelId: model.id, input: { name: name.trim(), context_window: parsedContext, capabilities } }, {
+      const input = { name: name.trim(), context_window: parsedContext, capabilities };
+      const options = {
         onSuccess: () => { toast.push({ kind: 'success', message: t('projectSettings.models.modelSaved') }); onClose(); },
-        onError: (cause) => setError(errorMessage(cause, t('projectSettings.models.saveModelError'))),
-      });
+        onError: (cause: unknown) => setError(errorMessage(cause, t('projectSettings.models.saveModelError'))),
+      };
+      if (api.scope.kind === 'cluster') {
+        api.updateClusterModel?.mutate({ id: model.id, input }, options);
+      } else {
+        api.updateModel?.mutate({ providerId: provider.id, modelId: model.id, input }, options);
+      }
       return;
     }
     api.createModel.mutate({ providerId: provider.id, input: { name: name.trim(), model_id: modelId.trim(), context_window: parsedContext, capabilities, source: 'custom' } }, {
@@ -348,7 +356,9 @@ function CustomModelDialog({ api, provider, open, onClose, model }: { api: Model
   };
 
   const formId = editing && model ? `custom-model-edit-${model.id}` : `custom-model-${provider.id}`;
-  const pending = editing ? api.updateModel?.isPending : api.createModel.isPending;
+  const pending = editing
+    ? (api.scope.kind === 'cluster' ? api.updateClusterModel?.isPending : api.updateModel?.isPending)
+    : api.createModel.isPending;
   return (
     <Modal open={open} onClose={onClose} title={editing && model ? t('projectSettings.models.editDialogTitle', { name: model.name }) : t('cluster.models.customDialogTitle', { name: provider.name })} footer={<><Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button><Button variant="primary" onClick={() => document.getElementById(formId)?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))} loading={pending}>{editing ? t('projectSettings.models.saveModel') : t('cluster.models.addCustomModel')}</Button></>}>
       <form id={formId} className={styles.dialogForm} onSubmit={submit}>

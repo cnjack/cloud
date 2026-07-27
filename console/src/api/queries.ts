@@ -632,7 +632,11 @@ export function useUpdateModel() {
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: UpdateModelInput }) =>
       api.updateModel(id, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.models }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.models });
+      qc.invalidateQueries({ queryKey: qk.modelProviders });
+      qc.invalidateQueries({ queryKey: ['project-models'] });
+    },
   });
 }
 

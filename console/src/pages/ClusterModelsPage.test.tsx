@@ -31,6 +31,7 @@ function renderPage(overrides: Partial<ApiClient> = {}) {
     searchUsers: async () => [account],
     getModelProviderCatalog: vi.fn().mockRejectedValue(new ApiError(409, 'catalog unavailable', { error: { code: 'catalog_unavailable' } })),
     createProviderModel: vi.fn().mockResolvedValue(provider.models[0]),
+    updateModel: vi.fn().mockResolvedValue(provider.models[0]),
     grantModel: vi.fn().mockResolvedValue({}), revokeModel: vi.fn().mockResolvedValue({}),
     grantModelToAccount: vi.fn().mockResolvedValue({}), revokeModelFromAccount: vi.fn().mockResolvedValue({}),
     verifyModelProvider: vi.fn().mockResolvedValue({ reachable: true, catalog_available: false, latency_ms: 42 }),
@@ -74,6 +75,23 @@ describe('ClusterModelsPage', () => {
     await waitFor(() => expect(client.createProviderModel).toHaveBeenCalledWith('prv-plan', {
       name: 'Plan Mini', model_id: 'plan-mini', context_window: 64000,
       capabilities: { reasoning: false, tools: true, image: false }, source: 'custom',
+    }));
+  });
+
+  it('lets a Cluster Admin correct catalog model capabilities', async () => {
+    const client = renderPage();
+    const card = await screen.findByTestId('provider-card-prv-plan');
+    fireEvent.click(within(card).getByRole('button', { name: 'Edit Coding Plan' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Edit model · Coding Plan' });
+    expect((within(dialog).getByLabelText('Reasoning') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(within(dialog).getByLabelText('Reasoning'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save model' }));
+
+    await waitFor(() => expect(client.updateModel).toHaveBeenCalledWith('mdl-plan', {
+      name: 'Coding Plan',
+      context_window: 32_000,
+      capabilities: { reasoning: true, tools: true, image: false },
     }));
   });
 

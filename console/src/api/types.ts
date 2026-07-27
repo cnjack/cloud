@@ -910,6 +910,8 @@ export interface Model {
   name: string;
   base_url: string;
   model_name: string;
+  context_window: number;
+  capabilities: ModelCapabilities;
   api_key_set: boolean;
   created_at: string;
   updated_at: string;
@@ -1053,6 +1055,8 @@ export interface UpdateModelInput {
   name?: string;
   base_url?: string;
   model_name?: string;
+  context_window?: number;
+  capabilities?: ModelCapabilities;
   api_key?: string;
 }
 

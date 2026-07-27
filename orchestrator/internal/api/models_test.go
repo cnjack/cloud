@@ -40,13 +40,15 @@ func catalogServer(t *testing.T, cipher bool) (*httptest.Server, *store.MemStore
 
 // modelAdminViewT decodes the admin catalog view.
 type modelAdminViewT struct {
-	ID                string   `json:"id"`
-	Name              string   `json:"name"`
-	BaseURL           string   `json:"base_url"`
-	ModelName         string   `json:"model_name"`
-	APIKeySet         bool     `json:"api_key_set"`
-	GrantedProjectIDs []string `json:"granted_project_ids"`
-	GrantedAccountIDs []string `json:"granted_account_ids"`
+	ID                string                   `json:"id"`
+	Name              string                   `json:"name"`
+	BaseURL           string                   `json:"base_url"`
+	ModelName         string                   `json:"model_name"`
+	ContextWindow     int                      `json:"context_window"`
+	Capabilities      domain.ModelCapabilities `json:"capabilities"`
+	APIKeySet         bool                     `json:"api_key_set"`
+	GrantedProjectIDs []string                 `json:"granted_project_ids"`
+	GrantedAccountIDs []string                 `json:"granted_account_ids"`
 }
 
 // createModel POSTs a model as the console admin and returns its view.
@@ -112,13 +114,37 @@ func TestModelCatalogCRUDAndRBAC(t *testing.T) {
 	}
 	dup.Body.Close()
 
-	// PATCH rename (keeps the key — api_key omitted).
-	resp = do(t, "PATCH", ts.URL+"/api/v1/system/models/"+v.ID, consoleToken, map[string]any{"name": "gpt4o"})
+	// PATCH mutable metadata (keeps the key — api_key omitted).
+	resp = do(t, "PATCH", ts.URL+"/api/v1/system/models/"+v.ID, consoleToken, map[string]any{
+		"name":           "gpt4o",
+		"context_window": 128_000,
+		"capabilities": map[string]any{
+			"reasoning": true,
+			"tools":     true,
+			"image":     false,
+		},
+	})
 	var patched modelAdminViewT
 	decode(t, resp, &patched)
-	if patched.Name != "gpt4o" || !patched.APIKeySet {
+	if patched.Name != "gpt4o" || patched.ContextWindow != 128_000 ||
+		!patched.Capabilities.Reasoning || !patched.Capabilities.Tools ||
+		patched.Capabilities.Image || !patched.APIKeySet {
 		t.Fatalf("patch view wrong: %+v", patched)
 	}
+	stored, err := st.GetModel(context.Background(), v.ID)
+	if err != nil {
+		t.Fatalf("get patched model: %v", err)
+	}
+	if stored.ContextWindow != 128_000 || !stored.Capabilities.Reasoning || !stored.Capabilities.Tools {
+		t.Fatalf("patch was not persisted: %+v", stored)
+	}
+
+	// PATCH invalid context_window => 400.
+	resp = do(t, "PATCH", ts.URL+"/api/v1/system/models/"+v.ID, consoleToken, map[string]any{"context_window": -1})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("patch bad context_window: status=%d want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
 
 	// PATCH invalid base_url => 400.
 	resp = do(t, "PATCH", ts.URL+"/api/v1/system/models/"+v.ID, consoleToken, map[string]any{"base_url": "ftp://x"})

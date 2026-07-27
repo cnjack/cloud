@@ -346,6 +346,8 @@ export function createMockClient(): ApiClient {
       name,
       base_url: `http://mockllm.jcloud.svc.cluster.local:8081/v1`,
       model_name: model,
+      context_window: 0,
+      capabilities: { reasoning: false, tools: true, image: false },
       api_key_set: true,
       created_at: nowISO(),
       updated_at: nowISO(),
@@ -1540,6 +1542,8 @@ export function createMockClient(): ApiClient {
         name,
         base_url: provider.base_url,
         model_name: providerModel.runtime_model_name,
+        context_window: providerModel.context_window,
+        capabilities: { ...providerModel.capabilities },
         api_key_set: provider.api_key_set,
         created_at: nowISO(),
         updated_at: nowISO(),
@@ -1726,6 +1730,7 @@ export function createMockClient(): ApiClient {
       const id = genId('mdl');
       const m: Model = {
         id, name, base_url: base, model_name: model, api_key_set: !!input.api_key,
+        context_window: 0, capabilities: { reasoning: false, tools: false, image: false },
         created_at: nowISO(), updated_at: nowISO(), updated_by: 'demo-admin',
         granted_project_ids: [], granted_account_ids: [],
       };
@@ -1760,6 +1765,8 @@ export function createMockClient(): ApiClient {
         if (!provider || rest.join('/') === '') throw badRequest("model_name must be in 'provider/model' form");
         m.model_name = model;
       }
+      if (input.context_window !== undefined) m.context_window = input.context_window;
+      if (input.capabilities !== undefined) m.capabilities = { ...input.capabilities };
       if (input.api_key !== undefined) m.api_key_set = input.api_key !== '';
       m.updated_at = nowISO();
       models.set(id, m);

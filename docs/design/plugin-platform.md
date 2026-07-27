@@ -473,6 +473,10 @@ manual attachment stages:
   against model capabilities and passes the resolved value to jcode at Run
   start. Each SCM/Cron Automation pins its selected Project model and optional
   effort; every Run dispatched from that Automation inherits both values.
+  Because many OpenAI-compatible `/models` catalogs do not advertise reasoning,
+  tool, image, or context-window metadata, Cluster Admins can correct those
+  capability flags on catalog models. The corrected cluster metadata is the
+  source of truth for Project task and Automation option availability.
   Unsupported values fail visibly. Existing pre-migration Automations without a
   pinned model continue to use the Service default/sole-grant resolution chain
   until they are edited and saved.

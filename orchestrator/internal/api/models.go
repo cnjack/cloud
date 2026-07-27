@@ -16,16 +16,18 @@ import (
 // carries the plaintext API key — only api_key_set. Account and Project grant
 // ids let the admin UI manage the two independent authorization scopes inline.
 type modelAdminView struct {
-	ID                string    `json:"id"`
-	Name              string    `json:"name"`
-	BaseURL           string    `json:"base_url"`
-	ModelName         string    `json:"model_name"`
-	APIKeySet         bool      `json:"api_key_set"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	UpdatedBy         string    `json:"updated_by"`
-	GrantedProjectIDs []string  `json:"granted_project_ids"`
-	GrantedAccountIDs []string  `json:"granted_account_ids"`
+	ID                string                   `json:"id"`
+	Name              string                   `json:"name"`
+	BaseURL           string                   `json:"base_url"`
+	ModelName         string                   `json:"model_name"`
+	ContextWindow     int                      `json:"context_window"`
+	Capabilities      domain.ModelCapabilities `json:"capabilities"`
+	APIKeySet         bool                     `json:"api_key_set"`
+	CreatedAt         time.Time                `json:"created_at"`
+	UpdatedAt         time.Time                `json:"updated_at"`
+	UpdatedBy         string                   `json:"updated_by"`
+	GrantedProjectIDs []string                 `json:"granted_project_ids"`
+	GrantedAccountIDs []string                 `json:"granted_account_ids"`
 }
 
 // modelMemberView is the member-facing projection of a granted model. Runtime
@@ -59,6 +61,8 @@ func (s *Server) adminModel(r *http.Request, m *domain.Model) modelAdminView {
 		Name:              m.Name,
 		BaseURL:           m.BaseURL,
 		ModelName:         m.ModelName,
+		ContextWindow:     m.ContextWindow,
+		Capabilities:      m.Capabilities,
 		APIKeySet:         m.APIKeySet(),
 		CreatedAt:         m.CreatedAt,
 		UpdatedAt:         m.UpdatedAt,
@@ -149,10 +153,12 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 // (nil = leave unchanged). api_key: a non-nil empty string clears the key
 // (keyless); a non-empty value re-encrypts it.
 type patchModelReq struct {
-	Name      *string `json:"name"`
-	BaseURL   *string `json:"base_url"`
-	ModelName *string `json:"model_name"`
-	APIKey    *string `json:"api_key"`
+	Name          *string                   `json:"name"`
+	BaseURL       *string                   `json:"base_url"`
+	ModelName     *string                   `json:"model_name"`
+	ContextWindow *int                      `json:"context_window"`
+	Capabilities  *domain.ModelCapabilities `json:"capabilities"`
+	APIKey        *string                   `json:"api_key"`
 }
 
 // handleUpdateModel updates a catalog model (cluster-admin only).
@@ -198,6 +204,16 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 		}
 		m.ModelName = model
 		_, m.ModelID, _ = strings.Cut(model, "/")
+	}
+	if req.ContextWindow != nil {
+		if *req.ContextWindow < 0 {
+			writeError(w, http.StatusBadRequest, "bad_request", "context_window cannot be negative")
+			return
+		}
+		m.ContextWindow = *req.ContextWindow
+	}
+	if req.Capabilities != nil {
+		m.Capabilities = *req.Capabilities
 	}
 	if req.APIKey != nil {
 		if *req.APIKey == "" {

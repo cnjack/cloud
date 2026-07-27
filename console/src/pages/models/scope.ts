@@ -21,6 +21,7 @@ import {
   useProjectModelProviders,
   useUpdateProjectModelProvider,
   useUpdateProjectProviderModel,
+  useUpdateModel,
   useUpdateModelProvider,
   useVerifyModelProvider,
   useVerifyProjectModelProvider,
@@ -28,11 +29,13 @@ import {
 import type {
   CatalogModel,
   CreateModelProviderInput,
+  Model,
   CreateProviderModelInput,
   ModelProvider,
   ModelProviderVerification,
   ProviderModel,
   UpdateModelProviderInput,
+  UpdateModelInput,
   UpdateProviderModelInput,
 } from '../../api/types';
 import type { UseMutationResult, UseQueryResult } from '@tanstack/react-query';
@@ -58,6 +61,7 @@ export interface ModelsAdminApi {
   verifyProvider: UseMutationResult<ModelProviderVerification, unknown, string>;
   createModel: UseMutationResult<ProviderModel, unknown, { providerId: string; input: CreateProviderModelInput }>;
   updateModel?: UseMutationResult<ProviderModel, unknown, { providerId: string; modelId: string; input: UpdateProviderModelInput }>;
+  updateClusterModel?: UseMutationResult<Model, unknown, { id: string; input: UpdateModelInput }>;
   deleteModel?: UseMutationResult<void, unknown, { providerId: string; modelId: string }>;
   /** A stable hook (safe to call at a component's top level) for a provider's catalog. */
   useCatalog: (providerId: string, open: boolean) => CatalogQuery;
@@ -76,6 +80,7 @@ export function useModelsAdminApi(scope: ModelsScope): ModelsAdminApi {
   const deleteClusterProvider = useDeleteModelProvider();
   const verifyClusterProvider = useVerifyModelProvider();
   const createClusterModel = useCreateProviderModel();
+  const updateClusterModel = useUpdateModel();
 
   const createProjectProvider = useCreateProjectModelProvider(projectId);
   const updateProjectProvider = useUpdateProjectModelProvider(projectId);
@@ -100,6 +105,7 @@ export function useModelsAdminApi(scope: ModelsScope): ModelsAdminApi {
       deleteProvider: deleteClusterProvider,
       verifyProvider: verifyClusterProvider,
       createModel: createClusterModel,
+      updateClusterModel,
       useCatalog,
     };
   }
