@@ -219,7 +219,7 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		sel, outcome, selectErr := s.models.SelectModel(r.Context(), svc.ProjectID, deref(svc.DefaultModelID), "")
 		if selectErr != nil || outcome != modelcfg.SelectOK {
-			s.recordPluginAutomationError(r, a, "Automation model is unavailable.")
+			s.recordPluginAutomationError(r, a, pluginAutomationModelError(outcome, selectErr))
 			continue
 		}
 		prompt := renderPluginPrompt(a.PromptTemplate, event)
@@ -291,6 +291,20 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		_ = s.st.RecordWebhookDelivery(r.Context(), routeBinding.ServiceID, now, "accepted", "")
 	}
 	writeWebhookOK(w, "accepted")
+}
+
+func pluginAutomationModelError(outcome modelcfg.SelectOutcome, err error) string {
+	if err != nil {
+		return "Automation model could not be resolved because of a temporary internal error."
+	}
+	switch outcome {
+	case modelcfg.SelectNotSelected:
+		return "Several project models are available, but this Service has no default model."
+	case modelcfg.SelectNotConfigured:
+		return "No model is authorized for this Project."
+	default:
+		return "Automation model is unavailable."
+	}
 }
 
 func automationRunBranch(event scmevent.NormalizedSCMEvent) string {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { GithubLogo, Warning } from '@phosphor-icons/react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { Button } from '../components/Button';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import { Modal } from '../components/Modal';
@@ -15,7 +15,7 @@ import {
   useStartPluginInstall,
 } from '../api/queries';
 import type { GitHubInstallationConsentPreview, PluginInstallStart, PluginStatus, Project, ProjectPlugin, ProviderKind } from '../api/types';
-import { ApiError } from '../api/client';
+import { apiErrorCode } from '../api/client';
 import styles from './ProjectPluginsPanel.module.css';
 
 const PROVIDERS: readonly ProviderKind[] = ['github', 'gitlab', 'gitea', 'jtype'];
@@ -42,6 +42,41 @@ export function ProviderMark({ provider, size = 24 }: { provider: ProviderKind; 
 
 function statusLabel(status: PluginStatus, t: (key: string) => string) {
   return t(`plugins.status.${status}`);
+}
+
+export function pluginHealthErrorText(message: string, t: (key: string) => string): string {
+  if (message === 'JType device authorization could not be started') return t('plugins.healthError.jtypeStartFailed');
+  if (message === 'Provider webhook cleanup failed; retry uninstall or explicitly force local removal') return t('plugins.healthError.webhookCleanupFailed');
+  if (message === 'Runtime cleanup failed; retry uninstall after the cluster is healthy') return t('plugins.healthError.runtimeCleanupFailed');
+  if (message === 'OAuth access expired and refresh failed; reconnect this Plugin') return t('plugins.healthError.oauthRefreshFailed');
+  if (message.includes('Cluster Provider identity, URL, credentials, or Plugin availability changed')) return t('plugins.healthError.providerConfigChanged');
+  return message;
+}
+
+export function pluginOperationErrorText(error: unknown, t: (key: string) => string): string {
+  const code = apiErrorCode(error);
+  switch (code) {
+  case 'github_app_not_configured': return t('plugins.apiError.githubAppNotConfigured');
+  case 'github_identity_required': return t('plugins.apiError.githubIdentityRequired');
+  case 'github_installation_forbidden': return t('plugins.apiError.githubInstallationForbidden');
+  case 'github_app_error': return t('plugins.apiError.githubAppError');
+  case 'consent_scope_changed': return t('plugins.apiError.consentScopeChanged');
+  case 'provider_not_configured': return t('plugins.apiError.providerNotConfigured');
+  case 'plugin_credential_unavailable': return t('plugins.apiError.credentialUnavailable');
+  case 'plugin_reconnect_required':
+  case 'reconnect_required': return t('plugins.apiError.reconnectRequired');
+  case 'connect_expired': return t('plugins.apiError.connectExpired');
+  case 'workspace_not_available': return t('plugins.apiError.workspaceUnavailable');
+  case 'workspace_required': return t('plugins.apiError.workspaceRequired');
+  case 'webhook_cleanup_failed': return t('plugins.apiError.webhookCleanupFailed');
+  case 'cleanup_failed': return t('plugins.apiError.runtimeCleanupFailed');
+  case 'plugin_connect_not_implemented': return t('plugins.apiError.connectUnsupported');
+  case 'cipher_not_configured': return t('plugins.apiError.encryptionUnavailable');
+  case 'consent_required': return t('plugins.apiError.consentRequired');
+  case 'provider_error':
+  case 'provider_unavailable': return t('plugins.apiError.providerUnavailable');
+  default: return t('plugins.apiError.generic');
+  }
 }
 
 export function ProjectPluginsPanel({ project }: { project: Project }) {
@@ -79,7 +114,7 @@ export function ProjectPluginsPanel({ project }: { project: Project }) {
                   {t('plugins.connect')}
                 </Button>
               )}
-              {(plugin.last_health_error || plugin.last_error) && <p className={styles.error}><Warning size={15} aria-hidden /> {plugin.last_health_error ?? plugin.last_error}</p>}
+              {(plugin.last_health_error || plugin.last_error) && <p className={styles.error}><Warning size={15} aria-hidden /> {pluginHealthErrorText(plugin.last_health_error ?? plugin.last_error ?? '', t)}</p>}
             </article>
           );
         })}
@@ -136,9 +171,9 @@ export function PluginConsentModal({ projectId, provider, onClose }: { projectId
           setDeviceStart(result);
           return;
         }
-        setError('The Provider returned an incomplete connection response.');
+        setError(t('plugins.incompleteResponse'));
       },
-      onError: (reason) => setError(reason instanceof ApiError ? reason.message : t('plugins.connectError')),
+      onError: (reason) => setError(pluginOperationErrorText(reason, t)),
     });
   };
   const previewInstallation = (installationId: string) => {
@@ -148,7 +183,7 @@ export function PluginConsentModal({ projectId, provider, onClose }: { projectId
         setGitHubPreview(preview);
         setAcknowledged(false);
       },
-      onError: (reason) => setError(reason instanceof ApiError ? reason.message : t('plugins.connectError')),
+      onError: (reason) => setError(pluginOperationErrorText(reason, t)),
     });
   };
   const selectInstallation = () => {
@@ -164,29 +199,29 @@ export function PluginConsentModal({ projectId, provider, onClose }: { projectId
       },
     }, {
       onSuccess: onClose,
-      onError: (reason) => setError(reason instanceof ApiError ? reason.message : t('plugins.connectError')),
+      onError: (reason) => setError(pluginOperationErrorText(reason, t)),
     });
   };
   const canContinue = acknowledged && !deviceStart && provider !== 'github';
   return (
     <Modal open onClose={onClose} title={t('plugins.consentTitle', { provider: providerName(provider) })} data-testid="plugin-consent-modal"
       footer={<>
-        <Button variant="ghost" type="button" onClick={onClose}>{deviceStart ? 'Close' : t('common.cancel')}</Button>
+        <Button variant="ghost" type="button" onClick={onClose}>{deviceStart ? t('common.close') : t('common.cancel')}</Button>
         {provider !== 'github' && !deviceStart && <Button type="button" onClick={submit} disabled={!canContinue} loading={install.isPending}>{t('plugins.continueToProvider')}</Button>}
       </>}>
       <div className={styles.consent}>
         <p>{t('plugins.consentIntro', { provider: providerName(provider) })}</p>
-        <p><strong>Provider instance:</strong> {providerCapabilities.data?.instance_url || (provider === 'github' ? 'https://github.com' : 'Configured cluster instance')}</p>
+        <p><strong>{t('plugins.providerInstance')}:</strong> {providerCapabilities.data?.instance_url || (provider === 'github' ? 'https://github.com' : t('plugins.configuredClusterInstance'))}</p>
         <div>
-          <strong>Requested scopes</strong>
+          <strong>{t('plugins.requestedScopes')}</strong>
           <ul>
             {(providerCapabilities.data?.oauth_scopes ?? providerScopes(provider)).map((scope) => <li key={scope}><code>{scope}</code></li>)}
           </ul>
         </div>
-        {coarseScopeDisclosure(provider) && (
+        {coarseScopeDisclosure(provider, t) && (
           <p className={styles.riskDisclosure} role="alert">
             <Warning size={18} aria-hidden />
-            {coarseScopeDisclosure(provider)}
+            {coarseScopeDisclosure(provider, t)}
           </p>
         )}
         <ul>
@@ -199,34 +234,45 @@ export function PluginConsentModal({ projectId, provider, onClose }: { projectId
         {provider !== 'github' && <label className={styles.checkbox}><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />{t('plugins.consentAcknowledge')}</label>}
         {provider === 'github' && (
           <div className={styles.installations}>
-            <strong>Choose a GitHub App Installation</strong>
-            <p>Select an Installation to inspect its actual permissions before consenting. The selection is explicit for this Project and is never reused automatically.</p>
-            {githubInstallations.isLoading && <p>Loading GitHub Installations…</p>}
-            {githubInstallations.isError && <ErrorBlock error={githubInstallations.error} title="GitHub Installations could not be listed" />}
+            <strong>{t('plugins.githubChooseInstallation')}</strong>
+            <p>{t('plugins.githubChooseInstallationHint')}</p>
+            {githubInstallations.isLoading && <p>{t('plugins.githubInstallationsLoading')}</p>}
+            {githubInstallations.isError && <ErrorBlock error={new Error(pluginOperationErrorText(githubInstallations.error, t))} title={t('plugins.githubInstallationsLoadError')} />}
             {(githubInstallations.data ?? []).map((item) => (
               <button key={item.id} type="button" onClick={() => previewInstallation(item.id)} disabled={previewGitHub.isPending || selectGitHub.isPending}>
                 <ProviderMark provider="github" size={18} />
-                <span><strong>{item.account}</strong><small>{item.target_type} · {item.repository_selection} repositories</small></span>
+                <span><strong>{item.account}</strong><small>{t('plugins.githubInstallationSummary', {
+                  target: item.target_type === 'Organization'
+                    ? t('plugins.githubTarget.organization')
+                    : item.target_type === 'User' ? t('plugins.githubTarget.user') : item.target_type,
+                  selection: item.repository_selection === 'selected'
+                    ? t('plugins.githubSelection.selected')
+                    : item.repository_selection === 'all' ? t('plugins.githubSelection.all') : item.repository_selection,
+                })}</small></span>
               </button>
             ))}
-            {githubInstallations.isSuccess && !githubInstallations.data.length && <p>No manageable GitHub App Installations were found. Install or adjust the GitHub App on GitHub, then retry.</p>}
+            {githubInstallations.isSuccess && !githubInstallations.data.length && <p>{t('plugins.githubInstallationsEmpty')}</p>}
             {githubPreview && (
               <div>
-                <strong>Actual permissions for {githubPreview.account}</strong>
+                <strong>{t('plugins.githubActualPermissions', { account: githubPreview.account })}</strong>
                 <ul>{githubPreview.scopes.map((scope) => <li key={scope}><code>{scope}</code></li>)}</ul>
-                <label className={styles.checkbox}><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />I reviewed these actual GitHub App permissions and accept the Project-wide credential risks above.</label>
-                <Button type="button" onClick={selectInstallation} disabled={!acknowledged} loading={selectGitHub.isPending}>Connect this Installation</Button>
+                <label className={styles.checkbox}><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />{t('plugins.githubPermissionsAcknowledge')}</label>
+                <Button type="button" onClick={selectInstallation} disabled={!acknowledged} loading={selectGitHub.isPending}>{t('plugins.githubConnectInstallation')}</Button>
               </div>
             )}
           </div>
         )}
         {provider === 'jtype' && deviceStart && (
           <div className={styles.deviceFlow}>
-            <strong>Approve in JType</strong>
-            <p>Use code <code>{deviceStart.user_code}</code>. This dialog will keep checking until JType confirms the grant.</p>
-            <a href={deviceStart.verification_uri_complete ?? deviceStart.verification_uri} target="_blank" rel="noopener noreferrer">Open JType consent page</a>
-            <p role="status">Status: {jtypeStatus.data?.status ?? (jtypeStatus.isError ? 'could not check status' : 'pending')}</p>
-            {jtypeStatus.isError && <ErrorBlock error={jtypeStatus.error} title="JType connection status could not be checked" />}
+            <strong>{t('plugins.jtypeApprove')}</strong>
+            <p><Trans i18nKey="plugins.jtypeApproveHint" values={{ code: deviceStart.user_code }} components={{ code: <code /> }} /></p>
+            <a href={deviceStart.verification_uri_complete ?? deviceStart.verification_uri} target="_blank" rel="noopener noreferrer">{t('plugins.jtypeOpenConsent')}</a>
+            <p role="status">{t('plugins.connectionStatusLabel', {
+              status: jtypeStatus.isError
+                ? t('plugins.connectionStatus.checkFailed')
+                : t(`plugins.connectionStatus.${jtypeStatus.data?.status ?? 'pending'}`),
+            })}</p>
+            {jtypeStatus.isError && <ErrorBlock error={new Error(pluginOperationErrorText(jtypeStatus.error, t))} title={t('plugins.jtypeStatusLoadError')} />}
           </div>
         )}
         {error && <p className={styles.error} role="alert">{error}</p>}
@@ -248,15 +294,15 @@ export function providerScopes(provider: ProviderKind): string[] {
   return ['full'];
 }
 
-function coarseScopeDisclosure(provider: ProviderKind): string {
+function coarseScopeDisclosure(provider: ProviderKind, t: (key: string) => string): string {
   if (provider === 'gitlab') {
-    return 'GitLab’s coarse api scope can authorize broader read/write API operations than this Plugin normally needs, including repository settings allowed to your external role. jcode has no command allowlist that technically prevents every destructive API call.';
+    return t('plugins.coarseScope.gitlab');
   }
   if (provider === 'gitea') {
-    return 'Gitea’s coarse write:repository scope may authorize repository settings and destructive operations beyond normal task workflows, depending on the instance version and your external role. jcode has no command allowlist.';
+    return t('plugins.coarseScope.gitea');
   }
   if (provider === 'jtype') {
-    return 'JType full scope authorizes every supported read/write operation in the selected cloud workspace, not only Kanban triggers.';
+    return t('plugins.coarseScope.jtype');
   }
   return '';
 }

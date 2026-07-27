@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Warning } from '@phosphor-icons/react';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import {
@@ -11,8 +12,29 @@ import {
 import type { AutomationTriggerKind, ProjectAutomationSpec, Service } from '../api/types';
 import styles from './ProjectAutomationsPanel.module.css';
 
-const triggerLabel = (kind: AutomationTriggerKind, t: (key: string) => string) =>
+const triggerLabel = (kind: AutomationTriggerKind, t: TFunction) =>
   t(`projectAutomations.trigger.${kind}`);
+
+const automationErrorLabel = (message: string, t: TFunction) => {
+  if (message === 'Automation model is unavailable.') return t('projectAutomations.error.modelUnavailable');
+  if (message.includes('several models') || message.includes('Service has no default model')) {
+    return t('projectAutomations.error.modelNotSelected');
+  }
+  if (message.includes('No model is authorized') || message.includes('no LLM is configured')) {
+    return t('projectAutomations.error.modelNotConfigured');
+  }
+  if (message.includes('temporary internal')) return t('projectAutomations.error.modelTemporary');
+  if (message.startsWith('invalid cron expression:')) {
+    return t('projectAutomations.error.invalidCron', { expression: message.slice('invalid cron expression:'.length).trim() });
+  }
+  if (message === 'dispatch failed') return t('projectAutomations.error.dispatchFailed');
+  if (message.startsWith('SCM webhook could not be reconciled')) return t('projectAutomations.error.webhookReconcileFailed');
+  if (message === 'Automation trigger configuration is unavailable.') return t('projectAutomations.error.triggerUnavailable');
+  if (message === 'Automation Service is unavailable.') return t('projectAutomations.error.serviceUnavailable');
+  if (message === 'Automation Service repository binding is unavailable.') return t('projectAutomations.error.repositoryUnavailable');
+  if (message === 'Automation Run could not be created.') return t('projectAutomations.error.runCreateFailed');
+  return message;
+};
 
 export function ProjectAutomationsPanel({
   projectId,
@@ -94,13 +116,16 @@ export function ProjectAutomationsPanel({
                 <div className={styles.meta}>
                   <span>{triggerLabel(automation.trigger_kind, t)}</span>
                   <small>{triggerSummary(item)}</small>
-                  {automation.last_error && <em>{automation.last_error}</em>}
+                  {automation.last_error && <em>{automationErrorLabel(automation.last_error, t)}</em>}
                 </div>
                 <div className={styles.actions}>
                   <button
                     type="button"
                     role="switch"
-                    aria-label={`${automation.name}: ${automation.enabled ? 'enabled' : 'disabled'}`}
+                    aria-label={t('projectAutomations.toggleLabel', {
+                      name: automation.name,
+                      status: automation.enabled ? t('projectAutomations.enabled') : t('projectAutomations.disabled'),
+                    })}
                     aria-checked={automation.enabled}
                     disabled={!canManage || update.isPending}
                     onClick={() => update.mutate({

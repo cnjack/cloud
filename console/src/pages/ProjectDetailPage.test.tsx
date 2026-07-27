@@ -645,7 +645,8 @@ describe('ProjectDetailPage — workspace sections', () => {
         automation: {
           id: 'auto-1', service_id: 'svc_default', name: 'Gitea PR automatic review',
           trigger_kind: 'scm', prompt_template: 'Review security and regressions.',
-          enabled: true, ignore_jcode: true, created_at: '', updated_at: '',
+          enabled: true, ignore_jcode: true, last_error: 'Automation model is unavailable.',
+          created_at: '', updated_at: '',
         },
         scm: { branch: 'main' },
         actions: [{ event_family: 'pull_request', action: 'opened' }],
@@ -658,6 +659,7 @@ describe('ProjectDetailPage — workspace sections', () => {
 
     expect(await screen.findByText('Gitea PR automatic review')).toBeTruthy();
     expect(screen.getByText('Review security and regressions.')).toBeTruthy();
+    expect(screen.getByText(/No model could be selected when this event was received/)).toBeTruthy();
   });
 
   it('links the Automation primary action to the independent editor route', async () => {

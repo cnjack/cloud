@@ -20,6 +20,7 @@ import type {
   ProviderKind,
   ScmAutomationAction,
 } from '../api/types';
+import { ApiError, apiErrorCode } from '../api/client';
 import styles from './AutomationEditorPage.module.css';
 
 const ALL_ACTIONS: readonly NormalizedScmAction[] = [
@@ -169,19 +170,19 @@ export function AutomationEditorPage() {
     event.preventDefault();
     setFormError('');
     if (!canEdit) {
-      setFormError('You do not have permission to edit Automations.');
+      setFormError(t('automationEditor.validation.noPermission'));
       return;
     }
     if (!name.trim() || !serviceId || !prompt.trim()) {
-      setFormError('Name, Service, and task Prompt are required.');
+      setFormError(t('automationEditor.validation.required'));
       return;
     }
     if (kind === 'scm' && (!supported.size || !actions.some((action) => supported.has(action)))) {
-      setFormError('Select at least one event supported by this Service provider.');
+      setFormError(t('automationEditor.validation.eventRequired'));
       return;
     }
     if (kind === 'cron' && !cronExpr.trim()) {
-      setFormError('Cron expression is required.');
+      setFormError(t('automationEditor.validation.cronRequired'));
       return;
     }
     const input: CreateProjectAutomationInput = {
@@ -206,64 +207,64 @@ export function AutomationEditorPage() {
   }
 
   if (project.isLoading || (editing && existing.isLoading)) {
-    return <LoadingBlock label="Loading Automation…" />;
+    return <LoadingBlock label={t('automationEditor.loading')} />;
   }
   if (project.isError || (editing && existing.isError)) {
-    return <ErrorBlock error={project.error ?? existing.error} title="Could not load Automation" />;
+    return <ErrorBlock error={project.error ?? existing.error} title={t('automationEditor.loadError')} />;
   }
 
   return (
     <main className={styles.page} data-testid="automation-editor-page">
       <Link className={styles.back} to={`/projects/${encodeURIComponent(projectId)}?tab=automations`}>
         <ArrowLeft size={16} aria-hidden />
-        Automations
+        {t('projectAutomations.title')}
       </Link>
       <header>
-        <p>Project Automation</p>
-        <h1>{editing ? 'Edit Automation' : 'Create Automation'}</h1>
-        <span>Bind one strongly typed trigger to one Service.</span>
+        <p>{t('automationEditor.eyebrow')}</p>
+        <h1>{editing ? t('automationEditor.editTitle') : t('automationEditor.createTitle')}</h1>
+        <span>{t('automationEditor.subtitle')}</span>
       </header>
-      {!canEdit && <div className={styles.warning}><Warning size={18} />Viewers can inspect but cannot save Automations.</div>}
+      {!canEdit && <div className={styles.warning}><Warning size={18} />{t('automationEditor.viewerWarning')}</div>}
       <form onSubmit={submit} className={styles.form}>
         <section>
-          <h2>Task</h2>
+          <h2>{t('automationEditor.task')}</h2>
           <div className={styles.grid}>
-            <label>Name<input value={name} onChange={(event) => setName(event.target.value)} required /></label>
-            <label>Service
+            <label>{t('automationEditor.name')}<input value={name} onChange={(event) => setName(event.target.value)} required /></label>
+            <label>{t('automationEditor.service')}
               <select value={serviceId} onChange={(event) => {
                 setServiceId(event.target.value);
                 setActions([]);
               }} required>
-                <option value="">Select Service…</option>
+                <option value="">{t('automationEditor.selectService')}</option>
                 {services.map((service) => <option value={service.id} key={service.id}>{service.name}</option>)}
               </select>
             </label>
           </div>
-          <label>Prompt template<textarea rows={6} value={prompt} onChange={(event) => setPrompt(event.target.value)} required /></label>
+          <label>{t('automationEditor.promptTemplate')}<textarea rows={6} value={prompt} onChange={(event) => setPrompt(event.target.value)} required /></label>
           <div className={styles.inline}>
-            <label><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />Enabled</label>
-            <label><input type="checkbox" checked={ignoreJcode} onChange={(event) => setIgnoreJcode(event.target.checked)} />Ignore events created by jcode</label>
+            <label><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />{t('automationEditor.enabled')}</label>
+            <label><input type="checkbox" checked={ignoreJcode} onChange={(event) => setIgnoreJcode(event.target.checked)} />{t('automationEditor.ignoreJcode')}</label>
           </div>
         </section>
 
         <section>
-          <h2>Trigger</h2>
+          <h2>{t('automationEditor.trigger')}</h2>
           <div className={styles.triggerTabs}>
             {(['scm', 'cron'] as const).map((value) => (
               <button key={value} type="button" aria-pressed={kind === value} onClick={() => setKind(value)}>
-                {value === 'scm' ? 'SCM' : 'Cron'}
+                {value === 'scm' ? t('automationEditor.scm') : t('automationEditor.cron')}
               </button>
             ))}
           </div>
 
           {kind === 'scm' && (
             <div className={styles.triggerBody}>
-              {!supported.size && <div className={styles.warning}><Warning size={18} />Select a GitHub, GitLab, or Gitea Service.</div>}
-              {capabilities.isError && <ErrorBlock error={capabilities.error} title="Provider capabilities could not be loaded" />}
+              {!supported.size && <div className={styles.warning}><Warning size={18} />{t('automationEditor.selectGitService')}</div>}
+              {capabilities.isError && <ErrorBlock error={capabilities.error} title={t('automationEditor.capabilitiesLoadError')} />}
               <div className={styles.grid}>
-                <label>Branch filter<input aria-label="Branch filter" value={branch} disabled={!branchFilterAllowed} onChange={(event) => setBranch(event.target.value)} placeholder="main or feature/*" /><small>Available for branch-carrying Push, PR, and Check events.</small></label>
-                <label>Path pattern<input aria-label="Path pattern" value={pathPattern} disabled={!pathFilterAllowed} onChange={(event) => setPathPattern(event.target.value)} placeholder="src/**" /><small>Available only when every selected event is push.updated.</small></label>
-                <label>CI conclusion<input aria-label="CI conclusion" value={conclusion} disabled={!conclusionFilterAllowed} onChange={(event) => setConclusion(event.target.value)} placeholder="success" /><small>Available only when every selected event is check.completed.</small></label>
+                <label>{t('automationEditor.branchFilter')}<input aria-label={t('automationEditor.branchFilter')} value={branch} disabled={!branchFilterAllowed} onChange={(event) => setBranch(event.target.value)} placeholder={t('automationEditor.branchPlaceholder')} /><small>{t('automationEditor.branchHint')}</small></label>
+                <label>{t('automationEditor.pathPattern')}<input aria-label={t('automationEditor.pathPattern')} value={pathPattern} disabled={!pathFilterAllowed} onChange={(event) => setPathPattern(event.target.value)} placeholder="src/**" /><small>{t('automationEditor.pathHint')}</small></label>
+                <label>{t('automationEditor.conclusion')}<input aria-label={t('automationEditor.conclusion')} value={conclusion} disabled={!conclusionFilterAllowed} onChange={(event) => setConclusion(event.target.value)} placeholder="success" /><small>{t('automationEditor.conclusionHint')}</small></label>
               </div>
               <fieldset className={styles.actionGrid}>
                 <legend>{t('automationEditor.events')}</legend>
@@ -280,8 +281,12 @@ export function AutomationEditorPage() {
                       <span>{action}</span>
                       {!available && (
                         <small>
-                          Not supported by {selectedService?.provider ?? 'this provider'}
-                          {capabilities.data?.minimum_version ? ` ${capabilities.data.minimum_version}+` : ''}.
+                          {t('automationEditor.eventUnavailable', {
+                            provider: selectedService?.provider ?? t('automationEditor.thisProvider'),
+                            version: capabilities.data?.minimum_version
+                              ? ` ${capabilities.data.minimum_version}+`
+                              : '',
+                          })}
                         </small>
                       )}
                     </label>
@@ -331,23 +336,34 @@ export function AutomationEditorPage() {
 
           {kind === 'cron' && (
             <div className={styles.triggerBody}>
-              <label>Cron expression<input value={cronExpr} onChange={(event) => setCronExpr(event.target.value)} placeholder="0 9 * * 1-5" /></label>
-              <small>Five-field cron expression. The minimum interval is enforced by the server.</small>
+              <label>{t('automationEditor.cronExpression')}<input value={cronExpr} onChange={(event) => setCronExpr(event.target.value)} placeholder="0 9 * * 1-5" /></label>
+              <small>{t('automationEditor.cronHint')}</small>
             </div>
           )}
         </section>
         {(formError || create.error || update.error) && (
           <p className={styles.error} role="alert">
-            {formError || (create.error as Error | null)?.message || (update.error as Error | null)?.message}
+            {formError || automationMutationError(create.error ?? update.error, t)}
           </p>
         )}
         <footer>
-          <Button type="button" variant="ghost" onClick={() => navigate(-1)}>Cancel</Button>
+          <Button type="button" variant="ghost" onClick={() => navigate(-1)}>{t('common.cancel')}</Button>
           <Button type="submit" loading={create.isPending || update.isPending} disabled={!canEdit}>
-            {editing ? 'Save Automation' : 'Create Automation'}
+            {editing ? t('automationEditor.save') : t('automationEditor.create')}
           </Button>
         </footer>
       </form>
     </main>
   );
+}
+
+function automationMutationError(error: unknown, t: (key: string) => string): string {
+  if (!error) return '';
+  if (error instanceof ApiError) {
+    const code = apiErrorCode(error);
+    if (code === 'automation_overlap') return t('automationEditor.apiError.overlap');
+    if (code === 'webhook_reconcile_failed') return t('automationEditor.apiError.webhook');
+    if (code === 'plugin_unavailable') return t('automationEditor.apiError.pluginUnavailable');
+  }
+  return t('automationEditor.apiError.generic');
 }

@@ -19,7 +19,7 @@ import {
   useUninstallProjectPlugin,
 } from '../api/queries';
 import type { ProjectPlugin, ProviderKind } from '../api/types';
-import { PluginConsentModal, ProviderMark, providerName } from './ProjectPluginsPanel';
+import { PluginConsentModal, ProviderMark, pluginHealthErrorText, pluginOperationErrorText, providerName } from './ProjectPluginsPanel';
 import styles from './ProjectPluginDetailPage.module.css';
 
 function isProviderKind(value: string | undefined): value is ProviderKind {
@@ -112,7 +112,7 @@ export function ProjectPluginDetailPage() {
           </Button>
         )}
       </header>
-      {healthError && <div className={styles.error} role="alert"><Warning size={17} aria-hidden />{healthError}</div>}
+      {healthError && <div className={styles.error} role="alert"><Warning size={17} aria-hidden />{pluginHealthErrorText(healthError, t)}</div>}
 
       <section className={styles.section}>
         <h2>{t('plugins.identity')}</h2>
@@ -131,7 +131,7 @@ export function ProjectPluginDetailPage() {
       <section className={styles.section}>
         <h2>{t('plugins.resources')}</h2>
         {(repositories.isError || workspaces.isError || boards.isError) && (
-          <ErrorBlock error={repositories.error ?? workspaces.error ?? boards.error} title={t('plugins.resourcesLoadError')} />
+          <ErrorBlock error={new Error(pluginOperationErrorText(repositories.error ?? workspaces.error ?? boards.error, t))} title={t('plugins.resourcesLoadError')} />
         )}
         {provider === 'jtype' ? (
           <>
@@ -154,7 +154,7 @@ export function ProjectPluginDetailPage() {
                   ))}
                 </select>
                 {!item.workspace_id && <small>{t('plugins.workspaceSetupHint')}</small>}
-                {setWorkspace.error && <small className={styles.fieldError}>{(setWorkspace.error as Error).message}</small>}
+                {setWorkspace.error && <small className={styles.fieldError}>{pluginOperationErrorText(setWorkspace.error, t)}</small>}
               </label>
             )}
             {(workspaces.data ?? []).map((workspace) => <p key={workspace.id}><strong>{workspace.name}</strong> · {t('plugins.workspace')}</p>)}
@@ -205,7 +205,7 @@ export function ProjectPluginDetailPage() {
           <ul className={styles.resources}>
             {audit.data.map((event) => (
               <li key={event.id}>
-                <strong>{event.event_type.replaceAll('_', ' ')}</strong>
+                <strong>{t(`plugins.auditEvent.${event.event_type}`, { defaultValue: event.event_type.replaceAll('_', ' ') })}</strong>
                 <small>{new Date(event.created_at).toLocaleString()}{event.detail ? ` · ${event.detail}` : ''}</small>
               </li>
             ))}
@@ -267,7 +267,7 @@ export function ProjectPluginDetailPage() {
               {t('plugins.forceUninstall')}
             </label>
           )}
-          {uninstall.error && <p className={styles.error} role="alert">{(uninstall.error as Error).message}</p>}
+          {uninstall.error && <p className={styles.error} role="alert">{pluginOperationErrorText(uninstall.error, t)}</p>}
         </div>
       </Modal>
     </main>

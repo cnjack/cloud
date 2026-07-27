@@ -7,6 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -16,10 +19,9 @@ import (
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
-	"io"
-	"log/slog"
 )
 
 func seedPluginWebhookAutomation(t *testing.T, kind, action string) (*testPluginWebhookFixture, string) {
@@ -136,6 +138,26 @@ func TestPluginWebhookHeadersPreferSpecificGiteaEventType(t *testing.T) {
 	if provider != "gitea" || eventType != "pull_request_review_approved" ||
 		delivery != "delivery" || bindingID != "binding-1" {
 		t.Fatalf("headers normalized to %q %q %q %q", provider, eventType, delivery, bindingID)
+	}
+}
+
+func TestPluginAutomationModelErrorIsActionable(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome modelcfg.SelectOutcome
+		err     error
+		want    string
+	}{
+		{name: "not selected", outcome: modelcfg.SelectNotSelected, want: "Several project models are available, but this Service has no default model."},
+		{name: "not configured", outcome: modelcfg.SelectNotConfigured, want: "No model is authorized for this Project."},
+		{name: "temporary", outcome: modelcfg.SelectOK, err: errors.New("database unavailable"), want: "Automation model could not be resolved because of a temporary internal error."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pluginAutomationModelError(tt.outcome, tt.err); got != tt.want {
+				t.Fatalf("pluginAutomationModelError()=%q want %q", got, tt.want)
+			}
+		})
 	}
 }
 
