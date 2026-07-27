@@ -466,6 +466,14 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// cancel whose best-effort delete failed). See cleanupTerminalJobs.
 	r.cleanupTerminalJobs(ctx)
 
+	// Provider-side completion passes. These consume terminal run artifacts and
+	// must be driven from the production Tick entrypoint (not only by direct
+	// unit tests): open draft PRs, fast-forward @mention task updates onto their
+	// existing PR, and publish native review comments.
+	r.reconcilePRs(ctx)
+	r.reconcileUpdatePushes(ctx)
+	r.reconcileReviews(ctx)
+
 	// Feature E — write finished kanban-origin runs back to their cards (comment
 	// + optional move to the done column). Idempotent via writeback_at. No-op
 	// when the jtype client is not wired.

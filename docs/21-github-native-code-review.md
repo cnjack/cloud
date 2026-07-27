@@ -315,7 +315,7 @@ explicit `run_kind=review` fixes the existing semantic gap.
 ## 9. Implementation review
 
 The completed diff was reviewed independently against the acceptance and
-failure-state contracts. Four defects were found and resolved before delivery:
+failure-state contracts. Five defects were found and resolved before delivery:
 
 1. manual dispatch initially overwrote the triggering comment URL with the PR
    URL; both are now retained in their distinct Run fields;
@@ -324,7 +324,11 @@ failure-state contracts. Four defects were found and resolved before delivery:
 3. a normal bare clone does not contain GitHub's synthetic fork PR ref; source
    bundle creation now fetches `refs/pull/<number>/head` explicitly;
 4. missing model/effort and queue failures were visible only in Cloud;
-   manual mention requests now also receive an actionable GitHub reply.
+   manual mention requests now also receive an actionable GitHub reply;
+5. the provider writeback functions had direct unit coverage but were omitted
+   from the production reconciler `Tick`; `Tick` now drives draft-PR creation,
+   existing-PR update pushes, and native review publication, with an
+   entrypoint-level regression test.
 
 The review also confirmed that duplicate deliveries remain idempotent, new
 comment IDs remain repeatable, App installation credentials are minted outside
@@ -334,4 +338,6 @@ inline-anchor `422` remains visible through the top-level fallback.
 Verification covers the complete orchestrator suite, Console tests/typecheck
 and production build, all runner Go modules, a container-level source/review
 journey, and the PostgreSQL-gated migration/store suite on an ephemeral
-database. The installed-App POC repository is the final deployment gate.
+database. The installed-App POC repository is the final deployment gate. That
+gate also verifies the runner and plugin-runtime image pins, rather than
+assuming an orchestrator/Console rollout upgraded the task execution plane.

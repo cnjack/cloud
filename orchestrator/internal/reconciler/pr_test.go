@@ -176,6 +176,24 @@ func TestReconcilePRCreation(t *testing.T) {
 	}
 }
 
+func TestTickRunsDraftPRWriteback(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	pusher := wirePRStack(rec, st, fake)
+	_, run := seedDraftPRRun(t, st, "jcode/run-tick-pr")
+
+	rec.Tick(ctx)
+
+	if len(pusher.pushed) != 1 || fake.CreatedCount() != 1 {
+		t.Fatalf("Tick pushed=%v created=%d, want one draft PR", pusher.pushed, fake.CreatedCount())
+	}
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.PRURL == "" {
+		t.Fatal("Tick did not persist the created PR")
+	}
+}
+
 // TestPRTriggerAttribution unit-tests the "Triggered by …" line (D19 / F5): an
 // integration-bound service names the real trigger (the PR is opened as the bot,
 // not the human); an unbound legacy service adds nothing (the PR is already the
@@ -416,6 +434,28 @@ func TestReconcileReviewPost(t *testing.T) {
 	}
 }
 
+// TestTickRunsReviewWriteback is the production-entrypoint regression test:
+// exercising reconcileReviews directly is insufficient if Tick forgets to
+// invoke the provider-side pass.
+func TestTickRunsReviewWriteback(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	wirePRStack(rec, st, fake)
+	fake.Seed("jcloud", "seed", "jcode/run-tick", provider.PR{Number: 18})
+	run := seedReviewRun(t, st, "jcode/run-tick", "One verified defect.")
+
+	rec.Tick(ctx)
+
+	if fake.ReviewCount() != 1 {
+		t.Fatalf("Tick posted %d reviews, want 1", fake.ReviewCount())
+	}
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.ReviewPostedAt == nil {
+		t.Fatal("Tick did not stamp review_posted_at")
+	}
+}
+
 func TestReconcileReviewUsesCapturedPRNumberForForkHeads(t *testing.T) {
 	ctx := context.Background()
 	rec, st, _ := testRec(t, 4)
@@ -579,6 +619,24 @@ func TestReconcileUpdatePush(t *testing.T) {
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.CommitSHA != "ffsha1234" {
 		t.Errorf("commit_sha=%q want the ff-pushed sha", got.CommitSHA)
+	}
+}
+
+func TestTickRunsUpdatePushWriteback(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	pusher := wirePRStack(rec, st, fake)
+	_, run := seedWebhookUpdateRun(t, st, "feature-tick")
+
+	rec.Tick(ctx)
+
+	if len(pusher.ffPushed) != 1 || pusher.ffPushed[0] != "feature-tick" {
+		t.Fatalf("Tick ff-pushed=%v, want [feature-tick]", pusher.ffPushed)
+	}
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.CommitSHA != "ffsha1234" {
+		t.Fatalf("Tick commit_sha=%q, want ffsha1234", got.CommitSHA)
 	}
 }
 
