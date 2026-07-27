@@ -441,7 +441,7 @@ func (s *PGStore) DeleteServiceRepositoryBinding(ctx context.Context, serviceID 
 	return nil
 }
 
-const pluginAutomationCols = `id,service_id,installation_id,name,trigger_kind,prompt_template,enabled,ignore_jcode,last_triggered_at,last_run_id,last_error,created_by,created_at,updated_at`
+const pluginAutomationCols = `id,service_id,installation_id,name,trigger_kind,prompt_template,model_id,model_effort,enabled,ignore_jcode,last_triggered_at,last_run_id,last_error,created_by,created_at,updated_at`
 
 func qualifiedPluginAutomationCols(alias string) string {
 	columns := strings.Split(pluginAutomationCols, ",")
@@ -455,8 +455,9 @@ func scanPluginAutomation(row pgx.Row) (*domain.PluginAutomation, error) {
 	var a domain.PluginAutomation
 	var createdBy *string
 	var installationID *string
+	var modelID *string
 	var lastRunID *string
-	err := row.Scan(&a.ID, &a.ServiceID, &installationID, &a.Name, &a.TriggerKind, &a.PromptTemplate, &a.Enabled, &a.IgnoreJCode, &a.LastTriggeredAt, &lastRunID, &a.LastError, &createdBy, &a.CreatedAt, &a.UpdatedAt)
+	err := row.Scan(&a.ID, &a.ServiceID, &installationID, &a.Name, &a.TriggerKind, &a.PromptTemplate, &modelID, &a.ModelEffort, &a.Enabled, &a.IgnoreJCode, &a.LastTriggeredAt, &lastRunID, &a.LastError, &createdBy, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -468,6 +469,9 @@ func scanPluginAutomation(row pgx.Row) (*domain.PluginAutomation, error) {
 	}
 	if installationID != nil {
 		a.InstallationID = *installationID
+	}
+	if modelID != nil {
+		a.ModelID = *modelID
 	}
 	if lastRunID != nil {
 		a.LastRunID = *lastRunID
@@ -483,7 +487,7 @@ func (s *PGStore) CreatePluginAutomation(ctx context.Context, a *domain.PluginAu
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `INSERT INTO automations_v2(id,service_id,installation_id,name,trigger_kind,prompt_template,enabled,ignore_jcode,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())`, a.ID, a.ServiceID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.PromptTemplate, a.Enabled, a.IgnoreJCode, nullStr(a.CreatedBy), a.CreatedAt); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO automations_v2(id,service_id,installation_id,name,trigger_kind,prompt_template,model_id,model_effort,enabled,ignore_jcode,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())`, a.ID, a.ServiceID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, nullStr(a.CreatedBy), a.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			return ErrAlreadyExists
 		}
@@ -743,7 +747,7 @@ func (s *PGStore) ListPluginAutomationsForEvent(ctx context.Context, provider do
 	return out, rows.Err()
 }
 func (s *PGStore) UpdatePluginAutomation(ctx context.Context, a *domain.PluginAutomation) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE automations_v2 SET name=$2,prompt_template=$3,enabled=$4,ignore_jcode=$5,last_triggered_at=$6,last_run_id=$7,last_error=$8,updated_at=now() WHERE id=$1`, a.ID, a.Name, a.PromptTemplate, a.Enabled, a.IgnoreJCode, a.LastTriggeredAt, a.LastRunID, a.LastError)
+	tag, err := s.pool.Exec(ctx, `UPDATE automations_v2 SET name=$2,prompt_template=$3,model_id=$4,model_effort=$5,enabled=$6,ignore_jcode=$7,last_triggered_at=$8,last_run_id=$9,last_error=$10,updated_at=now() WHERE id=$1`, a.ID, a.Name, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, a.LastTriggeredAt, a.LastRunID, a.LastError)
 	if err != nil {
 		return fmt.Errorf("update plugin automation: %w", err)
 	}
@@ -776,7 +780,7 @@ func (s *PGStore) ReplacePluginAutomationSpec(ctx context.Context, a *domain.Plu
 	if _, err = tx.Exec(ctx, `DELETE FROM automation_scm_actions WHERE automation_id=$1`, a.ID); err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `UPDATE automations_v2 SET installation_id=$2,name=$3,trigger_kind=$4,prompt_template=$5,enabled=$6,ignore_jcode=$7,last_error=$8,updated_at=now() WHERE id=$1`, a.ID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.PromptTemplate, a.Enabled, a.IgnoreJCode, a.LastError)
+	tag, err := tx.Exec(ctx, `UPDATE automations_v2 SET installation_id=$2,name=$3,trigger_kind=$4,prompt_template=$5,model_id=$6,model_effort=$7,enabled=$8,ignore_jcode=$9,last_error=$10,updated_at=now() WHERE id=$1`, a.ID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, a.LastError)
 	if err != nil {
 		return err
 	}

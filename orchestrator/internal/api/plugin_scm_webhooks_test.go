@@ -75,7 +75,7 @@ func newGiteaHookUpstream(t *testing.T) (*httptest.Server, *giteaHookUpstream) {
 	return upstream, state
 }
 
-func seedGiteaLifecycle(t *testing.T, upstreamURL string) (*httptest.Server, *store.MemStore, string, string) {
+func seedGiteaLifecycle(t *testing.T, upstreamURL string) (*httptest.Server, *store.MemStore, string, string, string) {
 	t.Helper()
 	ts, st, cfg := newCipherServer(t, nil, "")
 	cipher, err := auth.NewCipher(cfg.MasterKey)
@@ -110,6 +110,14 @@ func seedGiteaLifecycle(t *testing.T, upstreamURL string) (*httptest.Server, *st
 	}
 	projectID := newProject(t, ts, "scm-webhook-lifecycle")
 	now := time.Now().UTC()
+	modelID := domain.NewID()
+	if err := st.CreateModel(ctx, &domain.Model{
+		ID: modelID, ProjectID: projectID, Name: "Automation model",
+		BaseURL: "https://models.example/v1", ModelName: "test/automation", ModelID: "automation",
+		Capabilities: domain.ModelCapabilities{Reasoning: true}, Source: "custom", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	installation := &domain.PluginInstallation{ID: domain.NewID(), ProjectID: projectID, Provider: domain.PluginGitea, Status: domain.PluginStatusEnabled, AccessTokenEnc: access, ConsentVersion: "v1", ConsentedAt: now, ConfigRevision: providerConfig.ConfigRevision, CreatedAt: now}
 	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
 		t.Fatal(err)
@@ -120,14 +128,14 @@ func seedGiteaLifecycle(t *testing.T, upstreamURL string) (*httptest.Server, *st
 	if err := st.CreatePluginBoundService(ctx, svc, binding); err != nil {
 		t.Fatal(err)
 	}
-	return ts, st, projectID, svc.ID
+	return ts, st, projectID, svc.ID, modelID
 }
 
 func TestPluginAutomationRejectsActionOutsideObservedProviderMatrix(t *testing.T) {
 	upstream, _ := newGiteaHookUpstream(t)
-	ts, _, projectID, serviceID := seedGiteaLifecycle(t, upstream.URL)
+	ts, _, projectID, serviceID, modelID := seedGiteaLifecycle(t, upstream.URL)
 	resp := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/automations", consoleToken, map[string]any{
-		"service_id": serviceID, "name": "unsupported ready", "prompt_template": "handle event",
+		"service_id": serviceID, "model_id": modelID, "name": "unsupported ready", "prompt_template": "handle event",
 		"scm": map[string]any{"actions": []map[string]string{{"event_family": "pull_request", "action": "ready"}}},
 	})
 	if resp.StatusCode != http.StatusConflict {
@@ -140,10 +148,10 @@ func TestPluginAutomationRejectsActionOutsideObservedProviderMatrix(t *testing.T
 	}
 }
 
-func createSCMAutomation(t *testing.T, ts *httptest.Server, projectID, serviceID, family, action string) domain.PluginAutomationSpec {
+func createSCMAutomation(t *testing.T, ts *httptest.Server, projectID, serviceID, modelID, family, action string) domain.PluginAutomationSpec {
 	t.Helper()
 	resp := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/automations", consoleToken, map[string]any{
-		"service_id": serviceID, "name": family + "-" + action, "prompt_template": "handle event",
+		"service_id": serviceID, "model_id": modelID, "name": family + "-" + action, "prompt_template": "handle event",
 		"scm": map[string]any{"actions": []map[string]string{{"event_family": family, "action": action}}},
 	})
 	if resp.StatusCode != http.StatusCreated {
@@ -156,8 +164,8 @@ func createSCMAutomation(t *testing.T, ts *httptest.Server, projectID, serviceID
 
 func TestPluginSCMWebhookLifecycleGitea(t *testing.T) {
 	upstream, hook := newGiteaHookUpstream(t)
-	ts, st, projectID, serviceID := seedGiteaLifecycle(t, upstream.URL)
-	first := createSCMAutomation(t, ts, projectID, serviceID, "push", "updated")
+	ts, st, projectID, serviceID, modelID := seedGiteaLifecycle(t, upstream.URL)
+	first := createSCMAutomation(t, ts, projectID, serviceID, modelID, "push", "updated")
 	hook.mu.Lock()
 	if hook.postCount != 1 || hook.lastAuth != "Bearer installation-token" {
 		t.Fatalf("hook create=%d auth=%q", hook.postCount, hook.lastAuth)
@@ -180,7 +188,7 @@ func TestPluginSCMWebhookLifecycleGitea(t *testing.T) {
 	if bound.HookID == "" || len(bound.SecretEnc) == 0 || bound.Endpoint != perBindingURL {
 		t.Fatalf("binding did not persist opaque route and encrypted secret: %+v", bound)
 	}
-	second := createSCMAutomation(t, ts, projectID, serviceID, "pull_request", "opened")
+	second := createSCMAutomation(t, ts, projectID, serviceID, modelID, "pull_request", "opened")
 	hook.mu.Lock()
 	if hook.postCount != 1 { // the second enabled SCM Automation reuses the hook
 		t.Fatalf("hook created %d times", hook.postCount)
@@ -223,9 +231,9 @@ func TestPluginSCMWebhookLifecycleGitea(t *testing.T) {
 func TestPluginSCMWebhookCreateFailureIsVisible(t *testing.T) {
 	upstream, hook := newGiteaHookUpstream(t)
 	hook.failCreate = true
-	ts, st, projectID, serviceID := seedGiteaLifecycle(t, upstream.URL)
+	ts, st, projectID, serviceID, modelID := seedGiteaLifecycle(t, upstream.URL)
 	resp := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/automations", consoleToken, map[string]any{
-		"service_id": serviceID, "name": "push", "prompt_template": "handle event",
+		"service_id": serviceID, "model_id": modelID, "name": "push", "prompt_template": "handle event",
 		"scm": map[string]any{"actions": []map[string]string{{"event_family": "push", "action": "updated"}}},
 	})
 	if resp.StatusCode != http.StatusBadGateway {
@@ -247,7 +255,7 @@ func TestPluginSCMWebhookCreateFailureIsVisible(t *testing.T) {
 
 func TestPluginSCMWebhookReplacesLegacySharedSecretBinding(t *testing.T) {
 	upstream, hook := newGiteaHookUpstream(t)
-	ts, st, projectID, serviceID := seedGiteaLifecycle(t, upstream.URL)
+	ts, st, projectID, serviceID, modelID := seedGiteaLifecycle(t, upstream.URL)
 	const legacyURL = "https://cloud.example/webhooks/gitea"
 	hook.mu.Lock()
 	hook.hook = true
@@ -260,7 +268,7 @@ func TestPluginSCMWebhookReplacesLegacySharedSecretBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = createSCMAutomation(t, ts, projectID, serviceID, "push", "updated")
+	_ = createSCMAutomation(t, ts, projectID, serviceID, modelID, "push", "updated")
 	hook.mu.Lock()
 	defer hook.mu.Unlock()
 	if hook.deleteCount != 1 || hook.postCount != 1 {

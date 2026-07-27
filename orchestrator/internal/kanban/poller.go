@@ -206,8 +206,15 @@ func (p *Poller) pollPluginAutomation(ctx context.Context, factory *jtype.Factor
 		if err != nil || claim.RunID != "" {
 			continue
 		}
-		sel, outcome, err := p.models.SelectModel(ctx, svc.ProjectID, derefStr(svc.DefaultModelID), "")
+		sel, outcome, err := p.models.SelectModel(ctx, svc.ProjectID, derefStr(svc.DefaultModelID), spec.Automation.ModelID)
 		if err != nil || outcome != modelcfg.SelectOK {
+			spec.Automation.LastError = "Automation model is unavailable."
+			_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+			continue
+		}
+		if !sel.SupportsEffort(spec.Automation.ModelEffort) {
+			spec.Automation.LastError = "The selected Automation model no longer supports reasoning effort."
+			_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
 			continue
 		}
 		now := p.now()
@@ -218,6 +225,7 @@ func (p *Poller) pollPluginAutomation(ctx context.Context, factory *jtype.Factor
 			OriginAutomationID: spec.Automation.ID,
 			OriginEventKey:     "kanban:" + spec.Automation.ID + ":" + doc.ID,
 			Attempt:            1, CreatedAt: now, ModelName: sel.ModelName,
+			ModelEffort: spec.Automation.ModelEffort,
 		}
 		if sel.ModelID != "" {
 			modelID := sel.ModelID

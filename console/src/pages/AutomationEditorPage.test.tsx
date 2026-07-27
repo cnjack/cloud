@@ -64,6 +64,23 @@ function renderEditor(overrides: Partial<ApiClient> = {}) {
         { family: 'release', actions: ['published', 'updated', 'deleted'] },
       ],
     }),
+    listProjectModels: async () => ({
+      models: [
+        {
+          id: 'glm-52',
+          name: 'GLM 5.2',
+          model_name: 'zhipuai-coding-plan/glm-5.2',
+          capabilities: { reasoning: true, tools: true, image: false },
+        },
+        {
+          id: 'fast',
+          name: 'Fast',
+          model_name: 'provider/fast',
+          capabilities: { reasoning: false, tools: true, image: false },
+        },
+      ],
+      env_fallback: false,
+    }),
     createProjectAutomation: create,
     ...overrides,
   } as unknown as ApiClient;
@@ -87,6 +104,10 @@ describe('AutomationEditorPage', () => {
   it('sends the exact strongly typed SCM request and gates unsupported Gitea actions', async () => {
     const { create } = renderEditor();
     await screen.findByRole('heading', { name: 'Create Automation' });
+    expect(screen.queryByRole('combobox', { name: 'Service' })).toBeNull();
+    expect(screen.getByText('API')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-52' } });
+    fireEvent.change(screen.getByLabelText('Reasoning effort'), { target: { value: 'high' } });
 
     fireEvent.click(screen.getByText('More events'));
     const unsupported = screen.getByLabelText(/pull_request.ready/i) as HTMLInputElement;
@@ -104,6 +125,8 @@ describe('AutomationEditorPage', () => {
       service_id: 'svc-1',
       name: 'PR guard',
       prompt_template: 'Review the change.',
+      model_id: 'glm-52',
+      model_effort: 'high',
       enabled: true,
       ignore_jcode: true,
       scm: {
@@ -113,6 +136,13 @@ describe('AutomationEditorPage', () => {
         actions: [{ event_family: 'push', action: 'updated' }],
       },
     });
+  });
+
+  it('hides effort when the selected model does not advertise reasoning support', async () => {
+    renderEditor();
+    await screen.findByRole('heading', { name: 'Create Automation' });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'fast' } });
+    expect(screen.queryByLabelText('Reasoning effort')).toBeNull();
   });
 
   it('keeps JType Kanban out of the Automation editor', async () => {

@@ -155,12 +155,21 @@ func (f *fakeAPI) AddComment(ctx context.Context, ws, docID, body string) error 
 }
 
 // modelStub returns a fixed selection outcome. When SelectOK it yields a fixed
-// model id + name so the poller stamps runs.model_id/model_name.
-type modelStub struct{ outcome modelcfg.SelectOutcome }
+// reasoning-capable model so the poller stamps runs.model_id/model_name/effort.
+type modelStub struct {
+	outcome   modelcfg.SelectOutcome
+	requested *string
+}
 
 func (m modelStub) SelectModel(ctx context.Context, projectID, defaultModelID, requested string) (modelcfg.Selection, modelcfg.SelectOutcome, error) {
+	if m.requested != nil {
+		*m.requested = requested
+	}
 	if m.outcome == modelcfg.SelectOK {
-		return modelcfg.Selection{ModelID: "model-x", ModelName: "prov/model-x"}, modelcfg.SelectOK, nil
+		return modelcfg.Selection{
+			ModelID: "model-x", ModelName: "prov/model-x",
+			Capabilities: domain.ModelCapabilities{Reasoning: true},
+		}, modelcfg.SelectOK, nil
 	}
 	return modelcfg.Selection{}, m.outcome, nil
 }
@@ -244,7 +253,11 @@ func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
 	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
 		t.Fatal(err)
 	}
-	automation := &domain.PluginAutomation{ID: domain.NewID(), ServiceID: service.ID, InstallationID: installation.ID, Name: "board", TriggerKind: "kanban", PromptTemplate: "unused", Enabled: true, CreatedAt: time.Now()}
+	automation := &domain.PluginAutomation{
+		ID: domain.NewID(), ServiceID: service.ID, InstallationID: installation.ID,
+		Name: "board", TriggerKind: "kanban", PromptTemplate: "unused",
+		ModelID: "chosen-model", ModelEffort: "high", Enabled: true, CreatedAt: time.Now(),
+	}
 	trigger := &domain.KanbanTrigger{AutomationID: automation.ID, InstallationID: installation.ID, BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done"}
 	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
 		t.Fatal(err)
@@ -255,7 +268,9 @@ func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
 		api.tokens = append(api.tokens, token)
 		return api
 	}
-	poller := New(st, envResolver(st, "http://legacy-unused"), clientFor, testDecrypt, stubFor(true), testLogger(t), "http://console", time.Second)
+	requested := ""
+	models := modelStub{outcome: modelcfg.SelectOK, requested: &requested}
+	poller := New(st, envResolver(st, "http://legacy-unused"), clientFor, testDecrypt, models, testLogger(t), "http://console", time.Second)
 	poller.Tick(ctx)
 	poller.Tick(ctx)
 
@@ -266,6 +281,10 @@ func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
 	if runs[0].Origin != domain.RunOriginKanban || runs[0].OriginAutomationID != automation.ID ||
 		runs[0].Prompt != "Fix plugin\n\nkeep constraints" {
 		t.Fatalf("run=%+v", runs[0])
+	}
+	if requested != automation.ModelID || runs[0].ModelID == nil || *runs[0].ModelID != "model-x" ||
+		runs[0].ModelEffort != "high" {
+		t.Fatalf("requested=%q run model=%v effort=%q", requested, runs[0].ModelID, runs[0].ModelEffort)
 	}
 	if len(api.tokens) == 0 || api.tokens[0] != "PLAIN-PLUGINPAT" {
 		t.Fatalf("tokens=%v", api.tokens)

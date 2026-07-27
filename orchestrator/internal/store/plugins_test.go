@@ -14,8 +14,8 @@ import (
 func TestQualifiedPluginAutomationColsQualifiesEveryJoinedColumn(t *testing.T) {
 	got := qualifiedPluginAutomationCols("a")
 	columns := strings.Split(got, ",")
-	if len(columns) != 14 {
-		t.Fatalf("qualified columns=%d want 14: %q", len(columns), got)
+	if len(columns) != 16 {
+		t.Fatalf("qualified columns=%d want 16: %q", len(columns), got)
 	}
 	for _, column := range columns {
 		if !strings.HasPrefix(column, "a.") {

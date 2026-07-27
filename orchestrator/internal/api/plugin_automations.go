@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/schedule"
 	"github.com/cnjack/jcloud/internal/scmevent"
 	"github.com/cnjack/jcloud/internal/store"
@@ -63,6 +64,8 @@ type pluginAutomationReq struct {
 	ServiceID      string           `json:"service_id"`
 	Name           string           `json:"name"`
 	PromptTemplate string           `json:"prompt_template"`
+	ModelID        *string          `json:"model_id"`
+	ModelEffort    *string          `json:"model_effort"`
 	Enabled        *bool            `json:"enabled"`
 	IgnoreJCode    *bool            `json:"ignore_jcode"`
 	SCM            *pluginSCMReq    `json:"scm"`
@@ -140,6 +143,10 @@ func (s *Server) handleCreatePluginAutomation(w http.ResponseWriter, r *http.Req
 	}
 	if loadErr != nil {
 		writeError(w, 500, "internal", "could not load service")
+		return
+	}
+	if modelErr := s.validatePluginAutomationModel(r, svc, a, true); modelErr != nil {
+		writeError(w, modelErr.status, modelErr.code, modelErr.msg)
 		return
 	}
 	installationID, msg := s.validatePluginAutomationTarget(r, svc, scm, actions, kanban)
@@ -234,6 +241,14 @@ func (s *Server) handleUpdatePluginAutomation(w http.ResponseWriter, r *http.Req
 		v := spec.Automation.IgnoreJCode
 		req.IgnoreJCode = &v
 	}
+	if req.ModelID == nil {
+		value := spec.Automation.ModelID
+		req.ModelID = &value
+	}
+	if req.ModelEffort == nil {
+		value := spec.Automation.ModelEffort
+		req.ModelEffort = &value
+	}
 	req.ServiceID = svc.ID
 	if req.SCM == nil && req.Kanban == nil && req.Cron == nil {
 		req.SCM = specToSCM(spec)
@@ -248,6 +263,10 @@ func (s *Server) handleUpdatePluginAutomation(w http.ResponseWriter, r *http.Req
 	a.CreatedAt = spec.Automation.CreatedAt
 	a.CreatedBy = spec.Automation.CreatedBy
 	a.LastError = spec.Automation.LastError
+	if modelErr := s.validatePluginAutomationModel(r, svc, a, false); modelErr != nil {
+		writeError(w, modelErr.status, modelErr.code, modelErr.msg)
+		return
+	}
 	installationID, msg := s.validatePluginAutomationTarget(r, svc, scm, actions, kanban)
 	if msg != "" {
 		writeError(w, 409, "plugin_unavailable", msg)
@@ -359,7 +378,25 @@ func pluginAutomationFromReq(req pluginAutomationReq, id string) (*domain.Plugin
 	if req.IgnoreJCode != nil {
 		ignore = *req.IgnoreJCode
 	}
-	a := &domain.PluginAutomation{ID: id, ServiceID: strings.TrimSpace(req.ServiceID), Name: name, PromptTemplate: prompt, Enabled: enabled, IgnoreJCode: ignore}
+	modelID := ""
+	if req.ModelID != nil {
+		modelID = strings.TrimSpace(*req.ModelID)
+	}
+	modelEffort := ""
+	if req.ModelEffort != nil {
+		modelEffort = strings.TrimSpace(*req.ModelEffort)
+	}
+	if modelEffort == "auto" {
+		modelEffort = ""
+	}
+	if !domain.ValidModelEffort(modelEffort) {
+		return nil, nil, nil, nil, nil, "model_effort must be one of low, medium, or high"
+	}
+	a := &domain.PluginAutomation{
+		ID: id, ServiceID: strings.TrimSpace(req.ServiceID), Name: name,
+		PromptTemplate: prompt, ModelID: modelID, ModelEffort: modelEffort,
+		Enabled: enabled, IgnoreJCode: ignore,
+	}
 	if req.SCM != nil {
 		a.TriggerKind = "scm"
 		x := req.SCM
@@ -429,6 +466,43 @@ func pluginAutomationFromReq(req pluginAutomationReq, id string) (*domain.Plugin
 		return nil, nil, nil, nil, nil, "cron.cron_expr is invalid: " + err.Error()
 	}
 	return a, nil, nil, nil, &domain.CronTrigger{CronExpr: expr}, ""
+}
+
+func (s *Server) validatePluginAutomationModel(r *http.Request, svc *domain.Service, a *domain.PluginAutomation, required bool) *automationHTTPError {
+	if a.ModelID == "" {
+		if required {
+			return &automationHTTPError{http.StatusConflict, "model_not_selected", "select a model for this Automation"}
+		}
+		if a.ModelEffort != "" {
+			return &automationHTTPError{http.StatusBadRequest, "model_effort_unsupported", "model_effort requires a selected reasoning model"}
+		}
+		return nil
+	}
+	sel, outcome, err := s.models.SelectModel(r.Context(), svc.ProjectID, "", a.ModelID)
+	if err != nil {
+		return &automationHTTPError{http.StatusInternalServerError, "internal", "could not validate the Automation model"}
+	}
+	if outcome != modelcfg.SelectOK || sel.ModelID != a.ModelID {
+		switch outcome {
+		case modelcfg.SelectNotGranted:
+			return &automationHTTPError{http.StatusForbidden, "model_not_granted", "that model is not authorized for this Project"}
+		case modelcfg.SelectNotConfigured:
+			return &automationHTTPError{http.StatusConflict, "model_not_configured", modelcfg.NotConfiguredMessage(s.cfg.ConsoleURL)}
+		default:
+			return &automationHTTPError{http.StatusConflict, "model_not_selected", modelcfg.NotSelectedMessage()}
+		}
+	}
+	if a.ModelEffort == "" {
+		return nil
+	}
+	model, err := s.st.GetModel(r.Context(), a.ModelID)
+	if err != nil {
+		return &automationHTTPError{http.StatusConflict, "model_unavailable", "the selected Automation model is unavailable"}
+	}
+	if !model.Capabilities.Reasoning {
+		return &automationHTTPError{http.StatusBadRequest, "model_effort_unsupported", "the selected model does not support reasoning effort"}
+	}
+	return nil
 }
 
 func (s *Server) validatePluginAutomationTarget(r *http.Request, svc *domain.Service, scm *domain.SCMTrigger, actions []domain.SCMAction, kanban *domain.KanbanTrigger) (string, string) {

@@ -231,6 +231,7 @@ export function ProjectDetailPage() {
     next.delete('settings');
     if (activeServiceId) next.set('service', activeServiceId);
     next.set('tab', tab);
+    if (tab !== 'tasks') next.delete('add');
     setSearchParams(next);
   };
 
@@ -263,9 +264,26 @@ export function ProjectDetailPage() {
   };
 
   const openAddService = () => {
-    setWorkspaceTab('tasks');
+    const next = new URLSearchParams(searchParams);
+    next.delete('view');
+    next.delete('settings');
+    if (activeServiceId) next.set('service', activeServiceId);
+    next.set('tab', 'tasks');
+    next.set('add', 'service');
+    setSearchParams(next);
     setAddOpen(true);
   };
+
+  const closeAddService = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('add');
+    setSearchParams(next, { replace: true });
+    setAddOpen(false);
+  };
+
+  useEffect(() => {
+    setAddOpen(searchParams.get('add') === 'service');
+  }, [searchParams]);
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -389,7 +407,7 @@ export function ProjectDetailPage() {
     }, {
       onSuccess: () => {
         toast.push({ kind: 'success', message: t('projectDetail.repoAdded', { name: repo.full_name }) });
-        setAddOpen(false);
+        closeAddService();
         setRepoQuery('');
       },
       onError: (error) =>
@@ -690,7 +708,7 @@ export function ProjectDetailPage() {
                       type="button"
                       variant="ghost"
                       size="sm"
-                      onClick={() => setAddOpen(false)}
+                      onClick={closeAddService}
                       disabled={createService.isPending}
                       data-testid="first-service-cancel"
                     >
@@ -763,7 +781,7 @@ export function ProjectDetailPage() {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={() => setAddOpen(false)}
+                        onClick={closeAddService}
                         disabled={createService.isPending}
                       >
                         {t('common.cancel')}

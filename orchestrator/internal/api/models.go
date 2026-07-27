@@ -228,8 +228,7 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.adminModel(r, m))
 }
 
-// handleDeleteModel removes a catalog model (cluster-admin only). Its grants
-// cascade and any service default / run reference is nulled.
+// handleDeleteModel removes an unused catalog model (cluster-admin only).
 func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 	if !s.requireClusterAdmin(w, r) {
 		return
@@ -237,6 +236,10 @@ func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 	if err := s.st.DeleteModel(r.Context(), r.PathValue("id")); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "model not found")
+			return
+		}
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, "model_in_use", "model is selected by an Automation; change or delete that Automation first")
 			return
 		}
 		s.log.Error("delete model", "err", err)

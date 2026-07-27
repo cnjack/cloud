@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,12 +16,14 @@ import (
 
 // fakeModels is a ModelResolver stub returning a fixed selection/outcome.
 type fakeModels struct {
-	sel     modelcfg.Selection
-	outcome modelcfg.SelectOutcome
-	err     error
+	sel       modelcfg.Selection
+	outcome   modelcfg.SelectOutcome
+	err       error
+	requested string
 }
 
-func (f *fakeModels) SelectModel(_ context.Context, _, _, _ string) (modelcfg.Selection, modelcfg.SelectOutcome, error) {
+func (f *fakeModels) SelectModel(_ context.Context, _, _, requested string) (modelcfg.Selection, modelcfg.SelectOutcome, error) {
+	f.requested = requested
 	return f.sel, f.outcome, f.err
 }
 
@@ -61,7 +64,14 @@ func seed(t *testing.T, sc *domain.Schedule) (*store.MemStore, *domain.Service) 
 
 // okModels returns a resolver that always selects a concrete model.
 func okModels() *fakeModels {
-	return &fakeModels{sel: modelcfg.Selection{ModelID: "mid", ModelName: "prov/model"}, outcome: modelcfg.SelectOK}
+	return &fakeModels{
+		sel: modelcfg.Selection{
+			ModelID:      "mid",
+			ModelName:    "prov/model",
+			Capabilities: domain.ModelCapabilities{Reasoning: true},
+		},
+		outcome: modelcfg.SelectOK,
+	}
 }
 
 func runsFor(t *testing.T, m *store.MemStore, svcID string) []domain.Run {
@@ -134,12 +144,17 @@ func TestPluginCronAutomationDispatchesExactlyOnce(t *testing.T) {
 	_ = st.CreateProject(ctx, project)
 	service := &domain.Service{ID: domain.NewID(), ProjectID: project.ID, Name: "svc", RepoKind: domain.RepoKindRaw, RawRepoURL: "u", DefaultBranch: "main", CreatedAt: now.Add(-time.Hour)}
 	_ = st.CreateService(ctx, service)
-	automation := &domain.PluginAutomation{ID: domain.NewID(), ServiceID: service.ID, Name: "nightly", TriggerKind: "cron", PromptTemplate: "run nightly", Enabled: true, CreatedAt: now.Add(-10 * time.Minute)}
+	automation := &domain.PluginAutomation{
+		ID: domain.NewID(), ServiceID: service.ID, Name: "nightly", TriggerKind: "cron",
+		PromptTemplate: "run nightly", ModelID: "m", ModelEffort: "high",
+		Enabled: true, CreatedAt: now.Add(-10 * time.Minute),
+	}
 	trigger := &domain.CronTrigger{AutomationID: automation.ID, CronExpr: "*/5 * * * *"}
 	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, nil, trigger); err != nil {
 		t.Fatal(err)
 	}
-	poller := NewPoller(st, okModels(), nil, testLogger(), time.Minute)
+	models := okModels()
+	poller := NewPoller(st, models, nil, testLogger(), time.Minute)
 	poller.now = func() time.Time { return now }
 	poller.Tick(ctx)
 	poller.Tick(ctx)
@@ -150,9 +165,60 @@ func TestPluginCronAutomationDispatchesExactlyOnce(t *testing.T) {
 	if runs[0].Origin != domain.RunOriginSchedule || runs[0].OriginAutomationID != automation.ID || runs[0].Prompt != "run nightly" {
 		t.Fatalf("run=%+v", runs[0])
 	}
+	if models.requested != "m" {
+		t.Fatalf("requested model=%q want m", models.requested)
+	}
+	if runs[0].ModelID == nil || *runs[0].ModelID != "mid" || runs[0].ModelEffort != "high" {
+		t.Fatalf("run model=%v effort=%q want mid/high", runs[0].ModelID, runs[0].ModelEffort)
+	}
 	spec, err := st.GetPluginAutomationSpec(ctx, automation.ID)
 	if err != nil || spec.Cron == nil || spec.Cron.LastFiredAt == nil || !spec.Cron.LastFiredAt.Equal(now) {
 		t.Fatalf("spec=%+v err=%v", spec, err)
+	}
+}
+
+func TestPluginCronAutomationBlocksWhenReasoningCapabilityIsRemoved(t *testing.T) {
+	now := time.Date(2026, 7, 9, 15, 0, 0, 0, time.UTC)
+	st := store.NewMemStore()
+	ctx := context.Background()
+	project := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: now.Add(-time.Hour)}
+	_ = st.CreateProject(ctx, project)
+	service := &domain.Service{
+		ID: domain.NewID(), ProjectID: project.ID, Name: "svc",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "u", DefaultBranch: "main",
+		CreatedAt: now.Add(-time.Hour),
+	}
+	_ = st.CreateService(ctx, service)
+	automation := &domain.PluginAutomation{
+		ID: domain.NewID(), ServiceID: service.ID, Name: "nightly", TriggerKind: "cron",
+		PromptTemplate: "run nightly", ModelID: "m", ModelEffort: "high",
+		Enabled: true, CreatedAt: now.Add(-10 * time.Minute),
+	}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, nil, &domain.CronTrigger{
+		AutomationID: automation.ID, CronExpr: "*/5 * * * *",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	models := &fakeModels{
+		sel: modelcfg.Selection{
+			ModelID: "m", ModelName: "prov/model",
+			Capabilities: domain.ModelCapabilities{Reasoning: false},
+		},
+		outcome: modelcfg.SelectOK,
+	}
+	poller := NewPoller(st, models, nil, testLogger(), time.Minute)
+	poller.now = func() time.Time { return now }
+	poller.Tick(ctx)
+
+	if got := runsFor(t, st, service.ID); len(got) != 0 {
+		t.Fatalf("runs=%d want 0", len(got))
+	}
+	spec, err := st.GetPluginAutomationSpec(ctx, automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(spec.Automation.LastError, "no longer supports reasoning effort") {
+		t.Fatalf("last_error=%q", spec.Automation.LastError)
 	}
 }
 

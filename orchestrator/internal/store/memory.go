@@ -1889,6 +1889,11 @@ func (m *MemStore) deleteModelLocked(id string) error {
 	if _, ok := m.models[id]; !ok {
 		return ErrNotFound
 	}
+	for _, automation := range m.pluginAutomations {
+		if automation.ModelID == id {
+			return ErrConflict
+		}
+	}
 	delete(m.models, id)
 	for k := range m.modelGrants {
 		if strings.HasPrefix(k, id+"|") {
@@ -1920,6 +1925,16 @@ func (m *MemStore) DeleteModelProvider(_ context.Context, id string) error {
 	defer m.mu.Unlock()
 	if _, ok := m.modelProviders[id]; !ok {
 		return ErrNotFound
+	}
+	for modelID, mod := range m.models {
+		if mod.ProviderID != id {
+			continue
+		}
+		for _, automation := range m.pluginAutomations {
+			if automation.ModelID == modelID {
+				return ErrConflict
+			}
+		}
 	}
 	for modelID, mod := range m.models {
 		if mod.ProviderID == id {
@@ -2092,8 +2107,9 @@ func (m *MemStore) UpdateModel(_ context.Context, mod *domain.Model) error {
 	return nil
 }
 
-// DeleteModel removes a model, cascading its grants and nulling any service
-// default / run reference (mirrors the ON DELETE SET NULL / CASCADE FKs).
+// DeleteModel removes an unused model, cascading its grants and nulling any
+// service default / run reference. An Automation pin deliberately blocks the
+// delete so an explicit model choice can never silently fall back.
 func (m *MemStore) DeleteModel(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2941,6 +2957,8 @@ func (m *MemStore) UpdatePluginAutomation(_ context.Context, a *domain.PluginAut
 	// identity (Service, Installation, trigger kind, creator, created time).
 	current.Name = a.Name
 	current.PromptTemplate = a.PromptTemplate
+	current.ModelID = a.ModelID
+	current.ModelEffort = a.ModelEffort
 	current.Enabled = a.Enabled
 	current.IgnoreJCode = a.IgnoreJCode
 	current.LastTriggeredAt = a.LastTriggeredAt

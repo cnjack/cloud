@@ -757,6 +757,15 @@ func TestMemStoreModelGrants(t *testing.T) {
 	if err := m.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
+	automation := &domain.PluginAutomation{
+		ID: "a1", ServiceID: svc.ID, Name: "nightly", TriggerKind: "cron",
+		PromptTemplate: "x", ModelID: mod.ID, Enabled: true, CreatedAt: time.Now(),
+	}
+	if err := m.CreatePluginAutomation(ctx, automation, nil, nil, nil, &domain.CronTrigger{
+		AutomationID: automation.ID, CronExpr: "0 * * * *",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Grant to a missing project/model => ErrNotFound.
 	if err := m.GrantModel(ctx, "m1", "nope"); err != ErrNotFound {
@@ -776,7 +785,16 @@ func TestMemStoreModelGrants(t *testing.T) {
 		t.Fatalf("ListProjectIDsForModel mismatch: %+v", got)
 	}
 
-	// Delete the model => grants cascade + service default / run ref nulled.
+	// An explicit Automation pin blocks deletion rather than silently falling
+	// back to another Project model.
+	if err := m.DeleteModel(ctx, "m1"); err != ErrConflict {
+		t.Fatalf("delete pinned model: err=%v want ErrConflict", err)
+	}
+	if err := m.DeletePluginAutomation(ctx, automation.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Once unpinned, delete => grants cascade + service default / run ref nulled.
 	if err := m.DeleteModel(ctx, "m1"); err != nil {
 		t.Fatal(err)
 	}

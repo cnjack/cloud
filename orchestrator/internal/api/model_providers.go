@@ -355,6 +355,10 @@ func (s *Server) handleDeleteModelProvider(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusNotFound, "not_found", "model provider not found")
 			return
 		}
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, "model_in_use", "a model from this provider is selected by an Automation; change or delete that Automation first")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal", "could not delete model provider")
 		return
 	}

@@ -60,6 +60,14 @@ func seedPluginWebhookAutomation(t *testing.T, kind, action string) (*testPlugin
 	if err := st.CreatePluginBoundService(context.Background(), svc, binding); err != nil {
 		t.Fatal(err)
 	}
+	modelID := domain.NewID()
+	if err := st.CreateModel(context.Background(), &domain.Model{
+		ID: modelID, ProjectID: projectID, Name: "Automation model",
+		BaseURL: "https://models.example/v1", ModelName: "test/automation", ModelID: "automation",
+		Capabilities: domain.ModelCapabilities{Reasoning: true}, Source: "custom", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	cipher, err := auth.NewCipher(cfg.MasterKey)
 	if err != nil {
 		t.Fatal(err)
@@ -86,13 +94,14 @@ func seedPluginWebhookAutomation(t *testing.T, kind, action string) (*testPlugin
 	// Automation directly so it does not depend on a real provider hook endpoint;
 	// lifecycle behaviour is covered separately against a controllable upstream.
 	automation := &domain.PluginAutomation{ID: domain.NewID(), ServiceID: svc.ID, InstallationID: installation.ID,
-		Name: "trigger", TriggerKind: "scm", PromptTemplate: "Handle {{event}} in {{repository}}", Enabled: true, IgnoreJCode: true, CreatedAt: now}
+		Name: "trigger", TriggerKind: "scm", PromptTemplate: "Handle {{event}} in {{repository}}",
+		ModelID: modelID, ModelEffort: "high", Enabled: true, IgnoreJCode: true, CreatedAt: now}
 	if err := st.CreatePluginAutomation(context.Background(), automation, &domain.SCMTrigger{AutomationID: automation.ID}, []domain.SCMAction{{AutomationID: automation.ID, ServiceID: svc.ID, EventFamily: kind, Action: action}}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	return &testPluginWebhookFixture{
 		tsURL: ts.URL, st: st, projectID: projectID, installationID: installation.ID,
-		serviceID: svc.ID, hookID: hookID, hookSecret: hookSecret,
+		serviceID: svc.ID, modelID: modelID, hookID: hookID, hookSecret: hookSecret,
 	}, automation.ID
 }
 
@@ -102,6 +111,7 @@ type testPluginWebhookFixture struct {
 	projectID      string
 	installationID string
 	serviceID      string
+	modelID        string
 	hookID         string
 	hookSecret     string
 }
@@ -183,6 +193,9 @@ func TestPluginWebhookExternalCommentUsesWholeBodyAndDeduplicates(t *testing.T) 
 	if runs[0].Prompt != comment || runs[0].TriggeredByUserID != nil ||
 		runs[0].OriginAutomationID != automationID {
 		t.Fatalf("run=%+v", runs[0])
+	}
+	if runs[0].ModelID == nil || *runs[0].ModelID != f.modelID || runs[0].ModelEffort != "high" {
+		t.Fatalf("run model=%v effort=%q want %s/high", runs[0].ModelID, runs[0].ModelEffort, f.modelID)
 	}
 	duplicate := f.postGitea(t, "issue_comment", "delivery-comment-1", payload)
 	duplicate.Body.Close()

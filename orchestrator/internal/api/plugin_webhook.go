@@ -217,9 +217,13 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		if receipt.InstallationID == "" {
 			receipt.InstallationID = binding.InstallationID
 		}
-		sel, outcome, selectErr := s.models.SelectModel(r.Context(), svc.ProjectID, deref(svc.DefaultModelID), "")
+		sel, outcome, selectErr := s.models.SelectModel(r.Context(), svc.ProjectID, deref(svc.DefaultModelID), a.ModelID)
 		if selectErr != nil || outcome != modelcfg.SelectOK {
 			s.recordPluginAutomationError(r, a, pluginAutomationModelError(outcome, selectErr))
+			continue
+		}
+		if !sel.SupportsEffort(a.ModelEffort) {
+			s.recordPluginAutomationError(r, a, "The selected Automation model no longer supports reasoning effort.")
 			continue
 		}
 		prompt := renderPluginPrompt(a.PromptTemplate, event)
@@ -236,6 +240,7 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		run.OriginAutomationID = a.ID
 		run.OriginEventKey = pluginEventKey(a.ID, svc.ID, event)
 		run.ModelName = sel.ModelName
+		run.ModelEffort = a.ModelEffort
 		run.PRNumber = int(event.Object.Number)
 		// A normalized push ref can be "refs/heads/<name>", while the runner's
 		// BASE_BRANCH contract requires the repository branch name accepted by

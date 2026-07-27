@@ -1964,6 +1964,10 @@ func (s *PGStore) UpdateModelProvider(ctx context.Context, p *domain.ModelProvid
 func (s *PGStore) DeleteModelProvider(ctx context.Context, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM model_providers WHERE id=$1`, id)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return ErrConflict
+		}
 		return fmt.Errorf("delete model provider: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
@@ -2182,10 +2186,15 @@ func (s *PGStore) ListModelsForProvider(ctx context.Context, providerID string) 
 	return out, rows.Err()
 }
 
-// DeleteModel removes a catalog model (grants cascade; service/run refs SET NULL).
+// DeleteModel removes an unused catalog model. Service/run references are SET
+// NULL, but an Automation pin is RESTRICTed so it cannot silently change model.
 func (s *PGStore) DeleteModel(ctx context.Context, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM model_configs WHERE id=$1`, id)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return ErrConflict
+		}
 		return fmt.Errorf("delete model: %w", err)
 	}
 	if tag.RowsAffected() == 0 {

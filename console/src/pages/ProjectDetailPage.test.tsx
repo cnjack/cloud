@@ -172,7 +172,13 @@ function renderPage(
 
 function LocationProbe() {
   const location = useLocation();
-  return <output data-testid="workspace-location">{location.search}</output>;
+  const navigate = useNavigate();
+  return (
+    <>
+      <output data-testid="workspace-location">{location.search}</output>
+      <button type="button" data-testid="history-back" onClick={() => navigate(-1)}>Back</button>
+    </>
+  );
 }
 
 function ProjectRouteSwitchHarness() {
@@ -894,6 +900,33 @@ describe('ProjectDetailPage — add repository', () => {
       },
     });
     expect('repo_url' in calls.services[0]!.input).toBe(false);
+  });
+
+  it('opens Add Service from the Automation workspace and moves to Tasks visibly', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      plugins: [githubPlugin],
+      pluginRepos: [repository],
+    });
+    renderPage(client, undefined, '/projects/p1?service=svc_default&tab=automations');
+
+    fireEvent.click(await screen.findByTestId('add-repo-trigger'));
+    expect(await screen.findByTestId('repo-picker')).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('workspace-location').textContent).toContain('tab=tasks'));
+  });
+
+  it('closes Add Service when browser history removes the add URL state', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      plugins: [githubPlugin],
+      pluginRepos: [repository],
+    });
+    renderPage(client, undefined, '/projects/p1?service=svc_default&tab=automations');
+
+    fireEvent.click(await screen.findByTestId('add-repo-trigger'));
+    expect(await screen.findByTestId('repo-picker')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('history-back'));
+
+    await waitFor(() => expect(screen.getByTestId('workspace-location').textContent).toContain('tab=automations'));
+    await waitFor(() => expect(screen.queryByTestId('repo-picker')).toBeNull());
   });
 
   it('lets a Member use the same Project Plugin without a personal credential', async () => {

@@ -121,8 +121,10 @@ Installation statuses are `connecting`, `enabled`, `disabled`,
 projection, not a stored installation status.
 
 Automations have a list route and an independent create/edit route for SCM and
-Cron. The editor
-contains Trigger, Filters, and Task sections. It has no SCM result writeback
+Cron. The active Service is immutable in the editor: creation never asks the
+user to choose it again, editing cannot move an Automation to another Service,
+and the Service workspace lists only its own Automations. The editor contains
+Trigger, Filters, and Task sections. It has no SCM result writeback
 section. Provider capability gaps are disabled with an explanation instead of
 being hidden.
 
@@ -469,7 +471,11 @@ manual attachment stages:
 - **Model effort:** when the selected model supports reasoning effort, the user
   can choose an allowed effort or `auto`. The Orchestrator validates the choice
   against model capabilities and passes the resolved value to jcode at Run
-  start. Unsupported values fail visibly.
+  start. Each SCM/Cron Automation pins its selected Project model and optional
+  effort; every Run dispatched from that Automation inherits both values.
+  Unsupported values fail visibly. Existing pre-migration Automations without a
+  pinned model continue to use the Service default/sole-grant resolution chain
+  until they are edited and saved.
 - **Goal mode:** a task may start in goal mode with a concrete goal statement.
   Goal state is initialized through the
   task startup contract and remains observable in the task event stream.

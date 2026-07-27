@@ -181,8 +181,16 @@ func resolveModel(ctx context.Context, st ConfigReader, cipher *auth.Cipher, cfg
 // the model is deleted from the catalog). For the env fallback ModelID is "" and
 // ModelName is the env model name.
 type Selection struct {
-	ModelID   string
-	ModelName string
+	ModelID      string
+	ModelName    string
+	Capabilities domain.ModelCapabilities
+}
+
+// SupportsEffort revalidates an Automation's persisted effort against the
+// current model capability at dispatch time. Capabilities can change after an
+// Automation is saved, so save-time validation alone is not sufficient.
+func (s Selection) SupportsEffort(effort string) bool {
+	return effort == "" || s.Capabilities.Reasoning
 }
 
 // selectModel runs the resolution chain to CHOOSE a model for a new run:
@@ -203,7 +211,13 @@ func selectModel(ctx context.Context, st ConfigReader, cfg *config.Config, proje
 	for i := range grants {
 		byID[grants[i].ID] = grants[i]
 	}
-	pick := func(id string) Selection { return Selection{ModelID: id, ModelName: byID[id].ModelName} }
+	pick := func(id string) Selection {
+		return Selection{
+			ModelID:      id,
+			ModelName:    byID[id].ModelName,
+			Capabilities: byID[id].Capabilities,
+		}
+	}
 
 	// 1) Composer pick — must be in the project's grant set.
 	if requested != "" {

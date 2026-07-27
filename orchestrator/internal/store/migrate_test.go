@@ -26,6 +26,28 @@ func TestPRReviewAutomationMigrationUsesModelCatalog(t *testing.T) {
 	}
 }
 
+func TestPluginAutomationModelMigrationUsesModelCatalog(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0055_plugin_automation_models.sql")
+	if err != nil {
+		t.Fatalf("read 0055: %v", err)
+	}
+	migration := string(sql)
+	if strings.Contains(migration, "REFERENCES models(") {
+		t.Fatal("0055 references the nonexistent models table; use model_configs")
+	}
+	if !strings.Contains(migration, "REFERENCES model_configs(id)") {
+		t.Fatal("0055 must reference the model_configs catalog")
+	}
+	if !strings.Contains(migration, "ON DELETE RESTRICT") {
+		t.Fatal("0055 must block deletion of a model pinned by an Automation")
+	}
+	for _, effort := range []string{"low", "medium", "high"} {
+		if !strings.Contains(migration, "'"+effort+"'") {
+			t.Fatalf("0055 effort constraint missing %q", effort)
+		}
+	}
+}
+
 func TestWebhookBindingSecretMigrationFailsLegacyHooksClosed(t *testing.T) {
 	sql, err := migrationsFS.ReadFile("migrations/0051_webhook_binding_secrets.sql")
 	if err != nil {

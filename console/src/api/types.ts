@@ -244,6 +244,8 @@ export interface ProjectAutomationAggregate {
   name: string;
   trigger_kind: AutomationTriggerKind;
   prompt_template: string;
+  model_id?: string;
+  model_effort?: 'low' | 'medium' | 'high';
   enabled: boolean;
   ignore_jcode: boolean;
   last_triggered_at?: string;
@@ -289,6 +291,8 @@ export interface CreateProjectAutomationInput {
   service_id: string;
   name: string;
   prompt_template: string;
+  model_id?: string;
+  model_effort?: 'auto' | 'low' | 'medium' | 'high';
   enabled?: boolean;
   ignore_jcode?: boolean;
   scm?: { branch?: string; path_pattern?: string; conclusion?: string; actions: ScmAutomationAction[] };

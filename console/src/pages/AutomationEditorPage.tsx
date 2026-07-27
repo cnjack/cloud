@@ -9,6 +9,7 @@ import {
   useCreateProjectAutomation,
   useProject,
   useProjectAutomation,
+  useProjectModels,
   useProviderCapabilities,
   useUpdateProjectAutomation,
 } from '../api/queries';
@@ -90,15 +91,18 @@ export function AutomationEditorPage() {
   const editing = !!automationId;
   const project = useProject(projectId);
   const existing = useProjectAutomation(projectId, automationId, editing);
+  const projectModels = useProjectModels(projectId);
   const create = useCreateProjectAutomation(projectId);
   const update = useUpdateProjectAutomation(projectId);
 
   const services = project.data?.services ?? [];
-  const initialService = searchParams.get('service') ?? services[0]?.id ?? '';
+  const initialService = searchParams.get('service') ?? '';
   const [name, setName] = useState('');
   const [serviceId, setServiceId] = useState(initialService);
   const [kind, setKind] = useState<Exclude<AutomationTriggerKind, 'kanban'>>('scm');
   const [prompt, setPrompt] = useState('');
+  const [modelId, setModelId] = useState('');
+  const [modelEffort, setModelEffort] = useState<'auto' | 'low' | 'medium' | 'high'>('auto');
   const [enabled, setEnabled] = useState(true);
   const [ignoreJcode, setIgnoreJcode] = useState(true);
   const [branch, setBranch] = useState('');
@@ -110,6 +114,9 @@ export function AutomationEditorPage() {
   const [formError, setFormError] = useState('');
 
   const selectedService = services.find((service) => service.id === serviceId);
+  const models = projectModels.data?.models ?? [];
+  const selectedModel = models.find((model) => model.id === modelId);
+  const effortEnabled = selectedModel?.capabilities.reasoning === true;
   const scmProvider = (
     selectedService?.provider === 'github' ||
     selectedService?.provider === 'gitlab' ||
@@ -133,6 +140,17 @@ export function AutomationEditorPage() {
   }, [initialService, serviceId]);
 
   useEffect(() => {
+    if (editing || modelId || !selectedService || !models.length) return;
+    const preferred = models.find((model) => model.id === selectedService.default_model_id)
+      ?? (models.length === 1 ? models[0] : undefined);
+    if (preferred) setModelId(preferred.id);
+  }, [editing, modelId, models, selectedService]);
+
+  useEffect(() => {
+    if (!effortEnabled) setModelEffort('auto');
+  }, [effortEnabled]);
+
+  useEffect(() => {
     const spec = existing.data;
     if (!spec) return;
     hydrate(spec);
@@ -146,6 +164,8 @@ export function AutomationEditorPage() {
     setServiceId(automation.service_id);
     setKind(automation.trigger_kind === 'cron' ? 'cron' : 'scm');
     setPrompt(automation.prompt_template);
+    setModelId(automation.model_id ?? '');
+    setModelEffort(automation.model_effort ?? 'auto');
     setEnabled(automation.enabled);
     setIgnoreJcode(automation.ignore_jcode);
     setBranch(spec.scm?.branch ?? '');
@@ -173,7 +193,7 @@ export function AutomationEditorPage() {
       setFormError(t('automationEditor.validation.noPermission'));
       return;
     }
-    if (!name.trim() || !serviceId || !prompt.trim()) {
+    if (!name.trim() || !serviceId || !prompt.trim() || !modelId) {
       setFormError(t('automationEditor.validation.required'));
       return;
     }
@@ -189,6 +209,8 @@ export function AutomationEditorPage() {
       service_id: serviceId,
       name: name.trim(),
       prompt_template: prompt.trim(),
+      model_id: modelId,
+      model_effort: modelEffort,
       enabled,
       ignore_jcode: ignoreJcode,
       ...(kind === 'scm' ? {
@@ -206,16 +228,16 @@ export function AutomationEditorPage() {
     else create.mutate(input, { onSuccess });
   }
 
-  if (project.isLoading || (editing && existing.isLoading)) {
+  if (project.isLoading || projectModels.isLoading || (editing && existing.isLoading)) {
     return <LoadingBlock label={t('automationEditor.loading')} />;
   }
-  if (project.isError || (editing && existing.isError)) {
-    return <ErrorBlock error={project.error ?? existing.error} title={t('automationEditor.loadError')} />;
+  if (project.isError || projectModels.isError || (editing && existing.isError)) {
+    return <ErrorBlock error={project.error ?? projectModels.error ?? existing.error} title={t('automationEditor.loadError')} />;
   }
 
   return (
     <main className={styles.page} data-testid="automation-editor-page">
-      <Link className={styles.back} to={`/projects/${encodeURIComponent(projectId)}?tab=automations`}>
+      <Link className={styles.back} to={`/projects/${encodeURIComponent(projectId)}?tab=automations${serviceId ? `&service=${encodeURIComponent(serviceId)}` : ''}`}>
         <ArrowLeft size={16} aria-hidden />
         {t('projectAutomations.title')}
       </Link>
@@ -230,15 +252,31 @@ export function AutomationEditorPage() {
           <h2>{t('automationEditor.task')}</h2>
           <div className={styles.grid}>
             <label>{t('automationEditor.name')}<input value={name} onChange={(event) => setName(event.target.value)} required /></label>
-            <label>{t('automationEditor.service')}
-              <select value={serviceId} onChange={(event) => {
-                setServiceId(event.target.value);
-                setActions([]);
+            <div className={styles.fixedService}>
+              <span>{t('automationEditor.service')}</span>
+              <strong>{selectedService?.name ?? t('automationEditor.serviceUnavailable')}</strong>
+              {selectedService?.repo_owner_name && <small>{selectedService.repo_owner_name}</small>}
+            </div>
+            <label>{t('automationEditor.model')}
+              <select aria-label={t('automationEditor.model')} value={modelId} onChange={(event) => {
+                setModelId(event.target.value);
+                setModelEffort('auto');
               }} required>
-                <option value="">{t('automationEditor.selectService')}</option>
-                {services.map((service) => <option value={service.id} key={service.id}>{service.name}</option>)}
+                <option value="">{t('automationEditor.selectModel')}</option>
+                {models.map((model) => <option value={model.id} key={model.id}>{model.name} · {model.model_name}</option>)}
               </select>
             </label>
+            {effortEnabled && (
+              <label>{t('automationEditor.effort')}
+                <select aria-label={t('automationEditor.effort')} value={modelEffort} onChange={(event) => setModelEffort(event.target.value as typeof modelEffort)}>
+                  <option value="auto">{t('automationEditor.effortAuto')}</option>
+                  <option value="low">{t('automationEditor.effortLow')}</option>
+                  <option value="medium">{t('automationEditor.effortMedium')}</option>
+                  <option value="high">{t('automationEditor.effortHigh')}</option>
+                </select>
+                <small>{t('automationEditor.effortHint')}</small>
+              </label>
+            )}
           </div>
           <label>{t('automationEditor.promptTemplate')}<textarea rows={6} value={prompt} onChange={(event) => setPrompt(event.target.value)} required /></label>
           <div className={styles.inline}>
@@ -364,6 +402,9 @@ function automationMutationError(error: unknown, t: (key: string) => string): st
     if (code === 'automation_overlap') return t('automationEditor.apiError.overlap');
     if (code === 'webhook_reconcile_failed') return t('automationEditor.apiError.webhook');
     if (code === 'plugin_unavailable') return t('automationEditor.apiError.pluginUnavailable');
+    if (code === 'model_not_granted' || code === 'model_unavailable') return t('automationEditor.apiError.modelUnavailable');
+    if (code === 'model_not_selected' || code === 'model_not_configured') return t('automationEditor.apiError.modelRequired');
+    if (code === 'model_effort_unsupported') return t('automationEditor.apiError.effortUnsupported');
   }
   return t('automationEditor.apiError.generic');
 }

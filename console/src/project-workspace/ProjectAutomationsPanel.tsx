@@ -54,8 +54,9 @@ export function ProjectAutomationsPanel({
   const [filter, setFilter] = useState<'all' | AutomationTriggerKind>('all');
   const visible = useMemo(
     () => (query.data ?? []).filter((item) =>
-      filter === 'all' || item.automation.trigger_kind === filter),
-    [filter, query.data],
+      (!initialServiceId || item.automation.service_id === initialServiceId)
+      && (filter === 'all' || item.automation.trigger_kind === filter)),
+    [filter, initialServiceId, query.data],
   );
   const createHref = `/projects/${encodeURIComponent(projectId)}/automations/new${
     initialServiceId ? `?service=${encodeURIComponent(initialServiceId)}` : ''
@@ -136,7 +137,7 @@ export function ProjectAutomationsPanel({
                     <span />
                   </button>
                   {canManage && (
-                    <Link to={`/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automation.id)}/edit`}>
+                    <Link to={`/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automation.id)}/edit?service=${encodeURIComponent(automation.service_id)}`}>
                       {t('projectAutomations.edit')}
                     </Link>
                   )}

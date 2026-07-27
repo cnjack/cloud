@@ -145,6 +145,8 @@ type PluginAutomation struct {
 	Name            string     `json:"name"`
 	TriggerKind     string     `json:"trigger_kind"` // scm | kanban | cron
 	PromptTemplate  string     `json:"prompt_template"`
+	ModelID         string     `json:"model_id,omitempty"`
+	ModelEffort     string     `json:"model_effort,omitempty"`
 	Enabled         bool       `json:"enabled"`
 	IgnoreJCode     bool       `json:"ignore_jcode"`
 	LastTriggeredAt *time.Time `json:"last_triggered_at,omitempty"`

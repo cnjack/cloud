@@ -14,6 +14,15 @@ func validatePluginAutomationAggregate(a *domain.PluginAutomation, scm *domain.S
 	if a == nil || !domain.ValidPluginAutomationTrigger(a.TriggerKind) {
 		return fmt.Errorf("invalid plugin automation trigger")
 	}
+	switch a.ModelEffort {
+	case "":
+	case "low", "medium", "high":
+		if a.ModelID == "" {
+			return fmt.Errorf("plugin automation effort requires a model")
+		}
+	default:
+		return fmt.Errorf("invalid plugin automation model effort")
+	}
 	children := 0
 	if scm != nil {
 		children++

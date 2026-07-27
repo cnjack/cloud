@@ -133,12 +133,16 @@ func (p *Poller) firePluginAutomation(ctx context.Context, spec *domain.PluginAu
 			return
 		}
 	}
-	sel, outcome, err := p.models.SelectModel(ctx, svc.ProjectID, derefStr(svc.DefaultModelID), "")
+	sel, outcome, err := p.models.SelectModel(ctx, svc.ProjectID, derefStr(svc.DefaultModelID), spec.Automation.ModelID)
 	if err != nil {
 		return
 	}
 	if outcome != modelcfg.SelectOK {
 		_, _ = p.st.AdvancePluginCronAutomation(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, modelBlockReason(outcome))
+		return
+	}
+	if !sel.SupportsEffort(spec.Automation.ModelEffort) {
+		_, _ = p.st.AdvancePluginCronAutomation(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, "selected Automation model no longer supports reasoning effort")
 		return
 	}
 	won, err := p.st.AdvancePluginCronAutomation(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, "")
@@ -152,6 +156,7 @@ func (p *Poller) firePluginAutomation(ctx context.Context, spec *domain.PluginAu
 		OriginAutomationID: spec.Automation.ID,
 		OriginEventKey:     "cron:" + spec.Automation.ID + ":" + now.Format(time.RFC3339Nano),
 		Attempt:            1, CreatedAt: now, ModelName: sel.ModelName,
+		ModelEffort: spec.Automation.ModelEffort,
 	}
 	if sel.ModelID != "" {
 		modelID := sel.ModelID
