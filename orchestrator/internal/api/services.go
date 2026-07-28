@@ -880,7 +880,11 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 			}
 			s.emitStatus(r.Context(), committed)
 		}
-		if committed.K8sJobName != "" {
+		// Skip Jobs the reconciler already confirmed deleted. Historical services
+		// can accumulate hundreds of k8s_job_name values (kept for audit); re-issuing
+		// a Delete for each one serializes hundreds of API calls under the request
+		// context and trips gateway/client timeouts with "context canceled".
+		if committed.K8sJobName != "" && committed.JobCleanedAt == nil {
 			jobs[committed.K8sJobName] = struct{}{}
 		}
 	}
@@ -895,15 +899,21 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Detach cleanup from the HTTP request deadline. Browser/Kong clients often
+	// abort around 30s; PVC + residual Job deletes can legitimately take longer,
+	// and a canceled request context would otherwise leave the service fenced
+	// (deleting_at set) but not removed.
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Minute)
+	defer cleanupCancel()
 	if s.launcher != nil {
 		for name := range jobs {
-			if err := s.launcher.DeleteJob(r.Context(), name); err != nil {
+			if err := s.launcher.DeleteJob(cleanupCtx, name); err != nil {
 				s.log.Warn("delete service: job cleanup failed", "service", id, "job", name, "err", err)
 				writeError(w, http.StatusServiceUnavailable, "cleanup_failed", "could not stop all service jobs; retry deletion")
 				return
 			}
 		}
-		if err := s.launcher.DeleteWorkspacePVC(r.Context(), id); err != nil {
+		if err := s.launcher.DeleteWorkspacePVC(cleanupCtx, id); err != nil {
 			s.log.Warn("delete service: workspace pvc cleanup failed", "service", id, "err", err)
 			writeError(w, http.StatusServiceUnavailable, "cleanup_failed", "could not delete the service workspace; retry deletion")
 			return
@@ -913,7 +923,7 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 	// A restored workspace leaves the deterministic cold archive behind, so
 	// delete by deterministic key even when archive_key has already been cleared.
 	if s.archiveCleaner != nil {
-		if err := s.archiveCleaner.Delete(r.Context(), "workspaces/"+id+".tar.zst"); err != nil {
+		if err := s.archiveCleaner.Delete(cleanupCtx, "workspaces/"+id+".tar.zst"); err != nil {
 			s.log.Warn("delete service: archive cleanup failed", "service", id, "err", err)
 			writeError(w, http.StatusServiceUnavailable, "cleanup_failed", "could not delete the archived workspace; retry deletion")
 			return
@@ -926,7 +936,7 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 	// Database cleanup is last: runs are deleted first in the store transaction,
 	// which cascades their events, artifacts, messages and permissions; service
 	// schedules, automations, webhook state and kanban links cascade with service.
-	if err := s.st.DeleteService(r.Context(), id); err != nil {
+	if err := s.st.DeleteService(cleanupCtx, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "service not found")
 			return
