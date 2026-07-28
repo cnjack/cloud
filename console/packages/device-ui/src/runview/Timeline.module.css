@@ -1,5 +1,8 @@
-.wrap { display: grid; gap: var(--space-4); min-width: 0; }
-.thread { display: grid; gap: var(--space-5); }
+.wrap { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+/* Long replayed messages must not contribute their min-content width to the
+   Grid track; otherwise every centered jcode-ui message shifts to the right. */
+.thread { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); gap: var(--space-5); }
+.thread > * { min-width: 0; max-width: 100%; }
 
 .message { display: grid; gap: var(--space-3); min-width: 0; }
 .messageHead { display: flex; align-items: center; gap: var(--space-2); color: var(--color-text); font-size: var(--fs-caption); }

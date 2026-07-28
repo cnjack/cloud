@@ -20,12 +20,14 @@ function conversationFixture({
   clientHeight = 500,
   scrollHeight = 1_400,
   scrollTop = 25,
+  scrollLeft = 0,
   messageTop = 760,
   messageHeight = 620,
 }: {
   clientHeight?: number;
   scrollHeight?: number;
   scrollTop?: number;
+  scrollLeft?: number;
   messageTop?: number;
   messageHeight?: number;
 } = {}) {
@@ -36,6 +38,7 @@ function conversationFixture({
     clientHeight,
     scrollHeight,
     scrollTop,
+    scrollLeft,
     getBoundingClientRect: () => rect(100, clientHeight),
     querySelectorAll: () => [latest],
   } as unknown as HTMLElement;
@@ -43,6 +46,15 @@ function conversationFixture({
 }
 
 describe('followConversationScroll', () => {
+  it('resets horizontal drift while following content vertically', () => {
+    const { conversation } = conversationFixture({ scrollLeft: 420 });
+
+    followConversationScroll(conversation, 'running');
+
+    expect(conversation.scrollLeft).toBe(0);
+    expect(conversation.scrollTop).toBe(1_400);
+  });
+
   it('anchors a restored long final answer at its beginning', () => {
     const { conversation } = conversationFixture();
 
