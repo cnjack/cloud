@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Warning } from '@phosphor-icons/react';
+import { ArrowLeft, Check, Copy, Warning } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import { Button } from '../components/Button';
@@ -149,6 +149,8 @@ export function AutomationEditorPage() {
   const moreActionsOpen = showMoreActions || actions.some((action) => !COMMON_ACTIONS.has(action));
   const reviewMode = reviewPreset || runKind === 'review';
   const mentionHandle = capabilities.data?.mention_handle || '@jcode';
+  const reviewCommand = `${mentionHandle} review`;
+  const [commandCopied, setCommandCopied] = useState(false);
 
   useEffect(() => {
     if (!serviceId && initialService) setServiceId(initialService);
@@ -308,7 +310,22 @@ export function AutomationEditorPage() {
               <div>
                 <strong>{t('automationEditor.review.repeatTitle')}</strong>
                 <span>{t('automationEditor.review.repeatBody')}</span>
-                <code>{mentionHandle} review</code>
+                <button
+                  type="button"
+                  className={styles.reviewCommand}
+                  onClick={() => {
+                    if (!navigator.clipboard?.writeText) return;
+                    void navigator.clipboard.writeText(reviewCommand).then(() => {
+                      setCommandCopied(true);
+                      window.setTimeout(() => setCommandCopied(false), 1_500);
+                    }).catch(() => {});
+                  }}
+                  aria-label={`${t('common.copy')}: ${reviewCommand}`}
+                >
+                  <code>{reviewCommand}</code>
+                  {commandCopied ? <Check size={14} aria-hidden /> : <Copy size={14} aria-hidden />}
+                  <span>{commandCopied ? t('common.copied') : t('common.copy')}</span>
+                </button>
               </div>
             </div>
           )}

@@ -31,7 +31,7 @@ type Config struct {
 	// override (nil project guardrail => inherit these).
 	MaxLiveSessions        int   // MAX_LIVE_SESSIONS, default 2 (0 = unlimited); cap on live (running+awaiting_input) session runs per project
 	SessionIdleTimeoutSecs int64 // SESSION_IDLE_TIMEOUT_SECONDS, default 900; awaiting_input idle before auto-finalize
-	SessionTTLSecs         int64 // SESSION_TTL_SECONDS, default 14400; whole-session wall-clock budget (drives RUN_TIMEOUT + activeDeadlineSeconds of a session Job)
+	SessionTTLSecs         int64 // SESSION_TTL_SECONDS, default 43200; whole-session wall-clock budget (drives RUN_TIMEOUT + activeDeadlineSeconds of a session Job)
 
 	// Backoff (Symphony formula; carried for future auto-retry)
 	BackoffBaseMs int64 // BACKOFF_BASE_MS, default 10000
@@ -47,7 +47,7 @@ type Config struct {
 	ModelAPIKey        string            // MODEL_API_KEY — env fallback for the effective model config
 	ModelName          string            // MODEL_NAME — "provider/model" env fallback; NO silent mock default (fail-visible red line)
 	JobTTLSeconds      int32             // JOB_TTL_SECONDS, default 3600
-	RunTimeoutSecs     int64             // RUN_TIMEOUT_SECONDS, default 1800 (Job activeDeadlineSeconds)
+	RunTimeoutSecs     int64             // RUN_TIMEOUT_SECONDS, default 43200 (12h runner budget)
 	CPULimit           string            // RUNNER_CPU_LIMIT, default "2"
 	MemoryLimit        string            // RUNNER_MEMORY_LIMIT, default "4Gi"
 	CPURequest         string            // RUNNER_CPU_REQUEST, default "500m"
@@ -229,7 +229,7 @@ func Load() (*Config, error) {
 		StallTimeout:           getdur("STALL_TIMEOUT", 10*time.Minute),
 		MaxLiveSessions:        getint("MAX_LIVE_SESSIONS", 2),
 		SessionIdleTimeoutSecs: getint64("SESSION_IDLE_TIMEOUT_SECONDS", 900),
-		SessionTTLSecs:         getint64("SESSION_TTL_SECONDS", 14400),
+		SessionTTLSecs:         getint64("SESSION_TTL_SECONDS", 43200),
 		BackoffBaseMs:          getint64("BACKOFF_BASE_MS", 10000),
 		BackoffMaxMs:           getint64("BACKOFF_MAX_MS", 300000),
 		Kubeconfig:             os.Getenv("KUBECONFIG"),
@@ -241,7 +241,7 @@ func Load() (*Config, error) {
 		ModelAPIKey:            os.Getenv("MODEL_API_KEY"),
 		ModelName:              os.Getenv("MODEL_NAME"),
 		JobTTLSeconds:          int32(getint("JOB_TTL_SECONDS", 3600)),
-		RunTimeoutSecs:         getint64("RUN_TIMEOUT_SECONDS", 1800),
+		RunTimeoutSecs:         getint64("RUN_TIMEOUT_SECONDS", 43200),
 		CPULimit:               getenv("RUNNER_CPU_LIMIT", "2"),
 		MemoryLimit:            getenv("RUNNER_MEMORY_LIMIT", "4Gi"),
 		CPURequest:             getenv("RUNNER_CPU_REQUEST", "500m"),

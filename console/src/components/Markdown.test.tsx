@@ -1,10 +1,10 @@
 /*
- * Markdown.test.tsx — the tiny review-output renderer:
- *   - headings, bold, inline code, unordered lists and fenced code blocks
- *   - XSS: raw HTML in the source is rendered as literal text, never markup
+ * Markdown.test.tsx — the jcode-ui review-output renderer:
+ *   - GFM headings, bold, inline code, lists, links and fenced code blocks
+ *   - XSS: dangerous elements and event handlers are removed by DOMPurify
  */
 import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import { Markdown } from './Markdown';
 
 describe('Markdown', () => {
@@ -17,13 +17,15 @@ describe('Markdown', () => {
       '- first',
       '- second',
       '',
+      '[review](https://example.com/review)',
+      '',
       '```',
       'const x = 1;',
       '```',
     ].join('\n');
     const { container } = render(<Markdown source={src} />);
 
-    expect(container.querySelector('h4')?.textContent).toBe('Summary');
+    expect(container.querySelector('h2')?.textContent).toBe('Summary');
     expect(container.querySelector('strong')?.textContent).toBe('bold');
     // inline code + code block both produce <code>.
     const codes = [...container.querySelectorAll('code')].map((c) => c.textContent);
@@ -32,16 +34,17 @@ describe('Markdown', () => {
     expect(container.querySelector('pre')).toBeTruthy();
     const items = [...container.querySelectorAll('li')].map((li) => li.textContent);
     expect(items).toEqual(['first', 'second']);
+    expect(container.querySelector('a')?.getAttribute('href')).toBe('https://example.com/review');
+    expect(container.querySelector('[data-jcode-ui]')).toBeTruthy();
   });
 
-  it('does not interpret raw HTML — it renders as literal text (XSS-safe)', () => {
+  it('sanitizes scripts and event handlers from model-provided HTML', () => {
     const { container } = render(
-      <Markdown source={'<img src=x onerror=alert(1)> <b>hi</b>'} />,
+      <Markdown source={'<script>alert(1)</script><img src=x onerror=alert(2)><b>hi</b>'} />,
     );
-    // No injected <img> or <b> element — the markup is literal text.
-    expect(container.querySelector('img')).toBeNull();
-    expect(container.querySelector('b')).toBeNull();
-    expect(screen.getByText(/<img src=x onerror=alert\(1\)>/)).toBeTruthy();
+    expect(container.querySelector('script')).toBeNull();
+    expect(container.querySelector('img')?.hasAttribute('onerror')).toBe(false);
+    expect(container.querySelector('b')?.textContent).toBe('hi');
   });
 
   it('renders an empty string without crashing', () => {

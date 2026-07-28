@@ -1393,7 +1393,7 @@ export function createMockClient(): ApiClient {
           scheduling,
         },
         guardrails: {
-          run_timeout_seconds: 1800,
+          run_timeout_seconds: 43200,
           job_ttl_seconds: 3600,
         },
         provider: {

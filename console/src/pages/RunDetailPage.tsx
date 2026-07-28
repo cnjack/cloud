@@ -3,7 +3,7 @@ import { ArrowClockwise, ArrowLeft, ArrowSquareOut, CaretDown, Check, ClipboardT
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { RuntimeProvider, ToolRegistryProvider } from 'jcode-ui';
+import { Message, RuntimeProvider, ToolRegistryProvider, type ThreadItem } from 'jcode-ui';
 import type { ChatRuntime, RuntimeActions, RuntimeState } from 'jcode-ui-core/runtime';
 import {
   useCancelRun,
@@ -36,7 +36,7 @@ import { useRunStream } from '../hooks/useRunStream';
 import { formatDateTime, formatDuration, shortId } from '../lib/format';
 import { ProjectWorkspaceShell } from '../project-workspace/ProjectWorkspaceShell';
 import { ProjectSettingsAction } from '../project-workspace/ProjectSettingsAction';
-import { Timeline, type PermissionControls } from '../runview';
+import { Timeline, toThreadItems, type PermissionControls } from '../runview';
 import { followConversationScroll } from '../runview/conversationScroll';
 import styles from './RunDetailPage.module.css';
 
@@ -189,9 +189,27 @@ export function RunDetailPage() {
     );
   }, [navigate, resumeSession, runId, toast]);
 
+  const runtimeItems = useMemo<ThreadItem[]>(() => {
+    const current = run.data;
+    if (!current) return toThreadItems(stream.events);
+    return [
+      {
+        kind: 'message',
+        seq: 0,
+        data: {
+          id: `run-prompt-${current.id}`,
+          role: 'user',
+          content: current.prompt,
+          timestamp: Date.parse(current.created_at),
+        },
+      },
+      ...toThreadItems(stream.events),
+    ];
+  }, [run.data, stream.events]);
+
   const runtime = useMemo<ChatRuntime>(() => {
     const state: RuntimeState = {
-      items: [],
+      items: runtimeItems,
       isRunning: status === 'running',
       tokenSnapshot: null,
       goal: null,
@@ -212,7 +230,7 @@ export function RunDetailPage() {
       editMessage: () => {},
     };
     return { getState: () => state, subscribe: () => () => {}, actions };
-  }, [cancel, continueSession, runId, sendFollowUp, status, terminal, toast]);
+  }, [cancel, continueSession, runId, runtimeItems, sendFollowUp, status, terminal, toast]);
 
   if (run.isLoading) return <LoadingBlock label={t('runDetail.loadingRun')} />;
   if (!run.data) return <ErrorBlock error={run.error} onRetry={() => run.refetch()} title={t('runDetail.loadRunError')} />;
@@ -291,7 +309,7 @@ export function RunDetailPage() {
                 <Link to={serviceTasksPath} className={styles.backToProject} data-testid="run-back-to-project"><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>{t('runDetail.recentTasks')}</span></Link>
                 <div className={styles.taskTitleRow}>
                   <div>
-                    <h1>{current.prompt}</h1>
+                    <h1 className={styles.taskTitle} data-testid="run-task-title" title={current.prompt}>{current.prompt}</h1>
                     <p>{runKindLabel(current, t)} · {service?.name ?? t('runDetail.serviceUnavailable')} · {runOriginLabel(current, t)} · {formatDateTime(current.created_at)}</p>
                   </div>
                   <div className={styles.headerActions}>
@@ -339,10 +357,16 @@ export function RunDetailPage() {
                       ) : (
                         <>
                           <div className={styles.dateDivider}><span>{new Date(current.created_at).toLocaleDateString()}</span></div>
-                          <article className={styles.initialPrompt} data-testid="run-initial-prompt">
-                            <div className={styles.userAvatar}>U</div>
-                            <div><div className={styles.messageMeta}><strong>{t('runDetail.you')}</strong><time>{formatDateTime(current.created_at)}</time></div><p>{current.prompt}</p></div>
-                          </article>
+                          <div className={styles.initialPrompt} data-testid="run-initial-prompt">
+                            <Message
+                              message={{
+                                id: `run-prompt-${current.id}`,
+                                role: 'user',
+                                content: current.prompt,
+                                timestamp: Date.parse(current.created_at),
+                              }}
+                            />
+                          </div>
 
                           {isReview && current.review_output ? (
                             <div className={styles.reviewOutput} data-testid="review-output"><Markdown source={current.review_output} /></div>

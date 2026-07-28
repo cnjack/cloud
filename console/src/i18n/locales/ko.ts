@@ -1284,7 +1284,7 @@ export default {
       eyebrow: 'GitHub 코드 리뷰', title: 'Pull Request 리뷰', subtitle: '팀이 새 흐름을 배우지 않아도 GitHub 네이티브 리뷰를 켤 수 있습니다.',
       defaultName: 'Pull Request 리뷰', setup: '리뷰 설정',
       automaticTitle: '기본 자동 리뷰', automaticBody: 'Pull Request가 준비될 때와 새 커밋마다 App이 리뷰합니다.',
-      repeatTitle: 'GitHub에서 다시 실행', repeatBody: '다시 확인하려면 Pull Request 댓글에서 App을 멘션하세요.',
+      repeatTitle: 'GitHub에서 다시 실행', repeatBody: '이 명령을 Pull Request 댓글에 붙여 넣으세요. GitHub의 @ 자동 완성에 사용자 지정 App이 보이지 않아도 전체 명령은 동작합니다.',
       focus: '리뷰 중점 사항(선택)', focusPlaceholder: '예: 권한 경계를 특히 확인하세요.', focusHint: '정확성, 보안, 신뢰성, 데이터 손실, 회귀는 항상 확인합니다.',
       when: '리뷰 시점', readyTitle: '준비된 Pull Request', readyBody: '새 Pull Request와 Draft 해제 시 리뷰합니다.',
       updatesTitle: '새 커밋', updatesBody: 'Pull Request의 최신 커밋이 바뀌면 다시 리뷰합니다.',

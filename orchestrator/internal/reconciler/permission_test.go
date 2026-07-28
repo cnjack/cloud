@@ -121,7 +121,7 @@ func TestPermissionTimeoutFormula(t *testing.T) {
 		ttl  int64
 		want int64
 	}{
-		{ttl: 14400, want: 300}, // cluster default TTL: ceiling wins
+		{ttl: 43200, want: 300}, // cluster default TTL: ceiling wins
 		{ttl: 1200, want: 300},  // 1200/4 == 300: exactly the ceiling
 		{ttl: 400, want: 100},   // small TTL: ttl/4 wins
 		{ttl: 3, want: 1},       // degenerate: floor at 1s, never 0

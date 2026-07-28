@@ -169,7 +169,12 @@ describe('AutomationEditorPage', () => {
     expect(screen.getByLabelText('issue.closed')).toBeTruthy();
   });
 
-  it('creates a GitHub-native review from the guided preset and exposes the repeat mention', async () => {
+  it('creates a GitHub-native review and exposes a copyable repeat command without promising autocomplete', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
     const githubProject: Project = {
       ...project,
       services: [{ ...project.services![0]!, provider: 'github', repo_owner_name: 'cnjack/jcode-review-lab' }],
@@ -189,6 +194,9 @@ describe('AutomationEditorPage', () => {
 
     await screen.findByRole('heading', { name: 'Review pull requests' });
     expect(screen.getByText('@jcode-cloud-app review')).toBeTruthy();
+    expect(screen.getByText(/may not autocomplete custom Apps/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy: @jcode-cloud-app review' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('@jcode-cloud-app review'));
     expect(screen.queryByText('More events')).toBeNull();
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-52' } });
     fireEvent.change(screen.getByLabelText('Review focus (optional)'), {

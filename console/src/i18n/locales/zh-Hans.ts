@@ -1290,7 +1290,7 @@ export default {
       eyebrow: 'GitHub 代码评审', title: '评审 Pull Request', subtitle: '无需让团队学习新流程，即可启用实用的 GitHub 原生评审。',
       defaultName: 'Pull Request 评审', setup: '评审设置',
       automaticTitle: '默认自动评审', automaticBody: 'Pull Request 准备好后，App 会自动评审；后续每次提交新代码也会再次评审。',
-      repeatTitle: '直接从 GitHub 重复评审', repeatBody: '需要再看一遍时，在任意 Pull Request 评论中提及 App 即可。',
+      repeatTitle: '直接从 GitHub 重复评审', repeatBody: '将此命令粘贴到任意 Pull Request 评论中。GitHub 的 @ 自动补全可能不显示自定义 App，但完整命令可以正常触发。',
       focus: '评审关注点（可选）', focusPlaceholder: '例如：特别关注授权边界。', focusHint: '评审器始终会检查正确性、安全性、可靠性、数据丢失和回归。',
       when: '何时评审', readyTitle: '已准备好的 Pull Request', readyBody: '评审新建的 Pull Request，以及从草稿转为准备好的 Pull Request。',
       updatesTitle: '有新提交时', updatesBody: 'Pull Request 的最新提交发生变化时重新评审。',

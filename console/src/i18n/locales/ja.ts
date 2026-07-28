@@ -1284,7 +1284,7 @@ export default {
       eyebrow: 'GitHub コードレビュー', title: 'Pull Request をレビュー', subtitle: '新しい手順を覚えなくても、GitHub ネイティブのレビューを有効にできます。',
       defaultName: 'Pull Request レビュー', setup: 'レビュー設定',
       automaticTitle: 'デフォルトで自動', automaticBody: 'Pull Request の準備が整った時と、新しいコミットごとに App がレビューします。',
-      repeatTitle: 'GitHub から再実行', repeatBody: 'もう一度確認したい時は、Pull Request のコメントで App をメンションします。',
+      repeatTitle: 'GitHub から再実行', repeatBody: 'このコマンドを Pull Request のコメントに貼り付けます。GitHub の @ 補完にカスタム App が出ない場合でも、完全なコマンドで起動できます。',
       focus: 'レビューの重点（任意）', focusPlaceholder: '例：認可境界を特に確認する。', focusHint: '正確性、セキュリティ、信頼性、データ損失、回帰は常に確認します。',
       when: 'レビューするタイミング', readyTitle: '準備済みの Pull Request', readyBody: '新規 Pull Request と Draft 解除時にレビューします。',
       updatesTitle: '新しいコミット', updatesBody: 'Pull Request の先頭が変わると再レビューします。',

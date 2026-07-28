@@ -1399,7 +1399,7 @@ export default {
       automaticTitle: 'Automatic by default',
       automaticBody: 'The App reviews a pull request when it is ready and reviews each new commit.',
       repeatTitle: 'Repeat from GitHub',
-      repeatBody: 'Mention the App in any pull request comment whenever you want another pass.',
+      repeatBody: 'Paste this command in any pull request comment. GitHub may not autocomplete custom Apps after @, but the literal command is supported.',
       focus: 'Review focus (optional)',
       focusPlaceholder: 'For example: pay special attention to authorization boundaries.',
       focusHint: 'The reviewer always checks correctness, security, reliability, data loss, and regressions.',

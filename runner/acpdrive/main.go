@@ -149,7 +149,7 @@ func parseFlags(args []string) (*cliOpts, error) {
 	fs.Var(&o.agentArgs, "agent-arg", "extra arg passed to the agent (repeatable); defaults to [acp]")
 	fs.StringVar(&o.workspace, "workspace", os.Getenv("WORKSPACE"), "working directory the session runs against")
 	fs.StringVar(&o.prompt, "prompt", os.Getenv("TASK_PROMPT"), "task prompt to send (first turn, in --session mode)")
-	fs.DurationVar(&o.timeout, "timeout", 5*time.Minute, "hard ceiling for the whole run")
+	fs.DurationVar(&o.timeout, "timeout", 12*time.Hour, "hard ceiling for the whole run")
 	fs.BoolVar(&o.verbose, "verbose", false, "log ACP protocol details to stderr")
 	fs.BoolVar(&o.session, "session", os.Getenv("RUN_SESSION") == "1", "multi-turn session mode: loop session/prompt over long-polled follow-up messages instead of exiting after one turn (env RUN_SESSION=1); see docs/14-cloud-v2-design.md §3 (D22)")
 	fs.StringVar(&o.turnHook, "turn-hook", os.Getenv("TURN_HOOK"), "path to a script run synchronously after each turn in --session mode (env TURN_HOOK); ignored when --session is false")
@@ -245,6 +245,7 @@ func main() {
 
 func run(ctx context.Context, agentBin string, agentArgs []string, workspace, prompt, resume string, verbose bool) error {
 	cmd := exec.CommandContext(ctx, agentBin, agentArgs...)
+	configureProcessTree(cmd)
 	cmd.Dir = workspace
 	cmd.Stderr = os.Stderr // jcode logs go to stderr; stdout is the JSON-RPC channel
 	cmd.Env = os.Environ()
@@ -261,9 +262,7 @@ func run(ctx context.Context, agentBin string, agentArgs []string, workspace, pr
 		return fmt.Errorf("start %s: %w", agentBin, err)
 	}
 	defer func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
+		terminateProcessTree(cmd)
 		_ = cmd.Wait()
 	}()
 

@@ -1881,7 +1881,7 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 	// effective per-run budget. The Job's activeDeadlineSeconds is set SEPARATELY to
 	// this value PLUS a grace margin (see createJob/timeoutGrace) so the runner's
 	// own graceful timeout fires first and the "timeout" failure + partial artifact
-	// survive. entrypoint.sh otherwise defaults RUN_TIMEOUT to 300s.
+	// survive. entrypoint.sh otherwise defaults RUN_TIMEOUT to 43200s (12h).
 	if timeoutSecs > 0 {
 		env["RUN_TIMEOUT"] = fmt.Sprintf("%ds", timeoutSecs)
 	}

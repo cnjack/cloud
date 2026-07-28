@@ -38,7 +38,10 @@ data:
   # PodSpec.ServiceAccountName in internal/k8s/client.go buildJob().
   RUNNER_SERVICE_ACCOUNT: "runner"
   JOB_TTL_SECONDS: "3600"
-  RUN_TIMEOUT_SECONDS: "1800"
+  # Long code-review/agent jobs need room for deep repository work. Projects
+  # may still set a smaller explicit run_timeout_secs guardrail.
+  RUN_TIMEOUT_SECONDS: "43200"
+  SESSION_TTL_SECONDS: "43200"
   RUNNER_CPU_LIMIT: "2"
   RUNNER_MEMORY_LIMIT: "4Gi"
   RUNNER_CPU_REQUEST: "500m"

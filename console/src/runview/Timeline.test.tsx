@@ -54,7 +54,7 @@ describe('Timeline — task conversation rendering', () => {
 
     expect(screen.getAllByTestId('thread-message-assistant')).toHaveLength(1);
     expect(container.querySelector('[data-testid="thread-message-assistant"] strong')?.textContent).toBe('world');
-    expect(screen.getByText('jcode')).toBeTruthy();
+    expect(screen.getByText('JCODE')).toBeTruthy();
   });
 
   it('keeps fenced code chrome scoped and copies from the header action', async () => {
@@ -68,8 +68,9 @@ describe('Timeline — task conversation rendering', () => {
       ev(1, 'agent.text', { text: '```sh\npnpm test\n```' }),
     ]);
 
-    const prose = container.querySelector<HTMLElement>('[data-testid="thread-message-assistant"] > div:last-child');
-    expect(prose?.getAttribute('data-jcode-ui')).toBe('');
+    const message = container.querySelector<HTMLElement>('[data-testid="thread-message-assistant"] [data-jcode-ui]');
+    const prose = message?.querySelector<HTMLElement>('.jcode-prose');
+    expect(message?.getAttribute('data-jcode-ui')).toBe('');
     expect(prose?.classList.contains('jcode-prose')).toBe(true);
     const copy = screen.getByRole('button', { name: 'Copy code' });
     expect(copy.parentElement?.classList.contains('jcode-codeblock__bar')).toBe(true);
@@ -80,7 +81,7 @@ describe('Timeline — task conversation rendering', () => {
     expect(copy.textContent).toBe('Copied');
   });
 
-  it('groups paired tools into the compact progress rail from the design', () => {
+  it('renders paired tools through the jcode-ui activity group and registry', () => {
     const { container } = renderTimeline([
       ev(1, 'agent.tool_call', {
         name: 'execute',
@@ -106,26 +107,25 @@ describe('Timeline — task conversation rendering', () => {
       }),
     ]);
 
-    expect(screen.getByTestId('thread-progress')).toBeTruthy();
-    expect(container.querySelectorAll('[data-testid="thread-tool"]')).toHaveLength(2);
-    const rails = container.querySelectorAll('[data-testid="thread-tool-rail"]');
-    expect(rails).toHaveLength(2);
-    expect(rails[0]?.hasAttribute('data-last')).toBe(false);
-    expect(rails[1]?.getAttribute('data-last')).toBe('true');
-    expect(rails[0]?.textContent).toBe('');
-    expect(rails[1]?.textContent).toBe('');
-    expect(container.textContent).toContain('execute');
+    const group = screen.getByTestId('activity-group');
+    expect(group.getAttribute('data-jcode-ui')).toBe('');
+    fireEvent.click(group.querySelector('button')!);
+    expect(screen.getByTestId('activity-rows')).toBeTruthy();
+    fireEvent.click(container.querySelector<HTMLElement>('[data-tool-name="execute"] button')!);
+    expect(container.querySelector('.jcode-terminal__out')?.textContent).toContain('/workspace');
+    fireEvent.click(container.querySelector<HTMLElement>('[data-tool-name="read"] button')!);
+    expect(container.textContent).toContain('# Project');
   });
 
-  it('renders lifecycle information as compact run events instead of chat messages', () => {
+  it('renders lifecycle information through jcode-ui system messages', () => {
     const { container } = renderTimeline([
       ev(1, 'run.session', { resumed: true }),
       ev(2, 'session.finish', { reason: 'idle_timeout' }),
       ev(3, 'run.status', { status: 'succeeded' }),
     ]);
 
-    expect(container.querySelectorAll('[data-testid="thread-event"]')).toHaveLength(3);
-    expect(container.querySelectorAll('[data-testid="thread-message-system"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-testid="thread-message-system"]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-testid="thread-message-system"] [data-jcode-ui]')).toHaveLength(3);
     expect(container.textContent).toContain('Session resumed');
     expect(container.textContent).toContain('Session finished (idle timeout)');
     expect(container.textContent).toContain('Final status: Succeeded');

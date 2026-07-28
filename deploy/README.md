@@ -115,10 +115,11 @@ together mirror every variable read by
 (`internal/reconciler/reconciler.go` `jobEnv`) currently injects only
 `RUN_ID, TASK_PROMPT, ORCH_BASE_URL, MODEL_BASE_URL, MODEL_API_KEY, RUN_TOKEN,
 REPO_URL, REPO_BRANCH` into the runner Job env. The runner's
-`entrypoint.sh`, however, also reads optional `MODEL_NAME` (default
-`mock/mock-model`), `RUN_TIMEOUT`, `START_MOCKLLM`, `MOCK_SCENARIO` — none of
-which the orchestrator sets today, so the runner falls back to its own
-defaults (`mock/mock-model`, `300s`, unset/`0`). That's fine for this smoke
+`entrypoint.sh`, however, also reads optional `MODEL_NAME`, `RUN_TIMEOUT`,
+`START_MOCKLLM`, and `MOCK_SCENARIO`. The orchestrator supplies the effective
+model and timeout in managed runs; a standalone runner falls back to
+`RUN_TIMEOUT=43200s` and requires an explicit model unless the mock rig is
+enabled. That's fine for this smoke
 test because mockllm doesn't care what model name it's asked for, but if the
 integration work changes `MODEL_NAME` handling or expects the orchestrator to
 pass it, the ConfigMap in `base/orchestrator/configmap.yaml` and

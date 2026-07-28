@@ -21,7 +21,10 @@
 .reviewIntro > div + div { border-left: 1px solid var(--color-border-subtle); }
 .reviewIntro strong, .reviewOptions strong { color: var(--color-text); font-size: var(--fs-sm); }
 .reviewIntro span, .reviewOptions small { color: var(--color-text-dim); font-size: var(--fs-caption); line-height: 1.5; }
-.reviewIntro code { width: max-content; padding: 4px 7px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-panel); color: var(--color-text); font: var(--fs-caption) var(--font-mono); }
+.reviewCommand { display: inline-flex; width: max-content; max-width: 100%; align-items: center; gap: var(--space-2); padding: 4px 7px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-panel); color: var(--color-text); cursor: pointer; }
+.reviewCommand code { overflow: hidden; font: var(--fs-caption) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.reviewCommand span { color: var(--color-text-dim); font-size: var(--fs-tiny); }
+.reviewCommand:hover { border-color: var(--color-border-strong); background: var(--color-panel-hover); }
 .reviewOptions { display: grid; gap: var(--space-2); }
 .reviewOptions label { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-md); background: var(--color-bg-inset); }
 .reviewOptions label > span { display: grid; gap: 3px; }

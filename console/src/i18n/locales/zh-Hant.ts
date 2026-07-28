@@ -1284,7 +1284,7 @@ export default {
       eyebrow: 'GitHub 程式碼審查', title: '審查 Pull Request', subtitle: '無需讓團隊學習新流程，即可啟用實用的 GitHub 原生審查。',
       defaultName: 'Pull Request 審查', setup: '審查設定',
       automaticTitle: '預設自動審查', automaticBody: 'Pull Request 準備好後，App 會自動審查；後續每次提交新程式碼也會再次審查。',
-      repeatTitle: '直接從 GitHub 重複審查', repeatBody: '需要再看一次時，在任意 Pull Request 留言中提及 App 即可。',
+      repeatTitle: '直接從 GitHub 重複審查', repeatBody: '將此命令貼到任意 Pull Request 留言中。GitHub 的 @ 自動完成可能不顯示自訂 App，但完整命令可以正常觸發。',
       focus: '審查重點（選填）', focusPlaceholder: '例如：特別留意授權邊界。', focusHint: '審查器始終會檢查正確性、安全性、可靠性、資料遺失和回歸。',
       when: '何時審查', readyTitle: '已準備好的 Pull Request', readyBody: '審查新建的 Pull Request，以及從草稿轉為準備好的 Pull Request。',
       updatesTitle: '有新提交時', updatesBody: 'Pull Request 的最新提交發生變化時重新審查。',

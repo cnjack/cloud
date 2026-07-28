@@ -22,9 +22,11 @@ also ask the installed App directly:
 @jcode-cloud-app full review
 ```
 
-`@jcode review` remains a compatibility alias. The Console presents the actual
-App handle observed from GitHub, so the primary command is discoverable and is
-a real GitHub reference.
+`@jcode review` remains a compatibility alias. The Console presents and copies
+the exact comment command observed for the installed App. GitHub does **not**
+put arbitrary GitHub Apps in the `@` autocomplete menu, so this is a literal
+webhook command, not a linked user mention. A future true-autocomplete alias
+requires a separate GitHub user or organization identity.
 
 Every accepted request receives an eyes reaction, creates a `RunKindReview`,
 reviews the current head with repository context, and publishes one GitHub
@@ -83,7 +85,7 @@ prompt template. Saving creates a plugin Automation with `run_kind=review`.
 Unavailable dependencies show one corrective action beside the disabled
 primary action: install the App, connect a repository, configure a model, or
 update App permissions. After setup, the row shows policy, repository, model,
-the copyable real mention, and last Run outcome or actionable error. This page
+the copyable comment command, and last Run outcome or actionable error. This page
 does not become a second PR dashboard.
 
 ### 2.2 GitHub interaction
@@ -91,8 +93,8 @@ does not become a second PR dashboard.
 Supported grammar is deliberately small and case-insensitive:
 
 ```ebnf
-mention = "@" app-slug | "@jcode" ;
-command = mention, whitespace,
+command-prefix = "@" app-slug | "@jcode" ;
+command = command-prefix, whitespace,
           [ "full", whitespace ], "review",
           [ whitespace, focus ] ;
 ```
@@ -103,8 +105,9 @@ Delivery IDs remain idempotent while comment IDs preserve repeatability.
 
 Selecting the App in GitHub's reviewer picker is a compatible future entry
 point, but it is not claimed at launch: GitHub does not provide the same
-review-request webhook semantics for every App installation. Mention and
-automatic PR-event triggers are the verified contract.
+review-request webhook semantics for every App installation. Literal comment
+commands and automatic PR-event triggers are the verified contract. The setup
+UI must not call the command a native mention or imply GitHub autocomplete.
 
 ## 3. Review quality contract
 
@@ -277,7 +280,7 @@ branch.
 - review setup is the primary entry, uses correct defaults, and saves
   `run_kind=review`;
 - each missing dependency has one corrective action;
-- actual App mention is copyable;
+- exact App comment command is copyable, with the autocomplete limitation visible;
 - all five supported locales and keyboard/narrow layouts work;
 - the POC's reversed balance check produces one inline finding;
 - after the fix, a repeated mention produces an explicit clean review;
@@ -301,7 +304,9 @@ The first concept exposed automatic/manual/incremental/full modes, thresholds,
 event matrices, prompt text, and commands together. Review found:
 
 1. it taught infrastructure, so the primary action is now intent-based;
-2. it presented `@jcode` like a native reference, so the UI uses observed slug;
+2. it presented `@jcode` like a native reference; the UI now calls the observed
+   slug a copyable comment command and explains that custom Apps are not in
+   GitHub's `@` autocomplete;
 3. it risked bot noise, so start feedback is a reaction and output is one
    confidence-filtered review with an explicit clean result;
 4. it blurred future work, so native reviewer selection and true

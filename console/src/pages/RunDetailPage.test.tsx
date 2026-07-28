@@ -192,6 +192,32 @@ describe('RunDetailPage — resilient error states', () => {
     expect(screen.queryByTestId('tab-events')).toBeNull();
   });
 
+  it('truncates a long task title with the complete prompt available on hover', async () => {
+    const prompt = '# A deliberately long task title\n\n## Details\n' + 'keep this context '.repeat(40);
+    const { client, ctl } = makeClient('member');
+    const run = baseRun({ prompt });
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+
+    const title = await screen.findByTestId('run-task-title');
+    expect(title.getAttribute('title')).toBe(prompt);
+    expect(title.className).toContain('taskTitle');
+  });
+
+  it('renders the initial prompt with the jcode-ui Markdown pipeline', async () => {
+    const prompt = '# Task\n\n## Priority\n\n- High\n- Safe\n\nUse `jcode-ui`.';
+    const { client, ctl } = makeClient('member');
+    const run = baseRun({ prompt });
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+
+    const initial = await screen.findByTestId('run-initial-prompt');
+    expect(initial.querySelector('[data-jcode-ui]')).toBeTruthy();
+    expect(initial.querySelector('h1')?.textContent).toBe('Task');
+    expect([...initial.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['High', 'Safe']);
+    expect(initial.querySelector('code')?.textContent).toBe('jcode-ui');
+  });
+
   it('returns to the run service instead of the first project service', async () => {
     const { client, ctl } = makeClient('member');
     const run = baseRun({ service_id: 'svc-2' });

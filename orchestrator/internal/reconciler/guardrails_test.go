@@ -187,7 +187,7 @@ func TestZeroProjectLimitInherits(t *testing.T) {
 // grace, so the runner's own timeout fires before the hard k8s kill).
 func TestRunTimeoutProjectOverride(t *testing.T) {
 	ctx := context.Background()
-	rec, st, fake := testRec(t, 10) // cfg.RunTimeoutSecs defaults to 1800
+	rec, st, fake := testRec(t, 10)
 	to := int64(600)
 	_, ids := seedGuardrailProject(t, st, &domain.Project{RunTimeoutSecs: &to}, 1)
 
@@ -212,19 +212,20 @@ func TestRunTimeoutProjectOverride(t *testing.T) {
 }
 
 // TestRunTimeoutClusterDefault: with no project override RUN_TIMEOUT uses the
-// cluster default (1800) and the Job deadline is 1800 + grace.
+// cluster default (12h) and the Job deadline is 12h + grace.
 func TestRunTimeoutClusterDefault(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 10)
+	rec.cfg.RunTimeoutSecs = 43200
 	_, _ = seedGuardrailProject(t, st, &domain.Project{RunTimeoutSecs: nil}, 1)
 
 	rec.Tick(ctx)
 
 	spec := fake.Created[0]
-	if spec.Env["RUN_TIMEOUT"] != "1800s" {
-		t.Fatalf("RUN_TIMEOUT=%q want 1800s (cluster default)", spec.Env["RUN_TIMEOUT"])
+	if spec.Env["RUN_TIMEOUT"] != "43200s" {
+		t.Fatalf("RUN_TIMEOUT=%q want 43200s (cluster default)", spec.Env["RUN_TIMEOUT"])
 	}
-	wantDeadline := int64(1800) + timeoutGrace(1800) // 1800 + max(120, 180) = 1980
+	wantDeadline := int64(43200) + timeoutGrace(43200)
 	if spec.TimeoutSeconds != wantDeadline {
 		t.Fatalf("JobSpec.TimeoutSeconds=%d want %d (RUN_TIMEOUT + grace)", spec.TimeoutSeconds, wantDeadline)
 	}

@@ -158,6 +158,7 @@ func (c *sessionConfig) permissionTimeout() time.Duration {
 // same way regardless of mode — session mode needs no bespoke reporting path.
 func runSession(ctx context.Context, cfg sessionConfig) error {
 	cmd := exec.CommandContext(ctx, cfg.AgentBin, cfg.AgentArgs...)
+	configureProcessTree(cmd)
 	cmd.Dir = cfg.Workspace
 	cmd.Stderr = os.Stderr // jcode logs go to stderr; stdout is the JSON-RPC channel
 	cmd.Env = os.Environ()
@@ -177,9 +178,7 @@ func runSession(ctx context.Context, cfg sessionConfig) error {
 	// it runs LAST (defers are LIFO): the best-effort graceful stdin.Close()
 	// below runs before this, giving jcode a chance to flush its recorder.
 	defer func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
+		terminateProcessTree(cmd)
 		_ = cmd.Wait()
 	}()
 	defer func() { _ = stdin.Close() }()

@@ -194,7 +194,7 @@ if [ "${RUN_ARCHIVE:-0}" = "1" ]; then
   log "archive upload complete"
   exit 0
 fi
-RUN_TIMEOUT="${RUN_TIMEOUT:-300s}"
+RUN_TIMEOUT="${RUN_TIMEOUT:-43200s}"
 RUN_KIND="${RUN_KIND:-agent}"
 SOURCE_MODE="${SOURCE_MODE:-clone}"
 GIT_MODE="${GIT_MODE:-readonly}"

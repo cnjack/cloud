@@ -300,7 +300,7 @@ orchestrator 的兜底分类**不覆盖**它。
 
 ```json
 { "name": "demo2", "max_concurrent_runs": 2, "run_timeout_secs": 900,
-  "max_live_sessions": 2, "session_idle_timeout_secs": 900, "session_ttl_secs": 14400 }
+  "max_live_sessions": 2, "session_idle_timeout_secs": 900, "session_ttl_secs": 43200 }
 ```
 
 - **presence 语义(D15b)**:省略的字段不变;数值护栏显式发 `null` 或 ≤0 清回
@@ -315,7 +315,7 @@ orchestrator 的兜底分类**不覆盖**它。
 - **session 护栏(F7 / D22)**:`max_live_sessions`(project 内 live session 数
   上限,集群默认 `MAX_LIVE_SESSIONS`=2)、`session_idle_timeout_secs`
   (`awaiting_input` 空闲自动收尾,集群默认 900s)、`session_ttl_secs`
-  (整个 session 墙钟预算,集群默认 14400s)。
+  (整个 session 墙钟预算,集群默认 43200s / 12h)。
 - **明示:live session 总量只受 per-project `max_live_sessions` 闸约束,没有
   集群级上限**——集群级 `MAX_CONCURRENT_RUNS` 只管 scheduling/running 的调度槽,
   `awaiting_input` 的保活 pod 不占用它;project 数量多且并发开 session 时,
@@ -676,7 +676,7 @@ runner、版本等运行时快照。**只读**,console bearer token 鉴权(同�
     "scheduling": 1             // 跨所有 project 的 scheduling 计数
   },
   "guardrails": {
-    "run_timeout_seconds": 1800,  // RUN_TIMEOUT_SECONDS(Job activeDeadlineSeconds)
+    "run_timeout_seconds": 43200, // RUN_TIMEOUT_SECONDS (12h runner budget)
     "job_ttl_seconds": 3600       // JOB_TTL_SECONDS(完成后 Job 回收)
   },
   "provider":  {
@@ -1299,7 +1299,7 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
 | `MODEL_NAME` | 生效模型配置(DB 行优先,env 兜底)。**必填,无 mock 默认**(fail-visible 红线 D14;唯一例外:runner 独立运行时 `START_MOCKLLM=1` 显式声明 mock rig) | jcode 的 `provider/model` 标识;runner 据此为未知 provider 写 `custom_models` 配置项 |
 | `ORCH_BASE_URL` | 环境 `ORCH_BASE_URL` | orchestrator 基址,runner 回传事件/产物用 |
 | `RUN_TOKEN` | 每 run 随机生成 | Bearer,仅本 run 有效;打 `/internal/v1/runs/{RUN_ID}/*` |
-| `RUN_SESSION` | `run.session`(**F7 / D22**) | `1` = 多轮 session 模式:acpdrive 每轮后跑 turn-hook(逐轮 diff/commit/bundle)→ `POST turn-complete` → 长轮询 `GET next-prompt`(§5.3/§5.4)。**单发 run 不注入,行为不变**。session run 的 `RUN_TIMEOUT` 与 Job `activeDeadlineSeconds` 改用 session TTL(project `session_ttl_secs`,缺省集群 `SESSION_TTL_SECONDS`=14400s)——`--timeout` 包住整个 session 含 idle 等待 |
+| `RUN_SESSION` | `run.session`(**F7 / D22**) | `1` = 多轮 session 模式:acpdrive 每轮后跑 turn-hook(逐轮 diff/commit/bundle)→ `POST turn-complete` → 长轮询 `GET next-prompt`(§5.3/§5.4)。**单发 run 不注入,行为不变**。session run 的 `RUN_TIMEOUT` 与 Job `activeDeadlineSeconds` 改用 session TTL(project `session_ttl_secs`,缺省集群 `SESSION_TTL_SECONDS`=43200s)——`--timeout` 包住整个 session 含 idle 等待 |
 | `RUN_PERMISSION_MODE` | `run.permission_mode`(**F8b / D22**) | `approval` = acpdrive 把每个 jcode 权限请求转发审批(§4 权限事件 + §5.5 决议轮询)。**仅 `permission_mode=approval` 的 session run 注入;其余 run(含 full_access session)两个变量都不注入**——runner 缺省即 full_access,行为不变 |
 | `PERMISSION_TIMEOUT_SECONDS` | reconciler 计算(**F8b**) | 单个审批等待预算 = `min(300, session_ttl/4)`(下限 1s,TTL≤0 时取 300)。强制审批超时 **≪** session TTL(F8a 要求:整轮阻塞在 RequestPermission 里,超时过大将把一次没人理的审批烧成整 run 的硬 `RUN_TIMEOUT` 失败)。超时后 runner timeout-deny(reject 类 option / Cancelled),run 继续 |
 | `GIT_MODE` | project.git_mode(缺 token/host 不匹配时降级) | **(ST-1)** `readonly`(默认,diff-only)\| `draft_pr`(推分支) |

@@ -208,7 +208,7 @@ docker run --rm \
 (`provider/model`; all required — there is NO mock default, fail-visible red
 line; `START_MOCKLLM=1` is the one exception: the bundled mock rig supplies
 `MODEL_BASE_URL`/`MODEL_NAME` itself); `MODEL_API_KEY` (defaults `dummy-key`),
-`MODEL_PROVIDER`, `RUN_TIMEOUT` (default `300s`), `START_MOCKLLM`,
+`MODEL_PROVIDER`, `RUN_TIMEOUT` (default `43200s` / 12h), `START_MOCKLLM`,
 `MOCK_SCENARIO` (optional).
 
 **M3 runner contract (credential-free; blueprint §3):** the runner never holds a
