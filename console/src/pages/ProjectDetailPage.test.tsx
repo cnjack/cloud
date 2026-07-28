@@ -31,6 +31,7 @@ import type {
   UpdateServiceInput,
 } from '../api/types';
 import { pickOption } from '../test/select';
+import { qk } from '../api/queries';
 
 import { ProjectDetailPage } from './ProjectDetailPage';
 
@@ -152,7 +153,7 @@ function renderPage(
   initialEntry = '/projects/p1',
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  const rendered = render(
     <QueryClientProvider client={qc}>
       <ApiProvider client={client} role={role}>
         <ToastProvider>
@@ -168,6 +169,7 @@ function renderPage(
       </ApiProvider>
     </QueryClientProvider>,
   );
+  return { qc, ...rendered };
 }
 
 function LocationProbe() {
@@ -212,6 +214,26 @@ function renderSwitchablePage(client: ApiClient) {
 }
 
 describe('ProjectDetailPage — single-repo composer', () => {
+  it('carries the terminal list snapshot into the run detail cache on navigation', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    const succeeded: Run = {
+      id: 'run-terminal',
+      project_id: 'p1',
+      service_id: 'svc_default',
+      prompt: 'finished task',
+      status: 'succeeded',
+      created_at: '2026-07-28T08:00:00Z',
+      finished_at: '2026-07-28T08:05:00Z',
+    };
+    (client as { listRuns: ApiClient['listRuns'] }).listRuns = async () => [succeeded];
+
+    const { qc } = renderPage(client);
+    fireEvent.click(await screen.findByTestId('run-row'));
+
+    expect(qc.getQueryData(qk.run(succeeded.id))).toEqual(succeeded);
+    expect(await screen.findByTestId('run-page')).toBeTruthy();
+  });
+
   it('opens the server-derived provider repository URL from the Service header', async () => {
     const service = svc('svc_default', 'default');
     const { client } = makeClient(project('owner', [service]));

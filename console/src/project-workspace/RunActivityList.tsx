@@ -1,10 +1,13 @@
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import { StatusBadge } from '../components/StatusBadge';
 import { shortId, summarize, timeAgo } from '../lib/format';
 import type { Run } from '../api/types';
+import { qk } from '../api/queries';
+import { reconcileRunSnapshot } from '../api/runCache';
 import { runKindLabel } from './presentation';
 import styles from './RunActivityList.module.css';
 
@@ -28,6 +31,7 @@ export function RunActivityList({
   canRun: boolean;
 }) {
   const { t } = useTranslation();
+  const qc = useQueryClient();
   return (
     <section className={styles.section} aria-labelledby="recent-tasks-heading">
       <div className={styles.head}>
@@ -81,6 +85,11 @@ export function RunActivityList({
                 data-run-id={run.id}
                 data-status={run.status}
                 aria-label={t('runActivity.runAria', { kind: runKindLabel(run), summary: summarize(run.prompt), status: run.status })}
+                onClick={() => {
+                  qc.setQueryData<Run>(qk.run(run.id), (current) =>
+                    reconcileRunSnapshot(current, run),
+                  );
+                }}
               >
                 <span className={styles.origin} data-kind={run.kind ?? 'agent'} aria-hidden />
                 <span className={styles.copy}>

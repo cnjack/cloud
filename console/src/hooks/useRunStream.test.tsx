@@ -16,7 +16,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
 import type { ApiClient, StreamCallbacks, StreamHandle } from '../api/client';
 import { ApiError } from '../api/client';
-import type { RunEvent, RunStatus } from '../api/types';
+import type { Run, RunEvent, RunStatus } from '../api/types';
+import { qk } from '../api/queries';
 import { useRunStream } from './useRunStream';
 
 function statusEvent(seq: number, status: RunStatus): RunEvent {
@@ -69,6 +70,41 @@ function wrapper(client: ApiClient) {
 }
 
 describe('useRunStream — cursor + lifecycle', () => {
+  it('never regresses a terminal run cache from stale backlog or full-run frames', async () => {
+    const { client, streamCalls } = makeFakeClient([statusEvent(1, 'running')]);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const succeeded: Run = {
+      id: 'run1',
+      project_id: 'proj1',
+      prompt: 'finished task',
+      status: 'succeeded',
+      created_at: '2026-07-28T08:00:00Z',
+      finished_at: '2026-07-28T08:05:00Z',
+    };
+    qc.setQueryData(qk.run('run1'), succeeded);
+    const Wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>
+        <ApiProvider client={client}>{children}</ApiProvider>
+      </QueryClientProvider>
+    );
+
+    renderHook(() => useRunStream('run1'), { wrapper: Wrapper });
+    await waitFor(() => expect(streamCalls.length).toBe(1));
+    await waitFor(() => expect(qc.getQueryData<Run>(qk.run('run1'))?.status).toBe('succeeded'));
+
+    act(() => {
+      streamCalls[0]!.cb.onFrame({
+        event: 'run.status',
+        data: {
+          ...statusEvent(2, 'running'),
+          run: { ...succeeded, status: 'running', finished_at: null },
+        } as RunEvent & { run: Run },
+      });
+    });
+
+    expect(qc.getQueryData<Run>(qk.run('run1'))).toEqual(succeeded);
+  });
+
   it('opens the live stream from the backlog last seq (after_seq), not 0', async () => {
     // Backlog already has events up to seq 4 — the stream must resume from 4.
     const backlog = [

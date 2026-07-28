@@ -38,6 +38,7 @@ import type {
   UpdateServiceInput,
 } from './types';
 import { isTerminal } from './types';
+import { reconcileRunSnapshot } from './runCache';
 
 export const qk = {
   me: ['me'] as const,
@@ -154,9 +155,16 @@ export function useRuns(projectId: string) {
 
 export function useRun(runId: string, pollWhileNonTerminal = false) {
   const api = useApi();
+  const qc = useQueryClient();
   return useQuery({
     queryKey: qk.run(runId),
-    queryFn: () => api.getRun(runId),
+    queryFn: async () => {
+      const incoming = await api.getRun(runId);
+      return reconcileRunSnapshot(
+        qc.getQueryData<Run>(qk.run(runId)),
+        incoming,
+      );
+    },
     enabled: !!runId,
     // Polling fallback: when the live SSE stream is unavailable (e.g. a fatal
     // stream error), advance the run status by polling GET /runs/{id} while the

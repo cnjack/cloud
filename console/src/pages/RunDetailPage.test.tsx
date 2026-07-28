@@ -112,6 +112,22 @@ function renderPage(client: ApiClient, seed?: Run) {
 }
 
 describe('RunDetailPage — resilient error states', () => {
+  it('never regresses a terminal cached run to a stale non-terminal GET response', async () => {
+    const { client, ctl } = makeClient();
+    const succeeded = baseRun({
+      status: 'succeeded',
+      finished_at: '2026-07-07T00:05:00Z',
+    });
+    ctl.getRun.mockResolvedValue(baseRun({ status: 'running', finished_at: null }));
+
+    renderPage(client, succeeded);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('run-status-header').getAttribute('data-status')).toBe('succeeded'),
+    );
+    expect(screen.queryByTestId('cancel-btn')).toBeNull();
+  });
+
   it('repositions a restored long response when its DOM content lands after mount', async () => {
     const mutationObservers: { callback: MutationCallback; target?: Node }[] = [];
     class TestMutationObserver {

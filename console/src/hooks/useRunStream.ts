@@ -24,6 +24,7 @@ import {
   type EventState,
 } from '../api/eventReducer';
 import { isTerminal, type Run, type RunEvent } from '../api/types';
+import { reconcileRunSnapshot, reconcileRunStatus } from '../api/runCache';
 
 export type StreamPhase = 'connecting' | 'live' | 'closed' | 'error';
 
@@ -68,9 +69,7 @@ export function useRunStream(runId: string, enabled = true) {
   useEffect(() => {
     if (!derivedStatus) return;
     qc.setQueryData<Run>(qk.run(runId), (prev) =>
-      prev && prev.status !== derivedStatus
-        ? { ...prev, status: derivedStatus }
-        : prev,
+      reconcileRunStatus(prev, derivedStatus),
     );
     // On terminal status, refetch the authoritative run so late-populated fields
     // (failure_reason / failure_message / finished_at / pr_url) land in the
@@ -176,7 +175,11 @@ export function useRunStream(runId: string, enabled = true) {
           dispatch({ kind: 'events', events: [frame.data] });
           // run.status frames may carry the full run object.
           const maybeRun = (frame.data as { run?: Run }).run;
-          if (maybeRun) qc.setQueryData(qk.run(runId), maybeRun);
+          if (maybeRun) {
+            qc.setQueryData<Run>(qk.run(runId), (prev) =>
+              reconcileRunSnapshot(prev, maybeRun),
+            );
+          }
         },
         onError: () => {
           if (!cancelled) setPhase('error');
