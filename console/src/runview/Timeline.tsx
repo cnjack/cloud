@@ -16,6 +16,7 @@ import {
   isTurnChangesItem,
   type ThreadItem,
 } from 'jcode-ui';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PermissionCard } from '@jcloud/device-ui';
 import { timelineCss as styles } from '@jcloud/device-ui';
@@ -40,7 +41,10 @@ export function Timeline({
   permissions?: PermissionControls;
 }) {
   const { t } = useTranslation();
-  const items = appendTurnChangeSummaries(groupActivityTimeline(toThreadItems(events)), { isRunning });
+  const items = useMemo(
+    () => appendTurnChangeSummaries(groupActivityTimeline(toThreadItems(events)), { isRunning }),
+    [events, isRunning],
+  );
 
   return (
     <div className={styles.wrap} data-testid="event-timeline">

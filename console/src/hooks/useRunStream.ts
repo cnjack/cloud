@@ -3,7 +3,7 @@
  * (GET /events) then follow live (SSE), feeding both into the pure reducer.
  *
  * Flow (matches AC-7 "refresh/reconnect can fully replay"):
- *   1. fetch backlog via listEvents(after_seq=0)  → seeds the reducer
+ *   1. fetch backlog in bounded REST pages         → seeds the reducer once
  *   2. open streamRun(after_seq=lastSeq)           → server replays gap + live
  *   3. reducer dedupes by seq, so overlap between (1) and (2) is harmless
  *
@@ -34,7 +34,15 @@ interface StreamStateWrap {
 
 type Action =
   | { kind: 'events'; events: RunEvent[] }
+  | { kind: 'hydrate'; state: EventState }
   | { kind: 'reset' };
+
+// The list endpoint caps pages at 1,000. Runs above that threshold previously
+// spilled the rest of their history into SSE, where one React dispatch per
+// frame repeatedly rebuilt the entire Markdown timeline. Paging REST to
+// completion keeps transfers bounded while letting React restore history in
+// one commit.
+const REPLAY_PAGE_SIZE = 1000;
 
 function reducer(s: StreamStateWrap, a: Action): StreamStateWrap {
   switch (a.kind) {
@@ -42,6 +50,8 @@ function reducer(s: StreamStateWrap, a: Action): StreamStateWrap {
       const next = reduceEvents(s.state, a.events);
       return next === s.state ? s : { state: next };
     }
+    case 'hydrate':
+      return { state: a.state };
     case 'reset':
       return { state: initialEventState() };
   }
@@ -149,21 +159,44 @@ export function useRunStream(runId: string, enabled = true) {
     setPhase('connecting');
 
     (async () => {
-      // 1. Replay backlog.
+      // 1. Replay the complete backlog in bounded REST pages, then hydrate the
+      // reducer once. This prevents 1,000+ event runs from falling through to
+      // one-SSE-frame/one-render historical replay.
       let afterSeq = 0;
+      const backlog: RunEvent[] = [];
+      let replayComplete = false;
       try {
-        const backlog = await api.listEvents(runId, 0);
-        if (cancelled) return;
-        if (backlog.length) {
-          dispatch({ kind: 'events', events: backlog });
-          // Cursor for the live stream comes straight from the backlog — the
-          // reducer/ref is only updated during render, so reading it here (same
-          // synchronous tick) would still be 0 and force a full re-replay.
-          // Backlog is seq-ascending per the contract; Math.max guards drift.
-          afterSeq = backlog.reduce((m, e) => Math.max(m, e.seq), 0);
+        while (true) {
+          const page = await api.listEvents(runId, afterSeq, REPLAY_PAGE_SIZE);
+          if (cancelled) return;
+          backlog.push(...page);
+          if (page.length < REPLAY_PAGE_SIZE) {
+            replayComplete = true;
+            break;
+          }
+          const nextSeq = page.reduce((highest, event) => Math.max(highest, event.seq), afterSeq);
+          if (nextSeq <= afterSeq) break;
+          afterSeq = nextSeq;
         }
       } catch {
-        // Non-fatal: the stream will replay from 0 anyway.
+        // Non-fatal: preserve every completed page and let SSE replay from the
+        // last durable cursor rather than dropping already-loaded history.
+      }
+      if (cancelled) return;
+      if (backlog.length) {
+        const hydrated = reduceEvents(initialEventState(), backlog);
+        dispatch({ kind: 'hydrate', state: hydrated });
+        afterSeq = hydrated.lastSeq;
+        // Only a fully paged terminal backlog is authoritative. If a later page
+        // failed, SSE still needs to replay the missing tail.
+        if (
+          replayComplete
+          && hydrated.derivedStatus
+          && isTerminal(hydrated.derivedStatus)
+        ) {
+          setPhase('closed');
+          return;
+        }
       }
       if (cancelled) return;
 

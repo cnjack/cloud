@@ -126,13 +126,13 @@ describe('httpClient — request shaping', () => {
     expect(runs[0]!.id).toBe('r1');
   });
 
-  it('builds the events URL with after_seq and unwraps the envelope', async () => {
+  it('builds the events URL with after_seq and an optional replay limit', async () => {
     const { calls } = mockFetch(() => ({
       body: { events: [{ seq: 8, ts: '', type: 'agent.text', payload: {} }] },
     }));
     const client = createHttpClient('t');
-    const events = await client.listEvents('run1', 7);
-    expect(calls[0]!.url).toBe('/api/v1/runs/run1/events?after_seq=7');
+    const events = await client.listEvents('run1', 7, 1000);
+    expect(calls[0]!.url).toBe('/api/v1/runs/run1/events?after_seq=7&limit=1000');
     expect(events[0]!.seq).toBe(8);
   });
 

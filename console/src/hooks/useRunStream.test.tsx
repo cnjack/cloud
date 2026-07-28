@@ -121,6 +121,70 @@ describe('useRunStream — cursor + lifecycle', () => {
     expect(streamCalls[0]!.afterSeq).toBe(4);
   });
 
+  it('loads large history in REST pages before opening one live stream', async () => {
+    const firstPage = Array.from({ length: 1000 }, (_, index) =>
+      textEvent(index + 1, `chunk-${index + 1}`),
+    );
+    const finalPage = [
+      textEvent(1001, 'tail'),
+      statusEvent(1002, 'running'),
+    ];
+    const listEvents = vi.fn(async (_runId: string, afterSeq = 0, limit?: number) => {
+      expect(limit).toBe(1000);
+      if (afterSeq === 0) return firstPage;
+      if (afterSeq === 1000) return finalPage;
+      return [];
+    });
+    const { client, streamCalls } = makeFakeClient([]);
+    client.listEvents = listEvents;
+
+    const { result } = renderHook(() => useRunStream('run1'), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(streamCalls.length).toBe(1));
+    expect(listEvents.mock.calls.map((call) => call[1])).toEqual([0, 1000]);
+    expect(streamCalls[0]!.afterSeq).toBe(1002);
+    expect(result.current.events).toHaveLength(1002);
+  });
+
+  it('does not reopen SSE after a fully restored terminal history', async () => {
+    const backlog = [
+      statusEvent(1, 'queued'),
+      textEvent(2, 'done'),
+      statusEvent(3, 'succeeded'),
+    ];
+    const { client, streamCalls } = makeFakeClient(backlog);
+    const { result } = renderHook(() => useRunStream('run1'), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(result.current.phase).toBe('closed'));
+    expect(result.current.events).toHaveLength(3);
+    expect(result.current.terminal).toBe(true);
+    expect(streamCalls).toHaveLength(0);
+  });
+
+  it('keeps completed pages when a later history page fails', async () => {
+    const firstPage = Array.from({ length: 1000 }, (_, index) =>
+      textEvent(index + 1, `chunk-${index + 1}`),
+    );
+    const listEvents = vi.fn(async (_runId: string, afterSeq = 0) => {
+      if (afterSeq === 0) return firstPage;
+      throw new ApiError(503, 'history temporarily unavailable');
+    });
+    const { client, streamCalls } = makeFakeClient([]);
+    client.listEvents = listEvents;
+
+    const { result } = renderHook(() => useRunStream('run1'), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(streamCalls.length).toBe(1));
+    expect(result.current.events).toHaveLength(1000);
+    expect(streamCalls[0]!.afterSeq).toBe(1000);
+  });
+
   it('F11: keeps polling the run after terminal so a late pr_url lands without reload', async () => {
     vi.useFakeTimers();
     try {

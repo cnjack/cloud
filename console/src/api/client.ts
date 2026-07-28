@@ -167,8 +167,8 @@ export interface ApiClient {
    */
   requestReview(runId: string): Promise<Run>;
 
-  /** Replay events with seq > afterSeq (0 = from start). */
-  listEvents(runId: string, afterSeq?: number): Promise<RunEvent[]>;
+  /** Replay events with seq > afterSeq (0 = from start), optionally bounded. */
+  listEvents(runId: string, afterSeq?: number, limit?: number): Promise<RunEvent[]>;
   /** Subscribe to the live SSE stream (replay-after-seq then live). */
   streamRun(
     runId: string,
@@ -521,12 +521,15 @@ export function createHttpClient(
         method: 'POST',
       }),
 
-    listEvents: async (runId, afterSeq = 0) =>
-      (
+    listEvents: async (runId, afterSeq = 0, limit) => {
+      const params = new URLSearchParams({ after_seq: String(afterSeq) });
+      if (limit !== undefined) params.set('limit', String(limit));
+      return (
         await req<EventsEnvelope>(
-          `/runs/${encodeURIComponent(runId)}/events?after_seq=${afterSeq}`,
+          `/runs/${encodeURIComponent(runId)}/events?${params}`,
         )
-      ).events,
+      ).events;
+    },
 
     streamRun: (runId, afterSeq, cb) => {
       // Native EventSource cannot set Authorization headers, so the token rides
