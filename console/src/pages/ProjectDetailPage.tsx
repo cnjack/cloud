@@ -103,7 +103,6 @@ export function ProjectDetailPage() {
   const role = p?.role ?? 'owner';
   const canRun = role !== 'viewer';
   const canManage = role === 'owner';
-  const multiService = services.length > 1;
   const workspaceLocation = resolveWorkspaceLocation(services, searchParams, canManage);
   const activeServiceId = workspaceLocation.serviceId;
   const activeService = services.find((service) => service.id === activeServiceId);
@@ -376,7 +375,10 @@ export function ProjectDetailPage() {
     deleteService.mutate(activeService.id, {
       onSuccess: () => {
         const next = new URLSearchParams(searchParams);
-        next.delete('service');
+        const firstRemaining = services.find((service) => service.id !== activeService.id);
+        if (firstRemaining) next.set('service', firstRemaining.id);
+        else next.delete('service');
+        next.set('tab', 'tasks');
         setSearchParams(next, { replace: true });
         toast.push({ kind: 'success', message: t('projectDetail.serviceDeleted', { name: activeService.name }) });
       },
@@ -545,11 +547,6 @@ export function ProjectDetailPage() {
                     </>
                   ) : (
                     <span>{t('projectDetail.noRepositoriesYet')}</span>
-                  )}
-                  {multiService && (
-                    <span className={styles.workspaceRepoCount} data-testid="repo-count">
-                      {t('projectDetail.repositoriesCount', { count: services.length })}
-                    </span>
                   )}
                 </div>
               </div>

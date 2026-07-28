@@ -570,7 +570,7 @@ describe('ProjectDetailPage — multi-repo workspace', () => {
 
     await screen.findByTestId('run-input');
     expect(screen.queryByTestId('composer-service-select')).toBeNull();
-    expect(screen.getByTestId('repo-count').textContent).toContain('2 repositories');
+    expect(screen.queryByTestId('repo-count')).toBeNull();
 
     fireEvent.click(screen.getByTestId('service-rail-svc_web'));
 
@@ -866,6 +866,26 @@ describe('ProjectDetailPage — zero-repo empty state', () => {
 
     await waitFor(() => expect(calls.serviceDeletes).toEqual(['svc_default']));
     expect(await screen.findByTestId('no-repo-empty')).toBeTruthy();
+  });
+
+  it('lands on the first remaining service after deleting the active service', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const services = [
+      svc('svc_first', 'first'),
+      svc('svc_default', 'default'),
+      svc('svc_active', 'active'),
+    ];
+    const { client, calls } = makeClient(project('owner', services));
+    renderPage(client, undefined, '/projects/p1?service=svc_active&tab=settings');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete active service' }));
+
+    await waitFor(() => expect(calls.serviceDeletes).toEqual(['svc_active']));
+    await waitFor(() => {
+      expect(screen.getByTestId('workspace-location').textContent).toContain('service=svc_first');
+      expect(screen.getByTestId('workspace-location').textContent).toContain('tab=tasks');
+    });
+    expect(screen.getByRole('heading', { name: 'first' })).toBeTruthy();
   });
 });
 
