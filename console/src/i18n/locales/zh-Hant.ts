@@ -1337,6 +1337,9 @@ export default {
     conclusion: 'CI 結果', conclusionHint: '僅當所有選取事件都是 check.completed 時可用。',
     events: '事件', moreEvents: '更多事件', thisProvider: '目前供應商', eventUnavailable: '{provider}{version} 不支援此事件。',
     cronExpression: 'Cron 表達式', cronHint: '使用五段式 Cron 表達式；伺服器會強制執行最小時間間隔。',
+    outputMode: '輸出方式', outputRun: '直接建立 Run', outputCard: '先建立 jtype Card，再由服務看板執行',
+    outputHint: 'Card 輸出會保留 jtype 工作項目，並沿用標準看板受理與回寫閉環。',
+    outputCardUnavailable: '請先啟用健康的服務看板，再選擇 Card 輸出。',
     create: '建立自動化', save: '儲存自動化',
     review: {
       eyebrow: 'GitHub 程式碼審查', title: '審查 Pull Request', subtitle: '無需讓團隊學習新流程，即可啟用實用的 GitHub 原生審查。',
@@ -1349,7 +1352,7 @@ export default {
       draftsTitle: '包含草稿', draftsBody: '通常保持關閉，讓作者先完成自己的第一輪檢查。',
       create: '開啟審查', save: '儲存審查設定',
     },
-    validation: { noPermission: '你沒有編輯自動化的權限。', required: '名稱、服務、模型與任務提示詞都是必填項目。', eventRequired: '請至少選擇一個此服務供應商支援的事件。', cronRequired: 'Cron 表達式為必填項目。' },
+    validation: { noPermission: '你沒有編輯自動化的權限。', required: '名稱、服務、模型與任務提示詞都是必填項目。', eventRequired: '請至少選擇一個此服務供應商支援的事件。', cronRequired: 'Cron 表達式為必填項目。', cardOutputUnavailable: 'Card 輸出需要健康的服務看板策略。' },
     apiError: {
       overlap: '此服務的另一個自動化已使用所選 SCM 事件中的至少一個。',
       webhook: '自動化已儲存，但無法同步供應商 Webhook。請檢查外掛連接後重試。',
@@ -1358,6 +1361,34 @@ export default {
       modelRequired: '請選擇已授權給此專案的模型。',
       effortUnsupported: '所選模型不支援推理強度，請使用「自動」或選擇推理模型。',
       generic: '無法儲存自動化，請重試。',
+    },
+  },
+
+  automationExecutions: {
+    loading: '正在載入自動化…', loadError: '無法載入自動化。', back: '返回自動化列表',
+    cardOutput: 'Card 輸出', runOutput: '直接 Run 輸出', runNow: '立即執行',
+    runNowError: '本次執行未能受理；重試會沿用同一個冪等鍵。',
+    history: '執行歷史', loadingHistory: '正在載入執行歷史…', historyError: '無法載入執行歷史。',
+    empty: '尚無執行記錄。', loadMore: '載入更早的執行', select: '選擇一筆執行記錄查看詳情。',
+    selected: '選取的執行', execution: '執行', trigger: '觸發來源', kind: '類型',
+    requested: '請求者', accountable: '負責人', notApplicable: '不適用', unattributed: '未歸因',
+    output: '輸出', expected: '預期', cardThenRun: 'jtype Card → 看板 Run', directRun: '直接 Run',
+    actual: '實際結果', writeback: '回寫', usage: '用量', usageUnavailable: '暫不可用',
+    filter: { all: '全部', blocked: '受阻', running: '執行中', terminal: '已結束' },
+    state: {
+      accepted: '已受理', ignored: '已忽略', duplicate: '重複',
+      superseded: '已取代', blocked: '受阻', queued: '排隊中',
+      running: '執行中', terminal: '已結束',
+    },
+    outcome: { succeeded: '成功', failed: '失敗', canceled: '已取消' },
+    repair: {
+      project_owner: '專案擁有者可以修復此依賴。',
+      cluster_admin: '需要叢集管理員修復此依賴。',
+      requester: '需要請求者修復此依賴。',
+    },
+    title: {
+      blocked: '在產生輸出前受阻', ignored: '觸發已依規則忽略',
+      card: 'Card 輸出', run: 'Run 輸出',
     },
   },
 

@@ -1337,6 +1337,9 @@ export default {
     conclusion: 'CI 결과', conclusionHint: '선택한 모든 이벤트가 check.completed인 경우에만 사용할 수 있습니다.',
     events: '이벤트', moreEvents: '추가 이벤트', thisProvider: '이 공급자', eventUnavailable: '{provider}{version}에서 지원하지 않습니다.',
     cronExpression: 'Cron 표현식', cronHint: '5개 필드 Cron 표현식을 사용합니다. 최소 간격은 서버에서 적용됩니다.',
+    outputMode: '출력', outputRun: 'Run 직접 생성', outputCard: 'jtype Card 생성 후 Service Kanban에서 실행',
+    outputHint: 'Card 출력은 jtype 작업 항목을 유지하고 표준 Kanban 접수 및 기록 흐름을 사용합니다.',
+    outputCardUnavailable: '정상 상태의 Service Kanban을 활성화한 후 Card 출력을 선택하세요.',
     create: '자동화 만들기', save: '자동화 저장',
     review: {
       eyebrow: 'GitHub 코드 리뷰', title: 'Pull Request 리뷰', subtitle: '팀이 새 흐름을 배우지 않아도 GitHub 네이티브 리뷰를 켤 수 있습니다.',
@@ -1349,7 +1352,7 @@ export default {
       draftsTitle: 'Draft 포함', draftsBody: '보통 끄고 작성자의 첫 검토가 끝날 때까지 기다립니다.',
       create: '리뷰 켜기', save: '리뷰 설정 저장',
     },
-    validation: { noPermission: '자동화를 편집할 권한이 없습니다.', required: '이름, 서비스, 모델 및 작업 프롬프트는 필수입니다.', eventRequired: '이 서비스 공급자가 지원하는 이벤트를 하나 이상 선택하세요.', cronRequired: 'Cron 표현식은 필수입니다.' },
+    validation: { noPermission: '자동화를 편집할 권한이 없습니다.', required: '이름, 서비스, 모델 및 작업 프롬프트는 필수입니다.', eventRequired: '이 서비스 공급자가 지원하는 이벤트를 하나 이상 선택하세요.', cronRequired: 'Cron 표현식은 필수입니다.', cardOutputUnavailable: 'Card 출력에는 정상 상태의 Service Kanban 정책이 필요합니다.' },
     apiError: {
       overlap: '선택한 SCM 이벤트 중 하나 이상을 이 서비스의 다른 자동화가 이미 사용하고 있습니다.',
       webhook: '자동화는 저장되었지만 공급자 Webhook을 동기화할 수 없습니다. 플러그인 연결을 확인하고 다시 시도하세요.',
@@ -1358,6 +1361,34 @@ export default {
       modelRequired: '이 프로젝트에 허용된 모델을 선택하세요.',
       effortUnsupported: '선택한 모델은 추론 강도를 지원하지 않습니다. 자동 또는 추론 모델을 사용하세요.',
       generic: '자동화를 저장할 수 없습니다. 다시 시도하세요.',
+    },
+  },
+
+  automationExecutions: {
+    loading: '자동화 불러오는 중…', loadError: '자동화를 불러오지 못했습니다.', back: '자동화 목록으로',
+    cardOutput: 'Card 출력', runOutput: '직접 Run 출력', runNow: '지금 실행',
+    runNowError: '실행을 접수하지 못했습니다. 재시도에도 같은 멱등성 키를 사용합니다.',
+    history: '실행 기록', loadingHistory: '실행 기록 불러오는 중…', historyError: '실행 기록을 불러오지 못했습니다.',
+    empty: '아직 실행 기록이 없습니다.', loadMore: '이전 실행 불러오기', select: '실행을 선택해 상세 내용을 확인하세요.',
+    selected: '선택한 실행', execution: '실행', trigger: '트리거', kind: '종류',
+    requested: '요청자', accountable: '책임자', notApplicable: '해당 없음', unattributed: '귀속 없음',
+    output: '출력', expected: '예상', cardThenRun: 'jtype Card → Kanban Run', directRun: '직접 Run',
+    actual: '실제', writeback: '기록', usage: '사용량', usageUnavailable: '사용 불가',
+    filter: { all: '전체', blocked: '차단됨', running: '실행 중', terminal: '종료됨' },
+    state: {
+      accepted: '접수됨', ignored: '무시됨', duplicate: '중복',
+      superseded: '대체됨', blocked: '차단됨', queued: '대기 중',
+      running: '실행 중', terminal: '종료됨',
+    },
+    outcome: { succeeded: '성공', failed: '실패', canceled: '취소됨' },
+    repair: {
+      project_owner: '프로젝트 소유자가 이 종속성을 복구할 수 있습니다.',
+      cluster_admin: '클러스터 관리자가 이 종속성을 복구해야 합니다.',
+      requester: '요청자가 이 종속성을 복구해야 합니다.',
+    },
+    title: {
+      blocked: '출력 전에 차단됨', ignored: '규칙에 따라 무시됨',
+      card: 'Card 출력', run: 'Run 출력',
     },
   },
 

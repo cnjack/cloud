@@ -337,6 +337,33 @@ func TestWebhookReceiptAuthenticatedPayloadDigestDeduplicatesAndExpires(t *testi
 	}
 }
 
+func TestWebhookReceiptErrorCanBeReclaimedExactlyOnce(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	first := &domain.WebhookReceipt{
+		ID: "first", Provider: domain.PluginGitea, DeliveryID: "delivery-1",
+		PayloadDigest: "authenticated-body", Status: "received", ReceivedAt: time.Now().UTC(),
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, first); err != nil || !claimed {
+		t.Fatalf("claim first = %v, %v", claimed, err)
+	}
+	first.Status = "error"
+	first.Error = "ledger unavailable"
+	if err := st.CompleteWebhookReceipt(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	retry := *first
+	retry.ID = "retry"
+	retry.DeliveryID = "delivery-2"
+	retry.Status = "received"
+	retry.Error = ""
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &retry); err != nil || !claimed {
+		t.Fatalf("reclaim error = %v, %v", claimed, err)
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &retry); err != nil || claimed {
+		t.Fatalf("second reclaim = %v, %v; want duplicate", claimed, err)
+	}
+}
+
 func TestPluginInstallationIsUniqueAndUninstallCascadesBoundService(t *testing.T) {
 	ctx, st := context.Background(), NewMemStore()
 	p := &domain.Project{ID: "p", Name: "project", CreatedAt: time.Now()}

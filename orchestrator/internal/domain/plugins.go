@@ -205,8 +205,86 @@ type KanbanTrigger struct {
 type CronTrigger struct {
 	AutomationID string     `json:"automation_id"`
 	CronExpr     string     `json:"cron_expr"`
+	OutputMode   string     `json:"output_mode"` // run_only | create_card
 	LastFiredAt  *time.Time `json:"last_fired_at,omitempty"`
 	LastError    string     `json:"last_error,omitempty"`
+}
+
+const (
+	AutomationOutputRunOnly    = "run_only"
+	AutomationOutputCreateCard = "create_card"
+)
+
+func ValidAutomationOutputMode(value string) bool {
+	return value == AutomationOutputRunOnly || value == AutomationOutputCreateCard
+}
+
+type AutomationExecutionState string
+
+const (
+	AutomationExecutionAccepted   AutomationExecutionState = "accepted"
+	AutomationExecutionIgnored    AutomationExecutionState = "ignored"
+	AutomationExecutionDuplicate  AutomationExecutionState = "duplicate"
+	AutomationExecutionSuperseded AutomationExecutionState = "superseded"
+	AutomationExecutionBlocked    AutomationExecutionState = "blocked"
+	AutomationExecutionQueued     AutomationExecutionState = "queued"
+	AutomationExecutionRunning    AutomationExecutionState = "running"
+	AutomationExecutionTerminal   AutomationExecutionState = "terminal"
+)
+
+func ValidAutomationExecutionState(value AutomationExecutionState) bool {
+	switch value {
+	case AutomationExecutionAccepted, AutomationExecutionIgnored,
+		AutomationExecutionDuplicate, AutomationExecutionSuperseded,
+		AutomationExecutionBlocked, AutomationExecutionQueued,
+		AutomationExecutionRunning, AutomationExecutionTerminal:
+		return true
+	}
+	return false
+}
+
+// AutomationExecution is the durable trigger decision. Display fields are
+// frozen snapshots and must never be consulted for authorization.
+type AutomationExecution struct {
+	ID               string                   `json:"id"`
+	AutomationID     string                   `json:"automation_id"`
+	AutomationName   string                   `json:"automation_name"`
+	PromptSnapshot   string                   `json:"-"`
+	ProjectID        string                   `json:"project_id"`
+	ServiceID        string                   `json:"service_id"`
+	TriggerKind      string                   `json:"trigger_kind"` // scm | cron | manual
+	EventKey         string                   `json:"-"`
+	State            AutomationExecutionState `json:"state"`
+	Outcome          string                   `json:"outcome,omitempty"`
+	OutputMode       string                   `json:"output_mode"`
+	ReasonCode       string                   `json:"reason_code,omitempty"`
+	ReasonMessage    string                   `json:"reason,omitempty"`
+	RepairRole       string                   `json:"repair_role,omitempty"`
+	RequestedActor   ProvenanceActorRef       `json:"requested_actor"`
+	AccountableActor ProvenanceActorRef       `json:"accountable_actor"`
+	RunID            string                   `json:"run_id,omitempty"`
+	ExternalURL      string                   `json:"external_url,omitempty"`
+	CardAutomationID string                   `json:"card_automation_id,omitempty"`
+	CardWorkspaceID  string                   `json:"card_workspace_id,omitempty"`
+	CardDocumentID   string                   `json:"card_document_id,omitempty"`
+	CardPath         string                   `json:"card_path,omitempty"`
+	CardState        string                   `json:"card_state,omitempty"` // planned | creating | bound | unavailable
+	WritebackState   string                   `json:"writeback_state,omitempty"`
+	WritebackError   string                   `json:"writeback_error,omitempty"`
+	CreatedAt        time.Time                `json:"created_at"`
+	UpdatedAt        time.Time                `json:"updated_at"`
+	TerminalAt       *time.Time               `json:"terminal_at,omitempty"`
+}
+
+type AutomationCardMaterializationResult struct {
+	CardAutomationID string
+	WorkspaceID      string
+	DocumentID       string
+	DocumentPath     string
+	CardState        string
+	ReasonCode       string
+	ReasonMessage    string
+	RepairRole       string
 }
 
 // WebhookReceipt contains only the normalized and whitelisted delivery facts;

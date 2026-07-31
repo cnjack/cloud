@@ -34,8 +34,8 @@ importers:
         specifier: file:../../jcode/packages/jcode-ui-core
         version: file:../../jcode/packages/jcode-ui-core(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       jtype-board-react:
-        specifier: github:cnjack/jtype#939d7177676376942a8059b096d2c26205472239&path:/packages/board-react
-        version: https://codeload.github.com/cnjack/jtype/tar.gz/939d7177676376942a8059b096d2c26205472239#path:/packages/board-react(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+        specifier: github:cnjack/jtype#a83f55b8112cc534f42c66e9f8f1b6274ce3706d&path:/packages/board-react
+        version: https://codeload.github.com/cnjack/jtype/tar.gz/a83f55b8112cc534f42c66e9f8f1b6274ce3706d#path:/packages/board-react(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -1194,8 +1194,8 @@ packages:
     engines: {node: '>=6'}
     hasBin: true
 
-  jtype-board-react@https://codeload.github.com/cnjack/jtype/tar.gz/939d7177676376942a8059b096d2c26205472239#path:/packages/board-react:
-    resolution: {gitHosted: true, integrity: sha512-rUotJWPkrDR0iYdDKrpiiGTv2Z4D3dQgpOc9r0DBkMNjTIcXiBYBtDYA/ncbNrpztWRUZKDfEG3Q9ts/FK427Q==, path: /packages/board-react, tarball: https://codeload.github.com/cnjack/jtype/tar.gz/939d7177676376942a8059b096d2c26205472239}
+  jtype-board-react@https://codeload.github.com/cnjack/jtype/tar.gz/a83f55b8112cc534f42c66e9f8f1b6274ce3706d#path:/packages/board-react:
+    resolution: {gitHosted: true, integrity: sha512-1aLCgPjtU2y/oahY0Pt+JZoRfcnBR5ljwEee31RIBh8UuAwj2Z0Arclsr0kce0l+5EUpEiC1vdwlizDYZKQUQA==, path: /packages/board-react, tarball: https://codeload.github.com/cnjack/jtype/tar.gz/a83f55b8112cc534f42c66e9f8f1b6274ce3706d}
     version: 0.1.2
     peerDependencies:
       react: ^18.2.0 || ^19.0.0
@@ -2532,7 +2532,7 @@ snapshots:
 
   json5@2.2.3: {}
 
-  jtype-board-react@https://codeload.github.com/cnjack/jtype/tar.gz/939d7177676376942a8059b096d2c26205472239#path:/packages/board-react(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
+  jtype-board-react@https://codeload.github.com/cnjack/jtype/tar.gz/a83f55b8112cc534f42c66e9f8f1b6274ce3706d#path:/packages/board-react(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
     dependencies:
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)

@@ -43,6 +43,8 @@ import { resolveBoardPathById } from '../kanban/resolveBoardPathById';
 import type { BoardEmbedLink, KanbanCardExecution, PluginBoardResource } from '../api/types';
 import styles from './KanbanBoardModal.module.css';
 
+const CLOUD_MANAGED_CARD_ROOTS = ['jcode-automation'] as const;
+
 /** Map the browser locale to a board-supported one; default 'en'. */
 function boardLocale(): BoardLocale {
   const lang = (typeof navigator !== 'undefined' ? navigator.language : 'en')
@@ -128,6 +130,7 @@ interface Props {
   projectId: string;
   serviceId?: string;
   links: BoardEmbedLink[];
+  initialCardPath?: string;
   canManage?: boolean;
   onClose: () => void;
 }
@@ -299,7 +302,14 @@ function CardExecutionsSupplement({
   );
 }
 
-export function KanbanBoardModal({ projectId, serviceId = '', links, canManage = false, onClose }: Props) {
+export function KanbanBoardModal({
+  projectId,
+  serviceId = '',
+  links,
+  initialCardPath,
+  canManage = false,
+  onClose,
+}: Props) {
   const { t } = useTranslation();
   const api = useApi();
   // Memoize the injected client: a new identity per render restarts the board.
@@ -571,7 +581,10 @@ export function KanbanBoardModal({ projectId, serviceId = '', links, canManage =
                 client={proxyClient}
                 workspaceId={link.workspace_id}
                 boardRef={resolved.data}
+                initialCardPath={initialCardPath}
+                additionalCardRoots={CLOUD_MANAGED_CARD_ROOTS}
                 live={false}
+                readOnly={!canManage}
                 locale={boardLocale()}
                 renderCardSupplement={serviceId ? (card) => (
                   <CardExecutionsSupplement

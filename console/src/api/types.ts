@@ -272,7 +272,43 @@ export interface ProjectAutomationSpec {
     done_column?: string;
     done_label?: string;
   };
-  cron?: { automation_id?: string; cron_expr: string };
+  cron?: { automation_id?: string; cron_expr: string; output_mode?: 'run_only' | 'create_card' };
+}
+export type AutomationExecutionState =
+  | 'accepted' | 'ignored' | 'duplicate' | 'superseded'
+  | 'blocked' | 'queued' | 'running' | 'terminal';
+export interface AutomationExecution {
+  id: string;
+  automation_id: string;
+  automation_name: string;
+  trigger_kind: 'scm' | 'cron' | 'manual';
+  state: AutomationExecutionState;
+  outcome?: 'succeeded' | 'failed' | 'canceled';
+  output_mode: 'run_only' | 'create_card';
+  reason_code?: string;
+  reason?: string;
+  repair_role?: 'project_owner' | 'cluster_admin';
+  requested_actor: ProvenanceActorRef | null;
+  accountable_actor: ProvenanceActorRef | null;
+  output: { kind: 'run' | 'card' | 'none'; label: string; href?: string; available: boolean };
+  run: { id: string; status: RunStatus; href: string } | null;
+  card: {
+    workspace_id: string;
+    document_id?: string;
+    document_path: string;
+    href?: string;
+    available: boolean;
+  } | null;
+  external_url?: string;
+  writeback_state: string;
+  usage: { state: 'unavailable' };
+  created_at: string;
+  updated_at: string;
+  terminal_at?: string;
+}
+export interface AutomationExecutionsPage {
+  items: AutomationExecution[];
+  next_cursor: string | null;
 }
 export type ServiceKanbanBinding = ProjectAutomationSpec;
 export interface ServiceKanbanPolicy {
@@ -349,7 +385,7 @@ export interface CreateProjectAutomationInput {
   ignore_jcode?: boolean;
   scm?: { branch?: string; path_pattern?: string; conclusion?: string; include_drafts?: boolean; actions: ScmAutomationAction[] };
   kanban?: { installation_id: string; board_ref: string; trigger_column: string; done_column?: string };
-  cron?: { cron_expr: string };
+  cron?: { cron_expr: string; output_mode?: 'run_only' | 'create_card' };
 }
 
 export type UpdateProjectAutomationInput = Partial<CreateProjectAutomationInput>;

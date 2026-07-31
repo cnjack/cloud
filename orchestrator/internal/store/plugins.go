@@ -529,7 +529,7 @@ func (s *PGStore) CreatePluginAutomation(ctx context.Context, a *domain.PluginAu
 		}
 	}
 	if cron != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO automation_cron_triggers(automation_id,cron_expr)VALUES($1,$2)`, a.ID, cron.CronExpr); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO automation_cron_triggers(automation_id,cron_expr,output_mode)VALUES($1,$2,$3)`, a.ID, cron.CronExpr, cron.OutputMode); err != nil {
 			return err
 		}
 	}
@@ -574,7 +574,7 @@ func (s *PGStore) GetPluginAutomationSpec(ctx context.Context, id string) (*doma
 		spec.Kanban = &v
 	case "cron":
 		var v domain.CronTrigger
-		if err := s.pool.QueryRow(ctx, `SELECT automation_id,cron_expr,last_fired_at,last_error FROM automation_cron_triggers WHERE automation_id=$1`, id).Scan(&v.AutomationID, &v.CronExpr, &v.LastFiredAt, &v.LastError); err != nil {
+		if err := s.pool.QueryRow(ctx, `SELECT automation_id,cron_expr,output_mode,last_fired_at,last_error FROM automation_cron_triggers WHERE automation_id=$1`, id).Scan(&v.AutomationID, &v.CronExpr, &v.OutputMode, &v.LastFiredAt, &v.LastError); err != nil {
 			return nil, fmt.Errorf("get cron trigger: %w", err)
 		}
 		spec.Cron = &v
@@ -996,7 +996,7 @@ func (s *PGStore) ReplacePluginAutomationSpec(ctx context.Context, a *domain.Plu
 		}
 	}
 	if cron != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO automation_cron_triggers(automation_id,cron_expr)VALUES($1,$2)`, a.ID, cron.CronExpr); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO automation_cron_triggers(automation_id,cron_expr,output_mode)VALUES($1,$2,$3)`, a.ID, cron.CronExpr, cron.OutputMode); err != nil {
 			return err
 		}
 	}
@@ -1027,7 +1027,23 @@ func (s *PGStore) DeletePluginAutomation(ctx context.Context, id string) error {
 }
 
 func (s *PGStore) ClaimWebhookReceipt(ctx context.Context, r *domain.WebhookReceipt) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `INSERT INTO webhook_receipts(id,provider,delivery_id,payload_digest,installation_id,event_family,action,external_actor_id,external_actor,object_ref,status,matched_automation_id,error,received_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING`, r.ID, r.Provider, r.DeliveryID, r.PayloadDigest, nullStr(r.InstallationID), r.EventFamily, r.Action, r.ExternalActorID, r.ExternalActor, r.ObjectRef, r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt)
+	tag, err := s.pool.Exec(ctx, `UPDATE webhook_receipts SET
+		delivery_id=$2,payload_digest=$3,installation_id=$4,event_family=$5,action=$6,
+		external_actor_id=$7,external_actor=$8,object_ref=$9,status=$10,
+		matched_automation_id=$11,error=$12,received_at=$13::timestamptz,
+		expires_at=$13::timestamptz + interval '30 days'
+		WHERE provider=$1 AND status='error'
+		  AND (delivery_id=$2 OR ($3<>'' AND payload_digest=$3))`,
+		r.Provider, r.DeliveryID, r.PayloadDigest, nullStr(r.InstallationID),
+		r.EventFamily, r.Action, r.ExternalActorID, r.ExternalActor, r.ObjectRef,
+		r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt)
+	if err != nil {
+		return false, fmt.Errorf("reclaim webhook receipt: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		return true, nil
+	}
+	tag, err = s.pool.Exec(ctx, `INSERT INTO webhook_receipts(id,provider,delivery_id,payload_digest,installation_id,event_family,action,external_actor_id,external_actor,object_ref,status,matched_automation_id,error,received_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING`, r.ID, r.Provider, r.DeliveryID, r.PayloadDigest, nullStr(r.InstallationID), r.EventFamily, r.Action, r.ExternalActorID, r.ExternalActor, r.ObjectRef, r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt)
 	if err != nil {
 		return false, fmt.Errorf("claim webhook receipt: %w", err)
 	}

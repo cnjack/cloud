@@ -11,6 +11,7 @@ import {
   useProjectAutomation,
   useProjectModels,
   useProviderCapabilities,
+  useServiceKanbanPolicy,
   useUpdateProjectAutomation,
 } from '../api/queries';
 import type {
@@ -124,6 +125,7 @@ export function AutomationEditorPage() {
   const [includeDrafts, setIncludeDrafts] = useState(false);
   const [showMoreActions, setShowMoreActions] = useState(false);
   const [cronExpr, setCronExpr] = useState('0 9 * * 1-5');
+  const [cronOutputMode, setCronOutputMode] = useState<'run_only' | 'create_card'>('run_only');
   const [formError, setFormError] = useState('');
 
   const selectedService = services.find((service) => service.id === serviceId);
@@ -136,6 +138,8 @@ export function AutomationEditorPage() {
     selectedService?.provider === 'gitea'
   ) ? selectedService.provider as ProviderKind : 'github';
   const capabilities = useProviderCapabilities(scmProvider, kind === 'scm' && !!selectedService);
+  const kanbanPolicy = useServiceKanbanPolicy(serviceId, kind === 'cron' && !!serviceId);
+  const cardOutputReady = kanbanPolicy.data?.health.state === 'ready';
   const supported = useMemo(() => {
     if (!capabilities.data) return supportedActions(selectedService?.provider);
     return new Set<NormalizedScmAction>(capabilities.data.capabilities.flatMap((group) =>
@@ -203,6 +207,7 @@ export function AutomationEditorPage() {
     setIncludeDrafts(spec.scm?.include_drafts ?? false);
     setActions((spec.actions ?? []).map(actionName));
     setCronExpr(spec.cron?.cron_expr ?? '0 9 * * 1-5');
+    setCronOutputMode(spec.cron?.output_mode ?? 'run_only');
   }
 
   function toggleAction(action: NormalizedScmAction) {
@@ -250,6 +255,10 @@ export function AutomationEditorPage() {
       setFormError(t('automationEditor.validation.cronRequired'));
       return;
     }
+    if (kind === 'cron' && cronOutputMode === 'create_card' && !cardOutputReady) {
+      setFormError(t('automationEditor.validation.cardOutputUnavailable'));
+      return;
+    }
     const input: CreateProjectAutomationInput = {
       service_id: serviceId,
       name: name.trim(),
@@ -270,7 +279,7 @@ export function AutomationEditorPage() {
           actions: actions.filter((action) => supported.has(action)).map(actionParts),
         },
       } : {}),
-      ...(kind === 'cron' ? { cron: { cron_expr: cronExpr.trim() } } : {}),
+      ...(kind === 'cron' ? { cron: { cron_expr: cronExpr.trim(), output_mode: cronOutputMode } } : {}),
     };
     const onSuccess = () => navigate(`/projects/${encodeURIComponent(projectId)}?tab=automations&service=${encodeURIComponent(serviceId)}`);
     if (editing) update.mutate({ automationId, input }, { onSuccess });
@@ -506,6 +515,15 @@ export function AutomationEditorPage() {
             <div className={styles.triggerBody}>
               <label>{t('automationEditor.cronExpression')}<input value={cronExpr} onChange={(event) => setCronExpr(event.target.value)} placeholder="0 9 * * 1-5" /></label>
               <small>{t('automationEditor.cronHint')}</small>
+              <label>{t('automationEditor.outputMode')}
+                <select value={cronOutputMode} onChange={(event) => setCronOutputMode(event.target.value as 'run_only' | 'create_card')}>
+                  <option value="run_only">{t('automationEditor.outputRun')}</option>
+                  <option value="create_card" disabled={!cardOutputReady}>{t('automationEditor.outputCard')}</option>
+                </select>
+              </label>
+              <small>{!cardOutputReady
+                ? kanbanPolicy.data?.health.blocker ?? t('automationEditor.outputCardUnavailable')
+                : t('automationEditor.outputHint')}</small>
             </div>
           )}
         </section>}

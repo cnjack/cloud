@@ -91,6 +91,7 @@ export function ProjectDetailPage() {
   const [askApproval, setAskApproval] = useState(false);
   const [runFilter, setRunFilter] = useState<RunFilter>('all');
   const [kanbanOpen, setKanbanOpen] = useState(false);
+  const [kanbanCardPath, setKanbanCardPath] = useState('');
   const [repoQuery, setRepoQuery] = useState('');
   const [pickerInstallationId, setPickerInstallationId] = useState('');
   const deferredQuery = useDeferredValue(repoQuery);
@@ -111,6 +112,16 @@ export function ProjectDetailPage() {
   const addOpen = searchParams.get('add') === 'service';
   const projectSettingsOpen = canManage && searchParams.get('view') === 'project-settings';
   const projectSettingsSection = resolveProjectSettingsSection(searchParams.get('settings'), canManage);
+
+  useEffect(() => {
+    if (searchParams.get('kanban') !== '1' || !activeService) return;
+    setKanbanCardPath(searchParams.get('card') ?? '');
+    setKanbanOpen(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('kanban');
+    next.delete('card');
+    setSearchParams(next, { replace: true });
+  }, [activeService, searchParams, setSearchParams]);
 
   // A project switch must not retain a previous project's draft/model/form state.
   useEffect(() => {
@@ -166,7 +177,9 @@ export function ProjectDetailPage() {
   }, [p, projectSettingsOpen, projectSettingsSection, searchParams, setSearchParams, workspaceLocation]);
 
   const pluginsQuery = useProjectPlugins(projectId, !!p && canRun);
-  const boardLinks = useProjectBoardLinks(projectId, !!p && canRun);
+  // Viewers cannot open Kanban manually, but may follow an Automation output
+  // deep link into the same board with the host enforcing read-only access.
+  const boardLinks = useProjectBoardLinks(projectId, !!p);
   const activeBoardLinks = (boardLinks.data ?? []).filter((link) => link.service_id === activeService?.id);
   const jtypePluginEnabled = (pluginsQuery.data ?? []).some((plugin) =>
     plugin.provider === 'jtype' && plugin.status === 'enabled' && !!plugin.workspace_id);
@@ -808,8 +821,12 @@ export function ProjectDetailPage() {
           projectId={projectId}
           serviceId={activeService.id}
           links={activeBoardLinks}
+          initialCardPath={kanbanCardPath || undefined}
           canManage={canRun}
-          onClose={() => setKanbanOpen(false)}
+          onClose={() => {
+            setKanbanOpen(false);
+            setKanbanCardPath('');
+          }}
         />
       )}
 

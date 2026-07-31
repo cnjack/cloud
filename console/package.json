@@ -22,7 +22,7 @@
     "i18next": "^25.3.2",
     "jcode-ui": "file:../../jcode/packages/jcode-ui",
     "jcode-ui-core": "file:../../jcode/packages/jcode-ui-core",
-    "jtype-board-react": "github:cnjack/jtype#939d7177676376942a8059b096d2c26205472239&path:/packages/board-react",
+    "jtype-board-react": "github:cnjack/jtype#a83f55b8112cc534f42c66e9f8f1b6274ce3706d&path:/packages/board-react",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-i18next": "^15.6.1",

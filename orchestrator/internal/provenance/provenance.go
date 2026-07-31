@@ -75,6 +75,7 @@ func Stamp(ctx context.Context, st store.Store, run *domain.Run, external *Exter
 		(run.Origin == domain.RunOriginAutomation ||
 			run.Origin == domain.RunOriginSchedule ||
 			run.Origin == domain.RunOriginKanban)
+	isManualAutomation := run.OriginAutomationID != "" && run.Origin == domain.RunOriginAPI
 	if run.TriggeredByUserID != nil && *run.TriggeredByUserID != "" &&
 		(!isRuleExecution || hasExternalActor) {
 		actor := cloudUserActor(ctx, st, *run.TriggeredByUserID)
@@ -84,7 +85,9 @@ func Stamp(ctx context.Context, st store.Store, run *domain.Run, external *Exter
 			actor.ExternalLabel = external.Label
 		}
 		snapshot.RequestedActor = &actor
-		snapshot.AccountableActor = cloneActor(actor)
+		if !isManualAutomation {
+			snapshot.AccountableActor = cloneActor(actor)
+		}
 		snapshot.Precision = PrecisionExact
 	} else if hasExternalActor {
 		snapshot.RequestedActor = &domain.ProvenanceActorRef{
@@ -192,6 +195,9 @@ func attributionSource(run *domain.Run, external *ExternalActor) string {
 	case domain.RunOriginWebhook:
 		return "scm_comment"
 	default:
+		if run.OriginAutomationID != "" {
+			return "manual_automation"
+		}
 		return "direct_user"
 	}
 }
@@ -210,6 +216,9 @@ func triggerRef(run *domain.Run) TriggerRef {
 	case domain.RunOriginWebhook:
 		return TriggerRef{Kind: "scm_comment", Label: "PR comment", Ref: run.OriginCommentID, Href: run.OriginCommentURL}
 	default:
+		if run.OriginAutomationID != "" {
+			return TriggerRef{Kind: "manual_automation", Label: "Automation Run now", Ref: run.OriginAutomationID}
+		}
 		return TriggerRef{Kind: "api", Label: "Cloud Console / API"}
 	}
 }

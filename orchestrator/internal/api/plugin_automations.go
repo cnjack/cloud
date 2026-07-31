@@ -97,7 +97,8 @@ type pluginKanbanReq struct {
 	DoneColumn     string `json:"done_column"`
 }
 type pluginCronReq struct {
-	CronExpr string `json:"cron_expr"`
+	CronExpr   string `json:"cron_expr"`
+	OutputMode string `json:"output_mode"`
 }
 
 func (s *Server) handleListPluginAutomations(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +158,7 @@ func (s *Server) handleCreatePluginAutomation(w http.ResponseWriter, r *http.Req
 		writeError(w, modelErr.status, modelErr.code, modelErr.msg)
 		return
 	}
-	installationID, msg := s.validatePluginAutomationTarget(r, svc, scm, actions, kanban)
+	installationID, msg := s.validatePluginAutomationTarget(r, svc, scm, actions, kanban, cron)
 	if msg != "" {
 		writeError(w, 409, "plugin_unavailable", msg)
 		return
@@ -286,7 +287,7 @@ func (s *Server) handleUpdatePluginAutomation(w http.ResponseWriter, r *http.Req
 		writeError(w, modelErr.status, modelErr.code, modelErr.msg)
 		return
 	}
-	installationID, msg := s.validatePluginAutomationTarget(r, svc, scm, actions, kanban)
+	installationID, msg := s.validatePluginAutomationTarget(r, svc, scm, actions, kanban, cron)
 	if msg != "" {
 		writeError(w, 409, "plugin_unavailable", msg)
 		return
@@ -508,7 +509,14 @@ func pluginAutomationFromReq(req pluginAutomationReq, id string) (*domain.Plugin
 	if _, err := schedule.ParseCron(expr); err != nil {
 		return nil, nil, nil, nil, nil, "cron.cron_expr is invalid: " + err.Error()
 	}
-	return a, nil, nil, nil, &domain.CronTrigger{CronExpr: expr}, ""
+	outputMode := strings.TrimSpace(req.Cron.OutputMode)
+	if outputMode == "" {
+		outputMode = domain.AutomationOutputRunOnly
+	}
+	if !domain.ValidAutomationOutputMode(outputMode) {
+		return nil, nil, nil, nil, nil, "cron.output_mode must be run_only or create_card"
+	}
+	return a, nil, nil, nil, &domain.CronTrigger{CronExpr: expr, OutputMode: outputMode}, ""
 }
 
 func (s *Server) validatePluginAutomationModel(r *http.Request, svc *domain.Service, a *domain.PluginAutomation, required bool) *automationHTTPError {
@@ -548,7 +556,7 @@ func (s *Server) validatePluginAutomationModel(r *http.Request, svc *domain.Serv
 	return nil
 }
 
-func (s *Server) validatePluginAutomationTarget(r *http.Request, svc *domain.Service, scm *domain.SCMTrigger, actions []domain.SCMAction, kanban *domain.KanbanTrigger) (string, string) {
+func (s *Server) validatePluginAutomationTarget(r *http.Request, svc *domain.Service, scm *domain.SCMTrigger, actions []domain.SCMAction, kanban *domain.KanbanTrigger, cron *domain.CronTrigger) (string, string) {
 	if scm != nil {
 		b, err := s.st.GetServiceRepositoryBinding(r.Context(), svc.ID)
 		if err != nil {
@@ -579,6 +587,34 @@ func (s *Server) validatePluginAutomationTarget(r *http.Request, svc *domain.Ser
 		}
 		return in.ID, ""
 	}
+	if cron != nil && cron.OutputMode == domain.AutomationOutputCreateCard {
+		automations, err := s.st.ListPluginAutomationsByProject(r.Context(), svc.ProjectID)
+		if err != nil {
+			return "", "Service Kanban policy could not be read"
+		}
+		for i := range automations {
+			candidate := automations[i]
+			if candidate.ServiceID != svc.ID || candidate.TriggerKind != "kanban" || !candidate.Enabled {
+				continue
+			}
+			spec, loadErr := s.st.GetPluginAutomationSpec(r.Context(), candidate.ID)
+			if loadErr != nil || spec.Kanban == nil {
+				continue
+			}
+			installation, installErr := s.st.GetPluginInstallation(r.Context(), spec.Kanban.InstallationID)
+			if installErr != nil || installation.Status != domain.PluginStatusEnabled ||
+				installation.LastHealthError != "" || installation.Provider != domain.PluginJType {
+				return "", "the Service Kanban JType Plugin needs attention before Card output can be enabled"
+			}
+			cfg, cfgErr := s.st.GetProviderConfig(r.Context(), domain.PluginJType)
+			if cfgErr != nil || !cfg.PluginEnabled || cfg.LastHealthError != "" ||
+				cfg.ConfigRevision != installation.ConfigRevision {
+				return "", "the cluster JType Provider needs attention before Card output can be enabled"
+			}
+			return "", ""
+		}
+		return "", "enable a healthy Service Kanban policy before selecting Card output"
+	}
 	return "", ""
 }
 func specToSCM(s *domain.PluginAutomationSpec) *pluginSCMReq {
@@ -601,5 +637,5 @@ func specToCron(s *domain.PluginAutomationSpec) *pluginCronReq {
 	if s.Cron == nil {
 		return nil
 	}
-	return &pluginCronReq{CronExpr: s.Cron.CronExpr}
+	return &pluginCronReq{CronExpr: s.Cron.CronExpr, OutputMode: s.Cron.OutputMode}
 }

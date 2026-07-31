@@ -33,6 +33,22 @@ import type {
 import { pickOption } from '../test/select';
 import { qk } from '../api/queries';
 
+vi.mock('./KanbanBoardModal', () => ({
+  KanbanBoardModal: (props: {
+    initialCardPath?: string;
+    canManage?: boolean;
+    onClose: () => void;
+  }) => (
+    <div
+      data-testid="kanban-modal-stub"
+      data-initial-card={props.initialCardPath}
+      data-can-manage={String(props.canManage)}
+    >
+      <button type="button" onClick={props.onClose}>Close Kanban</button>
+    </div>
+  ),
+}));
+
 import { ProjectDetailPage } from './ProjectDetailPage';
 
 function svc(id: string, name: string): Service {
@@ -667,6 +683,37 @@ describe('ProjectDetailPage — multi-repo workspace', () => {
 });
 
 describe('ProjectDetailPage — workspace sections', () => {
+  it('opens an exact Automation Card deep link read-only for a Viewer and canonicalizes the URL', async () => {
+    const { client } = makeClient(project('viewer', [svc('svc_default', 'default')]));
+    const listProjectBoardLinks = vi.fn(async () => [{
+      id: 'kanban-1',
+      workspace_id: 'workspace-1',
+      board_ref: 'board-1',
+      board_title: 'Delivery',
+      service_id: 'svc_default',
+      trigger_column: 'agent',
+      enabled: true,
+    }]);
+    (client as { listProjectBoardLinks?: unknown }).listProjectBoardLinks = listProjectBoardLinks;
+    renderPage(
+      client,
+      undefined,
+      '/projects/p1?service=svc_default&tab=automations&kanban=1&card=jcode-automation%2Fauto-1%2Fexec-1.md',
+    );
+
+    const modal = await screen.findByTestId('kanban-modal-stub');
+    expect(modal.getAttribute('data-initial-card')).toBe('jcode-automation/auto-1/exec-1.md');
+    expect(modal.getAttribute('data-can-manage')).toBe('false');
+    expect(listProjectBoardLinks).toHaveBeenCalledWith('p1');
+    await waitFor(() => {
+      const search = screen.getByTestId('workspace-location').textContent ?? '';
+      expect(search).toContain('service=svc_default');
+      expect(search).toContain('tab=automations');
+      expect(search).not.toContain('kanban=');
+      expect(search).not.toContain('card=');
+    });
+  });
+
   it('renders the unified Project Automation list without legacy schedule surfaces', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]), {
       projectAutomations: [{

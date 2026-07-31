@@ -11,6 +11,7 @@ import {
 import { useApi } from './ApiProvider';
 import type {
   AddMemberInput,
+  AutomationExecution,
   CreateProjectAutomationInput,
   CreateApiKeyInput,
   CreateApiKeyResponse,
@@ -21,6 +22,7 @@ import type {
   CreateRunInput,
   CreateServiceInput,
 	ServiceBranch,
+  KanbanCardExecution,
   Member,
   Model,
   Project,
@@ -40,6 +42,25 @@ import type {
 } from './types';
 import { isTerminal } from './types';
 import { reconcileRunSnapshot } from './runCache';
+
+export function kanbanCardExecutionPollInterval(
+  items: readonly KanbanCardExecution[] | undefined,
+): number | false {
+  if (!items || items.length === 0) return 5_000;
+  return items.some((item) =>
+    item.status === 'received' || item.status === 'blocked' ||
+    item.status === 'queued' || item.status === 'running')
+    ? 5_000 : false;
+}
+
+export function automationExecutionPollInterval(
+  items: readonly AutomationExecution[] | undefined,
+): number | false {
+  return items?.some((item) =>
+    item.state === 'accepted' || item.state === 'queued' || item.state === 'running' ||
+    (item.state === 'blocked' && item.output_mode === 'create_card'))
+    ? 5_000 : false;
+}
 
 export const qk = {
   me: ['me'] as const,
@@ -79,6 +100,8 @@ export const qk = {
   projectAutomations: (projectId: string) => ['project-automations', projectId] as const,
   projectAutomation: (projectId: string, automationId: string) =>
     ['project-automation', projectId, automationId] as const,
+  automationExecutions: (automationId: string, state: string) =>
+    ['automation-executions', automationId, state] as const,
   providerCapabilities: (provider: ProviderKind) => ['provider-capabilities', provider] as const,
   githubAppInstallations: (projectId: string) => ['github-app-installations', projectId] as const,
   jtypePluginConnect: (projectId: string, installationId: string, connectId: string) =>
@@ -791,11 +814,11 @@ export function useServiceKanbanCardExecutions(
     enabled: enabled && !!serviceId && !!workspaceId && !!documentPath,
     retry: false,
     refetchInterval: (query) => {
-      const pages = query.state.data?.pages;
-      return pages?.some((page) => page.items.some((item) =>
-        item.status === 'received' || item.status === 'blocked' || item.status === 'queued' || item.status === 'running'))
-        ? 5_000
-        : false;
+      const items = query.state.data?.pages.flatMap((page) => page.items);
+      // Keep polling an empty Card so a receipt appears without closing and
+      // reopening the detail after the user moves it into the trigger column.
+      // Stop only once every known occurrence is terminal.
+      return kanbanCardExecutionPollInterval(items);
     },
   });
 }
@@ -980,6 +1003,31 @@ export function useProjectAutomation(projectId: string, automationId: string, en
     queryKey: qk.projectAutomation(projectId, automationId),
     queryFn: () => api.getProjectAutomation(projectId, automationId),
     enabled: enabled && !!projectId && !!automationId,
+  });
+}
+
+export function useAutomationExecutions(automationId: string, state = '', enabled = true) {
+  const api = useApi();
+  return useInfiniteQuery({
+    queryKey: qk.automationExecutions(automationId, state),
+    queryFn: ({ pageParam }) => api.listAutomationExecutions(
+      automationId, pageParam ?? undefined, state || undefined,
+    ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    enabled: enabled && !!automationId,
+    refetchInterval: (query) => automationExecutionPollInterval(
+      query.state.data?.pages.flatMap((page) => page.items),
+    ),
+  });
+}
+
+export function useRunAutomationNow(automationId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (idempotencyKey: string) => api.runAutomationNow(automationId, idempotencyKey),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['automation-executions', automationId] }),
   });
 }
 

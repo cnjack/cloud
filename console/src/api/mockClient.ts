@@ -22,6 +22,8 @@ import type {
 import type {
   AddMemberInput,
   ApiKey,
+  AutomationExecution,
+  AutomationExecutionsPage,
   BoardEmbedLink,
   CatalogModel,
   ClusterProviderConfig,
@@ -262,6 +264,8 @@ export function createMockClient(): ApiClient {
     ],
   };
   const projectAutomations = new Map<string, ProjectAutomationSpec>();
+  const automationExecutions = new Map<string, AutomationExecution[]>();
+  const automationIdempotency = new Map<string, string>();
   const projectPlugins = new Map<string, Map<ProviderKind, ProjectPlugin>>();
   const clusterProviders = new Map<ProviderKind, ClusterProviderConfig>((['github', 'gitlab', 'gitea', 'jtype'] as const).map((provider): [ProviderKind, ClusterProviderConfig] => [provider, { provider, base_url: provider === 'github' ? 'https://github.com' : '', login_enabled: provider !== 'jtype', plugin_enabled: true, configured: false, health: 'unknown' }]));
 
@@ -2170,6 +2174,64 @@ export function createMockClient(): ApiClient {
       if (!existing || !serviceIds.has(existing.automation.service_id)) throw new ApiError(404, 'automation not found');
       projectAutomations.delete(automationId);
       return delay(undefined);
+    },
+    async listAutomationExecutions(automationId: string, _before?: string, state?: string, limit = 20): Promise<AutomationExecutionsPage> {
+      const items = (automationExecutions.get(automationId) ?? [])
+        .filter((item) => !state || item.state === state)
+        .slice(0, limit);
+      return delay({ items: structuredClone(items), next_cursor: null });
+    },
+    async getAutomationExecution(automationId: string, executionId: string): Promise<AutomationExecution> {
+      const item = (automationExecutions.get(automationId) ?? []).find((value) => value.id === executionId);
+      if (!item) throw new ApiError(404, 'automation execution not found');
+      return delay(structuredClone(item));
+    },
+    async runAutomationNow(automationId: string, idempotencyKey: string): Promise<AutomationExecution> {
+      const spec = projectAutomations.get(automationId);
+      if (!spec) throw new ApiError(404, 'automation not found');
+      const replayId = automationIdempotency.get(`${automationId}|${idempotencyKey}`);
+      const existing = (automationExecutions.get(automationId) ?? []).find((item) => item.id === replayId);
+      if (existing) return delay(structuredClone(existing));
+      const service = [...services.values()].flat().find((item) => item.id === spec.automation.service_id);
+      if (!service) throw new ApiError(404, 'service not found');
+      const now = nowISO();
+      const outputMode = spec.cron?.output_mode ?? 'run_only';
+      const id = genId('execution');
+      let run: StoredRun | undefined;
+      if (outputMode === 'run_only' && spec.automation.run_kind !== 'review') {
+        run = makeRun(service.project_id, service.id, spec.automation.prompt_template);
+      }
+      const item: AutomationExecution = {
+        id,
+        automation_id: automationId,
+        automation_name: spec.automation.name,
+        trigger_kind: 'manual',
+        state: run ? 'queued' : spec.automation.run_kind === 'review' ? 'blocked' : 'accepted',
+        output_mode: outputMode,
+        reason_code: spec.automation.run_kind === 'review' ? 'manual_review_requires_pull_request' : undefined,
+        reason: spec.automation.run_kind === 'review' ? 'Run now needs a pull request for native review output.' : undefined,
+        repair_role: spec.automation.run_kind === 'review' ? 'project_owner' : undefined,
+        requested_actor: { kind: 'cloud_user', id: 'u_ada', label: 'Ada Lovelace' },
+        accountable_actor: { kind: 'cloud_user', id: 'u_ada', label: 'Ada Lovelace' },
+        output: run
+          ? { kind: 'run', label: `Run ${run.id}`, href: `/runs/${run.id}`, available: true }
+          : outputMode === 'create_card'
+            ? { kind: 'card', label: `jcode-automation/${automationId}/${id}.md`, available: false }
+            : { kind: 'none', label: 'No output', available: false },
+        run: run ? { id: run.id, status: run.status, href: `/runs/${run.id}` } : null,
+        card: outputMode === 'create_card' ? {
+          workspace_id: '',
+          document_path: `jcode-automation/${automationId}/${id}.md`,
+          available: false,
+        } : null,
+        writeback_state: outputMode === 'create_card' ? 'pending' : '',
+        usage: { state: 'unavailable' },
+        created_at: now,
+        updated_at: now,
+      };
+      automationExecutions.set(automationId, [item, ...(automationExecutions.get(automationId) ?? [])]);
+      automationIdempotency.set(`${automationId}|${idempotencyKey}`, id);
+      return delay(structuredClone(item));
     },
     async getServiceKanban(serviceId: string): Promise<ProjectAutomationSpec> {
       const spec = [...projectAutomations.values()].find((item) =>
