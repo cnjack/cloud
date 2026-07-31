@@ -17,3 +17,14 @@ func TestPRReadyPolicyValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestRunPushBranchTreatsEmptyKindAsDefaultAgent(t *testing.T) {
+	run := &Run{ID: "abcdef123456", PRHeadBranch: "feature/existing-pr"}
+	if got := RunPushBranch(run); got != "feature/existing-pr" {
+		t.Fatalf("RunPushBranch(empty kind)=%q want existing PR head", got)
+	}
+	run.Kind = RunKindReview
+	if got := RunPushBranch(run); got != "jcode/run-abcdef12" {
+		t.Fatalf("RunPushBranch(review)=%q want deterministic non-update branch", got)
+	}
+}

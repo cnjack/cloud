@@ -2418,21 +2418,24 @@ func (r *Reconciler) applyInjectedEnv(env map[string]string, run *domain.Run, pr
 //   - BASE_BRANCH: the service default branch (checkout target / bundle base).
 //   - SOURCE_MODE: always "clone".
 //   - REPO_URL: the immutable Service repository binding.
-//   - GIT_MODE: always "readonly"; Cloud never commits, pushes, opens a PR, or
-//     posts an SCM comment. The task may do those operations itself with the
-//     mounted Provider Skill and CLI.
+//   - GIT_MODE: "draft_pr" only for an agent run on a draft_pr Provider
+//     service. The runner commits locally and uploads a credential-free bundle;
+//     the orchestrator owns the authenticated push and PR creation. Review runs,
+//     readonly services, and raw repositories remain readonly.
+//   - BRANCH_NAME: the deterministic bundle/push branch for eligible agent runs.
 //   - PR_HEAD / PR_BASE: for a review run, the branches the runner diffs.
 //
 // No provider token is injected into the environment or URL. Git resolves it
 // from the tmpfs credential helper written by the sidecar.
 func (r *Reconciler) addGitEnv(ctx context.Context, env map[string]string, run *domain.Run, svc *domain.Service) {
+	isAgent := run.Kind == "" || run.Kind == domain.RunKindAgent
 	env["BASE_BRANCH"] = svc.DefaultBranch
 	if run.BaseBranch != "" {
 		env["BASE_BRANCH"] = run.BaseBranch
 	}
 	// M7 webhook @mention task: the baseline IS the PR head branch, so the agent
 	// builds on the existing PR and the produced branch pushes back to it (§8).
-	if run.Kind == domain.RunKindAgent && run.PRHeadBranch != "" {
+	if isAgent && run.PRHeadBranch != "" {
 		env["BASE_BRANCH"] = run.PRHeadBranch
 	}
 
@@ -2440,6 +2443,10 @@ func (r *Reconciler) addGitEnv(ctx context.Context, env map[string]string, run *
 	env["REPO_URL"] = r.serviceCloneURL(ctx, svc)
 	env["REPO_BRANCH"] = env["BASE_BRANCH"]
 	env["GIT_MODE"] = string(domain.GitModeReadonly)
+	if isAgent && svc.GitMode == domain.GitModeDraftPR && svc.RepoKind == domain.RepoKindProvider {
+		env["GIT_MODE"] = string(domain.GitModeDraftPR)
+		env["BRANCH_NAME"] = domain.RunPushBranch(run)
+	}
 
 	// Review runs diff PR_BASE...PR_HEAD (blueprint §3). Empty for agent runs.
 	if run.Kind == domain.RunKindReview {
