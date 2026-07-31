@@ -62,7 +62,11 @@ SEED="$TMP/seed"; OUT="$TMP/orch"; mkdir -p "$SEED" "$OUT"
   git config user.email seed@jcode.local; git config user.name seed
   printf '# seed\n' > README.md; git add -A; git commit -qm init
   git checkout -q -b feature
-  printf 'new feature line\n' > FEATURE.txt; git add -A; git commit -qm feature
+  # Keep the review diff above common Linux argv+environment limits. The
+  # review protocol must reference the on-disk diff instead of embedding it in
+  # TASK_PROMPT, or this fixture fails before acpdrive starts.
+  for i in $(seq 1 12000); do printf 'new feature line %05d with enough payload for a large pull request\n' "$i"; done > FEATURE.txt
+  git add -A; git commit -qm feature
   git checkout -q main
 )
 SRC_BUNDLE="$OUT/source.bundle"
