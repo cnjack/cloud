@@ -48,6 +48,7 @@ import { TaskComposer } from '../project-workspace/TaskComposer';
 import { ProjectAutomationsPanel } from '../project-workspace/ProjectAutomationsPanel';
 import { serviceMark, serviceProviderLabel, serviceSource } from '../project-workspace/presentation';
 import { KanbanBoardModal } from './KanbanBoardModal';
+import { ProjectUsagePanel } from './ProjectUsagePanel';
 import {
   ProjectSettingsPage,
   ProjectSettingsSubnav,
@@ -709,6 +710,10 @@ export function ProjectDetailPage() {
               initialServiceId={activeService?.id}
             />
           </section>
+        )}
+
+        {!projectSettingsOpen && workspaceTab === 'usage' && (
+          <ProjectUsagePanel projectId={projectId} />
         )}
 
         {!projectSettingsOpen && workspaceTab === 'settings' && canManage && (

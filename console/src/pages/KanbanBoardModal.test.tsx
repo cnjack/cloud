@@ -211,6 +211,13 @@ describe('KanbanBoardModal', () => {
   it('shows the execution policy and blocked receipt inside native Card details', async () => {
     const listExecutions = vi.fn(async () => ({
       claim: { document_path: 'cards/payment.md', external_ref_available: true },
+      usage_summary: {
+        availability: 'available' as const,
+        requests: 1,
+        capture: { reported: 1, partial: 0, unavailable: 0, parse_error: 0 },
+        tokens: { input: 800, output: 120, cache_read: null, cache_write: null },
+        costs: { reported: [], estimated: [], uncosted: [] },
+      },
       items: [{
         id: 'occ_1',
         status: 'blocked' as const,
@@ -261,6 +268,7 @@ describe('KanbanBoardModal', () => {
     expect(receipt.textContent).toContain('Model not configured');
     expect(receipt.textContent).toContain('Project owner');
     expect(receipt.textContent).not.toContain('Card writeback pending');
+    expect(screen.getByTestId('kanban-card-usage').textContent).toContain('800');
     expect(listExecutions).toHaveBeenCalledWith('svc_1', 'ws_team', 'cards/payment.md', undefined);
   });
 

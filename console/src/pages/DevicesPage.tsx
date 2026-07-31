@@ -12,6 +12,7 @@ import { ErrorBlock, LoadingBlock } from '../components/States';
 import { e2eeBadgeTooltip, platformBadgeLabel } from '../lib/deviceBadges';
 import { timeAgo } from '../lib/format';
 import styles from './DevicesPage.module.css';
+import { AccountUsagePanel } from './AccountUsagePanel';
 
 function lastSeenLabel(device: Device, t: TFunction): string {
   return device.last_seen_at
@@ -37,6 +38,7 @@ export function DevicesPage() {
             </Link>
           }
         />
+        <AccountUsagePanel enabled={!devices.isError} />
 
         {devices.isLoading ? (
           <div className={styles.state}><LoadingBlock label={t('common.loading')} /></div>

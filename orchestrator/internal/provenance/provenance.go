@@ -97,8 +97,17 @@ func Stamp(ctx context.Context, st store.Store, run *domain.Run, external *Exter
 		snapshot.Precision = PrecisionLinkedExternal
 	}
 
-	if run.OriginAutomationID != "" && snapshot.AccountableActor == nil {
-		if spec, err := st.GetPluginAutomationSpec(ctx, run.OriginAutomationID); err == nil &&
+	accountableAutomationID := run.OriginAutomationID
+	if run.Origin == domain.RunOriginKanban && run.OriginEventKey != "" {
+		if execution, err := st.GetAutomationExecutionForKanbanOccurrence(
+			ctx,
+			run.OriginEventKey,
+		); err == nil && execution.AutomationID != "" {
+			accountableAutomationID = execution.AutomationID
+		}
+	}
+	if accountableAutomationID != "" && snapshot.AccountableActor == nil {
+		if spec, err := st.GetPluginAutomationSpec(ctx, accountableAutomationID); err == nil &&
 			spec.Automation.CreatedBy != "" {
 			actor := cloudUserActor(ctx, st, spec.Automation.CreatedBy)
 			snapshot.AccountableActor = &actor

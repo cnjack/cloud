@@ -25,6 +25,12 @@ describe('resolveWorkspaceLocation', () => {
     ).toEqual({ serviceId: 'svc-web', tab: 'automations', needsNormalization: false });
   });
 
+  it('keeps Usage visible to a member or viewer', () => {
+    expect(
+      resolveWorkspaceLocation(services, new URLSearchParams('service=svc-web&tab=usage'), false),
+    ).toEqual({ serviceId: 'svc-web', tab: 'usage', needsNormalization: false });
+  });
+
   it('normalizes missing or stale route state to the default service and Tasks', () => {
     expect(resolveWorkspaceLocation(services, new URLSearchParams('service=gone&tab=unknown'), true)).toEqual({
       serviceId: 'svc-default',

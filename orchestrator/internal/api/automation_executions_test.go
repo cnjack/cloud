@@ -111,6 +111,54 @@ func TestAutomationExecutionRejectsInvalidCursorAndState(t *testing.T) {
 	}
 }
 
+func TestAutomationExecutionWithoutRunDoesNotBorrowAutomationUsage(t *testing.T) {
+	f := setupRBAC(t)
+	now := time.Now().UTC()
+	automation := &domain.PluginAutomation{
+		ID: domain.NewID(), ServiceID: f.serviceID, Name: "Blocked history",
+		TriggerKind: "cron", PromptTemplate: "work", Enabled: true, CreatedAt: now,
+	}
+	if err := f.st.CreatePluginAutomation(t.Context(), automation, nil, nil, nil, &domain.CronTrigger{
+		AutomationID: automation.ID, CronExpr: "0 9 * * *", OutputMode: domain.AutomationOutputRunOnly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocked := &domain.AutomationExecution{
+		ID: domain.NewID(), AutomationID: automation.ID, AutomationName: automation.Name,
+		ProjectID: f.projectID, ServiceID: f.serviceID, TriggerKind: "cron",
+		EventKey: "cron:blocked", State: domain.AutomationExecutionBlocked,
+		OutputMode: domain.AutomationOutputRunOnly, ReasonCode: "model_not_configured",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if _, created, err := f.st.CreateAutomationExecution(t.Context(), blocked, nil); err != nil || !created {
+		t.Fatalf("create blocked execution created=%v err=%v", created, err)
+	}
+	input := int64(91)
+	if _, err := f.st.RecordUsageEvent(t.Context(), &domain.UsageEvent{
+		ID: domain.NewID(), RequestID: domain.NewID(),
+		SubjectKind: domain.UsageSubjectRun, SubjectID: "other-run", RunID: "other-run",
+		ProjectID: f.projectID, ServiceID: f.serviceID,
+		AutomationID: automation.ID, AutomationName: automation.Name,
+		InputTokens: &input, CaptureStatus: domain.UsageCapturePartial,
+		OccurredAt: now, CreatedAt: now, Version: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := do(t, http.MethodGet,
+		f.ts.URL+"/api/v1/automations/"+automation.ID+"/executions/"+blocked.ID,
+		f.tokens["viewer"], nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("execution detail status=%d", resp.StatusCode)
+	}
+	var view automationExecutionView
+	decode(t, resp, &view)
+	if view.Usage.Availability != "unavailable" || view.Usage.Requests != 0 ||
+		view.Usage.Tokens.Input != nil {
+		t.Fatalf("blocked execution borrowed Automation usage: %+v", view.Usage)
+	}
+}
+
 func TestKanbanAutomationExecutionRoutesFailVisibly(t *testing.T) {
 	f := setupRBAC(t)
 	now := time.Now().UTC()

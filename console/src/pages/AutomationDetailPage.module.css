@@ -37,6 +37,7 @@
 .repair { display: flex; align-items: flex-start; gap: var(--space-2); margin-top: var(--space-4); padding: var(--space-3); border-left: 2px solid var(--color-warning); background: color-mix(in srgb, var(--color-warning) 8%, var(--color-panel)); color: var(--color-text-muted); font-size: var(--fs-caption); line-height: 1.5; }
 .repair strong, .repair small { display: block; }
 .repair strong { color: var(--color-warning); font-family: var(--font-mono); font-size: var(--fs-tiny); }
+.usage { margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--color-border); }
 @media (max-width: 860px) {
   .page { width: min(100% - 24px, 680px); }
   .head { align-items: flex-start; flex-direction: column; }

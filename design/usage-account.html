@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- Target-state Loop 4 Account/Device Cloud Model Proxy usage prototype. Sample fixtures only. -->
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Account and device usage prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Account usage — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/usage-ledger.css" />
+  <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/usage-ledger.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="usage-shell">
+    <header class="utility-bar">
+      <div class="breadcrumbs"><a href="./device-list.html">Devices</a><span>/</span><strong>Cloud model usage</strong></div>
+      <div class="utility-actions"><span class="prototype-chip">sample fixture · Loop 4</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div>
+    </header>
+    <main class="usage-main" id="mainContent">
+      <div class="usage-page">
+        <header class="usage-head">
+          <div><span class="eyebrow">Account · Device Cloud Model Proxy</span><h1>Cloud model usage</h1><p>Understand which remote devices, models, and grants caused control-plane model requests.</p></div>
+          <div class="usage-head-actions"><div class="usage-range" data-usage-range-group aria-label="Usage range"><button type="button" data-usage-range="7d" data-usage-range-label="Last 7 days" aria-pressed="false">7d</button><button type="button" data-usage-range="30d" data-usage-range-label="Last 30 days" aria-pressed="true">30d</button><button type="button" data-usage-range="90d" data-usage-range-label="Last 90 days" aria-pressed="false">90d</button></div></div>
+        </header>
+        <p class="usage-meta-note">Only requests sent through Cloud Model Proxy are included. Local model calls and Device Relay ciphertext are outside this total. Usage is operational telemetry, not a provider invoice.</p>
+
+        <section class="usage-grid" aria-label="Account usage summary">
+          <article class="usage-stat"><div class="usage-stat-top"><span>Input tokens</span><span class="usage-status" data-tone="success">reported</span></div><strong>482k</strong><small>196k served from cache</small></article>
+          <article class="usage-stat"><div class="usage-stat-top"><span>Output tokens</span><span>30 days</span></div><strong>96k</strong><small>Across 84 proxy requests</small></article>
+          <article class="usage-stat"><div class="usage-stat-top"><span>Captured requests</span><span>96%</span></div><strong>81 / 84</strong><small>2 partial · 1 unavailable</small></article>
+          <article class="usage-stat"><div class="usage-stat-top"><span>Estimated</span><span class="usage-status" data-tone="muted">cloud</span></div><strong>USD 3.821000</strong><small>Reported cost remains separate</small></article>
+        </section>
+
+        <section class="usage-table" aria-labelledby="accountAttributionTitle">
+          <header class="usage-section-head" style="padding:1rem 1rem 0"><div><h2 id="accountAttributionTitle">Attribution</h2><p>Latest retained Device display snapshots</p></div><div class="usage-range" aria-label="Group Account usage"><button type="button" aria-pressed="true">Devices</button><button type="button" aria-pressed="false">Models</button><button type="button" aria-pressed="false">Grants</button></div></header>
+          <div class="usage-table-head"><span>Source</span><span>Input</span><span>Output</span><span>Estimated</span><span>Capture</span></div>
+          <a class="usage-table-row" href="./device-welcome.html"><span class="usage-source"><span class="usage-source-mark">JM</span><span class="usage-source-copy"><strong>Jack’s Mac</strong><small>project grant · commerce</small></span></span><span>302k</span><span>61k</span><span>USD 2.417</span><span>98% reported</span></a>
+          <a class="usage-table-row" href="./device-welcome.html"><span class="usage-source"><span class="usage-source-mark">CI</span><span class="usage-source-copy"><strong>CI relay</strong><small>account grant</small></span></span><span>142k</span><span>29k</span><span>USD 1.108</span><span>94% reported</span></a>
+          <div class="usage-table-row"><span class="usage-source"><span class="usage-source-mark">IP</span><span class="usage-source-copy"><strong>iPad</strong><small>device deleted · retained snapshot</small></span></span><span>38k</span><span>6k</span><span class="uncosted">4k uncosted</span><span>88% reported</span></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

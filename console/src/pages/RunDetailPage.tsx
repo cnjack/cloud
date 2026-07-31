@@ -31,6 +31,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { LanguageToggle } from '../components/LanguageToggle';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { useToast } from '../components/Toast';
+import { UsageSummary } from '../components/UsageSummary';
 import { Wordmark } from '../components/Wordmark';
 import { useRunStream } from '../hooks/useRunStream';
 import { formatDateTime, formatDuration, shortId } from '../lib/format';
@@ -796,6 +797,9 @@ function RunInspector({
   return (
     <aside className={styles.inspector} data-testid="run-inspector" aria-label={t('runDetail.inspector.runDetailsLabel')}>
       <ProvenanceSection provenance={run.provenance} />
+      <div className={`${styles.inspectorSection} ${styles.inspectorUsage}`} data-testid="run-usage">
+        <UsageSummary value={run.usage_summary} />
+      </div>
       <InspectorSection title={t('runDetail.inspector.runOverview')}>
         <dl className={styles.facts}>
           <InspectorFact label={t('runDetail.inspector.permission')}>{run.permission_mode === 'approval' ? t('runDetail.inspector.askBeforeActions') : t('runDetail.permission.fullAccess')}</InspectorFact>

@@ -66,6 +66,7 @@
 .inspectorSection { display: grid; gap: var(--space-4); padding: 0 0 var(--space-5) var(--space-5); }
 .inspectorSection + .inspectorSection { padding-top: var(--space-5); border-top: 1px solid var(--color-border); }
 .inspectorSection h2 { margin: 0; color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); font-weight: var(--fw-semibold); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+.inspectorUsage { display: block; }
 .facts { display: grid; gap: var(--space-3); margin: 0; }
 .facts > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: start; gap: var(--space-2); }
 .facts dt { color: var(--color-text-faint); font-size: var(--fs-tiny); }

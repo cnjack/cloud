@@ -259,6 +259,15 @@ func (s *Server) handleGetServiceKanbanCardExecutions(w http.ResponseWriter, r *
 		writeError(w, http.StatusNotFound, "not_found", "Card is not part of this Service Kanban")
 		return
 	}
+	usage, err := s.st.GetUsageSummary(r.Context(), domain.UsageSummaryQuery{
+		SubjectKind: domain.UsageSubjectRun,
+		ProjectID:   svc.ProjectID, ServiceID: svc.ID,
+		CardWorkspace: workspaceID, CardPath: documentPath,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load Card usage")
+		return
+	}
 	limit := 20
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 		value, parseErr := strconv.Atoi(raw)
@@ -278,7 +287,7 @@ func (s *Server) handleGetServiceKanbanCardExecutions(w http.ResponseWriter, r *
 	)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusOK, serviceKanbanExecutionsView{
-			Items: []serviceKanbanExecutionItem{},
+			Items: []serviceKanbanExecutionItem{}, UsageSummary: usage,
 		})
 		return
 	}
@@ -312,13 +321,25 @@ func (s *Server) handleGetServiceKanbanCardExecutions(w http.ResponseWriter, r *
 			writeError(w, http.StatusInternalServerError, "internal", "could not load Card execution Run")
 			return
 		}
-		items = append(items, serviceKanbanExecutionView(*occurrence, run))
+		item := serviceKanbanExecutionView(*occurrence, run)
+		if run != nil {
+			runUsage, usageErr := s.st.GetUsageSummary(r.Context(), domain.UsageSummaryQuery{
+				SubjectKind: domain.UsageSubjectRun,
+				RunID:       run.ID,
+			})
+			if usageErr != nil {
+				writeError(w, http.StatusInternalServerError, "internal", "could not load Card execution usage")
+				return
+			}
+			item.UsageSummary = &runUsage
+		}
+		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, serviceKanbanExecutionsView{
 		Claim: &serviceKanbanClaimView{
 			DocumentPath: claim.DocumentPath, ExternalRefAvailable: claim.ExternalRefAvailable,
 		},
-		Items: items, NextCursor: nextCursor,
+		Items: items, NextCursor: nextCursor, UsageSummary: usage,
 	})
 }
 
@@ -389,12 +410,14 @@ type serviceKanbanExecutionItem struct {
 	CreatedAt      time.Time                         `json:"created_at"`
 	UpdatedAt      time.Time                         `json:"updated_at"`
 	TerminalAt     *time.Time                        `json:"terminal_at,omitempty"`
+	UsageSummary   *domain.UsageSummary              `json:"usage_summary,omitempty"`
 }
 
 type serviceKanbanExecutionsView struct {
-	Claim      *serviceKanbanClaimView      `json:"claim"`
-	Items      []serviceKanbanExecutionItem `json:"items"`
-	NextCursor *string                      `json:"next_cursor"`
+	Claim        *serviceKanbanClaimView      `json:"claim"`
+	Items        []serviceKanbanExecutionItem `json:"items"`
+	NextCursor   *string                      `json:"next_cursor"`
+	UsageSummary domain.UsageSummary          `json:"usage_summary"`
 }
 
 func serviceKanbanExecutionView(occurrence domain.PluginKanbanOccurrence, run *domain.Run) serviceKanbanExecutionItem {

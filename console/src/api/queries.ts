@@ -39,6 +39,7 @@ import type {
   UpdateProjectInput,
   UpdateProviderModelInput,
   UpdateServiceInput,
+  CreateModelPricingRevisionInput,
 } from './types';
 import { isTerminal } from './types';
 import { reconcileRunSnapshot } from './runCache';
@@ -102,7 +103,14 @@ export const qk = {
     ['project-automation', projectId, automationId] as const,
   automationExecutions: (automationId: string, state: string) =>
     ['automation-executions', automationId, state] as const,
+  automationUsage: (automationId: string, from: string, to: string) =>
+    ['automation-usage', automationId, from, to] as const,
+  projectUsage: (projectId: string, groupBy: string, from: string, to: string) =>
+    ['project-usage', projectId, groupBy, from, to] as const,
+  accountUsage: (groupBy: string, from: string, to: string) =>
+    ['account-usage', groupBy, from, to] as const,
   providerCapabilities: (provider: ProviderKind) => ['provider-capabilities', provider] as const,
+  modelPricingRevisions: (modelId: string) => ['model-pricing-revisions', modelId] as const,
   githubAppInstallations: (projectId: string) => ['github-app-installations', projectId] as const,
   jtypePluginConnect: (projectId: string, installationId: string, connectId: string) =>
     ['jtype-plugin-connect', projectId, installationId, connectId] as const,
@@ -1022,6 +1030,44 @@ export function useAutomationExecutions(automationId: string, state = '', enable
   });
 }
 
+export function useAutomationUsage(automationId: string, from = '', to = '', enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.automationUsage(automationId, from, to),
+    queryFn: () => api.getAutomationUsage(automationId, from || undefined, to || undefined),
+    enabled: enabled && !!automationId,
+  });
+}
+
+export function useProjectUsage(
+  projectId: string,
+  groupBy: 'service' | 'automation' | 'model',
+  from: string,
+  to: string,
+  enabled = true,
+) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.projectUsage(projectId, groupBy, from, to),
+    queryFn: () => api.getProjectUsage(projectId, groupBy, from, to),
+    enabled: enabled && !!projectId,
+  });
+}
+
+export function useAccountUsage(
+  groupBy: 'device' | 'model' | 'grant',
+  from: string,
+  to: string,
+  enabled = true,
+) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.accountUsage(groupBy, from, to),
+    queryFn: () => api.getAccountUsage(groupBy, from, to),
+    enabled,
+  });
+}
+
 export function useRunAutomationNow(automationId: string) {
   const api = useApi();
   const qc = useQueryClient();
@@ -1039,6 +1085,25 @@ export function useProviderCapabilities(provider: ProviderKind, enabled = true) 
     enabled,
     staleTime: 5 * 60_000,
     retry: false,
+  });
+}
+
+export function useModelPricingRevisions(modelId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.modelPricingRevisions(modelId),
+    queryFn: () => api.listModelPricingRevisions(modelId),
+    enabled: enabled && !!modelId,
+  });
+}
+
+export function useCreateModelPricingRevision(modelId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateModelPricingRevisionInput) =>
+      api.createModelPricingRevision(modelId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.modelPricingRevisions(modelId) }),
   });
 }
 

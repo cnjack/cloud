@@ -60,7 +60,7 @@ type automationExecutionView struct {
 	Card             *automationCardView             `json:"card"`
 	ExternalURL      string                          `json:"external_url,omitempty"`
 	WritebackState   string                          `json:"writeback_state"`
-	Usage            map[string]string               `json:"usage"`
+	Usage            domain.UsageSummary             `json:"usage_summary"`
 	CreatedAt        time.Time                       `json:"created_at"`
 	UpdatedAt        time.Time                       `json:"updated_at"`
 	TerminalAt       *time.Time                      `json:"terminal_at,omitempty"`
@@ -292,7 +292,6 @@ func (s *Server) automationExecutionView(r *http.Request, value *domain.Automati
 		RepairRole: value.RepairRole, ExternalURL: value.ExternalURL,
 		WritebackState: value.WritebackState, CreatedAt: value.CreatedAt,
 		UpdatedAt: value.UpdatedAt, TerminalAt: value.TerminalAt,
-		Usage: map[string]string{"state": "unavailable"},
 	}
 	if value.RequestedActor.Kind != "" {
 		actor := value.RequestedActor
@@ -374,6 +373,23 @@ func (s *Server) automationExecutionView(r *http.Request, value *domain.Automati
 	if view.Output.Kind == "" {
 		view.Output = automationOutputView{Kind: "none", Label: "No output", Available: false}
 	}
+	usageQuery := domain.UsageSummaryQuery{
+		SubjectKind: domain.UsageSubjectRun, AutomationID: value.AutomationID,
+	}
+	if value.RunID != "" {
+		usageQuery.RunID = value.RunID
+	} else if value.CardPath != "" {
+		usageQuery.CardWorkspace = value.CardWorkspaceID
+		usageQuery.CardPath = value.CardPath
+	} else {
+		view.Usage = unavailableUsageSummary("no_requests")
+		return view, nil
+	}
+	usage, err := s.st.GetUsageSummary(r.Context(), usageQuery)
+	if err != nil {
+		return automationExecutionView{}, err
+	}
+	view.Usage = usage
 	return view, nil
 }
 

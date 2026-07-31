@@ -206,6 +206,25 @@ func (s *PGStore) GetAutomationExecutionByEventKey(ctx context.Context, automati
 		automationID, eventKey))
 }
 
+func (s *PGStore) GetAutomationExecutionForKanbanOccurrence(
+	ctx context.Context,
+	occurrenceID string,
+) (*domain.AutomationExecution, error) {
+	return scanAutomationExecution(s.pool.QueryRow(ctx, `SELECT `+automationExecutionCols+`
+		FROM automation_executions
+		WHERE id=(
+			SELECT e.id
+			FROM automation_kanban_occurrences o
+			JOIN automation_executions e
+			  ON e.card_automation_id=o.automation_id
+			 AND e.card_workspace_id=o.workspace_id
+			 AND e.card_path=o.document_path
+			WHERE o.id=$1
+			ORDER BY e.created_at DESC,e.id DESC
+			LIMIT 1
+		)`, occurrenceID))
+}
+
 func (s *PGStore) ListAutomationExecutions(
 	ctx context.Context,
 	automationID, state string,
@@ -421,6 +440,41 @@ func (m *MemStore) GetAutomationExecutionByEventKey(_ context.Context, automatio
 		}
 	}
 	return nil, ErrNotFound
+}
+
+func (m *MemStore) GetAutomationExecutionForKanbanOccurrence(
+	_ context.Context,
+	occurrenceID string,
+) (*domain.AutomationExecution, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.automationExecutionForKanbanOccurrenceLocked(occurrenceID)
+}
+
+func (m *MemStore) automationExecutionForKanbanOccurrenceLocked(
+	occurrenceID string,
+) (*domain.AutomationExecution, error) {
+	occurrence, ok := m.pluginKanbanOccurrences[occurrenceID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	var source *domain.AutomationExecution
+	for _, value := range m.automationExecutions {
+		if value.CardAutomationID != occurrence.AutomationID ||
+			value.CardWorkspaceID != occurrence.WorkspaceID ||
+			value.CardPath != occurrence.DocumentPath {
+			continue
+		}
+		if source == nil || value.CreatedAt.After(source.CreatedAt) ||
+			value.CreatedAt.Equal(source.CreatedAt) && value.ID > source.ID {
+			copyValue := value
+			source = &copyValue
+		}
+	}
+	if source == nil {
+		return nil, ErrNotFound
+	}
+	return source, nil
 }
 
 func (m *MemStore) ListAutomationExecutions(

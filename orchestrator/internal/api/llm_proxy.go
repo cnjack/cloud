@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/modelcfg"
 )
 
@@ -80,7 +81,10 @@ func (s *Server) handleLLMProxy(w http.ResponseWriter, r *http.Request, runID st
 		writeError(w, http.StatusBadGateway, "model_resolve_failed", "could not resolve the model configuration")
 		return
 	}
-	s.proxyResolvedModel(w, r, model, "run", runID)
+	s.proxyResolvedModel(w, r, model, usageSubject{
+		Kind: domain.UsageSubjectRun, ID: runID,
+		ProjectID: run.ProjectID, ServiceID: run.ServiceID,
+	})
 }
 
 // proxyResolvedModel is the shared credential-injecting proxy for run-token and
@@ -88,7 +92,7 @@ func (s *Server) handleLLMProxy(w http.ResponseWriter, r *http.Request, runID st
 // forwarding rules here prevents the two surfaces from drifting on secret
 // stripping, custom-header filtering, /v1 composition, SSE flushing or timeout
 // behavior.
-func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, model modelcfg.Resolved, subjectKind, subjectID string) {
+func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, model modelcfg.Resolved, subject usageSubject) {
 	if !model.Configured() {
 		// A run scheduled while configured whose config was cleared before the
 		// runner called must fail visibly — never pretend the call succeeded.
@@ -99,7 +103,7 @@ func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, mode
 
 	target, err := url.Parse(model.BaseURL)
 	if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" {
-		s.log.Error("llm proxy: invalid model base url", "subject_kind", subjectKind, "subject", subjectID, "err", err)
+		s.log.Error("llm proxy: invalid model base url", "subject_kind", subject.Kind, "subject", subject.ID, "err", err)
 		writeError(w, http.StatusBadGateway, "model_misconfigured", "the configured model base URL is invalid")
 		return
 	}
@@ -110,6 +114,7 @@ func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, mode
 	// by the cloned outgoing URL and preserved.
 	rest := r.PathValue("rest")
 	forwardPath := composeUpstreamPath(target.Path, rest)
+	requestID := domain.NewID()
 
 	rp := &httputil.ReverseProxy{
 		// Flush immediately so SSE token chunks reach the runner as they arrive
@@ -144,10 +149,40 @@ func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, mode
 			}
 			// Hop-by-hop headers are stripped by ReverseProxy; keep no extras.
 		},
-		ModifyResponse: normalizeUpstreamError,
+		ModifyResponse: func(resp *http.Response) error {
+			if err := normalizeUpstreamError(resp); err != nil {
+				return err
+			}
+			observeUsageResponse(resp, func(measurement usageMeasurement) {
+				now := time.Now().UTC()
+				event := domain.UsageEvent{
+					ID: domain.NewID(), RequestID: requestID,
+					SubjectKind: subject.Kind, SubjectID: subject.ID,
+					ProjectID: subject.ProjectID, ServiceID: subject.ServiceID,
+					UserID: subject.UserID, DeviceID: subject.ID,
+					GrantScope: subject.GrantScope, GrantScopeID: subject.GrantScopeID, GrantScopeName: subject.GrantScopeName,
+					ProviderID: model.ProviderID, ModelID: model.ModelID, ModelName: model.ModelName,
+					InputTokens: measurement.InputTokens, OutputTokens: measurement.OutputTokens,
+					CacheReadTokens: measurement.CacheReadTokens, CacheWriteTokens: measurement.CacheWriteTokens,
+					ReportedCostMicros: measurement.ReportedCostMicros, ReportedCurrency: measurement.ReportedCurrency,
+					CaptureStatus: measurement.CaptureStatus, ErrorCategory: measurement.ErrorCategory,
+					OccurredAt: now, CreatedAt: now, Version: 1,
+				}
+				if model.Source == modelcfg.SourceEnv {
+					event.ProviderKind = "openai_compatible"
+					event.ProviderName = "Environment"
+				}
+				if event.SubjectKind == domain.UsageSubjectRun {
+					event.RunID = subject.ID
+					event.DeviceID = ""
+				}
+				s.submitUsageEvent(event)
+			})
+			return nil
+		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			// Log only method/subject/status — never the key, body, or full URL.
-			s.log.Warn("llm proxy: upstream error", "subject_kind", subjectKind, "subject", subjectID, "method", r.Method,
+			s.log.Warn("llm proxy: upstream error", "subject_kind", subject.Kind, "subject", subject.ID, "method", r.Method,
 				"status", http.StatusBadGateway, "err", err)
 			writeError(w, http.StatusBadGateway, "upstream_unreachable", "the model endpoint could not be reached")
 		},

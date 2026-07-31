@@ -50,12 +50,13 @@ const (
 // is the DECRYPTED key (empty when the endpoint needs none); callers must NEVER
 // serialise it to API clients — expose only APIKeySet.
 type Resolved struct {
-	Source    Source
-	ModelID   string // catalog model id; "" for the env fallback / none
-	BaseURL   string
-	ModelName string
-	APIKey    string
-	APIKeySet bool
+	Source     Source
+	ModelID    string // catalog model id; "" for the env fallback / none
+	ProviderID string
+	BaseURL    string
+	ModelName  string
+	APIKey     string
+	APIKeySet  bool
 	// Headers is the DECRYPTED custom-header map the owning provider configured
 	// (jcode advanced-form parity), or nil when none. Like APIKey it is a secret:
 	// the LLM proxy applies it on the outbound upstream request but it is NEVER
@@ -126,7 +127,10 @@ func resolveModel(ctx context.Context, st ConfigReader, cipher *auth.Cipher, cfg
 		case err != nil:
 			return Resolved{}, err
 		}
-		out := Resolved{Source: SourceCatalog, ModelID: m.ID, BaseURL: m.BaseURL, ModelName: m.ModelName}
+		out := Resolved{
+			Source: SourceCatalog, ModelID: m.ID, ProviderID: m.ProviderID,
+			BaseURL: m.BaseURL, ModelName: m.ModelName,
+		}
 		if len(m.APIKeyEnc) > 0 {
 			key, derr := cipher.DecryptString(m.APIKeyEnc)
 			if derr != nil {

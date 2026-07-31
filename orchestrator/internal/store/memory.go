@@ -73,6 +73,10 @@ type MemStore struct {
 	deviceOffers             map[string]domain.DevicePairingOffer    // keyed by offer id
 	attachmentStages         map[string]domain.AttachmentStage
 	runAttachments           map[string][]domain.RunAttachment
+	usageEvents              map[string]domain.UsageEvent // keyed by request id
+	usageReceipts            map[string]time.Time         // retained with rollups for durable idempotency
+	modelPricingRevisions    map[string]domain.ModelPricingRevision
+	usageRollups             map[string]usageRollup
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -131,6 +135,10 @@ func NewMemStore() *MemStore {
 		deviceOffers:             map[string]domain.DevicePairingOffer{},
 		attachmentStages:         map[string]domain.AttachmentStage{},
 		runAttachments:           map[string][]domain.RunAttachment{},
+		usageEvents:              map[string]domain.UsageEvent{},
+		usageReceipts:            map[string]time.Time{},
+		modelPricingRevisions:    map[string]domain.ModelPricingRevision{},
+		usageRollups:             map[string]usageRollup{},
 	}
 }
 

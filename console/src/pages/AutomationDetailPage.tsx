@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, ArrowSquareOut, Play, Wrench } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../components/Button';
+import { UsageSummary } from '../components/UsageSummary';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import {
   useAutomationExecutions,
@@ -183,8 +184,8 @@ function ExecutionInspector({ execution }: { execution?: AutomationExecution }) 
             ? <Link to={execution.output.href}>{execution.output.label}<ArrowSquareOut size={13} aria-hidden /></Link>
             : execution.output.label}</dd>
           <dt>{t('automationExecutions.writeback')}</dt><dd>{execution.writeback_state || t('automationExecutions.notApplicable')}</dd>
-          <dt>{t('automationExecutions.usage')}</dt><dd>{t('automationExecutions.usageUnavailable')}</dd>
         </dl>
+        <div className={styles.usage}><UsageSummary value={execution.usage_summary} /></div>
         {execution.reason && (
           <div className={styles.repair}>
             <Wrench size={15} aria-hidden />

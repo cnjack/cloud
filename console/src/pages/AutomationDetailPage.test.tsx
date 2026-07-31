@@ -38,7 +38,14 @@ const blocked: AutomationExecution = {
   run: null,
   card: null,
   writeback_state: '',
-  usage: { state: 'unavailable' },
+  usage_summary: {
+    availability: 'unavailable',
+    reason: 'no_requests',
+    requests: 0,
+    capture: { reported: 0, partial: 0, unavailable: 0, parse_error: 0 },
+    tokens: { input: null, output: null, cache_read: null, cache_write: null },
+    costs: { reported: [], estimated: [], uncosted: [] },
+  },
   created_at: '2026-07-31T09:00:00Z',
   updated_at: '2026-07-31T09:00:00Z',
 };

@@ -1,0 +1,69 @@
+<!doctype html>
+<!-- Target-state Loop 4 Project Usage prototype. All values are sample fixtures. -->
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Project usage attribution prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Project usage — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/usage-ledger.css" />
+  <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/usage-ledger.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="usage-shell">
+    <header class="utility-bar">
+      <div class="breadcrumbs"><a href="./projects.html">Projects</a><span>/</span><a href="./project-workspace.html">commerce</a><span>/</span><strong>Usage</strong></div>
+      <div class="utility-actions"><span class="prototype-chip">sample fixture · Loop 4</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div>
+    </header>
+    <main class="usage-main" id="mainContent">
+      <div class="usage-page">
+        <header class="usage-head">
+          <div><span class="eyebrow">commerce · operational telemetry</span><h1>Usage</h1><p>Trace model activity to Services, Automations, Cards, and Runs without treating Cloud estimates as a provider invoice.</p></div>
+          <div class="usage-head-actions"><div class="usage-range" data-usage-range-group aria-label="Usage range"><button type="button" data-usage-range="24h" data-usage-range-label="Last 24 hours" aria-pressed="false">24h</button><button type="button" data-usage-range="7d" data-usage-range-label="Last 7 days" aria-pressed="true">7d</button><button type="button" data-usage-range="30d" data-usage-range-label="Last 30 days" aria-pressed="false">30d</button></div></div>
+        </header>
+        <p class="usage-meta-note">Showing <strong data-usage-current-label>Last 7 days</strong> in Asia/Shanghai. Aggregation uses UTC hourly buckets. Usage is operational telemetry, not a provider invoice.</p>
+
+        <section class="usage-grid" aria-label="Token summary">
+          <article class="usage-stat"><div class="usage-stat-top"><span>Input tokens</span><span class="usage-status" data-tone="success">reported</span></div><strong>1.84M</strong><small>742k served from cache</small></article>
+          <article class="usage-stat"><div class="usage-stat-top"><span>Output tokens</span><span>7 days</span></div><strong>468k</strong><small>Across 214 provider requests</small></article>
+          <article class="usage-stat"><div class="usage-stat-top"><span>Runs with usage</span><span>92%</span></div><strong>81 / 88</strong><small>5 unavailable · 2 parse errors</small></article>
+          <article class="usage-stat"><div class="usage-stat-top"><span>Uncosted</span><span class="usage-status" data-tone="warning">visible</span></div><strong>96.2k</strong><small>Cache-write rate is missing</small></article>
+        </section>
+
+        <section class="usage-money-grid" aria-label="Cost sources">
+          <article class="usage-money"><div class="usage-money-head"><strong>Reported</strong><span class="usage-status" data-tone="success">provider</span></div><div class="usage-money-value">USD 18.420000</div><p class="usage-money-copy">Returned by 162 provider responses. It is not combined with Cloud estimates.</p></article>
+          <article class="usage-money"><div class="usage-money-head"><strong>Estimated</strong><span class="usage-status" data-tone="muted">cloud</span></div><div class="usage-money-value">USD 17.681000</div><p class="usage-money-copy">Calculated from two immutable pricing revisions effective during this range.</p><details><summary>View revisions</summary><p>price_01J6… · price_01J8…</p></details></article>
+          <article class="usage-money"><div class="usage-money-head"><strong>Uncosted</strong><span class="usage-status" data-tone="warning">action</span></div><div class="usage-money-value">96,200 tokens</div><p class="usage-money-copy">These tokens have no applicable category rate. Add a new pricing revision; history will not be rewritten.</p></article>
+        </section>
+
+        <div class="usage-two">
+          <section class="usage-chart" aria-labelledby="trendTitle">
+            <header class="usage-section-head"><div><h2 id="trendTitle">Token activity</h2><p>Input and output by UTC hour</p></div><div class="usage-legend"><span><i></i>Input</span><span><i></i>Output</span></div></header>
+            <div class="usage-bars" aria-label="Sample token chart"><span class="usage-bar"><i style="height:36%"></i><i style="height:11%"></i></span><span class="usage-bar"><i style="height:52%"></i><i style="height:18%"></i></span><span class="usage-bar"><i style="height:44%"></i><i style="height:14%"></i></span><span class="usage-bar"><i style="height:68%"></i><i style="height:22%"></i></span><span class="usage-bar"><i style="height:61%"></i><i style="height:20%"></i></span><span class="usage-bar"><i style="height:82%"></i><i style="height:31%"></i></span><span class="usage-bar"><i style="height:57%"></i><i style="height:19%"></i></span><span class="usage-bar"><i style="height:73%"></i><i style="height:28%"></i></span><span class="usage-bar"><i style="height:48%"></i><i style="height:16%"></i></span><span class="usage-bar"><i style="height:91%"></i><i style="height:36%"></i></span><span class="usage-bar"><i style="height:76%"></i><i style="height:25%"></i></span><span class="usage-bar"><i style="height:64%"></i><i style="height:20%"></i></span><span class="usage-bar"><i style="height:84%"></i><i style="height:29%"></i></span><span class="usage-bar"><i style="height:71%"></i><i style="height:24%"></i></span></div>
+            <div class="usage-axis"><span>Jul 25</span><span>Jul 28</span><span>Jul 31</span></div>
+          </section>
+          <section class="usage-capture" aria-labelledby="captureTitle">
+            <header class="usage-section-head"><div><h2 id="captureTitle">Capture health</h2><p>Every request remains visible</p></div></header>
+            <div class="usage-capture-row" data-tone="success"><span><i></i>Reported</span><strong>197</strong></div>
+            <div class="usage-capture-row" data-tone="warning"><span><i></i>Partial</span><strong>10</strong></div>
+            <div class="usage-capture-row" data-tone="muted"><span><i></i>Unavailable</span><strong>5</strong></div>
+            <div class="usage-capture-row" data-tone="danger"><span><i></i>Parse error</span><strong>2</strong></div>
+          </section>
+        </div>
+
+        <section class="usage-table" aria-labelledby="attributionTitle">
+          <header class="usage-section-head" style="padding:1rem 1rem 0"><div><h2 id="attributionTitle">Attribution</h2><p>Service and user-facing Automation snapshots</p></div><div class="usage-range" aria-label="Group usage"><button type="button" aria-pressed="true">Services</button><button type="button" aria-pressed="false">Automations</button><button type="button" aria-pressed="false">Models</button></div></header>
+          <div class="usage-table-head"><span>Source</span><span>Input</span><span>Output</span><span>Estimated</span><span>Capture</span></div>
+          <a class="usage-table-row" href="./usage-run.html"><span class="usage-source"><span class="usage-source-mark">PA</span><span class="usage-source-copy"><strong>payments-api</strong><small>41 Runs · 18 Cards</small></span></span><span>1.12M</span><span>301k</span><span>USD 11.842</span><span>96% reported</span></a>
+          <a class="usage-table-row" href="./usage-card.html"><span class="usage-source"><span class="usage-source-mark">WC</span><span class="usage-source-copy"><strong>web-checkout</strong><small>29 Runs · 3 Automations</small></span></span><span>612k</span><span>144k</span><span>USD 4.921</span><span>89% reported</span></a>
+          <div class="usage-table-row"><span class="usage-source"><span class="usage-source-mark">RI</span><span class="usage-source-copy"><strong>runner-images</strong><small>18 Runs · no active Automation</small></span></span><span>108k</span><span>23k</span><span class="uncosted">12k uncosted</span><span>83% reported</span></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

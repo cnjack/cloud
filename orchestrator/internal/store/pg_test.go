@@ -115,6 +115,101 @@ func TestPGCreateCoalescedRunConcurrentLatestWins(t *testing.T) {
 	}
 }
 
+func TestPGUsageRollupSurvivesRawRetentionAndDeduplicatesReplay(t *testing.T) {
+	ctx := context.Background()
+	st, runID := pgTestStore(t)
+	run, err := st.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID := "usage-pg-" + domain.NewID()
+	at := time.Date(2020, time.January, 2, 3, 12, 0, 0, time.UTC)
+	event := &domain.UsageEvent{
+		ID: domain.NewID(), RequestID: requestID,
+		SubjectKind: domain.UsageSubjectRun, SubjectID: runID, RunID: runID,
+		ProjectID: run.ProjectID, ServiceID: run.ServiceID,
+		InputTokens: usageInt64(11), OutputTokens: usageInt64(5),
+		CaptureStatus: domain.UsageCaptureReported,
+		OccurredAt:    at, CreatedAt: at, Version: 1,
+	}
+	t.Cleanup(func() {
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM usage_events WHERE request_id=$1`, requestID)
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM usage_request_receipts WHERE request_id=$1`, requestID)
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM usage_hourly_rollups WHERE subject_id=$1`, runID)
+	})
+	if recorded, err := st.RecordUsageEvent(ctx, event); err != nil || !recorded {
+		t.Fatalf("record = %v, %v", recorded, err)
+	}
+	rawDeleted, rollupsDeleted, err := st.CleanupUsage(
+		ctx,
+		at.Add(time.Hour),
+		at.Add(-365*24*time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rawDeleted < 1 || rollupsDeleted != 0 {
+		t.Fatalf("cleanup raw=%d rollups=%d", rawDeleted, rollupsDeleted)
+	}
+	if recorded, err := st.RecordUsageEvent(ctx, event); err != nil || recorded {
+		t.Fatalf("replay after raw cleanup = %v, %v; want durable no-op", recorded, err)
+	}
+	summary, err := st.GetUsageSummary(ctx, domain.UsageSummaryQuery{RunID: runID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Requests != 1 || summary.Tokens.Input == nil || *summary.Tokens.Input != 11 {
+		t.Fatalf("summary after cleanup=%+v", summary)
+	}
+}
+
+func TestPGPricingRevisionResolutionSurvivesModelDeletion(t *testing.T) {
+	ctx := context.Background()
+	st, _ := pgTestStore(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	model := &domain.Model{
+		ID: domain.NewID(), Name: "pricing-" + domain.NewID(),
+		ModelName: "provider/priced", BaseURL: "https://example.invalid/v1",
+		CreatedAt: now,
+	}
+	if err := st.CreateModel(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM model_pricing_revisions WHERE model_resource_id=$1`, model.ID)
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM model_configs WHERE id=$1`, model.ID)
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM model_providers WHERE id=$1`, model.ProviderID)
+	})
+
+	effective := now.Add(-time.Hour)
+	older := &domain.ModelPricingRevision{
+		ID: "zz-" + domain.NewID(), ModelResourceID: model.ID, ModelName: model.ModelName,
+		Currency: "USD", InputMicrosPerMillion: usageInt64(1),
+		EffectiveAt: effective, CreatedAt: now.Add(-time.Minute),
+	}
+	newer := &domain.ModelPricingRevision{
+		ID: "aa-" + domain.NewID(), ModelResourceID: model.ID, ModelName: model.ModelName,
+		Currency: "USD", InputMicrosPerMillion: usageInt64(2),
+		EffectiveAt: effective, CreatedAt: now,
+	}
+	for _, revision := range []*domain.ModelPricingRevision{older, newer} {
+		if err := st.CreateModelPricingRevision(ctx, revision); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved, err := st.ResolveModelPricingRevision(ctx, model.ID, now)
+	if err != nil || resolved.ID != newer.ID {
+		t.Fatalf("latest-created pricing=%+v err=%v", resolved, err)
+	}
+	if err := st.DeleteModel(ctx, model.ID); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err = st.ResolveModelPricingRevision(ctx, model.ID, now)
+	if err != nil || resolved.ID != newer.ID {
+		t.Fatalf("deleted-model pricing snapshot=%+v err=%v", resolved, err)
+	}
+}
+
 func TestPGRunProvenanceRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	st, seedRunID := pgTestStore(t)

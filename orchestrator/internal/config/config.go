@@ -23,9 +23,11 @@ type Config struct {
 	DatabaseURL string // DATABASE_URL (required) — pgx connection string
 
 	// Reconciler
-	ReconcileInterval time.Duration // RECONCILE_INTERVAL, default 3s
-	MaxConcurrentRuns int           // MAX_CONCURRENT_RUNS, default 4 (0 = unlimited)
-	StallTimeout      time.Duration // STALL_TIMEOUT, default 10m (0 = disabled)
+	ReconcileInterval    time.Duration // RECONCILE_INTERVAL, default 3s
+	MaxConcurrentRuns    int           // MAX_CONCURRENT_RUNS, default 4 (0 = unlimited)
+	StallTimeout         time.Duration // STALL_TIMEOUT, default 10m (0 = disabled)
+	UsageRawRetention    time.Duration // USAGE_RAW_RETENTION, default 2160h (90d)
+	UsageRollupRetention time.Duration // USAGE_ROLLUP_RETENTION, default 8760h (365d)
 
 	// Multi-turn session guardrails (D22). Cluster-wide defaults a project may
 	// override (nil project guardrail => inherit these).
@@ -227,6 +229,8 @@ func Load() (*Config, error) {
 		ReconcileInterval:      getdur("RECONCILE_INTERVAL", 3*time.Second),
 		MaxConcurrentRuns:      getint("MAX_CONCURRENT_RUNS", 4),
 		StallTimeout:           getdur("STALL_TIMEOUT", 10*time.Minute),
+		UsageRawRetention:      getdur("USAGE_RAW_RETENTION", 90*24*time.Hour),
+		UsageRollupRetention:   getdur("USAGE_ROLLUP_RETENTION", 365*24*time.Hour),
 		MaxLiveSessions:        getint("MAX_LIVE_SESSIONS", 2),
 		SessionIdleTimeoutSecs: getint64("SESSION_IDLE_TIMEOUT_SECONDS", 900),
 		SessionTTLSecs:         getint64("SESSION_TTL_SECONDS", 43200),
@@ -302,6 +306,12 @@ func Load() (*Config, error) {
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required env: %s", strings.Join(missing, ", "))
+	}
+	if c.UsageRawRetention <= 0 {
+		return nil, fmt.Errorf("USAGE_RAW_RETENTION must be positive")
+	}
+	if c.UsageRollupRetention < c.UsageRawRetention {
+		return nil, fmt.Errorf("USAGE_ROLLUP_RETENTION must be at least USAGE_RAW_RETENTION")
 	}
 
 	// JCLOUD_MASTER_KEY is required (and must be a valid base64 32-byte key) ONLY
