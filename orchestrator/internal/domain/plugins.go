@@ -191,11 +191,15 @@ type SCMAction struct {
 }
 
 type KanbanTrigger struct {
-	AutomationID   string `json:"automation_id"`
-	InstallationID string `json:"installation_id"`
-	BoardRef       string `json:"board_ref"`
-	TriggerColumn  string `json:"trigger_column"`
-	DoneColumn     string `json:"done_column,omitempty"`
+	AutomationID   string     `json:"automation_id"`
+	InstallationID string     `json:"installation_id"`
+	BoardRef       string     `json:"board_ref"`
+	TriggerColumn  string     `json:"trigger_column"`
+	TriggerLabel   string     `json:"trigger_label,omitempty"`
+	DoneColumn     string     `json:"done_column,omitempty"`
+	DoneLabel      string     `json:"done_label,omitempty"`
+	EventCursor    int64      `json:"event_cursor"`
+	BootstrappedAt *time.Time `json:"bootstrapped_at,omitempty"`
 }
 
 type CronTrigger struct {
@@ -318,13 +322,56 @@ type PluginAuditEvent struct {
 }
 
 type PluginKanbanClaim struct {
-	AutomationID   string     `json:"automation_id"`
-	InstallationID string     `json:"installation_id"`
-	DocumentID     string     `json:"document_id"`
-	DocumentPath   string     `json:"document_path"`
-	WorkspaceID    string     `json:"workspace_id"`
-	DoneColumn     string     `json:"done_column,omitempty"`
-	RunID          string     `json:"run_id,omitempty"`
-	WritebackAt    *time.Time `json:"writeback_at,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
+	AutomationID         string     `json:"automation_id"`
+	InstallationID       string     `json:"installation_id"`
+	DocumentID           string     `json:"document_id"`
+	DocumentPath         string     `json:"document_path"`
+	WorkspaceID          string     `json:"workspace_id"`
+	DoneColumn           string     `json:"done_column,omitempty"`
+	RunID                string     `json:"run_id,omitempty"`
+	WritebackAt          *time.Time `json:"writeback_at,omitempty"`
+	LastObservedColumn   string     `json:"last_observed_column,omitempty"`
+	OutsideTriggerAt     *time.Time `json:"outside_trigger_at,omitempty"`
+	LatestOccurrenceID   string     `json:"latest_occurrence_id,omitempty"`
+	ExternalRefAvailable bool       `json:"external_ref_available"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+}
+
+type KanbanOccurrenceState string
+
+const (
+	KanbanOccurrenceReceived KanbanOccurrenceState = "received"
+	KanbanOccurrenceBlocked  KanbanOccurrenceState = "blocked"
+	KanbanOccurrenceQueued   KanbanOccurrenceState = "queued"
+	KanbanOccurrenceRunning  KanbanOccurrenceState = "running"
+	KanbanOccurrenceTerminal KanbanOccurrenceState = "terminal"
+)
+
+type PluginKanbanOccurrence struct {
+	ID               string                `json:"id"`
+	AutomationID     string                `json:"automation_id"`
+	ServiceID        string                `json:"service_id"`
+	InstallationID   string                `json:"installation_id"`
+	WorkspaceID      string                `json:"workspace_id"`
+	DocumentID       string                `json:"document_id"`
+	DocumentPath     string                `json:"document_path"`
+	DoneColumn       string                `json:"done_column,omitempty"`
+	EventKey         string                `json:"event_key"`
+	EventSequence    *int64                `json:"event_sequence,omitempty"`
+	ActorDisplay     string                `json:"actor_display,omitempty"`
+	EntryColumn      string                `json:"entry_column"`
+	State            KanbanOccurrenceState `json:"state"`
+	Outcome          string                `json:"outcome,omitempty"`
+	ReasonCode       string                `json:"reason_code,omitempty"`
+	ReasonMessage    string                `json:"reason_message,omitempty"`
+	RepairRole       string                `json:"repair_role,omitempty"`
+	RunID            string                `json:"run_id,omitempty"`
+	ReceiptPhase     string                `json:"receipt_phase,omitempty"`
+	ReceiptWrittenAt *time.Time            `json:"receipt_written_at,omitempty"`
+	WritebackState   string                `json:"writeback_state"`
+	WritebackError   string                `json:"writeback_error,omitempty"`
+	CreatedAt        time.Time             `json:"created_at"`
+	UpdatedAt        time.Time             `json:"updated_at"`
+	TerminalAt       *time.Time            `json:"terminal_at,omitempty"`
 }

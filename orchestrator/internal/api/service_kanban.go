@@ -1,13 +1,17 @@
 package api
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/jtype"
+	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -73,6 +77,412 @@ func (s *Server) handleGetServiceKanban(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 200, spec)
 }
 
+type serviceKanbanPolicyView struct {
+	ServiceID   string `json:"service_id"`
+	ServiceName string `json:"service_name"`
+	Repository  string `json:"repository"`
+	Model       struct {
+		ID    string `json:"id,omitempty"`
+		Label string `json:"label"`
+	} `json:"model"`
+	Board struct {
+		WorkspaceID string `json:"workspace_id"`
+		Ref         string `json:"ref"`
+	} `json:"board"`
+	TriggerColumn struct {
+		Key   string `json:"key"`
+		Label string `json:"label"`
+	} `json:"trigger_column"`
+	DoneColumn struct {
+		Key   string `json:"key,omitempty"`
+		Label string `json:"label,omitempty"`
+	} `json:"done_column"`
+	Output string `json:"output"`
+	Health struct {
+		State      string  `json:"state"`
+		Blocker    *string `json:"blocker"`
+		RepairRole *string `json:"repair_role"`
+	} `json:"health"`
+}
+
+func (s *Server) handleGetServiceKanbanPolicy(w http.ResponseWriter, r *http.Request) {
+	svc, spec, ok := s.loadServiceKanban(w, r, domain.RoleViewer)
+	if !ok {
+		return
+	}
+	if spec == nil || spec.Kanban == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Kanban is not enabled for this Service")
+		return
+	}
+	view := serviceKanbanPolicyView{
+		ServiceID: svc.ID, ServiceName: svc.Name, Repository: svc.RepoOwnerName,
+		Output: "comment_and_move_on_success",
+	}
+	if view.Repository == "" {
+		view.Repository = svc.RawRepoURL
+	}
+	view.Board.Ref = spec.Kanban.BoardRef
+	view.TriggerColumn.Key = spec.Kanban.TriggerColumn
+	view.TriggerColumn.Label = spec.Kanban.TriggerLabel
+	if view.TriggerColumn.Label == "" {
+		view.TriggerColumn.Label = spec.Kanban.TriggerColumn
+	}
+	view.DoneColumn.Key = spec.Kanban.DoneColumn
+	view.DoneColumn.Label = spec.Kanban.DoneLabel
+	if view.DoneColumn.Label == "" {
+		view.DoneColumn.Label = spec.Kanban.DoneColumn
+	}
+	view.Health.State = "ready"
+	if spec.Kanban.DoneColumn == "" {
+		view.Output = "comment_only"
+	}
+
+	block := func(code, repairRole string) {
+		if view.Health.State == "ready" {
+			view.Health.State = "blocked"
+			value := code
+			view.Health.Blocker = &value
+			if repairRole != "" {
+				role := repairRole
+				view.Health.RepairRole = &role
+			}
+		}
+	}
+	if !spec.Automation.Enabled {
+		block("binding_disabled", "project_owner")
+	}
+	installation, err := s.st.GetPluginInstallation(r.Context(), spec.Kanban.InstallationID)
+	if err != nil || installation.Provider != domain.PluginJType ||
+		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" ||
+		installation.WorkspaceID == "" || !installation.TokenSet() {
+		block("plugin_unavailable", "project_owner")
+	} else {
+		view.Board.WorkspaceID = installation.WorkspaceID
+		cfg, cfgErr := s.st.GetProviderConfig(r.Context(), domain.PluginJType)
+		if cfgErr != nil || !cfg.PluginEnabled || strings.TrimSpace(cfg.BaseURL) == "" ||
+			cfg.ConfigRevision != installation.ConfigRevision {
+			block("plugin_unavailable", "cluster_admin")
+		}
+	}
+	if strings.HasPrefix(spec.Automation.LastError, "event_feed_unavailable:") {
+		block("event_feed_unavailable", "project_owner")
+	}
+	if strings.HasPrefix(spec.Automation.LastError, "bootstrap_unavailable:") {
+		block("bootstrap_unavailable", "project_owner")
+	}
+	if strings.HasPrefix(spec.Automation.LastError, "card_index_unavailable:") {
+		block("card_index_unavailable", "project_owner")
+	}
+	if strings.HasPrefix(spec.Automation.LastError, "board_validation_unavailable:") {
+		block("board_validation_unavailable", "project_owner")
+	}
+	if strings.HasPrefix(spec.Automation.LastError, "board_drift:") {
+		block("board_drift", "project_owner")
+	}
+	if blocker, repairRole := s.serviceKanbanRepositoryBlocker(r, svc); blocker != "" {
+		block(blocker, repairRole)
+	}
+	if s.cfg.DisableK8s {
+		block("runner_unavailable", "cluster_admin")
+	}
+	selection, outcome, selectErr := s.models.SelectModel(
+		r.Context(), svc.ProjectID, deref(svc.DefaultModelID), spec.Automation.ModelID,
+	)
+	if selectErr != nil || outcome != modelcfg.SelectOK {
+		block("model_not_configured", "project_owner")
+		view.Model.Label = "Not configured"
+	} else {
+		view.Model.ID = selection.ModelID
+		view.Model.Label = selection.ModelName
+		if !selection.SupportsEffort(spec.Automation.ModelEffort) {
+			block("model_effort_unsupported", "project_owner")
+		}
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) serviceKanbanRepositoryBlocker(r *http.Request, svc *domain.Service) (string, string) {
+	if svc == nil || svc.DeletingAt != nil {
+		return "service_unavailable", "project_owner"
+	}
+	switch svc.RepoKind {
+	case domain.RepoKindRaw:
+		if strings.TrimSpace(svc.RawRepoURL) == "" {
+			return "repository_not_configured", "project_owner"
+		}
+		return "", ""
+	case domain.RepoKindProvider:
+		if !domain.ValidProvider(svc.Provider) || strings.TrimSpace(svc.RepoOwnerName) == "" {
+			return "repository_not_configured", "project_owner"
+		}
+	default:
+		return "repository_not_configured", "project_owner"
+	}
+	binding, err := s.st.GetServiceRepositoryBinding(r.Context(), svc.ID)
+	if err != nil || binding.InstallationID == "" || strings.TrimSpace(binding.CloneURL) == "" {
+		return "repository_unavailable", "project_owner"
+	}
+	installation, err := s.st.GetPluginInstallation(r.Context(), binding.InstallationID)
+	if err != nil || installation.Provider != domain.ProviderKind(svc.Provider) ||
+		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" {
+		return "provider_unavailable", "project_owner"
+	}
+	if (installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
+		(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
+		return "provider_unavailable", "project_owner"
+	}
+	cfg, err := s.st.GetProviderConfig(r.Context(), installation.Provider)
+	if err != nil || !cfg.PluginEnabled || strings.TrimSpace(cfg.BaseURL) == "" ||
+		cfg.ConfigRevision != installation.ConfigRevision {
+		return "provider_unavailable", "cluster_admin"
+	}
+	return "", ""
+}
+
+func (s *Server) handleGetServiceKanbanCardExecutions(w http.ResponseWriter, r *http.Request) {
+	svc, spec, ok := s.loadServiceKanban(w, r, domain.RoleViewer)
+	if !ok {
+		return
+	}
+	if spec == nil || spec.Kanban == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Kanban is not enabled for this Service")
+		return
+	}
+	workspaceID := strings.TrimSpace(r.URL.Query().Get("workspace_id"))
+	documentPath := strings.TrimSpace(r.URL.Query().Get("document_path"))
+	if workspaceID == "" || documentPath == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "workspace_id and document_path are required")
+		return
+	}
+	installation, err := s.st.GetPluginInstallation(r.Context(), spec.Kanban.InstallationID)
+	if err != nil || installation.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "Card is not part of this Service Kanban")
+		return
+	}
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 1 || value > 50 {
+			writeError(w, http.StatusBadRequest, "bad_request", "limit must be between 1 and 50")
+			return
+		}
+		limit = value
+	}
+	before, cursorErr := decodeKanbanOccurrenceCursor(strings.TrimSpace(r.URL.Query().Get("before")))
+	if cursorErr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_cursor", "before is not a valid Card execution cursor")
+		return
+	}
+	claim, err := s.st.GetPluginKanbanClaimByPath(
+		r.Context(), spec.Automation.ID, workspaceID, documentPath,
+	)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusOK, serviceKanbanExecutionsView{
+			Items: []serviceKanbanExecutionItem{},
+		})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load Card execution claim")
+		return
+	}
+	occurrences, err := s.st.ListPluginKanbanCardExecutions(
+		r.Context(), spec.Automation.ID, svc.ID, workspaceID, documentPath, before, limit+1,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load Card executions")
+		return
+	}
+	var nextCursor *string
+	if len(occurrences) > limit {
+		occurrences = occurrences[:limit]
+		value := encodeKanbanOccurrenceCursor(occurrences[len(occurrences)-1])
+		nextCursor = &value
+	}
+	items := make([]serviceKanbanExecutionItem, 0, len(occurrences))
+	for i := range occurrences {
+		occurrence := &occurrences[i]
+		var run *domain.Run
+		if occurrence.RunID == "" {
+			items = append(items, serviceKanbanExecutionView(*occurrence, nil))
+			continue
+		}
+		run, err = s.st.GetRun(r.Context(), occurrence.RunID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, "internal", "could not load Card execution Run")
+			return
+		}
+		items = append(items, serviceKanbanExecutionView(*occurrence, run))
+	}
+	writeJSON(w, http.StatusOK, serviceKanbanExecutionsView{
+		Claim: &serviceKanbanClaimView{
+			DocumentPath: claim.DocumentPath, ExternalRefAvailable: claim.ExternalRefAvailable,
+		},
+		Items: items, NextCursor: nextCursor,
+	})
+}
+
+type kanbanOccurrenceCursorEnvelope struct {
+	CreatedAt time.Time `json:"created_at"`
+	ID        string    `json:"id"`
+}
+
+func encodeKanbanOccurrenceCursor(occurrence domain.PluginKanbanOccurrence) string {
+	payload, _ := json.Marshal(kanbanOccurrenceCursorEnvelope{
+		CreatedAt: occurrence.CreatedAt.UTC(), ID: occurrence.ID,
+	})
+	return base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func decodeKanbanOccurrenceCursor(raw string) (*store.PluginKanbanOccurrenceCursor, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, err
+	}
+	var envelope kanbanOccurrenceCursorEnvelope
+	if err = json.Unmarshal(payload, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.CreatedAt.IsZero() || strings.TrimSpace(envelope.ID) == "" {
+		return nil, errors.New("cursor fields are required")
+	}
+	return &store.PluginKanbanOccurrenceCursor{
+		CreatedAt: envelope.CreatedAt, ID: envelope.ID,
+	}, nil
+}
+
+type serviceKanbanClaimView struct {
+	DocumentPath         string `json:"document_path"`
+	ExternalRefAvailable bool   `json:"external_ref_available"`
+}
+
+type serviceKanbanRequestedActorView struct {
+	Label     string `json:"label"`
+	Precision string `json:"precision"`
+}
+
+type serviceKanbanExecutionRunView struct {
+	ID     string           `json:"id"`
+	Status domain.RunStatus `json:"status"`
+	Href   string           `json:"href"`
+}
+
+type serviceKanbanExecutionReceiptView struct {
+	External  string `json:"external"`
+	Writeback string `json:"writeback"`
+}
+
+type serviceKanbanExecutionItem struct {
+	ID             string                            `json:"id"`
+	Status         domain.KanbanOccurrenceState      `json:"status"`
+	Outcome        string                            `json:"outcome,omitempty"`
+	Summary        string                            `json:"summary"`
+	Reason         *string                           `json:"reason"`
+	ReasonCode     string                            `json:"reason_code,omitempty"`
+	RepairRole     *string                           `json:"repair_role"`
+	RequestedActor *serviceKanbanRequestedActorView  `json:"requested_actor"`
+	Run            *serviceKanbanExecutionRunView    `json:"run"`
+	Receipt        serviceKanbanExecutionReceiptView `json:"receipt"`
+	CreatedAt      time.Time                         `json:"created_at"`
+	UpdatedAt      time.Time                         `json:"updated_at"`
+	TerminalAt     *time.Time                        `json:"terminal_at,omitempty"`
+}
+
+type serviceKanbanExecutionsView struct {
+	Claim      *serviceKanbanClaimView      `json:"claim"`
+	Items      []serviceKanbanExecutionItem `json:"items"`
+	NextCursor *string                      `json:"next_cursor"`
+}
+
+func serviceKanbanExecutionView(occurrence domain.PluginKanbanOccurrence, run *domain.Run) serviceKanbanExecutionItem {
+	status := occurrence.State
+	outcome := occurrence.Outcome
+	terminalAt := occurrence.TerminalAt
+	reasonCode := occurrence.ReasonCode
+	reasonMessage := occurrence.ReasonMessage
+	repairRoleCode := occurrence.RepairRole
+	var runView *serviceKanbanExecutionRunView
+	if run != nil {
+		switch {
+		case run.Status.Terminal():
+			status = domain.KanbanOccurrenceTerminal
+			outcome = string(run.Status)
+			terminalAt = run.FinishedAt
+		case run.Status == domain.StatusRunning || run.Status == domain.StatusAwaitingInput:
+			status = domain.KanbanOccurrenceRunning
+		default:
+			status = domain.KanbanOccurrenceQueued
+		}
+		runView = &serviceKanbanExecutionRunView{
+			ID: run.ID, Status: run.Status, Href: "/runs/" + run.ID,
+		}
+	} else if occurrence.RunID != "" && status != domain.KanbanOccurrenceTerminal {
+		// Runs are the execution truth while they exist. If a retained Card
+		// occurrence points at a Run that is no longer readable, do not fall
+		// back to a stale queued/received state that looks healthy.
+		status = domain.KanbanOccurrenceBlocked
+		reasonCode = "run_unavailable"
+		reasonMessage = "The linked Cloud Run is no longer available."
+		repairRoleCode = "project_owner"
+	}
+	summary := "Card entry received"
+	switch status {
+	case domain.KanbanOccurrenceBlocked:
+		summary = "Execution is blocked"
+	case domain.KanbanOccurrenceQueued:
+		summary = "Run is queued"
+	case domain.KanbanOccurrenceRunning:
+		summary = "Run is applying the requested change"
+	case domain.KanbanOccurrenceTerminal:
+		switch outcome {
+		case string(domain.StatusSucceeded):
+			summary = "Run completed successfully"
+		case string(domain.StatusCanceled):
+			summary = "Run was canceled"
+		default:
+			summary = "Run failed"
+		}
+	}
+	var reason *string
+	if reasonMessage != "" {
+		value := reasonMessage
+		reason = &value
+	}
+	var repairRole *string
+	if repairRoleCode != "" {
+		value := repairRoleCode
+		repairRole = &value
+	}
+	var actor *serviceKanbanRequestedActorView
+	if occurrence.ActorDisplay != "" {
+		actor = &serviceKanbanRequestedActorView{
+			Label: occurrence.ActorDisplay, Precision: "display_only",
+		}
+	}
+	externalReceipt := "not_required"
+	if occurrence.WritebackState == "unavailable" {
+		externalReceipt = "unavailable"
+	} else if occurrence.ReceiptPhase != "" {
+		externalReceipt = "pending"
+		if occurrence.ReceiptWrittenAt != nil {
+			externalReceipt = "written"
+		}
+	}
+	return serviceKanbanExecutionItem{
+		ID: occurrence.ID, Status: status, Outcome: outcome, Summary: summary,
+		Reason: reason, ReasonCode: reasonCode, RepairRole: repairRole,
+		RequestedActor: actor, Run: runView,
+		Receipt: serviceKanbanExecutionReceiptView{
+			External: externalReceipt, Writeback: occurrence.WritebackState,
+		},
+		CreatedAt: occurrence.CreatedAt, UpdatedAt: occurrence.UpdatedAt,
+		TerminalAt: terminalAt,
+	}
+}
+
 func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) {
 	svc, current, ok := s.loadServiceKanban(w, r, domain.RoleMember)
 	if !ok {
@@ -129,6 +539,8 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	canonicalBoardRef := ""
+	triggerLabel := triggerColumn
+	doneLabel := doneColumn
 	roundTripCurrent := current != nil && current.Kanban != nil &&
 		current.Kanban.InstallationID == req.InstallationID &&
 		current.Kanban.BoardRef == req.BoardRef &&
@@ -139,6 +551,12 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 		// round-trip that value without performing an unbounded board-document
 		// scan; the poller remains responsible for detecting later board drift.
 		canonicalBoardRef = current.Kanban.BoardRef
+		if current.Kanban.TriggerLabel != "" {
+			triggerLabel = current.Kanban.TriggerLabel
+		}
+		if current.Kanban.DoneLabel != "" {
+			doneLabel = current.Kanban.DoneLabel
+		}
 	} else {
 		// New or changed bindings use a document path/name. A canonical-looking
 		// b_* value is only accepted when it exactly matches the current binding.
@@ -165,6 +583,8 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 			writeError(w, 409, "column_not_found", "done_column '"+doneColumn+"' is not a column on board "+req.BoardRef)
 			return
 		}
+		triggerLabel = boardColumnLabel(board, triggerColumn)
+		doneLabel = boardColumnLabel(board, doneColumn)
 	}
 	items, err := s.st.ListPluginAutomationsByProject(r.Context(), svc.ProjectID)
 	if err != nil {
@@ -187,7 +607,11 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 	}
 	now := time.Now().UTC()
 	a := &domain.PluginAutomation{ID: domain.NewID(), ServiceID: svc.ID, InstallationID: req.InstallationID, Name: "Kanban", TriggerKind: "kanban", PromptTemplate: "Complete the task described by the JType card.", Enabled: enabled, IgnoreJCode: true, CreatedBy: principalFrom(r.Context()).userID(), CreatedAt: now}
-	trigger := &domain.KanbanTrigger{AutomationID: a.ID, InstallationID: req.InstallationID, BoardRef: canonicalBoardRef, TriggerColumn: triggerColumn, DoneColumn: doneColumn}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: a.ID, InstallationID: req.InstallationID, BoardRef: canonicalBoardRef,
+		TriggerColumn: triggerColumn, TriggerLabel: triggerLabel,
+		DoneColumn: doneColumn, DoneLabel: doneLabel,
+	}
 	if current == nil {
 		if err := s.st.CreatePluginAutomation(r.Context(), a, nil, nil, trigger, nil); err != nil {
 			if errors.Is(err, store.ErrAlreadyExists) {
@@ -237,4 +661,19 @@ func (s *Server) handleDeleteServiceKanban(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func boardColumnLabel(board *jtype.Board, key string) string {
+	if board == nil || key == "" {
+		return ""
+	}
+	for _, column := range board.Columns {
+		if column.Key == key {
+			if strings.TrimSpace(column.Name) != "" {
+				return column.Name
+			}
+			return column.Key
+		}
+	}
+	return key
 }

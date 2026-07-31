@@ -263,10 +263,56 @@ export interface ProjectAutomationSpec {
   automation: ProjectAutomationAggregate;
   scm?: { automation_id?: string; branch?: string; path_pattern?: string; conclusion?: string; include_drafts?: boolean };
   actions?: ScmAutomationAction[];
-  kanban?: { automation_id?: string; installation_id: string; board_ref: string; trigger_column: string; done_column?: string };
+  kanban?: {
+    automation_id?: string;
+    installation_id: string;
+    board_ref: string;
+    trigger_column: string;
+    trigger_label?: string;
+    done_column?: string;
+    done_label?: string;
+  };
   cron?: { automation_id?: string; cron_expr: string };
 }
 export type ServiceKanbanBinding = ProjectAutomationSpec;
+export interface ServiceKanbanPolicy {
+  service_id: string;
+  service_name: string;
+  repository: string;
+  model: { id?: string; label: string };
+  board: { workspace_id: string; ref: string };
+  trigger_column: { key: string; label: string };
+  done_column: { key?: string; label?: string };
+  output: 'comment_only' | 'comment_and_move_on_success';
+  health: {
+    state: 'ready' | 'blocked';
+    blocker: string | null;
+    repair_role?: 'project_owner' | 'cluster_admin' | null;
+  };
+}
+export interface KanbanCardExecution {
+  id: string;
+  status: 'received' | 'blocked' | 'queued' | 'running' | 'terminal';
+  outcome?: 'succeeded' | 'failed' | 'canceled';
+  summary: string;
+  reason: string | null;
+  reason_code?: string;
+  repair_role: 'project_owner' | 'cluster_admin' | null;
+  requested_actor: { label: string; precision: 'display_only' } | null;
+  run: { id: string; status: RunStatus; href: string } | null;
+  receipt: {
+    external: 'not_required' | 'pending' | 'written' | 'unavailable';
+    writeback: 'not_required' | 'pending' | 'complete' | 'unavailable';
+  };
+  created_at: string;
+  updated_at: string;
+  terminal_at?: string;
+}
+export interface KanbanCardExecutionsPage {
+  claim: { document_path: string; external_ref_available: boolean } | null;
+  items: KanbanCardExecution[];
+  next_cursor: string | null;
+}
 export interface PutServiceKanbanInput {
   installation_id: string;
   board_ref: string;

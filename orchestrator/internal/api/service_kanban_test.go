@@ -68,14 +68,256 @@ func newServiceKanbanServer(t *testing.T) (*httptest.Server, *store.MemStore, *S
 	return ts, st, srv
 }
 
+func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
+	st := store.NewMemStore()
+	srv := New(st, &config.Config{ConsoleToken: consoleToken, MasterKey: validTokenKey(t)},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), sse.NewHub(), nil)
+	ts := httptest.NewServer(srv.Handler())
+	registerTestServerStore(t, ts, st)
+	t.Cleanup(ts.Close)
+	ctx := context.Background()
+	project := &domain.Project{ID: "receipt-project", Name: "Receipt project"}
+	service := &domain.Service{
+		ID: "receipt-service", ProjectID: project.ID, Name: "payments-api",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "acme/payments", DefaultBranch: "main",
+	}
+	if err := st.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateService(ctx, service); err != nil {
+		t.Fatal(err)
+	}
+	repositoryProvider := &domain.ProviderConfig{
+		Provider: domain.PluginGitea, BaseURL: "https://gitea.test", PluginEnabled: true,
+	}
+	if err := st.UpsertProviderConfig(ctx, repositoryProvider); err != nil {
+		t.Fatal(err)
+	}
+	repositoryInstallation := &domain.PluginInstallation{
+		ID: "receipt-gitea", ProjectID: project.ID, Provider: domain.PluginGitea,
+		Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("sealed-repository-token"),
+		ConfigRevision: repositoryProvider.ConfigRevision,
+	}
+	if err := st.CreatePluginInstallation(ctx, repositoryInstallation); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertServiceRepositoryBinding(ctx, &domain.ServiceRepositoryBinding{
+		ServiceID: service.ID, InstallationID: repositoryInstallation.ID,
+		ProviderRepoID: "42", RepositoryPath: service.RepoOwnerName,
+		CloneURL: "https://gitea.test/acme/payments.git", DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider := &domain.ProviderConfig{
+		Provider: domain.PluginJType, BaseURL: "https://jtype.test", PluginEnabled: true,
+	}
+	if err := st.UpsertProviderConfig(ctx, provider); err != nil {
+		t.Fatal(err)
+	}
+	installation := &domain.PluginInstallation{
+		ID: "receipt-jtype", ProjectID: project.ID, Provider: domain.PluginJType,
+		Status: domain.PluginStatusEnabled, WorkspaceID: "workspace",
+		AccessTokenEnc: []byte("sealed"), ConfigRevision: provider.ConfigRevision,
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	automation := &domain.PluginAutomation{
+		ID: "receipt-automation", ServiceID: service.ID, InstallationID: installation.ID,
+		Name: "Kanban", TriggerKind: "kanban", RunKind: domain.RunKindAgent, Enabled: true,
+	}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: automation.ID, InstallationID: installation.ID,
+		BoardRef: "delivery", TriggerColumn: "agent", DoneColumn: "done",
+	}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := st.ObservePluginKanbanCard(ctx, store.PluginKanbanObservation{
+		AutomationID: automation.ID, ServiceID: service.ID, InstallationID: installation.ID,
+		WorkspaceID: "workspace", DocumentID: "card", DocumentPath: "cards/payment.md",
+		TriggerColumn: "agent", DoneColumn: "done", ObservedColumn: "agent",
+		EventKey: "event:1", EventSequence: int64PtrAPI(1), ActorDisplay: "jtype editor",
+		ObservedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetPluginKanbanOccurrenceBlocked(
+		ctx, observed.Occurrence.ID, "model_not_configured",
+		"Choose an allowed model for this Service.", "project_owner",
+	); err != nil {
+		t.Fatal(err)
+	}
+	firstRun := &domain.Run{
+		ID: "receipt-run", ProjectID: project.ID, ServiceID: service.ID,
+		Status: domain.StatusQueued, Origin: domain.RunOriginKanban,
+		OriginAutomationID: automation.ID, OriginEventKey: observed.Occurrence.ID,
+		CreatedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	if attached, err := st.CreatePluginKanbanOccurrenceRun(ctx, observed.Occurrence.ID, firstRun); err != nil || !attached {
+		t.Fatalf("attach first execution=%v err=%v", attached, err)
+	}
+	if _, err := st.ScheduleRun(ctx, firstRun.ID, "job", "token", "Scheduling"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkRunning(ctx, firstRun.ID, "Running", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkSucceeded(ctx, firstRun.ID, "Succeeded", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := st.MarkPluginKanbanWriteback(
+		ctx, automation.ID, "card", observed.Occurrence.ID,
+		domain.StatusSucceeded, nil, time.Now().UTC(),
+	); err != nil || !wrote {
+		t.Fatalf("writeback=%v err=%v", wrote, err)
+	}
+	now := time.Now().UTC()
+	if _, err := st.ObservePluginKanbanCard(ctx, store.PluginKanbanObservation{
+		AutomationID: automation.ID, ServiceID: service.ID, InstallationID: installation.ID,
+		WorkspaceID: "workspace", DocumentID: "card", DocumentPath: "cards/payment.md",
+		TriggerColumn: "agent", DoneColumn: "done", ObservedColumn: "todo",
+		EventKey: "event:2", EventSequence: int64PtrAPI(2), ObservedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.ObservePluginKanbanCard(ctx, store.PluginKanbanObservation{
+		AutomationID: automation.ID, ServiceID: service.ID, InstallationID: installation.ID,
+		WorkspaceID: "workspace", DocumentID: "card", DocumentPath: "cards/payment.md",
+		TriggerColumn: "agent", DoneColumn: "done", ObservedColumn: "agent",
+		EventKey: "event:3", EventSequence: int64PtrAPI(3), ActorDisplay: "jtype editor",
+		ObservedAt: now.Add(time.Second),
+	})
+	if err != nil || second.Occurrence == nil {
+		t.Fatalf("second execution=%+v err=%v", second, err)
+	}
+	if _, err := st.SetPluginKanbanOccurrenceBlocked(
+		ctx, second.Occurrence.ID, "model_not_configured",
+		"Choose an allowed model for this Service.", "project_owner",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+"/kanban/policy", consoleToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("policy status=%d", resp.StatusCode)
+	}
+	var policy map[string]any
+	decode(t, resp, &policy)
+	if policy["service_name"] != "payments-api" || policy["repository"] != "acme/payments" ||
+		policy["trigger_column"].(map[string]any)["key"] != "agent" {
+		t.Fatalf("policy=%+v", policy)
+	}
+	health := policy["health"].(map[string]any)
+	if health["state"] != "blocked" || health["blocker"] != "model_not_configured" {
+		t.Fatalf("health=%+v", health)
+	}
+	if health["repair_role"] != "project_owner" {
+		t.Fatalf("health repair role=%+v", health)
+	}
+
+	spec, err := st.GetPluginAutomationSpec(ctx, automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Automation.LastError = "board_drift: the configured board or column no longer exists"
+	if err := st.UpdatePluginAutomation(ctx, &spec.Automation); err != nil {
+		t.Fatal(err)
+	}
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+"/kanban/policy", consoleToken, nil)
+	var driftPolicy map[string]any
+	decode(t, resp, &driftPolicy)
+	driftHealth := driftPolicy["health"].(map[string]any)
+	if driftHealth["state"] != "blocked" || driftHealth["blocker"] != "board_drift" {
+		t.Fatalf("drift health=%+v", driftHealth)
+	}
+
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+
+		"/kanban/card-executions?workspace_id=workspace&document_path=cards%2Fpayment.md&limit=1",
+		consoleToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("executions status=%d", resp.StatusCode)
+	}
+	var executions struct {
+		Claim struct {
+			DocumentPath         string `json:"document_path"`
+			ExternalRefAvailable bool   `json:"external_ref_available"`
+		} `json:"claim"`
+		Items      []map[string]any `json:"items"`
+		NextCursor *string          `json:"next_cursor"`
+	}
+	decode(t, resp, &executions)
+	if executions.Claim.DocumentPath != "cards/payment.md" || !executions.Claim.ExternalRefAvailable {
+		t.Fatalf("claim=%+v", executions.Claim)
+	}
+	if len(executions.Items) != 1 || executions.NextCursor == nil ||
+		executions.Items[0]["status"] != "blocked" ||
+		executions.Items[0]["reason_code"] != "model_not_configured" ||
+		executions.Items[0]["requested_actor"].(map[string]any)["label"] != "jtype editor" {
+		t.Fatalf("executions=%+v", executions.Items)
+	}
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+
+		"/kanban/card-executions?workspace_id=workspace&document_path=cards%2Fpayment.md&limit=1&before="+
+		*executions.NextCursor, consoleToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second executions page status=%d", resp.StatusCode)
+	}
+	var earlier struct {
+		Items      []map[string]any `json:"items"`
+		NextCursor *string          `json:"next_cursor"`
+	}
+	decode(t, resp, &earlier)
+	if len(earlier.Items) != 1 || earlier.Items[0]["status"] != "terminal" ||
+		earlier.Items[0]["outcome"] != "succeeded" || earlier.NextCursor != nil {
+		t.Fatalf("earlier executions=%+v cursor=%v", earlier.Items, earlier.NextCursor)
+	}
+
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+
+		"/kanban/card-executions?workspace_id=workspace&document_path=cards%2Fpayment.md&before=not-a-cursor",
+		consoleToken, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid cursor status=%d want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+
+		"/kanban/card-executions?workspace_id=other&document_path=cards%2Fpayment.md",
+		consoleToken, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("cross-workspace status=%d want 404", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func int64PtrAPI(value int64) *int64 { return &value }
+
+func TestServiceKanbanExecutionMissingRunIsVisible(t *testing.T) {
+	view := serviceKanbanExecutionView(domain.PluginKanbanOccurrence{
+		ID: "occurrence", RunID: "deleted-run",
+		State: domain.KanbanOccurrenceQueued,
+	}, nil)
+	if view.Status != domain.KanbanOccurrenceBlocked ||
+		view.ReasonCode != "run_unavailable" ||
+		view.Reason == nil ||
+		view.RepairRole == nil || *view.RepairRole != "project_owner" {
+		t.Fatalf("missing Run view=%+v", view)
+	}
+}
+
 func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	ts, st, srv := newServiceKanbanServer(t)
 	validatorCalls := 0
 	srv.boardValidatorFor = func(*jtype.Factory, string) boardValidator {
 		return serviceKanbanBoardValidator{
 			board: &jtype.Board{
-				ID:      "b_board",
-				Columns: []jtype.BoardColumn{{Key: "ai"}, {Key: "review"}, {Key: "done"}},
+				ID: "b_board",
+				Columns: []jtype.BoardColumn{
+					{Key: "ai", Name: "Agent queue"},
+					{Key: "review", Name: "Human review"},
+					{Key: "done", Name: "Done"},
+				},
 			},
 			calls: &validatorCalls,
 		}
@@ -122,7 +364,10 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	}
 	var created domain.PluginAutomationSpec
 	decode(t, resp, &created)
-	if created.Automation.TriggerKind != "kanban" || created.Kanban == nil || created.Kanban.BoardRef != "b_board" || created.Kanban.TriggerColumn != "ai" || created.Kanban.DoneColumn != "done" {
+	if created.Automation.TriggerKind != "kanban" || created.Kanban == nil ||
+		created.Kanban.BoardRef != "b_board" || created.Kanban.TriggerColumn != "ai" ||
+		created.Kanban.TriggerLabel != "Agent queue" ||
+		created.Kanban.DoneColumn != "done" || created.Kanban.DoneLabel != "Done" {
 		t.Fatalf("binding=%+v", created)
 	}
 	if validatorCalls != 1 {
@@ -156,7 +401,8 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	}
 	var updated domain.PluginAutomationSpec
 	decode(t, resp, &updated)
-	if updated.Kanban == nil || updated.Kanban.TriggerColumn != "review" || updated.Kanban.DoneColumn != "done" {
+	if updated.Kanban == nil || updated.Kanban.TriggerColumn != "review" ||
+		updated.Kanban.TriggerLabel != "Human review" || updated.Kanban.DoneColumn != "done" {
 		t.Fatalf("updated columns=%+v", updated.Kanban)
 	}
 	if validatorCalls != 2 {

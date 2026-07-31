@@ -37,6 +37,7 @@ icons, and small prototype-only interactions live under `assets/`.
 | `kanban-link-flow-connect.html` | 项目 Kanban 设置(候选)未连接态:jtype 集成登录卡 + 看板设置锁定 |
 | `kanban-link-flow-pick.html` | 项目 Kanban 设置(候选)已连接态:服务与工作区/看板/列全部点选,单一当前看板 |
 | `kanban-link-flow-expired.html` | 项目 Kanban 设置(候选)凭据过期态:看板设置收回,重新登录后恢复 |
+| `kanban-agent-executions.html` | Service Kanban 执行策略、内嵌 jtype Card detail supplement 与 accepted/blocked/succeeded/error receipt 状态 |
 | `device-list.html` | Cloud console device list, populated and empty states |
 | `device-welcome.html` | Cloud console device detail: new-session composer and session list |
 | `device-session.html` | Cloud console remote session: live and device-offline states |

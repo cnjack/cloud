@@ -486,6 +486,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /api/v1/automations/{aid}", s.authed(s.handleUpdatePluginAutomation))
 	mux.Handle("DELETE /api/v1/automations/{aid}", s.authed(s.handleDeletePluginAutomation))
 	mux.Handle("GET /api/v1/services/{id}/kanban", s.authed(s.handleGetServiceKanban))
+	mux.Handle("GET /api/v1/services/{id}/kanban/policy", s.authed(s.handleGetServiceKanbanPolicy))
+	mux.Handle("GET /api/v1/services/{id}/kanban/card-executions", s.authed(s.handleGetServiceKanbanCardExecutions))
 	mux.Handle("PUT /api/v1/services/{id}/kanban", s.authed(s.handlePutServiceKanban))
 	mux.Handle("DELETE /api/v1/services/{id}/kanban", s.authed(s.handleDeleteServiceKanban))
 	mux.Handle("GET /api/v1/projects/{id}/kanban/board/links", s.authed(s.handleListBoardEmbedLinks))

@@ -546,10 +546,23 @@ type Store interface {
 	ListEnabledCronAutomations(ctx context.Context) ([]domain.PluginAutomationSpec, error)
 	AdvancePluginCronAutomation(ctx context.Context, id string, previous, firedAt *time.Time, lastError string) (bool, error)
 	ListEnabledKanbanAutomations(ctx context.Context) ([]domain.PluginAutomationSpec, error)
+	ObservePluginKanbanCard(ctx context.Context, observation PluginKanbanObservation) (*PluginKanbanObservationResult, error)
+	CreatePluginKanbanOccurrenceRun(ctx context.Context, occurrenceID string, run *domain.Run) (bool, error)
+	SetPluginKanbanOccurrenceBlocked(ctx context.Context, occurrenceID, reasonCode, reasonMessage, repairRole string) (*domain.PluginKanbanOccurrence, error)
+	ListPluginKanbanDispatchableOccurrences(ctx context.Context, automationID string, limit int) ([]domain.PluginKanbanOccurrence, error)
+	ListPluginKanbanReceiptPending(ctx context.Context, automationID string, limit int) ([]domain.PluginKanbanOccurrence, error)
+	SetPluginKanbanOccurrenceReceiptPhase(ctx context.Context, occurrenceID, phase string) (*domain.PluginKanbanOccurrence, error)
+	MarkPluginKanbanOccurrenceReceipt(ctx context.Context, occurrenceID, phase string, writtenAt *time.Time, writebackError string) error
+	ListPluginKanbanOccurrences(ctx context.Context, automationID, documentID string, limit int) ([]domain.PluginKanbanOccurrence, error)
+	GetPluginKanbanClaimByPath(ctx context.Context, automationID, workspaceID, documentPath string) (*domain.PluginKanbanClaim, error)
+	MarkPluginKanbanCardUnavailable(ctx context.Context, automationID, workspaceID, documentPath string, at time.Time) (bool, error)
+	ListPluginKanbanCardExecutions(ctx context.Context, automationID, serviceID, workspaceID, documentPath string, before *PluginKanbanOccurrenceCursor, limit int) ([]domain.PluginKanbanOccurrence, error)
+	AdvancePluginKanbanTrigger(ctx context.Context, automationID string, previousCursor, nextCursor int64, bootstrappedAt *time.Time) (bool, error)
 	EnsurePluginKanbanClaim(ctx context.Context, automationID, documentID, documentPath, workspaceID, doneColumn string) (*domain.PluginKanbanClaim, error)
 	SetPluginKanbanClaimRun(ctx context.Context, automationID, documentID, runID string) error
 	ListPluginKanbanRunsAwaitingWriteback(ctx context.Context) ([]PluginKanbanWriteback, error)
-	MarkPluginKanbanWriteback(ctx context.Context, automationID, documentID string, at time.Time) (bool, error)
+	MarkPluginKanbanWriteback(ctx context.Context, automationID, documentID, occurrenceID string, outcome domain.RunStatus, terminalAt *time.Time, at time.Time) (bool, error)
+	MarkPluginKanbanWritebackUnavailable(ctx context.Context, automationID, documentID, occurrenceID string, outcome domain.RunStatus, terminalAt *time.Time, message string, at time.Time) (bool, error)
 
 	ClaimWebhookReceipt(ctx context.Context, receipt *domain.WebhookReceipt) (claimed bool, err error)
 	CompleteWebhookReceipt(ctx context.Context, receipt *domain.WebhookReceipt) error
