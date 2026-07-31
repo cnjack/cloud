@@ -16,6 +16,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/modelcfg"
+	"github.com/cnjack/jcloud/internal/provenance"
 	"github.com/cnjack/jcloud/internal/provider"
 )
 
@@ -409,6 +410,7 @@ func (s *Server) processReviewEvent(ctx context.Context, event *webhookReviewEve
 				modelID := sel.ModelID
 				run.ModelID = &modelID
 			}
+			provenance.Stamp(ctx, s.st, run, nil)
 			if err := s.st.CreateRun(ctx, run); err != nil {
 				if _, duplicateErr := s.st.GetRunByOriginEventKey(ctx, key); duplicateErr == nil {
 					duplicate = true
@@ -656,6 +658,10 @@ func (s *Server) processMention(ctx context.Context, m *webhookMention, cmd ment
 	if sel.ModelID != "" {
 		run.ModelID = &sel.ModelID
 	}
+	provenance.Stamp(ctx, s.st, run, &provenance.ExternalActor{
+		Provider: string(m.provider), ID: m.commenterUID,
+		Label: user.DisplayName, Source: "scm_comment",
+	})
 	if err := s.st.CreateRun(ctx, run); err != nil {
 		// A concurrent redelivery that lost the de-dup pre-check trips the unique
 		// origin_comment_id index here — treat it as the no-op it is.

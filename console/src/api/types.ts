@@ -578,6 +578,43 @@ export interface Run {
   permission_mode?: 'approval' | '';
   /** When the run entered awaiting_input (idle-timeout epoch). */
   awaiting_since?: string | null;
+  /**
+   * Read-only identity/source projection frozen at Run creation. These display
+   * references are audit metadata only and must never be used for authorization.
+   */
+  provenance?: RunProvenance;
+}
+
+export interface ProvenanceActorRef {
+  kind: 'cloud_user' | 'external_actor' | 'service_principal' | 'automation_principal' | 'provider_bot' | string;
+  id?: string;
+  label: string;
+  provider?: string;
+  external_id?: string;
+  external_label?: string;
+}
+
+export interface RunProvenance {
+  requested_actor?: ProvenanceActorRef;
+  accountable_actor?: ProvenanceActorRef;
+  attribution_source: string;
+  precision: 'exact' | 'linked_external' | 'rule_owner' | 'unattributed' | string;
+  trigger: {
+    kind: string;
+    label: string;
+    ref?: string;
+    href?: string;
+  };
+  executed_for: {
+    project_id: string;
+    project_label: string;
+    service_id: string;
+    service_label: string;
+    repository?: string;
+    model?: string;
+  };
+  runtime_principal: ProvenanceActorRef;
+  writeback_actor?: ProvenanceActorRef;
 }
 
 /* ---- session permission approval (F8b / D22) ------------------------------ */

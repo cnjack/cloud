@@ -115,6 +115,51 @@ func TestPGCreateCoalescedRunConcurrentLatestWins(t *testing.T) {
 	}
 }
 
+func TestPGRunProvenanceRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	st, seedRunID := pgTestStore(t)
+	seed, err := st.GetRun(ctx, seedRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "provenance", Status: domain.StatusQueued, Kind: domain.RunKindAgent,
+		Phase: "Queued", Attempt: 1, CreatedAt: time.Now().UTC(),
+		ProvenanceSnapshot: domain.RunProvenanceSnapshot{
+			RequestedActor: &domain.ProvenanceActorRef{
+				Kind: "external_actor", ID: "42", Label: "Mei", Provider: "jtype",
+			},
+			AccountableActor: &domain.ProvenanceActorRef{
+				Kind: "cloud_user", ID: "owner", Label: "Jack",
+			},
+			AttributionSource: "kanban_event", Precision: "rule_owner",
+			RuntimePrincipal: domain.ProvenanceActorRef{
+				Kind: "automation_principal", Label: "Cloud Automation",
+			},
+			WritebackActor: &domain.ProvenanceActorRef{
+				Kind: "provider_bot", Label: "jcode Cloud Bot", Provider: "jtype",
+			},
+		},
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProvenanceSnapshot.RequestedActor == nil ||
+		got.ProvenanceSnapshot.RequestedActor.Label != "Mei" ||
+		got.ProvenanceSnapshot.AccountableActor == nil ||
+		got.ProvenanceSnapshot.AccountableActor.Label != "Jack" ||
+		got.ProvenanceSnapshot.Precision != "rule_owner" ||
+		got.ProvenanceSnapshot.WritebackActor == nil ||
+		got.ProvenanceSnapshot.WritebackActor.Provider != "jtype" {
+		t.Fatalf("provenance round-trip=%+v", got.ProvenanceSnapshot)
+	}
+}
+
 func TestPGWebhookBindingSecretAndAuthenticatedDigest(t *testing.T) {
 	ctx := context.Background()
 	st, runID := pgTestStore(t)

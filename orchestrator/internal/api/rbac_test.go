@@ -188,6 +188,32 @@ func TestTriggeredByRecordedForUser(t *testing.T) {
 	if got.TriggeredByUserID == nil {
 		t.Fatal("member-triggered run should record triggered_by_user_id")
 	}
+	get := do(t, "GET", f.ts.URL+"/api/v1/runs/"+run.ID, f.tokens["member"], nil)
+	var detail struct {
+		Provenance struct {
+			RequestedActor struct {
+				Kind  string `json:"kind"`
+				ID    string `json:"id"`
+				Label string `json:"label"`
+			} `json:"requested_actor"`
+			AccountableActor struct {
+				ID string `json:"id"`
+			} `json:"accountable_actor"`
+			Precision string `json:"precision"`
+			Trigger   struct {
+				Kind string `json:"kind"`
+			} `json:"trigger"`
+		} `json:"provenance"`
+	}
+	decode(t, get, &detail)
+	if detail.Provenance.RequestedActor.Kind != "cloud_user" ||
+		detail.Provenance.RequestedActor.ID != *got.TriggeredByUserID ||
+		detail.Provenance.RequestedActor.Label == "" ||
+		detail.Provenance.AccountableActor.ID != *got.TriggeredByUserID ||
+		detail.Provenance.Precision != "exact" ||
+		detail.Provenance.Trigger.Kind != "api" {
+		t.Fatalf("manual provenance=%+v", detail.Provenance)
+	}
 
 	// Service principal triggers a run => null triggered_by.
 	r2 := do(t, "POST", f.ts.URL+"/api/v1/services/"+f.serviceID+"/runs", consoleToken,
