@@ -45,6 +45,7 @@ type MemStore struct {
 	pluginKanbanClaims       map[string]domain.PluginKanbanClaim
 	pluginKanbanOccurrences  map[string]domain.PluginKanbanOccurrence
 	pluginCronTriggers       map[string]domain.CronTrigger
+	automationExecutions     map[string]domain.AutomationExecution
 	webhookReceipts          map[string]domain.WebhookReceipt // provider|delivery id
 	webhookReceiptDigests    map[string]string                // provider|authenticated payload digest -> receipt key
 	runPluginSnapshots       map[string]map[string]domain.RunPluginSnapshot
@@ -104,6 +105,7 @@ func NewMemStore() *MemStore {
 		pluginKanbanClaims:       map[string]domain.PluginKanbanClaim{},
 		pluginKanbanOccurrences:  map[string]domain.PluginKanbanOccurrence{},
 		pluginCronTriggers:       map[string]domain.CronTrigger{},
+		automationExecutions:     map[string]domain.AutomationExecution{},
 		webhookReceipts:          map[string]domain.WebhookReceipt{},
 		webhookReceiptDigests:    map[string]string{},
 		runPluginSnapshots:       map[string]map[string]domain.RunPluginSnapshot{},
@@ -211,6 +213,11 @@ func (m *MemStore) DeleteProject(_ context.Context, id string) error {
 	for rid, r := range m.runs {
 		if r.ProjectID == id {
 			m.deleteRunLocked(rid)
+		}
+	}
+	for executionID, execution := range m.automationExecutions {
+		if execution.ProjectID == id {
+			delete(m.automationExecutions, executionID)
 		}
 	}
 	// Project plugin installations are children of projects. The database keeps
@@ -3406,14 +3413,28 @@ func (m *MemStore) ClaimWebhookReceipt(_ context.Context, r *domain.WebhookRecei
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := string(r.Provider) + "|" + r.DeliveryID
-	if _, ok := m.webhookReceipts[key]; ok {
-		return false, nil
-	}
 	digestKey := ""
 	if r.PayloadDigest != "" && (r.Provider == domain.PluginGitHub || r.Provider == domain.PluginGitea) {
 		digestKey = string(r.Provider) + "|" + r.PayloadDigest
-		if _, ok := m.webhookReceiptDigests[digestKey]; ok {
+	}
+	existingKey := key
+	existing, exists := m.webhookReceipts[existingKey]
+	if !exists && digestKey != "" {
+		if resolvedKey, ok := m.webhookReceiptDigests[digestKey]; ok {
+			existingKey = resolvedKey
+			existing, exists = m.webhookReceipts[existingKey]
+		}
+	}
+	if exists {
+		if existing.Status != "error" {
 			return false, nil
+		}
+		delete(m.webhookReceipts, existingKey)
+		if existing.PayloadDigest != "" {
+			oldDigestKey := string(existing.Provider) + "|" + existing.PayloadDigest
+			if m.webhookReceiptDigests[oldDigestKey] == existingKey {
+				delete(m.webhookReceiptDigests, oldDigestKey)
+			}
 		}
 	}
 	cp := *r

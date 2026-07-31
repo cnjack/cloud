@@ -69,6 +69,12 @@ func validatePluginAutomationAggregate(a *domain.PluginAutomation, scm *domain.S
 		if cron == nil || cron.AutomationID != a.ID {
 			return fmt.Errorf("cron automation needs exactly one trigger")
 		}
+		if cron.OutputMode == "" {
+			cron.OutputMode = domain.AutomationOutputRunOnly
+		}
+		if !domain.ValidAutomationOutputMode(cron.OutputMode) {
+			return fmt.Errorf("invalid cron automation output mode")
+		}
 	}
 	return nil
 }

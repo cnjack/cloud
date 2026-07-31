@@ -332,6 +332,18 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	if err := st.CreateService(ctx, service); err != nil {
 		t.Fatal(err)
 	}
+	member := mkUser(t, st, "service-kanban-member")
+	viewer := mkUser(t, st, "service-kanban-viewer")
+	for _, membership := range []*domain.ProjectMember{
+		{ProjectID: project.ID, UserID: member.ID, Role: domain.RoleMember, CreatedAt: now},
+		{ProjectID: project.ID, UserID: viewer.ID, Role: domain.RoleViewer, CreatedAt: now},
+	} {
+		if err := st.UpsertMember(ctx, membership); err != nil {
+			t.Fatal(err)
+		}
+	}
+	memberToken := mkSession(t, st, member.ID)
+	viewerToken := mkSession(t, st, viewer.ID)
 	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginJType, BaseURL: "https://jtype.test", PluginEnabled: true, ConfigRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -485,6 +497,35 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 		t.Fatalf("board links=%+v", links.Links)
 	}
 
+	// Viewer execution-output links can discover and read the linked board, but
+	// writes remain member+ and must stop before any upstream request.
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/projects/"+project.ID+"/kanban/board/links", viewerToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("viewer board links status=%d", resp.StatusCode)
+	}
+	var viewerLinks struct {
+		Links []boardEmbedLinkView `json:"links"`
+	}
+	decode(t, resp, &viewerLinks)
+	if len(viewerLinks.Links) != 1 || viewerLinks.Links[0].BoardRef != "b_board" {
+		t.Fatalf("viewer board links=%+v", viewerLinks.Links)
+	}
+	before := proxy.calls
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/projects/"+project.ID+"/kanban/board/documents?workspace=workspace-1", viewerToken, nil)
+	if resp.StatusCode != http.StatusOK || proxy.calls != before+1 {
+		t.Fatalf("viewer board read status=%d upstream_calls=%d want=%d", resp.StatusCode, proxy.calls, before+1)
+	}
+	resp.Body.Close()
+	before = proxy.calls
+	resp = do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+project.ID+"/kanban/board/documents/save?workspace=workspace-1", viewerToken, map[string]any{
+		"relativePath": "cards/viewer.md",
+		"content":      "---\nboard: b_board\nstatus: ai\n---\nread only",
+	})
+	if resp.StatusCode != http.StatusForbidden || proxy.calls != before {
+		t.Fatalf("viewer board write status=%d upstream_calls=%d want=%d", resp.StatusCode, proxy.calls, before)
+	}
+	resp.Body.Close()
+
 	// A compromised upstream cannot reflect the server-held token to a member.
 	proxy.body = `{"echo":"jtype-secret-that-must-not-leak"}`
 	resp = do(t, http.MethodGet, ts.URL+"/api/v1/projects/"+project.ID+"/kanban/board/documents?workspace=workspace-1", consoleToken, nil)
@@ -503,7 +544,7 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	// Even with a valid card body, the board proxy cannot overwrite an arbitrary
 	// Markdown note outside the card namespace.
 	proxy.body = `{}`
-	before := proxy.calls
+	before = proxy.calls
 	resp = do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+project.ID+"/kanban/board/documents/save?workspace=workspace-1", consoleToken, map[string]any{
 		"relativePath": "notes/private.md",
 		"content":      "---\nboard: b_board\nstatus: ai\n---\nsecret",
@@ -527,6 +568,38 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusForbidden || proxy.calls != before+2 {
 		t.Fatalf("cross-board overwrite status=%d upstream_calls=%d want=%d", resp.StatusCode, proxy.calls, before+2)
+	}
+	resp.Body.Close()
+
+	// Cloud Automation Cards use a separate deterministic namespace. Members
+	// may update one only after the proxy proves that exact Card already exists.
+	managedPath := "jcode-automation/automation-1/execution-1.md"
+	proxy.bodies = []string{
+		`[{"id":"managed-card","relativePath":"` + managedPath + `"}]`,
+		`{"content":"---\nboard: b_board\nstatus: ai\n---\nmanaged","contentHash":"managed-hash"}`,
+		`{"relativePath":"` + managedPath + `","contentHash":"next-hash","mergeStatus":"accepted"}`,
+	}
+	before = proxy.calls
+	resp = do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+project.ID+"/kanban/board/documents/save?workspace=workspace-1", memberToken, map[string]any{
+		"relativePath":    managedPath,
+		"content":         "---\nboard: b_board\nstatus: done\n---\nmanaged",
+		"baseContentHash": "managed-hash",
+	})
+	if resp.StatusCode != http.StatusOK || proxy.calls != before+3 {
+		t.Fatalf("managed Card update status=%d upstream_calls=%d want=%d", resp.StatusCode, proxy.calls, before+3)
+	}
+	resp.Body.Close()
+
+	// A crafted request cannot create a new document in Cloud's managed
+	// namespace; only the materializer owns that operation.
+	proxy.bodies = []string{`[]`}
+	before = proxy.calls
+	resp = do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+project.ID+"/kanban/board/documents/save?workspace=workspace-1", memberToken, map[string]any{
+		"relativePath": "jcode-automation/automation-1/forged.md",
+		"content":      "---\nboard: b_board\nstatus: ai\n---\nforged",
+	})
+	if resp.StatusCode != http.StatusForbidden || proxy.calls != before+1 {
+		t.Fatalf("managed Card create status=%d upstream_calls=%d want=%d", resp.StatusCode, proxy.calls, before+1)
 	}
 	resp.Body.Close()
 

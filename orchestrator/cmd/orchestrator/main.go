@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cnjack/jcloud/internal/api"
+	"github.com/cnjack/jcloud/internal/automationcard"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/k8s"
@@ -207,7 +208,8 @@ func run(log *slog.Logger) error {
 		// (fail-visible: a blocked window records last_error, never a silent skip).
 		if cfg.SchedulePollInterval > 0 {
 			sp := schedule.NewPoller(st, srv.Models(),
-				schedule.NewHostGate(st, cfg.AllowedGitHosts), log, cfg.SchedulePollInterval)
+				schedule.NewHostGate(st, cfg.AllowedGitHosts), log, cfg.SchedulePollInterval).
+				WithCardMaterializer(automationcard.New(st, decrypt))
 			go sp.Run(ctx)
 			log.Info("schedule poller enabled", "interval", cfg.SchedulePollInterval)
 		} else {

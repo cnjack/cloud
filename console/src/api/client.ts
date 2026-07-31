@@ -41,6 +41,8 @@ import type {
   PrInfo,
   Project,
   ProjectAutomationSpec,
+  AutomationExecution,
+  AutomationExecutionsPage,
   ProjectPlugin,
   PluginAuditEvent,
   PluginConsentInput,
@@ -337,6 +339,9 @@ export interface ApiClient {
   createProjectAutomation(projectId: string, input: CreateProjectAutomationInput): Promise<ProjectAutomationSpec>;
   updateProjectAutomation(projectId: string, automationId: string, input: UpdateProjectAutomationInput): Promise<ProjectAutomationSpec>;
   deleteProjectAutomation(projectId: string, automationId: string): Promise<void>;
+  listAutomationExecutions(automationId: string, before?: string, state?: string, limit?: number): Promise<AutomationExecutionsPage>;
+  getAutomationExecution(automationId: string, executionId: string): Promise<AutomationExecution>;
+  runAutomationNow(automationId: string, idempotencyKey: string): Promise<AutomationExecution>;
   getServiceKanban(serviceId: string): Promise<ServiceKanbanBinding>;
   getServiceKanbanPolicy(serviceId: string): Promise<ServiceKanbanPolicy>;
   listServiceKanbanCardExecutions(serviceId: string, workspaceId: string, documentPath: string, before?: string, limit?: number): Promise<KanbanCardExecutionsPage>;
@@ -827,6 +832,18 @@ export function createHttpClient(
       }),
     deleteProjectAutomation: (_projectId, automationId) =>
       req<void>(`/automations/${encodeURIComponent(automationId)}`, { method: 'DELETE' }),
+    listAutomationExecutions: (automationId, before, state, limit = 20) => {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (before) params.set('before', before);
+      if (state) params.set('state', state);
+      return req<AutomationExecutionsPage>(`/automations/${encodeURIComponent(automationId)}/executions?${params.toString()}`);
+    },
+    getAutomationExecution: (automationId, executionId) =>
+      req<AutomationExecution>(`/automations/${encodeURIComponent(automationId)}/executions/${encodeURIComponent(executionId)}`),
+    runAutomationNow: (automationId, idempotencyKey) =>
+      req<AutomationExecution>(`/automations/${encodeURIComponent(automationId)}/executions`, {
+        method: 'POST', body: JSON.stringify({ idempotency_key: idempotencyKey }),
+      }),
     getServiceKanban: (serviceId) => req<ServiceKanbanBinding>(`/services/${encodeURIComponent(serviceId)}/kanban`),
     getServiceKanbanPolicy: (serviceId) => req<ServiceKanbanPolicy>(`/services/${encodeURIComponent(serviceId)}/kanban/policy`),
     listServiceKanbanCardExecutions: (serviceId, workspaceId, documentPath, before, limit = 20) => {

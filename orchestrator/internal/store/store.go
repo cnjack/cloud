@@ -545,6 +545,14 @@ type Store interface {
 	DeletePluginAutomation(ctx context.Context, id string) error
 	ListEnabledCronAutomations(ctx context.Context) ([]domain.PluginAutomationSpec, error)
 	AdvancePluginCronAutomation(ctx context.Context, id string, previous, firedAt *time.Time, lastError string) (bool, error)
+	CreateAutomationExecution(ctx context.Context, execution *domain.AutomationExecution, run *domain.Run) (*domain.AutomationExecution, bool, error)
+	ClaimPluginCronExecution(ctx context.Context, automationID string, previous, firedAt *time.Time, execution *domain.AutomationExecution, run *domain.Run) (bool, error)
+	GetAutomationExecution(ctx context.Context, automationID, executionID string) (*domain.AutomationExecution, error)
+	GetAutomationExecutionByEventKey(ctx context.Context, automationID, eventKey string) (*domain.AutomationExecution, error)
+	ListAutomationExecutions(ctx context.Context, automationID, state string, beforeCreatedAt *time.Time, beforeID string, limit int) ([]domain.AutomationExecution, error)
+	ListPendingAutomationCards(ctx context.Context, limit int) ([]domain.AutomationExecution, error)
+	ClaimAutomationCardCreation(ctx context.Context, executionID string) (bool, error)
+	UpdateAutomationExecutionCard(ctx context.Context, executionID, cardState, cardAutomationID, workspaceID, documentID, documentPath, reasonCode, reasonMessage, repairRole string) error
 	ListEnabledKanbanAutomations(ctx context.Context) ([]domain.PluginAutomationSpec, error)
 	ObservePluginKanbanCard(ctx context.Context, observation PluginKanbanObservation) (*PluginKanbanObservationResult, error)
 	CreatePluginKanbanOccurrenceRun(ctx context.Context, occurrenceID string, run *domain.Run) (bool, error)

@@ -463,6 +463,17 @@ func TestPluginReviewMentionIsAuthorizedAndRepeatable(t *testing.T) {
 			t.Fatalf("manual review run=%+v", run)
 		}
 	}
+	executions, err := f.st.ListAutomationExecutions(ctx, automationID, "", nil, "", 10)
+	if err != nil || len(executions) != 2 {
+		t.Fatalf("executions=%+v err=%v", executions, err)
+	}
+	for _, execution := range executions {
+		if execution.RequestedActor.Kind != "cloud_user" ||
+			execution.RequestedActor.ID != user.ID ||
+			execution.RequestedActor.ExternalID != "9001" {
+			t.Fatalf("requested actor=%+v", execution.RequestedActor)
+		}
+	}
 }
 
 func TestPluginGitLabWebhookUsesPerBindingTokenAndDispatches(t *testing.T) {

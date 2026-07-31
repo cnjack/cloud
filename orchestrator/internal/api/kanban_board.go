@@ -52,8 +52,8 @@ type boardEmbedLinkView struct {
 	Enabled       bool   `json:"enabled"`
 }
 
-// jtypeBoardProxy is the slice of *jtype.Client the member+ board embed proxy uses
-// to forward document reads/writes to jtype verbatim (D31). A test injects a fake
+// jtypeBoardProxy is the slice of *jtype.Client the board embed proxy uses to
+// forward document reads/writes to jtype verbatim (D31). A test injects a fake
 // so the proxy endpoints are exercised without HTTP.
 type jtypeBoardProxy interface {
 	ProxyDocumentAPI(ctx context.Context, method, path string, body io.Reader) (*http.Response, error)
@@ -65,12 +65,12 @@ type jtypeBoardProxy interface {
 const maxProxyBody = 8 << 20
 
 // handleListBoardEmbedLinks returns the project's kanban links in the reduced,
-// credential-free boardEmbedLinkView (member+). The console gates the Kanban
-// button on a non-empty list and drives the modal's link picker from it. Viewers
-// (and non-members) get a 403 → the button never renders.
+// credential-free boardEmbedLinkView (viewer+). The console gates the manual
+// Kanban button to member+, while execution-output deep links use this read-only
+// discovery path for viewers. Non-members still receive 403.
 func (s *Server) handleListBoardEmbedLinks(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
-	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleMember) {
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleViewer) {
 		return
 	}
 	automations, err := s.st.ListPluginAutomationsByProject(r.Context(), projectID)
@@ -101,13 +101,18 @@ func (s *Server) handleListBoardEmbedLinks(w http.ResponseWriter, r *http.Reques
 }
 
 // resolveBoardProxy is the shared gate for every documents/* handler. It
-// authorizes member+, enforces the confused-deputy workspace-scoping guard, and
-// resolves the effective jtype client + token server-side — or writes a typed
-// fail-visible error and returns ok=false (the caller must stop). The returned
-// client already carries the resolved token; the workspace string is validated.
+// authorizes viewer+ reads and member+ writes, enforces the confused-deputy
+// workspace-scoping guard, and resolves the effective jtype client + token
+// server-side — or writes a typed fail-visible error and returns ok=false (the
+// caller must stop). The returned client already carries the resolved token;
+// the workspace string is validated.
 func (s *Server) resolveBoardProxy(w http.ResponseWriter, r *http.Request) (client jtypeBoardProxy, workspace, credential string, ok bool) {
 	projectID := r.PathValue("id")
-	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleMember) {
+	requiredRole := domain.RoleViewer
+	if r.Method != http.MethodGet {
+		requiredRole = domain.RoleMember
+	}
+	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, requiredRole) {
 		return nil, "", "", false
 	}
 
@@ -258,11 +263,11 @@ func (s *Server) handleBoardGetDocument(w http.ResponseWriter, r *http.Request) 
 
 // handleBoardSaveDocument proxies board-react's saveDocument(ws, req) — a card
 // create/edit/move (member+). The (bounded) body is buffered so the target path
-// can be validated: the member+ embed may only write CARD documents (`.md`),
-// never the `.board` config JSON or a traversal/other-type path — so a member
-// can't overwrite an arbitrary note in the linked workspace via a crafted save
-// (the board itself only ever saves card `.md` files). jtype's SaveDocument
-// response (mergeStatus/contentHash) is copied back verbatim.
+// can be validated: the embed may create ordinary Cards under `cards/` and may
+// update an existing Cloud-managed Automation Card under `jcode-automation/`.
+// It can never create in the managed namespace, write a `.board` config JSON,
+// or target a traversal/other-type path. jtype's SaveDocument response
+// (mergeStatus/contentHash) is copied back verbatim.
 func (s *Server) handleBoardSaveDocument(w http.ResponseWriter, r *http.Request) {
 	client, ws, credential, ok := s.resolveBoardProxy(w, r)
 	if !ok {
@@ -288,11 +293,13 @@ func (s *Server) handleBoardSaveDocument(w http.ResponseWriter, r *http.Request)
 	}
 	normalized := strings.ReplaceAll(rp, "\\", "/")
 	cleaned := path.Clean(normalized)
+	ordinaryCard := strings.HasPrefix(cleaned, "cards/")
+	managedAutomationCard := strings.HasPrefix(cleaned, "jcode-automation/")
 	if cleaned != normalized || strings.HasPrefix(cleaned, "/") ||
-		!strings.HasPrefix(cleaned, "cards/") ||
+		(!ordinaryCard && !managedAutomationCard) ||
 		!strings.HasSuffix(strings.ToLower(cleaned), ".md") {
 		writeError(w, http.StatusForbidden, "forbidden",
-			"the board embed may only write card documents under cards/")
+			"the board embed may only write card documents under cards/ or existing Cloud Automation Cards")
 		return
 	}
 	card := jtype.ParseCard(req.Content)
@@ -305,6 +312,11 @@ func (s *Server) handleBoardSaveDocument(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		s.log.Warn("board proxy: validate existing card", "workspace", ws, "path", cleaned, "err", err)
 		writeError(w, http.StatusBadGateway, "jtype_invalid_response", "could not validate the existing JType card")
+		return
+	}
+	if managedAutomationCard && !exists {
+		writeError(w, http.StatusForbidden, "forbidden",
+			"Cloud Automation Cards must already exist before the board can update them")
 		return
 	}
 	if exists && existingBoard != card.Board {

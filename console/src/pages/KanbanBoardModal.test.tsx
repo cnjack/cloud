@@ -19,6 +19,8 @@ vi.mock('jtype-board-react', () => ({
     boardRef: string;
     live?: boolean;
     readOnly?: boolean;
+    initialCardPath?: string;
+    additionalCardRoots?: readonly string[];
     renderCardSupplement?: (card: { id: string; title: string }) => ReactNode;
   }) => (
     <>
@@ -28,6 +30,8 @@ vi.mock('jtype-board-react', () => ({
         data-boardref={p.boardRef}
         data-live={String(p.live)}
         data-readonly={String(p.readOnly)}
+        data-initial-card={p.initialCardPath}
+        data-additional-card-roots={p.additionalCardRoots?.join(',')}
       />
       {p.renderCardSupplement?.({ id: 'cards/payment.md', title: 'Payment card' })}
     </>
@@ -167,7 +171,20 @@ describe('KanbanBoardModal', () => {
 
   it('single link: renders the board with the workspace and live=false', async () => {
     const api = makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] });
-    renderModal(api, [link()]);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ApiProvider client={api}>
+          <KanbanBoardModal
+            projectId="p1"
+            links={[link()]}
+            initialCardPath="cards/payment.md"
+            canManage
+            onClose={() => {}}
+          />
+        </ApiProvider>
+      </QueryClientProvider>,
+    );
 
     // The board is a working surface, not a form: it opts into Modal's bounded
     // wide layout so horizontal board scrolling stays inside the dialog.
@@ -176,8 +193,19 @@ describe('KanbanBoardModal', () => {
     expect(board.getAttribute('data-workspace')).toBe('ws_team');
     // No SSE proxy → the board is handed live=false (visible polling).
     expect(board.getAttribute('data-live')).toBe('false');
+    expect(board.getAttribute('data-readonly')).toBe('false');
+    expect(board.getAttribute('data-initial-card')).toBe('cards/payment.md');
+    expect(board.getAttribute('data-additional-card-roots')).toBe('jcode-automation');
     // Single link → no selector.
     expect(screen.queryByTestId('kanban-board-select')).toBeNull();
+  });
+
+  it('makes the embedded board read-only when the caller cannot manage Cards', async () => {
+    const api = makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] });
+    renderModal(api, [link()]);
+
+    const board = await screen.findByTestId('jtype-board');
+    expect(board.getAttribute('data-readonly')).toBe('true');
   });
 
   it('shows the execution policy and blocked receipt inside native Card details', async () => {

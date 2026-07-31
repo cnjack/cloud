@@ -126,7 +126,11 @@ export function ProjectAutomationsPanel({
             return (
               <li key={automation.id} className={styles.row}>
                 <div>
-                  <strong>{automation.name}</strong>
+                  <strong>
+                    <Link to={`/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automation.id)}`}>
+                      {automation.name}
+                    </Link>
+                  </strong>
                   <p>{automation.run_kind === 'review'
                     ? t('projectAutomations.review.rowSummary')
                     : automation.prompt_template}</p>

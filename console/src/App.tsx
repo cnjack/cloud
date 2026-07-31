@@ -9,6 +9,7 @@ import { NewProjectPage } from './pages/NewProjectPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { ProjectPluginDetailPage } from './pages/ProjectPluginDetailPage';
 import { AutomationEditorPage } from './pages/AutomationEditorPage';
+import { AutomationDetailPage } from './pages/AutomationDetailPage';
 import { RunDetailPage } from './pages/RunDetailPage';
 import { DevicesPage } from './pages/DevicesPage';
 import { DeviceWelcomePage } from './pages/DeviceWelcomePage';
@@ -70,6 +71,7 @@ export function App() {
             <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
             <Route path="/projects/:projectId/plugins/:provider" element={<ProjectPluginDetailPage />} />
             <Route path="/projects/:projectId/automations/new" element={<AutomationEditorPage />} />
+            <Route path="/projects/:projectId/automations/:automationId" element={<AutomationDetailPage />} />
             <Route path="/projects/:projectId/automations/:automationId/edit" element={<AutomationEditorPage />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
             <Route path="/devices" element={<DevicesPage />} />

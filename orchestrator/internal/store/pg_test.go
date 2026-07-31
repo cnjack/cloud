@@ -160,6 +160,134 @@ func TestPGRunProvenanceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPGAutomationExecutionRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	st, seedRunID := pgTestStore(t)
+	seed, err := st.GetRun(ctx, seedRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	value := &domain.AutomationExecution{
+		ID: domain.NewID(), AutomationID: "deleted-automation", AutomationName: "Frozen name",
+		PromptSnapshot: "configured prompt", ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		TriggerKind: "manual", EventKey: "manual:" + domain.NewID(),
+		State: domain.AutomationExecutionBlocked, OutputMode: domain.AutomationOutputCreateCard,
+		ReasonCode: "jtype_unavailable", ReasonMessage: "Reconnect JType.", RepairRole: "project_owner",
+		RequestedActor:   domain.ProvenanceActorRef{Kind: "external_actor", ID: "42", Label: "Mei", Provider: "jtype"},
+		AccountableActor: domain.ProvenanceActorRef{Kind: "cloud_user", ID: "owner", Label: "Jack"},
+		CardWorkspaceID:  "ws", CardPath: "jcode-automation/a/e.md", CardState: "unavailable",
+		WritebackState: "pending", CreatedAt: now, UpdatedAt: now,
+	}
+	saved, created, err := st.CreateAutomationExecution(ctx, value, nil)
+	if err != nil || !created || saved.ID != value.ID {
+		t.Fatalf("saved=%+v created=%v err=%v", saved, created, err)
+	}
+	got, err := st.GetAutomationExecution(ctx, value.AutomationID, value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AutomationName != "Frozen name" || got.PromptSnapshot != "configured prompt" ||
+		got.RequestedActor.Label != "Mei" || got.AccountableActor.Label != "Jack" ||
+		got.CardPath != value.CardPath || got.ReasonCode != "jtype_unavailable" {
+		t.Fatalf("round trip=%+v", got)
+	}
+
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "project state", Status: domain.StatusQueued, Phase: "Queued",
+		Attempt: 1, CreatedAt: now,
+	}
+	projected := &domain.AutomationExecution{
+		ID: domain.NewID(), AutomationID: "projected-" + domain.NewID(), AutomationName: "Projected",
+		ProjectID: seed.ProjectID, ServiceID: seed.ServiceID, TriggerKind: "manual",
+		EventKey: "manual:" + domain.NewID(), State: domain.AutomationExecutionQueued,
+		OutputMode: domain.AutomationOutputRunOnly, RunID: run.ID,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if _, _, err := st.CreateAutomationExecution(ctx, projected, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkFailed(ctx, run.ID, "Failed", domain.FailureAgentError, "boom", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := st.ListAutomationExecutions(ctx, projected.AutomationID, "terminal", nil, "", 20)
+	if err != nil || len(terminal) != 1 || terminal[0].ID != projected.ID {
+		t.Fatalf("terminal=%+v err=%v", terminal, err)
+	}
+}
+
+func TestPGAutomationExecutionStateFilterUsesCardRunProjection(t *testing.T) {
+	ctx := context.Background()
+	st, seedRunID := pgTestStore(t)
+	seed, err := st.GetRun(ctx, seedRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, Provider: domain.PluginJType,
+		Status: domain.PluginStatusEnabled, WorkspaceID: "workspace", Scopes: []string{},
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	cardAutomation := &domain.PluginAutomation{
+		ID: domain.NewID(), ServiceID: seed.ServiceID, InstallationID: installation.ID,
+		Name: "Agent queue", TriggerKind: "kanban", RunKind: domain.RunKindAgent, Enabled: true,
+	}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: cardAutomation.ID, InstallationID: installation.ID,
+		BoardRef: "delivery", TriggerColumn: "agent", DoneColumn: "done",
+	}
+	if err := st.CreatePluginAutomation(ctx, cardAutomation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	execution := &domain.AutomationExecution{
+		ID: domain.NewID(), AutomationID: "cron-" + domain.NewID(), AutomationName: "Nightly card",
+		ProjectID: seed.ProjectID, ServiceID: seed.ServiceID, TriggerKind: "cron",
+		EventKey: "cron:card-projected-state", State: domain.AutomationExecutionAccepted,
+		OutputMode:       domain.AutomationOutputCreateCard,
+		CardAutomationID: cardAutomation.ID, CardWorkspaceID: installation.WorkspaceID,
+		CardDocumentID: "card", CardPath: "jcode-automation/cron/execution.md",
+		CardState: "bound", CreatedAt: now, UpdatedAt: now,
+	}
+	if _, _, err := st.CreateAutomationExecution(ctx, execution, nil); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := st.ObservePluginKanbanCard(ctx, PluginKanbanObservation{
+		AutomationID: cardAutomation.ID, ServiceID: seed.ServiceID,
+		InstallationID: installation.ID, WorkspaceID: installation.WorkspaceID,
+		DocumentID: execution.CardDocumentID, DocumentPath: execution.CardPath,
+		TriggerColumn: trigger.TriggerColumn, DoneColumn: trigger.DoneColumn,
+		ObservedColumn: trigger.TriggerColumn, EventKey: "card:event:" + domain.NewID(),
+		ObservedAt: now,
+	})
+	if err != nil || observed.Occurrence == nil {
+		t.Fatalf("observe=%+v err=%v", observed, err)
+	}
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "work", Status: domain.StatusQueued, Phase: "Queued",
+		Origin: domain.RunOriginKanban, OriginAutomationID: cardAutomation.ID,
+		OriginEventKey: observed.Occurrence.EventKey, Attempt: 1, CreatedAt: now,
+	}
+	if attached, err := st.CreatePluginKanbanOccurrenceRun(ctx, observed.Occurrence.ID, run); err != nil || !attached {
+		t.Fatalf("attach=%v err=%v", attached, err)
+	}
+	if _, err := st.MarkFailed(ctx, run.ID, "Failed", domain.FailureAgentError, "boom", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := st.ListAutomationExecutions(ctx, execution.AutomationID, "terminal", nil, "", 20)
+	if err != nil || len(terminal) != 1 || terminal[0].ID != execution.ID {
+		t.Fatalf("terminal=%+v err=%v", terminal, err)
+	}
+	accepted, err := st.ListAutomationExecutions(ctx, execution.AutomationID, "accepted", nil, "", 20)
+	if err != nil || len(accepted) != 0 {
+		t.Fatalf("accepted=%+v err=%v", accepted, err)
+	}
+}
+
 func TestPGWebhookBindingSecretAndAuthenticatedDigest(t *testing.T) {
 	ctx := context.Background()
 	st, runID := pgTestStore(t)
@@ -203,6 +331,19 @@ func TestPGWebhookBindingSecretAndAuthenticatedDigest(t *testing.T) {
 	replay.DeliveryID = domain.NewID()
 	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || claimed {
 		t.Fatalf("claim replay=%v err=%v; want duplicate", claimed, err)
+	}
+	first.Status = "error"
+	first.Error = "ledger unavailable"
+	if err := st.CompleteWebhookReceipt(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	replay.Status = "received"
+	replay.Error = ""
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || !claimed {
+		t.Fatalf("reclaim errored receipt=%v err=%v", claimed, err)
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || claimed {
+		t.Fatalf("second reclaim=%v err=%v; want duplicate", claimed, err)
 	}
 }
 

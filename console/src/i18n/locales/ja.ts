@@ -1337,6 +1337,9 @@ export default {
     conclusion: 'CI 結果', conclusionHint: '選択したすべてのイベントが check.completed の場合のみ使用できます。',
     events: 'イベント', moreEvents: 'その他のイベント', thisProvider: 'このプロバイダー', eventUnavailable: '{provider}{version} ではサポートされていません。',
     cronExpression: 'Cron 式', cronHint: '5 フィールドの Cron 式を使用します。最小間隔はサーバーで強制されます。',
+    outputMode: '出力', outputRun: 'Run を直接作成', outputCard: 'jtype Card を作成して Service Kanban で実行',
+    outputHint: 'Card 出力は jtype の作業項目を残し、通常の Kanban 受付・書き戻しフローを使用します。',
+    outputCardUnavailable: '正常な Service Kanban を有効にしてから Card 出力を選択してください。',
     create: '自動化を作成', save: '自動化を保存',
     review: {
       eyebrow: 'GitHub コードレビュー', title: 'Pull Request をレビュー', subtitle: '新しい手順を覚えなくても、GitHub ネイティブのレビューを有効にできます。',
@@ -1349,7 +1352,7 @@ export default {
       draftsTitle: 'Draft を含める', draftsBody: '通常はオフにして、作者の最初の確認を待ちます。',
       create: 'レビューを有効化', save: 'レビュー設定を保存',
     },
-    validation: { noPermission: '自動化を編集する権限がありません。', required: '名前、サービス、モデル、タスクプロンプトは必須です。', eventRequired: 'このサービスのプロバイダーがサポートするイベントを 1 つ以上選択してください。', cronRequired: 'Cron 式は必須です。' },
+    validation: { noPermission: '自動化を編集する権限がありません。', required: '名前、サービス、モデル、タスクプロンプトは必須です。', eventRequired: 'このサービスのプロバイダーがサポートするイベントを 1 つ以上選択してください。', cronRequired: 'Cron 式は必須です。', cardOutputUnavailable: 'Card 出力には正常な Service Kanban が必要です。' },
     apiError: {
       overlap: '選択した SCM イベントのいずれかを、このサービスの別の自動化がすでに使用しています。',
       webhook: '自動化は保存されましたが、プロバイダー Webhook を同期できませんでした。プラグイン接続を確認して再試行してください。',
@@ -1358,6 +1361,34 @@ export default {
       modelRequired: 'このプロジェクトに許可されたモデルを選択してください。',
       effortUnsupported: '選択したモデルは推論強度に対応していません。自動または推論モデルを使用してください。',
       generic: '自動化を保存できませんでした。再試行してください。',
+    },
+  },
+
+  automationExecutions: {
+    loading: '自動化を読み込み中…', loadError: '自動化を読み込めませんでした。', back: '自動化一覧に戻る',
+    cardOutput: 'Card 出力', runOutput: '直接 Run 出力', runNow: '今すぐ実行',
+    runNowError: '実行を受理できませんでした。再試行時も同じ冪等キーを使用します。',
+    history: '実行履歴', loadingHistory: '実行履歴を読み込み中…', historyError: '実行履歴を読み込めませんでした。',
+    empty: '実行履歴はまだありません。', loadMore: '以前の実行を読み込む', select: '実行を選択して詳細を確認します。',
+    selected: '選択した実行', execution: '実行', trigger: 'トリガー', kind: '種類',
+    requested: '依頼者', accountable: '責任者', notApplicable: '該当なし', unattributed: '帰属なし',
+    output: '出力', expected: '予定', cardThenRun: 'jtype Card → Kanban Run', directRun: '直接 Run',
+    actual: '実際', writeback: '書き戻し', usage: '使用量', usageUnavailable: '利用不可',
+    filter: { all: 'すべて', blocked: 'ブロック', running: '実行中', terminal: '完了済み' },
+    state: {
+      accepted: '受付済み', ignored: '無視', duplicate: '重複',
+      superseded: '置換済み', blocked: 'ブロック', queued: '待機中',
+      running: '実行中', terminal: '完了済み',
+    },
+    outcome: { succeeded: '成功', failed: '失敗', canceled: 'キャンセル' },
+    repair: {
+      project_owner: 'プロジェクト所有者がこの依存関係を修復できます。',
+      cluster_admin: 'クラスター管理者がこの依存関係を修復する必要があります。',
+      requester: 'リクエストしたユーザーがこの依存関係を修復する必要があります。',
+    },
+    title: {
+      blocked: '出力前にブロック', ignored: 'ルールにより無視',
+      card: 'Card 出力', run: 'Run 出力',
     },
   },
 

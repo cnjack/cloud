@@ -304,9 +304,11 @@ type JTypeBoardProps = {
 }
 ```
 
-The function is invoked only for the built-in editable Card detail and its
-result is rendered in a dedicated, labelled-neutral slot beneath native
-Properties. It is not invoked when `onCardOpen` intercepts the detail.
+The function is invoked for the built-in editable and read-only Card details
+and its result is rendered in a dedicated, labelled-neutral slot beneath native
+Card fields. It is not invoked when `onCardOpen` intercepts the detail. This
+lets a Viewer inspect Cloud execution history without exposing mutation
+affordances.
 
 Shared board components receive the value through slots:
 
@@ -325,7 +327,7 @@ are part of the release. Feature impact:
 | Desktop | No visible change when prop omitted |
 | Web | No visible change when prop omitted |
 | `jtype-board-react` editable embed | Optional supplement in native detail |
-| read-only embed | Unchanged |
+| read-only embed | Optional read-only supplement in native detail |
 | intercepted `onCardOpen` | Unchanged; host owns the detail |
 
 ## Embedded UX contract

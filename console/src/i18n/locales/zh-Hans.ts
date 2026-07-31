@@ -1343,6 +1343,9 @@ export default {
     conclusion: 'CI 结果', conclusionHint: '仅当所有选中事件均为 check.completed 时可用。',
     events: '事件', moreEvents: '更多事件', thisProvider: '当前提供方', eventUnavailable: '{provider}{version} 不支持此事件。',
     cronExpression: 'Cron 表达式', cronHint: '使用五段式 Cron 表达式；服务器会强制执行最小时间间隔。',
+    outputMode: '输出方式', outputRun: '直接创建 Run', outputCard: '先创建 jtype Card，再由服务看板执行',
+    outputHint: 'Card 输出会保留 jtype 工作项，并复用标准的看板受理与回写闭环。',
+    outputCardUnavailable: '请先启用健康的服务看板，再选择 Card 输出。',
     create: '创建自动化', save: '保存自动化',
     review: {
       eyebrow: 'GitHub 代码评审', title: '评审 Pull Request', subtitle: '无需让团队学习新流程，即可启用实用的 GitHub 原生评审。',
@@ -1360,6 +1363,7 @@ export default {
       required: '名称、服务、模型和任务提示词均为必填项。',
       eventRequired: '请至少选择一个该服务提供方支持的事件。',
       cronRequired: 'Cron 表达式为必填项。',
+      cardOutputUnavailable: 'Card 输出需要健康的服务看板策略。',
     },
     apiError: {
       overlap: '此服务的另一个自动化已经使用了所选 SCM 事件中的至少一个。',
@@ -1369,6 +1373,34 @@ export default {
       modelRequired: '请选择一个已授权给本项目的模型。',
       effortUnsupported: '所选模型不支持推理强度，请使用“自动”或选择推理模型。',
       generic: '无法保存自动化，请重试。',
+    },
+  },
+
+  automationExecutions: {
+    loading: '正在加载自动化…', loadError: '无法加载自动化。', back: '返回自动化列表',
+    cardOutput: 'Card 输出', runOutput: '直接 Run 输出', runNow: '立即运行',
+    runNowError: '本次执行未能受理；重试会继续使用同一个幂等键。',
+    history: '执行历史', loadingHistory: '正在加载执行历史…', historyError: '无法加载执行历史。',
+    empty: '还没有执行记录。', loadMore: '加载更早的执行', select: '选择一条执行记录查看详情。',
+    selected: '选中的执行', execution: '执行', trigger: '触发来源', kind: '类型',
+    requested: '请求者', accountable: '责任人', notApplicable: '不适用', unattributed: '未归因',
+    output: '输出', expected: '预期', cardThenRun: 'jtype Card → 看板 Run', directRun: '直接 Run',
+    actual: '实际结果', writeback: '回写', usage: '用量', usageUnavailable: '暂不可用',
+    filter: { all: '全部', blocked: '受阻', running: '运行中', terminal: '已结束' },
+    state: {
+      accepted: '已受理', ignored: '已忽略', duplicate: '重复',
+      superseded: '已取代', blocked: '受阻', queued: '排队中',
+      running: '运行中', terminal: '已结束',
+    },
+    outcome: { succeeded: '成功', failed: '失败', canceled: '已取消' },
+    repair: {
+      project_owner: '项目所有者可以修复此依赖。',
+      cluster_admin: '需要集群管理员修复此依赖。',
+      requester: '需要请求者修复此依赖。',
+    },
+    title: {
+      blocked: '在生成输出前受阻', ignored: '触发已按规则忽略',
+      card: 'Card 输出', run: 'Run 输出',
     },
   },
 

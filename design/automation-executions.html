@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Automation executions · jcode Cloud</title>
+  <link rel="stylesheet" href="assets/shared.css">
+  <link rel="stylesheet" href="assets/automation-executions.css">
+</head>
+<body>
+  <main class="ae-page">
+    <div class="ae-shell">
+      <a class="ae-back" href="index.html">← Payments API / Automations</a>
+      <header class="ae-head">
+        <div>
+          <span class="ae-kicker">Cron · enabled</span>
+          <h1>Weekday issue sweep</h1>
+          <p>At 09:00 UTC · creates a Card for the Payments API agent queue</p>
+        </div>
+        <div class="ae-actions">
+          <button class="ae-button">Edit</button>
+          <button class="ae-button primary">Run now</button>
+        </div>
+      </header>
+      <div class="ae-layout">
+        <section class="ae-ledger" aria-label="Execution history">
+          <div class="ae-toolbar">
+            <strong>Execution history</strong>
+            <div class="ae-filters">
+              <button class="ae-filter active">All</button>
+              <button class="ae-filter">Blocked</button>
+              <button class="ae-filter">Active</button>
+            </div>
+          </div>
+          <ol class="ae-list">
+            <li class="ae-row selected">
+              <span class="ae-state blocked">Blocked</span>
+              <div><strong>Scheduled fire · Card output</strong><small>JType connection needs attention. No direct Run was created.</small></div>
+              <time class="ae-time">09:00 UTC</time>
+            </li>
+            <li class="ae-row">
+              <span class="ae-state running">Running</span>
+              <div><strong>Card #payments-184 → Run 8F2A</strong><small>Agent is working; accepted receipt written to jtype.</small></div>
+              <time class="ae-time">Yesterday</time>
+            </li>
+            <li class="ae-row">
+              <span class="ae-state">Succeeded</span>
+              <div><strong>Card #payments-179 → Run 76D1</strong><small>Card comment written and moved to Done.</small></div>
+              <time class="ae-time">Wed</time>
+            </li>
+            <li class="ae-row">
+              <span class="ae-state">Ignored</span>
+              <div><strong>SCM event did not match filters</strong><small>Recorded as ignored; it is not a successful Run.</small></div>
+              <time class="ae-time">Tue</time>
+            </li>
+          </ol>
+        </section>
+        <aside class="ae-inspector" aria-label="Selected execution">
+          <header><span class="ae-kicker">Execution</span><h2>Blocked before Card creation</h2></header>
+          <section>
+            <h3>Trigger</h3>
+            <dl><dt>Kind</dt><dd>Cron schedule</dd><dt>Occurrence</dt><dd>31 Jul 2026 · 09:00 UTC</dd><dt>Requested by</dt><dd>Automation rule</dd></dl>
+          </section>
+          <section>
+            <h3>Output</h3>
+            <dl><dt>Expected</dt><dd>jtype Card → Kanban Run</dd><dt>Card</dt><dd>Not created</dd><dt>Direct Run</dt><dd>Not created</dd></dl>
+            <p class="ae-repair"><strong>Project owner:</strong> reconnect the jtype plugin for this Project, then use Run now. Cloud will not silently fall back to a direct Run.</p>
+          </section>
+          <section>
+            <h3>Writeback & usage</h3>
+            <dl><dt>Writeback</dt><dd>Not started</dd><dt>Usage</dt><dd>Unavailable</dd></dl>
+          </section>
+        </aside>
+      </div>
+    </div>
+  </main>
+</body>
+</html>
