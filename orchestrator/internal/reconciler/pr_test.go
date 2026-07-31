@@ -709,7 +709,7 @@ func TestReconcileUpdatePushNonFFRetries(t *testing.T) {
 }
 
 // TestWebhookTaskJobEnv proves a webhook @mention agent task builds on the PR
-// head while Cloud itself does not push or open/update a PR.
+// head and produces a bundle for the control plane's ff-only update push.
 func TestWebhookTaskJobEnv(t *testing.T) {
 	ctx := context.Background()
 	rec, st, _ := testRec(t, 4)
@@ -718,11 +718,11 @@ func TestWebhookTaskJobEnv(t *testing.T) {
 	if env["BASE_BRANCH"] != "feature-env" {
 		t.Errorf("BASE_BRANCH=%q want feature-env (PR head)", env["BASE_BRANCH"])
 	}
-	if _, ok := env["BRANCH_NAME"]; ok {
-		t.Errorf("BRANCH_NAME=%q want absent (no Cloud writeback)", env["BRANCH_NAME"])
+	if env["BRANCH_NAME"] != "feature-env" {
+		t.Errorf("BRANCH_NAME=%q want feature-env", env["BRANCH_NAME"])
 	}
-	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
-		t.Errorf("GIT_MODE=%q want readonly", env["GIT_MODE"])
+	if env["GIT_MODE"] != string(domain.GitModeDraftPR) {
+		t.Errorf("GIT_MODE=%q want draft_pr", env["GIT_MODE"])
 	}
 }
 

@@ -727,39 +727,40 @@ func TestJobEnvRawRepoClonesDirectly(t *testing.T) {
 	}
 }
 
-// TestJobEnvLegacyDraftPRDoesNotTriggerCloudWriteback verifies the retired
-// Service flag cannot make Cloud commit, bundle, push, or open a PR.
-func TestJobEnvLegacyDraftPRDoesNotTriggerCloudWriteback(t *testing.T) {
+// TestJobEnvProviderDraftPRProducesCredentialFreeBundle verifies a provider
+// agent task is allowed to commit locally and upload a bundle while the provider
+// credential remains in the control plane.
+func TestJobEnvProviderDraftPRProducesCredentialFreeBundle(t *testing.T) {
 	env := jobEnvForService(t, domain.Service{
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
 		RepoOwnerName: "ai/priv", GitMode: domain.GitModeDraftPR,
 	}, "secret-pat", "https://git.example.com")
 	assertNoToken(t, env)
-	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
-		t.Fatalf("GIT_MODE=%q want readonly", env["GIT_MODE"])
+	if env["GIT_MODE"] != string(domain.GitModeDraftPR) {
+		t.Fatalf("GIT_MODE=%q want draft_pr", env["GIT_MODE"])
 	}
 	if env["SOURCE_MODE"] != "clone" {
 		t.Fatalf("SOURCE_MODE=%q want clone", env["SOURCE_MODE"])
 	}
-	if _, ok := env["BRANCH_NAME"]; ok {
-		t.Fatalf("Cloud writeback branch must be absent: %q", env["BRANCH_NAME"])
+	if env["BRANCH_NAME"] == "" {
+		t.Fatal("draft_pr provider agent must carry a deterministic BRANCH_NAME")
 	}
 	if env["BASE_BRANCH"] != "main" {
 		t.Fatalf("BASE_BRANCH=%q want main", env["BASE_BRANCH"])
 	}
 }
 
-func TestJobEnvLegacyDraftPRGitHubDoesNotTriggerCloudWriteback(t *testing.T) {
+func TestJobEnvGitHubDraftPRProducesCredentialFreeBundle(t *testing.T) {
 	env := jobEnvForService(t, domain.Service{
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitHub,
 		RepoOwnerName: "someone/other", GitMode: domain.GitModeDraftPR,
 	}, "secret-pat", "https://git.example.com")
 	assertNoToken(t, env)
-	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
-		t.Fatalf("GIT_MODE=%q want readonly", env["GIT_MODE"])
+	if env["GIT_MODE"] != string(domain.GitModeDraftPR) {
+		t.Fatalf("GIT_MODE=%q want draft_pr", env["GIT_MODE"])
 	}
-	if _, ok := env["BRANCH_NAME"]; ok {
-		t.Fatal("Cloud writeback branch must be absent")
+	if env["BRANCH_NAME"] == "" {
+		t.Fatal("draft_pr provider agent must carry a deterministic BRANCH_NAME")
 	}
 }
 
@@ -806,6 +807,12 @@ func TestJobEnvReviewInjectsPRRefs(t *testing.T) {
 	}
 	if env["PR_HEAD"] != "jcode/run-abc" || env["PR_BASE"] != "main" {
 		t.Fatalf("review PR refs wrong: head=%q base=%q", env["PR_HEAD"], env["PR_BASE"])
+	}
+	if env["GIT_MODE"] != string(domain.GitModeReadonly) {
+		t.Fatalf("review GIT_MODE=%q want readonly", env["GIT_MODE"])
+	}
+	if _, ok := env["BRANCH_NAME"]; ok {
+		t.Fatal("review run must not carry a writeback BRANCH_NAME")
 	}
 }
 
