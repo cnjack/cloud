@@ -26,6 +26,7 @@ type serviceInput struct {
 	Provider      string // explicit provider hint (optional)
 	OwnerName     string // explicit "owner/name" (provider form); wins over RepoURL
 	GitMode       string
+	PRReadyPolicy string
 	DefaultBranch string
 }
 
@@ -43,6 +44,13 @@ func resolveService(in serviceInput) (*domain.Service, string, string) {
 	}
 	if !domain.ValidGitMode(gitMode) {
 		return nil, "bad_request", "git_mode must be 'readonly' or 'draft_pr'"
+	}
+	readyPolicy := domain.PRReadyPolicy(strings.TrimSpace(in.PRReadyPolicy))
+	if readyPolicy == "" {
+		readyPolicy = domain.PRReadyPolicyLifecycleAware
+	}
+	if !domain.ValidPRReadyPolicy(readyPolicy) {
+		return nil, "bad_request", "pr_ready_policy must be 'always_draft' or 'lifecycle_aware'"
 	}
 	branch := strings.TrimSpace(in.DefaultBranch)
 	if branch == "" {
@@ -62,6 +70,7 @@ func resolveService(in serviceInput) (*domain.Service, string, string) {
 		RawRepoURL:    spec.RawRepoURL,
 		DefaultBranch: branch,
 		GitMode:       gitMode,
+		PRReadyPolicy: readyPolicy,
 	}
 	if code, msg := validateServiceConstraints(svc); code != "" {
 		return nil, code, msg
@@ -110,6 +119,7 @@ type createServiceReq struct {
 	InstallationID string `json:"installation_id"`
 	ProviderRepoID string `json:"provider_repo_id"`
 	GitMode        string `json:"git_mode"`
+	PRReadyPolicy  string `json:"pr_ready_policy"`
 	DefaultModelID string `json:"default_model_id"`
 }
 
@@ -303,6 +313,14 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "git_mode must be 'readonly' or 'draft_pr'")
 		return
 	}
+	readyPolicy := domain.PRReadyPolicy(strings.TrimSpace(req.PRReadyPolicy))
+	if readyPolicy == "" {
+		readyPolicy = domain.PRReadyPolicyLifecycleAware
+	}
+	if !domain.ValidPRReadyPolicy(readyPolicy) {
+		writeError(w, http.StatusBadRequest, "bad_request", "pr_ready_policy must be 'always_draft' or 'lifecycle_aware'")
+		return
+	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		parts := strings.Split(repo.FullName, "/")
@@ -332,7 +350,7 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		ID: domain.NewID(), ProjectID: projectID, Name: name,
 		RepoKind: domain.RepoKindProvider, Provider: domain.GitProvider(installation.Provider),
 		RepoOwnerName: repo.FullName, ProviderRepoID: &repoID, DefaultBranch: branch,
-		GitMode: gitMode, CreatedAt: now,
+		GitMode: gitMode, PRReadyPolicy: readyPolicy, CreatedAt: now,
 	}
 	if strings.TrimSpace(req.DefaultModelID) != "" {
 		modelID := strings.TrimSpace(req.DefaultModelID)
@@ -708,6 +726,7 @@ type servicePatch struct {
 	Provider      string
 	OwnerName     string
 	GitMode       string
+	PRReadyPolicy string
 	DefaultBranch string
 }
 
@@ -725,6 +744,12 @@ func applyServicePatch(svc *domain.Service, p servicePatch) (string, string) {
 			return "bad_request", "git_mode must be 'readonly' or 'draft_pr'"
 		}
 		svc.GitMode = v
+	}
+	if v := domain.PRReadyPolicy(strings.TrimSpace(p.PRReadyPolicy)); v != "" {
+		if !domain.ValidPRReadyPolicy(v) {
+			return "bad_request", "pr_ready_policy must be 'always_draft' or 'lifecycle_aware'"
+		}
+		svc.PRReadyPolicy = v
 	}
 	// Repo retarget: only when a repo field is supplied.
 	if strings.TrimSpace(p.RepoURL) != "" || strings.TrimSpace(p.OwnerName) != "" {
@@ -752,6 +777,7 @@ type patchServiceReq struct {
 	Provider      string `json:"provider"`
 	OwnerName     string `json:"owner_name"`
 	GitMode       string `json:"git_mode"`
+	PRReadyPolicy string `json:"pr_ready_policy"`
 	DefaultBranch string `json:"default_branch"`
 	// DefaultModelID sets the service's default model (D21). Presence semantics
 	// (pointer): omitted/null = unchanged; "" = clear (no default); an id = set,
@@ -797,6 +823,7 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		Provider:      req.Provider,
 		OwnerName:     req.OwnerName,
 		GitMode:       req.GitMode,
+		PRReadyPolicy: req.PRReadyPolicy,
 		DefaultBranch: req.DefaultBranch,
 	}); code != "" {
 		writeError(w, http.StatusBadRequest, code, msg)

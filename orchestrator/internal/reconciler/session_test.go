@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -308,6 +309,49 @@ func TestSessionPushOpensThenUpdates(t *testing.T) {
 	got, _ = st.GetRun(ctx, run.ID)
 	if got.PushedRev != 2 {
 		t.Fatalf("turn2 pushed_rev=%d want 2", got.PushedRev)
+	}
+}
+
+// TestSessionAdoptsExistingPRAfterEnsuringBundle proves that finding a manually
+// opened or crash-recovered PR is not enough to advance pushed_rev. The current
+// bundle must first reach the remote branch, otherwise Finish could expose stale
+// code as Ready.
+func TestSessionAdoptsExistingPRAfterEnsuringBundle(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	pusher := wirePRStack(rec, st, fake)
+	pid, sid := seedSessionProject(t, st, &domain.Project{})
+
+	branch := "jcode/run-adopt-session"
+	run := &domain.Run{ID: domain.NewID(), ProjectID: pid, ServiceID: sid, Prompt: "adopt chat",
+		Status: domain.StatusSucceeded, Kind: domain.RunKindAgent, Session: true,
+		GitBranch: branch, BundleRev: 1, PushedRev: 0, Attempt: 1, CreatedAt: time.Now()}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRunBundle(ctx, run.ID, []byte("final bundle")); err != nil {
+		t.Fatal(err)
+	}
+	fake.Seed("jcloud", "seed", branch, provider.PR{
+		Number: 47, URL: "http://gitea.test/jcloud/seed/pulls/47", State: "open", Draft: true,
+	})
+
+	pusher.err = errors.New("non-fast-forward")
+	rec.reconcileSessionPushes(ctx)
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.PushedRev != 0 || got.PRURL != "" {
+		t.Fatalf("failed branch ensure recorded delivery: pushed_rev=%d pr_url=%q", got.PushedRev, got.PRURL)
+	}
+
+	pusher.err = nil
+	rec.reconcileSessionPushes(ctx)
+	got, _ = st.GetRun(ctx, run.ID)
+	if got.PushedRev != 1 || got.PRNumber != 47 {
+		t.Fatalf("successful adoption not recorded: pushed_rev=%d pr_number=%d", got.PushedRev, got.PRNumber)
+	}
+	if fake.CreatedCount() != 0 || len(pusher.pushed) != 1 {
+		t.Fatalf("adoption created=%d successful_pushes=%v", fake.CreatedCount(), pusher.pushed)
 	}
 }
 

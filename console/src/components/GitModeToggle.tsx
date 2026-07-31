@@ -1,5 +1,5 @@
 /*
- * GitModeToggle — the segmented Read-only diff | Draft PR control shared by the
+ * GitModeToggle — the segmented Diff only | Pull request control shared by the
  * new-project and project-settings forms (multitenant blueprint §5). The repo is
  * a single smart-parsed URL now, so there are no separate provider fields: the
  * server derives the provider/owner-name from the URL and rejects draft_pr on a

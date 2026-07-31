@@ -289,7 +289,8 @@ func TestReconcilePRCreationIdempotent(t *testing.T) {
 
 // TestReconcilePRPreExisting covers the crash-between-push-and-persist path: the
 // provider already has an open PR for the head branch. The reconciler adopts it
-// (records url/number) and does NOT push or create a second PR.
+// (records url/number), proves the current bundle is on its branch, and does not
+// create a second PR.
 func TestReconcilePRPreExisting(t *testing.T) {
 	ctx := context.Background()
 	rec, st, _ := testRec(t, 4)
@@ -304,8 +305,8 @@ func TestReconcilePRPreExisting(t *testing.T) {
 	if fake.CreatedCount() != 0 {
 		t.Fatalf("created %d PRs, want 0 (must adopt the existing one)", fake.CreatedCount())
 	}
-	if len(pusher.pushed) != 0 {
-		t.Fatalf("pushed %d times, want 0 (PR already exists → skip push)", len(pusher.pushed))
+	if len(pusher.pushed) != 1 {
+		t.Fatalf("pushed %d times, want 1 (existing PR branch must contain this bundle)", len(pusher.pushed))
 	}
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.PRNumber != 7 || got.PRURL != "http://gitea.test/jcloud/seed/pulls/7" {

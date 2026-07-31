@@ -203,38 +203,38 @@ func (s *Server) handleIngestBundle(w http.ResponseWriter, r *http.Request, runI
 		writeError(w, http.StatusBadRequest, "bad_request", "empty bundle")
 		return
 	}
-	if err := s.st.PutRunBundle(r.Context(), runID, data); err != nil {
-		s.log.Error("ingest bundle", "run", runID, "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "could not store bundle")
-		return
-	}
 	// Record the push branch so the run enters the right scan. It is the run's
 	// deterministic branch — jcode/run-<id> for a normal draft-PR run, or the
 	// existing PR head branch for a webhook @mention task (M7). git_branch is set
 	// by the orchestrator (never runner-reported now) so runner + control plane
 	// always agree without the runner reporting it.
-	branch := domain.RunBranchName(runID)
-	var isSession bool
-	if run, err := s.st.GetRun(r.Context(), runID); err == nil {
-		branch = domain.RunPushBranch(run)
-		isSession = run.Session
-	} else {
-		s.log.Warn("ingest bundle: load run for push branch", "run", runID, "err", err)
+	run, err := s.st.GetRun(r.Context(), runID)
+	if err != nil {
+		s.log.Error("ingest bundle: load run", "run", runID, "err", err)
+		writeError(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	branch := domain.RunPushBranch(run)
+	if run.Session {
+		if _, err := s.st.PutSessionRunBundle(r.Context(), runID, data); err != nil {
+			if errors.Is(err, store.ErrInvalidTransition) {
+				writeError(w, http.StatusConflict, "bundle_closed", "the session has already finished accepting bundles")
+				return
+			}
+			s.log.Error("ingest session bundle", "run", runID, "err", err)
+			writeError(w, http.StatusInternalServerError, "internal", "could not store bundle")
+			return
+		}
+	} else if err := s.st.PutRunBundle(r.Context(), runID, data); err != nil {
+		s.log.Error("ingest bundle", "run", runID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not store bundle")
+		return
 	}
 	if _, err := s.st.SetRunGit(r.Context(), runID, branch, ""); err != nil {
 		s.log.Warn("ingest bundle: record branch", "run", runID, "err", err)
 	}
-	// Session (D22): every turn that produces new changes re-uploads a fresh
-	// cumulative bundle. Bump bundle_rev so the session-push reconcile pass
-	// opens the draft PR on the first bundle and ff-updates the same branch on
-	// each subsequent one (bundle_rev > pushed_rev is the "a new bundle awaits a
-	// push" signal). A single-shot run never enters that pass (git_branch alone
-	// puts it in the ordinary PR scan).
-	if isSession {
-		if _, err := s.st.BumpBundleRev(r.Context(), runID); err != nil {
-			s.log.Warn("ingest bundle: bump bundle rev", "run", runID, "err", err)
-		}
-	}
+	// PutSessionRunBundle stores the cumulative bytes and advances bundle_rev in
+	// one transaction, serialized with terminal status and Ready reconciliation.
 	s.emitArtifactEvent(r.Context(), runID, string(domain.ArtifactBundle), len(data))
 	writeJSON(w, http.StatusCreated, map[string]any{"kind": string(domain.ArtifactBundle), "bytes": len(data)})
 }

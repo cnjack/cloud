@@ -2,7 +2,7 @@
 
 自托管的**云端编码 agent**平台——把现有的 jcode / jtype / jbrowser 生态拼成一台"自主编码工厂"(GitHub Copilot cloud-agent / OpenAI Codex-cloud 风格),并采用 **OpenAI Symphony 的 SPEC** 作为编排契约。
 
-> 一句话架构:**一个 Go orchestrator(= Kubernetes 风格的 Symphony 控制器)把 jtype 看板当作 tracker,reconcile 出一批长活 worker Job;每个 Job 里跑 jcode headless,本地改代码、开 draft PR、用 jtype MCP 自己回写卡片;人工在 PR 上把关。K8s 替掉了 Symphony 的 Elixir,jcode 提供 agent,jtype 提供控制面数据,jbrowser 提供 K8s 模板。**
+> 一句话架构:**一个 Go orchestrator(= Kubernetes 风格的 Symphony 控制器)把 jtype 看板当作 tracker,reconcile 出一批长活 worker Job;每个 Job 里跑 jcode headless,本地改代码，由可信控制面交付 Pull Request，再由人工在 PR 上把关。K8s 替掉了 Symphony 的 Elixir,jcode 提供 agent,jtype 提供控制面数据,jbrowser 提供 K8s 模板。**
 
 **关键判断:整套系统约 70–80% 的积木已经存在于现有仓库,这是一个"编排 + 集成"项目,不是从零搭建。**
 
@@ -25,6 +25,7 @@
 | [20-unified-connections.md](20-unified-connections.md) | 统一 Connection 概念(kanban/gitea/github/gitlab)需求分析与对抗审查 |
 | [22-jtype-agent-work-prd.md](22-jtype-agent-work-prd.md) | jtype Card ↔ Agent Run 协作闭环、身份、自动化与 Usage PRD |
 | [23-kanban-execution-receipts.md](23-kanban-execution-receipts.md) | Kanban transition、occurrence、receipt、Card executions API 与 UI 实现合同 |
+| [27-pr-delivery-lifecycle.md](27-pr-delivery-lifecycle.md) | Agent 交付契约、Pull Request 模式与 Draft → Ready 生命周期 PRD |
 
 可视化蓝图(v1,早于存储/BYOK 细化):<https://claude.ai/code/artifact/68743dc8-aa5c-48f1-b712-fb8d974a2902>
 
@@ -53,7 +54,7 @@
 | 05 | 执行模型 | 长活 worker + **per-issue 持久 PVC** |
 | 06 | 状态/恢复 | **幂等 reconciler + Postgres**(K8s controller 风格) |
 | 07 | 编排契约 | 采用 **Symphony SPEC**;jtype 看板 = Symphony tracker |
-| 08 | Git 集成深度 | 默认 **draft PR/MR**,可按项目退只读;不自动 merge/CI |
+| 08 | Git 集成深度 | 默认 **Pull Request**、可退 Diff only；不自动 merge、不显式 dispatch CI |
 | 09 | Provider 顺序 | **Gitea 优先** → GitHub + GitLab |
 | 10 | BYOK 密钥 | 控制面 **LLM 代理**持真 key;sandbox 只拿短期 **temp token** |
 | 11 | 看板角色 | 触发源 **+** 回写 sink 都要 |

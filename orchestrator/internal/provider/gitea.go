@@ -68,6 +68,7 @@ type giteaPR struct {
 	HTMLURL string `json:"html_url"`
 	State   string `json:"state"`
 	Merged  bool   `json:"merged"`
+	Title   string `json:"title"`
 	Head    struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
@@ -85,19 +86,28 @@ func (c *GiteaClient) FindOpenPRByHead(ctx context.Context, owner, repo, head st
 	if err := c.do(ctx, http.MethodGet, path, nil, &prs); err != nil {
 		return nil, err
 	}
+	var found *PR
 	for _, p := range prs {
 		if p.Head.Ref == head {
-			return &PR{Number: p.Number, URL: p.HTMLURL}, nil
+			if found != nil {
+				return nil, ErrMultipleOpenPRs
+			}
+			found = &PR{Number: p.Number, URL: p.HTMLURL, State: prState(p.State, p.Merged), Draft: strings.HasPrefix(p.Title, GiteaWIPPrefix)}
 		}
 	}
-	return nil, nil
+	return found, nil
 }
 
 // CreateDraftPR opens a draft PR by prefixing the title with the WIP marker.
-// It NEVER merges and NEVER triggers CI — it only creates the PR.
+// It NEVER merges or explicitly dispatches CI. Provider-side workflows may
+// still react to the normal PR event.
 func (c *GiteaClient) CreateDraftPR(ctx context.Context, in CreateDraftPRInput) (*PR, error) {
+	return c.CreatePR(ctx, CreatePRInput{Owner: in.Owner, Repo: in.Repo, Head: in.Head, Base: in.Base, Title: in.Title, Body: in.Body, Draft: true})
+}
+
+func (c *GiteaClient) CreatePR(ctx context.Context, in CreatePRInput) (*PR, error) {
 	title := in.Title
-	if !strings.HasPrefix(title, GiteaWIPPrefix) {
+	if in.Draft && !strings.HasPrefix(title, GiteaWIPPrefix) {
 		title = GiteaWIPPrefix + title
 	}
 	body := map[string]any{
@@ -111,7 +121,27 @@ func (c *GiteaClient) CreateDraftPR(ctx context.Context, in CreateDraftPRInput) 
 	if err := c.do(ctx, http.MethodPost, path, body, &pr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: pr.Number, URL: pr.HTMLURL}, nil
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged), Draft: in.Draft}, nil
+}
+
+func (c *GiteaClient) MarkPRReady(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, prNumber)
+	var current giteaPR
+	if err := c.do(ctx, http.MethodGet, path, nil, &current); err != nil {
+		return nil, err
+	}
+	out := &PR{Number: current.Number, URL: current.HTMLURL, State: prState(current.State, current.Merged), Draft: strings.HasPrefix(current.Title, GiteaWIPPrefix)}
+	if out.State != "open" || !out.Draft {
+		return out, nil
+	}
+	title := strings.TrimPrefix(current.Title, GiteaWIPPrefix)
+	var updated giteaPR
+	if err := c.do(ctx, http.MethodPatch, path, map[string]any{"title": title}, &updated); err != nil {
+		return nil, err
+	}
+	out.URL = updated.HTMLURL
+	out.Draft = false
+	return out, nil
 }
 
 // CreatePRReview posts a COMMENT review carrying the AI review markdown. event
@@ -129,7 +159,7 @@ func (c *GiteaClient) PRStatus(ctx context.Context, owner, repo string, prNumber
 	if err := c.do(ctx, http.MethodGet, path, nil, &pr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged)}, nil
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged), Draft: strings.HasPrefix(pr.Title, GiteaWIPPrefix)}, nil
 }
 
 // PRByNumber returns the PR with its head/base branch refs populated (M7 webhook).
@@ -143,6 +173,7 @@ func (c *GiteaClient) PRByNumber(ctx context.Context, owner, repo string, prNumb
 		Number:  pr.Number,
 		URL:     pr.HTMLURL,
 		State:   prState(pr.State, pr.Merged),
+		Draft:   strings.HasPrefix(pr.Title, GiteaWIPPrefix),
 		HeadRef: pr.Head.Ref,
 		BaseRef: pr.Base.Ref,
 	}, nil

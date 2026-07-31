@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -151,6 +153,87 @@ func TestPGSessionMutators(t *testing.T) {
 	}
 
 	_ = st.DeleteProject(ctx, p.ID) // cascade run_messages
+}
+
+func TestPGPRDeliveryLifecycleFences(t *testing.T) {
+	st, seedID := pgTestStore(t)
+	ctx := context.Background()
+	seed, err := st.GetRun(ctx, seedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Bundle bytes and bundle_rev commit together, and terminal status fences all
+	// later uploads so Ready cannot race a straggling accepted revision.
+	session := &domain.Run{ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "session", Status: domain.StatusRunning, Kind: domain.RunKindAgent,
+		Session: true, Attempt: 1, CreatedAt: time.Now()}
+	if err := st.CreateRun(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.PutSessionRunBundle(ctx, session.ID, []byte("v1"))
+	if err != nil || got.BundleRev != 1 {
+		t.Fatalf("PutSessionRunBundle: run=%+v err=%v", got, err)
+	}
+	if _, err := st.MarkSucceeded(ctx, session.ID, "Done", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutSessionRunBundle(ctx, session.ID, []byte("late")); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("late session bundle err=%v want ErrInvalidTransition", err)
+	}
+	data, err := st.GetRunBundle(ctx, session.ID)
+	if err != nil || string(data) != "v1" {
+		t.Fatalf("terminal fence changed bundle=%q err=%v", data, err)
+	}
+
+	draft := true
+	readyRun := &domain.Run{ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "ready", Status: domain.StatusSucceeded, Kind: domain.RunKindAgent,
+		Session: true, PRURL: "https://example.test/pr/1", PRNumber: 1, PRDraft: &draft,
+		PRState: "open", BundleRev: 2, PushedRev: 1, Attempt: 1, CreatedAt: time.Now()}
+	if err := st.CreateRun(ctx, readyRun); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkPRReady(ctx, readyRun.ID, time.Now()); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("stale Ready err=%v want ErrInvalidTransition", err)
+	}
+	if _, err := st.SetPushedRev(ctx, readyRun.ID, 2, "sha2"); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := st.MarkPRReady(ctx, readyRun.ID, time.Now())
+	if err != nil || ready.PRReadyAt == nil || ready.PRDraft == nil || *ready.PRDraft {
+		t.Fatalf("guarded Ready: run=%+v err=%v", ready, err)
+	}
+
+	// The PostgreSQL conditional UPDATE is the actual cross-replica create fence.
+	const contenders = 12
+	start := make(chan struct{})
+	results := make(chan bool, contenders)
+	var wg sync.WaitGroup
+	for i := 0; i < contenders; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			ok, claimErr := st.ClaimPRCreation(ctx, seedID, domain.NewID(), time.Now(), time.Now().Add(-time.Minute))
+			if claimErr != nil {
+				t.Errorf("claim %d: %v", i, claimErr)
+			}
+			results <- ok
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	winners := 0
+	for won := range results {
+		if won {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("claim winners=%d want 1", winners)
+	}
 }
 
 // TestPGConcurrentOfferSingleWinner (C1): N truly-concurrent OfferNextMessage

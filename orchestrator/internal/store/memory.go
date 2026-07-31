@@ -262,6 +262,9 @@ func (m *MemStore) CreateService(_ context.Context, s *domain.Service) error {
 	if s.DefaultBranch == "" {
 		s.DefaultBranch = "main"
 	}
+	if s.PRReadyPolicy == "" {
+		s.PRReadyPolicy = domain.PRReadyPolicyAlwaysDraft
+	}
 	m.services[s.ID] = *s
 	return nil
 }
@@ -292,6 +295,9 @@ func (m *MemStore) CreatePluginBoundService(_ context.Context, s *domain.Service
 	}
 	if s.DefaultBranch == "" {
 		s.DefaultBranch = "main"
+	}
+	if s.PRReadyPolicy == "" {
+		s.PRReadyPolicy = domain.PRReadyPolicyAlwaysDraft
 	}
 	m.services[s.ID] = *s
 	m.serviceRepoBindings[s.ID] = *binding
@@ -361,6 +367,9 @@ func (m *MemStore) UpdateService(_ context.Context, s *domain.Service) error {
 		if err := validateServiceRepositoryBinding(s, &installation); err != nil {
 			return err
 		}
+	}
+	if s.PRReadyPolicy == "" {
+		s.PRReadyPolicy = domain.PRReadyPolicyAlwaysDraft
 	}
 	m.services[s.ID] = *s
 	return nil
@@ -602,8 +611,18 @@ func (m *MemStore) validateRunForCreateLocked(r *domain.Run) error {
 	// Older focused store tests seed standalone runs directly; preserve that
 	// convenience while still enforcing the deletion fence whenever the service
 	// aggregate is present (production PG always has the FK).
-	if svc, ok := m.services[r.ServiceID]; ok && svc.DeletingAt != nil {
-		return ErrServiceDeleting
+	if svc, ok := m.services[r.ServiceID]; ok {
+		if svc.DeletingAt != nil {
+			return ErrServiceDeleting
+		}
+		if r.PRReadyPolicy == "" {
+			r.PRReadyPolicy = svc.PRReadyPolicy
+			if r.PRReadyPolicy == "" {
+				r.PRReadyPolicy = domain.PRReadyPolicyAlwaysDraft
+			}
+		}
+	} else if r.PRReadyPolicy == "" {
+		r.PRReadyPolicy = domain.PRReadyPolicyAlwaysDraft
 	}
 	// Mirror the PG partial-unique index on origin_comment_id: a redelivered
 	// webhook comment cannot create a second run.
@@ -1248,6 +1267,10 @@ func (m *MemStore) SetRunACPSession(_ context.Context, id, acpSessionID string) 
 
 // MarkPRCreated stamps pr_url/pr_number idempotently, first-writer-wins.
 func (m *MemStore) MarkPRCreated(_ context.Context, id, prURL string, prNumber int) (*domain.Run, error) {
+	return m.MarkPRCreatedState(context.Background(), id, prURL, prNumber, true)
+}
+
+func (m *MemStore) MarkPRCreatedState(_ context.Context, id, prURL string, prNumber int, draft bool) (*domain.Run, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.runs[id]
@@ -1257,10 +1280,84 @@ func (m *MemStore) MarkPRCreated(_ context.Context, id, prURL string, prNumber i
 	if cur.PRURL == "" {
 		cur.PRURL = prURL
 		cur.PRNumber = prNumber
+		v := draft
+		cur.PRDraft = &v
+		cur.PRState = "open"
 	}
 	m.runs[id] = cur
 	cp := cur
 	return &cp, nil
+}
+
+func (m *MemStore) MarkPRState(_ context.Context, id, state string) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if state != "" {
+		cur.PRState = state
+	}
+	m.runs[id] = cur
+	cp := cur
+	return &cp, nil
+}
+
+func (m *MemStore) MarkPRReady(_ context.Context, id string, at time.Time) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if cur.PRReadyAt == nil {
+		if cur.Status != domain.StatusSucceeded || cur.BundleRev > cur.PushedRev || cur.PRURL == "" {
+			return nil, fmt.Errorf("%w: pull request is not ready to promote", ErrInvalidTransition)
+		}
+		v := false
+		cur.PRDraft = &v
+		t := at.UTC()
+		cur.PRReadyAt = &t
+	}
+	m.runs[id] = cur
+	cp := cur
+	return &cp, nil
+}
+
+func (m *MemStore) ClaimPRCreation(_ context.Context, id, token string, at, staleBefore time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if cur.PRURL != "" {
+		return false, nil
+	}
+	if cur.PRCreateClaimToken != "" && cur.PRCreateClaimedAt != nil && !cur.PRCreateClaimedAt.Before(staleBefore) {
+		return false, nil
+	}
+	cur.PRCreateClaimToken = token
+	t := at.UTC()
+	cur.PRCreateClaimedAt = &t
+	m.runs[id] = cur
+	return true, nil
+}
+
+func (m *MemStore) ReleasePRCreation(_ context.Context, id, token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if cur.PRCreateClaimToken == token {
+		cur.PRCreateClaimToken = ""
+		cur.PRCreateClaimedAt = nil
+		m.runs[id] = cur
+	}
+	return nil
 }
 
 // ListRunsAwaitingPR returns succeeded NON-session agent runs with a recorded
@@ -1271,7 +1368,8 @@ func (m *MemStore) ListRunsAwaitingPR(_ context.Context) ([]domain.Run, error) {
 	var out []domain.Run
 	for _, r := range m.runs {
 		if r.Status == domain.StatusSucceeded && r.Kind == domain.RunKindAgent &&
-			r.GitBranch != "" && r.PRURL == "" && !r.Session {
+			r.GitBranch != "" && r.PRURL == "" && !r.Session &&
+			r.PRState != "conflict" && r.PRState != "provider_unsupported" {
 			out = append(out, r)
 		}
 	}
@@ -1552,6 +1650,12 @@ func (m *MemStore) BumpBundleRev(_ context.Context, id string) (*domain.Run, err
 	if !ok {
 		return nil, ErrNotFound
 	}
+	if !cur.Session {
+		return nil, fmt.Errorf("%w: run is not a session", ErrInvalidTransition)
+	}
+	if cur.Status.Terminal() {
+		return nil, fmt.Errorf("%w: cannot accept a session bundle after %s", ErrInvalidTransition, cur.Status)
+	}
 	cur.BundleRev++
 	m.runs[id] = cur
 	cp := cur
@@ -1588,7 +1692,25 @@ func (m *MemStore) ListSessionRunsAwaitingPush(_ context.Context) ([]domain.Run,
 	for _, r := range m.runs {
 		if r.Session && r.Kind == domain.RunKindAgent && r.GitBranch != "" &&
 			r.BundleRev > r.PushedRev &&
-			r.Status != domain.StatusFailed && r.Status != domain.StatusCanceled {
+			r.Status != domain.StatusFailed && r.Status != domain.StatusCanceled &&
+			r.PRState != "closed" && r.PRState != "merged" &&
+			r.PRState != "conflict" && r.PRState != "provider_unsupported" {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemStore) ListSessionRunsAwaitingPRReady(_ context.Context) ([]domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Run
+	for _, r := range m.runs {
+		if r.Session && r.Kind == domain.RunKindAgent && r.Status == domain.StatusSucceeded &&
+			r.PRURL != "" && r.PRState != "closed" && r.PRState != "merged" &&
+			r.PRState != "conflict" && r.PRState != "provider_unsupported" &&
+			r.PRDraft != nil && *r.PRDraft && r.PRReadyAt == nil && r.BundleRev <= r.PushedRev {
 			out = append(out, r)
 		}
 	}
@@ -1810,6 +1932,29 @@ func (m *MemStore) PutRunBundle(_ context.Context, runID string, data []byte) er
 		RunID: runID, Kind: domain.ArtifactBundle, Bytes: cp, CreatedAt: time.Now().UTC(),
 	}
 	return nil
+}
+
+func (m *MemStore) PutSessionRunBundle(_ context.Context, runID string, data []byte) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[runID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if !cur.Session {
+		return nil, fmt.Errorf("%w: run is not a session", ErrInvalidTransition)
+	}
+	if cur.Status.Terminal() {
+		return nil, fmt.Errorf("%w: cannot accept a session bundle after %s", ErrInvalidTransition, cur.Status)
+	}
+	cp := append([]byte(nil), data...)
+	m.artifacts[runID+"/"+string(domain.ArtifactBundle)] = domain.RunArtifact{
+		RunID: runID, Kind: domain.ArtifactBundle, Bytes: cp, CreatedAt: time.Now().UTC(),
+	}
+	cur.BundleRev++
+	m.runs[runID] = cur
+	out := cur
+	return &out, nil
 }
 
 // GetRunBundle returns a run's stored git bundle bytes (ErrNotFound if absent).

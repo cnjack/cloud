@@ -432,6 +432,7 @@ describe('RunDetailPage — resilient error states', () => {
       finished_at: '2026-07-07T00:05:00Z',
       pr_url: 'https://gitea.local/jcloud/seed/pulls/42',
       pr_number: 42,
+      pr_draft: true,
     });
     const { client, ctl } = makeClient();
     ctl.getRun.mockResolvedValue(prRun);
@@ -444,6 +445,47 @@ describe('RunDetailPage — resilient error states', () => {
     expect(link.getAttribute('target')).toBe('_blank');
     expect(link.getAttribute('rel')).toContain('noreferrer');
   });
+
+  it('renders a ready-PR chip when the provider lifecycle is ready', async () => {
+    const prRun = baseRun({
+      status: 'succeeded',
+      pr_url: 'https://github.com/cnjack/cloud/pull/43',
+      pr_number: 43,
+      pr_draft: false,
+      pr_ready_at: '2026-07-07T00:05:00Z',
+    });
+    const { client, ctl } = makeClient();
+    ctl.getRun.mockResolvedValue(prRun);
+    renderPage(client, prRun);
+
+    const link = await screen.findByTestId('pr-link');
+    expect(link.textContent).toContain('Ready PR');
+    expect(link.textContent).toContain('#43');
+  });
+
+	  it('renders provider terminal state instead of stale draft state', async () => {
+	    const prRun = baseRun({
+	      status: 'succeeded',
+	      pr_url: 'https://github.com/cnjack/cloud/pull/44',
+	      pr_number: 44,
+	      pr_draft: true,
+	      pr_state: 'closed',
+	    });
+	    const { client, ctl } = makeClient();
+    ctl.getRun.mockResolvedValue(prRun);
+    renderPage(client, prRun);
+
+	    expect((await screen.findByTestId('pr-link')).textContent).toContain('Closed PR');
+	  });
+
+	  it('surfaces a parked multiple-PR delivery conflict without requiring a PR URL', async () => {
+	    const conflictRun = baseRun({ status: 'succeeded', pr_state: 'conflict' });
+	    const { client, ctl } = makeClient();
+	    ctl.getRun.mockResolvedValue(conflictRun);
+	    renderPage(client, conflictRun);
+
+	    expect((await screen.findByTestId('pr-delivery-conflict')).textContent).toContain('multiple open PRs');
+	  });
 
   // M7 (blueprint §8): a webhook-origin run links back to the triggering PR
   // comment via a "from PR comment ↗" chip; an api-origin run does not.

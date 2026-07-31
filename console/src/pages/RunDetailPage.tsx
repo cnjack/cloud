@@ -811,8 +811,10 @@ function RunInspector({
           <p className={styles.inspectorHint}>{noChanges ? t('runDetail.inspector.noCodeChanges') : diffState === 'ready' ? t('runDetail.inspector.reviewPatch') : diffState === 'loading' ? t('runDetail.inspector.loadingChangeSummary') : diffState === 'error' ? t('runDetail.inspector.diffUnavailable') : t('runDetail.inspector.diffAfterAgent')}</p>
           {diffContent && <DiffSummary patch={diffContent} />}
           <button type="button" className={styles.inspectorAction} onClick={onDiff} data-testid="tab-diff"><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /><span>{t('runDetail.inspector.viewCompleteDiff')}</span></button>
-          {showPr && <button type="button" className={styles.inspectorAction} onClick={onPr} data-testid="tab-pr"><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /><span>{t('runDetail.inspector.openPrDetails')}</span></button>}
-          {run.pr_url && <a className={styles.inspectorAction} href={run.pr_url} target="_blank" rel="noreferrer" data-testid="pr-link"><span>{t('runDetail.inspector.draftPr')} {run.pr_number ? `#${run.pr_number}` : ''}</span><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /></a>}
+	          {showPr && <button type="button" className={styles.inspectorAction} onClick={onPr} data-testid="tab-pr"><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /><span>{t('runDetail.inspector.openPrDetails')}</span></button>}
+	          {run.pr_url && <a className={styles.inspectorAction} href={run.pr_url} target="_blank" rel="noreferrer" data-testid="pr-link"><span>{t(run.pr_state === 'merged' ? 'runDetail.inspector.mergedPr' : run.pr_state === 'closed' ? 'runDetail.inspector.closedPr' : run.pr_draft === true ? 'runDetail.inspector.draftPr' : run.pr_draft === false ? 'runDetail.inspector.readyPr' : 'runDetail.inspector.pullRequest')} {run.pr_number ? `#${run.pr_number}` : ''}</span><ArrowSquareOut size={14} weight="regular" aria-hidden="true" /></a>}
+	          {run.pr_state === 'conflict' && <p className={styles.inspectorHint} data-testid="pr-delivery-conflict">{t('runDetail.inspector.prDeliveryConflict')}</p>}
+	          {run.pr_state === 'provider_unsupported' && <p className={styles.inspectorHint} data-testid="pr-provider-unsupported">{t('runDetail.inspector.prProviderUnsupported')}</p>}
         </InspectorSection>
       ) : null}
       <InspectorSection title={t('runDetail.inspector.execution')}>

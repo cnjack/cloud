@@ -45,9 +45,11 @@ export type FailureReason =
  *    nothing is pushed, no PR is opened.
  *  - `draft_pr` — after a successful run with a non-empty diff the runner pushes
  *    an `agent/run-<id>` branch and the orchestrator opens a draft PR on the
- *    provider. Never auto-merges, never triggers CI.
+ *    provider. Never auto-merges or explicitly dispatches CI; repository
+ *    workflows may still react to normal push/PR events.
  */
 export type GitMode = 'readonly' | 'draft_pr';
+export type PRReadyPolicy = 'always_draft' | 'lifecycle_aware';
 
 /**
  * Git providers the orchestrator understands (multitenant blueprint §1). Gitea is
@@ -489,6 +491,8 @@ export interface Service {
   raw_repo_url?: string;
   default_branch: string;
   git_mode: GitMode;
+  /** Completion policy for Pull request delivery. Old services default to always_draft. */
+  pr_ready_policy?: PRReadyPolicy;
   /**
    * The catalog model (D21) this service's runs use by default when the composer
    * doesn't pick one. Absent/null = no default (the project's sole granted model
@@ -635,6 +639,10 @@ export interface Run {
    */
   pr_url?: string | null;
   pr_number?: number | null;
+  /** null/absent means the provider state is unknown for a historical run. */
+  pr_draft?: boolean | null;
+  pr_ready_at?: string | null;
+  pr_state?: 'open' | 'closed' | 'merged' | 'unknown' | string;
   /**
    * The markdown a review run (kind=review) produced (blueprint §5). Empty/absent
    * for agent runs; populated once the runner posts its review output.
@@ -877,6 +885,9 @@ export interface RunEventPayload {
   // header updates without a refetch. run.git carries branch/commit_sha.
   pr_url?: string | null;
   pr_number?: number | null;
+  pr_draft?: boolean | null;
+  pr_ready_at?: string | null;
+  pr_state?: string;
   branch?: string;
   commit_sha?: string;
   // user.message / session.finish (D22): the follow-up prompt and its author /
@@ -1409,6 +1420,7 @@ export interface ResumeRunInput extends ResumeSessionOptions {
  */
 export interface UpdateServiceInput {
   default_model_id?: string;
+  pr_ready_policy?: PRReadyPolicy;
 }
 
 /** POST /projects/{id}/services. Services are always bound to a Project Plugin repository. */
@@ -1417,6 +1429,7 @@ export interface CreateServiceInput {
   installation_id?: string;
   provider_repo_id?: string;
   git_mode?: GitMode;
+  pr_ready_policy?: PRReadyPolicy;
   default_model_id?: string;
   /** @deprecated Mock-only compatibility. The production API rejects bare Git URLs. */
   repo_url?: string;

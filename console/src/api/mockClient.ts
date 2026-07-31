@@ -2446,6 +2446,9 @@ export function createMockClient(): ApiClient {
             svc.default_model_id = id;
           }
         }
+        if (input.pr_ready_policy !== undefined) {
+          svc.pr_ready_policy = input.pr_ready_policy;
+        }
         return delay({ ...svc });
       }
       throw new ApiError(404, 'service not found');

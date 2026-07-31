@@ -570,6 +570,63 @@ func TestMemMarkPRCreatedConcurrent(t *testing.T) {
 	}
 }
 
+func TestMemClaimPRCreationHasSingleWinnerAndTokenFencedRelease(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	id := seedRun(t, m)
+	now := time.Now().UTC()
+
+	first, err := m.ClaimPRCreation(ctx, id, "first", now, now.Add(-time.Minute))
+	if err != nil || !first {
+		t.Fatalf("first claim=%v err=%v", first, err)
+	}
+	second, err := m.ClaimPRCreation(ctx, id, "second", now, now.Add(-time.Minute))
+	if err != nil || second {
+		t.Fatalf("second claim=%v err=%v want false", second, err)
+	}
+	if err := m.ReleasePRCreation(ctx, id, "not-owner"); err != nil {
+		t.Fatal(err)
+	}
+	second, _ = m.ClaimPRCreation(ctx, id, "second", now, now.Add(-time.Minute))
+	if second {
+		t.Fatal("non-owner release cleared the active claim")
+	}
+	if err := m.ReleasePRCreation(ctx, id, "first"); err != nil {
+		t.Fatal(err)
+	}
+	second, _ = m.ClaimPRCreation(ctx, id, "second", now, now.Add(-time.Minute))
+	if !second {
+		t.Fatal("owner release did not make the claim available")
+	}
+}
+
+func TestMemPutSessionRunBundleIsAtomicAndTerminalFenced(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	seedID := seedRun(t, m)
+	seed, _ := m.GetRun(ctx, seedID)
+	run := &domain.Run{ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "session", Status: domain.StatusRunning, Kind: domain.RunKindAgent,
+		Session: true, Attempt: 1, CreatedAt: time.Now()}
+	if err := m.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.PutSessionRunBundle(ctx, run.ID, []byte("v1"))
+	if err != nil || got.BundleRev != 1 {
+		t.Fatalf("PutSessionRunBundle: run=%+v err=%v", got, err)
+	}
+	if _, err := m.MarkSucceeded(ctx, run.ID, "Done", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.PutSessionRunBundle(ctx, run.ID, []byte("late")); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("late bundle err=%v want ErrInvalidTransition", err)
+	}
+	data, _ := m.GetRunBundle(ctx, run.ID)
+	if string(data) != "v1" {
+		t.Fatalf("terminal upload replaced bundle: %q", data)
+	}
+}
+
 // TestMemSetRunGitFirstWriterWins proves branch/commit are recorded once and a
 // duplicate run.git event does not overwrite them.
 func TestMemSetRunGitFirstWriterWins(t *testing.T) {

@@ -26,6 +26,9 @@ export interface EventState {
   /** ST-1: draft PR link, from the latest run.status frame that carries pr_url. */
   prURL?: string;
   prNumber?: number;
+  prDraft?: boolean;
+  prReadyAt?: string;
+  prState?: string;
   /** Set of seqs held, for O(1) dedupe. Not for rendering. */
   seen: Set<number>;
 }
@@ -78,6 +81,9 @@ export function reduceEvents(
   let derivedStatus = state.derivedStatus;
   let prURL = state.prURL;
   let prNumber = state.prNumber;
+  let prDraft = state.prDraft;
+  let prReadyAt = state.prReadyAt;
+  let prState = state.prState;
 
   for (const ev of fresh) {
     seen.add(ev.seq);
@@ -105,9 +111,12 @@ export function reduceEvents(
           typeof ev.payload.pr_number === 'number'
             ? ev.payload.pr_number
             : prNumber;
+        if (typeof ev.payload.pr_draft === 'boolean') prDraft = ev.payload.pr_draft;
+        if (typeof ev.payload.pr_ready_at === 'string') prReadyAt = ev.payload.pr_ready_at;
+        if (typeof ev.payload.pr_state === 'string') prState = ev.payload.pr_state;
       }
     }
   }
 
-  return { events, lastSeq, derivedStatus, prURL, prNumber, seen };
+  return { events, lastSeq, derivedStatus, prURL, prNumber, prDraft, prReadyAt, prState, seen };
 }

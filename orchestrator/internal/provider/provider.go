@@ -4,7 +4,8 @@
 //
 // Scope (ST-1 / decision D08): the ONLY operations are "find an open PR by head
 // branch" and "create a draft PR". There is deliberately NO merge and NO CI
-// trigger — that is a hard architectural gate (never auto-merge, never auto-CI).
+// dispatch — that is a hard architectural gate (never auto-merge, never
+// explicitly dispatch CI; repository push/PR workflows may still run).
 package provider
 
 import (
@@ -20,6 +21,7 @@ type PR struct {
 	Number int
 	URL    string // human-facing HTML URL (persisted on the run as pr_url)
 	State  string // "open" | "closed" | "merged" | "" (unknown) — used by PRStatus
+	Draft  bool   // provider-normalized Draft/WIP state
 	// Head/Base branch refs. Populated by PRByNumber (M7 webhook needs them to
 	// build/diff against an existing PR); empty for the list/create shapes that do
 	// not carry them.
@@ -41,6 +43,18 @@ type CreateDraftPRInput struct {
 	Body  string
 }
 
+// CreatePRInput is the lifecycle-aware create request. Draft=false means the
+// provider must create a normal, ready-for-review pull request.
+type CreatePRInput struct {
+	Owner string
+	Repo  string
+	Head  string
+	Base  string
+	Title string
+	Body  string
+	Draft bool
+}
+
 // Provider is the git-host PR API seam. Implementations are idempotent-friendly:
 // FindOpenPRByHead lets the caller check for an existing PR before creating one,
 // so a retried reconcile never double-opens.
@@ -49,8 +63,13 @@ type Provider interface {
 	// (nil, nil) if none exists. owner/repo identify the repository.
 	FindOpenPRByHead(ctx context.Context, owner, repo, head string) (*PR, error)
 	// CreateDraftPR opens a DRAFT pull request and returns it. It must never
-	// merge or trigger CI.
+	// merge or explicitly dispatch CI.
 	CreateDraftPR(ctx context.Context, in CreateDraftPRInput) (*PR, error)
+	// CreatePR creates either a Draft or Ready PR according to in.Draft.
+	CreatePR(ctx context.Context, in CreatePRInput) (*PR, error)
+	// MarkPRReady idempotently promotes a provider Draft/WIP PR. Closed/merged
+	// PRs are returned unchanged; implementations never reopen them.
+	MarkPRReady(ctx context.Context, owner, repo string, prNumber int) (*PR, error)
 	// CreatePRReview posts a plain review comment on a pull request (the AI review
 	// output). It never approves/requests-changes with a merge effect — it is a
 	// comment-only review, so the hard "never auto-merge" gate holds (M3/M5).
@@ -179,6 +198,8 @@ type Factory interface {
 // are absent, so the reconciler can degrade gracefully (leave the run as a
 // diff-only success) rather than crash.
 var ErrNotConfigured = errors.New("git provider not configured")
+var ErrMultipleOpenPRs = errors.New("multiple open pull requests use the run head branch")
+var ErrUnsupportedPRTransition = errors.New("git provider cannot reliably change the pull request state")
 
 // httpFactory is the default Factory: it builds gitea/github/gitlab REST clients.
 type httpFactory struct {

@@ -123,24 +123,61 @@ func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *d
 		}
 		pr, err := prov.FindOpenPRByHead(ctx, owner, repo, branch)
 		if err != nil {
+			if errors.Is(err, provider.ErrMultipleOpenPRs) {
+				r.parkPRDelivery(ctx, run.ID, "conflict", err)
+				return
+			}
 			r.log.Warn("reconcile session push: find existing", "run", run.ID, "err", err)
 			return
 		}
 		sha := ""
+		// Even when an open PR already exists, do not adopt it or advance
+		// pushed_rev until its remote branch is proven to contain this revision.
+		// PushBundleBranch is non-forcing and treats an up-to-date branch as a
+		// successful no-op.
+		pushed, perr := r.pusher.PushBundleBranch(ctx, authed, f.Name(), branch)
+		if perr != nil {
+			r.log.Warn("reconcile session push: ensure branch", "run", run.ID, "src", tok.Source, "err", perr)
+			return
+		}
+		sha = pushed
 		if pr == nil {
-			pushed, perr := r.pusher.PushBundleBranch(ctx, authed, f.Name(), branch)
-			if perr != nil {
-				r.log.Warn("reconcile session push: push branch", "run", run.ID, "src", tok.Source, "err", perr)
+			claimToken := domain.NewID()
+			now := r.now()
+			claimed, cerr := r.st.ClaimPRCreation(ctx, run.ID, claimToken, now, now.Add(-2*time.Minute))
+			if cerr != nil {
+				r.log.Warn("reconcile session push: claim create", "run", run.ID, "err", cerr)
 				return
 			}
-			sha = pushed
-			pr, err = prov.CreateDraftPR(ctx, provider.CreateDraftPRInput{
+			if !claimed {
+				return
+			}
+			defer func() {
+				if err := r.st.ReleasePRCreation(ctx, run.ID, claimToken); err != nil {
+					r.log.Warn("reconcile session push: release create claim", "run", run.ID, "err", err)
+				}
+			}()
+			pr, err = prov.FindOpenPRByHead(ctx, owner, repo, branch)
+			if err != nil {
+				if errors.Is(err, provider.ErrMultipleOpenPRs) {
+					r.parkPRDelivery(ctx, run.ID, "conflict", err)
+					return
+				}
+				r.log.Warn("reconcile session push: re-find after claim", "run", run.ID, "err", err)
+				return
+			}
+		}
+		if pr == nil {
+			pr, err = prov.CreatePR(ctx, provider.CreatePRInput{
 				Owner: owner, Repo: repo, Head: branch, Base: svc.DefaultBranch,
-				Title: prTitle(run.Prompt), Body: prBody(run, r.prTriggerAttribution(ctx, run, svc)),
+				Title: prTitle(run.Prompt), Body: prBody(run, r.prTriggerAttribution(ctx, run, svc)), Draft: true,
 			})
 			if err != nil {
 				if found, ferr := prov.FindOpenPRByHead(ctx, owner, repo, branch); ferr == nil && found != nil {
 					pr = found
+				} else if errors.Is(ferr, provider.ErrMultipleOpenPRs) {
+					r.parkPRDelivery(ctx, run.ID, "conflict", ferr)
+					return
 				} else {
 					r.log.Warn("reconcile session push: create draft", "run", run.ID, "err", err)
 					return
@@ -149,7 +186,7 @@ func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *d
 				r.log.Info("reconcile session push: opened draft PR", "run", run.ID, "pr", pr.Number, "url", pr.URL, "src", tok.Source)
 			}
 		}
-		if _, err := r.st.MarkPRCreated(ctx, run.ID, pr.URL, pr.Number); err != nil {
+		if _, err := r.st.MarkPRCreatedState(ctx, run.ID, pr.URL, pr.Number, pr.Draft); err != nil {
 			r.log.Error("reconcile session push: mark pr created", "run", run.ID, "err", err)
 			return
 		}
@@ -164,6 +201,26 @@ func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *d
 
 	// Later turns: ff-only update the existing PR head branch (never force-push,
 	// never open a new PR).
+	prov, err := r.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
+	if err != nil {
+		r.log.Warn("reconcile session push: build state client", "run", run.ID, "err", err)
+		return
+	}
+	current, err := prov.PRByNumber(ctx, owner, repo, run.PRNumber)
+	if err != nil {
+		r.log.Warn("reconcile session push: read provider state", "run", run.ID, "pr", run.PRNumber, "err", err)
+		return
+	}
+	if current.State == "closed" || current.State == "merged" {
+		committed, serr := r.st.MarkPRState(ctx, run.ID, current.State)
+		if serr != nil {
+			r.log.Warn("reconcile session push: persist provider terminal state", "run", run.ID, "err", serr)
+			return
+		}
+		r.log.Info("reconcile session push: provider PR is terminal; freezing delivery", "run", run.ID, "pr", run.PRNumber, "state", current.State)
+		r.emitStatus(ctx, committed)
+		return
+	}
 	sha, alreadyPresent, err := r.pusher.PushBundleBranchFFOnly(ctx, authed, f.Name(), branch)
 	if err != nil {
 		r.log.Warn("reconcile session push: ff-only push failed (retry next tick)", "run", run.ID, "branch", branch, "src", tok.Source, "err", err)
@@ -176,6 +233,78 @@ func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *d
 	}
 	if _, err := r.st.SetPushedRev(ctx, run.ID, rev, sha); err != nil {
 		r.log.Warn("reconcile session push: set pushed rev", "run", run.ID, "err", err)
+	}
+}
+
+// reconcileSessionPRReady promotes a lifecycle-aware session PR only after the
+// run is successful and the store has proven bundle_rev <= pushed_rev. The
+// store query excludes already-promoted runs, which is the local idempotency
+// fence and intentionally prevents Cloud from overriding a later human re-draft.
+func (r *Reconciler) reconcileSessionPRReady(ctx context.Context) {
+	if r.factory == nil || r.creds == nil {
+		return
+	}
+	runs, err := r.st.ListSessionRunsAwaitingPRReady(ctx)
+	if err != nil {
+		r.log.Error("reconcile: list session prs awaiting ready", "err", err)
+		return
+	}
+	for i := range runs {
+		run := runs[i]
+		svc, err := r.st.GetService(ctx, run.ServiceID)
+		if err != nil {
+			r.log.Warn("reconcile session ready: get service", "run", run.ID, "err", err)
+			continue
+		}
+		if run.PRReadyPolicy != domain.PRReadyPolicyLifecycleAware || !sessionPushEligible(*svc) {
+			continue
+		}
+		owner, repo, ok := provider.SplitRepo(svc.RepoOwnerName)
+		if !ok {
+			r.log.Warn("reconcile session ready: bad repo_owner_name", "run", run.ID, "repo", svc.RepoOwnerName)
+			continue
+		}
+		tok, err := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
+		if err != nil {
+			if errors.Is(err, credentials.ErrIntegrationCredential) {
+				r.noteIntegrationCredentialFailure(ctx, run.ID, "mark PR ready", err)
+			} else {
+				r.log.Warn("reconcile session ready: no credential", "run", run.ID, "err", err)
+			}
+			continue
+		}
+		prov, err := r.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
+		if err != nil {
+			r.log.Warn("reconcile session ready: build client", "run", run.ID, "err", err)
+			continue
+		}
+		pr, err := prov.MarkPRReady(ctx, owner, repo, run.PRNumber)
+		if err != nil {
+			if errors.Is(err, provider.ErrUnsupportedPRTransition) {
+				r.parkPRDelivery(ctx, run.ID, "provider_unsupported", err)
+				continue
+			}
+			r.log.Warn("reconcile session ready: provider", "run", run.ID, "pr", run.PRNumber, "err", err)
+			continue
+		}
+		if pr.State == "closed" || pr.State == "merged" || pr.Draft {
+			if pr.State == "closed" || pr.State == "merged" {
+				if committed, serr := r.st.MarkPRState(ctx, run.ID, pr.State); serr == nil {
+					r.emitStatus(ctx, committed)
+				} else {
+					r.log.Warn("reconcile session ready: persist provider terminal state", "run", run.ID, "err", serr)
+				}
+			}
+			r.log.Info("reconcile session ready: provider state blocks transition", "run", run.ID, "pr", run.PRNumber, "state", pr.State, "draft", pr.Draft)
+			continue
+		}
+		committed, err := r.st.MarkPRReady(ctx, run.ID, r.now())
+		if err != nil {
+			r.log.Error("reconcile session ready: persist", "run", run.ID, "err", err)
+			continue
+		}
+		r.log.Info("reconcile session ready: marked ready", "run", run.ID, "pr", run.PRNumber)
+		r.emitStatus(ctx, committed)
 	}
 }
 

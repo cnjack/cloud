@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
-import type { ProjectModel, Service } from '../api/types';
+import type { PRReadyPolicy, ProjectModel, Service } from '../api/types';
 import { serviceProviderLabel, serviceSource } from './presentation';
 import styles from './SettingsPanel.module.css';
 
@@ -11,6 +11,7 @@ export function SettingsPanel({
   modelState,
   updating,
   onDefaultModelChange,
+  onPRReadyPolicyChange,
   onRetryModels,
 }: {
   service: Service | undefined;
@@ -18,6 +19,7 @@ export function SettingsPanel({
   modelState: 'loading' | 'ready' | 'unverified';
   updating: boolean;
   onDefaultModelChange: (modelId: string) => void;
+  onPRReadyPolicyChange: (policy: PRReadyPolicy) => void;
   onRetryModels: () => void;
 }) {
   const { t } = useTranslation();
@@ -56,7 +58,7 @@ export function SettingsPanel({
           </div>
           <div>
             <dt>{t('settingsPanel.gitMode')}</dt>
-            <dd>{service.git_mode === 'draft_pr' ? t('settingsPanel.gitModeDraftPr') : t('settingsPanel.gitModeReadOnly')}</dd>
+            <dd>{service.git_mode === 'draft_pr' ? t('settingsPanel.gitModePullRequest') : t('settingsPanel.gitModeReadOnly')}</dd>
           </div>
         </dl>
 
@@ -93,6 +95,25 @@ export function SettingsPanel({
             </p>
           )}
         </section>
+
+        {service.git_mode === 'draft_pr' && (
+          <section className={styles.policy} aria-labelledby="service-pr-policy-heading">
+            <span className={styles.eyebrow}>{t('settingsPanel.deliveryPolicyEyebrow')}</span>
+            <h3 id="service-pr-policy-heading">{t('settingsPanel.deliveryPolicyTitle')}</h3>
+            <p>{t('settingsPanel.deliveryPolicyDescription')}</p>
+            <Select
+              aria-label={t('settingsPanel.deliveryPolicyAria')}
+              value={service.pr_ready_policy ?? 'always_draft'}
+              data-testid="service-pr-ready-policy-select"
+              disabled={updating}
+              onChange={(value) => onPRReadyPolicyChange(value as PRReadyPolicy)}
+              options={[
+                { value: 'lifecycle_aware', label: t('settingsPanel.lifecycleAware') },
+                { value: 'always_draft', label: t('settingsPanel.alwaysDraft') },
+              ]}
+            />
+          </section>
+        )}
       </div>
     </section>
   );

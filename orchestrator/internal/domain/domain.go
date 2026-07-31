@@ -126,7 +126,8 @@ const (
 	GitModeReadonly GitMode = "readonly"
 	// GitModeDraftPR: after a successful run with a non-empty diff, the runner
 	// pushes an agent/run-<id> branch and the orchestrator opens a DRAFT PR on the
-	// configured provider. Never auto-merges, never triggers CI (hard gate, D08).
+	// configured provider. It never auto-merges or explicitly dispatches CI;
+	// provider-side workflows may still react to the normal push/PR events.
 	GitModeDraftPR GitMode = "draft_pr"
 )
 
@@ -137,6 +138,26 @@ func ValidGitMode(m GitMode) bool {
 		return true
 	}
 	return false
+}
+
+// PRReadyPolicy controls whether a pull-request delivery remains a draft or
+// follows the run lifecycle. It is separate from GitMode so existing
+// draft_pr API clients remain wire-compatible while the product language can
+// describe the capability as "Pull request".
+type PRReadyPolicy string
+
+const (
+	// PRReadyPolicyAlwaysDraft preserves the historical behavior. Existing
+	// services are migrated to this value so an upgrade never starts notifying
+	// reviewers without an owner opting in.
+	PRReadyPolicyAlwaysDraft PRReadyPolicy = "always_draft"
+	// PRReadyPolicyLifecycleAware creates a ready PR for a successful one-shot
+	// run and promotes a session draft only after its final bundle is pushed.
+	PRReadyPolicyLifecycleAware PRReadyPolicy = "lifecycle_aware"
+)
+
+func ValidPRReadyPolicy(p PRReadyPolicy) bool {
+	return p == PRReadyPolicyAlwaysDraft || p == PRReadyPolicyLifecycleAware
 }
 
 // GitProvider identifies the git host a service's repo lives on / the draft-PR
@@ -314,6 +335,9 @@ type Service struct {
 
 	DefaultBranch string  `json:"default_branch"`
 	GitMode       GitMode `json:"git_mode"`
+	// PRReadyPolicy is meaningful only for GitModeDraftPR. Empty values from old
+	// callers are normalized to AlwaysDraft by the store/API compatibility layer.
+	PRReadyPolicy PRReadyPolicy `json:"pr_ready_policy"`
 	// DefaultModelID is the catalog model (D21) runs against this service use when
 	// the composer does not pick one. Nil => no default: the project's sole
 	// granted model is used, or the composer must choose when several are granted.
@@ -394,6 +418,19 @@ type Run struct {
 	CommitSHA string `json:"commit_sha,omitempty"`
 	PRURL     string `json:"pr_url,omitempty"`
 	PRNumber  int    `json:"pr_number,omitempty"`
+	// PRDraft is nil for historical/unknown provider state, true for Draft/WIP,
+	// and false once the provider confirms Ready. PRReadyAt is the idempotency
+	// marker that prevents a later tick from overriding a human re-draft.
+	PRDraft   *bool      `json:"pr_draft,omitempty"`
+	PRReadyAt *time.Time `json:"pr_ready_at,omitempty"`
+	PRState   string     `json:"pr_state,omitempty"` // open|closed|merged|conflict|provider_unsupported|unknown
+	// PRReadyPolicy is copied from the Service when the run is created so a
+	// settings change cannot alter an in-flight run's delivery semantics.
+	PRReadyPolicy PRReadyPolicy `json:"pr_ready_policy,omitempty"`
+	// PR create claim is an internal lease fencing concurrent reconcilers. It is
+	// never exposed to API clients.
+	PRCreateClaimToken string     `json:"-"`
+	PRCreateClaimedAt  *time.Time `json:"-"`
 
 	// ReviewOutput is the markdown a review run (Kind == review) produced (M5).
 	// Empty for agent runs. Reported by the runner via POST /internal/.../review.

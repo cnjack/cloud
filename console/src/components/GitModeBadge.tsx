@@ -2,7 +2,7 @@
  * GitModeBadge — F3b. A compact indicator of a project's git integration shown
  * next to the repo line on the project detail page.
  *   - readonly  → "Read-only diff" (neutral hairline chip)
- *   - draft_pr  → "Draft PR → owner/name" (violet accent; reads as the
+ *   - draft_pr  → "Pull request → owner/name" (violet accent; reads as the
  *                 reviewable-PR promise, mono provider_repo)
  * Absent git_mode is treated as readonly (older projects / diff-only default).
  */

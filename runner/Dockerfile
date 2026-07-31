@@ -51,12 +51,13 @@ COPY bin/orchclient /usr/local/bin/orchclient
 COPY bin/mockllm   /usr/local/bin/mockllm
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY delivery-contract.sh /usr/local/bin/delivery-contract.sh
 # turn-hook.sh (F7a / D22): the per-turn diff/commit/bundle logic, extracted
 # from entrypoint.sh so acpdrive can exec it directly as --turn-hook in
 # multi-turn session mode (RUN_SESSION=1). Lands alongside entrypoint.sh so
 # entrypoint.sh's SCRIPT_DIR-relative lookup finds it in the image too.
 COPY turn-hook.sh  /usr/local/bin/turn-hook.sh
-RUN chmod +x /usr/local/bin/jcode /usr/local/bin/acpdrive /usr/local/bin/orchclient /usr/local/bin/mockllm /usr/local/bin/entrypoint.sh /usr/local/bin/turn-hook.sh
+RUN chmod +x /usr/local/bin/jcode /usr/local/bin/acpdrive /usr/local/bin/orchclient /usr/local/bin/mockllm /usr/local/bin/entrypoint.sh /usr/local/bin/delivery-contract.sh /usr/local/bin/turn-hook.sh
 RUN groupadd --gid 10001 jcode \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/jcode --shell /bin/bash jcode \
     && mkdir -p /workspace /out /home/jcode/.jcode /run/jcloud \

@@ -40,6 +40,8 @@ type githubPR struct {
 	HTMLURL string `json:"html_url"`
 	State   string `json:"state"`
 	Merged  bool   `json:"merged"`
+	Draft   bool   `json:"draft"`
+	NodeID  string `json:"node_id"`
 	Head    struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
@@ -57,22 +59,69 @@ func (c *GitHubClient) FindOpenPRByHead(ctx context.Context, owner, repo, head s
 	if err := doJSON(ctx, c.http, http.MethodGet, url, c.auth(), c.accept(), nil, &prs); err != nil {
 		return nil, err
 	}
+	var found *PR
 	for _, p := range prs {
 		if p.Head.Ref == head {
-			return &PR{Number: p.Number, URL: p.HTMLURL}, nil
+			if found != nil {
+				return nil, ErrMultipleOpenPRs
+			}
+			found = &PR{Number: p.Number, URL: p.HTMLURL, State: prState(p.State, p.Merged), Draft: p.Draft}
 		}
 	}
-	return nil, nil
+	return found, nil
 }
 
 func (c *GitHubClient) CreateDraftPR(ctx context.Context, in CreateDraftPRInput) (*PR, error) {
+	return c.CreatePR(ctx, CreatePRInput{Owner: in.Owner, Repo: in.Repo, Head: in.Head, Base: in.Base, Title: in.Title, Body: in.Body, Draft: true})
+}
+
+func (c *GitHubClient) CreatePR(ctx context.Context, in CreatePRInput) (*PR, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/pulls", c.apiBase, in.Owner, in.Repo)
-	body := map[string]any{"title": in.Title, "head": in.Head, "base": in.Base, "body": in.Body, "draft": true}
+	body := map[string]any{"title": in.Title, "head": in.Head, "base": in.Base, "body": in.Body, "draft": in.Draft}
 	var pr githubPR
 	if err := doJSON(ctx, c.http, http.MethodPost, url, c.auth(), c.accept(), body, &pr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: pr.Number, URL: pr.HTMLURL}, nil
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged), Draft: in.Draft}, nil
+}
+
+// MarkPRReady uses GitHub's GraphQL mutation; the REST update endpoint does not
+// expose the Draft -> Ready transition. The preceding REST read supplies the
+// node id and makes already-ready/closed/merged calls idempotent.
+func (c *GitHubClient) MarkPRReady(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.apiBase, owner, repo, prNumber)
+	var current githubPR
+	if err := doJSON(ctx, c.http, http.MethodGet, url, c.auth(), c.accept(), nil, &current); err != nil {
+		return nil, err
+	}
+	out := &PR{Number: current.Number, URL: current.HTMLURL, State: prState(current.State, current.Merged), Draft: current.Draft}
+	if out.State != "open" || !out.Draft {
+		return out, nil
+	}
+	if current.NodeID == "" {
+		return nil, fmt.Errorf("github pull request has no node_id")
+	}
+	graphqlURL := c.apiBase + "/graphql"
+	if strings.HasSuffix(c.apiBase, "/api/v3") {
+		graphqlURL = strings.TrimSuffix(c.apiBase, "/api/v3") + "/api/graphql"
+	}
+	var response struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	body := map[string]any{
+		"query":     "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}",
+		"variables": map[string]any{"id": current.NodeID},
+	}
+	if err := doJSON(ctx, c.http, http.MethodPost, graphqlURL, c.auth(), c.accept(), body, &response); err != nil {
+		return nil, err
+	}
+	if len(response.Errors) > 0 {
+		return nil, fmt.Errorf("github mark ready: %s", response.Errors[0].Message)
+	}
+	out.Draft = false
+	return out, nil
 }
 
 func (c *GitHubClient) CreatePRReview(ctx context.Context, owner, repo string, prNumber int, body string) error {
@@ -105,7 +154,7 @@ func (c *GitHubClient) PRStatus(ctx context.Context, owner, repo string, prNumbe
 	if err := doJSON(ctx, c.http, http.MethodGet, url, c.auth(), c.accept(), nil, &pr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged)}, nil
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged), Draft: pr.Draft}, nil
 }
 
 func (c *GitHubClient) PRByNumber(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
@@ -114,7 +163,7 @@ func (c *GitHubClient) PRByNumber(ctx context.Context, owner, repo string, prNum
 	if err := doJSON(ctx, c.http, http.MethodGet, url, c.auth(), c.accept(), nil, &pr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged),
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged), Draft: pr.Draft,
 		HeadRef: pr.Head.Ref, BaseRef: pr.Base.Ref}, nil
 }
 

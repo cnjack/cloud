@@ -126,14 +126,17 @@ export function useRunStream(runId: string, enabled = true) {
   // pr_url/pr_number (not the full run); patch those onto the cached run too.
   const prURL = wrap.state.prURL;
   const prNumber = wrap.state.prNumber;
+  const prDraft = wrap.state.prDraft;
+  const prReadyAt = wrap.state.prReadyAt;
+  const prState = wrap.state.prState;
   useEffect(() => {
     if (!prURL) return;
     qc.setQueryData<Run>(qk.run(runId), (prev) =>
-      prev && prev.pr_url !== prURL
-        ? { ...prev, pr_url: prURL, pr_number: prNumber ?? prev.pr_number ?? null }
+      prev && (prev.pr_url !== prURL || prev.pr_draft !== prDraft || prev.pr_ready_at !== prReadyAt || prev.pr_state !== prState)
+        ? { ...prev, pr_url: prURL, pr_number: prNumber ?? prev.pr_number ?? null, pr_draft: prDraft ?? prev.pr_draft, pr_ready_at: prReadyAt ?? prev.pr_ready_at, pr_state: prState ?? prev.pr_state }
         : prev,
     );
-  }, [prURL, prNumber, runId, qc]);
+  }, [prURL, prNumber, prDraft, prReadyAt, prState, runId, qc]);
 
   // Close the stream once we've observed a terminal status. The server closes a
   // terminal SSE connection; if we leave the EventSource open the browser treats

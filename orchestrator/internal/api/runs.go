@@ -644,6 +644,15 @@ func (s *Server) emitStatus(ctx context.Context, run *domain.Run) {
 		payload["pr_url"] = run.PRURL
 		payload["pr_number"] = run.PRNumber
 	}
+	if run.PRDraft != nil {
+		payload["pr_draft"] = *run.PRDraft
+	}
+	if run.PRReadyAt != nil {
+		payload["pr_ready_at"] = run.PRReadyAt
+	}
+	if run.PRState != "" {
+		payload["pr_state"] = run.PRState
+	}
 	ev, err := s.st.AppendInternalEvent(ctx, run.ID, domain.EventRunStatus, payload)
 	if err != nil {
 		s.log.Error("emit status", "run", run.ID, "err", err)

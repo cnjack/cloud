@@ -473,11 +473,12 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// cancel whose best-effort delete failed). See cleanupTerminalJobs.
 	r.cleanupTerminalJobs(ctx)
 
-	// Provider-side completion passes. These consume terminal run artifacts and
-	// must be driven from the production Tick entrypoint (not only by direct
-	// unit tests): open draft PRs, fast-forward @mention task updates onto their
-	// existing PR, and publish native review comments.
+	// Provider-side completion passes. Session bundles are pushed before any
+	// Ready transition so Finish can never expose a stale revision. The session
+	// push pass also handles non-terminal awaiting_input runs.
+	r.reconcileSessionPushes(ctx)
 	r.reconcilePRs(ctx)
+	r.reconcileSessionPRReady(ctx)
 	r.reconcileUpdatePushes(ctx)
 	r.reconcileReviews(ctx)
 
@@ -685,16 +686,27 @@ func (r *Reconciler) reconcilePRs(ctx context.Context) {
 		if !shouldOpenPR(run, *svc, true) {
 			continue
 		}
-		r.openDraftPR(ctx, &run, svc)
+		r.openPullRequest(ctx, &run, svc)
 	}
 }
 
-// openDraftPR resolves the acting token, pushes the run's bundle branch, then
-// looks up (idempotency) or creates the draft PR on the triggering user's
+func (r *Reconciler) parkPRDelivery(ctx context.Context, runID, state string, cause error) {
+	committed, err := r.st.MarkPRState(ctx, runID, state)
+	if err != nil {
+		r.log.Error("reconcile pr: persist parked delivery", "run", runID, "state", state, "cause", cause, "err", err)
+		return
+	}
+	r.log.Warn("reconcile pr: delivery parked", "run", runID, "state", state, "cause", cause)
+	r.emitStatus(ctx, committed)
+}
+
+// openPullRequest resolves the acting token, pushes the run's bundle branch,
+// then looks up (idempotency) or creates the requested PR state on the triggering user's
 // behalf, persists pr_url/pr_number, and emits a run.status refresh. Any step
 // failing leaves the run succeeded with pr_url empty so the next tick retries.
-// NEVER merges, NEVER triggers CI (hard gate).
-func (r *Reconciler) openDraftPR(ctx context.Context, run *domain.Run, svc *domain.Service) {
+// It never merges or explicitly dispatches CI; normal repository push/PR
+// workflows may still run as a provider-side consequence.
+func (r *Reconciler) openPullRequest(ctx context.Context, run *domain.Run, svc *domain.Service) {
 	if r.integrationCredentialParked(run.ID) {
 		return // parked (P1): credential problem already surfaced once
 	}
@@ -728,47 +740,102 @@ func (r *Reconciler) openDraftPR(ctx context.Context, run *domain.Run, svc *doma
 	// after push/create but before persist, and a manually opened PR).
 	pr, err := prov.FindOpenPRByHead(ctx, owner, repo, branch)
 	if err != nil {
+		if errors.Is(err, provider.ErrMultipleOpenPRs) {
+			r.parkPRDelivery(ctx, run.ID, "conflict", err)
+			return
+		}
 		r.log.Warn("reconcile pr: find existing", "run", run.ID, "err", err)
 		return
 	}
+	// Always prove that the remote head contains this run's bundle before
+	// adopting or creating a PR. This matters when a user manually opened a PR,
+	// and closes the crash-recovery gap where merely finding the PR could
+	// otherwise expose stale code as delivered. PushBundleBranch is non-forcing
+	// and accepts an already-up-to-date branch.
+	sha, perr := r.pushRunBundle(ctx, run, svc, tok, branch)
+	if perr != nil {
+		r.log.Warn("reconcile pr: ensure branch", "run", run.ID, "src", tok.Source, "err", perr)
+		return // transient/non-fast-forward; retry without recording delivery
+	}
+	if sha != "" {
+		if _, err := r.st.SetRunGit(ctx, run.ID, branch, sha); err != nil {
+			r.log.Warn("reconcile pr: record commit sha", "run", run.ID, "err", err)
+		}
+		run.CommitSHA = sha
+	}
+
 	if pr == nil {
-		// Push the branch from the stored bundle, then open the PR.
-		sha, perr := r.pushRunBundle(ctx, run, svc, tok, branch)
-		if perr != nil {
-			r.log.Warn("reconcile pr: push branch", "run", run.ID, "src", tok.Source, "err", perr)
-			return // transient; retry next tick
+		// Lease only the query/create interval. The potentially long bundle push is
+		// already complete, keeping the lease far below its stale threshold.
+		claimToken := domain.NewID()
+		now := r.now()
+		claimed, cerr := r.st.ClaimPRCreation(ctx, run.ID, claimToken, now, now.Add(-2*time.Minute))
+		if cerr != nil {
+			r.log.Warn("reconcile pr: claim create", "run", run.ID, "err", cerr)
+			return
 		}
-		if sha != "" {
-			if _, err := r.st.SetRunGit(ctx, run.ID, branch, sha); err != nil {
-				r.log.Warn("reconcile pr: record commit sha", "run", run.ID, "err", err)
+		if !claimed {
+			return
+		}
+		defer func() {
+			if err := r.st.ReleasePRCreation(ctx, run.ID, claimToken); err != nil {
+				r.log.Warn("reconcile pr: release create claim", "run", run.ID, "err", err)
 			}
-			run.CommitSHA = sha
+		}()
+		pr, err = prov.FindOpenPRByHead(ctx, owner, repo, branch)
+		if err != nil {
+			if errors.Is(err, provider.ErrMultipleOpenPRs) {
+				r.parkPRDelivery(ctx, run.ID, "conflict", err)
+				return
+			}
+			r.log.Warn("reconcile pr: re-find after claim", "run", run.ID, "err", err)
+			return
 		}
-		pr, err = prov.CreateDraftPR(ctx, provider.CreateDraftPRInput{
+	}
+	if pr == nil {
+		// The branch is confirmed before the provider can expose the PR.
+		draft := run.PRReadyPolicy != domain.PRReadyPolicyLifecycleAware
+		pr, err = prov.CreatePR(ctx, provider.CreatePRInput{
 			Owner: owner, Repo: repo, Head: branch, Base: svc.DefaultBranch,
-			Title: prTitle(run.Prompt), Body: prBody(run, r.prTriggerAttribution(ctx, run, svc)),
+			Title: prTitle(run.Prompt), Body: prBody(run, r.prTriggerAttribution(ctx, run, svc)), Draft: draft,
 		})
 		if err != nil {
 			// The branch is pushed; a create failure may be a race with another
 			// tick that already opened it — re-find before giving up.
 			if found, ferr := prov.FindOpenPRByHead(ctx, owner, repo, branch); ferr == nil && found != nil {
 				pr = found
+			} else if errors.Is(ferr, provider.ErrMultipleOpenPRs) {
+				r.parkPRDelivery(ctx, run.ID, "conflict", ferr)
+				return
 			} else {
 				r.log.Warn("reconcile pr: create draft", "run", run.ID, "err", err)
 				return
 			}
 		} else {
-			r.log.Info("reconcile pr: opened draft PR", "run", run.ID, "pr", pr.Number, "url", pr.URL, "src", tok.Source)
+			r.log.Info("reconcile pr: opened PR", "run", run.ID, "pr", pr.Number, "url", pr.URL, "draft", pr.Draft, "src", tok.Source)
 		}
 	}
 
-	committed, err := r.st.MarkPRCreated(ctx, run.ID, pr.URL, pr.Number)
+	committed, err := r.st.MarkPRCreatedState(ctx, run.ID, pr.URL, pr.Number, pr.Draft)
 	if err != nil {
 		r.log.Error("reconcile pr: mark pr created", "run", run.ID, "err", err)
 		return
 	}
+	if !pr.Draft {
+		committed, err = r.st.MarkPRReady(ctx, run.ID, r.now())
+		if err != nil {
+			r.log.Error("reconcile pr: record ready PR", "run", run.ID, "err", err)
+			return
+		}
+	}
 	// Re-emit run.status so the SSE stream carries pr_url to a live console.
 	r.emitStatus(ctx, committed)
+}
+
+// openDraftPR is kept as an internal compatibility shim for focused legacy
+// tests/callers. The service policy still decides Draft versus Ready.
+func (r *Reconciler) openDraftPR(ctx context.Context, run *domain.Run, svc *domain.Service) {
+	r.openPullRequest(ctx, run, svc)
 }
 
 // pushRunBundle writes the run's stored bundle to a temp file and pushes its
@@ -1947,6 +2014,15 @@ func (r *Reconciler) emitStatus(ctx context.Context, run *domain.Run) {
 	if run.PRURL != "" {
 		payload["pr_url"] = run.PRURL
 		payload["pr_number"] = run.PRNumber
+	}
+	if run.PRDraft != nil {
+		payload["pr_draft"] = *run.PRDraft
+	}
+	if run.PRReadyAt != nil {
+		payload["pr_ready_at"] = run.PRReadyAt
+	}
+	if run.PRState != "" {
+		payload["pr_state"] = run.PRState
 	}
 	r.emit(ctx, run.ID, domain.EventRunStatus, payload)
 	if run.Status == domain.StatusFailed {

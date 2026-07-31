@@ -105,10 +105,27 @@ describe('reduceEvents', () => {
         status: 'succeeded',
         pr_url: 'https://gitea.local/o/r/pulls/42',
         pr_number: 42,
+        pr_draft: true,
       }),
     );
     expect(s.prURL).toBe('https://gitea.local/o/r/pulls/42');
     expect(s.prNumber).toBe(42);
+    expect(s.prDraft).toBe(true);
     expect(s.derivedStatus).toBe('succeeded');
+
+    s = reduceEvents(
+      s,
+      ev(6, 'run.status', {
+        status: 'succeeded',
+        pr_url: 'https://gitea.local/o/r/pulls/42',
+        pr_number: 42,
+        pr_draft: false,
+        pr_ready_at: '2026-07-31T00:00:00Z',
+        pr_state: 'open',
+      }),
+    );
+    expect(s.prDraft).toBe(false);
+    expect(s.prReadyAt).toBe('2026-07-31T00:00:00Z');
+    expect(s.prState).toBe('open');
   });
 });

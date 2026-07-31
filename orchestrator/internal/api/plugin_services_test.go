@@ -91,8 +91,19 @@ func TestPluginBoundServiceCreation(t *testing.T) {
 	decode(t, created, &service)
 	if service.Name != "platform" || service.Provider != domain.ProviderGitea ||
 		service.RepoOwnerName != "acme/platform" || service.DefaultBranch != "trunk" ||
-		service.GitMode != domain.GitModeDraftPR {
+		service.GitMode != domain.GitModeDraftPR || service.PRReadyPolicy != domain.PRReadyPolicyLifecycleAware {
 		t.Fatalf("created Service=%+v", service)
+	}
+	policy := do(t, http.MethodPatch, ts.URL+"/api/v1/services/"+service.ID, consoleToken, map[string]any{
+		"pr_ready_policy": "always_draft",
+	})
+	if policy.StatusCode != http.StatusOK {
+		t.Fatalf("patch PR policy status=%d want 200", policy.StatusCode)
+	}
+	var policyService domain.Service
+	decode(t, policy, &policyService)
+	if policyService.PRReadyPolicy != domain.PRReadyPolicyAlwaysDraft {
+		t.Fatalf("patched PR policy=%q", policyService.PRReadyPolicy)
 	}
 	binding, err := st.GetServiceRepositoryBinding(context.Background(), service.ID)
 	if err != nil {

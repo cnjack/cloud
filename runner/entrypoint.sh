@@ -113,6 +113,8 @@ set -euo pipefail
 # from a repo checkout (e.g. local dev/testing).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK_SCRIPT="$SCRIPT_DIR/turn-hook.sh"
+# shellcheck source=delivery-contract.sh
+. "$SCRIPT_DIR/delivery-contract.sh"
 
 log()  { printf '[entrypoint] %s\n' "$*" >&2; }
 
@@ -659,6 +661,15 @@ if [ "${JCLOUD_PREP_ONLY:-0}" = "1" ]; then
   exit 0
 fi
 
+# Agent runs receive the platform-managed delivery contract in their initial
+# prompt. TASK_PROMPT itself stays unchanged because turn-hook.sh uses its first
+# line for the canonical commit title. Review runs already have a stricter,
+# separately managed review protocol above.
+AGENT_TASK_PROMPT="$TASK_PROMPT"
+if [ "$RUN_KIND" = "agent" ]; then
+  AGENT_TASK_PROMPT="$(build_delivery_prompt "$TASK_PROMPT" "$GIT_MODE" "$SESSION_MODE" "$BASE_BRANCH")"
+fi
+
 # --- 4. Drive one headless jcode run (or a multi-turn session, F7a / D22) ----
 # Single-shot (SESSION_MODE=0): acpdrive drives exactly one session/prompt and
 # exits — unchanged from before F7a. Session mode (SESSION_MODE=1): acpdrive
@@ -681,7 +692,7 @@ if [ "$SESSION_MODE" = "1" ]; then
   if [ -n "$RESUME_SESSION_ID" ]; then
     JCODE_BIN=jcode acpdrive \
       --workspace "$WORKSPACE" \
-      --prompt "$TASK_PROMPT" \
+      --prompt "$AGENT_TASK_PROMPT" \
       --timeout "$RUN_TIMEOUT" \
       --session --turn-hook "$HOOK_SCRIPT" \
       --resume "$RESUME_SESSION_ID" \
@@ -689,7 +700,7 @@ if [ "$SESSION_MODE" = "1" ]; then
   else
     JCODE_BIN=jcode acpdrive \
       --workspace "$WORKSPACE" \
-      --prompt "$TASK_PROMPT" \
+      --prompt "$AGENT_TASK_PROMPT" \
       --timeout "$RUN_TIMEOUT" \
       --session --turn-hook "$HOOK_SCRIPT" \
       --verbose < /dev/null
@@ -697,7 +708,7 @@ if [ "$SESSION_MODE" = "1" ]; then
 else
   JCODE_BIN=jcode acpdrive \
     --workspace "$WORKSPACE" \
-    --prompt "$TASK_PROMPT" \
+    --prompt "$AGENT_TASK_PROMPT" \
     --timeout "$RUN_TIMEOUT" \
     --verbose < /dev/null
 fi

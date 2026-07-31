@@ -77,7 +77,7 @@
 
 ### 3.3 Stretch goal(MVP 外,但紧接下一步)
 
-> **ST-1 · Gitea draft-MR 出口。** run 成功后,除了 diff 产物,把 `agent/<run-id>` 分支推到 Gitea 并开一个 **draft MR**(不自动 merge、不触发 CI)。
+> **ST-1 · Gitea draft-MR 出口。** run 成功后,除了 diff 产物,把 `agent/<run-id>` 分支推到 Gitea 并开一个 **draft MR**(不自动 merge、不主动 dispatch CI；仓库 workflow 仍可能响应正常的 push/PR 事件)。
 > - **为何是 stretch 而非 In:** In-scope 的验收出口是「diff 产物可看」(IN-8),它不依赖任何 git provider,先把 headless + 事件流 + diff 这条主链路证死。draft-MR 只是把出口从「下载 diff」升级成「推 Gitea 开 MR」,是 P1→P2 的自然延伸。
 > - **若本期有余量做:** 只做 Gitea 一家;失败降级为「仍然产出 diff 产物」,不阻断 run 判成功。
 > - 对应 User Journey 里以 `(ST)` 标注的可选步骤。
@@ -93,7 +93,7 @@
 > - **orchestrator 开 draft PR**(它拥有 provider 适配器 + 可幂等重试):reconciler
 >   观察到 succeeded + draft_pr + 已报 branch + 无 PR 的 run → 先按 head 查已存在 PR
 >   再建,title `WIP: [jcode] <prompt 首行>`,base = 默认分支;`MarkPRCreated` 幂等写
->   `pr_url`/`pr_number`。**永不 merge、永不触发 CI。**
+>   `pr_url`/`pr_number`。**永不自动 merge，也不主动 dispatch CI；仓库 workflow 仍可能被正常事件触发。**
 > - **console**:Run 增 `pr_url`/`pr_number`,详情页状态头出现「Draft PR #N ↗」链接徽章;
 >   `failure_reason` 增 `push_failed`;mock demo 含一条带假 PR 链接的 run。
 > - **deploy**:新增 `deploy/base/gitea/`(gitea/gitea:1.22 Deployment+Service+PVC,

@@ -236,6 +236,18 @@ type Store interface {
 	// tick cannot double-open or clobber an already-recorded PR. It does not
 	// change status and is a no-op on a missing run. Returns the committed row.
 	MarkPRCreated(ctx context.Context, id, prURL string, prNumber int) (*domain.Run, error)
+	// MarkPRCreatedState is the lifecycle-aware form and persists the provider's
+	// Draft/Ready state with the same first-writer-wins semantics.
+	MarkPRCreatedState(ctx context.Context, id, prURL string, prNumber int, draft bool) (*domain.Run, error)
+	// MarkPRReady records a provider-confirmed Draft -> Ready transition once.
+	MarkPRReady(ctx context.Context, id string, at time.Time) (*domain.Run, error)
+	// MarkPRState records provider truth (notably a human close/merge) so session
+	// delivery stops instead of continuing to update a dead PR branch.
+	MarkPRState(ctx context.Context, id, state string) (*domain.Run, error)
+	// ClaimPRCreation leases the non-atomic provider-create step to one
+	// reconciler. A stale lease may be replaced after staleBefore.
+	ClaimPRCreation(ctx context.Context, id, token string, at, staleBefore time.Time) (bool, error)
+	ReleasePRCreation(ctx context.Context, id, token string) error
 
 	// --- Session runs (D22) --------------------------------------------------
 
@@ -323,6 +335,9 @@ type Store interface {
 	// non-final state, so the reconciler opens/updates the draft PR per turn.
 	// Ordered oldest-first.
 	ListSessionRunsAwaitingPush(ctx context.Context) ([]domain.Run, error)
+	// ListSessionRunsAwaitingPRReady returns successful session runs whose latest
+	// bundle is pushed and whose provider PR is still known to be Draft.
+	ListSessionRunsAwaitingPRReady(ctx context.Context) ([]domain.Run, error)
 	// ListAwaitingInputRuns returns every run currently in awaiting_input, so the
 	// reconciler's idle-timeout pass can finalize the stale ones. Oldest-first.
 	ListAwaitingInputRuns(ctx context.Context) ([]domain.Run, error)
@@ -399,6 +414,9 @@ type Store interface {
 	// as raw bytes (bytea) — the diff stays a text artifact, but a bundle is
 	// binary. The orchestrator fetches the bundle to push the branch (M3).
 	PutRunBundle(ctx context.Context, runID string, data []byte) error
+	// PutSessionRunBundle atomically stores the cumulative session bundle and
+	// increments bundle_rev while the run is non-terminal.
+	PutSessionRunBundle(ctx context.Context, runID string, data []byte) (*domain.Run, error)
 	GetRunBundle(ctx context.Context, runID string) ([]byte, error)
 
 	// --- Model catalog + account/project grants (D21) -------------------------

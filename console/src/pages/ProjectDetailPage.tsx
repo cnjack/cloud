@@ -383,6 +383,21 @@ export function ProjectDetailPage() {
     );
   };
 
+  const updatePRReadyPolicy = (policy: 'always_draft' | 'lifecycle_aware') => {
+    if (!activeService) return;
+    updateService.mutate(
+      { serviceId: activeService.id, input: { pr_ready_policy: policy } },
+      {
+        onSuccess: () => toast.push({ kind: 'success', message: t('projectDetail.deliveryPolicyUpdated') }),
+        onError: (error) =>
+          toast.push({
+            kind: 'error',
+            message: error instanceof ApiError ? error.message : t('projectDetail.deliveryPolicyFailed'),
+          }),
+      },
+    );
+  };
+
   const removeActiveService = () => {
     if (!activeService) return;
     if (!window.confirm(t('projectDetail.deleteServiceConfirm', { name: activeService.name }))) return;
@@ -723,6 +738,7 @@ export function ProjectDetailPage() {
             modelState={modelPolicyState}
             updating={updateService.isPending}
             onDefaultModelChange={updateDefaultModel}
+            onPRReadyPolicyChange={updatePRReadyPolicy}
             onRetryModels={() => void projectModels.refetch()}
           />
         )}

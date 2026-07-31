@@ -88,7 +88,8 @@
     pushed and no PR is opened. J1-J3 use this.
   - `draft_pr` — after a successful run with a **non-empty diff**, the
     orchestrator pushes an `agent/run-<id>` branch (proxy-push, M3) and opens a
-    **draft PR** on the provider. **Never auto-merges, never triggers CI**.
+    a provider **Pull Request**. It never auto-merges or explicitly dispatches
+    CI; repository workflows may still react to the normal push/PR events.
 - **`repo_kind`**: `provider`(`repo_owner_name` = `owner/name`,配合
   `provider`)| `raw`(`raw_repo_url`,只读,不能 `draft_pr`)。provider 基址
   由 orchestrator 配置推导(gitea 用 `GITEA_URL`)。提供者**token** 不是
@@ -1357,7 +1358,7 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
 ## 6a · Gitea draft-PR 闭环(ST-1)
 
 > 决策 D08(默认 draft PR / 可退只读)+ D09(Gitea 优先)。**硬把关:永不自动
-> merge、永不自动触发 CI。** 失败降级:任一步失败仍产出 diff 产物,不因缺 PR
+> merge、永不显式 dispatch CI（仓库自身 workflow 仍可响应 push/PR 事件）。** 失败降级:任一步失败仍产出 diff 产物,不因缺 PR
 > 出口而回退——除**推送失败**外(见下)。
 
 **职责划分**:runner 拥有 checkout,负责**推分支**;orchestrator 拥有 provider
@@ -1380,7 +1381,7 @@ orchestrator 的 reconciler 为每个 run 起一个 K8s Job(`backoffLimit: 0`,
    - 用 **`MarkPRCreated`**(first-writer-wins,仅在 `pr_url` 为空时写)持久化
      `pr_url`/`pr_number`,并补发一条带 `pr_url` 的 `run.status`,让在连 console
      无需重取即可显示「Draft PR #N ↗」。
-   - **绝不 merge、绝不触发 CI。**
+	   - **绝不自动 merge，也不主动 dispatch CI；仓库自身的 push/PR workflow 仍可能正常触发。**
    - provider 未配(orchestrator 无 `GITEA_URL`/`GITEA_TOKEN`)→ 该步为空操作,run
      停在 diff-only(不失败)。provider 瞬时报错 → 本 tick 不写 `pr_url`,run 留在
      待开 PR 扫描里,下个 tick 重试。

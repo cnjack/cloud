@@ -24,6 +24,27 @@ type GitLabClient struct {
 // GitLabDraftPrefix is GitLab's marker for a draft merge request (title prefix).
 const GitLabDraftPrefix = "Draft: "
 
+var gitLabDraftPrefixes = []string{"draft:", "[draft]", "(draft)", "wip:", "[wip]", "(wip)"}
+
+// stripGitLabDraftMarker removes only a leading marker that GitLab recognises
+// as Draft/WIP syntax. Comparison is case-insensitive; the remaining title is
+// preserved.
+func stripGitLabDraftMarker(title string) (string, bool) {
+	lower := strings.ToLower(strings.TrimSpace(title))
+	trimmed := strings.TrimSpace(title)
+	for _, prefix := range gitLabDraftPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(trimmed[len(prefix):]), true
+		}
+	}
+	return title, false
+}
+
+func gitLabMRDraft(m gitlabMR) bool {
+	_, marked := stripGitLabDraftMarker(m.Title)
+	return m.Draft || marked
+}
+
 // NewGitLabClient builds a client. apiBase defaults to https://gitlab.com/api/v4
 // when empty (tests pass an httptest base ending without /api/v4 — we append it
 // only for the default). token is an OAuth access token. ErrNotConfigured when
@@ -44,6 +65,8 @@ type gitlabMR struct {
 	IID          int    `json:"iid"`
 	WebURL       string `json:"web_url"`
 	State        string `json:"state"` // opened|closed|merged|locked
+	Title        string `json:"title"`
+	Draft        bool   `json:"draft"`
 	SourceBranch string `json:"source_branch"`
 	TargetBranch string `json:"target_branch"`
 }
@@ -73,17 +96,25 @@ func (c *GitLabClient) FindOpenPRByHead(ctx context.Context, owner, repo, head s
 	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &mrs); err != nil {
 		return nil, err
 	}
+	var found *PR
 	for _, m := range mrs {
 		if m.SourceBranch == head {
-			return &PR{Number: m.IID, URL: m.WebURL}, nil
+			if found != nil {
+				return nil, ErrMultipleOpenPRs
+			}
+			found = &PR{Number: m.IID, URL: m.WebURL, State: gitlabState(m.State), Draft: gitLabMRDraft(m)}
 		}
 	}
-	return nil, nil
+	return found, nil
 }
 
 func (c *GitLabClient) CreateDraftPR(ctx context.Context, in CreateDraftPRInput) (*PR, error) {
+	return c.CreatePR(ctx, CreatePRInput{Owner: in.Owner, Repo: in.Repo, Head: in.Head, Base: in.Base, Title: in.Title, Body: in.Body, Draft: true})
+}
+
+func (c *GitLabClient) CreatePR(ctx context.Context, in CreatePRInput) (*PR, error) {
 	title := in.Title
-	if !strings.HasPrefix(title, GitLabDraftPrefix) {
+	if in.Draft && !strings.HasPrefix(title, GitLabDraftPrefix) {
 		title = GitLabDraftPrefix + title
 	}
 	u := fmt.Sprintf("%s/projects/%s/merge_requests", c.apiBase, projectPath(in.Owner, in.Repo))
@@ -95,7 +126,37 @@ func (c *GitLabClient) CreateDraftPR(ctx context.Context, in CreateDraftPRInput)
 	if err := doJSON(ctx, c.http, http.MethodPost, u, c.auth(), "application/json", body, &mr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: mr.IID, URL: mr.WebURL}, nil
+	return &PR{Number: mr.IID, URL: mr.WebURL, State: gitlabState(mr.State), Draft: in.Draft}, nil
+}
+
+func (c *GitLabClient) MarkPRReady(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
+	u := fmt.Sprintf("%s/projects/%s/merge_requests/%d", c.apiBase, projectPath(owner, repo), prNumber)
+	var current gitlabMR
+	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &current); err != nil {
+		return nil, err
+	}
+	draft := gitLabMRDraft(current)
+	out := &PR{Number: current.IID, URL: current.WebURL, State: gitlabState(current.State), Draft: draft}
+	if out.State != "open" || !draft {
+		return out, nil
+	}
+	readyTitle, marked := stripGitLabDraftMarker(current.Title)
+	if !marked {
+		return nil, fmt.Errorf("%w: GitLab reported draft=true without a recognised title marker", ErrUnsupportedPRTransition)
+	}
+	var updated gitlabMR
+	if err := doJSON(ctx, c.http, http.MethodPut, u, c.auth(), "application/json",
+		map[string]any{"title": readyTitle}, &updated); err != nil {
+		return nil, err
+	}
+	out.Number = updated.IID
+	out.URL = updated.WebURL
+	out.State = gitlabState(updated.State)
+	out.Draft = gitLabMRDraft(updated)
+	if out.Draft {
+		return nil, fmt.Errorf("%w: GitLab still reports merge request !%d as draft after update", ErrUnsupportedPRTransition, prNumber)
+	}
+	return out, nil
 }
 
 func (c *GitLabClient) CreatePRReview(ctx context.Context, owner, repo string, prNumber int, body string) error {
@@ -109,7 +170,7 @@ func (c *GitLabClient) PRStatus(ctx context.Context, owner, repo string, prNumbe
 	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &mr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: mr.IID, URL: mr.WebURL, State: gitlabState(mr.State)}, nil
+	return &PR{Number: mr.IID, URL: mr.WebURL, State: gitlabState(mr.State), Draft: gitLabMRDraft(mr)}, nil
 }
 
 func (c *GitLabClient) PRByNumber(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
@@ -118,7 +179,7 @@ func (c *GitLabClient) PRByNumber(ctx context.Context, owner, repo string, prNum
 	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &mr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: mr.IID, URL: mr.WebURL, State: gitlabState(mr.State),
+	return &PR{Number: mr.IID, URL: mr.WebURL, State: gitlabState(mr.State), Draft: gitLabMRDraft(mr),
 		HeadRef: mr.SourceBranch, BaseRef: mr.TargetBranch}, nil
 }
 

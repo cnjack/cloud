@@ -18,6 +18,9 @@ type FakeProvider struct {
 	byNumber map[string]PR
 	// Created records CreateDraftPR calls in order.
 	Created []CreateDraftPRInput
+	// CreatedPRs records lifecycle-aware creates, including the requested state.
+	CreatedPRs []CreatePRInput
+	Readied    []int
 	// Reviews records CreatePRReview call bodies keyed by owner/repo|prNumber.
 	Reviews []FakeReview
 	// Comments records CreateIssueComment call bodies in order (M7 receipts).
@@ -29,6 +32,7 @@ type FakeProvider struct {
 	// CreateErr / FindErr / ReviewErr / CommentErr let tests inject failures.
 	CreateErr      error
 	FindErr        error
+	ReadyErr       error
 	ReviewErr      error
 	BatchReviewErr error
 	CommentErr     error
@@ -93,7 +97,14 @@ func (f *FakeProvider) FindOpenPRByHead(_ context.Context, owner, repo, head str
 	return nil, nil
 }
 
-func (f *FakeProvider) CreateDraftPR(_ context.Context, in CreateDraftPRInput) (*PR, error) {
+func (f *FakeProvider) CreateDraftPR(ctx context.Context, in CreateDraftPRInput) (*PR, error) {
+	return f.CreatePR(ctx, CreatePRInput{
+		Owner: in.Owner, Repo: in.Repo, Head: in.Head, Base: in.Base,
+		Title: in.Title, Body: in.Body, Draft: true,
+	})
+}
+
+func (f *FakeProvider) CreatePR(_ context.Context, in CreatePRInput) (*PR, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.CreateErr != nil {
@@ -103,9 +114,33 @@ func (f *FakeProvider) CreateDraftPR(_ context.Context, in CreateDraftPRInput) (
 	pr := PR{
 		Number: f.nextNum,
 		URL:    fmt.Sprintf("http://gitea.test/%s/%s/pulls/%d", in.Owner, in.Repo, f.nextNum),
+		State:  "open",
+		Draft:  in.Draft,
 	}
 	f.prs[fakeKey(in.Owner, in.Repo, in.Head)] = pr
-	f.Created = append(f.Created, in)
+	f.byNumber[fakeNumKey(in.Owner, in.Repo, pr.Number)] = pr
+	f.CreatedPRs = append(f.CreatedPRs, in)
+	f.Created = append(f.Created, CreateDraftPRInput{Owner: in.Owner, Repo: in.Repo, Head: in.Head, Base: in.Base, Title: in.Title, Body: in.Body})
+	return &pr, nil
+}
+
+func (f *FakeProvider) MarkPRReady(_ context.Context, owner, repo string, prNumber int) (*PR, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ReadyErr != nil {
+		return nil, f.ReadyErr
+	}
+	key := fakeNumKey(owner, repo, prNumber)
+	pr, ok := f.byNumber[key]
+	if !ok {
+		pr = PR{Number: prNumber, URL: fmt.Sprintf("http://gitea.test/%s/%s/pulls/%d", owner, repo, prNumber), State: "open", Draft: true}
+	}
+	if pr.State == "closed" || pr.State == "merged" || !pr.Draft {
+		return &pr, nil
+	}
+	pr.Draft = false
+	f.byNumber[key] = pr
+	f.Readied = append(f.Readied, prNumber)
 	return &pr, nil
 }
 
@@ -182,7 +217,13 @@ func (f *FakeProvider) CommentCount() int {
 func (f *FakeProvider) CreatedCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.Created)
+	return len(f.CreatedPRs)
+}
+
+func (f *FakeProvider) ReadyCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.Readied)
 }
 
 // ReviewCount returns how many review comments were posted (test helper).
