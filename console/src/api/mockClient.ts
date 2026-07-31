@@ -80,6 +80,8 @@ import type {
   UpdateProviderModelInput,
   UpdateServiceInput,
   UserSearchResult,
+  UsageSummary,
+  ModelPricingRevision,
 } from './types';
 import { providerForRepoUrl } from '../lib/repo';
 import { isReservedEnvKey, isValidEnvKey } from '../lib/env';
@@ -93,6 +95,17 @@ function genId(prefix: string): string {
 
 function nowISO(offsetMs = 0): string {
   return new Date(Date.now() + offsetMs).toISOString();
+}
+
+function unavailableUsage(): UsageSummary {
+  return {
+    availability: 'unavailable',
+    reason: 'no_requests',
+    requests: 0,
+    capture: { reported: 0, partial: 0, unavailable: 0, parse_error: 0 },
+    tokens: { input: null, output: null, cache_read: null, cache_write: null },
+    costs: { reported: [], estimated: [], uncosted: [] },
+  };
 }
 
 // Demo runner-image prewarm state: '' until the Cluster page's "sync runner
@@ -2225,13 +2238,37 @@ export function createMockClient(): ApiClient {
           available: false,
         } : null,
         writeback_state: outputMode === 'create_card' ? 'pending' : '',
-        usage: { state: 'unavailable' },
+        usage_summary: unavailableUsage(),
         created_at: now,
         updated_at: now,
       };
       automationExecutions.set(automationId, [item, ...(automationExecutions.get(automationId) ?? [])]);
       automationIdempotency.set(`${automationId}|${idempotencyKey}`, id);
       return delay(structuredClone(item));
+    },
+    async getAutomationUsage(): Promise<UsageSummary> {
+      return delay(unavailableUsage());
+    },
+    async getProjectUsage() {
+      return delay({ summary: unavailableUsage(), groups: [] });
+    },
+    async getAccountUsage() {
+      return delay({ summary: unavailableUsage(), groups: [] });
+    },
+    async getServiceUsage(): Promise<UsageSummary> {
+      return delay(unavailableUsage());
+    },
+    async listModelPricingRevisions(): Promise<ModelPricingRevision[]> {
+      return delay([]);
+    },
+    async createModelPricingRevision(modelId, input): Promise<ModelPricingRevision> {
+      return delay({
+        id: genId('price'),
+        model_id: modelId,
+        model_name: modelId,
+        ...input,
+        created_at: nowISO(),
+      });
     },
     async getServiceKanban(serviceId: string): Promise<ProjectAutomationSpec> {
       const spec = [...projectAutomations.values()].find((item) =>
@@ -2265,6 +2302,7 @@ export function createMockClient(): ApiClient {
       return delay({
         claim: null,
         items: [],
+        usage_summary: unavailableUsage(),
         next_cursor: null,
       });
     },

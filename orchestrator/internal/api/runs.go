@@ -332,11 +332,19 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), run.ProjectID, domain.RoleViewer) {
 		return
 	}
+	usage, err := s.st.GetUsageSummary(r.Context(), domain.UsageSummaryQuery{
+		SubjectKind: domain.UsageSubjectRun, SubjectID: run.ID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load run usage")
+		return
+	}
 	writeJSON(w, http.StatusOK, struct {
 		*domain.Run
 		Provenance provenance.RunProvenance `json:"provenance"`
+		Usage      domain.UsageSummary      `json:"usage_summary"`
 	}{
-		Run: run, Provenance: provenance.Resolve(r.Context(), s.st, run),
+		Run: run, Provenance: provenance.Resolve(r.Context(), s.st, run), Usage: usage,
 	})
 }
 

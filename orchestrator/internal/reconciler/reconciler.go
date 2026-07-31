@@ -116,6 +116,10 @@ type Reconciler struct {
 	secretVersionCleanupMu       sync.Mutex
 	lastSecretVersionCleanup     time.Time
 	secretVersionCleanupInterval time.Duration
+	usageCleanupMu               sync.Mutex
+	lastUsageCleanup             time.Time
+	usageCleanupInterval         time.Duration
+	usageCleanupRunning          bool
 }
 
 // Archiver signs short-lived, single-object presigned URLs for the workspace
@@ -175,6 +179,7 @@ func New(st store.Store, launcher k8s.JobLauncher, cfg *config.Config, log *slog
 		receiptCleanupInterval:       time.Hour,
 		attachmentCleanupInterval:    time.Minute,
 		secretVersionCleanupInterval: time.Hour,
+		usageCleanupInterval:         time.Hour,
 	}
 }
 
@@ -294,6 +299,7 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	r.reconcileWebhookReceiptRetention(ctx)
 	r.reconcileExpiredAttachmentStages(ctx)
 	r.reconcilePluginSecretVersionRetention(ctx)
+	r.reconcileUsageRetention(ctx)
 	runs, err := r.st.ListRunsByStatus(ctx,
 		domain.StatusQueued, domain.StatusScheduling, domain.StatusRunning,
 		// Session (D22): awaiting_input runs still own a pod, so the loop must
@@ -489,6 +495,51 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// object storage and delete the PVC. No-op unless object storage is configured
 	// AND persistent workspace is on AND ARCHIVE_IDLE_DAYS>0.
 	r.reconcileArchive(ctx)
+}
+
+// reconcileUsageRetention keeps fine-grained observations for the configured
+// short audit window and UTC-hour aggregates for the longer reporting window.
+// Cleanup is non-blocking for run scheduling and retries on the next cadence.
+func (r *Reconciler) reconcileUsageRetention(ctx context.Context) {
+	now := r.now().UTC()
+	r.usageCleanupMu.Lock()
+	if r.usageCleanupRunning || !r.lastUsageCleanup.IsZero() && r.usageCleanupInterval > 0 &&
+		now.Sub(r.lastUsageCleanup) < r.usageCleanupInterval {
+		r.usageCleanupMu.Unlock()
+		return
+	}
+	r.usageCleanupRunning = true
+	r.usageCleanupMu.Unlock()
+	defer func() {
+		r.usageCleanupMu.Lock()
+		r.usageCleanupRunning = false
+		r.usageCleanupMu.Unlock()
+	}()
+
+	rawRetention := r.cfg.UsageRawRetention
+	if rawRetention <= 0 {
+		rawRetention = 90 * 24 * time.Hour
+	}
+	rollupRetention := r.cfg.UsageRollupRetention
+	if rollupRetention < rawRetention {
+		rollupRetention = 365 * 24 * time.Hour
+	}
+	rawDeleted, rollupsDeleted, err := r.st.CleanupUsage(
+		ctx,
+		now.Add(-rawRetention).Truncate(time.Hour),
+		now.Add(-rollupRetention).Truncate(time.Hour),
+	)
+	if err != nil {
+		r.log.Warn("reconcile: cleanup usage ledger", "err", err)
+		return
+	}
+	r.usageCleanupMu.Lock()
+	r.lastUsageCleanup = now
+	r.usageCleanupMu.Unlock()
+	if rawDeleted > 0 || rollupsDeleted > 0 {
+		r.log.Info("reconcile: cleaned usage ledger",
+			"raw_deleted", rawDeleted, "rollups_deleted", rollupsDeleted)
+	}
 }
 
 const webhookReceiptCleanupMaxBatches = 10

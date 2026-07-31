@@ -18,7 +18,7 @@ func TestDeviceCloudModelsCatalogAndProxy(t *testing.T) {
 		upstreamAuthorization = r.Header.Get("Authorization")
 		upstreamPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"ok":true}`)
+		_, _ = io.WriteString(w, `{"ok":true,"usage":{"input_tokens":64,"output_tokens":9}}`)
 	}))
 	t.Cleanup(upstream.Close)
 
@@ -112,6 +112,46 @@ func TestDeviceCloudModelsCatalogAndProxy(t *testing.T) {
 	}
 	if upstreamPath != "/v1/chat/completions" {
 		t.Fatalf("upstream path=%q want /v1/chat/completions", upstreamPath)
+	}
+
+	// Device Cloud Model usage belongs to the Account/device/model/grant view.
+	// A project grant is authorization metadata, not a reason to mix the request
+	// into Run-bound Project usage.
+	sessionToken := mkSession(t, fx.st, dt.UserID)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		usageResp := do(t, http.MethodGet,
+			fx.ts.URL+"/api/v1/account/usage?device_id="+deviceID+"&group_by=model",
+			sessionToken, nil)
+		if usageResp.StatusCode != http.StatusOK {
+			t.Fatalf("account usage status=%d want 200", usageResp.StatusCode)
+		}
+		var usage struct {
+			Summary domain.UsageSummary `json:"summary"`
+			Groups  []domain.UsageGroup `json:"groups"`
+		}
+		decode(t, usageResp, &usage)
+		if usage.Summary.Requests == 1 {
+			if usage.Summary.Tokens.Input == nil || *usage.Summary.Tokens.Input != 64 ||
+				len(usage.Groups) != 1 || usage.Groups[0].ID != model.ID {
+				t.Fatalf("device account usage=%+v", usage)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("device usage was not captured: %+v", usage)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	projectUsage := do(t, http.MethodGet,
+		fx.ts.URL+"/api/v1/projects/"+project.ID+"/usage?group_by=model",
+		sessionToken, nil)
+	var projectBody struct {
+		Summary domain.UsageSummary `json:"summary"`
+	}
+	decode(t, projectUsage, &projectBody)
+	if projectBody.Summary.Availability != "unavailable" || projectBody.Summary.Requests != 0 {
+		t.Fatalf("device usage leaked into Project totals: %+v", projectBody.Summary)
 	}
 
 	// A valid device cannot proxy an unknown model and gets a typed 404.

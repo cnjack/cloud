@@ -38,6 +38,7 @@ import { Button } from '../components/Button';
 import { Modal } from '../components/Modal';
 import { SelectField } from '../components/Field';
 import { LoadingBlock } from '../components/States';
+import { UsageSummary } from '../components/UsageSummary';
 import { makeBoardProxyClient } from '../kanban/boardProxyClient';
 import { resolveBoardPathById } from '../kanban/resolveBoardPathById';
 import type { BoardEmbedLink, KanbanCardExecution, PluginBoardResource } from '../api/types';
@@ -251,6 +252,9 @@ function CardExecutionsSupplement({
           {t('kanban.cardUnavailable')}
         </div>
       )}
+      <div className={styles.cardUsage} data-testid="kanban-card-usage">
+        <UsageSummary value={pages[0]?.usage_summary} compact />
+      </div>
       <article
         className={styles.executionCurrent}
         data-state={current.status === 'terminal' ? current.outcome : current.status}
@@ -272,6 +276,11 @@ function CardExecutionsSupplement({
           {current.receipt.writeback === 'pending' && <span>{t('kanban.writebackPending')}</span>}
           {current.receipt.writeback === 'unavailable' && <span>{t('kanban.writebackUnavailable')}</span>}
         </div>
+        {current.usage_summary && (
+          <div className={styles.executionUsage}>
+            <UsageSummary value={current.usage_summary} compact />
+          </div>
+        )}
       </article>
       {history.length > 0 && (
         <details className={styles.executionHistory}>
@@ -281,7 +290,8 @@ function CardExecutionsSupplement({
               <li key={execution.id}>
                 <span>{executionStateLabel(execution, t)}</span>
                 <time dateTime={execution.updated_at}>{new Date(execution.updated_at).toLocaleString()}</time>
-                  {execution.run && <Link to={execution.run.href}>{t('kanban.openRun')}</Link>}
+                {execution.run && <Link to={execution.run.href}>{t('kanban.openRun')}</Link>}
+                {execution.usage_summary && <UsageSummary value={execution.usage_summary} compact />}
               </li>
             ))}
           </ol>

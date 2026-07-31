@@ -259,6 +259,68 @@ export interface ProjectAutomationAggregate {
   updated_at: string;
 }
 export interface ScmAutomationAction { event_family: string; action: string; }
+export interface UsageMoneyTotal {
+  currency: string;
+  micros: number;
+  pricing_revision_ids?: string[];
+}
+export interface UsageSummary {
+  availability: 'available' | 'unavailable';
+  reason?: 'no_requests' | 'usage_not_reported' | string;
+  requests: number;
+  capture: {
+    reported: number;
+    partial: number;
+    unavailable: number;
+    parse_error: number;
+  };
+  tokens: {
+    input: number | null;
+    output: number | null;
+    cache_read: number | null;
+    cache_write: number | null;
+  };
+  costs: {
+    reported: UsageMoneyTotal[];
+    estimated: UsageMoneyTotal[];
+    uncosted: { category: string; tokens: number }[];
+  };
+  from?: string;
+  to?: string;
+}
+export interface UsageGroup {
+  kind: 'service' | 'automation' | 'model' | 'device' | 'grant';
+  id: string;
+  name: string;
+  summary: UsageSummary;
+}
+export interface UsageSummaryEnvelope {
+  summary: UsageSummary;
+  groups: UsageGroup[];
+}
+export interface ModelPricingRevision {
+  id: string;
+  model_id: string;
+  provider_id?: string;
+  provider_name?: string;
+  model_name: string;
+  currency: string;
+  input_micros_per_million: number | null;
+  output_micros_per_million: number | null;
+  cache_read_micros_per_million: number | null;
+  cache_write_micros_per_million: number | null;
+  effective_at: string;
+  created_by?: string;
+  created_at: string;
+}
+export interface CreateModelPricingRevisionInput {
+  currency: string;
+  input_micros_per_million: number | null;
+  output_micros_per_million: number | null;
+  cache_read_micros_per_million: number | null;
+  cache_write_micros_per_million: number | null;
+  effective_at: string;
+}
 export interface ProjectAutomationSpec {
   automation: ProjectAutomationAggregate;
   scm?: { automation_id?: string; branch?: string; path_pattern?: string; conclusion?: string; include_drafts?: boolean };
@@ -301,7 +363,7 @@ export interface AutomationExecution {
   } | null;
   external_url?: string;
   writeback_state: string;
-  usage: { state: 'unavailable' };
+  usage_summary: UsageSummary;
   created_at: string;
   updated_at: string;
   terminal_at?: string;
@@ -343,10 +405,12 @@ export interface KanbanCardExecution {
   created_at: string;
   updated_at: string;
   terminal_at?: string;
+  usage_summary?: UsageSummary;
 }
 export interface KanbanCardExecutionsPage {
   claim: { document_path: string; external_ref_available: boolean } | null;
   items: KanbanCardExecution[];
+  usage_summary: UsageSummary;
   next_cursor: string | null;
 }
 export interface PutServiceKanbanInput {
@@ -588,6 +652,7 @@ export interface Run {
   origin_comment_url?: string | null;
   origin_automation_id?: string | null;
   origin_event_key?: string | null;
+  usage_summary?: UsageSummary;
   /**
    * The catalog model (D21) this run was dispatched with, chosen by the
    * resolution chain at create time. Absent/null when the run resolved to the

@@ -3,6 +3,7 @@ package provenance
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/store"
@@ -88,6 +89,64 @@ func TestStampManualAndKanbanKeepAuthorizationSeparate(t *testing.T) {
 		kanban.ProvenanceSnapshot.WritebackActor == nil ||
 		kanban.ProvenanceSnapshot.WritebackActor.Provider != "jtype" {
 		t.Fatalf("kanban snapshot=%+v", kanban.ProvenanceSnapshot)
+	}
+}
+
+func TestStampCreateCardRunUsesOriginatingCronOwner(t *testing.T) {
+	ctx := context.Background()
+	st, _, kanbanAutomation := provenanceStore(t)
+	cronOwner := &domain.User{ID: "cron-owner", DisplayName: "Cron Owner"}
+	if _, err := st.CreateUserWithIdentity(ctx, cronOwner, &domain.UserIdentity{
+		ID: "cron-owner-identity", UserID: cronOwner.ID,
+		Provider: domain.ProviderGitea, ProviderUID: cronOwner.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cronAutomation := &domain.PluginAutomation{
+		ID: "cron-automation", ServiceID: "service", Name: "Daily triage",
+		TriggerKind: "cron", PromptTemplate: "triage", Enabled: true,
+		CreatedBy: cronOwner.ID,
+	}
+	if err := st.CreatePluginAutomation(ctx, cronAutomation, nil, nil, nil, &domain.CronTrigger{
+		AutomationID: cronAutomation.ID, CronExpr: "0 9 * * *",
+		OutputMode: domain.AutomationOutputCreateCard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	cardPath := "jcode-automation/cron-automation/execution.md"
+	execution := &domain.AutomationExecution{
+		ID: "cron-execution", AutomationID: cronAutomation.ID, AutomationName: cronAutomation.Name,
+		ProjectID: "project", ServiceID: "service", TriggerKind: "cron",
+		EventKey: "cron:daily", State: domain.AutomationExecutionAccepted,
+		OutputMode:       domain.AutomationOutputCreateCard,
+		CardAutomationID: kanbanAutomation.ID, CardWorkspaceID: "workspace",
+		CardDocumentID: "card", CardPath: cardPath, CardState: "bound",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if _, created, err := st.CreateAutomationExecution(ctx, execution, nil); err != nil || !created {
+		t.Fatalf("create execution created=%v err=%v", created, err)
+	}
+	observed, err := st.ObservePluginKanbanCard(ctx, store.PluginKanbanObservation{
+		AutomationID: kanbanAutomation.ID, ServiceID: "service",
+		InstallationID: "jtype", WorkspaceID: "workspace",
+		DocumentID: "card", DocumentPath: cardPath,
+		TriggerColumn: "agent", ObservedColumn: "agent",
+		EventKey: "card:entered", ObservedAt: now,
+	})
+	if err != nil || observed.Occurrence == nil {
+		t.Fatalf("observe generated Card=%+v err=%v", observed, err)
+	}
+	run := &domain.Run{
+		ProjectID: "project", ServiceID: "service",
+		Origin: domain.RunOriginKanban, OriginAutomationID: kanbanAutomation.ID,
+		OriginEventKey: observed.Occurrence.ID,
+	}
+	Stamp(ctx, st, run, nil)
+	if run.ProvenanceSnapshot.AccountableActor == nil ||
+		run.ProvenanceSnapshot.AccountableActor.ID != cronOwner.ID ||
+		run.ProvenanceSnapshot.AccountableActor.Label != cronOwner.DisplayName {
+		t.Fatalf("create-card provenance=%+v", run.ProvenanceSnapshot)
 	}
 }
 

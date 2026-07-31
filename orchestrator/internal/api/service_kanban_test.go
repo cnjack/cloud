@@ -168,6 +168,19 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 	if _, err := st.MarkSucceeded(ctx, firstRun.ID, "Succeeded", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
+	cardInput, cardOutput := int64(120), int64(30)
+	if _, err := st.RecordUsageEvent(ctx, &domain.UsageEvent{
+		ID: domain.NewID(), RequestID: domain.NewID(),
+		SubjectKind: domain.UsageSubjectRun, SubjectID: firstRun.ID, RunID: firstRun.ID,
+		ProjectID: project.ID, ProjectName: project.Name,
+		ServiceID: service.ID, ServiceName: service.Name,
+		CardWorkspace: "workspace", CardDocumentID: "card", CardPath: "cards/payment.md",
+		InputTokens: &cardInput, OutputTokens: &cardOutput,
+		CaptureStatus: domain.UsageCaptureReported,
+		OccurredAt:    time.Now().UTC(), CreatedAt: time.Now().UTC(), Version: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if wrote, err := st.MarkPluginKanbanWriteback(
 		ctx, automation.ID, "card", observed.Occurrence.ID,
 		domain.StatusSucceeded, nil, time.Now().UTC(),
@@ -245,8 +258,9 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 			DocumentPath         string `json:"document_path"`
 			ExternalRefAvailable bool   `json:"external_ref_available"`
 		} `json:"claim"`
-		Items      []map[string]any `json:"items"`
-		NextCursor *string          `json:"next_cursor"`
+		Items      []map[string]any    `json:"items"`
+		NextCursor *string             `json:"next_cursor"`
+		Usage      domain.UsageSummary `json:"usage_summary"`
 	}
 	decode(t, resp, &executions)
 	if executions.Claim.DocumentPath != "cards/payment.md" || !executions.Claim.ExternalRefAvailable {
@@ -257,6 +271,11 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 		executions.Items[0]["reason_code"] != "model_not_configured" ||
 		executions.Items[0]["requested_actor"].(map[string]any)["label"] != "jtype editor" {
 		t.Fatalf("executions=%+v", executions.Items)
+	}
+	if executions.Usage.Requests != 1 || executions.Usage.Tokens.Input == nil ||
+		*executions.Usage.Tokens.Input != 120 || executions.Usage.Tokens.Output == nil ||
+		*executions.Usage.Tokens.Output != 30 {
+		t.Fatalf("Card usage=%+v", executions.Usage)
 	}
 	resp = do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+
 		"/kanban/card-executions?workspace_id=workspace&document_path=cards%2Fpayment.md&limit=1&before="+

@@ -151,6 +151,17 @@ type Store interface {
 	// means all rows and is reserved for destructive cleanup paths.
 	ListRunsByService(ctx context.Context, serviceID string, limit int) ([]domain.Run, error)
 
+	// Usage ledger. RecordUsageEvent is append-only and request-idempotent; the
+	// bool is true only when this call inserted the event and its UTC rollup.
+	RecordUsageEvent(ctx context.Context, event *domain.UsageEvent) (bool, error)
+	GetUsageSummary(ctx context.Context, query domain.UsageSummaryQuery) (domain.UsageSummary, error)
+	CreateModelPricingRevision(ctx context.Context, revision *domain.ModelPricingRevision) error
+	ListModelPricingRevisions(ctx context.Context, modelID string) ([]domain.ModelPricingRevision, error)
+	ResolveModelPricingRevision(ctx context.Context, modelID string, at time.Time) (*domain.ModelPricingRevision, error)
+	GetRunUsageDimensions(ctx context.Context, runID string) (domain.RunUsageDimensions, error)
+	ListUsageGroups(ctx context.Context, query domain.UsageSummaryQuery, groupBy string) ([]domain.UsageGroup, error)
+	CleanupUsage(ctx context.Context, rawBefore, rollupBefore time.Time) (rawDeleted, rollupsDeleted int64, err error)
+
 	// Run mutators. Each of these re-reads the committed row inside a
 	// transaction (SELECT ... FOR UPDATE), validates the state-machine
 	// transition against the CURRENT stored status (not a caller snapshot), and
@@ -549,6 +560,7 @@ type Store interface {
 	ClaimPluginCronExecution(ctx context.Context, automationID string, previous, firedAt *time.Time, execution *domain.AutomationExecution, run *domain.Run) (bool, error)
 	GetAutomationExecution(ctx context.Context, automationID, executionID string) (*domain.AutomationExecution, error)
 	GetAutomationExecutionByEventKey(ctx context.Context, automationID, eventKey string) (*domain.AutomationExecution, error)
+	GetAutomationExecutionForKanbanOccurrence(ctx context.Context, occurrenceID string) (*domain.AutomationExecution, error)
 	ListAutomationExecutions(ctx context.Context, automationID, state string, beforeCreatedAt *time.Time, beforeID string, limit int) ([]domain.AutomationExecution, error)
 	ListPendingAutomationCards(ctx context.Context, limit int) ([]domain.AutomationExecution, error)
 	ClaimAutomationCardCreation(ctx context.Context, executionID string) (bool, error)

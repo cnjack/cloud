@@ -1,0 +1,27 @@
+.panel { display: grid; gap: var(--space-4); margin-top: var(--space-6); padding: var(--space-5); border: 1px solid var(--color-border); border-radius: var(--radius-xl); background: var(--color-panel); }
+.header { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-5); }
+.header h2 { margin: 0; color: var(--color-text); font-size: var(--fs-h3); }
+.header p { margin: var(--space-1) 0 0; color: var(--color-text-muted); font-size: var(--fs-caption); }
+.header small { display: block; margin-top: var(--space-1); color: var(--color-text-faint); font-size: var(--fs-tiny); }
+.controls { display: flex; align-items: flex-end; gap: var(--space-3); }
+.controls > div { display: grid; gap: var(--space-1); }
+.controls > div > span { color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+.segmented { display: flex; gap: 3px; padding: 3px; border-radius: var(--radius-lg); background: var(--color-bg-inset); }
+.segmented button { min-height: 30px; padding: 0 var(--space-2); border: 0; border-radius: var(--radius-md); background: transparent; color: var(--color-text-faint); font-size: var(--fs-caption); }
+.segmented button[aria-pressed='true'] { background: var(--color-panel); color: var(--color-text); box-shadow: var(--shadow-1); }
+.content { display: grid; gap: var(--space-4); }
+.total { padding-top: var(--space-4); border-top: 1px solid var(--color-border-subtle); }
+.groups { display: grid; overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
+.groups article { display: grid; grid-template-columns: minmax(140px, .35fr) minmax(0, 1fr); gap: var(--space-4); padding: var(--space-3); }
+.groups article + article { border-top: 1px solid var(--color-border); }
+.identity { display: grid; align-content: start; gap: 3px; }
+.identity a, .identity strong { color: var(--color-text); font-size: var(--fs-sm); }
+.identity a { text-decoration: none; }
+.identity a:hover { color: var(--color-accent); }
+.identity small { color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); text-transform: uppercase; }
+.empty { margin: 0; padding: var(--space-5); border: 1px dashed var(--color-border); border-radius: var(--radius-lg); color: var(--color-text-faint); text-align: center; }
+@media (max-width: 760px) {
+  .header, .controls { align-items: stretch; flex-direction: column; }
+  .segmented { overflow-x: auto; }
+  .groups article { grid-template-columns: 1fr; }
+}

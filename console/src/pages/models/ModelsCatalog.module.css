@@ -41,6 +41,13 @@
 /* Project scope: capabilities + the enable Switch + edit/delete controls. */
 .modelRowProject { grid-template-columns: minmax(0, 1fr) minmax(6rem, auto) auto; }
 .modelControls { display: inline-flex; align-items: center; gap: 6px; }
+.pricingIdentity, .pricingRates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.pricingHistory { display: grid; gap: var(--space-3); margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--color-border); }
+.pricingHistory h3 { margin: 0; color: var(--color-text); font-size: var(--fs-sm); }
+.pricingHistory ol { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.pricingHistory li { display: grid; gap: 3px; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-inset); }
+.pricingHistory li strong { color: var(--color-text); font-size: var(--fs-caption); }
+.pricingHistory li small { color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); }
 .modelCopy { display: grid; min-width: 0; gap: 2px; }
 .modelCopy strong { overflow: hidden; font-size: var(--fs-sm); font-weight: var(--fw-medium); text-overflow: ellipsis; white-space: nowrap; }
 .modelCopy small { overflow: hidden; color: var(--color-text-muted); font-family: var(--font-mono); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
@@ -144,6 +151,7 @@
   .capabilities { grid-column: 1; grid-row: 2; justify-content: flex-start; }
   .modelRow > button, .modelRow .modelControls { grid-column: 2; grid-row: 2; justify-self: end; }
   .modelRowProject { grid-template-columns: minmax(0, 1fr) auto; }
+  .pricingIdentity, .pricingRates { grid-template-columns: 1fr; }
   .defaultModel { grid-template-columns: 1fr; }
   .defaultModel > :last-child { grid-column: 1; grid-row: auto; }
 }

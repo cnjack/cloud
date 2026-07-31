@@ -211,6 +211,357 @@ func TestLLMProxyForwardsBaseWithV1(t *testing.T) {
 	}
 }
 
+// TestLLMProxyCapturesJSONUsageWithoutChangingResponse is the first Usage
+// ledger tracer bullet. Capture is an observer: the caller receives the exact
+// provider bytes, while the normalized Run summary becomes readable exactly
+// once through the public Run API.
+func TestLLMProxyCapturesJSONUsageWithoutChangingResponse(t *testing.T) {
+	const upstreamBody = `{"id":"chat_1","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":12480,"completion_tokens":3216,"prompt_tokens_details":{"cached_tokens":8192}}}`
+	cap := &upstreamCapture{
+		respond: func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, upstreamBody)
+		},
+	}
+	up := newUpstream(t, cap)
+	ts, st := proxyTestServer(t, up.URL+"/v1", "realkey")
+	rid, tok := proxyRun(t, st)
+
+	resp := proxyPost(t, ts.URL, tok, "runs/"+rid+"/llm/v1/chat/completions", []byte("{}"))
+	got, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(got) != upstreamBody {
+		t.Fatalf("status/body=%d %q want 200 and byte-identical upstream response", resp.StatusCode, string(got))
+	}
+
+	type usageSummary struct {
+		Availability string `json:"availability"`
+		Requests     int64  `json:"requests"`
+		Capture      struct {
+			Reported int64 `json:"reported"`
+		} `json:"capture"`
+		Tokens struct {
+			Input     *int64 `json:"input"`
+			Output    *int64 `json:"output"`
+			CacheRead *int64 `json:"cache_read"`
+		} `json:"tokens"`
+	}
+	var detail struct {
+		Usage usageSummary `json:"usage_summary"`
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runResp := do(t, http.MethodGet, ts.URL+"/api/v1/runs/"+rid, consoleToken, nil)
+		if runResp.StatusCode != http.StatusOK {
+			t.Fatalf("get Run status=%d want 200", runResp.StatusCode)
+		}
+		detail = struct {
+			Usage usageSummary `json:"usage_summary"`
+		}{}
+		decode(t, runResp, &detail)
+		if detail.Usage.Requests == 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if detail.Usage.Availability != "available" || detail.Usage.Requests != 1 ||
+		detail.Usage.Capture.Reported != 1 ||
+		detail.Usage.Tokens.Input == nil || *detail.Usage.Tokens.Input != 12480 ||
+		detail.Usage.Tokens.Output == nil || *detail.Usage.Tokens.Output != 3216 ||
+		detail.Usage.Tokens.CacheRead == nil || *detail.Usage.Tokens.CacheRead != 8192 {
+		t.Fatalf("Run usage summary=%+v", detail.Usage)
+	}
+}
+
+func TestLLMProxyCapturesUsageFromLargeJSONTailWithoutBufferingResponse(t *testing.T) {
+	content := strings.Repeat("x", maxUsageParserState*2)
+	upstreamBody := `{"choices":[{"message":{"content":"` + content +
+		`"}}],"usage":{"prompt_tokens":93,"completion_tokens":11}}`
+	cap := &upstreamCapture{
+		respond: func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, upstreamBody)
+		},
+	}
+	up := newUpstream(t, cap)
+	ts, st := proxyTestServer(t, up.URL+"/v1", "realkey")
+	rid, tok := proxyRun(t, st)
+
+	resp := proxyPost(t, ts.URL, tok, "runs/"+rid+"/llm/v1/chat/completions", []byte("{}"))
+	got, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || string(got) != upstreamBody {
+		t.Fatalf("large JSON response changed: bytes=%d err=%v", len(got), err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runResp := do(t, http.MethodGet, ts.URL+"/api/v1/runs/"+rid, consoleToken, nil)
+		var detail struct {
+			Usage struct {
+				Capture struct {
+					Reported   int64 `json:"reported"`
+					ParseError int64 `json:"parse_error"`
+				} `json:"capture"`
+				Tokens struct {
+					Input  *int64 `json:"input"`
+					Output *int64 `json:"output"`
+				} `json:"tokens"`
+			} `json:"usage_summary"`
+		}
+		decode(t, runResp, &detail)
+		if detail.Usage.Capture.Reported == 1 {
+			if detail.Usage.Capture.ParseError != 0 ||
+				detail.Usage.Tokens.Input == nil || *detail.Usage.Tokens.Input != 93 ||
+				detail.Usage.Tokens.Output == nil || *detail.Usage.Tokens.Output != 11 {
+				t.Fatalf("large JSON usage=%+v", detail.Usage)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("large JSON usage not captured: %+v", detail.Usage)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestUsageParserReportsHonestCaptureStates(t *testing.T) {
+	tests := []struct {
+		name         string
+		contentType  string
+		body         string
+		overflow     bool
+		wantStatus   domain.UsageCaptureStatus
+		wantCategory string
+		wantInput    *int64
+		wantOutput   *int64
+		wantCost     *int64
+		wantCurrency string
+	}{
+		{
+			name: "missing usage is unavailable", contentType: "application/json",
+			body: `{"choices":[]}`, wantStatus: domain.UsageCaptureUnavailable,
+		},
+		{
+			name: "one token field is partial", contentType: "application/json",
+			body: `{"usage":{"input_tokens":17}}`, wantStatus: domain.UsageCapturePartial,
+			wantInput: usageTestInt64(17),
+		},
+		{
+			name: "negative token is a parse error", contentType: "application/json",
+			body:       `{"usage":{"input_tokens":-1,"output_tokens":2}}`,
+			wantStatus: domain.UsageCaptureParseError, wantCategory: "invalid_usage_value",
+		},
+		{
+			name: "non-object usage is a parse error", contentType: "application/json",
+			body:       `{"usage":"not-an-object"}`,
+			wantStatus: domain.UsageCaptureParseError, wantCategory: "invalid_usage",
+		},
+		{
+			name: "provider cost without currency is not invented", contentType: "application/json",
+			body:       `{"usage":{"input_tokens":3,"output_tokens":2,"total_cost":"0.75"}}`,
+			wantStatus: domain.UsageCaptureReported,
+			wantInput:  usageTestInt64(3), wantOutput: usageTestInt64(2),
+		},
+		{
+			name: "decimal provider cost is normalized exactly", contentType: "application/json",
+			body:       `{"usage":{"input_tokens":3,"output_tokens":2,"total_cost":"0.003210","currency":"usd"}}`,
+			wantStatus: domain.UsageCaptureReported,
+			wantInput:  usageTestInt64(3), wantOutput: usageTestInt64(2),
+			wantCost: usageTestInt64(3210), wantCurrency: "USD",
+		},
+		{
+			name: "bounded parser state reports its limit", contentType: "application/json",
+			body: strings.Repeat("x", 128), overflow: true,
+			wantStatus: domain.UsageCaptureParseError, wantCategory: "parser_limit",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseUsageMeasurement(tt.contentType, []byte(tt.body), tt.overflow)
+			if got.CaptureStatus != tt.wantStatus || got.ErrorCategory != tt.wantCategory ||
+				!sameOptionalInt64(got.InputTokens, tt.wantInput) ||
+				!sameOptionalInt64(got.OutputTokens, tt.wantOutput) ||
+				!sameOptionalInt64(got.ReportedCostMicros, tt.wantCost) ||
+				got.ReportedCurrency != tt.wantCurrency {
+				t.Fatalf("measurement=%+v", got)
+			}
+		})
+	}
+}
+
+func TestUsageObserverCompletesOnceAfterEOFAndClose(t *testing.T) {
+	completions := 0
+	body := &usageObservedBody{
+		body:        io.NopCloser(strings.NewReader(`{"usage":{"input_tokens":4}}`)),
+		contentType: "application/json",
+		complete: func(measurement usageMeasurement) {
+			completions++
+			if measurement.CaptureStatus != domain.UsageCapturePartial {
+				t.Fatalf("capture status=%s want partial", measurement.CaptureStatus)
+			}
+		},
+	}
+	if _, err := io.ReadAll(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	body.finish()
+	if completions != 1 {
+		t.Fatalf("completion callbacks=%d want 1", completions)
+	}
+}
+
+func TestUsageSSEParserMakesOverflowAndTrailingErrorsVisible(t *testing.T) {
+	t.Run("overflow without retained usage is parser limit", func(t *testing.T) {
+		got := parseUsageMeasurement(
+			"text/event-stream",
+			[]byte("data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}\n\n"),
+			true,
+		)
+		if got.CaptureStatus != domain.UsageCaptureParseError || got.ErrorCategory != "parser_limit" {
+			t.Fatalf("overflow measurement=%+v", got)
+		}
+	})
+	t.Run("retained valid usage wins over a later truncated event", func(t *testing.T) {
+		got := parseUsageMeasurement(
+			"text/event-stream",
+			[]byte("data: {\"usage\":{\"input_tokens\":8,\"output_tokens\":3}}\n\ndata: {\"usage\":\n\n"),
+			true,
+		)
+		if got.CaptureStatus != domain.UsageCaptureReported ||
+			got.InputTokens == nil || *got.InputTokens != 8 ||
+			got.OutputTokens == nil || *got.OutputTokens != 3 {
+			t.Fatalf("overflow with retained usage=%+v", got)
+		}
+	})
+}
+
+func sameOptionalInt64(got, want *int64) bool {
+	if got == nil || want == nil {
+		return got == nil && want == nil
+	}
+	return *got == *want
+}
+
+func usageTestInt64(value int64) *int64 { return &value }
+
+func TestLLMProxySeparatesReportedEstimatedAndUncostedUsage(t *testing.T) {
+	const upstreamBody = `{"choices":[],"usage":{"input_tokens":1000,"output_tokens":500,"input_tokens_details":{"cached_tokens":200,"cache_write_tokens":100},"total_cost":0.003210,"currency":"USD"}}`
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	t.Cleanup(up.Close)
+
+	st := store.NewMemStore()
+	cfg := &config.Config{ConsoleToken: consoleToken, MasterKey: validTokenKey(t)}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(st, cfg, log, sse.NewHub(), nil)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	ctx := context.Background()
+	project := &domain.Project{ID: domain.NewID(), Name: "commerce", CreatedAt: time.Now().UTC()}
+	if err := st.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	service := &domain.Service{
+		ID: domain.NewID(), ProjectID: project.ID, Name: "payments-api",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "git://x/y.git", DefaultBranch: "main", CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateService(ctx, service); err != nil {
+		t.Fatal(err)
+	}
+	model := &domain.Model{
+		ID: domain.NewID(), Name: "usage-model", BaseURL: up.URL + "/v1",
+		ModelName: "provider/usage-model", ModelID: "usage-model", CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateModel(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	modelID := model.ID
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: project.ID, ServiceID: service.ID, Prompt: "measure",
+		Status: domain.StatusQueued, Kind: domain.RunKindAgent, Attempt: 1,
+		ModelID: &modelID, ModelName: model.ModelName, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := auth.GenerateRunToken()
+	if _, err := st.ScheduleRun(ctx, run.ID, "usage-job", auth.HashToken(token), "PreparingWorkspace"); err != nil {
+		t.Fatal(err)
+	}
+
+	effective := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	pricingResp := do(t, http.MethodPost,
+		ts.URL+"/api/v1/system/models/"+model.ID+"/pricing-revisions", consoleToken,
+		map[string]any{
+			"currency": "USD", "effective_at": effective,
+			"input_micros_per_million":      1_000_000,
+			"output_micros_per_million":     2_000_000,
+			"cache_read_micros_per_million": 100_000,
+		})
+	if pricingResp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(pricingResp.Body)
+		pricingResp.Body.Close()
+		t.Fatalf("create pricing status=%d body=%s", pricingResp.StatusCode, raw)
+	}
+	pricingResp.Body.Close()
+
+	resp := proxyPost(t, ts.URL, token, "runs/"+run.ID+"/llm/v1/chat/completions", []byte("{}"))
+	got, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || string(got) != upstreamBody {
+		t.Fatalf("priced response changed: %q err=%v", string(got), err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runResp := do(t, http.MethodGet, ts.URL+"/api/v1/runs/"+run.ID, consoleToken, nil)
+		var detail struct {
+			Usage struct {
+				Requests int64 `json:"requests"`
+				Costs    struct {
+					Reported  []domain.UsageMoneyTotal    `json:"reported"`
+					Estimated []domain.UsageMoneyTotal    `json:"estimated"`
+					Uncosted  []domain.UsageUncostedTotal `json:"uncosted"`
+				} `json:"costs"`
+			} `json:"usage_summary"`
+		}
+		decode(t, runResp, &detail)
+		if detail.Usage.Requests == 1 {
+			if len(detail.Usage.Costs.Reported) != 1 ||
+				detail.Usage.Costs.Reported[0].Currency != "USD" ||
+				detail.Usage.Costs.Reported[0].Micros != 3210 {
+				t.Fatalf("reported cost=%+v", detail.Usage.Costs.Reported)
+			}
+			if len(detail.Usage.Costs.Estimated) != 1 ||
+				detail.Usage.Costs.Estimated[0].Currency != "USD" ||
+				detail.Usage.Costs.Estimated[0].Micros != 1720 ||
+				len(detail.Usage.Costs.Estimated[0].PricingRevisionIDs) != 1 {
+				t.Fatalf("estimated cost=%+v", detail.Usage.Costs.Estimated)
+			}
+			if len(detail.Usage.Costs.Uncosted) != 1 ||
+				detail.Usage.Costs.Uncosted[0].Category != "cache_write" ||
+				detail.Usage.Costs.Uncosted[0].Tokens != 100 {
+				t.Fatalf("uncosted=%+v", detail.Usage.Costs.Uncosted)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("priced usage not recorded: %+v", detail.Usage)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestLLMProxyForwardsBaseWithoutV1 proves the proxy also does the right thing
 // when the real model base does NOT end in a version: the /v1 arriving in the
 // rest path is appended, still yielding /v1/chat/completions.
@@ -521,5 +872,97 @@ func TestLLMProxySSEStreaming(t *testing.T) {
 	rest, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(rest), "data: two") {
 		t.Fatalf("second chunk missing from stream tail: %q", string(rest))
+	}
+}
+
+func TestLLMProxyCapturesFinalSSEUsageWithoutChangingChunks(t *testing.T) {
+	release := make(chan struct{})
+	const firstChunk = "data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n"
+	const usageChunk = "data: {\"choices\":[],\"usage\":{\"input_tokens\":42,\"output_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":12}}}\n\n"
+	cap := &upstreamCapture{
+		respond: func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w, firstChunk)
+			flusher.Flush()
+			<-release
+			_, _ = io.WriteString(w, usageChunk)
+			flusher.Flush()
+		},
+	}
+	up := newUpstream(t, cap)
+	ts, st := proxyTestServer(t, up.URL+"/v1", "realkey")
+	rid, tok := proxyRun(t, st)
+
+	req, _ := http.NewRequest("POST", ts.URL+"/internal/v1/runs/"+rid+"/llm/v1/chat/completions", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+	first := make(chan struct {
+		value string
+		err   error
+	}, 1)
+	go func() {
+		value, readErr := reader.ReadString('\n')
+		if readErr == nil {
+			var blank string
+			blank, readErr = reader.ReadString('\n')
+			value += blank
+		}
+		first <- struct {
+			value string
+			err   error
+		}{value, readErr}
+	}()
+	select {
+	case got := <-first:
+		if got.err != nil || got.value != firstChunk {
+			t.Fatalf("first SSE chunk=%q err=%v want %q", got.value, got.err, firstChunk)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("usage observer buffered the first SSE chunk")
+	}
+	close(release)
+	rest, err := io.ReadAll(reader)
+	if err != nil || string(rest) != usageChunk {
+		t.Fatalf("SSE tail=%q err=%v want %q", string(rest), err, usageChunk)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runResp := do(t, http.MethodGet, ts.URL+"/api/v1/runs/"+rid, consoleToken, nil)
+		var detail struct {
+			Usage struct {
+				Requests int64 `json:"requests"`
+				Capture  struct {
+					Reported int64 `json:"reported"`
+				} `json:"capture"`
+				Tokens struct {
+					Input     *int64 `json:"input"`
+					Output    *int64 `json:"output"`
+					CacheRead *int64 `json:"cache_read"`
+				} `json:"tokens"`
+			} `json:"usage_summary"`
+		}
+		decode(t, runResp, &detail)
+		if detail.Usage.Requests == 1 {
+			if detail.Usage.Capture.Reported != 1 ||
+				detail.Usage.Tokens.Input == nil || *detail.Usage.Tokens.Input != 42 ||
+				detail.Usage.Tokens.Output == nil || *detail.Usage.Tokens.Output != 7 ||
+				detail.Usage.Tokens.CacheRead == nil || *detail.Usage.Tokens.CacheRead != 12 {
+				t.Fatalf("SSE usage summary=%+v", detail.Usage)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("final SSE usage was not recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

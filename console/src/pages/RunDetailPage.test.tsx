@@ -112,6 +112,28 @@ function renderPage(client: ApiClient, seed?: Run) {
 }
 
 describe('RunDetailPage — resilient error states', () => {
+  it('shows captured Run usage in the inspector without merging cost sources', async () => {
+    const { client, ctl } = makeClient();
+    const value = baseRun({
+      usage_summary: {
+        availability: 'available',
+        requests: 1,
+        capture: { reported: 1, partial: 0, unavailable: 0, parse_error: 0 },
+        tokens: { input: 120, output: 40, cache_read: null, cache_write: null },
+        costs: {
+          reported: [{ currency: 'USD', micros: 3000 }],
+          estimated: [{ currency: 'USD', micros: 2000 }],
+          uncosted: [],
+        },
+      },
+    });
+    ctl.getRun.mockResolvedValue(value);
+    renderPage(client, value);
+    expect(await screen.findByTestId('run-usage')).toBeTruthy();
+    expect(screen.getByText('USD 0.003000')).toBeTruthy();
+    expect(screen.getByText('USD 0.002000')).toBeTruthy();
+  });
+
   it('never regresses a terminal cached run to a stale non-terminal GET response', async () => {
     const { client, ctl } = makeClient();
     const succeeded = baseRun({

@@ -156,5 +156,8 @@ func (s *Server) handleDeviceCloudModelProxy(w http.ResponseWriter, r *http.Requ
 		"model", modelID,
 		"scope", authorized.Scope,
 		"scope_id", authorized.ScopeID)
-	s.proxyResolvedModel(w, r, resolved, "device", p.deviceID)
+	s.proxyResolvedModel(w, r, resolved, usageSubject{
+		Kind: domain.UsageSubjectDevice, ID: p.deviceID, UserID: p.deviceUserID,
+		GrantScope: authorized.Scope, GrantScopeID: authorized.ScopeID, GrantScopeName: authorized.ScopeName,
+	})
 }

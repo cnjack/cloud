@@ -482,6 +482,73 @@ func TestTickReapsExpiredWebhookReceiptsWithoutRuns(t *testing.T) {
 	}
 }
 
+type usageCleanupSpy struct {
+	*store.MemStore
+	calls        int
+	rawBefore    time.Time
+	rollupBefore time.Time
+	err          error
+}
+
+func (s *usageCleanupSpy) CleanupUsage(
+	ctx context.Context,
+	rawBefore, rollupBefore time.Time,
+) (int64, int64, error) {
+	s.calls++
+	s.rawBefore = rawBefore
+	s.rollupBefore = rollupBefore
+	if s.err != nil {
+		return 0, 0, s.err
+	}
+	return s.MemStore.CleanupUsage(ctx, rawBefore, rollupBefore)
+}
+
+func TestTickEnforcesConfiguredUsageRetentionWithoutRuns(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.July, 31, 12, 34, 0, 0, time.UTC)
+	st := &usageCleanupSpy{MemStore: store.NewMemStore()}
+	rec := New(st, k8s.NewFakeLauncher(), &config.Config{
+		MaxConcurrentRuns:    1,
+		UsageRawRetention:    90 * 24 * time.Hour,
+		UsageRollupRetention: 365 * 24 * time.Hour,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	rec.now = func() time.Time { return now }
+
+	rec.Tick(ctx)
+	if st.calls != 1 {
+		t.Fatalf("usage cleanup calls=%d want 1", st.calls)
+	}
+	if want := now.Add(-90 * 24 * time.Hour).Truncate(time.Hour); !st.rawBefore.Equal(want) {
+		t.Fatalf("raw cutoff=%s want %s", st.rawBefore, want)
+	}
+	if want := now.Add(-365 * 24 * time.Hour).Truncate(time.Hour); !st.rollupBefore.Equal(want) {
+		t.Fatalf("rollup cutoff=%s want %s", st.rollupBefore, want)
+	}
+	rec.Tick(ctx)
+	if st.calls != 1 {
+		t.Fatalf("cleanup ignored hourly cadence: calls=%d", st.calls)
+	}
+}
+
+func TestUsageRetentionRetriesImmediatelyAfterFailure(t *testing.T) {
+	ctx := context.Background()
+	st := &usageCleanupSpy{MemStore: store.NewMemStore(), err: errors.New("database unavailable")}
+	rec := New(st, k8s.NewFakeLauncher(), &config.Config{
+		MaxConcurrentRuns:    1,
+		UsageRawRetention:    90 * 24 * time.Hour,
+		UsageRollupRetention: 365 * 24 * time.Hour,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	rec.now = func() time.Time {
+		return time.Date(2026, time.July, 31, 12, 34, 0, 0, time.UTC)
+	}
+
+	rec.Tick(ctx)
+	rec.Tick(ctx)
+	if st.calls != 2 {
+		t.Fatalf("failed cleanup calls=%d want immediate retry", st.calls)
+	}
+}
+
 type fakeAttachmentStore struct {
 	deleted   []string
 	deleteErr error

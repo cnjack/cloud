@@ -22,6 +22,10 @@ vi.mock('@jcloud/device-ui', async (importOriginal) => ({
   }),
 }));
 
+vi.mock('./AccountUsagePanel', () => ({
+  AccountUsagePanel: () => null,
+}));
+
 function device(overrides: Partial<Device>): Device {
   return { id: 'd1', name: 'dev', online: true, ...overrides };
 }

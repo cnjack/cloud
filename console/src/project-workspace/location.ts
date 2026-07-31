@@ -1,6 +1,6 @@
 import type { Service } from '../api/types';
 
-export const WORKSPACE_TABS = ['tasks', 'automations', 'settings'] as const;
+export const WORKSPACE_TABS = ['tasks', 'automations', 'usage', 'settings'] as const;
 export type WorkspaceTab = (typeof WORKSPACE_TABS)[number];
 
 function defaultServiceId(services: readonly Service[]): string {
@@ -23,7 +23,7 @@ export function resolveWorkspaceLocation(
 
   const requestedTab = search.get('tab');
   const tab: WorkspaceTab =
-    requestedTab === 'automations' || (requestedTab === 'settings' && canManage)
+    requestedTab === 'automations' || requestedTab === 'usage' || (requestedTab === 'settings' && canManage)
       ? requestedTab
       : 'tasks';
 

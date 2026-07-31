@@ -30,6 +30,8 @@ import { ApiError, apiErrorCode } from '../../api/client';
 import {
   useProjects,
   useSearchUsers,
+  useCreateModelPricingRevision,
+  useModelPricingRevisions,
   useSetModelAccountGrant,
   useSetModelGrant,
 } from '../../api/queries';
@@ -240,6 +242,7 @@ function ModelRow({ api, provider, model }: { api: ModelsAdminApi; provider: Mod
   const toast = useToast();
   const [grantsOpen, setGrantsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [pricingOpen, setPricingOpen] = useState(false);
 
   if (api.scope.kind === 'cluster') {
     const projectGrantCount = (model.granted_project_ids ?? []).length;
@@ -252,8 +255,12 @@ function ModelRow({ api, provider, model }: { api: ModelsAdminApi; provider: Mod
           <span><b>{accountGrantCount}</b><small>{t('cluster.models.accountGrants', { count: accountGrantCount })}</small></span>
           <span><b>{projectGrantCount}</b><small>{t('cluster.models.projectGrants', { count: projectGrantCount })}</small></span>
         </span>
-        <Button size="sm" variant="ghost" onClick={() => setGrantsOpen(true)}>{t('cluster.models.manageAccess')}</Button>
-        <button className={styles.iconButton} type="button" aria-label={t('projectSettings.models.editModelAria', { name: model.name })} onClick={() => setEditOpen(true)}><PencilSimple size={16} aria-hidden="true" /></button>
+        <div className={styles.modelControls}>
+          <Button size="sm" variant="ghost" onClick={() => setPricingOpen(true)}>{t('usage.pricing')}</Button>
+          <Button size="sm" variant="ghost" onClick={() => setGrantsOpen(true)}>{t('cluster.models.manageAccess')}</Button>
+          <button className={styles.iconButton} type="button" aria-label={t('projectSettings.models.editModelAria', { name: model.name })} onClick={() => setEditOpen(true)}><PencilSimple size={16} aria-hidden="true" /></button>
+        </div>
+        <PricingRevisionDialog model={model} open={pricingOpen} onClose={() => setPricingOpen(false)} />
         <AccessDialog model={model} open={grantsOpen} onClose={() => setGrantsOpen(false)} />
         <CustomModelDialog api={api} provider={provider} model={model} open={editOpen} onClose={() => setEditOpen(false)} />
       </div>
@@ -293,6 +300,146 @@ function ModelRow({ api, provider, model }: { api: ModelsAdminApi; provider: Mod
       </div>
       <CustomModelDialog api={api} provider={provider} model={model} open={editOpen} onClose={() => setEditOpen(false)} />
     </div>
+  );
+}
+
+export function PricingRevisionDialog({
+  model,
+  open,
+  onClose,
+}: {
+  model: ProviderModel;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const revisions = useModelPricingRevisions(model.id, open);
+  const create = useCreateModelPricingRevision(model.id);
+  const [currency, setCurrency] = useState('USD');
+  const [effectiveAt, setEffectiveAt] = useState('');
+  const [rates, setRates] = useState({ input: '', output: '', cacheRead: '', cacheWrite: '' });
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    setCurrency('USD');
+    setEffectiveAt(dateTimeLocalValue(new Date()));
+    setRates({ input: '', output: '', cacheRead: '', cacheWrite: '' });
+    setError('');
+  }, [open]);
+
+  const toMicros = (value: string): number | null => {
+    if (value.trim() === '') return null;
+    const parsed = Number(value);
+    const micros = Math.round(parsed * 1_000_000);
+    return Number.isFinite(parsed) && parsed >= 0 && Number.isSafeInteger(micros)
+      ? micros
+      : Number.NaN;
+  };
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const values = {
+      input_micros_per_million: toMicros(rates.input),
+      output_micros_per_million: toMicros(rates.output),
+      cache_read_micros_per_million: toMicros(rates.cacheRead),
+      cache_write_micros_per_million: toMicros(rates.cacheWrite),
+    };
+    if (!/^[A-Z]{3,8}$/.test(currency.trim().toUpperCase()) ||
+      !effectiveAt ||
+      Object.values(values).some((value) => typeof value === 'number' && Number.isNaN(value)) ||
+      Object.values(values).every((value) => value == null)) {
+      setError(t('usage.pricingValidation'));
+      return;
+    }
+    create.mutate({
+      currency: currency.trim().toUpperCase(),
+      ...values,
+      effective_at: new Date(effectiveAt).toISOString(),
+    }, {
+      onSuccess: () => {
+        setRates({ input: '', output: '', cacheRead: '', cacheWrite: '' });
+        setError('');
+      },
+      onError: (cause) => setError(errorMessage(cause, t('usage.pricingCreateError'))),
+    });
+  };
+  const formId = `pricing-${model.id}`;
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={t('usage.pricingTitle', { model: model.name })}
+      footer={(
+        <>
+          <Button variant="ghost" onClick={onClose}>{t('common.done')}</Button>
+          <Button
+            loading={create.isPending}
+            onClick={() => document.getElementById(formId)?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))}
+          >
+            {t('usage.addPricingRevision')}
+          </Button>
+        </>
+      )}
+    >
+      <p className={styles.dialogIntro}>{t('usage.pricingImmutable')}</p>
+      <form id={formId} className={styles.dialogForm} onSubmit={submit}>
+        <div className={styles.pricingIdentity}>
+          <TextField label={t('usage.currency')} value={currency} onChange={(event) => setCurrency(event.target.value.toUpperCase())} />
+          <TextField label={t('usage.effectiveAt')} type="datetime-local" value={effectiveAt} onChange={(event) => setEffectiveAt(event.target.value)} />
+        </div>
+        <div className={styles.pricingRates}>
+          <PricingRate label={t('usage.inputRate')} value={rates.input} onChange={(input) => setRates((current) => ({ ...current, input }))} />
+          <PricingRate label={t('usage.outputRate')} value={rates.output} onChange={(output) => setRates((current) => ({ ...current, output }))} />
+          <PricingRate label={t('usage.cacheReadRate')} value={rates.cacheRead} onChange={(cacheRead) => setRates((current) => ({ ...current, cacheRead }))} />
+          <PricingRate label={t('usage.cacheWriteRate')} value={rates.cacheWrite} onChange={(cacheWrite) => setRates((current) => ({ ...current, cacheWrite }))} />
+        </div>
+        {error && <p className={styles.formError} role="alert">{error}</p>}
+      </form>
+      <div className={styles.pricingHistory}>
+        <h3>{t('usage.pricingHistory')}</h3>
+        {revisions.isLoading ? <LoadingBlock label={t('usage.loadingPricing')} /> : revisions.isError ? (
+          <ErrorBlock error={revisions.error} onRetry={() => void revisions.refetch()} title={t('usage.pricingLoadError')} />
+        ) : (revisions.data ?? []).length === 0 ? (
+          <p className={styles.dialogIntro}>{t('usage.noPricingRevisions')}</p>
+        ) : (
+          <ol>
+            {(revisions.data ?? []).map((revision) => (
+              <li key={revision.id}>
+                <strong>{revision.currency} · {new Date(revision.effective_at).toLocaleString()}</strong>
+                <small>
+                  {[
+                    revision.input_micros_per_million == null ? null : `${t('usage.input')} ${revision.input_micros_per_million / 1_000_000}`,
+                    revision.output_micros_per_million == null ? null : `${t('usage.output')} ${revision.output_micros_per_million / 1_000_000}`,
+                    revision.cache_read_micros_per_million == null ? null : `${t('usage.cacheRead')} ${revision.cache_read_micros_per_million / 1_000_000}`,
+                    revision.cache_write_micros_per_million == null ? null : `${t('usage.cacheWrite')} ${revision.cache_write_micros_per_million / 1_000_000}`,
+                  ].filter(Boolean).join(' · ')}
+                </small>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function dateTimeLocalValue(value: Date): string {
+  const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function PricingRate({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <TextField
+      label={label}
+      type="number"
+      min="0"
+      step="0.000001"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder="0.00"
+    />
   );
 }
 

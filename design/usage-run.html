@@ -1,0 +1,60 @@
+<!doctype html>
+<!-- Target-state Loop 4 Run Usage prototype. All values are sample fixtures. -->
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Run usage and capture provenance prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Run usage — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/usage-ledger.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="usage-shell">
+    <header class="utility-bar">
+      <div class="breadcrumbs"><a href="./projects.html">Projects</a><span>/</span><a href="./usage-project.html">commerce</a><span>/</span><strong>Run 7c3bec6</strong></div>
+      <div class="utility-actions"><span class="prototype-chip">sample fixture · Loop 4</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div>
+    </header>
+    <main class="usage-run-main" id="mainContent">
+      <header class="usage-run-head">
+        <div><span class="eyebrow">payments-api · Agent task</span><h1>Make payout retry idempotent</h1><p>Kanban Automation · Jul 31, 16:42</p></div>
+        <span class="status-label" data-tone="success">Succeeded</span>
+      </header>
+      <div class="usage-run-layout">
+        <section class="usage-run-conversation" aria-label="Run conversation">
+          <article class="usage-run-message"><header><span class="identity-mark">M</span><strong>Mei · via JType Card</strong><small>16:42</small></header>Duplicate callbacks must converge on one ledger update. Preserve the existing settlement audit trail.</article>
+          <article class="usage-run-message"><header><span class="identity-mark">J</span><strong>jcode Agent</strong><small>Claude Sonnet · payments-api</small></header>I added an idempotency fence around payout callback processing and verified the concurrent path against PostgreSQL.</article>
+        </section>
+        <aside class="usage-run-inspector" aria-label="Run audit inspector">
+          <section>
+            <h2>Identity &amp; source</h2>
+            <div class="usage-run-costs"><div><dt>Requested by</dt><dd>Mei<small>JType display snapshot</small></dd></div><div><dt>Accountable to</dt><dd>Jack<small>Rule owner · exact snapshot</small></dd></div><div><dt>Triggered from</dt><dd><a href="./usage-card.html">PAY-41 · JType Card ↗</a></dd></div></div>
+          </section>
+          <section>
+            <div class="usage-section-head"><div><h2>Usage</h2><p>2 provider requests</p></div><span class="usage-status" data-tone="warning">partial</span></div>
+            <div class="usage-run-token-grid">
+              <span><small>Input</small><strong>12,480</strong></span>
+              <span><small>Output</small><strong>3,216</strong></span>
+              <span><small>Cache read</small><strong>8,192</strong></span>
+              <span><small>Cache write</small><strong>920</strong></span>
+            </div>
+            <dl class="usage-run-costs">
+              <div><dt>Reported</dt><dd>USD 0.184200<small>Provider response · 1 request</small></dd></div>
+              <div><dt>Estimated</dt><dd>USD 0.176100<small>Pricing revision price_01J6…</small></dd></div>
+              <div><dt>Uncosted</dt><dd class="uncosted">920 cache-write tokens<small>No cache-write rate in this revision</small></dd></div>
+            </dl>
+            <p class="usage-run-disclaimer">Usage is operational telemetry, not a provider invoice.</p>
+          </section>
+          <details>
+            <summary>Capture details</summary>
+            <div class="usage-run-technical"><span>reported 1 · partial 1</span><span>provider Anthropic gateway</span><span>model claude-sonnet-4-5</span><span>UTC bucket 2026-07-31T08:00Z</span></div>
+          </details>
+        </aside>
+      </div>
+    </main>
+  </div>
+</body>
+</html>
