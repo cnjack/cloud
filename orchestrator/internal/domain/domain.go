@@ -590,7 +590,7 @@ func ValidModelEffort(v string) bool {
 // pushes back to it (blueprint §8, update mode). Runner (BRANCH_NAME) and
 // orchestrator (bundle branch + push target) both derive it identically.
 func RunPushBranch(run *Run) string {
-	if run.Kind == RunKindAgent && run.PRHeadBranch != "" {
+	if (run.Kind == "" || run.Kind == RunKindAgent) && run.PRHeadBranch != "" {
 		return run.PRHeadBranch
 	}
 	return RunBranchName(run.ID)

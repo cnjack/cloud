@@ -532,8 +532,13 @@ if [ "$RUN_KIND" = "review" ]; then
   HEAD_REF="origin/$PR_HEAD"; BASE_REF_R="origin/$PR_BASE"
   git -C "$WORKSPACE" rev-parse --verify -q "$HEAD_REF" >/dev/null 2>&1 || HEAD_REF="$PR_HEAD"
   git -C "$WORKSPACE" rev-parse --verify -q "$BASE_REF_R" >/dev/null 2>&1 || BASE_REF_R="$PR_BASE"
-  REVIEW_DIFF_FILE="$WORKSPACE/.git/jcode-review.diff"
-  git -C "$WORKSPACE" --no-pager diff "$BASE_REF_R...$HEAD_REF" > "$REVIEW_DIFF_FILE" 2>/dev/null || : > "$REVIEW_DIFF_FILE"
+  REVIEW_GIT_DIR="$(git -C "$WORKSPACE" rev-parse --absolute-git-dir 2>/dev/null)" \
+    || die setup_failed "review run could not resolve the workspace git directory"
+  REVIEW_DIFF_FILE="$REVIEW_GIT_DIR/jcode-review.diff"
+  if ! git -C "$WORKSPACE" --no-pager diff "$BASE_REF_R...$HEAD_REF" > "$REVIEW_DIFF_FILE" 2>/dev/null; then
+    rm -f "$REVIEW_DIFF_FILE" 2>/dev/null || true
+    die setup_failed "review run could not compute diff $PR_BASE...$PR_HEAD"
+  fi
   REVIEW_DIFF_BYTES="$(wc -c < "$REVIEW_DIFF_FILE" | tr -d ' ')"
   REVIEW_FOCUS="$TASK_PROMPT"
   TASK_PROMPT="$(cat <<EOF
