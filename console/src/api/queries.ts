@@ -3,6 +3,7 @@
  * centralised so SSE/status changes can invalidate precisely.
  */
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
@@ -60,6 +61,9 @@ export const qk = {
   // button + feeds the embed modal's selector.
   projectBoardLinks: (projectId: string) => ['project-board-links', projectId] as const,
   serviceKanban: (serviceId: string) => ['service-kanban', serviceId] as const,
+  serviceKanbanPolicy: (serviceId: string) => ['service-kanban-policy', serviceId] as const,
+  serviceKanbanCardExecutions: (serviceId: string, workspaceId: string, documentPath: string) =>
+    ['service-kanban-card-executions', serviceId, workspaceId, documentPath] as const,
   serviceBranches: (serviceId: string) => ['service-branches', serviceId] as const,
   projectPlugins: (projectId: string) => ['project-plugins', projectId] as const,
   projectPluginImpact: (projectId: string, installationId: string) =>
@@ -756,6 +760,42 @@ export function usePutServiceKanban(projectId: string, serviceId: string) {
         qc.invalidateQueries({ queryKey: qk.projectAutomations(projectId) }),
         qc.invalidateQueries({ queryKey: qk.serviceKanban(serviceId) }),
       ]);
+    },
+  });
+}
+
+export function useServiceKanbanPolicy(serviceId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.serviceKanbanPolicy(serviceId),
+    queryFn: () => api.getServiceKanbanPolicy(serviceId),
+    enabled: enabled && !!serviceId,
+    retry: false,
+  });
+}
+
+export function useServiceKanbanCardExecutions(
+  serviceId: string,
+  workspaceId: string,
+  documentPath: string,
+  enabled = true,
+) {
+  const api = useApi();
+  return useInfiniteQuery({
+    queryKey: qk.serviceKanbanCardExecutions(serviceId, workspaceId, documentPath),
+    queryFn: ({ pageParam }) => api.listServiceKanbanCardExecutions(
+      serviceId, workspaceId, documentPath, pageParam ?? undefined,
+    ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    enabled: enabled && !!serviceId && !!workspaceId && !!documentPath,
+    retry: false,
+    refetchInterval: (query) => {
+      const pages = query.state.data?.pages;
+      return pages?.some((page) => page.items.some((item) =>
+        item.status === 'received' || item.status === 'blocked' || item.status === 'queued' || item.status === 'running'))
+        ? 5_000
+        : false;
     },
   });
 }

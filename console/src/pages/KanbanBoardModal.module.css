@@ -19,6 +19,45 @@
   min-width: 16rem;
 }
 
+.policyStrip {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1.3fr) repeat(4, minmax(8rem, 1fr));
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-panel-raised);
+  color: var(--color-text-muted);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-normal);
+}
+
+.policyStrip[data-state='blocked'] {
+  border-color: var(--color-warning);
+}
+
+.policyLead {
+  display: grid;
+  min-width: 0;
+}
+
+.policyLead strong {
+  color: var(--color-text);
+  font-size: var(--fs-sm);
+}
+
+.policyLead span,
+.policyStrip > span {
+  overflow-wrap: anywhere;
+}
+
+.policyHealth {
+  justify-self: end;
+  color: var(--color-text);
+  font-weight: var(--fw-semibold);
+}
+
 .setupPanel {
   display: grid;
   width: min(100%, 46rem);
@@ -114,6 +153,108 @@
   overflow: auto;
 }
 
+.executions {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.executionCurrent {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-panel-raised);
+  overflow-wrap: anywhere;
+}
+
+.executionCurrent[data-state='blocked'],
+.executionCurrent[data-state='failed'],
+.executionCurrent[data-state='canceled'] {
+  border-color: var(--color-warning);
+}
+
+.executionCurrent[data-state='succeeded'] {
+  border-color: var(--color-success);
+}
+
+.executionHeading,
+.executionMeta,
+.executionHistory li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+
+.executionHeading {
+  justify-content: space-between;
+}
+
+.executionHeading strong {
+  color: var(--color-text);
+}
+
+.executionHeading time,
+.executionMeta,
+.executionHistory {
+  color: var(--color-text-dim);
+  font-size: var(--fs-caption);
+}
+
+.executionCurrent p,
+.executionEmpty {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+
+.executionMeta a,
+.executionHistory a {
+  color: var(--color-accent);
+  font-weight: var(--fw-semibold);
+}
+
+.executionHistory summary {
+  cursor: pointer;
+  color: var(--color-text);
+  font-weight: var(--fw-medium);
+}
+
+.executionHistory ol {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+}
+
+.executionLoading {
+  min-height: 4rem;
+  border-radius: var(--radius-md);
+  background: var(--color-panel-raised);
+  color: var(--color-text-dim);
+  font-size: var(--fs-caption);
+}
+
+.executionError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--color-danger);
+  font-size: var(--fs-sm);
+}
+.executionUnavailable {
+  border: 1px solid color-mix(in srgb, var(--color-warning) 42%, var(--color-border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-warning) 9%, var(--color-panel));
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--fs-caption);
+}
+
 /* Fail-visible panel: the board could not be opened (deleted / renamed / access
    lost). Never a blank modal (red line #1). */
 .failPanel {
@@ -139,6 +280,14 @@
   .columnGrid,
   .columnEditor {
     grid-template-columns: 1fr;
+  }
+
+  .policyStrip {
+    grid-template-columns: 1fr;
+  }
+
+  .policyHealth {
+    justify-self: start;
   }
 
   .columnStatus {

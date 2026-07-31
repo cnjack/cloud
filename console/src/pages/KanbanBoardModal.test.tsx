@@ -5,6 +5,7 @@
  * is a light typed Error (the proxy client + resolver depend on it).
  */
 import { describe, expect, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
@@ -18,14 +19,18 @@ vi.mock('jtype-board-react', () => ({
     boardRef: string;
     live?: boolean;
     readOnly?: boolean;
+    renderCardSupplement?: (card: { id: string; title: string }) => ReactNode;
   }) => (
-    <div
-      data-testid="jtype-board"
-      data-workspace={p.workspaceId}
-      data-boardref={p.boardRef}
-      data-live={String(p.live)}
-      data-readonly={String(p.readOnly)}
-    />
+    <>
+      <div
+        data-testid="jtype-board"
+        data-workspace={p.workspaceId}
+        data-boardref={p.boardRef}
+        data-live={String(p.live)}
+        data-readonly={String(p.readOnly)}
+      />
+      {p.renderCardSupplement?.({ id: 'cards/payment.md', title: 'Payment card' })}
+    </>
   ),
   JTypeApiError: class extends Error {
     status: number;
@@ -94,15 +99,27 @@ function makeApi(
       updatedClock: 2,
       mergeStatus: 'accepted' as const,
     }),
+    getServiceKanbanPolicy: async (serviceId: string) => ({
+      service_id: serviceId,
+      service_name: 'Service',
+      repository: 'acme/service',
+      model: { label: 'Demo model' },
+      board: { workspace_id: 'ws_team', ref: 'b_123' },
+      trigger_column: { key: 'ai', label: 'AI' },
+      done_column: { key: 'done', label: 'Done' },
+      output: 'comment_and_move_on_success' as const,
+      health: { state: 'ready' as const, blocker: null },
+    }),
+    listServiceKanbanCardExecutions: async () => ({ claim: null, items: [], next_cursor: null }),
   } as unknown as ApiClient;
 }
 
-function renderModal(api: ApiClient, links: BoardEmbedLink[]) {
+function renderModal(api: ApiClient, links: BoardEmbedLink[], serviceId?: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
       <ApiProvider client={api}>
-        <KanbanBoardModal projectId="p1" links={links} onClose={() => {}} />
+        <KanbanBoardModal projectId="p1" serviceId={serviceId} links={links} onClose={() => {}} />
       </ApiProvider>
     </QueryClientProvider>,
   );
@@ -161,6 +178,133 @@ describe('KanbanBoardModal', () => {
     expect(board.getAttribute('data-live')).toBe('false');
     // Single link → no selector.
     expect(screen.queryByTestId('kanban-board-select')).toBeNull();
+  });
+
+  it('shows the execution policy and blocked receipt inside native Card details', async () => {
+    const listExecutions = vi.fn(async () => ({
+      claim: { document_path: 'cards/payment.md', external_ref_available: true },
+      items: [{
+        id: 'occ_1',
+        status: 'blocked' as const,
+        summary: 'Execution is blocked',
+        reason: 'Choose an allowed model for this Service.',
+        reason_code: 'model_not_configured',
+        repair_role: 'project_owner' as const,
+        requested_actor: { label: 'External editor', precision: 'display_only' as const },
+        run: null,
+        receipt: { external: 'written' as const, writeback: 'not_required' as const },
+        created_at: '2026-07-31T00:00:00Z',
+        updated_at: '2026-07-31T00:00:00Z',
+      }],
+      next_cursor: null,
+    }));
+    const api = {
+      ...makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] }),
+      getServiceKanbanPolicy: async () => ({
+        service_id: 'svc_1',
+        service_name: 'payments-api',
+        repository: 'acme/payments',
+        model: { id: 'model_1', label: 'Claude Sonnet' },
+        board: { workspace_id: 'ws_team', ref: 'b_123' },
+        trigger_column: { key: 'ai', label: 'Agent queue' },
+        done_column: { key: 'done', label: 'Done' },
+        output: 'comment_and_move_on_success' as const,
+        health: { state: 'ready' as const, blocker: null },
+      }),
+      listServiceKanbanCardExecutions: listExecutions,
+    } as unknown as ApiClient;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ApiProvider client={api}>
+          <KanbanBoardModal
+            projectId="p1"
+            serviceId="svc_1"
+            links={[link()]}
+            onClose={() => {}}
+          />
+        </ApiProvider>
+      </QueryClientProvider>,
+    );
+
+    expect((await screen.findByTestId('kanban-policy')).textContent).toContain('payments-api');
+    expect(screen.getByTestId('kanban-policy').textContent).toContain('Agent queue');
+    const receipt = await screen.findByTestId('kanban-execution-current');
+    expect(receipt.textContent).toContain('Model not configured');
+    expect(receipt.textContent).toContain('Project owner');
+    expect(receipt.textContent).not.toContain('Card writeback pending');
+    expect(listExecutions).toHaveBeenCalledWith('svc_1', 'ws_team', 'cards/payment.md', undefined);
+  });
+
+  it('keeps execution load failures visible and retries into the empty state', async () => {
+    const listExecutions = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary API failure'))
+      .mockResolvedValueOnce({ claim: null, items: [], next_cursor: null });
+    const api = {
+      ...makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] }),
+      listServiceKanbanCardExecutions: listExecutions,
+    } as unknown as ApiClient;
+    renderModal(api, [link()], 'svc_1');
+
+    expect(await screen.findByText('Cloud executions could not be loaded.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText(/Move this Card into the Starts jcode column/)).toBeTruthy();
+    expect(listExecutions).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves deleted-Card history and loads older occurrences by opaque cursor', async () => {
+    const listExecutions = vi.fn(async (_serviceId: string, _workspaceId: string, _path: string, before?: string) => (
+      before
+        ? {
+            claim: { document_path: 'cards/payment.md', external_ref_available: false },
+            items: [{
+              id: 'occ_old',
+              status: 'terminal' as const,
+              outcome: 'failed',
+              summary: 'Run failed',
+              reason: null,
+              repair_role: null,
+              requested_actor: null,
+              run: null,
+              receipt: { external: 'written' as const, writeback: 'complete' as const },
+              created_at: '2026-07-30T00:00:00Z',
+              updated_at: '2026-07-30T00:01:00Z',
+            }],
+            next_cursor: null,
+          }
+        : {
+            claim: { document_path: 'cards/payment.md', external_ref_available: false },
+            items: [{
+              id: 'occ_current',
+              status: 'terminal' as const,
+              outcome: 'succeeded',
+              summary: 'Run completed successfully',
+              reason: null,
+              repair_role: null,
+              requested_actor: null,
+              run: null,
+              receipt: { external: 'written' as const, writeback: 'complete' as const },
+              created_at: '2026-07-31T00:00:00Z',
+              updated_at: '2026-07-31T00:01:00Z',
+            }],
+            next_cursor: 'opaque-before',
+          }
+    ));
+    const api = {
+      ...makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] }),
+      listServiceKanbanCardExecutions: listExecutions,
+    } as unknown as ApiClient;
+    renderModal(api, [link()], 'svc_1');
+
+    expect(await screen.findByText(/no longer exists in JType/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier executions' }));
+    expect(await screen.findByText('1 prior execution')).toBeTruthy();
+    expect(listExecutions).toHaveBeenLastCalledWith(
+      'svc_1',
+      'ws_team',
+      'cards/payment.md',
+      'opaque-before',
+    );
   });
 
   it('resolves board_ref (config id) → relativePath before rendering', async () => {

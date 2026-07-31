@@ -97,7 +97,9 @@ func (f *fakeJtype) handle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"id": "cmt-1"})
 
 	case strings.Contains(suffix, "/comments") && r.Method == http.MethodGet:
-		writeJSON(w, http.StatusOK, []any{})
+		writeJSON(w, http.StatusOK, []any{
+			map[string]any{"id": "cmt-1", "body": f.lastBody},
+		})
 
 	default:
 		// GET .../documents/{id}
@@ -112,6 +114,23 @@ func (f *fakeJtype) handle(w http.ResponseWriter, r *http.Request) {
 			"relativePath": d.path, "title": d.path, "content": d.body,
 			"contentHash": d.hash, "updatedClock": 1,
 		})
+	}
+}
+
+func TestClientListsCardCommentBodies(t *testing.T) {
+	f := newFakeJtype()
+	srv := httptest.NewServer(f.mux)
+	defer srv.Close()
+	c := NewClient(srv.URL, "token", 0)
+	if err := c.AddComment(context.Background(), "ws", "doc", "<!-- marker --> accepted"); err != nil {
+		t.Fatal(err)
+	}
+	comments, err := c.ListComments(context.Background(), "ws", "doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != 1 || comments[0].ID != "cmt-1" || comments[0].Body != "<!-- marker --> accepted" {
+		t.Fatalf("comments = %+v", comments)
 	}
 }
 

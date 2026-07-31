@@ -66,6 +66,8 @@ import type {
   ResumeSessionOptions,
   RunStatus,
   Service,
+  KanbanCardExecutionsPage,
+  ServiceKanbanPolicy,
 	ServiceBranch,
   SystemInfo,
   UpdateClusterProviderConfigInput,
@@ -2174,6 +2176,35 @@ export function createMockClient(): ApiClient {
         item.automation.service_id === serviceId && item.automation.trigger_kind === 'kanban');
       if (!spec) throw new ApiError(404, 'Kanban is not enabled');
       return delay(structuredClone(spec));
+    },
+    async getServiceKanbanPolicy(serviceId: string): Promise<ServiceKanbanPolicy> {
+      const service = [...services.values()].flat().find((item) => item.id === serviceId);
+      const spec = [...projectAutomations.values()].find((item) =>
+        item.automation.service_id === serviceId && item.automation.trigger_kind === 'kanban');
+      if (!service || !spec?.kanban) throw new ApiError(404, 'Kanban is not enabled');
+      const plugin = [...pluginList(service.project_id).values()].find((item) => item.id === spec.kanban!.installation_id);
+      return delay({
+        service_id: serviceId,
+        service_name: service.name,
+        repository: service.repo_owner_name ?? service.raw_repo_url ?? '',
+        model: { label: 'Demo model' },
+        board: { workspace_id: plugin?.workspace_id ?? '', ref: spec.kanban.board_ref },
+        trigger_column: { key: spec.kanban.trigger_column, label: spec.kanban.trigger_column },
+        done_column: { key: spec.kanban.done_column, label: spec.kanban.done_column },
+        output: spec.kanban.done_column ? 'comment_and_move_on_success' : 'comment_only',
+        health: {
+          state: spec.automation.enabled ? 'ready' : 'blocked',
+          blocker: spec.automation.enabled ? null : 'binding_disabled',
+          repair_role: spec.automation.enabled ? null : 'project_owner',
+        },
+      });
+    },
+    async listServiceKanbanCardExecutions(_serviceId: string, _workspaceId: string, _documentPath: string): Promise<KanbanCardExecutionsPage> {
+      return delay({
+        claim: null,
+        items: [],
+        next_cursor: null,
+      });
     },
     async putServiceKanban(serviceId, input): Promise<ProjectAutomationSpec> {
       const projectEntry = [...services.entries()].find(([, list]) => list.some((service) => service.id === serviceId));

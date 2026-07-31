@@ -90,6 +90,10 @@ performs one level scan:
 
 A board that cannot provide events is a visible `event_feed_unavailable`
 binding blocker; repeatedly scanning levels is not an acceptable steady state.
+Board drift or transient validation failure fences bootstrap and new event
+consumption only. Existing occurrences and receipt retries continue through
+their frozen document/writeback route, so drift cannot strand already accepted
+work.
 
 ### Claim anchor
 
@@ -127,7 +131,7 @@ Migration `0058` adds `automation_kanban_occurrences`:
 | `reason_code`, `reason_message` | Typed blocker/failure and safe guidance |
 | `repair_role` | `project_owner`, `cluster_admin`, or empty |
 | `run_id` | Nullable, unique when present |
-| `receipt_phase` | Latest required external comment phase |
+| `receipt_phase` | Latest required external comment phase: `accepted`, `blocked`, `already_running`, `writeback_pending`, or `terminal` |
 | `receipt_written_at` | Latest external receipt projection |
 | `writeback_state` | `not_required`, `pending`, `complete`, `unavailable` |
 | `writeback_error` | Safe last error, never a credential or model payload |
@@ -275,7 +279,7 @@ Response:
       "run": {
         "id": "run_123",
         "status": "running",
-        "href": "/projects/p_123/runs/run_123"
+        "href": "/runs/run_123"
       },
       "receipt": {"external": "written", "writeback": "pending"},
       "created_at": "2026-07-31T02:00:00Z"

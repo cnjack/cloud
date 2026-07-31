@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -32,11 +33,13 @@ func testDecrypt(b []byte) (string, error) { return "PLAIN-" + string(b), nil }
 // tokens records every PAT the token->writer factory was asked to bind, so the
 // per-link token-selection tests can assert which credential was used.
 type fakeKanbanWriter struct {
-	comments   []commentCall
-	moves      []moveCall
-	commentErr error
-	moveErr    error
-	tokens     []string
+	comments    []commentCall
+	moves       []moveCall
+	commentErr  error
+	listErr     error
+	moveErr     error
+	moveErrOnce bool
+	tokens      []string
 }
 
 // writerFor returns fk as a (factory,token)->writer builder, recording each
@@ -69,7 +72,24 @@ func (f *fakeKanbanWriter) AddComment(_ context.Context, ws, docID, body string)
 	return nil
 }
 
+func (f *fakeKanbanWriter) ListComments(_ context.Context, ws, docID string) ([]jtype.Comment, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	out := make([]jtype.Comment, 0)
+	for index, comment := range f.comments {
+		if comment.ws == ws && comment.docID == docID {
+			out = append(out, jtype.Comment{ID: fmt.Sprintf("comment-%d", index+1), Body: comment.body})
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeKanbanWriter) MoveCard(_ context.Context, ws, docID, status string) error {
+	if f.moveErrOnce {
+		f.moveErrOnce = false
+		return errors.New("temporary move failure")
+	}
 	if f.moveErr != nil {
 		return f.moveErr
 	}
@@ -177,14 +197,20 @@ func TestPluginKanbanWritebackUsesInstallationWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := &domain.Run{ID: domain.NewID(), ProjectID: project.ID, ServiceID: service.ID, Prompt: "p", Status: domain.StatusSucceeded, Origin: domain.RunOriginKanban, OriginAutomationID: automation.ID, Attempt: 1, CreatedAt: time.Now()}
-	if err := st.CreateRun(ctx, run); err != nil {
-		t.Fatal(err)
+	observed, err := st.ObservePluginKanbanCard(ctx, store.PluginKanbanObservation{
+		AutomationID: automation.ID, ServiceID: service.ID,
+		InstallationID: installation.ID, WorkspaceID: installation.WorkspaceID,
+		DocumentID: "doc-plugin", DocumentPath: "cards/x.md",
+		TriggerColumn: "ai", DoneColumn: "done", ObservedColumn: "ai",
+		EventKey: "event:1", ObservedAt: time.Now().UTC(),
+	})
+	if err != nil || observed.Occurrence == nil {
+		t.Fatalf("observe occurrence=%+v err=%v", observed, err)
 	}
-	if _, err := st.EnsurePluginKanbanClaim(ctx, automation.ID, "doc-plugin", "cards/x.md", "workspace-fixed", "done"); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.SetPluginKanbanClaimRun(ctx, automation.ID, "doc-plugin", run.ID); err != nil {
-		t.Fatal(err)
+	if attached, err := st.CreatePluginKanbanOccurrenceRun(
+		ctx, observed.Occurrence.ID, run,
+	); err != nil || !attached {
+		t.Fatalf("attach run=%v err=%v", attached, err)
 	}
 	if err := st.CreateRunPluginSnapshots(ctx, []domain.RunPluginSnapshot{{RunID: run.ID, InstallationID: installation.ID, CreatedAt: time.Now()}}); err != nil {
 		t.Fatal(err)
@@ -199,18 +225,100 @@ func TestPluginKanbanWritebackUsesInstallationWorkspace(t *testing.T) {
 	if err := st.DeletePluginAutomation(ctx, automation.ID); err != nil {
 		t.Fatal(err)
 	}
-	writer := &fakeKanbanWriter{}
+	writer := &fakeKanbanWriter{moveErrOnce: true}
 	rec := wire(st, newWritebackRec(st), writer, "http://console")
 	rec.Tick(ctx)
 	rec.Tick(ctx)
 	if len(writer.moves) != 1 || writer.moves[0].ws != "workspace-fixed" || writer.moves[0].status != "done" {
 		t.Fatalf("moves=%+v", writer.moves)
 	}
-	if len(writer.comments) != 1 || writer.comments[0].docID != "doc-plugin" {
+	if len(writer.comments) != 2 ||
+		writer.comments[0].docID != "doc-plugin" ||
+		writer.comments[1].docID != "doc-plugin" {
 		t.Fatalf("comments=%+v", writer.comments)
+	}
+	if !strings.Contains(writer.comments[0].body, ":accepted -->") ||
+		!strings.Contains(writer.comments[1].body, ":terminal -->") {
+		t.Fatalf("receipt phase order=%+v", writer.comments)
 	}
 	if len(writer.tokens) == 0 || writer.tokens[0] != "PLAIN-PLUGINPAT" {
 		t.Fatalf("tokens=%v", writer.tokens)
+	}
+}
+
+func TestPluginKanbanDeletedCardCompletesAsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: "deleted-card-project", Name: "p", CreatedAt: time.Now()}
+	_ = st.CreateProject(ctx, project)
+	service := &domain.Service{
+		ID: "deleted-card-service", ProjectID: project.ID, Name: "svc",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "https://git.test/acme/repo.git",
+		CreatedAt: time.Now(),
+	}
+	_ = st.CreateService(ctx, service)
+	cfg := &domain.ProviderConfig{
+		Provider: domain.PluginJType, BaseURL: "http://jtype.plugin", PluginEnabled: true,
+	}
+	_ = st.UpsertProviderConfig(ctx, cfg)
+	installation := &domain.PluginInstallation{
+		ID: "deleted-card-installation", ProjectID: project.ID, Provider: domain.PluginJType,
+		Status: domain.PluginStatusEnabled, WorkspaceID: "workspace-fixed",
+		AccessTokenEnc: []byte("PLUGINPAT"), ConfigRevision: cfg.ConfigRevision,
+		ConsentedAt: time.Now(), CreatedAt: time.Now(),
+	}
+	_ = st.CreatePluginInstallation(ctx, installation)
+	automation := &domain.PluginAutomation{
+		ID: "deleted-card-automation", ServiceID: service.ID, InstallationID: installation.ID,
+		Name: "board", TriggerKind: "kanban", Enabled: true, CreatedAt: time.Now(),
+	}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: automation.ID, InstallationID: installation.ID,
+		BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done",
+	}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: "deleted-card-run", ProjectID: project.ID, ServiceID: service.ID,
+		Status: domain.StatusSucceeded, Origin: domain.RunOriginKanban,
+		OriginAutomationID: automation.ID, CreatedAt: time.Now(),
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.EnsurePluginKanbanClaim(
+		ctx, automation.ID, "deleted-card", "cards/deleted.md", "workspace-fixed", "done",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetPluginKanbanClaimRun(ctx, automation.ID, "deleted-card", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateRunPluginSnapshots(ctx, []domain.RunPluginSnapshot{{
+		RunID: run.ID, InstallationID: installation.ID, CreatedAt: time.Now(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	writer := &fakeKanbanWriter{listErr: jtype.ErrDocNotFound}
+	rec := wire(st, newWritebackRec(st), writer, "http://console")
+	rec.Tick(ctx)
+	rec.Tick(ctx)
+
+	if pending, err := st.ListPluginKanbanRunsAwaitingWriteback(ctx); err != nil || len(pending) != 0 {
+		t.Fatalf("pending=%+v err=%v", pending, err)
+	}
+	claim, err := st.GetPluginKanbanClaimByPath(
+		ctx, automation.ID, "workspace-fixed", "cards/deleted.md",
+	)
+	if err != nil || claim.ExternalRefAvailable {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	history, err := st.ListPluginKanbanOccurrences(ctx, automation.ID, "deleted-card", 10)
+	if err != nil || len(history) != 1 ||
+		history[0].WritebackState != "unavailable" ||
+		history[0].Outcome != string(domain.StatusSucceeded) {
+		t.Fatalf("history=%+v err=%v", history, err)
 	}
 }
 

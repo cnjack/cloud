@@ -48,6 +48,7 @@ import type {
   GitHubAppInstallation,
   GitHubInstallationConsentPreview,
   JTypePluginConnectStatus,
+  KanbanCardExecutionsPage,
   ProviderKind,
   PluginRepositoryResource,
   PluginWorkspaceResource,
@@ -77,6 +78,7 @@ import type {
   UpdateProjectAutomationInput,
   PutServiceKanbanInput,
   ServiceKanbanBinding,
+  ServiceKanbanPolicy,
   UpdateModelInput,
   UpdateModelProviderInput,
   UpdateProjectInput,
@@ -336,6 +338,8 @@ export interface ApiClient {
   updateProjectAutomation(projectId: string, automationId: string, input: UpdateProjectAutomationInput): Promise<ProjectAutomationSpec>;
   deleteProjectAutomation(projectId: string, automationId: string): Promise<void>;
   getServiceKanban(serviceId: string): Promise<ServiceKanbanBinding>;
+  getServiceKanbanPolicy(serviceId: string): Promise<ServiceKanbanPolicy>;
+  listServiceKanbanCardExecutions(serviceId: string, workspaceId: string, documentPath: string, before?: string, limit?: number): Promise<KanbanCardExecutionsPage>;
   putServiceKanban(serviceId: string, input: PutServiceKanbanInput): Promise<ServiceKanbanBinding>;
   deleteServiceKanban(serviceId: string): Promise<void>;
   /** Lists branches through the Service's bound Plugin; never exposes a Git credential. */
@@ -824,6 +828,18 @@ export function createHttpClient(
     deleteProjectAutomation: (_projectId, automationId) =>
       req<void>(`/automations/${encodeURIComponent(automationId)}`, { method: 'DELETE' }),
     getServiceKanban: (serviceId) => req<ServiceKanbanBinding>(`/services/${encodeURIComponent(serviceId)}/kanban`),
+    getServiceKanbanPolicy: (serviceId) => req<ServiceKanbanPolicy>(`/services/${encodeURIComponent(serviceId)}/kanban/policy`),
+    listServiceKanbanCardExecutions: (serviceId, workspaceId, documentPath, before, limit = 20) => {
+      const params = new URLSearchParams({
+        workspace_id: workspaceId,
+        document_path: documentPath,
+        limit: String(limit),
+      });
+      if (before) params.set('before', before);
+      return req<KanbanCardExecutionsPage>(
+        `/services/${encodeURIComponent(serviceId)}/kanban/card-executions?${params.toString()}`,
+      );
+    },
     putServiceKanban: (serviceId, input) => req<ServiceKanbanBinding>(`/services/${encodeURIComponent(serviceId)}/kanban`, {
       method: 'PUT', body: JSON.stringify(input),
     }),
