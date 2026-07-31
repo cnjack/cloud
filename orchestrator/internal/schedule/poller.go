@@ -8,6 +8,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/modelcfg"
+	"github.com/cnjack/jcloud/internal/provenance"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -162,6 +163,7 @@ func (p *Poller) firePluginAutomation(ctx context.Context, spec *domain.PluginAu
 		modelID := sel.ModelID
 		run.ModelID = &modelID
 	}
+	provenance.Stamp(ctx, p.st, run, nil)
 	if err := p.st.CreateRun(ctx, run); err != nil {
 		automation := spec.Automation
 		automation.LastError = "dispatch failed"
@@ -258,6 +260,13 @@ func (p *Poller) fire(ctx context.Context, sc *domain.Schedule) {
 	if sel.ModelID != "" {
 		run.ModelID = &sel.ModelID
 	}
+	var attribution *provenance.ExternalActor
+	if sc.CreatedBy != nil && *sc.CreatedBy != "" {
+		attribution = &provenance.ExternalActor{
+			Source: "automation_rule", AccountableUserID: *sc.CreatedBy,
+		}
+	}
+	provenance.Stamp(ctx, p.st, run, attribution)
 	if err := p.st.CreateRun(ctx, run); err != nil {
 		// The window was already advanced (claimed), so we cannot retry it —
 		// exactly-once is deliberately preferred over at-least-once here. Record the

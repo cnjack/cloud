@@ -28,6 +28,7 @@ import (
 	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/kanbancfg"
 	"github.com/cnjack/jcloud/internal/modelcfg"
+	"github.com/cnjack/jcloud/internal/provenance"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -469,6 +470,9 @@ func (p *Poller) dispatchPluginKanbanOccurrence(ctx context.Context, api Documen
 		modelID := sel.ModelID
 		run.ModelID = &modelID
 	}
+	provenance.Stamp(ctx, p.st, run, &provenance.ExternalActor{
+		Provider: "jtype", Label: occurrence.ActorDisplay, Source: "kanban_event",
+	})
 	attached, err := p.st.CreatePluginKanbanOccurrenceRun(ctx, occurrence.ID, run)
 	if err != nil || !attached {
 		return
@@ -1028,6 +1032,13 @@ func (p *Poller) maybeDispatch(ctx context.Context, api DocumentAPI, link *domai
 	if sel.ModelID != "" {
 		run.ModelID = &sel.ModelID
 	}
+	var external *provenance.ExternalActor
+	if event != nil && strings.TrimSpace(event.EditedBy) != "" {
+		external = &provenance.ExternalActor{
+			Provider: "jtype", Label: event.EditedBy, Source: "kanban_event",
+		}
+	}
+	provenance.Stamp(ctx, p.st, run, external)
 	if err := p.st.CreateRun(ctx, run); err != nil {
 		p.log.Error("kanban poll: create run", "link", link.ID, "doc", d.ID, "err", err)
 		return false // run_id stays empty; retried next tick (no claim leak — no run yet)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/modelcfg"
+	"github.com/cnjack/jcloud/internal/provenance"
 	gitprovider "github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/scmevent"
 	"github.com/cnjack/jcloud/internal/store"
@@ -349,6 +350,10 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 			modelID := sel.ModelID
 			run.ModelID = &modelID
 		}
+		provenance.Stamp(r.Context(), s.st, run, &provenance.ExternalActor{
+			Provider: string(provider), ID: event.Actor.ID,
+			Label: event.Actor.Login, Source: "scm_event",
+		})
 		var createErr error
 		if coalesceKey := pluginRunCoalesceKey(a.ID, svc.ID, event); coalesceKey != "" && !manualReview {
 			createErr = s.st.CreateCoalescedRun(r.Context(), coalesceKey, run)

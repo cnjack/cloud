@@ -11,6 +11,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/modelcfg"
+	"github.com/cnjack/jcloud/internal/provenance"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -167,6 +168,7 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 	run.ModelEffort = req.ModelEffort
 	run.GoalMode = req.GoalMode
 	run.AttachmentStageIDs = append([]string(nil), req.AttachmentStageIDs...)
+	provenance.Stamp(r.Context(), s.st, run, nil)
 	if err := s.st.CreateRun(r.Context(), run); err != nil {
 		if errors.Is(err, store.ErrServiceDeleting) {
 			writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
@@ -330,7 +332,12 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), run.ProjectID, domain.RoleViewer) {
 		return
 	}
-	writeJSON(w, http.StatusOK, run)
+	writeJSON(w, http.StatusOK, struct {
+		*domain.Run
+		Provenance provenance.RunProvenance `json:"provenance"`
+	}{
+		Run: run, Provenance: provenance.Resolve(r.Context(), s.st, run),
+	})
 }
 
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
@@ -456,6 +463,7 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	retry.ModelEffort = orig.ModelEffort
 	retry.GoalMode = orig.GoalMode
 	retry.CopyAttachmentsFrom = orig.ID
+	provenance.Stamp(r.Context(), s.st, retry, nil)
 	if err := s.st.CreateRun(r.Context(), retry); err != nil {
 		s.log.Error("retry run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create retry run")
@@ -605,6 +613,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	resume.AcpSessionID = orig.AcpSessionID
 	// The project's max_live_sessions cap is enforced naturally when the reconciler
 	// tries to schedule this queued session run (F7b logic) — no extra check here.
+	provenance.Stamp(r.Context(), s.st, resume, nil)
 	if err := s.st.CreateRun(r.Context(), resume); err != nil {
 		s.log.Error("resume run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create resume run")

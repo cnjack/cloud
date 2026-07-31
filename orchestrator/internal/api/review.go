@@ -8,6 +8,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/modelcfg"
+	"github.com/cnjack/jcloud/internal/provenance"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -69,6 +70,7 @@ func (s *Server) handleRequestReview(w http.ResponseWriter, r *http.Request) {
 	review := newReviewRun(src, svc, principalFrom(r.Context()).userIDPtr())
 	review.ModelID = modelID
 	review.ModelName = modelName
+	provenance.Stamp(r.Context(), s.st, review, nil)
 	if err := s.st.CreateRun(r.Context(), review); err != nil {
 		s.log.Error("create review run", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not create review run")

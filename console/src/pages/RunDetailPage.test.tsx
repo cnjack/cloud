@@ -208,6 +208,80 @@ describe('RunDetailPage — resilient error states', () => {
     expect(screen.queryByTestId('tab-events')).toBeNull();
   });
 
+  it('separates requester, rule owner, execution target, and Bot writeback identity', async () => {
+    const { client, ctl } = makeClient('member');
+    const run = baseRun({
+      service_id: 'svc-1',
+      origin: 'kanban',
+      provenance: {
+        requested_actor: {
+          kind: 'external_actor',
+          label: 'Mei',
+          provider: 'jtype',
+        },
+        accountable_actor: {
+          kind: 'cloud_user',
+          id: 'user-jack',
+          label: 'Jack',
+        },
+        attribution_source: 'kanban_event',
+        precision: 'rule_owner',
+        trigger: {
+          kind: 'kanban_card',
+          label: 'JType Card #42',
+          ref: 'occurrence-42',
+        },
+        executed_for: {
+          project_id: 'proj1',
+          project_label: 'commerce',
+          service_id: 'svc-1',
+          service_label: 'payments-api',
+          repository: 'acme/payments',
+          model: 'anthropic/claude-sonnet',
+        },
+        runtime_principal: {
+          kind: 'automation_principal',
+          label: 'Cloud Automation',
+        },
+        writeback_actor: {
+          kind: 'provider_bot',
+          label: 'jcode Cloud Bot',
+          provider: 'jtype',
+        },
+      },
+    });
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+
+    expect((await screen.findByTestId('run-inspector')).textContent).toContain('Identity & source');
+    expect(screen.getByTestId('provenance-requested').textContent).toContain('Mei');
+    expect(screen.getByTestId('provenance-requested').textContent).toContain('External actor');
+    expect(screen.getByTestId('provenance-requested').textContent).not.toContain('Bot');
+    expect(screen.getByTestId('provenance-accountable').textContent).toContain('Jack');
+    expect(screen.getByTestId('provenance-accountable').textContent).toContain('Rule owner');
+    expect(screen.getByTestId('provenance-trigger').textContent).toContain('JType Card #42');
+    expect(screen.getByTestId('provenance-executed-for').textContent).toContain('commerce');
+    expect(screen.getByTestId('provenance-executed-for').textContent).toContain('payments-api');
+    expect(screen.getByTestId('provenance-executed-for').textContent).toContain('acme/payments');
+    expect(screen.getByTestId('provenance-executed-for').textContent).toContain('anthropic/claude-sonnet');
+    expect(screen.getByTestId('provenance-executed-for').textContent).toContain('Dispatch-time snapshot');
+    expect(screen.getByTestId('provenance-written-back').textContent).toContain('jcode Cloud Bot');
+    expect(screen.getByTestId('provenance-written-back').textContent).toContain('Bot / App');
+  });
+
+  it('labels missing legacy provenance without inventing a person, Bot, or zero value', async () => {
+    const { client, ctl } = makeClient('viewer');
+    const run = baseRun();
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+
+    expect((await screen.findByTestId('provenance-requested')).textContent).toBe('Not attributed');
+    expect(screen.getByTestId('provenance-accountable').textContent).toBe('Not attributed');
+    expect(screen.getByTestId('provenance-trigger').textContent).toBe('Unavailable');
+    expect(screen.getByTestId('provenance-executed-for').textContent).toContain('Unavailable');
+    expect(screen.getByTestId('provenance-written-back').textContent).toBe('Not applicable');
+  });
+
   it('truncates a long task title with the complete prompt available on hover', async () => {
     const prompt = '# A deliberately long task title\n\n## Details\n' + 'keep this context '.repeat(40);
     const { client, ctl } = makeClient('member');
