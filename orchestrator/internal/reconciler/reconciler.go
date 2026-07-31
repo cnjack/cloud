@@ -116,6 +116,10 @@ type Reconciler struct {
 	secretVersionCleanupMu       sync.Mutex
 	lastSecretVersionCleanup     time.Time
 	secretVersionCleanupInterval time.Duration
+	usageCleanupMu               sync.Mutex
+	lastUsageCleanup             time.Time
+	usageCleanupInterval         time.Duration
+	usageCleanupRunning          bool
 }
 
 // Archiver signs short-lived, single-object presigned URLs for the workspace
@@ -156,6 +160,7 @@ func workspaceArchiveKey(serviceID string) string {
 // KanbanWriter is the slice of *jtype.Client the writeback pass uses. Exported so
 // main.go can build the token->writer factory; a fake implements it in tests.
 type KanbanWriter interface {
+	ListComments(ctx context.Context, workspace, docID string) ([]jtype.Comment, error)
 	AddComment(ctx context.Context, workspace, docID, body string) error
 	MoveCard(ctx context.Context, workspace, docID, newStatus string) error
 }
@@ -174,6 +179,7 @@ func New(st store.Store, launcher k8s.JobLauncher, cfg *config.Config, log *slog
 		receiptCleanupInterval:       time.Hour,
 		attachmentCleanupInterval:    time.Minute,
 		secretVersionCleanupInterval: time.Hour,
+		usageCleanupInterval:         time.Hour,
 	}
 }
 
@@ -293,6 +299,7 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	r.reconcileWebhookReceiptRetention(ctx)
 	r.reconcileExpiredAttachmentStages(ctx)
 	r.reconcilePluginSecretVersionRetention(ctx)
+	r.reconcileUsageRetention(ctx)
 	runs, err := r.st.ListRunsByStatus(ctx,
 		domain.StatusQueued, domain.StatusScheduling, domain.StatusRunning,
 		// Session (D22): awaiting_input runs still own a pod, so the loop must
@@ -488,6 +495,51 @@ func (r *Reconciler) Tick(ctx context.Context) {
 	// object storage and delete the PVC. No-op unless object storage is configured
 	// AND persistent workspace is on AND ARCHIVE_IDLE_DAYS>0.
 	r.reconcileArchive(ctx)
+}
+
+// reconcileUsageRetention keeps fine-grained observations for the configured
+// short audit window and UTC-hour aggregates for the longer reporting window.
+// Cleanup is non-blocking for run scheduling and retries on the next cadence.
+func (r *Reconciler) reconcileUsageRetention(ctx context.Context) {
+	now := r.now().UTC()
+	r.usageCleanupMu.Lock()
+	if r.usageCleanupRunning || !r.lastUsageCleanup.IsZero() && r.usageCleanupInterval > 0 &&
+		now.Sub(r.lastUsageCleanup) < r.usageCleanupInterval {
+		r.usageCleanupMu.Unlock()
+		return
+	}
+	r.usageCleanupRunning = true
+	r.usageCleanupMu.Unlock()
+	defer func() {
+		r.usageCleanupMu.Lock()
+		r.usageCleanupRunning = false
+		r.usageCleanupMu.Unlock()
+	}()
+
+	rawRetention := r.cfg.UsageRawRetention
+	if rawRetention <= 0 {
+		rawRetention = 90 * 24 * time.Hour
+	}
+	rollupRetention := r.cfg.UsageRollupRetention
+	if rollupRetention < rawRetention {
+		rollupRetention = 365 * 24 * time.Hour
+	}
+	rawDeleted, rollupsDeleted, err := r.st.CleanupUsage(
+		ctx,
+		now.Add(-rawRetention).Truncate(time.Hour),
+		now.Add(-rollupRetention).Truncate(time.Hour),
+	)
+	if err != nil {
+		r.log.Warn("reconcile: cleanup usage ledger", "err", err)
+		return
+	}
+	r.usageCleanupMu.Lock()
+	r.lastUsageCleanup = now
+	r.usageCleanupMu.Unlock()
+	if rawDeleted > 0 || rollupsDeleted > 0 {
+		r.log.Info("reconcile: cleaned usage ledger",
+			"raw_deleted", rawDeleted, "rollups_deleted", rollupsDeleted)
+	}
 }
 
 const webhookReceiptCleanupMaxBatches = 10
@@ -1066,16 +1118,102 @@ func (r *Reconciler) reconcilePluginKanbanWriteback(ctx context.Context) {
 			continue
 		}
 		writer := r.kanbanFor(factory, token)
-		if wb.Run.Status == domain.StatusSucceeded && wb.Claim.DoneColumn != "" {
-			if err := writer.MoveCard(ctx, wb.Claim.WorkspaceID, wb.Claim.DocumentID, wb.Claim.DoneColumn); err != nil {
+		occurrenceID := wb.Claim.LatestOccurrenceID
+		if wb.Occurrence != nil {
+			occurrenceID = wb.Occurrence.ID
+		}
+		if occurrenceID == "" {
+			continue
+		}
+		comments, err := writer.ListComments(ctx, wb.Claim.WorkspaceID, wb.Claim.DocumentID)
+		if err != nil {
+			r.finishUnavailablePluginKanbanWriteback(ctx, wb, err)
+			continue
+		}
+		acceptedMarker := jtype.KanbanReceiptMarker(occurrenceID, "accepted")
+		terminalMarker := jtype.KanbanReceiptMarker(occurrenceID, "terminal")
+		acceptedWritten := false
+		terminalWritten := false
+		for _, comment := range comments {
+			acceptedWritten = acceptedWritten || strings.Contains(comment.Body, acceptedMarker)
+			terminalWritten = terminalWritten || strings.Contains(comment.Body, terminalMarker)
+		}
+		// The terminal result must not supersede a pending accepted receipt. A
+		// very fast Run can finish while the poller's first comment is retrying;
+		// write/dedupe that receipt here before publishing the terminal phase.
+		if wb.Occurrence != nil && wb.Occurrence.ReceiptPhase == "accepted" &&
+			wb.Occurrence.ReceiptWrittenAt == nil {
+			if !acceptedWritten {
+				service, serviceErr := r.st.GetService(ctx, wb.Run.ServiceID)
+				if serviceErr != nil {
+					continue
+				}
+				model := wb.Run.ModelName
+				if model == "" {
+					model = "the configured model"
+				}
+				body := acceptedMarker + "\n" +
+					"jcode Cloud accepted this Card for `" + service.Name +
+					"` using `" + model + "`."
+				if r.consoleURL != "" {
+					body += "\n\nRun: " + strings.TrimRight(r.consoleURL, "/") +
+						"/runs/" + wb.Run.ID
+				}
+				if err := writer.AddComment(
+					ctx, wb.Claim.WorkspaceID, wb.Claim.DocumentID, body,
+				); err != nil {
+					r.finishUnavailablePluginKanbanWriteback(ctx, wb, err)
+					continue
+				}
+			}
+			writtenAt := r.now()
+			if err := r.st.MarkPluginKanbanOccurrenceReceipt(
+				ctx, occurrenceID, "accepted", &writtenAt, "",
+			); err != nil {
 				continue
 			}
 		}
-		if err := writer.AddComment(ctx, wb.Claim.WorkspaceID, wb.Claim.DocumentID, kanbanCommentBody(&wb.Run, r.consoleURL)); err != nil {
-			continue
+		if !terminalWritten {
+			body := terminalMarker + "\n" + kanbanCommentBody(&wb.Run, r.consoleURL)
+			if err := writer.AddComment(ctx, wb.Claim.WorkspaceID, wb.Claim.DocumentID, body); err != nil {
+				r.finishUnavailablePluginKanbanWriteback(ctx, wb, err)
+				continue
+			}
 		}
-		_, _ = r.st.MarkPluginKanbanWriteback(ctx, wb.Claim.AutomationID, wb.Claim.DocumentID, r.now())
+		if wb.Run.Status == domain.StatusSucceeded && wb.Claim.DoneColumn != "" {
+			if err := writer.MoveCard(ctx, wb.Claim.WorkspaceID, wb.Claim.DocumentID, wb.Claim.DoneColumn); err != nil {
+				r.finishUnavailablePluginKanbanWriteback(ctx, wb, err)
+				continue
+			}
+		}
+		_, _ = r.st.MarkPluginKanbanWriteback(
+			ctx, wb.Claim.AutomationID, wb.Claim.DocumentID, occurrenceID,
+			wb.Run.Status, wb.Run.FinishedAt, r.now(),
+		)
 	}
+}
+
+func (r *Reconciler) finishUnavailablePluginKanbanWriteback(ctx context.Context, wb *store.PluginKanbanWriteback, cause error) {
+	if wb == nil || !isJTypeNotFound(cause) {
+		return
+	}
+	occurrenceID := wb.Claim.LatestOccurrenceID
+	if wb.Occurrence != nil {
+		occurrenceID = wb.Occurrence.ID
+	}
+	_, _ = r.st.MarkPluginKanbanWritebackUnavailable(
+		ctx, wb.Claim.AutomationID, wb.Claim.DocumentID, occurrenceID,
+		wb.Run.Status, wb.Run.FinishedAt,
+		"The source Card is no longer available in JType.", r.now(),
+	)
+}
+
+func isJTypeNotFound(err error) bool {
+	if errors.Is(err, jtype.ErrDocNotFound) {
+		return true
+	}
+	var apiErr *jtype.Error
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 }
 
 // writebackCard posts the result comment for one terminal run and (for a

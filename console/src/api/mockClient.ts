@@ -22,6 +22,8 @@ import type {
 import type {
   AddMemberInput,
   ApiKey,
+  AutomationExecution,
+  AutomationExecutionsPage,
   BoardEmbedLink,
   CatalogModel,
   ClusterProviderConfig,
@@ -66,6 +68,8 @@ import type {
   ResumeSessionOptions,
   RunStatus,
   Service,
+  KanbanCardExecutionsPage,
+  ServiceKanbanPolicy,
 	ServiceBranch,
   SystemInfo,
   UpdateClusterProviderConfigInput,
@@ -76,6 +80,8 @@ import type {
   UpdateProviderModelInput,
   UpdateServiceInput,
   UserSearchResult,
+  UsageSummary,
+  ModelPricingRevision,
 } from './types';
 import { providerForRepoUrl } from '../lib/repo';
 import { isReservedEnvKey, isValidEnvKey } from '../lib/env';
@@ -89,6 +95,17 @@ function genId(prefix: string): string {
 
 function nowISO(offsetMs = 0): string {
   return new Date(Date.now() + offsetMs).toISOString();
+}
+
+function unavailableUsage(): UsageSummary {
+  return {
+    availability: 'unavailable',
+    reason: 'no_requests',
+    requests: 0,
+    capture: { reported: 0, partial: 0, unavailable: 0, parse_error: 0 },
+    tokens: { input: null, output: null, cache_read: null, cache_write: null },
+    costs: { reported: [], estimated: [], uncosted: [] },
+  };
 }
 
 // Demo runner-image prewarm state: '' until the Cluster page's "sync runner
@@ -260,6 +277,8 @@ export function createMockClient(): ApiClient {
     ],
   };
   const projectAutomations = new Map<string, ProjectAutomationSpec>();
+  const automationExecutions = new Map<string, AutomationExecution[]>();
+  const automationIdempotency = new Map<string, string>();
   const projectPlugins = new Map<string, Map<ProviderKind, ProjectPlugin>>();
   const clusterProviders = new Map<ProviderKind, ClusterProviderConfig>((['github', 'gitlab', 'gitea', 'jtype'] as const).map((provider): [ProviderKind, ClusterProviderConfig] => [provider, { provider, base_url: provider === 'github' ? 'https://github.com' : '', login_enabled: provider !== 'jtype', plugin_enabled: true, configured: false, health: 'unknown' }]));
 
@@ -2169,11 +2188,123 @@ export function createMockClient(): ApiClient {
       projectAutomations.delete(automationId);
       return delay(undefined);
     },
+    async listAutomationExecutions(automationId: string, _before?: string, state?: string, limit = 20): Promise<AutomationExecutionsPage> {
+      const items = (automationExecutions.get(automationId) ?? [])
+        .filter((item) => !state || item.state === state)
+        .slice(0, limit);
+      return delay({ items: structuredClone(items), next_cursor: null });
+    },
+    async getAutomationExecution(automationId: string, executionId: string): Promise<AutomationExecution> {
+      const item = (automationExecutions.get(automationId) ?? []).find((value) => value.id === executionId);
+      if (!item) throw new ApiError(404, 'automation execution not found');
+      return delay(structuredClone(item));
+    },
+    async runAutomationNow(automationId: string, idempotencyKey: string): Promise<AutomationExecution> {
+      const spec = projectAutomations.get(automationId);
+      if (!spec) throw new ApiError(404, 'automation not found');
+      const replayId = automationIdempotency.get(`${automationId}|${idempotencyKey}`);
+      const existing = (automationExecutions.get(automationId) ?? []).find((item) => item.id === replayId);
+      if (existing) return delay(structuredClone(existing));
+      const service = [...services.values()].flat().find((item) => item.id === spec.automation.service_id);
+      if (!service) throw new ApiError(404, 'service not found');
+      const now = nowISO();
+      const outputMode = spec.cron?.output_mode ?? 'run_only';
+      const id = genId('execution');
+      let run: StoredRun | undefined;
+      if (outputMode === 'run_only' && spec.automation.run_kind !== 'review') {
+        run = makeRun(service.project_id, service.id, spec.automation.prompt_template);
+      }
+      const item: AutomationExecution = {
+        id,
+        automation_id: automationId,
+        automation_name: spec.automation.name,
+        trigger_kind: 'manual',
+        state: run ? 'queued' : spec.automation.run_kind === 'review' ? 'blocked' : 'accepted',
+        output_mode: outputMode,
+        reason_code: spec.automation.run_kind === 'review' ? 'manual_review_requires_pull_request' : undefined,
+        reason: spec.automation.run_kind === 'review' ? 'Run now needs a pull request for native review output.' : undefined,
+        repair_role: spec.automation.run_kind === 'review' ? 'project_owner' : undefined,
+        requested_actor: { kind: 'cloud_user', id: 'u_ada', label: 'Ada Lovelace' },
+        accountable_actor: { kind: 'cloud_user', id: 'u_ada', label: 'Ada Lovelace' },
+        output: run
+          ? { kind: 'run', label: `Run ${run.id}`, href: `/runs/${run.id}`, available: true }
+          : outputMode === 'create_card'
+            ? { kind: 'card', label: `jcode-automation/${automationId}/${id}.md`, available: false }
+            : { kind: 'none', label: 'No output', available: false },
+        run: run ? { id: run.id, status: run.status, href: `/runs/${run.id}` } : null,
+        card: outputMode === 'create_card' ? {
+          workspace_id: '',
+          document_path: `jcode-automation/${automationId}/${id}.md`,
+          available: false,
+        } : null,
+        writeback_state: outputMode === 'create_card' ? 'pending' : '',
+        usage_summary: unavailableUsage(),
+        created_at: now,
+        updated_at: now,
+      };
+      automationExecutions.set(automationId, [item, ...(automationExecutions.get(automationId) ?? [])]);
+      automationIdempotency.set(`${automationId}|${idempotencyKey}`, id);
+      return delay(structuredClone(item));
+    },
+    async getAutomationUsage(): Promise<UsageSummary> {
+      return delay(unavailableUsage());
+    },
+    async getProjectUsage() {
+      return delay({ summary: unavailableUsage(), groups: [] });
+    },
+    async getAccountUsage() {
+      return delay({ summary: unavailableUsage(), groups: [] });
+    },
+    async getServiceUsage(): Promise<UsageSummary> {
+      return delay(unavailableUsage());
+    },
+    async listModelPricingRevisions(): Promise<ModelPricingRevision[]> {
+      return delay([]);
+    },
+    async createModelPricingRevision(modelId, input): Promise<ModelPricingRevision> {
+      return delay({
+        id: genId('price'),
+        model_id: modelId,
+        model_name: modelId,
+        ...input,
+        created_at: nowISO(),
+      });
+    },
     async getServiceKanban(serviceId: string): Promise<ProjectAutomationSpec> {
       const spec = [...projectAutomations.values()].find((item) =>
         item.automation.service_id === serviceId && item.automation.trigger_kind === 'kanban');
       if (!spec) throw new ApiError(404, 'Kanban is not enabled');
       return delay(structuredClone(spec));
+    },
+    async getServiceKanbanPolicy(serviceId: string): Promise<ServiceKanbanPolicy> {
+      const service = [...services.values()].flat().find((item) => item.id === serviceId);
+      const spec = [...projectAutomations.values()].find((item) =>
+        item.automation.service_id === serviceId && item.automation.trigger_kind === 'kanban');
+      if (!service || !spec?.kanban) throw new ApiError(404, 'Kanban is not enabled');
+      const plugin = [...pluginList(service.project_id).values()].find((item) => item.id === spec.kanban!.installation_id);
+      return delay({
+        service_id: serviceId,
+        service_name: service.name,
+        repository: service.repo_owner_name ?? service.raw_repo_url ?? '',
+        model: { label: 'Demo model' },
+        board: { workspace_id: plugin?.workspace_id ?? '', ref: spec.kanban.board_ref },
+        trigger_column: { key: spec.kanban.trigger_column, label: spec.kanban.trigger_column },
+        done_column: { key: spec.kanban.done_column, label: spec.kanban.done_column },
+        output: spec.kanban.done_column ? 'comment_and_move_on_success' : 'comment_only',
+        health: {
+          state: spec.automation.enabled ? 'ready' : 'blocked',
+          blocker: spec.automation.enabled ? null : 'binding_disabled',
+          repair_role: spec.automation.enabled ? null : 'project_owner',
+        },
+      });
+    },
+    async listServiceKanbanCardExecutions(_serviceId: string, _workspaceId: string, _documentPath: string): Promise<KanbanCardExecutionsPage> {
+      return delay({
+        claim: null,
+        items: [],
+        usage_summary: unavailableUsage(),
+        next_cursor: null,
+      });
     },
     async putServiceKanban(serviceId, input): Promise<ProjectAutomationSpec> {
       const projectEntry = [...services.entries()].find(([, list]) => list.some((service) => service.id === serviceId));

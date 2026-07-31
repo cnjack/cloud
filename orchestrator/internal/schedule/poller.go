@@ -8,6 +8,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/modelcfg"
+	"github.com/cnjack/jcloud/internal/provenance"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -27,6 +28,10 @@ type HostGate interface {
 	IntegrationHostAllowed(ctx context.Context, svc *domain.Service) (allowed bool, host string, err error)
 }
 
+type CardMaterializer interface {
+	Materialize(ctx context.Context, execution domain.AutomationExecution, allowSave bool) domain.AutomationCardMaterializationResult
+}
+
 // Poller scans enabled schedules each tick and dispatches an agent run for every
 // schedule whose next fire has come due. It owns no in-memory cursor — the
 // authoritative state is schedules.last_fired_at, advanced with a conditional
@@ -35,9 +40,15 @@ type Poller struct {
 	st       store.Store
 	models   ModelResolver
 	hostGate HostGate // nil => host gate skipped (no integration binding to check)
+	cards    CardMaterializer
 	log      *slog.Logger
 	interval time.Duration
 	now      func() time.Time
+}
+
+func (p *Poller) WithCardMaterializer(value CardMaterializer) *Poller {
+	p.cards = value
+	return p
 }
 
 // NewPoller builds a Poller. models runs the D21 chain (share the API's resolver
@@ -77,7 +88,9 @@ func (p *Poller) Run(ctx context.Context) {
 // Tick performs one scan over every enabled schedule. Exported so tests (and a
 // manual trigger) can drive a single deterministic pass.
 func (p *Poller) Tick(ctx context.Context) {
+	p.materializeAutomationCards(ctx)
 	p.tickPluginAutomations(ctx)
+	p.materializeAutomationCards(ctx)
 	// The legacy schedule scan is retained only for in-process migration-era
 	// callers. Migration 0043 clears the table and the public CRUD routes are
 	// gone, so production dispatch is exclusively the unified Automation path.
@@ -118,18 +131,56 @@ func (p *Poller) firePluginAutomation(ctx context.Context, spec *domain.PluginAu
 		base = *spec.Cron.LastFiredAt
 	}
 	now := p.now().UTC()
-	if parsed.Next(base.UTC()).After(now) {
+	scheduledAt := parsed.Next(base.UTC())
+	if scheduledAt.After(now) {
 		return
 	}
 	svc, err := p.st.GetService(ctx, spec.Automation.ServiceID)
 	if err != nil {
 		return
 	}
+	execution := &domain.AutomationExecution{
+		ID: domain.NewID(), AutomationID: spec.Automation.ID,
+		AutomationName: spec.Automation.Name, PromptSnapshot: spec.Automation.PromptTemplate,
+		ProjectID: svc.ProjectID, ServiceID: svc.ID, TriggerKind: "cron",
+		EventKey: "cron:" + spec.Automation.ID + ":" + scheduledAt.UTC().Format(time.RFC3339Nano),
+		State:    domain.AutomationExecutionAccepted, OutputMode: spec.Cron.OutputMode,
+		AccountableActor: automationRuleActor(ctx, p.st, spec.Automation.CreatedBy),
+		CreatedAt:        now, UpdatedAt: now,
+	}
+	if execution.OutputMode == "" {
+		execution.OutputMode = domain.AutomationOutputRunOnly
+	}
+	if execution.OutputMode == domain.AutomationOutputCreateCard {
+		execution.CardPath = automationCardPath(spec.Automation.ID, execution.ID)
+		execution.CardState = "planned"
+		execution.WritebackState = "pending"
+		_, _ = p.st.ClaimPluginCronExecution(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, execution, nil)
+		return
+	}
 	if binding, err := p.st.GetServiceRepositoryBinding(ctx, svc.ID); err == nil {
 		installation, loadErr := p.st.GetPluginInstallation(ctx, binding.InstallationID)
 		if loadErr != nil || installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" {
-			won, _ := p.st.AdvancePluginCronAutomation(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, "Service project plugin is unavailable.")
-			_ = won
+			execution.State = domain.AutomationExecutionBlocked
+			execution.ReasonCode = "service_plugin_unavailable"
+			execution.ReasonMessage = "Service project plugin is unavailable."
+			execution.RepairRole = "project_owner"
+			_, _ = p.st.ClaimPluginCronExecution(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, execution, nil)
+			return
+		}
+	}
+	if p.hostGate != nil {
+		allowed, host, gateErr := p.hostGate.IntegrationHostAllowed(ctx, svc)
+		if gateErr != nil {
+			p.log.Error("cron Automation poll: host gate", "automation", spec.Automation.ID, "err", gateErr)
+			return
+		}
+		if !allowed {
+			execution.State = domain.AutomationExecutionBlocked
+			execution.ReasonCode = "host_not_allowed"
+			execution.ReasonMessage = "The Service repository host is no longer allowed: " + host
+			execution.RepairRole = "cluster_admin"
+			_, _ = p.st.ClaimPluginCronExecution(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, execution, nil)
 			return
 		}
 	}
@@ -138,15 +189,22 @@ func (p *Poller) firePluginAutomation(ctx context.Context, spec *domain.PluginAu
 		return
 	}
 	if outcome != modelcfg.SelectOK {
-		_, _ = p.st.AdvancePluginCronAutomation(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, modelBlockReason(outcome))
+		execution.State = domain.AutomationExecutionBlocked
+		execution.ReasonCode = modelBlockCode(outcome)
+		execution.ReasonMessage = modelBlockReason(outcome)
+		execution.RepairRole = "project_owner"
+		if outcome == modelcfg.SelectNotConfigured {
+			execution.RepairRole = "cluster_admin"
+		}
+		_, _ = p.st.ClaimPluginCronExecution(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, execution, nil)
 		return
 	}
 	if !sel.SupportsEffort(spec.Automation.ModelEffort) {
-		_, _ = p.st.AdvancePluginCronAutomation(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, "selected Automation model no longer supports reasoning effort")
-		return
-	}
-	won, err := p.st.AdvancePluginCronAutomation(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, "")
-	if err != nil || !won {
+		execution.State = domain.AutomationExecutionBlocked
+		execution.ReasonCode = "model_effort_unsupported"
+		execution.ReasonMessage = "Selected Automation model no longer supports reasoning effort."
+		execution.RepairRole = "project_owner"
+		_, _ = p.st.ClaimPluginCronExecution(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, execution, nil)
 		return
 	}
 	run := &domain.Run{
@@ -154,7 +212,7 @@ func (p *Poller) firePluginAutomation(ctx context.Context, spec *domain.PluginAu
 		Prompt: spec.Automation.PromptTemplate, Status: domain.StatusQueued,
 		Kind: domain.RunKindAgent, Phase: "Queued", Origin: domain.RunOriginSchedule,
 		OriginAutomationID: spec.Automation.ID,
-		OriginEventKey:     "cron:" + spec.Automation.ID + ":" + now.Format(time.RFC3339Nano),
+		OriginEventKey:     execution.EventKey,
 		Attempt:            1, CreatedAt: now, ModelName: sel.ModelName,
 		ModelEffort: spec.Automation.ModelEffort,
 	}
@@ -162,16 +220,71 @@ func (p *Poller) firePluginAutomation(ctx context.Context, spec *domain.PluginAu
 		modelID := sel.ModelID
 		run.ModelID = &modelID
 	}
-	if err := p.st.CreateRun(ctx, run); err != nil {
-		automation := spec.Automation
-		automation.LastError = "dispatch failed"
-		_ = p.st.UpdatePluginAutomation(ctx, &automation)
+	provenance.Stamp(ctx, p.st, run, nil)
+	execution.State = domain.AutomationExecutionQueued
+	execution.RunID = run.ID
+	_, _ = p.st.ClaimPluginCronExecution(ctx, spec.Automation.ID, spec.Cron.LastFiredAt, &now, execution, run)
+}
+
+func (p *Poller) materializeAutomationCards(ctx context.Context) {
+	if p.cards == nil {
 		return
 	}
-	spec.Automation.LastTriggeredAt = &now
-	spec.Automation.LastRunID = run.ID
-	spec.Automation.LastError = ""
-	_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+	executions, err := p.st.ListPendingAutomationCards(ctx, 50)
+	if err != nil {
+		p.log.Error("Automation Card materializer: list", "err", err)
+		return
+	}
+	for i := range executions {
+		execution := executions[i]
+		allowSave := false
+		if execution.CardState == "planned" {
+			allowSave, err = p.st.ClaimAutomationCardCreation(ctx, execution.ID)
+			if err != nil || !allowSave {
+				continue
+			}
+		}
+		result := p.cards.Materialize(ctx, execution, allowSave)
+		if err := p.st.UpdateAutomationExecutionCard(
+			ctx, execution.ID, result.CardState, result.CardAutomationID,
+			result.WorkspaceID, result.DocumentID, result.DocumentPath,
+			result.ReasonCode, result.ReasonMessage, result.RepairRole,
+		); err != nil {
+			p.log.Error("Automation Card materializer: persist", "execution", execution.ID, "err", err)
+		}
+	}
+}
+
+func automationRuleActor(ctx context.Context, st store.Store, userID string) domain.ProvenanceActorRef {
+	if userID == "" {
+		return domain.ProvenanceActorRef{Kind: "automation", Label: "Automation rule"}
+	}
+	user, err := st.GetUser(ctx, userID)
+	if err != nil {
+		return domain.ProvenanceActorRef{Kind: "cloud_user", ID: userID, Label: "Former member"}
+	}
+	label := user.DisplayName
+	if label == "" {
+		label = user.ID
+	}
+	return domain.ProvenanceActorRef{Kind: "cloud_user", ID: userID, Label: label}
+}
+
+func automationCardPath(automationID, executionID string) string {
+	return "jcode-automation/" + automationID + "/" + executionID + ".md"
+}
+
+func modelBlockCode(outcome modelcfg.SelectOutcome) string {
+	switch outcome {
+	case modelcfg.SelectNotConfigured:
+		return "model_not_configured"
+	case modelcfg.SelectNotSelected:
+		return "model_not_selected"
+	case modelcfg.SelectNotGranted:
+		return "model_not_granted"
+	default:
+		return "model_unavailable"
+	}
 }
 
 // fire evaluates one schedule: if its next fire is due it CLAIMS the window
@@ -258,6 +371,13 @@ func (p *Poller) fire(ctx context.Context, sc *domain.Schedule) {
 	if sel.ModelID != "" {
 		run.ModelID = &sel.ModelID
 	}
+	var attribution *provenance.ExternalActor
+	if sc.CreatedBy != nil && *sc.CreatedBy != "" {
+		attribution = &provenance.ExternalActor{
+			Source: "automation_rule", AccountableUserID: *sc.CreatedBy,
+		}
+	}
+	provenance.Stamp(ctx, p.st, run, attribution)
 	if err := p.st.CreateRun(ctx, run); err != nil {
 		// The window was already advanced (claimed), so we cannot retry it —
 		// exactly-once is deliberately preferred over at-least-once here. Record the

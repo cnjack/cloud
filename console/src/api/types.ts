@@ -259,14 +259,160 @@ export interface ProjectAutomationAggregate {
   updated_at: string;
 }
 export interface ScmAutomationAction { event_family: string; action: string; }
+export interface UsageMoneyTotal {
+  currency: string;
+  micros: number;
+  pricing_revision_ids?: string[];
+}
+export interface UsageSummary {
+  availability: 'available' | 'unavailable';
+  reason?: 'no_requests' | 'usage_not_reported' | string;
+  requests: number;
+  capture: {
+    reported: number;
+    partial: number;
+    unavailable: number;
+    parse_error: number;
+  };
+  tokens: {
+    input: number | null;
+    output: number | null;
+    cache_read: number | null;
+    cache_write: number | null;
+  };
+  costs: {
+    reported: UsageMoneyTotal[];
+    estimated: UsageMoneyTotal[];
+    uncosted: { category: string; tokens: number }[];
+  };
+  from?: string;
+  to?: string;
+}
+export interface UsageGroup {
+  kind: 'service' | 'automation' | 'model' | 'device' | 'grant';
+  id: string;
+  name: string;
+  summary: UsageSummary;
+}
+export interface UsageSummaryEnvelope {
+  summary: UsageSummary;
+  groups: UsageGroup[];
+}
+export interface ModelPricingRevision {
+  id: string;
+  model_id: string;
+  provider_id?: string;
+  provider_name?: string;
+  model_name: string;
+  currency: string;
+  input_micros_per_million: number | null;
+  output_micros_per_million: number | null;
+  cache_read_micros_per_million: number | null;
+  cache_write_micros_per_million: number | null;
+  effective_at: string;
+  created_by?: string;
+  created_at: string;
+}
+export interface CreateModelPricingRevisionInput {
+  currency: string;
+  input_micros_per_million: number | null;
+  output_micros_per_million: number | null;
+  cache_read_micros_per_million: number | null;
+  cache_write_micros_per_million: number | null;
+  effective_at: string;
+}
 export interface ProjectAutomationSpec {
   automation: ProjectAutomationAggregate;
   scm?: { automation_id?: string; branch?: string; path_pattern?: string; conclusion?: string; include_drafts?: boolean };
   actions?: ScmAutomationAction[];
-  kanban?: { automation_id?: string; installation_id: string; board_ref: string; trigger_column: string; done_column?: string };
-  cron?: { automation_id?: string; cron_expr: string };
+  kanban?: {
+    automation_id?: string;
+    installation_id: string;
+    board_ref: string;
+    trigger_column: string;
+    trigger_label?: string;
+    done_column?: string;
+    done_label?: string;
+  };
+  cron?: { automation_id?: string; cron_expr: string; output_mode?: 'run_only' | 'create_card' };
+}
+export type AutomationExecutionState =
+  | 'accepted' | 'ignored' | 'duplicate' | 'superseded'
+  | 'blocked' | 'queued' | 'running' | 'terminal';
+export interface AutomationExecution {
+  id: string;
+  automation_id: string;
+  automation_name: string;
+  trigger_kind: 'scm' | 'cron' | 'manual';
+  state: AutomationExecutionState;
+  outcome?: 'succeeded' | 'failed' | 'canceled';
+  output_mode: 'run_only' | 'create_card';
+  reason_code?: string;
+  reason?: string;
+  repair_role?: 'project_owner' | 'cluster_admin';
+  requested_actor: ProvenanceActorRef | null;
+  accountable_actor: ProvenanceActorRef | null;
+  output: { kind: 'run' | 'card' | 'none'; label: string; href?: string; available: boolean };
+  run: { id: string; status: RunStatus; href: string } | null;
+  card: {
+    workspace_id: string;
+    document_id?: string;
+    document_path: string;
+    href?: string;
+    available: boolean;
+  } | null;
+  external_url?: string;
+  writeback_state: string;
+  usage_summary: UsageSummary;
+  created_at: string;
+  updated_at: string;
+  terminal_at?: string;
+}
+export interface AutomationExecutionsPage {
+  items: AutomationExecution[];
+  next_cursor: string | null;
 }
 export type ServiceKanbanBinding = ProjectAutomationSpec;
+export interface ServiceKanbanPolicy {
+  service_id: string;
+  service_name: string;
+  repository: string;
+  model: { id?: string; label: string };
+  board: { workspace_id: string; ref: string };
+  trigger_column: { key: string; label: string };
+  done_column: { key?: string; label?: string };
+  output: 'comment_only' | 'comment_and_move_on_success';
+  health: {
+    state: 'ready' | 'blocked';
+    blocker: string | null;
+    repair_role?: 'project_owner' | 'cluster_admin' | null;
+  };
+}
+export interface KanbanCardExecution {
+  id: string;
+  status: 'received' | 'blocked' | 'queued' | 'running' | 'terminal';
+  outcome?: 'succeeded' | 'failed' | 'canceled';
+  summary: string;
+  reason: string | null;
+  reason_code?: string;
+  repair_role: 'project_owner' | 'cluster_admin' | null;
+  requested_actor: { label: string; precision: 'display_only' } | null;
+  run: { id: string; status: RunStatus; href: string } | null;
+  receipt: {
+    external: 'not_required' | 'pending' | 'written' | 'unavailable';
+    writeback: 'not_required' | 'pending' | 'complete' | 'unavailable';
+  };
+  created_at: string;
+  updated_at: string;
+  terminal_at?: string;
+  usage_summary?: UsageSummary;
+}
+export interface KanbanCardExecutionsPage {
+  claim: { document_path: string; external_ref_available: boolean } | null;
+  items: KanbanCardExecution[];
+  usage_summary: UsageSummary;
+  next_cursor: string | null;
+}
 export interface PutServiceKanbanInput {
   installation_id: string;
   board_ref: string;
@@ -303,7 +449,7 @@ export interface CreateProjectAutomationInput {
   ignore_jcode?: boolean;
   scm?: { branch?: string; path_pattern?: string; conclusion?: string; include_drafts?: boolean; actions: ScmAutomationAction[] };
   kanban?: { installation_id: string; board_ref: string; trigger_column: string; done_column?: string };
-  cron?: { cron_expr: string };
+  cron?: { cron_expr: string; output_mode?: 'run_only' | 'create_card' };
 }
 
 export type UpdateProjectAutomationInput = Partial<CreateProjectAutomationInput>;
@@ -506,6 +652,7 @@ export interface Run {
   origin_comment_url?: string | null;
   origin_automation_id?: string | null;
   origin_event_key?: string | null;
+  usage_summary?: UsageSummary;
   /**
    * The catalog model (D21) this run was dispatched with, chosen by the
    * resolution chain at create time. Absent/null when the run resolved to the
@@ -532,6 +679,43 @@ export interface Run {
   permission_mode?: 'approval' | '';
   /** When the run entered awaiting_input (idle-timeout epoch). */
   awaiting_since?: string | null;
+  /**
+   * Read-only identity/source projection frozen at Run creation. These display
+   * references are audit metadata only and must never be used for authorization.
+   */
+  provenance?: RunProvenance;
+}
+
+export interface ProvenanceActorRef {
+  kind: 'cloud_user' | 'external_actor' | 'service_principal' | 'automation_principal' | 'provider_bot' | string;
+  id?: string;
+  label: string;
+  provider?: string;
+  external_id?: string;
+  external_label?: string;
+}
+
+export interface RunProvenance {
+  requested_actor?: ProvenanceActorRef;
+  accountable_actor?: ProvenanceActorRef;
+  attribution_source: string;
+  precision: 'exact' | 'linked_external' | 'rule_owner' | 'unattributed' | string;
+  trigger: {
+    kind: string;
+    label: string;
+    ref?: string;
+    href?: string;
+  };
+  executed_for: {
+    project_id: string;
+    project_label: string;
+    service_id: string;
+    service_label: string;
+    repository?: string;
+    model?: string;
+  };
+  runtime_principal: ProvenanceActorRef;
+  writeback_actor?: ProvenanceActorRef;
 }
 
 /* ---- session permission approval (F8b / D22) ------------------------------ */

@@ -148,6 +148,22 @@ describe('httpClient — request shaping', () => {
     expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ prompt: 'do it' });
   });
 
+  it('encodes Card execution scope and opaque pagination cursor', async () => {
+    const { calls } = mockFetch(() => ({
+      body: { claim: null, items: [], next_cursor: null },
+    }));
+    const client = createHttpClient('t');
+    await client.listServiceKanbanCardExecutions(
+      'service/1', 'workspace 1', 'cards/payment fix.md', 'opaque+/cursor', 12,
+    );
+    const url = new URL(calls[0]!.url, 'https://console.test');
+    expect(url.pathname).toBe('/api/v1/services/service%2F1/kanban/card-executions');
+    expect(url.searchParams.get('workspace_id')).toBe('workspace 1');
+    expect(url.searchParams.get('document_path')).toBe('cards/payment fix.md');
+    expect(url.searchParams.get('before')).toBe('opaque+/cursor');
+    expect(url.searchParams.get('limit')).toBe('12');
+  });
+
   it('stages an attachment as JSON and uploads its raw body through Cloud', async () => {
     const { calls } = mockFetch(({ url }) => {
       if (url.endsWith('/attachments/intents')) {

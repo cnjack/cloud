@@ -171,9 +171,115 @@ func TestPluginCronAutomationDispatchesExactlyOnce(t *testing.T) {
 	if runs[0].ModelID == nil || *runs[0].ModelID != "mid" || runs[0].ModelEffort != "high" {
 		t.Fatalf("run model=%v effort=%q want mid/high", runs[0].ModelID, runs[0].ModelEffort)
 	}
+	executions, err := st.ListAutomationExecutions(ctx, automation.ID, "", nil, "", 20)
+	if err != nil || len(executions) != 1 || runs[0].OriginEventKey != executions[0].EventKey {
+		t.Fatalf("run event=%q executions=%+v err=%v", runs[0].OriginEventKey, executions, err)
+	}
 	spec, err := st.GetPluginAutomationSpec(ctx, automation.ID)
 	if err != nil || spec.Cron == nil || spec.Cron.LastFiredAt == nil || !spec.Cron.LastFiredAt.Equal(now) {
 		t.Fatalf("spec=%+v err=%v", spec, err)
+	}
+}
+
+func TestPluginCronAutomationHostBlockCreatesLedgerOccurrence(t *testing.T) {
+	now := time.Date(2026, 7, 9, 15, 0, 0, 0, time.UTC)
+	st := store.NewMemStore()
+	ctx := context.Background()
+	project := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: now.Add(-time.Hour)}
+	service := &domain.Service{
+		ID: domain.NewID(), ProjectID: project.ID, Name: "svc",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "https://blocked.example/repo.git",
+		DefaultBranch: "main", CreatedAt: now.Add(-time.Hour),
+	}
+	_ = st.CreateProject(ctx, project)
+	_ = st.CreateService(ctx, service)
+	automation := &domain.PluginAutomation{
+		ID: domain.NewID(), ServiceID: service.ID, Name: "nightly", TriggerKind: "cron",
+		PromptTemplate: "work", Enabled: true, CreatedAt: now.Add(-10 * time.Minute),
+	}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, nil, &domain.CronTrigger{
+		AutomationID: automation.ID, CronExpr: "*/5 * * * *",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	poller := NewPoller(st, okModels(), fakeHostGate{
+		allowed: false, host: "blocked.example",
+	}, testLogger(), time.Minute)
+	poller.now = func() time.Time { return now }
+	poller.Tick(ctx)
+
+	if runs := runsFor(t, st, service.ID); len(runs) != 0 {
+		t.Fatalf("runs=%d want 0", len(runs))
+	}
+	executions, err := st.ListAutomationExecutions(ctx, automation.ID, "blocked", nil, "", 20)
+	if err != nil || len(executions) != 1 ||
+		executions[0].ReasonCode != "host_not_allowed" ||
+		executions[0].RepairRole != "cluster_admin" {
+		t.Fatalf("executions=%+v err=%v", executions, err)
+	}
+}
+
+func TestAutomationRuleActorUsesCloudUserKind(t *testing.T) {
+	actor := automationRuleActor(context.Background(), store.NewMemStore(), "former-user")
+	if actor.Kind != "cloud_user" || actor.ID != "former-user" {
+		t.Fatalf("actor=%+v", actor)
+	}
+}
+
+type fakeCardMaterializer struct {
+	calls     int
+	allowSave []bool
+}
+
+func (f *fakeCardMaterializer) Materialize(_ context.Context, execution domain.AutomationExecution, allowSave bool) domain.AutomationCardMaterializationResult {
+	f.calls++
+	f.allowSave = append(f.allowSave, allowSave)
+	return domain.AutomationCardMaterializationResult{
+		CardAutomationID: "kanban", WorkspaceID: "ws", DocumentID: "doc",
+		DocumentPath: execution.CardPath, CardState: "bound",
+	}
+}
+
+func TestPluginCronCreateCardUsesLedgerWithoutDirectRun(t *testing.T) {
+	now := time.Date(2026, 7, 9, 15, 0, 0, 0, time.UTC)
+	st := store.NewMemStore()
+	ctx := context.Background()
+	project := &domain.Project{ID: domain.NewID(), Name: "p", CreatedAt: now.Add(-time.Hour)}
+	service := &domain.Service{
+		ID: domain.NewID(), ProjectID: project.ID, Name: "svc",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "u", DefaultBranch: "main",
+		CreatedAt: now.Add(-time.Hour),
+	}
+	_ = st.CreateProject(ctx, project)
+	_ = st.CreateService(ctx, service)
+	automation := &domain.PluginAutomation{
+		ID: domain.NewID(), ServiceID: service.ID, Name: "issue sweep", TriggerKind: "cron",
+		PromptTemplate: "triage the queue", Enabled: true, CreatedAt: now.Add(-10 * time.Minute),
+	}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, nil, &domain.CronTrigger{
+		AutomationID: automation.ID, CronExpr: "*/5 * * * *",
+		OutputMode: domain.AutomationOutputCreateCard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cards := &fakeCardMaterializer{}
+	poller := NewPoller(st, okModels(), nil, testLogger(), time.Minute).WithCardMaterializer(cards)
+	poller.now = func() time.Time { return now }
+	poller.Tick(ctx)
+	poller.Tick(ctx)
+	if got := runsFor(t, st, service.ID); len(got) != 0 {
+		t.Fatalf("direct runs=%d want 0", len(got))
+	}
+	values, err := st.ListAutomationExecutions(ctx, automation.ID, "", nil, "", 20)
+	if err != nil || len(values) != 1 {
+		t.Fatalf("executions=%+v err=%v", values, err)
+	}
+	if values[0].CardState != "bound" || values[0].CardDocumentID != "doc" ||
+		values[0].RunID != "" || !strings.Contains(values[0].CardPath, values[0].ID) {
+		t.Fatalf("execution=%+v", values[0])
+	}
+	if cards.calls != 1 || len(cards.allowSave) != 1 || !cards.allowSave[0] {
+		t.Fatalf("materializer calls=%d allowSave=%v", cards.calls, cards.allowSave)
 	}
 }
 

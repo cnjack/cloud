@@ -101,6 +101,15 @@ type KanbanEventPage struct {
 	HasMore      bool          `json:"hasMore"`
 }
 
+type Comment struct {
+	ID   string `json:"id"`
+	Body string `json:"body"`
+}
+
+func KanbanReceiptMarker(occurrenceID, phase string) string {
+	return "<!-- jcode-cloud-occurrence:" + occurrenceID + ":" + phase + " -->"
+}
+
 // ListDocuments returns every document in the workspace. The poller uses it for
 // its one-time compatibility scan and to resolve event paths to document ids.
 // 4xx/5xx return a typed *Error.
@@ -192,6 +201,18 @@ func (c *Client) AddComment(ctx context.Context, workspace, docID, body string) 
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
+}
+
+// ListComments returns the stable ids and bodies needed to make Cloud receipt
+// projection idempotent. Other comment metadata remains owned by jtype.
+func (c *Client) ListComments(ctx context.Context, workspace, docID string) ([]Comment, error) {
+	var comments []Comment
+	if err := c.getJSON(ctx,
+		c.path("/api/v1/workspaces/%s/documents/%s/comments", workspace, docID),
+		&comments); err != nil {
+		return nil, err
+	}
+	return comments, nil
 }
 
 // MoveCard reads a card, rewrites its frontmatter status to newStatus, and
@@ -340,6 +361,33 @@ func (c *Client) GetBoardByDoc(ctx context.Context, workspace, docID string) (*B
 		b.Columns = append(b.Columns, BoardColumn{Key: col.Key, Name: col.Name})
 	}
 	return b, nil
+}
+
+// GetBoardByConfigID resolves the immutable board id stored in Card
+// frontmatter and Kanban Automation bindings. Unlike GetBoard, which accepts a
+// user-facing document path/name, this survives a .board document rename.
+func (c *Client) GetBoardByConfigID(ctx context.Context, workspace, configID string) (*Board, error) {
+	configID = strings.TrimSpace(configID)
+	if configID == "" {
+		return nil, ErrDocNotFound
+	}
+	docs, err := c.ListDocuments(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	for _, doc := range docs {
+		if !strings.HasSuffix(strings.ToLower(doc.Path), ".board") {
+			continue
+		}
+		board, boardErr := c.GetBoardByDoc(ctx, workspace, doc.ID)
+		if boardErr != nil {
+			return nil, boardErr
+		}
+		if board.ID == configID {
+			return board, nil
+		}
+	}
+	return nil, ErrDocNotFound
 }
 
 // Workspace is a caller-visible jtype workspace (the fields the console picker

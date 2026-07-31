@@ -115,6 +115,274 @@ func TestPGCreateCoalescedRunConcurrentLatestWins(t *testing.T) {
 	}
 }
 
+func TestPGUsageRollupSurvivesRawRetentionAndDeduplicatesReplay(t *testing.T) {
+	ctx := context.Background()
+	st, runID := pgTestStore(t)
+	run, err := st.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID := "usage-pg-" + domain.NewID()
+	at := time.Date(2020, time.January, 2, 3, 12, 0, 0, time.UTC)
+	event := &domain.UsageEvent{
+		ID: domain.NewID(), RequestID: requestID,
+		SubjectKind: domain.UsageSubjectRun, SubjectID: runID, RunID: runID,
+		ProjectID: run.ProjectID, ServiceID: run.ServiceID,
+		InputTokens: usageInt64(11), OutputTokens: usageInt64(5),
+		CaptureStatus: domain.UsageCaptureReported,
+		OccurredAt:    at, CreatedAt: at, Version: 1,
+	}
+	t.Cleanup(func() {
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM usage_events WHERE request_id=$1`, requestID)
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM usage_request_receipts WHERE request_id=$1`, requestID)
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM usage_hourly_rollups WHERE subject_id=$1`, runID)
+	})
+	if recorded, err := st.RecordUsageEvent(ctx, event); err != nil || !recorded {
+		t.Fatalf("record = %v, %v", recorded, err)
+	}
+	rawDeleted, rollupsDeleted, err := st.CleanupUsage(
+		ctx,
+		at.Add(time.Hour),
+		at.Add(-365*24*time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rawDeleted < 1 || rollupsDeleted != 0 {
+		t.Fatalf("cleanup raw=%d rollups=%d", rawDeleted, rollupsDeleted)
+	}
+	if recorded, err := st.RecordUsageEvent(ctx, event); err != nil || recorded {
+		t.Fatalf("replay after raw cleanup = %v, %v; want durable no-op", recorded, err)
+	}
+	summary, err := st.GetUsageSummary(ctx, domain.UsageSummaryQuery{RunID: runID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Requests != 1 || summary.Tokens.Input == nil || *summary.Tokens.Input != 11 {
+		t.Fatalf("summary after cleanup=%+v", summary)
+	}
+}
+
+func TestPGPricingRevisionResolutionSurvivesModelDeletion(t *testing.T) {
+	ctx := context.Background()
+	st, _ := pgTestStore(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	model := &domain.Model{
+		ID: domain.NewID(), Name: "pricing-" + domain.NewID(),
+		ModelName: "provider/priced", BaseURL: "https://example.invalid/v1",
+		CreatedAt: now,
+	}
+	if err := st.CreateModel(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM model_pricing_revisions WHERE model_resource_id=$1`, model.ID)
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM model_configs WHERE id=$1`, model.ID)
+		_, _ = st.Pool().Exec(ctx, `DELETE FROM model_providers WHERE id=$1`, model.ProviderID)
+	})
+
+	effective := now.Add(-time.Hour)
+	older := &domain.ModelPricingRevision{
+		ID: "zz-" + domain.NewID(), ModelResourceID: model.ID, ModelName: model.ModelName,
+		Currency: "USD", InputMicrosPerMillion: usageInt64(1),
+		EffectiveAt: effective, CreatedAt: now.Add(-time.Minute),
+	}
+	newer := &domain.ModelPricingRevision{
+		ID: "aa-" + domain.NewID(), ModelResourceID: model.ID, ModelName: model.ModelName,
+		Currency: "USD", InputMicrosPerMillion: usageInt64(2),
+		EffectiveAt: effective, CreatedAt: now,
+	}
+	for _, revision := range []*domain.ModelPricingRevision{older, newer} {
+		if err := st.CreateModelPricingRevision(ctx, revision); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved, err := st.ResolveModelPricingRevision(ctx, model.ID, now)
+	if err != nil || resolved.ID != newer.ID {
+		t.Fatalf("latest-created pricing=%+v err=%v", resolved, err)
+	}
+	if err := st.DeleteModel(ctx, model.ID); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err = st.ResolveModelPricingRevision(ctx, model.ID, now)
+	if err != nil || resolved.ID != newer.ID {
+		t.Fatalf("deleted-model pricing snapshot=%+v err=%v", resolved, err)
+	}
+}
+
+func TestPGRunProvenanceRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	st, seedRunID := pgTestStore(t)
+	seed, err := st.GetRun(ctx, seedRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "provenance", Status: domain.StatusQueued, Kind: domain.RunKindAgent,
+		Phase: "Queued", Attempt: 1, CreatedAt: time.Now().UTC(),
+		ProvenanceSnapshot: domain.RunProvenanceSnapshot{
+			RequestedActor: &domain.ProvenanceActorRef{
+				Kind: "external_actor", ID: "42", Label: "Mei", Provider: "jtype",
+			},
+			AccountableActor: &domain.ProvenanceActorRef{
+				Kind: "cloud_user", ID: "owner", Label: "Jack",
+			},
+			AttributionSource: "kanban_event", Precision: "rule_owner",
+			RuntimePrincipal: domain.ProvenanceActorRef{
+				Kind: "automation_principal", Label: "Cloud Automation",
+			},
+			WritebackActor: &domain.ProvenanceActorRef{
+				Kind: "provider_bot", Label: "jcode Cloud Bot", Provider: "jtype",
+			},
+		},
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProvenanceSnapshot.RequestedActor == nil ||
+		got.ProvenanceSnapshot.RequestedActor.Label != "Mei" ||
+		got.ProvenanceSnapshot.AccountableActor == nil ||
+		got.ProvenanceSnapshot.AccountableActor.Label != "Jack" ||
+		got.ProvenanceSnapshot.Precision != "rule_owner" ||
+		got.ProvenanceSnapshot.WritebackActor == nil ||
+		got.ProvenanceSnapshot.WritebackActor.Provider != "jtype" {
+		t.Fatalf("provenance round-trip=%+v", got.ProvenanceSnapshot)
+	}
+}
+
+func TestPGAutomationExecutionRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	st, seedRunID := pgTestStore(t)
+	seed, err := st.GetRun(ctx, seedRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	value := &domain.AutomationExecution{
+		ID: domain.NewID(), AutomationID: "deleted-automation", AutomationName: "Frozen name",
+		PromptSnapshot: "configured prompt", ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		TriggerKind: "manual", EventKey: "manual:" + domain.NewID(),
+		State: domain.AutomationExecutionBlocked, OutputMode: domain.AutomationOutputCreateCard,
+		ReasonCode: "jtype_unavailable", ReasonMessage: "Reconnect JType.", RepairRole: "project_owner",
+		RequestedActor:   domain.ProvenanceActorRef{Kind: "external_actor", ID: "42", Label: "Mei", Provider: "jtype"},
+		AccountableActor: domain.ProvenanceActorRef{Kind: "cloud_user", ID: "owner", Label: "Jack"},
+		CardWorkspaceID:  "ws", CardPath: "jcode-automation/a/e.md", CardState: "unavailable",
+		WritebackState: "pending", CreatedAt: now, UpdatedAt: now,
+	}
+	saved, created, err := st.CreateAutomationExecution(ctx, value, nil)
+	if err != nil || !created || saved.ID != value.ID {
+		t.Fatalf("saved=%+v created=%v err=%v", saved, created, err)
+	}
+	got, err := st.GetAutomationExecution(ctx, value.AutomationID, value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AutomationName != "Frozen name" || got.PromptSnapshot != "configured prompt" ||
+		got.RequestedActor.Label != "Mei" || got.AccountableActor.Label != "Jack" ||
+		got.CardPath != value.CardPath || got.ReasonCode != "jtype_unavailable" {
+		t.Fatalf("round trip=%+v", got)
+	}
+
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "project state", Status: domain.StatusQueued, Phase: "Queued",
+		Attempt: 1, CreatedAt: now,
+	}
+	projected := &domain.AutomationExecution{
+		ID: domain.NewID(), AutomationID: "projected-" + domain.NewID(), AutomationName: "Projected",
+		ProjectID: seed.ProjectID, ServiceID: seed.ServiceID, TriggerKind: "manual",
+		EventKey: "manual:" + domain.NewID(), State: domain.AutomationExecutionQueued,
+		OutputMode: domain.AutomationOutputRunOnly, RunID: run.ID,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if _, _, err := st.CreateAutomationExecution(ctx, projected, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkFailed(ctx, run.ID, "Failed", domain.FailureAgentError, "boom", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := st.ListAutomationExecutions(ctx, projected.AutomationID, "terminal", nil, "", 20)
+	if err != nil || len(terminal) != 1 || terminal[0].ID != projected.ID {
+		t.Fatalf("terminal=%+v err=%v", terminal, err)
+	}
+}
+
+func TestPGAutomationExecutionStateFilterUsesCardRunProjection(t *testing.T) {
+	ctx := context.Background()
+	st, seedRunID := pgTestStore(t)
+	seed, err := st.GetRun(ctx, seedRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, Provider: domain.PluginJType,
+		Status: domain.PluginStatusEnabled, WorkspaceID: "workspace", Scopes: []string{},
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	cardAutomation := &domain.PluginAutomation{
+		ID: domain.NewID(), ServiceID: seed.ServiceID, InstallationID: installation.ID,
+		Name: "Agent queue", TriggerKind: "kanban", RunKind: domain.RunKindAgent, Enabled: true,
+	}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: cardAutomation.ID, InstallationID: installation.ID,
+		BoardRef: "delivery", TriggerColumn: "agent", DoneColumn: "done",
+	}
+	if err := st.CreatePluginAutomation(ctx, cardAutomation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	execution := &domain.AutomationExecution{
+		ID: domain.NewID(), AutomationID: "cron-" + domain.NewID(), AutomationName: "Nightly card",
+		ProjectID: seed.ProjectID, ServiceID: seed.ServiceID, TriggerKind: "cron",
+		EventKey: "cron:card-projected-state", State: domain.AutomationExecutionAccepted,
+		OutputMode:       domain.AutomationOutputCreateCard,
+		CardAutomationID: cardAutomation.ID, CardWorkspaceID: installation.WorkspaceID,
+		CardDocumentID: "card", CardPath: "jcode-automation/cron/execution.md",
+		CardState: "bound", CreatedAt: now, UpdatedAt: now,
+	}
+	if _, _, err := st.CreateAutomationExecution(ctx, execution, nil); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := st.ObservePluginKanbanCard(ctx, PluginKanbanObservation{
+		AutomationID: cardAutomation.ID, ServiceID: seed.ServiceID,
+		InstallationID: installation.ID, WorkspaceID: installation.WorkspaceID,
+		DocumentID: execution.CardDocumentID, DocumentPath: execution.CardPath,
+		TriggerColumn: trigger.TriggerColumn, DoneColumn: trigger.DoneColumn,
+		ObservedColumn: trigger.TriggerColumn, EventKey: "card:event:" + domain.NewID(),
+		ObservedAt: now,
+	})
+	if err != nil || observed.Occurrence == nil {
+		t.Fatalf("observe=%+v err=%v", observed, err)
+	}
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: seed.ProjectID, ServiceID: seed.ServiceID,
+		Prompt: "work", Status: domain.StatusQueued, Phase: "Queued",
+		Origin: domain.RunOriginKanban, OriginAutomationID: cardAutomation.ID,
+		OriginEventKey: observed.Occurrence.EventKey, Attempt: 1, CreatedAt: now,
+	}
+	if attached, err := st.CreatePluginKanbanOccurrenceRun(ctx, observed.Occurrence.ID, run); err != nil || !attached {
+		t.Fatalf("attach=%v err=%v", attached, err)
+	}
+	if _, err := st.MarkFailed(ctx, run.ID, "Failed", domain.FailureAgentError, "boom", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := st.ListAutomationExecutions(ctx, execution.AutomationID, "terminal", nil, "", 20)
+	if err != nil || len(terminal) != 1 || terminal[0].ID != execution.ID {
+		t.Fatalf("terminal=%+v err=%v", terminal, err)
+	}
+	accepted, err := st.ListAutomationExecutions(ctx, execution.AutomationID, "accepted", nil, "", 20)
+	if err != nil || len(accepted) != 0 {
+		t.Fatalf("accepted=%+v err=%v", accepted, err)
+	}
+}
+
 func TestPGWebhookBindingSecretAndAuthenticatedDigest(t *testing.T) {
 	ctx := context.Background()
 	st, runID := pgTestStore(t)
@@ -158,6 +426,19 @@ func TestPGWebhookBindingSecretAndAuthenticatedDigest(t *testing.T) {
 	replay.DeliveryID = domain.NewID()
 	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || claimed {
 		t.Fatalf("claim replay=%v err=%v; want duplicate", claimed, err)
+	}
+	first.Status = "error"
+	first.Error = "ledger unavailable"
+	if err := st.CompleteWebhookReceipt(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	replay.Status = "received"
+	replay.Error = ""
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || !claimed {
+		t.Fatalf("reclaim errored receipt=%v err=%v", claimed, err)
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || claimed {
+		t.Fatalf("second reclaim=%v err=%v; want duplicate", claimed, err)
 	}
 }
 

@@ -1,0 +1,310 @@
+<!doctype html>
+<!--
+  Target-state Loop 1 prototype. Sample records are labelled fixtures and are
+  never a product data source.
+
+  Implemented assumptions:
+  - jtype owns Card content/status; Cloud adds a supplement slot, not a second
+    editor or replacement detail.
+  - Moving into "Agent queue" is immediately server-authoritative. There is no
+    blocking confirmation until jtype exposes an optimistic-lock-safe pre-save
+    hook.
+  - Requested by is a display-only jtype snapshot in this loop. Stable
+    provenance and Bot/accountability semantics arrive in Loop 2.
+  - Policy and receipt APIs in docs/23-kanban-execution-receipts.md are required
+    backend work. Blocked/error examples must never be replaced by fake success.
+-->
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Kanban policy and Card execution receipts prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Kanban execution receipts — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/kanban-agent-executions.css" />
+  <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/kanban-agent-executions.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">跳到内容</a>
+  <div class="app-shell">
+    <aside class="global-rail" aria-label="Global navigation">
+      <div class="brand-row">
+        <a class="wordmark" href="./index.html">
+          <img class="wordmark-icon" src="./assets/app-icon.svg" alt="" />
+          <span class="wordmark-name">JCODE</span>
+          <span class="cloud-label">Cloud</span>
+        </a>
+      </div>
+      <div class="rail-context">
+        <span class="eyebrow">项目</span>
+        <strong>commerce</strong>
+        <small>3 个服务</small>
+      </div>
+      <nav class="rail-nav" aria-label="Primary">
+        <a class="nav-item" href="./projects.html">
+          <svg class="icon"><use href="./assets/icons.svg#i-projects" /></svg>
+          <span>Projects</span><span class="nav-count">3</span>
+        </a>
+        <a class="nav-item" href="./cluster-overview.html">
+          <svg class="icon"><use href="./assets/icons.svg#i-cluster" /></svg>
+          <span>Cluster</span><span class="nav-count">admin</span>
+        </a>
+      </nav>
+      <section class="rail-section" aria-labelledby="serviceLabel">
+        <div class="rail-section-head"><span id="serviceLabel">服务</span><span>3</span></div>
+        <nav class="recent-projects" aria-label="服务">
+          <a class="recent-item" aria-current="page" href="./project-workspace.html">
+            <span class="project-mark">PA</span>
+            <span class="recent-item-copy"><strong>payments-api</strong><small>GitHub · main</small></span>
+          </a>
+          <a class="recent-item" href="./project-workspace.html">
+            <span class="project-mark">WB</span>
+            <span class="recent-item-copy"><strong>web-checkout</strong><small>GitHub · main</small></span>
+          </a>
+        </nav>
+      </section>
+      <footer class="rail-footer">
+        <div class="rail-environment"><span>namespace / jcode</span><span>fixture</span></div>
+        <div class="identity-row">
+          <span class="identity-mark">J</span>
+          <span class="identity-copy"><strong>Jack</strong><small>project owner</small></span>
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme">
+            <svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg>
+            <svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg>
+          </button>
+        </div>
+      </footer>
+    </aside>
+
+    <section class="work-surface" aria-label="Payments Kanban">
+      <header class="utility-bar">
+        <div class="breadcrumbs">
+          <a href="./projects.html">项目</a><span class="breadcrumb-separator">/</span>
+          <a href="./project-workspace.html">commerce</a><span class="breadcrumb-separator">/</span>
+          <strong>Kanban</strong>
+        </div>
+        <div class="utility-actions">
+          <span class="prototype-chip">sample fixture · Loop 1</span>
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme">
+            <svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg>
+            <svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="ka-main" id="mainContent">
+        <header class="ka-heading">
+          <div>
+            <span class="eyebrow">payments-api · jtype / Payments delivery</span>
+            <h1>Kanban</h1>
+          </div>
+          <button class="button button-ghost" type="button" data-prototype-action="Board settings would open.">
+            <svg class="icon"><use href="./assets/icons.svg#i-sliders" /></svg>
+            看板设置
+          </button>
+        </header>
+
+        <nav class="ka-state-nav" aria-label="Prototype receipt states">
+          <span>查看状态</span>
+          <button type="button" data-ka-state-button="accepted" aria-pressed="true">已受理</button>
+          <button type="button" data-ka-state-button="blocked" aria-pressed="false">被阻塞</button>
+          <button type="button" data-ka-state-button="succeeded" aria-pressed="false">已完成</button>
+          <button type="button" data-ka-state-button="error" aria-pressed="false">加载失败</button>
+        </nav>
+
+        <section class="ka-policy" aria-labelledby="policyTitle" data-ka-policy="ready">
+          <div class="ka-policy-lead">
+            <span class="ka-policy-icon" aria-hidden="true"><svg class="icon"><use href="./assets/icons.svg#i-bolt" /></svg></span>
+            <span>
+              <strong id="policyTitle">拖入 Agent queue 即请求 Cloud Agent 执行</strong>
+              <small>每次有效进入只受理一次；列内编辑和重扫不会重复运行。</small>
+            </span>
+          </div>
+          <dl class="ka-policy-facts">
+            <div><dt>执行目标</dt><dd>payments-api</dd></div>
+            <div><dt>Repository</dt><dd class="mono">acme/payments</dd></div>
+            <div><dt>模型</dt><dd>Claude Sonnet 4.5</dd></div>
+            <div><dt>成功后</dt><dd>评论并移至 Done</dd></div>
+          </dl>
+          <span class="status-label ka-policy-status" data-tone="success">
+            <svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg>
+            可以执行
+          </span>
+        </section>
+
+        <section class="ka-board-shell" aria-label="Embedded jtype board">
+          <header class="ka-board-toolbar">
+            <div class="ka-view-tabs" aria-label="Board view">
+              <button type="button" aria-pressed="true">Board</button>
+              <button type="button" aria-pressed="false">Table</button>
+              <button type="button" aria-pressed="false">Calendar</button>
+            </div>
+            <div class="ka-toolbar-spacer"></div>
+            <button class="ka-compact-control" type="button">Filter</button>
+            <label class="ka-search"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-search" /></svg><span class="sr-only">Search cards</span><input type="search" placeholder="Search cards" /></label>
+          </header>
+
+          <div class="ka-board">
+            <section class="ka-column" aria-labelledby="backlogTitle">
+              <header><span class="ka-column-dot" data-tone="muted"></span><strong id="backlogTitle">Backlog</strong><span>2</span></header>
+              <article class="ka-card">
+                <span class="ka-card-ticket">PAY-48</span>
+                <h2>Document refund idempotency contract</h2>
+                <footer><span class="ka-priority">high</span><span>Wei</span></footer>
+              </article>
+              <article class="ka-card">
+                <span class="ka-card-ticket">PAY-52</span>
+                <h2>Expose settlement timeline to support</h2>
+                <footer><span class="ka-priority">medium</span><span>—</span></footer>
+              </article>
+            </section>
+
+            <section class="ka-column" data-trigger-column aria-labelledby="queueTitle">
+              <header><span class="ka-column-dot" data-tone="accent"></span><strong id="queueTitle">Agent queue</strong><span>2</span><em>触发 Cloud</em></header>
+              <article class="ka-card" data-selected>
+                <span class="ka-card-ticket">PAY-41</span>
+                <h2>Make payout retry idempotent</h2>
+                <p>Duplicate callbacks must converge on one ledger update.</p>
+                <footer><span class="ka-priority">urgent</span><span>Jack</span></footer>
+              </article>
+              <article class="ka-card">
+                <span class="ka-card-ticket">PAY-47</span>
+                <h2>Validate webhook signing clock skew</h2>
+                <footer><span class="ka-priority">high</span><span>Mei</span></footer>
+              </article>
+            </section>
+
+            <section class="ka-column" aria-labelledby="doingTitle">
+              <header><span class="ka-column-dot" data-tone="info"></span><strong id="doingTitle">In progress</strong><span>1</span></header>
+              <article class="ka-card">
+                <span class="ka-card-ticket">PAY-38</span>
+                <h2>Retry dead-letter reconciliation</h2>
+                <footer><span class="ka-priority">high</span><span>Yao</span></footer>
+              </article>
+            </section>
+
+            <section class="ka-column" aria-labelledby="doneTitle">
+              <header><span class="ka-column-dot" data-tone="success"></span><strong id="doneTitle">Done</strong><span>3</span></header>
+              <article class="ka-card">
+                <span class="ka-card-ticket">PAY-36</span>
+                <h2>Trace gateway request IDs</h2>
+                <footer><span class="ka-done">completed</span><span>Jack</span></footer>
+              </article>
+            </section>
+          </div>
+
+          <span class="ka-polling"><span></span>Polling every 30s</span>
+        </section>
+
+        <div class="ka-dialog-backdrop" aria-hidden="true"></div>
+        <section class="ka-card-dialog" role="dialog" aria-modal="true" aria-labelledby="cardTitle" aria-describedby="cardDescription">
+          <header class="ka-dialog-head">
+            <span class="ka-card-ticket">PAY-41 · Payments delivery</span>
+            <button class="icon-button" type="button" aria-label="Close" data-prototype-action="The Card detail would close.">×</button>
+          </header>
+          <div class="ka-dialog-grid">
+            <article class="ka-card-content">
+              <input id="cardTitle" class="ka-title-input" value="Make payout retry idempotent" aria-label="Card title" />
+              <section aria-labelledby="descriptionTitle">
+                <header class="ka-section-head"><h2 id="descriptionTitle">Description</h2><span>Write</span><span>Preview</span></header>
+                <textarea id="cardDescription" rows="10">## Goal
+Duplicate payout callbacks must converge on one ledger update.
+
+## Acceptance criteria
+- The retry key survives process restarts.
+- Concurrent callbacks return the first result.
+- Operators can trace the winning attempt.</textarea>
+              </section>
+              <section class="ka-native-section" aria-labelledby="subcardsTitle">
+                <h2 id="subcardsTitle">Sub-cards <span>1 / 2</span></h2>
+                <label><input type="checkbox" checked /> Add PostgreSQL concurrency test</label>
+                <label><input type="checkbox" /> Document retry response</label>
+              </section>
+              <section class="ka-native-section" aria-labelledby="commentsTitle">
+                <h2 id="commentsTitle">Comments <span>2</span></h2>
+                <p><strong>Jack</strong> Please keep provider retries out of the transaction.</p>
+              </section>
+            </article>
+
+            <aside class="ka-inspector" aria-label="Card properties and Cloud executions">
+              <section class="ka-properties" aria-labelledby="propertiesTitle">
+                <h2 id="propertiesTitle">Properties</h2>
+                <dl>
+                  <div><dt>Status</dt><dd><button type="button">Agent queue⌄</button></dd></div>
+                  <div><dt>Priority</dt><dd><button type="button">urgent⌄</button></dd></div>
+                  <div><dt>Assignee</dt><dd><button type="button">Jack⌄</button></dd></div>
+                  <div><dt>Due</dt><dd><button type="button">Aug 04</button></dd></div>
+                  <div><dt>Tags</dt><dd><button type="button">payments</button></dd></div>
+                </dl>
+              </section>
+
+              <section class="ka-executions" aria-labelledby="executionsTitle" aria-live="polite">
+                <header>
+                  <span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg><h2 id="executionsTitle">Cloud executions</h2></span>
+                  <small>payments-api</small>
+                </header>
+
+                <div class="ka-execution-state" data-ka-state-panel="accepted">
+                  <div class="ka-receipt" data-tone="info" role="status">
+                    <span class="ka-receipt-icon"><span class="ka-spinner"></span></span>
+                    <span><strong>Run is working</strong><small>Accepted 2 min ago · occurrence #2</small></span>
+                  </div>
+                  <p class="ka-receipt-copy">Cloud is applying this Card with Claude Sonnet 4.5. Editing the Card in this column will not start another Run.</p>
+                  <a class="button ka-run-link" href="#run-fixture"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg>Open run <span class="mono">run_4f82</span></a>
+                  <dl class="ka-execution-meta">
+                    <div><dt>Requested by</dt><dd>Jack <span>jtype display</span></dd></div>
+                    <div><dt>Receipt</dt><dd>Card comment written</dd></div>
+                  </dl>
+                </div>
+
+                <div class="ka-execution-state" data-ka-state-panel="blocked" hidden>
+                  <div class="ka-receipt" data-tone="warning" role="alert">
+                    <span class="ka-receipt-icon"><svg class="icon"><use href="./assets/icons.svg#i-warning" /></svg></span>
+                    <span><strong>Execution is blocked</strong><small>Same request will resume after repair</small></span>
+                  </div>
+                  <p class="ka-receipt-copy">No allowed model is configured for payments-api. This Card was received, but no Run was created.</p>
+                  <div class="ka-next-action"><strong>Next action</strong><span>Project owner: choose an allowed model. Cluster admin: configure the provider.</span></div>
+                  <button class="button ka-run-link" type="button" data-prototype-action="Dependency health would be checked without creating another occurrence."><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>Check again</button>
+                  <dl class="ka-execution-meta">
+                    <div><dt>Requested by</dt><dd>Jack <span>jtype display</span></dd></div>
+                    <div><dt>Receipt</dt><dd>Blocked comment written</dd></div>
+                  </dl>
+                </div>
+
+                <div class="ka-execution-state" data-ka-state-panel="succeeded" hidden>
+                  <div class="ka-receipt" data-tone="success" role="status">
+                    <span class="ka-receipt-icon"><svg class="icon"><use href="./assets/icons.svg#i-check" /></svg></span>
+                    <span><strong>Completed successfully</strong><small>Finished 1 min ago · 8m 14s</small></span>
+                  </div>
+                  <p class="ka-receipt-copy">The result comment was written and this Card is ready to move to Done.</p>
+                  <a class="button ka-run-link" href="#run-fixture"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg>Open run <span class="mono">run_4f82</span></a>
+                  <dl class="ka-execution-meta">
+                    <div><dt>Requested by</dt><dd>Jack <span>jtype display</span></dd></div>
+                    <div><dt>Writeback</dt><dd>Comment written · move pending</dd></div>
+                  </dl>
+                </div>
+
+                <div class="ka-execution-state" data-ka-state-panel="error" hidden>
+                  <div class="ka-receipt" data-tone="danger" role="alert">
+                    <span class="ka-receipt-icon">!</span>
+                    <span><strong>Executions unavailable</strong><small>The Card is still editable</small></span>
+                  </div>
+                  <p class="ka-receipt-copy">Cloud could not load the receipt history. This does not mean the request failed or succeeded.</p>
+                  <button class="button ka-run-link" type="button" data-prototype-action="The Card execution query would retry."><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>Retry</button>
+                </div>
+
+                <details class="ka-history">
+                  <summary><span>Previous executions</span><span>1</span></summary>
+                  <a href="#prior-run"><span class="ka-history-dot"></span><span><strong>Failed</strong><small>Jul 29 · occurrence #1</small></span><span class="mono">run_c191</span></a>
+                </details>
+              </section>
+            </aside>
+          </div>
+        </section>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

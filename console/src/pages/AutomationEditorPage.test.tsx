@@ -154,6 +154,51 @@ describe('AutomationEditorPage', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it('enables Card output only when Service Kanban is healthy and sends the explicit mode', async () => {
+    const { create } = renderEditor({
+      getServiceKanbanPolicy: async () => ({
+        service_id: 'svc-1',
+        service_name: 'API',
+        repository: 'acme/api',
+        model: { id: 'glm-52', label: 'GLM 5.2' },
+        board: { workspace_id: 'ws', ref: 'board' },
+        trigger_column: { key: 'agent', label: 'Agent' },
+        done_column: {},
+        output: 'comment_only',
+        health: { state: 'ready', blocker: null },
+      }),
+    });
+    await screen.findByRole('heading', { name: 'Create Automation' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cron' }));
+    await waitFor(() => {
+      const option = screen.getByRole('option', { name: /jtype Card/ }) as HTMLOptionElement;
+      expect(option.disabled).toBe(false);
+    });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Issue sweep' } });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-52' } });
+    fireEvent.change(screen.getByLabelText('Prompt template'), { target: { value: 'Triage open issues' } });
+    fireEvent.change(screen.getByLabelText('Output'), { target: { value: 'create_card' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Automation' }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create.mock.calls[0]?.[1].cron).toEqual({
+      cron_expr: '0 9 * * 1-5',
+      output_mode: 'create_card',
+    });
+  });
+
+  it('keeps Card output visibly unavailable without a healthy Service Kanban policy', async () => {
+    renderEditor({
+      getServiceKanbanPolicy: async () => {
+        throw new Error('not configured');
+      },
+    });
+    await screen.findByRole('heading', { name: 'Create Automation' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cron' }));
+    const option = await screen.findByRole('option', { name: /jtype Card/ }) as HTMLOptionElement;
+    expect(option.disabled).toBe(true);
+    expect(screen.getByText('Enable a healthy Service Kanban policy before selecting Card output.')).toBeTruthy();
+  });
+
   it('keeps common SCM events visible and places the complete low-frequency matrix behind More events', async () => {
     renderEditor();
     await screen.findByRole('heading', { name: 'Create Automation' });

@@ -41,6 +41,8 @@ import type {
   PrInfo,
   Project,
   ProjectAutomationSpec,
+  AutomationExecution,
+  AutomationExecutionsPage,
   ProjectPlugin,
   PluginAuditEvent,
   PluginConsentInput,
@@ -48,6 +50,7 @@ import type {
   GitHubAppInstallation,
   GitHubInstallationConsentPreview,
   JTypePluginConnectStatus,
+  KanbanCardExecutionsPage,
   ProviderKind,
   PluginRepositoryResource,
   PluginWorkspaceResource,
@@ -77,6 +80,7 @@ import type {
   UpdateProjectAutomationInput,
   PutServiceKanbanInput,
   ServiceKanbanBinding,
+  ServiceKanbanPolicy,
   UpdateModelInput,
   UpdateModelProviderInput,
   UpdateProjectInput,
@@ -84,6 +88,10 @@ import type {
   UpdateServiceInput,
   UserSearchResult,
   UsersEnvelope,
+  UsageSummary,
+  UsageSummaryEnvelope,
+  ModelPricingRevision,
+  CreateModelPricingRevisionInput,
 } from './types';
 
 // ApiError / apiErrorCode / TokenSource live in @jcloud/device-ui (M6 shared
@@ -335,7 +343,18 @@ export interface ApiClient {
   createProjectAutomation(projectId: string, input: CreateProjectAutomationInput): Promise<ProjectAutomationSpec>;
   updateProjectAutomation(projectId: string, automationId: string, input: UpdateProjectAutomationInput): Promise<ProjectAutomationSpec>;
   deleteProjectAutomation(projectId: string, automationId: string): Promise<void>;
+  listAutomationExecutions(automationId: string, before?: string, state?: string, limit?: number): Promise<AutomationExecutionsPage>;
+  getAutomationExecution(automationId: string, executionId: string): Promise<AutomationExecution>;
+  runAutomationNow(automationId: string, idempotencyKey: string): Promise<AutomationExecution>;
+  getAutomationUsage(automationId: string, from?: string, to?: string): Promise<UsageSummary>;
+  getProjectUsage(projectId: string, groupBy: 'service' | 'automation' | 'model', from?: string, to?: string): Promise<UsageSummaryEnvelope>;
+  getAccountUsage(groupBy: 'device' | 'model' | 'grant', from?: string, to?: string): Promise<UsageSummaryEnvelope>;
+  getServiceUsage(serviceId: string, from?: string, to?: string): Promise<UsageSummary>;
+  listModelPricingRevisions(modelId: string): Promise<ModelPricingRevision[]>;
+  createModelPricingRevision(modelId: string, input: CreateModelPricingRevisionInput): Promise<ModelPricingRevision>;
   getServiceKanban(serviceId: string): Promise<ServiceKanbanBinding>;
+  getServiceKanbanPolicy(serviceId: string): Promise<ServiceKanbanPolicy>;
+  listServiceKanbanCardExecutions(serviceId: string, workspaceId: string, documentPath: string, before?: string, limit?: number): Promise<KanbanCardExecutionsPage>;
   putServiceKanban(serviceId: string, input: PutServiceKanbanInput): Promise<ServiceKanbanBinding>;
   deleteServiceKanban(serviceId: string): Promise<void>;
   /** Lists branches through the Service's bound Plugin; never exposes a Git credential. */
@@ -404,6 +423,14 @@ export interface HttpClientOptions {
    * The auth layer clears the stored token and routes back to the login gate.
    */
   onUnauthorized?: () => void;
+}
+
+function usageParams(from?: string, to?: string): string {
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  const value = params.toString();
+  return value ? `?${value}` : '';
 }
 
 export function createHttpClient(
@@ -823,7 +850,60 @@ export function createHttpClient(
       }),
     deleteProjectAutomation: (_projectId, automationId) =>
       req<void>(`/automations/${encodeURIComponent(automationId)}`, { method: 'DELETE' }),
+    listAutomationExecutions: (automationId, before, state, limit = 20) => {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (before) params.set('before', before);
+      if (state) params.set('state', state);
+      return req<AutomationExecutionsPage>(`/automations/${encodeURIComponent(automationId)}/executions?${params.toString()}`);
+    },
+    getAutomationExecution: (automationId, executionId) =>
+      req<AutomationExecution>(`/automations/${encodeURIComponent(automationId)}/executions/${encodeURIComponent(executionId)}`),
+    runAutomationNow: (automationId, idempotencyKey) =>
+      req<AutomationExecution>(`/automations/${encodeURIComponent(automationId)}/executions`, {
+        method: 'POST', body: JSON.stringify({ idempotency_key: idempotencyKey }),
+      }),
+    getAutomationUsage: (automationId, from, to) => {
+      const params = usageParams(from, to);
+      return req<UsageSummary>(`/automations/${encodeURIComponent(automationId)}/usage${params}`);
+    },
+    getProjectUsage: (projectId, groupBy, from, to) => {
+      const params = new URLSearchParams({ group_by: groupBy });
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return req<UsageSummaryEnvelope>(`/projects/${encodeURIComponent(projectId)}/usage?${params.toString()}`);
+    },
+    getAccountUsage: (groupBy, from, to) => {
+      const params = new URLSearchParams({ group_by: groupBy });
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return req<UsageSummaryEnvelope>(`/account/usage?${params.toString()}`);
+    },
+    getServiceUsage: (serviceId, from, to) => {
+      const params = usageParams(from, to);
+      return req<UsageSummary>(`/services/${encodeURIComponent(serviceId)}/usage${params}`);
+    },
+    listModelPricingRevisions: async (modelId) =>
+      (await req<{ pricing_revisions: ModelPricingRevision[] }>(
+        `/system/models/${encodeURIComponent(modelId)}/pricing-revisions`,
+      )).pricing_revisions ?? [],
+    createModelPricingRevision: (modelId, input) =>
+      req<ModelPricingRevision>(`/system/models/${encodeURIComponent(modelId)}/pricing-revisions`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
     getServiceKanban: (serviceId) => req<ServiceKanbanBinding>(`/services/${encodeURIComponent(serviceId)}/kanban`),
+    getServiceKanbanPolicy: (serviceId) => req<ServiceKanbanPolicy>(`/services/${encodeURIComponent(serviceId)}/kanban/policy`),
+    listServiceKanbanCardExecutions: (serviceId, workspaceId, documentPath, before, limit = 20) => {
+      const params = new URLSearchParams({
+        workspace_id: workspaceId,
+        document_path: documentPath,
+        limit: String(limit),
+      });
+      if (before) params.set('before', before);
+      return req<KanbanCardExecutionsPage>(
+        `/services/${encodeURIComponent(serviceId)}/kanban/card-executions?${params.toString()}`,
+      );
+    },
     putServiceKanban: (serviceId, input) => req<ServiceKanbanBinding>(`/services/${encodeURIComponent(serviceId)}/kanban`, {
       method: 'PUT', body: JSON.stringify(input),
     }),

@@ -167,7 +167,10 @@ func TestPluginSecretVersionGCRetainsActiveRunAndTerminalSnapshotAudit(t *testin
 	if _, ok := st.providerConfigVersions[originalProviderKey]; !ok {
 		t.Fatal("pending Kanban writeback lost its provider configuration version")
 	}
-	if wrote, err := st.MarkPluginKanbanWriteback(ctx, pendingClaim.AutomationID, pendingClaim.DocumentID, time.Now().UTC()); err != nil || !wrote {
+	if wrote, err := st.MarkPluginKanbanWriteback(
+		ctx, pendingClaim.AutomationID, pendingClaim.DocumentID, "",
+		domain.StatusSucceeded, nil, time.Now().UTC(),
+	); err != nil || !wrote {
 		t.Fatalf("mark writeback wrote=%v err=%v", wrote, err)
 	}
 	if credentials, providers, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil || credentials != 1 || providers != 1 {
@@ -285,7 +288,9 @@ func TestPGPluginSecretVersionGCAndSnapshotFKMigration(t *testing.T) {
 	if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM provider_config_versions WHERE provider=$1 AND config_revision=$2`, domain.PluginGitLab, snapshotProviderRevision).Scan(&providerStillPinnedByWriteback); err != nil || providerStillPinnedByWriteback != 1 {
 		t.Fatalf("pending writeback provider version retained=%d err=%v, want 1,nil", providerStillPinnedByWriteback, err)
 	}
-	if wrote, err := st.MarkPluginKanbanWriteback(ctx, automationID, documentID, time.Now().UTC()); err != nil || !wrote {
+	if wrote, err := st.MarkPluginKanbanWriteback(
+		ctx, automationID, documentID, "", domain.StatusSucceeded, nil, time.Now().UTC(),
+	); err != nil || !wrote {
 		t.Fatalf("mark PG writeback wrote=%v err=%v", wrote, err)
 	}
 	if _, _, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil {
@@ -329,6 +334,33 @@ func TestWebhookReceiptAuthenticatedPayloadDigestDeduplicatesAndExpires(t *testi
 	}
 	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || !claimed {
 		t.Fatalf("digest was not released after 30-day cleanup: %v, %v", claimed, err)
+	}
+}
+
+func TestWebhookReceiptErrorCanBeReclaimedExactlyOnce(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	first := &domain.WebhookReceipt{
+		ID: "first", Provider: domain.PluginGitea, DeliveryID: "delivery-1",
+		PayloadDigest: "authenticated-body", Status: "received", ReceivedAt: time.Now().UTC(),
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, first); err != nil || !claimed {
+		t.Fatalf("claim first = %v, %v", claimed, err)
+	}
+	first.Status = "error"
+	first.Error = "ledger unavailable"
+	if err := st.CompleteWebhookReceipt(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	retry := *first
+	retry.ID = "retry"
+	retry.DeliveryID = "delivery-2"
+	retry.Status = "received"
+	retry.Error = ""
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &retry); err != nil || !claimed {
+		t.Fatalf("reclaim error = %v, %v", claimed, err)
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &retry); err != nil || claimed {
+		t.Fatalf("second reclaim = %v, %v; want duplicate", claimed, err)
 	}
 }
 

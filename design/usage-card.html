@@ -1,0 +1,51 @@
+<!doctype html>
+<!-- Target-state Loop 4 JType Card usage supplement. All values are sample fixtures. -->
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Card usage aggregation prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Card usage — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/usage-ledger.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to content</a>
+  <div class="usage-shell">
+    <header class="utility-bar">
+      <div class="breadcrumbs"><a href="./projects.html">Projects</a><span>/</span><a href="./project-workspace.html">commerce</a><span>/</span><strong>Payments delivery</strong></div>
+      <div class="utility-actions"><span class="prototype-chip">sample fixture · Loop 4</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div>
+    </header>
+    <main class="usage-card-backdrop" id="mainContent">
+      <div class="usage-card-board" aria-hidden="true"><section class="usage-card-column"><header>Backlog · 4</header><div class="usage-card-ghost"></div><div class="usage-card-ghost"></div></section><section class="usage-card-column"><header>Agent queue · 2</header><div class="usage-card-ghost"></div></section><section class="usage-card-column"><header>Done · 12</header><div class="usage-card-ghost"></div><div class="usage-card-ghost"></div></section></div>
+      <section class="usage-card-dialog" role="dialog" aria-modal="true" aria-labelledby="cardTitle">
+        <article class="usage-card-content">
+          <span class="eyebrow">PAY-41 · Payments delivery</span>
+          <h1 id="cardTitle">Make payout retry idempotent</h1>
+          <div class="usage-card-copy"><strong>Description</strong><p>Duplicate payout callbacks must converge on one ledger update. Preserve the settlement audit trail and prove the concurrent path against PostgreSQL.</p><br /><strong>Acceptance criteria</strong><p>Retries return the first committed result. Operators can trace the winning attempt. Existing ledger records are append-only.</p></div>
+        </article>
+        <aside class="usage-card-inspector" aria-label="Cloud execution and usage supplement">
+          <section><h2>Properties</h2><div class="usage-card-costs"><div><span>Status</span><strong>Done</strong></div><div><span>Assignee</span><strong>Jack</strong></div><div><span>Service</span><strong>payments-api</strong></div></div></section>
+          <section>
+            <div class="usage-section-head"><div><h2>Cloud usage</h2><p>Across 3 linked Runs</p></div><span class="usage-status" data-tone="warning">partial</span></div>
+            <div class="usage-card-summary"><span><small>Input</small><strong>31,842</strong></span><span><small>Output</small><strong>7,914</strong></span><span><small>Cache read</small><strong>18,440</strong></span></div>
+            <div class="usage-run-costs"><div><dt>Reported</dt><dd>USD 0.482000</dd></div><div><dt>Estimated</dt><dd>USD 0.451200</dd></div><div><dt>Uncosted</dt><dd class="uncosted">1,440 cache-write</dd></div></div>
+            <p class="usage-run-disclaimer">Usage is operational telemetry, not a provider invoice.</p>
+          </section>
+          <section>
+            <h2>Usage by Run</h2>
+            <div class="usage-card-runs">
+              <a class="usage-run-row" href="./usage-run.html"><span><strong>Run 7c3bec6 · succeeded</strong><small>Jul 31 · reported</small></span><span><code>12,480 in</code><code>3,216 out</code></span></a>
+              <a class="usage-run-row" href="./usage-run.html"><span><strong>Run c191ae2 · failed</strong><small>Jul 30 · partial</small></span><span><code>9,812 in</code><code>2,041 out</code></span></a>
+              <a class="usage-run-row" href="./usage-run.html"><span><strong>Run 10de02a · succeeded</strong><small>Jul 29 · usage unavailable</small></span><span><code>— in</code><code>— out</code></span></a>
+            </div>
+          </section>
+          <details style="padding:1rem 1.1rem"><summary>Retained attribution details</summary><p class="usage-run-disclaimer">Workspace ws_payments · cards/PAY-41.md. If the Card is deleted, this snapshot and its Run usage remain available while the external link becomes unavailable.</p></details>
+        </aside>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

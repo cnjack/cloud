@@ -19,7 +19,7 @@ import {
 } from '../api/queries';
 import { useApi } from '../api/ApiProvider';
 import { ApiError } from '../api/client';
-import { isTerminal, type FailureReason, type ProjectModel, type ResumeSessionOptions, type Run } from '../api/types';
+import { isTerminal, type FailureReason, type ProjectModel, type ProvenanceActorRef, type ResumeSessionOptions, type Run, type RunProvenance } from '../api/types';
 import { Button } from '../components/Button';
 import { DiffView } from '../components/DiffView';
 import { Markdown } from '../components/Markdown';
@@ -31,6 +31,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { LanguageToggle } from '../components/LanguageToggle';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { useToast } from '../components/Toast';
+import { UsageSummary } from '../components/UsageSummary';
 import { Wordmark } from '../components/Wordmark';
 import { useRunStream } from '../hooks/useRunStream';
 import { formatDateTime, formatDuration, shortId } from '../lib/format';
@@ -407,7 +408,6 @@ export function RunDetailPage() {
 
                 <RunInspector
                   run={current}
-                  serviceName={service?.name}
                   noChanges={noChanges}
                   diffState={diff.isLoading ? 'loading' : diff.isError ? 'error' : diff.data ? 'ready' : 'unavailable'}
                   diffContent={diff.data?.content}
@@ -776,7 +776,6 @@ function useDismissablePicker(
 
 function RunInspector({
   run,
-  serviceName,
   noChanges,
   diffState,
   diffContent,
@@ -786,7 +785,6 @@ function RunInspector({
   showPr,
 }: {
   run: Run;
-  serviceName?: string;
   noChanges: boolean;
   diffState: 'loading' | 'error' | 'ready' | 'unavailable';
   diffContent?: string;
@@ -798,11 +796,12 @@ function RunInspector({
   const { t } = useTranslation();
   return (
     <aside className={styles.inspector} data-testid="run-inspector" aria-label={t('runDetail.inspector.runDetailsLabel')}>
+      <ProvenanceSection provenance={run.provenance} />
+      <div className={`${styles.inspectorSection} ${styles.inspectorUsage}`} data-testid="run-usage">
+        <UsageSummary value={run.usage_summary} />
+      </div>
       <InspectorSection title={t('runDetail.inspector.runOverview')}>
         <dl className={styles.facts}>
-          <InspectorFact label={t('runDetail.inspector.service')}>{serviceName ?? (run.service_id ? shortId(run.service_id) : t('runDetail.inspector.unavailable'))}</InspectorFact>
-          <InspectorFact label={t('runDetail.inspector.trigger')}>{runOriginLabel(run, t)}</InspectorFact>
-          <InspectorFact label={t('runDetail.modelLabel')}>{run.model_name || run.model_id || t('runDetail.inspector.notReported')}</InspectorFact>
           <InspectorFact label={t('runDetail.inspector.permission')}>{run.permission_mode === 'approval' ? t('runDetail.inspector.askBeforeActions') : t('runDetail.permission.fullAccess')}</InspectorFact>
           <InspectorFact label={t('runDetail.inspector.workspace')}>{run.k8s_job_name || t('runDetail.inspector.notReported')}</InspectorFact>
         </dl>
@@ -828,6 +827,119 @@ function RunInspector({
       </InspectorSection>
     </aside>
   );
+}
+
+function ProvenanceSection({ provenance }: { provenance?: RunProvenance }) {
+  const { t } = useTranslation();
+  const executedFor = provenance?.executed_for;
+  const unavailable = t('runDetail.inspector.unavailable');
+
+  return (
+    <>
+      <InspectorSection title={t('runDetail.inspector.identityAndSource')}>
+        <dl className={`${styles.facts} ${styles.provenanceFacts}`} data-testid="run-provenance">
+          <InspectorFact label={t('runDetail.inspector.requestedBy')}>
+            <ActorDisplay
+              actor={provenance?.requested_actor}
+              qualifier={provenance?.requested_actor?.kind === 'external_actor' ? t('runDetail.inspector.externalActor') : undefined}
+              testId="provenance-requested"
+            />
+          </InspectorFact>
+          <InspectorFact label={t('runDetail.inspector.accountableTo')}>
+            <ActorDisplay
+              actor={provenance?.accountable_actor}
+              qualifier={provenance?.precision === 'rule_owner' ? t('runDetail.inspector.ruleOwner') : undefined}
+              testId="provenance-accountable"
+            />
+          </InspectorFact>
+          <InspectorFact label={t('runDetail.inspector.triggeredFrom')}>
+            <span className={styles.triggerReference} data-testid="provenance-trigger">
+              <span>
+                {provenance?.trigger.href ? (
+                  <a href={provenance.trigger.href} target="_blank" rel="noreferrer">
+                    {provenance.trigger.label} <ArrowSquareOut size={12} weight="regular" aria-hidden="true" />
+                  </a>
+                ) : provenance?.trigger.label ?? unavailable}
+              </span>
+              {provenance?.trigger.ref && <small>{provenance.trigger.ref}</small>}
+            </span>
+          </InspectorFact>
+        </dl>
+      </InspectorSection>
+      <InspectorSection title={t('runDetail.inspector.executedFor')}>
+        <dl className={styles.facts} data-testid="provenance-executed-for">
+          <InspectorFact label={t('runDetail.inspector.project')}>{executedFor?.project_label || unavailable}</InspectorFact>
+          <InspectorFact label={t('runDetail.inspector.service')}>{executedFor?.service_label || unavailable}</InspectorFact>
+          <InspectorFact label={t('runDetail.inspector.repository')}>{executedFor?.repository || unavailable}</InspectorFact>
+          <InspectorFact label={t('runDetail.modelLabel')}>
+            <span className={styles.executedFor}>
+              <span>{executedFor?.model || unavailable}</span>
+              {executedFor?.model && <small>{t('runDetail.inspector.dispatchSnapshot')}</small>}
+            </span>
+          </InspectorFact>
+        </dl>
+      </InspectorSection>
+      <InspectorSection title={t('runDetail.inspector.writtenBackAs')}>
+        <div className={styles.botIdentity} data-testid="provenance-written-back">
+          {provenance?.writeback_actor ? <span className={styles.botMark}>JC</span> : null}
+          <ActorDisplay
+            actor={provenance?.writeback_actor}
+            qualifier={provenance?.writeback_actor ? t('runDetail.inspector.botOrApp') : undefined}
+            emptyLabel={t('runDetail.inspector.notApplicable')}
+            testId="provenance-writeback-actor"
+          />
+        </div>
+      </InspectorSection>
+      {provenance && (
+        <section className={styles.inspectorSection}>
+          <details className={styles.provenanceTechnical}>
+            <summary>{t('runDetail.inspector.technicalIdentity')}</summary>
+            <dl className={styles.facts}>
+              <InspectorFact label={t('runDetail.inspector.runtimePrincipal')}>
+                {provenance.runtime_principal?.label || unavailable}
+              </InspectorFact>
+              <InspectorFact label={t('runDetail.inspector.attribution')}>
+                {provenancePrecisionLabel(provenance.precision, t)}
+              </InspectorFact>
+              <InspectorFact label={t('runDetail.inspector.source')}>
+                <code>{provenance.attribution_source || unavailable}</code>
+              </InspectorFact>
+            </dl>
+          </details>
+        </section>
+      )}
+    </>
+  );
+}
+
+function ActorDisplay({
+  actor,
+  qualifier,
+  emptyLabel,
+  testId,
+}: {
+  actor?: ProvenanceActorRef;
+  qualifier?: string;
+  emptyLabel?: string;
+  testId: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <span className={styles.actorDisplay} data-testid={testId}>
+      <span>{actor?.label || emptyLabel || t('runDetail.inspector.notAttributed')}</span>
+      {qualifier && <small>{qualifier}</small>}
+    </span>
+  );
+}
+
+function provenancePrecisionLabel(precision: string, t: TFunction): string {
+  const labels: Record<string, string> = {
+    exact: t('runDetail.inspector.precisionExact'),
+    linked_external: t('runDetail.inspector.precisionLinkedExternal'),
+    rule_owner: t('runDetail.inspector.precisionRuleOwner'),
+    unattributed: t('runDetail.inspector.precisionUnattributed'),
+  };
+  return labels[precision] ?? precision;
 }
 
 function DiffSummary({ patch }: { patch: string }) {

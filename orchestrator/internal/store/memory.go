@@ -43,7 +43,9 @@ type MemStore struct {
 	pluginSCMTriggers        map[string]domain.SCMTrigger
 	pluginKanbanTriggers     map[string]domain.KanbanTrigger
 	pluginKanbanClaims       map[string]domain.PluginKanbanClaim
+	pluginKanbanOccurrences  map[string]domain.PluginKanbanOccurrence
 	pluginCronTriggers       map[string]domain.CronTrigger
+	automationExecutions     map[string]domain.AutomationExecution
 	webhookReceipts          map[string]domain.WebhookReceipt // provider|delivery id
 	webhookReceiptDigests    map[string]string                // provider|authenticated payload digest -> receipt key
 	runPluginSnapshots       map[string]map[string]domain.RunPluginSnapshot
@@ -71,6 +73,10 @@ type MemStore struct {
 	deviceOffers             map[string]domain.DevicePairingOffer    // keyed by offer id
 	attachmentStages         map[string]domain.AttachmentStage
 	runAttachments           map[string][]domain.RunAttachment
+	usageEvents              map[string]domain.UsageEvent // keyed by request id
+	usageReceipts            map[string]time.Time         // retained with rollups for durable idempotency
+	modelPricingRevisions    map[string]domain.ModelPricingRevision
+	usageRollups             map[string]usageRollup
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -101,7 +107,9 @@ func NewMemStore() *MemStore {
 		pluginSCMTriggers:        map[string]domain.SCMTrigger{},
 		pluginKanbanTriggers:     map[string]domain.KanbanTrigger{},
 		pluginKanbanClaims:       map[string]domain.PluginKanbanClaim{},
+		pluginKanbanOccurrences:  map[string]domain.PluginKanbanOccurrence{},
 		pluginCronTriggers:       map[string]domain.CronTrigger{},
+		automationExecutions:     map[string]domain.AutomationExecution{},
 		webhookReceipts:          map[string]domain.WebhookReceipt{},
 		webhookReceiptDigests:    map[string]string{},
 		runPluginSnapshots:       map[string]map[string]domain.RunPluginSnapshot{},
@@ -127,6 +135,10 @@ func NewMemStore() *MemStore {
 		deviceOffers:             map[string]domain.DevicePairingOffer{},
 		attachmentStages:         map[string]domain.AttachmentStage{},
 		runAttachments:           map[string][]domain.RunAttachment{},
+		usageEvents:              map[string]domain.UsageEvent{},
+		usageReceipts:            map[string]time.Time{},
+		modelPricingRevisions:    map[string]domain.ModelPricingRevision{},
+		usageRollups:             map[string]usageRollup{},
 	}
 }
 
@@ -209,6 +221,11 @@ func (m *MemStore) DeleteProject(_ context.Context, id string) error {
 	for rid, r := range m.runs {
 		if r.ProjectID == id {
 			m.deleteRunLocked(rid)
+		}
+	}
+	for executionID, execution := range m.automationExecutions {
+		if execution.ProjectID == id {
+			delete(m.automationExecutions, executionID)
 		}
 	}
 	// Project plugin installations are children of projects. The database keeps
@@ -437,6 +454,12 @@ func (m *MemStore) deleteRunLocked(runID string) {
 		if claim.RunID == runID {
 			claim.RunID = ""
 			m.pluginKanbanClaims[key] = claim
+		}
+	}
+	for key, occurrence := range m.pluginKanbanOccurrences {
+		if occurrence.RunID == runID {
+			occurrence.RunID = ""
+			m.pluginKanbanOccurrences[key] = occurrence
 		}
 	}
 }
@@ -2785,7 +2808,7 @@ func (m *MemStore) deletePluginAutomationLocked(automationID string) {
 		}
 	}
 	for key, claim := range m.pluginKanbanClaims {
-		if claim.AutomationID == automationID && claim.RunID == "" {
+		if claim.AutomationID == automationID && claim.RunID == "" && claim.LatestOccurrenceID == "" {
 			delete(m.pluginKanbanClaims, key)
 		}
 	}
@@ -3237,7 +3260,12 @@ func (m *MemStore) EnsurePluginKanbanClaim(_ context.Context, automationID, docu
 		if !exists {
 			return nil, ErrNotFound
 		}
-		claim = domain.PluginKanbanClaim{AutomationID: automationID, InstallationID: trigger.InstallationID, DocumentID: documentID, DocumentPath: documentPath, WorkspaceID: workspaceID, DoneColumn: doneColumn, CreatedAt: time.Now().UTC()}
+		now := time.Now().UTC()
+		claim = domain.PluginKanbanClaim{
+			AutomationID: automationID, InstallationID: trigger.InstallationID,
+			DocumentID: documentID, DocumentPath: documentPath, WorkspaceID: workspaceID,
+			DoneColumn: doneColumn, ExternalRefAvailable: true, CreatedAt: now, UpdatedAt: now,
+		}
 		m.pluginKanbanClaims[key] = claim
 	}
 	copy := claim
@@ -3255,7 +3283,26 @@ func (m *MemStore) SetPluginKanbanClaimRun(_ context.Context, automationID, docu
 	if claim.RunID != "" {
 		return ErrAlreadyExists
 	}
+	if claim.LatestOccurrenceID == "" {
+		automation, automationOK := m.pluginAutomations[automationID]
+		trigger, triggerOK := m.pluginKanbanTriggers[automationID]
+		if !automationOK || !triggerOK {
+			return ErrNotFound
+		}
+		now := time.Now().UTC()
+		occurrence := domain.PluginKanbanOccurrence{
+			ID: domain.NewID(), AutomationID: automationID, ServiceID: automation.ServiceID,
+			InstallationID: claim.InstallationID, WorkspaceID: claim.WorkspaceID,
+			DocumentID: documentID, DocumentPath: claim.DocumentPath, DoneColumn: claim.DoneColumn,
+			EventKey: "legacy:" + documentID + ":" + runID, EntryColumn: trigger.TriggerColumn,
+			State: domain.KanbanOccurrenceQueued, RunID: runID, WritebackState: "pending",
+			CreatedAt: now, UpdatedAt: now,
+		}
+		m.pluginKanbanOccurrences[occurrence.ID] = occurrence
+		claim.LatestOccurrenceID = occurrence.ID
+	}
 	claim.RunID = runID
+	claim.UpdatedAt = time.Now().UTC()
 	m.pluginKanbanClaims[key] = claim
 	return nil
 }
@@ -3272,12 +3319,31 @@ func (m *MemStore) ListPluginKanbanRunsAwaitingWriteback(_ context.Context) ([]P
 		if !ok || !run.Status.Terminal() {
 			continue
 		}
-		out = append(out, PluginKanbanWriteback{Claim: claim, Run: run})
+		var occurrence *domain.PluginKanbanOccurrence
+		if claim.LatestOccurrenceID != "" {
+			if value, exists := m.pluginKanbanOccurrences[claim.LatestOccurrenceID]; exists {
+				if value.WritebackState != "pending" {
+					continue
+				}
+				copy := value
+				occurrence = &copy
+			}
+		}
+		if occurrence == nil {
+			continue
+		}
+		out = append(out, PluginKanbanWriteback{Claim: claim, Occurrence: occurrence, Run: run})
 	}
 	return out, nil
 }
 
-func (m *MemStore) MarkPluginKanbanWriteback(_ context.Context, automationID, documentID string, at time.Time) (bool, error) {
+func (m *MemStore) MarkPluginKanbanWriteback(
+	_ context.Context,
+	automationID, documentID, occurrenceID string,
+	outcome domain.RunStatus,
+	terminalAt *time.Time,
+	at time.Time,
+) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := pluginKanbanClaimKey(automationID, documentID)
@@ -3285,11 +3351,69 @@ func (m *MemStore) MarkPluginKanbanWriteback(_ context.Context, automationID, do
 	if !ok {
 		return false, ErrNotFound
 	}
-	if claim.WritebackAt != nil {
+	if claim.WritebackAt != nil || claim.LatestOccurrenceID != occurrenceID {
 		return false, nil
 	}
 	claim.WritebackAt = &at
+	claim.UpdatedAt = at
 	m.pluginKanbanClaims[key] = claim
+	if claim.LatestOccurrenceID != "" {
+		if occurrence, ok := m.pluginKanbanOccurrences[claim.LatestOccurrenceID]; ok {
+			occurrence.State = domain.KanbanOccurrenceTerminal
+			occurrence.WritebackState = "complete"
+			occurrence.ReceiptPhase = "terminal"
+			occurrence.ReceiptWrittenAt = &at
+			finishedAt := at
+			if terminalAt != nil {
+				finishedAt = *terminalAt
+			}
+			occurrence.TerminalAt = &finishedAt
+			occurrence.UpdatedAt = at
+			occurrence.Outcome = string(outcome)
+			m.pluginKanbanOccurrences[claim.LatestOccurrenceID] = occurrence
+		}
+	}
+	return true, nil
+}
+
+func (m *MemStore) MarkPluginKanbanWritebackUnavailable(
+	_ context.Context,
+	automationID, documentID, occurrenceID string,
+	outcome domain.RunStatus,
+	terminalAt *time.Time,
+	message string,
+	at time.Time,
+) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := pluginKanbanClaimKey(automationID, documentID)
+	claim, ok := m.pluginKanbanClaims[key]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if claim.WritebackAt != nil || claim.LatestOccurrenceID != occurrenceID {
+		return false, nil
+	}
+	claim.WritebackAt = &at
+	claim.ExternalRefAvailable = false
+	claim.LastObservedColumn = ""
+	claim.OutsideTriggerAt = &at
+	claim.UpdatedAt = at
+	m.pluginKanbanClaims[key] = claim
+	if occurrence, exists := m.pluginKanbanOccurrences[claim.LatestOccurrenceID]; exists {
+		occurrence.State = domain.KanbanOccurrenceTerminal
+		occurrence.WritebackState = "unavailable"
+		occurrence.WritebackError = message
+		occurrence.ReceiptPhase = "terminal"
+		finishedAt := at
+		if terminalAt != nil {
+			finishedAt = *terminalAt
+		}
+		occurrence.TerminalAt = &finishedAt
+		occurrence.UpdatedAt = at
+		occurrence.Outcome = string(outcome)
+		m.pluginKanbanOccurrences[claim.LatestOccurrenceID] = occurrence
+	}
 	return true, nil
 }
 
@@ -3297,14 +3421,28 @@ func (m *MemStore) ClaimWebhookReceipt(_ context.Context, r *domain.WebhookRecei
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := string(r.Provider) + "|" + r.DeliveryID
-	if _, ok := m.webhookReceipts[key]; ok {
-		return false, nil
-	}
 	digestKey := ""
 	if r.PayloadDigest != "" && (r.Provider == domain.PluginGitHub || r.Provider == domain.PluginGitea) {
 		digestKey = string(r.Provider) + "|" + r.PayloadDigest
-		if _, ok := m.webhookReceiptDigests[digestKey]; ok {
+	}
+	existingKey := key
+	existing, exists := m.webhookReceipts[existingKey]
+	if !exists && digestKey != "" {
+		if resolvedKey, ok := m.webhookReceiptDigests[digestKey]; ok {
+			existingKey = resolvedKey
+			existing, exists = m.webhookReceipts[existingKey]
+		}
+	}
+	if exists {
+		if existing.Status != "error" {
 			return false, nil
+		}
+		delete(m.webhookReceipts, existingKey)
+		if existing.PayloadDigest != "" {
+			oldDigestKey := string(existing.Provider) + "|" + existing.PayloadDigest
+			if m.webhookReceiptDigests[oldDigestKey] == existingKey {
+				delete(m.webhookReceiptDigests, oldDigestKey)
+			}
 		}
 	}
 	cp := *r

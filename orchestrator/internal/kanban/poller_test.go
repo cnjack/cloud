@@ -2,8 +2,11 @@ package kanban
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -35,22 +38,24 @@ func testLogger(t *testing.T) *slog.Logger {
 
 // fakeAPI is an in-memory jtype stand-in for poller tests.
 type fakeAPI struct {
-	mu         sync.Mutex
-	docs       map[string]jtype.Doc // id -> list item
-	contents   map[string]string    // id -> content
-	events     []jtype.KanbanEvent
-	comments   map[string][]string     // docID -> bodies
-	boards     map[string]*jtype.Board // ref -> resolved board (D30 runtime check)
-	boardErr   error                   // when set, GetBoard returns it (transient/definitive)
-	getCalls   int                     // number of GetDocument calls (cursor probe)
-	listCalls  int
-	boardCalls int // number of GetBoard calls (revalidation probe)
-	pullCalls  []int64
-	pageSize   int
-	listErr    error
-	pullErr    error
-	getErrOnce map[string]error
-	tokens     []string // PATs the token->client factory was asked to bind (F6)
+	mu                        sync.Mutex
+	docs                      map[string]jtype.Doc // id -> list item
+	contents                  map[string]string    // id -> content
+	events                    []jtype.KanbanEvent
+	comments                  map[string][]string     // docID -> bodies
+	boards                    map[string]*jtype.Board // ref -> resolved board (D30 runtime check)
+	boardErr                  error                   // when set, GetBoard returns it (transient/definitive)
+	configBoardMissing        bool                    // GetBoardByConfigID returns a durable drift signal
+	getCalls                  int                     // number of GetDocument calls (cursor probe)
+	listCalls                 int
+	boardCalls                int // number of GetBoard calls (revalidation probe)
+	pullCalls                 []int64
+	pageSize                  int
+	listErr                   error
+	pullErr                   error
+	getErrOnce                map[string]error
+	tokens                    []string // PATs the token->client factory was asked to bind (F6)
+	commentPersistThenErrOnce bool
 }
 
 func newFakeAPI() *fakeAPI {
@@ -77,6 +82,29 @@ func (f *fakeAPI) GetBoard(ctx context.Context, ws, ref string) (*jtype.Board, e
 		return b, nil
 	}
 	return nil, jtype.ErrDocNotFound
+}
+
+func (f *fakeAPI) GetBoardByConfigID(ctx context.Context, ws, ref string) (*jtype.Board, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.boardCalls++
+	if f.boardErr != nil {
+		return nil, f.boardErr
+	}
+	if f.configBoardMissing {
+		return nil, jtype.ErrDocNotFound
+	}
+	if b, ok := f.boards[ref]; ok {
+		return b, nil
+	}
+	return &jtype.Board{
+		ID: ref,
+		Columns: []jtype.BoardColumn{
+			{Key: "ai", Name: "Agent queue"},
+			{Key: "agent", Name: "Agent queue"},
+			{Key: "done", Name: "Done"},
+		},
+	}, nil
 }
 
 func (f *fakeAPI) addCard(id, path, board, status, title, body string, clock int64) {
@@ -151,7 +179,21 @@ func (f *fakeAPI) AddComment(ctx context.Context, ws, docID, body string) error 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.comments[docID] = append(f.comments[docID], body)
+	if f.commentPersistThenErrOnce {
+		f.commentPersistThenErrOnce = false
+		return errors.New("timeout after remote comment success")
+	}
 	return nil
+}
+
+func (f *fakeAPI) ListComments(ctx context.Context, ws, docID string) ([]jtype.Comment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]jtype.Comment, 0, len(f.comments[docID]))
+	for index, body := range f.comments[docID] {
+		out = append(out, jtype.Comment{ID: "comment-" + strconv.Itoa(index+1), Body: body})
+	}
+	return out, nil
 }
 
 // modelStub returns a fixed selection outcome. When SelectOK it yields a fixed
@@ -241,7 +283,7 @@ func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
 	if err := st.CreateProject(ctx, project); err != nil {
 		t.Fatal(err)
 	}
-	service := &domain.Service{ID: domain.NewID(), ProjectID: project.ID, Name: "svc", RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea, RepoOwnerName: "acme/repo", DefaultBranch: "main", CreatedAt: time.Now()}
+	service := &domain.Service{ID: domain.NewID(), ProjectID: project.ID, Name: "svc", RepoKind: domain.RepoKindRaw, RawRepoURL: "https://git.test/acme/repo.git", DefaultBranch: "main", CreatedAt: time.Now()}
 	if err := st.CreateService(ctx, service); err != nil {
 		t.Fatal(err)
 	}
@@ -264,6 +306,8 @@ func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
 	}
 	api := newFakeAPI()
 	api.addCardWithoutEvent("doc-plugin", "cards/plugin.md", "b", "ai", "Fix plugin", "keep constraints", 1)
+	api.getErrOnce["doc-plugin"] = errors.New("transient Card read")
+	api.commentPersistThenErrOnce = true
 	clientFor := func(_ *jtype.Factory, token string) DocumentAPI {
 		api.tokens = append(api.tokens, token)
 		return api
@@ -272,9 +316,19 @@ func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
 	models := modelStub{outcome: modelcfg.SelectOK, requested: &requested}
 	poller := New(st, envResolver(st, "http://legacy-unused"), clientFor, testDecrypt, models, testLogger(t), "http://console", time.Second)
 	poller.Tick(ctx)
+	spec, err := st.GetPluginAutomationSpec(ctx, automation.ID)
+	if err != nil || spec.Kanban.BootstrappedAt != nil ||
+		!strings.HasPrefix(spec.Automation.LastError, "bootstrap_unavailable:") {
+		t.Fatalf("partial bootstrap committed or hid failure: spec=%+v err=%v", spec, err)
+	}
+	runs, err := st.ListRunsByService(ctx, service.ID, 10)
+	if err != nil || len(runs) != 0 {
+		t.Fatalf("partial bootstrap runs=%d err=%v, want 0", len(runs), err)
+	}
+	poller.Tick(ctx)
 	poller.Tick(ctx)
 
-	runs, err := st.ListRunsByService(ctx, service.ID, 10)
+	runs, err = st.ListRunsByService(ctx, service.ID, 10)
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs=%d err=%v", len(runs), err)
 	}
@@ -288,6 +342,532 @@ func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
 	}
 	if len(api.tokens) == 0 || api.tokens[0] != "PLAIN-PLUGINPAT" {
 		t.Fatalf("tokens=%v", api.tokens)
+	}
+	if comments := api.comments["doc-plugin"]; len(comments) != 1 ||
+		!strings.Contains(comments[0], "<!-- jcode-cloud-occurrence:") ||
+		!strings.Contains(comments[0], ":accepted -->") {
+		t.Fatalf("accepted receipt comments=%q", comments)
+	}
+	spec, err = st.GetPluginAutomationSpec(ctx, automation.ID)
+	if err != nil || spec.Kanban == nil || spec.Kanban.BootstrappedAt == nil {
+		t.Fatalf("trigger was not bootstrapped: %+v, %v", spec, err)
+	}
+	if len(api.pullCalls) == 0 {
+		t.Fatal("bootstrap did not establish a durable event cursor")
+	}
+}
+
+func TestPluginKanbanAutomationConsumesEventsWithoutLevelRescan(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: "plugin-events-project", Name: "plugin-events"}
+	service := &domain.Service{ID: "plugin-events-service", ProjectID: project.ID, Name: "svc", RepoKind: domain.RepoKindRaw, RawRepoURL: "https://git.test/acme/repo.git"}
+	if err := st.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateService(ctx, service); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &domain.ProviderConfig{Provider: domain.PluginJType, BaseURL: "http://jtype.plugin", PluginEnabled: true}
+	if err := st.UpsertProviderConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	installation := &domain.PluginInstallation{
+		ID: "plugin-events-installation", ProjectID: project.ID, Provider: domain.PluginJType,
+		Status: domain.PluginStatusEnabled, WorkspaceID: "ws", AccessTokenEnc: []byte("PLUGINPAT"),
+		ConfigRevision: cfg.ConfigRevision,
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	automation := &domain.PluginAutomation{
+		ID: "plugin-events-automation", ServiceID: service.ID, InstallationID: installation.ID,
+		Name: "board", TriggerKind: "kanban", RunKind: domain.RunKindAgent, Enabled: true,
+	}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: automation.ID, InstallationID: installation.ID,
+		BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done",
+	}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	api := newFakeAPI()
+	api.addCardWithoutEvent("doc-plugin", "cards/plugin.md", "b", "ai", "Fix plugin", "keep constraints", 1)
+	clientFor := func(_ *jtype.Factory, token string) DocumentAPI { return api }
+	poller := New(st, envResolver(st, "http://legacy-unused"), clientFor, testDecrypt, stubFor(true), testLogger(t), "http://console", time.Second)
+
+	poller.Tick(ctx)
+	bootstrapListCalls := api.listCalls
+	api.addEvent(2, "b", "cards/plugin.md", "ai", "Fix plugin")
+	poller.Tick(ctx)
+	poller.Tick(ctx)
+
+	runs, err := st.ListRunsByService(ctx, service.ID, 10)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("in-column edit dispatched again: runs=%d err=%v", len(runs), err)
+	}
+	if api.listCalls != bootstrapListCalls+1 {
+		t.Fatalf("steady no-event tick performed a level rescan: list calls %d -> %d", bootstrapListCalls, api.listCalls)
+	}
+	spec, err := st.GetPluginAutomationSpec(ctx, automation.ID)
+	if err != nil || spec.Kanban.EventCursor != 2 {
+		t.Fatalf("event cursor = %+v, %v; want 2", spec.Kanban, err)
+	}
+
+	// A durable event whose Card no longer appears in JType preserves the claim
+	// and history but marks the external reference unavailable.
+	delete(api.docs, "doc-plugin")
+	delete(api.contents, "doc-plugin")
+	api.addEvent(3, "b", "cards/plugin.md", "ai", "Fix plugin")
+	poller.Tick(ctx)
+	claim, err := st.GetPluginKanbanClaimByPath(
+		ctx, automation.ID, installation.WorkspaceID, "cards/plugin.md",
+	)
+	if err != nil || claim.ExternalRefAvailable {
+		t.Fatalf("deleted Card claim=%+v err=%v; want unavailable", claim, err)
+	}
+	spec, err = st.GetPluginAutomationSpec(ctx, automation.ID)
+	if err != nil || spec.Kanban.EventCursor != 3 {
+		t.Fatalf("deleted Card cursor = %+v, %v; want 3", spec.Kanban, err)
+	}
+
+	// If the stable Card returns at the same path, the next observation restores
+	// availability without creating a second in-column occurrence.
+	api.addCardWithoutEvent("doc-plugin", "cards/plugin.md", "b", "ai", "Fix plugin", "keep constraints", 4)
+	api.addEvent(4, "b", "cards/plugin.md", "ai", "Fix plugin")
+	poller.Tick(ctx)
+	claim, err = st.GetPluginKanbanClaimByPath(
+		ctx, automation.ID, installation.WorkspaceID, "cards/plugin.md",
+	)
+	if err != nil || !claim.ExternalRefAvailable {
+		t.Fatalf("restored Card claim=%+v err=%v; want available", claim, err)
+	}
+}
+
+func TestPluginKanbanAutomationStopsAtBoardDriftAndRecovers(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: "drift-project", Name: "drift"}
+	service := &domain.Service{
+		ID: "drift-service", ProjectID: project.ID, Name: "svc",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "https://git.test/acme/repo.git",
+	}
+	_ = st.CreateProject(ctx, project)
+	_ = st.CreateService(ctx, service)
+	cfg := &domain.ProviderConfig{Provider: domain.PluginJType, BaseURL: "http://jtype.plugin", PluginEnabled: true}
+	_ = st.UpsertProviderConfig(ctx, cfg)
+	installation := &domain.PluginInstallation{
+		ID: "drift-installation", ProjectID: project.ID, Provider: domain.PluginJType,
+		Status: domain.PluginStatusEnabled, WorkspaceID: "ws", AccessTokenEnc: []byte("PLUGINPAT"),
+		ConfigRevision: cfg.ConfigRevision,
+	}
+	_ = st.CreatePluginInstallation(ctx, installation)
+	automation := &domain.PluginAutomation{
+		ID: "drift-automation", ServiceID: service.ID, InstallationID: installation.ID,
+		Name: "board", TriggerKind: "kanban", RunKind: domain.RunKindAgent, Enabled: true,
+	}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: automation.ID, InstallationID: installation.ID,
+		BoardRef: "b_stable", TriggerColumn: "ai", DoneColumn: "done",
+	}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	api := newFakeAPI()
+	poller := New(st, envResolver(st, "http://legacy-unused"),
+		func(_ *jtype.Factory, token string) DocumentAPI { return api },
+		testDecrypt, stubFor(true), testLogger(t), "http://console", time.Second)
+
+	poller.Tick(ctx)
+	api.addCardWithoutEvent(
+		"accepted-before-drift", "cards/accepted-before-drift.md",
+		"b_stable", "ai", "Resume accepted work", "", 1,
+	)
+	existing, err := st.ObservePluginKanbanCard(ctx, store.PluginKanbanObservation{
+		AutomationID: automation.ID, ServiceID: service.ID, InstallationID: installation.ID,
+		WorkspaceID: installation.WorkspaceID, DocumentID: "accepted-before-drift",
+		DocumentPath: "cards/accepted-before-drift.md", TriggerColumn: "ai",
+		DoneColumn: "done", ObservedColumn: "ai", EventKey: "event:accepted-before-drift",
+		ObservedAt: time.Now().UTC(),
+	})
+	if err != nil || existing.Occurrence == nil {
+		t.Fatalf("existing occurrence=%+v err=%v", existing, err)
+	}
+	if _, err := st.SetPluginKanbanOccurrenceBlocked(
+		ctx, existing.Occurrence.ID, "model_not_configured",
+		"Choose an allowed model for this Service.", "project_owner",
+	); err != nil {
+		t.Fatal(err)
+	}
+	api.configBoardMissing = true
+	api.addCard("drift-card", "cards/drift.md", "b_stable", "ai", "Do not dispatch", "", 1)
+	poller.Tick(ctx)
+
+	spec, err := st.GetPluginAutomationSpec(ctx, automation.ID)
+	if err != nil || !strings.HasPrefix(spec.Automation.LastError, "board_drift:") {
+		t.Fatalf("last_error=%q err=%v", spec.Automation.LastError, err)
+	}
+	runs, _ := st.ListRunsByService(ctx, service.ID, 10)
+	if len(runs) != 1 || runs[0].OriginEventKey != existing.Occurrence.ID ||
+		spec.Kanban.EventCursor != 0 {
+		t.Fatalf("drift did not resume only existing work: runs=%+v cursor=%d", runs, spec.Kanban.EventCursor)
+	}
+
+	api.configBoardMissing = false
+	poller.Tick(ctx)
+	spec, err = st.GetPluginAutomationSpec(ctx, automation.ID)
+	runs, _ = st.ListRunsByService(ctx, service.ID, 10)
+	if err != nil || spec.Automation.LastError != "" || len(runs) != 2 {
+		t.Fatalf("recovery spec=%+v runs=%d err=%v", spec.Automation, len(runs), err)
+	}
+}
+
+func TestPluginKanbanAutomationReentryRequiresTerminalWritebackAndNewLeave(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: "reentry-project", Name: "reentry"}
+	service := &domain.Service{ID: "reentry-service", ProjectID: project.ID, Name: "svc", RepoKind: domain.RepoKindRaw, RawRepoURL: "https://git.test/acme/repo.git"}
+	_ = st.CreateProject(ctx, project)
+	_ = st.CreateService(ctx, service)
+	cfg := &domain.ProviderConfig{Provider: domain.PluginJType, BaseURL: "http://jtype.plugin", PluginEnabled: true}
+	_ = st.UpsertProviderConfig(ctx, cfg)
+	installation := &domain.PluginInstallation{
+		ID: "reentry-installation", ProjectID: project.ID, Provider: domain.PluginJType,
+		Status: domain.PluginStatusEnabled, WorkspaceID: "ws", AccessTokenEnc: []byte("PLUGINPAT"),
+		ConfigRevision: cfg.ConfigRevision,
+	}
+	_ = st.CreatePluginInstallation(ctx, installation)
+	automation := &domain.PluginAutomation{
+		ID: "reentry-automation", ServiceID: service.ID, InstallationID: installation.ID,
+		Name: "board", TriggerKind: "kanban", RunKind: domain.RunKindAgent, Enabled: true,
+	}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: automation.ID, InstallationID: installation.ID,
+		BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done",
+	}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	api := newFakeAPI()
+	api.addCardWithoutEvent("doc-plugin", "cards/plugin.md", "b", "ai", "Fix plugin", "keep constraints", 1)
+	poller := New(st, envResolver(st, "http://legacy-unused"),
+		func(_ *jtype.Factory, token string) DocumentAPI { return api },
+		testDecrypt, stubFor(true), testLogger(t), "http://console", time.Second)
+	poller.Tick(ctx)
+
+	runs, _ := st.ListRunsByService(ctx, service.ID, 10)
+	if len(runs) != 1 {
+		t.Fatalf("bootstrap runs=%d, want 1", len(runs))
+	}
+	firstRun := runs[0]
+	firstClaim, err := st.GetPluginKanbanClaimByPath(
+		ctx, automation.ID, installation.WorkspaceID, "cards/plugin.md",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.addEvent(2, "b", "cards/plugin.md", "todo", "Fix plugin")
+	api.addEvent(3, "b", "cards/plugin.md", "ai", "Fix plugin")
+	poller.Tick(ctx)
+	runs, _ = st.ListRunsByService(ctx, service.ID, 10)
+	if len(runs) != 1 {
+		t.Fatalf("active re-entry runs=%d, want 1", len(runs))
+	}
+	activeReceipt := jtype.KanbanReceiptMarker(
+		firstClaim.LatestOccurrenceID, store.PluginKanbanAlreadyRunning,
+	)
+	if !strings.Contains(strings.Join(api.comments["doc-plugin"], "\n"), activeReceipt) {
+		t.Fatalf("active re-entry comments=%+v, want %q", api.comments["doc-plugin"], activeReceipt)
+	}
+
+	if _, err := st.ScheduleRun(ctx, firstRun.ID, "job", "token", "Scheduling"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkRunning(ctx, firstRun.ID, "Running", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkSucceeded(ctx, firstRun.ID, "Succeeded", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	api.addEvent(4, "b", "cards/plugin.md", "todo", "Fix plugin")
+	api.addEvent(5, "b", "cards/plugin.md", "ai", "Fix plugin")
+	poller.Tick(ctx)
+	runs, _ = st.ListRunsByService(ctx, service.ID, 10)
+	if len(runs) != 1 {
+		t.Fatalf("writeback-pending re-entry runs=%d, want 1", len(runs))
+	}
+	pendingReceipt := jtype.KanbanReceiptMarker(
+		firstClaim.LatestOccurrenceID, store.PluginKanbanWritebackPending,
+	)
+	if !strings.Contains(strings.Join(api.comments["doc-plugin"], "\n"), pendingReceipt) {
+		t.Fatalf("pending re-entry comments=%+v, want %q", api.comments["doc-plugin"], pendingReceipt)
+	}
+	if wrote, err := st.MarkPluginKanbanWriteback(
+		ctx, automation.ID, "doc-plugin", firstClaim.LatestOccurrenceID,
+		domain.StatusSucceeded, nil, time.Now().UTC(),
+	); err != nil || !wrote {
+		t.Fatalf("mark writeback=%v,%v", wrote, err)
+	}
+	api.addEvent(6, "b", "cards/plugin.md", "todo", "Fix plugin")
+	api.addEvent(7, "b", "cards/plugin.md", "ai", "Fix plugin")
+	poller.Tick(ctx)
+	runs, _ = st.ListRunsByService(ctx, service.ID, 10)
+	if len(runs) != 2 {
+		t.Fatalf("completed leave/re-entry runs=%d, want 2", len(runs))
+	}
+	history, err := st.ListPluginKanbanOccurrences(ctx, automation.ID, "doc-plugin", 10)
+	if err != nil || len(history) != 2 {
+		t.Fatalf("history=%+v err=%v", history, err)
+	}
+}
+
+func TestPluginKanbanBlockedOccurrenceRetriesWithoutNewBoardEvent(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: "blocked-project", Name: "blocked"}
+	service := &domain.Service{ID: "blocked-service", ProjectID: project.ID, Name: "svc", RepoKind: domain.RepoKindRaw, RawRepoURL: "https://git.test/acme/repo.git"}
+	_ = st.CreateProject(ctx, project)
+	_ = st.CreateService(ctx, service)
+	cfg := &domain.ProviderConfig{Provider: domain.PluginJType, BaseURL: "http://jtype.plugin", PluginEnabled: true}
+	_ = st.UpsertProviderConfig(ctx, cfg)
+	installation := &domain.PluginInstallation{
+		ID: "blocked-installation", ProjectID: project.ID, Provider: domain.PluginJType,
+		Status: domain.PluginStatusEnabled, WorkspaceID: "ws", AccessTokenEnc: []byte("PLUGINPAT"),
+		ConfigRevision: cfg.ConfigRevision,
+	}
+	_ = st.CreatePluginInstallation(ctx, installation)
+	automation := &domain.PluginAutomation{
+		ID: "blocked-automation", ServiceID: service.ID, InstallationID: installation.ID,
+		Name: "board", TriggerKind: "kanban", RunKind: domain.RunKindAgent, Enabled: true,
+	}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: automation.ID, InstallationID: installation.ID,
+		BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done",
+	}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	api := newFakeAPI()
+	api.addCardWithoutEvent("blocked-card", "cards/blocked.md", "b", "ai", "Fix model", "body", 1)
+	models := modelStub{outcome: modelcfg.SelectNotConfigured}
+	poller := New(st, envResolver(st, "http://legacy-unused"),
+		func(_ *jtype.Factory, token string) DocumentAPI { return api },
+		testDecrypt, &models, testLogger(t), "http://console", time.Second)
+
+	poller.Tick(ctx)
+	poller.Tick(ctx)
+	runs, _ := st.ListRunsByService(ctx, service.ID, 10)
+	history, err := st.ListPluginKanbanOccurrences(ctx, automation.ID, "blocked-card", 10)
+	if err != nil || len(runs) != 0 || len(history) != 1 ||
+		history[0].State != domain.KanbanOccurrenceBlocked ||
+		history[0].ReasonCode != "model_not_configured" {
+		t.Fatalf("blocked state: runs=%d history=%+v err=%v", len(runs), history, err)
+	}
+	if comments := api.comments["blocked-card"]; len(comments) != 1 ||
+		!strings.Contains(comments[0], ":blocked -->") {
+		t.Fatalf("blocked receipt comments=%q", comments)
+	}
+
+	models.outcome = modelcfg.SelectOK
+	poller.Tick(ctx)
+	runs, _ = st.ListRunsByService(ctx, service.ID, 10)
+	history, err = st.ListPluginKanbanOccurrences(ctx, automation.ID, "blocked-card", 10)
+	if err != nil || len(runs) != 1 || len(history) != 1 ||
+		history[0].State != domain.KanbanOccurrenceQueued ||
+		history[0].RunID != runs[0].ID {
+		t.Fatalf("resumed state: runs=%+v history=%+v err=%v", runs, history, err)
+	}
+	if comments := api.comments["blocked-card"]; len(comments) != 2 ||
+		!strings.Contains(comments[1], ":accepted -->") {
+		t.Fatalf("resumed receipt comments=%q", comments)
+	}
+}
+
+func TestPluginKanbanCardReadFailureIsVisibleAndRetriesSameOccurrence(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: "card-read-project", Name: "card-read"}
+	service := &domain.Service{
+		ID: "card-read-service", ProjectID: project.ID, Name: "svc",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "https://git.test/acme/repo.git",
+	}
+	_ = st.CreateProject(ctx, project)
+	_ = st.CreateService(ctx, service)
+	cfg := &domain.ProviderConfig{
+		Provider: domain.PluginJType, BaseURL: "http://jtype.plugin", PluginEnabled: true,
+	}
+	_ = st.UpsertProviderConfig(ctx, cfg)
+	installation := &domain.PluginInstallation{
+		ID: "card-read-installation", ProjectID: project.ID, Provider: domain.PluginJType,
+		Status: domain.PluginStatusEnabled, WorkspaceID: "ws",
+		AccessTokenEnc: []byte("PLUGINPAT"), ConfigRevision: cfg.ConfigRevision,
+	}
+	_ = st.CreatePluginInstallation(ctx, installation)
+	automation := &domain.PluginAutomation{
+		ID: "card-read-automation", ServiceID: service.ID, InstallationID: installation.ID,
+		Name: "board", TriggerKind: "kanban", RunKind: domain.RunKindAgent, Enabled: true,
+	}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: automation.ID, InstallationID: installation.ID,
+		BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done",
+	}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	api := newFakeAPI()
+	poller := New(st, envResolver(st, "http://legacy-unused"),
+		func(_ *jtype.Factory, token string) DocumentAPI { return api },
+		testDecrypt, stubFor(true), testLogger(t), "http://console", time.Second)
+
+	// Establish the one-time event cursor without an initial Card, then create
+	// one durable transition whose full Card read fails transiently.
+	poller.Tick(ctx)
+	api.addCard("card-read", "cards/card-read.md", "b", "ai", "Read me", "body", 1)
+	api.getErrOnce["card-read"] = &jtype.Error{
+		StatusCode: 503, Code: "unavailable", Message: "retry",
+	}
+	poller.Tick(ctx)
+
+	history, err := st.ListPluginKanbanOccurrences(ctx, automation.ID, "card-read", 10)
+	if err != nil || len(history) != 1 ||
+		history[0].State != domain.KanbanOccurrenceBlocked ||
+		history[0].ReasonCode != "card_read_unavailable" {
+		t.Fatalf("visible Card read blocker: history=%+v err=%v", history, err)
+	}
+	spec, err := st.GetPluginAutomationSpec(ctx, automation.ID)
+	if err != nil ||
+		!strings.HasPrefix(spec.Automation.LastError, "card_read_unavailable:") {
+		t.Fatalf("automation error=%q err=%v", spec.Automation.LastError, err)
+	}
+	if runs, _ := st.ListRunsByService(ctx, service.ID, 10); len(runs) != 0 {
+		t.Fatalf("Card read failure dispatched %d runs", len(runs))
+	}
+	occurrenceID := history[0].ID
+
+	// No new board event is needed. The retry attaches exactly one Run to the
+	// already persisted occurrence and advances its receipt to accepted.
+	poller.Tick(ctx)
+	history, err = st.ListPluginKanbanOccurrences(ctx, automation.ID, "card-read", 10)
+	runs, _ := st.ListRunsByService(ctx, service.ID, 10)
+	if err != nil || len(history) != 1 || history[0].ID != occurrenceID ||
+		history[0].State != domain.KanbanOccurrenceQueued ||
+		len(runs) != 1 || history[0].RunID != runs[0].ID {
+		t.Fatalf("Card read recovery: history=%+v runs=%+v err=%v", history, runs, err)
+	}
+	if spec, err = st.GetPluginAutomationSpec(ctx, automation.ID); err != nil ||
+		spec.Automation.LastError != "" {
+		t.Fatalf("recovered automation error=%q err=%v", spec.Automation.LastError, err)
+	}
+}
+
+func TestPluginKanbanMissingCardMarksClaimUnavailable(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: "missing-card-project", Name: "missing-card"}
+	service := &domain.Service{
+		ID: "missing-card-service", ProjectID: project.ID, Name: "svc",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "https://git.test/acme/repo.git",
+	}
+	_ = st.CreateProject(ctx, project)
+	_ = st.CreateService(ctx, service)
+	cfg := &domain.ProviderConfig{
+		Provider: domain.PluginJType, BaseURL: "http://jtype.plugin", PluginEnabled: true,
+	}
+	_ = st.UpsertProviderConfig(ctx, cfg)
+	installation := &domain.PluginInstallation{
+		ID: "missing-card-installation", ProjectID: project.ID, Provider: domain.PluginJType,
+		Status: domain.PluginStatusEnabled, WorkspaceID: "ws",
+		AccessTokenEnc: []byte("PLUGINPAT"), ConfigRevision: cfg.ConfigRevision,
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	automation := &domain.PluginAutomation{
+		ID: "missing-card-automation", ServiceID: service.ID,
+		InstallationID: installation.ID,
+		Name:           "board", TriggerKind: "kanban", Enabled: true,
+	}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: automation.ID, InstallationID: installation.ID,
+		BoardRef: "b", TriggerColumn: "ai",
+	}
+	if err := st.CreatePluginAutomation(
+		ctx, automation, nil, nil, trigger, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	api := newFakeAPI()
+	result, err := st.ObservePluginKanbanCard(ctx, store.PluginKanbanObservation{
+		AutomationID: automation.ID, ServiceID: service.ID,
+		InstallationID: installation.ID, WorkspaceID: "ws",
+		DocumentID: "missing-card", DocumentPath: "cards/missing.md",
+		TriggerColumn: "ai", ObservedColumn: "ai",
+		EventKey: "event:1", ObservedAt: time.Now().UTC(),
+	})
+	if err != nil || result.Occurrence == nil {
+		t.Fatalf("seed occurrence=%+v err=%v", result, err)
+	}
+	api.getErrOnce["missing-card"] = &jtype.Error{
+		StatusCode: 404, Code: "not_found", Message: "gone",
+	}
+	poller := &Poller{st: st, models: stubFor(true), now: func() time.Time {
+		return time.Now().UTC()
+	}}
+	poller.dispatchPluginKanbanOccurrence(
+		ctx, api, &domain.PluginAutomationSpec{Automation: *automation},
+		result.Occurrence, nil,
+	)
+
+	claim, err := st.GetPluginKanbanClaimByPath(
+		ctx, automation.ID, "ws", "cards/missing.md",
+	)
+	if err != nil || claim.ExternalRefAvailable {
+		t.Fatalf("missing Card claim=%+v err=%v", claim, err)
+	}
+	history, err := st.ListPluginKanbanOccurrences(
+		ctx, automation.ID, "missing-card", 10,
+	)
+	if err != nil || len(history) != 1 ||
+		history[0].ReasonCode != "card_unavailable" {
+		t.Fatalf("missing Card history=%+v err=%v", history, err)
+	}
+}
+
+func TestPluginKanbanRepositoryBlockersAreTyped(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: "repository-gate-project", Name: "repository-gate"}
+	if err := st.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	raw := &domain.Service{
+		ID: "raw-service", ProjectID: project.ID, Name: "raw",
+		RepoKind: domain.RepoKindRaw,
+	}
+	if err := st.CreateService(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	providerService := &domain.Service{
+		ID: "provider-service", ProjectID: project.ID, Name: "provider",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "acme/repo",
+	}
+	if err := st.CreateService(ctx, providerService); err != nil {
+		t.Fatal(err)
+	}
+	poller := &Poller{st: st}
+
+	code, _, role := poller.pluginKanbanRepositoryBlocker(ctx, raw)
+	if code != "repository_not_configured" || role != "project_owner" {
+		t.Fatalf("raw blocker=%q role=%q", code, role)
+	}
+	raw.RawRepoURL = "https://git.test/acme/repo.git"
+	if code, _, _ = poller.pluginKanbanRepositoryBlocker(ctx, raw); code != "" {
+		t.Fatalf("healthy raw repository blocker=%q", code)
+	}
+	code, _, role = poller.pluginKanbanRepositoryBlocker(ctx, providerService)
+	if code != "repository_unavailable" || role != "project_owner" {
+		t.Fatalf("provider blocker=%q role=%q", code, role)
 	}
 }
 

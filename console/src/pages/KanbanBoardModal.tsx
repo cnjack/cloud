@@ -21,6 +21,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { JTypeApiError, JTypeBoard, type BoardLocale } from 'jtype-board-react';
 import 'jtype-board-react/style.css';
 import { useApi } from '../api/ApiProvider';
@@ -30,15 +31,20 @@ import {
   usePluginBoards,
   useProjectPlugins,
   usePutServiceKanban,
+  useServiceKanbanCardExecutions,
+  useServiceKanbanPolicy,
 } from '../api/queries';
 import { Button } from '../components/Button';
 import { Modal } from '../components/Modal';
 import { SelectField } from '../components/Field';
 import { LoadingBlock } from '../components/States';
+import { UsageSummary } from '../components/UsageSummary';
 import { makeBoardProxyClient } from '../kanban/boardProxyClient';
 import { resolveBoardPathById } from '../kanban/resolveBoardPathById';
-import type { BoardEmbedLink, PluginBoardResource } from '../api/types';
+import type { BoardEmbedLink, KanbanCardExecution, PluginBoardResource } from '../api/types';
 import styles from './KanbanBoardModal.module.css';
+
+const CLOUD_MANAGED_CARD_ROOTS = ['jcode-automation'] as const;
 
 /** Map the browser locale to a board-supported one; default 'en'. */
 function boardLocale(): BoardLocale {
@@ -125,11 +131,195 @@ interface Props {
   projectId: string;
   serviceId?: string;
   links: BoardEmbedLink[];
+  initialCardPath?: string;
   canManage?: boolean;
   onClose: () => void;
 }
 
-export function KanbanBoardModal({ projectId, serviceId = '', links, canManage = false, onClose }: Props) {
+function KanbanPolicyStrip({ serviceId }: { serviceId: string }) {
+  const { t } = useTranslation();
+  const policy = useServiceKanbanPolicy(serviceId, !!serviceId);
+  if (!serviceId) return null;
+  if (policy.isLoading) {
+    return <div className={styles.policyStrip} aria-label={t('kanban.loadingPolicy')}>{t('kanban.loadingPolicy')}</div>;
+  }
+  if (policy.isError || !policy.data) {
+    return (
+      <div className={styles.policyStrip} data-state="blocked" role="alert">
+        {t('kanban.policyUnavailable')}
+        <Button type="button" variant="ghost" size="sm" onClick={() => void policy.refetch()}>
+          {t('common.retry')}
+        </Button>
+      </div>
+    );
+  }
+  const value = policy.data;
+  const blocker = value.health.blocker
+    ? t(`kanban.policyBlockers.${value.health.blocker}`, { defaultValue: value.health.blocker })
+    : '';
+  return (
+    <div
+      className={styles.policyStrip}
+      data-state={value.health.state}
+      data-testid="kanban-policy"
+      role={value.health.state === 'blocked' ? 'alert' : 'status'}
+    >
+      <div className={styles.policyLead}>
+        <strong>{value.service_name}</strong>
+        <span>{value.repository}</span>
+      </div>
+      <span>
+        {t('kanban.policyTrigger', {
+          column: value.trigger_column.label || value.trigger_column.key,
+        })}
+      </span>
+      <span>{value.model.label}</span>
+      <span>
+        {value.done_column.key
+          ? t('kanban.policyWriteback', { column: value.done_column.label || value.done_column.key })
+          : t('kanban.policyCommentOnly')}
+      </span>
+      <span className={styles.policyHealth}>
+        {value.health.state === 'ready'
+          ? t('kanban.policyReady')
+          : (
+            <>
+              {t('kanban.policyBlocked', { blocker })}
+              {value.health.repair_role === 'project_owner' && ` · ${t('kanban.projectOwner')}`}
+              {value.health.repair_role === 'cluster_admin' && ` · ${t('kanban.clusterAdmin')}`}
+            </>
+          )}
+      </span>
+    </div>
+  );
+}
+
+function executionStateLabel(execution: KanbanCardExecution, t: TFunction): string {
+  if (execution.status === 'terminal' && execution.outcome) {
+    return t(`kanban.executionState.${execution.outcome}`);
+  }
+  return t(`kanban.executionState.${execution.status}`);
+}
+
+function executionDescription(execution: KanbanCardExecution, t: TFunction): string {
+  if (execution.status === 'blocked' && execution.reason_code) {
+    return t(`kanban.policyBlockers.${execution.reason_code}`, {
+      defaultValue: execution.reason ?? execution.summary,
+    });
+  }
+  const key = execution.status === 'terminal' && execution.outcome
+    ? execution.outcome
+    : execution.status;
+  return t(`kanban.executionSummary.${key}`, { defaultValue: execution.summary });
+}
+
+function CardExecutionsSupplement({
+  serviceId,
+  workspaceId,
+  documentPath,
+}: {
+  serviceId: string;
+  workspaceId: string;
+  documentPath: string;
+}) {
+  const { t } = useTranslation();
+  const query = useServiceKanbanCardExecutions(serviceId, workspaceId, documentPath);
+  if (query.isLoading) {
+    return <div className={styles.executionLoading} aria-label={t('kanban.loadingExecutions')}>{t('kanban.loadingExecutions')}</div>;
+  }
+  if (query.isError) {
+    return (
+      <div className={styles.executionError} role="alert">
+        <span>{t('kanban.executionsUnavailable')}</span>
+        <Button type="button" size="sm" variant="ghost" onClick={() => void query.refetch()}>
+          {t('common.retry')}
+        </Button>
+      </div>
+    );
+  }
+  const pages = query.data?.pages ?? [];
+  const executions = pages.flatMap((page) => page.items);
+  const claim = pages[0]?.claim ?? null;
+  if (executions.length === 0) {
+    return <p className={styles.executionEmpty}>{t('kanban.noExecutions')}</p>;
+  }
+  const current = executions[0]!;
+  const history = executions.slice(1);
+  return (
+    <div className={styles.executions} aria-label={t('kanban.executionsTitle')}>
+      {claim && !claim.external_ref_available && (
+        <div className={styles.executionUnavailable} role="status">
+          {t('kanban.cardUnavailable')}
+        </div>
+      )}
+      <div className={styles.cardUsage} data-testid="kanban-card-usage">
+        <UsageSummary value={pages[0]?.usage_summary} compact />
+      </div>
+      <article
+        className={styles.executionCurrent}
+        data-state={current.status === 'terminal' ? current.outcome : current.status}
+        data-testid="kanban-execution-current"
+        role={current.status === 'blocked' ? 'alert' : 'status'}
+      >
+        <div className={styles.executionHeading}>
+          <strong>{executionStateLabel(current, t)}</strong>
+          <time dateTime={current.updated_at}>{new Date(current.updated_at).toLocaleString()}</time>
+        </div>
+        <p>{executionDescription(current, t)}</p>
+        <div className={styles.executionMeta}>
+          {current.requested_actor && (
+            <span>{t('kanban.requestedByExternal', { actor: current.requested_actor.label })}</span>
+          )}
+          {current.repair_role === 'project_owner' && <span>{t('kanban.projectOwner')}</span>}
+          {current.repair_role === 'cluster_admin' && <span>{t('kanban.clusterAdmin')}</span>}
+          {current.run && <Link to={current.run.href}>{t('kanban.openRun')}</Link>}
+          {current.receipt.writeback === 'pending' && <span>{t('kanban.writebackPending')}</span>}
+          {current.receipt.writeback === 'unavailable' && <span>{t('kanban.writebackUnavailable')}</span>}
+        </div>
+        {current.usage_summary && (
+          <div className={styles.executionUsage}>
+            <UsageSummary value={current.usage_summary} compact />
+          </div>
+        )}
+      </article>
+      {history.length > 0 && (
+        <details className={styles.executionHistory}>
+          <summary>{t('kanban.priorExecutions', { count: history.length })}</summary>
+          <ol>
+            {history.map((execution) => (
+              <li key={execution.id}>
+                <span>{executionStateLabel(execution, t)}</span>
+                <time dateTime={execution.updated_at}>{new Date(execution.updated_at).toLocaleString()}</time>
+                {execution.run && <Link to={execution.run.href}>{t('kanban.openRun')}</Link>}
+                {execution.usage_summary && <UsageSummary value={execution.usage_summary} compact />}
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
+      {query.hasNextPage && (
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={query.isFetchingNextPage}
+          onClick={() => void query.fetchNextPage()}
+        >
+          {query.isFetchingNextPage ? t('kanban.loadingExecutions') : t('kanban.loadEarlierExecutions')}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+export function KanbanBoardModal({
+  projectId,
+  serviceId = '',
+  links,
+  initialCardPath,
+  canManage = false,
+  onClose,
+}: Props) {
   const { t } = useTranslation();
   const api = useApi();
   // Memoize the injected client: a new identity per render restarts the board.
@@ -290,6 +480,7 @@ export function KanbanBoardModal({ projectId, serviceId = '', links, canManage =
             />
           </div>
         )}
+        {link && serviceId && <KanbanPolicyStrip serviceId={serviceId} />}
 
         {!link ? null : resolved.isPending ? (
           <LoadingBlock label={t('kanban.openingBoard')} />
@@ -400,8 +591,18 @@ export function KanbanBoardModal({ projectId, serviceId = '', links, canManage =
                 client={proxyClient}
                 workspaceId={link.workspace_id}
                 boardRef={resolved.data}
+                initialCardPath={initialCardPath}
+                additionalCardRoots={CLOUD_MANAGED_CARD_ROOTS}
                 live={false}
+                readOnly={!canManage}
                 locale={boardLocale()}
+                renderCardSupplement={serviceId ? (card) => (
+                  <CardExecutionsSupplement
+                    serviceId={serviceId}
+                    workspaceId={link.workspace_id}
+                    documentPath={card.id}
+                  />
+                ) : undefined}
               />
             </div>
           </>

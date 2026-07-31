@@ -66,11 +66,23 @@
 .inspectorSection { display: grid; gap: var(--space-4); padding: 0 0 var(--space-5) var(--space-5); }
 .inspectorSection + .inspectorSection { padding-top: var(--space-5); border-top: 1px solid var(--color-border); }
 .inspectorSection h2 { margin: 0; color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); font-weight: var(--fw-semibold); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+.inspectorUsage { display: block; }
 .facts { display: grid; gap: var(--space-3); margin: 0; }
 .facts > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: start; gap: var(--space-2); }
 .facts dt { color: var(--color-text-faint); font-size: var(--fs-tiny); }
 .facts dd { min-width: 0; margin: 0; color: var(--color-text-muted); font-size: var(--fs-tiny); overflow-wrap: anywhere; }
 .facts code { font-family: var(--font-mono); }
+.provenanceFacts > div { grid-template-columns: 88px minmax(0, 1fr); }
+.actorDisplay, .executedFor, .triggerReference { display: grid; gap: 2px; }
+.actorDisplay small, .executedFor small, .triggerReference small { color: var(--color-text-faint); font-size: 10px; }
+.botIdentity { display: flex; align-items: flex-start; gap: var(--space-2); }
+.botMark { display: grid; width: 30px; height: 30px; flex: none; place-items: center; border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-accent) 12%, transparent); color: var(--color-accent); font-family: var(--font-mono); font-size: 10px; font-weight: var(--fw-semibold); }
+.botIdentity .actorDisplay > span { color: var(--color-text); font-weight: var(--fw-medium); }
+.provenanceTechnical { color: var(--color-text-faint); font-size: var(--fs-tiny); }
+.provenanceTechnical summary { width: max-content; cursor: pointer; }
+.provenanceTechnical[open] summary { margin-bottom: var(--space-3); }
+.provenanceTechnical .facts { padding-left: var(--space-2); border-left: 1px solid var(--color-border); }
+.provenanceTechnical a, .provenanceFacts a { display: inline-flex; align-items: center; gap: 3px; color: var(--color-text-muted); }
 .inspectorHint { margin: 0; color: var(--color-text-faint); font-size: var(--fs-tiny); line-height: var(--lh-normal); }
 .changeList { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); color: var(--color-text-faint); font-size: var(--fs-tiny); }
 .changeList code { overflow: hidden; color: var(--color-text-muted); font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
@@ -146,7 +158,7 @@
 @media (max-width: 940px) {
   .taskLayout { grid-template-columns: minmax(0, 1fr); align-content: start; overflow-y: auto; }
   .conversationColumn { min-height: 560px; }
-  .inspector { grid-template-columns: repeat(3, minmax(0, 1fr)); padding-top: var(--space-5); border-top: 1px solid var(--color-border); border-left: 0; overflow: visible; }
+  .inspector { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: var(--space-5); border-top: 1px solid var(--color-border); border-left: 0; overflow: visible; }
   .inspectorSection { padding: var(--space-5) var(--space-4) 0 0; }
   .inspectorSection + .inspectorSection { padding-top: var(--space-5); padding-left: var(--space-4); border-top: 0; border-left: 1px solid var(--color-border); }
 }

@@ -1,0 +1,61 @@
+<!doctype html>
+<!-- Loop 2 page-scoped prototype. All records are labelled fixtures. -->
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Run provenance and Bot identity prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>Run provenance — jcode Cloud design</title>
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/run-provenance.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">跳到内容</a>
+  <div class="rp-shell">
+    <header class="utility-bar">
+      <div class="breadcrumbs"><a href="./projects.html">Projects</a><span>/</span><a href="./project-workspace.html">commerce</a><span>/</span><strong>Run 7c3bec6</strong></div>
+      <div class="utility-actions"><span class="prototype-chip">sample fixture · Loop 2</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div>
+    </header>
+    <main class="rp-main" id="mainContent">
+      <header class="rp-head">
+        <a href="./project-workspace.html">← Recent tasks</a>
+        <div><div><span class="eyebrow">payments-api · Agent task</span><h1>Make payout retry idempotent</h1><p>Kanban Automation · 2 minutes ago</p></div><span class="status-label" data-tone="success">Succeeded</span></div>
+      </header>
+      <div class="rp-layout">
+        <section class="rp-conversation" aria-label="Run conversation">
+          <div class="rp-date"><span>Today</span></div>
+          <article class="rp-message"><span class="identity-mark">M</span><div><small>Mei · via JType Card</small><p>Duplicate callbacks must converge on one ledger update. Preserve the existing settlement audit trail.</p></div></article>
+          <article class="rp-agent"><header><span class="identity-mark">J</span><strong>jcode Agent</strong><small>Claude Sonnet · payments-api</small></header><p>I added an idempotency fence around the payout callback and kept the ledger append-only.</p><div class="rp-tool"><span>✓</span><code>go test ./internal/payments/...</code><strong>passed</strong></div></article>
+        </section>
+        <aside class="rp-inspector" aria-label="Run provenance inspector">
+          <section>
+            <h2>Identity &amp; source</h2>
+            <dl>
+              <div><dt>Requested by</dt><dd><strong>Mei</strong><small>External actor · JType display snapshot</small></dd></div>
+              <div><dt>Accountable to</dt><dd><strong>Jack</strong><small>Rule owner · Cloud member</small></dd></div>
+              <div><dt>Triggered from</dt><dd><a href="./kanban-agent-executions.html">PAY-41 · JType Card ↗</a><small>Occurrence occ_01J…</small></dd></div>
+            </dl>
+          </section>
+          <section>
+            <h2>Executed for</h2>
+            <dl>
+              <div><dt>Service</dt><dd><strong>payments-api</strong><small>acme/payments · main</small></dd></div>
+              <div><dt>Model</dt><dd><strong>Claude Sonnet 4.5</strong><small>Dispatch-time snapshot</small></dd></div>
+            </dl>
+          </section>
+          <section class="rp-bot">
+            <h2>Written back as</h2>
+            <div><span class="rp-bot-mark">JC</span><p><strong>jcode Cloud Bot</strong><small>JType Plugin identity · not the requester</small></p></div>
+          </section>
+          <details>
+            <summary>Technical attribution</summary>
+            <dl><div><dt>Runtime</dt><dd>Cloud Automation</dd></div><div><dt>Precision</dt><dd>rule_owner</dd></div><div><dt>Source</dt><dd>kanban_event</dd></div></dl>
+          </details>
+        </aside>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,0 +1,399 @@
+/* Feature Loop 1 — policy, embedded jtype board, and Card execution supplement.
+   Uses the shared prototype tokens; sample data lives in the page only. */
+
+.ka-main {
+  position: relative;
+  min-height: 0;
+  height: calc(100dvh - 3.25rem);
+  overflow: hidden;
+  padding: 1rem 1.25rem 1.25rem;
+  background: var(--surface);
+}
+
+.ka-heading,
+.ka-state-nav,
+.ka-policy,
+.ka-board-toolbar,
+.ka-column > header,
+.ka-card footer,
+.ka-dialog-head,
+.ka-section-head,
+.ka-executions > header,
+.ka-executions > header > span,
+.ka-history summary {
+  display: flex;
+  align-items: center;
+}
+
+.ka-heading {
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.ka-heading h1 {
+  margin-top: 0.125rem;
+  font-size: 1.35rem;
+  letter-spacing: -0.035em;
+}
+
+.ka-state-nav {
+  position: relative;
+  z-index: 7;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+  color: var(--text-faint);
+  font-size: 0.6875rem;
+}
+
+.ka-state-nav > span { margin-right: 0.25rem; }
+.ka-state-nav button,
+.ka-view-tabs button,
+.ka-compact-control {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 0.25rem 0.55rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.ka-state-nav button:hover,
+.ka-view-tabs button:hover,
+.ka-compact-control:hover { background: var(--surface-hover); color: var(--text); }
+.ka-state-nav button[aria-pressed="true"] {
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-weight: 650;
+}
+
+.ka-policy {
+  position: relative;
+  z-index: 1;
+  gap: 1rem;
+  min-height: 4.25rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 0.75rem 0.875rem;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+}
+
+.ka-policy-lead {
+  display: flex;
+  align-items: center;
+  min-width: 17rem;
+  gap: 0.7rem;
+}
+
+.ka-policy-lead > span:last-child,
+.ka-receipt > span:last-child { display: grid; gap: 0.1rem; }
+.ka-policy-lead strong { font-size: 0.75rem; }
+.ka-policy-lead small,
+.ka-receipt small { color: var(--text-muted); font-size: 0.625rem; }
+.ka-policy-icon {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ka-policy-facts {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(4, minmax(6rem, 1fr));
+  gap: 0.5rem 1rem;
+}
+
+.ka-policy-facts div { display: grid; min-width: 0; gap: 0.05rem; }
+.ka-policy-facts dt,
+.ka-execution-meta dt { color: var(--text-faint); font-size: 0.625rem; }
+.ka-policy-facts dd {
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ka-policy-status { flex: none; gap: 0.3rem; }
+.ka-policy[data-ka-policy="blocked"] .ka-policy-icon { background: var(--warning-bg); color: var(--warning); }
+
+.ka-board-shell {
+  position: relative;
+  height: calc(100% - 9.2rem);
+  min-height: 22rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-soft);
+}
+
+.ka-board-toolbar {
+  min-height: 2.8rem;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 0.45rem 0.75rem;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+}
+
+.ka-view-tabs { display: inline-flex; border-radius: var(--radius-md); background: var(--surface-inset); padding: 0.15rem; }
+.ka-view-tabs button { font-size: 0.625rem; }
+.ka-view-tabs button[aria-pressed="true"] { background: var(--surface); box-shadow: var(--shadow); color: var(--text); font-weight: 650; }
+.ka-toolbar-spacer { flex: 1; }
+.ka-compact-control { border-color: var(--border); font-size: 0.625rem; }
+.ka-search {
+  display: flex;
+  align-items: center;
+  width: 11rem;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.3rem 0.5rem;
+  background: var(--surface);
+  color: var(--text-faint);
+}
+.ka-search input { width: 100%; border: 0; outline: 0; background: transparent; font-size: 0.625rem; }
+
+.ka-board {
+  display: grid;
+  height: calc(100% - 2.8rem);
+  grid-template-columns: repeat(4, minmax(12rem, 1fr));
+  gap: 0.65rem;
+  overflow: auto;
+  padding: 0.65rem;
+}
+
+.ka-column {
+  min-width: 12rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: 0.45rem;
+  background: color-mix(in srgb, var(--surface-inset) 30%, transparent);
+}
+
+.ka-column[data-trigger-column] {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 30%, var(--surface-soft));
+}
+
+.ka-column > header { gap: 0.4rem; min-height: 1.8rem; padding: 0 0.25rem 0.35rem; color: var(--text-muted); font-size: 0.625rem; }
+.ka-column > header strong { color: var(--text-dim); font-size: 0.6875rem; }
+.ka-column > header em { margin-left: auto; color: var(--accent); font-size: 0.5625rem; font-style: normal; font-weight: 650; }
+.ka-column-dot { width: 0.45rem; height: 0.45rem; border-radius: 99px; background: var(--text-faint); }
+.ka-column-dot[data-tone="accent"] { background: var(--accent); }
+.ka-column-dot[data-tone="info"] { background: var(--info); }
+.ka-column-dot[data-tone="success"] { background: var(--success); }
+
+.ka-card {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: 0.45rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: 0.65rem;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.ka-card[data-selected] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.ka-card-ticket { color: var(--text-faint); font-family: var(--font-mono); font-size: 0.5625rem; }
+.ka-card h2 { font-size: 0.6875rem; line-height: 1.35; }
+.ka-card p { color: var(--text-muted); font-size: 0.5625rem; line-height: 1.45; }
+.ka-card footer { justify-content: space-between; color: var(--text-faint); font-size: 0.5625rem; }
+.ka-priority { color: var(--danger); }
+.ka-done { color: var(--success); }
+.ka-polling {
+  position: absolute;
+  right: 0.55rem;
+  bottom: 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 99px;
+  padding: 0.15rem 0.45rem;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  color: var(--text-faint);
+  font-size: 0.5625rem;
+}
+.ka-polling span { width: 0.35rem; height: 0.35rem; border-radius: 99px; background: var(--text-faint); }
+
+.ka-dialog-backdrop {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  background: color-mix(in srgb, var(--text) 18%, transparent);
+  backdrop-filter: blur(1px);
+}
+
+.ka-card-dialog {
+  position: absolute;
+  z-index: 6;
+  inset: 6.5rem 2.25rem 1.8rem;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--text) 9%, var(--border));
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+}
+
+.ka-dialog-head {
+  min-height: 2.9rem;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 0.5rem 0.8rem 0.5rem 1.4rem;
+}
+.ka-dialog-grid { display: grid; min-height: 0; flex: 1; grid-template-columns: minmax(0, 1fr) 20rem; }
+.ka-card-content { min-width: 0; overflow: auto; padding: 1.35rem 2rem 2.5rem; }
+.ka-title-input {
+  width: 100%;
+  margin-bottom: 1.35rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+}
+.ka-section-head { gap: 0.65rem; margin-bottom: 0.45rem; }
+.ka-section-head h2,
+.ka-native-section h2,
+.ka-properties h2,
+.ka-executions h2 { font-size: 0.6875rem; }
+.ka-section-head h2 { margin-right: auto; }
+.ka-section-head span { color: var(--text-faint); font-size: 0.5625rem; }
+.ka-card-content textarea {
+  width: 100%;
+  min-height: 10rem;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.8rem;
+  background: var(--surface-soft);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  line-height: 1.6;
+}
+.ka-native-section { display: grid; gap: 0.5rem; margin-top: 1.35rem; border-top: 1px solid var(--border-soft); padding-top: 1rem; color: var(--text-dim); font-size: 0.625rem; }
+.ka-native-section h2 span { margin-left: 0.35rem; color: var(--text-faint); font-weight: 500; }
+.ka-native-section label { display: flex; align-items: center; gap: 0.45rem; }
+
+.ka-inspector {
+  min-width: 0;
+  overflow: auto;
+  border-left: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-soft) 75%, var(--surface));
+}
+.ka-properties { padding: 1.15rem 1.15rem 1rem; }
+.ka-properties dl { display: grid; gap: 0.15rem; margin-top: 0.65rem; }
+.ka-properties dl > div { display: grid; min-height: 2.1rem; grid-template-columns: 5.3rem minmax(0, 1fr); align-items: center; gap: 0.4rem; }
+.ka-properties dt { color: var(--text-muted); font-size: 0.625rem; }
+.ka-properties dd { min-width: 0; margin: 0; }
+.ka-properties button { width: 100%; overflow: hidden; border: 0; border-radius: var(--radius-sm); background: transparent; padding: 0.3rem 0.4rem; color: var(--text-dim); text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.ka-properties button:hover { background: var(--surface); }
+
+.ka-executions {
+  border-top: 1px solid var(--border);
+  padding: 1rem 1.15rem 1.35rem;
+}
+.ka-executions > header { justify-content: space-between; gap: 0.5rem; margin-bottom: 0.75rem; }
+.ka-executions > header > span { gap: 0.4rem; }
+.ka-executions > header > span .icon { color: var(--accent); }
+.ka-executions > header small { color: var(--text-faint); font-size: 0.5625rem; }
+.ka-execution-state { display: grid; gap: 0.65rem; }
+.ka-receipt { display: flex; align-items: center; gap: 0.6rem; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.65rem; }
+.ka-receipt[data-tone="info"] { border-color: color-mix(in srgb, var(--info) 35%, var(--border)); background: var(--info-bg); }
+.ka-receipt[data-tone="warning"] { border-color: color-mix(in srgb, var(--warning) 38%, var(--border)); background: var(--warning-bg); }
+.ka-receipt[data-tone="success"] { border-color: color-mix(in srgb, var(--success) 35%, var(--border)); background: var(--success-bg); }
+.ka-receipt[data-tone="danger"] { border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); background: var(--danger-bg); }
+.ka-receipt strong { font-size: 0.6875rem; }
+.ka-receipt-icon { display: grid; width: 1.65rem; height: 1.65rem; flex: none; place-items: center; border-radius: 99px; background: color-mix(in srgb, var(--surface) 72%, transparent); color: currentColor; font-weight: 700; }
+.ka-spinner { width: 0.75rem; height: 0.75rem; border: 2px solid color-mix(in srgb, var(--info) 25%, transparent); border-top-color: var(--info); border-radius: 99px; animation: ka-spin 900ms linear infinite; }
+@keyframes ka-spin { to { transform: rotate(360deg); } }
+.ka-receipt-copy { color: var(--text-muted); font-size: 0.625rem; line-height: 1.55; }
+.ka-run-link { width: 100%; min-width: 0; justify-content: flex-start; overflow: hidden; font-size: 0.625rem; }
+.ka-run-link .mono { margin-left: auto; overflow: hidden; color: var(--text-faint); text-overflow: ellipsis; }
+.ka-next-action { display: grid; gap: 0.15rem; border-left: 2px solid var(--warning); padding-left: 0.55rem; color: var(--text-muted); font-size: 0.625rem; }
+.ka-next-action strong { color: var(--warning); font-size: 0.5625rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.ka-execution-meta { display: grid; gap: 0.3rem; }
+.ka-execution-meta > div { display: flex; justify-content: space-between; gap: 0.5rem; }
+.ka-execution-meta dd { margin: 0; color: var(--text-dim); font-size: 0.625rem; text-align: right; }
+.ka-execution-meta dd span { display: block; color: var(--text-faint); font-size: 0.5625rem; }
+.ka-history { margin-top: 0.8rem; border-top: 1px solid var(--border); padding-top: 0.65rem; }
+.ka-history summary { justify-content: space-between; color: var(--text-muted); font-size: 0.625rem; cursor: pointer; }
+.ka-history summary span:last-child { border-radius: 99px; background: var(--surface-inset); padding: 0.05rem 0.35rem; }
+.ka-history a { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.45rem; margin-top: 0.5rem; border-radius: var(--radius-md); padding: 0.45rem; font-size: 0.5625rem; }
+.ka-history a:hover { background: var(--surface); }
+.ka-history a > span:nth-child(2) { display: grid; }
+.ka-history small { color: var(--text-faint); }
+.ka-history-dot { width: 0.4rem; height: 0.4rem; border-radius: 99px; background: var(--danger); }
+
+@media (max-width: 1000px) {
+  .ka-policy-facts { grid-template-columns: repeat(2, minmax(6rem, 1fr)); }
+  .ka-policy-facts div:nth-child(n + 3) { display: none; }
+  .ka-card-dialog { inset-inline: 1rem; }
+  .ka-dialog-grid { grid-template-columns: minmax(0, 1fr) 18rem; }
+}
+
+@media (max-width: 720px) {
+  .ka-main {
+    height: auto;
+    min-height: calc(100dvh - 3.25rem);
+    overflow: auto;
+    padding: 0.75rem;
+  }
+  .ka-heading { position: relative; }
+  .ka-state-nav {
+    position: fixed;
+    z-index: 8;
+    top: 3.5rem;
+    right: 0.35rem;
+    left: 0.35rem;
+    overflow-x: auto;
+    margin: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.35rem;
+    background: color-mix(in srgb, var(--surface) 96%, transparent);
+    box-shadow: var(--shadow);
+    white-space: nowrap;
+  }
+  .ka-policy { align-items: flex-start; flex-wrap: wrap; }
+  .ka-policy-lead { width: 100%; min-width: 0; }
+  .ka-policy-facts { width: 100%; flex-basis: 100%; grid-template-columns: 1fr 1fr; }
+  .ka-policy-facts div { display: grid !important; }
+  .ka-policy-status { position: absolute; top: 0.75rem; right: 0.75rem; }
+  .ka-policy-lead > span:last-child { padding-right: 6rem; }
+  .ka-board-shell { height: 28rem; }
+  .ka-board { grid-template-columns: repeat(4, 15rem); }
+  .ka-search { width: 8.5rem; }
+  .ka-dialog-backdrop { position: fixed; }
+  .ka-card-dialog {
+    position: fixed;
+    inset: 6.15rem 0.35rem 0.35rem;
+    border-radius: var(--radius-lg);
+  }
+  .ka-dialog-grid { display: block; overflow: auto; }
+  .ka-card-content { overflow: visible; padding: 1.1rem 1rem 1.5rem; }
+  .ka-title-input { font-size: 1.1rem; }
+  .ka-inspector { overflow: visible; border-top: 1px solid var(--border); border-left: 0; }
+  .ka-executions { padding-bottom: 2rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ka-spinner { animation: none; }
+}

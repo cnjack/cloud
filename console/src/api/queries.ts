@@ -3,6 +3,7 @@
  * centralised so SSE/status changes can invalidate precisely.
  */
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
@@ -10,6 +11,7 @@ import {
 import { useApi } from './ApiProvider';
 import type {
   AddMemberInput,
+  AutomationExecution,
   CreateProjectAutomationInput,
   CreateApiKeyInput,
   CreateApiKeyResponse,
@@ -20,6 +22,7 @@ import type {
   CreateRunInput,
   CreateServiceInput,
 	ServiceBranch,
+  KanbanCardExecution,
   Member,
   Model,
   Project,
@@ -36,9 +39,29 @@ import type {
   UpdateProjectInput,
   UpdateProviderModelInput,
   UpdateServiceInput,
+  CreateModelPricingRevisionInput,
 } from './types';
 import { isTerminal } from './types';
 import { reconcileRunSnapshot } from './runCache';
+
+export function kanbanCardExecutionPollInterval(
+  items: readonly KanbanCardExecution[] | undefined,
+): number | false {
+  if (!items || items.length === 0) return 5_000;
+  return items.some((item) =>
+    item.status === 'received' || item.status === 'blocked' ||
+    item.status === 'queued' || item.status === 'running')
+    ? 5_000 : false;
+}
+
+export function automationExecutionPollInterval(
+  items: readonly AutomationExecution[] | undefined,
+): number | false {
+  return items?.some((item) =>
+    item.state === 'accepted' || item.state === 'queued' || item.state === 'running' ||
+    (item.state === 'blocked' && item.output_mode === 'create_card'))
+    ? 5_000 : false;
+}
 
 export const qk = {
   me: ['me'] as const,
@@ -60,6 +83,9 @@ export const qk = {
   // button + feeds the embed modal's selector.
   projectBoardLinks: (projectId: string) => ['project-board-links', projectId] as const,
   serviceKanban: (serviceId: string) => ['service-kanban', serviceId] as const,
+  serviceKanbanPolicy: (serviceId: string) => ['service-kanban-policy', serviceId] as const,
+  serviceKanbanCardExecutions: (serviceId: string, workspaceId: string, documentPath: string) =>
+    ['service-kanban-card-executions', serviceId, workspaceId, documentPath] as const,
   serviceBranches: (serviceId: string) => ['service-branches', serviceId] as const,
   projectPlugins: (projectId: string) => ['project-plugins', projectId] as const,
   projectPluginImpact: (projectId: string, installationId: string) =>
@@ -75,7 +101,16 @@ export const qk = {
   projectAutomations: (projectId: string) => ['project-automations', projectId] as const,
   projectAutomation: (projectId: string, automationId: string) =>
     ['project-automation', projectId, automationId] as const,
+  automationExecutions: (automationId: string, state: string) =>
+    ['automation-executions', automationId, state] as const,
+  automationUsage: (automationId: string, from: string, to: string) =>
+    ['automation-usage', automationId, from, to] as const,
+  projectUsage: (projectId: string, groupBy: string, from: string, to: string) =>
+    ['project-usage', projectId, groupBy, from, to] as const,
+  accountUsage: (groupBy: string, from: string, to: string) =>
+    ['account-usage', groupBy, from, to] as const,
   providerCapabilities: (provider: ProviderKind) => ['provider-capabilities', provider] as const,
+  modelPricingRevisions: (modelId: string) => ['model-pricing-revisions', modelId] as const,
   githubAppInstallations: (projectId: string) => ['github-app-installations', projectId] as const,
   jtypePluginConnect: (projectId: string, installationId: string, connectId: string) =>
     ['jtype-plugin-connect', projectId, installationId, connectId] as const,
@@ -760,6 +795,42 @@ export function usePutServiceKanban(projectId: string, serviceId: string) {
   });
 }
 
+export function useServiceKanbanPolicy(serviceId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.serviceKanbanPolicy(serviceId),
+    queryFn: () => api.getServiceKanbanPolicy(serviceId),
+    enabled: enabled && !!serviceId,
+    retry: false,
+  });
+}
+
+export function useServiceKanbanCardExecutions(
+  serviceId: string,
+  workspaceId: string,
+  documentPath: string,
+  enabled = true,
+) {
+  const api = useApi();
+  return useInfiniteQuery({
+    queryKey: qk.serviceKanbanCardExecutions(serviceId, workspaceId, documentPath),
+    queryFn: ({ pageParam }) => api.listServiceKanbanCardExecutions(
+      serviceId, workspaceId, documentPath, pageParam ?? undefined,
+    ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    enabled: enabled && !!serviceId && !!workspaceId && !!documentPath,
+    retry: false,
+    refetchInterval: (query) => {
+      const items = query.state.data?.pages.flatMap((page) => page.items);
+      // Keep polling an empty Card so a receipt appears without closing and
+      // reopening the detail after the user moves it into the trigger column.
+      // Stop only once every known occurrence is terminal.
+      return kanbanCardExecutionPollInterval(items);
+    },
+  });
+}
+
 export function useDeleteServiceKanban(projectId: string, serviceId: string) {
   const api = useApi();
   const qc = useQueryClient();
@@ -943,6 +1014,69 @@ export function useProjectAutomation(projectId: string, automationId: string, en
   });
 }
 
+export function useAutomationExecutions(automationId: string, state = '', enabled = true) {
+  const api = useApi();
+  return useInfiniteQuery({
+    queryKey: qk.automationExecutions(automationId, state),
+    queryFn: ({ pageParam }) => api.listAutomationExecutions(
+      automationId, pageParam ?? undefined, state || undefined,
+    ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    enabled: enabled && !!automationId,
+    refetchInterval: (query) => automationExecutionPollInterval(
+      query.state.data?.pages.flatMap((page) => page.items),
+    ),
+  });
+}
+
+export function useAutomationUsage(automationId: string, from = '', to = '', enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.automationUsage(automationId, from, to),
+    queryFn: () => api.getAutomationUsage(automationId, from || undefined, to || undefined),
+    enabled: enabled && !!automationId,
+  });
+}
+
+export function useProjectUsage(
+  projectId: string,
+  groupBy: 'service' | 'automation' | 'model',
+  from: string,
+  to: string,
+  enabled = true,
+) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.projectUsage(projectId, groupBy, from, to),
+    queryFn: () => api.getProjectUsage(projectId, groupBy, from, to),
+    enabled: enabled && !!projectId,
+  });
+}
+
+export function useAccountUsage(
+  groupBy: 'device' | 'model' | 'grant',
+  from: string,
+  to: string,
+  enabled = true,
+) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.accountUsage(groupBy, from, to),
+    queryFn: () => api.getAccountUsage(groupBy, from, to),
+    enabled,
+  });
+}
+
+export function useRunAutomationNow(automationId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (idempotencyKey: string) => api.runAutomationNow(automationId, idempotencyKey),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['automation-executions', automationId] }),
+  });
+}
+
 export function useProviderCapabilities(provider: ProviderKind, enabled = true) {
   const api = useApi();
   return useQuery({
@@ -951,6 +1085,25 @@ export function useProviderCapabilities(provider: ProviderKind, enabled = true) 
     enabled,
     staleTime: 5 * 60_000,
     retry: false,
+  });
+}
+
+export function useModelPricingRevisions(modelId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.modelPricingRevisions(modelId),
+    queryFn: () => api.listModelPricingRevisions(modelId),
+    enabled: enabled && !!modelId,
+  });
+}
+
+export function useCreateModelPricingRevision(modelId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateModelPricingRevisionInput) =>
+      api.createModelPricingRevision(modelId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.modelPricingRevisions(modelId) }),
   });
 }
 

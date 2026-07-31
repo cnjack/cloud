@@ -3,9 +3,11 @@ package jtype
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // docsFrom builds a []Doc from relativePaths (ids are "id:"+path).
@@ -121,6 +123,28 @@ func TestGetBoard_ReturnsConfigID(t *testing.T) {
 	// A name with no matching .board is ErrDocNotFound (not a 503-ish transport err).
 	if _, err := c.GetBoard(ctx, "ws", "ghost"); !errors.Is(err, ErrDocNotFound) {
 		t.Fatalf("missing board want ErrDocNotFound, got %v", err)
+	}
+}
+
+func TestGetBoardByConfigIDFindsRenamedBoardDocument(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws/documents", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `[{"id":"board-doc","relativePath":"renamed/delivery.board","title":"Delivery"}]`)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws/documents/board-doc", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"relativePath":"renamed/delivery.board","title":"Delivery","content":"{\"id\":\"b_stable\",\"title\":\"Delivery\",\"columns\":[{\"key\":\"agent\",\"name\":\"Agent queue\"},{\"key\":\"done\",\"name\":\"Done\"}]}","contentHash":"h","updatedClock":2}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	board, err := NewClient(server.URL, "token", time.Second).GetBoardByConfigID(
+		context.Background(), "ws", "b_stable",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if board.ID != "b_stable" || len(board.Columns) != 2 || board.Columns[0].Name != "Agent queue" {
+		t.Fatalf("board=%+v", board)
 	}
 }
 

@@ -23,6 +23,8 @@
 | [18-device-mesh-dispatch.md](18-device-mesh-dispatch.md) | 设备网格调度设计 |
 | [19-account-settings-sync.md](19-account-settings-sync.md) | 多 Desktop Provider 配置 E2EE 同步 + Cloud Provider Proxy |
 | [20-unified-connections.md](20-unified-connections.md) | 统一 Connection 概念(kanban/gitea/github/gitlab)需求分析与对抗审查 |
+| [22-jtype-agent-work-prd.md](22-jtype-agent-work-prd.md) | jtype Card ↔ Agent Run 协作闭环、身份、自动化与 Usage PRD |
+| [23-kanban-execution-receipts.md](23-kanban-execution-receipts.md) | Kanban transition、occurrence、receipt、Card executions API 与 UI 实现合同 |
 
 可视化蓝图(v1,早于存储/BYOK 细化):<https://claude.ai/code/artifact/68743dc8-aa5c-48f1-b712-fb8d974a2902>
 

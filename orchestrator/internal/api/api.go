@@ -161,6 +161,10 @@ type Server struct {
 	// Pairing-offer validity window (M11 scan-to-pair). Zero =>
 	// domain.DevicePairingOfferWindow (10m). Test-overridable.
 	devicePairingOfferWindow time.Duration
+
+	// usageWriteSlots bounds asynchronous usage persistence. Capture must never
+	// delay or fail an otherwise healthy provider response.
+	usageWriteSlots chan struct{}
 }
 
 // boardValidator is the slice of *jtype.Client the admin link API needs to
@@ -182,7 +186,10 @@ type jtypeDiscovery interface {
 // OAuth provider registry are built from cfg, so no OAuth config => empty
 // registry => auth endpoints report no providers and CONSOLE_TOKEN still works.
 func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, launcher k8s.JobLauncher) *Server {
-	s := &Server{st: st, cfg: cfg, log: log, hub: hub, launcher: launcher}
+	s := &Server{
+		st: st, cfg: cfg, log: log, hub: hub, launcher: launcher,
+		usageWriteSlots: make(chan struct{}, 64),
+	}
 
 	// Token cipher (nil when JCLOUD_MASTER_KEY is unset). config.Load has already
 	// validated the key when any provider is configured.
@@ -404,6 +411,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/system/models/{id}/grants/{projectID}", s.authed(s.handleRevokeModel))
 	mux.Handle("PUT /api/v1/system/models/{id}/account-grants/{userID}", s.authed(s.handleGrantModelToAccount))
 	mux.Handle("DELETE /api/v1/system/models/{id}/account-grants/{userID}", s.authed(s.handleRevokeModelFromAccount))
+	mux.Handle("GET /api/v1/system/models/{id}/pricing-revisions", s.authed(s.handleListModelPricingRevisions))
+	mux.Handle("POST /api/v1/system/models/{id}/pricing-revisions", s.authed(s.handleCreateModelPricingRevision))
 	// Provider-owned model catalog. Credentials are write-only; verification and
 	// catalog errors are typed and never replaced with synthetic model data.
 	mux.Handle("GET /api/v1/system/model-providers", s.authed(s.handleListModelProviders))
@@ -423,6 +432,7 @@ func (s *Server) Handler() http.Handler {
 	// set a header — same rationale as the run stream).
 	mux.Handle("GET /api/v1/devices", s.authed(s.handleListDevices))
 	mux.Handle("GET /api/v1/account/settings", s.authed(s.handleGetAccountSettings))
+	mux.Handle("GET /api/v1/account/usage", s.authed(s.handleGetAccountUsage))
 	mux.Handle("PUT /api/v1/account/settings", s.authed(s.handlePutAccountSettings))
 	mux.Handle("GET /api/v1/devices/{id}", s.authed(s.handleGetDevice))
 	mux.Handle("DELETE /api/v1/devices/{id}", s.authed(s.handleDeleteDevice))
@@ -451,6 +461,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/projects", s.authed(s.handleCreateProject))
 	mux.Handle("GET /api/v1/projects", s.authed(s.handleListProjects))
 	mux.Handle("GET /api/v1/projects/{id}", s.authed(s.handleGetProject))
+	mux.Handle("GET /api/v1/projects/{id}/usage", s.authed(s.handleGetProjectUsage))
 	mux.Handle("PATCH /api/v1/projects/{id}", s.authed(s.handleUpdateProject))
 	mux.Handle("DELETE /api/v1/projects/{id}", s.authed(s.handleDeleteProject))
 
@@ -485,7 +496,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/automations/{aid}", s.authed(s.handleGetPluginAutomation))
 	mux.Handle("PATCH /api/v1/automations/{aid}", s.authed(s.handleUpdatePluginAutomation))
 	mux.Handle("DELETE /api/v1/automations/{aid}", s.authed(s.handleDeletePluginAutomation))
+	mux.Handle("GET /api/v1/automations/{aid}/executions", s.authed(s.handleListAutomationExecutions))
+	mux.Handle("GET /api/v1/automations/{aid}/usage", s.authed(s.handleGetAutomationUsage))
+	mux.Handle("POST /api/v1/automations/{aid}/executions", s.authed(s.handleRunAutomationNow))
+	mux.Handle("GET /api/v1/automations/{aid}/executions/{eid}", s.authed(s.handleGetAutomationExecution))
 	mux.Handle("GET /api/v1/services/{id}/kanban", s.authed(s.handleGetServiceKanban))
+	mux.Handle("GET /api/v1/services/{id}/usage", s.authed(s.handleGetServiceUsage))
+	mux.Handle("GET /api/v1/services/{id}/kanban/policy", s.authed(s.handleGetServiceKanbanPolicy))
+	mux.Handle("GET /api/v1/services/{id}/kanban/card-executions", s.authed(s.handleGetServiceKanbanCardExecutions))
 	mux.Handle("PUT /api/v1/services/{id}/kanban", s.authed(s.handlePutServiceKanban))
 	mux.Handle("DELETE /api/v1/services/{id}/kanban", s.authed(s.handleDeleteServiceKanban))
 	mux.Handle("GET /api/v1/projects/{id}/kanban/board/links", s.authed(s.handleListBoardEmbedLinks))

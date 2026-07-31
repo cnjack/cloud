@@ -521,7 +521,7 @@ func (s *PGStore) CreatePluginAutomation(ctx context.Context, a *domain.PluginAu
 		}
 	}
 	if kanban != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO automation_kanban_triggers(automation_id,installation_id,board_ref,trigger_column,done_column)VALUES($1,$2,$3,$4,$5)`, a.ID, kanban.InstallationID, kanban.BoardRef, kanban.TriggerColumn, kanban.DoneColumn); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO automation_kanban_triggers(automation_id,installation_id,board_ref,trigger_column,done_column,trigger_label,done_label)VALUES($1,$2,$3,$4,$5,$6,$7)`, a.ID, kanban.InstallationID, kanban.BoardRef, kanban.TriggerColumn, kanban.DoneColumn, kanban.TriggerLabel, kanban.DoneLabel); err != nil {
 			if isUniqueViolation(err) {
 				return ErrAlreadyExists
 			}
@@ -529,7 +529,7 @@ func (s *PGStore) CreatePluginAutomation(ctx context.Context, a *domain.PluginAu
 		}
 	}
 	if cron != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO automation_cron_triggers(automation_id,cron_expr)VALUES($1,$2)`, a.ID, cron.CronExpr); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO automation_cron_triggers(automation_id,cron_expr,output_mode)VALUES($1,$2,$3)`, a.ID, cron.CronExpr, cron.OutputMode); err != nil {
 			return err
 		}
 	}
@@ -568,13 +568,13 @@ func (s *PGStore) GetPluginAutomationSpec(ctx context.Context, id string) (*doma
 		}
 	case "kanban":
 		var v domain.KanbanTrigger
-		if err := s.pool.QueryRow(ctx, `SELECT automation_id,installation_id,board_ref,trigger_column,done_column FROM automation_kanban_triggers WHERE automation_id=$1`, id).Scan(&v.AutomationID, &v.InstallationID, &v.BoardRef, &v.TriggerColumn, &v.DoneColumn); err != nil {
+		if err := s.pool.QueryRow(ctx, `SELECT automation_id,installation_id,board_ref,trigger_column,done_column,trigger_label,done_label,event_cursor,bootstrapped_at FROM automation_kanban_triggers WHERE automation_id=$1`, id).Scan(&v.AutomationID, &v.InstallationID, &v.BoardRef, &v.TriggerColumn, &v.DoneColumn, &v.TriggerLabel, &v.DoneLabel, &v.EventCursor, &v.BootstrappedAt); err != nil {
 			return nil, fmt.Errorf("get kanban trigger: %w", err)
 		}
 		spec.Kanban = &v
 	case "cron":
 		var v domain.CronTrigger
-		if err := s.pool.QueryRow(ctx, `SELECT automation_id,cron_expr,last_fired_at,last_error FROM automation_cron_triggers WHERE automation_id=$1`, id).Scan(&v.AutomationID, &v.CronExpr, &v.LastFiredAt, &v.LastError); err != nil {
+		if err := s.pool.QueryRow(ctx, `SELECT automation_id,cron_expr,output_mode,last_fired_at,last_error FROM automation_cron_triggers WHERE automation_id=$1`, id).Scan(&v.AutomationID, &v.CronExpr, &v.OutputMode, &v.LastFiredAt, &v.LastError); err != nil {
 			return nil, fmt.Errorf("get cron trigger: %w", err)
 		}
 		spec.Cron = &v
@@ -659,71 +659,228 @@ func (s *PGStore) EnsurePluginKanbanClaim(ctx context.Context, automationID, doc
 	if err != nil {
 		return nil, fmt.Errorf("ensure Kanban Automation claim: %w", err)
 	}
-	var claim domain.PluginKanbanClaim
-	err = s.pool.QueryRow(ctx, `SELECT automation_id,installation_id,document_id,document_path,workspace_id,done_column,COALESCE(run_id,''),writeback_at,created_at FROM automation_kanban_claims WHERE automation_id=$1 AND document_id=$2`, automationID, documentID).
-		Scan(&claim.AutomationID, &claim.InstallationID, &claim.DocumentID, &claim.DocumentPath, &claim.WorkspaceID, &claim.DoneColumn, &claim.RunID, &claim.WritebackAt, &claim.CreatedAt)
+	claim, err := scanPluginKanbanClaim(s.pool.QueryRow(ctx,
+		`SELECT `+pluginKanbanClaimCols+` FROM automation_kanban_claims WHERE automation_id=$1 AND document_id=$2`,
+		automationID, documentID))
 	if err != nil {
 		return nil, fmt.Errorf("load Kanban Automation claim: %w", err)
 	}
-	return &claim, nil
+	return claim, nil
 }
 
 func (s *PGStore) SetPluginKanbanClaimRun(ctx context.Context, automationID, documentID, runID string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE automation_kanban_claims SET run_id=$3 WHERE automation_id=$1 AND document_id=$2 AND run_id IS NULL`, automationID, documentID, runID)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("set Kanban Automation claim run: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	claim, err := scanPluginKanbanClaim(tx.QueryRow(ctx,
+		`SELECT `+pluginKanbanClaimCols+` FROM automation_kanban_claims WHERE automation_id=$1 AND document_id=$2 FOR UPDATE`,
+		automationID, documentID))
+	if err != nil {
+		return err
+	}
+	if claim.RunID != "" {
+		return ErrAlreadyExists
+	}
+	occurrenceID := claim.LatestOccurrenceID
+	if occurrenceID == "" {
+		var serviceID, triggerColumn string
+		if err = tx.QueryRow(ctx, `SELECT a.service_id,t.trigger_column
+			FROM automations_v2 a JOIN automation_kanban_triggers t ON t.automation_id=a.id
+			WHERE a.id=$1`, automationID).Scan(&serviceID, &triggerColumn); err != nil {
+			return fmt.Errorf("set Kanban Automation claim run: load trigger: %w", err)
+		}
+		occurrenceID = domain.NewID()
+		now := time.Now().UTC()
+		if _, err = tx.Exec(ctx, `INSERT INTO automation_kanban_occurrences(
+			id,automation_id,service_id,installation_id,workspace_id,document_id,document_path,
+			done_column,event_key,entry_column,state,run_id,writeback_state,created_at,updated_at
+		) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'queued',$11,'pending',$12,$12)`,
+			occurrenceID, automationID, serviceID, claim.InstallationID, claim.WorkspaceID,
+			documentID, claim.DocumentPath, claim.DoneColumn, "legacy:"+documentID+":"+runID,
+			triggerColumn, runID, now); err != nil {
+			return fmt.Errorf("set Kanban Automation claim run: create occurrence: %w", err)
+		}
+	} else {
+		tag, updateErr := tx.Exec(ctx, `UPDATE automation_kanban_occurrences
+			SET run_id=$2,state='queued',updated_at=now() WHERE id=$1 AND run_id IS NULL`,
+			occurrenceID, runID)
+		if updateErr != nil {
+			return fmt.Errorf("set Kanban Automation claim run: update occurrence: %w", updateErr)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrAlreadyExists
+		}
+	}
+	tag, err := tx.Exec(ctx, `UPDATE automation_kanban_claims
+		SET run_id=$3,latest_occurrence_id=$4,updated_at=now()
+		WHERE automation_id=$1 AND document_id=$2 AND run_id IS NULL`,
+		automationID, documentID, runID, occurrenceID)
 	if err != nil {
 		return fmt.Errorf("set Kanban Automation claim run: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrAlreadyExists
 	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("set Kanban Automation claim run: commit: %w", err)
+	}
 	return nil
 }
 
 type PluginKanbanWriteback struct {
-	Claim domain.PluginKanbanClaim
-	Run   domain.Run
+	Claim      domain.PluginKanbanClaim
+	Occurrence *domain.PluginKanbanOccurrence
+	Run        domain.Run
 }
 
 func (s *PGStore) ListPluginKanbanRunsAwaitingWriteback(ctx context.Context) ([]PluginKanbanWriteback, error) {
-	rows, err := s.pool.Query(ctx, `SELECT
-		c.automation_id,c.installation_id,c.document_id,c.document_path,c.workspace_id,c.done_column,c.run_id,c.writeback_at,c.created_at
-		FROM automation_kanban_claims c
-		JOIN runs r ON r.id=c.run_id
-		WHERE c.writeback_at IS NULL AND r.status IN ('succeeded','failed','canceled')
+	rows, err := s.pool.Query(ctx, `SELECT `+qualifiedPluginKanbanOccurrenceCols+`
+		FROM automation_kanban_occurrences o
+		JOIN automation_kanban_claims c
+		  ON c.automation_id=o.automation_id AND c.document_id=o.document_id
+		 AND c.latest_occurrence_id=o.id AND c.writeback_at IS NULL
+		JOIN runs r ON r.id=o.run_id
+		WHERE o.writeback_state='pending' AND r.status IN ('succeeded','failed','canceled')
 		ORDER BY r.finished_at NULLS LAST,r.created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list Kanban Automation writebacks: %w", err)
 	}
 	defer rows.Close()
-	var claims []domain.PluginKanbanClaim
+	var occurrences []domain.PluginKanbanOccurrence
 	for rows.Next() {
-		var claim domain.PluginKanbanClaim
-		if err := rows.Scan(&claim.AutomationID, &claim.InstallationID, &claim.DocumentID, &claim.DocumentPath, &claim.WorkspaceID, &claim.DoneColumn, &claim.RunID, &claim.WritebackAt, &claim.CreatedAt); err != nil {
+		occurrence, err := scanPluginKanbanOccurrence(rows)
+		if err != nil {
 			return nil, err
 		}
-		claims = append(claims, claim)
+		occurrences = append(occurrences, *occurrence)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	rows.Close()
-	out := make([]PluginKanbanWriteback, 0, len(claims))
-	for _, claim := range claims {
-		run, err := s.GetRun(ctx, claim.RunID)
+	out := make([]PluginKanbanWriteback, 0, len(occurrences))
+	for i := range occurrences {
+		occurrence := occurrences[i]
+		run, err := s.GetRun(ctx, occurrence.RunID)
 		if err != nil {
 			return nil, fmt.Errorf("load Kanban Automation writeback run: %w", err)
 		}
-		out = append(out, PluginKanbanWriteback{Claim: claim, Run: *run})
+		claim, err := scanPluginKanbanClaim(s.pool.QueryRow(ctx,
+			`SELECT `+pluginKanbanClaimCols+` FROM automation_kanban_claims
+			 WHERE automation_id=$1 AND document_id=$2 AND latest_occurrence_id=$3`,
+			occurrence.AutomationID, occurrence.DocumentID, occurrence.ID))
+		if err != nil {
+			return nil, fmt.Errorf("load Kanban Automation writeback claim: %w", err)
+		}
+		out = append(out, PluginKanbanWriteback{Claim: *claim, Occurrence: &occurrence, Run: *run})
 	}
 	return out, nil
 }
 
-func (s *PGStore) MarkPluginKanbanWriteback(ctx context.Context, automationID, documentID string, at time.Time) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE automation_kanban_claims SET writeback_at=$3 WHERE automation_id=$1 AND document_id=$2 AND writeback_at IS NULL`, automationID, documentID, at)
+func (s *PGStore) MarkPluginKanbanWriteback(
+	ctx context.Context,
+	automationID, documentID, occurrenceID string,
+	outcome domain.RunStatus,
+	terminalAt *time.Time,
+	at time.Time,
+) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("mark Kanban Automation writeback: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if occurrenceID != "" {
+		finishedAt := at
+		if terminalAt != nil {
+			finishedAt = *terminalAt
+		}
+		tag, updateErr := tx.Exec(ctx, `UPDATE automation_kanban_occurrences o SET
+			state='terminal',outcome=$4,receipt_phase='terminal',
+			receipt_written_at=$6,writeback_state='complete',writeback_error='',
+			terminal_at=$5,updated_at=$6
+			FROM automation_kanban_claims c
+			WHERE c.automation_id=$1 AND c.document_id=$2
+			  AND c.latest_occurrence_id=$3 AND c.writeback_at IS NULL
+			  AND o.id=$3 AND o.writeback_state='pending'`,
+			automationID, documentID, occurrenceID, outcome, finishedAt, at)
+		if updateErr != nil {
+			return false, fmt.Errorf("mark Kanban Automation occurrence writeback: %w", updateErr)
+		}
+		if tag.RowsAffected() == 0 {
+			return false, nil
+		}
+	}
+	tag, err := tx.Exec(ctx, `UPDATE automation_kanban_claims
+		SET writeback_at=$4,updated_at=$4
+		WHERE automation_id=$1 AND document_id=$2
+		  AND COALESCE(latest_occurrence_id,'')=$3
+		  AND writeback_at IS NULL`,
+		automationID, documentID, occurrenceID, at)
 	if err != nil {
 		return false, fmt.Errorf("mark Kanban Automation writeback: %w", err)
 	}
-	return tag.RowsAffected() == 1, nil
+	if tag.RowsAffected() == 0 {
+		return false, fmt.Errorf("mark Kanban Automation writeback: claim changed during occurrence update")
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("mark Kanban Automation writeback: commit: %w", err)
+	}
+	return true, nil
+}
+
+func (s *PGStore) MarkPluginKanbanWritebackUnavailable(
+	ctx context.Context,
+	automationID, documentID, occurrenceID string,
+	outcome domain.RunStatus,
+	terminalAt *time.Time,
+	message string,
+	at time.Time,
+) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("mark Kanban Automation writeback unavailable: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if occurrenceID != "" {
+		finishedAt := at
+		if terminalAt != nil {
+			finishedAt = *terminalAt
+		}
+		tag, updateErr := tx.Exec(ctx, `UPDATE automation_kanban_occurrences o SET
+			state='terminal',outcome=$4,receipt_phase='terminal',
+			writeback_state='unavailable',writeback_error=$6,
+			terminal_at=$5,updated_at=$7
+			FROM automation_kanban_claims c
+			WHERE c.automation_id=$1 AND c.document_id=$2
+			  AND c.latest_occurrence_id=$3 AND c.writeback_at IS NULL
+			  AND o.id=$3 AND o.writeback_state='pending'`,
+			automationID, documentID, occurrenceID, outcome, finishedAt, message, at)
+		if updateErr != nil {
+			return false, fmt.Errorf("mark Kanban Automation occurrence writeback unavailable: %w", updateErr)
+		}
+		if tag.RowsAffected() == 0 {
+			return false, nil
+		}
+	}
+	tag, err := tx.Exec(ctx, `UPDATE automation_kanban_claims
+		SET writeback_at=$4,external_ref_available=FALSE,last_observed_column='',
+		    outside_trigger_at=$4,updated_at=$4
+		WHERE automation_id=$1 AND document_id=$2
+		  AND COALESCE(latest_occurrence_id,'')=$3
+		  AND writeback_at IS NULL`,
+		automationID, documentID, occurrenceID, at)
+	if err != nil {
+		return false, fmt.Errorf("mark Kanban Automation writeback unavailable: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, fmt.Errorf("mark Kanban Automation writeback unavailable: claim changed during occurrence update")
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("mark Kanban Automation writeback unavailable: commit: %w", err)
+	}
+	return true, nil
 }
 func (s *PGStore) ListPluginAutomationsByProject(ctx context.Context, projectID string) ([]domain.PluginAutomation, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+qualifiedPluginAutomationCols("a")+` FROM automations_v2 a JOIN services s ON s.id=a.service_id WHERE s.project_id=$1 ORDER BY a.created_at DESC`, projectID)
@@ -831,7 +988,7 @@ func (s *PGStore) ReplacePluginAutomationSpec(ctx context.Context, a *domain.Plu
 		}
 	}
 	if kanban != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO automation_kanban_triggers(automation_id,installation_id,board_ref,trigger_column,done_column)VALUES($1,$2,$3,$4,$5)`, a.ID, kanban.InstallationID, kanban.BoardRef, kanban.TriggerColumn, kanban.DoneColumn); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO automation_kanban_triggers(automation_id,installation_id,board_ref,trigger_column,done_column,trigger_label,done_label)VALUES($1,$2,$3,$4,$5,$6,$7)`, a.ID, kanban.InstallationID, kanban.BoardRef, kanban.TriggerColumn, kanban.DoneColumn, kanban.TriggerLabel, kanban.DoneLabel); err != nil {
 			if isUniqueViolation(err) {
 				return ErrAlreadyExists
 			}
@@ -839,7 +996,7 @@ func (s *PGStore) ReplacePluginAutomationSpec(ctx context.Context, a *domain.Plu
 		}
 	}
 	if cron != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO automation_cron_triggers(automation_id,cron_expr)VALUES($1,$2)`, a.ID, cron.CronExpr); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO automation_cron_triggers(automation_id,cron_expr,output_mode)VALUES($1,$2,$3)`, a.ID, cron.CronExpr, cron.OutputMode); err != nil {
 			return err
 		}
 	}
@@ -851,7 +1008,12 @@ func (s *PGStore) DeletePluginAutomation(ctx context.Context, id string) error {
 		return fmt.Errorf("delete plugin automation: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `DELETE FROM automation_kanban_claims WHERE automation_id=$1 AND run_id IS NULL`, id); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM automation_kanban_claims c
+		WHERE c.automation_id=$1 AND c.run_id IS NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM automation_kanban_occurrences o
+			WHERE o.automation_id=c.automation_id AND o.document_id=c.document_id
+		  )`, id); err != nil {
 		return fmt.Errorf("delete plugin automation observations: %w", err)
 	}
 	tag, err := tx.Exec(ctx, `DELETE FROM automations_v2 WHERE id=$1`, id)
@@ -865,7 +1027,23 @@ func (s *PGStore) DeletePluginAutomation(ctx context.Context, id string) error {
 }
 
 func (s *PGStore) ClaimWebhookReceipt(ctx context.Context, r *domain.WebhookReceipt) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `INSERT INTO webhook_receipts(id,provider,delivery_id,payload_digest,installation_id,event_family,action,external_actor_id,external_actor,object_ref,status,matched_automation_id,error,received_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING`, r.ID, r.Provider, r.DeliveryID, r.PayloadDigest, nullStr(r.InstallationID), r.EventFamily, r.Action, r.ExternalActorID, r.ExternalActor, r.ObjectRef, r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt)
+	tag, err := s.pool.Exec(ctx, `UPDATE webhook_receipts SET
+		delivery_id=$2,payload_digest=$3,installation_id=$4,event_family=$5,action=$6,
+		external_actor_id=$7,external_actor=$8,object_ref=$9,status=$10,
+		matched_automation_id=$11,error=$12,received_at=$13::timestamptz,
+		expires_at=$13::timestamptz + interval '30 days'
+		WHERE provider=$1 AND status='error'
+		  AND (delivery_id=$2 OR ($3<>'' AND payload_digest=$3))`,
+		r.Provider, r.DeliveryID, r.PayloadDigest, nullStr(r.InstallationID),
+		r.EventFamily, r.Action, r.ExternalActorID, r.ExternalActor, r.ObjectRef,
+		r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt)
+	if err != nil {
+		return false, fmt.Errorf("reclaim webhook receipt: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		return true, nil
+	}
+	tag, err = s.pool.Exec(ctx, `INSERT INTO webhook_receipts(id,provider,delivery_id,payload_digest,installation_id,event_family,action,external_actor_id,external_actor,object_ref,status,matched_automation_id,error,received_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING`, r.ID, r.Provider, r.DeliveryID, r.PayloadDigest, nullStr(r.InstallationID), r.EventFamily, r.Action, r.ExternalActorID, r.ExternalActor, r.ObjectRef, r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt)
 	if err != nil {
 		return false, fmt.Errorf("claim webhook receipt: %w", err)
 	}

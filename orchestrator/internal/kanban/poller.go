@@ -16,7 +16,10 @@ package kanban
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +28,7 @@ import (
 	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/kanbancfg"
 	"github.com/cnjack/jcloud/internal/modelcfg"
+	"github.com/cnjack/jcloud/internal/provenance"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -34,11 +38,16 @@ type DocumentAPI interface {
 	ListDocuments(ctx context.Context, workspace string) ([]jtype.Doc, error)
 	PullBoardEvents(ctx context.Context, workspace, boardRef string, afterSequence int64, limit int) (*jtype.KanbanEventPage, error)
 	GetDocument(ctx context.Context, workspace, id string) (*jtype.Document, error)
+	ListComments(ctx context.Context, workspace, docID string) ([]jtype.Comment, error)
 	AddComment(ctx context.Context, workspace, docID, body string) error
 	// GetBoard resolves a board by name/ref and returns its config id + columns.
 	// Used by the runtime fail-visible re-validation of an unvalidated/invalid link
 	// (D30); the normal card scan does NOT call it (it matches by frontmatter).
 	GetBoard(ctx context.Context, workspace, boardRef string) (*jtype.Board, error)
+}
+
+type boardConfigInspector interface {
+	GetBoardByConfigID(ctx context.Context, workspace, configID string) (*jtype.Board, error)
 }
 
 // ModelResolver runs the D21 resolution chain for a project/service so the poller
@@ -181,13 +190,70 @@ func (p *Poller) pollPluginAutomation(ctx context.Context, factory *jtype.Factor
 		return
 	}
 	api := p.clientFor(factory, token)
-	docs, err := api.ListDocuments(ctx, installation.WorkspaceID)
-	if err != nil {
-		p.log.Warn("Kanban Automation poll: list documents", "automation", spec.Automation.ID, "err", err)
+	// Existing occurrences and their receipts use frozen routing and remain
+	// retryable even while the live board configuration is drifting. Board
+	// validation fences only bootstrap/event consumption, i.e. new triggers.
+	p.retryPluginKanbanOccurrences(ctx, api, spec)
+	p.retryPluginKanbanReceipts(ctx, api, spec)
+	if !p.validatePluginKanbanBoard(ctx, api, spec, installation.WorkspaceID) {
 		return
 	}
-	svc, err := p.st.GetService(ctx, spec.Automation.ServiceID)
+	if spec.Kanban.BootstrappedAt == nil {
+		p.bootstrapPluginAutomation(ctx, api, spec, installation)
+		return
+	}
+	p.consumePluginAutomationEvents(ctx, api, spec, installation)
+}
+
+func (p *Poller) validatePluginKanbanBoard(
+	ctx context.Context,
+	api DocumentAPI,
+	spec *domain.PluginAutomationSpec,
+	workspaceID string,
+) bool {
+	inspector, ok := api.(boardConfigInspector)
+	if !ok {
+		// Focused test doubles can implement only DocumentAPI. Production's
+		// *jtype.Client always implements the config-id lookup.
+		return true
+	}
+	board, err := inspector.GetBoardByConfigID(ctx, workspaceID, spec.Kanban.BoardRef)
 	if err != nil {
+		code := "board_validation_unavailable"
+		message := "JType could not validate the configured board."
+		if errors.Is(err, jtype.ErrDocNotFound) {
+			code = "board_drift"
+			message = "The configured JType board no longer exists."
+		}
+		spec.Automation.LastError = code + ": " + message
+		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+		return false
+	}
+	if !boardHasColumn(board, spec.Kanban.TriggerColumn) ||
+		(spec.Kanban.DoneColumn != "" && !boardHasColumn(board, spec.Kanban.DoneColumn)) {
+		spec.Automation.LastError = "board_drift: A configured Kanban column no longer exists."
+		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+		return false
+	}
+	if strings.HasPrefix(spec.Automation.LastError, "board_drift:") ||
+		strings.HasPrefix(spec.Automation.LastError, "board_validation_unavailable:") {
+		spec.Automation.LastError = ""
+		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+	}
+	return true
+}
+
+func (p *Poller) bootstrapPluginAutomation(ctx context.Context, api DocumentAPI, spec *domain.PluginAutomationSpec, installation *domain.PluginInstallation) {
+	head, err := pluginAutomationEventHead(ctx, api, installation.WorkspaceID, spec.Kanban.BoardRef, spec.Kanban.EventCursor)
+	if err != nil {
+		spec.Automation.LastError = "event_feed_unavailable: JType board events could not be read."
+		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+		return
+	}
+	docs, err := api.ListDocuments(ctx, installation.WorkspaceID)
+	if err != nil {
+		spec.Automation.LastError = "bootstrap_unavailable: JType cards could not be listed."
+		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
 		return
 	}
 	for _, doc := range docs {
@@ -196,52 +262,407 @@ func (p *Poller) pollPluginAutomation(ctx context.Context, factory *jtype.Factor
 		}
 		full, err := api.GetDocument(ctx, installation.WorkspaceID, doc.ID)
 		if err != nil {
-			continue
+			spec.Automation.LastError = "bootstrap_unavailable: A JType Card could not be read."
+			_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+			return
 		}
 		card := jtype.ParseCard(full.Content)
-		if card.Board != spec.Kanban.BoardRef || card.Status != spec.Kanban.TriggerColumn {
+		if card.Board != spec.Kanban.BoardRef || strings.TrimSpace(card.Status) == "" {
 			continue
 		}
-		claim, err := p.st.EnsurePluginKanbanClaim(ctx, spec.Automation.ID, doc.ID, doc.Path, installation.WorkspaceID, spec.Kanban.DoneColumn)
-		if err != nil || claim.RunID != "" {
-			continue
+		result, err := p.st.ObservePluginKanbanCard(ctx, store.PluginKanbanObservation{
+			AutomationID: spec.Automation.ID, ServiceID: spec.Automation.ServiceID,
+			InstallationID: installation.ID, WorkspaceID: installation.WorkspaceID,
+			DocumentID: doc.ID, DocumentPath: doc.Path, TriggerColumn: spec.Kanban.TriggerColumn,
+			DoneColumn: spec.Kanban.DoneColumn, ObservedColumn: card.Status,
+			EventKey: "bootstrap:" + spec.Automation.ID + ":" + doc.ID, ObservedAt: p.now(),
+		})
+		if err != nil {
+			return
 		}
-		sel, outcome, err := p.models.SelectModel(ctx, svc.ProjectID, derefStr(svc.DefaultModelID), spec.Automation.ModelID)
-		if err != nil || outcome != modelcfg.SelectOK {
-			spec.Automation.LastError = "Automation model is unavailable."
-			_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
-			continue
+		if result.Created && result.Occurrence != nil {
+			p.dispatchPluginKanbanOccurrence(ctx, api, spec, result.Occurrence, &card)
+		} else {
+			p.projectPluginKanbanSuppressionReceipt(ctx, api, result)
 		}
-		if !sel.SupportsEffort(spec.Automation.ModelEffort) {
-			spec.Automation.LastError = "The selected Automation model no longer supports reasoning effort."
-			_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
-			continue
-		}
-		now := p.now()
-		run := &domain.Run{
-			ID: domain.NewID(), ProjectID: svc.ProjectID, ServiceID: svc.ID,
-			Prompt: buildPrompt(card), Status: domain.StatusQueued, Kind: domain.RunKindAgent,
-			Phase: "Queued", Origin: domain.RunOriginKanban,
-			OriginAutomationID: spec.Automation.ID,
-			OriginEventKey:     "kanban:" + spec.Automation.ID + ":" + doc.ID,
-			Attempt:            1, CreatedAt: now, ModelName: sel.ModelName,
-			ModelEffort: spec.Automation.ModelEffort,
-		}
-		if sel.ModelID != "" {
-			modelID := sel.ModelID
-			run.ModelID = &modelID
-		}
-		if err := p.st.CreateRun(ctx, run); err != nil {
-			continue
-		}
-		if err := p.st.SetPluginKanbanClaimRun(ctx, spec.Automation.ID, doc.ID, run.ID); err != nil {
-			continue
-		}
-		spec.Automation.LastTriggeredAt = &now
-		spec.Automation.LastRunID = run.ID
-		spec.Automation.LastError = ""
-		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
 	}
+	now := p.now()
+	if advanced, err := p.st.AdvancePluginKanbanTrigger(ctx, spec.Automation.ID, spec.Kanban.EventCursor, head, &now); err != nil || !advanced {
+		return
+	}
+	spec.Kanban.EventCursor = head
+	spec.Kanban.BootstrappedAt = &now
+	p.clearPluginKanbanPollingError(ctx, spec)
+}
+
+func pluginAutomationEventHead(ctx context.Context, api DocumentAPI, workspaceID, boardRef string, after int64) (int64, error) {
+	head := after
+	for {
+		page, err := api.PullBoardEvents(ctx, workspaceID, boardRef, head, 100)
+		if err != nil {
+			return after, err
+		}
+		if page.NextSequence < head {
+			return after, fmt.Errorf("JType event cursor moved backwards from %d to %d", head, page.NextSequence)
+		}
+		head = page.NextSequence
+		if !page.HasMore {
+			return head, nil
+		}
+		if len(page.Events) == 0 || page.NextSequence == after {
+			return after, errors.New("JType event feed did not advance")
+		}
+		after = head
+	}
+}
+
+func (p *Poller) consumePluginAutomationEvents(ctx context.Context, api DocumentAPI, spec *domain.PluginAutomationSpec, installation *domain.PluginInstallation) {
+	cursor := spec.Kanban.EventCursor
+	for {
+		page, err := api.PullBoardEvents(ctx, installation.WorkspaceID, spec.Kanban.BoardRef, cursor, 100)
+		if err != nil {
+			spec.Automation.LastError = "event_feed_unavailable: JType board events could not be read."
+			_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+			return
+		}
+		if len(page.Events) == 0 {
+			p.clearPluginKanbanPollingError(ctx, spec)
+			return
+		}
+		docs, err := api.ListDocuments(ctx, installation.WorkspaceID)
+		if err != nil {
+			spec.Automation.LastError = "card_index_unavailable: JType Card index could not be read."
+			_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+			return
+		}
+		docsByPath := make(map[string]jtype.Doc, len(docs))
+		for _, doc := range docs {
+			docsByPath[doc.Path] = doc
+		}
+		for i := range page.Events {
+			event := page.Events[i]
+			if event.Sequence <= cursor {
+				continue
+			}
+			doc, ok := docsByPath[event.Card.Path]
+			if !ok {
+				if _, markErr := p.st.MarkPluginKanbanCardUnavailable(
+					ctx, spec.Automation.ID, installation.WorkspaceID, event.Card.Path, p.now(),
+				); markErr != nil {
+					return
+				}
+			} else if isMarkdown(doc.Path) {
+				sequence := event.Sequence
+				result, observeErr := p.st.ObservePluginKanbanCard(ctx, store.PluginKanbanObservation{
+					AutomationID: spec.Automation.ID, ServiceID: spec.Automation.ServiceID,
+					InstallationID: installation.ID, WorkspaceID: installation.WorkspaceID,
+					DocumentID: doc.ID, DocumentPath: doc.Path, TriggerColumn: spec.Kanban.TriggerColumn,
+					DoneColumn: spec.Kanban.DoneColumn, ObservedColumn: event.Card.Status,
+					EventKey: "event:" + strconv.FormatInt(event.Sequence, 10), EventSequence: &sequence,
+					ActorDisplay: event.EditedBy, ObservedAt: p.now(),
+				})
+				if observeErr != nil {
+					return
+				}
+				if result.Created && result.Occurrence != nil {
+					p.dispatchPluginKanbanOccurrence(ctx, api, spec, result.Occurrence, nil)
+				} else {
+					p.projectPluginKanbanSuppressionReceipt(ctx, api, result)
+				}
+			}
+			advanced, advanceErr := p.st.AdvancePluginKanbanTrigger(ctx, spec.Automation.ID, cursor, event.Sequence, nil)
+			if advanceErr != nil || !advanced {
+				return
+			}
+			cursor = event.Sequence
+		}
+		if !page.HasMore {
+			p.clearPluginKanbanPollingError(ctx, spec)
+			return
+		}
+	}
+}
+
+func (p *Poller) clearPluginKanbanPollingError(ctx context.Context, spec *domain.PluginAutomationSpec) {
+	if spec == nil {
+		return
+	}
+	for _, prefix := range []string{
+		"event_feed_unavailable:",
+		"bootstrap_unavailable:",
+		"card_index_unavailable:",
+	} {
+		if strings.HasPrefix(spec.Automation.LastError, prefix) {
+			spec.Automation.LastError = ""
+			_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+			return
+		}
+	}
+}
+
+func (p *Poller) dispatchPluginKanbanOccurrence(ctx context.Context, api DocumentAPI, spec *domain.PluginAutomationSpec, occurrence *domain.PluginKanbanOccurrence, parsedCard *jtype.Card) {
+	if occurrence == nil || occurrence.RunID != "" {
+		return
+	}
+	svc, err := p.st.GetService(ctx, spec.Automation.ServiceID)
+	if err != nil {
+		return
+	}
+	if reasonCode, reasonMessage, repairRole := p.pluginKanbanRepositoryBlocker(ctx, svc); reasonCode != "" {
+		p.blockPluginKanbanOccurrence(
+			ctx, api, spec, occurrence, svc, reasonCode, reasonMessage, repairRole,
+		)
+		return
+	}
+	card := parsedCard
+	if card == nil {
+		full, err := api.GetDocument(ctx, occurrence.WorkspaceID, occurrence.DocumentID)
+		if err != nil {
+			reasonCode := "card_read_unavailable"
+			reasonMessage := "JType could not read the source Card. Cloud will retry this occurrence."
+			repairRole := "project_owner"
+			var jtypeErr *jtype.Error
+			if errors.As(err, &jtypeErr) && jtypeErr.StatusCode == http.StatusNotFound {
+				reasonCode = "card_unavailable"
+				reasonMessage = "The source Card is no longer available in JType."
+				_, _ = p.st.MarkPluginKanbanCardUnavailable(
+					ctx, occurrence.AutomationID, occurrence.WorkspaceID,
+					occurrence.DocumentPath, p.now(),
+				)
+			}
+			p.blockPluginKanbanOccurrence(
+				ctx, api, spec, occurrence, svc, reasonCode, reasonMessage, repairRole,
+			)
+			return
+		}
+		value := jtype.ParseCard(full.Content)
+		card = &value
+	}
+	sel, outcome, err := p.models.SelectModel(ctx, svc.ProjectID, derefStr(svc.DefaultModelID), spec.Automation.ModelID)
+	if err != nil || outcome != modelcfg.SelectOK {
+		spec.Automation.LastError = "Automation model is unavailable."
+		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+		p.blockPluginKanbanOccurrence(
+			ctx, api, spec, occurrence, svc, "model_not_configured",
+			"Choose an allowed model for this Service.", "project_owner",
+		)
+		return
+	}
+	if !sel.SupportsEffort(spec.Automation.ModelEffort) {
+		spec.Automation.LastError = "The selected Automation model no longer supports reasoning effort."
+		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+		p.blockPluginKanbanOccurrence(
+			ctx, api, spec, occurrence, svc, "model_effort_unsupported",
+			"Choose a supported reasoning effort for this Automation.", "project_owner",
+		)
+		return
+	}
+	now := p.now()
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: svc.ProjectID, ServiceID: svc.ID,
+		Prompt: buildPrompt(*card), Status: domain.StatusQueued, Kind: domain.RunKindAgent,
+		Phase: "Queued", Origin: domain.RunOriginKanban,
+		OriginAutomationID: spec.Automation.ID, OriginEventKey: occurrence.ID,
+		Attempt: 1, CreatedAt: now, ModelName: sel.ModelName,
+		ModelEffort: spec.Automation.ModelEffort,
+	}
+	if sel.ModelID != "" {
+		modelID := sel.ModelID
+		run.ModelID = &modelID
+	}
+	provenance.Stamp(ctx, p.st, run, &provenance.ExternalActor{
+		Provider: "jtype", Label: occurrence.ActorDisplay, Source: "kanban_event",
+	})
+	attached, err := p.st.CreatePluginKanbanOccurrenceRun(ctx, occurrence.ID, run)
+	if err != nil || !attached {
+		return
+	}
+	spec.Automation.LastTriggeredAt = &now
+	spec.Automation.LastRunID = run.ID
+	spec.Automation.LastError = ""
+	_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+	occurrence.RunID = run.ID
+	occurrence.State = domain.KanbanOccurrenceQueued
+	occurrence.ReceiptPhase = "accepted"
+	occurrence.ReceiptWrittenAt = nil
+	p.projectPluginKanbanReceipt(ctx, api, occurrence, run, svc)
+}
+
+func (p *Poller) blockPluginKanbanOccurrence(
+	ctx context.Context,
+	api DocumentAPI,
+	spec *domain.PluginAutomationSpec,
+	occurrence *domain.PluginKanbanOccurrence,
+	svc *domain.Service,
+	reasonCode, reasonMessage, repairRole string,
+) {
+	spec.Automation.LastError = reasonCode + ": " + reasonMessage
+	_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+	blocked, err := p.st.SetPluginKanbanOccurrenceBlocked(
+		ctx, occurrence.ID, reasonCode, reasonMessage, repairRole,
+	)
+	if err == nil {
+		p.projectPluginKanbanReceipt(ctx, api, blocked, nil, svc)
+	}
+}
+
+// pluginKanbanRepositoryBlocker checks only durable prerequisites that must be
+// true before a Run is created. Temporary scheduler capacity is intentionally
+// not a blocker: a valid Run may remain queued until capacity becomes free.
+func (p *Poller) pluginKanbanRepositoryBlocker(ctx context.Context, svc *domain.Service) (string, string, string) {
+	if svc == nil || svc.DeletingAt != nil {
+		return "service_unavailable", "The target Service is being deleted.", "project_owner"
+	}
+	switch svc.RepoKind {
+	case domain.RepoKindRaw:
+		if strings.TrimSpace(svc.RawRepoURL) == "" {
+			return "repository_not_configured", "Configure a repository for this Service.", "project_owner"
+		}
+		return "", "", ""
+	case domain.RepoKindProvider:
+		if !domain.ValidProvider(svc.Provider) || strings.TrimSpace(svc.RepoOwnerName) == "" {
+			return "repository_not_configured", "Choose a valid provider repository for this Service.", "project_owner"
+		}
+	default:
+		return "repository_not_configured", "Configure a repository for this Service.", "project_owner"
+	}
+
+	binding, err := p.st.GetServiceRepositoryBinding(ctx, svc.ID)
+	if err != nil || binding.InstallationID == "" || strings.TrimSpace(binding.CloneURL) == "" {
+		return "repository_unavailable", "Reconnect the Service repository Plugin.", "project_owner"
+	}
+	installation, err := p.st.GetPluginInstallation(ctx, binding.InstallationID)
+	if err != nil || installation.Provider != domain.ProviderKind(svc.Provider) ||
+		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" {
+		return "provider_unavailable", "Repair the repository Provider connection.", "project_owner"
+	}
+	if (installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
+		(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
+		return "provider_unavailable", "Reconnect the repository Provider credential.", "project_owner"
+	}
+	cfg, err := p.st.GetProviderConfig(ctx, installation.Provider)
+	if err != nil || !cfg.PluginEnabled || strings.TrimSpace(cfg.BaseURL) == "" ||
+		cfg.ConfigRevision != installation.ConfigRevision {
+		return "provider_unavailable", "Ask a cluster administrator to repair the repository Provider.", "cluster_admin"
+	}
+	return "", "", ""
+}
+
+func (p *Poller) retryPluginKanbanOccurrences(ctx context.Context, api DocumentAPI, spec *domain.PluginAutomationSpec) {
+	pending, err := p.st.ListPluginKanbanDispatchableOccurrences(ctx, spec.Automation.ID, 50)
+	if err != nil {
+		return
+	}
+	for i := range pending {
+		p.dispatchPluginKanbanOccurrence(ctx, api, spec, &pending[i], nil)
+	}
+}
+
+func (p *Poller) retryPluginKanbanReceipts(ctx context.Context, api DocumentAPI, spec *domain.PluginAutomationSpec) {
+	pending, err := p.st.ListPluginKanbanReceiptPending(ctx, spec.Automation.ID, 50)
+	if err != nil {
+		return
+	}
+	svc, _ := p.st.GetService(ctx, spec.Automation.ServiceID)
+	for i := range pending {
+		occurrence := &pending[i]
+		var run *domain.Run
+		if occurrence.RunID != "" {
+			run, _ = p.st.GetRun(ctx, occurrence.RunID)
+		}
+		p.projectPluginKanbanReceipt(ctx, api, occurrence, run, svc)
+	}
+}
+
+func (p *Poller) projectPluginKanbanSuppressionReceipt(
+	ctx context.Context,
+	api DocumentAPI,
+	result *store.PluginKanbanObservationResult,
+) {
+	if result == nil || result.Occurrence == nil ||
+		(result.SuppressedReason != store.PluginKanbanAlreadyRunning &&
+			result.SuppressedReason != store.PluginKanbanWritebackPending) {
+		return
+	}
+	occurrence, err := p.st.SetPluginKanbanOccurrenceReceiptPhase(
+		ctx, result.Occurrence.ID, result.SuppressedReason,
+	)
+	if err != nil {
+		return
+	}
+	var run *domain.Run
+	if occurrence.RunID != "" {
+		run, _ = p.st.GetRun(ctx, occurrence.RunID)
+	}
+	p.projectPluginKanbanReceipt(ctx, api, occurrence, run, nil)
+}
+
+func (p *Poller) projectPluginKanbanReceipt(ctx context.Context, api DocumentAPI, occurrence *domain.PluginKanbanOccurrence, run *domain.Run, svc *domain.Service) {
+	if occurrence == nil || occurrence.ReceiptPhase == "" || occurrence.ReceiptWrittenAt != nil {
+		return
+	}
+	marker := jtype.KanbanReceiptMarker(occurrence.ID, occurrence.ReceiptPhase)
+	dedupeMarker := marker
+	if occurrence.ReceiptPhase == "blocked" && occurrence.ReasonCode != "" {
+		dedupeMarker = jtype.KanbanReceiptMarker(
+			occurrence.ID,
+			"blocked-"+occurrence.ReasonCode+"-"+occurrence.RepairRole,
+		)
+	}
+	comments, err := api.ListComments(ctx, occurrence.WorkspaceID, occurrence.DocumentID)
+	if err != nil {
+		_ = p.st.MarkPluginKanbanOccurrenceReceipt(ctx, occurrence.ID, occurrence.ReceiptPhase, nil, "JType comments could not be read.")
+		return
+	}
+	for _, comment := range comments {
+		if strings.Contains(comment.Body, dedupeMarker) {
+			now := p.now()
+			_ = p.st.MarkPluginKanbanOccurrenceReceipt(ctx, occurrence.ID, occurrence.ReceiptPhase, &now, "")
+			return
+		}
+	}
+
+	body := marker + "\n"
+	if dedupeMarker != marker {
+		body += dedupeMarker + "\n"
+	}
+	switch occurrence.ReceiptPhase {
+	case "blocked":
+		body += "jcode Cloud could not start this Card: " + occurrence.ReasonMessage
+		if occurrence.RepairRole == "project_owner" {
+			body += "\n\nNext: ask a Project owner to update the Automation or Service configuration."
+		} else if occurrence.RepairRole == "cluster_admin" {
+			body += "\n\nNext: ask a cluster administrator to repair the required Provider."
+		}
+	case "accepted":
+		if run == nil || svc == nil {
+			return
+		}
+		model := run.ModelName
+		if model == "" {
+			model = "the configured model"
+		}
+		body += "jcode Cloud accepted this Card for `" + svc.Name + "` using `" + model + "`."
+		body += "\n\nRun: " + strings.TrimRight(p.consoleURL, "/") + "/runs/" + run.ID
+	case store.PluginKanbanAlreadyRunning:
+		body += "jcode Cloud is already working on this Card."
+		if run != nil {
+			body += "\n\nRun: " + strings.TrimRight(p.consoleURL, "/") + "/runs/" + run.ID
+		}
+	case store.PluginKanbanWritebackPending:
+		body += "The Run has finished; jcode Cloud is still syncing its result to this Card."
+		if run != nil {
+			body += "\n\nRun: " + strings.TrimRight(p.consoleURL, "/") + "/runs/" + run.ID
+		}
+	default:
+		return
+	}
+	if err := api.AddComment(ctx, occurrence.WorkspaceID, occurrence.DocumentID, body); err != nil {
+		_ = p.st.MarkPluginKanbanOccurrenceReceipt(ctx, occurrence.ID, occurrence.ReceiptPhase, nil, "JType receipt comment could not be written.")
+		return
+	}
+	now := p.now()
+	_ = p.st.MarkPluginKanbanOccurrenceReceipt(ctx, occurrence.ID, occurrence.ReceiptPhase, &now, "")
 }
 
 // pollLink pulls one link's durable board-event sequence. Errors reaching jtype
@@ -611,6 +1032,13 @@ func (p *Poller) maybeDispatch(ctx context.Context, api DocumentAPI, link *domai
 	if sel.ModelID != "" {
 		run.ModelID = &sel.ModelID
 	}
+	var external *provenance.ExternalActor
+	if event != nil && strings.TrimSpace(event.EditedBy) != "" {
+		external = &provenance.ExternalActor{
+			Provider: "jtype", Label: event.EditedBy, Source: "kanban_event",
+		}
+	}
+	provenance.Stamp(ctx, p.st, run, external)
 	if err := p.st.CreateRun(ctx, run); err != nil {
 		p.log.Error("kanban poll: create run", "link", link.ID, "doc", d.ID, "err", err)
 		return false // run_id stays empty; retried next tick (no claim leak — no run yet)

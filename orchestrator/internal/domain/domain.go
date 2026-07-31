@@ -428,6 +428,10 @@ type Run struct {
 	OriginCommentURL   string    `json:"origin_comment_url,omitempty"`
 	OriginAutomationID string    `json:"origin_automation_id,omitempty"`
 	OriginEventKey     string    `json:"origin_event_key,omitempty"`
+	// ProvenanceSnapshot is a bounded, display-only audit snapshot. It is
+	// persisted as JSONB but exposed through the API's resolved provenance
+	// projection, never as a direct authorization input.
+	ProvenanceSnapshot RunProvenanceSnapshot `json:"-"`
 	// CoalesceKey is internal scheduling metadata for bursty SCM events. The
 	// Store uses it to atomically keep at most one queued Run for the same
 	// Automation + Service + ref/object; it is never exposed through the API.
