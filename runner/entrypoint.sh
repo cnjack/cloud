@@ -581,7 +581,14 @@ Write exactly one JSON object to REVIEW.json in the repository root:
   "checks": ["specific context inspected or command run"]
 }
 Use an empty findings array when no high-confidence defect exists. Do not add
-markdown fences or any text outside the JSON object.
+markdown fences or any text outside the JSON object. The upload validator is
+strict: do not add fields that are absent from the schema above. Keep summary
+between 1 and 2000 bytes. Keep checks to at most 12 entries, each 1-240 bytes.
+For every finding, use a safe repository-relative path (no absolute
+path, backslash, or '..'), line >= 1, end_line omitted or >= line, a title of
+1-160 bytes, a body of 1-4000 bytes, and an optional suggestion of at most 4000
+bytes. Confidence must be an integer from 80 through 100. These limits are part
+of the delivery contract: exceeding one rejects the entire review.
 EOF
 )"
 fi

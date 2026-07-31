@@ -1,9 +1,36 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
+
+// TestReviewPromptPublishesValidatorLimits prevents the runner prompt from
+// drifting behind the orchestrator's strict ReviewResult validation contract.
+// A live clean review once produced valid JSON with 14 checks; the hidden
+// 12-check limit rejected the whole run after all review work had completed.
+func TestReviewPromptPublishesValidatorLimits(t *testing.T) {
+	entrypoint, err := os.ReadFile("../entrypoint.sh")
+	if err != nil {
+		t.Fatalf("read entrypoint: %v", err)
+	}
+	contract := string(entrypoint)
+	for _, want := range []string{
+		"between 1 and 2000 bytes",
+		"at most 12 entries",
+		"each 1-240 bytes",
+		"title of\n1-160 bytes",
+		"body of 1-4000 bytes",
+		"suggestion of at most 4000",
+		"integer from 80 through 100",
+		"do not add fields",
+	} {
+		if !strings.Contains(contract, want) {
+			t.Errorf("review protocol does not publish validator constraint %q", want)
+		}
+	}
+}
 
 // TestScenarioForRequestReview proves a request whose messages carry the
 // "[review]" marker selects the review scenario regardless of the env default,
