@@ -17,6 +17,10 @@ func TestReviewPromptPublishesValidatorLimits(t *testing.T) {
 	}
 	contract := string(entrypoint)
 	for _, want := range []string{
+		"Do not add\nmarkdown fences or any text outside the JSON object",
+		"safe repository-relative path",
+		"line >= 1",
+		"end_line omitted or >= line",
 		"between 1 and 2000 bytes",
 		"at most 12 entries",
 		"each 1-240 bytes",
