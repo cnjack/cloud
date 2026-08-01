@@ -23,6 +23,7 @@ MOCK_CTR="jcode-mockllm-test"
 RUN_CTR="jcode-runner-test"
 SCENARIO="write_file"
 EXPECT_FILE="HELLO_FROM_JCODE.txt"
+EXPECT_DIFF_PREFIX="JCODE_TASK_"
 EXPECT_STR="jcode ran headless in a container"
 
 pass() { printf '\033[32mPASS\033[0m %s\n' "$*"; }
@@ -117,10 +118,10 @@ pass "runner exited 0"
 [ -s "$OUT/diff.patch" ] || fail "/out/diff.patch is empty or missing"
 pass "diff.patch is non-empty ($(wc -c < "$OUT/diff.patch" | tr -d ' ') bytes)"
 
-grep -q "$EXPECT_FILE" "$OUT/diff.patch" || fail "diff.patch does not mention $EXPECT_FILE"
+grep -q "$EXPECT_DIFF_PREFIX" "$OUT/diff.patch" || fail "diff.patch does not contain the per-task mock filename"
 grep -q "$EXPECT_STR"  "$OUT/diff.patch" || fail "diff.patch missing scripted content"
 grep -q '^new file mode' "$OUT/diff.patch" || fail "diff.patch is not a valid new-file diff"
-pass "diff.patch contains the mock-scripted change to $EXPECT_FILE"
+pass "diff.patch contains the per-task mock-scripted change"
 
 # stdout must carry the diff between markers too
 grep -q '===JCODE_DIFF_BEGIN' "$TMP/run.stdout" || fail "stdout missing diff markers"

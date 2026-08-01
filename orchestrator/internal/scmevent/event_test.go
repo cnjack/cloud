@@ -153,7 +153,7 @@ func TestNormalizeGitHubCommentRequiresPullRequestMarker(t *testing.T) {
 func TestNormalizePullRequestCarriesDraftState(t *testing.T) {
 	body := []byte(`{
 	  "action":"opened",
-	  "pull_request":{"id":8,"number":4,"draft":true,"head":{"ref":"feat","sha":"abc"},"base":{"ref":"main"}},
+	  "pull_request":{"id":8,"number":4,"draft":true,"head":{"ref":"feat","sha":"abc1234"},"base":{"ref":"main","sha":"def5678"}},
 	  "repository":{"id":1,"full_name":"a/r"},
 	  "sender":{"id":2,"login":"maintainer"}
 	}`)
@@ -163,6 +163,9 @@ func TestNormalizePullRequestCarriesDraftState(t *testing.T) {
 	}
 	if !event.Draft {
 		t.Fatal("draft pull request lost its draft state")
+	}
+	if event.HeadSHA != "abc1234" || event.BaseSHA != "def5678" {
+		t.Fatalf("revision pair = %s...%s", event.BaseSHA, event.HeadSHA)
 	}
 }
 

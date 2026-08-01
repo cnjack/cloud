@@ -350,7 +350,7 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 			userID := identity.UserID
 			manualUserID = &userID
 			pr, prErr := manualClient.PRByNumber(r.Context(), manualOwner, manualRepo, int(event.Object.Number))
-			if prErr != nil || pr == nil || pr.HeadRef == "" || pr.BaseRef == "" {
+			if prErr != nil || pr == nil || pr.HeadRef == "" || pr.BaseRef == "" || pr.HeadSHA == "" || pr.BaseSHA == "" {
 				manualReply("jcode couldn't read this pull request. Check that the App still has Pull requests: read and write permission.")
 				if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
 					"pull_request_unavailable", "The repository Provider could not read this pull request.", "project_owner") {
@@ -358,8 +358,38 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 				}
 				continue
 			}
-			event.Ref, event.BaseRef = pr.HeadRef, pr.BaseRef
+			event.Ref, event.BaseRef, event.HeadSHA, event.BaseSHA = pr.HeadRef, pr.BaseRef, pr.HeadSHA, pr.BaseSHA
 			event.Object.URL = pr.URL
+		}
+		// GitLab MR webhooks commonly omit diff_refs.base_sha. Keep the queue
+		// fail-closed, but enrich an incomplete automatic Review from the current
+		// repository grant before resolving its immutable Run contract. Comment
+		// reviews already took this path above for authorization and acknowledgement.
+		if a.RunKind == domain.RunKindReview && event.Family == scmevent.FamilyPullRequest &&
+			(event.Ref == "" || event.BaseRef == "" || event.HeadSHA == "" || event.BaseSHA == "") {
+			client, clientErr := s.pluginProviderClient(r.Context(), binding)
+			owner, repo, splitOK := gitprovider.SplitRepo(binding.RepositoryPath)
+			if clientErr != nil || client == nil || !splitOK {
+				s.recordPluginAutomationError(r, a, "The repository Provider credential is unavailable for review revision lookup.")
+				if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
+					"provider_credential_unavailable", "The repository Provider credential is unavailable.", "project_owner") {
+					return
+				}
+				continue
+			}
+			pr, prErr := client.PRByNumber(r.Context(), owner, repo, int(event.Object.Number))
+			if prErr != nil || pr == nil || pr.HeadRef == "" || pr.BaseRef == "" || pr.HeadSHA == "" || pr.BaseSHA == "" {
+				s.recordPluginAutomationError(r, a, "The pull request revision pair could not be read from the Provider.")
+				if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
+					"review_revision_unavailable", "The repository Provider could not supply the pull request base and head revisions.", "provider") {
+					return
+				}
+				continue
+			}
+			event.Ref, event.BaseRef, event.HeadSHA, event.BaseSHA = pr.HeadRef, pr.BaseRef, pr.HeadSHA, pr.BaseSHA
+			if pr.URL != "" {
+				event.Object.URL = pr.URL
+			}
 		}
 		sel, outcome, selectErr := s.models.SelectModel(r.Context(), svc.ProjectID, deref(svc.DefaultModelID), a.ModelID)
 		if selectErr != nil || outcome != modelcfg.SelectOK {
@@ -439,6 +469,20 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		if event.Family == scmevent.FamilyPullRequest || manualReview {
 			run.PRHeadBranch = automationRunBranch(event)
 			run.PRBaseBranch = strings.TrimPrefix(event.BaseRef, "refs/heads/")
+			run.PRHeadSHA = event.HeadSHA
+			run.PRBaseSHA = event.BaseSHA
+		}
+		if run.Kind == domain.RunKindReview &&
+			(run.PRHeadBranch == "" || run.PRBaseBranch == "" || run.PRHeadSHA == "" || run.PRBaseSHA == "") {
+			s.recordPluginAutomationError(r, a, "The pull request revision pair is unavailable; the review was not queued.")
+			if manualReview {
+				manualReply("jcode couldn't freeze the pull request revision pair, so no review was queued. Refresh the pull request and try again.")
+			}
+			if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
+				"review_revision_unavailable", "The pull request base and head revisions are required before queueing a review.", "provider") {
+				return
+			}
+			continue
 		}
 		if event.Object.URL != "" {
 			run.PRURL = event.Object.URL

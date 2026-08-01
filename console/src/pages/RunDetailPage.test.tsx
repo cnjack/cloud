@@ -112,6 +112,67 @@ function renderPage(client: ApiClient, seed?: Run) {
 }
 
 describe('RunDetailPage — resilient error states', () => {
+  it('shows the frozen workflow contract and deterministic review coverage', async () => {
+    const { client, ctl } = makeClient();
+    const run = baseRun({
+      kind: 'review',
+      status: 'succeeded',
+      finished_at: '2026-07-07T00:05:00Z',
+      review_output: 'No findings.',
+      execution_contract: {
+        schema_version: 1,
+        hash: 'sha256:contract',
+        workflow: { id: 'builtin:pull-request-review', name: 'Pull Request Review', revision: 1, source: 'builtin', definition_hash: 'sha256:definition' },
+        profile: { id: 'builtin:reviewer', name: 'Reviewer', role: 'reviewer', revision: 1, instructions: 'Review exact revisions.' },
+        trigger: { kind: 'scm', origin: 'automation', idempotency_key: 'delivery-1', concurrency_group: 'svc-1:pull_request:42' },
+        execution: {
+          run_kind: 'review',
+          llm_selection: { model_name: 'glm-5.2', source: 'resolved_run' },
+          session: false,
+          permission_mode: 'full_access',
+          workspace_access: 'read_only',
+          provider_credentials: 'none',
+          timeout_seconds: 1800,
+          timeout_source: 'project_override',
+        },
+        delivery: { outputs: [{ type: 'provider_review', target: 'trigger_pr' }], merge: 'never' },
+        verification: { mode: 'structured_review', rules_revision: 'review-v2', max_findings: 50, minimum_confidence: 80 },
+        requirements: ['source.read', 'git', 'ripgrep', 'scm.review.write'],
+        resolved_at: '2026-07-07T00:00:00Z',
+      },
+      review_plan: {
+        schema_version: 1,
+        plan_hash: 'sha256:plan',
+        base_sha: '1111111111111111111111111111111111111111',
+        head_sha: '2222222222222222222222222222222222222222',
+        merge_base_sha: '1111111111111111111111111111111111111111',
+        rules_revision: 'review-v2',
+        coverage: 'partial',
+        changed_files: 2,
+        eligible_files: 1,
+        indexed_files: 1,
+        changed_hunks: 3,
+        indexed_hunks: 2,
+        changed_lines: 17,
+        files: [
+          { path: 'src/main.ts', status: 'indexed', hunks: 2, changed_lines: 17 },
+          { path: 'assets/logo.png', status: 'skipped', reason: 'binary', hunks: 1, changed_lines: 0 },
+        ],
+        created_at: '2026-07-07T00:00:10Z',
+      },
+    });
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+
+    expect(await screen.findByTestId('workflow-contract')).toBeTruthy();
+    expect(screen.getByText('Pull Request Review v1')).toBeTruthy();
+    expect(screen.getByText('30m · project_override')).toBeTruthy();
+    const coverage = screen.getByTestId('review-coverage');
+    expect(coverage.querySelector('[data-coverage="partial"]')).toBeTruthy();
+    expect(screen.getByText('1/2')).toBeTruthy();
+    expect(screen.getByText('17')).toBeTruthy();
+  });
+
   it('shows captured Run usage in the inspector without merging cost sources', async () => {
     const { client, ctl } = makeClient();
     const value = baseRun({

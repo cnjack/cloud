@@ -1280,6 +1280,35 @@ runner 通过 `POST /internal/v1/runs/{id}/events` 上报;orchestrator 也会内
 > `agent.permission_request` 的 upsert 失败时**整批回 5xx**(runner 重发幂等),
 > 绝不 ack 一个没落库的请求事件。
 
+### 5.6 `GET /internal/v1/runs/{id}/source` — 获取冻结 SCM 源码
+
+仅 provider Service 使用。Run 在调度领取时把 provider 配置版本、凭据版本、
+repository id/path/clone URL/default branch 和 acting principal 一起冻结到
+`run_plugin_snapshots`。本端点只用该快照签发短期凭据并生成无凭据 Git bundle；
+领取后发生的仓库改名、Service 重绑或 Plugin 重连不会改变既有 Run 的源码目标。
+历史 Run 没有 repository grant 时保留旧解析路径；新 Run 的冻结 grant 无法签发凭据
+则返回 `409 scm_grant_unavailable`，绝不回退到别的用户或集群身份。
+
+### 5.7 `POST /internal/v1/runs/{id}/review-plan` — 冻结确定性评审输入
+
+仅 `kind=review` 且处于 `scheduling|running` 的 Run；请求体为单个严格 JSON 对象：
+
+```json
+{
+  "base_sha": "1111111111111111111111111111111111111111",
+  "head_sha": "2222222222222222222222222222222222222222",
+  "merge_base_sha": "1111111111111111111111111111111111111111",
+  "diff": "diff --git a/main.go b/main.go\n..."
+}
+```
+
+服务端核对 Run 已冻结的 base/head，解析右侧新增行 anchor，丢弃 raw diff，只持久化
+canonical `review_plan`。首次写入 `201`，相同 plan 重试 `200`，不同 plan
+`409 review_plan_conflict`，revision 不符 `409 review_revision_mismatch`，超过
+2 MiB/400 files/2000 hunks 返回 `413 review_input_too_large`。公开 Run JSON 只返回
+coverage 与逐文件计数，不返回私有 anchor；随后结构化 Review Result 的每个 finding
+都必须命中该计划的 changed right-side line。
+
 ---
 
 ## 6 · Runner Job 环境变量(runner-integration agent 对接清单)

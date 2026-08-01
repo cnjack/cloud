@@ -41,7 +41,7 @@ func (r *Reconciler) reconcileSessionPushes(ctx context.Context) {
 			r.log.Warn("reconcile session push: get service", "run", run.ID, "err", err)
 			continue
 		}
-		if !sessionPushEligible(*svc) {
+		if !sessionPushEligible(run, *svc) {
 			// readonly / raw session run: nothing to push. Advance pushed_rev so it
 			// drops out of the scan (the diff artifact still uploaded per turn).
 			if _, err := r.st.SetPushedRev(ctx, run.ID, run.BundleRev, run.CommitSHA); err != nil {
@@ -56,7 +56,11 @@ func (r *Reconciler) reconcileSessionPushes(ctx context.Context) {
 // sessionPushEligible reports whether a session run's service pushes a draft PR
 // (draft_pr mode on a provider repo with owner/name). readonly/raw sessions are
 // diff-only.
-func sessionPushEligible(svc domain.Service) bool {
+func sessionPushEligible(run domain.Run, svc domain.Service) bool {
+	if run.ExecutionContract != nil {
+		return run.ExecutionContract.Delivers(domain.OutputCreatePullRequest)
+	}
+	// Rolling-upgrade behavior for historical Runs without a contract.
 	return svc.GitMode == domain.GitModeDraftPR &&
 		svc.RepoKind == domain.RepoKindProvider &&
 		domain.ValidProvider(svc.Provider) &&
@@ -72,21 +76,22 @@ func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *d
 		return // parked (P1): credential problem already surfaced once
 	}
 	rev := run.BundleRev // capture: a newer bundle after this leaves pushed_rev behind → re-push next tick
-	owner, repo, ok := provider.SplitRepo(svc.RepoOwnerName)
+	scm, err := r.scmContextForRun(ctx, run, svc)
+	if err != nil {
+		if errors.Is(err, credentials.ErrIntegrationCredential) || errors.Is(err, credentials.ErrPluginCredentialUnavailable) {
+			r.noteIntegrationCredentialFailure(ctx, run.ID, "session push", err)
+		} else {
+			r.log.Warn("reconcile session push: no frozen scm context", "run", run.ID, "err", err)
+		}
+		return
+	}
+	owner, repo, ok := provider.SplitRepo(scm.RepositoryPath)
 	if !ok {
-		r.log.Warn("reconcile session push: bad repo_owner_name", "run", run.ID, "repo", svc.RepoOwnerName)
+		r.log.Warn("reconcile session push: bad repository path", "run", run.ID, "repo", scm.RepositoryPath)
 		return
 	}
 	branch := run.GitBranch
-	tok, err := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
-	if err != nil {
-		if errors.Is(err, credentials.ErrIntegrationCredential) {
-			r.noteIntegrationCredentialFailure(ctx, run.ID, "session push", err)
-			return
-		}
-		r.log.Warn("reconcile session push: no credential; leaving for retry", "run", run.ID, "provider", svc.Provider, "err", err)
-		return
-	}
+	tok := scm.Token
 
 	bundle, err := r.st.GetRunBundle(ctx, run.ID)
 	if err != nil {
@@ -106,21 +111,16 @@ func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *d
 	}
 	f.Close()
 
-	rawURL := r.serviceCloneURL(ctx, svc)
-	if rawURL == "" {
+	if scm.CloneURL == "" {
 		r.log.Warn("reconcile session push: could not derive push URL", "run", run.ID)
 		return
 	}
-	authed := tok.AuthedURL(rawURL, svc.Provider)
+	authed := tok.AuthedURL(scm.CloneURL, scm.Provider)
 
 	if run.PRURL == "" {
 		// First turn (or PR not opened yet): open the draft PR. An already-open PR
 		// for this head wins (crash between push/create and persist).
-		prov, err := r.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
-		if err != nil {
-			r.log.Warn("reconcile session push: build client", "run", run.ID, "err", err)
-			return
-		}
+		prov := scm.Client
 		pr, err := prov.FindOpenPRByHead(ctx, owner, repo, branch)
 		if err != nil {
 			if errors.Is(err, provider.ErrMultipleOpenPRs) {
@@ -169,7 +169,7 @@ func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *d
 		}
 		if pr == nil {
 			pr, err = prov.CreatePR(ctx, provider.CreatePRInput{
-				Owner: owner, Repo: repo, Head: branch, Base: svc.DefaultBranch,
+				Owner: owner, Repo: repo, Head: branch, Base: scm.DefaultBranch,
 				Title: prTitle(run.Prompt), Body: prBody(run, r.prTriggerAttribution(ctx, run, svc)), Draft: true,
 			})
 			if err != nil {
@@ -201,11 +201,7 @@ func (r *Reconciler) pushSessionRun(ctx context.Context, run *domain.Run, svc *d
 
 	// Later turns: ff-only update the existing PR head branch (never force-push,
 	// never open a new PR).
-	prov, err := r.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
-	if err != nil {
-		r.log.Warn("reconcile session push: build state client", "run", run.ID, "err", err)
-		return
-	}
+	prov := scm.Client
 	current, err := prov.PRByNumber(ctx, owner, repo, run.PRNumber)
 	if err != nil {
 		r.log.Warn("reconcile session push: read provider state", "run", run.ID, "pr", run.PRNumber, "err", err)
@@ -256,28 +252,24 @@ func (r *Reconciler) reconcileSessionPRReady(ctx context.Context) {
 			r.log.Warn("reconcile session ready: get service", "run", run.ID, "err", err)
 			continue
 		}
-		if run.PRReadyPolicy != domain.PRReadyPolicyLifecycleAware || !sessionPushEligible(*svc) {
+		if effectivePRReadyPolicy(&run) != domain.PRReadyPolicyLifecycleAware || !sessionPushEligible(run, *svc) {
 			continue
 		}
-		owner, repo, ok := provider.SplitRepo(svc.RepoOwnerName)
-		if !ok {
-			r.log.Warn("reconcile session ready: bad repo_owner_name", "run", run.ID, "repo", svc.RepoOwnerName)
-			continue
-		}
-		tok, err := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
+		scm, err := r.scmContextForRun(ctx, &run, svc)
 		if err != nil {
-			if errors.Is(err, credentials.ErrIntegrationCredential) {
+			if errors.Is(err, credentials.ErrIntegrationCredential) || errors.Is(err, credentials.ErrPluginCredentialUnavailable) {
 				r.noteIntegrationCredentialFailure(ctx, run.ID, "mark PR ready", err)
 			} else {
-				r.log.Warn("reconcile session ready: no credential", "run", run.ID, "err", err)
+				r.log.Warn("reconcile session ready: no frozen scm context", "run", run.ID, "err", err)
 			}
 			continue
 		}
-		prov, err := r.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
-		if err != nil {
-			r.log.Warn("reconcile session ready: build client", "run", run.ID, "err", err)
+		owner, repo, ok := provider.SplitRepo(scm.RepositoryPath)
+		if !ok {
+			r.log.Warn("reconcile session ready: bad repository path", "run", run.ID, "repo", scm.RepositoryPath)
 			continue
 		}
+		prov := scm.Client
 		pr, err := prov.MarkPRReady(ctx, owner, repo, run.PRNumber)
 		if err != nil {
 			if errors.Is(err, provider.ErrUnsupportedPRTransition) {

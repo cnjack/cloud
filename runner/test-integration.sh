@@ -35,6 +35,7 @@ CONSOLE_TOKEN="itest-console-token"
 PG_DSN="${PG_DSN:-postgres://jcloud:jcloud@localhost:5432/jcloud?sslmode=disable}"
 SCENARIO="write_file"
 EXPECT_FILE="HELLO_FROM_JCODE.txt"
+EXPECT_DIFF_PREFIX="JCODE_TASK_"
 EXPECT_STR="jcode ran headless in a container"
 
 pass() { printf '\033[32mPASS\033[0m %s\n' "$*"; }
@@ -225,7 +226,7 @@ pass "event seqs are unique, gapless, monotonic (no collision / no drops)"
 # === 9. assert the artifact ===
 ART_JSON="$(curl -fsS "${AUTH[@]}" "$API/runs/$RUN_ID/artifact")" || fail "artifact fetch failed"
 ART_CONTENT="$(printf '%s' "$ART_JSON" | JQ -r .content)"
-printf '%s' "$ART_CONTENT" | grep -q "$EXPECT_FILE" || fail "artifact diff does not mention $EXPECT_FILE"
+printf '%s' "$ART_CONTENT" | grep -q "$EXPECT_DIFF_PREFIX" || fail "artifact diff does not contain the per-task mock filename"
 printf '%s' "$ART_CONTENT" | grep -q "$EXPECT_STR"  || fail "artifact diff missing scripted content"
 pass "artifact diff present and contains the scripted change"
 

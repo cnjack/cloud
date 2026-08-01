@@ -123,6 +123,80 @@ func seedDraftPRRun(t *testing.T, st *store.MemStore, branch string) (domain.Ser
 	return *svc, *got
 }
 
+func TestSCMContextKeepsClaimedRepositoryAndCredentialAfterReconnect(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	cipher := prTestCipher(t)
+	oldToken, _ := cipher.EncryptString("old-bot-token")
+	newToken, _ := cipher.EncryptString("new-bot-token")
+	svc, run := seedDraftPRRun(t, st, "jcode/run-frozen")
+
+	oldCfg := &domain.ProviderConfig{Provider: domain.PluginGitea, BaseURL: "https://old-gitea.example", PluginEnabled: true}
+	if err := st.UpsertProviderConfig(ctx, oldCfg); err != nil {
+		t.Fatal(err)
+	}
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: svc.ProjectID, Provider: domain.PluginGitea,
+		Status: domain.PluginStatusEnabled, AccessTokenEnc: oldToken,
+		ConfigRevision: oldCfg.ConfigRevision, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	oldBinding := &domain.ServiceRepositoryBinding{
+		ServiceID: svc.ID, InstallationID: installation.ID, ProviderRepoID: "repo-42",
+		RepositoryPath: "acme/old-name", CloneURL: "https://old-gitea.example/acme/old-name.git", DefaultBranch: "main",
+	}
+	if err := st.UpsertServiceRepositoryBinding(ctx, oldBinding); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := rec.runPluginSnapshotCandidates(ctx, &run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateRunPluginSnapshots(ctx, candidates); err != nil {
+		t.Fatal(err)
+	}
+
+	// A reconnect plus repository rename changes all live records after claim.
+	newCfg := &domain.ProviderConfig{Provider: domain.PluginGitea, BaseURL: "https://new-gitea.example", PluginEnabled: true}
+	if err := st.UpsertProviderConfigAndInvalidate(ctx, newCfg, true, "reconnect"); err != nil {
+		t.Fatal(err)
+	}
+	live, _ := st.GetPluginInstallation(ctx, installation.ID)
+	live.Status, live.ConfigRevision, live.AccessTokenEnc = domain.PluginStatusEnabled, newCfg.ConfigRevision, newToken
+	if err := st.UpdatePluginInstallation(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertServiceRepositoryBinding(ctx, &domain.ServiceRepositoryBinding{
+		ServiceID: svc.ID, InstallationID: installation.ID, ProviderRepoID: "repo-42",
+		RepositoryPath: "acme/new-name", CloneURL: "https://new-gitea.example/acme/new-name.git", DefaultBranch: "trunk",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.RepoOwnerName, svc.DefaultBranch = "acme/new-name", "trunk"
+	if err := st.UpdateService(ctx, &svc); err != nil {
+		t.Fatal(err)
+	}
+
+	rec.WithPRStack(&fakeFactory{p: provider.NewFakeProvider()}, &fakePusher{}, credentials.NewResolver(st, cipher, nil, "", nil))
+	got, err := rec.scmContextForRun(ctx, &run, &svc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Frozen || got.RepositoryPath != "acme/old-name" || got.CloneURL != "https://old-gitea.example/acme/old-name.git" || got.DefaultBranch != "main" {
+		t.Fatalf("claimed repository grant drifted: %+v", got)
+	}
+	if got.Token.Value != "old-bot-token" || got.Token.Source != "plugin_snapshot" {
+		t.Fatalf("claimed credential drifted: source=%q value=%q", got.Token.Source, got.Token.Value)
+	}
+	env := map[string]string{}
+	rec.addGitEnv(ctx, env, &run, &svc)
+	if env["REPO_URL"] != oldBinding.CloneURL || env["BASE_BRANCH"] != oldBinding.DefaultBranch {
+		t.Fatalf("runner source drifted after claim: REPO_URL=%q BASE_BRANCH=%q", env["REPO_URL"], env["BASE_BRANCH"])
+	}
+}
+
 // TestReconcilePRCreation covers the happy path: a succeeded draft_pr run with a
 // stored bundle gets its branch pushed and exactly one draft PR opened, pr_url /
 // pr_number persisted, and a run.status event carrying pr_url emitted.
@@ -400,7 +474,8 @@ func seedReviewRun(t *testing.T, st *store.MemStore, head, output string) domain
 	run := &domain.Run{
 		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "review the PR",
 		Status: domain.StatusSucceeded, Kind: domain.RunKindReview,
-		PRHeadBranch: head, PRBaseBranch: "main", CreatedAt: time.Now(),
+		PRHeadBranch: head, PRBaseBranch: "main",
+		PRHeadSHA: strings.Repeat("a", 40), PRBaseSHA: strings.Repeat("b", 40), CreatedAt: time.Now(),
 	}
 	_ = st.CreateRun(ctx, run)
 	if _, err := st.SetReviewOutput(ctx, run.ID, output); err != nil {
@@ -766,6 +841,30 @@ func TestShouldUpdatePush(t *testing.T) {
 	}
 }
 
+func TestDeliveryGatesUseFrozenContractAfterServiceModeChanges(t *testing.T) {
+	createPR := &domain.WorkflowContract{Delivery: domain.WorkflowDelivery{Outputs: []domain.WorkflowOutput{{Type: domain.OutputCreatePullRequest, Target: "service_repository"}}}}
+	diffOnly := &domain.WorkflowContract{Delivery: domain.WorkflowDelivery{Outputs: []domain.WorkflowOutput{{Type: domain.OutputDiffOnly}}}}
+	svc := domain.Service{RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea, RepoOwnerName: "o/r", GitMode: domain.GitModeReadonly}
+	run := domain.Run{Status: domain.StatusSucceeded, Kind: domain.RunKindAgent, GitBranch: "jcode/run-x", ExecutionContract: createPR}
+	if !shouldOpenPR(run, svc, true) {
+		t.Fatal("live readonly mutation overrode the frozen create_pull_request delivery")
+	}
+	svc.GitMode = domain.GitModeDraftPR
+	run.ExecutionContract = diffOnly
+	if shouldOpenPR(run, svc, true) {
+		t.Fatal("live draft_pr mutation overrode the frozen diff_only delivery")
+	}
+
+	update := run
+	update.Origin = domain.RunOriginWebhook
+	update.PRURL = "https://example.test/pulls/1"
+	update.ExecutionContract = &domain.WorkflowContract{Delivery: domain.WorkflowDelivery{Outputs: []domain.WorkflowOutput{{Type: domain.OutputCreatePullRequest, Target: "trigger_pr"}}}}
+	svc.GitMode = domain.GitModeReadonly
+	if !shouldUpdatePush(update, svc, true) {
+		t.Fatal("live readonly mutation overrode the frozen trigger_pr delivery")
+	}
+}
+
 // --- gates ------------------------------------------------------------------
 
 // TestShouldOpenPR is the exhaustive table for the pure PR-creation gate.
@@ -951,7 +1050,8 @@ func TestReconcileReviewParksOnIntegrationCredential(t *testing.T) {
 	review := &domain.Run{
 		ID: domain.NewID(), ProjectID: svc.ProjectID, ServiceID: svc.ID,
 		Prompt: "review", Status: domain.StatusSucceeded, Kind: domain.RunKindReview,
-		PRHeadBranch: "jcode/run-rvpark", PRBaseBranch: "main", Attempt: 1, CreatedAt: time.Now(),
+		PRHeadBranch: "jcode/run-rvpark", PRBaseBranch: "main",
+		PRHeadSHA: strings.Repeat("a", 40), PRBaseSHA: strings.Repeat("b", 40), Attempt: 1, CreatedAt: time.Now(),
 	}
 	if err := st.CreateRun(ctx, review); err != nil {
 		t.Fatal(err)

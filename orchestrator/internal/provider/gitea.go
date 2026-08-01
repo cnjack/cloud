@@ -71,9 +71,11 @@ type giteaPR struct {
 	Title   string `json:"title"`
 	Head    struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"base"`
 }
 
@@ -176,6 +178,8 @@ func (c *GiteaClient) PRByNumber(ctx context.Context, owner, repo string, prNumb
 		Draft:   strings.HasPrefix(pr.Title, GiteaWIPPrefix),
 		HeadRef: pr.Head.Ref,
 		BaseRef: pr.Base.Ref,
+		HeadSHA: pr.Head.SHA,
+		BaseSHA: pr.Base.SHA,
 	}, nil
 }
 

@@ -69,6 +69,10 @@ type gitlabMR struct {
 	Draft        bool   `json:"draft"`
 	SourceBranch string `json:"source_branch"`
 	TargetBranch string `json:"target_branch"`
+	DiffRefs     struct {
+		BaseSHA string `json:"base_sha"`
+		HeadSHA string `json:"head_sha"`
+	} `json:"diff_refs"`
 }
 
 func (c *GitLabClient) auth() string { return "Bearer " + c.token }
@@ -180,7 +184,7 @@ func (c *GitLabClient) PRByNumber(ctx context.Context, owner, repo string, prNum
 		return nil, err
 	}
 	return &PR{Number: mr.IID, URL: mr.WebURL, State: gitlabState(mr.State), Draft: gitLabMRDraft(mr),
-		HeadRef: mr.SourceBranch, BaseRef: mr.TargetBranch}, nil
+		HeadRef: mr.SourceBranch, BaseRef: mr.TargetBranch, HeadSHA: mr.DiffRefs.HeadSHA, BaseSHA: mr.DiffRefs.BaseSHA}, nil
 }
 
 func (c *GitLabClient) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error {

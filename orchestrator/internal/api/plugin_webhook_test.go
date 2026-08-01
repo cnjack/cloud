@@ -354,17 +354,17 @@ func TestPluginReviewAutomationCreatesReviewRunAndSkipsDrafts(t *testing.T) {
 			"pull_request": map[string]any{
 				"id": 7, "number": 7, "draft": draft, "html_url": "https://gitea.example/acme/repo/pulls/7",
 				"head": map[string]any{"ref": "feature", "sha": sha},
-				"base": map[string]any{"ref": "main"},
+				"base": map[string]any{"ref": "main", "sha": strings.Repeat("b", 40)},
 			},
 		}
 	}
-	draft := f.postGitea(t, "pull_request", "draft-review", payload(true, "sha-draft"))
+	draft := f.postGitea(t, "pull_request", "draft-review", payload(true, strings.Repeat("c", 40)))
 	draft.Body.Close()
 	runs, _ := f.st.ListRunsByService(context.Background(), f.serviceID, 10)
 	if len(runs) != 0 {
 		t.Fatalf("draft review created %d runs", len(runs))
 	}
-	ready := f.postGitea(t, "pull_request", "ready-review", payload(false, "sha-ready"))
+	ready := f.postGitea(t, "pull_request", "ready-review", payload(false, strings.Repeat("a", 40)))
 	ready.Body.Close()
 	runs, err = f.st.ListRunsByService(context.Background(), f.serviceID, 10)
 	if err != nil || len(runs) != 1 {
@@ -381,7 +381,7 @@ func TestPluginReviewMentionIsAuthorizedAndRepeatable(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/acme/repo/pulls/7":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"number":7,"html_url":"https://gitea.example/acme/repo/pulls/7","state":"open","head":{"ref":"feature"},"base":{"ref":"main"}}`))
+			_, _ = w.Write([]byte(`{"number":7,"html_url":"https://gitea.example/acme/repo/pulls/7","state":"open","head":{"ref":"feature","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"base":{"ref":"main","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`))
 		default:
 			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
 		}
@@ -477,18 +477,42 @@ func TestPluginReviewMentionIsAuthorizedAndRepeatable(t *testing.T) {
 }
 
 func TestPluginGitLabWebhookUsesPerBindingTokenAndDispatches(t *testing.T) {
+	lookupCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/merge_requests/7") {
+			lookupCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"iid":7,"web_url":"https://gitlab.example/acme/repo/-/merge_requests/7","state":"opened","source_branch":"feature","target_branch":"main","diff_refs":{"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","base_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`))
+			return
+		}
+		http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+	}))
+	t.Cleanup(upstream.Close)
 	ts, st, cfg := newCipherServer(t, nil, "")
 	ctx := context.Background()
 	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{
-		Provider: domain.PluginGitLab, BaseURL: "https://gitlab.example.test", PluginEnabled: true,
+		Provider: domain.PluginGitLab, BaseURL: upstream.URL, PluginEnabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	projectID := newProject(t, ts, "gitlab-webhook")
 	now := time.Now().UTC()
+	cipher, err := auth.NewCipher(cfg.MasterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessToken, err := cipher.EncryptString("gitlab-access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerConfig, err := st.GetProviderConfig(ctx, domain.PluginGitLab)
+	if err != nil {
+		t.Fatal(err)
+	}
 	installation := &domain.PluginInstallation{
 		ID: domain.NewID(), ProjectID: projectID, Provider: domain.PluginGitLab,
 		Status: domain.PluginStatusEnabled, ConsentVersion: "v1", ConsentedAt: now, CreatedAt: now,
+		AccessTokenEnc: accessToken, ConfigRevision: providerConfig.ConfigRevision,
 	}
 	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
 		t.Fatal(err)
@@ -514,10 +538,6 @@ func TestPluginGitLabWebhookUsesPerBindingTokenAndDispatches(t *testing.T) {
 	}
 	if err := st.CreatePluginAutomation(ctx, automation, &domain.SCMTrigger{AutomationID: automation.ID},
 		[]domain.SCMAction{{AutomationID: automation.ID, ServiceID: svc.ID, EventFamily: "push", Action: "updated"}}, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	cipher, err := auth.NewCipher(cfg.MasterKey)
-	if err != nil {
 		t.Fatal(err)
 	}
 	const hookSecret = "gitlab-per-binding-token"
@@ -554,6 +574,51 @@ func TestPluginGitLabWebhookUsesPerBindingTokenAndDispatches(t *testing.T) {
 	runs, err := st.ListRunsByService(ctx, svc.ID, 10)
 	if err != nil || len(runs) != 1 || runs[0].BaseBranch != "main" {
 		t.Fatalf("GitLab runs=%+v err=%v", runs, err)
+	}
+
+	reviewAutomation := &domain.PluginAutomation{
+		ID: domain.NewID(), ServiceID: svc.ID, InstallationID: installation.ID,
+		Name: "gitlab-review", TriggerKind: "scm", RunKind: domain.RunKindReview,
+		PromptTemplate: "review {{repository}}", Enabled: true, CreatedAt: now,
+	}
+	if err := st.CreatePluginAutomation(ctx, reviewAutomation, &domain.SCMTrigger{AutomationID: reviewAutomation.ID},
+		[]domain.SCMAction{{AutomationID: reviewAutomation.ID, ServiceID: svc.ID, EventFamily: "pull_request", Action: "synchronized"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	mrPayload := []byte(`{"object_kind":"merge_request","user":{"id":8,"username":"dev"},"project":{"id":42,"path_with_namespace":"acme/repo","default_branch":"main"},"object_attributes":{"id":70,"iid":7,"action":"update","oldrev":"before-sha","source_branch":"feature","target_branch":"main","url":"https://gitlab.example/acme/repo/-/merge_requests/7"}}`)
+	mrReq, err := http.NewRequest(http.MethodPost, ts.URL+"/webhooks/gitlab/"+hookID, bytes.NewReader(mrPayload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mrReq.Header.Set("X-Gitlab-Event", "Merge Request Hook")
+	mrReq.Header.Set("X-Gitlab-Event-UUID", "gitlab-review-delivery")
+	mrReq.Header.Set("X-Gitlab-Token", hookSecret)
+	mrResp, err := http.DefaultClient.Do(mrReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mrResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(mrResp.Body)
+		mrResp.Body.Close()
+		t.Fatalf("GitLab review webhook status=%d body=%s", mrResp.StatusCode, body)
+	}
+	mrResp.Body.Close()
+	runs, err = st.ListRunsByService(ctx, svc.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reviewRun *domain.Run
+	for i := range runs {
+		if runs[i].Kind == domain.RunKindReview {
+			reviewRun = &runs[i]
+			break
+		}
+	}
+	if reviewRun == nil || reviewRun.PRHeadSHA != strings.Repeat("a", 40) || reviewRun.PRBaseSHA != strings.Repeat("b", 40) {
+		t.Fatalf("GitLab review revision was not enriched before queue: %+v", reviewRun)
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("GitLab PR detail lookups=%d want 1", lookupCalls)
 	}
 }
 

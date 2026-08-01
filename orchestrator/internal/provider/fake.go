@@ -185,7 +185,8 @@ func (f *FakeProvider) PRByNumber(_ context.Context, owner, repo string, prNumbe
 		return &cp, nil
 	}
 	return &PR{Number: prNumber, URL: fmt.Sprintf("http://gitea.test/%s/%s/pulls/%d", owner, repo, prNumber),
-		State: "open", HeadRef: fmt.Sprintf("pr-%d-head", prNumber), BaseRef: "main"}, nil
+		State: "open", HeadRef: fmt.Sprintf("pr-%d-head", prNumber), BaseRef: "main",
+		HeadSHA: fmt.Sprintf("%040x", prNumber+1), BaseSHA: fmt.Sprintf("%040x", prNumber)}, nil
 }
 
 // CreateIssueComment records a comment (or returns the injected error).

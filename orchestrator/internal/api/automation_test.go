@@ -164,8 +164,8 @@ func TestGiteaPREventDispatchesOneReviewRunPerHeadSHA(t *testing.T) {
 		"repository": map[string]any{"full_name": "acme/repo"},
 		"pull_request": map[string]any{
 			"html_url": "http://gitea.test/acme/repo/pulls/17", "draft": false,
-			"head": map[string]any{"ref": "feature", "sha": "abc123"},
-			"base": map[string]any{"ref": "main"},
+			"head": map[string]any{"ref": "feature", "sha": strings.Repeat("a", 40)},
+			"base": map[string]any{"ref": "main", "sha": strings.Repeat("b", 40)},
 		},
 	}
 	for i := 0; i < 2; i++ {
@@ -209,7 +209,7 @@ func TestParseGiteaReviewEvent(t *testing.T) {
 			payload := map[string]any{
 				"action": tt.action, "number": 1, "changes": tt.changes,
 				"repository":   map[string]any{"full_name": "acme/repo"},
-				"pull_request": map[string]any{"html_url": "http://gitea/pr/1", "draft": false, "head": map[string]any{"ref": "x", "sha": "sha"}, "base": map[string]any{"ref": "main"}},
+				"pull_request": map[string]any{"html_url": "http://gitea/pr/1", "draft": false, "head": map[string]any{"ref": "x", "sha": strings.Repeat("a", 40)}, "base": map[string]any{"ref": "main", "sha": strings.Repeat("b", 40)}},
 			}
 			body, _ := json.Marshal(payload)
 			got, _ := parseGiteaReviewEvent(tt.header, body)

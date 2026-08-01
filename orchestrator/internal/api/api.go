@@ -637,6 +637,7 @@ func (s *Server) Handler() http.Handler {
 	// Review output may be stored as a run artifact. SCM clone/push/comment
 	// operations are deliberately absent here: tasks use mounted Skills/CLIs.
 	mux.Handle("POST /internal/v1/runs/{id}/review", s.runToken(s.handleIngestReview))
+	mux.Handle("POST /internal/v1/runs/{id}/review-plan", s.runToken(s.handleIngestReviewPlan))
 	// Multi-turn session (D22): the runner's acpdrive reports each turn's
 	// completion and long-polls for the next user message. RUN_TOKEN authed.
 	mux.Handle("POST /internal/v1/runs/{id}/turn-complete", s.runToken(s.handleTurnComplete))

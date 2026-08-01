@@ -33,7 +33,8 @@
 #   BASE_BRANCH      the baseline branch to check out (may be "")
 #   GIT_MODE         "readonly" (default; diff-only) | "draft_pr"
 #   BRANCH_NAME      the branch to create for a draft_pr bundle (jcode/run-<id>)
-#   PR_HEAD/PR_BASE  review run: the branches to diff (base...head)
+#   PR_HEAD/PR_BASE  review run: display branches for the frozen revision pair
+#   PR_HEAD_SHA/PR_BASE_SHA exact review commits (required; branch movement is ignored)
 #
 # Orchestrator wiring (present under the control plane; absent standalone):
 #   RUN_ID, RUN_TOKEN, ORCH_BASE_URL
@@ -522,27 +523,42 @@ fi
 # The prompt contains the literal marker "[review]" so the mock LLM (and any
 # prompt-routing) can identify a review turn.
 if [ "$RUN_KIND" = "review" ]; then
-  [ -n "${PR_HEAD:-}" ] && [ -n "${PR_BASE:-}" ] \
-    || die setup_failed "RUN_KIND=review requires PR_HEAD and PR_BASE"
-  log "review run: diffing $PR_BASE...$PR_HEAD"
+	[ -n "${PR_HEAD:-}" ] && [ -n "${PR_BASE:-}" ] && [ -n "${PR_HEAD_SHA:-}" ] && [ -n "${PR_BASE_SHA:-}" ] \
+		|| die setup_failed "review_revision_unavailable: RUN_KIND=review requires PR_HEAD, PR_BASE, PR_HEAD_SHA, and PR_BASE_SHA"
+	command -v git >/dev/null 2>&1 || die setup_failed "review_runtime_unavailable: git is required"
+	command -v rg >/dev/null 2>&1 || die setup_failed "review_runtime_unavailable: ripgrep is required"
+	if [ "${JCLOUD_PREP_ONLY:-0}" != "1" ]; then
+		command -v orchclient >/dev/null 2>&1 || die setup_failed "review_runtime_unavailable: review upload client is required"
+	fi
+	log "review run: verifying frozen revisions $PR_BASE_SHA...$PR_HEAD_SHA ($PR_BASE...$PR_HEAD)"
   # Make sure both refs are present (a bundle clone exposes them as origin/*).
   git -C "$WORKSPACE" fetch -q origin \
     "+refs/heads/$PR_BASE:refs/remotes/origin/$PR_BASE" \
     "+refs/heads/$PR_HEAD:refs/remotes/origin/$PR_HEAD" 2>/dev/null || true
-  HEAD_REF="origin/$PR_HEAD"; BASE_REF_R="origin/$PR_BASE"
-  git -C "$WORKSPACE" rev-parse --verify -q "$HEAD_REF" >/dev/null 2>&1 || HEAD_REF="$PR_HEAD"
-  git -C "$WORKSPACE" rev-parse --verify -q "$BASE_REF_R" >/dev/null 2>&1 || BASE_REF_R="$PR_BASE"
+	HEAD_REF="$(git -C "$WORKSPACE" rev-parse --verify -q "$PR_HEAD_SHA^{commit}" 2>/dev/null || true)"
+	BASE_REF_R="$(git -C "$WORKSPACE" rev-parse --verify -q "$PR_BASE_SHA^{commit}" 2>/dev/null || true)"
+	[ "$HEAD_REF" = "$PR_HEAD_SHA" ] || die setup_failed "review_revision_mismatch: frozen head commit is unavailable in the source bundle"
+	[ "$BASE_REF_R" = "$PR_BASE_SHA" ] || die setup_failed "review_revision_mismatch: frozen base commit is unavailable in the source bundle"
+	MERGE_BASE_SHA="$(git -C "$WORKSPACE" merge-base "$BASE_REF_R" "$HEAD_REF" 2>/dev/null || true)"
+	[ -n "$MERGE_BASE_SHA" ] || die setup_failed "review_revision_mismatch: no merge-base exists for the frozen revision pair"
   REVIEW_GIT_DIR="$(git -C "$WORKSPACE" rev-parse --absolute-git-dir 2>/dev/null)" \
     || die setup_failed "review run could not resolve the workspace git directory"
   REVIEW_DIFF_FILE="$REVIEW_GIT_DIR/jcode-review.diff"
-  if ! git -C "$WORKSPACE" --no-pager diff "$BASE_REF_R...$HEAD_REF" > "$REVIEW_DIFF_FILE" 2>/dev/null; then
+	if ! git -C "$WORKSPACE" --no-pager diff "$MERGE_BASE_SHA" "$HEAD_REF" > "$REVIEW_DIFF_FILE" 2>/dev/null; then
     rm -f "$REVIEW_DIFF_FILE" 2>/dev/null || true
-    die setup_failed "review run could not compute diff $PR_BASE...$PR_HEAD"
+		die setup_failed "review run could not compute diff $MERGE_BASE_SHA...$PR_HEAD_SHA"
   fi
   REVIEW_DIFF_BYTES="$(wc -c < "$REVIEW_DIFF_FILE" | tr -d ' ')"
+	if [ "${JCLOUD_PREP_ONLY:-0}" != "1" ]; then
+		orchclient post-review-plan --diff "$REVIEW_DIFF_FILE" --base-sha "$PR_BASE_SHA" --head-sha "$PR_HEAD_SHA" --merge-base-sha "$MERGE_BASE_SHA" \
+			|| die setup_failed "review plan was rejected or could not be uploaded"
+	else
+		log "JCLOUD_PREP_ONLY=1: review plan upload skipped (no Agent turn will start)"
+	fi
   REVIEW_FOCUS="$TASK_PROMPT"
   TASK_PROMPT="$(cat <<EOF
-[review] You are reviewing a pull request. Base branch: $PR_BASE. Head branch: $PR_HEAD.
+[review] You are reviewing a pull request. Event base: $PR_BASE_SHA ($PR_BASE).
+Event head: $PR_HEAD_SHA ($PR_HEAD). Computed merge-base: $MERGE_BASE_SHA.
 
 Repository-specific review focus:
 $REVIEW_FOCUS

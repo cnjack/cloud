@@ -18,7 +18,9 @@ import (
 
 // PGStore is a Postgres-backed Store using a pgx connection pool.
 type PGStore struct {
-	pool *pgxpool.Pool
+	pool                   *pgxpool.Pool
+	workflowRunTimeoutSecs int64
+	workflowSessionTTLSecs int64
 }
 
 // New opens a pool against dsn and returns a PGStore. Callers should run
@@ -32,7 +34,16 @@ func New(ctx context.Context, dsn string) (*PGStore, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
-	return &PGStore{pool: pool}, nil
+	return &PGStore{pool: pool, workflowRunTimeoutSecs: defaultWorkflowTimeoutSeconds, workflowSessionTTLSecs: defaultWorkflowTimeoutSeconds}, nil
+}
+
+func (s *PGStore) configureWorkflowTimeoutDefaults(runTimeoutSeconds, sessionTTLSeconds int64) {
+	if runTimeoutSeconds > 0 {
+		s.workflowRunTimeoutSecs = runTimeoutSeconds
+	}
+	if sessionTTLSeconds > 0 {
+		s.workflowSessionTTLSecs = sessionTTLSeconds
+	}
 }
 
 // Pool exposes the underlying pool (used by Migrate at boot).
@@ -439,12 +450,13 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 	result, model_id, model_name,
 	base_branch, model_effort, goal_mode,
 	session, awaiting_since, session_finalizing, bundle_rev, pushed_rev, permission_mode,
-	acp_session_id, resumed_from, provenance`
+	acp_session_id, resumed_from, provenance,
+	execution_contract, review_plan, pr_head_sha, pr_base_sha`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
 	var commentID, commentURL, automationID, eventKey, result *string
-	var reviewResult, provenanceSnapshot []byte
+	var reviewResult, provenanceSnapshot, executionContract, reviewPlan []byte
 	err := row.Scan(&r.ID, &r.ProjectID, &r.ServiceID, &r.Prompt, &r.Status, &r.Kind, &r.Phase, &r.Error,
 		&r.K8sJobName, &r.RetriedFrom, &r.FailureReason, &r.FailureMessage,
 		&r.Attempt, &r.TokenHash,
@@ -454,7 +466,8 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 		&r.Origin, &commentID, &commentURL, &automationID, &eventKey, &r.CoalesceKey, &result, &r.ModelID, &r.ModelName,
 		&r.BaseBranch, &r.ModelEffort, &r.GoalMode,
 		&r.Session, &r.AwaitingSince, &r.SessionFinalizing, &r.BundleRev, &r.PushedRev, &r.PermissionMode,
-		&r.AcpSessionID, &r.ResumedFrom, &provenanceSnapshot)
+		&r.AcpSessionID, &r.ResumedFrom, &provenanceSnapshot,
+		&executionContract, &reviewPlan, &r.PRHeadSHA, &r.PRBaseSHA)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -488,6 +501,25 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 		if err := json.Unmarshal(provenanceSnapshot, &r.ProvenanceSnapshot); err != nil {
 			return nil, fmt.Errorf("scan run provenance: %w", err)
 		}
+	}
+	if len(executionContract) > 0 {
+		decoder := json.NewDecoder(strings.NewReader(string(executionContract)))
+		decoder.DisallowUnknownFields()
+		var contract domain.WorkflowContract
+		if err := decoder.Decode(&contract); err != nil {
+			return nil, fmt.Errorf("scan run execution contract: %w", err)
+		}
+		if err := contract.Validate(); err != nil {
+			return nil, fmt.Errorf("scan run execution contract: %w", err)
+		}
+		r.ExecutionContract = &contract
+	}
+	if len(reviewPlan) > 0 {
+		parsed, err := domain.UnmarshalStoredReviewPlan(reviewPlan)
+		if err != nil {
+			return nil, fmt.Errorf("scan run review plan: %w", err)
+		}
+		r.ReviewPlan = parsed
 	}
 	return &r, nil
 }
@@ -550,9 +582,18 @@ func (s *PGStore) CreateCoalescedRun(ctx context.Context, coalesceKey string, r 
 }
 
 func (s *PGStore) createRunTx(ctx context.Context, tx pgx.Tx, r *domain.Run) error {
+	if r.Kind == domain.RunKindReview && (!domain.ValidCommitSHA(strings.TrimSpace(r.PRHeadSHA)) || !domain.ValidCommitSHA(strings.TrimSpace(r.PRBaseSHA))) {
+		return errors.New("create run: review revision pair is required before queueing")
+	}
 	var deletingAt *time.Time
 	var serviceReadyPolicy domain.PRReadyPolicy
-	if err := tx.QueryRow(ctx, `SELECT deleting_at,pr_ready_policy FROM services WHERE id=$1 FOR SHARE`, r.ServiceID).Scan(&deletingAt, &serviceReadyPolicy); errors.Is(err, pgx.ErrNoRows) {
+	var svc domain.Service
+	var providerName, repoOwnerName, rawRepoURL *string
+	var projectRunTimeout, projectSessionTTL *int64
+	if err := tx.QueryRow(ctx, `SELECT s.deleting_at,s.pr_ready_policy,s.git_mode,s.repo_kind,s.provider,s.repo_owner_name,s.raw_repo_url,s.default_branch,p.run_timeout_secs,p.session_ttl_secs
+		FROM services s JOIN projects p ON p.id=s.project_id
+		WHERE s.id=$1 AND s.project_id=$2 FOR SHARE`, r.ServiceID, r.ProjectID).Scan(
+		&deletingAt, &serviceReadyPolicy, &svc.GitMode, &svc.RepoKind, &providerName, &repoOwnerName, &rawRepoURL, &svc.DefaultBranch, &projectRunTimeout, &projectSessionTTL); errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return fmt.Errorf("create run: lock service: %w", err)
@@ -566,13 +607,49 @@ func (s *PGStore) createRunTx(ctx context.Context, tx pgx.Tx, r *domain.Run) err
 			r.PRReadyPolicy = domain.PRReadyPolicyAlwaysDraft
 		}
 	}
+	svc.ID, svc.ProjectID, svc.PRReadyPolicy = r.ServiceID, r.ProjectID, serviceReadyPolicy
+	if providerName != nil {
+		svc.Provider = domain.GitProvider(*providerName)
+	}
+	if repoOwnerName != nil {
+		svc.RepoOwnerName = *repoOwnerName
+	}
+	if rawRepoURL != nil {
+		svc.RawRepoURL = *rawRepoURL
+	}
+	if r.ExecutionContract != nil {
+		if err := r.ExecutionContract.Validate(); err != nil {
+			return fmt.Errorf("create run: invalid execution contract: %w", err)
+		}
+	} else {
+		timeout, source := s.workflowRunTimeoutSecs, domain.TimeoutSourceCluster
+		if timeout <= 0 {
+			timeout = defaultWorkflowTimeoutSeconds
+		}
+		if r.Session {
+			timeout = s.workflowSessionTTLSecs
+			if timeout <= 0 {
+				timeout = defaultWorkflowTimeoutSeconds
+			}
+			if projectSessionTTL != nil && *projectSessionTTL > 0 {
+				timeout, source = *projectSessionTTL, domain.TimeoutSourceProject
+			}
+		} else if projectRunTimeout != nil && *projectRunTimeout > 0 {
+			timeout, source = *projectRunTimeout, domain.TimeoutSourceProject
+		}
+		contract, contractErr := domain.ResolveWorkflowContract(r, &svc, timeout, source, r.CreatedAt)
+		if contractErr != nil {
+			return fmt.Errorf("create run: resolve execution contract: %w", contractErr)
+		}
+		r.ExecutionContract = contract
+	}
 	provenanceJSON, err := json.Marshal(r.ProvenanceSnapshot)
 	if err != nil {
 		return fmt.Errorf("create run: encode provenance: %w", err)
 	}
 	_, err = tx.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
@@ -582,7 +659,8 @@ func (s *PGStore) createRunTx(ctx context.Context, tx pgx.Tx, r *domain.Run) err
 		nullRunResult(r.Result), r.ModelID, r.ModelName,
 		r.BaseBranch, r.ModelEffort, r.GoalMode,
 		r.Session, r.AwaitingSince, r.SessionFinalizing, r.BundleRev, r.PushedRev, r.PermissionMode,
-		r.AcpSessionID, r.ResumedFrom, provenanceJSON)
+		r.AcpSessionID, r.ResumedFrom, provenanceJSON,
+		workflowContractJSON(r.ExecutionContract), reviewPlanJSON(r.ReviewPlan), r.PRHeadSHA, r.PRBaseSHA)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
@@ -617,6 +695,25 @@ func reviewResultJSON(result *domain.ReviewResult) any {
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
+func workflowContractJSON(contract *domain.WorkflowContract) any {
+	if contract == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(contract)
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
+func reviewPlanJSON(plan *domain.ReviewPlan) any {
+	encoded, err := domain.MarshalStoredReviewPlan(plan)
+	if err != nil || len(encoded) == 0 {
 		return nil
 	}
 	return encoded
@@ -1093,18 +1190,37 @@ func (s *PGStore) ClaimRunDispatch(ctx context.Context, id, jobName, tokenHash, 
 			createdAt = time.Now().UTC()
 		}
 		tag, insertErr := tx.Exec(ctx, `
-			INSERT INTO run_plugin_snapshots(run_id,installation_id,provider,provider_config_revision,credential_version_id,created_at)
-			SELECT $1,pi.id,pi.provider,pi.config_revision,pi.credential_version_id,$3
+			INSERT INTO run_plugin_snapshots(run_id,installation_id,provider,provider_config_revision,credential_version_id,created_at,
+				repository_id,repository_path,clone_url,default_branch,acting_principal_kind,acting_principal_id)
+			SELECT $1,pi.id,pi.provider,pi.config_revision,pi.credential_version_id,$3,
+				COALESCE(rb.provider_repo_id,''),COALESCE(rb.repository_path,''),COALESCE(rb.clone_url,''),COALESCE(rb.default_branch,''),
+				CASE WHEN rb.installation_id IS NULL THEN '' ELSE 'provider_bot' END,
+				CASE WHEN rb.installation_id IS NULL THEN '' ELSE pi.id END
 			FROM plugin_installations pi
 			JOIN provider_config_versions pv ON pv.provider=pi.provider AND pv.config_revision=pi.config_revision
 			JOIN plugin_credential_versions cv ON cv.id=pi.credential_version_id AND cv.installation_id=pi.id AND cv.provider=pi.provider
-			WHERE pi.id=$2 AND pi.project_id=$4`, id, snap.InstallationID, createdAt, cur.ProjectID)
+			LEFT JOIN service_repository_bindings rb ON rb.service_id=$5 AND rb.installation_id=pi.id
+			WHERE pi.id=$2 AND pi.project_id=$4`, id, snap.InstallationID, createdAt, cur.ProjectID, cur.ServiceID)
 		if insertErr != nil {
 			err = insertErr
 			return nil, fmt.Errorf("persist dispatch snapshot: %w", err)
 		}
 		if tag.RowsAffected() != 1 {
 			return nil, fmt.Errorf("%w: immutable version unavailable for plugin %s", ErrDispatchClaimUnavailable, snap.InstallationID)
+		}
+	}
+	if requiredInstallationID != "" {
+		var frozen bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM run_plugin_snapshots
+			WHERE run_id=$1 AND installation_id=$2
+			  AND repository_id<>'' AND repository_path<>'' AND clone_url<>'' AND default_branch<>''
+			  AND acting_principal_kind<>'' AND acting_principal_id<>''
+		)`, id, requiredInstallationID).Scan(&frozen); err != nil {
+			return nil, fmt.Errorf("verify required repository grant: %w", err)
+		}
+		if !frozen {
+			return nil, fmt.Errorf("%w: required repository grant changed", ErrDispatchClaimUnavailable)
 		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE runs SET status=$2,phase=$3,k8s_job_name=$4,token_hash=$5 WHERE id=$1`, id, domain.StatusScheduling, phase, jobName, tokenHash); err != nil {
@@ -1932,6 +2048,42 @@ func (s *PGStore) SetReviewResult(ctx context.Context, id string, result domain.
 		return nil, fmt.Errorf("set review result: %w", err)
 	}
 	return s.commitAndReload(ctx, tx, id)
+}
+
+func (s *PGStore) SetReviewPlan(ctx context.Context, id string, plan domain.ReviewPlan) (*domain.Run, bool, error) {
+	tx, cur, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if cur.Kind != domain.RunKindReview || (cur.Status != domain.StatusScheduling && cur.Status != domain.StatusRunning) {
+		return nil, false, ErrInvalidTransition
+	}
+	if cur.PRBaseSHA != "" && plan.BaseSHA != cur.PRBaseSHA || cur.PRHeadSHA != "" && plan.HeadSHA != cur.PRHeadSHA {
+		return nil, false, ErrConflict
+	}
+	want, err := plan.CanonicalHash()
+	if err != nil || plan.PlanHash != want {
+		return nil, false, ErrConflict
+	}
+	if cur.ReviewPlan != nil {
+		if cur.ReviewPlan.PlanHash != plan.PlanHash {
+			return nil, false, ErrConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, false, err
+		}
+		return cur, false, nil
+	}
+	encoded, err := domain.MarshalStoredReviewPlan(&plan)
+	if err != nil {
+		return nil, false, fmt.Errorf("marshal review plan: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE runs SET review_plan=$2::jsonb WHERE id=$1 AND review_plan IS NULL`, id, encoded); err != nil {
+		return nil, false, fmt.Errorf("set review plan: %w", err)
+	}
+	committed, err := s.commitAndReload(ctx, tx, id)
+	return committed, err == nil, err
 }
 
 // MarkReviewPosted stamps review_posted_at once the review comment has been

@@ -21,8 +21,11 @@
 //	orchclient upload-bundle --file /tmp/run.bundle
 //	    → POST /internal/v1/runs/{RUN_ID}/bundle    (application/octet-stream)
 //
-//	orchclient post-review --file /workspace/REVIEW.md
-//	    → POST /internal/v1/runs/{RUN_ID}/review    (text/plain)
+//	orchclient post-review-plan --diff /tmp/review.diff --base-sha ... --head-sha ... --merge-base-sha ...
+//	    → POST /internal/v1/runs/{RUN_ID}/review-plan (JSON envelope)
+//
+//	orchclient post-review --file /workspace/REVIEW.json
+//	    → POST /internal/v1/runs/{RUN_ID}/review    (structured JSON)
 //
 // The three M3 runner-contract commands (fetch-source/upload-bundle/post-review)
 // are LOAD-BEARING: unlike the best-effort report/upload-artifact commands they
@@ -56,7 +59,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: orchclient <report-failure|report-git|report-result|upload-artifact|fetch-source|upload-bundle|post-review> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: orchclient <report-failure|report-git|report-result|upload-artifact|fetch-source|upload-bundle|post-review-plan|post-review> [flags]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -67,7 +70,7 @@ func main() {
 	token := os.Getenv("RUN_TOKEN")
 	if base == "" || runID == "" || token == "" {
 		switch cmd {
-		case "fetch-source", "upload-bundle", "post-review":
+		case "fetch-source", "upload-bundle", "post-review-plan", "post-review":
 			// Load-bearing: without the control plane these cannot do their job.
 			fmt.Fprintln(os.Stderr, "[orchclient] "+cmd+" requires ORCH_BASE_URL/RUN_ID/RUN_TOKEN")
 			os.Exit(1)
@@ -179,6 +182,31 @@ func main() {
 			os.Exit(1)
 		}
 		if !c.uploadRaw("/internal/v1/runs/"+c.runID+"/review", "application/vnd.jcode.review+json", data, "post-review") {
+			os.Exit(1)
+		}
+
+	case "post-review-plan":
+		fs := flag.NewFlagSet("post-review-plan", flag.ExitOnError)
+		diffFile := fs.String("diff", "", "path to the exact unified diff")
+		baseSHA := fs.String("base-sha", "", "frozen event base commit")
+		headSHA := fs.String("head-sha", "", "frozen event head commit")
+		mergeBaseSHA := fs.String("merge-base-sha", "", "computed merge-base commit")
+		_ = fs.Parse(args)
+		if *diffFile == "" || *baseSHA == "" || *headSHA == "" || *mergeBaseSHA == "" {
+			fmt.Fprintln(os.Stderr, "[orchclient] post-review-plan requires --diff, --base-sha, --head-sha, and --merge-base-sha")
+			os.Exit(2)
+		}
+		diff, err := os.ReadFile(*diffFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[orchclient] post-review-plan: read %s: %v\n", *diffFile, err)
+			os.Exit(1)
+		}
+		body, err := json.Marshal(map[string]string{"base_sha": *baseSHA, "head_sha": *headSHA, "merge_base_sha": *mergeBaseSHA, "diff": string(diff)})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[orchclient] post-review-plan: encode: %v\n", err)
+			os.Exit(1)
+		}
+		if !c.uploadRaw("/internal/v1/runs/"+c.runID+"/review-plan", "application/json", body, "post-review-plan") {
 			os.Exit(1)
 		}
 

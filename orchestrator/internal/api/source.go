@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,10 @@ const maxBundleBytes = 16 << 20
 
 // maxReviewBytes caps a review-output upload (defensive; reviews are small).
 const maxReviewBytes = 1 << 20
+
+// maxReviewPlanBytes allows a bounded unified diff plus its small JSON
+// envelope. The domain parser applies the tighter decoded diff/file/hunk caps.
+const maxReviewPlanBytes = domain.MaxReviewDiffBytes + (64 << 10)
 
 // sourceCache serves orchestrator-generated source bundles, generating each
 // lazily on first request and caching it on disk with a TTL. A per-key mutex
@@ -133,19 +138,44 @@ func (s *Server) handleGetSource(w http.ResponseWriter, r *http.Request, runID s
 		return
 	}
 	rawURL := domain.ServiceCloneURL(*svc, s.cfg.GiteaURL)
-	if binding, bindingErr := s.st.GetServiceRepositoryBinding(r.Context(), svc.ID); bindingErr == nil {
-		rawURL = binding.CloneURL
-	} else if !errors.Is(bindingErr, store.ErrNotFound) {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load repository binding")
+	resolvedProvider := svc.Provider
+	var tok credentials.Token
+	usedFrozenGrant := false
+	snapshots, snapshotErr := s.st.ListRunPluginSnapshots(r.Context(), runID)
+	if snapshotErr != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load Run SCM grant")
 		return
+	}
+	for i := range snapshots {
+		snapshot := &snapshots[i]
+		if !snapshot.HasFrozenRepositoryGrant() {
+			continue
+		}
+		if s.pluginCredentialIssuer == nil {
+			writeError(w, http.StatusConflict, "scm_grant_unavailable", "the frozen Run SCM grant cannot issue a credential")
+			return
+		}
+		credential, issueErr := s.pluginCredentialIssuer.IssueRunPluginSnapshotCredential(r.Context(), snapshot)
+		if issueErr != nil {
+			writeError(w, http.StatusConflict, "scm_grant_unavailable", "the frozen Run SCM grant cannot issue a credential")
+			return
+		}
+		rawURL, resolvedProvider = snapshot.CloneURL, domain.GitProvider(snapshot.Provider)
+		tok = credentials.Token{Value: credential.AccessToken, Scheme: credential.Scheme, Source: "plugin_snapshot"}
+		usedFrozenGrant = true
+		break
 	}
 	if rawURL == "" {
 		writeError(w, http.StatusInternalServerError, "internal", "could not derive repository URL")
 		return
 	}
-	// Resolve a credential (integration bot token when the service is bound, else
-	// user OAuth / gitea PAT).
-	tok, rerr := s.creds.ResolveForService(r.Context(), svc, run.TriggeredByUserID)
+	// Legacy non-Plugin Services retain the historical credential resolver. A
+	// Plugin-bound Run must use the immutable dispatch snapshot above and never
+	// re-read a current binding or credential after reconnect/rename.
+	var rerr error
+	if !usedFrozenGrant {
+		tok, rerr = s.creds.ResolveForService(r.Context(), svc, run.TriggeredByUserID)
+	}
 	if rerr != nil && errors.Is(rerr, credentials.ErrIntegrationCredential) {
 		// Fail-visible (F5 review C2): an integration-bound service whose bot token
 		// cannot be used must fail with the REAL reason — never degrade to an
@@ -165,10 +195,10 @@ func (s *Server) handleGetSource(w http.ResponseWriter, r *http.Request, runID s
 	// Any OTHER resolution miss (legacy path, no credential at all) is non-fatal:
 	// tok stays the zero value → an anonymous URL (public repos still clone; a
 	// private one fails visibly at git clone time).
-	authed := tok.AuthedURL(rawURL, svc.Provider)
+	authed := tok.AuthedURL(rawURL, resolvedProvider)
 
 	data, err := s.srcCache.Get(runID, func(dst string) error {
-		if run.Kind == domain.RunKindReview && svc.Provider == domain.ProviderGitHub &&
+		if run.Kind == domain.RunKindReview && resolvedProvider == domain.ProviderGitHub &&
 			run.PRNumber > 0 && run.PRHeadBranch != "" {
 			return s.git.CreatePullRequestSourceBundle(r.Context(), authed, dst, run.PRNumber, run.PRHeadBranch)
 		}
@@ -241,6 +271,74 @@ func (s *Server) handleIngestBundle(w http.ResponseWriter, r *http.Request, runI
 
 const structuredReviewMediaType = "application/vnd.jcode.review+json"
 
+// handleIngestReviewPlan accepts the Runner's exact revision facts and raw
+// unified diff before the Agent turn. The control plane, rather than the Runner,
+// parses changed-line anchors and computes the canonical plan hash.
+func (s *Server) handleIngestReviewPlan(w http.ResponseWriter, r *http.Request, runID string) {
+	data, err := io.ReadAll(io.LimitReader(r.Body, int64(maxReviewPlanBytes)+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "could not read review plan")
+		return
+	}
+	if len(data) > maxReviewPlanBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "review_input_too_large", "review plan exceeds the size limit")
+		return
+	}
+	var input domain.ReviewPlanInput
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_review_plan", "review plan must be exactly one valid JSON object")
+		return
+	}
+	run, err := s.st.GetRun(r.Context(), runID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load run")
+		return
+	}
+	if run.Kind != domain.RunKindReview || run.PRBaseSHA == "" || run.PRHeadSHA == "" {
+		writeError(w, http.StatusConflict, "review_revision_unavailable", "review run has no frozen base/head revision pair")
+		return
+	}
+	if input.BaseSHA != run.PRBaseSHA || input.HeadSHA != run.PRHeadSHA {
+		writeError(w, http.StatusConflict, "review_revision_mismatch", "review plan revisions do not match the frozen Run revisions")
+		return
+	}
+	input.CreatedAt = time.Now().UTC()
+	plan, err := domain.BuildReviewPlan(input)
+	if err != nil {
+		if strings.Contains(err.Error(), "review_input_too_large") {
+			writeError(w, http.StatusRequestEntityTooLarge, "review_input_too_large", err.Error())
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_review_plan", err.Error())
+		}
+		return
+	}
+	committed, created, err := s.st.SetReviewPlan(r.Context(), runID, *plan)
+	if errors.Is(err, store.ErrConflict) {
+		writeError(w, http.StatusConflict, "review_plan_conflict", "a different review plan is already stored for this Run")
+		return
+	}
+	if errors.Is(err, store.ErrInvalidTransition) {
+		writeError(w, http.StatusConflict, "review_plan_closed", "the Run is not accepting a review plan")
+		return
+	}
+	if err != nil {
+		s.log.Error("ingest review plan", "run", runID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not store review plan")
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, committed.ReviewPlan)
+}
+
 // handleIngestReview accepts validated structured review output from new
 // runners while retaining text/plain for rolling-upgrade compatibility.
 func (s *Server) handleIngestReview(w http.ResponseWriter, r *http.Request, runID string) {
@@ -258,6 +356,19 @@ func (s *Server) handleIngestReview(w http.ResponseWriter, r *http.Request, runI
 		return
 	}
 	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	run, getErr := s.st.GetRun(r.Context(), runID)
+	if errors.Is(getErr, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	if getErr != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load run")
+		return
+	}
+	if run.ExecutionContract != nil && run.Kind == domain.RunKindReview && mediaType != structuredReviewMediaType {
+		writeError(w, http.StatusConflict, "structured_review_required", "contract review runs accept only structured review output")
+		return
+	}
 	if mediaType == structuredReviewMediaType {
 		var result domain.ReviewResult
 		decoder := json.NewDecoder(bytes.NewReader(data))
@@ -270,9 +381,22 @@ func (s *Server) handleIngestReview(w http.ResponseWriter, r *http.Request, runI
 			writeError(w, http.StatusBadRequest, "invalid_review_result", "review output must contain exactly one JSON object")
 			return
 		}
-		if err := result.Validate(); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_review_result", err.Error())
+		if run.ExecutionContract != nil && run.Kind == domain.RunKindReview && run.ReviewPlan == nil {
+			writeError(w, http.StatusConflict, "review_plan_required", "deterministic review output requires an accepted review plan")
 			return
+		}
+		if run.ReviewPlan != nil {
+			if err := result.ValidateAgainst(run.ReviewPlan); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_review_result", err.Error())
+				return
+			}
+		} else {
+			// Rolling-upgrade compatibility for historical Runs which predate the
+			// deterministic Plan. New contract Runs are rejected above when absent.
+			if err := result.Validate(); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_review_result", err.Error())
+				return
+			}
 		}
 		if _, err := s.st.SetReviewResult(r.Context(), runID, result); err != nil {
 			s.writeReviewStoreError(w, runID, err)

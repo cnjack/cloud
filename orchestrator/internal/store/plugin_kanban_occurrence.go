@@ -200,6 +200,9 @@ func (m *MemStore) CreatePluginKanbanOccurrenceRun(_ context.Context, occurrence
 	if err := m.validateRunForCreateLocked(run); err != nil {
 		return false, err
 	}
+	if err := m.resolveRunContractLocked(run); err != nil {
+		return false, err
+	}
 	m.insertRunLocked(run)
 	now := time.Now().UTC()
 	occurrence.RunID = run.ID

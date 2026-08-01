@@ -1,0 +1,78 @@
+<!doctype html>
+<!-- Ship-R1 Workflow Contract prototype. Fixtures only; live readiness is Ship-R2. -->
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="description" content="jcode Cloud Workflow Contract and Run readiness design." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/workflow-contract.css" />
+  <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/workflow-contract.js" defer></script>
+  <title>Workflow contract — jcode Cloud design</title>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">跳到内容</a>
+  <div class="wc-shell">
+    <header class="utility-bar">
+      <div class="breadcrumbs"><a href="./projects.html">Projects</a><span>/</span><a href="./project-workspace.html">jcode</a><span>/</span><strong>Tasks</strong></div>
+      <div class="utility-actions"><span class="prototype-chip">sample fixture · Ship-R1 honest scope</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div>
+    </header>
+    <main class="wc-main" id="mainContent">
+      <header class="wc-head">
+        <div><span class="eyebrow">jcode · main</span><h1>Start a task</h1><p>One Run, one frozen execution contract.</p></div>
+        <div class="wc-head-actions"><span class="status-label" data-tone="success">Service ready</span></div>
+      </header>
+      <div class="wc-layout">
+        <section class="wc-stage" aria-label="Task composer">
+          <div class="wc-content">
+            <div class="wc-intro">
+              <div><span class="eyebrow">New run</span><h2>Tell jcode what outcome you need</h2><p>The role guides how the agent works. Cloud freezes the trigger, model, delivery and verification before anything starts.</p></div>
+              <div class="wc-step"><span>WORKFLOW CONTRACT</span><strong>01 / BUILT-IN</strong></div>
+            </div>
+            <section class="wc-composer">
+              <div class="wc-compose-body"><textarea aria-label="Task prompt">Audit the repository’s webhook delivery path. Fix any credential drift, add regression tests, and leave the pull request ready for review.</textarea></div>
+              <div class="wc-controls">
+                <div class="wc-control-set">
+                  <span class="wc-pill" data-accent><svg class="icon"><use href="./assets/icons.svg#i-agent" /></svg>Developer · r1 <span class="wc-planned">selector in R2</span></span>
+                  <span class="wc-pill">Isolated · no provider credential</span>
+                </div>
+                <div class="wc-control-set"><span class="wc-pill">main</span><span class="wc-pill">GLM-5.2 · high</span><button class="button button-primary" type="button">Start Run</button></div>
+              </div>
+            </section>
+
+            <section class="wc-readiness" aria-labelledby="readiness-title">
+              <div class="wc-readiness-head">
+                <div class="wc-readiness-title"><span>W1</span><div><strong id="readiness-title">Contract preview · not a readiness verdict</strong><small>Ship-R1 freezes actual facts on Run creation. Live capability preflight arrives in Ship-R2.</small></div></div>
+                <button class="wc-disclosure" type="button" data-contract-disclosure aria-expanded="true">Hide scope</button>
+              </div>
+              <div class="wc-checks" data-contract-body>
+                <div class="wc-check"><span>—</span><div><strong>Effective timeout</strong><small>12 hours from current Cluster default; the Run and Kubernetes deadline must match</small></div></div>
+                <div class="wc-check"><span>—</span><div><strong>Typed delivery</strong><small><code>create_pull_request</code> only · lifecycle-aware · never auto-merge</small></div></div>
+                <div class="wc-check"><span>→</span><div><strong>Future readiness</strong><small>Runner manifest and toolchain blockers are deliberately not claimed in Ship-R1</small></div></div>
+              </div>
+            </section>
+
+            <section class="wc-contract-preview">
+              <div class="wc-section-head"><h3>What will be frozen</h3><span>schema v1</span></div>
+              <div class="wc-manifest">
+                <article class="wc-manifest-card"><span>Role</span><strong>Developer · revision 1</strong><p>Edit the repository, verify observable behavior, and deliver a reviewable change.</p></article>
+                <article class="wc-manifest-card"><span>Trigger</span><strong>Manual · Jack</strong><p>Direct member request from the jcode Service workspace.</p></article>
+                <article class="wc-manifest-card"><span>Delivery</span><strong>Ready Pull Request</strong><p>One-shot success publishes Ready. Draft is only a long-session intermediate state.</p></article>
+                <article class="wc-manifest-card"><span>Verification</span><strong>Repository-owned tests</strong><p>Ship-R1 records the declared verification and actual result. Toolchain preflight arrives in Ship-R2.</p></article>
+              </div>
+            </section>
+          </div>
+        </section>
+        <aside class="wc-inspector" aria-label="Workflow contract preview">
+          <section><h2>Contract stamp</h2><div class="wc-contract-stamp"><span>W1</span><div><strong>Uncommitted preview</strong><small>Hash is finalized with the Run</small></div></div></section>
+          <section><h2>Execution</h2><dl><div><dt>Workflow</dt><dd>builtin:implementation-task@1</dd></div><div><dt>Profile</dt><dd>builtin:developer@1</dd></div><div><dt>Model selection</dt><dd>zhipuai/glm-5.2 · high</dd></div><div><dt>Permission</dt><dd>full_access · isolated</dd></div><div><dt>Timeout</dt><dd>43,200s · cluster default</dd></div><div><dt>Workspace</dt><dd>Service persistent cache</dd></div></dl></section>
+          <section><h2>Required capabilities</h2><dl><div><dt>Source</dt><dd><code>source.read/write</code></dd></div><div><dt>Tools</dt><dd><code>git · shell · ripgrep</code></dd></div><div><dt>Output</dt><dd><code>create_pull_request</code></dd></div></dl></section>
+          <section><h2>Reading the state</h2><div class="wc-legend"><div><i></i><span>Preview is not capability evidence.</span></div><div><i></i><span>Orange identifies the selected policy.</span></div><div><i></i><span>Ship-R2 controls are named, never shipped as dead UI.</span></div></div></section>
+        </aside>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

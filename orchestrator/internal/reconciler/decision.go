@@ -174,14 +174,17 @@ func shouldOpenPR(run domain.Run, svc domain.Service, providerReady bool) bool {
 	if run.Status != domain.StatusSucceeded || run.Kind == domain.RunKindReview {
 		return false
 	}
-	if svc.GitMode != domain.GitModeDraftPR {
-		return false
-	}
-	if svc.RepoKind != domain.RepoKindProvider || !domain.ValidProvider(svc.Provider) {
-		return false
-	}
-	if strings.TrimSpace(svc.RepoOwnerName) == "" {
-		return false
+	if run.ExecutionContract != nil {
+		if !run.ExecutionContract.Delivers(domain.OutputCreatePullRequest) ||
+			run.ExecutionContract.DeliveryTarget(domain.OutputCreatePullRequest) != "service_repository" {
+			return false
+		}
+	} else {
+		// Rolling-upgrade behavior for historical Runs without a contract.
+		if svc.GitMode != domain.GitModeDraftPR || svc.RepoKind != domain.RepoKindProvider ||
+			!domain.ValidProvider(svc.Provider) || strings.TrimSpace(svc.RepoOwnerName) == "" {
+			return false
+		}
 	}
 	if strings.TrimSpace(run.GitBranch) == "" {
 		return false // no bundle received yet (branch not recorded)
@@ -211,11 +214,17 @@ func shouldUpdatePush(run domain.Run, svc domain.Service, providerReady bool) bo
 	if run.Origin != domain.RunOriginWebhook {
 		return false
 	}
-	if svc.GitMode != domain.GitModeDraftPR || svc.RepoKind != domain.RepoKindProvider || !domain.ValidProvider(svc.Provider) {
-		return false
-	}
-	if strings.TrimSpace(svc.RepoOwnerName) == "" {
-		return false
+	if run.ExecutionContract != nil {
+		if !run.ExecutionContract.Delivers(domain.OutputCreatePullRequest) ||
+			run.ExecutionContract.DeliveryTarget(domain.OutputCreatePullRequest) != "trigger_pr" {
+			return false
+		}
+	} else {
+		// Rolling-upgrade behavior for historical Runs without a contract.
+		if svc.GitMode != domain.GitModeDraftPR || svc.RepoKind != domain.RepoKindProvider ||
+			!domain.ValidProvider(svc.Provider) || strings.TrimSpace(svc.RepoOwnerName) == "" {
+			return false
+		}
 	}
 	if strings.TrimSpace(run.GitBranch) == "" || run.PRURL == "" {
 		return false // no bundle received, or no target PR

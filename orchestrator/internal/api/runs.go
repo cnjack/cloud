@@ -211,7 +211,7 @@ func (s *Server) handleListServiceRuns(w http.ResponseWriter, r *http.Request) {
 	if runs == nil {
 		runs = []domain.Run{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+	writeJSON(w, http.StatusOK, map[string]any{"runs": nonNilRuns(runs)})
 }
 
 // deref returns the pointed-to string, or "" for a nil pointer.
@@ -316,7 +316,13 @@ func nonNilRuns(runs []domain.Run) []domain.Run {
 	if runs == nil {
 		return []domain.Run{}
 	}
-	return runs
+	// List views never need embedded profile instructions. Keep them in the
+	// member-only detail projection and make list payloads uniformly public.
+	out := make([]domain.Run, len(runs))
+	for i := range runs {
+		out[i] = *projectRunForRole(&runs[i], domain.RoleViewer)
+	}
+	return out
 }
 
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
@@ -329,9 +335,16 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not get run")
 		return
 	}
-	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), run.ProjectID, domain.RoleViewer) {
+	prin := principalFrom(r.Context())
+	if !s.authorizeProject(r.Context(), w, prin, run.ProjectID, domain.RoleViewer) {
 		return
 	}
+	role, _, err := s.effectiveRole(r.Context(), prin, run.ProjectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not resolve project access")
+		return
+	}
+	run = projectRunForRole(run, role)
 	usage, err := s.st.GetUsageSummary(r.Context(), domain.UsageSummaryQuery{
 		SubjectKind: domain.UsageSubjectRun, SubjectID: run.ID,
 	})
@@ -346,6 +359,21 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	}{
 		Run: run, Provenance: provenance.Resolve(r.Context(), s.st, run), Usage: usage,
 	})
+}
+
+func projectRunForRole(run *domain.Run, role domain.Role) *domain.Run {
+	if run == nil || role.AtLeast(domain.RoleMember) || run.ExecutionContract == nil {
+		return run
+	}
+	copyRun := *run
+	copyContract := *run.ExecutionContract
+	copyContract.Requirements = append([]string(nil), run.ExecutionContract.Requirements...)
+	copyContract.Delivery.Outputs = append([]domain.WorkflowOutput(nil), run.ExecutionContract.Delivery.Outputs...)
+	copyContract.Verification.RequiredRecords = append([]string(nil), run.ExecutionContract.Verification.RequiredRecords...)
+	copyContract.Profile = run.ExecutionContract.Profile
+	copyContract.Profile.Instructions = ""
+	copyRun.ExecutionContract = &copyContract
+	return &copyRun
 }
 
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
@@ -458,6 +486,12 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	retry.Kind = orig.Kind
 	retry.PRHeadBranch = orig.PRHeadBranch
 	retry.PRBaseBranch = orig.PRBaseBranch
+	retry.PRHeadSHA = orig.PRHeadSHA
+	retry.PRBaseSHA = orig.PRBaseSHA
+	retry.PRReadyPolicy = orig.PRReadyPolicy
+	// A retry is another attempt at the same immutable execution contract. A
+	// genuinely new trigger resolves the current built-in definition instead.
+	retry.ExecutionContract = orig.ExecutionContract
 	// Session-ness is part of that identity too (D22): retrying a session run
 	// starts a fresh session (same prompt, new ACP session), not a single-shot.
 	retry.Session = orig.Session

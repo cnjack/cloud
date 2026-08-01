@@ -44,9 +44,11 @@ type githubPR struct {
 	NodeID  string `json:"node_id"`
 	Head    struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"base"`
 }
 
@@ -164,7 +166,7 @@ func (c *GitHubClient) PRByNumber(ctx context.Context, owner, repo string, prNum
 		return nil, err
 	}
 	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged), Draft: pr.Draft,
-		HeadRef: pr.Head.Ref, BaseRef: pr.Base.Ref}, nil
+		HeadRef: pr.Head.Ref, BaseRef: pr.Base.Ref, HeadSHA: pr.Head.SHA, BaseSHA: pr.Base.SHA}, nil
 }
 
 func (c *GitHubClient) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error {

@@ -217,6 +217,7 @@ func TestRunTimeoutClusterDefault(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 10)
 	rec.cfg.RunTimeoutSecs = 43200
+	store.ConfigureWorkflowTimeoutDefaults(st, rec.cfg.RunTimeoutSecs, rec.cfg.SessionTTLSecs)
 	_, _ = seedGuardrailProject(t, st, &domain.Project{RunTimeoutSecs: nil}, 1)
 
 	rec.Tick(ctx)

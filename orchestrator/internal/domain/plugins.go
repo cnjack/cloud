@@ -323,6 +323,17 @@ type RunPluginSnapshot struct {
 	ProviderConfigRevision int64        `json:"-"`
 	CredentialVersionID    string       `json:"-"`
 
+	// Repository grant facts are copied from the service binding in the same
+	// dispatch transaction as the credential/config revisions. Only the snapshot
+	// matching this Run's repository carries them; unrelated project Plugin
+	// snapshots keep these fields empty.
+	RepositoryID        string `json:"repository_id,omitempty"`
+	RepositoryPath      string `json:"repository_path,omitempty"`
+	CloneURL            string `json:"-"`
+	DefaultBranch       string `json:"default_branch,omitempty"`
+	ActingPrincipalKind string `json:"acting_principal_kind,omitempty"`
+	ActingPrincipalID   string `json:"acting_principal_id,omitempty"`
+
 	// The following fields are hydrated from the referenced immutable version
 	// rows by Store.ListRunPluginSnapshots. They are never persisted in
 	// run_plugin_snapshots itself and never serialized to callers.
@@ -379,6 +390,11 @@ func (s RunPluginSnapshot) HasFrozenRuntimeMaterial() bool {
 		return s.GitHubInstallID != "" && s.ProviderAppID != "" && len(s.ProviderAppPrivateKeyEnc) > 0
 	}
 	return len(s.AccessTokenEnc) > 0
+}
+
+func (s RunPluginSnapshot) HasFrozenRepositoryGrant() bool {
+	return s.RepositoryID != "" && s.RepositoryPath != "" && s.CloneURL != "" &&
+		s.DefaultBranch != "" && s.ActingPrincipalKind != "" && s.ActingPrincipalID != ""
 }
 
 func clonePluginSnapshotTime(v *time.Time) *time.Time {
