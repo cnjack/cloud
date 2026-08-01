@@ -160,6 +160,9 @@ export default {
     crumbConnections: '连接',
     crumbOverview: '概览',
     crumbWorkspace: '工作区',
+    crumbProject: '项目',
+    crumbDevice: '设备',
+    crumbSession: '会话',
     crumbNotFound: '未找到',
   },
 

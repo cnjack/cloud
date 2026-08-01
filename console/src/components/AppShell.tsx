@@ -7,7 +7,7 @@ import {
 import { useEffect, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { NavLink, useLocation, useMatch, useNavigate } from 'react-router-dom';
+import { Link, matchPath, NavLink, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import { useDemoMode, useRole } from '../api/ApiProvider';
 import { useProjects } from '../api/queries';
 import type { Project } from '../api/types';
@@ -19,6 +19,29 @@ import { Wordmark } from './Wordmark';
 import styles from './AppShell.module.css';
 
 const RECENT_PROJECTS_KEY = 'jcloud.recent-projects.v1';
+const PROJECT_CHILD_PATTERNS = [
+  '/projects/:projectId/plugins/:provider',
+  '/projects/:projectId/automations/new',
+  '/projects/:projectId/automations/:automationId/edit',
+  '/projects/:projectId/automations/:automationId',
+] as const;
+const CLUSTER_PATHS = ['/cluster', '/cluster/models', '/cluster/connections'] as const;
+
+function exactMatch(pattern: string, pathname: string) {
+  return matchPath({ path: pattern, end: true }, pathname);
+}
+
+function knownProjectChildId(pathname: string): string | undefined {
+  for (const pattern of PROJECT_CHILD_PATTERNS) {
+    const match = exactMatch(pattern, pathname);
+    if (match?.params.projectId) return match.params.projectId;
+  }
+  return undefined;
+}
+
+function isKnownClusterPath(pathname: string): boolean {
+  return CLUSTER_PATHS.some((path) => !!exactMatch(path, pathname));
+}
 
 function readRecentProjects(): string[] {
   try {
@@ -45,22 +68,85 @@ function projectInitials(name: string): string {
   return `${words[0]![0]}${words[words.length - 1]![0]}`.toUpperCase();
 }
 
-function Breadcrumbs() {
-  const { pathname } = useLocation();
+function Breadcrumbs({ projects }: { projects: Project[] }) {
+  const { pathname, search } = useLocation();
   const { t } = useTranslation();
-  if (pathname === '/projects/new') {
-    return <><NavLink to="/projects">{t('shell.crumbProjects')}</NavLink><span>/</span><strong>{t('shell.crumbNewProject')}</strong></>;
+
+  const projectTrail = (projectId: string, leaf: string) => {
+    const projectName = projects.find((project) => project.id === projectId)?.name
+      ?? t('shell.crumbProject');
+    return <>
+      <Link to="/projects">{t('shell.crumbProjects')}</Link><span>/</span>
+      <Link to={`/projects/${encodeURIComponent(projectId)}`}>{projectName}</Link><span>/</span>
+      <strong>{leaf}</strong>
+    </>;
+  };
+
+  if (exactMatch('/projects/new', pathname)) {
+    return <><Link to="/projects">{t('shell.crumbProjects')}</Link><span>/</span><strong>{t('shell.crumbNewProject')}</strong></>;
   }
-  if (pathname.startsWith('/cluster')) {
-    const leaf = pathname === '/cluster/models' ? t('shell.crumbModels') : pathname === '/cluster/connections' ? t('shell.crumbConnections') : t('shell.crumbOverview');
-    return <><span>{t('shell.crumbCluster')}</span><span>/</span><strong>{leaf}</strong></>;
+
+  const pluginMatch = exactMatch('/projects/:projectId/plugins/:provider', pathname);
+  if (pluginMatch?.params.projectId) {
+    const provider = pluginMatch.params.provider ?? '';
+    const providerLabel = ({ github: 'GitHub', gitlab: 'GitLab', gitea: 'Gitea', jtype: 'JType Kanban' } as Record<string, string>)[provider]
+      ?? t('plugins.projectPlugin');
+    return projectTrail(pluginMatch.params.projectId, providerLabel);
   }
-  if (pathname.startsWith('/devices')) {
+
+  const automationNewMatch = exactMatch('/projects/:projectId/automations/new', pathname);
+  if (automationNewMatch?.params.projectId) {
+    const reviewPreset = new URLSearchParams(search).get('preset') === 'review';
+    return projectTrail(
+      automationNewMatch.params.projectId,
+      reviewPreset ? t('automationEditor.review.title') : t('automationEditor.createTitle'),
+    );
+  }
+
+  const automationEditMatch = exactMatch('/projects/:projectId/automations/:automationId/edit', pathname);
+  if (automationEditMatch?.params.projectId) {
+    return projectTrail(automationEditMatch.params.projectId, t('automationEditor.editTitle'));
+  }
+
+  const automationMatch = exactMatch('/projects/:projectId/automations/:automationId', pathname);
+  if (automationMatch?.params.projectId) {
+    return projectTrail(automationMatch.params.projectId, t('projectAutomations.title'));
+  }
+
+  if (isKnownClusterPath(pathname)) {
+    const leaf = exactMatch('/cluster/models', pathname)
+      ? t('shell.crumbModels')
+      : exactMatch('/cluster/connections', pathname)
+        ? t('shell.crumbConnections')
+        : t('shell.crumbOverview');
+    return <><Link to="/cluster">{t('shell.crumbCluster')}</Link><span>/</span><strong>{leaf}</strong></>;
+  }
+
+  if (exactMatch('/devices', pathname)) {
     return <><span>{t('shell.crumbWorkspace')}</span><span>/</span><strong>{t('shell.devices')}</strong></>;
   }
-  if (pathname === '/projects' || pathname === '/') {
+
+  if (exactMatch('/devices/guide', pathname)) {
+    return <><Link to="/devices">{t('shell.devices')}</Link><span>/</span><strong>{t('device.guide.entry')}</strong></>;
+  }
+
+  const sessionMatch = exactMatch('/devices/:deviceId/sessions/:sessionId', pathname);
+  if (sessionMatch?.params.deviceId) {
+    return <>
+      <Link to="/devices">{t('shell.devices')}</Link><span>/</span>
+      <Link to={`/devices/${encodeURIComponent(sessionMatch.params.deviceId)}`}>{t('shell.crumbDevice')}</Link><span>/</span>
+      <strong>{t('shell.crumbSession')}</strong>
+    </>;
+  }
+
+  if (exactMatch('/devices/:deviceId', pathname)) {
+    return <><Link to="/devices">{t('shell.devices')}</Link><span>/</span><strong>{t('shell.crumbDevice')}</strong></>;
+  }
+
+  if (exactMatch('/projects', pathname) || exactMatch('/', pathname)) {
     return <><span>{t('shell.crumbWorkspace')}</span><span>/</span><strong>{t('shell.crumbProjects')}</strong></>;
   }
+
   return <><span>{t('shell.crumbWorkspace')}</span><span>/</span><strong>{t('shell.crumbNotFound')}</strong></>;
 }
 
@@ -75,11 +161,14 @@ export function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation();
   const projectMatch = useMatch('/projects/:projectId');
   const runMatch = useMatch('/runs/:runId');
-  const activeProjectId = projectMatch?.params.projectId;
-  const isProjectWorkspace = !!activeProjectId;
+  const projectWorkspaceId = projectMatch?.params.projectId === 'new'
+    ? undefined
+    : projectMatch?.params.projectId;
+  const activeProjectId = projectWorkspaceId ?? knownProjectChildId(location.pathname);
+  const isProjectWorkspace = !!projectWorkspaceId;
   const isRunWorkspace = !!runMatch;
   const isRouteWorkspace = isProjectWorkspace || isRunWorkspace;
-  const isDeviceAuthorization = location.pathname === '/device';
+  const isDeviceAuthorization = !!exactMatch('/device', location.pathname);
   const projects = useProjects(!isRouteWorkspace && !isDeviceAuthorization);
   const navigate = useNavigate();
 
@@ -113,7 +202,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     return <div className={styles.standaloneAuth} data-device-authorization="true">{children}</div>;
   }
 
-  const isCluster = location.pathname.startsWith('/cluster');
+  const isCluster = isKnownClusterPath(location.pathname);
   return (
     <div className={styles.shell}>
       <a className={styles.skipLink} href="#main-content">{t('shell.skipToContent')}</a>
@@ -173,7 +262,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <section className={styles.surface} aria-label={t('shell.workspaceAria')}>
         <header className={styles.utilityBar}>
-          <div className={styles.breadcrumbs}><Breadcrumbs /></div>
+          <div className={styles.breadcrumbs}><Breadcrumbs projects={projects.data ?? []} /></div>
           <div className={styles.utilityActions}>
             {demo && <span className={styles.demoTag}>{t('shell.demoTag')}</span>}
             <LanguageToggle />

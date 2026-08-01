@@ -160,6 +160,9 @@ export default {
     crumbConnections: '接続',
     crumbOverview: '概要',
     crumbWorkspace: 'ワークスペース',
+    crumbProject: 'プロジェクト',
+    crumbDevice: 'デバイス',
+    crumbSession: 'セッション',
     crumbNotFound: '見つかりません',
   },
 

@@ -495,6 +495,9 @@ export default {
     crumbConnections: 'Connections',
     crumbOverview: 'Overview',
     crumbWorkspace: 'Workspace',
+    crumbProject: 'Project',
+    crumbDevice: 'Device',
+    crumbSession: 'Session',
     crumbNotFound: 'Not found',
   },
 

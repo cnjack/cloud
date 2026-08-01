@@ -160,6 +160,9 @@ export default {
     crumbConnections: '連線',
     crumbOverview: '總覽',
     crumbWorkspace: '工作區',
+    crumbProject: '專案',
+    crumbDevice: '裝置',
+    crumbSession: '工作階段',
     crumbNotFound: '找不到頁面',
   },
 

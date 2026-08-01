@@ -11,15 +11,16 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
 import type { ApiClient } from '../api/client';
 import type { Role } from '../api/config';
+import type { Project } from '../api/types';
 import { AppShell } from './AppShell';
 
-function renderShell(role: Role) {
+function renderShell(role: Role, initialEntry = '/', projects: Project[] = []) {
   const qc = new QueryClient();
-  const client = { listProjects: async () => [] } as unknown as ApiClient;
+  const client = { listProjects: async () => projects } as unknown as ApiClient;
   return render(
     <QueryClientProvider client={qc}>
       <ApiProvider client={client} role={role}>
-        <MemoryRouter initialEntries={['/']}>
+        <MemoryRouter initialEntries={[initialEntry]}>
           <AppShell>
             <div>content</div>
           </AppShell>
@@ -114,5 +115,49 @@ describe('AppShell — identity + role gating', () => {
     expect(screen.queryByTestId('cluster-nav')).toBeNull();
     expect(screen.queryByTestId('identity-chip')).toBeNull();
     expect(container.querySelector('[data-device-authorization="true"]')).toBeTruthy();
+  });
+
+  it('keeps the new-project route in the global shell instead of treating "new" as a project id', () => {
+    const { container } = renderShell('cluster-admin', '/projects/new');
+    expect(container.querySelector('[data-project-workspace="true"]')).toBeNull();
+    expect(screen.getByText('New Project')).toBeTruthy();
+  });
+
+  it.each([
+    ['/projects/project-1/plugins/github', 'GitHub'],
+    ['/projects/project-1/automations/new', 'Create Automation'],
+    ['/projects/project-1/automations/new?preset=review', 'Review pull requests'],
+    ['/projects/project-1/automations/automation-1', 'Automations'],
+    ['/projects/project-1/automations/automation-1/edit', 'Edit Automation'],
+    ['/devices/guide', 'Usage guide'],
+    ['/devices/device-1', 'Device'],
+    ['/devices/device-1/sessions/session-1', 'Session'],
+    ['/cluster', 'Overview'],
+    ['/cluster/models', 'Models'],
+    ['/cluster/connections', 'Connections'],
+  ])('shows a truthful breadcrumb for %s', (path, expectedLeaf) => {
+    renderShell('cluster-admin', path);
+    expect(screen.queryByText('Not found')).toBeNull();
+    expect(screen.getByText(expectedLeaf)).toBeTruthy();
+  });
+
+  it('resolves the project name for project-scoped breadcrumbs', async () => {
+    renderShell(
+      'cluster-admin',
+      '/projects/project-1/automations/new?preset=review',
+      [{ id: 'project-1', name: 'Navigation Lab', created_at: '2026-08-01T00:00:00Z', services: [] }],
+    );
+    const projectLink = await screen.findByRole('link', { name: 'Navigation Lab' });
+    expect(projectLink.getAttribute('href')).toBe('/projects/project-1');
+    expect(projectLink.getAttribute('aria-current')).toBeNull();
+  });
+
+  it.each([
+    '/cluster/unknown',
+    '/devices/device-1/unknown',
+    '/projects/project-1/unknown',
+  ])('keeps the not-found breadcrumb for an unregistered route: %s', (path) => {
+    renderShell('cluster-admin', path);
+    expect(screen.getByText('Not found')).toBeTruthy();
   });
 });

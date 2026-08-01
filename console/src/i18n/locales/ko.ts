@@ -160,6 +160,9 @@ export default {
     crumbConnections: '연결',
     crumbOverview: '개요',
     crumbWorkspace: '워크스페이스',
+    crumbProject: '프로젝트',
+    crumbDevice: '디바이스',
+    crumbSession: '세션',
     crumbNotFound: '찾을 수 없음',
   },
 
