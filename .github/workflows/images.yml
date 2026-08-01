@@ -3,10 +3,10 @@
 #
 # Every push to main is a release. The version is auto-derived from git tags:
 # the latest v<X.Y.Z> tag's patch number is bumped, so there is no VERSION file
-# in the repo. All four images push to GHCR; Orchestrator, Runner, and Console
-# also push to Aliyun ACR. Both registries receive identical `v<version>`,
-# `latest`, and commit-SHA tags, and the final job creates the same `v<version>`
-# Git tag.
+# in the repo. All core and optional Runner Profile images push to GHCR;
+# Orchestrator, Runner, Console, and the four Profiles also push to Aliyun ACR.
+# Both registries receive identical `v<version>`, `latest`, and commit-SHA tags,
+# and the final job creates the same `v<version>` Git tag.
 # The tag is created only after every image has been pushed, so a failed build
 # never leaves a dangling release tag.
 # Required repository settings for the Aliyun mirror:
@@ -17,6 +17,9 @@
 #   ghcr.io/<owner>/jcloud-orchestrator   from orchestrator/
 #   ghcr.io/<owner>/jcloud-runner         from runner/ (jcode compiled from the
 #                                         public cnjack/jcode checkout)
+#   ghcr.io/<owner>/jcloud-runner-<profile>
+#                                         from runner/profiles/Dockerfile
+#                                         (go-node, python, rust, polyglot)
 #   ghcr.io/<owner>/jcloud-console        from console/ (vite build + nginx)
 #   ghcr.io/<owner>/jcloud-mockllm        from deploy/mockllm/Dockerfile
 name: images
@@ -166,6 +169,73 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+  runner-profile:
+    name: runner-profile (${{ matrix.profile }})
+    needs: [version, runner]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: go-node
+            verify: go version && node --version && npm --version && corepack --version
+          - profile: python
+            verify: python --version && pip --version
+          - profile: rust
+            verify: rustc --version && cargo --version
+          - profile: polyglot
+            verify: go version && node --version && npm --version && python --version && rustc --version
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_REGISTRY_SECRET }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-runner-${{ matrix.profile }}
+            ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/jcloud-runner-${{ matrix.profile }}
+          tags: |
+            type=raw,value=v${{ needs.version.outputs.version }}
+            type=raw,value=latest
+            type=sha,format=long
+      - name: Build and publish ${{ matrix.profile }} Runner Profile
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: runner/profiles/Dockerfile
+          target: ${{ matrix.profile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-runner:sha-${{ github.sha }}
+            GO_SOURCE_IMAGE=golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+            NODE_SOURCE_IMAGE=node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46
+            PYTHON_SOURCE_IMAGE=python:3.13-bookworm@sha256:353cf2106d143e1d28f5d7c10c5f5c0387085bba22ef0f7f7e52c2c330fb1779
+            RUST_SOURCE_IMAGE=rust:1.85-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4
+          cache-from: type=gha,scope=runner-profile-${{ matrix.profile }}
+          cache-to: type=gha,mode=max,scope=runner-profile-${{ matrix.profile }}
+      - name: Verify ${{ matrix.profile }} toolchain
+        env:
+          PROFILE_IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-runner-${{ matrix.profile }}:sha-${{ github.sha }}
+          VERIFY_COMMAND: ${{ matrix.verify }}
+        run: docker run --rm --entrypoint /bin/sh "$PROFILE_IMAGE" -c "$VERIFY_COMMAND"
+
   console:
     needs: version
     runs-on: ubuntu-latest
@@ -264,7 +334,7 @@ jobs:
     # always corresponds to a fully published release. Only main cuts releases —
     # workflow_dispatch from a feature branch builds/pushes images without a tag.
     if: github.ref == 'refs/heads/main'
-    needs: [version, orchestrator, runner, console, mockllm]
+    needs: [version, orchestrator, runner, runner-profile, console, mockllm]
     runs-on: ubuntu-latest
     permissions:
       contents: write

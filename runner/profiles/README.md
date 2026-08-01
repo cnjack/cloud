@@ -28,3 +28,8 @@ the outputs, push them, and configure only output digests:
 Set that object as `RUNNER_PROFILES_JSON`. `default` is reserved and always
 maps to `RUNNER_IMAGE`. Unknown names fail a Run visibly before scheduling; a
 task, Card, webhook, or agent prompt cannot supply an image reference.
+
+The `images` GitHub Actions workflow publishes all four targets to GHCR and the
+company Aliyun ACR mirror as `jcloud-runner-<profile>`. It pins the base Runner
+to the triggering commit and pins every language source image by digest, then
+runs the profile's toolchain command before the release tag can be created.
