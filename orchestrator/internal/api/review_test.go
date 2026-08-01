@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,7 +104,7 @@ func setupReview(t *testing.T, factory provider.Factory) reviewFixture {
 	agent := &domain.Run{
 		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "add hello",
 		Status: domain.StatusSucceeded, Kind: domain.RunKindAgent,
-		GitBranch: "jcode/run-abc12345", PRURL: "http://gitea.test/jcloud/seed/pulls/7", PRNumber: 7,
+		GitBranch: "pr-7-head", PRURL: "http://gitea.test/jcloud/seed/pulls/7", PRNumber: 7,
 		Attempt: 1, CreatedAt: time.Now().UTC(),
 	}
 	if err := st.CreateRun(ctx, agent); err != nil {
@@ -127,7 +128,7 @@ func setupReview(t *testing.T, factory provider.Factory) reviewFixture {
 // TestRequestReviewRBAC: viewer/stranger are forbidden; member/owner/admin/service
 // may request a review of a succeeded agent run with a PR.
 func TestRequestReviewRBAC(t *testing.T) {
-	f := setupReview(t, nil)
+	f := setupReview(t, &fakePRFactory{prov: provider.NewFakeProvider()})
 	url := f.ts.URL + "/api/v1/runs/" + f.agentRun.ID + "/review"
 
 	want := map[string]int{
@@ -146,7 +147,7 @@ func TestRequestReviewRBAC(t *testing.T) {
 // TestRequestReviewCreatesReviewRun: the created run is kind=review, carries the
 // PR head/base branches, records the triggering user, and its prompt names the PR.
 func TestRequestReviewCreatesReviewRun(t *testing.T) {
-	f := setupReview(t, nil)
+	f := setupReview(t, &fakePRFactory{prov: provider.NewFakeProvider()})
 	r := do(t, "POST", f.ts.URL+"/api/v1/runs/"+f.agentRun.ID+"/review", f.tokens["member"], nil)
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("request review: status=%d want 201", r.StatusCode)
@@ -161,6 +162,12 @@ func TestRequestReviewCreatesReviewRun(t *testing.T) {
 	}
 	if run.PRBaseBranch != f.svc.DefaultBranch {
 		t.Errorf("pr_base_branch=%q want %q", run.PRBaseBranch, f.svc.DefaultBranch)
+	}
+	if run.PRHeadSHA == "" || run.PRBaseSHA == "" {
+		t.Errorf("review revision pair was not frozen: head=%q base=%q", run.PRHeadSHA, run.PRBaseSHA)
+	}
+	if run.PRNumber != f.agentRun.PRNumber || run.PRURL != f.agentRun.PRURL {
+		t.Errorf("review target=%d %q want %d %q", run.PRNumber, run.PRURL, f.agentRun.PRNumber, f.agentRun.PRURL)
 	}
 	if run.Status != domain.StatusQueued {
 		t.Errorf("status=%q want queued", run.Status)
@@ -199,7 +206,8 @@ func TestRequestReviewPreconditions(t *testing.T) {
 	// A review run (cannot review a review).
 	rev := &domain.Run{
 		ID: domain.NewID(), ProjectID: f.projectID, ServiceID: f.svc.ID, Prompt: "x",
-		Status: domain.StatusSucceeded, Kind: domain.RunKindReview, Attempt: 1, CreatedAt: time.Now().UTC(),
+		Status: domain.StatusSucceeded, Kind: domain.RunKindReview, Attempt: 1,
+		PRHeadSHA: strings.Repeat("a", 40), PRBaseSHA: strings.Repeat("b", 40), CreatedAt: time.Now().UTC(),
 	}
 	if err := f.st.CreateRun(ctx, rev); err != nil {
 		t.Fatal(err)
@@ -287,7 +295,8 @@ func TestGetPRReviewRunsFilter(t *testing.T) {
 	other := &domain.Run{
 		ID: domain.NewID(), ProjectID: f.projectID, ServiceID: f.svc.ID, Prompt: "other",
 		Status: domain.StatusSucceeded, Kind: domain.RunKindReview,
-		PRHeadBranch: "jcode/run-zzz", Attempt: 1, CreatedAt: time.Now().UTC(),
+		PRHeadBranch: "jcode/run-zzz", PRHeadSHA: strings.Repeat("a", 40), PRBaseSHA: strings.Repeat("b", 40),
+		Attempt: 1, CreatedAt: time.Now().UTC(),
 	}
 	if err := f.st.CreateRun(ctx, other); err != nil {
 		t.Fatal(err)

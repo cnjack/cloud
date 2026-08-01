@@ -27,6 +27,8 @@ type PR struct {
 	// not carry them.
 	HeadRef string
 	BaseRef string
+	HeadSHA string
+	BaseSHA string
 }
 
 // CreateDraftPRInput is the request to open a draft PR.

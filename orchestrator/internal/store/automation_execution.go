@@ -353,6 +353,9 @@ func (m *MemStore) CreateAutomationExecution(_ context.Context, value *domain.Au
 		if err := m.validateRunForCreateLocked(run); err != nil {
 			return nil, false, err
 		}
+		if err := m.resolveRunContractLocked(run); err != nil {
+			return nil, false, err
+		}
 	}
 	copyValue := *value
 	m.automationExecutions[value.ID] = copyValue
@@ -400,6 +403,9 @@ func (m *MemStore) ClaimPluginCronExecution(
 	if run != nil {
 		normalizeRunForCreate(run)
 		if err := m.validateRunForCreateLocked(run); err != nil {
+			return false, err
+		}
+		if err := m.resolveRunContractLocked(run); err != nil {
 			return false, err
 		}
 	}

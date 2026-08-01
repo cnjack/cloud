@@ -19,7 +19,7 @@ import {
 } from '../api/queries';
 import { useApi } from '../api/ApiProvider';
 import { ApiError } from '../api/client';
-import { isTerminal, type FailureReason, type ProjectModel, type ProvenanceActorRef, type ResumeSessionOptions, type Run, type RunProvenance } from '../api/types';
+import { isTerminal, type FailureReason, type ProjectModel, type ProvenanceActorRef, type ResumeSessionOptions, type ReviewPlan, type Run, type RunProvenance, type WorkflowContract } from '../api/types';
 import { Button } from '../components/Button';
 import { DiffView } from '../components/DiffView';
 import { Markdown } from '../components/Markdown';
@@ -368,6 +368,8 @@ export function RunDetailPage() {
                               }}
                             />
                           </div>
+
+                          {isReview && <ReviewCoverageCard plan={current.review_plan} />}
 
                           {isReview && current.review_output ? (
                             <div className={styles.reviewOutput} data-testid="review-output"><Markdown source={current.review_output} /></div>
@@ -800,6 +802,7 @@ function RunInspector({
       <div className={`${styles.inspectorSection} ${styles.inspectorUsage}`} data-testid="run-usage">
         <UsageSummary value={run.usage_summary} />
       </div>
+      <WorkflowContractSection contract={run.execution_contract} />
       <InspectorSection title={t('runDetail.inspector.runOverview')}>
         <dl className={styles.facts}>
           <InspectorFact label={t('runDetail.inspector.permission')}>{run.permission_mode === 'approval' ? t('runDetail.inspector.askBeforeActions') : t('runDetail.permission.fullAccess')}</InspectorFact>
@@ -829,6 +832,91 @@ function RunInspector({
       </InspectorSection>
     </aside>
   );
+}
+
+function WorkflowContractSection({ contract }: { contract?: WorkflowContract }) {
+  const { t } = useTranslation();
+  if (!contract) {
+    return (
+      <InspectorSection title={t('runDetail.contract.title')}>
+        <p className={styles.inspectorHint} data-testid="workflow-contract-unavailable">{t('runDetail.contract.legacyUnavailable')}</p>
+      </InspectorSection>
+    );
+  }
+  const output = contract.delivery.outputs[0];
+  const delivery = output
+    ? [output.type, output.target, output.ready_policy].filter(Boolean).join(' · ')
+    : t('runDetail.inspector.unavailable');
+  const verification = [contract.verification.mode, contract.verification.rules_revision].filter(Boolean).join(' · ');
+  return (
+    <InspectorSection title={t('runDetail.contract.title')}>
+      <dl className={styles.facts} data-testid="workflow-contract">
+        <InspectorFact label={t('runDetail.contract.workflow')}>{contract.workflow.name} v{contract.workflow.revision}</InspectorFact>
+        <InspectorFact label={t('runDetail.contract.profile')}>{contract.profile.name} · {contract.profile.role}</InspectorFact>
+        <InspectorFact label={t('runDetail.contract.trigger')}>{contract.trigger.kind}</InspectorFact>
+        <InspectorFact label={t('runDetail.contract.model')}>{contract.execution.llm_selection.model_name || t('runDetail.inspector.unavailable')}</InspectorFact>
+        <InspectorFact label={t('runDetail.contract.timeout')}>{formatTimeout(contract.execution.timeout_seconds)} · {contract.execution.timeout_source}</InspectorFact>
+        <InspectorFact label={t('runDetail.contract.delivery')}>{delivery}</InspectorFact>
+        <InspectorFact label={t('runDetail.contract.verification')}>{verification}</InspectorFact>
+      </dl>
+      <details className={styles.provenanceTechnical} data-testid="workflow-contract-technical">
+        <summary>{t('runDetail.contract.technical')}</summary>
+        <dl className={styles.facts}>
+          <InspectorFact label={t('runDetail.contract.hash')}><code>{contract.hash}</code></InspectorFact>
+          <InspectorFact label={t('runDetail.contract.definition')}><code>{contract.workflow.definition_hash}</code></InspectorFact>
+          <InspectorFact label={t('runDetail.contract.access')}>{contract.execution.workspace_access}</InspectorFact>
+          <InspectorFact label={t('runDetail.contract.requirements')}>{contract.requirements.join(', ')}</InspectorFact>
+        </dl>
+      </details>
+    </InspectorSection>
+  );
+}
+
+function ReviewCoverageCard({ plan }: { plan?: ReviewPlan }) {
+  const { t } = useTranslation();
+  if (!plan) {
+    return (
+      <section className={styles.reviewCoverage} data-testid="review-coverage-unavailable" aria-label={t('runDetail.coverage.title')}>
+        <header><div><span>{t('runDetail.coverage.eyebrow')}</span><h2>{t('runDetail.coverage.title')}</h2></div><strong data-coverage="unavailable">{t('runDetail.coverage.unavailable')}</strong></header>
+        <p>{t('runDetail.coverage.legacyUnavailable')}</p>
+      </section>
+    );
+  }
+  const skipped = plan.files.filter((file) => file.status !== 'indexed');
+  const coverageLabel = plan.coverage === 'complete' ? t('runDetail.coverage.complete') : t('runDetail.coverage.partial');
+  return (
+    <section className={styles.reviewCoverage} data-testid="review-coverage" aria-label={t('runDetail.coverage.title')}>
+      <header>
+        <div><span>{t('runDetail.coverage.eyebrow')}</span><h2>{t('runDetail.coverage.title')}</h2></div>
+        <strong data-coverage={plan.coverage}>{coverageLabel}</strong>
+      </header>
+      <div className={styles.coverageMetrics}>
+        <div><b>{plan.indexed_files}/{plan.changed_files}</b><span>{t('runDetail.coverage.files')}</span></div>
+        <div><b>{plan.indexed_hunks}/{plan.changed_hunks}</b><span>{t('runDetail.coverage.hunks')}</span></div>
+        <div><b>{plan.changed_lines}</b><span>{t('runDetail.coverage.lines')}</span></div>
+      </div>
+      <dl className={styles.coverageRevisions}>
+        <div><dt>{t('runDetail.coverage.baseHead')}</dt><dd><code>{shortRevision(plan.base_sha)} → {shortRevision(plan.head_sha)}</code></dd></div>
+        <div><dt>{t('runDetail.coverage.mergeBase')}</dt><dd><code>{shortRevision(plan.merge_base_sha)}</code></dd></div>
+      </dl>
+      {skipped.length > 0 && (
+        <details className={styles.coverageSkipped}>
+          <summary>{t('runDetail.coverage.skipped', { count: skipped.length })}</summary>
+          <ul>{skipped.map((file) => <li key={file.path}><code>{file.path}</code><span>{file.reason || t('runDetail.coverage.unsupported')}</span></li>)}</ul>
+        </details>
+      )}
+    </section>
+  );
+}
+
+function formatTimeout(seconds: number): string {
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${seconds}s`;
+}
+
+function shortRevision(value: string): string {
+  return value.length > 10 ? value.slice(0, 10) : value;
 }
 
 function ProvenanceSection({ provenance }: { provenance?: RunProvenance }) {

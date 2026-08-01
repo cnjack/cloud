@@ -100,6 +100,7 @@ type giteaPullRequestPayload struct {
 		} `json:"head"`
 		Base struct {
 			Ref string `json:"ref"`
+			SHA string `json:"sha"`
 		} `json:"base"`
 	} `json:"pull_request"`
 	Repository struct {
@@ -116,6 +117,7 @@ type webhookReviewEvent struct {
 	headRef      string
 	headSHA      string
 	baseRef      string
+	baseSHA      string
 	draft        bool
 }
 
@@ -325,13 +327,13 @@ func parseGiteaReviewEvent(header string, body []byte) (*webhookReviewEvent, str
 		return nil, "ignored: PR action is not an Automation event"
 	}
 	if p.Repository.FullName == "" || p.Number == 0 || p.PullRequest.Head.Ref == "" ||
-		p.PullRequest.Head.SHA == "" || p.PullRequest.Base.Ref == "" {
+		p.PullRequest.Head.SHA == "" || p.PullRequest.Base.Ref == "" || p.PullRequest.Base.SHA == "" {
 		return nil, "ignored: incomplete pull-request payload"
 	}
 	return &webhookReviewEvent{
 		provider: domain.ProviderGitea, repoFullName: p.Repository.FullName, event: event,
 		prNumber: p.Number, prURL: p.PullRequest.HTMLURL, headRef: p.PullRequest.Head.Ref,
-		headSHA: p.PullRequest.Head.SHA, baseRef: p.PullRequest.Base.Ref, draft: p.PullRequest.Draft,
+		headSHA: p.PullRequest.Head.SHA, baseRef: p.PullRequest.Base.Ref, baseSHA: p.PullRequest.Base.SHA, draft: p.PullRequest.Draft,
 	}, ""
 }
 
@@ -403,7 +405,7 @@ func (s *Server) processReviewEvent(ctx context.Context, event *webhookReviewEve
 				Prompt: a.Instructions, Status: domain.StatusQueued, Kind: domain.RunKindReview,
 				Phase: "Queued", TriggeredByUserID: a.CreatedBy, Attempt: 1, CreatedAt: now,
 				PRURL: event.prURL, PRNumber: event.prNumber, PRHeadBranch: event.headRef,
-				PRBaseBranch: event.baseRef, Origin: domain.RunOriginAutomation,
+				PRBaseBranch: event.baseRef, PRHeadSHA: event.headSHA, PRBaseSHA: event.baseSHA, Origin: domain.RunOriginAutomation,
 				OriginAutomationID: a.ID, OriginEventKey: key, ModelName: sel.ModelName,
 			}
 			if sel.ModelID != "" {
@@ -647,7 +649,8 @@ func (s *Server) processMention(ctx context.Context, m *webhookMention, cmd ment
 
 	// PR detail (head/base branch + html_url) — the payload's issue omits them.
 	pr, err := client.PRByNumber(ctx, owner, repo, m.prNumber)
-	if err != nil || pr == nil || pr.HeadRef == "" {
+	if err != nil || pr == nil || pr.HeadRef == "" ||
+		(cmd.kind == cmdReview && (pr.BaseRef == "" || pr.HeadSHA == "" || pr.BaseSHA == "")) {
 		s.log.Warn("webhook: PR detail lookup failed", "provider", m.provider, "repo", m.repoFullName, "pr", m.prNumber, "err", err)
 		reply("jcode couldn't read this pull request from " + providerDisplayName(m.provider) + ".")
 		return
@@ -764,6 +767,8 @@ func newWebhookRun(svc *domain.Service, userID string, cmd mentionCommand, pr *p
 		PRNumber:          m.prNumber,
 		PRHeadBranch:      pr.HeadRef,
 		PRBaseBranch:      pr.BaseRef,
+		PRHeadSHA:         pr.HeadSHA,
+		PRBaseSHA:         pr.BaseSHA,
 	}
 	if cmd.kind == cmdReview {
 		run.Kind = domain.RunKindReview

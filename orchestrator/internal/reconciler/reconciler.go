@@ -168,6 +168,10 @@ type KanbanWriter interface {
 // New builds a Reconciler. pub may be nil. The draft-PR / review stack is set
 // separately via WithPRStack so existing callers/tests are unaffected.
 func New(st store.Store, launcher k8s.JobLauncher, cfg *config.Config, log *slog.Logger, pub Publisher) *Reconciler {
+	// Run execution contracts are resolved at creation, not at scheduling. Wire
+	// the same cluster defaults into the Store here as a safe constructor-level
+	// invariant (main also does this immediately after migrations).
+	store.ConfigureWorkflowTimeoutDefaults(st, cfg.RunTimeoutSecs, cfg.SessionTTLSecs)
 	return &Reconciler{
 		st:                           st,
 		launcher:                     launcher,
@@ -710,31 +714,22 @@ func (r *Reconciler) openPullRequest(ctx context.Context, run *domain.Run, svc *
 	if r.integrationCredentialParked(run.ID) {
 		return // parked (P1): credential problem already surfaced once
 	}
-	owner, repo, ok := provider.SplitRepo(svc.RepoOwnerName)
+	scm, err := r.scmContextForRun(ctx, run, svc)
+	if err != nil {
+		if errors.Is(err, credentials.ErrIntegrationCredential) || errors.Is(err, credentials.ErrPluginCredentialUnavailable) {
+			r.noteIntegrationCredentialFailure(ctx, run.ID, "pull request delivery", err)
+			return
+		}
+		r.log.Warn("reconcile pr: resolve frozen scm context", "run", run.ID, "err", err)
+		return
+	}
+	owner, repo, ok := provider.SplitRepo(scm.RepositoryPath)
 	if !ok {
-		r.log.Warn("reconcile pr: bad repo_owner_name", "run", run.ID, "repo", svc.RepoOwnerName)
+		r.log.Warn("reconcile pr: bad repository path", "run", run.ID, "repo", scm.RepositoryPath)
 		return
 	}
 	branch := run.GitBranch // recorded when the bundle was received (jcode/run-<id>)
-
-	// Resolve the credential to act with: the service's integration bot token when
-	// bound (D19 / F5), else user OAuth / gitea PAT. The token value is never
-	// logged — only its source label.
-	tok, err := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
-	if err != nil {
-		if errors.Is(err, credentials.ErrIntegrationCredential) {
-			// Persistent config error (P1): surface once + park, never spin.
-			r.noteIntegrationCredentialFailure(ctx, run.ID, "draft PR", err)
-			return
-		}
-		r.log.Warn("reconcile pr: no credential; leaving diff-only", "run", run.ID, "provider", svc.Provider, "err", err)
-		return // retry next tick (a user may bind the provider later)
-	}
-	prov, err := r.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
-	if err != nil {
-		r.log.Warn("reconcile pr: build client", "run", run.ID, "provider", svc.Provider, "err", err)
-		return
-	}
+	tok, prov := scm.Token, scm.Client
 
 	// Idempotency: an existing open PR for this head branch wins (covers a crash
 	// after push/create but before persist, and a manually opened PR).
@@ -752,7 +747,7 @@ func (r *Reconciler) openPullRequest(ctx context.Context, run *domain.Run, svc *
 	// and closes the crash-recovery gap where merely finding the PR could
 	// otherwise expose stale code as delivered. PushBundleBranch is non-forcing
 	// and accepts an already-up-to-date branch.
-	sha, perr := r.pushRunBundle(ctx, run, svc, tok, branch)
+	sha, perr := r.pushRunBundle(ctx, run, scm.CloneURL, scm.Provider, tok, branch)
 	if perr != nil {
 		r.log.Warn("reconcile pr: ensure branch", "run", run.ID, "src", tok.Source, "err", perr)
 		return // transient/non-fast-forward; retry without recording delivery
@@ -794,9 +789,9 @@ func (r *Reconciler) openPullRequest(ctx context.Context, run *domain.Run, svc *
 	}
 	if pr == nil {
 		// The branch is confirmed before the provider can expose the PR.
-		draft := run.PRReadyPolicy != domain.PRReadyPolicyLifecycleAware
+		draft := effectivePRReadyPolicy(run) != domain.PRReadyPolicyLifecycleAware
 		pr, err = prov.CreatePR(ctx, provider.CreatePRInput{
-			Owner: owner, Repo: repo, Head: branch, Base: svc.DefaultBranch,
+			Owner: owner, Repo: repo, Head: branch, Base: scm.DefaultBranch,
 			Title: prTitle(run.Prompt), Body: prBody(run, r.prTriggerAttribution(ctx, run, svc)), Draft: draft,
 		})
 		if err != nil {
@@ -832,6 +827,18 @@ func (r *Reconciler) openPullRequest(ctx context.Context, run *domain.Run, svc *
 	r.emitStatus(ctx, committed)
 }
 
+func effectivePRReadyPolicy(run *domain.Run) domain.PRReadyPolicy {
+	if run != nil && run.ExecutionContract != nil {
+		if policy := run.ExecutionContract.DeliveryReadyPolicy(domain.OutputCreatePullRequest); policy != "" {
+			return policy
+		}
+	}
+	if run != nil {
+		return run.PRReadyPolicy
+	}
+	return ""
+}
+
 // openDraftPR is kept as an internal compatibility shim for focused legacy
 // tests/callers. The service policy still decides Draft versus Ready.
 func (r *Reconciler) openDraftPR(ctx context.Context, run *domain.Run, svc *domain.Service) {
@@ -841,7 +848,7 @@ func (r *Reconciler) openDraftPR(ctx context.Context, run *domain.Run, svc *doma
 // pushRunBundle writes the run's stored bundle to a temp file and pushes its
 // branch to the provider using an authenticated clone/push URL. The temp file
 // (and the URL's credential) never persist. Returns the pushed branch tip SHA.
-func (r *Reconciler) pushRunBundle(ctx context.Context, run *domain.Run, svc *domain.Service, tok credentials.Token, branch string) (string, error) {
+func (r *Reconciler) pushRunBundle(ctx context.Context, run *domain.Run, cloneURL string, gitProvider domain.GitProvider, tok credentials.Token, branch string) (string, error) {
 	bundle, err := r.st.GetRunBundle(ctx, run.ID)
 	if err != nil {
 		return "", fmt.Errorf("load bundle: %w", err)
@@ -857,11 +864,10 @@ func (r *Reconciler) pushRunBundle(ctx context.Context, run *domain.Run, svc *do
 	}
 	f.Close()
 
-	rawURL := r.serviceCloneURL(ctx, svc)
-	if rawURL == "" {
-		return "", fmt.Errorf("could not derive push URL for service %s", svc.ID)
+	if cloneURL == "" {
+		return "", fmt.Errorf("could not derive push URL for run %s", run.ID)
 	}
-	authed := tok.AuthedURL(rawURL, svc.Provider)
+	authed := tok.AuthedURL(cloneURL, gitProvider)
 	return r.pusher.PushBundleBranch(ctx, authed, f.Name(), branch)
 }
 
@@ -904,15 +910,16 @@ func (r *Reconciler) updatePushRun(ctx context.Context, run *domain.Run, svc *do
 		return // parked (P1): credential problem already surfaced once
 	}
 	branch := run.GitBranch // recorded when the bundle was received (= PR head branch)
-	tok, err := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
+	scm, err := r.scmContextForRun(ctx, run, svc)
 	if err != nil {
-		if errors.Is(err, credentials.ErrIntegrationCredential) {
+		if errors.Is(err, credentials.ErrIntegrationCredential) || errors.Is(err, credentials.ErrPluginCredentialUnavailable) {
 			r.noteIntegrationCredentialFailure(ctx, run.ID, "update push", err)
 			return
 		}
-		r.log.Warn("reconcile update: no credential; leaving for retry", "run", run.ID, "provider", svc.Provider, "err", err)
+		r.log.Warn("reconcile update: no frozen scm context; leaving for retry", "run", run.ID, "provider", svc.Provider, "err", err)
 		return
 	}
+	tok := scm.Token
 
 	bundle, err := r.st.GetRunBundle(ctx, run.ID)
 	if err != nil {
@@ -932,12 +939,11 @@ func (r *Reconciler) updatePushRun(ctx context.Context, run *domain.Run, svc *do
 	}
 	f.Close()
 
-	rawURL := r.serviceCloneURL(ctx, svc)
-	if rawURL == "" {
+	if scm.CloneURL == "" {
 		r.log.Warn("reconcile update: could not derive push URL", "run", run.ID)
 		return
 	}
-	authed := tok.AuthedURL(rawURL, svc.Provider)
+	authed := tok.AuthedURL(scm.CloneURL, scm.Provider)
 
 	sha, alreadyPresent, err := r.pusher.PushBundleBranchFFOnly(ctx, authed, f.Name(), branch)
 	if err != nil {
@@ -1006,33 +1012,21 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 	if svc.RepoKind != domain.RepoKindProvider || strings.TrimSpace(run.PRHeadBranch) == "" {
 		return // not associated with a provider PR (misconfigured review run)
 	}
-	owner, repo, ok := provider.SplitRepo(svc.RepoOwnerName)
-	if !ok {
-		r.log.Warn("reconcile review: bad repo_owner_name", "run", run.ID)
-		return
-	}
-	prov, credentialSource, usedPlugin, err := r.pluginReviewClient(ctx, run, svc)
+	scm, err := r.scmContextForRun(ctx, run, svc)
 	if err != nil {
-		r.log.Warn("reconcile review: Plugin credential", "run", run.ID, "provider", svc.Provider, "err", err)
+		if errors.Is(err, credentials.ErrIntegrationCredential) || errors.Is(err, credentials.ErrPluginCredentialUnavailable) {
+			r.noteIntegrationCredentialFailure(ctx, run.ID, "review post", err)
+			return
+		}
+		r.log.Warn("reconcile review: frozen scm credential", "run", run.ID, "provider", svc.Provider, "err", err)
 		return
 	}
-	if !usedPlugin {
-		tok, resolveErr := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
-		if resolveErr != nil {
-			if errors.Is(resolveErr, credentials.ErrIntegrationCredential) {
-				r.noteIntegrationCredentialFailure(ctx, run.ID, "review post", resolveErr)
-				return
-			}
-			r.log.Warn("reconcile review: no credential", "run", run.ID, "provider", svc.Provider, "err", resolveErr)
-			return
-		}
-		prov, err = r.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
-		credentialSource = tok.Source
-		if err != nil {
-			r.log.Warn("reconcile review: build client", "run", run.ID, "err", err)
-			return
-		}
+	owner, repo, ok := provider.SplitRepo(scm.RepositoryPath)
+	if !ok {
+		r.log.Warn("reconcile review: bad frozen repository path", "run", run.ID)
+		return
 	}
+	prov, credentialSource := scm.Client, scm.Token.Source
 	prNumber := run.PRNumber
 	if prNumber <= 0 {
 		pr, findErr := prov.FindOpenPRByHead(ctx, owner, repo, run.PRHeadBranch)
@@ -1057,33 +1051,62 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 	r.log.Info("reconcile review: posted review comment", "run", run.ID, "pr", prNumber, "src", credentialSource)
 }
 
-func (r *Reconciler) pluginReviewClient(ctx context.Context, run *domain.Run, svc *domain.Service) (provider.Provider, string, bool, error) {
-	if run.OriginAutomationID == "" || r.creds == nil {
-		return nil, "", false, nil
-	}
-	binding, err := r.st.GetServiceRepositoryBinding(ctx, svc.ID)
-	if err != nil {
-		return nil, "", true, err
+type runSCMContext struct {
+	Client         provider.Provider
+	Token          credentials.Token
+	Provider       domain.GitProvider
+	RepositoryPath string
+	CloneURL       string
+	DefaultBranch  string
+	Frozen         bool
+}
+
+// scmContextForRun converges every post-claim SCM consumer on the same grant.
+// New plugin-backed Runs use only their append-only credential/config and
+// repository snapshot; reconnects, repository renames, and binding changes do
+// not reinterpret an in-flight Run. Rows created before this contract retain a
+// deliberate legacy fallback.
+func (r *Reconciler) scmContextForRun(ctx context.Context, run *domain.Run, svc *domain.Service) (*runSCMContext, error) {
+	if r.creds == nil || r.factory == nil {
+		return nil, errors.New("scm stack is unavailable")
 	}
 	snapshots, err := r.st.ListRunPluginSnapshots(ctx, run.ID)
 	if err != nil {
-		return nil, "", true, err
+		return nil, err
 	}
 	for i := range snapshots {
 		snapshot := &snapshots[i]
-		if snapshot.InstallationID != binding.InstallationID {
+		if !snapshot.HasFrozenRepositoryGrant() {
 			continue
 		}
 		credential, issueErr := r.creds.IssueRunPluginSnapshotCredential(ctx, snapshot)
 		if issueErr != nil {
-			return nil, "", true, issueErr
+			return nil, issueErr
 		}
 		client, clientErr := provider.IntegrationClientWithScheme(
-			svc.Provider, credential.BaseURL, credential.AccessToken, credential.Scheme,
+			domain.GitProvider(snapshot.Provider), credential.BaseURL, credential.AccessToken, credential.Scheme,
 		)
-		return client, "plugin_snapshot", true, clientErr
+		if clientErr != nil {
+			return nil, clientErr
+		}
+		return &runSCMContext{
+			Client: client, Token: credentials.Token{Value: credential.AccessToken, Scheme: credential.Scheme, Source: "plugin_snapshot"},
+			Provider: domain.GitProvider(snapshot.Provider), RepositoryPath: snapshot.RepositoryPath,
+			CloneURL: snapshot.CloneURL, DefaultBranch: snapshot.DefaultBranch, Frozen: true,
+		}, nil
 	}
-	return nil, "", true, errors.New("review Run has no matching Plugin credential snapshot")
+
+	// Rolling-upgrade path for runs which predate repository grants.
+	tok, err := r.creds.ResolveForService(ctx, svc, run.TriggeredByUserID)
+	if err != nil {
+		return nil, err
+	}
+	client, err := r.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
+	if err != nil {
+		return nil, err
+	}
+	return &runSCMContext{Client: client, Token: tok, Provider: svc.Provider,
+		RepositoryPath: svc.RepoOwnerName, CloneURL: r.serviceCloneURL(ctx, svc), DefaultBranch: svc.DefaultBranch}, nil
 }
 
 func postProviderReview(ctx context.Context, prov provider.Provider, owner, repo string, prNumber int, run *domain.Run) error {
@@ -1536,6 +1559,15 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		r.log.Error("reconcile: createJob without a loaded project — refusing to schedule blind", "run", run.ID)
 		return false
 	}
+	if run.Kind == domain.RunKindReview && (strings.TrimSpace(run.PRBaseSHA) == "" || strings.TrimSpace(run.PRHeadSHA) == "") {
+		msg := "review_revision_unavailable: review requires a frozen base/head commit pair before the Runner starts"
+		if committed, err := r.st.MarkFailed(ctx, run.ID, "Failed", domain.FailureSetupFailed, msg, r.now()); err != nil {
+			r.log.Error("reconcile: mark review revision failure", "run", run.ID, "err", err)
+		} else {
+			r.emitStatus(ctx, committed)
+		}
+		return false
+	}
 	// Fail-visible gate (CLAUDE.md red line #1): resolve the EFFECTIVE model
 	// config at Job-launch time. The API gate blocks creation, but a run can be
 	// queued while configured and then have its config cleared before it is
@@ -1721,6 +1753,13 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 		if proj.SessionTTLSecs != nil && *proj.SessionTTLSecs > 0 {
 			timeout = *proj.SessionTTLSecs
 		}
+	}
+	// New Runs carry the effective timeout frozen at creation. Mutable Project
+	// guardrails cannot reinterpret an already-visible execution contract while
+	// it waits in the queue. Legacy rows without a contract retain the historical
+	// calculation above during a rolling upgrade.
+	if run.ExecutionContract != nil && run.ExecutionContract.Execution.TimeoutSeconds > 0 {
+		timeout = run.ExecutionContract.Execution.TimeoutSeconds
 	}
 	// The Job's activeDeadlineSeconds is a HARD backstop and counts from pod start
 	// (including clone/setup), whereas RUN_TIMEOUT only bounds the agent turn. If we
@@ -2289,12 +2328,25 @@ func (r *Reconciler) runPluginSnapshotCandidates(ctx context.Context, run *domai
 		return nil, err
 	}
 	snapshots := make([]domain.RunPluginSnapshot, 0, len(installations))
+	binding, bindingErr := r.st.GetServiceRepositoryBinding(ctx, run.ServiceID)
+	if bindingErr != nil && !errors.Is(bindingErr, store.ErrNotFound) {
+		return nil, bindingErr
+	}
 	for i := range installations {
 		if r.pluginInstallationEligibleNow(ctx, &installations[i]) {
-			snapshots = append(snapshots, domain.RunPluginSnapshot{
+			snapshot := domain.RunPluginSnapshot{
 				RunID: run.ID, InstallationID: installations[i].ID,
 				Provider: installations[i].Provider, CreatedAt: r.now(),
-			})
+			}
+			if bindingErr == nil && binding.InstallationID == installations[i].ID {
+				snapshot.RepositoryID = binding.ProviderRepoID
+				snapshot.RepositoryPath = binding.RepositoryPath
+				snapshot.CloneURL = binding.CloneURL
+				snapshot.DefaultBranch = binding.DefaultBranch
+				snapshot.ActingPrincipalKind = "provider_bot"
+				snapshot.ActingPrincipalID = installations[i].ID
+			}
+			snapshots = append(snapshots, snapshot)
 		}
 	}
 	return snapshots, nil
@@ -2429,7 +2481,20 @@ func (r *Reconciler) applyInjectedEnv(env map[string]string, run *domain.Run, pr
 // from the tmpfs credential helper written by the sidecar.
 func (r *Reconciler) addGitEnv(ctx context.Context, env map[string]string, run *domain.Run, svc *domain.Service) {
 	isAgent := run.Kind == "" || run.Kind == domain.RunKindAgent
-	env["BASE_BRANCH"] = svc.DefaultBranch
+	defaultBranch := svc.DefaultBranch
+	repoURL := r.serviceCloneURL(ctx, svc)
+	// ClaimRunDispatch has already committed the repository grant before jobEnv
+	// runs. Prefer it over the mutable Service/binding so a rename in this narrow
+	// window cannot send the pod to a different repository or default branch.
+	if snapshots, err := r.st.ListRunPluginSnapshots(ctx, run.ID); err == nil {
+		for i := range snapshots {
+			if snapshots[i].HasFrozenRepositoryGrant() {
+				defaultBranch, repoURL = snapshots[i].DefaultBranch, snapshots[i].CloneURL
+				break
+			}
+		}
+	}
+	env["BASE_BRANCH"] = defaultBranch
 	if run.BaseBranch != "" {
 		env["BASE_BRANCH"] = run.BaseBranch
 	}
@@ -2440,10 +2505,17 @@ func (r *Reconciler) addGitEnv(ctx context.Context, env map[string]string, run *
 	}
 
 	env["SOURCE_MODE"] = "clone"
-	env["REPO_URL"] = r.serviceCloneURL(ctx, svc)
+	env["REPO_URL"] = repoURL
 	env["REPO_BRANCH"] = env["BASE_BRANCH"]
 	env["GIT_MODE"] = string(domain.GitModeReadonly)
-	if isAgent && svc.GitMode == domain.GitModeDraftPR && svc.RepoKind == domain.RepoKindProvider {
+	wantsPullRequest := false
+	if run.ExecutionContract != nil {
+		wantsPullRequest = run.ExecutionContract.Delivers(domain.OutputCreatePullRequest)
+	} else {
+		// Rolling-upgrade behavior for historical Runs without a contract.
+		wantsPullRequest = svc.GitMode == domain.GitModeDraftPR && svc.RepoKind == domain.RepoKindProvider
+	}
+	if isAgent && wantsPullRequest {
 		env["GIT_MODE"] = string(domain.GitModeDraftPR)
 		env["BRANCH_NAME"] = domain.RunPushBranch(run)
 	}
@@ -2452,5 +2524,7 @@ func (r *Reconciler) addGitEnv(ctx context.Context, env map[string]string, run *
 	if run.Kind == domain.RunKindReview {
 		env["PR_HEAD"] = run.PRHeadBranch
 		env["PR_BASE"] = run.PRBaseBranch
+		env["PR_HEAD_SHA"] = run.PRHeadSHA
+		env["PR_BASE_SHA"] = run.PRBaseSHA
 	}
 }

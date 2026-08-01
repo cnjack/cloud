@@ -18,6 +18,8 @@ import (
 // a database. It is safe for concurrent use.
 type MemStore struct {
 	mu                       sync.Mutex
+	workflowRunTimeoutSecs   int64
+	workflowSessionTTLSecs   int64
 	projects                 map[string]domain.Project
 	services                 map[string]domain.Service
 	runs                     map[string]domain.Run
@@ -82,6 +84,8 @@ type MemStore struct {
 // NewMemStore returns an empty in-memory store.
 func NewMemStore() *MemStore {
 	return &MemStore{
+		workflowRunTimeoutSecs:   defaultWorkflowTimeoutSeconds,
+		workflowSessionTTLSecs:   defaultWorkflowTimeoutSeconds,
 		projects:                 map[string]domain.Project{},
 		services:                 map[string]domain.Service{},
 		runs:                     map[string]domain.Run{},
@@ -139,6 +143,17 @@ func NewMemStore() *MemStore {
 		usageReceipts:            map[string]time.Time{},
 		modelPricingRevisions:    map[string]domain.ModelPricingRevision{},
 		usageRollups:             map[string]usageRollup{},
+	}
+}
+
+func (m *MemStore) configureWorkflowTimeoutDefaults(runTimeoutSeconds, sessionTTLSeconds int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if runTimeoutSeconds > 0 {
+		m.workflowRunTimeoutSecs = runTimeoutSeconds
+	}
+	if sessionTTLSeconds > 0 {
+		m.workflowSessionTTLSecs = sessionTTLSeconds
 	}
 }
 
@@ -557,6 +572,9 @@ func (m *MemStore) CreateRun(_ context.Context, r *domain.Run) error {
 	if err := m.validateRunForCreateLocked(r); err != nil {
 		return err
 	}
+	if err := m.resolveRunContractLocked(r); err != nil {
+		return err
+	}
 	m.insertRunLocked(r)
 	return nil
 }
@@ -577,6 +595,9 @@ func (m *MemStore) CreateCoalescedRun(_ context.Context, coalesceKey string, r *
 	normalizeRunForCreate(r)
 	r.CoalesceKey = coalesceKey
 	if err := m.validateRunForCreateLocked(r); err != nil {
+		return err
+	}
+	if err := m.resolveRunContractLocked(r); err != nil {
 		return err
 	}
 	now := time.Now().UTC()
@@ -608,6 +629,9 @@ func normalizeRunForCreate(r *domain.Run) {
 // validateRunForCreateLocked performs every fallible check before insertion.
 // The caller holds m.mu.
 func (m *MemStore) validateRunForCreateLocked(r *domain.Run) error {
+	if r.Kind == domain.RunKindReview && (!domain.ValidCommitSHA(strings.TrimSpace(r.PRHeadSHA)) || !domain.ValidCommitSHA(strings.TrimSpace(r.PRBaseSHA))) {
+		return errors.New("review revision pair is required before queueing")
+	}
 	// Older focused store tests seed standalone runs directly; preserve that
 	// convenience while still enforcing the deletion fence whenever the service
 	// aggregate is present (production PG always has the FK).
@@ -651,10 +675,40 @@ func (m *MemStore) validateRunForCreateLocked(r *domain.Run) error {
 	return nil
 }
 
+func (m *MemStore) resolveRunContractLocked(r *domain.Run) error {
+	if r.ExecutionContract != nil {
+		if err := r.ExecutionContract.Validate(); err != nil {
+			return fmt.Errorf("create run: invalid execution contract: %w", err)
+		}
+		r.ExecutionContract = cloneWorkflowContract(r.ExecutionContract)
+		return nil
+	}
+	svc := m.services[r.ServiceID]
+	if svc.ID == "" {
+		svc = domain.Service{ID: r.ServiceID, ProjectID: r.ProjectID, RepoKind: domain.RepoKindRaw, DefaultBranch: "main", GitMode: domain.GitModeReadonly}
+	}
+	timeout, source := m.workflowRunTimeoutSecs, domain.TimeoutSourceCluster
+	project := m.projects[r.ProjectID]
+	if r.Session {
+		timeout = m.workflowSessionTTLSecs
+		if project.SessionTTLSecs != nil && *project.SessionTTLSecs > 0 {
+			timeout, source = *project.SessionTTLSecs, domain.TimeoutSourceProject
+		}
+	} else if project.RunTimeoutSecs != nil && *project.RunTimeoutSecs > 0 {
+		timeout, source = *project.RunTimeoutSecs, domain.TimeoutSourceProject
+	}
+	contract, err := domain.ResolveWorkflowContract(r, &svc, timeout, source, r.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("create run: resolve execution contract: %w", err)
+	}
+	r.ExecutionContract = contract
+	return nil
+}
+
 // insertRunLocked applies the already-validated mutation. The caller holds
 // m.mu and must have called validateRunForCreateLocked first.
 func (m *MemStore) insertRunLocked(r *domain.Run) {
-	m.runs[r.ID] = *r
+	m.runs[r.ID] = cloneRun(*r)
 	for _, id := range r.AttachmentStageIDs {
 		stage := m.attachmentStages[id]
 		m.runAttachments[r.ID] = append(m.runAttachments[r.ID], domain.RunAttachment{RunID: r.ID, StageID: stage.ID, ObjectKey: stage.ObjectKey, DisplayName: stage.DisplayName, ContentType: stage.ContentType, SizeBytes: stage.SizeBytes})
@@ -891,8 +945,41 @@ func (m *MemStore) GetRun(_ context.Context, id string) (*domain.Run, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
-	cp := r
+	cp := cloneRun(r)
 	return &cp, nil
+}
+
+func cloneWorkflowContract(contract *domain.WorkflowContract) *domain.WorkflowContract {
+	if contract == nil {
+		return nil
+	}
+	copy := *contract
+	copy.Requirements = append([]string(nil), contract.Requirements...)
+	copy.Delivery.Outputs = append([]domain.WorkflowOutput(nil), contract.Delivery.Outputs...)
+	copy.Verification.RequiredRecords = append([]string(nil), contract.Verification.RequiredRecords...)
+	return &copy
+}
+
+func cloneReviewPlan(plan *domain.ReviewPlan) *domain.ReviewPlan {
+	if plan == nil {
+		return nil
+	}
+	copy := *plan
+	copy.Files = append([]domain.ReviewPlanFile(nil), plan.Files...)
+	copy.Anchors = append([]domain.ReviewAnchor(nil), plan.Anchors...)
+	return &copy
+}
+
+func cloneRun(run domain.Run) domain.Run {
+	run.ExecutionContract = cloneWorkflowContract(run.ExecutionContract)
+	run.ReviewPlan = cloneReviewPlan(run.ReviewPlan)
+	if run.ReviewResult != nil {
+		result := *run.ReviewResult
+		result.Findings = append([]domain.ReviewFinding(nil), run.ReviewResult.Findings...)
+		result.Checks = append([]string(nil), run.ReviewResult.Checks...)
+		run.ReviewResult = &result
+	}
+	return run
 }
 
 func (m *MemStore) GetRunByTokenHash(_ context.Context, tokenHash string) (*domain.Run, error) {
@@ -1068,7 +1155,17 @@ func (m *MemStore) ClaimRunDispatch(_ context.Context, id, jobName, tokenHash, p
 		snap.ProviderBaseURL, snap.ProviderClientID, snap.ProviderClientSecretEnc = "", "", nil
 		snap.ProviderAppID, snap.ProviderAppPrivateKeyEnc = "", nil
 		snap.GitHubInstallID, snap.AccessTokenEnc, snap.RefreshTokenEnc, snap.TokenExpiresAt = "", nil, nil, nil
+		if binding, ok := m.serviceRepoBindings[run.ServiceID]; ok && binding.InstallationID == snap.InstallationID {
+			snap.RepositoryID, snap.RepositoryPath, snap.CloneURL, snap.DefaultBranch = binding.ProviderRepoID, binding.RepositoryPath, binding.CloneURL, binding.DefaultBranch
+			snap.ActingPrincipalKind, snap.ActingPrincipalID = "provider_bot", installation.ID
+		}
 		staged[snap.InstallationID] = snap
+	}
+	if requiredInstallationID != "" {
+		required, ok := staged[requiredInstallationID]
+		if !ok || !required.HasFrozenRepositoryGrant() {
+			return nil, fmt.Errorf("%w: required repository grant changed", ErrDispatchClaimUnavailable)
+		}
 	}
 	m.runPluginSnapshots[id] = staged
 	run.Status = domain.StatusScheduling
@@ -1785,6 +1882,36 @@ func (m *MemStore) SetReviewResult(_ context.Context, id string, result domain.R
 	}
 	out := cur
 	return &out, nil
+}
+
+func (m *MemStore) SetReviewPlan(_ context.Context, id string, plan domain.ReviewPlan) (*domain.Run, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return nil, false, ErrNotFound
+	}
+	if cur.Kind != domain.RunKindReview || (cur.Status != domain.StatusScheduling && cur.Status != domain.StatusRunning) {
+		return nil, false, ErrInvalidTransition
+	}
+	if cur.PRBaseSHA != "" && plan.BaseSHA != cur.PRBaseSHA || cur.PRHeadSHA != "" && plan.HeadSHA != cur.PRHeadSHA {
+		return nil, false, ErrConflict
+	}
+	want, err := plan.CanonicalHash()
+	if err != nil || plan.PlanHash != want {
+		return nil, false, ErrConflict
+	}
+	if cur.ReviewPlan != nil {
+		if cur.ReviewPlan.PlanHash != plan.PlanHash {
+			return nil, false, ErrConflict
+		}
+		out := cloneRun(cur)
+		return &out, false, nil
+	}
+	cur.ReviewPlan = cloneReviewPlan(&plan)
+	m.runs[id] = cur
+	out := cloneRun(cur)
+	return &out, true, nil
 }
 
 // MarkReviewPosted stamps review_posted_at idempotently, returning true only for

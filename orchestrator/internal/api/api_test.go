@@ -351,6 +351,7 @@ func TestRetryPreservesReviewIdentity(t *testing.T) {
 		Prompt: "AI review of PR x", Status: domain.StatusQueued,
 		Kind: domain.RunKindReview, Phase: "Queued", Attempt: 1,
 		PRHeadBranch: "jcode/run-abc12345", PRBaseBranch: "main",
+		PRHeadSHA: strings.Repeat("a", 40), PRBaseSHA: strings.Repeat("b", 40),
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := st.CreateRun(ctx, rev); err != nil {

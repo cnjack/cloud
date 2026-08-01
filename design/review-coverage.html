@@ -1,0 +1,42 @@
+<!doctype html>
+<!-- Deterministic Review coverage prototype. Fixtures only. -->
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="description" content="jcode Cloud deterministic pull request review coverage." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="./assets/workflow-contract.css" />
+  <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/workflow-contract.js" defer></script>
+  <title>Review coverage — jcode Cloud design</title>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">跳到内容</a>
+  <div class="wc-shell">
+    <header class="utility-bar"><div class="breadcrumbs"><a href="./projects.html">Projects</a><span>/</span><a href="./project-workspace.html">jcode</a><span>/</span><strong>Review run 91bd60a</strong></div><div class="utility-actions"><span class="prototype-chip">sample fixture · R1</span><button class="icon-button" type="button" data-theme-toggle aria-label="Use dark theme"><svg class="icon theme-icon-moon"><use href="./assets/icons.svg#i-moon" /></svg><svg class="icon theme-icon-sun"><use href="./assets/icons.svg#i-sun" /></svg></button></div></header>
+    <main class="wc-main" id="mainContent">
+      <header class="wc-head"><div><span class="eyebrow">jcode · Pull request review</span><h1>Review credential snapshot convergence</h1><p>GitHub PR #24 · synchronized event · 4 minutes ago</p></div><div class="wc-head-actions"><span class="status-label" data-tone="success">Posted</span></div></header>
+      <div class="rv-layout">
+        <section class="rv-main">
+          <div class="rv-content">
+            <section class="rv-revision" aria-label="Frozen review revisions"><div><span>Event base</span><code>7d37301</code><small>main · exact commit</small></div><b class="rv-arrow">→</b><div><span>Event head</span><code>0aa42e9</code><small>fix/scm-grant · exact commit</small></div></section>
+            <section class="rv-coverage">
+              <div class="rv-coverage-head"><div><span class="eyebrow">Review plan · review-v2 · merge base 4fa21c0</span><h2>Partial input coverage</h2><p>Merge-base differs from the event base. Every eligible text hunk was indexed; one binary file is explicitly outside line review.</p></div><span class="rv-state">PARTIAL</span></div>
+              <div class="rv-metrics"><div><strong>13</strong><span>changed files</span></div><div><strong>36 / 36</strong><span>indexed hunks</span></div><div><strong>204</strong><span>changed lines</span></div></div>
+            </section>
+            <section class="rv-files"><div class="wc-section-head"><h3>Coverage ledger</h3><div class="rv-tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-review-tab="covered">Covered</button><button type="button" role="tab" aria-selected="false" data-review-tab="skipped">Skipped · 1</button></div></div>
+              <div class="rv-file-list" data-review-panel="covered"><div class="rv-file"><code>orchestrator/internal/api/source.go</code><span>4 hunks · 31 lines</span><b>indexed</b></div><div class="rv-file"><code>orchestrator/internal/reconciler/reconciler.go</code><span>8 hunks · 64 lines</span><b>indexed</b></div><div class="rv-file"><code>orchestrator/internal/store/plugins.go</code><span>5 hunks · 42 lines</span><b>indexed</b></div><div class="rv-file"><code>Showing 3 of 12 eligible files</code><span>Public summary omits changed-line ranges</span><b>bounded</b></div></div>
+              <div class="rv-file-list wc-hidden" data-review-panel="skipped"><div class="rv-file"><code>docs/architecture.png</code><span>binary · no line anchor</span><b>reported</b></div></div>
+            </section>
+            <section class="rv-result"><div class="rv-result-head"><h2>2 validated findings</h2><span class="eyebrow">All anchors are changed lines</span></div><article class="rv-finding"><span class="rv-priority">P1</span><div><strong>Source path still re-resolves the current Service credential</strong><code>orchestrator/internal/api/source.go:148 · 96% confidence</code><p>The source bundle can be created with a reconnect-time identity while review writeback uses the launch snapshot. Resolve both through the same Run SCM Grant.</p></div></article><article class="rv-finding"><span class="rv-priority">P2</span><div><strong>Repository rename can redirect a pending delivery</strong><code>orchestrator/internal/reconciler/reconciler.go:1009 · 91% confidence</code><p>Owner/repository is loaded from the mutable Service at writeback. Use the frozen repository path stored with the Run.</p></div></article></section>
+            <section class="rv-files" aria-label="Additional acceptance states"><div class="wc-section-head"><h3>Result state contract</h3><span>separate fixtures required</span></div><div class="rv-file-list"><div class="rv-file"><code>No findings</code><span>Valid result; coverage may still be partial</span><b>result</b></div><div class="rv-file"><code>Plan unavailable</code><span>Legacy Run; never labelled deterministic</span><b>legacy</b></div><div class="rv-file"><code>Invalid output</code><span>Rejected anchor remains a visible failure</span><b>blocked</b></div></div></section>
+          </div>
+        </section>
+        <aside class="wc-inspector" aria-label="Review workflow contract"><section><h2>Workflow contract</h2><div class="wc-contract-stamp"><span>W1</span><div><strong>builtin:pull-request-review@1</strong><small>sha256:74c9…a120</small></div></div></section><section><h2>Execution</h2><dl><div><dt>Profile</dt><dd>builtin:reviewer@1</dd></div><div><dt>Trigger</dt><dd>GitHub synchronized</dd></div><div><dt>Model</dt><dd>Claude Sonnet · high</dd></div><div><dt>Effective timeout</dt><dd>43,200s · cluster default</dd></div><div><dt>Agent approval</dt><dd>full_access · isolated</dd></div><div><dt>Workspace</dt><dd>read-only source</dd></div><div><dt>Provider credential</dt><dd>none in Runner</dd></div><div><dt>Typed output</dt><dd><code>provider_review</code></dd></div></dl></section><section><h2>Frozen SCM grant</h2><dl><div><dt>Repository</dt><dd>cnjack/cloud</dd></div><div><dt>Install</dt><dd><code>8142</code></dd></div><div><dt>Provider rev</dt><dd><code>github@17</code></dd></div><div><dt>Grant rev</dt><dd><code>cred_01K…</code></dd></div></dl></section><section><h2>Safety</h2><div class="wc-legend"><div><i></i><span>Token never entered the Runner.</span></div><div><i></i><span>Commit pair and line anchors were server-validated.</span></div><div><i></i><span>Cloud did not approve or merge.</span></div></div></section></aside>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

@@ -66,8 +66,18 @@ func (s *Server) handleRequestReview(w http.ResponseWriter, r *http.Request) {
 	if !s.integrationDispatchAllowed(w, r, svc) {
 		return
 	}
+	pr, err := s.reviewTargetAtCreation(r.Context(), src, svc)
+	if err != nil || pr == nil || pr.HeadRef == "" || pr.BaseRef == "" || pr.HeadSHA == "" || pr.BaseSHA == "" {
+		s.log.Warn("resolve exact review target", "run", src.ID, "err", err)
+		writeError(w, http.StatusConflict, "review_revision_unavailable", "could not freeze the pull request base/head revisions")
+		return
+	}
 
 	review := newReviewRun(src, svc, principalFrom(r.Context()).userIDPtr())
+	review.PRHeadBranch = pr.HeadRef
+	review.PRBaseBranch = pr.BaseRef
+	review.PRHeadSHA = pr.HeadSHA
+	review.PRBaseSHA = pr.BaseSHA
 	review.ModelID = modelID
 	review.ModelName = modelName
 	provenance.Stamp(r.Context(), s.st, review, nil)
@@ -78,6 +88,44 @@ func (s *Server) handleRequestReview(w http.ResponseWriter, r *http.Request) {
 	}
 	s.emitStatus(r.Context(), review)
 	writeJSON(w, http.StatusCreated, review)
+}
+
+// reviewTargetAtCreation reads the pull request before the review Run exists so
+// its branch names and exact commit pair become immutable Run input. Plugin
+// repositories use their configured base URL; unbound legacy services retain
+// the existing credential/factory path.
+func (s *Server) reviewTargetAtCreation(ctx context.Context, src *domain.Run, svc *domain.Service) (*provider.PR, error) {
+	if src.PRNumber <= 0 || svc.RepoKind != domain.RepoKindProvider {
+		return nil, errors.New("review target is not a provider pull request")
+	}
+	repositoryPath := svc.RepoOwnerName
+	var client provider.Provider
+	if binding, err := s.st.GetServiceRepositoryBinding(ctx, svc.ID); err == nil {
+		repositoryPath = binding.RepositoryPath
+		client, err = s.pluginProviderClient(ctx, binding)
+		if err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	} else {
+		if s.factory == nil || s.creds == nil {
+			return nil, errors.New("provider credential resolver is unavailable")
+		}
+		tok, err := s.creds.ResolveForService(ctx, svc, src.TriggeredByUserID)
+		if err != nil {
+			return nil, err
+		}
+		client, err = s.factory.PRClient(svc.Provider, tok.Value, tok.Scheme)
+		if err != nil {
+			return nil, err
+		}
+	}
+	owner, repo, ok := provider.SplitRepo(repositoryPath)
+	if !ok {
+		return nil, errors.New("provider repository path is invalid")
+	}
+	return client.PRByNumber(ctx, owner, repo, src.PRNumber)
 }
 
 // newReviewRun builds a queued review run associated with the agent run's PR: it
@@ -97,6 +145,9 @@ func newReviewRun(src *domain.Run, svc *domain.Service, triggeredBy *string) *do
 		TriggeredByUserID: triggeredBy,
 		PRHeadBranch:      src.GitBranch,
 		PRBaseBranch:      svc.DefaultBranch,
+		PRHeadSHA:         src.CommitSHA,
+		PRURL:             src.PRURL,
+		PRNumber:          src.PRNumber,
 		Attempt:           1,
 		CreatedAt:         time.Now().UTC(),
 	}

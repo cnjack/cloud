@@ -99,3 +99,7 @@ The designs deliberately stay within current backend contracts:
    setup-command copy, and visible prototype feedback.
 4. Treat `project-workspace.html` as the baseline for spacing and density; do
    not merge the new pages back into it.
+@@
+ | `desktop-remote-session.html` | jcode Desktop remote session view with running-on-device banner |
++| `workflow-contract.html` | Workflow Contract preview, built-in Agent Profile, readiness anatomy, and frozen execution manifest |
++| `review-coverage.html` | Deterministic PR Review commit pair, coverage ledger, validated findings, and frozen SCM grant |

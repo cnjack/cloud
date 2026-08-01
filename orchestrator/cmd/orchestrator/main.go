@@ -66,6 +66,7 @@ func run(log *slog.Logger) error {
 	if err := store.Migrate(ctx, st.Pool()); err != nil {
 		return err
 	}
+	store.ConfigureWorkflowTimeoutDefaults(st, cfg.RunTimeoutSecs, cfg.SessionTTLSecs)
 	log.Info("migrations applied")
 
 	if *migrateOnly {

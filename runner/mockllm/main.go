@@ -221,12 +221,14 @@ func scenarioForRequest(msgs []message) (string, Scenario) {
 			// path silently no-ops on any branch that already carries the file
 			// (M7 live find — @jcode update runs then produced empty diffs, now
 			// surfaced as no_changes with no push).
+			fileName := "JCODE_TASK_" + fp + ".txt"
 			args, _ := json.Marshal(map[string]string{
-				"file_path": "JCODE_TASK_" + fp + ".txt",
+				"file_path": fileName,
 				"content": "jcode ran headless in a container and wrote this file.\n" +
 					"Task: " + excerpt + "\n",
 			})
 			sc.ToolArgs = string(args)
+			sc.FinalText = "Done. I created " + fileName + " in the repository root."
 		}
 	}
 	return name, sc

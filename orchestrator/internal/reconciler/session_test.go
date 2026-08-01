@@ -74,6 +74,7 @@ func TestSessionJobEnvAndTTL(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 10)
 	rec.cfg.SessionTTLSecs = 7200
+	store.ConfigureWorkflowTimeoutDefaults(st, rec.cfg.RunTimeoutSecs, rec.cfg.SessionTTLSecs)
 	pid, sid := seedSessionProject(t, st, &domain.Project{})
 
 	run := &domain.Run{ID: domain.NewID(), ProjectID: pid, ServiceID: sid, Prompt: "chat",

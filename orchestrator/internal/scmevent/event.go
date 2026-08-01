@@ -96,6 +96,7 @@ type NormalizedSCMEvent struct {
 	Ref              string       `json:"ref,omitempty"`
 	BaseRef          string       `json:"base_ref,omitempty"`
 	HeadSHA          string       `json:"head_sha,omitempty"`
+	BaseSHA          string       `json:"base_sha,omitempty"`
 	Conclusion       string       `json:"conclusion,omitempty"`
 	Body             string       `json:"body,omitempty"`
 	OccurredAt       time.Time    `json:"occurred_at"`

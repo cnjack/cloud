@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/store"
 )
 
 // F8b reconciler half: a permission_mode=approval SESSION run gets
@@ -35,6 +36,7 @@ func TestApprovalSessionJobEnv(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 10)
 	rec.cfg.SessionTTLSecs = 7200
+	store.ConfigureWorkflowTimeoutDefaults(st, rec.cfg.RunTimeoutSecs, rec.cfg.SessionTTLSecs)
 	pid, sid := seedSessionProject(t, st, &domain.Project{})
 	queueApprovalSession(t, st, pid, sid)
 
@@ -62,6 +64,7 @@ func TestApprovalSessionTimeoutScalesWithSmallTTL(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 10)
 	rec.cfg.SessionTTLSecs = 7200 // cluster default would cap at 300…
+	store.ConfigureWorkflowTimeoutDefaults(st, rec.cfg.RunTimeoutSecs, rec.cfg.SessionTTLSecs)
 	ttl := int64(400)
 	pid, sid := seedSessionProject(t, st, &domain.Project{SessionTTLSecs: &ttl}) // …project override wins
 	queueApprovalSession(t, st, pid, sid)

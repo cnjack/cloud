@@ -95,6 +95,7 @@ type commonPayload struct {
 		} `json:"head"`
 		Base struct {
 			Ref string `json:"ref"`
+			SHA string `json:"sha"`
 		} `json:"base"`
 	} `json:"pull_request"`
 	Review struct {
@@ -177,7 +178,7 @@ func NormalizeForApp(provider ProviderKind, eventType, deliveryID string, payloa
 		event.Family = FamilyPullRequest
 		event.Action = normalizePullRequestAction(p.Action, p.PullRequest.Merged, kind == "pull_request_sync")
 		event.Object = Object{ID: anyID(p.PullRequest.ID), Number: p.PullRequest.Number, Title: p.PullRequest.Title, URL: p.PullRequest.HTMLURL}
-		event.Ref, event.BaseRef, event.HeadSHA = p.PullRequest.Head.Ref, p.PullRequest.Base.Ref, p.PullRequest.Head.SHA
+		event.Ref, event.BaseRef, event.HeadSHA, event.BaseSHA = p.PullRequest.Head.Ref, p.PullRequest.Base.Ref, p.PullRequest.Head.SHA, p.PullRequest.Base.SHA
 		event.Draft = p.PullRequest.Draft
 	case "pull_request_review":
 		event.Family = FamilyReview
@@ -289,6 +290,10 @@ type gitLabPayload struct {
 		LastCommit   struct {
 			ID string `json:"id"`
 		} `json:"last_commit"`
+		DiffRefs struct {
+			BaseSHA string `json:"base_sha"`
+			HeadSHA string `json:"head_sha"`
+		} `json:"diff_refs"`
 		Status      string `json:"status"`
 		Ref         string `json:"ref"`
 		Tag         string `json:"tag"`
@@ -334,7 +339,9 @@ func normalizeGitLab(eventType, deliveryID string, payload []byte, receivedAt ti
 		}
 		event.Action = normalizeGitLabMRAction(p.ObjectAttributes.Action, p.ObjectAttributes.State)
 		event.Object = Object{ID: anyID(p.ObjectAttributes.ID), Number: p.ObjectAttributes.IID, Title: p.ObjectAttributes.Title, URL: p.ObjectAttributes.URL}
-		event.Ref, event.BaseRef, event.HeadSHA = p.ObjectAttributes.SourceBranch, p.ObjectAttributes.TargetBranch, p.ObjectAttributes.LastCommit.ID
+		event.Ref, event.BaseRef = p.ObjectAttributes.SourceBranch, p.ObjectAttributes.TargetBranch
+		event.HeadSHA = firstNonEmpty(p.ObjectAttributes.DiffRefs.HeadSHA, p.ObjectAttributes.LastCommit.ID)
+		event.BaseSHA = p.ObjectAttributes.DiffRefs.BaseSHA
 		if event.Action == ActionApproved || event.Action == ActionApprovalRemoved {
 			event.Family = FamilyReview
 		}

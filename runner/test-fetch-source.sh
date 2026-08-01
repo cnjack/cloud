@@ -73,6 +73,8 @@ SEED="$TMP/seed"; OUT="$TMP/orch"; mkdir -p "$SEED" "$OUT"
 SRC_BUNDLE="$OUT/source.bundle"
 git -C "$SEED" bundle create "$SRC_BUNDLE" --all >/dev/null 2>&1 || fail "could not build source bundle"
 git bundle verify "$SRC_BUNDLE" >/dev/null 2>&1 || fail "source bundle invalid"
+BASE_SHA="$(git -C "$SEED" rev-parse main)"
+HEAD_SHA="$(git -C "$SEED" rev-parse feature)"
 
 cat > "$TMP/mock.py" <<'PY'
 import http.server, sys, os
@@ -87,7 +89,10 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_response(404); self.end_headers()
     def do_POST(self):
         n = int(self.headers.get('Content-Length', '0')); body = self.rfile.read(n)
-        if self.path.endswith('/review'):
+        if self.path.endswith('/review-plan'):
+            open(os.path.join(OUT, 'received.review-plan'), 'wb').write(body)
+            self.send_response(201); self.end_headers(); self.wfile.write(b'{"coverage":"complete"}')
+        elif self.path.endswith('/review'):
             open(os.path.join(OUT, 'received.review'), 'wb').write(body)
             self.send_response(201); self.end_headers(); self.wfile.write(b'{"kind":"review"}')
         elif self.path.endswith('/bundle'):
@@ -141,6 +146,7 @@ docker run --name "$RUN_CTR" --platform "linux/$TARGETARCH" \
   -e SOURCE_MODE="fetch" \
   -e BASE_BRANCH="main" \
   -e PR_BASE="main" -e PR_HEAD="feature" \
+  -e PR_BASE_SHA="$BASE_SHA" -e PR_HEAD_SHA="$HEAD_SHA" \
   -e START_MOCKLLM=1 \
   -e MODEL_NAME="mock/mock-model" -e MODEL_API_KEY="dummy-key" \
   -e ORCH_BASE_URL="http://host.docker.internal:$MOCK_PORT" \
@@ -150,6 +156,7 @@ R_RC=$?
 set -e
 cat "$TMP/review.out"
 [ "$R_RC" -eq 0 ] || fail "[B] review run exited $R_RC (want 0)"
+[ -s "$OUT/received.review-plan" ] || fail "[B] orchestrator did not receive a review plan before the review"
 [ -s "$OUT/received.review" ] || fail "[B] orchestrator did not receive a review"
 if ! grep -q '"findings"' "$OUT/received.review"; then
   echo "----- received review -----"; cat "$OUT/received.review"

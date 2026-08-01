@@ -70,7 +70,9 @@ run_case() {
 
   local extra_env=()
   if [ "$run_kind" = "review" ]; then
-    extra_env=(RUN_KIND=review PR_HEAD=main PR_BASE=main)
+    local revision
+    revision="$(git -C "$SEED" rev-parse main)"
+    extra_env=(RUN_KIND=review PR_HEAD=main PR_BASE=main PR_HEAD_SHA="$revision" PR_BASE_SHA="$revision")
   else
     extra_env=(RUN_KIND=agent)
   fi

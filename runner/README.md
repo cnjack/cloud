@@ -227,8 +227,14 @@ plane over the per-run `RUN_TOKEN`.
   (`BASE_BRANCH..BRANCH_NAME`), and POSTs it to
   `POST /internal/v1/runs/$RUN_ID/bundle` — the orchestrator pushes + opens the
   draft PR. **The runner never pushes and holds no token.**
-- `PR_HEAD` / `PR_BASE` — review runs: the branches the runner diffs; the review
-  is written to `REVIEW.md` and POSTed to `POST /internal/v1/runs/$RUN_ID/review`.
+- `PR_HEAD` / `PR_BASE` are display/checkout branch names for review runs;
+  `PR_HEAD_SHA` / `PR_BASE_SHA` are the required immutable revisions. The runner
+  verifies both commits, computes their merge-base, builds the unified diff,
+  and POSTs a server-validated Review Plan before starting the Agent. The Agent
+  writes structured `REVIEW.json`; the runner POSTs it as
+  `application/vnd.jcode.review+json` to
+  `POST /internal/v1/runs/$RUN_ID/review`. Contract review runs cannot fall back
+  to legacy Markdown output.
 
 When wired to an orchestrator it reads `ORCH_BASE_URL`, `RUN_TOKEN` (with
 `RUN_ID`) for all of the above plus event streaming and diff-artifact upload.

@@ -438,6 +438,10 @@ type Run struct {
 	// ReviewResult is validated provider-neutral output. ReviewOutput remains
 	// readable for legacy runners and providers during the transition.
 	ReviewResult *ReviewResult `json:"review_result,omitempty"`
+	// ReviewPlan is the immutable server-canonicalized input coverage ledger for
+	// a deterministic review. Its private changed-line anchors are persisted but
+	// excluded from the public Run JSON projection.
+	ReviewPlan *ReviewPlan `json:"review_plan,omitempty"`
 	// ReviewPostedAt is stamped once the orchestrator has posted a review run's
 	// output as a PR review comment on the provider (idempotency marker; M3
 	// reconcile review pass). Nil until posted / for agent runs.
@@ -456,6 +460,13 @@ type Run struct {
 	// update-push mode instead of opening a new draft PR (blueprint §8).
 	PRHeadBranch string `json:"pr_head_branch,omitempty"`
 	PRBaseBranch string `json:"pr_base_branch,omitempty"`
+	PRHeadSHA    string `json:"pr_head_sha,omitempty"`
+	PRBaseSHA    string `json:"pr_base_sha,omitempty"`
+
+	// ExecutionContract is resolved once in the same transaction that creates
+	// the Run. Retry/resume paths copy it explicitly; mutable Project, Service,
+	// Automation, and profile settings are never consulted to reinterpret it.
+	ExecutionContract *WorkflowContract `json:"execution_contract,omitempty"`
 
 	// Origin records how the run was triggered (api|webhook; M7 / blueprint §8).
 	// Defaults to api. OriginCommentID/URL are set only for webhook runs — the

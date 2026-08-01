@@ -1122,10 +1122,15 @@ func (s *PGStore) CreateRunPluginSnapshots(ctx context.Context, snapshots []doma
 		// creates the immutable snapshot. This closes the gap between the
 		// reconciler's list and insert when an owner disables/revokes a Plugin.
 		if _, err = tx.Exec(ctx, `
-			INSERT INTO run_plugin_snapshots(run_id,installation_id,provider,provider_config_revision,credential_version_id,created_at)
-			SELECT r.id,pi.id,pi.provider,pi.config_revision,pi.credential_version_id,$3
+			INSERT INTO run_plugin_snapshots(run_id,installation_id,provider,provider_config_revision,credential_version_id,created_at,
+				repository_id,repository_path,clone_url,default_branch,acting_principal_kind,acting_principal_id)
+			SELECT r.id,pi.id,pi.provider,pi.config_revision,pi.credential_version_id,$3,
+				COALESCE(rb.provider_repo_id,''),COALESCE(rb.repository_path,''),COALESCE(rb.clone_url,''),COALESCE(rb.default_branch,''),
+				CASE WHEN rb.installation_id IS NULL THEN '' ELSE 'provider_bot' END,
+				CASE WHEN rb.installation_id IS NULL THEN '' ELSE pi.id END
 			FROM runs r
 			JOIN plugin_installations pi ON pi.project_id=r.project_id
+			LEFT JOIN service_repository_bindings rb ON rb.service_id=r.service_id AND rb.installation_id=pi.id
 			JOIN provider_configs pc ON pc.provider=pi.provider AND pc.config_revision=pi.config_revision
 			JOIN provider_config_versions pv ON pv.provider=pi.provider AND pv.config_revision=pi.config_revision
 			JOIN plugin_credential_versions cv ON cv.id=pi.credential_version_id AND cv.installation_id=pi.id AND cv.provider=pi.provider
@@ -1157,6 +1162,7 @@ func (s *PGStore) ClearQueuedRunPluginSnapshots(ctx context.Context, runID strin
 func (s *PGStore) ListRunPluginSnapshots(ctx context.Context, runID string) ([]domain.RunPluginSnapshot, error) {
 	rows, err := s.pool.Query(ctx, `SELECT
 		s.run_id,s.installation_id,s.provider,s.provider_config_revision,s.credential_version_id,
+		s.repository_id,s.repository_path,s.clone_url,s.default_branch,s.acting_principal_kind,s.acting_principal_id,
 		COALESCE(pv.base_url,''),COALESCE(pv.client_id,''),pv.client_secret_enc,
 		COALESCE(pv.app_id,''),pv.app_private_key_enc,
 		COALESCE(cv.github_installation_id,''),cv.access_token_enc,cv.refresh_token_enc,cv.token_expires_at,
@@ -1176,6 +1182,7 @@ func (s *PGStore) ListRunPluginSnapshots(ctx context.Context, runID string) ([]d
 		var snap domain.RunPluginSnapshot
 		if err := rows.Scan(
 			&snap.RunID, &snap.InstallationID, &snap.Provider, &snap.ProviderConfigRevision, &snap.CredentialVersionID,
+			&snap.RepositoryID, &snap.RepositoryPath, &snap.CloneURL, &snap.DefaultBranch, &snap.ActingPrincipalKind, &snap.ActingPrincipalID,
 			&snap.ProviderBaseURL, &snap.ProviderClientID, &snap.ProviderClientSecretEnc,
 			&snap.ProviderAppID, &snap.ProviderAppPrivateKeyEnc,
 			&snap.GitHubInstallID, &snap.AccessTokenEnc, &snap.RefreshTokenEnc, &snap.TokenExpiresAt,

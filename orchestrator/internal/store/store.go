@@ -37,6 +37,21 @@ var ErrAttachmentQuotaExceeded = errors.New("attachment staging quota exceeded")
 // the Plugin set it needs for launch (disabled, revoked, or reconfigured).
 var ErrDispatchClaimUnavailable = errors.New("dispatch claim unavailable")
 
+const defaultWorkflowTimeoutSeconds int64 = 43200
+
+// workflowTimeoutConfigurer is implemented by both stores. Production calls
+// ConfigureWorkflowTimeoutDefaults once after loading cluster configuration;
+// focused tests that omit it retain the documented 12-hour defaults.
+type workflowTimeoutConfigurer interface {
+	configureWorkflowTimeoutDefaults(runTimeoutSeconds, sessionTTLSeconds int64)
+}
+
+func ConfigureWorkflowTimeoutDefaults(st Store, runTimeoutSeconds, sessionTTLSeconds int64) {
+	if configurable, ok := st.(workflowTimeoutConfigurer); ok {
+		configurable.configureWorkflowTimeoutDefaults(runTimeoutSeconds, sessionTTLSeconds)
+	}
+}
+
 // EventInput is a single event to append. For AppendEvents the Seq is the
 // authoritative global seq (caller-assigned). For AppendRunnerEvents the Seq is
 // only the runner's client-side sequence number, used as a per-source
@@ -378,6 +393,10 @@ type Store interface {
 	SetReviewOutput(ctx context.Context, id, md string) (*domain.Run, error)
 	// SetReviewResult records a validated structured result, first-writer-wins.
 	SetReviewResult(ctx context.Context, id string, result domain.ReviewResult) (*domain.Run, error)
+	// SetReviewPlan persists the server-canonicalized deterministic review input.
+	// The first call creates it; an identical retry is a no-op; a different hash
+	// returns ErrConflict and can never replace the accepted plan.
+	SetReviewPlan(ctx context.Context, id string, plan domain.ReviewPlan) (*domain.Run, bool, error)
 	// MarkReviewPosted stamps review_posted_at once the review comment is posted.
 	// Idempotent + first-writer-wins: returns posted=true only for the tick that
 	// stamped it, so two ticks never double-post.

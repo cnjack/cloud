@@ -635,7 +635,7 @@ func TestClaimRunDispatchIsAtomicAndFailureClearsCredentials(t *testing.T) {
 	if err := st.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimRunDispatch(ctx, run.ID, "job", "hash", "PreparingWorkspace", installation.ID, []domain.RunPluginSnapshot{{RunID: run.ID, InstallationID: installation.ID}}); err != nil {
+	if _, err := st.ClaimRunDispatch(ctx, run.ID, "job", "hash", "PreparingWorkspace", "", []domain.RunPluginSnapshot{{RunID: run.ID, InstallationID: installation.ID}}); err != nil {
 		t.Fatal(err)
 	}
 	claimed, _ := st.GetRun(ctx, run.ID)
@@ -654,6 +654,36 @@ func TestClaimRunDispatchIsAtomicAndFailureClearsCredentials(t *testing.T) {
 	}
 	if got, _ := st.ListRunPluginSnapshots(ctx, run.ID); len(got) != 0 {
 		t.Fatalf("snapshots remain after failed claim: %v", got)
+	}
+}
+
+func TestClaimRunDispatchRejectsChangedRequiredRepositoryGrant(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	_ = st.CreateProject(ctx, &domain.Project{ID: "p", Name: "p"})
+	_ = st.CreateService(ctx, &domain.Service{ID: "s", ProjectID: "p", Name: "s", RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea, RepoOwnerName: "owner/repo", DefaultBranch: "main"})
+	_ = st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginGitea, PluginEnabled: true})
+	cfg, _ := st.GetProviderConfig(ctx, domain.PluginGitea)
+	installation := &domain.PluginInstallation{ID: "i", ProjectID: "p", Provider: domain.PluginGitea, Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("ciphertext"), ConfigRevision: cfg.ConfigRevision}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertServiceRepositoryBinding(ctx, &domain.ServiceRepositoryBinding{ServiceID: "s", InstallationID: "i", ProviderRepoID: "42", RepositoryPath: "owner/repo", CloneURL: "https://git.example/owner/repo.git", DefaultBranch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{ID: "r", ProjectID: "p", ServiceID: "s", Status: domain.StatusQueued}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteServiceRepositoryBinding(ctx, "s"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := st.ClaimRunDispatch(ctx, "r", "job", "hash", "PreparingWorkspace", "i", []domain.RunPluginSnapshot{{RunID: "r", InstallationID: "i"}})
+	if !errors.Is(err, ErrDispatchClaimUnavailable) {
+		t.Fatalf("claim err=%v want ErrDispatchClaimUnavailable", err)
+	}
+	got, _ := st.GetRun(ctx, "r")
+	if got.Status != domain.StatusQueued || got.TokenHash != "" {
+		t.Fatalf("failed grant claim mutated Run: %+v", got)
 	}
 }
 
@@ -841,7 +871,7 @@ func TestPGClaimRunDispatchFencesConcurrentDisableAndUninstall(t *testing.T) {
 	}
 	if err := st.CreatePluginBoundService(ctx, svc, &domain.ServiceRepositoryBinding{
 		ServiceID: svc.ID, InstallationID: installation.ID, ProviderRepoID: "claimed",
-		RepositoryPath: "owner/claimed", CreatedAt: time.Now(),
+		RepositoryPath: "owner/claimed", CloneURL: "https://gitea.example/owner/claimed.git", DefaultBranch: "main", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -650,6 +650,13 @@ export interface Run {
   review_output?: string;
   /** When the review comment was posted to the PR (idempotency marker). */
   review_posted_at?: string | null;
+  /** Immutable built-in Workflow + Agent Profile projection resolved at Run creation. */
+  execution_contract?: WorkflowContract;
+  /** Server-accepted review input coverage. Private changed-line anchors are never serialized. */
+  review_plan?: ReviewPlan;
+  /** Exact provider revisions frozen before a review Run is queued. */
+  pr_head_sha?: string;
+  pr_base_sha?: string;
   /**
    * How the run was triggered (M7 / blueprint §8): the API/console (default,
    * absent) or a Gitea PR comment `@jcode …` webhook. A webhook run carries the
@@ -692,6 +699,65 @@ export interface Run {
    * references are audit metadata only and must never be used for authorization.
    */
   provenance?: RunProvenance;
+}
+
+export interface WorkflowContract {
+  schema_version: number;
+  hash: string;
+  workflow: { id: string; name: string; revision: number; source: string; definition_hash: string };
+  profile: { id: string; name: string; role: string; revision: number; instructions: string };
+  trigger: {
+    kind: string;
+    origin?: string;
+    repository?: string;
+    object?: string;
+    action?: string;
+    ref?: string;
+    automation_id?: string;
+    idempotency_key: string;
+    concurrency_group: string;
+  };
+  execution: {
+    run_kind: RunKind;
+    llm_selection: { model_id?: string; model_name: string; effort?: string; source: string };
+    session: boolean;
+    permission_mode: string;
+    workspace_access: 'read_only' | 'read_write' | string;
+    provider_credentials: 'none' | string;
+    base_ref?: string;
+    timeout_seconds: number;
+    timeout_source: string;
+  };
+  delivery: { outputs: Array<{ type: string; target?: string; ready_policy?: string }>; merge: 'never' | string };
+  verification: { mode: string; rules_revision?: string; max_findings?: number; minimum_confidence?: number; required_records?: string[] };
+  requirements: string[];
+  resolved_at: string;
+}
+
+export interface ReviewPlanFile {
+  path: string;
+  status: 'indexed' | 'skipped' | string;
+  reason?: string;
+  hunks: number;
+  changed_lines: number;
+}
+
+export interface ReviewPlan {
+  schema_version: number;
+  plan_hash: string;
+  base_sha: string;
+  head_sha: string;
+  merge_base_sha: string;
+  rules_revision: string;
+  coverage: 'complete' | 'partial' | string;
+  changed_files: number;
+  eligible_files: number;
+  indexed_files: number;
+  changed_hunks: number;
+  indexed_hunks: number;
+  changed_lines: number;
+  files: ReviewPlanFile[];
+  created_at: string;
 }
 
 export interface ProvenanceActorRef {
