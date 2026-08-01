@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -585,6 +586,38 @@ func TestTickReclaimsExpiredAttachmentOnlyAfterObjectDelete(t *testing.T) {
 	}
 	if len(f.deleted) != 2 {
 		t.Fatalf("delete attempts=%v", f.deleted)
+	}
+}
+
+func TestTickReclaimsEveryExpiredArtifactShareGenerationBeforeMarkingDeleted(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 1)
+	now := time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC)
+	rec.now = func() time.Time { return now }
+	rec.attachmentCleanupInterval = 0
+	share := &domain.ArtifactShare{
+		ID: "expired-share", UserID: "u", DeviceID: "d", ArtifactID: "a", Revision: 1,
+		Protocol: domain.ArtifactShareProtocolV1, State: domain.ArtifactShareUploaded,
+		CiphertextSize: 64, UploadGeneration: 2, ObjectKey: "artifact-shares/expired-share/2",
+		IntentExpiresAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour), CreatedAt: now.Add(-2 * time.Hour),
+	}
+	if err := st.CreateArtifactShare(ctx, share, 100, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeAttachmentStore{deleteErr: errors.New("s3 down")}
+	rec.attachmentStore = f
+	rec.Tick(ctx)
+	if candidates, err := st.ListArtifactSharesForGC(ctx, now, 10); err != nil || len(candidates) != 1 {
+		t.Fatalf("failed delete must retain GC candidate: %+v err=%v", candidates, err)
+	}
+	f.deleteErr = nil
+	rec.Tick(ctx)
+	if candidates, err := st.ListArtifactSharesForGC(ctx, now, 10); err != nil || len(candidates) != 0 {
+		t.Fatalf("successful delete must clear GC candidate: %+v err=%v", candidates, err)
+	}
+	want := []string{"artifact-shares/expired-share/1", "artifact-shares/expired-share/2", "artifact-shares/expired-share/1", "artifact-shares/expired-share/2"}
+	if !reflect.DeepEqual(f.deleted, want) {
+		t.Fatalf("delete attempts=%v want %v", f.deleted, want)
 	}
 }
 

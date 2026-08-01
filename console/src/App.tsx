@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppShell } from './components/AppShell';
 import { DeviceApiProvider } from './api/DeviceApiProvider';
 import { OnboardingGate } from './pages/OnboardingGate';
@@ -21,6 +21,7 @@ import { ClusterConnectionsPage } from './pages/ClusterConnectionsPage';
 import { DeviceAuthorizePage } from './pages/DeviceAuthorizePage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { SetupPage } from './pages/SetupPage';
+import { SharedArtifactPage } from './pages/SharedArtifactPage';
 import { useToast } from './components/Toast';
 import { readQueryParam, stripQueryParams } from './lib/url';
 
@@ -56,6 +57,14 @@ function useLinkFlash() {
 }
 
 export function App() {
+  const location = useLocation();
+  if (location.pathname.startsWith('/s/')) {
+    return <Routes><Route path="/s/:shareID" element={<SharedArtifactPage />} /><Route path="*" element={<NotFoundPage />} /></Routes>;
+  }
+  return <AuthenticatedApp />;
+}
+
+function AuthenticatedApp() {
   useLinkFlash();
   return (
     // The gate owns everything before a verified session exists: environment

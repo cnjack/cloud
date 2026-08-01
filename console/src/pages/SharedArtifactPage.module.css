@@ -1,0 +1,21 @@
+.page { min-height: 100%; padding: var(--space-6); background: var(--color-bg); color: var(--color-text); }
+.header { display: flex; align-items: center; justify-content: space-between; max-width: 1120px; margin: 0 auto var(--space-6); }
+.brand { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--fs-body); font-weight: var(--fw-semibold); }
+.brand svg { color: var(--color-accent); }
+.security { color: var(--color-text-dim); font-size: var(--fs-caption); }
+.status { display: grid; place-items: center; align-content: center; min-height: 70vh; gap: var(--space-3); text-align: center; }
+.status h1 { font-size: var(--fs-h1); }
+.status p { max-width: 36rem; color: var(--color-text-dim); }
+.spinner { width: var(--space-6); height: var(--space-6); border: 2px solid var(--color-border); border-top-color: var(--color-accent); border-radius: 50%; animation: spin 800ms linear infinite; }
+.artifact { max-width: 1120px; margin: 0 auto; overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-panel); box-shadow: var(--shadow-2); }
+.meta { display: flex; align-items: end; justify-content: space-between; gap: var(--space-6); padding: var(--space-6); border-bottom: 1px solid var(--color-border-subtle); }
+.meta p, .meta > span { color: var(--color-text-dim); font-family: var(--font-mono); font-size: var(--fs-caption); }
+.meta h1 { margin-top: var(--space-1); font-size: var(--fs-h1); }
+.viewer { min-height: min(72vh, 760px); padding: var(--space-6); }
+.text { overflow: auto; margin: 0; white-space: pre-wrap; font-family: var(--font-mono); line-height: 1.6; }
+.frame { width: 100%; min-height: min(66vh, 700px); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-inset); }
+.image { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; object-fit: contain; }
+.download { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--color-accent); }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 640px) { .page { padding: var(--space-4); } .security, .meta > span { display: none; } .meta, .viewer { padding: var(--space-4); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }

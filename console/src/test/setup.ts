@@ -1,7 +1,15 @@
 import '@testing-library/dom';
+import { webcrypto } from 'node:crypto';
 // Initialise i18n so components rendered in tests resolve real English copy
 // (react-i18next uses the shared instance; without this, t() returns raw keys).
 import '../i18n';
+
+// jsdom exposes a Crypto shell without WebCrypto methods. Artifact-share and
+// device E2EE tests exercise the browser crypto contract with Node's standards-
+// compatible implementation.
+if (!globalThis.crypto?.subtle) {
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+}
 
 // jsdom does not implement element scrolling. jcode-ui's stream-follow hook
 // intentionally uses scrollTo, so provide the browser API shape for component

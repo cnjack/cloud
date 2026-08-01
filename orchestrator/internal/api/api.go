@@ -358,6 +358,10 @@ func (s *Server) Handler() http.Handler {
 
 	// Health (unauthenticated).
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// Public encrypted Artifact snapshots. These routes never receive the URL
+	// fragment key and deliberately bypass auth/onboarding.
+	mux.HandleFunc("GET /api/v1/shared-artifacts/{shareID}", s.handleGetSharedArtifact)
+	mux.HandleFunc("GET /api/v1/shared-artifacts/{shareID}/content", s.handleGetSharedArtifactContent)
 
 	// Provider webhooks are always present and authenticate against the
 	// DB-backed cluster Provider config. A missing/invalid config is fail-visible;
@@ -633,6 +637,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/internal/v1/device/cloud-models/{model_id}/llm/{rest...}", s.authed(s.handleDeviceCloudModelProxy))
 	mux.Handle("POST /internal/v1/device/pairing-offers", s.authed(s.handleCreatePairingOffer))
 	mux.Handle("POST /internal/v1/device/revoke", s.authed(s.handleDeviceRevoke))
+	mux.Handle("POST /internal/v1/device/artifact-shares/intents", s.authed(s.handleCreateArtifactShareIntent))
+	mux.Handle("PUT /internal/v1/device/artifact-shares/{shareID}/content", s.authed(s.handleUploadArtifactShareContent))
+	mux.Handle("POST /internal/v1/device/artifact-shares/{shareID}/complete", s.authed(s.handleCompleteArtifactShare))
+	mux.Handle("GET /internal/v1/device/artifact-shares", s.authed(s.handleListArtifactShares))
+	mux.Handle("DELETE /internal/v1/device/artifact-shares/{shareID}", s.authed(s.handleRevokeArtifactShare))
 	mux.Handle("POST /internal/v1/runs/{id}/artifact", s.runToken(s.handleIngestArtifact))
 	// The source endpoint remains retired: provider credentials are injected for
 	// the checkout. Delivery is different: the credential-free runner uploads a

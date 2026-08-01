@@ -73,6 +73,7 @@ type MemStore struct {
 	deviceCommands           map[string]domain.DeviceCommand         // keyed by command id
 	devicePairings           map[string]domain.DevicePairing         // keyed by pairing id
 	deviceOffers             map[string]domain.DevicePairingOffer    // keyed by offer id
+	artifactShares           map[string]domain.ArtifactShare         // keyed by share id
 	attachmentStages         map[string]domain.AttachmentStage
 	runAttachments           map[string][]domain.RunAttachment
 	usageEvents              map[string]domain.UsageEvent // keyed by request id
@@ -137,6 +138,7 @@ func NewMemStore() *MemStore {
 		deviceCommands:           map[string]domain.DeviceCommand{},
 		devicePairings:           map[string]domain.DevicePairing{},
 		deviceOffers:             map[string]domain.DevicePairingOffer{},
+		artifactShares:           map[string]domain.ArtifactShare{},
 		attachmentStages:         map[string]domain.AttachmentStage{},
 		runAttachments:           map[string][]domain.RunAttachment{},
 		usageEvents:              map[string]domain.UsageEvent{},
