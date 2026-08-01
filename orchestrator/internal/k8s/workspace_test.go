@@ -35,6 +35,24 @@ func TestBuildJobNoPVC(t *testing.T) {
 	}
 }
 
+func TestBuildJobUsesResolvedProfileImageForRunnerUtilities(t *testing.T) {
+	c := &Client{cfg: Config{
+		Namespace: "jcloud", RunnerImage: "runner:default",
+		CPULimit: "2", MemoryLimit: "4Gi", CPURequest: "500m", MemoryRequest: "1Gi",
+	}}
+	job := c.buildJob(JobSpec{
+		Name: "jcloud-run-profile", RunID: "profile", Image: "runner:go-node",
+		Env: map[string]string{"RUN_ID": "profile"}, ModelConfigBase64: "e30=",
+	})
+	pod := job.Spec.Template.Spec
+	if pod.Containers[0].Image != "runner:go-node" {
+		t.Fatalf("runner image=%q, want profile image", pod.Containers[0].Image)
+	}
+	if len(pod.InitContainers) == 0 || pod.InitContainers[0].Image != "runner:go-node" {
+		t.Fatalf("runner utility init image=%q, want same profile image", pod.InitContainers[0].Image)
+	}
+}
+
 // TestBuildJobWithPVC verifies the persistent layout: a single PVC-backed volume
 // mounted at /workspace (subPath work) and $HOME/.jcode (subPath home).
 func TestBuildJobWithPVC(t *testing.T) {

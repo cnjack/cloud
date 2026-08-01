@@ -55,6 +55,50 @@ func TestLoadRunnerProxy(t *testing.T) {
 	}
 }
 
+func TestLoadRunnerProfilesBuildsAnAllowlist(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("RUNNER_IMAGE", "registry.example/jcode/runner@sha256:default")
+	t.Setenv("RUNNER_PROFILES_JSON", `{
+		"go-node":"registry.example/jcode/runner-go-node@sha256:abc",
+		"rust":"registry.example/jcode/runner-rust@sha256:def"
+	}`)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for profile, want := range map[string]string{
+		"default": "registry.example/jcode/runner@sha256:default",
+		"go-node": "registry.example/jcode/runner-go-node@sha256:abc",
+		"rust":    "registry.example/jcode/runner-rust@sha256:def",
+	} {
+		got, ok := c.ResolveRunnerImage(profile)
+		if !ok || got != want {
+			t.Fatalf("ResolveRunnerImage(%q)=(%q,%v), want (%q,true)", profile, got, ok, want)
+		}
+	}
+	if _, ok := c.ResolveRunnerImage("user-supplied-image"); ok {
+		t.Fatal("unknown profile must not resolve to an arbitrary image")
+	}
+}
+
+func TestLoadRunnerProfilesRejectsInvalidConfiguration(t *testing.T) {
+	for name, raw := range map[string]string{
+		"invalid json":         `{`,
+		"reserved default":     `{"default":"runner:other"}`,
+		"invalid profile name": `{"../../escape":"runner:bad"}`,
+		"empty image":          `{"python":""}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			baseEnv(t)
+			t.Setenv("RUNNER_IMAGE", "runner:default")
+			t.Setenv("RUNNER_PROFILES_JSON", raw)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "RUNNER_PROFILES_JSON") {
+				t.Fatalf("Load error=%v, want RUNNER_PROFILES_JSON validation error", err)
+			}
+		})
+	}
+}
+
 func TestLoadKubernetesRequiresPluginRuntimeImage(t *testing.T) {
 	t.Setenv("CONSOLE_TOKEN", "tok")
 	t.Setenv("DATABASE_URL", "postgres://x")

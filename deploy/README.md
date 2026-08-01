@@ -103,6 +103,7 @@ together mirror every variable read by
 |---|---|---|
 | `DATABASE_URL` | `postgres://jcloud:jcloud@localhost:5432/jcloud` | `postgres://jcloud:jcloud@postgres:5432/jcloud` (Service DNS) |
 | `RUNNER_IMAGE` | `registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner:latest` | `jcloud/runner:dev` (local) |
+| `RUNNER_PROFILES_JSON` | optional JSON allowlist of profile name → immutable OCI image | empty (only `default`) |
 | `PLUGIN_RUNTIME_IMAGE` | `registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-orchestrator:latest` | `jcloud/orchestrator:dev` (local) |
 | `ORCH_BASE_URL` | n/a | `http://orchestrator.jcloud.svc.cluster.local:8080` (for future runner→orchestrator callbacks) |
 | `MODEL_BASE_URL` | real provider | `http://mockllm.jcloud.svc.cluster.local:8081/v1` |

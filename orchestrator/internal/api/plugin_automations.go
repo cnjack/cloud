@@ -94,6 +94,7 @@ type pluginKanbanReq struct {
 	InstallationID string `json:"installation_id"`
 	BoardRef       string `json:"board_ref"`
 	TriggerColumn  string `json:"trigger_column"`
+	WorkColumn     string `json:"work_column"`
 	DoneColumn     string `json:"done_column"`
 }
 type pluginCronReq struct {
@@ -492,9 +493,12 @@ func pluginAutomationFromReq(req pluginAutomationReq, id string) (*domain.Plugin
 		}
 		a.TriggerKind = "kanban"
 		x := req.Kanban
-		k := &domain.KanbanTrigger{InstallationID: strings.TrimSpace(x.InstallationID), BoardRef: strings.TrimSpace(x.BoardRef), TriggerColumn: strings.TrimSpace(x.TriggerColumn), DoneColumn: strings.TrimSpace(x.DoneColumn)}
+		k := &domain.KanbanTrigger{InstallationID: strings.TrimSpace(x.InstallationID), BoardRef: strings.TrimSpace(x.BoardRef), TriggerColumn: strings.TrimSpace(x.TriggerColumn), WorkColumn: strings.TrimSpace(x.WorkColumn), DoneColumn: strings.TrimSpace(x.DoneColumn)}
 		if k.InstallationID == "" || k.BoardRef == "" || k.TriggerColumn == "" {
 			return nil, nil, nil, nil, nil, "kanban installation_id, board_ref and trigger_column are required"
+		}
+		if k.WorkColumn != "" && (k.WorkColumn == k.TriggerColumn || k.WorkColumn == k.DoneColumn) {
+			return nil, nil, nil, nil, nil, "kanban work_column must differ from trigger_column and done_column"
 		}
 		return a, nil, nil, k, nil, ""
 	}
@@ -631,7 +635,7 @@ func specToKanban(s *domain.PluginAutomationSpec) *pluginKanbanReq {
 	if s.Kanban == nil {
 		return nil
 	}
-	return &pluginKanbanReq{InstallationID: s.Kanban.InstallationID, BoardRef: s.Kanban.BoardRef, TriggerColumn: s.Kanban.TriggerColumn, DoneColumn: s.Kanban.DoneColumn}
+	return &pluginKanbanReq{InstallationID: s.Kanban.InstallationID, BoardRef: s.Kanban.BoardRef, TriggerColumn: s.Kanban.TriggerColumn, WorkColumn: s.Kanban.WorkColumn, DoneColumn: s.Kanban.DoneColumn}
 }
 func specToCron(s *domain.PluginAutomationSpec) *pluginCronReq {
 	if s.Cron == nil {

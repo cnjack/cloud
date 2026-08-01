@@ -280,6 +280,9 @@ func (m *MemStore) CreateService(_ context.Context, s *domain.Service) error {
 	if s.PRReadyPolicy == "" {
 		s.PRReadyPolicy = domain.PRReadyPolicyAlwaysDraft
 	}
+	if s.RunnerProfile == "" {
+		s.RunnerProfile = "default"
+	}
 	m.services[s.ID] = *s
 	return nil
 }
@@ -313,6 +316,9 @@ func (m *MemStore) CreatePluginBoundService(_ context.Context, s *domain.Service
 	}
 	if s.PRReadyPolicy == "" {
 		s.PRReadyPolicy = domain.PRReadyPolicyAlwaysDraft
+	}
+	if s.RunnerProfile == "" {
+		s.RunnerProfile = "default"
 	}
 	m.services[s.ID] = *s
 	m.serviceRepoBindings[s.ID] = *binding
@@ -623,6 +629,9 @@ func normalizeRunForCreate(r *domain.Run) {
 	}
 	if r.Origin == "" {
 		r.Origin = domain.RunOriginAPI
+	}
+	if r.DeliveryStatus == "" {
+		r.DeliveryStatus = domain.DeliveryNotRequired
 	}
 }
 
@@ -1227,6 +1236,35 @@ func (m *MemStore) MarkSucceeded(_ context.Context, id, phase string, finishedAt
 	})
 }
 
+func (m *MemStore) UpdateRunDelivery(_ context.Context, id string, status domain.DeliveryStatus, kind domain.DeliveryKind, message string, at time.Time) (*domain.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !status.Valid() || !kind.Valid() {
+		return nil, errors.New("invalid delivery state")
+	}
+	run, ok := m.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	run.DeliveryStatus = status
+	if kind != "" {
+		run.DeliveryKind = kind
+	}
+	run.DeliveryError = message
+	updatedAt := at
+	run.DeliveryUpdatedAt = &updatedAt
+	if message != "" {
+		run.DeliveryAttempts++
+	}
+	if status == domain.DeliveryDelivered && run.DeliveredAt == nil {
+		deliveredAt := at
+		run.DeliveredAt = &deliveredAt
+	}
+	m.runs[id] = run
+	copy := run
+	return &copy, nil
+}
+
 func (m *MemStore) MarkFailed(_ context.Context, id, phase string, reason domain.FailureReason, msg string, finishedAt time.Time) (*domain.Run, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1465,8 +1503,10 @@ func (m *MemStore) ListRunsAwaitingPR(_ context.Context) ([]domain.Run, error) {
 	var out []domain.Run
 	for _, r := range m.runs {
 		if r.Status == domain.StatusSucceeded && r.Kind == domain.RunKindAgent &&
-			r.GitBranch != "" && r.PRURL == "" && !r.Session &&
-			r.PRState != "conflict" && r.PRState != "provider_unsupported" {
+			r.GitBranch != "" && !r.Session &&
+			r.PRState != "conflict" && r.PRState != "provider_unsupported" &&
+			((r.PRURL == "" && (r.DeliveryStatus == domain.DeliveryPending || r.DeliveryStatus == domain.DeliveryNotRequired)) ||
+				(r.PRURL != "" && r.DeliveryStatus == domain.DeliveryPending && r.DeliveryKind == domain.DeliveryPullRequest)) {
 			out = append(out, r)
 		}
 	}
@@ -1828,7 +1868,9 @@ func (m *MemStore) ListReviewRunsAwaitingPost(_ context.Context) ([]domain.Run, 
 	var out []domain.Run
 	for _, r := range m.runs {
 		if r.Status == domain.StatusSucceeded && r.Kind == domain.RunKindReview &&
-			(r.ReviewOutput != "" || r.ReviewResult != nil) && r.ReviewPostedAt == nil {
+			(r.ReviewOutput != "" || r.ReviewResult != nil) &&
+			((r.ReviewPostedAt == nil && (r.DeliveryStatus == domain.DeliveryPending || r.DeliveryStatus == domain.DeliveryNotRequired)) ||
+				(r.ReviewPostedAt != nil && r.DeliveryStatus == domain.DeliveryPending && r.DeliveryKind == domain.DeliveryReviewComment)) {
 			out = append(out, r)
 		}
 	}
@@ -1842,7 +1884,9 @@ func (m *MemStore) ListRunsAwaitingUpdatePush(_ context.Context) ([]domain.Run, 
 	var out []domain.Run
 	for _, r := range m.runs {
 		if r.Status == domain.StatusSucceeded && r.Origin == domain.RunOriginWebhook &&
-			r.Kind == domain.RunKindAgent && r.GitBranch != "" && r.PRURL != "" && r.CommitSHA == "" {
+			r.Kind == domain.RunKindAgent && r.GitBranch != "" && r.PRURL != "" &&
+			((r.CommitSHA == "" && (r.DeliveryStatus == domain.DeliveryPending || r.DeliveryStatus == domain.DeliveryNotRequired)) ||
+				(r.CommitSHA != "" && r.DeliveryStatus == domain.DeliveryPending && r.DeliveryKind == domain.DeliveryBranchUpdate)) {
 			out = append(out, r)
 		}
 	}

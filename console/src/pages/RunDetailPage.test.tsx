@@ -234,6 +234,22 @@ describe('RunDetailPage — resilient error states', () => {
     expect(screen.getByText('USD 0.002000')).toBeTruthy();
   });
 
+	it('shows execution success and pending delivery as separate outcomes', async () => {
+		const { client, ctl } = makeClient();
+		const value = baseRun({
+			status: 'succeeded',
+			delivery_status: 'pending',
+			delivery_kind: 'pull_request',
+			delivery_error: 'The pull request provider will retry.',
+			finished_at: '2026-07-07T00:05:00Z',
+		});
+		ctl.getRun.mockResolvedValue(value);
+		renderPage(client, value);
+
+		expect((await screen.findByTestId('delivery-status')).textContent).toContain('Pending');
+		expect(screen.getByTestId('run-inspector').textContent).toContain('The pull request provider will retry.');
+	});
+
   it('never regresses a terminal cached run to a stale non-terminal GET response', async () => {
     const { client, ctl } = makeClient();
     const succeeded = baseRun({

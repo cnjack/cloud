@@ -51,6 +51,8 @@ describe('mockClient — lifecycle', () => {
     await flush(200);
     const final = await finalP;
     expect(final.status).toBe('succeeded');
+    expect(final.delivery_status).toBe('delivered');
+    expect(final.delivery_kind).toBe('pull_request');
     expect(final.started_at).toBeTruthy();
     expect(final.finished_at).toBeTruthy();
 
@@ -413,6 +415,60 @@ describe('mockClient — identity / services / members (M4 demo parity)', () => 
     expect(await listP).toHaveLength(2);
   });
 
+  it('updates a service only to a cluster-allowlisted runner profile', async () => {
+    const client = createMockClient();
+    const projectP = client.createProject({ name: 'runtime-profile' });
+    await flush(200);
+    const project = await projectP;
+    const serviceP = client.createService(project.id, {
+      name: 'default',
+      repo_url: 'https://github.com/acme/runtime-profile',
+      git_mode: 'readonly',
+    });
+    await flush(200);
+    const service = await serviceP;
+
+    const updateP = client.updateService(service.id, { runner_profile: 'go-node' });
+    await flush(200);
+    expect((await updateP).runner_profile).toBe('go-node');
+
+    const rejected = expect(
+      client.updateService(service.id, { runner_profile: 'task-image' }),
+    ).rejects.toMatchObject({ status: 400 });
+    await flush(200);
+    await rejected;
+  });
+
+  it('creates a provider service from a Project Plugin repository selection', async () => {
+    const client = createMockClient();
+    const projectP = client.createProject({ name: 'plugin-repository' });
+    await flush(200);
+    const project = await projectP;
+    const pluginP = client.selectGitHubAppInstallation(project.id, '12345', {
+      consent_accepted: true,
+      consent_version: 'v1',
+      scopes: ['contents:write', 'pull_requests:write'],
+    });
+    await flush(200);
+    const plugin = await pluginP;
+
+    const serviceP = client.createService(project.id, {
+      name: 'demo',
+      installation_id: plugin.id,
+      provider_repo_id: 'repo-1',
+      git_mode: 'draft_pr',
+    });
+    await flush(200);
+    const service = await serviceP;
+
+    expect(service).toMatchObject({
+      repo_kind: 'provider',
+      provider: 'github',
+      repo_owner_name: 'acme/demo',
+      git_mode: 'draft_pr',
+    });
+  });
+
   it('seeds the creator as owner, adds a member by search and removes them', async () => {
     const client = createMockClient();
     const projP = client.createProject({ name: 'demo' });
@@ -478,6 +534,7 @@ describe('mockClient — getSystem (cluster snapshot)', () => {
     expect(active).toBeGreaterThanOrEqual(1);
     expect(sys.guardrails.run_timeout_seconds).toBeGreaterThan(0);
     expect(sys.runner.image).toBeTruthy();
+    expect(sys.runner.profiles).toContain('go-node');
     expect(sys.namespace).toBeTruthy();
 
     // No secret shape may appear anywhere in the serialized snapshot.

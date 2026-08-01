@@ -108,6 +108,7 @@ func seedDraftPRRun(t *testing.T, st *store.MemStore, branch string) (domain.Ser
 	run := &domain.Run{
 		ID: domain.NewID(), ProjectID: p.ID, ServiceID: svc.ID, Prompt: "add a Hello line to README",
 		Status: domain.StatusSucceeded, Kind: domain.RunKindAgent, Attempt: 1, CreatedAt: time.Now(),
+		DeliveryStatus: domain.DeliveryPending, DeliveryKind: domain.DeliveryPullRequest,
 	}
 	if err := st.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
@@ -233,6 +234,9 @@ func TestReconcilePRCreation(t *testing.T) {
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.PRURL == "" || got.PRNumber == 0 {
 		t.Fatalf("pr_url/pr_number not persisted: url=%q num=%d", got.PRURL, got.PRNumber)
+	}
+	if got.DeliveryStatus != domain.DeliveryDelivered || got.DeliveredAt == nil || got.DeliveryError != "" {
+		t.Fatalf("delivery=%q at=%v error=%q, want delivered", got.DeliveryStatus, got.DeliveredAt, got.DeliveryError)
 	}
 	if got.CommitSHA != "pushedsha1234" {
 		t.Errorf("commit_sha=%q want the pushed sha", got.CommitSHA)
@@ -401,6 +405,9 @@ func TestReconcilePRSkipsWhenNoStack(t *testing.T) {
 	if got.PRURL != "" {
 		t.Fatalf("pr_url set with no stack: %q", got.PRURL)
 	}
+	if got.DeliveryStatus != domain.DeliveryPending || got.DeliveryError == "" {
+		t.Fatalf("delivery=%q error=%q, want visible pending failure", got.DeliveryStatus, got.DeliveryError)
+	}
 }
 
 // TestReconcilePRPushErrorRetries proves a transient push error leaves the run in
@@ -476,6 +483,7 @@ func seedReviewRun(t *testing.T, st *store.MemStore, head, output string) domain
 		Status: domain.StatusSucceeded, Kind: domain.RunKindReview,
 		PRHeadBranch: head, PRBaseBranch: "main",
 		PRHeadSHA: strings.Repeat("a", 40), PRBaseSHA: strings.Repeat("b", 40), CreatedAt: time.Now(),
+		DeliveryStatus: domain.DeliveryPending, DeliveryKind: domain.DeliveryReviewComment,
 	}
 	_ = st.CreateRun(ctx, run)
 	if _, err := st.SetReviewOutput(ctx, run.ID, output); err != nil {
@@ -507,6 +515,9 @@ func TestReconcileReviewPost(t *testing.T) {
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.ReviewPostedAt == nil {
 		t.Fatal("review_posted_at not stamped")
+	}
+	if got.DeliveryStatus != domain.DeliveryDelivered || got.DeliveredAt == nil {
+		t.Fatalf("review delivery=%q at=%v, want delivered", got.DeliveryStatus, got.DeliveredAt)
 	}
 }
 
@@ -685,6 +696,7 @@ func seedWebhookUpdateRun(t *testing.T, st *store.MemStore, head string) (domain
 		Origin: domain.RunOriginWebhook, OriginCommentID: "c-" + head,
 		PRURL: "http://gitea.test/jcloud/seed/pulls/9", PRNumber: 9,
 		PRHeadBranch: head, PRBaseBranch: "main", Attempt: 1, CreatedAt: time.Now(),
+		DeliveryStatus: domain.DeliveryPending, DeliveryKind: domain.DeliveryBranchUpdate,
 	}
 	if err := st.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
@@ -721,6 +733,9 @@ func TestReconcileUpdatePush(t *testing.T) {
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.CommitSHA != "ffsha1234" {
 		t.Errorf("commit_sha=%q want the ff-pushed sha", got.CommitSHA)
+	}
+	if got.DeliveryStatus != domain.DeliveryDelivered || got.DeliveredAt == nil {
+		t.Fatalf("branch delivery=%q at=%v, want delivered", got.DeliveryStatus, got.DeliveredAt)
 	}
 }
 

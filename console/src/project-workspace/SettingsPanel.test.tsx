@@ -27,6 +27,8 @@ describe('SettingsPanel pull-request delivery policy', () => {
         updating={false}
         onDefaultModelChange={() => undefined}
         onPRReadyPolicyChange={change}
+        runnerProfiles={['default', 'go-node']}
+        onRunnerProfileChange={() => undefined}
         onRetryModels={() => undefined}
       />,
     );

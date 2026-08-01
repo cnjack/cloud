@@ -12,6 +12,8 @@ export function SettingsPanel({
   updating,
   onDefaultModelChange,
   onPRReadyPolicyChange,
+  runnerProfiles,
+  onRunnerProfileChange,
   onRetryModels,
 }: {
   service: Service | undefined;
@@ -20,6 +22,8 @@ export function SettingsPanel({
   updating: boolean;
   onDefaultModelChange: (modelId: string) => void;
   onPRReadyPolicyChange: (policy: PRReadyPolicy) => void;
+  runnerProfiles: readonly string[];
+  onRunnerProfileChange: (profile: string) => void;
   onRetryModels: () => void;
 }) {
   const { t } = useTranslation();
@@ -114,6 +118,24 @@ export function SettingsPanel({
             />
           </section>
         )}
+
+        <section className={styles.policy} aria-labelledby="service-runtime-policy-heading">
+          <span className={styles.eyebrow}>{t('settingsPanel.runtimePolicyEyebrow')}</span>
+          <h3 id="service-runtime-policy-heading">{t('settingsPanel.runtimePolicyTitle')}</h3>
+          <p>{t('settingsPanel.runtimePolicyDescription')}</p>
+          {runnerProfiles.length > 0 ? (
+            <Select
+              aria-label={t('settingsPanel.runnerProfileAria')}
+              value={service.runner_profile || 'default'}
+              data-testid="service-runner-profile-select"
+              disabled={updating}
+              onChange={onRunnerProfileChange}
+              options={runnerProfiles.map((profile) => ({ value: profile, label: profile }))}
+            />
+          ) : (
+            <p className={styles.unavailable}>{t('settingsPanel.runtimeProfilesUnavailable')}</p>
+          )}
+        </section>
       </div>
     </section>
   );

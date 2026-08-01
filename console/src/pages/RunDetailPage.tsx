@@ -800,6 +800,12 @@ function RunInspector({
       {run.kind === 'review' && <SCMGrantSection grant={run.scm_grant} />}
       <InspectorSection title={t('runDetail.inspector.runOverview')}>
         <dl className={styles.facts}>
+			<InspectorFact label={t('runDetail.inspector.executionStatus')}>{currentRunStatusLabel(run.status, t)}</InspectorFact>
+			<InspectorFact label={t('runDetail.inspector.deliveryStatus')}>
+				<span data-testid="delivery-status">{deliveryStatusLabel(run.delivery_status, t)}</span>
+			</InspectorFact>
+			{run.delivery_kind && <InspectorFact label={t('runDetail.inspector.deliveryKind')}>{deliveryKindLabel(run.delivery_kind, t)}</InspectorFact>}
+			{run.delivery_error && <InspectorFact label={t('runDetail.inspector.deliveryIssue')}>{run.delivery_error}</InspectorFact>}
           <InspectorFact label={t('runDetail.inspector.permission')}>{run.permission_mode === 'approval' ? t('runDetail.inspector.askBeforeActions') : t('runDetail.permission.fullAccess')}</InspectorFact>
           <InspectorFact label={t('runDetail.inspector.workspace')}>{run.k8s_job_name || t('runDetail.inspector.notReported')}</InspectorFact>
         </dl>
@@ -1059,6 +1065,19 @@ function formatTimeout(seconds: number): string {
 
 function shortRevision(value: string): string {
   return value.length > 10 ? value.slice(0, 10) : value;
+}
+
+function currentRunStatusLabel(status: Run['status'], t: TFunction): string {
+  return t(`status.${status}`);
+}
+
+function deliveryStatusLabel(status: Run['delivery_status'], t: TFunction): string {
+  if (!status) return t('runDetail.inspector.deliveryUnknown');
+  return t(`runDetail.inspector.delivery.${status}`);
+}
+
+function deliveryKindLabel(kind: NonNullable<Run['delivery_kind']>, t: TFunction): string {
+  return t(`runDetail.inspector.deliveryKindLabel.${kind}`);
 }
 
 function ProvenanceSection({ provenance }: { provenance?: RunProvenance }) {

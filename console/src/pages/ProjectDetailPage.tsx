@@ -20,6 +20,7 @@ import {
   useProjectModels,
   useProjectPlugins,
 	useServiceBranches,
+	useSystem,
   useRuns,
   useUpdateService,
 } from '../api/queries';
@@ -207,6 +208,7 @@ export function ProjectDetailPage() {
 
   const modelGate = useModelGate(projectId, canRun && services.length > 0);
   const projectModels = useProjectModels(projectId, canRun && services.length > 0);
+	const system = useSystem(canManage);
   const grantedModels = projectModels.data?.models ?? [];
   const modelPolicyState = projectModels.isError
     ? 'unverified'
@@ -394,6 +396,20 @@ export function ProjectDetailPage() {
             kind: 'error',
             message: error instanceof ApiError ? error.message : t('projectDetail.deliveryPolicyFailed'),
           }),
+      },
+    );
+  };
+
+  const updateRunnerProfile = (runnerProfile: string) => {
+    if (!activeService) return;
+    updateService.mutate(
+      { serviceId: activeService.id, input: { runner_profile: runnerProfile } },
+      {
+        onSuccess: () => toast.push({ kind: 'success', message: t('projectDetail.runnerProfileUpdated') }),
+        onError: (error) => toast.push({
+          kind: 'error',
+          message: error instanceof ApiError ? error.message : t('projectDetail.runnerProfileFailed'),
+        }),
       },
     );
   };
@@ -739,6 +755,8 @@ export function ProjectDetailPage() {
             updating={updateService.isPending}
             onDefaultModelChange={updateDefaultModel}
             onPRReadyPolicyChange={updatePRReadyPolicy}
+            runnerProfiles={system.data?.runner.profiles ?? []}
+            onRunnerProfileChange={updateRunnerProfile}
             onRetryModels={() => void projectModels.refetch()}
           />
         )}

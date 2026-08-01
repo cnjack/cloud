@@ -152,7 +152,7 @@ func (s *PGStore) DeleteProject(ctx context.Context, id string) error {
 // --- Services ----------------------------------------------------------------
 
 const serviceCols = `id, project_id, name, repo_kind, provider, repo_owner_name,
-	raw_repo_url, provider_repo_id, default_branch, git_mode, pr_ready_policy, default_model_id, integration_id, created_at`
+	raw_repo_url, provider_repo_id, default_branch, git_mode, pr_ready_policy, default_model_id, integration_id, runner_profile, created_at`
 
 // serviceSelectCols is serviceCols plus control-plane lifecycle columns. It is
 // used by every SELECT/scan of a service; INSERT/ordinary UPDATE keep using
@@ -185,7 +185,8 @@ func scanService(row pgx.Row) (*domain.Service, error) {
 	var provider, ownerName, rawURL, archiveKey *string
 	err := row.Scan(&s.ID, &s.ProjectID, &s.Name, &s.RepoKind,
 		&provider, &ownerName, &rawURL, &s.ProviderRepoID, &s.DefaultBranch, &s.GitMode,
-		&s.PRReadyPolicy, &s.DefaultModelID, &s.IntegrationID, &s.CreatedAt, &s.ArchivedAt, &archiveKey, &s.DeletingAt)
+		&s.PRReadyPolicy, &s.DefaultModelID, &s.IntegrationID, &s.RunnerProfile,
+		&s.CreatedAt, &s.ArchivedAt, &archiveKey, &s.DeletingAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -217,12 +218,16 @@ func (s *PGStore) CreateService(ctx context.Context, svc *domain.Service) error 
 	if svc.PRReadyPolicy == "" {
 		svc.PRReadyPolicy = domain.PRReadyPolicyAlwaysDraft
 	}
+	if svc.RunnerProfile == "" {
+		svc.RunnerProfile = "default"
+	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO services (`+serviceCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		svc.ID, svc.ProjectID, svc.Name, string(svc.RepoKind),
 		nullStr(string(svc.Provider)), nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL),
-		svc.ProviderRepoID, svc.DefaultBranch, string(svc.GitMode), string(svc.PRReadyPolicy), svc.DefaultModelID, svc.IntegrationID, svc.CreatedAt)
+		svc.ProviderRepoID, svc.DefaultBranch, string(svc.GitMode), string(svc.PRReadyPolicy),
+		svc.DefaultModelID, svc.IntegrationID, svc.RunnerProfile, svc.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
 	}
@@ -242,6 +247,9 @@ func (s *PGStore) CreatePluginBoundService(ctx context.Context, svc *domain.Serv
 	if svc.PRReadyPolicy == "" {
 		svc.PRReadyPolicy = domain.PRReadyPolicyAlwaysDraft
 	}
+	if svc.RunnerProfile == "" {
+		svc.RunnerProfile = "default"
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("create plugin-bound service: begin: %w", err)
@@ -249,10 +257,11 @@ func (s *PGStore) CreatePluginBoundService(ctx context.Context, svc *domain.Serv
 	defer tx.Rollback(ctx) //nolint:errcheck
 	if _, err = tx.Exec(ctx,
 		`INSERT INTO services (`+serviceCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		svc.ID, svc.ProjectID, svc.Name, string(svc.RepoKind),
 		nullStr(string(svc.Provider)), nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL),
-		svc.ProviderRepoID, svc.DefaultBranch, string(svc.GitMode), string(svc.PRReadyPolicy), svc.DefaultModelID, svc.IntegrationID, svc.CreatedAt); err != nil {
+		svc.ProviderRepoID, svc.DefaultBranch, string(svc.GitMode), string(svc.PRReadyPolicy),
+		svc.DefaultModelID, svc.IntegrationID, svc.RunnerProfile, svc.CreatedAt); err != nil {
 		return fmt.Errorf("create plugin-bound service: service: %w", err)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO service_repository_bindings(`+repositoryBindingCols+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
@@ -322,11 +331,12 @@ func (s *PGStore) UpdateService(ctx context.Context, svc *domain.Service) error 
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE services SET name=$2, repo_kind=$3, provider=$4, repo_owner_name=$5,
 		    raw_repo_url=$6, provider_repo_id=$7, default_branch=$8, git_mode=$9,
-		    pr_ready_policy=$10, default_model_id=$11, integration_id=$12
+		    pr_ready_policy=$10, default_model_id=$11, integration_id=$12, runner_profile=$13
 		 WHERE id=$1`,
 		svc.ID, svc.Name, string(svc.RepoKind), nullStr(string(svc.Provider)),
 		nullStr(svc.RepoOwnerName), nullStr(svc.RawRepoURL), svc.ProviderRepoID,
-		svc.DefaultBranch, string(svc.GitMode), string(svc.PRReadyPolicy), svc.DefaultModelID, svc.IntegrationID)
+		svc.DefaultBranch, string(svc.GitMode), string(svc.PRReadyPolicy),
+		svc.DefaultModelID, svc.IntegrationID, svc.RunnerProfile)
 	if err != nil {
 		return fmt.Errorf("update service: %w", err)
 	}
@@ -451,7 +461,8 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 	base_branch, model_effort, goal_mode,
 	session, awaiting_since, session_finalizing, bundle_rev, pushed_rev, permission_mode,
 	acp_session_id, resumed_from, provenance,
-	execution_contract, review_plan, pr_head_sha, pr_base_sha, pr_title, review_delivery_error`
+	execution_contract, review_plan, pr_head_sha, pr_base_sha, pr_title, review_delivery_error,
+	delivery_status, delivery_kind, delivery_error, delivery_attempts, delivery_updated_at, delivered_at`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
@@ -467,7 +478,8 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 		&r.BaseBranch, &r.ModelEffort, &r.GoalMode,
 		&r.Session, &r.AwaitingSince, &r.SessionFinalizing, &r.BundleRev, &r.PushedRev, &r.PermissionMode,
 		&r.AcpSessionID, &r.ResumedFrom, &provenanceSnapshot,
-		&executionContract, &reviewPlan, &r.PRHeadSHA, &r.PRBaseSHA, &r.PRTitle, &r.ReviewDeliveryError)
+		&executionContract, &reviewPlan, &r.PRHeadSHA, &r.PRBaseSHA, &r.PRTitle, &r.ReviewDeliveryError,
+		&r.DeliveryStatus, &r.DeliveryKind, &r.DeliveryError, &r.DeliveryAttempts, &r.DeliveryUpdatedAt, &r.DeliveredAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -649,7 +661,7 @@ func (s *PGStore) createRunTx(ctx context.Context, tx pgx.Tx, r *domain.Run) err
 	}
 	_, err = tx.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
@@ -660,7 +672,8 @@ func (s *PGStore) createRunTx(ctx context.Context, tx pgx.Tx, r *domain.Run) err
 		r.BaseBranch, r.ModelEffort, r.GoalMode,
 		r.Session, r.AwaitingSince, r.SessionFinalizing, r.BundleRev, r.PushedRev, r.PermissionMode,
 		r.AcpSessionID, r.ResumedFrom, provenanceJSON,
-		workflowContractJSON(r.ExecutionContract), reviewPlanJSON(r.ReviewPlan), r.PRHeadSHA, r.PRBaseSHA, r.PRTitle, r.ReviewDeliveryError)
+		workflowContractJSON(r.ExecutionContract), reviewPlanJSON(r.ReviewPlan), r.PRHeadSHA, r.PRBaseSHA, r.PRTitle, r.ReviewDeliveryError,
+		r.DeliveryStatus, r.DeliveryKind, r.DeliveryError, r.DeliveryAttempts, r.DeliveryUpdatedAt, r.DeliveredAt)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
@@ -1281,6 +1294,28 @@ func (s *PGStore) MarkSucceeded(ctx context.Context, id, phase string, finishedA
 		    finished_at=COALESCE(finished_at,$4) WHERE id=$1`,
 		id, domain.StatusSucceeded, phase, finishedAt); err != nil {
 		return nil, fmt.Errorf("mark succeeded: %w", err)
+	}
+	return s.commitAndReload(ctx, tx, id)
+}
+
+func (s *PGStore) UpdateRunDelivery(ctx context.Context, id string, status domain.DeliveryStatus, kind domain.DeliveryKind, message string, at time.Time) (*domain.Run, error) {
+	if !status.Valid() || !kind.Valid() {
+		return nil, errors.New("invalid delivery state")
+	}
+	tx, _, err := s.lockRunTx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `UPDATE runs SET
+		delivery_status=$2,
+		delivery_kind=CASE WHEN $3<>'' THEN $3 ELSE delivery_kind END,
+		delivery_error=$4,
+		delivery_attempts=delivery_attempts + CASE WHEN $4<>'' THEN 1 ELSE 0 END,
+		delivery_updated_at=$5,
+		delivered_at=CASE WHEN $2='delivered' THEN COALESCE(delivered_at,$5) ELSE delivered_at END
+		WHERE id=$1`, id, status, kind, message, at); err != nil {
+		return nil, fmt.Errorf("update run delivery: %w", err)
 	}
 	return s.commitAndReload(ctx, tx, id)
 }
@@ -1946,8 +1981,10 @@ func (s *PGStore) ListAwaitingInputRuns(ctx context.Context) ([]domain.Run, erro
 func (s *PGStore) ListRunsAwaitingPR(ctx context.Context) ([]domain.Run, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+runCols+` FROM runs
-			 WHERE status=$1 AND kind='agent' AND git_branch <> '' AND pr_url = '' AND NOT session
-			   AND pr_state NOT IN ('conflict','provider_unsupported')
+		 WHERE status=$1 AND kind='agent' AND git_branch <> '' AND NOT session
+		   AND pr_state NOT IN ('conflict','provider_unsupported')
+		   AND ((pr_url = '' AND delivery_status IN ('pending','not_required'))
+		     OR (pr_url <> '' AND delivery_status='pending' AND delivery_kind='pull_request'))
 		 ORDER BY created_at ASC`,
 		string(domain.StatusSucceeded))
 	if err != nil {
@@ -1971,7 +2008,9 @@ func (s *PGStore) ListRunsAwaitingPR(ctx context.Context) ([]domain.Run, error) 
 func (s *PGStore) ListReviewRunsAwaitingPost(ctx context.Context) ([]domain.Run, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+runCols+` FROM runs
-		 WHERE status=$1 AND kind='review' AND (review_output <> '' OR review_result IS NOT NULL) AND review_posted_at IS NULL
+		 WHERE status=$1 AND kind='review' AND (review_output <> '' OR review_result IS NOT NULL)
+		   AND ((review_posted_at IS NULL AND delivery_status IN ('pending','not_required'))
+		     OR (review_posted_at IS NOT NULL AND delivery_status='pending' AND delivery_kind='review_comment'))
 		 ORDER BY created_at ASC`,
 		string(domain.StatusSucceeded))
 	if err != nil {
@@ -1996,7 +2035,9 @@ func (s *PGStore) ListRunsAwaitingUpdatePush(ctx context.Context) ([]domain.Run,
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+runCols+` FROM runs
 		 WHERE status=$1 AND origin='webhook' AND kind='agent'
-		   AND git_branch <> '' AND pr_url <> '' AND commit_sha = ''
+		   AND git_branch <> '' AND pr_url <> ''
+		   AND ((commit_sha = '' AND delivery_status IN ('pending','not_required'))
+		     OR (commit_sha <> '' AND delivery_status='pending' AND delivery_kind='branch_update'))
 		 ORDER BY created_at ASC`,
 		string(domain.StatusSucceeded))
 	if err != nil {

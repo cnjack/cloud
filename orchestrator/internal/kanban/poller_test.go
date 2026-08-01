@@ -56,6 +56,7 @@ type fakeAPI struct {
 	getErrOnce                map[string]error
 	tokens                    []string // PATs the token->client factory was asked to bind (F6)
 	commentPersistThenErrOnce bool
+	moves                     []string // docID:column writes observed at the JType boundary
 }
 
 func newFakeAPI() *fakeAPI {
@@ -102,6 +103,7 @@ func (f *fakeAPI) GetBoardByConfigID(ctx context.Context, ws, ref string) (*jtyp
 		Columns: []jtype.BoardColumn{
 			{Key: "ai", Name: "Agent queue"},
 			{Key: "agent", Name: "Agent queue"},
+			{Key: "doing", Name: "Doing"},
 			{Key: "done", Name: "Done"},
 		},
 	}, nil
@@ -183,6 +185,18 @@ func (f *fakeAPI) AddComment(ctx context.Context, ws, docID, body string) error 
 		f.commentPersistThenErrOnce = false
 		return errors.New("timeout after remote comment success")
 	}
+	return nil
+}
+
+func (f *fakeAPI) MoveCard(ctx context.Context, ws, docID, column string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	content, ok := f.contents[docID]
+	if !ok {
+		return jtype.ErrDocNotFound
+	}
+	f.contents[docID] = jtype.SetStatus(content, column)
+	f.moves = append(f.moves, docID+":"+column)
 	return nil
 }
 
@@ -316,6 +330,18 @@ func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
 	models := modelStub{outcome: modelcfg.SelectOK, requested: &requested}
 	poller := New(st, envResolver(st, "http://legacy-unused"), clientFor, testDecrypt, models, testLogger(t), "http://console", time.Second)
 	poller.Tick(ctx)
+	blockedSpec, err := st.GetPluginAutomationSpec(ctx, automation.ID)
+	if err != nil || !strings.HasPrefix(blockedSpec.Automation.LastError, "work_column_not_configured:") {
+		t.Fatalf("missing WIP column did not block bootstrap: spec=%+v err=%v", blockedSpec, err)
+	}
+	if runs, listErr := st.ListRunsByService(ctx, service.ID, 10); listErr != nil || len(runs) != 0 {
+		t.Fatalf("missing WIP column consumed existing Cards: runs=%d err=%v", len(runs), listErr)
+	}
+	trigger.WorkColumn = "doing"
+	if err := st.ReplacePluginAutomationSpec(ctx, automation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	poller.Tick(ctx)
 	spec, err := st.GetPluginAutomationSpec(ctx, automation.ID)
 	if err != nil || spec.Kanban.BootstrappedAt != nil ||
 		!strings.HasPrefix(spec.Automation.LastError, "bootstrap_unavailable:") {
@@ -342,6 +368,9 @@ func TestPluginKanbanAutomationDispatchesAndClaimsOnce(t *testing.T) {
 	}
 	if len(api.tokens) == 0 || api.tokens[0] != "PLAIN-PLUGINPAT" {
 		t.Fatalf("tokens=%v", api.tokens)
+	}
+	if card := jtype.ParseCard(api.contents["doc-plugin"]); card.Status != "doing" {
+		t.Fatalf("accepted Card status=%q moves=%v, want doing", card.Status, api.moves)
 	}
 	if comments := api.comments["doc-plugin"]; len(comments) != 1 ||
 		!strings.Contains(comments[0], "<!-- jcode-cloud-occurrence:") ||
@@ -386,7 +415,7 @@ func TestPluginKanbanAutomationConsumesEventsWithoutLevelRescan(t *testing.T) {
 	}
 	trigger := &domain.KanbanTrigger{
 		AutomationID: automation.ID, InstallationID: installation.ID,
-		BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done",
+		BoardRef: "b", TriggerColumn: "ai", WorkColumn: "doing", DoneColumn: "done",
 	}
 	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
 		t.Fatal(err)
@@ -468,7 +497,7 @@ func TestPluginKanbanAutomationStopsAtBoardDriftAndRecovers(t *testing.T) {
 	}
 	trigger := &domain.KanbanTrigger{
 		AutomationID: automation.ID, InstallationID: installation.ID,
-		BoardRef: "b_stable", TriggerColumn: "ai", DoneColumn: "done",
+		BoardRef: "b_stable", TriggerColumn: "ai", WorkColumn: "doing", DoneColumn: "done",
 	}
 	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
 		t.Fatal(err)
@@ -543,7 +572,7 @@ func TestPluginKanbanAutomationReentryRequiresTerminalWritebackAndNewLeave(t *te
 	}
 	trigger := &domain.KanbanTrigger{
 		AutomationID: automation.ID, InstallationID: installation.ID,
-		BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done",
+		BoardRef: "b", TriggerColumn: "ai", WorkColumn: "doing", DoneColumn: "done",
 	}
 	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
 		t.Fatal(err)
@@ -642,7 +671,7 @@ func TestPluginKanbanBlockedOccurrenceRetriesWithoutNewBoardEvent(t *testing.T) 
 	}
 	trigger := &domain.KanbanTrigger{
 		AutomationID: automation.ID, InstallationID: installation.ID,
-		BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done",
+		BoardRef: "b", TriggerColumn: "ai", WorkColumn: "doing", DoneColumn: "done",
 	}
 	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
 		t.Fatal(err)
@@ -709,7 +738,7 @@ func TestPluginKanbanCardReadFailureIsVisibleAndRetriesSameOccurrence(t *testing
 	}
 	trigger := &domain.KanbanTrigger{
 		AutomationID: automation.ID, InstallationID: installation.ID,
-		BoardRef: "b", TriggerColumn: "ai", DoneColumn: "done",
+		BoardRef: "b", TriggerColumn: "ai", WorkColumn: "doing", DoneColumn: "done",
 	}
 	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
 		t.Fatal(err)
@@ -789,7 +818,7 @@ func TestPluginKanbanMissingCardMarksClaimUnavailable(t *testing.T) {
 	}
 	trigger := &domain.KanbanTrigger{
 		AutomationID: automation.ID, InstallationID: installation.ID,
-		BoardRef: "b", TriggerColumn: "ai",
+		BoardRef: "b", TriggerColumn: "ai", WorkColumn: "doing",
 	}
 	if err := st.CreatePluginAutomation(
 		ctx, automation, nil, nil, trigger, nil,

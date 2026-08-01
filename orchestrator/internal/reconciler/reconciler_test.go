@@ -894,6 +894,55 @@ func TestCreateJobLeavesQueuedWhenOrchBaseURLEmpty(t *testing.T) {
 	}
 }
 
+func TestCreateJobUsesTheServicesAllowlistedRunnerProfile(t *testing.T) {
+	ctx := context.Background()
+	rec, st, fake := testRec(t, 4)
+	rec.cfg.RunnerProfiles = map[string]string{
+		"default": "runner:test",
+		"go-node": "registry.example/jcode/runner-go-node@sha256:abc",
+	}
+	run := seedProjectAndRun(t, st)
+	svc, err := st.GetService(ctx, run.ServiceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.RunnerProfile = "go-node"
+	if err := st.UpdateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+
+	rec.Tick(ctx)
+
+	if len(fake.Created) != 1 {
+		t.Fatalf("created Jobs=%d, want 1", len(fake.Created))
+	}
+	if got, want := fake.Created[0].Image, rec.cfg.RunnerProfiles["go-node"]; got != want {
+		t.Fatalf("runner image=%q, want profile image %q", got, want)
+	}
+}
+
+func TestCreateJobFailsVisiblyForAnUnknownRunnerProfile(t *testing.T) {
+	ctx := context.Background()
+	rec, st, fake := testRec(t, 4)
+	run := seedProjectAndRun(t, st)
+	svc, _ := st.GetService(ctx, run.ServiceID)
+	svc.RunnerProfile = "removed-profile"
+	if err := st.UpdateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+
+	rec.Tick(ctx)
+
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.Status != domain.StatusFailed || got.FailureReason != domain.FailureSetupFailed ||
+		!strings.Contains(got.FailureMessage, "runner profile") {
+		t.Fatalf("run=%+v, want visible runner profile setup failure", got)
+	}
+	if len(fake.Created) != 0 {
+		t.Fatalf("unknown profile launched %d Jobs", len(fake.Created))
+	}
+}
+
 func TestReconcileFullLifecycle(t *testing.T) {
 	ctx := context.Background()
 	rec, st, fake := testRec(t, 4)

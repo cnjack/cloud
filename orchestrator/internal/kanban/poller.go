@@ -40,6 +40,7 @@ type DocumentAPI interface {
 	GetDocument(ctx context.Context, workspace, id string) (*jtype.Document, error)
 	ListComments(ctx context.Context, workspace, docID string) ([]jtype.Comment, error)
 	AddComment(ctx context.Context, workspace, docID, body string) error
+	MoveCard(ctx context.Context, workspace, docID, column string) error
 	// GetBoard resolves a board by name/ref and returns its config id + columns.
 	// Used by the runtime fail-visible re-validation of an unvalidated/invalid link
 	// (D30); the normal card scan does NOT call it (it matches by frontmatter).
@@ -193,8 +194,13 @@ func (p *Poller) pollPluginAutomation(ctx context.Context, factory *jtype.Factor
 	// Existing occurrences and their receipts use frozen routing and remain
 	// retryable even while the live board configuration is drifting. Board
 	// validation fences only bootstrap/event consumption, i.e. new triggers.
-	p.retryPluginKanbanOccurrences(ctx, api, spec)
 	p.retryPluginKanbanReceipts(ctx, api, spec)
+	if strings.TrimSpace(spec.Kanban.WorkColumn) == "" {
+		spec.Automation.LastError = "work_column_not_configured: Choose a WIP column before Cloud consumes Cards."
+		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+		return
+	}
+	p.retryPluginKanbanOccurrences(ctx, api, spec)
 	if !p.validatePluginKanbanBoard(ctx, api, spec, installation.WorkspaceID) {
 		return
 	}
@@ -230,13 +236,15 @@ func (p *Poller) validatePluginKanbanBoard(
 		return false
 	}
 	if !boardHasColumn(board, spec.Kanban.TriggerColumn) ||
+		(spec.Kanban.WorkColumn != "" && !boardHasColumn(board, spec.Kanban.WorkColumn)) ||
 		(spec.Kanban.DoneColumn != "" && !boardHasColumn(board, spec.Kanban.DoneColumn)) {
 		spec.Automation.LastError = "board_drift: A configured Kanban column no longer exists."
 		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
 		return false
 	}
 	if strings.HasPrefix(spec.Automation.LastError, "board_drift:") ||
-		strings.HasPrefix(spec.Automation.LastError, "board_validation_unavailable:") {
+		strings.HasPrefix(spec.Automation.LastError, "board_validation_unavailable:") ||
+		strings.HasPrefix(spec.Automation.LastError, "work_column_not_configured:") {
 		spec.Automation.LastError = ""
 		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
 	}
@@ -473,6 +481,16 @@ func (p *Poller) dispatchPluginKanbanOccurrence(ctx context.Context, api Documen
 	provenance.Stamp(ctx, p.st, run, &provenance.ExternalActor{
 		Provider: "jtype", Label: occurrence.ActorDisplay, Source: "kanban_event",
 	})
+	if spec.Kanban.WorkColumn != "" {
+		if err := api.MoveCard(ctx, occurrence.WorkspaceID, occurrence.DocumentID, spec.Kanban.WorkColumn); err != nil {
+			p.blockPluginKanbanOccurrence(
+				ctx, api, spec, occurrence, svc, "card_claim_unavailable",
+				"JType could not move the Card into the configured work column. Cloud will retry this occurrence.",
+				"project_owner",
+			)
+			return
+		}
+	}
 	attached, err := p.st.CreatePluginKanbanOccurrenceRun(ctx, occurrence.ID, run)
 	if err != nil || !attached {
 		return

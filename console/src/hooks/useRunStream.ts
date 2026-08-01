@@ -104,6 +104,8 @@ export function useRunStream(runId: string, enabled = true) {
     const timers: ReturnType<typeof setTimeout>[] = [];
     const settled = (run: Run | undefined): boolean => {
       if (!run) return false;
+		if (run.delivery_status === 'pending') return false;
+		if (run.delivery_status) return true;
       if (run.kind === 'review') return Boolean(run.review_output);
       return Boolean(run.pr_url);
     };

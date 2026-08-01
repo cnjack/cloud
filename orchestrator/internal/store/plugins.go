@@ -521,7 +521,7 @@ func (s *PGStore) CreatePluginAutomation(ctx context.Context, a *domain.PluginAu
 		}
 	}
 	if kanban != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO automation_kanban_triggers(automation_id,installation_id,board_ref,trigger_column,done_column,trigger_label,done_label)VALUES($1,$2,$3,$4,$5,$6,$7)`, a.ID, kanban.InstallationID, kanban.BoardRef, kanban.TriggerColumn, kanban.DoneColumn, kanban.TriggerLabel, kanban.DoneLabel); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO automation_kanban_triggers(automation_id,installation_id,board_ref,trigger_column,work_column,done_column,trigger_label,work_label,done_label)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, a.ID, kanban.InstallationID, kanban.BoardRef, kanban.TriggerColumn, kanban.WorkColumn, kanban.DoneColumn, kanban.TriggerLabel, kanban.WorkLabel, kanban.DoneLabel); err != nil {
 			if isUniqueViolation(err) {
 				return ErrAlreadyExists
 			}
@@ -568,7 +568,7 @@ func (s *PGStore) GetPluginAutomationSpec(ctx context.Context, id string) (*doma
 		}
 	case "kanban":
 		var v domain.KanbanTrigger
-		if err := s.pool.QueryRow(ctx, `SELECT automation_id,installation_id,board_ref,trigger_column,done_column,trigger_label,done_label,event_cursor,bootstrapped_at FROM automation_kanban_triggers WHERE automation_id=$1`, id).Scan(&v.AutomationID, &v.InstallationID, &v.BoardRef, &v.TriggerColumn, &v.DoneColumn, &v.TriggerLabel, &v.DoneLabel, &v.EventCursor, &v.BootstrappedAt); err != nil {
+		if err := s.pool.QueryRow(ctx, `SELECT automation_id,installation_id,board_ref,trigger_column,work_column,done_column,trigger_label,work_label,done_label,event_cursor,bootstrapped_at FROM automation_kanban_triggers WHERE automation_id=$1`, id).Scan(&v.AutomationID, &v.InstallationID, &v.BoardRef, &v.TriggerColumn, &v.WorkColumn, &v.DoneColumn, &v.TriggerLabel, &v.WorkLabel, &v.DoneLabel, &v.EventCursor, &v.BootstrappedAt); err != nil {
 			return nil, fmt.Errorf("get kanban trigger: %w", err)
 		}
 		spec.Kanban = &v
@@ -988,7 +988,7 @@ func (s *PGStore) ReplacePluginAutomationSpec(ctx context.Context, a *domain.Plu
 		}
 	}
 	if kanban != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO automation_kanban_triggers(automation_id,installation_id,board_ref,trigger_column,done_column,trigger_label,done_label)VALUES($1,$2,$3,$4,$5,$6,$7)`, a.ID, kanban.InstallationID, kanban.BoardRef, kanban.TriggerColumn, kanban.DoneColumn, kanban.TriggerLabel, kanban.DoneLabel); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO automation_kanban_triggers(automation_id,installation_id,board_ref,trigger_column,work_column,done_column,trigger_label,work_label,done_label)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, a.ID, kanban.InstallationID, kanban.BoardRef, kanban.TriggerColumn, kanban.WorkColumn, kanban.DoneColumn, kanban.TriggerLabel, kanban.WorkLabel, kanban.DoneLabel); err != nil {
 			if isUniqueViolation(err) {
 				return ErrAlreadyExists
 			}

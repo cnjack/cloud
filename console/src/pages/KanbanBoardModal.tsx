@@ -75,6 +75,15 @@ function initialDoneColumn(board?: PluginBoardResource): string {
   return board?.columns.find((column) => column.key === 'done')?.key ?? '';
 }
 
+function initialWorkColumn(board?: PluginBoardResource): string {
+	return board?.columns.find((column) => {
+		const key = column.key.toLowerCase();
+		const name = column.name.toLowerCase();
+		return key === 'doing' || key === 'wip' || key === 'in-progress' ||
+			name === 'doing' || name === 'wip' || name === 'in progress';
+	})?.key ?? '';
+}
+
 /** Pick the initial link: the first enabled one, else the first. */
 function initialLinkId(links: BoardEmbedLink[]): string {
   return (links.find((l) => l.enabled) ?? links[0])?.id ?? '';
@@ -173,6 +182,11 @@ function KanbanPolicyStrip({ serviceId }: { serviceId: string }) {
           column: value.trigger_column.label || value.trigger_column.key,
         })}
       </span>
+	  <span>
+		{value.work_column?.key
+			? t('kanban.policyWork', { column: value.work_column.label || value.work_column.key })
+			: t('kanban.policyWorkMissing')}
+	  </span>
       <span>{value.model.label}</span>
       <span>
         {value.done_column.key
@@ -345,6 +359,7 @@ export function KanbanBoardModal({
   const deleteBinding = useDeleteServiceKanban(projectId, serviceId);
   const [boardRef, setBoardRef] = useState('');
   const [triggerColumn, setTriggerColumn] = useState('');
+	const [workColumn, setWorkColumn] = useState('');
   const [doneColumn, setDoneColumn] = useState('');
   const previewBoard = (boards.data ?? []).find((board) => board.id === boardRef);
   const linkedBoard = link
@@ -370,10 +385,12 @@ export function KanbanBoardModal({
     if (!board) return;
     if (link) {
       setTriggerColumn(link.trigger_column || initialTriggerColumn(board));
+	  setWorkColumn(link.work_column || initialWorkColumn(board));
       setDoneColumn(link.done_column ?? '');
       return;
     }
     setTriggerColumn(initialTriggerColumn(board));
+	setWorkColumn(initialWorkColumn(board));
     setDoneColumn(initialDoneColumn(board));
   }, [link, linkedBoard, previewBoard]);
 
@@ -429,6 +446,13 @@ export function KanbanBoardModal({
                       data-testid="kanban-trigger-column"
                     />
                     <SelectField
+					  label={t('kanban.workColumn')}
+					  value={workColumn}
+					  onChange={setWorkColumn}
+					  options={columnOptions(previewBoard).filter((column) => column.value !== triggerColumn && column.value !== doneColumn)}
+					  data-testid="kanban-work-column"
+					/>
+					<SelectField
                       label={t('kanban.doneColumn')}
                       value={doneColumn}
                       onChange={setDoneColumn}
@@ -445,7 +469,7 @@ export function KanbanBoardModal({
             <div className={styles.setupActions}>
               <Button
                 type="button"
-                disabled={!canManage || !jtypePlugin || !previewBoard || !triggerColumn || putBinding.isPending}
+				disabled={!canManage || !jtypePlugin || !previewBoard || !triggerColumn || !workColumn || putBinding.isPending}
                 loading={putBinding.isPending}
                 onClick={() => putBinding.mutate({
                   installation_id: jtypePlugin!.id!,
@@ -453,6 +477,7 @@ export function KanbanBoardModal({
                   // validate the board, then persist its canonical config id.
                   board_ref: previewBoard!.ref,
                   trigger_column: triggerColumn,
+				  work_column: workColumn,
                   done_column: doneColumn,
                   enabled: true,
                 })}
@@ -524,6 +549,13 @@ export function KanbanBoardModal({
                       data-testid="kanban-trigger-column"
                     />
                     <SelectField
+					  label={t('kanban.workColumn')}
+					  value={workColumn}
+					  onChange={setWorkColumn}
+					  options={columnOptions(linkedBoard).filter((column) => column.value !== triggerColumn && column.value !== doneColumn)}
+					  data-testid="kanban-work-column"
+					/>
+					<SelectField
                       label={t('kanban.doneColumn')}
                       value={doneColumn}
                       onChange={setDoneColumn}
@@ -539,8 +571,10 @@ export function KanbanBoardModal({
                         size="sm"
                         disabled={
                           !triggerColumn
+						  || !workColumn
                           || (
                             triggerColumn === link.trigger_column
+							&& workColumn === (link.work_column ?? '')
                             && doneColumn === (link.done_column ?? '')
                           )
                           || putBinding.isPending
@@ -550,6 +584,7 @@ export function KanbanBoardModal({
                           installation_id: jtypePlugin.id!,
                           board_ref: linkedBoard.ref,
                           trigger_column: triggerColumn,
+						  work_column: workColumn,
                           done_column: doneColumn,
                           enabled: true,
                         })}

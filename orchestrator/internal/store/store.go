@@ -201,6 +201,10 @@ type Store interface {
 	MarkRunning(ctx context.Context, id, phase string, startedAt time.Time) (*domain.Run, error)
 	// MarkSucceeded moves a run to succeeded, stamping finished_at if null.
 	MarkSucceeded(ctx context.Context, id, phase string, finishedAt time.Time) (*domain.Run, error)
+	// UpdateRunDelivery records publication independently from execution. A
+	// non-empty message counts as a failed attempt while pending/failed; delivered
+	// clears the last error and stamps delivered_at once.
+	UpdateRunDelivery(ctx context.Context, id string, status domain.DeliveryStatus, kind domain.DeliveryKind, message string, at time.Time) (*domain.Run, error)
 	// MarkFailed moves a run to failed, stamping finished_at if null. It
 	// PRESERVES any already-set failure_reason/failure_message (e.g. a specific
 	// runner-reported reason): the given reason/message are written only where

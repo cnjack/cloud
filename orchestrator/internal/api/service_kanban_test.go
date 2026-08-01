@@ -129,7 +129,7 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 	}
 	trigger := &domain.KanbanTrigger{
 		AutomationID: automation.ID, InstallationID: installation.ID,
-		BoardRef: "delivery", TriggerColumn: "agent", DoneColumn: "done",
+		BoardRef: "delivery", TriggerColumn: "agent", WorkColumn: "doing", DoneColumn: "done",
 	}
 	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
 		t.Fatal(err)
@@ -334,6 +334,7 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 				ID: "b_board",
 				Columns: []jtype.BoardColumn{
 					{Key: "ai", Name: "Agent queue"},
+					{Key: "doing", Name: "Doing"},
 					{Key: "review", Name: "Human review"},
 					{Key: "done", Name: "Done"},
 				},
@@ -388,6 +389,7 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
 		"installation_id": installation.ID,
 		"board_ref":       "delivery.board",
+		"work_column":     "doing",
 		"enabled":         true,
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -398,6 +400,7 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	if created.Automation.TriggerKind != "kanban" || created.Kanban == nil ||
 		created.Kanban.BoardRef != "b_board" || created.Kanban.TriggerColumn != "ai" ||
 		created.Kanban.TriggerLabel != "Agent queue" ||
+		created.Kanban.WorkColumn != "doing" || created.Kanban.WorkLabel != "Doing" ||
 		created.Kanban.DoneColumn != "done" || created.Kanban.DoneLabel != "Done" {
 		t.Fatalf("binding=%+v", created)
 	}

@@ -226,6 +226,14 @@ func (r *Reconciler) noteIntegrationCredentialFailure(ctx context.Context, runID
 	}
 	r.log.Warn("reconcile: integration credential unavailable; parking run (fix the integration, or restart to re-check)",
 		"run", runID, "pass", pass, "err", err)
+	if run, getErr := r.st.GetRun(ctx, runID); getErr == nil {
+		kind := run.DeliveryKind
+		if kind == "" {
+			kind = deliveryKindForPass(pass)
+		}
+		r.recordDelivery(ctx, run, domain.DeliveryFailed, kind,
+			"Integration credential is unavailable; fix or rotate the integration, then retry delivery.")
+	}
 	ev, aerr := r.st.AppendInternalEvent(ctx, runID, domain.EventRunFailure, map[string]any{
 		"reason": string(domain.FailurePushFailed),
 		"message": pass + " skipped: " + err.Error() +
@@ -672,9 +680,6 @@ func (r *Reconciler) reconcilePluginSecretVersionRetention(ctx context.Context) 
 // push/create and persist), the push is up-to-date-tolerant, and MarkPRCreated
 // is first-writer-wins so two ticks cannot double-record.
 func (r *Reconciler) reconcilePRs(ctx context.Context) {
-	if r.factory == nil || r.pusher == nil || r.creds == nil {
-		return // draft-PR flow disabled — diff-only.
-	}
 	runs, err := r.st.ListRunsAwaitingPR(ctx)
 	if err != nil {
 		r.log.Error("reconcile: list runs awaiting pr", "err", err)
@@ -682,12 +687,21 @@ func (r *Reconciler) reconcilePRs(ctx context.Context) {
 	}
 	for i := range runs {
 		run := runs[i]
+		if run.PRURL != "" && run.DeliveryStatus == domain.DeliveryPending && run.DeliveryKind == domain.DeliveryPullRequest {
+			r.recordDelivery(ctx, &run, domain.DeliveryDelivered, domain.DeliveryPullRequest, "")
+			continue
+		}
 		svc, err := r.st.GetService(ctx, run.ServiceID)
 		if err != nil {
 			r.log.Warn("reconcile pr: get service", "run", run.ID, "err", err)
 			continue
 		}
 		if !shouldOpenPR(run, *svc, true) {
+			continue
+		}
+		if r.factory == nil || r.pusher == nil || r.creds == nil {
+			r.recordDelivery(ctx, &run, domain.DeliveryPending, domain.DeliveryPullRequest,
+				"Pull-request delivery is not configured; Cloud will retry after the provider stack is enabled.")
 			continue
 		}
 		r.openPullRequest(ctx, &run, svc)
@@ -726,6 +740,8 @@ func (r *Reconciler) openPullRequest(ctx context.Context, run *domain.Run, svc *
 	owner, repo, ok := provider.SplitRepo(scm.RepositoryPath)
 	if !ok {
 		r.log.Warn("reconcile pr: bad repository path", "run", run.ID, "repo", scm.RepositoryPath)
+		r.recordDelivery(ctx, run, domain.DeliveryFailed, domain.DeliveryPullRequest,
+			"The repository binding is invalid; fix the service repository and retry delivery.")
 		return
 	}
 	branch := run.GitBranch // recorded when the bundle was received (jcode/run-<id>)
@@ -740,6 +756,8 @@ func (r *Reconciler) openPullRequest(ctx context.Context, run *domain.Run, svc *
 			return
 		}
 		r.log.Warn("reconcile pr: find existing", "run", run.ID, "err", err)
+		r.recordDelivery(ctx, run, domain.DeliveryPending, domain.DeliveryPullRequest,
+			"Could not verify an existing pull request; Cloud will retry delivery.")
 		return
 	}
 	// Always prove that the remote head contains this run's bundle before
@@ -750,6 +768,8 @@ func (r *Reconciler) openPullRequest(ctx context.Context, run *domain.Run, svc *
 	sha, perr := r.pushRunBundle(ctx, run, scm.CloneURL, scm.Provider, tok, branch)
 	if perr != nil {
 		r.log.Warn("reconcile pr: ensure branch", "run", run.ID, "src", tok.Source, "err", perr)
+		r.recordDelivery(ctx, run, domain.DeliveryPending, domain.DeliveryPullRequest,
+			"Could not push the generated branch; Cloud will retry delivery.")
 		return // transient/non-fast-forward; retry without recording delivery
 	}
 	if sha != "" {
@@ -767,6 +787,8 @@ func (r *Reconciler) openPullRequest(ctx context.Context, run *domain.Run, svc *
 		claimed, cerr := r.st.ClaimPRCreation(ctx, run.ID, claimToken, now, now.Add(-2*time.Minute))
 		if cerr != nil {
 			r.log.Warn("reconcile pr: claim create", "run", run.ID, "err", cerr)
+			r.recordDelivery(ctx, run, domain.DeliveryPending, domain.DeliveryPullRequest,
+				"Could not claim pull-request creation; Cloud will retry delivery.")
 			return
 		}
 		if !claimed {
@@ -804,6 +826,8 @@ func (r *Reconciler) openPullRequest(ctx context.Context, run *domain.Run, svc *
 				return
 			} else {
 				r.log.Warn("reconcile pr: create draft", "run", run.ID, "err", err)
+				r.recordDelivery(ctx, run, domain.DeliveryPending, domain.DeliveryPullRequest,
+					"The generated branch was pushed, but the pull request could not be created; Cloud will retry delivery.")
 				return
 			}
 		} else {
@@ -822,6 +846,11 @@ func (r *Reconciler) openPullRequest(ctx context.Context, run *domain.Run, svc *
 			r.log.Error("reconcile pr: record ready PR", "run", run.ID, "err", err)
 			return
 		}
+	}
+	committed, err = r.st.UpdateRunDelivery(ctx, run.ID, domain.DeliveryDelivered, domain.DeliveryPullRequest, "", r.now())
+	if err != nil {
+		r.log.Error("reconcile pr: mark delivery", "run", run.ID, "err", err)
+		return
 	}
 	// Re-emit run.status so the SSE stream carries pr_url to a live console.
 	r.emitStatus(ctx, committed)
@@ -843,6 +872,29 @@ func effectivePRReadyPolicy(run *domain.Run) domain.PRReadyPolicy {
 // tests/callers. The service policy still decides Draft versus Ready.
 func (r *Reconciler) openDraftPR(ctx context.Context, run *domain.Run, svc *domain.Service) {
 	r.openPullRequest(ctx, run, svc)
+}
+
+func (r *Reconciler) recordDelivery(ctx context.Context, run *domain.Run, status domain.DeliveryStatus, kind domain.DeliveryKind, message string) {
+	if run == nil {
+		return
+	}
+	committed, err := r.st.UpdateRunDelivery(ctx, run.ID, status, kind, message, r.now())
+	if err != nil {
+		r.log.Error("reconcile: record delivery", "run", run.ID, "kind", kind, "status", status, "err", err)
+		return
+	}
+	r.emitStatus(ctx, committed)
+}
+
+func deliveryKindForPass(pass string) domain.DeliveryKind {
+	switch pass {
+	case "review post":
+		return domain.DeliveryReviewComment
+	case "update push", "session push":
+		return domain.DeliveryBranchUpdate
+	default:
+		return domain.DeliveryPullRequest
+	}
 }
 
 // pushRunBundle writes the run's stored bundle to a temp file and pushes its
@@ -877,9 +929,6 @@ func (r *Reconciler) pushRunBundle(ctx context.Context, run *domain.Run, cloneUR
 // commit_sha is stamped (on a successful push, or when the remote already carries
 // the change). It NEVER opens a new PR — the existing PR auto-updates.
 func (r *Reconciler) reconcileUpdatePushes(ctx context.Context) {
-	if r.factory == nil || r.pusher == nil || r.creds == nil {
-		return
-	}
 	runs, err := r.st.ListRunsAwaitingUpdatePush(ctx)
 	if err != nil {
 		r.log.Error("reconcile: list runs awaiting update push", "err", err)
@@ -887,12 +936,21 @@ func (r *Reconciler) reconcileUpdatePushes(ctx context.Context) {
 	}
 	for i := range runs {
 		run := runs[i]
+		if run.CommitSHA != "" && run.DeliveryStatus == domain.DeliveryPending && run.DeliveryKind == domain.DeliveryBranchUpdate {
+			r.recordDelivery(ctx, &run, domain.DeliveryDelivered, domain.DeliveryBranchUpdate, "")
+			continue
+		}
 		svc, err := r.st.GetService(ctx, run.ServiceID)
 		if err != nil {
 			r.log.Warn("reconcile update: get service", "run", run.ID, "err", err)
 			continue
 		}
 		if !shouldUpdatePush(run, *svc, true) {
+			continue
+		}
+		if r.pusher == nil || r.creds == nil {
+			r.recordDelivery(ctx, &run, domain.DeliveryPending, domain.DeliveryBranchUpdate,
+				"Branch-update delivery is not configured; Cloud will retry after the provider stack is enabled.")
 			continue
 		}
 		r.updatePushRun(ctx, &run, svc)
@@ -917,6 +975,8 @@ func (r *Reconciler) updatePushRun(ctx context.Context, run *domain.Run, svc *do
 			return
 		}
 		r.log.Warn("reconcile update: no frozen scm context; leaving for retry", "run", run.ID, "provider", svc.Provider, "err", err)
+		r.recordDelivery(ctx, run, domain.DeliveryPending, domain.DeliveryBranchUpdate,
+			"A provider credential is unavailable; Cloud will retry the branch update.")
 		return
 	}
 	tok := scm.Token
@@ -950,6 +1010,8 @@ func (r *Reconciler) updatePushRun(ctx context.Context, run *domain.Run, svc *do
 		// Non-fast-forward (or transient): leave in the scan and retry next tick.
 		// This does NOT spin CPU — the reconciler ticks on its interval.
 		r.log.Warn("reconcile update: ff-only push failed (retry next tick)", "run", run.ID, "branch", branch, "src", tok.Source, "err", err)
+		r.recordDelivery(ctx, run, domain.DeliveryPending, domain.DeliveryBranchUpdate,
+			"The pull-request branch could not be updated; Cloud will retry without force-pushing.")
 		return
 	}
 	if alreadyPresent {
@@ -958,12 +1020,17 @@ func (r *Reconciler) updatePushRun(ctx context.Context, run *domain.Run, svc *do
 		r.log.Info("reconcile update: pushed onto PR head branch", "run", run.ID, "branch", branch, "src", tok.Source)
 	}
 	// Stamp commit_sha so the run drops out of the update scan (idempotency).
-	if _, err := r.st.SetRunGit(ctx, run.ID, branch, sha); err != nil {
+	committed, err := r.st.SetRunGit(ctx, run.ID, branch, sha)
+	if err != nil {
 		r.log.Warn("reconcile update: record commit sha", "run", run.ID, "err", err)
 		return
 	}
-	run.CommitSHA = sha
-	r.emitStatus(ctx, run)
+	committed, err = r.st.UpdateRunDelivery(ctx, run.ID, domain.DeliveryDelivered, domain.DeliveryBranchUpdate, "", r.now())
+	if err != nil {
+		r.log.Warn("reconcile update: mark delivery", "run", run.ID, "err", err)
+		return
+	}
+	r.emitStatus(ctx, committed)
 }
 
 // serviceCloneURL prefers the immutable Project Plugin binding. The legacy
@@ -983,9 +1050,6 @@ func (r *Reconciler) serviceCloneURL(ctx context.Context, svc *domain.Service) s
 // review stack is not configured. Idempotent: after a successful post the run is
 // stamped review_posted_at and drops out of the scan.
 func (r *Reconciler) reconcileReviews(ctx context.Context) {
-	if r.factory == nil || r.creds == nil {
-		return
-	}
 	runs, err := r.st.ListReviewRunsAwaitingPost(ctx)
 	if err != nil {
 		r.log.Error("reconcile: list review runs", "err", err)
@@ -993,6 +1057,15 @@ func (r *Reconciler) reconcileReviews(ctx context.Context) {
 	}
 	for i := range runs {
 		run := runs[i]
+		if run.ReviewPostedAt != nil && run.DeliveryStatus == domain.DeliveryPending && run.DeliveryKind == domain.DeliveryReviewComment {
+			r.recordDelivery(ctx, &run, domain.DeliveryDelivered, domain.DeliveryReviewComment, "")
+			continue
+		}
+		if r.factory == nil || r.creds == nil {
+			r.recordDelivery(ctx, &run, domain.DeliveryPending, domain.DeliveryReviewComment,
+				"Review delivery is not configured; Cloud will retry after the provider stack is enabled.")
+			continue
+		}
 		svc, err := r.st.GetService(ctx, run.ServiceID)
 		if err != nil {
 			r.log.Warn("reconcile review: get service", "run", run.ID, "err", err)
@@ -1011,24 +1084,31 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 		return // parked (P1): credential problem already surfaced once
 	}
 	if svc.RepoKind != domain.RepoKindProvider || strings.TrimSpace(run.PRHeadBranch) == "" {
-		r.setReviewDeliveryError(ctx, run.ID, "The frozen pull request target is incomplete; review writeback cannot continue.")
+		message := "The frozen pull request target is incomplete; review writeback cannot continue."
+		r.setReviewDeliveryError(ctx, run.ID, message)
+		r.recordDelivery(ctx, run, domain.DeliveryFailed, domain.DeliveryReviewComment, message)
 		return // not associated with a provider PR (misconfigured review run)
 	}
 	scm, err := r.scmContextForRun(ctx, run, svc)
 	if err != nil {
 		if errors.Is(err, credentials.ErrIntegrationCredential) || errors.Is(err, credentials.ErrPluginCredentialUnavailable) {
 			r.noteIntegrationCredentialFailure(ctx, run.ID, "review post", err)
-			r.setReviewDeliveryError(ctx, run.ID, "Provider review writeback is waiting for a valid frozen credential.")
+			message := "Provider review writeback is waiting for a valid frozen credential."
+			r.setReviewDeliveryError(ctx, run.ID, message)
 			return
 		}
 		r.log.Warn("reconcile review: frozen scm credential", "run", run.ID, "provider", svc.Provider, "err", err)
-		r.setReviewDeliveryError(ctx, run.ID, "The frozen repository grant is unavailable; the system will retry review writeback.")
+		message := "The frozen repository grant is unavailable; the system will retry review writeback."
+		r.setReviewDeliveryError(ctx, run.ID, message)
+		r.recordDelivery(ctx, run, domain.DeliveryPending, domain.DeliveryReviewComment, message)
 		return
 	}
 	owner, repo, ok := provider.SplitRepo(scm.RepositoryPath)
 	if !ok {
 		r.log.Warn("reconcile review: bad frozen repository path", "run", run.ID)
-		r.setReviewDeliveryError(ctx, run.ID, "The frozen repository reference is invalid; review writeback cannot continue.")
+		message := "The frozen repository reference is invalid; review writeback cannot continue."
+		r.setReviewDeliveryError(ctx, run.ID, message)
+		r.recordDelivery(ctx, run, domain.DeliveryFailed, domain.DeliveryReviewComment, message)
 		return
 	}
 	prov, credentialSource := scm.Client, scm.Token.Source
@@ -1037,19 +1117,25 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 		pr, findErr := prov.FindOpenPRByHead(ctx, owner, repo, run.PRHeadBranch)
 		if findErr != nil {
 			r.log.Warn("reconcile review: find target PR", "run", run.ID, "err", findErr)
-			r.setReviewDeliveryError(ctx, run.ID, "The provider could not resolve the target pull request; the system will retry.")
+			message := "The provider could not resolve the target pull request; the system will retry."
+			r.setReviewDeliveryError(ctx, run.ID, message)
+			r.recordDelivery(ctx, run, domain.DeliveryPending, domain.DeliveryReviewComment, message)
 			return
 		}
 		if pr == nil {
 			r.log.Warn("reconcile review: target PR not found (closed?)", "run", run.ID, "head", run.PRHeadBranch)
-			r.setReviewDeliveryError(ctx, run.ID, "The target pull request is unavailable; review writeback will retry.")
+			message := "The target pull request is unavailable; review writeback will retry."
+			r.setReviewDeliveryError(ctx, run.ID, message)
+			r.recordDelivery(ctx, run, domain.DeliveryPending, domain.DeliveryReviewComment, message)
 			return // retry next tick; PR may reopen or this stays unposted
 		}
 		prNumber = pr.Number
 	}
 	if err := postProviderReview(ctx, prov, owner, repo, prNumber, run); err != nil {
 		r.log.Warn("reconcile review: post comment", "run", run.ID, "pr", prNumber, "err", err)
-		r.setReviewDeliveryError(ctx, run.ID, "Provider rejected the review writeback; the system will retry automatically.")
+		message := "Provider rejected the review writeback; the system will retry automatically."
+		r.setReviewDeliveryError(ctx, run.ID, message)
+		r.recordDelivery(ctx, run, domain.DeliveryPending, domain.DeliveryReviewComment, message)
 		return
 	}
 	if _, err := r.st.MarkReviewPosted(ctx, run.ID); err != nil {
@@ -1057,6 +1143,12 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 		r.setReviewDeliveryError(ctx, run.ID, "The review reached the provider, but Cloud could not record delivery confirmation.")
 		return
 	}
+	committed, err := r.st.UpdateRunDelivery(ctx, run.ID, domain.DeliveryDelivered, domain.DeliveryReviewComment, "", r.now())
+	if err != nil {
+		r.log.Warn("reconcile review: mark delivery", "run", run.ID, "err", err)
+		return
+	}
+	r.emitStatus(ctx, committed)
 	r.log.Info("reconcile review: posted review comment", "run", run.ID, "pr", prNumber, "src", credentialSource)
 }
 
@@ -1278,6 +1370,13 @@ func (r *Reconciler) reconcilePluginKanbanWriteback(ctx context.Context) {
 				continue
 			}
 		}
+		// The accepted receipt above is independent of code delivery and must be
+		// retried immediately. The terminal receipt and Done move are not: a
+		// successful runner Job only proves execution completed, so keep the Card
+		// in WIP until the provider confirms the requested publication.
+		if deliveryAwaiting(&wb.Run) {
+			continue
+		}
 		if !terminalWritten {
 			body := terminalMarker + "\n" + kanbanCommentBody(&wb.Run, r.consoleURL)
 			if err := writer.AddComment(ctx, wb.Claim.WorkspaceID, wb.Claim.DocumentID, body); err != nil {
@@ -1285,7 +1384,7 @@ func (r *Reconciler) reconcilePluginKanbanWriteback(ctx context.Context) {
 				continue
 			}
 		}
-		if wb.Run.Status == domain.StatusSucceeded && wb.Claim.DoneColumn != "" {
+		if deliveryAllowsCompletion(&wb.Run) && wb.Claim.DoneColumn != "" {
 			if err := writer.MoveCard(ctx, wb.Claim.WorkspaceID, wb.Claim.DocumentID, wb.Claim.DoneColumn); err != nil {
 				r.finishUnavailablePluginKanbanWriteback(ctx, wb, err)
 				continue
@@ -1329,6 +1428,9 @@ func isJTypeNotFound(err error) bool {
 // thing that removes it from the scan): a transient jtype error therefore just
 // retries — it never loses the result silently.
 func (r *Reconciler) writebackCard(ctx context.Context, f *jtype.Factory, wb *store.KanbanWriteback) {
+	if deliveryAwaiting(&wb.Run) {
+		return
+	}
 	// Resolve this link's PAT (D25/D36): the per-link encrypted token, or
 	// fail-visibly skip (no cluster fallback since D36). On the
 	// missing-credential path the claim is left unmarked so the writeback
@@ -1349,7 +1451,7 @@ func (r *Reconciler) writebackCard(ctx context.Context, f *jtype.Factory, wb *st
 	// retry the whole pass before commenting, so the comment never lands on a
 	// card that did not move. Failed/canceled runs skip the move (see doc comment).
 	moveTo := ""
-	if wb.Run.Status == domain.StatusSucceeded && wb.Link.DoneColumn != "" {
+	if deliveryAllowsCompletion(&wb.Run) && wb.Link.DoneColumn != "" {
 		moveTo = wb.Link.DoneColumn
 	}
 	if moveTo != "" {
@@ -1373,6 +1475,20 @@ func (r *Reconciler) writebackCard(ctx context.Context, f *jtype.Factory, wb *st
 		"moved_to", moveTo)
 }
 
+func deliveryAwaiting(run *domain.Run) bool {
+	return run != nil && run.Status == domain.StatusSucceeded && run.DeliveryStatus == domain.DeliveryPending
+}
+
+func deliveryAllowsCompletion(run *domain.Run) bool {
+	if run == nil || run.Status != domain.StatusSucceeded {
+		return false
+	}
+	// Empty is accepted for records written before the delivery-state migration.
+	return run.DeliveryStatus == "" ||
+		run.DeliveryStatus == domain.DeliveryNotRequired ||
+		run.DeliveryStatus == domain.DeliveryDelivered
+}
+
 // kanbanCommentBody renders the card comment for a terminal run. Succeeded runs
 // link the draft PR (if any) + the console run view; failed/canceled runs state
 // the reason. Always includes a console deep-link when consoleURL is set so the
@@ -1385,7 +1501,19 @@ func kanbanCommentBody(run *domain.Run, consoleURL string) string {
 	var b strings.Builder
 	switch run.Status {
 	case domain.StatusSucceeded:
-		b.WriteString("✅ jcode finished run `")
+		if run.DeliveryStatus == domain.DeliveryFailed {
+			b.WriteString("⚠️ jcode completed execution for run `")
+			b.WriteString(run.ID)
+			b.WriteString("`, but delivery failed")
+			if run.DeliveryError != "" {
+				b.WriteString(": ")
+				b.WriteString(run.DeliveryError)
+			} else {
+				b.WriteString(".")
+			}
+			break
+		}
+		b.WriteString("✅ jcode finished and delivered run `")
 		b.WriteString(run.ID)
 		if run.NoChanges() {
 			// D18: an empty-diff run is a first-class success — say so explicitly
@@ -1526,7 +1654,7 @@ func (r *Reconciler) apply(ctx context.Context, run *domain.Run, d Decision, pro
 		if committed, err := r.st.MarkSucceeded(ctx, run.ID, "Succeeded", r.now()); err != nil {
 			r.log.Error("reconcile: mark succeeded", "run", run.ID, "err", err)
 		} else {
-			r.emitStatus(ctx, committed)
+			r.emitStatus(ctx, r.initializeDelivery(ctx, committed))
 		}
 
 	case ActionMarkFailed:
@@ -1547,6 +1675,56 @@ func (r *Reconciler) apply(ctx context.Context, run *domain.Run, d Decision, pro
 		}
 	}
 	return false
+}
+
+// initializeDelivery starts the publication state machine after execution has
+// succeeded. The provider-side reconcile passes complete it independently.
+func (r *Reconciler) initializeDelivery(ctx context.Context, run *domain.Run) *domain.Run {
+	if run == nil {
+		return run
+	}
+	svc, err := r.st.GetService(ctx, run.ServiceID)
+	if err != nil {
+		r.log.Error("reconcile: load service for delivery", "run", run.ID, "err", err)
+		return run
+	}
+	status := domain.DeliveryDelivered
+	kind := domain.DeliveryArtifact
+	message := ""
+	switch {
+	case run.NoChanges():
+		status, kind = domain.DeliveryNotRequired, ""
+	case run.Kind == domain.RunKindReview:
+		status, kind = domain.DeliveryPending, domain.DeliveryReviewComment
+		if run.ReviewPostedAt != nil {
+			status = domain.DeliveryDelivered
+		} else if strings.TrimSpace(run.ReviewOutput) == "" && run.ReviewResult == nil {
+			status = domain.DeliveryFailed
+			message = "The review Run completed without a review result to publish."
+		}
+	case run.Kind == domain.RunKindAgent && run.PRHeadBranch != "":
+		status, kind = domain.DeliveryPending, domain.DeliveryBranchUpdate
+		if run.CommitSHA != "" {
+			status = domain.DeliveryDelivered
+		} else if run.GitBranch == "" {
+			status = domain.DeliveryFailed
+			message = "The Run completed without a branch bundle to publish."
+		}
+	case svc.GitMode == domain.GitModeDraftPR:
+		status, kind = domain.DeliveryPending, domain.DeliveryPullRequest
+		if run.PRURL != "" {
+			status = domain.DeliveryDelivered
+		} else if run.GitBranch == "" {
+			status = domain.DeliveryFailed
+			message = "The Run completed without a branch bundle to publish."
+		}
+	}
+	committed, err := r.st.UpdateRunDelivery(ctx, run.ID, status, kind, message, r.now())
+	if err != nil {
+		r.log.Error("reconcile: initialize delivery", "run", run.ID, "err", err)
+		return run
+	}
+	return committed
 }
 
 // createJob mints a per-run token, creates the runner Job, and persists the job
@@ -1632,6 +1810,26 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 	// an empty value when K8s is enabled); this guards dev/API-only shapes.
 	if r.cfg.OrchBaseURL == "" {
 		r.log.Warn("reconcile: ORCH_BASE_URL unset — cannot build LLM proxy URL; leaving run queued", "run", run.ID)
+		return false
+	}
+
+	// Runtime selection is a Service policy resolved exclusively through the
+	// cluster administrator's allowlist. Never accept an OCI reference from a
+	// Run or trigger payload: that would turn task input into code execution
+	// outside the reviewed runner supply chain.
+	svc, err := r.st.GetService(ctx, run.ServiceID)
+	if err != nil {
+		r.log.Error("reconcile: load service runtime profile", "run", run.ID, "err", err)
+		return false
+	}
+	runnerImage, ok := r.cfg.ResolveRunnerImage(svc.RunnerProfile)
+	if !ok {
+		msg := "the Service's runner profile is not available in this cluster; select an allowlisted runner profile and retry"
+		if committed, merr := r.st.MarkFailed(ctx, run.ID, "Failed", domain.FailureSetupFailed, msg, r.now()); merr != nil {
+			r.log.Error("reconcile: mark failed (runner profile unavailable)", "run", run.ID, "profile", svc.RunnerProfile, "err", merr)
+		} else {
+			r.emitStatus(ctx, committed)
+		}
 		return false
 	}
 
@@ -1816,6 +2014,7 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 	spec := k8s.JobSpec{
 		Name:              jobName,
 		RunID:             run.ID,
+		Image:             runnerImage,
 		Env:               env,
 		TimeoutSeconds:    jobDeadline,
 		WorkspacePVC:      workspacePVC,
@@ -2056,8 +2255,16 @@ func (r *Reconciler) cleanupTerminalJobs(ctx context.Context) {
 // emitStatus appends a run.status event (and run.failure when failed).
 func (r *Reconciler) emitStatus(ctx context.Context, run *domain.Run) {
 	payload := map[string]any{
-		"status": string(run.Status),
-		"phase":  run.Phase,
+		"status":          string(run.Status),
+		"phase":           run.Phase,
+		"delivery_status": string(run.DeliveryStatus),
+		"delivery_kind":   string(run.DeliveryKind),
+	}
+	if run.DeliveryError != "" {
+		payload["delivery_error"] = run.DeliveryError
+	}
+	if run.DeliveredAt != nil {
+		payload["delivered_at"] = run.DeliveredAt
 	}
 	if run.Status == domain.StatusFailed {
 		payload["failure_reason"] = string(run.FailureReason)

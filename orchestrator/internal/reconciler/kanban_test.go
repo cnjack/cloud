@@ -180,6 +180,36 @@ func TestWritebackSucceededPostsAndMoves(t *testing.T) {
 	}
 }
 
+func TestWritebackSucceededWaitsForDeliveryBeforeMovingDone(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	run, _, _ := seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
+	if _, err := st.UpdateRunDelivery(
+		ctx, run.ID, domain.DeliveryPending, domain.DeliveryPullRequest, "", time.Now(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	fk := &fakeKanbanWriter{}
+	rec := wire(st, newWritebackRec(st), fk, "http://console")
+
+	rec.Tick(ctx)
+
+	if len(fk.comments) != 0 || len(fk.moves) != 0 {
+		t.Fatalf("pending delivery must stay in WIP; comments=%d moves=%d", len(fk.comments), len(fk.moves))
+	}
+	if _, err := st.UpdateRunDelivery(
+		ctx, run.ID, domain.DeliveryDelivered, domain.DeliveryPullRequest, "", time.Now(),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	rec.Tick(ctx)
+
+	if len(fk.comments) != 1 || len(fk.moves) != 1 || fk.moves[0].status != "done" {
+		t.Fatalf("delivered run must complete the card; comments=%d moves=%+v", len(fk.comments), fk.moves)
+	}
+}
+
 func TestPluginKanbanWritebackUsesInstallationWorkspace(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemStore()
@@ -212,6 +242,9 @@ func TestPluginKanbanWritebackUsesInstallationWorkspace(t *testing.T) {
 	); err != nil || !attached {
 		t.Fatalf("attach run=%v err=%v", attached, err)
 	}
+	if _, err := st.UpdateRunDelivery(ctx, run.ID, domain.DeliveryPending, domain.DeliveryPullRequest, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.CreateRunPluginSnapshots(ctx, []domain.RunPluginSnapshot{{RunID: run.ID, InstallationID: installation.ID, CreatedAt: time.Now()}}); err != nil {
 		t.Fatal(err)
 	}
@@ -227,6 +260,13 @@ func TestPluginKanbanWritebackUsesInstallationWorkspace(t *testing.T) {
 	}
 	writer := &fakeKanbanWriter{moveErrOnce: true}
 	rec := wire(st, newWritebackRec(st), writer, "http://console")
+	rec.Tick(ctx)
+	if len(writer.comments) != 1 || !strings.Contains(writer.comments[0].body, ":accepted -->") || len(writer.moves) != 0 {
+		t.Fatalf("pending delivery receipts=%+v moves=%+v, want accepted receipt and WIP", writer.comments, writer.moves)
+	}
+	if _, err := st.UpdateRunDelivery(ctx, run.ID, domain.DeliveryDelivered, domain.DeliveryPullRequest, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	rec.Tick(ctx)
 	rec.Tick(ctx)
 	if len(writer.moves) != 1 || writer.moves[0].ws != "workspace-fixed" || writer.moves[0].status != "done" {

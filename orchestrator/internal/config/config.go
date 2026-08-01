@@ -4,8 +4,10 @@ package config
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -40,9 +42,13 @@ type Config struct {
 	BackoffMaxMs  int64 // BACKOFF_MAX_MS, default 300000
 
 	// Kubernetes
-	Kubeconfig         string            // KUBECONFIG (empty => in-cluster)
-	Namespace          string            // K8S_NAMESPACE, default "jcloud"
-	RunnerImage        string            // RUNNER_IMAGE (required)
+	Kubeconfig  string // KUBECONFIG (empty => in-cluster)
+	Namespace   string // K8S_NAMESPACE, default "jcloud"
+	RunnerImage string // RUNNER_IMAGE (required)
+	// RunnerProfiles is an administrator-controlled allowlist from
+	// RUNNER_PROFILES_JSON. "default" always resolves to RUNNER_IMAGE; a Run can
+	// select a profile name, never an arbitrary container image.
+	RunnerProfiles     map[string]string
 	PluginRuntimeImage string            // PLUGIN_RUNTIME_IMAGE (required; Orchestrator release image used for per-run Plugin injection)
 	OrchBaseURL        string            // ORCH_BASE_URL (required) — reachable from runner pods
 	ModelBaseURL       string            // MODEL_BASE_URL — env fallback for the effective model config (see internal/modelcfg)
@@ -307,6 +313,11 @@ func Load() (*Config, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required env: %s", strings.Join(missing, ", "))
 	}
+	profiles, err := loadRunnerProfiles(c.RunnerImage, os.Getenv("RUNNER_PROFILES_JSON"))
+	if err != nil {
+		return nil, err
+	}
+	c.RunnerProfiles = profiles
 	if c.UsageRawRetention <= 0 {
 		return nil, fmt.Errorf("USAGE_RAW_RETENTION must be positive")
 	}
@@ -327,6 +338,84 @@ func Load() (*Config, error) {
 		}
 	}
 	return c, nil
+}
+
+// ResolveRunnerImage resolves a user-facing runtime profile through the
+// administrator-owned allowlist. Empty profile is the backwards-compatible
+// default; image references supplied by task input are never accepted.
+func (c *Config) ResolveRunnerImage(profile string) (string, bool) {
+	if c == nil {
+		return "", false
+	}
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		profile = "default"
+	}
+	image, ok := c.RunnerProfiles[profile]
+	if !ok && profile == "default" && strings.TrimSpace(c.RunnerImage) != "" {
+		return strings.TrimSpace(c.RunnerImage), true
+	}
+	return image, ok && image != ""
+}
+
+func (c *Config) RunnerProfileNames() []string {
+	if c == nil {
+		return []string{}
+	}
+	names := make([]string, 0, len(c.RunnerProfiles)+1)
+	seen := make(map[string]bool, len(c.RunnerProfiles)+1)
+	if _, ok := c.ResolveRunnerImage("default"); ok {
+		names = append(names, "default")
+		seen["default"] = true
+	}
+	for name, image := range c.RunnerProfiles {
+		if !seen[name] && image != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func loadRunnerProfiles(defaultImage, raw string) (map[string]string, error) {
+	profiles := make(map[string]string)
+	if image := strings.TrimSpace(defaultImage); image != "" {
+		profiles["default"] = image
+	}
+	if strings.TrimSpace(raw) == "" {
+		return profiles, nil
+	}
+	var configured map[string]string
+	if err := json.Unmarshal([]byte(raw), &configured); err != nil {
+		return nil, fmt.Errorf("RUNNER_PROFILES_JSON must be a JSON object: %w", err)
+	}
+	for name, image := range configured {
+		if name == "default" {
+			return nil, fmt.Errorf("RUNNER_PROFILES_JSON profile %q is reserved for RUNNER_IMAGE", name)
+		}
+		if !validRunnerProfileName(name) {
+			return nil, fmt.Errorf("RUNNER_PROFILES_JSON profile %q must match [a-z0-9][a-z0-9-]{0,31}", name)
+		}
+		image = strings.TrimSpace(image)
+		if image == "" || strings.HasPrefix(image, "-") || strings.ContainsAny(image, " \t\r\n") {
+			return nil, fmt.Errorf("RUNNER_PROFILES_JSON profile %q has an invalid image reference", name)
+		}
+		profiles[name] = image
+	}
+	return profiles, nil
+}
+
+func validRunnerProfileName(name string) bool {
+	if len(name) == 0 || len(name) > 32 {
+		return false
+	}
+	for i, r := range name {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || i > 0 && r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // oauthProviderDefaults lists the supported providers and their public default

@@ -259,6 +259,10 @@ func (c *Client) DeleteJob(ctx context.Context, name string) error {
 }
 
 func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
+	runnerImage := strings.TrimSpace(spec.Image)
+	if runnerImage == "" {
+		runnerImage = c.cfg.RunnerImage
+	}
 	pluginProviderSet := make(map[string]bool, len(spec.PluginProviders))
 	for _, provider := range spec.PluginProviders {
 		pluginProviderSet[provider] = true
@@ -412,7 +416,7 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 	}
 	runner := corev1.Container{
 		Name:            "runner",
-		Image:           c.cfg.RunnerImage,
+		Image:           runnerImage,
 		SecurityContext: containerSecurityContext.DeepCopy(),
 		Env:             env,
 		VolumeMounts:    mounts,
@@ -430,7 +434,7 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 	containers := []corev1.Container{runner}
 	var initContainers []corev1.Container
 	if spec.ModelConfigBase64 != "" {
-		initContainers = append(initContainers, corev1.Container{Name: "run-model-effort-config", Image: c.cfg.RunnerImage,
+		initContainers = append(initContainers, corev1.Container{Name: "run-model-effort-config", Image: runnerImage,
 			Command:      []string{"/bin/sh", "-ec", `printf %s "$RUN_MODEL_CONFIG_B64" | base64 -d > /run/jcloud/config/config.json`},
 			Env:          []corev1.EnvVar{{Name: "RUN_MODEL_CONFIG_B64", Value: spec.ModelConfigBase64}},
 			VolumeMounts: []corev1.VolumeMount{{Name: runtimeConfigVolumeName, MountPath: runtimeConfigMountPath}}, SecurityContext: containerSecurityContext.DeepCopy()})
@@ -438,7 +442,7 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 	for index, attachment := range spec.Attachments {
 		// Index is part of the name, so two long ids with a shared prefix cannot
 		// collide after Kubernetes' 63-character name limit is applied.
-		initContainers = append(initContainers, corev1.Container{Name: fmt.Sprintf("run-attachment-%02d", index+1), Image: c.cfg.RunnerImage,
+		initContainers = append(initContainers, corev1.Container{Name: fmt.Sprintf("run-attachment-%02d", index+1), Image: runnerImage,
 			Command:      []string{"/bin/sh", "-ec", `tmp="${ATTACHMENT_DEST}.partial"; trap 'rm -f "$tmp"' EXIT; curl --fail --silent --show-error --location "$ATTACHMENT_URL" --output "$tmp"; actual="$(wc -c < "$tmp" | tr -d ' ')"; [ "$actual" = "$ATTACHMENT_SIZE_BYTES" ] || { echo "attachment size mismatch" >&2; exit 1; }; mv "$tmp" "$ATTACHMENT_DEST"`},
 			Env:          []corev1.EnvVar{{Name: "ATTACHMENT_URL", Value: attachment.URL}, {Name: "ATTACHMENT_DEST", Value: attachmentsMountPath + "/" + attachment.StageID}, {Name: "ATTACHMENT_SIZE_BYTES", Value: strconv.FormatInt(attachment.SizeBytes, 10)}},
 			VolumeMounts: []corev1.VolumeMount{{Name: attachmentsVolumeName, MountPath: attachmentsMountPath}}, SecurityContext: containerSecurityContext.DeepCopy()})
@@ -461,7 +465,7 @@ func (c *Client) buildJob(spec JobSpec) *batchv1.Job {
 		if err != nil {
 			panic("attachment manifest marshal: " + err.Error())
 		}
-		initContainers = append(initContainers, corev1.Container{Name: "run-attachments-manifest", Image: c.cfg.RunnerImage,
+		initContainers = append(initContainers, corev1.Container{Name: "run-attachments-manifest", Image: runnerImage,
 			Command:      []string{"/bin/sh", "-ec", `printf %s "$ATTACHMENTS_MANIFEST_B64" | base64 -d > /run/jcloud/attachments/manifest.json`},
 			Env:          []corev1.EnvVar{{Name: "ATTACHMENTS_MANIFEST_B64", Value: base64.StdEncoding.EncodeToString(b)}},
 			VolumeMounts: []corev1.VolumeMount{{Name: attachmentsVolumeName, MountPath: attachmentsMountPath}}, SecurityContext: containerSecurityContext.DeepCopy()})

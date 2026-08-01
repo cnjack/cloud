@@ -78,6 +78,10 @@ type JobSpec struct {
 	Name string
 	// RunID is stamped into the jcloud.run-id label and the RUN_ID env var.
 	RunID string
+	// Image is the already-resolved, administrator-allowlisted runtime profile
+	// image. Empty keeps backwards compatibility with the launcher's configured
+	// default image for maintenance Jobs and older callers.
+	Image string
 
 	// Env is the full environment injected into the runner container. The
 	// reconciler assembles the runner-contract vars; see reconciler.jobEnv.

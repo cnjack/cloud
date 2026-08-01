@@ -121,6 +121,7 @@ type createServiceReq struct {
 	GitMode        string `json:"git_mode"`
 	PRReadyPolicy  string `json:"pr_ready_policy"`
 	DefaultModelID string `json:"default_model_id"`
+	RunnerProfile  string `json:"runner_profile"`
 }
 
 // serviceBranchView is deliberately smaller than a provider's branch resource.
@@ -350,7 +351,14 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		ID: domain.NewID(), ProjectID: projectID, Name: name,
 		RepoKind: domain.RepoKindProvider, Provider: domain.GitProvider(installation.Provider),
 		RepoOwnerName: repo.FullName, ProviderRepoID: &repoID, DefaultBranch: branch,
-		GitMode: gitMode, PRReadyPolicy: readyPolicy, CreatedAt: now,
+		GitMode: gitMode, PRReadyPolicy: readyPolicy, RunnerProfile: "default", CreatedAt: now,
+	}
+	if profile := strings.TrimSpace(req.RunnerProfile); profile != "" {
+		if _, ok := s.cfg.ResolveRunnerImage(profile); !ok {
+			writeError(w, http.StatusBadRequest, "runner_profile_unavailable", "runner_profile must be one of the cluster's allowlisted runtime profiles")
+			return
+		}
+		svc.RunnerProfile = profile
 	}
 	if strings.TrimSpace(req.DefaultModelID) != "" {
 		modelID := strings.TrimSpace(req.DefaultModelID)
@@ -785,6 +793,9 @@ type patchServiceReq struct {
 	// empty-string="unchanged" fields above because clearing a default is a
 	// meaningful action.
 	DefaultModelID *string `json:"default_model_id"`
+	// RunnerProfile has pointer presence semantics: omitted = unchanged; empty =
+	// reset to default; otherwise it must resolve through the cluster allowlist.
+	RunnerProfile *string `json:"runner_profile"`
 	// IntegrationID binds/unbinds the service to a project integration (D19 / F5).
 	// Presence semantics (pointer): omitted = unchanged; "" = unbind (legacy
 	// credential path); an id = bind, validated to belong to this project + a still
@@ -848,6 +859,17 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 			}
 			svc.DefaultModelID = &id
 		}
+	}
+	if req.RunnerProfile != nil {
+		profile := strings.TrimSpace(*req.RunnerProfile)
+		if profile == "" {
+			profile = "default"
+		}
+		if _, ok := s.cfg.ResolveRunnerImage(profile); !ok {
+			writeError(w, http.StatusBadRequest, "runner_profile_unavailable", "runner_profile must be one of the cluster's allowlisted runtime profiles")
+			return
+		}
+		svc.RunnerProfile = profile
 	}
 	if err := s.st.UpdateService(r.Context(), svc); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not update service")

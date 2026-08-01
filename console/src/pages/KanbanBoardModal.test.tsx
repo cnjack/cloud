@@ -60,12 +60,13 @@ function link(over: Partial<BoardEmbedLink> = {}): BoardEmbedLink {
     board_title: 'jtype',
     service_id: 'svc_1',
     trigger_column: 'ai',
+	work_column: 'doing',
     enabled: true,
     ...over,
   };
 }
 
-const COLS = [{ key: 'ai', name: 'AI' }];
+const COLS = [{ key: 'ai', name: 'AI' }, { key: 'doing', name: 'Doing' }, { key: 'done', name: 'Done' }];
 
 /**
  * A fake ApiClient whose board proxy serves `.board` docs from an in-memory
@@ -110,6 +111,7 @@ function makeApi(
       model: { label: 'Demo model' },
       board: { workspace_id: 'ws_team', ref: 'b_123' },
       trigger_column: { key: 'ai', label: 'AI' },
+	  work_column: { key: 'doing', label: 'Doing' },
       done_column: { key: 'done', label: 'Done' },
       output: 'comment_and_move_on_success' as const,
       health: { state: 'ready' as const, blocker: null },
@@ -131,9 +133,9 @@ function renderModal(api: ApiClient, links: BoardEmbedLink[], serviceId?: string
 
 describe('KanbanBoardModal', () => {
   it('shows setup without a duplicate board preview and saves the selected columns', async () => {
-    const putServiceKanban = vi.fn(async (_serviceId: string, input: { installation_id: string; board_ref: string; trigger_column?: string; done_column?: string }) => ({
+    const putServiceKanban = vi.fn(async (_serviceId: string, input: { installation_id: string; board_ref: string; trigger_column?: string; work_column?: string; done_column?: string }) => ({
       automation: { id: 'a1', service_id: 'svc_1', name: 'Kanban', trigger_kind: 'kanban' as const, prompt_template: '', enabled: true, ignore_jcode: true, created_at: '', updated_at: '' },
-      kanban: { installation_id: input.installation_id, board_ref: input.board_ref, trigger_column: input.trigger_column ?? 'ai', done_column: input.done_column ?? 'done' },
+	  kanban: { installation_id: input.installation_id, board_ref: input.board_ref, trigger_column: input.trigger_column ?? 'ai', work_column: input.work_column ?? 'doing', done_column: input.done_column ?? 'done' },
     }));
     const api = {
       ...makeApi({}),
@@ -142,7 +144,7 @@ describe('KanbanBoardModal', () => {
         id: 'b_stable',
         ref: 'delivery.board',
         title: 'Delivery',
-        columns: [{ key: 'ai', name: 'AI' }, { key: 'review', name: 'Review' }, { key: 'done', name: 'Done' }],
+		columns: [{ key: 'ai', name: 'AI' }, { key: 'review', name: 'Review' }, { key: 'doing', name: 'Doing' }, { key: 'done', name: 'Done' }],
       }],
       putServiceKanban,
       deleteServiceKanban: async () => undefined,
@@ -164,6 +166,7 @@ describe('KanbanBoardModal', () => {
       installation_id: 'jtype-1',
       board_ref: 'delivery.board',
       trigger_column: 'review',
+	  work_column: 'doing',
       done_column: 'done',
       enabled: true,
     }));
@@ -403,7 +406,7 @@ describe('KanbanBoardModal', () => {
         id: 'b_123',
         ref: 'jtype.board',
         title: 'jtype',
-        columns: [{ key: 'ai', name: 'AI' }, { key: 'review', name: 'Review' }, { key: 'done', name: 'Done' }],
+		columns: [{ key: 'ai', name: 'AI' }, { key: 'review', name: 'Review' }, { key: 'doing', name: 'Doing' }, { key: 'done', name: 'Done' }],
       }],
       putServiceKanban,
       deleteServiceKanban: async () => undefined,
@@ -432,6 +435,7 @@ describe('KanbanBoardModal', () => {
       installation_id: 'jtype-1',
       board_ref: 'jtype.board',
       trigger_column: 'review',
+	  work_column: 'doing',
       done_column: 'done',
       enabled: true,
     }));

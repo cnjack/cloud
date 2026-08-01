@@ -667,6 +667,10 @@ func TestMemListRunsAwaitingPR(t *testing.T) {
 	// r4: running with branch -> excluded (not terminal-succeeded).
 	r4 := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Status: domain.StatusRunning, GitBranch: "agent/run-4", CreatedAt: time.Now()}
 	_ = m.CreateRun(ctx, r4)
+	// r5: permanently failed delivery -> excluded instead of being retried and
+	// emitting the same error on every reconciler tick.
+	r5 := &domain.Run{ID: domain.NewID(), ProjectID: p.ID, Status: domain.StatusSucceeded, GitBranch: "agent/run-5", DeliveryStatus: domain.DeliveryFailed, CreatedAt: time.Now()}
+	_ = m.CreateRun(ctx, r5)
 
 	out, err := m.ListRunsAwaitingPR(ctx)
 	if err != nil {

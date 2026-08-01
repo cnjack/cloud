@@ -62,7 +62,8 @@ type systemProvider struct {
 }
 
 type systemRunner struct {
-	Image string `json:"image"`
+	Image    string   `json:"image"`
+	Profiles []string `json:"profiles"`
 	// PersistentWorkspace mirrors the cluster PERSISTENT_WORKSPACE switch (Feature
 	// C / D05): when on, each service keeps a persistent workspace PVC (reused
 	// checkout + jcode memory) and runs serialize per service. Purely informational.
@@ -170,6 +171,7 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 		},
 		Runner: systemRunner{
 			Image:               s.cfg.RunnerImage,
+			Profiles:            s.cfg.RunnerProfileNames(),
 			PersistentWorkspace: s.cfg.PersistentWorkspace,
 			Prewarm:             s.prewarmStatus(r.Context()),
 		},

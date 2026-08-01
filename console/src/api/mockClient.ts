@@ -190,6 +190,11 @@ const DEMO_USERS: UserSearchResult[] = [
   { id: 'u_katherine', display_name: 'Katherine Johnson', is_cluster_admin: false },
 ];
 
+const DEMO_PLUGIN_REPOSITORIES: PluginRepositoryResource[] = [
+  { id: 'repo-1', full_name: 'acme/demo', clone_url: 'https://example.test/acme/demo.git', html_url: 'https://example.test/acme/demo', default_branch: 'main', private: false },
+  { id: 'repo-2', full_name: 'acme/platform', clone_url: 'https://example.test/acme/platform.git', html_url: 'https://example.test/acme/platform', default_branch: 'main', private: true },
+];
+
 /** "owner/name" from a provider-shaped http(s) URL, or "" otherwise. */
 function ownerName(raw: string): string {
   try {
@@ -763,6 +768,10 @@ export function createMockClient(): ApiClient {
         // present the moment the header goes terminal.
         run.pr_url = 'https://gitea.local/jcloud/seed/pulls/42';
         run.pr_number = 42;
+        run.delivery_status = 'delivered';
+        run.delivery_kind = 'pull_request';
+        run.delivery_updated_at = nowISO();
+        run.delivered_at = run.delivery_updated_at;
         // D22: a session run parks in awaiting_input (waiting for the user's next
         // message) instead of finishing — sendMessage/finishSession drive it on.
         setStatus(run, run.session ? 'awaiting_input' : 'succeeded');
@@ -876,6 +885,7 @@ export function createMockClient(): ApiClient {
       kind: 'agent',
       prompt,
       status: 'queued',
+      delivery_status: 'not_required',
       attempt,
       retried_from: retriedFrom ?? null,
       // F9b: a resume run links back to the original + carries the copied ACP
@@ -1422,6 +1432,7 @@ export function createMockClient(): ApiClient {
         },
         runner: {
           image: 'ghcr.io/jcloud/runner:demo',
+          profiles: ['default', 'go-node', 'python', 'rust', 'polyglot'],
           prewarm: {
             supported: true,
             desired: 2,
@@ -2087,10 +2098,7 @@ export function createMockClient(): ApiClient {
     async listPluginRepositories(projectId: string, installationId: string, q?: string): Promise<PluginRepositoryResource[]> {
       const plugin = [...pluginList(projectId).values()].find((item) => item.id === installationId);
       if (!plugin) throw new ApiError(404, 'plugin installation not found');
-      const rows = [
-        { id: 'repo-1', full_name: 'acme/demo', clone_url: 'https://example.test/acme/demo.git', html_url: 'https://example.test/acme/demo', default_branch: 'main', private: false },
-        { id: 'repo-2', full_name: 'acme/platform', clone_url: 'https://example.test/acme/platform.git', html_url: 'https://example.test/acme/platform', default_branch: 'main', private: true },
-      ];
+      const rows = DEMO_PLUGIN_REPOSITORIES.map((row) => ({ ...row }));
       const needle = q?.trim().toLowerCase();
       return delay(needle ? rows.filter((row) => row.full_name.includes(needle)) : rows);
     },
@@ -2391,10 +2399,37 @@ export function createMockClient(): ApiClient {
       if (gitMode !== 'readonly' && gitMode !== 'draft_pr') {
         throw badRequest("git_mode must be 'readonly' or 'draft_pr'");
       }
-      const repoUrl = input.repo_url?.trim() ?? '';
-      const prov = input.owner_name?.trim()
+      let repoUrl = input.repo_url?.trim() ?? '';
+      let repoOwnerName = input.owner_name?.trim() ?? '';
+      let repoHTMLURL: string | undefined;
+      let defaultBranch = input.default_branch?.trim() || 'main';
+      let prov: Service['provider'] = input.owner_name?.trim()
         ? input.provider ?? 'gitea'
-        : providerForRepoUrl(repoUrl);
+        : providerForRepoUrl(repoUrl) ?? undefined;
+      let installation: ProjectPlugin | undefined;
+      if (input.installation_id || input.provider_repo_id) {
+        if (!input.installation_id || !input.provider_repo_id) {
+          throw badRequest('installation_id and provider_repo_id are required together');
+        }
+        installation = [...pluginList(projectId).values()].find(
+          (item) => item.id === input.installation_id,
+        );
+        if (!installation || installation.status !== 'enabled') {
+          throw badRequest('the selected Project Plugin is not enabled');
+        }
+        if (installation.provider === 'jtype') {
+          throw badRequest('JType is not a source-code repository provider');
+        }
+        const selectedRepo = DEMO_PLUGIN_REPOSITORIES.find(
+          (repo) => String(repo.id) === String(input.provider_repo_id),
+        );
+        if (!selectedRepo) throw new ApiError(404, 'plugin repository not found');
+        prov = installation.provider;
+        repoOwnerName = selectedRepo.full_name;
+        repoUrl = selectedRepo.clone_url ?? selectedRepo.html_url ?? '';
+        repoHTMLURL = selectedRepo.html_url;
+        defaultBranch = selectedRepo.default_branch || 'main';
+      }
       if (gitMode === 'draft_pr' && !prov) {
         throw badRequest(
           "git_mode 'draft_pr' requires a provider repository (owner/name); raw repos are read-only",
@@ -2407,18 +2442,12 @@ export function createMockClient(): ApiClient {
         name,
         repo_kind: boundProvider ? 'provider' : 'raw',
         provider: boundProvider ?? undefined,
-        repo_owner_name: boundProvider
-          ? input.owner_name?.trim() || ownerName(repoUrl)
-          : undefined,
+        repo_owner_name: boundProvider ? repoOwnerName || ownerName(repoUrl) : undefined,
         repo_html_url: boundProvider
-          ? mockRepoHTMLURL(
-              boundProvider,
-              input.owner_name?.trim() || ownerName(repoUrl),
-              repoUrl,
-            )
+          ? repoHTMLURL ?? mockRepoHTMLURL(boundProvider, repoOwnerName || ownerName(repoUrl), repoUrl)
           : undefined,
         raw_repo_url: boundProvider ? undefined : repoUrl,
-        default_branch: input.default_branch?.trim() || 'main',
+        default_branch: defaultBranch,
         git_mode: gitMode,
         default_model_id: projects.get(projectId)?.default_model_id ?? null,
         integration_id: null,
@@ -2426,6 +2455,7 @@ export function createMockClient(): ApiClient {
       };
       list.push(svc);
       services.set(projectId, list);
+      if (installation) installation.service_count = (installation.service_count ?? 0) + 1;
       return delay(svc);
     },
 
@@ -2448,6 +2478,14 @@ export function createMockClient(): ApiClient {
         }
         if (input.pr_ready_policy !== undefined) {
           svc.pr_ready_policy = input.pr_ready_policy;
+        }
+        if (input.runner_profile !== undefined) {
+          const profile = input.runner_profile.trim() || 'default';
+          const allowed = ['default', 'go-node', 'python', 'rust', 'polyglot'];
+          if (!allowed.includes(profile)) {
+            throw badRequest('runner_profile is not configured by the cluster administrator');
+          }
+          svc.runner_profile = profile;
         }
         return delay({ ...svc });
       }

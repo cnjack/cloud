@@ -382,6 +382,7 @@ export interface ServiceKanbanPolicy {
   model: { id?: string; label: string };
   board: { workspace_id: string; ref: string };
   trigger_column: { key: string; label: string };
+	work_column?: { key?: string; label?: string };
   done_column: { key?: string; label?: string };
   output: 'comment_only' | 'comment_and_move_on_success';
   health: {
@@ -419,6 +420,7 @@ export interface PutServiceKanbanInput {
   installation_id: string;
   board_ref: string;
   trigger_column?: string;
+	work_column?: string;
   done_column?: string;
   enabled?: boolean;
 }
@@ -432,7 +434,7 @@ export interface ProjectAutomation {
   enabled: boolean;
   prompt: string;
   scm?: { provider: GitProvider; action: NormalizedScmAction; branch?: string; paths?: string[]; conclusions?: string[]; ignore_jcode: boolean };
-  kanban?: { workspace_id: string; board_id: string; board_name?: string; trigger_column: string; done_column?: string };
+	kanban?: { workspace_id: string; board_id: string; board_name?: string; trigger_column: string; work_column?: string; done_column?: string };
   cron?: { expression: string };
   last_error?: string;
   last_triggered_at?: string;
@@ -450,7 +452,7 @@ export interface CreateProjectAutomationInput {
   enabled?: boolean;
   ignore_jcode?: boolean;
   scm?: { branch?: string; path_pattern?: string; conclusion?: string; include_drafts?: boolean; actions: ScmAutomationAction[] };
-  kanban?: { installation_id: string; board_ref: string; trigger_column: string; done_column?: string };
+	kanban?: { installation_id: string; board_ref: string; trigger_column: string; work_column?: string; done_column?: string };
   cron?: { cron_expr: string; output_mode?: 'run_only' | 'create_card' };
 }
 
@@ -472,6 +474,9 @@ export type RepoKind = 'provider' | 'raw';
  * Absent is treated as `agent` by the UI.
  */
 export type RunKind = 'agent' | 'review';
+
+export type DeliveryStatus = 'not_required' | 'pending' | 'delivered' | 'failed';
+export type DeliveryKind = 'artifact' | 'pull_request' | 'branch_update' | 'review_comment';
 
 /**
  * A service is one repository configuration inside a project. The simple "one
@@ -499,6 +504,8 @@ export interface Service {
    * is used, or the composer must choose when several are granted).
    */
   default_model_id?: string | null;
+	/** Administrator-allowlisted runtime environment used for this Service. */
+	runner_profile?: string;
   /**
    * The project integration (D19 / F5) this service's runs act as. When set, all
    * git operations use the integration's bot credential (not the triggering
@@ -600,6 +607,13 @@ export interface Run {
   kind?: RunKind;
   prompt: string;
   status: RunStatus;
+	/** Publication outcome, intentionally separate from runner execution status. */
+	delivery_status?: DeliveryStatus;
+	delivery_kind?: DeliveryKind;
+	delivery_error?: string;
+	delivery_attempts?: number;
+	delivery_updated_at?: string | null;
+	delivered_at?: string | null;
   /**
    * D18/D26: whether a succeeded run actually produced a diff. `no_changes`
    * means the agent ran to completion but made no code changes (still a
@@ -957,6 +971,10 @@ export interface RunEvent {
 export interface RunEventPayload {
   // run.status
   status?: RunStatus;
+	delivery_status?: DeliveryStatus;
+	delivery_kind?: DeliveryKind;
+	delivery_error?: string;
+	delivered_at?: string | null;
   // agent.text
   text?: string;
   // agent.tool_call / agent.tool_result
@@ -1069,6 +1087,8 @@ export interface SystemInfo {
   };
   runner: {
     image: string;
+	/** Service-selectable runtime profile names; never arbitrary image input. */
+	profiles?: string[];
     /**
      * Feature C (D05): whether the cluster PERSISTENT_WORKSPACE switch is on —
      * services keep a persistent workspace PVC (reused checkout + jcode memory)
@@ -1156,6 +1176,7 @@ export interface BoardEmbedLink {
   board_title?: string;
   service_id: string;
   trigger_column: string;
+	work_column?: string;
   done_column?: string;
   enabled: boolean;
 }
@@ -1523,6 +1544,7 @@ export interface ResumeRunInput extends ResumeSessionOptions {
 export interface UpdateServiceInput {
   default_model_id?: string;
   pr_ready_policy?: PRReadyPolicy;
+  runner_profile?: string;
 }
 
 /** POST /projects/{id}/services. Services are always bound to a Project Plugin repository. */
@@ -1533,6 +1555,7 @@ export interface CreateServiceInput {
   git_mode?: GitMode;
   pr_ready_policy?: PRReadyPolicy;
   default_model_id?: string;
+	runner_profile?: string;
   /** @deprecated Mock-only compatibility. The production API rejects bare Git URLs. */
   repo_url?: string;
   /** @deprecated Mock-only compatibility. */

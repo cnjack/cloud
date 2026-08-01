@@ -60,6 +60,44 @@ func (s RunStatus) Valid() bool {
 	return false
 }
 
+// DeliveryStatus is the outcome of publishing a successful Run's result to its
+// declared destination. It is deliberately separate from RunStatus: an agent
+// process can finish successfully while a PR push, review post, or other
+// provider-side delivery is still pending or has failed.
+type DeliveryStatus string
+
+const (
+	DeliveryNotRequired DeliveryStatus = "not_required"
+	DeliveryPending     DeliveryStatus = "pending"
+	DeliveryDelivered   DeliveryStatus = "delivered"
+	DeliveryFailed      DeliveryStatus = "failed"
+)
+
+func (s DeliveryStatus) Valid() bool {
+	switch s {
+	case DeliveryNotRequired, DeliveryPending, DeliveryDelivered, DeliveryFailed:
+		return true
+	}
+	return false
+}
+
+type DeliveryKind string
+
+const (
+	DeliveryArtifact      DeliveryKind = "artifact"
+	DeliveryPullRequest   DeliveryKind = "pull_request"
+	DeliveryBranchUpdate  DeliveryKind = "branch_update"
+	DeliveryReviewComment DeliveryKind = "review_comment"
+)
+
+func (k DeliveryKind) Valid() bool {
+	switch k {
+	case "", DeliveryArtifact, DeliveryPullRequest, DeliveryBranchUpdate, DeliveryReviewComment:
+		return true
+	}
+	return false
+}
+
 // Terminal reports whether s is a terminal state that the reconciler will not
 // move out of.
 func (s RunStatus) Terminal() bool {
@@ -343,8 +381,12 @@ type Service struct {
 	// granted model is used, or the composer must choose when several are granted.
 	// Always references a model the service's project is granted (validated on
 	// write).
-	DefaultModelID *string   `json:"default_model_id,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	DefaultModelID *string `json:"default_model_id,omitempty"`
+	// RunnerProfile selects an administrator-defined runtime image allowlist
+	// entry (for example default, go-node, python, or rust). It is a name, never a
+	// caller-supplied OCI image reference.
+	RunnerProfile string    `json:"runner_profile"`
+	CreatedAt     time.Time `json:"created_at"`
 
 	// Workspace archive state (F10 / D23 ③). When the persistent-workspace PVC
 	// (Feature C / D05) has been idle long enough, the reconciler's archive pass
@@ -404,6 +446,15 @@ type Run struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	// Delivery* tracks the external publication contract independently from the
+	// runner Job. DeliveryStatus=pending/failed on a succeeded Run is therefore a
+	// normal, visible state rather than a false green result.
+	DeliveryStatus    DeliveryStatus `json:"delivery_status"`
+	DeliveryKind      DeliveryKind   `json:"delivery_kind,omitempty"`
+	DeliveryError     string         `json:"delivery_error,omitempty"`
+	DeliveryAttempts  int            `json:"delivery_attempts"`
+	DeliveryUpdatedAt *time.Time     `json:"delivery_updated_at,omitempty"`
+	DeliveredAt       *time.Time     `json:"delivered_at,omitempty"`
 	// JobCleanedAt is stamped when the reconciler has confirmed the run's
 	// terminal Job was deleted from the cluster. K8sJobName is NEVER cleared —
 	// it is part of the run's historical record (audit + e2e verification); this

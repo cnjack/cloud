@@ -191,11 +191,16 @@ type SCMAction struct {
 }
 
 type KanbanTrigger struct {
-	AutomationID   string     `json:"automation_id"`
-	InstallationID string     `json:"installation_id"`
-	BoardRef       string     `json:"board_ref"`
-	TriggerColumn  string     `json:"trigger_column"`
-	TriggerLabel   string     `json:"trigger_label,omitempty"`
+	AutomationID   string `json:"automation_id"`
+	InstallationID string `json:"installation_id"`
+	BoardRef       string `json:"board_ref"`
+	TriggerColumn  string `json:"trigger_column"`
+	TriggerLabel   string `json:"trigger_label,omitempty"`
+	// WorkColumn is the user-visible ownership state entered before Cloud queues
+	// a Run. It keeps bootstrap pickup and ordinary event pickup honest on the
+	// source board: accepted work no longer remains in the trigger queue.
+	WorkColumn     string     `json:"work_column,omitempty"`
+	WorkLabel      string     `json:"work_label,omitempty"`
 	DoneColumn     string     `json:"done_column,omitempty"`
 	DoneLabel      string     `json:"done_label,omitempty"`
 	EventCursor    int64      `json:"event_cursor"`

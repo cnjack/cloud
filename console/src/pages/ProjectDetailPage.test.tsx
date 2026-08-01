@@ -62,6 +62,7 @@ function svc(id: string, name: string): Service {
     repo_html_url: `https://git.example.test/acme/${name}`,
     default_branch: 'main',
     git_mode: 'readonly',
+	runner_profile: 'default',
     created_at: '',
   };
 }
@@ -104,6 +105,15 @@ function makeClient(
   };
   const client: Partial<ApiClient> = {
     getProject: async () => p,
+	getSystem: async () => ({
+		version: { version: 'test', commit: 'test' },
+		capacity: { max_concurrent_runs: 4, running: 0, queued: 0, scheduling: 0 },
+		guardrails: { run_timeout_seconds: 1800, job_ttl_seconds: 3600 },
+		provider: { gitea_enabled: true, gitea_url: 'https://git.example.test' },
+		runner: { image: 'runner:default', profiles: ['default', 'go-node', 'python', 'rust'] },
+		namespace: 'jcode',
+		launcher: 'kubernetes',
+	}),
     listRuns: async () => [] as Run[],
     listProjectPlugins: async () => opts.plugins ?? [{
       id: 'plugin-gitea',
@@ -153,7 +163,11 @@ function makeClient(
     },
     updateService: async (sid, input) => {
       calls.serviceUpdates.push({ sid, input });
-      return { ...svc(sid, 'default'), default_model_id: input.default_model_id ?? null };
+		return {
+			...svc(sid, 'default'),
+			default_model_id: input.default_model_id ?? null,
+			runner_profile: input.runner_profile ?? 'default',
+		};
     },
     deleteService: async (sid) => {
       calls.serviceDeletes.push(sid);
@@ -572,6 +586,22 @@ describe('ProjectDetailPage — model selection (D21)', () => {
     await waitFor(() => expect(calls.serviceUpdates).toHaveLength(1));
     expect(calls.serviceUpdates[0]).toMatchObject({ sid: 'svc_default', input: { default_model_id: 'm_gpt' } });
   });
+
+	it('selects an allowlisted Runner environment from Service settings', async () => {
+		const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+			models: grantedModels,
+		});
+		renderPage(client);
+
+		await screen.findByTestId('run-input');
+		fireEvent.click(screen.getByRole('tab', { name: 'Service settings' }));
+		await screen.findByTestId('service-runner-profile-select');
+		await pickOption('service-runner-profile-select', 'go-node');
+
+		await waitFor(() => expect(calls.serviceUpdates).toContainEqual({
+			sid: 'svc_default', input: { runner_profile: 'go-node' },
+		}));
+	});
 
   it('hides the service default-model editor from a member (composer pick only)', async () => {
     const { client } = makeClient(project('member', [svc('svc_default', 'default')]), {

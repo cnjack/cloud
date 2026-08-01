@@ -24,6 +24,7 @@ type serviceKanbanReq struct {
 	InstallationID string  `json:"installation_id"`
 	BoardRef       string  `json:"board_ref"`
 	TriggerColumn  *string `json:"trigger_column"`
+	WorkColumn     *string `json:"work_column"`
 	DoneColumn     *string `json:"done_column"`
 	Enabled        *bool   `json:"enabled"`
 }
@@ -93,6 +94,10 @@ type serviceKanbanPolicyView struct {
 		Key   string `json:"key"`
 		Label string `json:"label"`
 	} `json:"trigger_column"`
+	WorkColumn struct {
+		Key   string `json:"key,omitempty"`
+		Label string `json:"label,omitempty"`
+	} `json:"work_column"`
 	DoneColumn struct {
 		Key   string `json:"key,omitempty"`
 		Label string `json:"label,omitempty"`
@@ -127,6 +132,11 @@ func (s *Server) handleGetServiceKanbanPolicy(w http.ResponseWriter, r *http.Req
 	if view.TriggerColumn.Label == "" {
 		view.TriggerColumn.Label = spec.Kanban.TriggerColumn
 	}
+	view.WorkColumn.Key = spec.Kanban.WorkColumn
+	view.WorkColumn.Label = spec.Kanban.WorkLabel
+	if view.WorkColumn.Label == "" {
+		view.WorkColumn.Label = spec.Kanban.WorkColumn
+	}
 	view.DoneColumn.Key = spec.Kanban.DoneColumn
 	view.DoneColumn.Label = spec.Kanban.DoneLabel
 	if view.DoneColumn.Label == "" {
@@ -150,6 +160,9 @@ func (s *Server) handleGetServiceKanbanPolicy(w http.ResponseWriter, r *http.Req
 	}
 	if !spec.Automation.Enabled {
 		block("binding_disabled", "project_owner")
+	}
+	if strings.TrimSpace(spec.Kanban.WorkColumn) == "" {
+		block("work_column_not_configured", "project_owner")
 	}
 	installation, err := s.st.GetPluginInstallation(r.Context(), spec.Kanban.InstallationID)
 	if err != nil || installation.Provider != domain.PluginJType ||
@@ -531,19 +544,28 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	triggerColumn := defaultKanbanTriggerColumn
+	workColumn := ""
 	doneColumn := defaultKanbanDoneColumn
 	if current != nil && current.Kanban != nil {
 		triggerColumn = current.Kanban.TriggerColumn
+		workColumn = current.Kanban.WorkColumn
 		doneColumn = current.Kanban.DoneColumn
 	}
 	if req.TriggerColumn != nil {
 		triggerColumn = strings.TrimSpace(*req.TriggerColumn)
+	}
+	if req.WorkColumn != nil {
+		workColumn = strings.TrimSpace(*req.WorkColumn)
 	}
 	if req.DoneColumn != nil {
 		doneColumn = strings.TrimSpace(*req.DoneColumn)
 	}
 	if triggerColumn == "" {
 		writeError(w, 400, "bad_request", "trigger_column is required")
+		return
+	}
+	if workColumn != "" && (workColumn == triggerColumn || workColumn == doneColumn) {
+		writeError(w, 400, "bad_request", "work_column must differ from trigger_column and done_column")
 		return
 	}
 	in, err := s.st.GetPluginInstallation(r.Context(), req.InstallationID)
@@ -563,11 +585,13 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 	}
 	canonicalBoardRef := ""
 	triggerLabel := triggerColumn
+	workLabel := workColumn
 	doneLabel := doneColumn
 	roundTripCurrent := current != nil && current.Kanban != nil &&
 		current.Kanban.InstallationID == req.InstallationID &&
 		current.Kanban.BoardRef == req.BoardRef &&
 		current.Kanban.TriggerColumn == triggerColumn &&
+		current.Kanban.WorkColumn == workColumn &&
 		current.Kanban.DoneColumn == doneColumn
 	if roundTripCurrent {
 		// GET returns the persisted canonical board id. An enabled-only PUT may
@@ -576,6 +600,9 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 		canonicalBoardRef = current.Kanban.BoardRef
 		if current.Kanban.TriggerLabel != "" {
 			triggerLabel = current.Kanban.TriggerLabel
+		}
+		if current.Kanban.WorkLabel != "" {
+			workLabel = current.Kanban.WorkLabel
 		}
 		if current.Kanban.DoneLabel != "" {
 			doneLabel = current.Kanban.DoneLabel
@@ -602,11 +629,16 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 			writeError(w, 409, "column_not_found", "trigger_column '"+triggerColumn+"' is not a column on board "+req.BoardRef)
 			return
 		}
+		if workColumn != "" && !boardHasColumn(board, workColumn) {
+			writeError(w, 409, "column_not_found", "work_column '"+workColumn+"' is not a column on board "+req.BoardRef)
+			return
+		}
 		if doneColumn != "" && !boardHasColumn(board, doneColumn) {
 			writeError(w, 409, "column_not_found", "done_column '"+doneColumn+"' is not a column on board "+req.BoardRef)
 			return
 		}
 		triggerLabel = boardColumnLabel(board, triggerColumn)
+		workLabel = boardColumnLabel(board, workColumn)
 		doneLabel = boardColumnLabel(board, doneColumn)
 	}
 	items, err := s.st.ListPluginAutomationsByProject(r.Context(), svc.ProjectID)
@@ -633,6 +665,7 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 	trigger := &domain.KanbanTrigger{
 		AutomationID: a.ID, InstallationID: req.InstallationID, BoardRef: canonicalBoardRef,
 		TriggerColumn: triggerColumn, TriggerLabel: triggerLabel,
+		WorkColumn: workColumn, WorkLabel: workLabel,
 		DoneColumn: doneColumn, DoneLabel: doneLabel,
 	}
 	if current == nil {

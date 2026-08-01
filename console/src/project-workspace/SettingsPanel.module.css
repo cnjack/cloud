@@ -47,6 +47,10 @@
   gap: var(--space-5);
 }
 
+.grid > .policy:last-child {
+	grid-column: 2;
+}
+
 .facts,
 .policy {
   padding: var(--space-5);
@@ -133,4 +137,8 @@
     grid-template-columns: 1fr;
     flex-direction: column;
   }
+
+	.grid > .policy:last-child {
+		grid-column: auto;
+	}
 }

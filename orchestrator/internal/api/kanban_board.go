@@ -48,6 +48,7 @@ type boardEmbedLinkView struct {
 	BoardStatus   string `json:"board_status"`
 	ServiceID     string `json:"service_id"`
 	TriggerColumn string `json:"trigger_column"`
+	WorkColumn    string `json:"work_column,omitempty"`
 	DoneColumn    string `json:"done_column,omitempty"`
 	Enabled       bool   `json:"enabled"`
 }
@@ -95,7 +96,7 @@ func (s *Server) handleListBoardEmbedLinks(w http.ResponseWriter, r *http.Reques
 			in.ConfigRevision != cfg.ConfigRevision || in.LastHealthError != "" || in.WorkspaceID == "" {
 			continue
 		}
-		out = append(out, boardEmbedLinkView{ID: a.ID, WorkspaceID: in.WorkspaceID, BoardRef: spec.Kanban.BoardRef, BoardStatus: domain.KanbanBoardOK, ServiceID: a.ServiceID, TriggerColumn: spec.Kanban.TriggerColumn, DoneColumn: spec.Kanban.DoneColumn, Enabled: a.Enabled})
+		out = append(out, boardEmbedLinkView{ID: a.ID, WorkspaceID: in.WorkspaceID, BoardRef: spec.Kanban.BoardRef, BoardStatus: domain.KanbanBoardOK, ServiceID: a.ServiceID, TriggerColumn: spec.Kanban.TriggerColumn, WorkColumn: spec.Kanban.WorkColumn, DoneColumn: spec.Kanban.DoneColumn, Enabled: a.Enabled})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"links": out})
 }

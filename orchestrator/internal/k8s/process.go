@@ -78,7 +78,14 @@ func (p *ProcessLauncher) CreateJob(ctx context.Context, spec JobSpec) error {
 	for k, v := range spec.Env {
 		args = append(args, "-e", k+"="+v)
 	}
-	args = append(args, p.image)
+	image := strings.TrimSpace(spec.Image)
+	if image == "" {
+		image = p.image
+	}
+	if image == "" {
+		return fmt.Errorf("runner image is empty")
+	}
+	args = append(args, image)
 
 	cmd := exec.CommandContext(ctx, p.docker, args...)
 	var stderr bytes.Buffer
