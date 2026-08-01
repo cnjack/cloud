@@ -316,6 +316,7 @@ export default {
       syncMetadataError: '無法同步模型中繼資料。',
       catalogDialogTitle: '目錄 · {name}',
       loadingCatalog: '正在載入供應商目錄…',
+      catalogModelsDevNote: '目錄來自內建 models.dev 快照；供應商連線驗證會另外進行。',
       catalogLoadError: '無法載入目錄',
       catalogLoadFallback: '無法載入供應商目錄。',
       grantUpdateError: '無法更新專案授權。',

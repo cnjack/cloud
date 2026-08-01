@@ -545,30 +545,34 @@ function CatalogDialog({ api, provider, open, onClose }: { api: ModelsAdminApi; 
     }
   };
   const updatePending = api.scope.kind === 'cluster' ? api.updateClusterModel?.isPending : api.updateModel?.isPending;
+  const usesModelsDev = catalog.data?.some((model) => model.metadata_source === 'models.dev') ?? false;
   return (
     <Modal open={open} onClose={onClose} title={t('cluster.models.catalogDialogTitle', { name: provider.name })}>
       {catalog.isLoading ? <LoadingBlock label={t('cluster.models.loadingCatalog')} /> : catalog.isError ? (
         <div className={styles.catalogError}><strong>{apiErrorCode(catalog.error) === 'catalog_unavailable' ? t('cluster.models.catalogUnavailable') : t('cluster.models.catalogLoadError')}</strong><p>{errorMessage(catalog.error, t('cluster.models.catalogLoadFallback'))}</p><Button onClick={() => catalog.refetch()}>{t('common.retry')}</Button></div>
       ) : (
-        <ul className={styles.catalogList}>{(catalog.data ?? []).map((model) => {
-          const configured = provider.models.find((item) => item.model_id === model.id);
-          const metadataDiffers = !!configured && configured.source === 'catalog' && model.metadata_source === 'models.dev' && (
-            configured.context_window !== model.context_window ||
-            configured.capabilities.reasoning !== model.capabilities.reasoning ||
-            configured.capabilities.tools !== model.capabilities.tools ||
-            configured.capabilities.image !== model.capabilities.image
-          );
-          return (
-            <li key={model.id}>
-              <span><strong>{model.name || model.id}</strong><small>{model.id} · {contextLabel(model.context_window, t)}</small></span>
-              {metadataDiffers ? (
-                <Button size="sm" onClick={() => syncMetadata(model, configured)} disabled={updatePending}>{t('cluster.models.syncMetadata')}</Button>
-              ) : (
-                <Button size="sm" onClick={() => add(model)} disabled={!!configured || create.isPending}>{configured ? t('common.configured') : t('common.add')}</Button>
-              )}
-            </li>
-          );
-        })}</ul>
+        <>
+          {usesModelsDev && <p className={styles.catalogSourceNote}>{t('cluster.models.catalogModelsDevNote')}</p>}
+          <ul className={styles.catalogList}>{(catalog.data ?? []).map((model) => {
+            const configured = provider.models.find((item) => item.model_id === model.id);
+            const metadataDiffers = !!configured && configured.source === 'catalog' && model.metadata_source === 'models.dev' && (
+              configured.context_window !== model.context_window ||
+              configured.capabilities.reasoning !== model.capabilities.reasoning ||
+              configured.capabilities.tools !== model.capabilities.tools ||
+              configured.capabilities.image !== model.capabilities.image
+            );
+            return (
+              <li key={model.id}>
+                <span><strong>{model.name || model.id}</strong><small>{model.id} · {contextLabel(model.context_window, t)}</small></span>
+                {metadataDiffers ? (
+                  <Button size="sm" onClick={() => syncMetadata(model, configured)} disabled={updatePending}>{t('cluster.models.syncMetadata')}</Button>
+                ) : (
+                  <Button size="sm" onClick={() => add(model)} disabled={!!configured || create.isPending}>{configured ? t('common.configured') : t('common.add')}</Button>
+                )}
+              </li>
+            );
+          })}</ul>
+        </>
       )}
     </Modal>
   );

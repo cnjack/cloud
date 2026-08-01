@@ -83,11 +83,11 @@ func TestModelProviderCRUDCatalogAndCredentials(t *testing.T) {
 
 	const secret = "provider-super-secret"
 	provider := createProvider(t, ts, map[string]any{
-		"name": "Zhipu AI", "kind": "zhipuai-coding-plan", "base_url": upstream.URL + "/v1",
+		"name": "Custom Zhipu", "kind": "custom-zhipu", "base_url": upstream.URL + "/v1",
 		"auth_type": "api_key", "api_key": secret, "catalog_mode": "auto",
 		"headers": map[string]any{"X-Org": "desktop-parity"},
 	})
-	if provider.ID == "" || provider.Name != "Zhipu AI" || provider.Kind != "zhipuai-coding-plan" || !provider.APIKeySet || !provider.HeadersSet {
+	if provider.ID == "" || provider.Name != "Custom Zhipu" || provider.Kind != "custom-zhipu" || !provider.APIKeySet || !provider.HeadersSet {
 		t.Fatalf("provider view mismatch: %+v", provider)
 	}
 
@@ -120,10 +120,10 @@ func TestModelProviderCRUDCatalogAndCredentials(t *testing.T) {
 	if len(catalog.Models) != 2 || catalog.Models[0].ID != "glm-5.2" {
 		t.Fatalf("catalog mismatch: %+v", catalog.Models)
 	}
-	if catalog.Models[0].Name != "GLM-5.2" || catalog.Models[0].ContextWindow != 1_000_000 ||
-		!catalog.Models[0].Capabilities.Reasoning || !catalog.Models[0].Capabilities.Tools || catalog.Models[0].Capabilities.Image ||
-		catalog.Models[0].MetadataSource != "models.dev" {
-		t.Fatalf("catalog models.dev metadata mismatch: %+v", catalog.Models[0])
+	if catalog.Models[0].Name != "" || catalog.Models[0].ContextWindow != 0 ||
+		catalog.Models[0].Capabilities.Reasoning || catalog.Models[0].Capabilities.Tools || catalog.Models[0].Capabilities.Image ||
+		catalog.Models[0].MetadataSource != "" {
+		t.Fatalf("custom provider catalog should remain live and unenriched: %+v", catalog.Models[0])
 	}
 	if catalogAuth != "Bearer "+secret {
 		t.Fatalf("catalog authorization=%q want bearer credential", catalogAuth)
@@ -191,6 +191,54 @@ func TestModelProviderCRUDCatalogAndCredentials(t *testing.T) {
 	if len(modelsEnvelope.Models) != 0 {
 		t.Fatalf("provider delete did not cascade models: %+v", modelsEnvelope.Models)
 	}
+}
+
+func TestKnownProviderCatalogUsesModelsDevWithoutLiveProbe(t *testing.T) {
+	liveProbeCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		liveProbeCalled = true
+		http.Error(w, "credential rejected", http.StatusUnauthorized)
+	}))
+	t.Cleanup(upstream.Close)
+
+	ts, st := catalogServer(t, true)
+	_ = mkUser(t, st, "admin")
+	provider := createProvider(t, ts, map[string]any{
+		"name": "Alibaba Token Plan (China)", "kind": "alibaba-token-plan-cn", "base_url": upstream.URL + "/v1",
+		"auth_type": "api_key", "api_key": "token-plan-secret", "catalog_mode": "auto",
+	})
+
+	resp := do(t, http.MethodGet, ts.URL+"/api/v1/system/model-providers/"+provider.ID+"/catalog", consoleToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("built-in catalog: status=%d body=%s", resp.StatusCode, raw)
+	}
+	var catalog struct {
+		Models []struct {
+			ID             string                 `json:"id"`
+			Name           string                 `json:"name"`
+			ContextWindow  int                    `json:"context_window"`
+			Capabilities   modelCapabilitiesViewT `json:"capabilities"`
+			MetadataSource string                 `json:"metadata_source"`
+		} `json:"models"`
+	}
+	decode(t, resp, &catalog)
+	if liveProbeCalled {
+		t.Fatal("known provider catalog unexpectedly called the live /models endpoint")
+	}
+	for _, model := range catalog.Models {
+		if model.ID != "qwen3.8-max-preview" {
+			continue
+		}
+		if model.Name == "" || model.ContextWindow != 1_000_000 ||
+			!model.Capabilities.Reasoning || !model.Capabilities.Tools || !model.Capabilities.Image ||
+			model.MetadataSource != "models.dev" {
+			t.Fatalf("models.dev catalog metadata mismatch: %+v", model)
+		}
+		return
+	}
+	t.Fatalf("qwen3.8-max-preview missing from built-in catalog: %+v", catalog.Models)
 }
 
 func TestModelProviderCatalogUnavailableIsTyped(t *testing.T) {

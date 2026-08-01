@@ -316,6 +316,7 @@ export default {
       syncMetadataError: '모델 메타데이터를 동기화할 수 없습니다.',
       catalogDialogTitle: '카탈로그 · {name}',
       loadingCatalog: '제공자 카탈로그 불러오는 중…',
+      catalogModelsDevNote: '카탈로그는 내장 models.dev 스냅샷에서 가져옵니다. 제공자 연결 검증은 별도로 수행됩니다.',
       catalogLoadError: '카탈로그를 불러올 수 없습니다',
       catalogLoadFallback: '제공자 카탈로그를 불러올 수 없습니다.',
       grantUpdateError: '프로젝트 권한 부여를 업데이트할 수 없습니다.',

@@ -651,6 +651,7 @@ export default {
       syncMetadataError: 'Could not sync model metadata.',
       catalogDialogTitle: 'Catalog · {name}',
       loadingCatalog: 'Loading provider catalog…',
+      catalogModelsDevNote: 'Catalog from the built-in models.dev snapshot. Provider connection verification is performed separately.',
       catalogLoadError: 'Could not load catalog',
       catalogLoadFallback: 'The provider catalog could not be loaded.',
       grantUpdateError: 'Could not update the Project grant.',

@@ -98,6 +98,7 @@
 .catalogError { display: grid; gap: var(--space-3); }
 .catalogError p, .dialogIntro { color: var(--color-text-muted); font-size: var(--fs-caption); line-height: 1.55; }
 .catalogError button { justify-self: start; }
+.catalogSourceNote { margin: 0 0 var(--space-2); border-radius: var(--radius-md); background: var(--color-bg-inset); padding: var(--space-2) var(--space-3); color: var(--color-text-muted); font-size: var(--fs-tiny); line-height: 1.5; }
 .catalogList { display: grid; margin: 0; list-style: none; padding: 0; }
 .catalogList li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); border-bottom: 1px solid var(--color-border-subtle); padding: var(--space-3) 0; }
 .catalogList li:last-child { border-bottom: 0; }

@@ -449,6 +449,10 @@ func (s *Server) handleProjectModelProviderCatalog(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusConflict, "catalog_unavailable", "this provider does not expose a model catalog; add a custom model")
 		return
 	}
+	if models, ok := builtInProviderCatalog(provider.Kind); ok {
+		writeJSON(w, http.StatusOK, map[string]any{"models": models})
+		return
+	}
 	resp, err := s.requestProviderModels(r.Context(), provider)
 	if err != nil {
 		code := "provider_unreachable"
@@ -480,7 +484,6 @@ func (s *Server) handleProjectModelProviderCatalog(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadGateway, "catalog_invalid", "the provider returned an invalid model catalog")
 		return
 	}
-	enrichProviderCatalog(provider.Kind, models)
 	available := true
 	s.recordProviderVerification(r.Context(), provider, &available, "")
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})

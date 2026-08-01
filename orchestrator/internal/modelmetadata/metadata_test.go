@@ -1,6 +1,9 @@
 package modelmetadata
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestLookupGeneratedModelsDevMetadata(t *testing.T) {
 	tests := []struct {
@@ -37,5 +40,36 @@ func TestLookupDoesNotGuessUnknownProviderOrModel(t *testing.T) {
 	}
 	if _, ok := Lookup("zhipuai-coding-plan", "glm-unknown"); ok {
 		t.Fatal("unknown model must remain unknown")
+	}
+}
+
+func TestListReturnsSortedProviderCatalog(t *testing.T) {
+	entries, ok := List("alibaba-token-plan-cn")
+	if !ok {
+		t.Fatal("Alibaba Token Plan catalog not found")
+	}
+	if len(entries) == 0 {
+		t.Fatal("Alibaba Token Plan catalog is empty")
+	}
+	ids := make([]string, 0, len(entries))
+	var preview Entry
+	for _, entry := range entries {
+		ids = append(ids, entry.ID)
+		if entry.ID == "qwen3.8-max-preview" {
+			preview = entry
+		}
+	}
+	if !slices.IsSorted(ids) {
+		t.Fatalf("catalog ids are not sorted: %v", ids)
+	}
+	if preview.ID == "" || preview.ContextWindow != 1_000_000 ||
+		!preview.Capabilities.Reasoning || !preview.Capabilities.Tools || !preview.Capabilities.Image {
+		t.Fatalf("qwen3.8-max-preview metadata mismatch: %+v", preview)
+	}
+}
+
+func TestListDoesNotInventUnknownProviderCatalog(t *testing.T) {
+	if entries, ok := List("custom-openai-compatible"); ok || entries != nil {
+		t.Fatalf("unknown provider catalog = (%+v, %v), want (nil, false)", entries, ok)
 	}
 }

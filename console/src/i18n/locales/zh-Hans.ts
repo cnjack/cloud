@@ -316,6 +316,7 @@ export default {
       syncMetadataError: '无法同步模型元数据。',
       catalogDialogTitle: '目录 · {name}',
       loadingCatalog: '加载提供方目录…',
+      catalogModelsDevNote: '目录来自内置 models.dev 快照；提供方连接验证会单独进行。',
       catalogLoadError: '无法加载目录',
       catalogLoadFallback: '无法加载提供方目录。',
       grantUpdateError: '无法更新项目授权。',

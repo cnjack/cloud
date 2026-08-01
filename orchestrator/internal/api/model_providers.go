@@ -474,20 +474,26 @@ func decodeProviderCatalog(resp *http.Response) ([]catalogModelView, error) {
 	return models, nil
 }
 
-// enrichProviderCatalog overlays verified build-time models.dev metadata onto
-// the IDs returned by the provider's live /models endpoint. Exact provider and
-// model IDs are required; unknown entries remain explicitly unknown.
-func enrichProviderCatalog(providerKind string, models []catalogModelView) {
-	for i := range models {
-		metadata, ok := modelmetadata.Lookup(providerKind, models[i].ID)
-		if !ok {
-			continue
-		}
-		models[i].Name = metadata.Name
-		models[i].ContextWindow = metadata.ContextWindow
-		models[i].Capabilities = metadata.Capabilities
-		models[i].MetadataSource = "models.dev"
+// builtInProviderCatalog returns the models.dev snapshot as the catalog for a
+// known provider. Several coding-plan endpoints either do not expose /models or
+// apply different credential rules to it, so a live probe must not gate catalog
+// browsing. Connection verification remains a separate, live operation.
+func builtInProviderCatalog(providerKind string) ([]catalogModelView, bool) {
+	entries, ok := modelmetadata.List(providerKind)
+	if !ok {
+		return nil, false
 	}
+	models := make([]catalogModelView, 0, len(entries))
+	for _, entry := range entries {
+		models = append(models, catalogModelView{
+			ID:             entry.ID,
+			Name:           entry.Name,
+			Capabilities:   entry.Capabilities,
+			ContextWindow:  entry.ContextWindow,
+			MetadataSource: "models.dev",
+		})
+	}
+	return models, true
 }
 
 // applyCatalogMetadata makes the server authoritative for models.dev-backed
@@ -548,6 +554,10 @@ func (s *Server) handleModelProviderCatalog(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, "catalog_unavailable", "this provider does not expose a model catalog; add a custom model")
 		return
 	}
+	if models, ok := builtInProviderCatalog(provider.Kind); ok {
+		writeJSON(w, http.StatusOK, map[string]any{"models": models})
+		return
+	}
 	resp, err := s.requestProviderModels(r.Context(), provider)
 	if err != nil {
 		code := "provider_unreachable"
@@ -579,7 +589,6 @@ func (s *Server) handleModelProviderCatalog(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadGateway, "catalog_invalid", "the provider returned an invalid model catalog")
 		return
 	}
-	enrichProviderCatalog(provider.Kind, models)
 	available := true
 	s.recordProviderVerification(r.Context(), provider, &available, "")
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})

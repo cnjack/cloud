@@ -143,6 +143,47 @@ func TestProjectProviderOwnerCreateAndList(t *testing.T) {
 	}
 }
 
+func TestProjectKnownProviderCatalogUsesModelsDevWithoutLiveProbe(t *testing.T) {
+	liveProbeCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		liveProbeCalled = true
+		http.Error(w, "credential rejected", http.StatusUnauthorized)
+	}))
+	t.Cleanup(upstream.Close)
+
+	ts, _, proj, ownerTok, _, _ := projectRBACServer(t)
+	provider, status := createProjectProvider(t, ts, proj.ID, ownerTok, map[string]any{
+		"name": "Alibaba Token Plan (China)", "kind": "alibaba-token-plan-cn", "base_url": upstream.URL + "/v1",
+		"auth_type": "api_key", "api_key": "token-plan-secret", "catalog_mode": "auto",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create project provider: status=%d want 201", status)
+	}
+
+	resp := do(t, http.MethodGet, ts.URL+"/api/v1/projects/"+proj.ID+"/model-providers/"+provider.ID+"/catalog", ownerTok, nil)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("built-in project catalog: status=%d body=%s", resp.StatusCode, raw)
+	}
+	var catalog struct {
+		Models []struct {
+			ID             string `json:"id"`
+			MetadataSource string `json:"metadata_source"`
+		} `json:"models"`
+	}
+	decode(t, resp, &catalog)
+	if liveProbeCalled {
+		t.Fatal("known project provider catalog unexpectedly called the live /models endpoint")
+	}
+	for _, model := range catalog.Models {
+		if model.ID == "qwen3.8-max-preview" && model.MetadataSource == "models.dev" {
+			return
+		}
+	}
+	t.Fatalf("models.dev catalog entry missing: %+v", catalog.Models)
+}
+
 // Case 2: a member may GET project providers but every mutation is 403.
 func TestProjectProviderMemberIsReadOnly(t *testing.T) {
 	ts, _, proj, ownerTok, memberTok, _ := projectRBACServer(t)

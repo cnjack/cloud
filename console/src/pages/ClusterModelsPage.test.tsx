@@ -123,6 +123,7 @@ describe('ClusterModelsPage', () => {
 	const card = await screen.findByTestId('provider-card-prv-plan');
 	fireEvent.click(within(card).getByRole('button', { name: 'Browse catalog' }));
 	const dialog = await screen.findByRole('dialog', { name: 'Catalog · Coding Plan' });
+	expect(await within(dialog).findByText(/built-in models\.dev snapshot/i)).toBeTruthy();
 	fireEvent.click(await within(dialog).findByRole('button', { name: 'Sync metadata' }));
 
 	await waitFor(() => expect(updateModel).toHaveBeenCalledWith('mdl-plan', {

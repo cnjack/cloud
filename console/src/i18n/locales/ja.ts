@@ -316,6 +316,7 @@ export default {
       syncMetadataError: 'モデルメタデータを同期できませんでした。',
       catalogDialogTitle: 'カタログ · {name}',
       loadingCatalog: 'プロバイダーカタログを読み込み中…',
+      catalogModelsDevNote: 'カタログは組み込みの models.dev スナップショットから取得しています。プロバイダー接続の検証は別途行われます。',
       catalogLoadError: 'カタログを読み込めませんでした',
       catalogLoadFallback: 'プロバイダーカタログを読み込めませんでした。',
       grantUpdateError: 'プロジェクト付与を更新できませんでした。',
