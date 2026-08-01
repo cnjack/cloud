@@ -547,17 +547,24 @@ func TestFinishSetsFinalize(t *testing.T) {
 	resp.Body.Close()
 }
 
-// Cloud no longer accepts runner bundles or pushes session branches. Sessions
-// use the same in-task Skill/CLI SCM contract as single-turn runs.
-func TestSessionBundleEndpointIsRetired(t *testing.T) {
+// Session delivery accepts cumulative runner bundles. Each accepted bundle
+// advances bundle_rev so the reconciler can push the newest session revision.
+func TestSessionBundleEndpointAcceptsDelivery(t *testing.T) {
 	_, ts, st := sessionTestServer(t)
 	rid, tok := makeSessionRun(t, st, domain.StatusRunning)
 
-	resp := do(t, http.MethodPost, ts.URL+"/internal/v1/runs/"+rid+"/bundle", tok, map[string]any{"retired": true})
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("bundle status=%d want 404", resp.StatusCode)
+	resp := do(t, http.MethodPost, ts.URL+"/internal/v1/runs/"+rid+"/bundle", tok, map[string]any{"delivery": true})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("bundle status=%d want 201", resp.StatusCode)
 	}
 	resp.Body.Close()
+	run, err := st.GetRun(context.Background(), rid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.GitBranch != domain.RunBranchName(rid) || run.BundleRev != 1 {
+		t.Fatalf("git_branch=%q bundle_rev=%d want branch=%q rev=1", run.GitBranch, run.BundleRev, domain.RunBranchName(rid))
+	}
 }
 
 // TestCreateRunWithSessionFlag: POST /services/{id}/runs {session:true} creates a

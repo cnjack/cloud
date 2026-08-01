@@ -45,16 +45,11 @@
 # run (including a reused persistent workspace) so no state ever leaks across
 # runs — see the PERSISTENT_WORKSPACE / cross-run hygiene comment there.
 #
-# Known F7b integration limitation (see the F7a task report): the bundle
-# upload endpoint (POST .../bundle) and the diff artifact endpoint (POST
-# .../artifact) were both designed for a SINGLE call per run. In session mode
-# this script may call them multiple times over the life of one run (once per
-# turn that produces new changes). The dedup above keeps that to "once per
-# turn that actually changed something" rather than every turn, and both
-# uploads are already treated as best-effort/non-fatal (a failed upload logs
-# and continues — see below), so a server that rejects a second call for the
-# same run cannot fail the run; it can only mean the LATEST turn's changes
-# fail to show up until F7b makes these endpoints upsert-safe.
+# Session bundle uploads are cumulative and upsert-safe. A per-turn delivery
+# failure remains retryable: this script does not advance its dedup cursor until
+# the control plane acknowledges the bundle. Finalization is the delivery
+# boundary, so an unacknowledged final bundle fails visibly instead of allowing
+# "execution succeeded" to masquerade as successful delivery.
 
 set -euo pipefail
 
@@ -182,8 +177,12 @@ fi
 PREV_DIFF=""
 [ -f "$STATE_FILE" ] && PREV_DIFF="$(cat "$STATE_FILE" 2>/dev/null || true)"
 if [ "$DIFF" = "$PREV_DIFF" ]; then
-  log "[turn $TURN_INDEX] no NEW change since the last upload — skipping commit/upload"
-  exit 0
+  if [ "$GIT_MODE" = "draft_pr" ] && [ ! -e "$BUNDLE_MARKER" ]; then
+    log "[turn $TURN_INDEX] diff matches stale state but no bundle was acknowledged — retrying delivery"
+  else
+    log "[turn $TURN_INDEX] no NEW change since the last upload — skipping commit/upload"
+    exit 0
+  fi
 fi
 
 # --- draft-PR bundle (blueprint §3) ------------------------------------------
@@ -191,6 +190,7 @@ fi
 # git bundle (BASE_REF..BRANCH_NAME), then POST it to the orchestrator, which
 # pushes the branch and opens/updates the draft PR. The runner NEVER pushes
 # and holds NO token. readonly mode skips this entirely (diff-only).
+BUNDLE_UPLOAD_FAILED=0
 if [ "$GIT_MODE" = "draft_pr" ]; then
   BRANCH_NAME="${BRANCH_NAME:-jcode/run-$RUN_ID}"
   [ -n "$BASE_REF" ] || die setup_failed "draft_pr requires a base commit but none was recorded"
@@ -235,16 +235,15 @@ if [ "$GIT_MODE" = "draft_pr" ]; then
   log "built run bundle ($BUNDLE_BYTES bytes)"
 
   if command -v orchclient >/dev/null 2>&1 && [ -n "${ORCH_BASE_URL:-}" ] && [ -n "${RUN_TOKEN:-}" ]; then
-    # Best-effort/non-fatal (as today): a failed upload never fails the run —
-    # in session mode this ALSO means a later turn's successful upload isn't
-    # blocked by an earlier turn's transient failure (see the F7b integration
-    # note in this file's header). A SUCCESSFUL upload stamps BUNDLE_MARKER:
-    # from that point on the run branch exists server-side, so the finalize
-    # no_changes report is permanently suppressed for this run (see above).
+    # A successful upload is the delivery acknowledgement. On failure, keep
+    # the per-turn hook non-fatal so a later turn/finalizer can retry, but do
+    # not advance STATE_FILE below. Finalize turns a repeated failure into a
+    # visible run failure after preserving the diff artifact.
     if orchclient upload-bundle --file "$RUN_BUNDLE"; then
       touch "$BUNDLE_MARKER" 2>/dev/null || true
     else
-      log "bundle upload failed (non-fatal; the draft PR will not open/update until retried)"
+      BUNDLE_UPLOAD_FAILED=1
+      log "bundle upload failed (will retry before final delivery)"
     fi
   else
     log "no orchestrator wired; skipping bundle upload (standalone run)"
@@ -261,6 +260,17 @@ if command -v orchclient >/dev/null 2>&1 && [ -n "${ORCH_BASE_URL:-}" ] && [ -n 
   fi
 fi
 
+if [ "$BUNDLE_UPLOAD_FAILED" = "1" ]; then
+  if [ "$FINALIZE" = "1" ]; then
+    die agent_error "could not deliver the run bundle to the control plane"
+  fi
+  log "delivery is not acknowledged; leaving dedup state unchanged for retry"
+  exit 0
+fi
+
+# STATE_FILE is the last successfully processed diff. In draft_pr mode that
+# specifically means the matching bundle was acknowledged by the control
+# plane; never let a failed upload suppress the final retry.
 printf '%s' "$DIFF" > "$STATE_FILE" 2>/dev/null || true
 log "success ([turn $TURN_INDEX] changes committed/uploaded)"
 exit 0

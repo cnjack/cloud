@@ -24,6 +24,11 @@
 #      run.failure itself (acpdrive→entrypoint reports once); the SAME failure
 #      under FINALIZE=1 posts run.failure (entrypoint's set -e path would
 #      otherwise swallow the reason).
+#   G. delivery acknowledgement: a failed per-turn bundle upload does not stamp
+#      dedup state; finalize retries it and succeeds when the control plane
+#      recovers.
+#   H. delivery failure is terminal: when finalize still cannot upload the
+#      bundle, the hook fails visibly instead of reporting execution success.
 #
 # Env: KEEP=1 to keep the temp dir for inspection.
 
@@ -61,6 +66,13 @@ cat > "$FAKEBIN/orchclient" <<'FAKE'
 #!/bin/sh
 [ -t 0 ] || cat >/dev/null
 echo "$@" >> "$ORCH_LOG"
+if [ "${1:-}" = "upload-bundle" ] && [ -n "${ORCH_FAIL_BUNDLE_FILE:-}" ] && [ -f "$ORCH_FAIL_BUNDLE_FILE" ]; then
+  remaining="$(cat "$ORCH_FAIL_BUNDLE_FILE")"
+  if [ "$remaining" -gt 0 ]; then
+    echo $((remaining - 1)) > "$ORCH_FAIL_BUNDLE_FILE"
+    exit 1
+  fi
+fi
 exit 0
 FAKE
 chmod +x "$FAKEBIN/orchclient"
@@ -229,8 +241,45 @@ run_hook 1 1 draft_pr "" "jcode/run-hook-f"
 [ "$(count_log report-failure)" = "1" ] || fail "[F] finalize die must post run.failure exactly once, log: $(cat "$ORCH_LOG")"
 pass "[F] finalize die: non-zero exit + run.failure posted once"
 
+# === G. failed per-turn upload is retried by finalize ========================
+info "[G] delivery acknowledgement: finalize retries an unacknowledged bundle"
+new_fixture G; RUN_ID="hook-g"; BR="jcode/run-hook-g"
+ORCH_FAIL_BUNDLE_FILE="$TMP/fail-bundle-g"; export ORCH_FAIL_BUNDLE_FILE
+printf '1\n' > "$ORCH_FAIL_BUNDLE_FILE"
+
+echo "retry delivery" > "$WS/retry.txt"
+run_hook 1 0 draft_pr "$BASE" "$BR"
+[ "$HOOK_RC" -eq 0 ] || fail "[G] per-turn upload failure must remain retryable"
+[ "$(count_log upload-bundle)" = "1" ] || fail "[G] expected first bundle upload attempt"
+[ ! -e "$WS/.git/jcode-bundle-uploaded" ] || fail "[G] failed upload stamped bundle marker"
+[ ! -e "$WS/.git/jcode-turn-hook.last-diff" ] || fail "[G] failed upload stamped dedup state and would suppress retry"
+
+run_hook 1 1 draft_pr "$BASE" "$BR"
+[ "$HOOK_RC" -eq 0 ] || fail "[G] finalize retry exited $HOOK_RC"
+[ "$(count_log upload-bundle)" = "2" ] || fail "[G] finalize did not retry the unacknowledged bundle"
+[ -e "$WS/.git/jcode-bundle-uploaded" ] || fail "[G] successful retry did not stamp bundle marker"
+[ -e "$WS/.git/jcode-turn-hook.last-diff" ] || fail "[G] successful retry did not stamp dedup state"
+pass "[G] failed per-turn upload retried and acknowledged at finalize"
+
+# === H. final bundle delivery failure fails visibly =========================
+info "[H] final delivery failure is terminal"
+new_fixture H; RUN_ID="hook-h"; BR="jcode/run-hook-h"
+ORCH_FAIL_BUNDLE_FILE="$TMP/fail-bundle-h"; export ORCH_FAIL_BUNDLE_FILE
+printf '2\n' > "$ORCH_FAIL_BUNDLE_FILE"
+
+echo "undeliverable" > "$WS/undeliverable.txt"
+run_hook 1 0 draft_pr "$BASE" "$BR"
+[ "$HOOK_RC" -eq 0 ] || fail "[H] per-turn upload failure must remain retryable"
+run_hook 1 1 draft_pr "$BASE" "$BR"
+[ "$HOOK_RC" -ne 0 ] || fail "[H] finalize reported success without delivery acknowledgement"
+[ "$(count_log upload-bundle)" = "2" ] || fail "[H] expected per-turn plus finalize upload attempts"
+[ "$(count_log report-failure)" = "1" ] || fail "[H] final delivery failure must post run.failure exactly once"
+pass "[H] final delivery failure is visible and terminal"
+
+unset ORCH_FAIL_BUNDLE_FILE
+
 echo
 printf '\033[32m===========================================================\033[0m\n'
 printf '\033[32m  PROVEN: turn-hook.sh per-turn/finalize semantics — dedup,  \033[0m\n'
-printf '\033[32m  branch reuse, revert-safe no_changes, split failure report \033[0m\n'
+printf '\033[32m  branch reuse, delivery acknowledgement, visible failure   \033[0m\n'
 printf '\033[32m===========================================================\033[0m\n'

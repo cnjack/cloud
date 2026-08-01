@@ -634,8 +634,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /internal/v1/device/pairing-offers", s.authed(s.handleCreatePairingOffer))
 	mux.Handle("POST /internal/v1/device/revoke", s.authed(s.handleDeviceRevoke))
 	mux.Handle("POST /internal/v1/runs/{id}/artifact", s.runToken(s.handleIngestArtifact))
-	// Review output may be stored as a run artifact. SCM clone/push/comment
-	// operations are deliberately absent here: tasks use mounted Skills/CLIs.
+	// The source endpoint remains retired: provider credentials are injected for
+	// the checkout. Delivery is different: the credential-free runner uploads a
+	// git bundle, then the trusted control plane pushes it and manages the PR.
+	// Keep this route aligned with runner/turn-hook.sh and delivery-contract.sh.
+	mux.Handle("POST /internal/v1/runs/{id}/bundle", s.runToken(s.handleIngestBundle))
+	// Review output may be stored as a run artifact.
 	mux.Handle("POST /internal/v1/runs/{id}/review", s.runToken(s.handleIngestReview))
 	mux.Handle("POST /internal/v1/runs/{id}/review-plan", s.runToken(s.handleIngestReviewPlan))
 	// Multi-turn session (D22): the runner's acpdrive reports each turn's

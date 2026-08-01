@@ -11,22 +11,28 @@ import (
 	"github.com/cnjack/jcloud/internal/store"
 )
 
-func TestRetiredCloudSCMSourceAndBundleEndpointsAreAbsent(t *testing.T) {
+func TestCloudSCMSurfaceKeepsSourceRetiredAndAcceptsDeliveryBundles(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	runID, token := createActiveInternalTestRun(t, st)
-	for _, tc := range []struct {
-		method string
-		path   string
-		body   any
-	}{
-		{http.MethodGet, "/internal/v1/runs/" + runID + "/source", nil},
-		{http.MethodPost, "/internal/v1/runs/" + runID + "/bundle", map[string]any{"data": "retired"}},
-	} {
-		resp := do(t, tc.method, ts.URL+tc.path, token, tc.body)
-		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("%s %s status=%d want 404", tc.method, tc.path, resp.StatusCode)
-		}
-		resp.Body.Close()
+
+	resp := do(t, http.MethodGet, ts.URL+"/internal/v1/runs/"+runID+"/source", token, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET source status=%d want 404", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = do(t, http.MethodPost, ts.URL+"/internal/v1/runs/"+runID+"/bundle", token, map[string]any{"data": "delivery"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST bundle status=%d want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	run, err := st.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.GitBranch != domain.RunBranchName(runID) {
+		t.Fatalf("git_branch=%q want %q", run.GitBranch, domain.RunBranchName(runID))
 	}
 }
 
@@ -41,7 +47,7 @@ func createActiveInternalTestRun(t *testing.T, st *store.MemStore) (string, stri
 		ID: domain.NewID(), ProjectID: project.ID, Name: "service",
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitHub,
 		RepoOwnerName: "acme/repo", DefaultBranch: "main",
-		GitMode: domain.GitModeReadonly, CreatedAt: time.Now().UTC(),
+		GitMode: domain.GitModeDraftPR, CreatedAt: time.Now().UTC(),
 	}
 	if err := st.CreateService(ctx, service); err != nil {
 		t.Fatal(err)
