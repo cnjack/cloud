@@ -1007,23 +1007,28 @@ func (r *Reconciler) reconcileReviews(ctx context.Context) {
 // the scan for the next tick.
 func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domain.Service) {
 	if r.integrationCredentialParked(run.ID) {
+		r.setReviewDeliveryError(ctx, run.ID, "Provider review writeback is waiting for a valid frozen credential.")
 		return // parked (P1): credential problem already surfaced once
 	}
 	if svc.RepoKind != domain.RepoKindProvider || strings.TrimSpace(run.PRHeadBranch) == "" {
+		r.setReviewDeliveryError(ctx, run.ID, "The frozen pull request target is incomplete; review writeback cannot continue.")
 		return // not associated with a provider PR (misconfigured review run)
 	}
 	scm, err := r.scmContextForRun(ctx, run, svc)
 	if err != nil {
 		if errors.Is(err, credentials.ErrIntegrationCredential) || errors.Is(err, credentials.ErrPluginCredentialUnavailable) {
 			r.noteIntegrationCredentialFailure(ctx, run.ID, "review post", err)
+			r.setReviewDeliveryError(ctx, run.ID, "Provider review writeback is waiting for a valid frozen credential.")
 			return
 		}
 		r.log.Warn("reconcile review: frozen scm credential", "run", run.ID, "provider", svc.Provider, "err", err)
+		r.setReviewDeliveryError(ctx, run.ID, "The frozen repository grant is unavailable; the system will retry review writeback.")
 		return
 	}
 	owner, repo, ok := provider.SplitRepo(scm.RepositoryPath)
 	if !ok {
 		r.log.Warn("reconcile review: bad frozen repository path", "run", run.ID)
+		r.setReviewDeliveryError(ctx, run.ID, "The frozen repository reference is invalid; review writeback cannot continue.")
 		return
 	}
 	prov, credentialSource := scm.Client, scm.Token.Source
@@ -1032,23 +1037,33 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 		pr, findErr := prov.FindOpenPRByHead(ctx, owner, repo, run.PRHeadBranch)
 		if findErr != nil {
 			r.log.Warn("reconcile review: find target PR", "run", run.ID, "err", findErr)
+			r.setReviewDeliveryError(ctx, run.ID, "The provider could not resolve the target pull request; the system will retry.")
 			return
 		}
 		if pr == nil {
 			r.log.Warn("reconcile review: target PR not found (closed?)", "run", run.ID, "head", run.PRHeadBranch)
+			r.setReviewDeliveryError(ctx, run.ID, "The target pull request is unavailable; review writeback will retry.")
 			return // retry next tick; PR may reopen or this stays unposted
 		}
 		prNumber = pr.Number
 	}
 	if err := postProviderReview(ctx, prov, owner, repo, prNumber, run); err != nil {
 		r.log.Warn("reconcile review: post comment", "run", run.ID, "pr", prNumber, "err", err)
+		r.setReviewDeliveryError(ctx, run.ID, "Provider rejected the review writeback; the system will retry automatically.")
 		return
 	}
 	if _, err := r.st.MarkReviewPosted(ctx, run.ID); err != nil {
 		r.log.Warn("reconcile review: mark posted", "run", run.ID, "err", err)
+		r.setReviewDeliveryError(ctx, run.ID, "The review reached the provider, but Cloud could not record delivery confirmation.")
 		return
 	}
 	r.log.Info("reconcile review: posted review comment", "run", run.ID, "pr", prNumber, "src", credentialSource)
+}
+
+func (r *Reconciler) setReviewDeliveryError(ctx context.Context, runID, message string) {
+	if err := r.st.SetReviewDeliveryError(ctx, runID, message); err != nil {
+		r.log.Warn("reconcile review: record delivery error", "run", runID, "err", err)
+	}
 }
 
 type runSCMContext struct {

@@ -1,0 +1,2 @@
+ALTER TABLE runs
+    ADD COLUMN IF NOT EXISTS review_delivery_error TEXT NOT NULL DEFAULT '';

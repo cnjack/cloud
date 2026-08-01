@@ -78,6 +78,7 @@ func (s *Server) handleRequestReview(w http.ResponseWriter, r *http.Request) {
 	review.PRBaseBranch = pr.BaseRef
 	review.PRHeadSHA = pr.HeadSHA
 	review.PRBaseSHA = pr.BaseSHA
+	review.PRTitle = pr.Title
 	review.ModelID = modelID
 	review.ModelName = modelName
 	provenance.Stamp(r.Context(), s.st, review, nil)

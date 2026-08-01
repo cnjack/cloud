@@ -38,6 +38,7 @@ func NewGitHubClient(apiBase, token string) (*GitHubClient, error) {
 type githubPR struct {
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
+	Title   string `json:"title"`
 	State   string `json:"state"`
 	Merged  bool   `json:"merged"`
 	Draft   bool   `json:"draft"`
@@ -67,7 +68,7 @@ func (c *GitHubClient) FindOpenPRByHead(ctx context.Context, owner, repo, head s
 			if found != nil {
 				return nil, ErrMultipleOpenPRs
 			}
-			found = &PR{Number: p.Number, URL: p.HTMLURL, State: prState(p.State, p.Merged), Draft: p.Draft}
+			found = &PR{Number: p.Number, URL: p.HTMLURL, Title: p.Title, State: prState(p.State, p.Merged), Draft: p.Draft}
 		}
 	}
 	return found, nil
@@ -84,7 +85,7 @@ func (c *GitHubClient) CreatePR(ctx context.Context, in CreatePRInput) (*PR, err
 	if err := doJSON(ctx, c.http, http.MethodPost, url, c.auth(), c.accept(), body, &pr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged), Draft: in.Draft}, nil
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, Title: pr.Title, State: prState(pr.State, pr.Merged), Draft: in.Draft}, nil
 }
 
 // MarkPRReady uses GitHub's GraphQL mutation; the REST update endpoint does not
@@ -96,7 +97,7 @@ func (c *GitHubClient) MarkPRReady(ctx context.Context, owner, repo string, prNu
 	if err := doJSON(ctx, c.http, http.MethodGet, url, c.auth(), c.accept(), nil, &current); err != nil {
 		return nil, err
 	}
-	out := &PR{Number: current.Number, URL: current.HTMLURL, State: prState(current.State, current.Merged), Draft: current.Draft}
+	out := &PR{Number: current.Number, URL: current.HTMLURL, Title: current.Title, State: prState(current.State, current.Merged), Draft: current.Draft}
 	if out.State != "open" || !out.Draft {
 		return out, nil
 	}
@@ -156,7 +157,7 @@ func (c *GitHubClient) PRStatus(ctx context.Context, owner, repo string, prNumbe
 	if err := doJSON(ctx, c.http, http.MethodGet, url, c.auth(), c.accept(), nil, &pr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged), Draft: pr.Draft}, nil
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, Title: pr.Title, State: prState(pr.State, pr.Merged), Draft: pr.Draft}, nil
 }
 
 func (c *GitHubClient) PRByNumber(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
@@ -165,7 +166,7 @@ func (c *GitHubClient) PRByNumber(ctx context.Context, owner, repo string, prNum
 	if err := doJSON(ctx, c.http, http.MethodGet, url, c.auth(), c.accept(), nil, &pr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged), Draft: pr.Draft,
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, Title: pr.Title, State: prState(pr.State, pr.Merged), Draft: pr.Draft,
 		HeadRef: pr.Head.Ref, BaseRef: pr.Base.Ref, HeadSHA: pr.Head.SHA, BaseSHA: pr.Base.SHA}, nil
 }
 

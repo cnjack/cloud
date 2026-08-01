@@ -118,7 +118,35 @@ describe('RunDetailPage — resilient error states', () => {
       kind: 'review',
       status: 'succeeded',
       finished_at: '2026-07-07T00:05:00Z',
-      review_output: 'No findings.',
+      pr_title: 'Fix pagination contract',
+      pr_number: 42,
+      pr_url: 'https://gitea.local/jcloud/seed/pulls/42',
+      pr_head_branch: 'fix/pagination',
+      pr_base_branch: 'main',
+      review_posted_at: '2026-07-07T00:05:00Z',
+      review_result: {
+        summary: 'Two validated pagination defects must be fixed.',
+        findings: [
+          {
+            path: 'src/main.ts',
+            line: 21,
+            severity: 'P0',
+            confidence: 99,
+            title: 'First page is skipped',
+            body: 'The start offset advances by one complete page.',
+            suggestion: 'const start = (number - 1) * size;',
+          },
+        ],
+        checks: ['Validated every finding against a changed right-side line.'],
+      },
+      scm_grant: {
+        provider: 'github',
+        repository: 'jcloud/orchestrator',
+        installation_id: 'install-42',
+        provider_config_revision: 17,
+        credential_version_id: 'cred-17',
+        acting_principal_kind: 'provider_bot',
+      },
       execution_contract: {
         schema_version: 1,
         hash: 'sha256:contract',
@@ -167,10 +195,21 @@ describe('RunDetailPage — resilient error states', () => {
     expect(await screen.findByTestId('workflow-contract')).toBeTruthy();
     expect(screen.getByText('Pull Request Review v1')).toBeTruthy();
     expect(screen.getByText('30m · project_override')).toBeTruthy();
+    expect(screen.getByTestId('run-task-title').textContent).toBe('Fix pagination contract');
+    expect(screen.getByTestId('review-delivery-state').getAttribute('data-state')).toBe('posted');
     const coverage = screen.getByTestId('review-coverage');
     expect(coverage.querySelector('[data-coverage="partial"]')).toBeTruthy();
     expect(screen.getByText('1/2')).toBeTruthy();
     expect(screen.getByText('17')).toBeTruthy();
+    expect(screen.getByText('src/main.ts')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('review-coverage-tab-skipped'));
+    expect(screen.getByRole('tabpanel')).toBeTruthy();
+    expect(screen.getByText('assets/logo.png')).toBeTruthy();
+    expect(screen.getByText('First page is skipped')).toBeTruthy();
+    expect(screen.getByText('src/main.ts:21')).toBeTruthy();
+    expect(screen.getByText('99% confidence')).toBeTruthy();
+    expect(screen.getByText('const start = (number - 1) * size;')).toBeTruthy();
+    expect(screen.getByTestId('scm-grant').textContent).toContain('cred-17');
   });
 
   it('shows captured Run usage in the inspector without merging cost sources', async () => {
@@ -1008,31 +1047,112 @@ describe('RunDetailPage — PR tab + review runs (blueprint §5)', () => {
     expect(screen.queryByTestId('tab-pr')).toBeNull();
   });
 
-  it('renders a review run body as markdown with no Diff/PR tabs', async () => {
+  it('renders structured review findings instead of the provider markdown fallback', async () => {
     const review = baseRun({
       kind: 'review',
       status: 'succeeded',
       finished_at: '2026-07-07T00:05:00Z',
-      review_output: '## Review\n\nThis change is **safe**.',
+      review_output: '## Legacy provider markdown that must not drive the Cloud UI',
+      review_result: {
+        summary: 'This change is safe.',
+        findings: [],
+        checks: ['Inspected every changed file.'],
+      },
     });
     const { client, ctl } = makeClient('member');
     ctl.getRun.mockResolvedValue(review);
     renderPage(client, review);
 
-    const body = await screen.findByTestId('review-output');
-    expect(body.textContent).toContain('Review');
-    expect(body.querySelector('strong')?.textContent).toBe('safe');
+    const body = await screen.findByTestId('review-result');
+    expect(body.textContent).toContain('This change is safe.');
+    expect(screen.getByTestId('review-no-findings')).toBeTruthy();
+    expect(screen.queryByText('Legacy provider markdown that must not drive the Cloud UI')).toBeNull();
     // A review run has no Diff / PR tabs.
     expect(screen.queryByTestId('tab-diff')).toBeNull();
     expect(screen.queryByTestId('tab-pr')).toBeNull();
   });
 
-  it('shows a review-in-progress state while a review run is still running', async () => {
+  it('shows plan-pending before the runner uploads the deterministic review plan', async () => {
     const running = baseRun({ kind: 'review', status: 'running' });
     const { client, ctl } = makeClient('member');
     ctl.getRun.mockResolvedValue(running);
     renderPage(client, running);
 
-    await waitFor(() => expect(screen.getByTestId('review-in-progress')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('review-stage-plan')).toBeTruthy());
+    expect(screen.getByTestId('review-delivery-state').getAttribute('data-state')).toBe('running');
+  });
+
+  it('shows analysis-in-progress after the review plan is accepted', async () => {
+    const running = baseRun({
+      kind: 'review',
+      status: 'running',
+      review_plan: {
+        schema_version: 1,
+        plan_hash: 'sha256:plan',
+        base_sha: '1111111111111111111111111111111111111111',
+        head_sha: '2222222222222222222222222222222222222222',
+        merge_base_sha: '1111111111111111111111111111111111111111',
+        rules_revision: 'review-v2',
+        coverage: 'complete',
+        changed_files: 1,
+        eligible_files: 1,
+        indexed_files: 1,
+        changed_hunks: 1,
+        indexed_hunks: 1,
+        changed_lines: 4,
+        files: [{ path: 'src/main.ts', status: 'indexed', hunks: 1, changed_lines: 4 }],
+        created_at: '2026-07-07T00:00:10Z',
+      },
+    });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(running);
+    renderPage(client, running);
+
+    await waitFor(() => expect(screen.getByTestId('review-stage-analysis')).toBeTruthy());
+  });
+
+  it('shows provider-posting after validation and before writeback completes', async () => {
+    const posting = baseRun({
+      kind: 'review',
+      status: 'succeeded',
+      finished_at: '2026-07-07T00:05:00Z',
+      review_result: { summary: 'Validated.', findings: [], checks: [] },
+    });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(posting);
+    renderPage(client, posting);
+
+    await waitFor(() => expect(screen.getByTestId('review-delivery-state').getAttribute('data-state')).toBe('posting'));
+  });
+
+  it('surfaces a retrying provider writeback failure instead of posting forever', async () => {
+    const delayed = baseRun({
+      kind: 'review',
+      status: 'succeeded',
+      finished_at: '2026-07-07T00:05:00Z',
+      review_result: { summary: 'Validated.', findings: [], checks: [] },
+      review_delivery_error: 'Provider rejected the review writeback; the system will retry automatically.',
+    });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(delayed);
+    renderPage(client, delayed);
+
+    await waitFor(() => expect(screen.getByTestId('review-delivery-state').getAttribute('data-state')).toBe('error'));
+    expect(screen.getByTestId('review-delivery-error').textContent).toContain('Provider rejected');
+  });
+
+  it('fails visibly for a terminal legacy review without a structured result', async () => {
+    const legacy = baseRun({
+      kind: 'review',
+      status: 'succeeded',
+      finished_at: '2026-07-07T00:05:00Z',
+      review_output: 'Old markdown output',
+    });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(legacy);
+    renderPage(client, legacy);
+
+    await waitFor(() => expect(screen.getByTestId('review-legacy-unavailable')).toBeTruthy());
+    expect(screen.queryByText('Old markdown output')).toBeNull();
   });
 });

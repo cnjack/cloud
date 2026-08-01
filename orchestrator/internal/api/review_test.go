@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -147,7 +148,12 @@ func TestRequestReviewRBAC(t *testing.T) {
 // TestRequestReviewCreatesReviewRun: the created run is kind=review, carries the
 // PR head/base branches, records the triggering user, and its prompt names the PR.
 func TestRequestReviewCreatesReviewRun(t *testing.T) {
-	f := setupReview(t, &fakePRFactory{prov: provider.NewFakeProvider()})
+	prov := provider.NewFakeProvider()
+	prov.SeedByNumber("jcloud", "seed", 7, provider.PR{
+		Number: 7, URL: "http://gitea.test/jcloud/seed/pulls/7", Title: "Fix pagination contract",
+		HeadRef: "pr-7-head", BaseRef: "main", HeadSHA: strings.Repeat("b", 40), BaseSHA: strings.Repeat("a", 40),
+	})
+	f := setupReview(t, &fakePRFactory{prov: prov})
 	r := do(t, "POST", f.ts.URL+"/api/v1/runs/"+f.agentRun.ID+"/review", f.tokens["member"], nil)
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("request review: status=%d want 201", r.StatusCode)
@@ -169,6 +175,9 @@ func TestRequestReviewCreatesReviewRun(t *testing.T) {
 	if run.PRNumber != f.agentRun.PRNumber || run.PRURL != f.agentRun.PRURL {
 		t.Errorf("review target=%d %q want %d %q", run.PRNumber, run.PRURL, f.agentRun.PRNumber, f.agentRun.PRURL)
 	}
+	if run.PRTitle != "Fix pagination contract" {
+		t.Errorf("pr_title=%q want frozen provider title", run.PRTitle)
+	}
 	if run.Status != domain.StatusQueued {
 		t.Errorf("status=%q want queued", run.Status)
 	}
@@ -178,6 +187,56 @@ func TestRequestReviewCreatesReviewRun(t *testing.T) {
 	stored, _ := f.st.GetRun(context.Background(), run.ID)
 	if stored.TriggeredByUserID == nil || *stored.TriggeredByUserID != f.member.ID {
 		t.Errorf("triggered_by=%v want member id %s", stored.TriggeredByUserID, f.member.ID)
+	}
+}
+
+func TestGetRunProjectsOnlySafeFrozenSCMGrantReferences(t *testing.T) {
+	f := setupReview(t, &fakePRFactory{prov: provider.NewFakeProvider()})
+	ctx := context.Background()
+	cfg := &domain.ProviderConfig{
+		Provider: domain.PluginGitLab, BaseURL: "https://private-provider.example.test",
+		PluginEnabled: true, ClientSecretEnc: []byte("must-not-leak"),
+	}
+	if err := f.st.UpsertProviderConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: f.projectID, Provider: domain.PluginGitLab,
+		Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("encrypted-access-must-not-leak"),
+		RefreshTokenEnc: []byte("encrypted-refresh-must-not-leak"), ConfigRevision: cfg.ConfigRevision,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := f.st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.CreateRunPluginSnapshots(ctx, []domain.RunPluginSnapshot{{
+		RunID: f.agentRun.ID, InstallationID: installation.ID,
+		RepositoryID: "repo-42", RepositoryPath: "jcloud/orchestrator", DefaultBranch: "main",
+		ActingPrincipalKind: "provider_bot", ActingPrincipalID: "bot-42", CreatedAt: time.Now().UTC(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := do(t, http.MethodGet, f.ts.URL+"/api/v1/runs/"+f.agentRun.ID, consoleToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get run: status=%d want 200", resp.StatusCode)
+	}
+	var payload map[string]any
+	decode(t, resp, &payload)
+	grant, ok := payload["scm_grant"].(map[string]any)
+	if !ok {
+		t.Fatalf("scm_grant missing: %+v", payload)
+	}
+	if grant["provider"] != "gitlab" || grant["repository"] != "jcloud/orchestrator" ||
+		grant["installation_id"] != installation.ID || grant["credential_version_id"] != installation.CredentialVersionID ||
+		grant["acting_principal_kind"] != "provider_bot" {
+		t.Fatalf("scm_grant=%+v", grant)
+	}
+	encoded, _ := json.Marshal(payload)
+	for _, secret := range []string{"must-not-leak", "encrypted-access-must-not-leak", "encrypted-refresh-must-not-leak", "private-provider.example.test", "bot-42"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("public Run leaked sensitive grant material %q: %s", secret, encoded)
+		}
 	}
 }
 

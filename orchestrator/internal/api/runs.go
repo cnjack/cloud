@@ -352,13 +352,51 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load run usage")
 		return
 	}
+	scmGrant, err := s.safeSCMGrant(r.Context(), run.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load frozen SCM grant")
+		return
+	}
 	writeJSON(w, http.StatusOK, struct {
 		*domain.Run
 		Provenance provenance.RunProvenance `json:"provenance"`
 		Usage      domain.UsageSummary      `json:"usage_summary"`
+		SCMGrant   *safeSCMGrant            `json:"scm_grant,omitempty"`
 	}{
-		Run: run, Provenance: provenance.Resolve(r.Context(), s.st, run), Usage: usage,
+		Run: run, Provenance: provenance.Resolve(r.Context(), s.st, run), Usage: usage, SCMGrant: scmGrant,
 	})
+}
+
+// safeSCMGrant is the public, reference-only projection of the launch-time
+// repository authorization. Deliberately absent: provider URLs, client/app
+// credentials, tokens, secret ciphertext, and the provider principal ID.
+type safeSCMGrant struct {
+	Provider               domain.ProviderKind `json:"provider"`
+	Repository             string              `json:"repository"`
+	InstallationID         string              `json:"installation_id,omitempty"`
+	ProviderConfigRevision int64               `json:"provider_config_revision,omitempty"`
+	CredentialVersionID    string              `json:"credential_version_id,omitempty"`
+	ActingPrincipalKind    string              `json:"acting_principal_kind,omitempty"`
+}
+
+func (s *Server) safeSCMGrant(ctx context.Context, runID string) (*safeSCMGrant, error) {
+	snapshots, err := s.st.ListRunPluginSnapshots(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	for _, snapshot := range snapshots {
+		if strings.TrimSpace(snapshot.RepositoryPath) == "" {
+			continue
+		}
+		return &safeSCMGrant{
+			Provider: snapshot.Provider, Repository: snapshot.RepositoryPath,
+			InstallationID:         snapshot.InstallationID,
+			ProviderConfigRevision: snapshot.ProviderConfigRevision,
+			CredentialVersionID:    snapshot.CredentialVersionID,
+			ActingPrincipalKind:    snapshot.ActingPrincipalKind,
+		}, nil
+	}
+	return nil, nil
 }
 
 func projectRunForRole(run *domain.Run, role domain.Role) *domain.Run {
@@ -488,6 +526,9 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	retry.PRBaseBranch = orig.PRBaseBranch
 	retry.PRHeadSHA = orig.PRHeadSHA
 	retry.PRBaseSHA = orig.PRBaseSHA
+	retry.PRURL = orig.PRURL
+	retry.PRNumber = orig.PRNumber
+	retry.PRTitle = orig.PRTitle
 	retry.PRReadyPolicy = orig.PRReadyPolicy
 	// A retry is another attempt at the same immutable execution contract. A
 	// genuinely new trigger resolves the current built-in definition instead.

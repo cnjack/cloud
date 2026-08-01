@@ -418,6 +418,9 @@ type Run struct {
 	CommitSHA string `json:"commit_sha,omitempty"`
 	PRURL     string `json:"pr_url,omitempty"`
 	PRNumber  int    `json:"pr_number,omitempty"`
+	// PRTitle is frozen when a review Run is created so later provider edits do
+	// not reinterpret the Run header or its audit trail.
+	PRTitle string `json:"pr_title,omitempty"`
 	// PRDraft is nil for historical/unknown provider state, true for Draft/WIP,
 	// and false once the provider confirms Ready. PRReadyAt is the idempotency
 	// marker that prevents a later tick from overriding a human re-draft.
@@ -446,6 +449,9 @@ type Run struct {
 	// output as a PR review comment on the provider (idempotency marker; M3
 	// reconcile review pass). Nil until posted / for agent runs.
 	ReviewPostedAt *time.Time `json:"review_posted_at,omitempty"`
+	// ReviewDeliveryError is a sanitized, retryable provider-writeback status.
+	// It never contains raw provider/credential errors and is cleared on success.
+	ReviewDeliveryError string `json:"review_delivery_error,omitempty"`
 
 	// PRHeadBranch / PRBaseBranch associate a review run (Kind == review) with the
 	// pull request it reviews: the runner diffs PRBaseBranch...PRHeadBranch, and

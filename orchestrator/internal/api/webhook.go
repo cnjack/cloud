@@ -93,6 +93,7 @@ type giteaPullRequestPayload struct {
 	} `json:"changes,omitempty"`
 	PullRequest struct {
 		HTMLURL string `json:"html_url"`
+		Title   string `json:"title"`
 		Draft   bool   `json:"draft"`
 		Head    struct {
 			Ref string `json:"ref"`
@@ -114,6 +115,7 @@ type webhookReviewEvent struct {
 	event        domain.AutomationEvent
 	prNumber     int
 	prURL        string
+	prTitle      string
 	headRef      string
 	headSHA      string
 	baseRef      string
@@ -332,7 +334,7 @@ func parseGiteaReviewEvent(header string, body []byte) (*webhookReviewEvent, str
 	}
 	return &webhookReviewEvent{
 		provider: domain.ProviderGitea, repoFullName: p.Repository.FullName, event: event,
-		prNumber: p.Number, prURL: p.PullRequest.HTMLURL, headRef: p.PullRequest.Head.Ref,
+		prNumber: p.Number, prURL: p.PullRequest.HTMLURL, prTitle: p.PullRequest.Title, headRef: p.PullRequest.Head.Ref,
 		headSHA: p.PullRequest.Head.SHA, baseRef: p.PullRequest.Base.Ref, baseSHA: p.PullRequest.Base.SHA, draft: p.PullRequest.Draft,
 	}, ""
 }
@@ -404,7 +406,7 @@ func (s *Server) processReviewEvent(ctx context.Context, event *webhookReviewEve
 				ID: domain.NewID(), ProjectID: svc.ProjectID, ServiceID: svc.ID,
 				Prompt: a.Instructions, Status: domain.StatusQueued, Kind: domain.RunKindReview,
 				Phase: "Queued", TriggeredByUserID: a.CreatedBy, Attempt: 1, CreatedAt: now,
-				PRURL: event.prURL, PRNumber: event.prNumber, PRHeadBranch: event.headRef,
+				PRURL: event.prURL, PRNumber: event.prNumber, PRTitle: event.prTitle, PRHeadBranch: event.headRef,
 				PRBaseBranch: event.baseRef, PRHeadSHA: event.headSHA, PRBaseSHA: event.baseSHA, Origin: domain.RunOriginAutomation,
 				OriginAutomationID: a.ID, OriginEventKey: key, ModelName: sel.ModelName,
 			}
@@ -765,6 +767,7 @@ func newWebhookRun(svc *domain.Service, userID string, cmd mentionCommand, pr *p
 		OriginCommentURL:  m.commentURL,
 		PRURL:             pr.URL,
 		PRNumber:          m.prNumber,
+		PRTitle:           pr.Title,
 		PRHeadBranch:      pr.HeadRef,
 		PRBaseBranch:      pr.BaseRef,
 		PRHeadSHA:         pr.HeadSHA,

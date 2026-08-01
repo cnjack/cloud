@@ -42,7 +42,7 @@ func TestPGWorkflowContractAndReviewPlanRoundTrip(t *testing.T) {
 	}
 	run := &domain.Run{
 		ID: domain.NewID(), ProjectID: project.ID, ServiceID: service.ID, Prompt: "review exact pair",
-		Status: domain.StatusQueued, Kind: domain.RunKindReview, PRNumber: 42,
+		Status: domain.StatusQueued, Kind: domain.RunKindReview, PRNumber: 42, PRTitle: "Fix pagination contract",
 		PRHeadBranch: "feature", PRBaseBranch: "main",
 		PRHeadSHA: "2222222222222222222222222222222222222222", PRBaseSHA: "1111111111111111111111111111111111111111",
 		ModelName: "test/glm-5.2", Attempt: 1, CreatedAt: time.Now().UTC(),
@@ -73,5 +73,8 @@ func TestPGWorkflowContractAndReviewPlanRoundTrip(t *testing.T) {
 	}
 	if got.ReviewPlan == nil || got.ReviewPlan.PlanHash != plan.PlanHash || !got.ReviewPlan.AllowsAnchor("main.go", 2, 2) {
 		t.Fatalf("review plan did not round-trip with private anchors: %+v", got.ReviewPlan)
+	}
+	if got.PRTitle != run.PRTitle {
+		t.Fatalf("pr title did not round-trip: got %q want %q", got.PRTitle, run.PRTitle)
 	}
 }

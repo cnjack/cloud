@@ -1914,6 +1914,18 @@ func (m *MemStore) SetReviewPlan(_ context.Context, id string, plan domain.Revie
 	return &out, true, nil
 }
 
+func (m *MemStore) SetReviewDeliveryError(_ context.Context, id, message string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.runs[id]
+	if !ok {
+		return ErrNotFound
+	}
+	cur.ReviewDeliveryError = strings.TrimSpace(message)
+	m.runs[id] = cur
+	return nil
+}
+
 // MarkReviewPosted stamps review_posted_at idempotently, returning true only for
 // the caller that actually stamped it.
 func (m *MemStore) MarkReviewPosted(_ context.Context, id string) (bool, error) {
@@ -1928,6 +1940,7 @@ func (m *MemStore) MarkReviewPosted(_ context.Context, id string) (bool, error) 
 	}
 	t := time.Now().UTC()
 	cur.ReviewPostedAt = &t
+	cur.ReviewDeliveryError = ""
 	m.runs[id] = cur
 	return true, nil
 }

@@ -106,7 +106,7 @@ func (c *GitLabClient) FindOpenPRByHead(ctx context.Context, owner, repo, head s
 			if found != nil {
 				return nil, ErrMultipleOpenPRs
 			}
-			found = &PR{Number: m.IID, URL: m.WebURL, State: gitlabState(m.State), Draft: gitLabMRDraft(m)}
+			found = &PR{Number: m.IID, URL: m.WebURL, Title: m.Title, State: gitlabState(m.State), Draft: gitLabMRDraft(m)}
 		}
 	}
 	return found, nil
@@ -130,7 +130,7 @@ func (c *GitLabClient) CreatePR(ctx context.Context, in CreatePRInput) (*PR, err
 	if err := doJSON(ctx, c.http, http.MethodPost, u, c.auth(), "application/json", body, &mr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: mr.IID, URL: mr.WebURL, State: gitlabState(mr.State), Draft: in.Draft}, nil
+	return &PR{Number: mr.IID, URL: mr.WebURL, Title: mr.Title, State: gitlabState(mr.State), Draft: in.Draft}, nil
 }
 
 func (c *GitLabClient) MarkPRReady(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
@@ -140,7 +140,7 @@ func (c *GitLabClient) MarkPRReady(ctx context.Context, owner, repo string, prNu
 		return nil, err
 	}
 	draft := gitLabMRDraft(current)
-	out := &PR{Number: current.IID, URL: current.WebURL, State: gitlabState(current.State), Draft: draft}
+	out := &PR{Number: current.IID, URL: current.WebURL, Title: current.Title, State: gitlabState(current.State), Draft: draft}
 	if out.State != "open" || !draft {
 		return out, nil
 	}
@@ -174,7 +174,7 @@ func (c *GitLabClient) PRStatus(ctx context.Context, owner, repo string, prNumbe
 	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &mr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: mr.IID, URL: mr.WebURL, State: gitlabState(mr.State), Draft: gitLabMRDraft(mr)}, nil
+	return &PR{Number: mr.IID, URL: mr.WebURL, Title: mr.Title, State: gitlabState(mr.State), Draft: gitLabMRDraft(mr)}, nil
 }
 
 func (c *GitLabClient) PRByNumber(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
@@ -183,7 +183,7 @@ func (c *GitLabClient) PRByNumber(ctx context.Context, owner, repo string, prNum
 	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &mr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: mr.IID, URL: mr.WebURL, State: gitlabState(mr.State), Draft: gitLabMRDraft(mr),
+	return &PR{Number: mr.IID, URL: mr.WebURL, Title: mr.Title, State: gitlabState(mr.State), Draft: gitLabMRDraft(mr),
 		HeadRef: mr.SourceBranch, BaseRef: mr.TargetBranch, HeadSHA: mr.DiffRefs.HeadSHA, BaseSHA: mr.DiffRefs.BaseSHA}, nil
 }
 

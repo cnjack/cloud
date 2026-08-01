@@ -631,6 +631,32 @@ func TestReconcileReviewNoTargetPR(t *testing.T) {
 	}
 }
 
+func TestReconcileReviewSurfacesWritebackFailureAndClearsItAfterRecovery(t *testing.T) {
+	ctx := context.Background()
+	rec, st, _ := testRec(t, 4)
+	fake := provider.NewFakeProvider()
+	wirePRStack(rec, st, fake)
+	fake.Seed("jcloud", "seed", "jcode/run-retry", provider.PR{Number: 24})
+	fake.ReviewErr = errors.New("provider outage with internal details")
+	run := seedReviewRun(t, st, "jcode/run-retry", "No findings.")
+
+	rec.reconcileReviews(ctx)
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.ReviewDeliveryError != "Provider rejected the review writeback; the system will retry automatically." {
+		t.Fatalf("review_delivery_error=%q", got.ReviewDeliveryError)
+	}
+	if strings.Contains(got.ReviewDeliveryError, "internal details") {
+		t.Fatalf("review delivery error leaked provider details: %q", got.ReviewDeliveryError)
+	}
+
+	fake.ReviewErr = nil
+	rec.reconcileReviews(ctx)
+	got, _ = st.GetRun(ctx, run.ID)
+	if got.ReviewPostedAt == nil || got.ReviewDeliveryError != "" {
+		t.Fatalf("recovered review posted_at=%v delivery_error=%q", got.ReviewPostedAt, got.ReviewDeliveryError)
+	}
+}
+
 // --- M7 webhook update-push pass --------------------------------------------
 
 // seedWebhookUpdateRun creates a project + draft_pr gitea service + a succeeded

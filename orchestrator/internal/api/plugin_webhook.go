@@ -467,6 +467,7 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		// PR-head update path.
 		run.BaseBranch = automationRunBranch(event)
 		if event.Family == scmevent.FamilyPullRequest || manualReview {
+			run.PRTitle = event.Object.Title
 			run.PRHeadBranch = automationRunBranch(event)
 			run.PRBaseBranch = strings.TrimPrefix(event.BaseRef, "refs/heads/")
 			run.PRHeadSHA = event.HeadSHA

@@ -397,6 +397,8 @@ type Store interface {
 	// The first call creates it; an identical retry is a no-op; a different hash
 	// returns ErrConflict and can never replace the accepted plan.
 	SetReviewPlan(ctx context.Context, id string, plan domain.ReviewPlan) (*domain.Run, bool, error)
+	// SetReviewDeliveryError records a sanitized retryable writeback failure.
+	SetReviewDeliveryError(ctx context.Context, id, message string) error
 	// MarkReviewPosted stamps review_posted_at once the review comment is posted.
 	// Idempotent + first-writer-wins: returns posted=true only for the tick that
 	// stamped it, so two ticks never double-post.

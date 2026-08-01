@@ -94,7 +94,7 @@ func (c *GiteaClient) FindOpenPRByHead(ctx context.Context, owner, repo, head st
 			if found != nil {
 				return nil, ErrMultipleOpenPRs
 			}
-			found = &PR{Number: p.Number, URL: p.HTMLURL, State: prState(p.State, p.Merged), Draft: strings.HasPrefix(p.Title, GiteaWIPPrefix)}
+			found = &PR{Number: p.Number, URL: p.HTMLURL, Title: p.Title, State: prState(p.State, p.Merged), Draft: strings.HasPrefix(p.Title, GiteaWIPPrefix)}
 		}
 	}
 	return found, nil
@@ -123,7 +123,7 @@ func (c *GiteaClient) CreatePR(ctx context.Context, in CreatePRInput) (*PR, erro
 	if err := c.do(ctx, http.MethodPost, path, body, &pr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged), Draft: in.Draft}, nil
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, Title: pr.Title, State: prState(pr.State, pr.Merged), Draft: in.Draft}, nil
 }
 
 func (c *GiteaClient) MarkPRReady(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
@@ -132,7 +132,7 @@ func (c *GiteaClient) MarkPRReady(ctx context.Context, owner, repo string, prNum
 	if err := c.do(ctx, http.MethodGet, path, nil, &current); err != nil {
 		return nil, err
 	}
-	out := &PR{Number: current.Number, URL: current.HTMLURL, State: prState(current.State, current.Merged), Draft: strings.HasPrefix(current.Title, GiteaWIPPrefix)}
+	out := &PR{Number: current.Number, URL: current.HTMLURL, Title: current.Title, State: prState(current.State, current.Merged), Draft: strings.HasPrefix(current.Title, GiteaWIPPrefix)}
 	if out.State != "open" || !out.Draft {
 		return out, nil
 	}
@@ -161,7 +161,7 @@ func (c *GiteaClient) PRStatus(ctx context.Context, owner, repo string, prNumber
 	if err := c.do(ctx, http.MethodGet, path, nil, &pr); err != nil {
 		return nil, err
 	}
-	return &PR{Number: pr.Number, URL: pr.HTMLURL, State: prState(pr.State, pr.Merged), Draft: strings.HasPrefix(pr.Title, GiteaWIPPrefix)}, nil
+	return &PR{Number: pr.Number, URL: pr.HTMLURL, Title: pr.Title, State: prState(pr.State, pr.Merged), Draft: strings.HasPrefix(pr.Title, GiteaWIPPrefix)}, nil
 }
 
 // PRByNumber returns the PR with its head/base branch refs populated (M7 webhook).
@@ -174,6 +174,7 @@ func (c *GiteaClient) PRByNumber(ctx context.Context, owner, repo string, prNumb
 	return &PR{
 		Number:  pr.Number,
 		URL:     pr.HTMLURL,
+		Title:   pr.Title,
 		State:   prState(pr.State, pr.Merged),
 		Draft:   strings.HasPrefix(pr.Title, GiteaWIPPrefix),
 		HeadRef: pr.Head.Ref,

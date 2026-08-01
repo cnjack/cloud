@@ -19,10 +19,9 @@ import {
 } from '../api/queries';
 import { useApi } from '../api/ApiProvider';
 import { ApiError } from '../api/client';
-import { isTerminal, type FailureReason, type ProjectModel, type ProvenanceActorRef, type ResumeSessionOptions, type ReviewPlan, type Run, type RunProvenance, type WorkflowContract } from '../api/types';
+import { isTerminal, type FailureReason, type ProjectModel, type ProvenanceActorRef, type ResumeSessionOptions, type ReviewPlan, type ReviewResult, type Run, type RunProvenance, type SCMGrant, type WorkflowContract } from '../api/types';
 import { Button } from '../components/Button';
 import { DiffView } from '../components/DiffView';
-import { Markdown } from '../components/Markdown';
 import { useModelGate } from '../components/ModelGate';
 import { PrPanel } from '../components/PrPanel';
 import { LoadingBlock, ErrorBlock, InlineHint } from '../components/States';
@@ -310,11 +309,12 @@ export function RunDetailPage() {
                 <Link to={serviceTasksPath} className={styles.backToProject} data-testid="run-back-to-project"><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>{t('runDetail.recentTasks')}</span></Link>
                 <div className={styles.taskTitleRow}>
                   <div>
-                    <h1 className={styles.taskTitle} data-testid="run-task-title" title={current.prompt}>{current.prompt}</h1>
+                    <h1 className={styles.taskTitle} data-testid="run-task-title" title={isReview ? current.pr_title || current.prompt : current.prompt}>{isReview ? current.pr_title || t('runDetail.review.titleFallback', { number: current.pr_number || '—' }) : current.prompt}</h1>
                     <p>{runKindLabel(current, t)} · {service?.name ?? t('runDetail.serviceUnavailable')} · {runOriginLabel(current, t)} · {formatDateTime(current.created_at)}</p>
                   </div>
                   <div className={styles.headerActions}>
                     <StatusBadge status={current.status} />
+                    {isReview && <ReviewDeliveryState run={current} />}
                     {noChanges && <span className={styles.noChangesBadge} data-testid="no-changes-badge">{t('runDetail.noChangesBadge')}</span>}
                     {!terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doCancel} loading={cancel.isPending} data-testid="cancel-btn"><Stop size={15} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.stop')}</span></Button>}
                     {terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doRetry} loading={retry.isPending} disabled={!modelGate.configured} data-testid="retry-btn"><ArrowClockwise size={15} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.retry')}</span></Button>}
@@ -358,7 +358,7 @@ export function RunDetailPage() {
                       ) : (
                         <>
                           <div className={styles.dateDivider}><span>{new Date(current.created_at).toLocaleDateString()}</span></div>
-                          <div className={styles.initialPrompt} data-testid="run-initial-prompt">
+                          {!isReview && <div className={styles.initialPrompt} data-testid="run-initial-prompt">
                             <Message
                               message={{
                                 id: `run-prompt-${current.id}`,
@@ -367,16 +367,10 @@ export function RunDetailPage() {
                                 timestamp: Date.parse(current.created_at),
                               }}
                             />
-                          </div>
+                          </div>}
 
-                          {isReview && <ReviewCoverageCard plan={current.review_plan} />}
-
-                          {isReview && current.review_output ? (
-                            <div className={styles.reviewOutput} data-testid="review-output"><Markdown source={current.review_output} /></div>
-                          ) : isReview && !terminalRun ? (
-                            <div className={styles.reviewProgress} data-testid="review-in-progress"><Spinner label={t('runDetail.reviewInProgress')} /><Timeline events={stream.events} isRunning={live} permissions={permissionControls} /></div>
-                          ) : isReview ? (
-                            <p className={styles.empty}>{failed ? t('runDetail.reviewFailed') : t('runDetail.noReviewOutput')}</p>
+                          {isReview ? (
+                            <ReviewWorkspace run={current} terminal={terminalRun} events={<Timeline events={stream.events} isRunning={live} permissions={permissionControls} />} />
                           ) : stream.events.length > 0 || live ? (
                             <Timeline events={stream.events} isRunning={live} permissions={permissionControls} />
                           ) : (
@@ -803,6 +797,7 @@ function RunInspector({
         <UsageSummary value={run.usage_summary} />
       </div>
       <WorkflowContractSection contract={run.execution_contract} />
+      {run.kind === 'review' && <SCMGrantSection grant={run.scm_grant} />}
       <InspectorSection title={t('runDetail.inspector.runOverview')}>
         <dl className={styles.facts}>
           <InspectorFact label={t('runDetail.inspector.permission')}>{run.permission_mode === 'approval' ? t('runDetail.inspector.askBeforeActions') : t('runDetail.permission.fullAccess')}</InspectorFact>
@@ -872,8 +867,148 @@ function WorkflowContractSection({ contract }: { contract?: WorkflowContract }) 
   );
 }
 
+function ReviewDeliveryState({ run }: { run: Run }) {
+  const { t } = useTranslation();
+  const state = run.review_posted_at
+    ? 'posted'
+    : run.review_delivery_error
+      ? 'error'
+    : run.review_result
+      ? run.status === 'failed' || run.status === 'canceled' ? 'incomplete' : 'posting'
+      : isTerminal(run.status) ? 'unavailable' : 'running';
+  return (
+    <span className={styles.reviewDeliveryState} data-testid="review-delivery-state" data-state={state}>
+      <span aria-hidden="true" />
+      {t(`runDetail.review.delivery.${state}`)}
+    </span>
+  );
+}
+
+function ReviewWorkspace({ run, terminal, events }: { run: Run; terminal: boolean; events: ReactNode }) {
+  const { t } = useTranslation();
+  const hasPlan = !!run.review_plan;
+  const hasResult = !!run.review_result;
+
+  return (
+    <div className={styles.reviewWorkspace} data-testid="review-workspace">
+      <div className={styles.reviewRevisionStrip} data-testid="review-revision-strip">
+        <div>
+          <span>{t('runDetail.review.pullRequest')}</span>
+          {run.pr_url ? <a href={run.pr_url} target="_blank" rel="noreferrer">#{run.pr_number || '—'} <ArrowSquareOut size={12} aria-hidden="true" /></a> : <strong>#{run.pr_number || '—'}</strong>}
+        </div>
+        <div><span>{t('runDetail.review.base')}</span><code>{run.pr_base_branch || shortRevision(run.pr_base_sha || '') || '—'}</code></div>
+        <div><span>{t('runDetail.review.head')}</span><code>{run.pr_head_branch || shortRevision(run.pr_head_sha || '') || '—'}</code></div>
+        <div><span>{t('runDetail.review.revisions')}</span><code>{shortRevision(run.pr_base_sha || '') || '—'} → {shortRevision(run.pr_head_sha || '') || '—'}</code></div>
+      </div>
+
+      {run.review_delivery_error && (
+        <section className={styles.reviewDeliveryError} data-testid="review-delivery-error" role="alert">
+          <ShieldWarning size={18} weight="fill" aria-hidden="true" />
+          <div><strong>{t('runDetail.review.deliveryError.title')}</strong><p>{run.review_delivery_error}</p></div>
+        </section>
+      )}
+
+      {hasPlan ? <ReviewCoverageCard plan={run.review_plan} /> : !terminal ? (
+        <ReviewStage
+          testId="review-stage-plan"
+          title={t('runDetail.review.stage.planTitle')}
+          body={t('runDetail.review.stage.planBody')}
+          events={events}
+        />
+      ) : (
+        <ReviewCoverageCard />
+      )}
+
+      {hasResult ? <ReviewResultPanel result={run.review_result!} /> : hasPlan && !terminal ? (
+        <ReviewStage
+          testId="review-stage-analysis"
+          title={t('runDetail.review.stage.analysisTitle')}
+          body={t('runDetail.review.stage.analysisBody')}
+          events={events}
+        />
+      ) : terminal ? (
+        <section className={styles.reviewUnavailable} data-testid="review-legacy-unavailable" role="status">
+          <strong>{t('runDetail.review.legacy.title')}</strong>
+          <p>{t('runDetail.review.legacy.body')}</p>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function ReviewStage({ testId, title, body, events }: { testId: string; title: string; body: string; events: ReactNode }) {
+  const { t } = useTranslation();
+  return (
+    <section className={styles.reviewStage} data-testid={testId}>
+      <div className={styles.reviewStageLead}>
+        <Spinner label={title} />
+        <div><strong>{title}</strong><p>{body}</p></div>
+      </div>
+      <details className={styles.reviewStageEvents}>
+        <summary>{t('runDetail.review.stage.activity')}</summary>
+        {events}
+      </details>
+    </section>
+  );
+}
+
+function ReviewResultPanel({ result }: { result: ReviewResult }) {
+  const { t } = useTranslation();
+  return (
+    <section className={styles.reviewResult} data-testid="review-result">
+      <header>
+        <div><span>{t('runDetail.review.result.eyebrow')}</span><h2>{t('runDetail.review.result.title')}</h2></div>
+        <strong>{t('runDetail.review.result.count', { count: result.findings.length })}</strong>
+      </header>
+      <p className={styles.reviewSummary}>{result.summary}</p>
+      {result.findings.length === 0 ? (
+        <div className={styles.reviewNoFindings} data-testid="review-no-findings"><Check size={18} weight="bold" aria-hidden="true" /><span>{t('runDetail.review.result.noFindings')}</span></div>
+      ) : (
+        <ol className={styles.findingList}>
+          {result.findings.map((finding, index) => (
+            <li key={`${finding.path}:${finding.line}:${index}`} className={styles.findingCard} data-severity={finding.severity}>
+              <div className={styles.findingHead}>
+                <span className={styles.findingSeverity}>{finding.severity}</span>
+                <div><h3>{finding.title}</h3><code>{finding.path}:{finding.line}{finding.end_line && finding.end_line !== finding.line ? `–${finding.end_line}` : ''}</code></div>
+                <span className={styles.findingConfidence}>{t('runDetail.review.result.confidence', { confidence: finding.confidence })}</span>
+              </div>
+              <p>{finding.body}</p>
+              {finding.suggestion && <div className={styles.findingSuggestion}><span>{t('runDetail.review.result.suggestion')}</span><code>{finding.suggestion}</code></div>}
+            </li>
+          ))}
+        </ol>
+      )}
+      {result.checks.length > 0 && (
+        <details className={styles.reviewChecks}>
+          <summary>{t('runDetail.review.result.checks', { count: result.checks.length })}</summary>
+          <ul>{result.checks.map((check) => <li key={check}>{check}</li>)}</ul>
+        </details>
+      )}
+    </section>
+  );
+}
+
+function SCMGrantSection({ grant }: { grant?: SCMGrant }) {
+  const { t } = useTranslation();
+  return (
+    <InspectorSection title={t('runDetail.review.grant.title')}>
+      {grant ? (
+        <dl className={styles.facts} data-testid="scm-grant">
+          <InspectorFact label={t('runDetail.review.grant.provider')}>{grant.provider}</InspectorFact>
+          <InspectorFact label={t('runDetail.review.grant.repository')}>{grant.repository}</InspectorFact>
+          <InspectorFact label={t('runDetail.review.grant.installation')}><code>{grant.installation_id || '—'}</code></InspectorFact>
+          <InspectorFact label={t('runDetail.review.grant.config')}>v{grant.provider_config_revision ?? '—'}</InspectorFact>
+          <InspectorFact label={t('runDetail.review.grant.credential')}><code>{grant.credential_version_id || '—'}</code></InspectorFact>
+          <InspectorFact label={t('runDetail.review.grant.principal')}>{grant.acting_principal_kind || '—'}</InspectorFact>
+        </dl>
+      ) : <p className={styles.inspectorHint} data-testid="scm-grant-unavailable">{t('runDetail.review.grant.unavailable')}</p>}
+    </InspectorSection>
+  );
+}
+
 function ReviewCoverageCard({ plan }: { plan?: ReviewPlan }) {
   const { t } = useTranslation();
+  const [tab, setTab] = useState<'indexed' | 'skipped'>('indexed');
   if (!plan) {
     return (
       <section className={styles.reviewCoverage} data-testid="review-coverage-unavailable" aria-label={t('runDetail.coverage.title')}>
@@ -882,7 +1017,9 @@ function ReviewCoverageCard({ plan }: { plan?: ReviewPlan }) {
       </section>
     );
   }
+  const indexed = plan.files.filter((file) => file.status === 'indexed');
   const skipped = plan.files.filter((file) => file.status !== 'indexed');
+  const visibleFiles = tab === 'indexed' ? indexed : skipped;
   const coverageLabel = plan.coverage === 'complete' ? t('runDetail.coverage.complete') : t('runDetail.coverage.partial');
   return (
     <section className={styles.reviewCoverage} data-testid="review-coverage" aria-label={t('runDetail.coverage.title')}>
@@ -899,12 +1036,17 @@ function ReviewCoverageCard({ plan }: { plan?: ReviewPlan }) {
         <div><dt>{t('runDetail.coverage.baseHead')}</dt><dd><code>{shortRevision(plan.base_sha)} → {shortRevision(plan.head_sha)}</code></dd></div>
         <div><dt>{t('runDetail.coverage.mergeBase')}</dt><dd><code>{shortRevision(plan.merge_base_sha)}</code></dd></div>
       </dl>
-      {skipped.length > 0 && (
-        <details className={styles.coverageSkipped}>
-          <summary>{t('runDetail.coverage.skipped', { count: skipped.length })}</summary>
-          <ul>{skipped.map((file) => <li key={file.path}><code>{file.path}</code><span>{file.reason || t('runDetail.coverage.unsupported')}</span></li>)}</ul>
-        </details>
-      )}
+      <div className={styles.coverageLedger}>
+        <div className={styles.coverageTabs} role="tablist" aria-label={t('runDetail.coverage.ledger')}>
+          <button id="review-coverage-indexed-tab" type="button" role="tab" aria-controls="review-coverage-panel" aria-selected={tab === 'indexed'} onClick={() => setTab('indexed')}>{t('runDetail.coverage.indexed', { count: indexed.length })}</button>
+          <button id="review-coverage-skipped-tab" type="button" role="tab" aria-controls="review-coverage-panel" aria-selected={tab === 'skipped'} onClick={() => setTab('skipped')} data-testid="review-coverage-tab-skipped">{t('runDetail.coverage.skipped', { count: skipped.length })}</button>
+        </div>
+        <div id="review-coverage-panel" role="tabpanel" aria-labelledby={`review-coverage-${tab}-tab`}>
+          {visibleFiles.length > 0 ? (
+            <ul>{visibleFiles.map((file) => <li key={file.path}><code>{file.path}</code><span>{file.status === 'indexed' ? t('runDetail.coverage.fileStats', { hunks: file.hunks, lines: file.changed_lines }) : file.reason || t('runDetail.coverage.unsupported')}</span></li>)}</ul>
+          ) : <p>{tab === 'skipped' ? t('runDetail.coverage.noneSkipped') : t('runDetail.coverage.noneIndexed')}</p>}
+        </div>
+      </div>
     </section>
   );
 }

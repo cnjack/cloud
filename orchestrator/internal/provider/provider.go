@@ -20,6 +20,7 @@ import (
 type PR struct {
 	Number int
 	URL    string // human-facing HTML URL (persisted on the run as pr_url)
+	Title  string // provider title frozen onto review Runs for display/audit
 	State  string // "open" | "closed" | "merged" | "" (unknown) — used by PRStatus
 	Draft  bool   // provider-normalized Draft/WIP state
 	// Head/Base branch refs. Populated by PRByNumber (M7 webhook needs them to

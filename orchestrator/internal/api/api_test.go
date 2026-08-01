@@ -352,6 +352,7 @@ func TestRetryPreservesReviewIdentity(t *testing.T) {
 		Kind: domain.RunKindReview, Phase: "Queued", Attempt: 1,
 		PRHeadBranch: "jcode/run-abc12345", PRBaseBranch: "main",
 		PRHeadSHA: strings.Repeat("a", 40), PRBaseSHA: strings.Repeat("b", 40),
+		PRURL: "https://git.example/acme/repo/pulls/42", PRNumber: 42, PRTitle: "Fix pagination contract",
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := st.CreateRun(ctx, rev); err != nil {
@@ -370,6 +371,9 @@ func TestRetryPreservesReviewIdentity(t *testing.T) {
 	}
 	if retry.PRHeadBranch != "jcode/run-abc12345" || retry.PRBaseBranch != "main" {
 		t.Fatalf("retry PR assoc = %q..%q, want preserved", retry.PRBaseBranch, retry.PRHeadBranch)
+	}
+	if retry.PRURL != rev.PRURL || retry.PRNumber != rev.PRNumber || retry.PRTitle != rev.PRTitle {
+		t.Fatalf("retry PR display facts = %q #%d %q, want preserved", retry.PRURL, retry.PRNumber, retry.PRTitle)
 	}
 }
 

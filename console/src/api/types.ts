@@ -639,6 +639,10 @@ export interface Run {
    */
   pr_url?: string | null;
   pr_number?: number | null;
+  /** Frozen pull-request display facts captured when a review Run is created. */
+  pr_title?: string;
+  pr_head_branch?: string;
+  pr_base_branch?: string;
   /** null/absent means the provider state is unknown for a historical run. */
   pr_draft?: boolean | null;
   pr_ready_at?: string | null;
@@ -650,10 +654,16 @@ export interface Run {
   review_output?: string;
   /** When the review comment was posted to the PR (idempotency marker). */
   review_posted_at?: string | null;
+  /** Sanitized retryable provider-writeback failure; cleared after delivery. */
+  review_delivery_error?: string;
   /** Immutable built-in Workflow + Agent Profile projection resolved at Run creation. */
   execution_contract?: WorkflowContract;
   /** Server-accepted review input coverage. Private changed-line anchors are never serialized. */
   review_plan?: ReviewPlan;
+  /** Validated, provider-neutral review output used by the Cloud UI and provider writeback. */
+  review_result?: ReviewResult;
+  /** Safe projection of the frozen repository grant; never contains tokens or secrets. */
+  scm_grant?: SCMGrant;
   /** Exact provider revisions frozen before a review Run is queued. */
   pr_head_sha?: string;
   pr_base_sha?: string;
@@ -758,6 +768,32 @@ export interface ReviewPlan {
   changed_lines: number;
   files: ReviewPlanFile[];
   created_at: string;
+}
+
+export interface ReviewFinding {
+  path: string;
+  line: number;
+  end_line?: number;
+  severity: 'P0' | 'P1' | 'P2' | 'P3' | string;
+  confidence: number;
+  title: string;
+  body: string;
+  suggestion?: string;
+}
+
+export interface ReviewResult {
+  summary: string;
+  findings: ReviewFinding[];
+  checks: string[];
+}
+
+export interface SCMGrant {
+  provider: ProviderKind | string;
+  repository: string;
+  installation_id?: string;
+  provider_config_revision?: number;
+  credential_version_id?: string;
+  acting_principal_kind?: string;
 }
 
 export interface ProvenanceActorRef {

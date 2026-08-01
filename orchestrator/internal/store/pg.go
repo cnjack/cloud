@@ -451,7 +451,7 @@ const runCols = `id, project_id, service_id, prompt, status, kind, phase, error,
 	base_branch, model_effort, goal_mode,
 	session, awaiting_since, session_finalizing, bundle_rev, pushed_rev, permission_mode,
 	acp_session_id, resumed_from, provenance,
-	execution_contract, review_plan, pr_head_sha, pr_base_sha`
+	execution_contract, review_plan, pr_head_sha, pr_base_sha, pr_title, review_delivery_error`
 
 func scanRun(row pgx.Row) (*domain.Run, error) {
 	var r domain.Run
@@ -467,7 +467,7 @@ func scanRun(row pgx.Row) (*domain.Run, error) {
 		&r.BaseBranch, &r.ModelEffort, &r.GoalMode,
 		&r.Session, &r.AwaitingSince, &r.SessionFinalizing, &r.BundleRev, &r.PushedRev, &r.PermissionMode,
 		&r.AcpSessionID, &r.ResumedFrom, &provenanceSnapshot,
-		&executionContract, &reviewPlan, &r.PRHeadSHA, &r.PRBaseSHA)
+		&executionContract, &reviewPlan, &r.PRHeadSHA, &r.PRBaseSHA, &r.PRTitle, &r.ReviewDeliveryError)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -649,7 +649,7 @@ func (s *PGStore) createRunTx(ctx context.Context, tx pgx.Tx, r *domain.Run) err
 	}
 	_, err = tx.Exec(ctx,
 		`INSERT INTO runs (`+runCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61)`,
 		r.ID, r.ProjectID, r.ServiceID, r.Prompt, r.Status, string(r.Kind), r.Phase, r.Error, r.K8sJobName,
 		r.RetriedFrom, r.FailureReason, r.FailureMessage, r.Attempt, r.TokenHash,
 		r.CreatedAt, r.StartedAt, r.FinishedAt, r.JobCleanedAt,
@@ -660,7 +660,7 @@ func (s *PGStore) createRunTx(ctx context.Context, tx pgx.Tx, r *domain.Run) err
 		r.BaseBranch, r.ModelEffort, r.GoalMode,
 		r.Session, r.AwaitingSince, r.SessionFinalizing, r.BundleRev, r.PushedRev, r.PermissionMode,
 		r.AcpSessionID, r.ResumedFrom, provenanceJSON,
-		workflowContractJSON(r.ExecutionContract), reviewPlanJSON(r.ReviewPlan), r.PRHeadSHA, r.PRBaseSHA)
+		workflowContractJSON(r.ExecutionContract), reviewPlanJSON(r.ReviewPlan), r.PRHeadSHA, r.PRBaseSHA, r.PRTitle, r.ReviewDeliveryError)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
 	}
@@ -2086,6 +2086,17 @@ func (s *PGStore) SetReviewPlan(ctx context.Context, id string, plan domain.Revi
 	return committed, err == nil, err
 }
 
+func (s *PGStore) SetReviewDeliveryError(ctx context.Context, id, message string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE runs SET review_delivery_error=$2 WHERE id=$1`, id, strings.TrimSpace(message))
+	if err != nil {
+		return fmt.Errorf("set review delivery error: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // MarkReviewPosted stamps review_posted_at once the review comment has been
 // posted to the PR. Idempotent + first-writer-wins via COALESCE under a row
 // lock: returns posted=true only for the tick that actually stamped it, so two
@@ -2101,7 +2112,7 @@ func (s *PGStore) MarkReviewPosted(ctx context.Context, id string) (bool, error)
 		return false, nil // already posted
 	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE runs SET review_posted_at=now() WHERE id=$1 AND review_posted_at IS NULL`, id); err != nil {
+		`UPDATE runs SET review_posted_at=now(), review_delivery_error='' WHERE id=$1 AND review_posted_at IS NULL`, id); err != nil {
 		return false, fmt.Errorf("mark review posted: %w", err)
 	}
 	if _, err := s.commitAndReload(ctx, tx, id); err != nil {
