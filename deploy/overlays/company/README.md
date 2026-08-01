@@ -26,6 +26,6 @@ kubectl -n jcode rollout status deploy/console --timeout=120s
 ```
 
 The company overlay deliberately deletes the base development
-`orchestrator-secret` from its rendered resources. Applying the overlay
-therefore preserves the real, out-of-band Secret already installed in the
-cluster.
+`orchestrator-secret` and `postgres-secret` from its rendered resources.
+Applying the overlay therefore preserves the real, out-of-band Secrets already
+installed in the cluster.
