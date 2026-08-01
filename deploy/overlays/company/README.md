@@ -29,3 +29,10 @@ The company overlay deliberately deletes the base development
 `orchestrator-secret` and `postgres-secret` from its rendered resources.
 Applying the overlay therefore preserves the real, out-of-band Secrets already
 installed in the cluster.
+
+The overlay also registers the optional `go-node`, `python`, `rust`, and
+`polyglot` Runner Profiles by immutable Aliyun ACR manifest digest. The
+`images` workflow publishes and verifies those images. When intentionally
+refreshing their toolchains, update all four digests here from one successful
+release, render the overlay, and run one real toolchain smoke Pod per profile
+before making the new names available to Services.
