@@ -18,7 +18,8 @@
 --
 -- The global UNIQUE(name) constraints on model_providers/model_configs are relaxed
 -- to a SCOPED uniqueness keyed on COALESCE(project_id,'') so the cluster and each
--- project may independently name a provider/model "OpenAI".
+-- project may independently name a provider/model "OpenAI". Migration 0070 later
+-- narrows model display-name uniqueness further to the owning provider.
 --
 -- Idempotent: ADD COLUMN IF NOT EXISTS, guarded constraint drops, and
 -- CREATE ... IF NOT EXISTS make a re-apply a clean no-op.

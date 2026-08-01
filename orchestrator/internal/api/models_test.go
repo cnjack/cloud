@@ -105,7 +105,7 @@ func TestModelCatalogCRUDAndRBAC(t *testing.T) {
 		t.Fatalf("list should report api_key_set:true, got %s", raw)
 	}
 
-	// Duplicate name => 409.
+	// The legacy flat create also creates a scope-unique implicit provider.
 	dup := do(t, "POST", ts.URL+"/api/v1/system/models", consoleToken, map[string]any{
 		"name": "gpt", "base_url": "http://y/v1", "model_name": "c/d",
 	})

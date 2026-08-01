@@ -2380,8 +2380,9 @@ func scanModel(row pgx.Row) (*domain.Model, error) {
 	return &m, nil
 }
 
-// CreateModel inserts a catalog model. Duplicate name => ErrAlreadyExists. A new
-// model is always enabled (jcode Switch parity; the DB column default is true).
+// CreateModel inserts a catalog model. Display name and upstream model id are
+// unique within the owning provider. A new model is always enabled (jcode
+// Switch parity; the DB column default is true).
 func (s *PGStore) CreateModel(ctx context.Context, m *domain.Model) error {
 	m.Enabled = true
 	if m.CreatedAt.IsZero() {
@@ -2471,7 +2472,8 @@ func (s *PGStore) CountModels(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// UpdateModel updates a model's mutable fields. Duplicate name => ErrAlreadyExists.
+// UpdateModel updates a model's mutable fields. Provider-scoped duplicate names
+// are reported as ErrAlreadyExists.
 func (s *PGStore) UpdateModel(ctx context.Context, m *domain.Model) error {
 	if m.Source == "" {
 		m.Source = "custom"

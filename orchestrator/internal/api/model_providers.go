@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/modelmetadata"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -367,10 +368,11 @@ func (s *Server) handleDeleteModelProvider(w http.ResponseWriter, r *http.Reques
 }
 
 type catalogModelView struct {
-	ID            string                   `json:"id"`
-	Name          string                   `json:"name,omitempty"`
-	Capabilities  domain.ModelCapabilities `json:"capabilities"`
-	ContextWindow int                      `json:"context_window"`
+	ID             string                   `json:"id"`
+	Name           string                   `json:"name,omitempty"`
+	Capabilities   domain.ModelCapabilities `json:"capabilities"`
+	ContextWindow  int                      `json:"context_window"`
+	MetadataSource string                   `json:"metadata_source,omitempty"`
 }
 
 type openAIModelsEnvelope struct {
@@ -472,6 +474,38 @@ func decodeProviderCatalog(resp *http.Response) ([]catalogModelView, error) {
 	return models, nil
 }
 
+// enrichProviderCatalog overlays verified build-time models.dev metadata onto
+// the IDs returned by the provider's live /models endpoint. Exact provider and
+// model IDs are required; unknown entries remain explicitly unknown.
+func enrichProviderCatalog(providerKind string, models []catalogModelView) {
+	for i := range models {
+		metadata, ok := modelmetadata.Lookup(providerKind, models[i].ID)
+		if !ok {
+			continue
+		}
+		models[i].Name = metadata.Name
+		models[i].ContextWindow = metadata.ContextWindow
+		models[i].Capabilities = metadata.Capabilities
+		models[i].MetadataSource = "models.dev"
+	}
+}
+
+// applyCatalogMetadata makes the server authoritative for models.dev-backed
+// catalog creates, including requests from older clients that only submit the
+// model ID. Custom models keep their explicitly authored metadata untouched.
+func applyCatalogMetadata(providerKind string, model *domain.Model) {
+	if model.Source != "catalog" {
+		return
+	}
+	metadata, ok := modelmetadata.Lookup(providerKind, model.ModelID)
+	if !ok {
+		return
+	}
+	model.Name = metadata.Name
+	model.ContextWindow = metadata.ContextWindow
+	model.Capabilities = metadata.Capabilities
+}
+
 func (s *Server) recordProviderVerification(ctx context.Context, p *domain.ModelProvider, available *bool, message string) {
 	now := time.Now().UTC()
 	p.CatalogAvailable = available
@@ -545,6 +579,7 @@ func (s *Server) handleModelProviderCatalog(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadGateway, "catalog_invalid", "the provider returned an invalid model catalog")
 		return
 	}
+	enrichProviderCatalog(provider.Kind, models)
 	available := true
 	s.recordProviderVerification(r.Context(), provider, &available, "")
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
@@ -657,6 +692,7 @@ func (s *Server) handleCreateProviderModel(w http.ResponseWriter, r *http.Reques
 		ContextWindow: req.ContextWindow, Capabilities: req.Capabilities, Source: source,
 		CreatedAt: now, UpdatedAt: now, UpdatedBy: principalFrom(r.Context()).userID(),
 	}
+	applyCatalogMetadata(provider.Kind, model)
 	if err := s.st.CreateModel(r.Context(), model); err != nil {
 		if errors.Is(err, store.ErrAlreadyExists) {
 			writeError(w, http.StatusConflict, "conflict", "that model is already configured")

@@ -292,7 +292,7 @@ run 首次启动的冷拉取(数百 MB 镜像)由 **jcloud-runner-prewarm Daemon
 
 每个 **project 拥有自己的 model providers + models**(对齐 sibling jcode 的 provider 管理器),供该 project 所有 service 自动使用;**集群级目录**(cluster-admin 的 providers/models + `model_grants`)完全保留。为将来 jcode 直连 cloud 共用能力,schema/DTO 按 jcode 超集建模。
 
-- **归属轴(可空 `project_id`)**:`model_providers`/`model_configs` 各加可空 `project_id`(NULL=集群全局,今日行为不变;非空=项目自有,随项目删除 `ON DELETE CASCADE`),照搬 `integrations`(0018)的项目自有资源模式,**不建平行表**(否则 FK/resolver 全要改,收益不抵)。全局 `UNIQUE(name)` 放宽为 `UNIQUE(COALESCE(project_id,''), name)`,让集群与各项目可同名。迁移 `0029`,幂等。
+- **归属轴(可空 `project_id`)**:`model_providers`/`model_configs` 各加可空 `project_id`(NULL=集群全局,今日行为不变;非空=项目自有,随项目删除 `ON DELETE CASCADE`),照搬 `integrations`(0018)的项目自有资源模式,**不建平行表**(否则 FK/resolver 全要改,收益不抵)。provider 名称按 `COALESCE(project_id,'')` 唯一；model 名称与上游 `model_id` 都按 `provider_id` 唯一，因此同一 scope 的不同 provider 可配置同名模型。迁移 `0029` 建立 scope，`0070` 修正 model 名称唯一键，均幂等。
 - **可用集合(唯一改动点)**:`ListModelsForProject` 扩成 **项目自有 `enabled` 模型 ∪ 集群 grant 给它的模型**(单 SELECT 的 OR,天然去重;`enabled` 仅过滤项目自有)。这是定义 project 可用模型集的**唯一**查询——`modelcfg.SelectModel`/`ResolveModel`、`services.default_model_id` 校验、LLM 反代**全部不变**,自动覆盖项目自有模型。env `MODEL_*` 兜底仍仅当全局 `CountModels()==0`。
 - **RBAC**:`/api/v1/projects/{id}/model-providers*` —— list=member+,写=owner;每个 `{pid}`/`{mid}` handler **断言行 `project_id`==路径项目否则 404**(集群全局与他项目行不可达)。集群 `/system/model-*` 端点原样保留。
 - **jcode 对齐**:`kind`=runtime 前缀、`provider/model` 寻址、能力位(reasoning/tools/image)+`context_window`、自定义模型、**每模型 `enabled` 开关**、**provider 级自定义 headers**。凭据纪律不变:`api_key_enc`/`headers_enc` AES-256-GCM、`json:"-"`、绝不序列化(只回显 `api_key_set`/`headers_set`);runner pod 零凭据,LLM 反代注入真 key。

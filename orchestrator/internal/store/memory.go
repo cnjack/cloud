@@ -2351,15 +2351,27 @@ func cloneModel(m domain.Model) domain.Model {
 
 func grantKey(modelID, projectID string) string { return modelID + "|" + projectID }
 
-// CreateModel inserts a catalog model. Duplicate name => ErrAlreadyExists. A new
+// CreateModel inserts a catalog model. A display name is unique within its
+// provider, matching the provider-scoped model_id database constraint. A new
 // model is always enabled (jcode Switch parity; the DB column default is true).
 func (m *MemStore) CreateModel(_ context.Context, mod *domain.Model) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	mod.Enabled = true
-	// Scope-aware uniqueness (M1): unique WITHIN scope (COALESCE(project_id,'')).
+	// The legacy flat-model endpoint creates one implicit provider per model. Its
+	// provider name remains scope-unique, matching the model_providers index and
+	// the PG transaction below; do this check before assigning mod.ProviderID.
+	if mod.ProviderID == "" {
+		for _, provider := range m.modelProviders {
+			if provider.Name == mod.Name && provider.ProjectID == mod.ProjectID {
+				return ErrAlreadyExists
+			}
+		}
+	}
+	// A provider may expose a name once; another provider may expose the same
+	// model name independently, even when both providers share a project scope.
 	for _, e := range m.models {
-		if e.Name == mod.Name && e.ProjectID == mod.ProjectID {
+		if e.Name == mod.Name && e.ProviderID == mod.ProviderID {
 			return ErrAlreadyExists
 		}
 	}
@@ -2428,7 +2440,8 @@ func (m *MemStore) CountModels(_ context.Context) (int, error) {
 	return len(m.models), nil
 }
 
-// UpdateModel updates a model's mutable fields. Duplicate name => ErrAlreadyExists.
+// UpdateModel updates a model's mutable fields. Display names are unique only
+// among sibling models owned by the same provider.
 func (m *MemStore) UpdateModel(_ context.Context, mod *domain.Model) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2436,7 +2449,7 @@ func (m *MemStore) UpdateModel(_ context.Context, mod *domain.Model) error {
 		return ErrNotFound
 	}
 	for id, e := range m.models {
-		if id != mod.ID && e.Name == mod.Name && e.ProjectID == mod.ProjectID {
+		if id != mod.ID && e.Name == mod.Name && e.ProviderID == mod.ProviderID {
 			return ErrAlreadyExists
 		}
 	}

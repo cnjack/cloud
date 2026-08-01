@@ -772,8 +772,8 @@ console 全部走以下新端点。api key **只写不读**(回显 `api_key_set`
 | `PATCH /api/v1/system/model-providers/{id}` | cluster-admin | 字段皆可选；provider identity/endpoint/credential 变化会清掉旧 verification，并原子同步子 model 的运行时 endpoint、key 与 `{kind}/{model_id}` 名称 |
 | `DELETE /api/v1/system/model-providers/{id}` | cluster-admin | 删除 provider；models 与 grants 级联，service 默认模型/run FK 按既有约束清理 |
 | `POST /api/v1/system/model-providers/{id}/verify` | cluster-admin | 探测 provider 与 `/models`；成功回 `{reachable,catalog_available,latency_ms}`，失败写入可见 verification 状态并回 typed error |
-| `GET /api/v1/system/model-providers/{id}/catalog` | cluster-admin | 读取上游 `/models`；目录关闭/不支持时 `409 catalog_unavailable`，绝不补 synthetic fallback catalog |
-| `POST /api/v1/system/model-providers/{id}/models` | cluster-admin | `{name,model_id,context_window,capabilities,source?}`；`source ∈ {custom,catalog}`，同 provider 下 `model_id` 唯一 |
+| `GET /api/v1/system/model-providers/{id}/catalog` | cluster-admin | 读取上游 `/models`；对精确匹配的 Desktop provider kind + model id，用构建期 models.dev 快照补充 name/context/capabilities，并标记 `metadata_source=models.dev`；目录关闭/不支持时 `409 catalog_unavailable`，绝不补 synthetic fallback catalog |
+| `POST /api/v1/system/model-providers/{id}/models` | cluster-admin | `{name,model_id,context_window,capabilities,source?}`；`source ∈ {custom,catalog}`，同 provider 下 `model_id` 与 display name 唯一；不同 provider 可配置同名/同上游 id 模型 |
 | `GET /api/v1/system/models` | cluster-admin | 目录全量(含 `api_key_set` + `granted_account_ids` + `granted_project_ids`,不含明文 key) |
 | `POST /api/v1/system/models` | cluster-admin | `{name, base_url, model_name, api_key?}`;`base_url` 须 http(s),`model_name` 须 `provider/model`,name 唯一(重名 `409`);有 key 但无 `JCLOUD_MASTER_KEY` → `409 cipher_not_configured` |
 | `PATCH /api/v1/system/models/{id}` | cluster-admin | 字段皆可选(省略=不变);`api_key` 省略=不变、`""`=清空(keyless)、有值=轮换 |
@@ -787,9 +787,12 @@ console 全部走以下新端点。api key **只写不读**(回显 `api_key_set`
 | `POST /api/v1/services/{id}/runs` | member+ | 新增可选 `{model_id?}`(composer 选);见下方解析链 |
 
 `/system/models` 继续作为运行解析、旧管理调用与 grant 路径的兼容视图；Cluster
-Models 页面以 `/system/model-providers` 为管理入口。provider catalog 只投影上游返回的
-model id；display name、context window 与 capabilities 在配置 model 时显式落库，避免把
-未知 provider metadata 假装成已验证事实。
+Models 页面以 `/system/model-providers` 为管理入口。provider catalog 以**上游实时返回的
+model id 为集合边界**，再用 `internal/modelmetadata` 中由 `go generate` 从 models.dev
+生成的快照补充精确命中项；未知 provider/model 仍返回空名称、零 context 与 false
+capabilities，不按名称猜测。display name、context window 与 capabilities 在配置 model
+时显式落库；已有 catalog model 只有管理员点击“同步元数据”才会被快照覆盖，人工修正
+不会在 GET 时被静默改写。
 
 Account grant 与 Project grant 均只允许指向 `project_id IS NULL` 的
 Cluster-global model。Project-owned model 只能由其所属 Project 使用，尝试跨范围

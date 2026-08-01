@@ -95,6 +95,43 @@ describe('ClusterModelsPage', () => {
     }));
   });
 
+  it('syncs an already configured catalog model from models.dev metadata', async () => {
+	const catalogProvider: ModelProvider = {
+	  ...provider,
+	  catalog_mode: 'auto',
+	  catalog_available: true,
+	  models: [{
+		...provider.models[0]!,
+		context_window: 0,
+		capabilities: { reasoning: false, tools: false, image: false },
+		source: 'catalog',
+	  }],
+	};
+	const updateModel = vi.fn().mockResolvedValue(catalogProvider.models[0]);
+	const getModelProviderCatalog = vi.fn().mockResolvedValue([{
+	  id: 'coding-plan',
+	  name: 'Coding Plan',
+	  context_window: 1_000_000,
+	  capabilities: { reasoning: true, tools: true, image: false },
+	  metadata_source: 'models.dev',
+	}]);
+	renderPage({
+	  listModelProviders: async () => [catalogProvider],
+	  getModelProviderCatalog,
+	  updateModel,
+	});
+	const card = await screen.findByTestId('provider-card-prv-plan');
+	fireEvent.click(within(card).getByRole('button', { name: 'Browse catalog' }));
+	const dialog = await screen.findByRole('dialog', { name: 'Catalog · Coding Plan' });
+	fireEvent.click(await within(dialog).findByRole('button', { name: 'Sync metadata' }));
+
+	await waitFor(() => expect(updateModel).toHaveBeenCalledWith('mdl-plan', {
+	  name: 'Coding Plan',
+	  context_window: 1_000_000,
+	  capabilities: { reasoning: true, tools: true, image: false },
+	}));
+  });
+
   it('manages Project grants through the existing grant contract', async () => {
     const client = renderPage();
     await screen.findByTestId('provider-card-prv-plan');

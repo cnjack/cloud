@@ -723,8 +723,9 @@ func TestMemServiceGitConfigRoundTrip(t *testing.T) {
 	}
 }
 
-// TestMemStoreModelCatalogRoundTrip covers the D21 catalog: create (unique name),
-// read-back, update, list newest-first, count, defensive copy, and delete.
+// TestMemStoreModelCatalogRoundTrip covers the legacy flat-model path (one
+// implicit provider per model): create, provider-name conflict, read-back,
+// update, list newest-first, count, defensive copy, and delete.
 func TestMemStoreModelCatalogRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemStore()
@@ -740,7 +741,7 @@ func TestMemStoreModelCatalogRoundTrip(t *testing.T) {
 	if err := m.CreateModel(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	// Duplicate name => ErrAlreadyExists.
+	// The implicit provider reuses the model name and remains scope-unique.
 	if err := m.CreateModel(ctx, &domain.Model{ID: "m2", Name: "gpt", BaseURL: "http://y/v1", ModelName: "c/d"}); err != ErrAlreadyExists {
 		t.Fatalf("dup name: err=%v want ErrAlreadyExists", err)
 	}
@@ -793,6 +794,36 @@ func TestMemStoreModelCatalogRoundTrip(t *testing.T) {
 	}
 	if err := m.DeleteModel(ctx, "m1"); err != ErrNotFound {
 		t.Fatalf("delete twice: err=%v want ErrNotFound", err)
+	}
+}
+
+func TestMemStoreModelNameUniquenessIsProviderScoped(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	for _, provider := range []*domain.ModelProvider{
+		{ID: "provider-a", Name: "Provider A", Kind: "openai", BaseURL: "https://a.example/v1"},
+		{ID: "provider-b", Name: "Provider B", Kind: "openai", BaseURL: "https://b.example/v1"},
+	} {
+		if err := m.CreateModelProvider(ctx, provider); err != nil {
+			t.Fatalf("create provider %s: %v", provider.ID, err)
+		}
+	}
+
+	first := &domain.Model{ID: "model-a", ProviderID: "provider-a", Name: "Shared model", ModelID: "shared", ModelName: "openai/shared"}
+	if err := m.CreateModel(ctx, first); err != nil {
+		t.Fatalf("create first model: %v", err)
+	}
+	if err := m.CreateModel(ctx, &domain.Model{
+		ID: "model-b", ProviderID: "provider-b", Name: first.Name,
+		ModelID: first.ModelID, ModelName: first.ModelName,
+	}); err != nil {
+		t.Fatalf("same model name on another provider should be allowed: %v", err)
+	}
+	if err := m.CreateModel(ctx, &domain.Model{
+		ID: "model-a-duplicate", ProviderID: "provider-a", Name: first.Name,
+		ModelID: "different-upstream-id", ModelName: "openai/different-upstream-id",
+	}); err != ErrAlreadyExists {
+		t.Fatalf("same model name on one provider: err=%v want ErrAlreadyExists", err)
 	}
 }
 
@@ -887,7 +918,7 @@ func TestMemStoreModelGrants(t *testing.T) {
 
 // TestMemStoreProjectOwnedModels covers the M1 project-owned scope: the usable
 // set is the project's OWN enabled models UNION its cluster grants; disabling a
-// project-owned model drops it; provider/model names are unique per scope; and
+// project-owned model drops it; provider names are unique per scope; and
 // ListModelProvidersForProject returns only that project's providers.
 func TestMemStoreProjectOwnedModels(t *testing.T) {
 	ctx := context.Background()

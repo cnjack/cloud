@@ -1133,8 +1133,9 @@ func containsRun(runs []domain.Run, id string) bool {
 	return false
 }
 
-// TestPGModelCatalogRoundTrip validates the D21 catalog against a real Postgres:
-// create (unique name), bytea api_key_enc round-trip, update, grants +
+// TestPGModelCatalogRoundTrip validates the legacy implicit-provider path
+// against a real Postgres: create, provider-name conflict, bytea api_key_enc
+// round-trip, update, grants +
 // ListModelsForProject / ListProjectIDsForModel, and the ON DELETE cascade/SET
 // NULL to grants + service defaults + run refs. Requires JCLOUD_PG_DSN.
 func TestPGModelCatalogRoundTrip(t *testing.T) {
@@ -1157,7 +1158,7 @@ func TestPGModelCatalogRoundTrip(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.DeleteModel(ctx, m.ID) })
 
-	// Duplicate name => ErrAlreadyExists.
+	// The implicit provider reuses the model name and remains scope-unique.
 	if err := st.CreateModel(ctx, &domain.Model{ID: domain.NewID(), Name: m.Name, BaseURL: "http://y/v1", ModelName: "c/d"}); err != ErrAlreadyExists {
 		t.Fatalf("dup name: err=%v want ErrAlreadyExists", err)
 	}

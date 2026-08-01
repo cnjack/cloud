@@ -993,7 +993,7 @@ type Model struct {
 	// ProjectID owns this model (project-scoped, M1), denormalised from its
 	// provider. "" (SQL NULL) means the model is cluster-global (pre-M1 behavior).
 	ProjectID string `json:"project_id,omitempty"`
-	// Name is the unique display name (e.g. "GPT-4o").
+	// Name is the display name (e.g. "GPT-4o"), unique within ProviderID.
 	Name string `json:"name"`
 	// BaseURL is the OpenAI-compatible base URL (http/https).
 	BaseURL string `json:"base_url"`

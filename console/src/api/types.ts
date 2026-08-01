@@ -1348,6 +1348,8 @@ export interface CatalogModel {
   name?: string;
   context_window: number;
   capabilities: ModelCapabilities;
+  /** Present only when the server matched the exact provider/model in its snapshot. */
+  metadata_source?: 'models.dev';
 }
 
 export interface ModelProviderVerification {

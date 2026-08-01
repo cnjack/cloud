@@ -220,6 +220,26 @@ func TestProjectModelManagementMigrationContract(t *testing.T) {
 	}
 }
 
+func TestProviderScopedModelNamesMigrationContract(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0070_provider_scoped_model_names.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := string(sql)
+	for _, required := range []string{
+		"DROP INDEX IF EXISTS model_configs_scope_name_idx",
+		"CREATE UNIQUE INDEX IF NOT EXISTS model_configs_provider_name_idx",
+		"ON model_configs (provider_id, name)",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Fatalf("0070 migration missing %q", required)
+		}
+	}
+	if strings.Contains(migration, "COALESCE(project_id, '')") {
+		t.Fatal("model display-name uniqueness must be provider-scoped, not project-scoped")
+	}
+}
+
 func TestDesktopConfigMeshMigrationContract(t *testing.T) {
 	sql, err := migrationsFS.ReadFile("migrations/0039_desktop_config_mesh.sql")
 	if err != nil {

@@ -1564,8 +1564,8 @@ export function createMockClient(): ApiClient {
         });
       }
       return delay([
-        { id: 'gpt-4o', name: 'GPT-4o', context_window: 128_000, capabilities: { reasoning: true, tools: true, image: true } },
-        { id: 'o3', name: 'o3', context_window: 200_000, capabilities: { reasoning: true, tools: true, image: true } },
+        { id: 'gpt-4o', name: 'GPT-4o', context_window: 128_000, capabilities: { reasoning: true, tools: true, image: true }, metadata_source: 'models.dev' },
+        { id: 'o3', name: 'o3', context_window: 200_000, capabilities: { reasoning: true, tools: true, image: true }, metadata_source: 'models.dev' },
       ]);
     },
 
@@ -1706,8 +1706,8 @@ export function createMockClient(): ApiClient {
         });
       }
       return delay([
-        { id: 'gpt-4o', name: 'GPT-4o', context_window: 128_000, capabilities: { reasoning: true, tools: true, image: true } },
-        { id: 'o3', name: 'o3', context_window: 200_000, capabilities: { reasoning: true, tools: true, image: true } },
+        { id: 'gpt-4o', name: 'GPT-4o', context_window: 128_000, capabilities: { reasoning: true, tools: true, image: true }, metadata_source: 'models.dev' },
+        { id: 'o3', name: 'o3', context_window: 200_000, capabilities: { reasoning: true, tools: true, image: true }, metadata_source: 'models.dev' },
       ]);
     },
 

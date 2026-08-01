@@ -480,6 +480,7 @@ func (s *Server) handleProjectModelProviderCatalog(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadGateway, "catalog_invalid", "the provider returned an invalid model catalog")
 		return
 	}
+	enrichProviderCatalog(provider.Kind, models)
 	available := true
 	s.recordProviderVerification(r.Context(), provider, &available, "")
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
@@ -530,6 +531,7 @@ func (s *Server) handleCreateProjectProviderModel(w http.ResponseWriter, r *http
 		ContextWindow: req.ContextWindow, Capabilities: req.Capabilities, Source: source,
 		Enabled: true, CreatedAt: now, UpdatedAt: now, UpdatedBy: principalFrom(r.Context()).userID(),
 	}
+	applyCatalogMetadata(provider.Kind, model)
 	if err := s.st.CreateModel(r.Context(), model); err != nil {
 		if errors.Is(err, store.ErrAlreadyExists) {
 			writeError(w, http.StatusConflict, "conflict", "that model is already configured in this project")

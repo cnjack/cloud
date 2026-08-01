@@ -83,11 +83,11 @@ func TestModelProviderCRUDCatalogAndCredentials(t *testing.T) {
 
 	const secret = "provider-super-secret"
 	provider := createProvider(t, ts, map[string]any{
-		"name": "Zhipu AI", "kind": "zhipu", "base_url": upstream.URL + "/v1",
+		"name": "Zhipu AI", "kind": "zhipuai-coding-plan", "base_url": upstream.URL + "/v1",
 		"auth_type": "api_key", "api_key": secret, "catalog_mode": "auto",
 		"headers": map[string]any{"X-Org": "desktop-parity"},
 	})
-	if provider.ID == "" || provider.Name != "Zhipu AI" || provider.Kind != "zhipu" || !provider.APIKeySet || !provider.HeadersSet {
+	if provider.ID == "" || provider.Name != "Zhipu AI" || provider.Kind != "zhipuai-coding-plan" || !provider.APIKeySet || !provider.HeadersSet {
 		t.Fatalf("provider view mismatch: %+v", provider)
 	}
 
@@ -109,12 +109,21 @@ func TestModelProviderCRUDCatalogAndCredentials(t *testing.T) {
 	}
 	var catalog struct {
 		Models []struct {
-			ID string `json:"id"`
+			ID             string                 `json:"id"`
+			Name           string                 `json:"name"`
+			ContextWindow  int                    `json:"context_window"`
+			Capabilities   modelCapabilitiesViewT `json:"capabilities"`
+			MetadataSource string                 `json:"metadata_source"`
 		} `json:"models"`
 	}
 	decode(t, resp, &catalog)
 	if len(catalog.Models) != 2 || catalog.Models[0].ID != "glm-5.2" {
 		t.Fatalf("catalog mismatch: %+v", catalog.Models)
+	}
+	if catalog.Models[0].Name != "GLM-5.2" || catalog.Models[0].ContextWindow != 1_000_000 ||
+		!catalog.Models[0].Capabilities.Reasoning || !catalog.Models[0].Capabilities.Tools || catalog.Models[0].Capabilities.Image ||
+		catalog.Models[0].MetadataSource != "models.dev" {
+		t.Fatalf("catalog models.dev metadata mismatch: %+v", catalog.Models[0])
 	}
 	if catalogAuth != "Bearer "+secret {
 		t.Fatalf("catalog authorization=%q want bearer credential", catalogAuth)
@@ -204,6 +213,42 @@ func TestModelProviderCatalogUnavailableIsTyped(t *testing.T) {
 	if body.Error.Code != "catalog_unavailable" {
 		t.Fatalf("disabled catalog code=%q want catalog_unavailable", body.Error.Code)
 	}
+}
+
+func TestProviderModelsAllowSameNameAcrossProviders(t *testing.T) {
+	ts, st := catalogServer(t, true)
+	_ = mkUser(t, st, "admin")
+
+	providerA := createProvider(t, ts, map[string]any{
+		"name": "Provider A", "kind": "openai", "base_url": "https://a.example/v1",
+		"auth_type": "none", "catalog_mode": "disabled",
+	})
+	providerB := createProvider(t, ts, map[string]any{
+		"name": "Provider B", "kind": "openai", "base_url": "https://b.example/v1",
+		"auth_type": "none", "catalog_mode": "disabled",
+	})
+	body := map[string]any{
+		"name": "Shared model", "model_id": "shared",
+		"context_window": 128000,
+		"capabilities":   map[string]any{"reasoning": true, "tools": true, "image": false},
+	}
+	for _, providerID := range []string{providerA.ID, providerB.ID} {
+		resp := do(t, http.MethodPost, ts.URL+"/api/v1/system/model-providers/"+providerID+"/models", consoleToken, body)
+		if resp.StatusCode != http.StatusCreated {
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("create same-named model for provider %s: status=%d body=%s", providerID, resp.StatusCode, raw)
+		}
+		resp.Body.Close()
+	}
+
+	resp := do(t, http.MethodPost, ts.URL+"/api/v1/system/model-providers/"+providerA.ID+"/models", consoleToken, body)
+	if resp.StatusCode != http.StatusConflict {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("duplicate model on one provider: status=%d body=%s", resp.StatusCode, raw)
+	}
+	resp.Body.Close()
 }
 
 func TestModelProviderValidation(t *testing.T) {

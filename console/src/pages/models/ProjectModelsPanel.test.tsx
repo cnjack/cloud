@@ -216,6 +216,44 @@ describe('ProjectModelsPanel', () => {
     });
   });
 
+  it('owner syncs an existing catalog model from models.dev metadata', async () => {
+    const catalogProvider: ModelProvider = {
+      ...seedProvider,
+      catalog_mode: 'auto',
+      catalog_available: true,
+      models: [{
+        ...providerModel,
+        source: 'catalog',
+        context_window: 0,
+        capabilities: { reasoning: false, tools: false, image: false },
+      }],
+    };
+    const { client, ctl } = makeClient([catalogProvider]);
+    client.getProjectModelProviderCatalog = vi.fn().mockResolvedValue([{
+      id: 'plan',
+      name: 'Plan',
+      context_window: 1_000_000,
+      capabilities: { reasoning: true, tools: true, image: false },
+      metadata_source: 'models.dev',
+    }]);
+    renderPanel(true, client);
+
+    const card = await screen.findByTestId('provider-card-prv-1');
+    fireEvent.click(within(card).getByRole('button', { name: 'Browse catalog' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Catalog · Project OpenAI' });
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Sync metadata' }));
+
+    await waitFor(() => expect(ctl.updated).toEqual([{
+      providerId: 'prv-1',
+      modelId: 'mdl-1',
+      input: {
+        name: 'Plan',
+        context_window: 1_000_000,
+        capabilities: { reasoning: true, tools: true, image: false },
+      },
+    }]));
+  });
+
   it('owner toggles a model off, which PATCHes enabled=false and drops it from the union', async () => {
     const { client, ctl } = makeClient();
     renderPanel(true, client);
