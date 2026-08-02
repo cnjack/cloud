@@ -629,6 +629,10 @@ func pluginEventKey(automation *domain.PluginAutomation, serviceID string, event
 	return fmt.Sprintf("plugin:%s:%s:%s", automationID, event.Provider, event.DeliveryID)
 }
 
+func pluginDecisionEventKey(automation *domain.PluginAutomation, event scmevent.NormalizedSCMEvent) string {
+	return fmt.Sprintf("plugin-decision:%s:%s:%s", automation.ID, event.Provider, event.DeliveryID)
+}
+
 func (s *Server) pluginProviderClient(ctx context.Context, binding *domain.ServiceRepositoryBinding) (gitprovider.Provider, error) {
 	if binding == nil || s.pluginCredentialIssuer == nil {
 		return nil, errors.New("Plugin credential issuer is unavailable")
@@ -736,6 +740,9 @@ func (s *Server) recordPluginSCMDecision(
 	reasonCode, reasonMessage, repairRole string,
 ) error {
 	execution := s.newPluginSCMExecution(r, automation, service, event, state)
+	// An ignored or blocked decision must not reserve the revision-scoped key
+	// used by a later runnable review event for the same pull request head.
+	execution.EventKey = pluginDecisionEventKey(automation, event)
 	execution.ReasonCode = reasonCode
 	execution.ReasonMessage = reasonMessage
 	execution.RepairRole = repairRole

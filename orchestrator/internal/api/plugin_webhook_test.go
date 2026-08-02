@@ -332,7 +332,7 @@ func TestPluginWebhookCoalescesQueuedPushToLatest(t *testing.T) {
 	}
 }
 
-func TestPluginReviewAutomationCreatesReviewRunAndSkipsDrafts(t *testing.T) {
+func TestPluginReviewAutomationQueuesReadyAfterIgnoringSameRevisionDraft(t *testing.T) {
 	f, automationID := seedPluginWebhookAutomation(t, "pull_request", "synchronized")
 	automation, err := f.st.GetPluginAutomation(context.Background(), automationID)
 	if err != nil {
@@ -344,12 +344,16 @@ func TestPluginReviewAutomationCreatesReviewRunAndSkipsDrafts(t *testing.T) {
 	}
 	automation.RunKind = domain.RunKindReview
 	spec.SCM.IncludeDrafts = false
+	spec.Actions = append(spec.Actions, domain.SCMAction{
+		AutomationID: automationID, ServiceID: f.serviceID,
+		EventFamily: "pull_request", Action: "ready",
+	})
 	if err := f.st.ReplacePluginAutomationSpec(context.Background(), automation, spec.SCM, spec.Actions, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	payload := func(draft bool, sha string) map[string]any {
+	payload := func(action string, draft bool, sha string) map[string]any {
 		return map[string]any{
-			"action": "synchronize", "sender": map[string]any{"id": 8, "login": "dev"},
+			"action": action, "sender": map[string]any{"id": 8, "login": "dev"},
 			"repository": map[string]any{"id": 42, "full_name": "acme/repo", "default_branch": "main"},
 			"pull_request": map[string]any{
 				"id": 7, "number": 7, "draft": draft, "html_url": "https://gitea.example/acme/repo/pulls/7",
@@ -358,13 +362,14 @@ func TestPluginReviewAutomationCreatesReviewRunAndSkipsDrafts(t *testing.T) {
 			},
 		}
 	}
-	draft := f.postGitea(t, "pull_request", "draft-review", payload(true, strings.Repeat("c", 40)))
+	headSHA := strings.Repeat("c", 40)
+	draft := f.postGitea(t, "pull_request", "draft-review", payload("synchronize", true, headSHA))
 	draft.Body.Close()
 	runs, _ := f.st.ListRunsByService(context.Background(), f.serviceID, 10)
 	if len(runs) != 0 {
 		t.Fatalf("draft review created %d runs", len(runs))
 	}
-	ready := f.postGitea(t, "pull_request", "ready-review", payload(false, strings.Repeat("a", 40)))
+	ready := f.postGitea(t, "pull_request", "ready-review", payload("ready_for_review", false, headSHA))
 	ready.Body.Close()
 	runs, err = f.st.ListRunsByService(context.Background(), f.serviceID, 10)
 	if err != nil || len(runs) != 1 {
@@ -373,6 +378,17 @@ func TestPluginReviewAutomationCreatesReviewRunAndSkipsDrafts(t *testing.T) {
 	if runs[0].Kind != domain.RunKindReview || runs[0].PRHeadBranch != "feature" ||
 		runs[0].PRBaseBranch != "main" || runs[0].PRNumber != 7 {
 		t.Fatalf("review run=%+v", runs[0])
+	}
+	executions, err := f.st.ListAutomationExecutions(context.Background(), automationID, "", nil, "", 10)
+	if err != nil || len(executions) != 2 {
+		t.Fatalf("executions=%d err=%v", len(executions), err)
+	}
+	states := map[domain.AutomationExecutionState]int{}
+	for _, execution := range executions {
+		states[execution.State]++
+	}
+	if states[domain.AutomationExecutionIgnored] != 1 || states[domain.AutomationExecutionQueued] != 1 {
+		t.Fatalf("execution states=%v want one ignored draft and one queued review", states)
 	}
 }
 
