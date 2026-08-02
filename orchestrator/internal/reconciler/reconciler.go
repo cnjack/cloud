@@ -589,6 +589,26 @@ func (r *Reconciler) reconcileExpiredAttachmentStages(ctx context.Context) {
 			r.log.Warn("reconcile: delete expired attachment stage", "stage", stage.ID, "err", err)
 		}
 	}
+	shares, err := r.st.ListArtifactSharesForGC(ctx, now, attachmentCleanupBatchSize)
+	if err != nil {
+		r.log.Warn("reconcile: list artifact shares for gc", "err", err)
+		return
+	}
+	for _, share := range shares {
+		allDeleted := true
+		for _, key := range share.ObjectKeys() {
+			if err := r.attachmentStore.Delete(ctx, key); err != nil {
+				r.log.Warn("reconcile: delete artifact share object", "share", share.ID, "generation_key", key, "err", err)
+				allDeleted = false
+			}
+		}
+		if !allDeleted {
+			continue
+		}
+		if err := r.st.MarkArtifactShareObjectsDeleted(ctx, share.ID, now); err != nil && !errors.Is(err, store.ErrNotFound) {
+			r.log.Warn("reconcile: mark artifact share objects deleted", "share", share.ID, "err", err)
+		}
+	}
 	// Bindings deliberately survive run/project/user deletion until the backing
 	// object is removed. A shared retry/resume object is eligible only after its
 	// final live Run reference is gone.

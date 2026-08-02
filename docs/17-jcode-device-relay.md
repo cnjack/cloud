@@ -88,6 +88,10 @@ users ──< devices ──< device_sessions ──< device_events (seq 只追�
 | GET | `/internal/v1/device/pairings?status=pending` | 列出本设备的配对请求（默认 pending）：`{pairings:[{id,label,created_at}]}`；超过 10 分钟的 pending 在此惰性结算为 expired（§6.3） |
 | POST | `/internal/v1/device/pairings/{pid}/respond` | 设备审批配对 `{approve, key_gen?, wrap?}`：approve 必须带当前 `key_gen` 与 ECIES 包裹的 CEK（`wrap`，原样存）；同结果重复 respond 幂等，竞争结果/旧代次 → 409；已过期 → 409 `pairing_expired`；他人配对 404 |
 | POST | `/internal/v1/device/revoke` | 吊销自己的 device token（`jcode logout`）：204，立即生效（下一个请求即 401，天然幂等） |
+| POST | `/internal/v1/device/artifact-shares/intents` | 创建加密 Artifact 快照 intent：只接收 `{protocol,artifact_id,revision,ciphertext_size,expires_in_seconds}`；不接收标题、路径、MIME 或明文内容。返回同源 upload/complete 路径与 public `base_url`。 |
+| PUT | `/internal/v1/device/artifact-shares/{shareID}/content` | 上传 `nonce(12B) || AES-256-GCM ciphertext+tag`；要求精确 `Content-Length`，Cloud 代理对象存储；lease/generation 防并发重试覆盖。 |
+| POST | `/internal/v1/device/artifact-shares/{shareID}/complete` | 用 ciphertext SHA-256 与加密 metadata envelope 完成不可变分享；同内容幂等，竞争完成返回 409。 |
+| GET/DELETE | `/internal/v1/device/artifact-shares[/{shareID}]` | device owner 列表/吊销；列表可按 opaque `artifact_id` 过滤，永不返回 fragment key。 |
 
 ### 4.2 下行（orchestrator → jcode，长轮询）
 
@@ -245,6 +249,18 @@ CEK 生成时同时可导出 24 词 recovery phrase（BIP39 编码 256bit，`jco
 - **状态上报**：connector register（`POST /internal/v1/device/register`）新增可选字段 `e2ee: bool`，取**实际加密状态**（CEK 已激活且 `cloud.e2ee` 未置 false），不是配置项原样。服务端存 `devices.e2ee`（migration 0035，默认 false），并在 `GET /api/v1/devices/{id}` 的 deviceView 里回显（非 omitempty，老 connector 缺省即 false）。
 - **门**：所有客户端下行指令端点（messages、stop、approval、workspace browse）在 `e2ee=true` 时只接受 `{envelope:{enc,...}}` 密文形式；明文 body 返回 **409 `{error:{code:"pairing_required"}}`**，不入队。客户端见此错误应引导配对（§6.3）拿 CEK 后改发密文。
 - **兼容**：`e2ee=false`（老 connector 或 `cloud.e2ee:false`）行为完全不变，明文路径照常放行——J8（e2ee:false 设备）明文发送不受影响即回归证据。
+
+### 6.8 Artifact 分享信封（Desktop/Web）
+
+Artifact 分享不复用账号 CEK，也不依赖 relay online。每次用户显式点击分享时，已登录的 JCode 设备生成独立随机 32B key；key 仅放在 `https://…/s/{shareID}#k=v1.<base64url-key>` 的 URL fragment 中，既不发送到 Cloud，也不写 session、日志或 WebSocket。未登录时本地 UI 完全隐藏分享入口。
+
+- 协议：`jcode-artifact-share-v1`，单快照明文上限 25 MiB，过期时间 1 小时到 30 天。
+- content wire：`12B nonce || AES-256-GCM(ciphertext || 16B tag)`。
+- metadata：`{title,relative_path,media_type,kind,size}` 先编码为 UTF-8 JSON，再独立 nonce + AES-GCM；Cloud 仅保存 `{nonce,ciphertext,plaintext_length}`。
+- AAD：`protocol + "\n" + share_id + "\n" + ("metadata"|"content") + "\n" + artifact_id + "\n" + revision + "\n" + plaintext_length`。
+- public API：`GET /api/v1/shared-artifacts/{shareID}` 只返回密文元数据/摘要；`GET …/content` 由 Cloud 代理对象存储并返回密文，两个端点均为 unauthenticated、`no-store`、`no-referrer`、`nosniff`。撤销或过期后一律 404。
+- public viewer：先从 fragment 取 key 并立刻从地址栏移除，再请求密文；HTML 仅在 opaque-origin iframe（`sandbox="allow-scripts"`、无 `allow-same-origin`）渲染，页面 CSP 禁止 connect/object/base/form。
+- 跨实现标准向量：`shared/artifact-share-v1.json`；JCode Go 与 Cloud Console WebCrypto 测试必须共同读取该文件。
 
 ## 7. 客户端
 

@@ -240,6 +240,32 @@ func TestProviderScopedModelNamesMigrationContract(t *testing.T) {
 	}
 }
 
+func TestArtifactShareMigrationKeepsCiphertextLifecycleBoundedAndUserOwned(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0071_device_artifact_shares.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := strings.Join(strings.Fields(string(sql)), " ")
+	for _, required := range []string{
+		"CREATE TABLE IF NOT EXISTS device_artifact_shares",
+		"user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT",
+		"device_id TEXT REFERENCES devices(id) ON DELETE SET NULL",
+		"CHECK (protocol = 'jcode-artifact-share-v1')",
+		"CHECK (upload_generation BETWEEN 0 AND 3)",
+		"encrypted_metadata JSONB",
+		"object_deleted_at TIMESTAMPTZ",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Fatalf("0071 migration missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"share_key", "plaintext", "title TEXT", "relative_path"} {
+		if strings.Contains(migration, forbidden) {
+			t.Fatalf("0071 migration must not persist %q", forbidden)
+		}
+	}
+}
+
 func TestDesktopConfigMeshMigrationContract(t *testing.T) {
 	sql, err := migrationsFS.ReadFile("migrations/0039_desktop_config_mesh.sql")
 	if err != nil {

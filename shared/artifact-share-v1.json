@@ -1,0 +1,14 @@
+{
+  "protocol": "jcode-artifact-share-v1",
+  "share_id": "share-vector-1",
+  "artifact_id": "artifact_vector_1",
+  "revision": 3,
+  "key_b64url": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+  "metadata_plaintext": "{\"title\":\"Cross-runtime report\",\"relative_path\":\"reports/vector.md\",\"media_type\":\"text/markdown\",\"kind\":\"markdown\",\"size\":31}",
+  "metadata_nonce_b64url": "CwwNDg8QERITFBUW",
+  "metadata_ciphertext_b64url": "PCNe9QCm_5U0umhdsLdK7TtyBbN8pu-t4smkfT-2XYcq-2JUyD4cIfOBeanG3zDPLlJTLXRXxL4xvrVoPMmMP5kigmXs6mD-kCQbczKrspa8SYhQK0tMMsLOB-x2hWfH4L5eEJlJHlhedcjHs9pOk-lkjP1GTZLZ1E9ej7Dih0FHU-TF9xJKTEPWFton",
+  "content_plaintext_b64url": "IyBJbnRlcm9wCgpFbmNyeXB0ZWQgaW4gSkNvZGUuCg",
+  "content_nonce_b64url": "HyAhIiMkJSYnKCkq",
+  "content_wire_b64url": "HyAhIiMkJSYnKCkq2xKsh6NOnLDnqssEWDOZS1uvsdcYXDckbV5MZhzAafl-e395eaPl28tng3dC8bo",
+  "content_wire_sha256": "1f71a86a9d4dc5a71fc0f8a3063ec97688c941394e76a9f7a743a519a26ea053"
+}

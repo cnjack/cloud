@@ -33,6 +33,10 @@ var ErrConflict = errors.New("conflict")
 // too many or too many bytes of unconsumed staged uploads.
 var ErrAttachmentQuotaExceeded = errors.New("attachment staging quota exceeded")
 
+// ErrArtifactShareQuotaExceeded is returned atomically when a user has too
+// many active encrypted shares or too many reserved ciphertext bytes.
+var ErrArtifactShareQuotaExceeded = errors.New("artifact share quota exceeded")
+
 // ErrDispatchClaimUnavailable means a queued run could not atomically reserve
 // the Plugin set it needs for launch (disabled, revoked, or reconfigured).
 var ErrDispatchClaimUnavailable = errors.New("dispatch claim unavailable")
@@ -925,6 +929,20 @@ type Store interface {
 	// ListDevicesForUser returns a user's non-revoked devices, oldest first
 	// (the "my devices" client view).
 	ListDevicesForUser(ctx context.Context, userID string) ([]domain.Device, error)
+
+	// --- Encrypted Artifact shares ------------------------------------------
+	// The JSON metadata envelope and object body are ciphertext. These methods
+	// own the intent/upload/complete lifecycle and never accept a share key.
+	CreateArtifactShare(ctx context.Context, share *domain.ArtifactShare, maxCount int, maxBytes int64) error
+	ClaimArtifactShareUpload(ctx context.Context, id, userID, claimID string, at, leaseExpiresAt time.Time) (*domain.ArtifactShare, error)
+	MarkArtifactShareUploaded(ctx context.Context, id, userID, claimID string, generation int, digest string, at time.Time) error
+	ReleaseArtifactShareUpload(ctx context.Context, id, userID, claimID string, generation int) bool
+	CompleteArtifactShare(ctx context.Context, id, userID, digest string, metadata domain.EncryptedArtifactMetadata, at time.Time) (*domain.ArtifactShare, error)
+	ListArtifactSharesForUser(ctx context.Context, userID, artifactID string) ([]domain.ArtifactShare, error)
+	GetPublicArtifactShare(ctx context.Context, id string, at time.Time) (*domain.ArtifactShare, error)
+	RevokeArtifactShare(ctx context.Context, id, userID string, at time.Time) (*domain.ArtifactShare, error)
+	ListArtifactSharesForGC(ctx context.Context, before time.Time, limit int) ([]domain.ArtifactShare, error)
+	MarkArtifactShareObjectsDeleted(ctx context.Context, id string, at time.Time) error
 
 	// --- Device relay (docs/17 §4 — P2) ---------------------------------------
 	// Sessions/events/commands are the relay's data plane. Meta/envelope blobs

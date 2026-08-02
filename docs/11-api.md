@@ -653,6 +653,18 @@ data: {"seq":7,"ts":"2026-07-07T12:00:10Z","type":"agent.tool_call","payload":{"
   `Content-Disposition: attachment; filename="<run-id>.diff"`,body 为原始 diff。
 - 错误:`404`(产物尚不存在)。
 
+#### Device Artifact Shares — 端到端加密快照
+
+这组端点服务 JCode Desktop/Web 的显式分享，和 run diff artifact 不同。device 写路径使用 device bearer token；公开读路径不要求登录。Cloud 永远拿不到标题、路径、MIME、文件明文或 fragment key。
+
+1. `POST /internal/v1/device/artifact-shares/intents`：请求 `{protocol:"jcode-artifact-share-v1",artifact_id,revision,ciphertext_size,expires_in_seconds}`，响应 `201 {share_id,upload_url,complete_url,base_url,expires_at}`。`artifact_id` 只能是 1–128 字节 ASCII `[A-Za-z0-9_-]`；ciphertext 最大为 25 MiB + 28B 信封；有效期 1h–30d。
+2. `PUT /internal/v1/device/artifact-shares/{shareID}/content`：认证上传密文，`Content-Length` 必须与 intent 一致。成功 `204`；失败 lease 回收后可重试，object key 按 generation 隔离。
+3. `POST /internal/v1/device/artifact-shares/{shareID}/complete`：请求 `{ciphertext_sha256,encrypted_metadata:{nonce,ciphertext,plaintext_length}}`。成功后快照不可变。
+4. `GET /internal/v1/device/artifact-shares?artifact_id=…` 与 `DELETE /internal/v1/device/artifact-shares/{shareID}`：owner 管理与吊销；均不返回 key。
+5. `GET /api/v1/shared-artifacts/{shareID}` 与 `GET /api/v1/shared-artifacts/{shareID}/content`：公开读取密文。吊销、过期、未完成一律 `404`，响应带 `Cache-Control:no-store`、`Referrer-Policy:no-referrer`、`X-Content-Type-Options:nosniff`。
+
+密钥放在 public URL 的 `#k=v1.<base64url-32B>` fragment 中，浏览器不会把 fragment 发给服务端。AES-GCM wire、AAD 与跨端向量见 `docs/17` §6.8 和 `shared/artifact-share-v1.json`。
+
 ### 2.5 System / admin
 
 #### `GET /api/v1/system` — 集群管理只读快照

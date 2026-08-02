@@ -58,6 +58,17 @@ server {
         proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
     }
 
+    # Public artifact viewer. The AES key lives only in the URL fragment, but
+    # these page-scoped headers also prevent referrer leakage, framing, stale
+    # decrypted navigation state, and unexpected network capabilities.
+    location ^~ /s/ {
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Cache-Control "no-store" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
+        try_files $uri /index.html;
+    }
+
     # SPA fallback.
     location / {
         try_files $uri /index.html;
