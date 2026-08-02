@@ -80,6 +80,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -225,6 +226,10 @@ func main() {
 				fmt.Fprintf(os.Stderr, "[acpdrive] error: session run exceeded --timeout=%s: %v\n", timeout, err)
 				os.Exit(124)
 			}
+			if errors.Is(err, errModelRateLimited) {
+				fmt.Fprintf(os.Stderr, "[acpdrive] error: %v\n", err)
+				os.Exit(exitModelRateLimited)
+			}
 			fatal("%v", err)
 		}
 		return
@@ -238,6 +243,10 @@ func main() {
 		if ctx.Err() == context.DeadlineExceeded {
 			fmt.Fprintf(os.Stderr, "[acpdrive] error: run exceeded --timeout=%s: %v\n", timeout, err)
 			os.Exit(124)
+		}
+		if errors.Is(err, errModelRateLimited) {
+			fmt.Fprintf(os.Stderr, "[acpdrive] error: %v\n", err)
+			os.Exit(exitModelRateLimited)
 		}
 		fatal("%v", err)
 	}
@@ -338,11 +347,15 @@ func run(ctx context.Context, agentBin string, agentArgs []string, workspace, pr
 	}
 
 	logf("prompting: %q", truncate(prompt, 200))
+	client.terminal.Reset()
 	promptResp, err := conn.Prompt(ctx, acp.PromptRequest{
 		SessionId: sessionID,
 		Prompt:    []acp.ContentBlock{acp.TextBlock(prompt)},
 	})
 	if err != nil {
+		if client.terminal.ModelRateLimited() {
+			return fmt.Errorf("%w: session/prompt: %s", errModelRateLimited, describeErr(err))
+		}
 		return fmt.Errorf("session/prompt: %s", describeErr(err))
 	}
 	logf("run finished, stop_reason=%s", promptResp.StopReason)
@@ -400,6 +413,7 @@ type driverClient struct {
 	permissionMode    string
 	permissionTimeout time.Duration
 	cp                *controlPlaneClient
+	terminal          terminalSignal
 }
 
 var _ acp.Client = (*driverClient)(nil)
@@ -416,7 +430,9 @@ func (c *driverClient) SessionUpdate(_ context.Context, params acp.SessionNotifi
 	u := params.Update
 	switch {
 	case u.AgentMessageChunk != nil && u.AgentMessageChunk.Content.Text != nil:
-		fmt.Fprintf(os.Stderr, "[agent] %s\n", strings.TrimRight(u.AgentMessageChunk.Content.Text.Text, "\n"))
+		text := u.AgentMessageChunk.Content.Text.Text
+		c.terminal.Observe(text)
+		fmt.Fprintf(os.Stderr, "[agent] %s\n", strings.TrimRight(text, "\n"))
 	case u.ToolCall != nil:
 		fmt.Fprintf(os.Stderr, "[tool] %s (%s)\n", u.ToolCall.Title, u.ToolCall.Status)
 	case u.ToolCallUpdate != nil:

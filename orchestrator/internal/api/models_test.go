@@ -706,6 +706,117 @@ func TestRetryModelNotGrantedUsesReuseMessage(t *testing.T) {
 	}
 }
 
+func TestRetryWithExplicitModelOverridePreservesFrozenContract(t *testing.T) {
+	ts, st := catalogServer(t, true)
+	p := createProject(t, ts)
+	a := createModel(t, ts, "retry-a", "http://a/v1", "provider/model-a", "")
+	b := createModel(t, ts, "retry-b", "http://b/v1", "provider/model-b", "")
+	grant(t, ts, a.ID, p.ID)
+	grant(t, ts, b.ID, p.ID)
+
+	status, created, body := createRunBody(t, ts, p.ServiceID, map[string]any{
+		"prompt": "review this", "model_id": a.ID,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create status=%d body=%+v", status, body)
+	}
+	ctx := context.Background()
+	original, err := st.GetRun(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = st.ScheduleRun(ctx, original.ID, "j", "h", "PreparingWorkspace")
+	_, _ = st.MarkRunning(ctx, original.ID, "Running", original.CreatedAt)
+	_, _ = st.MarkFailed(ctx, original.ID, "Failed", domain.FailureModelRateLimited, "rate limited", time.Now())
+	original, _ = st.GetRun(ctx, original.ID)
+	if original.ExecutionContract == nil {
+		t.Fatal("original workflow contract was not resolved")
+	}
+	originalContractJSON, _ := json.Marshal(original.ExecutionContract)
+
+	resp := do(t, http.MethodPost, ts.URL+"/api/v1/runs/"+original.ID+"/retry", consoleToken,
+		map[string]any{"model_id": b.ID})
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("retry status=%d body=%s", resp.StatusCode, raw)
+	}
+	var retry domain.Run
+	decode(t, resp, &retry)
+	if retry.ModelID == nil || *retry.ModelID != b.ID || retry.ModelName != "provider/model-b" {
+		t.Fatalf("retry model=%v/%q want %s/provider/model-b", retry.ModelID, retry.ModelName, b.ID)
+	}
+	if retry.RetriedFrom == nil || *retry.RetriedFrom != original.ID || retry.Attempt != original.Attempt+1 {
+		t.Fatalf("retry lineage=%v attempt=%d", retry.RetriedFrom, retry.Attempt)
+	}
+	if retry.ExecutionContract == nil {
+		t.Fatal("retry workflow contract missing")
+	}
+	selection := retry.ExecutionContract.Execution.LLMSelection
+	if selection.ModelID != b.ID || selection.ModelName != "provider/model-b" || selection.Source != domain.WorkflowLLMSourceRetryOverride {
+		t.Fatalf("retry contract selection=%+v", selection)
+	}
+	if retry.ExecutionContract.Hash == original.ExecutionContract.Hash {
+		t.Fatal("model override reused the original contract hash")
+	}
+	if retry.ExecutionContract.Trigger != original.ExecutionContract.Trigger ||
+		retry.ExecutionContract.Workflow != original.ExecutionContract.Workflow ||
+		retry.ExecutionContract.Profile != original.ExecutionContract.Profile {
+		t.Fatal("model override changed frozen workflow identity")
+	}
+	storedOriginal, _ := st.GetRun(ctx, original.ID)
+	storedOriginalJSON, _ := json.Marshal(storedOriginal.ExecutionContract)
+	if string(storedOriginalJSON) != string(originalContractJSON) {
+		t.Fatal("explicit retry mutated the original contract")
+	}
+}
+
+func TestRetryModelOverrideValidationCreatesNoRun(t *testing.T) {
+	ts, st := catalogServer(t, true)
+	p := createProject(t, ts)
+	a := createModel(t, ts, "retry-a", "http://a/v1", "provider/model-a", "")
+	ungranted := createModel(t, ts, "retry-ungranted", "http://b/v1", "provider/model-b", "")
+	grant(t, ts, a.ID, p.ID)
+	status, created, body := createRunBody(t, ts, p.ServiceID, map[string]any{
+		"prompt": "do it", "model_id": a.ID,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create status=%d body=%+v", status, body)
+	}
+	ctx := context.Background()
+	original, _ := st.GetRun(ctx, created.ID)
+	_, _ = st.ScheduleRun(ctx, original.ID, "j", "h", "PreparingWorkspace")
+	_, _ = st.MarkRunning(ctx, original.ID, "Running", original.CreatedAt)
+	_, _ = st.MarkSucceeded(ctx, original.ID, "Succeeded", original.CreatedAt)
+	before, _ := st.ListRuns(ctx, p.ID, 10)
+
+	tests := []struct {
+		name       string
+		body       map[string]any
+		statusCode int
+		code       string
+	}{
+		{name: "same model", body: map[string]any{"model_id": a.ID}, statusCode: http.StatusBadRequest, code: "retry_model_unchanged"},
+		{name: "empty model", body: map[string]any{"model_id": "  "}, statusCode: http.StatusBadRequest, code: "bad_request"},
+		{name: "ungranted model", body: map[string]any{"model_id": ungranted.ID}, statusCode: http.StatusForbidden, code: "model_not_granted"},
+		{name: "unknown field", body: map[string]any{"unexpected": true}, statusCode: http.StatusBadRequest, code: "bad_request"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := do(t, http.MethodPost, ts.URL+"/api/v1/runs/"+original.ID+"/retry", consoleToken, tc.body)
+			var eb errorBody
+			decode(t, resp, &eb)
+			if resp.StatusCode != tc.statusCode || eb.Error.Code != tc.code {
+				t.Fatalf("status=%d code=%q want %d/%s", resp.StatusCode, eb.Error.Code, tc.statusCode, tc.code)
+			}
+		})
+	}
+	after, _ := st.ListRuns(ctx, p.ID, 10)
+	if len(after) != len(before) {
+		t.Fatalf("invalid overrides created runs: before=%d after=%d", len(before), len(after))
+	}
+}
+
 // --- run-creation gate (fail-visible, moved from the old system_model_test) ---
 
 func TestCreateRun409WhenModelNotConfigured(t *testing.T) {
@@ -766,6 +877,55 @@ func TestRetryAndReview409WhenModelNotConfigured(t *testing.T) {
 	decode(t, resp, &body)
 	if body.Error.Code != "model_not_configured" {
 		t.Fatalf("review error code=%q want model_not_configured", body.Error.Code)
+	}
+}
+
+func TestRetryEnvironmentFallbackNeverSilentlySwitchesToCatalogModel(t *testing.T) {
+	st := store.NewMemStore()
+	cfg := withTestModel(&config.Config{ConsoleToken: consoleToken, MasterKey: validTokenKey(t)})
+	srv := New(st, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), sse.NewHub(), nil)
+	ts := httptest.NewServer(srv.Handler())
+	registerTestServerStore(t, ts, st)
+	t.Cleanup(ts.Close)
+	p := createProject(t, ts)
+
+	status, created, body := createRunBody(t, ts, p.ServiceID, map[string]any{"prompt": "use env model"})
+	if status != http.StatusCreated || created.ModelID != nil {
+		t.Fatalf("create status=%d model=%v body=%+v", status, created.ModelID, body)
+	}
+	ctx := context.Background()
+	original, _ := st.GetRun(ctx, created.ID)
+	_, _ = st.ScheduleRun(ctx, original.ID, "j", "h", "PreparingWorkspace")
+	_, _ = st.MarkRunning(ctx, original.ID, "Running", original.CreatedAt)
+	_, _ = st.MarkFailed(ctx, original.ID, "Failed", domain.FailureModelRateLimited, "rate limited", time.Now())
+
+	// Adding a catalog model disables the legacy environment fallback. Even
+	// though this is now the project's sole granted model, a plain retry must
+	// fail rather than silently changing providers/models.
+	b := createModel(t, ts, "catalog-b", "http://b/v1", "provider/model-b", "")
+	grant(t, ts, b.ID, p.ID)
+	resp := do(t, http.MethodPost, ts.URL+"/api/v1/runs/"+original.ID+"/retry", consoleToken, nil)
+	var eb errorBody
+	decode(t, resp, &eb)
+	if resp.StatusCode != http.StatusConflict || eb.Error.Code != "model_not_configured" {
+		t.Fatalf("same-model retry status=%d code=%q want 409/model_not_configured", resp.StatusCode, eb.Error.Code)
+	}
+	runs, _ := st.ListRuns(ctx, p.ID, 10)
+	if len(runs) != 1 {
+		t.Fatalf("plain retry silently created a run: count=%d", len(runs))
+	}
+
+	// The user can still make the switch explicitly.
+	resp = do(t, http.MethodPost, ts.URL+"/api/v1/runs/"+original.ID+"/retry", consoleToken, map[string]any{"model_id": b.ID})
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("explicit retry status=%d body=%s", resp.StatusCode, raw)
+	}
+	var retry domain.Run
+	decode(t, resp, &retry)
+	if retry.ModelID == nil || *retry.ModelID != b.ID {
+		t.Fatalf("explicit retry model=%v want %s", retry.ModelID, b.ID)
 	}
 }
 

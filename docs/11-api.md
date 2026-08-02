@@ -210,13 +210,20 @@
 | `clone_failed` | 仓库 clone 失败 | runner 报 `run.failure` 事件精化 |
 | `setup_failed` | 项目 setup 阶段失败 | runner 报 `run.failure` 事件精化 |
 | `agent_error` | agent 报错 / 通用 Job 失败(**兜底**) | 集群状态推断,或 runner 报 |
+| `model_rate_limited` | 当前冻结模型在 agent 内部重试后仍被供应商限流 | runner 从 jcode 终态信号报 `run.failure` 精化 |
 | `timeout` | 超过 `activeDeadlineSeconds` 墙钟上限 | orchestrator 从 Job DeadlineExceeded 推断 |
 | `push_failed` | **(ST-1)** `draft_pr` 模式下已产出 diff,但推送 `agent/run-<id>` 分支到 provider 失败(token/网络/受保护分支) | runner 报 `run.failure` 事件 |
 
 **归类规则**:orchestrator 从 K8s Job 状态推断——Job 失败 → `agent_error`;
 Job DeadlineExceeded → `timeout`。仅凭集群状态**无法**区分 clone/setup,故 runner
-可主动 POST 一个 `run.failure` 事件(`{reason,message}`)来**精化**;若 runner 已上报,
+可主动 POST 一个 `run.failure` 事件(`{reason,message}`)来**精化**;模型限流也由
+runner 精化为 `model_rate_limited`,不归咎为通用 agent 故障。若 runner 已上报,
 orchestrator 的兜底分类**不覆盖**它。
+
+`model_rate_limited` 的 Runner 合同不依赖异步事件文本是否送达:仅当 ACP
+`session/prompt` 返回错误,且 `acpdrive` 跨 chunk 累积到 jcode 的规范终态摘要
+`Rate limited[ by ...], and retries didn't clear it.` 时退出 `75`;
+`entrypoint.sh` 将该退出码同步上报为此 reason。成功 turn 中出现相同普通文本不触发。
 
 ### 1.5 RunEvent
 
@@ -475,11 +482,19 @@ default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `4
 
 #### `POST /api/v1/runs/{id}/retry` — 重试 run
 
+- 请求体可选:`{ "model_id": "..." }`。空 body / `{}` 时沿用原模型并原样复制
+  Workflow Contract;服务器只复核这个冻结模型本身仍可用,不可用则类型化拒绝,
+  **绝不**继续解析 Service/Project 默认模型。显式传入时表示用户选择**切换模型重试**。
+  目标模型必须当前可供该 Project 使用,并支持原 run 冻结的 `model_effort`;
+  校验失败不创建 run。空字符串、未知字段或显式选择当前冻结模型均为 `400`。
 - **生成一条新 run**(同 project、同 prompt),`status = queued`,
   `retried_from` = 原 run id,`attempt` = 原 + 1。
 - **只有终态 run 可 retry**。
 - 响应 `201 Created`:**新** Run 对象(`id` ≠ 原)。
-- 错误:`404`;`409 conflict`(run 未结束)。
+- 错误:`404`;`409 conflict`(run 未结束);`403 model_not_granted`;
+  `400 model_effort_unsupported`;`400 retry_model_unchanged`。
+  显式切换一个没有 Workflow Contract 的旧 Run 时返回
+  `409 workflow_contract_unavailable`;旧 Run 仍可使用原模型普通重试。
 
 > **与 Symphony 的分歧**:Symphony 在同一 claim 上 `RetryQueued→Running` 原地重试;
 > 本系统以 Job-per-run 模型 + REST 触发,retry = 新 run + `retried_from` 链接,
@@ -487,7 +502,14 @@ default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `4
 > `attempt` 携带,供未来**自动**重试;MVP 为**手动**重试,不强制退避。
 > retry 保留 run 身份:`kind`、PR 关联、**`session`**(session run 的 retry 仍是
 > session)、**`permission_mode`**(F8b:审批 session 的 retry 仍是审批 session,
-> 绝不静默降级成 full_access)一并拷贝。
+> 绝不静默降级成 full_access)一并拷贝。普通 retry 原样复制 Workflow Contract;
+> 显式切换模型时只派生新 run 的 `execution.llm_selection`(`source=retry_override`)
+> 并重算 canonical hash,原 run/原 contract 永不修改。Cloud 不自动 fallback 模型。
+> 派生 contract 保留原 Trigger 快照(含 source receipt/idempotency key),因为它描述
+> 被重跑的源请求与回写目标;retry API 不拿这些字段做创建去重。该 API 有意非幂等:
+> 每个成功请求都会创建独立新 Run,以新 id/`retried_from`/attempt/请求者审计区分。
+> 对早于 `model_name` 快照的极旧 Run,普通 retry 仅在环境 fallback 仍是当前唯一
+> 模型来源时复用该 fallback;一旦 Catalog 生效便拒绝,不会猜测或切换默认模型。
 
 #### `POST /api/v1/runs/{id}/resume` — 续聊已结束的 session run(F9b / D23 ①②)
 

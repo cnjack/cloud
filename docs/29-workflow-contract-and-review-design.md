@@ -392,6 +392,65 @@ entire output is rejected, preserving the existing all-or-nothing contract.
 For a rename, the plan indexes the new/right-side path; pure renames with no
 changed right-side lines cannot receive inline findings and appear as skipped.
 
+### 4.4 Model-aware retry and transient model failures
+
+A retry is always a new Run. The original Run and its Workflow Contract remain
+immutable. `POST /api/v1/runs/{id}/retry` accepts an optional
+`{"model_id":"..."}` body:
+
+- omitted `model_id` preserves the current same-model retry behavior and copies
+  the original contract byte-for-byte. The original model is revalidated
+  exactly; a deleted, disabled, ungranted or changed environment fallback fails
+  before a Run is created and never falls through to a Service/Project default;
+	legacy rows that predate the `model_name` snapshot may reuse the environment
+	fallback only while it remains the sole active model source;
+- an explicit `model_id` is a user-authorized model switch. The model must be
+  currently usable by the Project and must support the frozen reasoning effort;
+  otherwise the API rejects the request before a Run is created. Selecting the
+  current frozen model is `400 retry_model_unchanged`, not a model override;
+- the new Run keeps `retried_from`, attempt, workflow/profile, trigger,
+  repository revisions, permissions, delivery and verification from the
+  original, but receives a derivative immutable contract whose
+  `execution.llm_selection` names the selected model, uses source
+  `retry_override`, and has a newly computed canonical hash;
+- Cloud never selects an alternate model automatically. Provider failover is a
+  visible user decision, not an implementation fallback.
+
+The Cloud-side signal contract is exact and does not depend on the asynchronous
+event emitter: `acpdrive` keeps a bounded local accumulator of live
+`AgentMessageChunk` text across chunk boundaries, reset before every prompt so
+successful prior turns cannot contaminate a later failure. Only when `session/prompt`
+returns an error and that terminal text starts with jcode's canonical
+`Rate limited[ by ...], and retries didn't clear it.` summary does `acpdrive`
+exit with `EX_TEMPFAIL` (`75`). `entrypoint.sh` maps only that exit code to
+`failure_reason=model_rate_limited`; any other non-zero process exit stays the
+`agent_error` fallback. The synchronous `orchclient report-failure` path records
+the typed reason before the Job exits, so event-emitter backpressure cannot lose
+the classification. The message names the frozen model and offers the two valid
+repairs: wait and retry with the same model, or explicitly choose another
+Project model.
+
+The derivative contract is created by one pure domain helper. It copies the
+original contract, changes only `execution.llm_selection.model_id`,
+`model_name`, and `source=retry_override`, updates `resolved_at`, recomputes the
+canonical hash, then validates the result. `resolved_run` remains the source for
+ordinary resolved Runs. The original Trigger snapshot, including its source
+receipt/idempotency key, remains frozen because it identifies the reviewed or
+implemented source request and provider delivery target; retry insertion does
+not use contract trigger fields as a uniqueness key. The retry endpoint itself
+is intentionally non-idempotent: each accepted call creates a new Run with its
+own ID, `retried_from`, `attempt`, `triggered_by_user_id`, and provenance.
+
+The Run detail header keeps **Retry** as the same-model action and adds
+**Switch model and retry** when at least one different Project model is
+available. The model dialog identifies the current model, requires one explicit
+alternative selection, and submits only that model ID. The resulting Run detail
+shows both the new model snapshot and the `retried_from` audit link.
+
+Rollout order is Orchestrator/Console before Runner. Older Runner images keep
+reporting generic `agent_error`; the new failure reason is additive and does not
+add a required top-level field to any Runner request.
+
 ## 5. API design
 
 ### 5.1 Existing Run response additions
@@ -614,8 +673,10 @@ Console never derives Plan state from finding count.
 | `review_input_too_large` | bootstrap | Review input exceeded deterministic limits | Automation owner |
 | `review_plan_conflict` | bootstrap | Review plan changed after it was frozen | Cloud operator |
 | `invalid_review_anchor` | result | Review output referenced a non-changed line | Retry review |
+| `model_rate_limited` | model turn | The selected model remained rate limited after agent retries | Wait and retry, or explicitly switch model |
 
-None of these falls back to a different repository, credential, branch or output.
+None of these falls back to a different repository, credential, branch, model or
+output.
 
 ## 9. Migration and compatibility
 
@@ -637,6 +698,8 @@ None of these falls back to a different repository, credential, branch or output
 
 - contract canonical hash and tamper detection;
 - built-in profile mapping by Run kind;
+- derivative retry contract changes only the explicit model selection, source,
+  resolution time and canonical hash;
 - unified diff: added/context/deleted/rename/binary/multiple hunks/no-newline;
 - range compression and maximum bounds;
 - finding anchor validation.
@@ -653,6 +716,17 @@ None of these falls back to a different repository, credential, branch or output
 
 - all Run creation paths obtain contract;
 - contract includes stable workflow identity/revision and timeout;
+- retry without a body preserves the original model and exact contract;
+- retry with an unavailable original model creates no Run and never selects a
+  default model;
+- retry with an explicitly granted model creates a linked Run with a re-hashed
+  derivative contract; unknown, disabled, ungranted or effort-incompatible
+  models create no Run;
+- empty body and `{}` mean same-model retry; malformed/unknown fields and an
+  explicit current model are rejected;
+- split ACP text chunks plus a prompt error produce `model_rate_limited` and
+  exit 75; identical text in a successful turn is not classified; unrelated
+  failures remain `agent_error`;
 - internal review-plan auth/state/content/size checks;
 - exact SHA mismatch fails before Agent turn;
 - fixture with event base != computed merge-base preserves all three fields and
@@ -665,6 +739,10 @@ None of these falls back to a different repository, credential, branch or output
 ### Console
 
 - contract facts render with exact labels;
+- same-model retry remains one click; switch-model retry requires an explicit
+  alternative and sends its ID;
+- rate-limit failure copy explains both repair paths and is not labelled as a
+  generic Agent failure;
 - legacy empty state;
 - complete/partial review coverage;
 - no-finding and coverage remain separate;

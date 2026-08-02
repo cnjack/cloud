@@ -34,6 +34,7 @@ export type FailureReason =
   | 'clone_failed'
   | 'setup_failed'
   | 'agent_error'
+	| 'model_rate_limited'
   | 'timeout'
   // push_failed (ST-1): draft_pr mode produced a diff but could not push the
   // agent/run-<id> branch to the provider. See 11-api.md §1.4.
@@ -1532,6 +1533,12 @@ export interface ResumeSessionOptions {
   model_id?: string;
   /** `full_access` is explicit so an approval-mode original can be relaxed. */
   permission_mode?: 'approval' | 'full_access';
+}
+
+/** POST /runs/{id}/retry. Omitted options preserve the original model. */
+export interface RetryRunOptions {
+  /** Must identify a different model currently granted to the project. */
+  model_id?: string;
 }
 
 export interface ResumeRunInput extends ResumeSessionOptions {

@@ -136,7 +136,8 @@ report_failure() {
 # defined here anyway).
 
 # die REASON MESSAGE — report the failure (if wired) then exit non-zero.
-# REASON ∈ {clone_failed, setup_failed, agent_error, timeout} (docs/11-api.md §1.4).
+# REASON ∈ {clone_failed, setup_failed, agent_error, model_rate_limited,
+# timeout, push_failed} (docs/11-api.md §1.4).
 die() {
   local reason message
   if [ "$#" -ge 2 ]; then
@@ -749,6 +750,8 @@ RUN_RC=$?
 set -e
 if [ "$RUN_RC" -eq 124 ]; then
   die timeout "headless agent run exceeded RUN_TIMEOUT=$RUN_TIMEOUT"
+elif [ "$RUN_RC" -eq 75 ]; then
+  die model_rate_limited "model $MODEL_NAME remained rate limited after agent retries; wait and retry, or choose another project model"
 elif [ "$RUN_RC" -ne 0 ]; then
   die agent_error "headless agent run failed (rc=$RUN_RC)"
 fi

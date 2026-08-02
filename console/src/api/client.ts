@@ -68,6 +68,7 @@ import type {
   RunMessage,
   RunPermission,
   RunnerPrewarm,
+  RetryRunOptions,
   ResumeSessionOptions,
   RunsEnvelope,
   Service,
@@ -138,7 +139,7 @@ export interface ApiClient {
   listRuns(projectId: string): Promise<Run[]>;
   getRun(runId: string): Promise<Run>;
   cancelRun(runId: string): Promise<Run>;
-  retryRun(runId: string): Promise<Run>;
+  retryRun(runId: string, options?: RetryRunOptions): Promise<Run>;
   /**
    * POST /api/v1/runs/{id}/resume — continue a FINISHED session run in a new run
    * that reloads the same ACP session (F9b / D23 ①②). 409 run_not_resumable
@@ -510,9 +511,10 @@ export function createHttpClient(
         method: 'POST',
       }),
 
-    retryRun: (runId) =>
+    retryRun: (runId, options) =>
       req<Run>(`/runs/${encodeURIComponent(runId)}/retry`, {
         method: 'POST',
+		...(options?.model_id ? { body: JSON.stringify(options) } : {}),
       }),
 
     // Session resume (F9b).

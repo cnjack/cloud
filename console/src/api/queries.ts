@@ -31,6 +31,7 @@ import type {
   ProviderKind,
   UpdateClusterProviderConfigInput,
   UpdateProjectAutomationInput,
+  RetryRunOptions,
   ResumeSessionOptions,
   Run,
   ServiceWebhookSetup,
@@ -292,7 +293,7 @@ export function useRetryRun() {
   const api = useApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (runId: string) => api.retryRun(runId),
+    mutationFn: ({ runId, options }: { runId: string; options?: RetryRunOptions }) => api.retryRun(runId, options),
     onSuccess: (run: Run) => {
       qc.setQueryData(qk.run(run.id), run);
       qc.invalidateQueries({ queryKey: qk.runs(run.project_id) });

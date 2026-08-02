@@ -96,6 +96,22 @@
 .failBanner, .streamError { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); color: var(--color-text-muted); font-size: var(--fs-caption); }
 .failBanner { align-items: flex-start; flex-direction: column; border-color: var(--color-danger); background: var(--status-failed-bg); color: var(--color-danger-fg); }
 
+.retryModelDialog { display: grid; gap: var(--space-4); }
+.retryModelDialog > p { margin: 0; color: var(--color-text-muted); font-size: var(--fs-sm); line-height: var(--lh-normal); }
+.retryCurrentModel { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-bg-inset); }
+.retryCurrentModel span { color: var(--color-text-faint); font-size: var(--fs-tiny); }
+.retryCurrentModel strong { overflow: hidden; color: var(--color-text); font-family: var(--font-mono); font-size: var(--fs-tiny); font-weight: var(--fw-medium); text-overflow: ellipsis; white-space: nowrap; }
+.retryModelOptions { display: grid; gap: var(--space-2); min-width: 0; margin: 0; padding: 0; border: 0; }
+.retryModelOptions legend { margin-bottom: var(--space-2); color: var(--color-text-faint); font-size: var(--fs-tiny); font-weight: var(--fw-semibold); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+.retryModelOptions label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-lg); cursor: pointer; transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out); }
+.retryModelOptions label:hover { background: var(--color-panel-hover); }
+.retryModelOptions label[data-selected='true'] { border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 8%, var(--color-panel)); }
+.retryModelOptions input { accent-color: var(--color-accent); }
+.retryModelOptions label > span { display: grid; min-width: 0; gap: 2px; }
+.retryModelOptions strong, .retryModelOptions small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.retryModelOptions strong { color: var(--color-text); font-size: var(--fs-caption); font-weight: var(--fw-medium); }
+.retryModelOptions small { color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); }
+
 .sessionDock { position: relative; z-index: 3; display: grid; flex: none; gap: var(--space-2); padding: var(--space-2) 0 var(--space-4); background: var(--color-panel); color: var(--color-text-faint); font-size: var(--fs-tiny); }
 .resumeHint { padding: 0 var(--space-2); color: var(--color-text-faint); }
 .conversationComposer { position: relative; width: 100%; padding: 0; background: transparent; }

@@ -745,6 +745,47 @@ describe('RunDetailPage — model gate on Retry (Feature A)', () => {
     );
     expect(screen.getByTestId('model-not-configured')).toBeTruthy();
   });
+
+	it('shows rate limiting accurately and retries with an explicitly selected alternative model', async () => {
+		const failed = baseRun({
+			status: 'failed',
+			finished_at: '2026-07-07T00:05:00Z',
+			model_id: 'model-a',
+			model_name: 'provider/model-a',
+			failure_reason: 'model_rate_limited',
+			failure_message: 'model provider/model-a remained rate limited after agent retries',
+		});
+		const models: ProjectModel[] = [
+			{ id: 'model-a', name: 'Model A', model_name: 'provider/model-a', capabilities: { reasoning: false, tools: true, image: false } },
+			{ id: 'model-b', name: 'Model B', model_name: 'provider/model-b', capabilities: { reasoning: false, tools: true, image: false } },
+		];
+		const { client, ctl } = makeClient('member', { models });
+		ctl.getRun.mockResolvedValue(failed);
+		const retryRun = vi.fn().mockResolvedValue(baseRun({ id: 'run2', status: 'queued', model_id: 'model-b', model_name: 'provider/model-b' }));
+		(client as { retryRun?: unknown }).retryRun = retryRun;
+		renderPage(client, failed);
+
+		expect(await screen.findByText('Model rate limited')).toBeTruthy();
+		fireEvent.click(await screen.findByTestId('retry-other-model-btn'));
+		expect(await screen.findByRole('dialog', { name: 'Retry with another model' })).toBeTruthy();
+		expect((screen.getByRole('radio', { name: /Model B/ }) as HTMLInputElement).checked).toBe(true);
+		fireEvent.click(screen.getByRole('button', { name: 'Switch model and retry' }));
+		await waitFor(() => expect(retryRun).toHaveBeenCalledWith('run1', { model_id: 'model-b' }));
+	});
+
+	it('disables same-model retry when the original grant is gone and points to model switching', async () => {
+		const failed = baseRun({ status: 'failed', finished_at: '2026-07-07T00:05:00Z', model_id: 'model-a', model_name: 'provider/model-a' });
+		const models: ProjectModel[] = [
+			{ id: 'model-b', name: 'Model B', model_name: 'provider/model-b', capabilities: { reasoning: false, tools: true, image: false } },
+		];
+		const { client, ctl } = makeClient('member', { models });
+		ctl.getRun.mockResolvedValue(failed);
+		renderPage(client, failed);
+
+		await waitFor(() => expect((screen.getByTestId('retry-btn') as HTMLButtonElement).disabled).toBe(true));
+		expect(screen.getByText('The original model is no longer available. Choose another project model.')).toBeTruthy();
+		expect(screen.getByTestId('retry-other-model-btn')).toBeTruthy();
+	});
 });
 
 describe('RunDetailPage — multi-turn session (D22)', () => {

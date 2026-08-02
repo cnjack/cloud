@@ -23,10 +23,12 @@ const (
 	OutputCreatePullRequest = "create_pull_request"
 	OutputProviderReview    = "provider_review"
 
-	WorkspaceReadOnly    = "read_only"
-	WorkspaceReadWrite   = "read_write"
-	TimeoutSourceProject = "project_override"
-	TimeoutSourceCluster = "cluster_default"
+	WorkspaceReadOnly              = "read_only"
+	WorkspaceReadWrite             = "read_write"
+	TimeoutSourceProject           = "project_override"
+	TimeoutSourceCluster           = "cluster_default"
+	WorkflowLLMSourceResolvedRun   = "resolved_run"
+	WorkflowLLMSourceRetryOverride = "retry_override"
 
 	RequirementSourceRead          = "source.read"
 	RequirementSourceWrite         = "source.write"
@@ -221,7 +223,7 @@ func ResolveWorkflowContract(run *Run, service *Service, timeoutSeconds int64, t
 		SchemaVersion: WorkflowContractSchemaVersion,
 		Trigger:       resolveWorkflowTrigger(run, service),
 		Execution: WorkflowExecution{
-			RunKind: kind, LLMSelection: WorkflowLLMSelection{ModelName: run.ModelName, Effort: run.ModelEffort, Source: "resolved_run"},
+			RunKind: kind, LLMSelection: WorkflowLLMSelection{ModelName: run.ModelName, Effort: run.ModelEffort, Source: WorkflowLLMSourceResolvedRun},
 			Session: run.Session, PermissionMode: permissionMode, ProviderCredentials: "none", BaseRef: baseRef,
 			TimeoutSeconds: timeoutSeconds, TimeoutSource: timeoutSource,
 		},
@@ -273,6 +275,39 @@ func ResolveWorkflowContract(run *Run, service *Service, timeoutSeconds int64, t
 		return nil, err
 	}
 	return contract, nil
+}
+
+// DeriveWorkflowContractModelOverride creates the immutable contract for an
+// explicit "retry with another model" request. A retry keeps the original
+// workflow, profile, trigger, delivery, verification and requirements; only
+// the resolved model identity/provenance and resolution timestamp change.
+// The original contract is never mutated.
+func DeriveWorkflowContractModelOverride(original *WorkflowContract, modelID, modelName string, resolvedAt time.Time) (*WorkflowContract, error) {
+	if original == nil {
+		return nil, errors.New("original workflow contract is required")
+	}
+	modelID = strings.TrimSpace(modelID)
+	modelName = strings.TrimSpace(modelName)
+	if modelID == "" || modelName == "" {
+		return nil, errors.New("model id and name are required")
+	}
+	derived := *original
+	derived.Requirements = append([]string(nil), original.Requirements...)
+	derived.Delivery.Outputs = append([]WorkflowOutput(nil), original.Delivery.Outputs...)
+	derived.Verification.RequiredRecords = append([]string(nil), original.Verification.RequiredRecords...)
+	derived.Execution.LLMSelection.ModelID = modelID
+	derived.Execution.LLMSelection.ModelName = modelName
+	derived.Execution.LLMSelection.Source = WorkflowLLMSourceRetryOverride
+	derived.ResolvedAt = resolvedAt.UTC()
+	hash, err := derived.CanonicalHash()
+	if err != nil {
+		return nil, err
+	}
+	derived.Hash = hash
+	if err := derived.Validate(); err != nil {
+		return nil, err
+	}
+	return &derived, nil
 }
 
 func workflowIdentity(def builtinWorkflowDefinition) WorkflowIdentity {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -14,6 +15,12 @@ import (
 	"github.com/cnjack/jcloud/internal/provenance"
 	"github.com/cnjack/jcloud/internal/store"
 )
+
+type retryRunReq struct {
+	// Nil means retry with the original run's model. A non-nil value is an
+	// explicit user choice and must name another model granted to the project.
+	ModelID *string `json:"model_id"`
+}
 
 type createRunReq struct {
 	Prompt string `json:"prompt"`
@@ -488,9 +495,27 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "only a finished run can be retried")
 		return
 	}
-	// Fail-visible gate: a retry is a fresh dispatch — re-run the D21 resolution
-	// chain, preserving the original run's model pick when it is still granted
-	// (else it fails visibly / re-resolves via the service default).
+	var req retryRunReq
+	if err := decodeJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	explicitModelOverride := req.ModelID != nil
+	requestedModel := ""
+	if explicitModelOverride {
+		requestedModel = strings.TrimSpace(*req.ModelID)
+		if requestedModel == "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "model_id cannot be empty")
+			return
+		}
+		if orig.ModelID != nil && requestedModel == *orig.ModelID {
+			writeError(w, http.StatusBadRequest, "retry_model_unchanged", "choose a different model, or retry without model_id to use the original model")
+			return
+		}
+	}
+	// Fail-visible gate: a retry is a fresh dispatch. Without an explicit
+	// override it must revalidate the exact original model and must not silently
+	// fall through to a mutable service/project default.
 	svc, err := s.st.GetService(r.Context(), orig.ServiceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
@@ -500,9 +525,39 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
 		return
 	}
-	modelID, modelName, ok := s.selectModelForRun(w, r, svc, deref(orig.ModelID), modelcfg.NotGrantedReuseMessage())
-	if !ok {
-		return
+	var modelID *string
+	var modelName string
+	if explicitModelOverride {
+		var ok bool
+		modelID, modelName, ok = s.selectModelForRun(w, r, svc, requestedModel, modelcfg.NotGrantedMessage())
+		if !ok {
+			return
+		}
+	} else if orig.ModelID != nil {
+		var ok bool
+		modelID, modelName, ok = s.selectModelForRun(w, r, svc, *orig.ModelID, modelcfg.NotGrantedReuseMessage())
+		if !ok {
+			return
+		}
+	} else {
+		// A nil model id identifies the legacy environment fallback. It is only
+		// the same model while that fallback remains active with the same durable
+		// model-name snapshot; catalog defaults are intentionally ignored. Rows
+		// from before model_name was persisted have no identity to compare, so
+		// they may reuse the still-active environment fallback for compatibility.
+		fallbackName := ""
+		if s.cfg != nil {
+			fallbackName = strings.TrimSpace(s.cfg.ModelName)
+		}
+		originalName := strings.TrimSpace(orig.ModelName)
+		if !s.envFallbackActive(r) || (originalName != "" && fallbackName != originalName) {
+			writeError(w, http.StatusConflict, "model_not_configured", "the model this run used is no longer configured — choose another project model")
+			return
+		}
+		modelName = originalName
+		if modelName == "" {
+			modelName = fallbackName
+		}
 	}
 	if !s.validateModelEffortForRun(w, r, modelID, orig.ModelEffort) {
 		return
@@ -530,9 +585,24 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	retry.PRNumber = orig.PRNumber
 	retry.PRTitle = orig.PRTitle
 	retry.PRReadyPolicy = orig.PRReadyPolicy
-	// A retry is another attempt at the same immutable execution contract. A
-	// genuinely new trigger resolves the current built-in definition instead.
-	retry.ExecutionContract = orig.ExecutionContract
+	// A same-model retry is another attempt at the exact immutable execution
+	// contract. An explicit model choice derives a new immutable contract that
+	// changes only the LLM selection/provenance and hash.
+	if explicitModelOverride {
+		if orig.ExecutionContract == nil {
+			writeError(w, http.StatusConflict, "workflow_contract_unavailable", "this legacy run has no workflow contract to derive; retry with its original model")
+			return
+		}
+		contract, err := domain.DeriveWorkflowContractModelOverride(orig.ExecutionContract, *modelID, modelName, time.Now().UTC())
+		if err != nil {
+			s.log.Error("derive retry workflow contract", "run", orig.ID, "err", err)
+			writeError(w, http.StatusInternalServerError, "internal", "could not derive retry workflow contract")
+			return
+		}
+		retry.ExecutionContract = contract
+	} else {
+		retry.ExecutionContract = orig.ExecutionContract
+	}
 	// Session-ness is part of that identity too (D22): retrying a session run
 	// starts a fresh session (same prompt, new ACP session), not a single-shot.
 	retry.Session = orig.Session

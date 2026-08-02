@@ -29,6 +29,8 @@ package main
 //	                              "txt:<turn>" before returning, so tests can
 //	                              assert real-turn streaming still flows after
 //	                              the replay gate opens
+//	FAKE_AGENT_PROMPT_ERR=msg     if set, Prompt returns a JSON-RPC error with
+//	                              this message after emitting its live text
 //	FAKE_AGENT_SET_SESSION_MODE_ERR=msg  if set, SetSessionMode returns a
 //	                              JSON-RPC error with this message instead of
 //	                              succeeding (F8a fail-visible-on-failed-
@@ -92,6 +94,7 @@ func runFakeAgentProcess() {
 		loadSessionErr:       os.Getenv("FAKE_AGENT_LOAD_SESSION_ERR"),
 		replayTexts:          replayTexts,
 		liveText:             os.Getenv("FAKE_AGENT_LIVE_TEXT"),
+		promptErr:            os.Getenv("FAKE_AGENT_PROMPT_ERR"),
 		setSessionModeErr:    os.Getenv("FAKE_AGENT_SET_SESSION_MODE_ERR"),
 		requestPermission:    os.Getenv("FAKE_AGENT_REQUEST_PERMISSION") == "1",
 		permissionToolCallID: envOr("FAKE_AGENT_PERMISSION_TOOL_CALL_ID", "tc_perm_1"),
@@ -123,6 +126,8 @@ type fakeAgent struct {
 	// liveText, if non-empty, makes each Prompt send one live session/update
 	// chunk "liveText:<turn>" before returning.
 	liveText string
+	// promptErr, if non-empty, makes Prompt fail after sending liveText.
+	promptErr string
 	// setSessionModeErr, if non-empty, makes SetSessionMode fail with this
 	// message instead of succeeding (F8a fail-visible test).
 	setSessionModeErr string
@@ -274,6 +279,9 @@ func (a *fakeAgent) Prompt(ctx context.Context, p acp.PromptRequest) (acp.Prompt
 			"outcome":   outcome,
 			"option_id": optionID,
 		})
+	}
+	if a.promptErr != "" {
+		return acp.PromptResponse{}, &acp.RequestError{Code: -32603, Message: a.promptErr}
 	}
 	reason := a.stopReasons[len(a.stopReasons)-1]
 	if n-1 < len(a.stopReasons) {

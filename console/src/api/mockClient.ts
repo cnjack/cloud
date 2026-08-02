@@ -65,6 +65,7 @@ import type {
   RunMessage,
   RunPermission,
   RunnerPrewarm,
+  RetryRunOptions,
   ResumeSessionOptions,
   RunStatus,
   Service,
@@ -1118,7 +1119,7 @@ export function createMockClient(): ApiClient {
       return delay(publicRun(r));
     },
 
-    async retryRun(runId: string) {
+    async retryRun(runId: string, options?: RetryRunOptions) {
       const orig = runs.get(runId);
       if (!orig) throw new ApiError(404, 'run not found');
       // 11-api.md §2.2: only terminal runs may be retried; retry on a
@@ -1128,11 +1129,21 @@ export function createMockClient(): ApiClient {
           error: { code: 'conflict', message: 'run not finished' },
         });
       }
+	  const requestedModel = options?.model_id?.trim();
+	  if (options?.model_id !== undefined && !requestedModel) {
+		throw badRequest('model_id cannot be empty');
+	  }
+	  if (requestedModel && requestedModel === orig.model_id) {
+		throw new ApiError(400, 'choose a different model, or retry without model_id to use the original model', {
+		  error: { code: 'retry_model_unchanged', message: 'choose a different model' },
+		});
+	  }
+	  const svc = services.get(orig.project_id)?.find((service) => service.id === orig.service_id);
+	  if (!svc) throw new ApiError(409, 'the service for this run is unavailable');
+	  const modelId = resolveModelForRun(orig.project_id, svc, requestedModel ?? orig.model_id ?? undefined);
       // Retry preserves the run's identity (D22/F8b): session-ness and the
       // permission mode carry over, mirroring the orchestrator.
-      return delay(
-        publicRun(
-          makeRun(
+	  const run = makeRun(
             orig.project_id,
             orig.service_id,
             orig.prompt,
@@ -1140,9 +1151,10 @@ export function createMockClient(): ApiClient {
             (orig.attempt ?? 1) + 1,
             orig.session === true,
             orig.permission_mode === 'approval' ? 'approval' : '',
-          ),
-        ),
-      );
+	  );
+	  run.model_id = modelId ?? undefined;
+	  run.model_name = modelId ? models.get(modelId)?.model_name : orig.model_name;
+	  return delay(publicRun(run));
     },
 
     // ---- session resume (F9b / D23 ①②) ------------------------------------

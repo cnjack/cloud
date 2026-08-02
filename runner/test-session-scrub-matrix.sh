@@ -155,28 +155,32 @@ cat > "$FAKEBIN/acpdrive" <<'FAKE'
 [ -t 0 ] || cat >/dev/null
 printf '%s\n' "$*" > "$ACPDRIVE_ARGV_LOG"
 env > "$ACPDRIVE_ENV_LOG"
-exit 0
+exit "${ACPDRIVE_EXIT_CODE:-0}"
 FAKE
 cat > "$FAKEBIN/orchclient" <<'FAKE'
 #!/bin/sh
 [ -t 0 ] || cat >/dev/null
+printf '%s\n' "$*" >> "$ORCHCLIENT_LOG"
 exit 0
 FAKE
 chmod +x "$FAKEBIN/acpdrive" "$FAKEBIN/orchclient"
 
-# run_step4 NAME RUN_SESSION RESUME_ID — runs entrypoint through step 4 with
+# run_step4 NAME RUN_SESSION RESUME_ID [ACPDRIVE_RC] — runs entrypoint through step 4 with
 # the fake acpdrive; sets OUT/ARGV_LOG/ENV_LOG/RC globals for assertions.
 run_step4() {
-  local name="$1" run_session="$2" resume_id="$3"
+	local name="$1" run_session="$2" resume_id="$3" acpdrive_rc="${4:-0}"
   local ws="$TMP/ws-$name" home="$TMP/home-$name" out_dir="$TMP/outdir-$name"
   mkdir -p "$ws" "$home" "$out_dir"
   OUT="$TMP/run-$name.out"
   ARGV_LOG="$TMP/acpdrive-argv-$name.log"
   ENV_LOG="$TMP/acpdrive-env-$name.log"
+	ORCH_LOG="$TMP/orchclient-$name.log"
   set +e
   env -i PATH="$FAKEBIN:$PATH" HOME="$home" \
     ACPDRIVE_ARGV_LOG="$ARGV_LOG" \
     ACPDRIVE_ENV_LOG="$ENV_LOG" \
+	ACPDRIVE_EXIT_CODE="$acpdrive_rc" \
+	ORCHCLIENT_LOG="$ORCH_LOG" \
     WORKSPACE="$ws" \
     OUT_DIR="$out_dir" \
     PERSISTENT_WORKSPACE=0 \
@@ -223,6 +227,15 @@ grep -q -- "--resume sess_wake_42" "$ARGV_LOG" \
 grep -q "resume=sess_wake_42" "$OUT" \
   || { cat "$OUT"; fail "[b] step-4 log line should show resume=sess_wake_42"; }
 pass "[b] session mode: --resume sess_wake_42 passed to acpdrive explicitly"
+
+info "[c] acpdrive exit 75: typed model_rate_limited failure"
+run_step4 rate-limit 0 "" 75
+[ "$RC" -ne 0 ] || { cat "$OUT"; fail "[c] rate-limited run unexpectedly succeeded"; }
+grep -q "model mock/mock-model remained rate limited after agent retries" "$OUT" \
+	|| { cat "$OUT"; fail "[c] missing actionable rate-limit message"; }
+grep -q "report-failure --reason model_rate_limited" "$ORCH_LOG" \
+	|| { cat "$ORCH_LOG"; fail "[c] exit 75 was not reported as model_rate_limited"; }
+pass "[c] exit 75 maps to model_rate_limited; generic exits remain agent_error"
 
 echo
 printf '\033[32m=====================================================\033[0m\n'

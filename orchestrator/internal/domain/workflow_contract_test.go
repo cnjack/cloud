@@ -89,6 +89,73 @@ func TestWorkflowContractRejectsDeliveryConflict(t *testing.T) {
 	}
 }
 
+func TestDeriveWorkflowContractModelOverrideChangesOnlyLLMSelection(t *testing.T) {
+	svc := Service{ID: "svc", ProjectID: "project", RepoKind: RepoKindProvider, Provider: ProviderGitHub,
+		RepoOwnerName: "cnjack/cloud", DefaultBranch: "main", GitMode: GitModeDraftPR,
+		PRReadyPolicy: PRReadyPolicyLifecycleAware}
+	originalModelID := "model-a"
+	run := Run{ID: "review", Kind: RunKindReview, Origin: RunOriginAutomation,
+		ModelID: &originalModelID, ModelName: "provider/model-a", ModelEffort: "high",
+		PRNumber: 24, PRHeadBranch: "feature", PRBaseBranch: "main"}
+	original, err := ResolveWorkflowContract(&run, &svc, 3600, TimeoutSourceProject, time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalHash := original.Hash
+	derivedAt := time.Unix(2, 0).UTC()
+	derived, err := DeriveWorkflowContractModelOverride(original, "model-b", "provider/model-b", derivedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if derived == original {
+		t.Fatal("derivation mutated the original contract in place")
+	}
+	if original.Hash != originalHash || original.Execution.LLMSelection.ModelID != originalModelID {
+		t.Fatalf("original contract changed: hash=%q model=%q", original.Hash, original.Execution.LLMSelection.ModelID)
+	}
+	if derived.Execution.LLMSelection.ModelID != "model-b" || derived.Execution.LLMSelection.ModelName != "provider/model-b" {
+		t.Fatalf("derived model = %q/%q", derived.Execution.LLMSelection.ModelID, derived.Execution.LLMSelection.ModelName)
+	}
+	if derived.Execution.LLMSelection.Effort != "high" || derived.Execution.LLMSelection.Source != WorkflowLLMSourceRetryOverride {
+		t.Fatalf("derived effort/source = %q/%q", derived.Execution.LLMSelection.Effort, derived.Execution.LLMSelection.Source)
+	}
+	if !derived.ResolvedAt.Equal(derivedAt) || derived.Hash == original.Hash {
+		t.Fatalf("derived resolved_at/hash = %s/%q", derived.ResolvedAt, derived.Hash)
+	}
+	if derived.Trigger != original.Trigger || derived.Workflow != original.Workflow || derived.Profile != original.Profile {
+		t.Fatal("derivation changed frozen workflow identity")
+	}
+	if err := derived.Validate(); err != nil {
+		t.Fatalf("derived contract invalid: %v", err)
+	}
+
+	// Prove the helper deep-copies slices instead of aliasing the original.
+	derived.Requirements[0] = "changed"
+	derived.Delivery.Outputs[0].Target = "changed"
+	if original.Requirements[0] == "changed" || original.Delivery.Outputs[0].Target == "changed" {
+		t.Fatal("derived contract aliases original slices")
+	}
+}
+
+func TestDeriveWorkflowContractModelOverrideRejectsInvalidInputs(t *testing.T) {
+	if _, err := DeriveWorkflowContractModelOverride(nil, "model-b", "provider/model-b", time.Now()); err == nil {
+		t.Fatal("nil original accepted")
+	}
+	svc := Service{RepoKind: RepoKindRaw, RawRepoURL: "https://example.invalid/repo.git", DefaultBranch: "main", GitMode: GitModeReadonly}
+	run := Run{ID: "r", Kind: RunKindAgent, Origin: RunOriginAPI, ModelName: "provider/model-a"}
+	original, err := ResolveWorkflowContract(&run, &svc, 3600, TimeoutSourceProject, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DeriveWorkflowContractModelOverride(original, "", "provider/model-b", time.Now()); err == nil {
+		t.Fatal("empty model id accepted")
+	}
+	if _, err := DeriveWorkflowContractModelOverride(original, "model-b", "", time.Now()); err == nil {
+		t.Fatal("empty model name accepted")
+	}
+}
+
 func TestBuiltinWorkflowDefinitionHashesRequireExplicitRevisionBump(t *testing.T) {
 	// If a built-in definition intentionally changes, bump its Revision and then
 	// update this golden hash. This prevents a semantic edit from masquerading as

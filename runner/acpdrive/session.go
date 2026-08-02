@@ -297,11 +297,17 @@ func runSession(ctx context.Context, cfg sessionConfig) error {
 	nextPrompt := cfg.Prompt
 	for turn := 1; ; turn++ {
 		logf("[turn %d] started", turn)
+		// Classification is per prompt. Never let a successful earlier turn's
+		// prose reclassify an unrelated failure in a later turn.
+		client.terminal.Reset()
 		promptResp, err := conn.Prompt(ctx, acp.PromptRequest{
 			SessionId: sessionID,
 			Prompt:    []acp.ContentBlock{acp.TextBlock(nextPrompt)},
 		})
 		if err != nil {
+			if client.terminal.ModelRateLimited() {
+				return fmt.Errorf("%w: [turn %d] session/prompt: %s", errModelRateLimited, turn, describeErr(err))
+			}
 			return fmt.Errorf("[turn %d] session/prompt: %s", turn, describeErr(err))
 		}
 		stopReason := promptResp.StopReason

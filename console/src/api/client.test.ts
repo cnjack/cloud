@@ -214,13 +214,16 @@ describe('httpClient — request shaping', () => {
 		expect(calls[0]!.url).toBe('/api/v1/services/s1/branches');
 	});
 
-  it('POSTs to cancel and retry endpoints', async () => {
+  it('POSTs to cancel and retry endpoints, with an optional retry model override', async () => {
     const { calls } = mockFetch(() => ({ body: { id: 'r', status: 'canceled' } }));
     const client = createHttpClient('t');
     await client.cancelRun('r1');
     await client.retryRun('r1');
+    await client.retryRun('r1', { model_id: 'model-b' });
     expect(calls[0]!.url).toBe('/api/v1/runs/r1/cancel');
     expect(calls[1]!.url).toBe('/api/v1/runs/r1/retry');
+    expect(calls[1]!.init!.body).toBeUndefined();
+    expect(JSON.parse(calls[2]!.init!.body as string)).toEqual({ model_id: 'model-b' });
     expect(calls.every((c) => c.init!.method === 'POST')).toBe(true);
   });
 });

@@ -863,6 +863,10 @@ const (
 	// failure. This is the fallback when the cluster state alone cannot
 	// distinguish clone/setup failures.
 	FailureAgentError FailureReason = "agent_error"
+	// FailureModelRateLimited: the selected model provider remained rate
+	// limited after the agent exhausted its own retries. The run is safe to
+	// retry later, or the user can explicitly retry with another granted model.
+	FailureModelRateLimited FailureReason = "model_rate_limited"
 	// FailureTimeout: the Job exceeded its activeDeadlineSeconds guardrail.
 	FailureTimeout FailureReason = "timeout"
 	// FailurePushFailed: in draft_pr mode, the runner produced a diff but could
@@ -875,7 +879,7 @@ const (
 // ValidFailureReason reports whether r is a recognised failure reason.
 func ValidFailureReason(r FailureReason) bool {
 	switch r {
-	case FailureCloneFailed, FailureSetupFailed, FailureAgentError, FailureTimeout, FailurePushFailed:
+	case FailureCloneFailed, FailureSetupFailed, FailureAgentError, FailureModelRateLimited, FailureTimeout, FailurePushFailed:
 		return true
 	}
 	return false

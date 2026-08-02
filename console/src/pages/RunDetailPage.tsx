@@ -28,6 +28,7 @@ import { LoadingBlock, ErrorBlock, InlineHint } from '../components/States';
 import { Spinner } from '../components/Spinner';
 import { StatusBadge } from '../components/StatusBadge';
 import { LanguageToggle } from '../components/LanguageToggle';
+import { Modal } from '../components/Modal';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { useToast } from '../components/Toast';
 import { UsageSummary } from '../components/UsageSummary';
@@ -45,6 +46,7 @@ function failureLabel(reason: FailureReason, t: TFunction): string {
     clone_failed: t('runDetail.failure.cloneFailed'),
     setup_failed: t('runDetail.failure.setupFailed'),
     agent_error: t('runDetail.failure.agentError'),
+    model_rate_limited: t('runDetail.failure.modelRateLimited'),
     timeout: t('runDetail.failure.timeout'),
     push_failed: t('runDetail.failure.pushFailed'),
   };
@@ -62,6 +64,8 @@ export function RunDetailPage() {
   const { t } = useTranslation();
   const [view, setView] = useState<View>('conversation');
   const [failedSubmission, setFailedSubmission] = useState<FailedSubmission | null>(null);
+	const [retryDialogOpen, setRetryDialogOpen] = useState(false);
+	const [retryModelId, setRetryModelId] = useState('');
   const conversationRef = useRef<HTMLElement>(null);
   const conversationContentRef = useRef<HTMLDivElement>(null);
   const followConversationRef = useRef(true);
@@ -69,6 +73,8 @@ export function RunDetailPage() {
 
   useEffect(() => {
     setFailedSubmission(null);
+	setRetryDialogOpen(false);
+	setRetryModelId('');
     setView('conversation');
   }, [runId]);
 
@@ -90,6 +96,20 @@ export function RunDetailPage() {
   const noChanges = status === 'succeeded' && run.data?.result === 'no_changes';
   const modelGate = useModelGate(run.data?.project_id ?? '', canAct && terminal);
   const projectModels = useProjectModels(run.data?.project_id ?? '', canAct);
+	const retryModelOptions = useMemo(() => {
+		const currentModelID = run.data?.model_id;
+		const currentModelName = run.data?.model_name;
+		return (projectModels.data?.models ?? []).filter((model) =>
+			currentModelID ? model.id !== currentModelID : model.model_name !== currentModelName,
+		);
+	}, [projectModels.data?.models, run.data?.model_id, run.data?.model_name]);
+	const sameModelRetryAvailable = useMemo(() => {
+		if (!run.data || !projectModels.data) return false;
+		if (run.data.model_id) {
+			return projectModels.data.models.some((model) => model.id === run.data?.model_id);
+		}
+		return projectModels.data.env_fallback;
+	}, [projectModels.data, run.data]);
   const artifactReady = stream.events.some(
     (event) => event.type === 'run.artifact' && event.payload?.kind === 'diff',
   );
@@ -260,8 +280,12 @@ export function RunDetailPage() {
     onSuccess: () => toast.push({ kind: 'info', message: t('runDetail.toast.canceled') }),
     onError: (error) => toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : t('runDetail.toast.cancelFailed') }),
   });
-  const doRetry = () => retry.mutate(runId, {
+	const doRetry = (modelId?: string) => retry.mutate({
+		runId,
+		options: modelId ? { model_id: modelId } : undefined,
+	}, {
     onSuccess: (nextRun) => {
+		setRetryDialogOpen(false);
       toast.push({ kind: 'success', message: t('runDetail.toast.retryDispatched') });
       navigate(`/runs/${nextRun.id}`);
     },
@@ -317,7 +341,13 @@ export function RunDetailPage() {
                     {isReview && <ReviewDeliveryState run={current} />}
                     {noChanges && <span className={styles.noChangesBadge} data-testid="no-changes-badge">{t('runDetail.noChangesBadge')}</span>}
                     {!terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doCancel} loading={cancel.isPending} data-testid="cancel-btn"><Stop size={15} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.stop')}</span></Button>}
-                    {terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doRetry} loading={retry.isPending} disabled={!modelGate.configured} data-testid="retry-btn"><ArrowClockwise size={15} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.retry')}</span></Button>}
+					{terminalRun && canAct && <Button variant="secondary" size="sm" onClick={() => doRetry()} loading={retry.isPending && !retryDialogOpen} disabled={!modelGate.configured || projectModels.isLoading || !sameModelRetryAvailable} data-testid="retry-btn"><ArrowClockwise size={15} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.retry')}</span></Button>}
+					{terminalRun && canAct && retryModelOptions.length > 0 && <Button variant="secondary" size="sm" onClick={() => {
+						const first = retryModelOptions[0];
+						if (!first) return;
+						setRetryModelId(first.id);
+						setRetryDialogOpen(true);
+					}} data-testid="retry-other-model-btn"><Cpu size={15} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.retryOtherModel')}</span></Button>}
                   </div>
                 </div>
               </header>
@@ -337,6 +367,9 @@ export function RunDetailPage() {
                   >
                     <div ref={conversationContentRef} className={styles.conversationContent}>
                       {terminalRun && canAct && modelGate.notice}
+					  {terminalRun && canAct && !projectModels.isLoading && !sameModelRetryAvailable && retryModelOptions.length > 0 && (
+						<InlineHint>{t('runDetail.retryModel.originalUnavailable')}</InlineHint>
+					  )}
                       {failed && (
                         <div className={styles.failBanner} role="alert" data-testid="failure-banner">
                           <strong>{current.failure_reason ? failureLabel(current.failure_reason, t) : t('runDetail.failure.runFailed')}</strong>
@@ -415,6 +448,33 @@ export function RunDetailPage() {
               </div>
             </div>
           </ProjectWorkspaceShell>
+		  <Modal
+			open={retryDialogOpen}
+			onClose={() => !retry.isPending && setRetryDialogOpen(false)}
+			title={t('runDetail.retryModel.title')}
+			data-testid="retry-model-dialog"
+			footer={<>
+				<Button variant="ghost" onClick={() => setRetryDialogOpen(false)} disabled={retry.isPending}>{t('common.cancel')}</Button>
+				<Button variant="primary" onClick={() => doRetry(retryModelId)} loading={retry.isPending} disabled={!retryModelId}>{t('runDetail.retryModel.confirm')}</Button>
+			</>}
+		  >
+			<div className={styles.retryModelDialog}>
+				<p>{t('runDetail.retryModel.description')}</p>
+				<div className={styles.retryCurrentModel}>
+					<span>{t('runDetail.retryModel.current')}</span>
+					<strong>{current.model_name || t('runDetail.retryModel.unknown')}</strong>
+				</div>
+				<fieldset className={styles.retryModelOptions}>
+					<legend>{t('runDetail.retryModel.choose')}</legend>
+					{retryModelOptions.map((model) => (
+						<label key={model.id} data-selected={retryModelId === model.id}>
+							<input type="radio" name="retry-model" value={model.id} checked={retryModelId === model.id} onChange={() => setRetryModelId(model.id)} />
+							<span><strong>{model.name}</strong><small>{model.model_name}</small></span>
+						</label>
+					))}
+				</fieldset>
+			</div>
+		  </Modal>
         </div>
       </ToolRegistryProvider>
     </RuntimeProvider>

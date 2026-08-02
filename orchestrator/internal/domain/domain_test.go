@@ -84,7 +84,7 @@ func TestStatusTerminalAndValid(t *testing.T) {
 
 func TestValidFailureReason(t *testing.T) {
 	// push_failed (ST-1) is a first-class reason alongside the original four.
-	valid := []FailureReason{FailureCloneFailed, FailureSetupFailed, FailureAgentError, FailureTimeout, FailurePushFailed}
+	valid := []FailureReason{FailureCloneFailed, FailureSetupFailed, FailureAgentError, FailureModelRateLimited, FailureTimeout, FailurePushFailed}
 	for _, r := range valid {
 		if !ValidFailureReason(r) {
 			t.Errorf("%s should be valid", r)
