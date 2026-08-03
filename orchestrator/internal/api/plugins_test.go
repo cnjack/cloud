@@ -443,17 +443,27 @@ func TestProviderNoOpPutDoesNotIncrementRevision(t *testing.T) {
 func TestProviderCapabilitiesFailClosedForFailedOrTooOldProbe(t *testing.T) {
 	ts, st, _ := newCipherServer(t, nil, "")
 	now := time.Now().UTC()
+	var result struct {
+		Capabilities []scmevent.Capability `json:"capabilities"`
+	}
+	// An unconfigured provider must not advertise the optimistic catalog either.
+	resp := do(t, http.MethodGet, ts.URL+"/api/v1/providers/gitea/capabilities", consoleToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unconfigured capabilities status=%d", resp.StatusCode)
+	}
+	decode(t, resp, &result)
+	if len(result.Capabilities) != 0 {
+		t.Fatalf("unconfigured provider advertised %d capability families", len(result.Capabilities))
+	}
+
 	if err := st.UpsertProviderConfig(context.Background(), &domain.ProviderConfig{
 		Provider: domain.PluginGitea, BaseURL: "https://gitea.example.test", PluginEnabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	resp := do(t, http.MethodGet, ts.URL+"/api/v1/providers/gitea/capabilities", consoleToken, nil)
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/providers/gitea/capabilities", consoleToken, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("unknown capabilities status=%d", resp.StatusCode)
-	}
-	var result struct {
-		Capabilities []scmevent.Capability `json:"capabilities"`
 	}
 	decode(t, resp, &result)
 	if len(result.Capabilities) != 0 {

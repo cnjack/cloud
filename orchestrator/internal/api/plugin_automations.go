@@ -34,7 +34,13 @@ func (s *Server) handleProviderCapabilities(w http.ResponseWriter, r *http.Reque
 	capabilities := scmevent.Capabilities(provider)
 	instanceURL := ""
 	mentionHandle := ""
-	if cfg, err := s.st.GetProviderConfig(r.Context(), domain.ProviderKind(provider)); err == nil {
+	cfg, err := s.st.GetProviderConfig(r.Context(), domain.ProviderKind(provider))
+	if err != nil {
+		// No (readable) cluster Provider configuration: advertise no events. An
+		// unconfigured provider must not present the optimistic catalog as if an
+		// Automation could fire (fail-visible).
+		capabilities.Capabilities = []scmevent.Capability{}
+	} else {
 		instanceURL = cfg.BaseURL
 		capabilities = providerCapabilitiesForConfig(provider, cfg)
 		if provider == scmevent.ProviderGitHub && strings.TrimSpace(cfg.AppSlug) != "" {

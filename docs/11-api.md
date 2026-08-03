@@ -1569,8 +1569,8 @@ Integration/PAT 流程，不得再据其创建新 UI 或调用旧 webhook sync A
 - 状态变更：`PATCH /api/v1/plugins/{installation}`；
   `DELETE /api/v1/plugins/{installation}` 是带影响预览和强确认的破坏性卸载。
 - 能力：`GET /api/v1/providers/{provider}/capabilities` 返回实际观察版本过滤后的
-  event/action matrix。GitLab/Gitea 未探测、版本不可解析、低于基线、Plugin
-  disabled 或 health error 时 fail closed，返回空 actions；Automation 创建也会
+  event/action matrix。Provider 未配置、GitLab/Gitea 未探测、版本不可解析、低于基线、
+  Plugin disabled 或 health error 时 fail closed，返回空 actions；Automation 创建也会
   再次拒绝未支持动作。
 - Automation：`GET/POST /api/v1/projects/{id}/automations` 和
   `GET/PATCH/DELETE /api/v1/automations/{aid}`。正文必须恰有一个 `scm` 或 `cron`
