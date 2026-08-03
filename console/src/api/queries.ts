@@ -34,7 +34,6 @@ import type {
   RetryRunOptions,
   ResumeSessionOptions,
   Run,
-  ServiceWebhookSetup,
   UpdateModelInput,
   UpdateModelProviderInput,
   UpdateProjectInput,
@@ -751,15 +750,6 @@ export function useDeleteService(projectId: string) {
       qc.invalidateQueries({ queryKey: qk.project(projectId) });
       qc.invalidateQueries({ queryKey: qk.projects });
     },
-  });
-}
-
-/** Explicit provider webhook synchronization for one service's Automation page. */
-export function useEnsureServiceWebhook() {
-  const api = useApi();
-  return useMutation({
-    mutationFn: (serviceId: string): Promise<ServiceWebhookSetup> =>
-      api.ensureServiceWebhook(serviceId),
   });
 }
 

@@ -99,11 +99,6 @@ type Store interface {
 	// GetDefaultService returns the project's service named "default" (the one
 	// the compatibility shim creates and routes to). ErrNotFound if absent.
 	GetDefaultService(ctx context.Context, projectID string) (*domain.Service, error)
-	// ListServicesByRepo returns every service (across all projects) that targets
-	// the given provider + "owner/name" repo. Used by the M7 webhook to resolve a
-	// PR comment's repository to the jcloud project(s) that track it; the handler
-	// then picks the first whose commenter is a member. Empty when none match.
-	ListServicesByRepo(ctx context.Context, provider domain.GitProvider, repoOwnerName string) ([]domain.Service, error)
 	UpdateService(ctx context.Context, s *domain.Service) error
 	// MarkServiceDeleting installs a durable fence before external cleanup.
 	// Idempotent: retries preserve the original timestamp.
@@ -159,10 +154,6 @@ type Store interface {
 	DeleteOrphanedRunAttachmentObject(ctx context.Context, objectKey string) error
 	GetRun(ctx context.Context, id string) (*domain.Run, error)
 	GetRunByTokenHash(ctx context.Context, tokenHash string) (*domain.Run, error)
-	// GetRunByOriginCommentID returns the run a webhook comment already triggered
-	// (the M7 de-dup key), or ErrNotFound when the comment has not been seen. An
-	// empty id returns ErrNotFound (never matches api-origin runs).
-	GetRunByOriginCommentID(ctx context.Context, commentID string) (*domain.Run, error)
 	// GetRunByOriginEventKey is the provider-event Automation de-dup lookup.
 	GetRunByOriginEventKey(ctx context.Context, eventKey string) (*domain.Run, error)
 	ListRuns(ctx context.Context, projectID string, limit int) ([]domain.Run, error)
@@ -800,16 +791,6 @@ type Store interface {
 	// (the window was already advanced). Best-effort; ErrNotFound when the row is
 	// gone (a concurrent delete), which the poller ignores.
 	SetScheduleLastError(ctx context.Context, id, lastErr string) error
-
-	// --- PR review Automations -------------------------------------------------
-	CreateAutomation(ctx context.Context, a *domain.Automation) error
-	GetAutomation(ctx context.Context, id string) (*domain.Automation, error)
-	ListAutomationsByService(ctx context.Context, serviceID string) ([]domain.Automation, error)
-	UpdateAutomation(ctx context.Context, a *domain.Automation) error
-	DeleteAutomation(ctx context.Context, id string) error
-	// RecordAutomationDispatch exposes the latest accepted run or a fail-visible
-	// pre-dispatch error without rewriting the Automation's saved policy.
-	RecordAutomationDispatch(ctx context.Context, id string, at time.Time, runID, lastErr string) error
 
 	// One provider hook is shared by comment commands and every Automation on a
 	// Service. GitLab/Gitea persist an opaque route id and encrypted per-binding

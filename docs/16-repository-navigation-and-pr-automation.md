@@ -1,5 +1,19 @@
 # 16 · Repository Navigation and PR Review Automation
 
+> **Status: SUPERSEDED (2026-08-03).** The Gitea-first, service-scoped Automation
+> API described here was removed: migration 0043 discarded its data, and the
+> unregistered handlers (`api/webhook.go`, `api/automations.go`), the old store
+> CRUD, and the `domain.Automation` types have been deleted. The live design is
+> `docs/21-github-native-code-review.md` + `docs/29-workflow-contract-and-review-design.md`:
+> one shared Plugin webhook ingress (`POST /webhooks/github`,
+> `POST /webhooks/{gitea,gitlab}/{hook_id}`) serves **all three providers**, PR
+> lifecycle events dispatch `run_kind=review` Plugin Automations (no
+> `automatic_review_unsupported` restriction exists anymore), and fork PR/MR
+> heads are fetched through each provider's synthetic ref
+> (`refs/pull/<n>/head`; GitLab `refs/merge-requests/<iid>/head`). This document
+> remains only as historical context for the superseded design; the repository
+> navigation projection (`repo_html_url`) in §1 is still accurate.
+
 > Status: implementation design (2026-07-13).
 >
 > Scope: the provider repository action in the Service header and the

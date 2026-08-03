@@ -56,7 +56,6 @@ type MemStore struct {
 	kanbanLinks              map[string]domain.KanbanLink            // keyed by link id
 	kanbanClaims             map[string]domain.KanbanClaim           // keyed by linkID+"|"+documentID
 	schedules                map[string]domain.Schedule              // keyed by schedule id (F11 / D24)
-	automations              map[string]domain.Automation            // keyed by automation id
 	webhookBindings          map[string]domain.WebhookBinding        // keyed by service id
 	runMessages              map[string][]domain.RunMessage          // session follow-up queue, keyed by runID (D22)
 	permissions              map[string]domain.RunPermission         // permission requests, keyed by request_id (F8b)
@@ -122,7 +121,6 @@ func NewMemStore() *MemStore {
 		kanbanLinks:              map[string]domain.KanbanLink{},
 		kanbanClaims:             map[string]domain.KanbanClaim{},
 		schedules:                map[string]domain.Schedule{},
-		automations:              map[string]domain.Automation{},
 		webhookBindings:          map[string]domain.WebhookBinding{},
 		runMessages:              map[string][]domain.RunMessage{},
 		permissions:              map[string]domain.RunPermission{},
@@ -363,19 +361,6 @@ func (m *MemStore) GetDefaultService(_ context.Context, projectID string) (*doma
 	return nil, ErrNotFound
 }
 
-func (m *MemStore) ListServicesByRepo(_ context.Context, provider domain.GitProvider, repoOwnerName string) ([]domain.Service, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []domain.Service
-	for _, s := range m.services {
-		if s.RepoKind == domain.RepoKindProvider && s.Provider == provider && s.RepoOwnerName == repoOwnerName {
-			out = append(out, s)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return out, nil
-}
-
 func (m *MemStore) UpdateService(_ context.Context, s *domain.Service) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -429,11 +414,6 @@ func (m *MemStore) deleteServiceLocked(id string) {
 	for scheduleID, schedule := range m.schedules {
 		if schedule.ServiceID == id {
 			delete(m.schedules, scheduleID)
-		}
-	}
-	for automationID, automation := range m.automations {
-		if automation.ServiceID == id {
-			delete(m.automations, automationID)
 		}
 	}
 	for automationID, automation := range m.pluginAutomations {
@@ -917,21 +897,6 @@ func (m *MemStore) DeleteOrphanedRunAttachmentObject(_ context.Context, objectKe
 		}
 	}
 	return nil
-}
-
-func (m *MemStore) GetRunByOriginCommentID(_ context.Context, commentID string) (*domain.Run, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if commentID == "" {
-		return nil, ErrNotFound
-	}
-	for _, r := range m.runs {
-		if r.OriginCommentID == commentID {
-			cp := r
-			return &cp, nil
-		}
-	}
-	return nil, ErrNotFound
 }
 
 func (m *MemStore) GetRunByOriginEventKey(_ context.Context, eventKey string) (*domain.Run, error) {
@@ -4432,82 +4397,6 @@ func (m *MemStore) SetScheduleLastError(_ context.Context, id, lastErr string) e
 	sc.LastError = lastErr
 	sc.UpdatedAt = time.Now().UTC()
 	m.schedules[id] = sc
-	return nil
-}
-
-// --- PR review Automations --------------------------------------------------
-
-func cloneAutomation(a domain.Automation) domain.Automation {
-	a.Events = append([]domain.AutomationEvent(nil), a.Events...)
-	return a
-}
-
-func (m *MemStore) CreateAutomation(_ context.Context, a *domain.Automation) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, exists := m.automations[a.ID]; exists {
-		return ErrAlreadyExists
-	}
-	m.automations[a.ID] = cloneAutomation(*a)
-	return nil
-}
-
-func (m *MemStore) GetAutomation(_ context.Context, id string) (*domain.Automation, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	a, ok := m.automations[id]
-	if !ok {
-		return nil, ErrNotFound
-	}
-	cp := cloneAutomation(a)
-	return &cp, nil
-}
-
-func (m *MemStore) ListAutomationsByService(_ context.Context, serviceID string) ([]domain.Automation, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]domain.Automation, 0)
-	for _, a := range m.automations {
-		if a.ServiceID == serviceID {
-			out = append(out, cloneAutomation(a))
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
-	return out, nil
-}
-
-func (m *MemStore) UpdateAutomation(_ context.Context, a *domain.Automation) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.automations[a.ID]; !ok {
-		return ErrNotFound
-	}
-	m.automations[a.ID] = cloneAutomation(*a)
-	return nil
-}
-
-func (m *MemStore) DeleteAutomation(_ context.Context, id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.automations[id]; !ok {
-		return ErrNotFound
-	}
-	delete(m.automations, id)
-	return nil
-}
-
-func (m *MemStore) RecordAutomationDispatch(_ context.Context, id string, at time.Time, runID, lastErr string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	a, ok := m.automations[id]
-	if !ok {
-		return ErrNotFound
-	}
-	a.LastTriggeredAt = &at
-	a.LastRunID = runID
-	a.LastError = lastErr
-	a.UpdatedAt = time.Now().UTC()
-	m.automations[id] = a
 	return nil
 }
 

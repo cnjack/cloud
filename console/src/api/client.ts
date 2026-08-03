@@ -73,7 +73,6 @@ import type {
   RunsEnvelope,
   Service,
   ServiceBranch,
-  ServiceWebhookSetup,
   ServicesEnvelope,
   StreamFrame,
   SystemInfo,
@@ -312,13 +311,6 @@ export interface ApiClient {
   updateService(serviceId: string, input: UpdateServiceInput): Promise<Service>;
   /** DELETE /api/v1/services/{id} — stop runs and cascade-delete a service (owner). */
   deleteService(serviceId: string): Promise<void>;
-  /**
-   * POST /api/v1/services/{id}/webhook — explicitly sync the provider's
-   * @jcode comment webhook with the calling member's OAuth account. The API
-   * never accepts or returns a provider token; typed 409/502 errors stay
-   * visible to the Automation page.
-   */
-  ensureServiceWebhook(serviceId: string): Promise<ServiceWebhookSetup>;
   /* ---- unified project plugins (plugin-platform v1) --------------------- */
   /** GET /projects/{id}/plugins — fixed Provider cards, member+ read. */
   listProjectPlugins(projectId: string): Promise<ProjectPlugin[]>;
@@ -800,11 +792,6 @@ export function createHttpClient(
 
     deleteService: (serviceId) =>
       req<void>(`/services/${encodeURIComponent(serviceId)}`, { method: 'DELETE' }),
-
-    ensureServiceWebhook: (serviceId) =>
-      req<ServiceWebhookSetup>(`/services/${encodeURIComponent(serviceId)}/webhook`, {
-        method: 'POST',
-      }),
 
     listProjectPlugins: async (projectId) =>
       (await req<{ plugins: ProjectPlugin[] }>(`/projects/${encodeURIComponent(projectId)}/plugins`)).plugins ?? [],

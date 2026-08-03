@@ -1,8 +1,9 @@
 package api
 
-// This file is the clean-cut Automation API for the Project Plugin platform.
-// The older service automation resource deliberately has no route registration:
-// migration 0043 discarded its data and its model/PR-review-only contract.
+// This file is the Automation API for the Project Plugin platform. The older
+// service automation resource was removed: migration 0043 discarded its data,
+// and its unregistered handlers/store CRUD were deleted with the legacy
+// webhook.go path.
 
 import (
 	"errors"
@@ -17,6 +18,12 @@ import (
 	"github.com/cnjack/jcloud/internal/scmevent"
 	"github.com/cnjack/jcloud/internal/store"
 )
+
+type automationHTTPError struct {
+	status int
+	code   string
+	msg    string
+}
 
 func (s *Server) handleProviderCapabilities(w http.ResponseWriter, r *http.Request) {
 	provider := scmevent.ProviderKind(strings.TrimSpace(r.PathValue("provider")))

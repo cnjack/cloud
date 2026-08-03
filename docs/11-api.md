@@ -1041,30 +1041,29 @@ Schedule 对象(`GET`/`POST`/`PATCH` 的响应体):
 
 env:`SCHEDULE_POLL_INTERVAL`(默认 `30s`,`<=0` 禁用整个 schedule poller)。
 
-#### 2.5d.1 PR review Automations(Gitea-first · migration 0026)
+#### 2.5d.1 PR review Automations（已迁移到 Plugin Automation）
 
-PR review Automation 把 instructions、显式 model、PR event/base/draft policy 持久化
-到 Service。它与 `@jcode review` 是两条并存的触发路径：前者由 PR 生命周期事件自动
-触发，后者仍由评论者主动触发。详细状态机与 payload 见
-`16-repository-navigation-and-pr-automation.md`。
+> **历史段落**：此处曾描述 service 级 `GET/POST /api/v1/services/{id}/automations`
+> API（migration 0026，Gitea-first）。该 API 已被移除——migration 0043 清空了
+> `automations` 表并把 `runs.origin_automation_id` 的 FK 改指 `automations_v2`，
+> 对应的 handler、store CRUD 与 `domain.Automation` 类型也已从代码中删除。
 
-| 端点 | 角色 | 说明 |
-|---|---|---|
-| `GET /api/v1/services/{id}/automations` | member+ | 返回 `{automations, webhook_binding}`；binding 仅反映已保存的同步和最近一次已观察 delivery |
-| `POST /api/v1/services/{id}/automations` | owner | 创建 `trigger_type=pr_review` policy；要求显式 `model_id`；用当前 owner 的 Gitea OAuth reconcile hook；返回 `201` |
-| `PATCH /api/v1/automations/{aid}` | owner | 编辑/启停 policy；enable 或 runtime policy 变化时重新验证 model，enabled 时 reconcile hook |
-| `DELETE /api/v1/automations/{aid}` | owner | 删除 policy；共享 hook 保留给其它 Automation 与 `@jcode` 评论 |
-
-Gitea `pull_request` opened/reopened/ready 与 `pull_request_sync` synchronized 事件经过
-base/draft/event filter 后创建 `kind=review, origin=automation` Run。`origin_event_key`
-由 Automation/provider/repo/PR/head SHA 生成并有唯一索引，因此 opened 与随后同一 head
-的重复/同步 delivery 至多创建一个 Run。GitHub/GitLab 自动 PR event 尚未实现，API
-返回 `409 automatic_review_unsupported`，Console 必须显式显示 Gitea-first 状态。
+当前形态见 §6c：PR review 是 `run_kind=review` 的 **Plugin Automation**
+（`POST /api/v1/projects/{id}/automations`，typed `scm` trigger，actions 只能是
+`pull_request.*`）。三家 Provider（GitHub/Gitea/GitLab）的 PR 生命周期事件都经过
+统一的 Plugin webhook ingress 派发 review Run；不再存在
+`automatic_review_unsupported` 限制。review Run 必须冻结精确
+base/head revision（缺任一项即 `review_revision_unavailable` 拒绝入队），
+`origin_event_key` 按 Automation+repo+PR+head SHA 幂等，同一 head 的重复
+delivery 至多创建一个 Run，新 head 产生新 Run。fork PR/MR 的 head 通过
+Provider synthetic ref 进入 source bundle（GitHub/Gitea `refs/pull/<n>/head`，
+GitLab `refs/merge-requests/<iid>/head`）。
 
 > **`origin` 枚举**(run 字段):`"api"`(默认/console)、`"webhook"`(PR 评论
-> `@jcode`)、`"kanban"`(卡片拖入触发列)、`"schedule"`(cron 到点)、
-> `"automation"`(持久化 PR event policy)。Automation Run 另带
-> `origin_automation_id` 与唯一 `origin_event_key`；Console 按 origin 展示对应徽标。
+> `@jcode` 命令)、`"kanban"`(卡片拖入触发列)、`"schedule"`(cron 到点)、
+> `"automation"`(Plugin Automation 事件)。Automation Run 另带
+> `origin_automation_id`（指向 `automations_v2`）与唯一 `origin_event_key`；
+> Console 按 origin 展示对应徽标。
 
 ---
 

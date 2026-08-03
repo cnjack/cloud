@@ -1286,57 +1286,6 @@ type Schedule struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// AutomationTrigger identifies the durable trigger family. Schedule remains a
-// separate proven aggregate; this first Automation contract adds provider PR
-// review events and is intentionally extensible without pretending other
-// trigger types already exist.
-type AutomationTrigger string
-
-const AutomationTriggerPRReview AutomationTrigger = "pr_review"
-
-func ValidAutomationTrigger(t AutomationTrigger) bool { return t == AutomationTriggerPRReview }
-
-// AutomationEvent is a provider-neutral PR lifecycle event. Provider adapters
-// normalize their headers/payload actions into this vocabulary before matching.
-type AutomationEvent string
-
-const (
-	AutomationEventOpened      AutomationEvent = "opened"
-	AutomationEventReady       AutomationEvent = "ready"
-	AutomationEventSynchronize AutomationEvent = "synchronize"
-	AutomationEventReopened    AutomationEvent = "reopened"
-)
-
-func ValidAutomationEvent(e AutomationEvent) bool {
-	switch e {
-	case AutomationEventOpened, AutomationEventReady, AutomationEventSynchronize, AutomationEventReopened:
-		return true
-	}
-	return false
-}
-
-// Automation is a service-scoped, headless PR review policy. The instructions
-// and model are stamped onto every dispatched review Run; provider delivery
-// state lives on the service-level WebhookBinding shared by all Automations.
-type Automation struct {
-	ID              string            `json:"id"`
-	ServiceID       string            `json:"service_id"`
-	Name            string            `json:"name"`
-	Instructions    string            `json:"instructions"`
-	TriggerType     AutomationTrigger `json:"trigger_type"`
-	ModelID         string            `json:"model_id"`
-	Events          []AutomationEvent `json:"events"`
-	BaseBranch      string            `json:"base_branch"`
-	IncludeDrafts   bool              `json:"include_drafts"`
-	Enabled         bool              `json:"enabled"`
-	LastTriggeredAt *time.Time        `json:"last_triggered_at,omitempty"`
-	LastRunID       string            `json:"last_run_id,omitempty"`
-	LastError       string            `json:"last_error,omitempty"`
-	CreatedBy       *string           `json:"created_by,omitempty"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
-}
-
 type WebhookBindingStatus string
 
 const (

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cnjack/jcloud/internal/credentials"
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/provider"
@@ -577,127 +576,6 @@ func (s *Server) bindServiceIntegration(ctx context.Context, projectID, integrat
 	}
 	return "repo_not_reachable",
 		"the repository '" + svc.RepoOwnerName + "' is not reachable with this integration's credential"
-}
-
-// commentWebhookRegistrar is intentionally narrower than provider.Provider:
-// only concrete provider clients that can manage repository webhooks implement
-// it. The explicit type assertion lets an unsupported deployment fail visibly.
-type commentWebhookRegistrar interface {
-	EnsureCommentWebhook(ctx context.Context, owner, repo, hookURL, secret string) error
-}
-
-type webhookSetupView struct {
-	Provider domain.GitProvider `json:"provider"`
-	Endpoint string             `json:"endpoint"`
-	Status   string             `json:"status"`
-}
-
-// handleEnsureServiceWebhook registers (or idempotently re-synchronizes) the
-// @jcode PR/MR-comment webhook for one provider-backed service. This is an
-// explicit member action: it uses ONLY the requesting user's OAuth grant, never
-// a project integration token or the legacy cluster PAT. A service creation must
-// remain side-effect free with respect to an external repository so every
-// unavailable dependency and permission failure can be shown in the Console.
-func (s *Server) handleEnsureServiceWebhook(w http.ResponseWriter, r *http.Request) {
-	svc, err := s.st.GetService(r.Context(), r.PathValue("id"))
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "service not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
-		return
-	}
-	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), svc.ProjectID, domain.RoleMember) {
-		return
-	}
-	if svc.RepoKind != domain.RepoKindProvider || !domain.ValidProvider(svc.Provider) {
-		writeError(w, http.StatusConflict, "provider_webhook_unavailable",
-			"This service is not a provider-backed repository, so it cannot receive PR review webhooks.")
-		return
-	}
-	if strings.TrimSpace(s.cfg.WebhookURL) == "" || strings.TrimSpace(s.cfg.WebhookSecret) == "" {
-		writeError(w, http.StatusConflict, "webhook_not_configured",
-			"This cluster has not configured a webhook receiver. Contact a cluster administrator.")
-		return
-	}
-	if _, configured := s.oauth[svc.Provider]; !configured {
-		writeError(w, http.StatusConflict, "oauth_not_configured",
-			"OAuth is not configured for this provider. Contact a cluster administrator.")
-		return
-	}
-	userID := principalFrom(r.Context()).userID()
-	if userID == "" || s.creds == nil {
-		writeError(w, http.StatusConflict, "oauth_not_connected",
-			"Connect your provider account with OAuth before enabling this webhook.")
-		return
-	}
-	token, err := s.creds.ResolveUserOAuth(r.Context(), svc.Provider, userID)
-	if err != nil {
-		if errors.Is(err, credentials.ErrNoCredential) {
-			writeError(w, http.StatusConflict, "oauth_not_connected",
-				"Connect your provider account with OAuth before enabling this webhook.")
-			return
-		}
-		s.log.Warn("resolve webhook OAuth credential", "service", svc.ID, "provider", svc.Provider, "err", err)
-		writeError(w, http.StatusBadGateway, "oauth_unavailable",
-			"Could not use your provider OAuth connection. Reconnect it and try again.")
-		return
-	}
-	owner, repo, ok := provider.SplitRepo(svc.RepoOwnerName)
-	if !ok {
-		writeError(w, http.StatusConflict, "provider_webhook_unavailable",
-			"This service does not have a valid provider repository name for webhook setup.")
-		return
-	}
-	hookURL := webhookURLForProvider(s.cfg.WebhookURL, svc.Provider)
-	if hookURL == "" || s.factory == nil {
-		writeError(w, http.StatusConflict, "provider_webhook_unavailable",
-			"This provider webhook cannot be configured in the current cluster.")
-		return
-	}
-	client, err := s.factory.PRClient(svc.Provider, token.Value, token.Scheme)
-	if err != nil {
-		s.log.Warn("build webhook provider client", "service", svc.ID, "provider", svc.Provider, "err", err)
-		writeError(w, http.StatusConflict, "provider_webhook_unavailable",
-			"This provider webhook cannot be configured in the current cluster.")
-		return
-	}
-	hooker, ok := client.(commentWebhookRegistrar)
-	if !ok {
-		writeError(w, http.StatusConflict, "provider_webhook_unavailable",
-			"This provider client does not support repository webhook setup.")
-		return
-	}
-	if err := hooker.EnsureCommentWebhook(r.Context(), owner, repo, hookURL, s.cfg.WebhookSecret); err != nil {
-		s.log.Warn("service webhook registration failed", "service", svc.ID, "provider", svc.Provider, "repo", svc.RepoOwnerName, "err", err)
-		writeError(w, http.StatusBadGateway, "webhook_registration_failed",
-			"The provider rejected or could not reach webhook registration. Reconnect OAuth with repository-hook access and confirm you are a repository administrator.")
-		return
-	}
-	s.log.Info("service webhook synchronized", "service", svc.ID, "provider", svc.Provider, "repo", svc.RepoOwnerName, "actor", userID)
-	writeJSON(w, http.StatusOK, webhookSetupView{Provider: svc.Provider, Endpoint: hookURL, Status: "synced"})
-}
-
-// webhookURLForProvider derives the inbound webhook URL for prov from the single
-// configured WEBHOOK_URL (F13). WEBHOOK_URL points at ONE receiver
-// (…/webhooks/gitea by deployment convention); the github/gitlab receivers are
-// SIBLING paths on the same orchestrator, so a trailing "/webhooks/<known>"
-// segment is swapped for "/webhooks/<prov>". A WEBHOOK_URL without a known
-// trailing segment is treated as a base and the path is appended. This keeps the
-// single-env deploy working for all three providers with no manifest change.
-func webhookURLForProvider(base string, prov domain.GitProvider) string {
-	base = strings.TrimRight(strings.TrimSpace(base), "/")
-	if base == "" {
-		return ""
-	}
-	for _, p := range []string{"gitea", "github", "gitlab"} {
-		if strings.HasSuffix(base, "/webhooks/"+p) {
-			base = strings.TrimSuffix(base, "/webhooks/"+p)
-			break
-		}
-	}
-	return base + "/webhooks/" + string(prov)
 }
 
 func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {

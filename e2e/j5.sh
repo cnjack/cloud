@@ -8,7 +8,7 @@
 # run.session, user.message, session.finish). Feature commits: F7 (D22, session
 # core), F7a/F7b (runner loop + orchestrator awaiting_input), F9a (session
 # transcript). Not the console — this is the headless API/event-contract
-# equivalent, in the same spirit as j1-j4/j6.
+# equivalent, in the same spirit as j1-j4.
 #
 # Covers (assertion ids J5-S1..S4; see J5-S5 note below):
 #   J5-S1  create a session run (session:true) -> first turn completes ->
@@ -310,12 +310,12 @@ j5_run() {
   # with always resolves to the cluster-admin service principal
   # (orchestrator/internal/api/principal.go isClusterAdmin) — there is no HTTP
   # endpoint to mint a plain member/viewer user + session token; the only path
-  # is the full Gitea OAuth round trip j6-webhook.sh already drives (browser-
-  # facing Gitea + orchestrator port-forwards, consent form, etc). Wiring that
-  # up here just to flip one status code from 401 to 403 is out of proportion
-  # for a smoke journey, so it is left to the unit test rather than forced
-  # into a fake e2e assertion.
-  skip J5-S4 "viewer-role 403 on /messages not exercised (needs a real OAuth-minted non-admin user, see j6-webhook.sh oauth_login_gitea; covered at unit level by sessions_test.go TestSendMessagePermission)"
+  # is the full Gitea OAuth round trip (browser-facing Gitea + orchestrator
+  # port-forwards, consent form, etc — the retired j6-webhook.sh used to drive
+  # it). Wiring that up here just to flip one status code from 401 to 403 is
+  # out of proportion for a smoke journey, so it is left to the unit test
+  # rather than forced into a fake e2e assertion.
+  skip J5-S4 "viewer-role 403 on /messages not exercised (needs a real OAuth-minted non-admin user; covered at unit level by sessions_test.go TestSendMessagePermission)"
 
   # ==========================================================================
   # J5-S5: permission_mode=approval / agent.permission_request — SKIPPED
