@@ -131,7 +131,7 @@ func TestCreatePullRequestSourceBundleIncludesSyntheticForkHead(t *testing.T) {
 	runGit(t, "-C", origin, "update-ref", "-d", "refs/heads/fork-topic")
 
 	bundle := filepath.Join(dir, "pr.bundle")
-	if err := g.CreatePullRequestSourceBundle(ctx, "file://"+origin, bundle, 7, "fork-topic"); err != nil {
+	if err := g.CreatePullRequestSourceBundle(ctx, "file://"+origin, bundle, "refs/pull/7/head", "fork-topic"); err != nil {
 		t.Fatalf("CreatePullRequestSourceBundle: %v", err)
 	}
 	out, err := exec.Command("git", "bundle", "list-heads", bundle, "refs/heads/fork-topic").CombinedOutput()
@@ -140,6 +140,47 @@ func TestCreatePullRequestSourceBundleIncludesSyntheticForkHead(t *testing.T) {
 	}
 	if !strings.Contains(string(out), strings.TrimSpace(string(forkSHA))) {
 		t.Fatalf("bundle head=%q want fork sha %q", out, forkSHA)
+	}
+}
+
+// TestCreatePullRequestSourceBundleGitLabMergeRequestRef proves the GitLab
+// variant: refs/merge-requests/<iid>/head (a fork MR's head lives only there on
+// the target project) is captured under the source-branch name.
+func TestCreatePullRequestSourceBundleGitLabMergeRequestRef(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	g := New()
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	runGit(t, "-C", mkdir(t, work), "init", "-q", "-b", "main")
+	writeFile(t, filepath.Join(work, "README.md"), "# seed\n")
+	runGit(t, "-C", work, "add", "-A")
+	runGit(t, "-C", work, "commit", "-q", "-m", "init")
+	runGit(t, "-C", work, "checkout", "-q", "-b", "contributor/mr-branch")
+	writeFile(t, filepath.Join(work, "MR.txt"), "fork change\n")
+	runGit(t, "-C", work, "add", "-A")
+	runGit(t, "-C", work, "commit", "-q", "-m", "mr")
+	mrSHA, err := exec.Command("git", "-C", work, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := filepath.Join(dir, "origin.git")
+	runGit(t, "clone", "--bare", "--quiet", work, origin)
+	runGit(t, "-C", origin, "update-ref", "refs/merge-requests/12/head", strings.TrimSpace(string(mrSHA)))
+	runGit(t, "-C", origin, "update-ref", "-d", "refs/heads/contributor/mr-branch")
+
+	bundle := filepath.Join(dir, "mr.bundle")
+	if err := g.CreatePullRequestSourceBundle(ctx, "file://"+origin, bundle, "refs/merge-requests/12/head", "contributor/mr-branch"); err != nil {
+		t.Fatalf("CreatePullRequestSourceBundle: %v", err)
+	}
+	out, err := exec.Command("git", "bundle", "list-heads", bundle, "refs/heads/contributor/mr-branch").CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), strings.TrimSpace(string(mrSHA))) {
+		t.Fatalf("bundle head=%q want mr sha %q", out, mrSHA)
 	}
 }
 

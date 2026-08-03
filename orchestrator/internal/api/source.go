@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -198,9 +199,13 @@ func (s *Server) handleGetSource(w http.ResponseWriter, r *http.Request, runID s
 	authed := tok.AuthedURL(rawURL, resolvedProvider)
 
 	data, err := s.srcCache.Get(runID, func(dst string) error {
-		if run.Kind == domain.RunKindReview && resolvedProvider == domain.ProviderGitHub &&
-			run.PRNumber > 0 && run.PRHeadBranch != "" {
-			return s.git.CreatePullRequestSourceBundle(r.Context(), authed, dst, run.PRNumber, run.PRHeadBranch)
+		if run.Kind == domain.RunKindReview && run.PRNumber > 0 && run.PRHeadBranch != "" {
+			// Fetch the provider's synthetic pull-request head ref into the frozen
+			// head branch name: a fork PR/MR head exists only under that ref on the
+			// target repository, so a plain all-refs bundle cannot review it.
+			if pullRef := pullRequestHeadRef(resolvedProvider, run.PRNumber); pullRef != "" {
+				return s.git.CreatePullRequestSourceBundle(r.Context(), authed, dst, pullRef, run.PRHeadBranch)
+			}
 		}
 		return s.git.CreateSourceBundle(r.Context(), authed, dst)
 	})
@@ -212,6 +217,27 @@ func (s *Server) handleGetSource(w http.ResponseWriter, r *http.Request, runID s
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+// pullRequestHeadRef maps a provider's pull request number to its synthetic
+// head ref on the target repository: GitHub and Gitea use refs/pull/<n>/head,
+// GitLab uses refs/merge-requests/<iid>/head. All three providers publish the
+// ref for same-repository and fork pull requests alike, and every advertised
+// minimum instance version (Gitea 1.25, GitLab 17.11) supports it. "" means the
+// provider has no known synthetic ref and the caller falls back to a plain
+// all-refs bundle.
+func pullRequestHeadRef(provider domain.GitProvider, prNumber int) string {
+	if prNumber <= 0 {
+		return ""
+	}
+	switch provider {
+	case domain.ProviderGitHub, domain.ProviderGitea:
+		return "refs/pull/" + strconv.Itoa(prNumber) + "/head"
+	case domain.ProviderGitLab:
+		return "refs/merge-requests/" + strconv.Itoa(prNumber) + "/head"
+	default:
+		return ""
+	}
 }
 
 // handleIngestBundle stores a draft_pr agent run's git bundle (raw

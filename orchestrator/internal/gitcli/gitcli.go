@@ -18,7 +18,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -90,18 +89,22 @@ func (g *Git) CreateSourceBundle(ctx context.Context, remoteURL, bundlePath stri
 	return g.createSourceBundle(ctx, remoteURL, bundlePath, "", "")
 }
 
-// CreatePullRequestSourceBundle includes GitHub's synthetic pull ref under the
-// exact head branch name expected by the review runner. This makes fork PRs
-// reviewable without giving the runner a provider token.
-func (g *Git) CreatePullRequestSourceBundle(ctx context.Context, remoteURL, bundlePath string, prNumber int, headBranch string) error {
-	if prNumber <= 0 || strings.TrimSpace(headBranch) == "" {
-		return fmt.Errorf("pull request number and head branch are required")
+// CreatePullRequestSourceBundle includes the provider's synthetic pull-request
+// head ref (GitHub/Gitea: refs/pull/<n>/head; GitLab: refs/merge-requests/<n>/head,
+// chosen by the caller) under the exact head branch name expected by the review
+// runner. This makes fork PRs reviewable without giving the runner a provider
+// token.
+func (g *Git) CreatePullRequestSourceBundle(ctx context.Context, remoteURL, bundlePath, pullRef, headBranch string) error {
+	if strings.TrimSpace(pullRef) == "" || strings.TrimSpace(headBranch) == "" {
+		return fmt.Errorf("pull request ref and head branch are required")
 	}
 	headRef := "refs/heads/" + headBranch
 	if _, err := g.run(ctx, "check-ref-format", headRef); err != nil {
 		return fmt.Errorf("invalid pull request head branch: %w", err)
 	}
-	pullRef := "refs/pull/" + strconv.Itoa(prNumber) + "/head"
+	if _, err := g.run(ctx, "check-ref-format", pullRef); err != nil {
+		return fmt.Errorf("invalid pull request ref: %w", err)
+	}
 	return g.createSourceBundle(ctx, remoteURL, bundlePath, pullRef, headRef)
 }
 

@@ -93,8 +93,14 @@ func (s *Server) handleRequestReview(w http.ResponseWriter, r *http.Request) {
 
 // reviewTargetAtCreation reads the pull request before the review Run exists so
 // its branch names and exact commit pair become immutable Run input. Plugin
-// repositories use their configured base URL; unbound legacy services retain
-// the existing credential/factory path.
+// repositories use their configured base URL.
+//
+// The GetServiceRepositoryBinding-miss branch below is a ROLLING-UPGRADE-ONLY
+// fallback for Services created before the Plugin platform (no repository
+// binding exists). It re-reads the CURRENT Service credential, so it is not the
+// frozen-grant path of docs/29 — do not extend it; Plugin-bound Services never
+// reach it. It is removed together with the legacy credential path, not
+// generalized.
 func (s *Server) reviewTargetAtCreation(ctx context.Context, src *domain.Run, svc *domain.Service) (*provider.PR, error) {
 	if src.PRNumber <= 0 || svc.RepoKind != domain.RepoKindProvider {
 		return nil, errors.New("review target is not a provider pull request")
@@ -110,6 +116,7 @@ func (s *Server) reviewTargetAtCreation(ctx context.Context, src *domain.Run, sv
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	} else {
+		// Legacy fallback (see the function comment): unbound pre-Plugin Service.
 		if s.factory == nil || s.creds == nil {
 			return nil, errors.New("provider credential resolver is unavailable")
 		}

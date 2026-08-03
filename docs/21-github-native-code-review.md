@@ -1,6 +1,15 @@
 # 21 · GitHub-native code review
 
-> Status: implementation contract (2026-07-28).
+> Status: implementation contract (2026-07-28), updated 2026-08-03.
+>
+> Implementation reality update: the single Plugin webhook ingress serves GitHub,
+> Gitea, and GitLab alike — PR lifecycle events dispatch `run_kind=review`
+> Automations for all three providers (the Gitea-first limitation of docs/16 is
+> superseded), the comment-command grammar runs for every provider, and the
+> review source bundle fetches each provider's synthetic PR/MR head ref
+> (`refs/pull/<n>/head` for GitHub/Gitea, `refs/merge-requests/<iid>/head` for
+> GitLab) so fork pull requests are reviewable everywhere. Gitea/GitLab
+> writeback still uses the top-level summary renderer (no batch inline review).
 >
 > Scope: GitHub App review entry points, review quality, repeatable mentions,
 > automation setup, structured output, and GitHub-native writeback.
@@ -233,6 +242,11 @@ bundling. Same-repository and fork PRs therefore receive the exact reviewed
 commit without exposing an installation token to the runner. Writeback uses the
 captured PR number instead of rediscovering a PR from a possibly fork-owned
 branch.
+
+As of 2026-08-03 the same applies to the other providers: Gitea exposes the
+identical `refs/pull/<number>/head`, and GitLab review Runs fetch
+`refs/merge-requests/<iid>/head`. A plain all-refs bundle never contains these
+refs, so fork PR/MR review depends on this explicit fetch on every provider.
 
 ## 5. Security and abuse boundaries
 
