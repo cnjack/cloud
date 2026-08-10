@@ -464,6 +464,45 @@ func TestReconcilePRCreateErrorRetries(t *testing.T) {
 
 // --- review pass ------------------------------------------------------------
 
+// nonBatchReviewProvider models the production Gitea/GitLab capability surface:
+// it implements Provider but deliberately does not implement BatchReviewProvider.
+type nonBatchReviewProvider struct {
+	body string
+}
+
+func (p *nonBatchReviewProvider) FindOpenPRByHead(context.Context, string, string, string) (*provider.PR, error) {
+	return nil, nil
+}
+
+func (p *nonBatchReviewProvider) CreateDraftPR(context.Context, provider.CreateDraftPRInput) (*provider.PR, error) {
+	return nil, nil
+}
+
+func (p *nonBatchReviewProvider) CreatePR(context.Context, provider.CreatePRInput) (*provider.PR, error) {
+	return nil, nil
+}
+
+func (p *nonBatchReviewProvider) MarkPRReady(context.Context, string, string, int) (*provider.PR, error) {
+	return nil, nil
+}
+
+func (p *nonBatchReviewProvider) CreatePRReview(_ context.Context, _, _ string, _ int, body string) error {
+	p.body = body
+	return nil
+}
+
+func (p *nonBatchReviewProvider) PRStatus(context.Context, string, string, int) (*provider.PR, error) {
+	return nil, nil
+}
+
+func (p *nonBatchReviewProvider) PRByNumber(context.Context, string, string, int) (*provider.PR, error) {
+	return nil, nil
+}
+
+func (p *nonBatchReviewProvider) CreateIssueComment(context.Context, string, string, int, string) error {
+	return nil
+}
+
 // seedReviewRun creates a project + draft_pr provider service + a succeeded
 // review run whose output is set and target PR head recorded.
 func seedReviewRun(t *testing.T, st *store.MemStore, head, output string) domain.Run {
@@ -596,9 +635,63 @@ func TestReconcileStructuredReviewPostsInlineAndFallsBackOnInvalidAnchor(t *test
 	if fake.ReviewCount() != 2 {
 		t.Fatalf("reviews after fallback=%+v", fake.Reviews)
 	}
-	if len(fake.Reviews[1].Comments) != 0 || !strings.Contains(fake.Reviews[1].Body, "inline placement was unavailable") ||
+	if len(fake.Reviews[1].Comments) != 0 || !strings.Contains(fake.Reviews[1].Body, "Inline comments are unavailable for this provider") ||
 		!strings.Contains(fake.Reviews[1].Body, "ledger.py:7") {
 		t.Fatalf("fallback review=%+v", fake.Reviews[1])
+	}
+}
+
+func TestPostProviderReviewUsesProviderMarkdownDialect(t *testing.T) {
+	result := domain.ReviewResult{
+		Summary: "One defect found.",
+		Findings: []domain.ReviewFinding{{
+			Path: "ledger.py", Line: 7, Severity: "P1", Confidence: 99,
+			Title: "Reversed guard", Body: "Valid transfers are rejected.",
+		}},
+	}
+	run := &domain.Run{ReviewResult: &result}
+	t.Run("github batch and fallback", func(t *testing.T) {
+		fake := provider.NewFakeProvider()
+		if err := postProviderReview(context.Background(), fake, domain.ProviderGitHub, "jcloud", "seed", 17, run); err != nil {
+			t.Fatal(err)
+		}
+		if fake.ReviewCount() != 1 || len(fake.Reviews[0].Comments) != 1 ||
+			!strings.Contains(fake.Reviews[0].Body, "> [!IMPORTANT]") || strings.Contains(fake.Reviews[0].Body, "### Findings") {
+			t.Fatalf("GitHub batch review=%+v", fake.Reviews)
+		}
+
+		fallback := provider.NewFakeProvider()
+		fallback.BatchReviewErr = &provider.HTTPStatusError{Method: "POST", StatusCode: http.StatusUnprocessableEntity}
+		if err := postProviderReview(context.Background(), fallback, domain.ProviderGitHub, "jcloud", "seed", 18, run); err != nil {
+			t.Fatal(err)
+		}
+		if fallback.ReviewCount() != 1 || !strings.Contains(fallback.Reviews[0].Body, "> [!WARNING]") ||
+			!strings.Contains(fallback.Reviews[0].Body, "Inline comments could not be placed on the diff") ||
+			!strings.Contains(fallback.Reviews[0].Body, "<code>ledger.py:7</code>") {
+			t.Fatalf("GitHub fallback review=%+v", fallback.Reviews)
+		}
+	})
+
+	for _, gitProvider := range []domain.GitProvider{domain.ProviderGitea, domain.ProviderGitLab} {
+		t.Run(string(gitProvider)+" portable fallback", func(t *testing.T) {
+			portable := &nonBatchReviewProvider{}
+			if err := postProviderReview(context.Background(), portable, gitProvider, "jcloud", "seed", 19, run); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{
+				"## jcode review",
+				"Inline comments are unavailable for this provider",
+				"### Findings",
+				"<code>ledger.py:7</code>",
+			} {
+				if !strings.Contains(portable.body, want) {
+					t.Fatalf("portable review missing %q:\n%s", want, portable.body)
+				}
+			}
+			if strings.Contains(portable.body, "[!IMPORTANT]") || strings.Contains(portable.body, "[!WARNING]") {
+				t.Fatalf("portable review contains GitHub alert syntax:\n%s", portable.body)
+			}
+		})
 	}
 }
 

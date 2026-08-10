@@ -159,15 +159,27 @@ The model emits data, not ready-to-post prose:
 
 The orchestrator validates paths, lines, enums, confidence, sizes, count, and
 duplicate anchors before storing or posting it. Invalid output fails visibly
-and is never posted verbatim.
+and is never posted verbatim. Provider renderers escape model-authored Markdown
+and HTML, neutralize `@mentions`, and size suggestion fences so result data
+cannot break the surrounding comment structure. Escaped text has a bounded
+provider-comment budget: every finding remains present with a visibly bounded
+title/location and intact severity/confidence, while oversized prose is visibly
+truncated and remains complete in jcode Cloud.
 
 GitHub receives one batch review:
 
 - event is always `COMMENT`;
-- the top body contains conclusion, finding count, and checks;
+- the top body leads with a short GitHub alert: neutral for no findings,
+  important for validated findings, and warning when inline placement fails;
+- the model conclusion is a separate Summary section, and detailed verification
+  stays in a collapsed Checks section rather than turning the alert into a text
+  wall;
 - findings become inline comments with severity, title, explanation,
   confidence, and an optional suggestion;
-- zero findings produces a concise explicit clean review.
+- zero findings produces a concise explicit no-high-confidence-findings result.
+
+Gitea and GitLab receive the same hierarchy using portable headings,
+blockquotes, details, and separators, without GitHub-only alert syntax.
 
 If GitHub rejects an inline anchor with `422`, jcode retries once as a top-level
 review containing `path:line` locations and explains that inline placement was

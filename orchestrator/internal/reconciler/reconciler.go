@@ -1151,7 +1151,7 @@ func (r *Reconciler) postReview(ctx context.Context, run *domain.Run, svc *domai
 		}
 		prNumber = pr.Number
 	}
-	if err := postProviderReview(ctx, prov, owner, repo, prNumber, run); err != nil {
+	if err := postProviderReview(ctx, prov, scm.Provider, owner, repo, prNumber, run); err != nil {
 		r.log.Warn("reconcile review: post comment", "run", run.ID, "pr", prNumber, "err", err)
 		message := "Provider rejected the review writeback; the system will retry automatically."
 		r.setReviewDeliveryError(ctx, run.ID, message)
@@ -1236,13 +1236,17 @@ func (r *Reconciler) scmContextForRun(ctx context.Context, run *domain.Run, svc 
 		RepositoryPath: svc.RepoOwnerName, CloneURL: r.serviceCloneURL(ctx, svc), DefaultBranch: svc.DefaultBranch}, nil
 }
 
-func postProviderReview(ctx context.Context, prov provider.Provider, owner, repo string, prNumber int, run *domain.Run) error {
+func postProviderReview(ctx context.Context, prov provider.Provider, gitProvider domain.GitProvider, owner, repo string, prNumber int, run *domain.Run) error {
 	if run.ReviewResult == nil {
 		return prov.CreatePRReview(ctx, owner, repo, prNumber, run.ReviewOutput)
 	}
 	result := *run.ReviewResult
+	renderSummary := result.RenderSummary
+	if gitProvider == domain.ProviderGitHub {
+		renderSummary = result.RenderGitHubSummary
+	}
 	if batch, ok := prov.(provider.BatchReviewProvider); ok {
-		review := provider.PRReview{Body: result.RenderSummary(false)}
+		review := provider.PRReview{Body: renderSummary(false)}
 		for _, finding := range result.Findings {
 			review.Comments = append(review.Comments, provider.PRReviewComment{
 				Path: finding.Path, Line: finding.Line, EndLine: finding.EndLine, Body: finding.RenderInline(),
@@ -1252,11 +1256,11 @@ func postProviderReview(ctx context.Context, prov provider.Provider, owner, repo
 			if status, ok := provider.IsProviderHTTPStatusError(err); !ok || status != http.StatusUnprocessableEntity {
 				return err
 			}
-			return prov.CreatePRReview(ctx, owner, repo, prNumber, result.RenderSummary(true))
+			return prov.CreatePRReview(ctx, owner, repo, prNumber, renderSummary(true))
 		}
 		return nil
 	}
-	return prov.CreatePRReview(ctx, owner, repo, prNumber, result.RenderSummary(true))
+	return prov.CreatePRReview(ctx, owner, repo, prNumber, renderSummary(true))
 }
 
 // reconcileKanbanWriteback posts the result of each finished kanban-origin run

@@ -50,23 +50,178 @@ func TestReviewResultValidation(t *testing.T) {
 	}
 }
 
-func TestReviewResultRenderIsExplicitForCleanAndFallback(t *testing.T) {
-	clean := ReviewResult{Summary: "No high-confidence defects found.", Checks: []string{"Inspected changed code"}}
-	body := clean.RenderSummary(false)
-	if !strings.Contains(body, "No high-confidence") || !strings.Contains(body, "0 findings") {
-		t.Fatalf("clean render=%q", body)
-	}
+func TestReviewResultRenderSummaryUsesGitHubFormatting(t *testing.T) {
+	t.Run("clean review", func(t *testing.T) {
+		result := ReviewResult{
+			Summary: "No high-confidence defects found.",
+			Checks:  []string{"Inspected changed code"},
+		}
+		want := `> [!NOTE]
+> ## No high-confidence findings
+>
+> No findings met the configured confidence threshold.
+
+### Summary
+
+No high\-confidence defects found\.
+
+<details>
+<summary>🔍 <strong>Checks performed</strong> · 1</summary>
+
+- Inspected changed code
+
+</details>
+
+---
+
+<sub>jcode posts a non-blocking COMMENT review. Merge decisions remain with your team.</sub>`
+		if got := result.RenderGitHubSummary(false); got != want {
+			t.Fatalf("RenderGitHubSummary() mismatch\nwant:\n%s\n\ngot:\n%s", want, got)
+		}
+	})
+
+	t.Run("review with inline findings", func(t *testing.T) {
+		result := ReviewResult{
+			Summary: "One defect found.",
+			Findings: []ReviewFinding{{
+				Path: "ledger.py", Line: 7, Severity: "P1", Confidence: 99,
+				Title: "Reversed guard", Body: "Valid transfers are rejected.",
+			}},
+		}
+		body := result.RenderGitHubSummary(false)
+		for _, want := range []string{"> [!IMPORTANT]", "> ## 1 validated finding", "> Review the inline comment on the changed line.", "### Summary\n\nOne defect found\\."} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("formatted review missing %q:\n%s", want, body)
+			}
+		}
+		if strings.Contains(body, "### Findings") {
+			t.Fatalf("inline review should not duplicate findings in its summary:\n%s", body)
+		}
+	})
+
+	t.Run("fallback findings", func(t *testing.T) {
+		result := ReviewResult{
+			Summary: "Two defects found.",
+			Findings: []ReviewFinding{
+				{Path: "z.go", Line: 12, Severity: "P2", Confidence: 91, Title: "Late issue", Body: "The late path fails."},
+				{Path: "a.go", Line: 7, Severity: "P1", Confidence: 99, Title: "Reversed guard", Body: "Valid transfers are rejected."},
+			},
+		}
+		body := result.RenderGitHubSummary(true)
+		for _, want := range []string{
+			"> [!WARNING]",
+			"> ## 2 validated findings",
+			"> Inline comments could not be placed on the diff. Review the locations below.",
+			"### Summary\n\nTwo defects found\\.",
+			"### Findings",
+			"#### P1 · Reversed guard\n\n<code>a.go:7</code> · 99% confidence\n\nValid transfers are rejected\\.",
+			"#### P2 · Late issue\n\n<code>z.go:12</code> · 91% confidence\n\nThe late path fails\\.",
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("fallback review missing %q:\n%s", want, body)
+			}
+		}
+		if strings.Index(body, "a.go:7") > strings.Index(body, "z.go:12") {
+			t.Fatalf("fallback findings are not sorted by path:\n%s", body)
+		}
+	})
+
+	t.Run("multiline summary stays in its own section", func(t *testing.T) {
+		result := ReviewResult{Summary: "First paragraph.\n\nSecond paragraph."}
+		body := result.RenderGitHubSummary(false)
+		if !strings.Contains(body, "### Summary\n\nFirst paragraph\\.\n\nSecond paragraph\\.") {
+			t.Fatalf("summary section is malformed:\n%s", body)
+		}
+		if strings.Contains(body, "> First paragraph.") {
+			t.Fatalf("model summary should not turn the status alert into a text wall:\n%s", body)
+		}
+	})
+
+	t.Run("portable providers do not receive GitHub alert syntax", func(t *testing.T) {
+		result := ReviewResult{Summary: "No high-confidence defects found."}
+		body := result.RenderSummary(false)
+		for _, want := range []string{"## jcode review", "### No high-confidence findings", "### Summary\n\nNo high\\-confidence defects found\\."} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("portable review missing %q:\n%s", want, body)
+			}
+		}
+		if strings.Contains(body, "[!NOTE]") || strings.Contains(body, "[!WARNING]") {
+			t.Fatalf("portable review contains GitHub-only alert syntax:\n%s", body)
+		}
+	})
+
+	t.Run("structured text cannot escape the renderer", func(t *testing.T) {
+		finding := ReviewFinding{
+			Path: "docs/@scope/guide  two.md", Line: 7, Severity: "P1", Confidence: 99,
+			Title:      "Bug\n\n> [!CAUTION]\n> Review failed",
+			Body:       "</details>\n\n@org/team",
+			Suggestion: "before\n```\nafter",
+		}
+		result := ReviewResult{
+			Summary:  "Looks fine.\n\n> [!CAUTION]\n> Review failed @org/team & &#64;other/team",
+			Findings: []ReviewFinding{finding},
+			Checks:   []string{"</details>\n\n@org/team"},
+		}
+		body := result.RenderGitHubSummary(true)
+		if strings.Count(body, "[!") != 1 {
+			t.Fatalf("structured text injected another GitHub alert:\n%s", body)
+		}
+		if strings.Contains(body, "@org/team") || strings.Contains(body, "@other/team") {
+			t.Fatalf("structured text retained an active mention:\n%s", body)
+		}
+		if strings.Count(body, "</details>") != 1 {
+			t.Fatalf("structured text escaped the checks disclosure:\n%s", body)
+		}
+		if !strings.Contains(body, "&#64;&#8203;org") || !strings.Contains(body, "&amp;\\#64\\;other") {
+			t.Fatalf("mentions or entities were not neutralized:\n%s", body)
+		}
+		if !strings.Contains(body, "<code>docs/@scope/guide  two.md:7</code>") {
+			t.Fatalf("fallback location no longer preserves the exact path:\n%s", body)
+		}
+
+		inline := finding.RenderInline()
+		if strings.Contains(inline, "[!CAUTION]") || strings.Contains(inline, "@org/team") {
+			t.Fatalf("inline finding retained injected Markdown:\n%s", inline)
+		}
+		if !strings.Contains(inline, "````suggestion\nbefore\n```\nafter\n````") {
+			t.Fatalf("suggestion fence can be closed by its content:\n%s", inline)
+		}
+	})
+}
+
+func TestReviewResultRenderedOutputStaysWithinProviderLimit(t *testing.T) {
 	result := ReviewResult{
-		Summary: "One defect found.",
-		Findings: []ReviewFinding{{
-			Path: "ledger.py", Line: 7, Severity: "P1", Confidence: 99,
-			Title: "Reversed guard", Body: "Valid transfers are rejected.",
-		}},
+		Summary: strings.Repeat("@", 2_000),
+		Checks:  make([]string, 12),
 	}
-	fallback := result.RenderSummary(true)
-	for _, want := range []string{"1 finding", "`ledger.py:7`", "inline placement was unavailable"} {
-		if !strings.Contains(fallback, want) {
-			t.Fatalf("fallback render missing %q: %s", want, fallback)
+	for i := range result.Checks {
+		result.Checks[i] = strings.Repeat("@", 240)
+	}
+	for i := 0; i < MaxReviewFindings; i++ {
+		result.Findings = append(result.Findings, ReviewFinding{
+			Path:       strings.Repeat("@", 4_000) + ".go",
+			Line:       i + 1,
+			Severity:   "P1",
+			Confidence: 99,
+			Title:      strings.Repeat("@", 160),
+			Body:       strings.Repeat("@", 4_000),
+		})
+	}
+	result.Findings[0].Suggestion = strings.Repeat("`", 4_000)
+	if err := result.Validate(); err != nil {
+		t.Fatalf("worst-case result should satisfy the structured limits: %v", err)
+	}
+
+	for name, body := range map[string]string{
+		"github fallback": result.RenderGitHubSummary(true),
+		"portable":        result.RenderSummary(true),
+		"inline":          result.Findings[0].RenderInline(),
+	} {
+		if len(body) > maxRenderedReviewBytes {
+			t.Fatalf("%s rendered %d bytes, limit %d", name, len(body), maxRenderedReviewBytes)
+		}
+		if !strings.Contains(body, "truncated") {
+			t.Fatalf("%s did not disclose truncation", name)
 		}
 	}
 }
