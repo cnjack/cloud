@@ -258,12 +258,12 @@ the client secret. Use the Provider UI.
   so replaying the same signed body under a forged delivery ID remains a
   duplicate. The digest expires with its 30-day receipt.
 - Historical encrypted Provider/grant versions are deleted in bounded batches
-  only after no live Installation, non-terminal Run, or terminal JType Run with
-  `automation_kanban_claims.writeback_at IS NULL` references them. A pending
-  card comment/move therefore keeps the frozen JType versions until writeback
-  succeeds. Terminal Run snapshots subsequently retain only immutable audit
-  identifiers. Monitor cleanup warnings; failures are retried and do not make
-  readiness fail.
+  only after no live Installation, non-terminal Run, pending native review,
+  terminal JType writeback, or mutable review-status comment references them.
+  Every asynchronous Provider projection therefore keeps its accepted frozen
+  identity until it converges; terminal Run snapshots subsequently retain only
+  immutable audit identifiers. Monitor cleanup warnings; failures are retried
+  and do not make readiness fail.
 - Uninstall permanently deletes dependent Services and Automations.
 - If Provider hook cleanup fails, the installation remains `uninstalling`.
 - Force local uninstall can leave a Provider hook behind and requires an

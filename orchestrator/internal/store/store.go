@@ -595,6 +595,10 @@ type Store interface {
 	ListEnabledCronAutomations(ctx context.Context) ([]domain.PluginAutomationSpec, error)
 	AdvancePluginCronAutomation(ctx context.Context, id string, previous, firedAt *time.Time, lastError string) (bool, error)
 	CreateAutomationExecution(ctx context.Context, execution *domain.AutomationExecution, run *domain.Run) (*domain.AutomationExecution, bool, error)
+	// CreateAutomationExecutionWithReviewStatus atomically creates the execution,
+	// its queued Run, and the desired provider status-comment projection. A replay
+	// that loses the execution uniqueness race does not advance the comment.
+	CreateAutomationExecutionWithReviewStatus(ctx context.Context, execution *domain.AutomationExecution, run *domain.Run, intent *domain.ReviewStatusComment) (*domain.AutomationExecution, bool, error)
 	ClaimPluginCronExecution(ctx context.Context, automationID string, previous, firedAt *time.Time, execution *domain.AutomationExecution, run *domain.Run) (bool, error)
 	GetAutomationExecution(ctx context.Context, automationID, executionID string) (*domain.AutomationExecution, error)
 	GetAutomationExecutionByEventKey(ctx context.Context, automationID, eventKey string) (*domain.AutomationExecution, error)
@@ -603,6 +607,27 @@ type Store interface {
 	ListPendingAutomationCards(ctx context.Context, limit int) ([]domain.AutomationExecution, error)
 	ClaimAutomationCardCreation(ctx context.Context, executionID string) (bool, error)
 	UpdateAutomationExecutionCard(ctx context.Context, executionID, cardState, cardAutomationID, workspaceID, documentID, documentPath, reasonCode, reasonMessage, repairRole string) error
+	GetReviewStatusComment(ctx context.Context, key domain.ReviewStatusCommentKey) (*domain.ReviewStatusComment, error)
+	// AdvanceReviewStatusCursor records a DB-monotonic, Provider-confirmed PR
+	// revision before later policy gates run. It returns false when a newer
+	// receipt already owns the PR, and supersedes an older queued review when the
+	// authoritative head changed without creating a replacement Run.
+	AdvanceReviewStatusCursor(ctx context.Context, key domain.ReviewStatusCommentKey, acceptedSequence int64, receiptClaimToken, headSHA string, at time.Time) (bool, error)
+	// ListPendingReviewStatusComments includes unapplied intents and comments whose
+	// linked Run projection changed. Backoff is evaluated against the caller's
+	// explicit now, while a live claim newer than staleBefore temporarily removes
+	// a row from the list.
+	ListPendingReviewStatusComments(ctx context.Context, now, staleBefore time.Time, limit int) ([]domain.ReviewStatusComment, error)
+	ClaimReviewStatusComment(ctx context.Context, key domain.ReviewStatusCommentKey, claimToken string, claimedAt, staleBefore time.Time) (*domain.ReviewStatusComment, bool, error)
+	MarkReviewStatusCommentApplied(ctx context.Context, key domain.ReviewStatusCommentKey, claimToken, commentID, commentURL string, appliedState domain.ReviewStatusState, appliedBodyHash string, at time.Time) (*domain.ReviewStatusComment, error)
+	// MarkReviewStatusCommentFailed releases the lease while preserving the
+	// caller-sanitized failure for operators and the next retry attempt.
+	MarkReviewStatusCommentFailed(ctx context.Context, key domain.ReviewStatusCommentKey, claimToken, lastError string, at time.Time) (*domain.ReviewStatusComment, error)
+	// UpdateReviewStatusCommentDesired advances only the expected current
+	// Run/revision and exact observed Run projection. It preserves an active claim
+	// so provider writes remain serialized, and rejects stale Runs after a newer PR
+	// head or lifecycle transition takes over.
+	UpdateReviewStatusCommentDesired(ctx context.Context, key domain.ReviewStatusCommentKey, currentRunID, headSHA string, desiredState domain.ReviewStatusState, desiredBodyHash string, observed domain.ReviewStatusRunObservation, at time.Time) (*domain.ReviewStatusComment, error)
 	ListEnabledKanbanAutomations(ctx context.Context) ([]domain.PluginAutomationSpec, error)
 	ObservePluginKanbanCard(ctx context.Context, observation PluginKanbanObservation) (*PluginKanbanObservationResult, error)
 	CreatePluginKanbanOccurrenceRun(ctx context.Context, occurrenceID string, run *domain.Run) (bool, error)

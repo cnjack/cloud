@@ -421,6 +421,9 @@ func TestPGWebhookBindingSecretAndAuthenticatedDigest(t *testing.T) {
 	if claimed, err := st.ClaimWebhookReceipt(ctx, first); err != nil || !claimed {
 		t.Fatalf("claim first=%v err=%v", claimed, err)
 	}
+	if first.IngressSequence <= 0 {
+		t.Fatalf("first ingress sequence=%d, want positive", first.IngressSequence)
+	}
 	replay := *first
 	replay.ID = domain.NewID()
 	replay.DeliveryID = domain.NewID()
@@ -439,6 +442,39 @@ func TestPGWebhookBindingSecretAndAuthenticatedDigest(t *testing.T) {
 	}
 	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || claimed {
 		t.Fatalf("second reclaim=%v err=%v; want duplicate", claimed, err)
+	}
+}
+
+func TestPGWebhookReceiptStaleClaimIsRecoverableAndFenced(t *testing.T) {
+	ctx := context.Background()
+	st, _ := pgTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	oldClaimedAt := now.Add(-3 * time.Minute)
+	first := &domain.WebhookReceipt{
+		ID: domain.NewID(), Provider: domain.PluginGitHub, DeliveryID: domain.NewID(),
+		PayloadDigest: "stale-receipt-" + domain.NewID(), Status: "received",
+		ReceivedAt: oldClaimedAt, ClaimedAt: &oldClaimedAt, ClaimToken: "claim-old",
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, first); err != nil || !claimed {
+		t.Fatalf("claim first=%v err=%v", claimed, err)
+	}
+	freshClaimedAt := now
+	retry := *first
+	retry.ID, retry.DeliveryID, retry.ClaimToken = domain.NewID(), domain.NewID(), "claim-new"
+	retry.ReceivedAt, retry.ClaimedAt, retry.ReclaimBefore = now, &freshClaimedAt, now.Add(-2*time.Minute)
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &retry); err != nil || !claimed {
+		t.Fatalf("reclaim stale receipt=%v err=%v", claimed, err)
+	}
+	if retry.IngressSequence <= first.IngressSequence {
+		t.Fatalf("reclaim sequence=%d want newer than=%d", retry.IngressSequence, first.IngressSequence)
+	}
+	first.Status = "matched"
+	if err := st.CompleteWebhookReceipt(ctx, first); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale completion=%v want ErrConflict", err)
+	}
+	retry.Status = "matched"
+	if err := st.CompleteWebhookReceipt(ctx, &retry); err != nil {
+		t.Fatalf("current completion=%v", err)
 	}
 }
 

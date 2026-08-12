@@ -1,6 +1,6 @@
 # 21 · GitHub-native code review
 
-> Status: implementation contract (2026-07-28), updated 2026-08-03.
+> Status: implementation contract (2026-07-28), updated 2026-08-12.
 >
 > Implementation reality update: the single Plugin webhook ingress serves GitHub,
 > Gitea, and GitLab alike — PR lifecycle events dispatch `run_kind=review`
@@ -37,11 +37,16 @@ put arbitrary GitHub Apps in the `@` autocomplete menu, so this is a literal
 webhook command, not a linked user mention. A future true-autocomplete alias
 requires a separate GitHub user or organization identity.
 
-Every accepted request receives an eyes reaction, creates a `RunKindReview`,
-reviews the current head with repository context, and publishes one GitHub
-`COMMENT` review. It has high-confidence inline findings or an explicit clean
-result. A new comment can repeat the review on the same head. Missing identity,
-membership, model, runner, or writeback dependencies fail visibly.
+Every accepted manual request receives an eyes reaction, creates a
+`RunKindReview`, and reviews the current head with repository context. Manual
+commands retain that lightweight acknowledgement and do not create a status
+comment. An accepted automatic PR event from an enabled review Automation
+creates or updates one mutable status comment for the Service and pull request;
+the completed result is published separately as one non-blocking native
+`COMMENT` review per Run. It has high-confidence inline findings or an explicit
+clean result. A new manual command can repeat the review on the same head.
+Missing identity, membership, model, runner, or writeback dependencies fail
+visibly.
 
 ## 1. Product principles and research
 
@@ -186,6 +191,43 @@ review containing `path:line` locations and explains that inline placement was
 unavailable. Other errors use reconciliation retries. Gitea/GitLab initially
 use the top-level renderer until their adapters gain batch inline reviews.
 
+### 3.1 Review status comment
+
+Automatic review execution has one mutable status comment keyed by Service,
+provider repository ID, and pull-request number. It is created only after an
+enabled review Automation accepts a PR event and creates its Run. Manual
+`@jcode ... review` commands continue to use the eyes reaction or actionable
+error reply and never create or update this comment. The comment is a progress
+surface, not the review result: the final native review described above remains
+a separate provider object and is never replaced by an edit to the status
+comment. Disabled Automations, excluded drafts, unmatched events, and failures
+that prevent Run creation never post a misleading processing status; their
+existing ignored/blocked execution reason remains the fail-visible record.
+
+The status comment moves through this vocabulary:
+
+- `queued`: the review Run exists and is waiting for a runner;
+- `running`: the runner is reviewing the captured head revision;
+- `publishing`: analysis succeeded and native review delivery is in progress;
+- `completed`: the separate native review was delivered;
+- `failed`: review execution or delivery ended without a native review;
+- `canceled`: an operator canceled the Run;
+- `superseded`: a newer head replaced this review attempt.
+
+`completed`, `failed`, `canceled`, and `superseded` are terminal for one attempt.
+A later accepted automatic Run for the same Service and PR reuses the same
+provider comment and moves it back to `queued`, while recording the new Run and
+head. Each body identifies the captured revision, links to the Cloud Run when a
+safe link is available, and reports aggregate plan coverage after planning. It
+never claims completion before the separate native review is delivered.
+
+GitHub status bodies use the appropriate native alert (`NOTE`, `IMPORTANT`,
+`TIP`, `WARNING`, or `CAUTION`). Gitea and GitLab use portable headings and
+blockquotes without GitHub alert syntax. All Run-derived text is untrusted:
+renderers escape Markdown and HTML, neutralize mentions, validate HTTP(S)
+links, visibly truncate bounded text, and include the caller-supplied hidden
+identity marker exactly once.
+
 ## 4. Architecture
 
 ```text
@@ -198,7 +240,13 @@ GitHub App webhook
 authorize actor + resolve Service/PR/model
             ↓
 Create Run(kind=review, origin=webhook|automation)
-            ↓
+       ├─ automatic PR event
+       │    └─ upsert desired Service+PR status = queued
+       │         └─ reconciler creates or updates one provider status comment
+       │              └─ queued → running → publishing
+       │                   → completed|failed|canceled|superseded
+       └─ manual command: keep eyes reaction; do not create a status comment
+       ↓
 runner clones exact head, reviews base...head, emits REVIEW.json
             ↓
 orchestrator validates and stores structured result
@@ -248,6 +296,21 @@ compatibility. New runners upload `application/vnd.jcode.review+json`; the
 domain exposes typed `ReviewResult`, and provider rendering happens only after
 validation.
 
+The review-status record is independent from the final Run delivery record. Its
+unique identity is `(service_id, provider, provider_repo_id, pr_number)`, and it
+stores the current Run/head plus desired and applied state/body hashes. A short
+claim leases provider work across reconcilers. Provider comment ID and URL are
+saved after creation so normal updates address the same comment; a stable hidden
+marker allows recovery when provider creation succeeded but persistence of that
+ID did not. Webhook delivery replay, concurrent reconcilers, and multiple
+automatic actions for the same head therefore do not create additional status
+comments. Manual repeat commands remain outside this lifecycle. A new automatic
+head updates the existing comment and makes its Run the current owner. Late
+updates from a displaced Run are fenced by `current_run_id` and cannot overwrite
+the newer `queued`/`running` state. A genuinely current displaced attempt may
+render `superseded`; neither path rewrites or removes already-published native
+reviews.
+
 For GitHub review Runs, source-bundle creation fetches the authenticated
 synthetic `refs/pull/<number>/head` into the captured head branch before
 bundling. Same-repository and fork PRs therefore receive the exact reviewed
@@ -268,6 +331,8 @@ refs, so fork PR/MR review depends on this explicit fetch on every provider.
 - Match repositories by provider repository ID plus installation, never
   comment-supplied owner/name.
 - Treat source, comments, and diffs as prompt-injection-capable untrusted data.
+- Treat PR titles, Run IDs/errors, revision labels, and status links as
+  untrusted renderer inputs; only the validated hidden marker is emitted raw.
 - Give the runner no App key/token, model secret, or webhook secret.
 - Coalesce synchronize bursts per repository and PR. When manual capacity is
   exhausted, reply with a visible busy state.
@@ -301,6 +366,28 @@ refs, so fork PR/MR review depends on this explicit fetch on every provider.
 - `422` falls back visibly to top-level locations;
 - transient errors retry and unvalidated text is never posted.
 
+### Status comment lifecycle
+
+- the first accepted automatic PR-event Run creates one `queued` comment for
+  its Service and PR;
+- disabled review Automations, excluded drafts, unmatched events, and
+  pre-Run failures create no status comment;
+- manual review commands keep the eyes reaction/error reply and never create or
+  mutate the status comment;
+- `queued`, `running`, `publishing`, and each terminal state render for GitHub;
+- Gitea/GitLab render the same facts without GitHub-only alert syntax;
+- same-delivery replay, same-head automatic PR actions, and concurrent
+  reconciliation reuse the same status comment;
+- a new head reuses the comment for its new `queued` Run, and late terminal
+  updates from the displaced Run cannot overwrite the new owner;
+- provider-create success followed by persistence failure recovers by hidden
+  marker instead of creating a duplicate;
+- final review delivery failure never renders `completed`, and status-comment
+  delivery failure never blocks review execution;
+- PR title, Run/error text, links, and entity-encoded mentions cannot inject
+  Markdown, HTML, alerts, links, or notifications;
+- rendered bodies remain below the provider budget and disclose truncation.
+
 ### Console and end-to-end
 
 - review setup is the primary entry, uses correct defaults, and saves
@@ -322,7 +409,9 @@ Completion requires a real installed-App repository to prove:
 4. the POC defect lands on the correct changed line;
 5. the corrected commit receives a clean review;
 6. unauthorized mention and missing model fail visibly;
-7. orchestrator, Console, migration, and public-path checks pass after deploy.
+7. one status comment per Service and PR shows the latest attempt without
+   replacing or duplicating its separate native reviews;
+8. orchestrator, Console, migration, and public-path checks pass after deploy.
 
 ## 8. Design and architecture review
 
@@ -333,8 +422,10 @@ event matrices, prompt text, and commands together. Review found:
 2. it presented `@jcode` like a native reference; the UI now calls the observed
    slug a copyable comment command and explains that custom Apps are not in
    GitHub's `@` autocomplete;
-3. it risked bot noise, so start feedback is a reaction and output is one
-   confidence-filtered review with an explicit clean result;
+3. a reaction alone did not expose automatic review progress or failures, so
+   automatic PR-event Runs now share one in-place status comment per Service
+   and PR; manual commands keep the reaction, and every Run's
+   confidence-filtered native review remains a separate result;
 4. it blurred future work, so native reviewer selection and true
    previous-review incremental diffing stay unclaimed until verified.
 

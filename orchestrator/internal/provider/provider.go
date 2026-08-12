@@ -11,6 +11,9 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/cnjack/jcloud/internal/domain"
@@ -113,6 +116,167 @@ type IssueCommentReactor interface {
 	CreateIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, content string) error
 }
 
+// IssueComment is the provider-neutral view of a mutable issue or pull-request
+// conversation comment. ID deliberately remains a string at the abstraction
+// boundary even though the currently supported providers return numeric IDs.
+type IssueComment struct {
+	ID          string
+	URL         string
+	Body        string
+	AuthorID    string
+	AuthorLogin string
+	AuthorAppID string
+}
+
+// ProviderUserIdentity is the provider-neutral identity used to prove that a
+// marker-bearing comment belongs to the credential that is synchronizing it.
+// Numeric provider identifiers are canonical positive decimal strings; a
+// missing/zero identifier is represented as empty and is never a match.
+type ProviderUserIdentity struct {
+	ID    string
+	Login string
+	AppID string
+}
+
+// MatchesIssueComment compares the strongest identity available. GitHub App
+// ownership is never allowed to fall back to a bot login. For user-backed
+// providers an exact numeric id wins; login is a compatibility fallback only
+// when either side did not return an id.
+func (identity ProviderUserIdentity) MatchesIssueComment(comment IssueComment) bool {
+	if appID := canonicalProviderNumericIDString(identity.AppID); appID != "" {
+		return appID == canonicalProviderNumericIDString(comment.AuthorAppID)
+	}
+	identityID := canonicalProviderNumericIDString(identity.ID)
+	commentID := canonicalProviderNumericIDString(comment.AuthorID)
+	if identityID != "" && commentID != "" {
+		return identityID == commentID
+	}
+	identityLogin := strings.TrimSpace(identity.Login)
+	commentLogin := strings.TrimSpace(comment.AuthorLogin)
+	return identityLogin != "" && commentLogin != "" &&
+		strings.EqualFold(identityLogin, commentLogin)
+}
+
+// CurrentUserIdentity is the optional capability for providers whose current
+// token maps to an ordinary user account. GitHub App installation tokens do
+// not implement it: callers must compare their frozen App id with
+// IssueComment.AuthorAppID instead of relying on /user.
+type CurrentUserIdentity interface {
+	CurrentUserIdentity(ctx context.Context) (ProviderUserIdentity, error)
+}
+
+// ManagedIssueCommentProvider is the optional capability for a caller that must
+// create one durable status comment and update that same comment as work
+// progresses. Provider remains unchanged so existing callers and test fakes do
+// not need to implement comment tracking.
+type ManagedIssueCommentProvider interface {
+	CreateManagedIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) (*IssueComment, error)
+	UpdateIssueComment(ctx context.Context, owner, repo string, issueNumber int, commentID, body string) (*IssueComment, error)
+	// ListIssueComments returns at most limit comments, newest first. Invalid or
+	// provider-excessive limits use the bounded default of 100.
+	ListIssueComments(ctx context.Context, owner, repo string, issueNumber, limit int) ([]IssueComment, error)
+}
+
+const (
+	maxManagedIssueComments = 100
+	// Keep list pages small because provider comment bodies can be much larger
+	// than ordinary repository payloads (GitLab permits one million characters
+	// per note). The recovery path may still assemble the newest 100 comments,
+	// but no single response contains more than two bodies.
+	managedIssueCommentPageSize = 2
+	// Ascending-only APIs need one initial request to discover their last page,
+	// followed by enough tail pages to collect maxManagedIssueComments.
+	maxManagedIssueCommentPageFetches = 1 + (maxManagedIssueComments+managedIssueCommentPageSize-1)/managedIssueCommentPageSize
+	// Two one-million-character GitLab notes can exceed eight MiB when their
+	// Unicode is encoded as UTF-8 (and more when JSON escapes control codepoints).
+	// Sixteen MiB keeps that legal page bounded without relaxing all REST calls.
+	maxManagedIssueCommentJSONResponseBytes = 16 << 20
+	// Marker recovery must also bound the aggregate retained across pages. A PR
+	// participant can create many provider-legal multi-megabyte comments; keeping
+	// the newest 100 full bodies would otherwise multiply into hundreds of MiB
+	// per worker. Exceeding this budget fails closed so callers retry instead of
+	// creating a duplicate managed comment from an incomplete recovery scan.
+	maxManagedIssueCommentListBodyBytes = 8 << 20
+)
+
+// ErrInvalidIssueCommentID means a caller supplied a comment ID that cannot be
+// represented safely in the numeric REST paths used by all supported hosts, or
+// a provider returned an unusable ID.
+var (
+	ErrInvalidIssueCommentID           = errors.New("invalid issue comment id")
+	ErrManagedIssueCommentListTooLarge = errors.New("managed issue comment recovery window exceeds byte budget")
+)
+
+func addManagedIssueCommentBodyBytes(used int, bodies ...string) (int, error) {
+	for _, body := range bodies {
+		if len(body) > maxManagedIssueCommentListBodyBytes-used {
+			return used, ErrManagedIssueCommentListTooLarge
+		}
+		used += len(body)
+	}
+	return used, nil
+}
+
+func managedIssueCommentLimit(limit int) int {
+	if limit < 1 || limit > maxManagedIssueComments {
+		return maxManagedIssueComments
+	}
+	return limit
+}
+
+func parseIssueCommentID(commentID string) (int64, error) {
+	id, err := strconv.ParseInt(commentID, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != commentID {
+		return 0, ErrInvalidIssueCommentID
+	}
+	return id, nil
+}
+
+func canonicalProviderNumericID(id int64) string {
+	if id <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(id, 10)
+}
+
+func canonicalProviderNumericIDString(id string) string {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
+	if err != nil || parsed <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(parsed, 10)
+}
+
+func newProviderUserIdentity(id int64, login string) (ProviderUserIdentity, error) {
+	identity := ProviderUserIdentity{
+		ID:    canonicalProviderNumericID(id),
+		Login: strings.TrimSpace(login),
+	}
+	if identity.ID == "" && identity.Login == "" {
+		return ProviderUserIdentity{}, errors.New("provider returned no usable current-user identity")
+	}
+	return identity, nil
+}
+
+func newIssueComment(id int64, commentURL, body string, authorID int64, authorLogin string, authorAppID int64) (*IssueComment, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: provider returned a non-positive id", ErrInvalidIssueCommentID)
+	}
+	return &IssueComment{
+		ID: strconv.FormatInt(id, 10), URL: commentURL, Body: body,
+		AuthorID:    canonicalProviderNumericID(authorID),
+		AuthorLogin: strings.TrimSpace(authorLogin),
+		AuthorAppID: canonicalProviderNumericID(authorAppID),
+	}, nil
+}
+
+// escapedRepositoryPath builds the two distinct path segments GitHub and Gitea
+// expect. Escaping each segment prevents a malformed repository identity from
+// injecting another API path component.
+func escapedRepositoryPath(owner, repo string) string {
+	return url.PathEscape(owner) + "/" + url.PathEscape(repo)
+}
+
 // Repo is one entry in a provider repository listing (the Drone-style
 // service-onboarding picker). ID is the provider's numeric repo id — stored on
 // a service as its rename-proof identity (provider_repo_id).
@@ -197,6 +361,14 @@ type Factory interface {
 	PRClient(prov domain.GitProvider, token, scheme string) (Provider, error)
 }
 
+// FrozenFactory is the optional factory capability for clients that must use an
+// append-only Provider base URL captured with a Run. The production factory and
+// reconciler fakes implement it; callers may fall back to
+// IntegrationClientWithScheme for older custom factories.
+type FrozenFactory interface {
+	FrozenPRClient(prov domain.GitProvider, baseURL, token, scheme string) (Provider, error)
+}
+
 // ErrNotConfigured is returned by a factory when the provider credentials/URL
 // are absent, so the reconciler can degrade gracefully (leave the run as a
 // diff-only success) rather than crash.
@@ -224,6 +396,10 @@ func (f *httpFactory) PRClient(prov domain.GitProvider, token, scheme string) (P
 	default:
 		return nil, ErrNotConfigured
 	}
+}
+
+func (f *httpFactory) FrozenPRClient(prov domain.GitProvider, baseURL, token, scheme string) (Provider, error) {
+	return IntegrationClientWithScheme(prov, baseURL, token, scheme)
 }
 
 // IntegrationClient builds a REST client for an integration's host + token

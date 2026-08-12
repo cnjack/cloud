@@ -74,6 +74,10 @@ func (f *fakeFactory) PRClient(_ domain.GitProvider, _ /*token*/, _ /*scheme*/ s
 	return f.p, nil
 }
 
+func (f *fakeFactory) FrozenPRClient(_ domain.GitProvider, _, _, _ string) (provider.Provider, error) {
+	return f.PRClient("", "", "")
+}
+
 // wirePRStack attaches a fake factory (over the given provider), a fresh fake
 // pusher, and a gitea-PAT credential resolver (so a user-less run resolves the
 // fallback token) to rec. Returns the pusher so a test can assert push behavior.

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,6 +78,51 @@ type giteaPR struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"base"`
+}
+
+type giteaIssueComment struct {
+	ID             int64  `json:"id"`
+	HTMLURL        string `json:"html_url"`
+	IssueURL       string `json:"issue_url"`
+	PullRequestURL string `json:"pull_request_url"`
+	Body           string `json:"body"`
+	User           struct {
+		ID       int64  `json:"id"`
+		Login    string `json:"login"`
+		Username string `json:"username"`
+	} `json:"user"`
+}
+
+func (c giteaIssueComment) author() string {
+	if c.User.Login != "" {
+		return c.User.Login
+	}
+	return c.User.Username
+}
+
+func (c giteaIssueComment) issueComment() (*IssueComment, error) {
+	return newIssueComment(c.ID, c.HTMLURL, c.Body, c.User.ID, c.author(), 0)
+}
+
+func (c giteaIssueComment) belongsToIssue(issueNumber int) bool {
+	resourceURL := strings.TrimSpace(c.IssueURL)
+	if resourceURL == "" {
+		resourceURL = strings.TrimSpace(c.PullRequestURL)
+	}
+	if resourceURL == "" || issueNumber <= 0 {
+		return false
+	}
+	parsed, err := url.Parse(resourceURL)
+	if err != nil {
+		return false
+	}
+	resourcePath := strings.TrimRight(parsed.Path, "/")
+	separator := strings.LastIndexByte(resourcePath, '/')
+	if separator < 0 || separator == len(resourcePath)-1 {
+		return false
+	}
+	got, err := strconv.ParseInt(resourcePath[separator+1:], 10, 64)
+	return err == nil && got > 0 && got == int64(issueNumber)
 }
 
 // FindOpenPRByHead lists open PRs and returns the one whose head ref matches
@@ -189,6 +235,65 @@ func (c *GiteaClient) PRByNumber(ctx context.Context, owner, repo string, prNumb
 func (c *GiteaClient) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", owner, repo, issueNumber)
 	return c.do(ctx, http.MethodPost, path, map[string]any{"body": body}, nil)
+}
+
+func (c *GiteaClient) CreateManagedIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) (*IssueComment, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/issues/%d/comments", escapedRepositoryPath(owner, repo), issueNumber)
+	var out giteaIssueComment
+	if err := c.do(ctx, http.MethodPost, path, map[string]any{"body": body}, &out); err != nil {
+		return nil, err
+	}
+	return out.issueComment()
+}
+
+func (c *GiteaClient) UpdateIssueComment(ctx context.Context, owner, repo string, _ int, commentID, body string) (*IssueComment, error) {
+	id, err := parseIssueCommentID(commentID)
+	if err != nil {
+		return nil, err
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/issues/comments/%d", escapedRepositoryPath(owner, repo), id)
+	var out giteaIssueComment
+	if err := c.do(ctx, http.MethodPatch, path, map[string]any{"body": body}, &out); err != nil {
+		return nil, err
+	}
+	return out.issueComment()
+}
+
+func (c *GiteaClient) ListIssueComments(ctx context.Context, owner, repo string, issueNumber, limit int) ([]IssueComment, error) {
+	limit = managedIssueCommentLimit(limit)
+	// Gitea's issue-specific handler returns the complete issue comment history
+	// and ignores ListOptions. That is useful for crash recovery because a
+	// repository-wide bounded tail can silently omit this PR's marker after
+	// unrelated issues receive traffic. Bound both the one response and retained
+	// bodies; an oversized history fails closed instead of creating a duplicate.
+	path := fmt.Sprintf("/api/v1/repos/%s/issues/%d/comments", escapedRepositoryPath(owner, repo), issueNumber)
+	raw := make([]giteaIssueComment, 0, limit)
+	if _, err := c.doResponseWithLimit(ctx, http.MethodGet, path, nil, &raw, maxManagedIssueCommentJSONResponseBytes); err != nil {
+		return nil, err
+	}
+	retainedBodyBytes := 0
+	for _, comment := range raw {
+		var budgetErr error
+		retainedBodyBytes, budgetErr = addManagedIssueCommentBodyBytes(retainedBodyBytes, comment.Body)
+		if budgetErr != nil {
+			return nil, budgetErr
+		}
+	}
+	// Gitea has no descending-sort option. Numeric comment IDs provide a stable
+	// newest-first view after reading the repository tail.
+	sort.Slice(raw, func(i, j int) bool { return raw[i].ID > raw[j].ID })
+	if len(raw) > limit {
+		raw = raw[:limit]
+	}
+	comments := make([]IssueComment, 0, len(raw))
+	for _, item := range raw {
+		comment, err := item.issueComment()
+		if err != nil {
+			return nil, err
+		}
+		comments = append(comments, *comment)
+	}
+	return comments, nil
 }
 
 // giteaRepo is the subset of Gitea's Repository JSON the repo picker consumes.
@@ -373,17 +478,33 @@ func unionWebhookEvents(existing, required []string) []string {
 // + bot_username discovery). Gitea's /api/v1/user carries both "login" and
 // "username"; login is the canonical handle.
 func (c *GiteaClient) CurrentUser(ctx context.Context) (string, error) {
+	identity, err := c.CurrentUserIdentity(ctx)
+	if err != nil {
+		return "", err
+	}
+	if identity.Login == "" {
+		return "", fmt.Errorf("provider returned no usable current-user login")
+	}
+	return identity.Login, nil
+}
+
+// CurrentUserIdentity returns the stable numeric Gitea user id and canonical
+// login. Username remains a compatibility fallback for older Gitea-shaped
+// hosts that omit login.
+func (c *GiteaClient) CurrentUserIdentity(ctx context.Context) (ProviderUserIdentity, error) {
 	var u struct {
+		ID       int64  `json:"id"`
 		Login    string `json:"login"`
 		Username string `json:"username"`
 	}
 	if err := c.do(ctx, http.MethodGet, "/api/v1/user", nil, &u); err != nil {
-		return "", err
+		return ProviderUserIdentity{}, err
 	}
-	if u.Login != "" {
-		return u.Login, nil
+	login := u.Login
+	if strings.TrimSpace(login) == "" {
+		login = u.Username
 	}
-	return u.Username, nil
+	return newProviderUserIdentity(u.ID, login)
 }
 
 // prState normalises a provider's (state, merged) pair to our vocabulary.
@@ -406,17 +527,26 @@ func prState(state string, merged bool) string {
 // body in its error: Gitea is a configured external boundary and a malicious
 // proxy may reflect the Authorization credential we just sent.
 func (c *GiteaClient) do(ctx context.Context, method, path string, body any, out any) error {
+	_, err := c.doResponse(ctx, method, path, body, out)
+	return err
+}
+
+func (c *GiteaClient) doResponse(ctx context.Context, method, path string, body any, out any) (http.Header, error) {
+	return c.doResponseWithLimit(ctx, method, path, body, out, maxProviderJSONResponseBytes)
+}
+
+func (c *GiteaClient) doResponseWithLimit(ctx context.Context, method, path string, body any, out any, maxResponseBytes int64) (http.Header, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("marshal %s %s: %w", method, path, err)
+			return nil, fmt.Errorf("marshal %s %s: %w", method, path, err)
 		}
 		rdr = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, rdr)
 	if err != nil {
-		return fmt.Errorf("build %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("build %s %s: %w", method, path, err)
 	}
 	req.Header.Set("Authorization", c.scheme+" "+c.token)
 	req.Header.Set("Accept", "application/json")
@@ -425,26 +555,33 @@ func (c *GiteaClient) do(ctx context.Context, method, path string, body any, out
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, path, err)
+		return nil, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &HTTPStatusError{Method: method, StatusCode: resp.StatusCode}
+		return nil, &HTTPStatusError{Method: method, StatusCode: resp.StatusCode}
 	}
-	// 4MiB cap: PR payloads are tiny, but /repos/search on a big instance (an
-	// admin PAT sees everything) easily blows a smaller cap — a truncated body
-	// fails JSON decode with a misleading "unexpected end of JSON input".
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	// Repository pages can be much larger than PR payloads. Keep decoding
+	// bounded, but distinguish a provider-sized overflow from malformed JSON.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s %s: %w", method, path, err)
+	}
+	if int64(len(respBody)) > maxResponseBytes {
+		return nil, fmt.Errorf("read %s %s: provider response exceeds %d bytes", method, path, maxResponseBytes)
+	}
 	if out != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, out); err != nil {
-			return fmt.Errorf("decode %s %s: %w", method, path, err)
+			return nil, fmt.Errorf("decode %s %s: %w", method, path, err)
 		}
 	}
-	return nil
+	return resp.Header.Clone(), nil
 }
 
 var _ Provider = (*GiteaClient)(nil)
+var _ ManagedIssueCommentProvider = (*GiteaClient)(nil)
 var _ RepoLister = (*GiteaClient)(nil)
 var _ BranchLister = (*GiteaClient)(nil)
 var _ CurrentUser = (*GiteaClient)(nil)
+var _ CurrentUserIdentity = (*GiteaClient)(nil)
 var _ SCMWebhookManager = (*GiteaClient)(nil)

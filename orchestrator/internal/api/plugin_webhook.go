@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ import (
 	"github.com/cnjack/jcloud/internal/scmevent"
 	"github.com/cnjack/jcloud/internal/store"
 )
+
+const webhookReceiptClaimTTL = 2 * time.Minute
 
 // handlePluginWebhook is the only SCM ingress used by the Plugin platform. It
 // authenticates with the DB-backed Provider config, immediately normalizes the
@@ -161,6 +164,9 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 		ObjectRef:       normalizedObjectRef(event),
 		Status:          "received",
 		ReceivedAt:      now,
+		ClaimToken:      domain.NewID(),
+		ClaimedAt:       &now,
+		ReclaimBefore:   now.Add(-webhookReceiptClaimTTL),
 	}
 	claimed, err := s.st.ClaimWebhookReceipt(r.Context(), receipt)
 	if err != nil {
@@ -254,13 +260,80 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		if a.RunKind == domain.RunKindReview && event.Family == scmevent.FamilyPullRequest &&
-			event.Draft && !spec.SCM.IncludeDrafts {
-			if !recordDecision(a, svc, domain.AutomationExecutionIgnored,
-				"draft_pull_request", "Draft pull requests are excluded by this Automation.", "") {
+		automaticReviewPR := !manualReview && a.RunKind == domain.RunKindReview && event.Family == scmevent.FamilyPullRequest
+		hostPolicyChecked := false
+		if automaticReviewPR {
+			// Confirm the repository is still allowed before making the authoritative
+			// Provider read. That read and its durable cursor must precede filters:
+			// even a new head that is later ignored makes an older queued review stale.
+			allowed, host, hostErr := s.integrationHostStillAllowed(r.Context(), svc)
+			if hostErr != nil {
+				s.recordPluginAutomationError(r, a, "The Service repository host policy could not be checked.")
+				if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
+					"host_policy_unavailable", "The Service repository host policy could not be checked.", "cluster_admin") {
+					return
+				}
+				continue
+			}
+			if !allowed {
+				reason := "The Service repository host is no longer allowed: " + host
+				s.recordPluginAutomationError(r, a, reason)
+				if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
+					"host_not_allowed", reason, "cluster_admin") {
+					return
+				}
+				continue
+			}
+			hostPolicyChecked = true
+			if receipt.InstallationID == "" {
+				receipt.InstallationID = binding.InstallationID
+			}
+			client, clientErr := s.pluginProviderClient(r.Context(), binding)
+			owner, repo, splitOK := gitprovider.SplitRepo(binding.RepositoryPath)
+			if clientErr != nil || client == nil || !splitOK {
+				s.recordPluginAutomationError(r, a, "The repository Provider credential is unavailable for review revision lookup.")
+				if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
+					"provider_credential_unavailable", "The repository Provider credential is unavailable.", "project_owner") {
+					return
+				}
+				continue
+			}
+			pr, prErr := client.PRByNumber(r.Context(), owner, repo, int(event.Object.Number))
+			if prErr != nil || pr == nil || pr.HeadRef == "" || pr.BaseRef == "" || pr.HeadSHA == "" || pr.BaseSHA == "" {
+				s.recordPluginAutomationError(r, a, "The pull request revision pair could not be read from the Provider.")
+				if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
+					"review_revision_unavailable", "The repository Provider could not supply the pull request base and head revisions.", "provider") {
+					return
+				}
+				continue
+			}
+			if event.HeadSHA != "" && !strings.EqualFold(event.HeadSHA, pr.HeadSHA) {
+				if !recordDecision(a, svc, domain.AutomationExecutionIgnored,
+					"stale_pull_request_revision", "A newer pull request revision is already current at the Provider.", "") {
+					return
+				}
+				continue
+			}
+			cursorAccepted, cursorErr := s.st.AdvanceReviewStatusCursor(r.Context(), domain.ReviewStatusCommentKey{
+				ServiceID: svc.ID, Provider: domain.GitProvider(provider),
+				ProviderRepoID: binding.ProviderRepoID, PRNumber: int(event.Object.Number),
+			}, receipt.IngressSequence, receipt.ClaimToken, pr.HeadSHA, receipt.ReceivedAt)
+			if cursorErr != nil {
+				failReceipt("could not advance review status cursor")
 				return
 			}
-			continue
+			if !cursorAccepted {
+				if !recordDecision(a, svc, domain.AutomationExecutionIgnored,
+					"stale_pull_request_revision", "A newer pull request delivery was already accepted.", "") {
+					return
+				}
+				continue
+			}
+			event.Ref, event.BaseRef, event.HeadSHA, event.BaseSHA = pr.HeadRef, pr.BaseRef, pr.HeadSHA, pr.BaseSHA
+			event.Draft = pr.Draft
+			if pr.URL != "" {
+				event.Object.URL = pr.URL
+			}
 		}
 		if a.IgnoreJCode && event.GeneratedByJCode {
 			if !recordDecision(a, svc, domain.AutomationExecutionIgnored,
@@ -283,23 +356,25 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		allowed, host, hostErr := s.integrationHostStillAllowed(r.Context(), svc)
-		if hostErr != nil {
-			s.recordPluginAutomationError(r, a, "The Service repository host policy could not be checked.")
-			if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
-				"host_policy_unavailable", "The Service repository host policy could not be checked.", "cluster_admin") {
-				return
+		if !hostPolicyChecked {
+			allowed, host, hostErr := s.integrationHostStillAllowed(r.Context(), svc)
+			if hostErr != nil {
+				s.recordPluginAutomationError(r, a, "The Service repository host policy could not be checked.")
+				if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
+					"host_policy_unavailable", "The Service repository host policy could not be checked.", "cluster_admin") {
+					return
+				}
+				continue
 			}
-			continue
-		}
-		if !allowed {
-			reason := "The Service repository host is no longer allowed: " + host
-			s.recordPluginAutomationError(r, a, reason)
-			if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
-				"host_not_allowed", reason, "cluster_admin") {
-				return
+			if !allowed {
+				reason := "The Service repository host is no longer allowed: " + host
+				s.recordPluginAutomationError(r, a, reason)
+				if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
+					"host_not_allowed", reason, "cluster_admin") {
+					return
+				}
+				continue
 			}
-			continue
 		}
 		if receipt.InstallationID == "" {
 			receipt.InstallationID = binding.InstallationID
@@ -359,37 +434,19 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			event.Ref, event.BaseRef, event.HeadSHA, event.BaseSHA = pr.HeadRef, pr.BaseRef, pr.HeadSHA, pr.BaseSHA
+			event.Draft = pr.Draft
 			event.Object.URL = pr.URL
 		}
-		// GitLab MR webhooks commonly omit diff_refs.base_sha. Keep the queue
-		// fail-closed, but enrich an incomplete automatic Review from the current
-		// repository grant before resolving its immutable Run contract. Comment
-		// reviews already took this path above for authorization and acknowledgement.
+		// The provider lookup above is authoritative for the current draft state.
+		// Webhook deliveries can race ready/draft transitions in both directions,
+		// so the payload flag alone must neither start nor suppress a review.
 		if a.RunKind == domain.RunKindReview && event.Family == scmevent.FamilyPullRequest &&
-			(event.Ref == "" || event.BaseRef == "" || event.HeadSHA == "" || event.BaseSHA == "") {
-			client, clientErr := s.pluginProviderClient(r.Context(), binding)
-			owner, repo, splitOK := gitprovider.SplitRepo(binding.RepositoryPath)
-			if clientErr != nil || client == nil || !splitOK {
-				s.recordPluginAutomationError(r, a, "The repository Provider credential is unavailable for review revision lookup.")
-				if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
-					"provider_credential_unavailable", "The repository Provider credential is unavailable.", "project_owner") {
-					return
-				}
-				continue
+			event.Draft && !spec.SCM.IncludeDrafts {
+			if !recordDecision(a, svc, domain.AutomationExecutionIgnored,
+				"draft_pull_request", "Draft pull requests are excluded by this Automation.", "") {
+				return
 			}
-			pr, prErr := client.PRByNumber(r.Context(), owner, repo, int(event.Object.Number))
-			if prErr != nil || pr == nil || pr.HeadRef == "" || pr.BaseRef == "" || pr.HeadSHA == "" || pr.BaseSHA == "" {
-				s.recordPluginAutomationError(r, a, "The pull request revision pair could not be read from the Provider.")
-				if !recordDecision(a, svc, domain.AutomationExecutionBlocked,
-					"review_revision_unavailable", "The repository Provider could not supply the pull request base and head revisions.", "provider") {
-					return
-				}
-				continue
-			}
-			event.Ref, event.BaseRef, event.HeadSHA, event.BaseSHA = pr.HeadRef, pr.BaseRef, pr.HeadSHA, pr.BaseSHA
-			if pr.URL != "" {
-				event.Object.URL = pr.URL
-			}
+			continue
 		}
 		sel, outcome, selectErr := s.models.SelectModel(r.Context(), svc.ProjectID, deref(svc.DefaultModelID), a.ModelID)
 		if selectErr != nil || outcome != modelcfg.SelectOK {
@@ -496,16 +553,51 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 			Provider: string(provider), ID: event.Actor.ID,
 			Label: event.Actor.Login, Source: "scm_event",
 		})
-		if coalesceKey := pluginRunCoalesceKey(a.ID, svc.ID, event); coalesceKey != "" && !manualReview {
+		if coalesceKey := pluginRunCoalesceKey(a.ID, svc.ID, run.Kind, event); coalesceKey != "" && !manualReview {
 			run.CoalesceKey = coalesceKey
 		}
 		execution := s.newPluginSCMExecution(r, a, svc, event, domain.AutomationExecutionQueued)
 		execution.RunID = run.ID
-		_, created, createErr := s.st.CreateAutomationExecution(r.Context(), execution, run)
+		var (
+			storedExecution *domain.AutomationExecution
+			created         bool
+			createErr       error
+		)
+		if !manualReview && run.Kind == domain.RunKindReview && event.Family == scmevent.FamilyPullRequest {
+			key := domain.ReviewStatusCommentKey{
+				ServiceID: svc.ID, Provider: domain.GitProvider(provider),
+				ProviderRepoID: binding.ProviderRepoID, PRNumber: run.PRNumber,
+			}
+			body, renderErr := domain.RenderReviewStatusComment(domain.ReviewStatusCommentInput{
+				Provider: key.Provider, State: domain.ReviewStatusQueued, Run: *run,
+				RunURL: pluginReviewStatusRunURL(s.cfg.ConsoleURL, run.ID),
+				Marker: domain.ReviewStatusCommentMarker(key),
+			})
+			if renderErr != nil {
+				s.recordPluginAutomationError(r, a, "The review status comment could not be prepared.")
+				failReceipt("could not prepare review status comment")
+				return
+			}
+			intent := &domain.ReviewStatusComment{
+				Key: key, RepositoryPath: binding.RepositoryPath, InstallationID: binding.InstallationID,
+				CurrentRunID: run.ID, HeadSHA: run.PRHeadSHA, AcceptedSequence: receipt.IngressSequence,
+				ReceiptClaimToken: receipt.ClaimToken,
+				DesiredState:      domain.ReviewStatusQueued,
+				DesiredBodyHash:   domain.ReviewStatusCommentBodyHash(body),
+				CreatedAt:         execution.CreatedAt, UpdatedAt: execution.CreatedAt,
+			}
+			storedExecution, created, createErr = s.st.CreateAutomationExecutionWithReviewStatus(r.Context(), execution, run, intent)
+		} else {
+			storedExecution, created, createErr = s.st.CreateAutomationExecution(r.Context(), execution, run)
+		}
 		if createErr != nil {
 			if existingRun, duplicateErr := s.st.GetRunByOriginEventKey(r.Context(), run.OriginEventKey); duplicateErr == nil {
 				execution.RunID = existingRun.ID
 				if _, _, recoverErr := s.st.CreateAutomationExecution(r.Context(), execution, nil); recoverErr == nil {
+					if receipt.MatchedAutomationID == "" {
+						receipt.MatchedAutomationID = a.ID
+					}
+					dispatched++
 					continue
 				}
 			}
@@ -517,6 +609,15 @@ func (s *Server) handlePluginWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !created {
+			// A recovered receipt may observe the execution committed by the worker
+			// that crashed before completing its ledger row. Count that durable
+			// execution as matched without emitting or queueing it a second time.
+			if storedExecution != nil {
+				if receipt.MatchedAutomationID == "" {
+					receipt.MatchedAutomationID = a.ID
+				}
+				dispatched++
+			}
 			continue
 		}
 		nowTriggered := time.Now().UTC()
@@ -572,6 +673,14 @@ func automationRunBranch(event scmevent.NormalizedSCMEvent) string {
 		branch = strings.TrimSpace(strings.TrimPrefix(event.BaseRef, "refs/heads/"))
 	}
 	return branch
+}
+
+func pluginReviewStatusRunURL(consoleURL, runID string) string {
+	consoleURL = strings.TrimRight(strings.TrimSpace(consoleURL), "/")
+	if consoleURL == "" {
+		return ""
+	}
+	return consoleURL + "/runs/" + url.PathEscape(runID)
 }
 
 func pluginWebhookHeaders(r *http.Request) (scmevent.ProviderKind, string, string, string) {
@@ -654,7 +763,15 @@ func (s *Server) pluginProviderClient(ctx context.Context, binding *domain.Servi
 	)
 }
 
-func pluginRunCoalesceKey(automationID, serviceID string, event scmevent.NormalizedSCMEvent) string {
+func pluginRunCoalesceKey(automationID, serviceID string, runKind domain.RunKind, event scmevent.NormalizedSCMEvent) string {
+	// A review Automation owns one current attempt per Service+provider PR. Keep
+	// that identity stable across opened/ready/reopened/synchronized so a newer
+	// accepted head supersedes an older queued attempt regardless of which PR
+	// lifecycle action delivered either revision.
+	if runKind == domain.RunKindReview && event.Family == scmevent.FamilyPullRequest &&
+		event.Object.Number > 0 && strings.TrimSpace(event.Repository.ID) != "" {
+		return fmt.Sprintf("plugin-review:%s:%s:%s:%d", serviceID, event.Provider, event.Repository.ID, event.Object.Number)
+	}
 	key := scmevent.CoalesceKey(serviceID, event)
 	if key == "" {
 		return ""
@@ -754,5 +871,9 @@ func (s *Server) completePluginReceipt(r *http.Request, receipt *domain.WebhookR
 	receipt.Status = status
 	receipt.MatchedAutomationID = automationID
 	receipt.Error = message
-	_ = s.st.CompleteWebhookReceipt(r.Context(), receipt)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
+	defer cancel()
+	if err := s.st.CompleteWebhookReceipt(ctx, receipt); err != nil && !errors.Is(err, store.ErrConflict) {
+		s.log.Warn("complete plugin webhook receipt", "provider", receipt.Provider, "delivery", receipt.DeliveryID, "err", err)
+	}
 }

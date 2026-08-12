@@ -108,14 +108,94 @@ func insertAutomationExecutionTx(ctx context.Context, tx pgx.Tx, value *domain.A
 }
 
 func (s *PGStore) CreateAutomationExecution(ctx context.Context, value *domain.AutomationExecution, run *domain.Run) (*domain.AutomationExecution, bool, error) {
+	return s.createAutomationExecution(ctx, value, run, nil)
+}
+
+func (s *PGStore) CreateAutomationExecutionWithReviewStatus(ctx context.Context, value *domain.AutomationExecution, run *domain.Run, intent *domain.ReviewStatusComment) (*domain.AutomationExecution, bool, error) {
+	return s.createAutomationExecution(ctx, value, run, intent)
+}
+
+func (s *PGStore) createAutomationExecution(ctx context.Context, value *domain.AutomationExecution, run *domain.Run, intent *domain.ReviewStatusComment) (*domain.AutomationExecution, bool, error) {
+	if intent != nil {
+		if err := validateReviewStatusIntent(value, run, intent); err != nil {
+			return nil, false, err
+		}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("create automation execution: begin: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	var (
+		currentStatus      *domain.ReviewStatusComment
+		acceptedCursor     int64
+		acceptedCursorHead string
+	)
+	if intent != nil {
+		// Global Plugin mutation order: Project -> provider config -> installation -> Service ->
+		// binding, then receipt/status rows. Uninstall follows installation -> Service;
+		// taking the immutable acceptance grant first avoids both receipt and Service
+		// FK lock inversions.
+		if err := lockReviewStatusGrantTx(ctx, tx, intent, run.ProjectID); err != nil {
+			return nil, false, err
+		}
+		activeReceipt, activeErr := lockWebhookReceiptClaimTx(ctx, tx, intent.AcceptedSequence, intent.ReceiptClaimToken)
+		if activeErr != nil {
+			return nil, false, fmt.Errorf("create automation execution: verify webhook receipt claim: %w", activeErr)
+		}
+		if !activeReceipt {
+			return nil, false, nil
+		}
+		// The row may not exist yet, so use a key-scoped advisory lock in addition
+		// to its unique constraint. This serializes first insert, later revisions,
+		// and same-head cursor bumps before any execution or Run mutation.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+			"review-status:"+domain.ReviewStatusCommentMarker(intent.Key)); err != nil {
+			return nil, false, fmt.Errorf("create automation execution: lock review status: %w", err)
+		}
+		args := reviewStatusKeyArgs(intent.Key)
+		currentStatus, err = scanReviewStatusComment(tx.QueryRow(ctx, `SELECT `+reviewStatusCommentCols+`
+			FROM review_status_comments
+			WHERE service_id=$1 AND provider=$2 AND provider_repo_id=$3 AND pr_number=$4
+			FOR UPDATE`, args...))
+		if errors.Is(err, ErrNotFound) {
+			currentStatus, err = nil, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		cursorErr := tx.QueryRow(ctx, `SELECT head_sha,accepted_sequence
+			FROM review_status_cursors
+			WHERE service_id=$1 AND provider=$2 AND provider_repo_id=$3 AND pr_number=$4
+			FOR UPDATE`, args...).Scan(&acceptedCursorHead, &acceptedCursor)
+		if !errors.Is(cursorErr, pgx.ErrNoRows) && cursorErr != nil {
+			return nil, false, fmt.Errorf("create automation execution: load review status cursor: %w", cursorErr)
+		}
+		if cursorErr == nil && acceptedCursor > intent.AcceptedSequence {
+			return nil, false, nil
+		}
+		if currentStatus != nil && currentStatus.AcceptedSequence >= intent.AcceptedSequence {
+			return nil, false, nil
+		}
+	}
 	created, err := insertAutomationExecutionTx(ctx, tx, value)
 	if err != nil {
 		return nil, false, err
+	}
+	if !created && intent != nil && (currentStatus == nil || !strings.EqualFold(currentStatus.HeadSHA, intent.HeadSHA)) &&
+		acceptedCursor == intent.AcceptedSequence && strings.EqualFold(acceptedCursorHead, intent.HeadSHA) {
+		// A PR may legitimately return to an earlier SHA after a force-push. Its
+		// head-derived event key then matches the first visit, but the monotonic
+		// ingress sequence proves this is a new accepted revision and Run.
+		returnEventKey := fmt.Sprintf("%s:return:%d", value.EventKey, intent.AcceptedSequence)
+		value.EventKey = returnEventKey
+		if run != nil {
+			run.OriginEventKey = returnEventKey
+		}
+		created, err = insertAutomationExecutionTx(ctx, tx, value)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	if !created {
 		existing, getErr := scanAutomationExecution(tx.QueryRow(ctx,
@@ -123,6 +203,24 @@ func (s *PGStore) CreateAutomationExecution(ctx context.Context, value *domain.A
 			value.AutomationID, value.EventKey))
 		if getErr != nil {
 			return nil, false, getErr
+		}
+		if intent != nil && currentStatus != nil &&
+			strings.EqualFold(currentStatus.HeadSHA, intent.HeadSHA) &&
+			acceptedCursor == intent.AcceptedSequence && strings.EqualFold(acceptedCursorHead, intent.HeadSHA) {
+			args := append(reviewStatusKeyArgs(intent.Key), intent.AcceptedSequence)
+			tag, bumpErr := tx.Exec(ctx, `UPDATE review_status_comments
+				SET accepted_sequence=$5
+				WHERE service_id=$1 AND provider=$2 AND provider_repo_id=$3 AND pr_number=$4
+				  AND accepted_sequence<$5`, args...)
+			if bumpErr != nil {
+				return nil, false, fmt.Errorf("advance duplicate review status cursor: %w", bumpErr)
+			}
+			if tag.RowsAffected() != 1 {
+				return nil, false, nil
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return nil, false, fmt.Errorf("advance duplicate review status cursor: commit: %w", err)
+			}
 		}
 		return existing, false, nil
 	}
@@ -141,6 +239,29 @@ func (s *PGStore) CreateAutomationExecution(ctx context.Context, value *domain.A
 		}
 		if err := s.createRunTx(ctx, tx, run); err != nil {
 			return nil, false, err
+		}
+	}
+	if intent != nil {
+		if err := freezeReviewStatusSnapshotTx(ctx, tx, intent); err != nil {
+			return nil, false, err
+		}
+		advanced, upsertErr := upsertReviewStatusCommentTx(ctx, tx, intent)
+		if upsertErr != nil {
+			return nil, false, upsertErr
+		}
+		if !advanced {
+			// A larger ingress sequence already owns this Service+PR. Rolling back
+			// also discards the provisional execution, Run, and queued supersede.
+			return nil, false, nil
+		}
+		args := append(reviewStatusKeyArgs(intent.Key), intent.HeadSHA, intent.AcceptedSequence, intent.UpdatedAt.UTC())
+		if _, cursorErr := tx.Exec(ctx, `INSERT INTO review_status_cursors(
+			service_id,provider,provider_repo_id,pr_number,head_sha,accepted_sequence,updated_at)
+			VALUES($1,$2,$3,$4,$5,$6,$7)
+			ON CONFLICT(service_id,provider,provider_repo_id,pr_number) DO UPDATE SET
+				head_sha=EXCLUDED.head_sha,accepted_sequence=EXCLUDED.accepted_sequence,updated_at=EXCLUDED.updated_at
+			WHERE review_status_cursors.accepted_sequence<EXCLUDED.accepted_sequence`, args...); cursorErr != nil {
+			return nil, false, fmt.Errorf("create automation execution: advance review status cursor: %w", cursorErr)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -337,16 +458,82 @@ func (s *PGStore) UpdateAutomationExecutionCard(
 }
 
 func (m *MemStore) CreateAutomationExecution(_ context.Context, value *domain.AutomationExecution, run *domain.Run) (*domain.AutomationExecution, bool, error) {
+	return m.createAutomationExecution(value, run, nil)
+}
+
+func (m *MemStore) CreateAutomationExecutionWithReviewStatus(_ context.Context, value *domain.AutomationExecution, run *domain.Run, intent *domain.ReviewStatusComment) (*domain.AutomationExecution, bool, error) {
+	return m.createAutomationExecution(value, run, intent)
+}
+
+func (m *MemStore) createAutomationExecution(value *domain.AutomationExecution, run *domain.Run, intent *domain.ReviewStatusComment) (*domain.AutomationExecution, bool, error) {
+	if intent != nil {
+		if err := validateReviewStatusIntent(value, run, intent); err != nil {
+			return nil, false, err
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var (
+		statusMapKey            string
+		currentStatus           domain.ReviewStatusComment
+		statusExists            bool
+		currentCursor           reviewStatusCursor
+		cursorExists            bool
+		frozenReviewSnapshot    domain.RunPluginSnapshot
+		hasFrozenReviewSnapshot bool
+	)
+	if intent != nil {
+		statusMapKey = reviewStatusMapKey(intent.Key)
+		currentStatus, statusExists = m.reviewStatusComments[statusMapKey]
+		currentCursor, cursorExists = m.reviewStatusCursors[statusMapKey]
+		if !m.webhookReceiptClaimActiveLocked(intent.AcceptedSequence, intent.ReceiptClaimToken) {
+			return nil, false, nil
+		}
+		if cursorExists && currentCursor.AcceptedSequence > intent.AcceptedSequence {
+			return nil, false, nil
+		}
+		if statusExists && currentStatus.AcceptedSequence >= intent.AcceptedSequence {
+			return nil, false, nil
+		}
+	}
 	if err := normalizeAutomationExecution(value); err != nil {
 		return nil, false, err
 	}
+	var duplicate *domain.AutomationExecution
 	for _, existing := range m.automationExecutions {
 		if existing.AutomationID == value.AutomationID && existing.EventKey == value.EventKey {
-			copyValue := existing
-			return &copyValue, false, nil
+			copyExisting := existing
+			duplicate = &copyExisting
+			break
 		}
+	}
+	if duplicate != nil && intent != nil && (!statusExists || !strings.EqualFold(currentStatus.HeadSHA, intent.HeadSHA)) &&
+		cursorExists && currentCursor.AcceptedSequence == intent.AcceptedSequence && strings.EqualFold(currentCursor.HeadSHA, intent.HeadSHA) {
+		returnEventKey := fmt.Sprintf("%s:return:%d", value.EventKey, intent.AcceptedSequence)
+		value.EventKey = returnEventKey
+		if run != nil {
+			run.OriginEventKey = returnEventKey
+		}
+		duplicate = nil
+		for _, existing := range m.automationExecutions {
+			if existing.AutomationID == value.AutomationID && existing.EventKey == value.EventKey {
+				copyExisting := existing
+				duplicate = &copyExisting
+				break
+			}
+		}
+	}
+	if duplicate != nil {
+		if intent != nil && statusExists && strings.EqualFold(currentStatus.HeadSHA, intent.HeadSHA) &&
+			cursorExists && currentCursor.AcceptedSequence == intent.AcceptedSequence && strings.EqualFold(currentCursor.HeadSHA, intent.HeadSHA) {
+			currentStatus.AcceptedSequence = intent.AcceptedSequence
+			m.reviewStatusComments[statusMapKey] = currentStatus
+			m.reviewStatusCursors[statusMapKey] = reviewStatusCursor{
+				Key: intent.Key, HeadSHA: currentStatus.HeadSHA,
+				AcceptedSequence: intent.AcceptedSequence, UpdatedAt: intent.UpdatedAt.UTC(),
+			}
+		}
+		return duplicate, false, nil
 	}
 	if run != nil {
 		normalizeRunForCreate(run)
@@ -355,6 +542,13 @@ func (m *MemStore) CreateAutomationExecution(_ context.Context, value *domain.Au
 		}
 		if err := m.resolveRunContractLocked(run); err != nil {
 			return nil, false, err
+		}
+		if intent != nil {
+			var snapshotErr error
+			frozenReviewSnapshot, hasFrozenReviewSnapshot, snapshotErr = m.buildReviewStatusSnapshotLocked(run, intent)
+			if snapshotErr != nil {
+				return nil, false, snapshotErr
+			}
 		}
 	}
 	copyValue := *value
@@ -376,6 +570,21 @@ func (m *MemStore) CreateAutomationExecution(_ context.Context, value *domain.Au
 			}
 		}
 		m.insertRunLocked(run)
+		if hasFrozenReviewSnapshot {
+			if m.runPluginSnapshots[run.ID] == nil {
+				m.runPluginSnapshots[run.ID] = map[string]domain.RunPluginSnapshot{}
+			}
+			m.runPluginSnapshots[run.ID][frozenReviewSnapshot.InstallationID] = frozenReviewSnapshot
+		}
+	}
+	if intent != nil {
+		if !m.upsertReviewStatusCommentLocked(intent) {
+			panic("review status ingress sequence changed while MemStore lock was held")
+		}
+		m.reviewStatusCursors[statusMapKey] = reviewStatusCursor{
+			Key: intent.Key, HeadSHA: intent.HeadSHA,
+			AcceptedSequence: intent.AcceptedSequence, UpdatedAt: intent.UpdatedAt.UTC(),
+		}
 	}
 	return &copyValue, true, nil
 }

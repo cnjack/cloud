@@ -289,6 +289,9 @@ func (r *Reconciler) WithKanban(resolver *kanbancfg.Resolver, writerFor func(f *
 
 // Run drives the loop until ctx is cancelled, ticking every cfg.ReconcileInterval.
 func (r *Reconciler) Run(ctx context.Context) {
+	// Provider status comments have their own worker. A slow or unavailable SCM
+	// must never hold the scheduling/native-review/cleanup pass behind HTTP I/O.
+	go r.runReviewStatusCommentLoop(ctx)
 	ticker := time.NewTicker(r.cfg.ReconcileInterval)
 	defer ticker.Stop()
 	r.log.Info("reconciler started", "interval", r.cfg.ReconcileInterval)
@@ -661,10 +664,11 @@ func (r *Reconciler) reconcileWebhookReceiptRetention(ctx context.Context) {
 }
 
 // reconcilePluginSecretVersionRetention bounds historical credential/config
-// ciphertext while preserving every version pinned by a live Installation or a
-// non-terminal run. Terminal snapshots retain audit IDs after their secrets are
-// reclaimed. Errors are intentionally non-fatal to scheduling and retried on
-// the next retention interval.
+// ciphertext while preserving every version pinned by a live Installation, a
+// non-terminal run, or an asynchronous Provider writeback/status projection
+// that has not converged. Once terminal projections settle, snapshots retain
+// audit IDs while historical secrets may be reclaimed. Errors are intentionally
+// non-fatal to scheduling and retried on the next retention interval.
 func (r *Reconciler) reconcilePluginSecretVersionRetention(ctx context.Context) {
 	now := r.now().UTC()
 	r.secretVersionCleanupMu.Lock()
@@ -1182,9 +1186,11 @@ type runSCMContext struct {
 	Client         provider.Provider
 	Token          credentials.Token
 	Provider       domain.GitProvider
+	RepositoryID   string
 	RepositoryPath string
 	CloneURL       string
 	DefaultBranch  string
+	ProviderAppID  string
 	Frozen         bool
 }
 
@@ -1210,16 +1216,25 @@ func (r *Reconciler) scmContextForRun(ctx context.Context, run *domain.Run, svc 
 		if issueErr != nil {
 			return nil, issueErr
 		}
-		client, clientErr := provider.IntegrationClientWithScheme(
-			domain.GitProvider(snapshot.Provider), credential.BaseURL, credential.AccessToken, credential.Scheme,
-		)
+		var client provider.Provider
+		var clientErr error
+		if frozenFactory, ok := r.factory.(provider.FrozenFactory); ok {
+			client, clientErr = frozenFactory.FrozenPRClient(
+				domain.GitProvider(snapshot.Provider), credential.BaseURL, credential.AccessToken, credential.Scheme,
+			)
+		} else {
+			client, clientErr = provider.IntegrationClientWithScheme(
+				domain.GitProvider(snapshot.Provider), credential.BaseURL, credential.AccessToken, credential.Scheme,
+			)
+		}
 		if clientErr != nil {
 			return nil, clientErr
 		}
 		return &runSCMContext{
 			Client: client, Token: credentials.Token{Value: credential.AccessToken, Scheme: credential.Scheme, Source: "plugin_snapshot"},
-			Provider: domain.GitProvider(snapshot.Provider), RepositoryPath: snapshot.RepositoryPath,
+			Provider: domain.GitProvider(snapshot.Provider), RepositoryID: snapshot.RepositoryID, RepositoryPath: snapshot.RepositoryPath,
 			CloneURL: snapshot.CloneURL, DefaultBranch: snapshot.DefaultBranch, Frozen: true,
+			ProviderAppID: snapshot.ProviderAppID,
 		}, nil
 	}
 
@@ -1232,7 +1247,11 @@ func (r *Reconciler) scmContextForRun(ctx context.Context, run *domain.Run, svc 
 	if err != nil {
 		return nil, err
 	}
-	return &runSCMContext{Client: client, Token: tok, Provider: svc.Provider,
+	repositoryID := ""
+	if svc.ProviderRepoID != nil {
+		repositoryID = strconv.FormatInt(*svc.ProviderRepoID, 10)
+	}
+	return &runSCMContext{Client: client, Token: tok, Provider: svc.Provider, RepositoryID: repositoryID,
 		RepositoryPath: svc.RepoOwnerName, CloneURL: r.serviceCloneURL(ctx, svc), DefaultBranch: svc.DefaultBranch}, nil
 }
 
@@ -1948,7 +1967,7 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 	committed, err := r.st.ClaimRunDispatch(ctx, run.ID, jobName, auth.HashToken(token), "PreparingWorkspace", requiredPluginInstallationID, snapshots)
 	if err != nil {
 		msg := "the Service's project plugin changed while the run was being scheduled; retry after reconnecting or enabling the plugin"
-		if requiredPluginInstallationID != "" {
+		if requiredPluginInstallationID != "" || errors.Is(err, store.ErrDispatchClaimUnavailable) {
 			if failed, merr := r.st.MarkFailed(ctx, run.ID, "Failed", domain.FailureSetupFailed, msg, r.now()); merr == nil {
 				r.emitStatus(ctx, failed)
 			}

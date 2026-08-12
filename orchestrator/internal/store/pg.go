@@ -1082,6 +1082,13 @@ func (s *PGStore) ClaimRunDispatch(ctx context.Context, id, jobName, tokenHash, 
 	if cur.Status != domain.StatusQueued {
 		return nil, fmt.Errorf("%w: %s is not queued", ErrInvalidTransition, id)
 	}
+	var hasReviewStatus bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM review_status_comments WHERE current_run_id=$1)`, id).Scan(&hasReviewStatus); err != nil {
+		return nil, fmt.Errorf("read accepted review status: %w", err)
+	}
+	if hasReviewStatus && requiredInstallationID == "" {
+		return nil, fmt.Errorf("%w: accepted review provider grant is unavailable", ErrDispatchClaimUnavailable)
+	}
 	// Read the candidate providers, then acquire provider-config locks followed
 	// by installation locks.  That is the same order used by a cluster Provider
 	// reconfiguration (config first, then its installations), preventing a
@@ -1143,16 +1150,18 @@ func (s *PGStore) ClaimRunDispatch(ctx context.Context, id, jobName, tokenHash, 
 		}
 		configRevisions[provider] = revision
 	}
+	installationCredentialVersions := make(map[string]string, len(ordered))
 	for _, snap := range ordered {
 		var lockedProvider domain.ProviderKind
 		var installationRevision int64
-		err = tx.QueryRow(ctx, `SELECT provider, config_revision
+		var credentialVersionID string
+		err = tx.QueryRow(ctx, `SELECT provider, config_revision, credential_version_id
 			FROM plugin_installations
 			WHERE id=$1 AND project_id=$2
 			  AND status='enabled' AND last_health_error=''
 			  AND ((provider='github' AND github_installation_id<>'')
 			    OR (provider<>'github' AND access_token_enc IS NOT NULL))
-			FOR SHARE`, snap.InstallationID, cur.ProjectID).Scan(&lockedProvider, &installationRevision)
+			FOR SHARE`, snap.InstallationID, cur.ProjectID).Scan(&lockedProvider, &installationRevision, &credentialVersionID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("%w: plugin %s", ErrDispatchClaimUnavailable, snap.InstallationID)
 		}
@@ -1161,6 +1170,31 @@ func (s *PGStore) ClaimRunDispatch(ctx context.Context, id, jobName, tokenHash, 
 		}
 		if lockedProvider != installationProviders[snap.InstallationID] || configRevisions[lockedProvider] != installationRevision {
 			return nil, fmt.Errorf("%w: plugin %s configuration changed", ErrDispatchClaimUnavailable, snap.InstallationID)
+		}
+		installationCredentialVersions[snap.InstallationID] = credentialVersionID
+	}
+	if requiredInstallationID != "" {
+		var acceptedInstallationID string
+		var frozenProvider domain.ProviderKind
+		var frozenRevision int64
+		var frozenCredentialVersion string
+		err = tx.QueryRow(ctx, `SELECT s.installation_id,s.provider,s.provider_config_revision,s.credential_version_id
+			FROM review_status_comments c
+			JOIN run_plugin_snapshots s ON s.run_id=c.current_run_id
+			WHERE c.current_run_id=$1 AND s.repository_id=c.provider_repo_id
+			  AND s.repository_path=c.repository_path AND s.provider=c.provider`, id).
+			Scan(&acceptedInstallationID, &frozenProvider, &frozenRevision, &frozenCredentialVersion)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("read accepted review provider grant: %w", err)
+		}
+		if hasReviewStatus && errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: accepted review provider grant is unavailable", ErrDispatchClaimUnavailable)
+		}
+		if err == nil && (acceptedInstallationID != requiredInstallationID ||
+			frozenProvider != installationProviders[requiredInstallationID] ||
+			frozenRevision != configRevisions[frozenProvider] ||
+			frozenCredentialVersion != installationCredentialVersions[requiredInstallationID]) {
+			return nil, fmt.Errorf("%w: accepted review provider identity changed", ErrDispatchClaimUnavailable)
 		}
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM run_plugin_snapshots WHERE run_id=$1`, id); err != nil {
@@ -1204,6 +1238,24 @@ func (s *PGStore) ClaimRunDispatch(ctx context.Context, id, jobName, tokenHash, 
 		if !frozen {
 			return nil, fmt.Errorf("%w: required repository grant changed", ErrDispatchClaimUnavailable)
 		}
+		// An automatic review status row is the accepted repository identity for
+		// this Run. A Service can be rebound between webhook acceptance and
+		// scheduling; never let the fresh binding reinterpret that immutable PR as
+		// work for another repository or renamed path.
+		var statusGrantMatches bool
+		if err = tx.QueryRow(ctx, `SELECT NOT EXISTS(
+			SELECT 1
+			FROM review_status_comments c
+			JOIN run_plugin_snapshots s ON s.run_id=c.current_run_id AND s.installation_id=$2
+			WHERE c.current_run_id=$1 AND (
+				c.provider<>s.provider OR c.provider_repo_id<>s.repository_id OR c.repository_path<>s.repository_path
+			)
+		)`, id, requiredInstallationID).Scan(&statusGrantMatches); err != nil {
+			return nil, fmt.Errorf("verify review repository grant: %w", err)
+		}
+		if !statusGrantMatches {
+			return nil, fmt.Errorf("%w: accepted review repository changed", ErrDispatchClaimUnavailable)
+		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE runs SET status=$2,phase=$3,k8s_job_name=$4,token_hash=$5 WHERE id=$1`, id, domain.StatusScheduling, phase, jobName, tokenHash); err != nil {
 		return nil, fmt.Errorf("claim run dispatch: %w", err)
@@ -1220,7 +1272,12 @@ func (s *PGStore) FailRunDispatch(ctx context.Context, id, jobName, phase, messa
 	if cur.Status != domain.StatusScheduling || cur.K8sJobName != jobName {
 		return nil, fmt.Errorf("%w: dispatch claim no longer current", ErrInvalidTransition)
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM run_plugin_snapshots WHERE run_id=$1`, id); err != nil {
+	if _, err = tx.Exec(ctx, `DELETE FROM run_plugin_snapshots s
+		WHERE s.run_id=$1 AND NOT EXISTS (
+			SELECT 1 FROM review_status_comments c
+			WHERE c.current_run_id=$1 AND c.provider=s.provider
+			  AND c.provider_repo_id=s.repository_id AND c.repository_path=s.repository_path
+		)`, id); err != nil {
 		return nil, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE runs SET status=$2,phase=$3,error=$4,failure_reason=$5,failure_message=$4,finished_at=COALESCE(finished_at,$6),token_hash='' WHERE id=$1`, id, domain.StatusFailed, phase, message, domain.FailureSetupFailed, finishedAt); err != nil {

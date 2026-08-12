@@ -1027,35 +1027,56 @@ func (s *PGStore) DeletePluginAutomation(ctx context.Context, id string) error {
 }
 
 func (s *PGStore) ClaimWebhookReceipt(ctx context.Context, r *domain.WebhookReceipt) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE webhook_receipts SET
+	claimedAt := r.ReceivedAt.UTC()
+	if r.ClaimedAt != nil {
+		claimedAt = r.ClaimedAt.UTC()
+	}
+	err := s.pool.QueryRow(ctx, `UPDATE webhook_receipts SET
 		delivery_id=$2,payload_digest=$3,installation_id=$4,event_family=$5,action=$6,
 		external_actor_id=$7,external_actor=$8,object_ref=$9,status=$10,
 		matched_automation_id=$11,error=$12,received_at=$13::timestamptz,
-		expires_at=$13::timestamptz + interval '30 days'
-		WHERE provider=$1 AND status='error'
-		  AND (delivery_id=$2 OR ($3<>'' AND payload_digest=$3))`,
+		expires_at=$13::timestamptz + interval '30 days',claim_token=$14,claimed_at=$15,
+		ingress_sequence=nextval('webhook_receipt_ingress_sequence_seq')
+		WHERE provider=$1 AND (status='error' OR (
+			status='received' AND COALESCE(claimed_at,received_at) <= $16
+		))
+		  AND (delivery_id=$2 OR ($3<>'' AND payload_digest=$3))
+		RETURNING ingress_sequence`,
 		r.Provider, r.DeliveryID, r.PayloadDigest, nullStr(r.InstallationID),
 		r.EventFamily, r.Action, r.ExternalActorID, r.ExternalActor, r.ObjectRef,
-		r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt)
-	if err != nil {
-		return false, fmt.Errorf("reclaim webhook receipt: %w", err)
-	}
-	if tag.RowsAffected() == 1 {
+		r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt,
+		r.ClaimToken, claimedAt, r.ReclaimBefore.UTC()).Scan(&r.IngressSequence)
+	if err == nil {
 		return true, nil
 	}
-	tag, err = s.pool.Exec(ctx, `INSERT INTO webhook_receipts(id,provider,delivery_id,payload_digest,installation_id,event_family,action,external_actor_id,external_actor,object_ref,status,matched_automation_id,error,received_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING`, r.ID, r.Provider, r.DeliveryID, r.PayloadDigest, nullStr(r.InstallationID), r.EventFamily, r.Action, r.ExternalActorID, r.ExternalActor, r.ObjectRef, r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return false, fmt.Errorf("reclaim webhook receipt: %w", err)
+	}
+	err = s.pool.QueryRow(ctx, `INSERT INTO webhook_receipts(
+		id,provider,delivery_id,payload_digest,installation_id,event_family,action,
+		external_actor_id,external_actor,object_ref,status,matched_automation_id,error,
+		received_at,claim_token,claimed_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		ON CONFLICT DO NOTHING RETURNING ingress_sequence`,
+		r.ID, r.Provider, r.DeliveryID, r.PayloadDigest, nullStr(r.InstallationID),
+		r.EventFamily, r.Action, r.ExternalActorID, r.ExternalActor, r.ObjectRef,
+		r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ReceivedAt,
+		r.ClaimToken, claimedAt).Scan(&r.IngressSequence)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("claim webhook receipt: %w", err)
 	}
-	return tag.RowsAffected() == 1, nil
+	return true, nil
 }
 func (s *PGStore) CompleteWebhookReceipt(ctx context.Context, r *domain.WebhookReceipt) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE webhook_receipts SET status=$3,matched_automation_id=$4,error=$5 WHERE provider=$1 AND delivery_id=$2`, r.Provider, r.DeliveryID, r.Status, nullStr(r.MatchedAutomationID), r.Error)
+	tag, err := s.pool.Exec(ctx, `UPDATE webhook_receipts SET status=$3,matched_automation_id=$4,error=$5 WHERE provider=$1 AND (delivery_id=$2 OR ($7<>'' AND payload_digest=$7)) AND claim_token=$6`, r.Provider, r.DeliveryID, r.Status, nullStr(r.MatchedAutomationID), r.Error, r.ClaimToken, r.PayloadDigest)
 	if err != nil {
 		return fmt.Errorf("complete webhook receipt: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return ErrConflict
 	}
 	return nil
 }
@@ -1196,8 +1217,9 @@ func (s *PGStore) ListRunPluginSnapshots(ctx context.Context, runID string) ([]d
 }
 
 // DeleteUnreferencedPluginSecretVersions retains exactly the encrypted history
-// needed to launch or continue a non-terminal run. Terminal snapshots retain
-// their immutable audit identifiers after their historical ciphertext is gone.
+// needed to launch/continue a Run and to finish native review, Kanban, or review
+// status Provider projections. Converged terminal snapshots retain immutable
+// audit identifiers after their historical ciphertext is gone.
 func (s *PGStore) DeleteUnreferencedPluginSecretVersions(ctx context.Context, limit int) (credentialVersions, providerVersions int64, err error) {
 	if limit <= 0 {
 		return 0, 0, nil
@@ -1233,10 +1255,26 @@ func deleteUnreferencedPluginSecretVersionsTx(ctx context.Context, tx pgx.Tx, li
 				WHERE s.credential_version_id=cv.id
 				  AND (
 					r.status NOT IN ('succeeded','failed','canceled')
+					OR (r.kind='review' AND r.status='succeeded' AND (r.review_output<>'' OR r.review_result IS NOT NULL) AND r.delivery_status IN ('not_required','pending'))
 					OR EXISTS (
 						SELECT 1
 						FROM automation_kanban_claims c
 						WHERE c.run_id=r.id AND c.writeback_at IS NULL
+					)
+					OR EXISTS (
+						SELECT 1
+						FROM review_status_comments c
+						WHERE c.current_run_id=r.id AND NOT (
+							c.comment_id<>'' AND c.desired_state=c.applied_state
+							AND c.desired_body_hash=c.applied_body_hash
+							AND c.applied_state IN ('completed','failed','canceled','superseded')
+							AND c.observed_run_status=r.status
+							AND c.observed_run_phase=r.phase
+							AND c.observed_failure_reason=r.failure_reason
+							AND c.observed_delivery_status=r.delivery_status
+							AND c.observed_review_posted=(r.review_posted_at IS NOT NULL)
+							AND c.observed_review_plan_hash=COALESCE(r.review_plan->>'plan_hash','')
+						)
 					)
 				  )
 			)
@@ -1267,10 +1305,26 @@ func deleteUnreferencedPluginSecretVersionsTx(ctx context.Context, tx pgx.Tx, li
 				  AND s.provider_config_revision=pv.config_revision
 				  AND (
 					r.status NOT IN ('succeeded','failed','canceled')
+					OR (r.kind='review' AND r.status='succeeded' AND (r.review_output<>'' OR r.review_result IS NOT NULL) AND r.delivery_status IN ('not_required','pending'))
 					OR EXISTS (
 						SELECT 1
 						FROM automation_kanban_claims c
 						WHERE c.run_id=r.id AND c.writeback_at IS NULL
+					)
+					OR EXISTS (
+						SELECT 1
+						FROM review_status_comments c
+						WHERE c.current_run_id=r.id AND NOT (
+							c.comment_id<>'' AND c.desired_state=c.applied_state
+							AND c.desired_body_hash=c.applied_body_hash
+							AND c.applied_state IN ('completed','failed','canceled','superseded')
+							AND c.observed_run_status=r.status
+							AND c.observed_run_phase=r.phase
+							AND c.observed_failure_reason=r.failure_reason
+							AND c.observed_delivery_status=r.delivery_status
+							AND c.observed_review_posted=(r.review_posted_at IS NOT NULL)
+							AND c.observed_review_plan_hash=COALESCE(r.review_plan->>'plan_hash','')
+						)
 					)
 				  )
 			)

@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -333,7 +334,52 @@ func TestPluginWebhookCoalescesQueuedPushToLatest(t *testing.T) {
 }
 
 func TestPluginReviewAutomationQueuesReadyAfterIgnoringSameRevisionDraft(t *testing.T) {
+	headSHA := strings.Repeat("c", 40)
+	var currentDraft atomic.Bool
+	currentDraft.Store(true)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/repos/acme/repo/pulls/7" {
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		title := "Ready review"
+		if currentDraft.Load() {
+			title = "WIP: Draft review"
+		}
+		_, _ = fmt.Fprintf(w, `{"number":7,"html_url":"https://gitea.example/acme/repo/pulls/7","state":"open","title":%q,"head":{"ref":"feature","sha":%q},"base":{"ref":"main","sha":%q}}`, title, headSHA, strings.Repeat("b", 40))
+	}))
+	t.Cleanup(upstream.Close)
 	f, automationID := seedPluginWebhookAutomation(t, "pull_request", "synchronized")
+	ctx := context.Background()
+	cfg, err := f.st.GetProviderConfig(ctx, domain.PluginGitea)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.BaseURL = upstream.URL
+	if err := f.st.UpsertProviderConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := auth.NewCipher(f.masterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation, err := f.st.GetPluginInstallation(ctx, f.installationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation.AccessTokenEnc, err = cipher.EncryptString("gitea-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation.ConfigRevision = cfg.ConfigRevision
+	if err := f.st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	statusKey := domain.ReviewStatusCommentKey{
+		ServiceID: f.serviceID, Provider: domain.ProviderGitea,
+		ProviderRepoID: "42", PRNumber: 7,
+	}
 	automation, err := f.st.GetPluginAutomation(context.Background(), automationID)
 	if err != nil {
 		t.Fatal(err)
@@ -362,14 +408,21 @@ func TestPluginReviewAutomationQueuesReadyAfterIgnoringSameRevisionDraft(t *test
 			},
 		}
 	}
-	headSHA := strings.Repeat("c", 40)
-	draft := f.postGitea(t, "pull_request", "draft-review", payload("synchronize", true, headSHA))
+	// The payload says ready, but the provider already reports the same head as
+	// draft. The current provider state must suppress the review.
+	draft := f.postGitea(t, "pull_request", "draft-review", payload("synchronize", false, headSHA))
 	draft.Body.Close()
 	runs, _ := f.st.ListRunsByService(context.Background(), f.serviceID, 10)
 	if len(runs) != 0 {
 		t.Fatalf("draft review created %d runs", len(runs))
 	}
-	ready := f.postGitea(t, "pull_request", "ready-review", payload("ready_for_review", false, headSHA))
+	if _, err := f.st.GetReviewStatusComment(context.Background(), statusKey); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("draft review status err=%v, want not found", err)
+	}
+	currentDraft.Store(false)
+	// The inverse stale payload must not suppress a review after the provider has
+	// made the same head ready again.
+	ready := f.postGitea(t, "pull_request", "ready-review", payload("ready_for_review", true, headSHA))
 	ready.Body.Close()
 	runs, err = f.st.ListRunsByService(context.Background(), f.serviceID, 10)
 	if err != nil || len(runs) != 1 {
@@ -378,6 +431,21 @@ func TestPluginReviewAutomationQueuesReadyAfterIgnoringSameRevisionDraft(t *test
 	if runs[0].Kind != domain.RunKindReview || runs[0].PRHeadBranch != "feature" ||
 		runs[0].PRBaseBranch != "main" || runs[0].PRNumber != 7 {
 		t.Fatalf("review run=%+v", runs[0])
+	}
+	status, err := f.st.GetReviewStatusComment(context.Background(), statusKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CurrentRunID != runs[0].ID || status.HeadSHA != headSHA ||
+		status.RepositoryPath != "acme/repo" || status.DesiredState != domain.ReviewStatusQueued ||
+		status.DesiredBodyHash == "" || status.CommentID != "" || status.AcceptedSequence <= 0 {
+		t.Fatalf("queued review status=%+v", status)
+	}
+	snapshots, err := f.st.ListRunPluginSnapshots(context.Background(), runs[0].ID)
+	if err != nil || len(snapshots) != 1 || snapshots[0].InstallationID != f.installationID ||
+		snapshots[0].RepositoryID != "42" || snapshots[0].RepositoryPath != "acme/repo" ||
+		snapshots[0].CredentialVersionID == "" {
+		t.Fatalf("accepted review snapshots=%+v err=%v", snapshots, err)
 	}
 	executions, err := f.st.ListAutomationExecutions(context.Background(), automationID, "", nil, "", 10)
 	if err != nil || len(executions) != 2 {
@@ -389,6 +457,159 @@ func TestPluginReviewAutomationQueuesReadyAfterIgnoringSameRevisionDraft(t *test
 	}
 	if states[domain.AutomationExecutionIgnored] != 1 || states[domain.AutomationExecutionQueued] != 1 {
 		t.Fatalf("execution states=%v want one ignored draft and one queued review", states)
+	}
+
+	// A delayed older delivery must not move the shared PR status or Run owner
+	// backwards after the Provider already reports the accepted head.
+	delayed := f.postGitea(t, "pull_request", "delayed-old-review", payload("synchronize", false, strings.Repeat("a", 40)))
+	delayedBody, _ := io.ReadAll(delayed.Body)
+	delayed.Body.Close()
+	if delayed.StatusCode != http.StatusOK || !strings.Contains(string(delayedBody), `"status":"ignored"`) {
+		t.Fatalf("delayed response=%d body=%s", delayed.StatusCode, delayedBody)
+	}
+	runs, err = f.st.ListRunsByService(context.Background(), f.serviceID, 10)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("delayed runs=%d err=%v", len(runs), err)
+	}
+	status, err = f.st.GetReviewStatusComment(context.Background(), statusKey)
+	if err != nil || status.CurrentRunID != runs[0].ID || status.HeadSHA != headSHA {
+		t.Fatalf("delayed status=%+v err=%v", status, err)
+	}
+}
+
+func TestPluginReviewAutomationCoalescesQueuedHeadAcrossPRActions(t *testing.T) {
+	var currentHead atomic.Value
+	currentHead.Store(strings.Repeat("a", 40))
+	baseSHA := strings.Repeat("b", 40)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/repos/acme/repo/pulls/7" {
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"number":7,"html_url":"https://gitea.example/acme/repo/pulls/7","state":"open","title":"Review","head":{"ref":"feature","sha":%q},"base":{"ref":"main","sha":%q}}`, currentHead.Load().(string), baseSHA)
+	}))
+	t.Cleanup(upstream.Close)
+
+	f, automationID := seedPluginWebhookAutomation(t, "pull_request", "synchronized")
+	ctx := context.Background()
+	cfg, err := f.st.GetProviderConfig(ctx, domain.PluginGitea)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.BaseURL = upstream.URL
+	if err := f.st.UpsertProviderConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := auth.NewCipher(f.masterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation, err := f.st.GetPluginInstallation(ctx, f.installationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation.AccessTokenEnc, err = cipher.EncryptString("gitea-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation.ConfigRevision = cfg.ConfigRevision
+	if err := f.st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	automation, err := f.st.GetPluginAutomation(ctx, automationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := f.st.GetPluginAutomationSpec(ctx, automationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	automation.RunKind = domain.RunKindReview
+	spec.Actions = append(spec.Actions, domain.SCMAction{
+		AutomationID: automationID, ServiceID: f.serviceID,
+		EventFamily: "pull_request", Action: "opened",
+	})
+	if err := f.st.ReplacePluginAutomationSpec(ctx, automation, spec.SCM, spec.Actions, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	payload := func(action, sha string) map[string]any {
+		return map[string]any{
+			"action": action, "sender": map[string]any{"id": 8, "login": "dev"},
+			"repository": map[string]any{"id": 42, "full_name": "acme/repo", "default_branch": "main"},
+			"pull_request": map[string]any{
+				"id": 7, "number": 7, "html_url": "https://gitea.example/acme/repo/pulls/7",
+				"head": map[string]any{"ref": "feature", "sha": sha},
+				"base": map[string]any{"ref": "main", "sha": baseSHA},
+			},
+		}
+	}
+
+	headA := currentHead.Load().(string)
+	opened := f.postGitea(t, "pull_request", "opened-head-a", payload("opened", headA))
+	opened.Body.Close()
+	headB := strings.Repeat("c", 40)
+	currentHead.Store(headB)
+	synchronized := f.postGitea(t, "pull_request", "synchronized-head-b", payload("synchronize", headB))
+	synchronized.Body.Close()
+
+	runs, err := f.st.ListRunsByService(ctx, f.serviceID, 10)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("review runs=%+v err=%v", runs, err)
+	}
+	var oldRun, currentRun *domain.Run
+	for i := range runs {
+		switch runs[i].PRHeadSHA {
+		case headA:
+			oldRun = &runs[i]
+		case headB:
+			currentRun = &runs[i]
+		}
+	}
+	if oldRun == nil || oldRun.Status != domain.StatusCanceled || oldRun.Phase != "Superseded" {
+		t.Fatalf("opened head A was not superseded: %+v", oldRun)
+	}
+	if currentRun == nil || currentRun.Status != domain.StatusQueued {
+		t.Fatalf("synchronized head B is not queued: %+v", currentRun)
+	}
+	if oldRun.CoalesceKey == "" || oldRun.CoalesceKey != currentRun.CoalesceKey {
+		t.Fatalf("review coalesce keys A=%q B=%q", oldRun.CoalesceKey, currentRun.CoalesceKey)
+	}
+	status, err := f.st.GetReviewStatusComment(ctx, domain.ReviewStatusCommentKey{
+		ServiceID: f.serviceID, Provider: domain.ProviderGitea, ProviderRepoID: "42", PRNumber: 7,
+	})
+	if err != nil || status.CurrentRunID != currentRun.ID || status.HeadSHA != headB {
+		t.Fatalf("current review status=%+v err=%v", status, err)
+	}
+
+	// A newer Provider head that fails this Automation's path filter still makes
+	// the queued B review stale. It must cancel B without creating a misleading
+	// processing Run/status owner for the filtered C revision.
+	spec.SCM.PathPattern = "src/**"
+	if err := f.st.ReplacePluginAutomationSpec(ctx, automation, spec.SCM, spec.Actions, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	headC := strings.Repeat("d", 40)
+	currentHead.Store(headC)
+	filtered := f.postGitea(t, "pull_request", "synchronized-head-c-filtered", payload("synchronize", headC))
+	filteredBody, _ := io.ReadAll(filtered.Body)
+	filtered.Body.Close()
+	if filtered.StatusCode != http.StatusOK || !strings.Contains(string(filteredBody), `"status":"ignored"`) {
+		t.Fatalf("filtered response=%d body=%s", filtered.StatusCode, filteredBody)
+	}
+	runs, err = f.st.ListRunsByService(ctx, f.serviceID, 10)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("filtered head created a Run: runs=%+v err=%v", runs, err)
+	}
+	gotB, err := f.st.GetRun(ctx, currentRun.ID)
+	if err != nil || gotB.Status != domain.StatusCanceled || gotB.Phase != "Superseded" {
+		t.Fatalf("filtered current head did not supersede B: run=%+v err=%v", gotB, err)
+	}
+	status, err = f.st.GetReviewStatusComment(ctx, domain.ReviewStatusCommentKey{
+		ServiceID: f.serviceID, Provider: domain.ProviderGitea, ProviderRepoID: "42", PRNumber: 7,
+	})
+	if err != nil || status.CurrentRunID != currentRun.ID || status.HeadSHA != headB {
+		t.Fatalf("filtered head incorrectly became status owner: status=%+v err=%v", status, err)
 	}
 }
 
@@ -475,7 +696,7 @@ func TestPluginReviewMentionIsAuthorizedAndRepeatable(t *testing.T) {
 	for _, run := range runs {
 		if run.Kind != domain.RunKindReview || run.Origin != domain.RunOriginWebhook ||
 			run.PRHeadBranch != "feature" || run.PRBaseBranch != "main" ||
-			!strings.Contains(run.Prompt, "transaction boundaries") {
+			run.CoalesceKey != "" || !strings.Contains(run.Prompt, "transaction boundaries") {
 			t.Fatalf("manual review run=%+v", run)
 		}
 	}
@@ -489,6 +710,13 @@ func TestPluginReviewMentionIsAuthorizedAndRepeatable(t *testing.T) {
 			execution.RequestedActor.ExternalID != "9001" {
 			t.Fatalf("requested actor=%+v", execution.RequestedActor)
 		}
+	}
+	statusKey := domain.ReviewStatusCommentKey{
+		ServiceID: f.serviceID, Provider: domain.ProviderGitea,
+		ProviderRepoID: "42", PRNumber: 7,
+	}
+	if _, err := f.st.GetReviewStatusComment(ctx, statusKey); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("manual review status err=%v, want not found", err)
 	}
 }
 

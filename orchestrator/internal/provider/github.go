@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -51,6 +52,27 @@ type githubPR struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"base"`
+}
+
+type githubIssueComment struct {
+	ID      int64  `json:"id"`
+	HTMLURL string `json:"html_url"`
+	Body    string `json:"body"`
+	User    struct {
+		ID    int64  `json:"id"`
+		Login string `json:"login"`
+	} `json:"user"`
+	PerformedViaGitHubApp *struct {
+		ID int64 `json:"id"`
+	} `json:"performed_via_github_app"`
+}
+
+func (c githubIssueComment) issueComment() (*IssueComment, error) {
+	var authorAppID int64
+	if c.PerformedViaGitHubApp != nil && c.PerformedViaGitHubApp.ID > 0 {
+		authorAppID = c.PerformedViaGitHubApp.ID
+	}
+	return newIssueComment(c.ID, c.HTMLURL, c.Body, c.User.ID, c.User.Login, authorAppID)
 }
 
 func (c *GitHubClient) auth() string   { return "Bearer " + c.token }
@@ -173,6 +195,96 @@ func (c *GitHubClient) PRByNumber(ctx context.Context, owner, repo string, prNum
 func (c *GitHubClient) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error {
 	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments", c.apiBase, owner, repo, issueNumber)
 	return doJSON(ctx, c.http, http.MethodPost, url, c.auth(), c.accept(), map[string]any{"body": body}, nil)
+}
+
+func (c *GitHubClient) CreateManagedIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) (*IssueComment, error) {
+	u := fmt.Sprintf("%s/repos/%s/issues/%d/comments", c.apiBase, escapedRepositoryPath(owner, repo), issueNumber)
+	var out githubIssueComment
+	if err := doJSON(ctx, c.http, http.MethodPost, u, c.auth(), c.accept(), map[string]any{"body": body}, &out); err != nil {
+		return nil, err
+	}
+	return out.issueComment()
+}
+
+func (c *GitHubClient) UpdateIssueComment(ctx context.Context, owner, repo string, _ int, commentID, body string) (*IssueComment, error) {
+	id, err := parseIssueCommentID(commentID)
+	if err != nil {
+		return nil, err
+	}
+	u := fmt.Sprintf("%s/repos/%s/issues/comments/%d", c.apiBase, escapedRepositoryPath(owner, repo), id)
+	var out githubIssueComment
+	if err := doJSON(ctx, c.http, http.MethodPatch, u, c.auth(), c.accept(), map[string]any{"body": body}, &out); err != nil {
+		return nil, err
+	}
+	return out.issueComment()
+}
+
+func (c *GitHubClient) ListIssueComments(ctx context.Context, owner, repo string, issueNumber, limit int) ([]IssueComment, error) {
+	limit = managedIssueCommentLimit(limit)
+	const pageSize = managedIssueCommentPageSize
+	baseURL := fmt.Sprintf("%s/repos/%s/issues/%d/comments", c.apiBase, escapedRepositoryPath(owner, repo), issueNumber)
+	fetchPage := func(page int) ([]githubIssueComment, http.Header, error) {
+		u := fmt.Sprintf("%s?per_page=%d&page=%d", baseURL, pageSize, page)
+		var pageComments []githubIssueComment
+		header, err := doJSONResponseWithLimit(ctx, c.http, http.MethodGet, u, c.auth(), c.accept(), nil, &pageComments, maxManagedIssueCommentJSONResponseBytes)
+		return pageComments, header, err
+	}
+
+	firstPage, header, err := fetchPage(1)
+	if err != nil {
+		return nil, err
+	}
+	lastPage, err := providerLastPage(header, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	raw := make([]githubIssueComment, 0, limit)
+	retainedBodyBytes := 0
+	appendPage := func(pageComments []githubIssueComment) error {
+		for _, comment := range pageComments {
+			var budgetErr error
+			retainedBodyBytes, budgetErr = addManagedIssueCommentBodyBytes(retainedBodyBytes, comment.Body)
+			if budgetErr != nil {
+				return budgetErr
+			}
+			raw = append(raw, comment)
+		}
+		return nil
+	}
+	if lastPage > 1 {
+		fetches := 1 // page 1 was needed to discover the provider's last page.
+		for page := lastPage; page >= 1 && len(raw) < limit; page-- {
+			pageComments := firstPage
+			if page != 1 {
+				if fetches >= maxManagedIssueCommentPageFetches {
+					break
+				}
+				pageComments, _, err = fetchPage(page)
+				fetches++
+				if err != nil {
+					return nil, err
+				}
+			}
+			if err = appendPage(pageComments); err != nil {
+				return nil, err
+			}
+		}
+	} else if err = appendPage(firstPage); err != nil {
+		return nil, err
+	}
+	sort.Slice(raw, func(i, j int) bool { return raw[i].ID > raw[j].ID })
+	if len(raw) > limit {
+		raw = raw[:limit]
+	}
+	comments := make([]IssueComment, 0, len(raw))
+	for _, item := range raw {
+		comment, err := item.issueComment()
+		if err != nil {
+			return nil, err
+		}
+		comments = append(comments, *comment)
+	}
+	return comments, nil
 }
 
 func (c *GitHubClient) CreateIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, content string) error {
@@ -328,6 +440,7 @@ func (c *GitHubClient) CurrentUser(ctx context.Context) (string, error) {
 }
 
 var _ Provider = (*GitHubClient)(nil)
+var _ ManagedIssueCommentProvider = (*GitHubClient)(nil)
 var _ RepoLister = (*GitHubClient)(nil)
 var _ BranchLister = (*GitHubClient)(nil)
 var _ CurrentUser = (*GitHubClient)(nil)

@@ -48,8 +48,11 @@ type MemStore struct {
 	pluginKanbanOccurrences  map[string]domain.PluginKanbanOccurrence
 	pluginCronTriggers       map[string]domain.CronTrigger
 	automationExecutions     map[string]domain.AutomationExecution
+	reviewStatusComments     map[string]domain.ReviewStatusComment
+	reviewStatusCursors      map[string]reviewStatusCursor
 	webhookReceipts          map[string]domain.WebhookReceipt // provider|delivery id
 	webhookReceiptDigests    map[string]string                // provider|authenticated payload digest -> receipt key
+	webhookReceiptSequence   int64
 	runPluginSnapshots       map[string]map[string]domain.RunPluginSnapshot
 	pluginAuditEvents        map[string]domain.PluginAuditEvent
 	clusterSettings          *domain.ClusterSettings
@@ -114,6 +117,8 @@ func NewMemStore() *MemStore {
 		pluginKanbanOccurrences:  map[string]domain.PluginKanbanOccurrence{},
 		pluginCronTriggers:       map[string]domain.CronTrigger{},
 		automationExecutions:     map[string]domain.AutomationExecution{},
+		reviewStatusComments:     map[string]domain.ReviewStatusComment{},
+		reviewStatusCursors:      map[string]reviewStatusCursor{},
 		webhookReceipts:          map[string]domain.WebhookReceipt{},
 		webhookReceiptDigests:    map[string]string{},
 		runPluginSnapshots:       map[string]map[string]domain.RunPluginSnapshot{},
@@ -421,6 +426,16 @@ func (m *MemStore) deleteServiceLocked(id string) {
 			m.deletePluginAutomationLocked(automationID)
 		}
 	}
+	for key, status := range m.reviewStatusComments {
+		if status.Key.ServiceID == id {
+			delete(m.reviewStatusComments, key)
+		}
+	}
+	for key, cursor := range m.reviewStatusCursors {
+		if cursor.Key.ServiceID == id {
+			delete(m.reviewStatusCursors, key)
+		}
+	}
 	delete(m.serviceRepoBindings, id)
 	delete(m.webhookBindings, id)
 	delete(m.services, id)
@@ -443,6 +458,12 @@ func (m *MemStore) MarkServiceDeleting(_ context.Context, id string, at time.Tim
 
 func (m *MemStore) deleteRunLocked(runID string) {
 	delete(m.runs, runID)
+	for key, status := range m.reviewStatusComments {
+		if status.CurrentRunID == runID {
+			status.CurrentRunID = ""
+			m.reviewStatusComments[key] = status
+		}
+	}
 	delete(m.events, runID)
 	delete(m.runMessages, runID)
 	delete(m.runPluginSnapshots, runID)
@@ -1088,6 +1109,16 @@ func (m *MemStore) ClaimRunDispatch(_ context.Context, id, jobName, tokenHash, p
 	if run.Status != domain.StatusQueued {
 		return nil, fmt.Errorf("%w: %s is not queued", ErrInvalidTransition, id)
 	}
+	hasReviewStatus := false
+	for _, status := range m.reviewStatusComments {
+		if status.CurrentRunID == id {
+			hasReviewStatus = true
+			break
+		}
+	}
+	if hasReviewStatus && requiredInstallationID == "" {
+		return nil, fmt.Errorf("%w: accepted review provider grant is unavailable", ErrDispatchClaimUnavailable)
+	}
 	seen := map[string]struct{}{}
 	requiredFound := requiredInstallationID == ""
 	for _, snap := range snapshots {
@@ -1114,6 +1145,30 @@ func (m *MemStore) ClaimRunDispatch(_ context.Context, id, jobName, tokenHash, p
 	}
 	if !requiredFound {
 		return nil, fmt.Errorf("%w: required plugin missing", ErrDispatchClaimUnavailable)
+	}
+	if requiredInstallationID != "" {
+		for _, status := range m.reviewStatusComments {
+			if status.CurrentRunID != id {
+				continue
+			}
+			var acceptedInstallationID string
+			var frozen domain.RunPluginSnapshot
+			for installationID, candidate := range m.runPluginSnapshots[id] {
+				if domain.GitProvider(candidate.Provider) == status.Key.Provider &&
+					candidate.RepositoryID == status.Key.ProviderRepoID && candidate.RepositoryPath == status.RepositoryPath {
+					acceptedInstallationID, frozen = installationID, candidate
+					break
+				}
+			}
+			installation := m.pluginInstallations[requiredInstallationID]
+			if acceptedInstallationID == "" || acceptedInstallationID != requiredInstallationID ||
+				frozen.Provider != installation.Provider ||
+				frozen.ProviderConfigRevision != installation.ConfigRevision ||
+				frozen.CredentialVersionID != installation.CredentialVersionID {
+				return nil, fmt.Errorf("%w: accepted review provider identity changed", ErrDispatchClaimUnavailable)
+			}
+			break
+		}
 	}
 	// Validation completed before mutation: a bad later input cannot leave a
 	// partial batch of snapshots behind.
@@ -1142,6 +1197,15 @@ func (m *MemStore) ClaimRunDispatch(_ context.Context, id, jobName, tokenHash, p
 		if !ok || !required.HasFrozenRepositoryGrant() {
 			return nil, fmt.Errorf("%w: required repository grant changed", ErrDispatchClaimUnavailable)
 		}
+		for _, status := range m.reviewStatusComments {
+			if status.CurrentRunID != id {
+				continue
+			}
+			if domain.GitProvider(required.Provider) != status.Key.Provider ||
+				required.RepositoryID != status.Key.ProviderRepoID || required.RepositoryPath != status.RepositoryPath {
+				return nil, fmt.Errorf("%w: accepted review repository changed", ErrDispatchClaimUnavailable)
+			}
+		}
 	}
 	m.runPluginSnapshots[id] = staged
 	run.Status = domain.StatusScheduling
@@ -1163,7 +1227,26 @@ func (m *MemStore) FailRunDispatch(_ context.Context, id, jobName, phase, messag
 	if run.Status != domain.StatusScheduling || run.K8sJobName != jobName {
 		return nil, fmt.Errorf("%w: dispatch claim no longer current", ErrInvalidTransition)
 	}
-	delete(m.runPluginSnapshots, id)
+	if snapshots := m.runPluginSnapshots[id]; len(snapshots) > 0 {
+		for installationID, snapshot := range snapshots {
+			keep := false
+			for _, status := range m.reviewStatusComments {
+				if status.CurrentRunID == id && domain.GitProvider(snapshot.Provider) == status.Key.Provider &&
+					snapshot.RepositoryID == status.Key.ProviderRepoID && snapshot.RepositoryPath == status.RepositoryPath {
+					keep = true
+					break
+				}
+			}
+			if !keep {
+				delete(snapshots, installationID)
+			}
+		}
+		if len(snapshots) == 0 {
+			delete(m.runPluginSnapshots, id)
+		} else {
+			m.runPluginSnapshots[id] = snapshots
+		}
+	}
 	run.Status = domain.StatusFailed
 	run.Phase = phase
 	run.Error = message
@@ -3743,7 +3826,9 @@ func (m *MemStore) ClaimWebhookReceipt(_ context.Context, r *domain.WebhookRecei
 		}
 	}
 	if exists {
-		if existing.Status != "error" {
+		staleReceived := existing.Status == "received" &&
+			!r.ReclaimBefore.IsZero() && !webhookReceiptClaimedAt(existing).After(r.ReclaimBefore)
+		if existing.Status != "error" && !staleReceived {
 			return false, nil
 		}
 		delete(m.webhookReceipts, existingKey)
@@ -3754,9 +3839,15 @@ func (m *MemStore) ClaimWebhookReceipt(_ context.Context, r *domain.WebhookRecei
 			}
 		}
 	}
+	m.webhookReceiptSequence++
+	r.IngressSequence = m.webhookReceiptSequence
 	cp := *r
 	if cp.ReceivedAt.IsZero() {
 		cp.ReceivedAt = time.Now().UTC()
+	}
+	if cp.ClaimedAt == nil {
+		claimedAt := cp.ReceivedAt
+		cp.ClaimedAt = &claimedAt
 	}
 	m.webhookReceipts[key] = cp
 	if digestKey != "" {
@@ -3769,11 +3860,28 @@ func (m *MemStore) CompleteWebhookReceipt(_ context.Context, r *domain.WebhookRe
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := string(r.Provider) + "|" + r.DeliveryID
-	if _, ok := m.webhookReceipts[key]; !ok {
+	existing, ok := m.webhookReceipts[key]
+	if !ok && r.PayloadDigest != "" {
+		if resolved, exists := m.webhookReceiptDigests[string(r.Provider)+"|"+r.PayloadDigest]; exists {
+			key = resolved
+			existing, ok = m.webhookReceipts[key]
+		}
+	}
+	if !ok {
 		return ErrNotFound
+	}
+	if existing.ClaimToken != r.ClaimToken {
+		return ErrConflict
 	}
 	m.webhookReceipts[key] = *r
 	return nil
+}
+
+func webhookReceiptClaimedAt(receipt domain.WebhookReceipt) time.Time {
+	if receipt.ClaimedAt != nil {
+		return receipt.ClaimedAt.UTC()
+	}
+	return receipt.ReceivedAt.UTC()
 }
 
 // DeleteExpiredWebhookReceipts mirrors the database's expires_at column. The
@@ -3939,12 +4047,30 @@ func (m *MemStore) deleteUnreferencedPluginSecretVersionsLocked(limit int) (cred
 			pendingKanbanWritebackRuns[claim.RunID] = struct{}{}
 		}
 	}
+	pendingReviewStatusRuns := make(map[string]struct{})
+	for _, status := range m.reviewStatusComments {
+		run, ok := m.runs[status.CurrentRunID]
+		if !ok {
+			continue
+		}
+		converged := status.CommentID != "" && status.DesiredState == status.AppliedState &&
+			status.DesiredBodyHash == status.AppliedBodyHash && status.AppliedState.Terminal() &&
+			status.ObservedRun == domain.ReviewStatusObservationForRun(run)
+		if !converged {
+			pendingReviewStatusRuns[run.ID] = struct{}{}
+		}
+	}
 	for runID, snapshots := range m.runPluginSnapshots {
 		run, ok := m.runs[runID]
 		if !ok {
 			continue
 		}
-		if _, awaitingWriteback := pendingKanbanWritebackRuns[runID]; run.Status.Terminal() && !awaitingWriteback {
+		_, awaitingWriteback := pendingKanbanWritebackRuns[runID]
+		_, awaitingReviewStatus := pendingReviewStatusRuns[runID]
+		awaitingNativeReview := run.Kind == domain.RunKindReview && run.Status == domain.StatusSucceeded &&
+			(run.ReviewOutput != "" || run.ReviewResult != nil) &&
+			(run.DeliveryStatus == domain.DeliveryNotRequired || run.DeliveryStatus == domain.DeliveryPending)
+		if run.Status.Terminal() && !awaitingWriteback && !awaitingReviewStatus && !awaitingNativeReview {
 			continue
 		}
 		for _, snapshot := range snapshots {

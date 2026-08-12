@@ -212,6 +212,85 @@ func TestPluginSecretVersionGCWaitsForLastActiveSnapshotReference(t *testing.T) 
 	}
 }
 
+func TestPluginSecretVersionGCWaitsForReviewStatusDelivery(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	installation, run := seedPluginSecretRetentionRun(t, st, "review-status")
+	originalVersion := installation.CredentialVersionID
+	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{
+		Provider: domain.PluginGitLab, PluginEnabled: true, BaseURL: "https://gitlab.rotated",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	installation, _ = st.GetPluginInstallation(ctx, installation.ID)
+	installation.AccessTokenEnc = []byte("rotated-token")
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	run.Kind = domain.RunKindReview
+	run.Status = domain.StatusSucceeded
+	run.DeliveryStatus = domain.DeliveryFailed
+	st.runs[run.ID] = run
+	statusKey := domain.ReviewStatusCommentKey{
+		ServiceID: run.ServiceID, Provider: domain.ProviderGitLab,
+		ProviderRepoID: "repo-1", PRNumber: 1,
+	}
+	st.reviewStatusComments[reviewStatusMapKey(statusKey)] = domain.ReviewStatusComment{
+		Key: statusKey, CurrentRunID: run.ID, DesiredState: domain.ReviewStatusFailed,
+		AppliedState: domain.ReviewStatusPublishing, DesiredBodyHash: "failed", AppliedBodyHash: "publishing",
+	}
+	if credentials, providers, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil || credentials != 0 || providers != 0 {
+		t.Fatalf("pending review status GC=(%d,%d,%v), want 0,0,nil", credentials, providers, err)
+	}
+	if _, ok := st.pluginCredentialVersions[originalVersion]; !ok {
+		t.Fatal("pending review status lost its credential version")
+	}
+
+	status := st.reviewStatusComments[reviewStatusMapKey(statusKey)]
+	status.CommentID = "note-1"
+	status.AppliedState = domain.ReviewStatusFailed
+	status.AppliedBodyHash = status.DesiredBodyHash
+	status.ObservedRun = domain.ReviewStatusObservationForRun(run)
+	st.reviewStatusComments[reviewStatusMapKey(statusKey)] = status
+	if credentials, providers, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil || credentials != 1 || providers != 1 {
+		t.Fatalf("converged review status GC=(%d,%d,%v), want 1,1,nil", credentials, providers, err)
+	}
+}
+
+func TestPluginSecretVersionGCWaitsForStructuredNativeReviewDelivery(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	installation, run := seedPluginSecretRetentionRun(t, st, "structured-review")
+	originalVersion := installation.CredentialVersionID
+	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{
+		Provider: domain.PluginGitLab, PluginEnabled: true, BaseURL: "https://gitlab.rotated",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	installation, _ = st.GetPluginInstallation(ctx, installation.ID)
+	installation.AccessTokenEnc = []byte("rotated-token")
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	run.Kind = domain.RunKindReview
+	run.Status = domain.StatusSucceeded
+	run.DeliveryStatus = domain.DeliveryPending
+	run.DeliveryKind = domain.DeliveryReviewComment
+	run.ReviewOutput = ""
+	run.ReviewResult = &domain.ReviewResult{Summary: "Structured review is ready."}
+	st.runs[run.ID] = run
+	if credentials, providers, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil || credentials != 0 || providers != 0 {
+		t.Fatalf("pending structured review GC=(%d,%d,%v), want 0,0,nil", credentials, providers, err)
+	}
+	if _, ok := st.pluginCredentialVersions[originalVersion]; !ok {
+		t.Fatal("pending structured review lost its credential version")
+	}
+
+	run.DeliveryStatus = domain.DeliveryDelivered
+	st.runs[run.ID] = run
+	if credentials, providers, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil || credentials != 1 || providers != 1 {
+		t.Fatalf("delivered structured review GC=(%d,%d,%v), want 1,1,nil", credentials, providers, err)
+	}
+}
+
 func TestPGPluginSecretVersionGCAndSnapshotFKMigration(t *testing.T) {
 	ctx := context.Background()
 	st, runID := pgTestStore(t)
@@ -274,8 +353,24 @@ func TestPGPluginSecretVersionGCAndSnapshotFKMigration(t *testing.T) {
 	if _, err := st.MarkSucceeded(ctx, run.ID, "done", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.Pool().Exec(ctx, `UPDATE runs SET
+		kind='review',review_output='',review_result='{"summary":"Structured review is ready.","findings":[]}'::jsonb,
+		delivery_status='pending',delivery_kind='review_comment'
+		WHERE id=$1`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil {
+		t.Fatalf("pending structured PG review GC: %v", err)
+	}
+	var originalStillPinnedByStructuredReview int
+	if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM plugin_credential_versions WHERE id=$1`, originalVersion).Scan(&originalStillPinnedByStructuredReview); err != nil || originalStillPinnedByStructuredReview != 1 {
+		t.Fatalf("pending structured PG review credential retained=%d err=%v, want 1,nil", originalStillPinnedByStructuredReview, err)
+	}
 	automationID, documentID := "pending-writeback-"+domain.NewID(), "card-"+domain.NewID()
 	if _, err := st.Pool().Exec(ctx, `INSERT INTO automation_kanban_claims(automation_id,installation_id,document_id,run_id) VALUES($1,$2,$3,$4)`, automationID, installation.ID, documentID, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool().Exec(ctx, `UPDATE runs SET delivery_status='delivered' WHERE id=$1`, run.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil {
@@ -322,6 +417,9 @@ func TestWebhookReceiptAuthenticatedPayloadDigestDeduplicatesAndExpires(t *testi
 	if claimed, err := st.ClaimWebhookReceipt(ctx, first); err != nil || !claimed {
 		t.Fatalf("claim first = %v, %v", claimed, err)
 	}
+	if first.IngressSequence <= 0 {
+		t.Fatalf("first ingress sequence=%d, want positive", first.IngressSequence)
+	}
 	replay := *first
 	replay.ID = "replay"
 	replay.DeliveryID = "forged-delivery-id"
@@ -334,6 +432,9 @@ func TestWebhookReceiptAuthenticatedPayloadDigestDeduplicatesAndExpires(t *testi
 	}
 	if claimed, err := st.ClaimWebhookReceipt(ctx, &replay); err != nil || !claimed {
 		t.Fatalf("digest was not released after 30-day cleanup: %v, %v", claimed, err)
+	}
+	if replay.IngressSequence <= first.IngressSequence {
+		t.Fatalf("new receipt sequence=%d, want greater than expired %d", replay.IngressSequence, first.IngressSequence)
 	}
 }
 
@@ -361,6 +462,44 @@ func TestWebhookReceiptErrorCanBeReclaimedExactlyOnce(t *testing.T) {
 	}
 	if claimed, err := st.ClaimWebhookReceipt(ctx, &retry); err != nil || claimed {
 		t.Fatalf("second reclaim = %v, %v; want duplicate", claimed, err)
+	}
+}
+
+func TestWebhookReceiptStaleReceivedClaimCanBeRecoveredAndIsFenced(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	now := time.Date(2026, time.August, 12, 9, 0, 0, 0, time.UTC)
+	oldClaimedAt := now.Add(-3 * time.Minute)
+	first := &domain.WebhookReceipt{
+		ID: "first", Provider: domain.PluginGitea, DeliveryID: "delivery-1",
+		PayloadDigest: "authenticated-body", Status: "received", ReceivedAt: oldClaimedAt,
+		ClaimToken: "claim-old", ClaimedAt: &oldClaimedAt,
+	}
+	if claimed, err := st.ClaimWebhookReceipt(ctx, first); err != nil || !claimed {
+		t.Fatalf("claim first = %v, %v", claimed, err)
+	}
+
+	freshClaimedAt := now
+	retry := *first
+	retry.ID = "retry"
+	retry.DeliveryID = "delivery-2"
+	retry.ReceivedAt = now
+	retry.ClaimToken = "claim-new"
+	retry.ClaimedAt = &freshClaimedAt
+	retry.ReclaimBefore = now.Add(-2 * time.Minute)
+	if claimed, err := st.ClaimWebhookReceipt(ctx, &retry); err != nil || !claimed {
+		t.Fatalf("reclaim stale received receipt = %v, %v", claimed, err)
+	}
+	if retry.IngressSequence <= first.IngressSequence {
+		t.Fatalf("reclaim sequence=%d, want newer than %d", retry.IngressSequence, first.IngressSequence)
+	}
+
+	first.Status = "matched"
+	if err := st.CompleteWebhookReceipt(ctx, first); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale worker completion error = %v, want ErrConflict", err)
+	}
+	retry.Status = "matched"
+	if err := st.CompleteWebhookReceipt(ctx, &retry); err != nil {
+		t.Fatalf("new worker completion = %v", err)
 	}
 }
 
@@ -687,6 +826,202 @@ func TestClaimRunDispatchRejectsChangedRequiredRepositoryGrant(t *testing.T) {
 	}
 }
 
+func TestClaimRunDispatchRejectsRepositoryReboundAfterReviewAcceptance(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	_ = st.CreateProject(ctx, &domain.Project{ID: "p", Name: "p"})
+	repoID := int64(42)
+	_ = st.CreateService(ctx, &domain.Service{
+		ID: "s", ProjectID: "p", Name: "s", RepoKind: domain.RepoKindProvider,
+		Provider: domain.ProviderGitea, ProviderRepoID: &repoID, RepoOwnerName: "owner/accepted", DefaultBranch: "main",
+	})
+	_ = st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginGitea, PluginEnabled: true})
+	cfg, _ := st.GetProviderConfig(ctx, domain.PluginGitea)
+	installation := &domain.PluginInstallation{
+		ID: "i", ProjectID: "p", Provider: domain.PluginGitea, Status: domain.PluginStatusEnabled,
+		AccessTokenEnc: []byte("ciphertext"), ConfigRevision: cfg.ConfigRevision,
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	accepted := &domain.ServiceRepositoryBinding{
+		ServiceID: "s", InstallationID: "i", ProviderRepoID: "42", RepositoryPath: "owner/accepted",
+		CloneURL: "https://git.example/owner/accepted.git", DefaultBranch: "main",
+	}
+	if err := st.UpsertServiceRepositoryBinding(ctx, accepted); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: "r", ProjectID: "p", ServiceID: "s", Status: domain.StatusQueued, Kind: domain.RunKindReview,
+		PRNumber: 7, PRHeadBranch: "feature", PRBaseBranch: "main",
+		PRHeadSHA: strings.Repeat("a", 40), PRBaseSHA: strings.Repeat("b", 40),
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	statusKey := domain.ReviewStatusCommentKey{
+		ServiceID: "s", Provider: domain.ProviderGitea, ProviderRepoID: "42", PRNumber: 7,
+	}
+	st.reviewStatusComments[reviewStatusMapKey(statusKey)] = domain.ReviewStatusComment{
+		Key: statusKey, RepositoryPath: accepted.RepositoryPath, CurrentRunID: run.ID,
+		DesiredState: domain.ReviewStatusQueued, DesiredBodyHash: "queued",
+	}
+	if err := st.UpsertServiceRepositoryBinding(ctx, &domain.ServiceRepositoryBinding{
+		ServiceID: "s", InstallationID: "i", ProviderRepoID: "99", RepositoryPath: "owner/rebound",
+		CloneURL: "https://git.example/owner/rebound.git", DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := st.ClaimRunDispatch(ctx, run.ID, "job", "hash", "PreparingWorkspace", installation.ID,
+		[]domain.RunPluginSnapshot{{RunID: run.ID, InstallationID: installation.ID}})
+	if !errors.Is(err, ErrDispatchClaimUnavailable) {
+		t.Fatalf("claim err=%v want ErrDispatchClaimUnavailable", err)
+	}
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.Status != domain.StatusQueued || got.TokenHash != "" {
+		t.Fatalf("rebound claim mutated Run: %+v", got)
+	}
+	_, err = st.ClaimRunDispatch(ctx, run.ID, "job", "hash", "PreparingWorkspace", "",
+		[]domain.RunPluginSnapshot{{RunID: run.ID, InstallationID: installation.ID}})
+	if !errors.Is(err, ErrDispatchClaimUnavailable) {
+		t.Fatalf("claim without required installation err=%v want ErrDispatchClaimUnavailable", err)
+	}
+}
+
+func TestClaimRunDispatchPreservesAcceptedReviewCredentialIdentity(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	_ = st.CreateProject(ctx, &domain.Project{ID: "p", Name: "p"})
+	_ = st.CreateService(ctx, &domain.Service{
+		ID: "s", ProjectID: "p", Name: "s", RepoKind: domain.RepoKindProvider,
+		Provider: domain.ProviderGitea, RepoOwnerName: "owner/repo", DefaultBranch: "main",
+	})
+	_ = st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginGitea, PluginEnabled: true})
+	cfg, _ := st.GetProviderConfig(ctx, domain.PluginGitea)
+	installation := &domain.PluginInstallation{
+		ID: "i", ProjectID: "p", Provider: domain.PluginGitea, Status: domain.PluginStatusEnabled,
+		AccessTokenEnc: []byte("account-a-token"), ConfigRevision: cfg.ConfigRevision,
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertServiceRepositoryBinding(ctx, &domain.ServiceRepositoryBinding{
+		ServiceID: "s", InstallationID: "i", ProviderRepoID: "42", RepositoryPath: "owner/repo",
+		CloneURL: "https://git.example/owner/repo.git", DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: "r", ProjectID: "p", ServiceID: "s", Status: domain.StatusQueued,
+		Kind: domain.RunKindReview, PRNumber: 7, PRHeadBranch: "feature", PRBaseBranch: "main",
+		PRHeadSHA: strings.Repeat("a", 40), PRBaseSHA: strings.Repeat("b", 40),
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	statusKey := domain.ReviewStatusCommentKey{
+		ServiceID: "s", Provider: domain.ProviderGitea, ProviderRepoID: "42", PRNumber: 7,
+	}
+	st.reviewStatusComments[reviewStatusMapKey(statusKey)] = domain.ReviewStatusComment{
+		Key: statusKey, RepositoryPath: "owner/repo", CurrentRunID: run.ID,
+		DesiredState: domain.ReviewStatusQueued, DesiredBodyHash: "queued",
+	}
+	if err := st.CreateRunPluginSnapshots(ctx, []domain.RunPluginSnapshot{{
+		RunID: run.ID, InstallationID: installation.ID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := st.ListRunPluginSnapshots(ctx, run.ID)
+	if err != nil || len(accepted) != 1 {
+		t.Fatalf("accepted snapshots=%+v err=%v", accepted, err)
+	}
+	acceptedCredentialVersion := accepted[0].CredentialVersionID
+
+	installation.AccessTokenEnc = []byte("account-b-token")
+	if err := st.UpdatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if installation.CredentialVersionID == acceptedCredentialVersion {
+		t.Fatal("credential reconnect did not rotate immutable version")
+	}
+	_, err = st.ClaimRunDispatch(ctx, run.ID, "job", "hash", "PreparingWorkspace", installation.ID,
+		[]domain.RunPluginSnapshot{{RunID: run.ID, InstallationID: installation.ID}})
+	if !errors.Is(err, ErrDispatchClaimUnavailable) {
+		t.Fatalf("claim err=%v want ErrDispatchClaimUnavailable", err)
+	}
+	got, _ := st.GetRun(ctx, run.ID)
+	if got.Status != domain.StatusQueued || got.TokenHash != "" {
+		t.Fatalf("reconnected claim mutated Run: %+v", got)
+	}
+	retained, err := st.ListRunPluginSnapshots(ctx, run.ID)
+	if err != nil || len(retained) != 1 || retained[0].CredentialVersionID != acceptedCredentialVersion {
+		t.Fatalf("accepted grant was replaced: snapshots=%+v err=%v", retained, err)
+	}
+}
+
+func TestClaimRunDispatchRejectsSameRepositoryReboundToAnotherInstallation(t *testing.T) {
+	ctx, st := context.Background(), NewMemStore()
+	_ = st.CreateProject(ctx, &domain.Project{ID: "p", Name: "p"})
+	_ = st.CreateService(ctx, &domain.Service{
+		ID: "s", ProjectID: "p", Name: "s", RepoKind: domain.RepoKindProvider,
+		Provider: domain.ProviderGitea, RepoOwnerName: "owner/repo", DefaultBranch: "main",
+	})
+	_ = st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginGitea, PluginEnabled: true})
+	cfg, _ := st.GetProviderConfig(ctx, domain.PluginGitea)
+	acceptedInstallation := &domain.PluginInstallation{
+		ID: "accepted", ProjectID: "p", Provider: domain.PluginGitea,
+		Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("account-a"), ConfigRevision: cfg.ConfigRevision,
+	}
+	if err := st.CreatePluginInstallation(ctx, acceptedInstallation); err != nil {
+		t.Fatal(err)
+	}
+	// MemStore enforces one installation per provider/project at the public API.
+	// Seed a second valid aggregate directly to exercise the binding identity
+	// invariant independently of that current product-level uniqueness rule.
+	otherInstallation := *acceptedInstallation
+	otherInstallation.ID = "other"
+	otherInstallation.AccessTokenEnc = []byte("account-b")
+	st.appendPluginCredentialVersionLocked(&otherInstallation)
+	st.pluginInstallations[otherInstallation.ID] = otherInstallation
+	if err := st.UpsertServiceRepositoryBinding(ctx, &domain.ServiceRepositoryBinding{
+		ServiceID: "s", InstallationID: acceptedInstallation.ID, ProviderRepoID: "42",
+		RepositoryPath: "owner/repo", CloneURL: "https://git.example/owner/repo.git", DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: "r", ProjectID: "p", ServiceID: "s", Status: domain.StatusQueued, Kind: domain.RunKindReview,
+		PRNumber: 7, PRHeadBranch: "feature", PRBaseBranch: "main",
+		PRHeadSHA: strings.Repeat("a", 40), PRBaseSHA: strings.Repeat("b", 40),
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	key := domain.ReviewStatusCommentKey{ServiceID: "s", Provider: domain.ProviderGitea, ProviderRepoID: "42", PRNumber: 7}
+	st.reviewStatusComments[reviewStatusMapKey(key)] = domain.ReviewStatusComment{
+		Key: key, RepositoryPath: "owner/repo", CurrentRunID: run.ID,
+		DesiredState: domain.ReviewStatusQueued, DesiredBodyHash: "queued",
+	}
+	if err := st.CreateRunPluginSnapshots(ctx, []domain.RunPluginSnapshot{{
+		RunID: run.ID, InstallationID: acceptedInstallation.ID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertServiceRepositoryBinding(ctx, &domain.ServiceRepositoryBinding{
+		ServiceID: "s", InstallationID: otherInstallation.ID, ProviderRepoID: "42",
+		RepositoryPath: "owner/repo", CloneURL: "https://git.example/owner/repo.git", DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := st.ClaimRunDispatch(ctx, run.ID, "job", "hash", "PreparingWorkspace", otherInstallation.ID,
+		[]domain.RunPluginSnapshot{{RunID: run.ID, InstallationID: otherInstallation.ID}})
+	if !errors.Is(err, ErrDispatchClaimUnavailable) {
+		t.Fatalf("claim err=%v want ErrDispatchClaimUnavailable", err)
+	}
+	retained, err := st.ListRunPluginSnapshots(ctx, run.ID)
+	if err != nil || len(retained) != 1 || retained[0].InstallationID != acceptedInstallation.ID {
+		t.Fatalf("accepted installation was replaced: snapshots=%+v err=%v", retained, err)
+	}
+}
+
 func TestCreateRunPluginSnapshotsIsAtomicInMemory(t *testing.T) {
 	ctx, st := context.Background(), NewMemStore()
 	_ = st.CreateProject(ctx, &domain.Project{ID: "p", Name: "p"})
@@ -935,4 +1270,312 @@ func TestPGClaimRunDispatchFencesConcurrentDisableAndUninstall(t *testing.T) {
 	if err := st.UninstallPlugin(ctx, installation.ID); err != nil {
 		t.Fatalf("uninstall after terminal dispatch: %v", err)
 	}
+}
+
+func TestPGReviewAcceptanceSnapshotFencesCredentialRotationAndGC(t *testing.T) {
+	ctx := context.Background()
+	st, fixtureRunID := pgTestStore(t)
+	fixtureRun, err := st.GetRun(ctx, fixtureRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{
+		Provider: domain.PluginGitea, BaseURL: "https://gitea.example", PluginEnabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := st.GetProviderConfig(ctx, domain.PluginGitea)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: fixtureRun.ProjectID, Provider: domain.PluginGitea,
+		Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("account-a-token"),
+		Scopes: []string{}, ConfigRevision: cfg.ConfigRevision, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	service := &domain.Service{
+		ID: domain.NewID(), ProjectID: fixtureRun.ProjectID, Name: "acceptance-lock",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "owner/repo", DefaultBranch: "main", CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreatePluginBoundService(ctx, service, &domain.ServiceRepositoryBinding{
+		ServiceID: service.ID, InstallationID: installation.ID, ProviderRepoID: "42",
+		RepositoryPath: "owner/repo", CloneURL: "https://gitea.example/owner/repo.git",
+		DefaultBranch: "main", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: fixtureRun.ProjectID, ServiceID: service.ID,
+		Status: domain.StatusQueued, Kind: domain.RunKindReview, PRNumber: 7,
+		PRHeadSHA: strings.Repeat("a", 40), PRBaseSHA: strings.Repeat("b", 40),
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	intent := &domain.ReviewStatusComment{
+		Key: domain.ReviewStatusCommentKey{
+			ServiceID: service.ID, Provider: domain.ProviderGitea, ProviderRepoID: "42", PRNumber: 7,
+		},
+		RepositoryPath: "owner/repo", CurrentRunID: run.ID, InstallationID: installation.ID,
+		UpdatedAt: time.Now().UTC(),
+	}
+	originalCredentialVersion := installation.CredentialVersionID
+	tx, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lockReviewStatusGrantTx(ctx, tx, intent, fixtureRun.ProjectID); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := freezeReviewStatusSnapshotTx(ctx, tx, intent); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+
+	rotated := *installation
+	rotated.AccessTokenEnc = []byte("account-b-token")
+	rotationResult := make(chan error, 1)
+	go func() { rotationResult <- st.UpdatePluginInstallation(context.Background(), &rotated) }()
+	select {
+	case err := <-rotationResult:
+		_ = tx.Rollback(ctx)
+		t.Fatalf("credential rotation escaped acceptance lock: %v", err)
+	case <-time.After(150 * time.Millisecond):
+		// Expected: the accepting transaction holds the installation SHARE lock.
+	}
+	if _, _, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("concurrent secret GC: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-rotationResult; err != nil {
+		t.Fatal(err)
+	}
+	if rotated.CredentialVersionID == originalCredentialVersion {
+		t.Fatal("credential rotation did not create a new immutable version")
+	}
+	if _, _, err := st.DeleteUnreferencedPluginSecretVersions(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	var retained int
+	if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM plugin_credential_versions WHERE id=$1`,
+		originalCredentialVersion).Scan(&retained); err != nil || retained != 1 {
+		t.Fatalf("accepted credential retained=%d err=%v", retained, err)
+	}
+	snapshots, err := st.ListRunPluginSnapshots(ctx, run.ID)
+	if err != nil || len(snapshots) != 1 || snapshots[0].CredentialVersionID != originalCredentialVersion {
+		t.Fatalf("acceptance snapshots=%+v err=%v", snapshots, err)
+	}
+}
+
+func TestPGReviewAcceptanceAndUninstallShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	st, fixtureRunID := pgTestStore(t)
+	fixtureRun, err := st.GetRun(ctx, fixtureRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{
+		Provider: domain.PluginGitea, BaseURL: "https://gitea.example", PluginEnabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := st.GetProviderConfig(ctx, domain.PluginGitea)
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: fixtureRun.ProjectID, Provider: domain.PluginGitea,
+		Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("token"), Scopes: []string{},
+		ConfigRevision: cfg.ConfigRevision, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	service := &domain.Service{
+		ID: domain.NewID(), ProjectID: fixtureRun.ProjectID, Name: "acceptance-uninstall",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "owner/repo", DefaultBranch: "main", CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreatePluginBoundService(ctx, service, &domain.ServiceRepositoryBinding{
+		ServiceID: service.ID, InstallationID: installation.ID, ProviderRepoID: "42",
+		RepositoryPath: "owner/repo", CloneURL: "https://gitea.example/owner/repo.git",
+		DefaultBranch: "main", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := domain.ReviewStatusCommentKey{
+		ServiceID: service.ID, Provider: domain.ProviderGitea, ProviderRepoID: "42", PRNumber: 7,
+	}
+	execution, run, intent := reviewStatusExecution(
+		fixtureRun.ProjectID, service.ID, key, domain.NewID(), strings.Repeat("a", 40), "queued", time.Now().UTC(),
+	)
+	intent.InstallationID = installation.ID
+	intent.RepositoryPath = "owner/repo"
+
+	blocker, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blocker.Exec(ctx, `SELECT 1 FROM plugin_installations WHERE id=$1 FOR UPDATE`, installation.ID); err != nil {
+		_ = blocker.Rollback(ctx)
+		t.Fatal(err)
+	}
+	acceptResult := make(chan error, 1)
+	go func() {
+		_, created, createErr := st.CreateAutomationExecutionWithReviewStatus(
+			context.Background(), execution, run, intent,
+		)
+		if createErr == nil && !created {
+			createErr = errors.New("acceptance did not create")
+		}
+		acceptResult <- createErr
+	}()
+	select {
+	case err := <-acceptResult:
+		_ = blocker.Rollback(ctx)
+		t.Fatalf("acceptance escaped installation lock: %v", err)
+	case <-time.After(150 * time.Millisecond):
+		// Expected: acceptance waits before it acquires any Service FK lock.
+	}
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-acceptResult; err != nil {
+		t.Fatalf("acceptance after installation unlock: %v", err)
+	}
+
+	secondKey := key
+	secondKey.PRNumber = 8
+	secondExecution, secondRun, secondIntent := reviewStatusExecution(
+		fixtureRun.ProjectID, service.ID, secondKey, domain.NewID(), strings.Repeat("c", 40), "queued", time.Now().UTC(),
+	)
+	secondIntent.InstallationID = installation.ID
+	secondIntent.RepositoryPath = "owner/repo"
+	serviceBlocker, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serviceBlocker.Exec(ctx, `SELECT 1 FROM services WHERE id=$1 FOR UPDATE`, service.ID); err != nil {
+		_ = serviceBlocker.Rollback(ctx)
+		t.Fatal(err)
+	}
+	secondResult := make(chan error, 1)
+	go func() {
+		_, created, createErr := st.CreateAutomationExecutionWithReviewStatus(
+			context.Background(), secondExecution, secondRun, secondIntent,
+		)
+		if createErr == nil && !created {
+			createErr = errors.New("second acceptance did not create")
+		}
+		secondResult <- createErr
+	}()
+	select {
+	case err := <-secondResult:
+		_ = serviceBlocker.Rollback(ctx)
+		t.Fatalf("acceptance escaped Service lock: %v", err)
+	case <-time.After(150 * time.Millisecond):
+		// Expected: acceptance waits for Service before touching its binding.
+	}
+	if _, err := serviceBlocker.Exec(ctx, `DELETE FROM runs WHERE service_id=$1`, service.ID); err != nil {
+		_ = serviceBlocker.Rollback(ctx)
+		t.Fatalf("Service owner could not delete existing Runs while acceptance waited: %v", err)
+	}
+	if _, err := serviceBlocker.Exec(ctx, `DELETE FROM services WHERE id=$1`, service.ID); err != nil {
+		_ = serviceBlocker.Rollback(ctx)
+		t.Fatalf("Service owner could not cascade binding while acceptance waited: %v", err)
+	}
+	if err := serviceBlocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondResult; !errors.Is(err, ErrConflict) {
+		t.Fatalf("acceptance after concurrent Service delete=%v want ErrConflict", err)
+	}
+	if err := st.UninstallPlugin(ctx, installation.ID); err != nil {
+		t.Fatalf("uninstall after fenced acceptance: %v", err)
+	}
+}
+
+func TestPGReviewAcceptanceAndProjectDeleteShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	st, fixtureRunID := pgTestStore(t)
+	fixtureRun, err := st.GetRun(ctx, fixtureRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := &domain.Project{ID: domain.NewID(), Name: "acceptance-project-delete", CreatedAt: time.Now().UTC()}
+	if err := st.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{
+		Provider: domain.PluginGitea, BaseURL: "https://gitea.example", PluginEnabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := st.GetProviderConfig(ctx, domain.PluginGitea)
+	installation := &domain.PluginInstallation{
+		ID: domain.NewID(), ProjectID: project.ID, Provider: domain.PluginGitea,
+		Status: domain.PluginStatusEnabled, AccessTokenEnc: []byte("token"), Scopes: []string{},
+		ConfigRevision: cfg.ConfigRevision, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	service := &domain.Service{
+		ID: domain.NewID(), ProjectID: project.ID, Name: "project-delete-repo",
+		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
+		RepoOwnerName: "owner/repo", DefaultBranch: "main", CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreatePluginBoundService(ctx, service, &domain.ServiceRepositoryBinding{
+		ServiceID: service.ID, InstallationID: installation.ID, ProviderRepoID: "42",
+		RepositoryPath: "owner/repo", CloneURL: "https://gitea.example/owner/repo.git",
+		DefaultBranch: "main", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := domain.ReviewStatusCommentKey{
+		ServiceID: service.ID, Provider: domain.ProviderGitea, ProviderRepoID: "42", PRNumber: 9,
+	}
+	execution, run, intent := reviewStatusExecution(
+		project.ID, service.ID, key, domain.NewID(), strings.Repeat("d", 40), "queued", time.Now().UTC(),
+	)
+	intent.InstallationID = installation.ID
+	intent.RepositoryPath = "owner/repo"
+
+	projectBlocker, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projectBlocker.Exec(ctx, `SELECT 1 FROM projects WHERE id=$1 FOR UPDATE`, project.ID); err != nil {
+		_ = projectBlocker.Rollback(ctx)
+		t.Fatal(err)
+	}
+	acceptResult := make(chan error, 1)
+	go func() {
+		_, _, createErr := st.CreateAutomationExecutionWithReviewStatus(context.Background(), execution, run, intent)
+		acceptResult <- createErr
+	}()
+	select {
+	case err := <-acceptResult:
+		_ = projectBlocker.Rollback(ctx)
+		t.Fatalf("acceptance escaped Project lock: %v", err)
+	case <-time.After(150 * time.Millisecond):
+		// Expected: acceptance blocks before taking the Installation lock.
+	}
+	if _, err := projectBlocker.Exec(ctx, `DELETE FROM projects WHERE id=$1`, project.ID); err != nil {
+		_ = projectBlocker.Rollback(ctx)
+		t.Fatalf("Project owner could not cascade while acceptance waited: %v", err)
+	}
+	if err := projectBlocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-acceptResult; !errors.Is(err, ErrConflict) {
+		t.Fatalf("acceptance after Project delete=%v want ErrConflict", err)
+	}
+	_ = fixtureRun // keep the shared PG fixture project alive for test cleanup.
 }

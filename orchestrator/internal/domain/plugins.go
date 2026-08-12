@@ -313,6 +313,15 @@ type WebhookReceipt struct {
 	MatchedAutomationID string    `json:"matched_automation_id,omitempty"`
 	Error               string    `json:"error,omitempty"`
 	ReceivedAt          time.Time `json:"received_at"`
+	// ClaimToken/ClaimedAt fence webhook workers across process crashes. They
+	// are control-plane lease material and are never exposed in API payloads.
+	ClaimToken    string     `json:"-"`
+	ClaimedAt     *time.Time `json:"-"`
+	ReclaimBefore time.Time  `json:"-"`
+	// IngressSequence is allocated by the Store for every successful claim,
+	// including stale/error recovery. A reclaimed receipt therefore fences its
+	// previous worker as well as older pull-request deliveries.
+	IngressSequence int64 `json:"-"`
 }
 
 type RunPluginSnapshot struct {

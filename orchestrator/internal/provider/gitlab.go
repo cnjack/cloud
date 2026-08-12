@@ -2,9 +2,11 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -73,6 +75,20 @@ type gitlabMR struct {
 		BaseSHA string `json:"base_sha"`
 		HeadSHA string `json:"head_sha"`
 	} `json:"diff_refs"`
+}
+
+type gitlabIssueComment struct {
+	ID     int64  `json:"id"`
+	WebURL string `json:"web_url"`
+	Body   string `json:"body"`
+	Author struct {
+		ID       int64  `json:"id"`
+		Username string `json:"username"`
+	} `json:"author"`
+}
+
+func (c gitlabIssueComment) issueComment() (*IssueComment, error) {
+	return newIssueComment(c.ID, c.WebURL, c.Body, c.Author.ID, c.Author.Username, 0)
 }
 
 func (c *GitLabClient) auth() string { return "Bearer " + c.token }
@@ -190,6 +206,70 @@ func (c *GitLabClient) PRByNumber(ctx context.Context, owner, repo string, prNum
 func (c *GitLabClient) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error {
 	u := fmt.Sprintf("%s/projects/%s/merge_requests/%d/notes", c.apiBase, projectPath(owner, repo), issueNumber)
 	return doJSON(ctx, c.http, http.MethodPost, u, c.auth(), "application/json", map[string]any{"body": body}, nil)
+}
+
+func (c *GitLabClient) CreateManagedIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) (*IssueComment, error) {
+	u := fmt.Sprintf("%s/projects/%s/merge_requests/%d/notes", c.apiBase, projectPath(owner, repo), issueNumber)
+	var out gitlabIssueComment
+	if err := doJSON(ctx, c.http, http.MethodPost, u, c.auth(), "application/json", map[string]any{"body": body}, &out); err != nil {
+		return nil, err
+	}
+	return out.issueComment()
+}
+
+func (c *GitLabClient) UpdateIssueComment(ctx context.Context, owner, repo string, issueNumber int, commentID, body string) (*IssueComment, error) {
+	id, err := parseIssueCommentID(commentID)
+	if err != nil {
+		return nil, err
+	}
+	u := fmt.Sprintf("%s/projects/%s/merge_requests/%d/notes/%d", c.apiBase, projectPath(owner, repo), issueNumber, id)
+	var out gitlabIssueComment
+	if err := doJSON(ctx, c.http, http.MethodPut, u, c.auth(), "application/json", map[string]any{"body": body}, &out); err != nil {
+		return nil, err
+	}
+	return out.issueComment()
+}
+
+func (c *GitLabClient) ListIssueComments(ctx context.Context, owner, repo string, issueNumber, limit int) ([]IssueComment, error) {
+	limit = managedIssueCommentLimit(limit)
+	const pageSize = managedIssueCommentPageSize
+	baseURL := fmt.Sprintf("%s/projects/%s/merge_requests/%d/notes", c.apiBase, projectPath(owner, repo), issueNumber)
+	raw := make([]gitlabIssueComment, 0, limit)
+	retainedBodyBytes := 0
+	// GitLab can sort notes newest-first, so walk forward from page one until the
+	// requested recovery window is full. A short page is the terminal page; the
+	// request-count cap also keeps non-conforming compatible hosts bounded.
+	for page := 1; page <= maxManagedIssueCommentPageFetches && len(raw) < limit; page++ {
+		u := fmt.Sprintf("%s?per_page=%d&page=%d&order_by=created_at&sort=desc", baseURL, pageSize, page)
+		var pageComments []gitlabIssueComment
+		if _, err := doJSONResponseWithLimit(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &pageComments, maxManagedIssueCommentJSONResponseBytes); err != nil {
+			return nil, err
+		}
+		for _, comment := range pageComments {
+			var budgetErr error
+			retainedBodyBytes, budgetErr = addManagedIssueCommentBodyBytes(retainedBodyBytes, comment.Body)
+			if budgetErr != nil {
+				return nil, budgetErr
+			}
+			raw = append(raw, comment)
+		}
+		if len(pageComments) < pageSize {
+			break
+		}
+	}
+	sort.Slice(raw, func(i, j int) bool { return raw[i].ID > raw[j].ID })
+	if len(raw) > limit {
+		raw = raw[:limit]
+	}
+	comments := make([]IssueComment, 0, len(raw))
+	for _, item := range raw {
+		comment, err := item.issueComment()
+		if err != nil {
+			return nil, err
+		}
+		comments = append(comments, *comment)
+	}
+	return comments, nil
 }
 
 // gitlabProject is the subset of GitLab's Project JSON the repo picker consumes.
@@ -343,18 +423,35 @@ func (c *GitLabClient) DeleteSCMWebhook(ctx context.Context, owner, repo, hookUR
 
 // CurrentUser returns the token account's username (GET /user; D19 / F5).
 func (c *GitLabClient) CurrentUser(ctx context.Context) (string, error) {
+	identity, err := c.CurrentUserIdentity(ctx)
+	if err != nil {
+		return "", err
+	}
+	if identity.Login == "" {
+		return "", errors.New("provider returned no usable current-user login")
+	}
+	return identity.Login, nil
+}
+
+// CurrentUserIdentity returns the stable numeric GitLab user id together with
+// its username. Marker adoption can therefore survive username changes while
+// retaining a non-empty-login fallback for older compatible hosts.
+func (c *GitLabClient) CurrentUserIdentity(ctx context.Context) (ProviderUserIdentity, error) {
 	u := fmt.Sprintf("%s/user", c.apiBase)
 	var out struct {
+		ID       int64  `json:"id"`
 		Username string `json:"username"`
 	}
 	if err := doJSON(ctx, c.http, http.MethodGet, u, c.auth(), "application/json", nil, &out); err != nil {
-		return "", err
+		return ProviderUserIdentity{}, err
 	}
-	return out.Username, nil
+	return newProviderUserIdentity(out.ID, out.Username)
 }
 
 var _ Provider = (*GitLabClient)(nil)
+var _ ManagedIssueCommentProvider = (*GitLabClient)(nil)
 var _ RepoLister = (*GitLabClient)(nil)
 var _ BranchLister = (*GitLabClient)(nil)
 var _ CurrentUser = (*GitLabClient)(nil)
+var _ CurrentUserIdentity = (*GitLabClient)(nil)
 var _ SCMWebhookManager = (*GitLabClient)(nil)
