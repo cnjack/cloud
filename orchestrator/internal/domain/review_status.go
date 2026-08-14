@@ -62,6 +62,22 @@ func (s ReviewStatusState) Terminal() bool {
 	return false
 }
 
+// ReviewStatusCompletionConverged keeps the provider status projection tied to
+// the structured completion receipt. Unlike the ordinary Run observation, this
+// check remains live across rolling upgrades so an older worker cannot make a
+// legacy or partial review quiesce as completed.
+func ReviewStatusCompletionConverged(state ReviewStatusState, result *ReviewResult) bool {
+	complete := result != nil && result.Completion != nil && result.Completion.Status == ReviewCompletionComplete
+	switch state {
+	case ReviewStatusCompleted:
+		return complete
+	case ReviewStatusPartial:
+		return !complete
+	default:
+		return true
+	}
+}
+
 // ReviewStatusCommentKey enforces the product identity of one mutable status
 // comment per Service and provider pull request.
 type ReviewStatusCommentKey struct {

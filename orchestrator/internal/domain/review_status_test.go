@@ -31,6 +31,33 @@ func TestReviewStatusStateLifecycle(t *testing.T) {
 	}
 }
 
+func TestReviewStatusCompletionConverged(t *testing.T) {
+	complete := &ReviewResult{Completion: &ReviewCompletion{Status: ReviewCompletionComplete}}
+	partial := &ReviewResult{Completion: &ReviewCompletion{
+		Status: ReviewCompletionPartial, Reasons: []ReviewIncompleteReason{ReviewReasonReviewerIncomplete},
+	}}
+	tests := []struct {
+		name   string
+		state  ReviewStatusState
+		result *ReviewResult
+		want   bool
+	}{
+		{name: "completed with receipt", state: ReviewStatusCompleted, result: complete, want: true},
+		{name: "completed without receipt", state: ReviewStatusCompleted, want: false},
+		{name: "partial without receipt", state: ReviewStatusPartial, want: true},
+		{name: "partial with partial receipt", state: ReviewStatusPartial, result: partial, want: true},
+		{name: "partial with complete receipt", state: ReviewStatusPartial, result: complete, want: false},
+		{name: "unrelated terminal state", state: ReviewStatusFailed, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ReviewStatusCompletionConverged(tt.state, tt.result); got != tt.want {
+				t.Fatalf("ReviewStatusCompletionConverged() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestReviewStatusCommentPersistenceShape(t *testing.T) {
 	now := time.Now().UTC()
 	comment := ReviewStatusComment{

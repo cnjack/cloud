@@ -1274,6 +1274,8 @@ func deleteUnreferencedPluginSecretVersionsTx(ctx context.Context, tx pgx.Tx, li
 							AND c.observed_delivery_status=r.delivery_status
 							AND c.observed_review_posted=(r.review_posted_at IS NOT NULL)
 							AND c.observed_review_plan_hash=COALESCE(r.review_plan->>'plan_hash','')
+							AND (c.applied_state<>'completed' OR COALESCE(r.review_result->'completion'->>'status','')='complete')
+							AND (c.applied_state<>'partial' OR COALESCE(r.review_result->'completion'->>'status','')<>'complete')
 						)
 					)
 				  )
@@ -1324,6 +1326,8 @@ func deleteUnreferencedPluginSecretVersionsTx(ctx context.Context, tx pgx.Tx, li
 							AND c.observed_delivery_status=r.delivery_status
 							AND c.observed_review_posted=(r.review_posted_at IS NOT NULL)
 							AND c.observed_review_plan_hash=COALESCE(r.review_plan->>'plan_hash','')
+							AND (c.applied_state<>'completed' OR COALESCE(r.review_result->'completion'->>'status','')='complete')
+							AND (c.applied_state<>'partial' OR COALESCE(r.review_result->'completion'->>'status','')<>'complete')
 						)
 					)
 				  )

@@ -27,7 +27,9 @@ const reviewStatusProjectionPendingPredicate = `(c.current_run_id IS NOT NULL AN
 			c.observed_run_status<>r.status OR c.observed_run_phase<>r.phase OR
 			c.observed_failure_reason<>r.failure_reason OR c.observed_delivery_status<>r.delivery_status OR
 			c.observed_review_posted<>(r.review_posted_at IS NOT NULL) OR
-			c.observed_review_plan_hash<>COALESCE(r.review_plan->>'plan_hash','')
+			c.observed_review_plan_hash<>COALESCE(r.review_plan->>'plan_hash','') OR
+			(c.applied_state='completed' AND COALESCE(r.review_result->'completion'->>'status','')<>'complete') OR
+			(c.applied_state='partial' AND COALESCE(r.review_result->'completion'->>'status','')='complete')
 		)
 	)))`
 
@@ -717,7 +719,8 @@ func (m *MemStore) reviewStatusPendingLocked(value domain.ReviewStatusComment, n
 		return true
 	}
 	if run, ok := m.runs[value.CurrentRunID]; ok {
-		return value.ObservedRun != domain.ReviewStatusObservationForRun(run)
+		return value.ObservedRun != domain.ReviewStatusObservationForRun(run) ||
+			!domain.ReviewStatusCompletionConverged(value.AppliedState, run.ReviewResult)
 	}
 	return false
 }

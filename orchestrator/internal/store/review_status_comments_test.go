@@ -270,6 +270,11 @@ func TestMemReviewStatusCommentLeaseFencingAndTerminalQuiescence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if succeededRun, err = st.SetReviewResult(ctx, run.ID, domain.ReviewResult{
+		Summary: "No findings.", Completion: &domain.ReviewCompletion{Status: domain.ReviewCompletionComplete},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	pending, err = st.ListPendingReviewStatusComments(ctx, now.Add(10*time.Second), now.Add(10*time.Second), 10)
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("changed run pending=%+v err=%v", pending, err)
@@ -288,6 +293,15 @@ func TestMemReviewStatusCommentLeaseFencingAndTerminalQuiescence(t *testing.T) {
 	pending, err = st.ListPendingReviewStatusComments(ctx, now.Add(14*time.Second), now.Add(14*time.Second), 10)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("terminal pending=%+v err=%v", pending, err)
+	}
+	st.mu.Lock()
+	legacy := st.runs[run.ID]
+	legacy.ReviewResult = nil
+	st.runs[run.ID] = legacy
+	st.mu.Unlock()
+	pending, err = st.ListPendingReviewStatusComments(ctx, now.Add(15*time.Second), now.Add(15*time.Second), 10)
+	if err != nil || len(pending) != 1 || pending[0].Key != key {
+		t.Fatalf("legacy completed result was not kept pending: pending=%+v err=%v", pending, err)
 	}
 }
 
@@ -776,6 +790,11 @@ func TestPGReviewStatusCommentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if succeededRun, err = st.SetReviewResult(ctx, run.ID, domain.ReviewResult{
+		Summary: "No findings.", Completion: &domain.ReviewCompletion{Status: domain.ReviewCompletionComplete},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	completedObservation := domain.ReviewStatusObservationForRun(*succeededRun)
 	updated, err := st.UpdateReviewStatusCommentDesired(ctx, key, run.ID, run.PRHeadSHA,
 		domain.ReviewStatusCompleted, "completed", completedObservation, now.Add(10*time.Second))
@@ -797,6 +816,13 @@ func TestPGReviewStatusCommentLifecycle(t *testing.T) {
 		if candidate.Key == key {
 			t.Fatalf("terminal applied status remained pending=%+v", candidate)
 		}
+	}
+	if _, err := st.pool.Exec(ctx, `UPDATE runs SET review_result=NULL WHERE id=$1`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = st.ListPendingReviewStatusComments(ctx, now.Add(15*time.Second), now.Add(15*time.Second), 10)
+	if err != nil || len(pending) != 1 || pending[0].Key != key {
+		t.Fatalf("legacy completed result was not kept pending: pending=%+v err=%v", pending, err)
 	}
 }
 
