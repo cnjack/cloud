@@ -82,14 +82,14 @@ patches:
       data:
         K8S_NAMESPACE: jcode
         RUNNER_IMAGE: registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner:latest
-        # Administrator-owned runtime allowlist. These are immutable v0.0.126
+        # Administrator-owned runtime allowlist. These are immutable v0.0.137
         # release manifests; tasks select names and can never inject an image.
         RUNNER_PROFILES_JSON: >-
           {
-            "go-node": "registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner-go-node@sha256:da8b4a1b8c0fe4483e2b92555e924fb68ebebbf5501bc156495dd1d133e7f628",
-            "python": "registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner-python@sha256:ed9caab939616444bf2c0e256ccde11bcdb89e203356acc6c2fca9989e39a431",
-            "rust": "registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner-rust@sha256:849b3832e5c81540c278c1cd8f29dec81cbe668e66d3811e9efff5aed28901eb",
-            "polyglot": "registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner-polyglot@sha256:9b6f422da11e9c0e194f3d9f002685b431adb9c81e3fa6a938c1911656b52bd7"
+            "go-node": "registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner-go-node@sha256:950ae9cd841dde99785de4a3c77c56d197acfaa10c3568c98ace1cb82b666ea0",
+            "python": "registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner-python@sha256:51a7ac48f1dfc3f470c965d4d50798819c97b866d103c54ced42c6a37581cc37",
+            "rust": "registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner-rust@sha256:39f1caa39048298e30c67dc8300e0ff32414f636fb8d285e5fb1b0af1b2e7613",
+            "polyglot": "registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-runner-polyglot@sha256:880f5f3e4aa9c29aad270e255b826d88bd140898738a72ec9f03d128478db6c3"
           }
         PLUGIN_RUNTIME_IMAGE: registry.cn-shanghai.aliyuncs.com/jcode-cloud/jcloud-orchestrator:latest
         ORCH_BASE_URL: http://orchestrator.jcode.svc.cluster.local:8080
