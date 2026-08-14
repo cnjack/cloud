@@ -108,6 +108,8 @@ jobs:
           context: orchestrator
           platforms: linux/amd64
           push: true
+          # Aliyun ACR rejects BuildKit's OCI provenance attachment manifest.
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -166,6 +168,7 @@ jobs:
           context: runner
           platforms: linux/amd64
           push: true
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -220,6 +223,7 @@ jobs:
           target: ${{ matrix.profile }}
           platforms: linux/amd64
           push: true
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -291,6 +295,7 @@ jobs:
           context: console
           platforms: linux/amd64
           push: true
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
