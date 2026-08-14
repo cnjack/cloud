@@ -200,11 +200,11 @@ if [ "${RUN_ARCHIVE:-0}" = "1" ]; then
 fi
 RUN_TIMEOUT="${RUN_TIMEOUT:-43200s}"
 RUN_KIND="${RUN_KIND:-agent}"
-# Review runs are deliberately bounded below the general interactive default.
-# Hitting this hard iteration ceiling fails the run rather than allowing an
-# unfinished reviewer to manufacture a clean result.
+# Keep the review POC on the general agent budget while we measure real request,
+# token, cache and completion distributions. The accepted submit_review receipt
+# remains the completion gate, so a reviewer that exhausts even this larger
+# budget still fails rather than manufacturing a clean result.
 JCODE_MAX_ITERATIONS=1000
-[ "$RUN_KIND" = "review" ] && JCODE_MAX_ITERATIONS=40
 SOURCE_MODE="${SOURCE_MODE:-clone}"
 GIT_MODE="${GIT_MODE:-readonly}"
 # RUN_SESSION=1 (F7a / D22): multi-turn session mode, see the header comment

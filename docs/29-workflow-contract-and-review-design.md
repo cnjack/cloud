@@ -337,9 +337,14 @@ signature against another process running with the same filesystem identity.
 `partial` preserves and publishes any validated findings already produced, but
 the native review, mutable PR status comment, and Run detail all state that no
 clean conclusion was reached. `0 finding` is labelled clean only when both the
-Review Plan and accepted completion receipt are complete. Review runs also use a hard
-40-iteration ceiling; exhausting the runner ceiling fails visibly instead of
-falling through to a successful empty result.
+Review Plan and accepted completion receipt are complete. During the POC,
+review Runs use the general 1000-iteration budget rather than a review-specific
+40-iteration ceiling. We retain per-request usage events to measure actual
+iterations, input/output/cache tokens, Plan coverage, completion status, and
+delivery outcome before choosing a lower production bound. The wall-clock Run
+timeout and accepted `submit_review` receipt remain hard gates: exhausting the
+budget still fails visibly instead of falling through to a successful empty
+result.
 
 ## 4. Dispatch and runtime sequence
 

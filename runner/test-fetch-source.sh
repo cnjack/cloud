@@ -157,6 +157,8 @@ R_RC=$?
 set -e
 cat "$TMP/review.out"
 [ "$R_RC" -eq 0 ] || fail "[B] review run exited $R_RC (want 0)"
+grep -q 'max_iterations=1000' "$TMP/review.out" \
+  || fail "[B] review run did not use the open 1000-iteration POC budget"
 [ -s "$OUT/received.review-plan" ] || fail "[B] orchestrator did not receive a review plan before the review"
 [ -s "$OUT/received.review" ] || fail "[B] orchestrator did not receive a review"
 if ! grep -q '"findings"' "$OUT/received.review"; then

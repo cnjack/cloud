@@ -32,6 +32,24 @@ func TestReviewPromptRequiresTheValidatedSubmissionTool(t *testing.T) {
 	}
 }
 
+// TestReviewIterationBudgetRemainsOpenDuringPOC prevents the review runner from
+// regressing to the 40-iteration ceiling that stopped a real review immediately
+// after its verification build completed. Wall-clock timeout and the validated
+// submit_review receipt remain the fail-visible bounds.
+func TestReviewIterationBudgetRemainsOpenDuringPOC(t *testing.T) {
+	entrypoint, err := os.ReadFile("../entrypoint.sh")
+	if err != nil {
+		t.Fatalf("read entrypoint: %v", err)
+	}
+	contract := string(entrypoint)
+	if !strings.Contains(contract, "JCODE_MAX_ITERATIONS=1000") {
+		t.Fatal("runner no longer publishes the open 1000-iteration POC budget")
+	}
+	if strings.Contains(contract, `[ "$RUN_KIND" = "review" ] && JCODE_MAX_ITERATIONS=40`) {
+		t.Fatal("review runner still restores the premature 40-iteration ceiling")
+	}
+}
+
 // TestScenarioForRequestReview proves a request whose messages carry the
 // "[review]" marker selects the review scenario regardless of the env default,
 // and that a normal request keeps the default.

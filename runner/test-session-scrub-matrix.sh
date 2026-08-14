@@ -97,6 +97,14 @@ run_case() {
   set -e
   [ "$rc" -eq 0 ] || { cat "$out"; fail "case $N (RUN_SESSION=$run_session PERSISTENT_WORKSPACE=$persistent RUN_KIND=$run_kind) exited $rc"; }
 
+  # Review POC runs use the same open iteration budget as general agent runs.
+  # Exercise the real config writer so this cannot pass only as a source-text
+  # assertion while the generated jcode config keeps the former value of 40.
+  if [ "$run_kind" = "review" ]; then
+    grep -q '"max_iterations": 1000' "$home/.jcode/config.json" \
+      || { cat "$home/.jcode/config.json"; fail "review max_iterations is not 1000"; }
+  fi
+
   local label="RUN_SESSION=$run_session PERSISTENT_WORKSPACE=$persistent RUN_KIND=$run_kind"
   case "$outcome" in
     scrubbed)
