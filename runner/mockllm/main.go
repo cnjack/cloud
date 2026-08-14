@@ -14,10 +14,10 @@
 // is chosen by the MOCK_SCENARIO env var (default "write_file"). Within a
 // scenario, the "turn" is derived from the request itself: if the incoming
 // messages already contain a tool result (role=="tool"), we are on the SECOND
-// turn (the agent fed our tool call's result back), so we answer with a plain
-// assistant message and finish_reason=stop. Otherwise we are on the FIRST turn
-// and answer with a tool call. This makes the mock stateless and safe under the
-// agent's ret/summarize/parallel behavior.
+// turn (the agent fed our tool call's result back), so we normally answer with
+// a plain assistant message and finish_reason=stop. Review tests can request one
+// deliberately rejected submission followed by corrected arguments; the count
+// of tool results keeps that three-step flow stateless as well.
 //
 // Extending: add a Scenario to the scenarios map. Each scenario is just the
 // first-turn tool call (name + JSON arguments) and the final assistant text.
@@ -112,7 +112,10 @@ type Scenario struct {
 	ToolName string
 	// ToolArgs is the JSON arguments object for that tool call.
 	ToolArgs string
-	// FinalText is the assistant message returned on turn 2 (finish_reason=stop).
+	// RetryToolArgs, when non-empty, is sent after exactly one tool result. It
+	// exercises a model correcting a validator error in the same agent turn.
+	RetryToolArgs string
+	// FinalText is the assistant message returned after the final tool result.
 	FinalText string
 }
 
@@ -137,14 +140,15 @@ var scenarios = map[string]Scenario{
 		ToolArgs:  `{"command":"printf 'written by jcode via bash\\n' > HELLO_FROM_BASH.txt","description":"create a file"}`,
 		FinalText: "Done. I created HELLO_FROM_BASH.txt using a shell command.",
 	},
-	// Review: the review channel. Turn 1 writes provider-neutral structured
-	// output to REVIEW.json; turn 2 finishes. This
+	// Review: the review channel. Turn 1 submits provider-neutral structured
+	// output through the review-only MCP tool; turn 2 observes its accepted
+	// receipt and finishes. This
 	// scenario is selected automatically when a request's messages contain the
 	// "[review]" marker (see scenarioForRequest), regardless of MOCK_SCENARIO.
 	"review": {
-		ToolName:  "write",
-		ToolArgs:  `{"file_path":"REVIEW.json","content":"{\"summary\":\"One high-confidence defect was found.\",\"findings\":[{\"path\":\"ledger.py\",\"line\":7,\"severity\":\"P2\",\"confidence\":92,\"title\":\"Missing empty-input handling\",\"body\":\"The new branch accepts an empty input and reaches an invalid state.\"}],\"checks\":[\"Inspected the changed branch\"],\"completion\":{\"status\":\"complete\",\"reviewed_files\":[\"ledger.py\"]}}\n"}`,
-		FinalText: "Review complete. I wrote validated findings to REVIEW.json.",
+		ToolName:  "mcp__review__submit_review",
+		ToolArgs:  `{"summary":"One high-confidence defect was found.","findings":[{"path":"FEATURE.txt","line":7,"severity":"P2","confidence":92,"title":"Missing empty-input handling","body":"The new branch accepts an empty input and reaches an invalid state."}],"checks":["Inspected the changed FEATURE.txt branch"],"completion":{"status":"complete","reviewed_files":["FEATURE.txt"]}}`,
+		FinalText: "Review complete. The validated submit_review receipt was accepted.",
 	},
 }
 
@@ -210,7 +214,16 @@ func messageText(m message) string {
 func scenarioForRequest(msgs []message) (string, Scenario) {
 	for _, m := range msgs {
 		if strings.Contains(messageText(m), reviewMarker) {
-			return "review", scenarios["review"]
+			sc := scenarios["review"]
+			if os.Getenv("MOCK_REVIEW_INVALID_FIRST") == "1" {
+				sc.RetryToolArgs = sc.ToolArgs
+				var invalid map[string]any
+				_ = json.Unmarshal([]byte(sc.ToolArgs), &invalid)
+				delete(invalid, "completion")
+				data, _ := json.Marshal(invalid)
+				sc.ToolArgs = string(data)
+			}
+			return "review", sc
 		}
 	}
 	name, sc := activeScenario()
@@ -296,8 +309,9 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, sc := scenarioForRequest(req.Messages)
-	turn2 := hasToolResult(req.Messages)
-	log.Printf("[mockllm] scenario=%s stream=%v msgs=%d turn2=%v", name, req.Stream, len(req.Messages), turn2)
+	step := toolResultCount(req.Messages)
+	toolArgs, done := scenarioStep(sc, step)
+	log.Printf("[mockllm] scenario=%s stream=%v msgs=%d tool_results=%d done=%v", name, req.Stream, len(req.Messages), step, done)
 
 	model := req.Model
 	if model == "" {
@@ -305,16 +319,37 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Stream {
-		streamResponse(w, model, sc, turn2)
+		streamResponse(w, model, sc, toolArgs, step, done)
 		return
 	}
-	jsonResponse(w, model, sc, turn2)
+	jsonResponse(w, model, sc, toolArgs, step, done)
+}
+
+func toolResultCount(msgs []message) int {
+	count := 0
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			count++
+		}
+	}
+	return count
+}
+
+func scenarioStep(sc Scenario, toolResults int) (toolArgs string, done bool) {
+	switch {
+	case toolResults == 0:
+		return sc.ToolArgs, false
+	case toolResults == 1 && sc.RetryToolArgs != "":
+		return sc.RetryToolArgs, false
+	default:
+		return "", true
+	}
 }
 
 // jsonResponse handles the non-streaming (Generate) path.
-func jsonResponse(w http.ResponseWriter, model string, sc Scenario, turn2 bool) {
+func jsonResponse(w http.ResponseWriter, model string, sc Scenario, toolArgs string, step int, done bool) {
 	var choice respChoice
-	if turn2 {
+	if done {
 		choice = respChoice{
 			Index:        0,
 			Message:      message{Role: "assistant", Content: sc.FinalText},
@@ -327,10 +362,10 @@ func jsonResponse(w http.ResponseWriter, model string, sc Scenario, turn2 bool) 
 			Message: message{
 				Role: "assistant",
 				ToolCalls: []toolCall{{
-					ID:       "call_mock_1",
+					ID:       fmt.Sprintf("call_mock_%d", step+1),
 					Type:     "function",
 					Index:    &idx,
-					Function: toolCallFunc{Name: sc.ToolName, Arguments: sc.ToolArgs},
+					Function: toolCallFunc{Name: sc.ToolName, Arguments: toolArgs},
 				}},
 			},
 			FinishReason: "tool_calls",
@@ -352,7 +387,7 @@ func jsonResponse(w http.ResponseWriter, model string, sc Scenario, turn2 bool) 
 //   - a finish_reason chunk,
 //   - a final usage-only chunk (stream_options.include_usage),
 //   - the [DONE] sentinel.
-func streamResponse(w http.ResponseWriter, model string, sc Scenario, turn2 bool) {
+func streamResponse(w http.ResponseWriter, model string, sc Scenario, toolArgs string, step int, done bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -382,7 +417,7 @@ func streamResponse(w http.ResponseWriter, model string, sc Scenario, turn2 bool
 	c.Choices = []chunkChoice{{Index: 0, Delta: message{Role: "assistant"}}}
 	send(c)
 
-	if turn2 {
+	if done {
 		// content chunk(s)
 		c = base()
 		c.Choices = []chunkChoice{{Index: 0, Delta: message{Content: sc.FinalText}}}
@@ -398,10 +433,10 @@ func streamResponse(w http.ResponseWriter, model string, sc Scenario, turn2 bool
 		c = base()
 		c.Choices = []chunkChoice{{Index: 0, Delta: message{
 			ToolCalls: []toolCall{{
-				ID:       "call_mock_1",
+				ID:       fmt.Sprintf("call_mock_%d", step+1),
 				Type:     "function",
 				Index:    &idx,
-				Function: toolCallFunc{Name: sc.ToolName, Arguments: sc.ToolArgs},
+				Function: toolCallFunc{Name: sc.ToolName, Arguments: toolArgs},
 			}},
 		}}}
 		send(c)

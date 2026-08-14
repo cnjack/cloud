@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh — cross-compile the three static binaries the Docker image needs, on
+# build.sh — cross-compile the static binaries the Docker image needs, on
 # the host, into ./bin/. Called by test.sh; also usable standalone.
 #
 # Env:
@@ -51,6 +51,10 @@ echo "[build] compiling acpdrive..."
 echo "[build] compiling orchclient..."
 ( cd "$HERE/orchclient" && GOOS=linux GOARCH="$TARGETARCH" CGO_ENABLED=0 \
     go build -ldflags "-s -w" -o "$HERE/bin/orchclient" . )
+
+echo "[build] compiling reviewmcp..."
+( cd "$HERE/../orchestrator" && GOOS=linux GOARCH="$TARGETARCH" CGO_ENABLED=0 \
+    go build -ldflags "-s -w" -o "$HERE/bin/reviewmcp" ./cmd/reviewmcp )
 
 echo "[build] compiling mockllm..."
 ( cd "$HERE/mockllm" && GOOS=linux GOARCH="$TARGETARCH" CGO_ENABLED=0 \

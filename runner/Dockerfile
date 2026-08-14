@@ -20,6 +20,7 @@
 #                    AND streams agent text/tool events to the orchestrator
 #   ./bin/orchclient linux/<arch> stdlib-only helper the entrypoint uses to POST
 #                    run.failure events and upload the diff artifact
+#   ./bin/reviewmcp  linux/<arch> review-only MCP submission + receipt verifier
 #   ./bin/mockllm    linux/<arch> (optional; only bundled for self-contained tests)
 #
 # P0 keeps the base minimal: git + ca-certificates + curl + zstd + ripgrep (see
@@ -46,6 +47,7 @@ RUN apt-get update \
 COPY bin/jcode     /usr/local/bin/jcode
 COPY bin/acpdrive  /usr/local/bin/acpdrive
 COPY bin/orchclient /usr/local/bin/orchclient
+COPY bin/reviewmcp /usr/local/bin/reviewmcp
 # mockllm is bundled so the container can run fully self-contained in tests; in
 # production the MODEL_BASE_URL points at a real (or sidecar) model instead.
 COPY bin/mockllm   /usr/local/bin/mockllm
@@ -57,7 +59,7 @@ COPY delivery-contract.sh /usr/local/bin/delivery-contract.sh
 # multi-turn session mode (RUN_SESSION=1). Lands alongside entrypoint.sh so
 # entrypoint.sh's SCRIPT_DIR-relative lookup finds it in the image too.
 COPY turn-hook.sh  /usr/local/bin/turn-hook.sh
-RUN chmod +x /usr/local/bin/jcode /usr/local/bin/acpdrive /usr/local/bin/orchclient /usr/local/bin/mockllm /usr/local/bin/entrypoint.sh /usr/local/bin/delivery-contract.sh /usr/local/bin/turn-hook.sh
+RUN chmod +x /usr/local/bin/jcode /usr/local/bin/acpdrive /usr/local/bin/orchclient /usr/local/bin/reviewmcp /usr/local/bin/mockllm /usr/local/bin/entrypoint.sh /usr/local/bin/delivery-contract.sh /usr/local/bin/turn-hook.sh
 RUN groupadd --gid 10001 jcode \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/jcode --shell /bin/bash jcode \
     && mkdir -p /workspace /out /home/jcode/.jcode /run/jcloud \

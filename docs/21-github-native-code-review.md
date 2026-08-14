@@ -247,7 +247,10 @@ Create Run(kind=review, origin=webhook|automation)
        │                   → completed|failed|canceled|superseded
        └─ manual command: keep eyes reaction; do not create a status comment
        ↓
-runner clones exact head, reviews base...head, emits REVIEW.json
+runner clones exact head and reviews base...head
+       ↓
+review-only submit_review MCP tool validates Plan anchors + completion receipt
+and emits a tool-accepted REVIEW.json with a plan-bound receipt
             ↓
 orchestrator validates and stores structured result
             ↓

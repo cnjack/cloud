@@ -13,8 +13,8 @@
 #   3. AGENT/fetch: run the runner with SOURCE_MODE=fetch (no REPO_URL). Assert it
 #      downloads the bundle, clones it, runs, and produces a diff — no token used.
 #   4. REVIEW: run the runner with RUN_KIND=review, PR_HEAD=feature, PR_BASE=main.
-#      The mockllm auto-detects the "[review]" prompt and writes REVIEW.json; assert
-#      the orchestrator receives the review markdown.
+#      The mockllm auto-detects the "[review]" prompt and calls the injected
+#      submit_review MCP tool; assert the orchestrator receives its accepted JSON.
 #
 # Env: IMAGE (default jcode-runner:local), TARGETARCH (host arch), KEEP=1.
 
@@ -40,7 +40,7 @@ cleanup() {
 trap cleanup EXIT
 
 need() { command -v "$1" >/dev/null 2>&1 || fail "$1 is required"; }
-need docker; need git; need python3
+need docker; need git; need python3; need jq
 
 if [ -z "${TARGETARCH:-}" ]; then
   case "$(uname -m)" in
@@ -148,6 +148,7 @@ docker run --name "$RUN_CTR" --platform "linux/$TARGETARCH" \
   -e PR_BASE="main" -e PR_HEAD="feature" \
   -e PR_BASE_SHA="$BASE_SHA" -e PR_HEAD_SHA="$HEAD_SHA" \
   -e START_MOCKLLM=1 \
+  -e MOCK_REVIEW_INVALID_FIRST=1 \
   -e MODEL_NAME="mock/mock-model" -e MODEL_API_KEY="dummy-key" \
   -e ORCH_BASE_URL="http://host.docker.internal:$MOCK_PORT" \
   -e RUN_TOKEN="run-token-review" \
@@ -162,9 +163,13 @@ if ! grep -q '"findings"' "$OUT/received.review"; then
   echo "----- received review -----"; cat "$OUT/received.review"
   fail "[B] review output is not structured JSON"
 fi
+jq -e '.completion.status == "complete" and .completion.reviewed_files == ["FEATURE.txt"]' \
+  "$OUT/received.review" >/dev/null || fail "[B] review output has no validated complete receipt"
+grep -q "verified successful submit_review receipt" "$TMP/review.out" \
+  || fail "[B] runner did not verify the submit_review receipt"
 # A review run must NOT produce a bundle.
 [ ! -s "$OUT/received.bundle" ] || fail "[B] review run POSTed a bundle (must skip diff/bundle)"
-pass "[B] review run posted REVIEW.json with findings and produced no bundle"
+pass "[B] review run posted a tool-accepted REVIEW.json with findings and produced no bundle"
 
 echo
 printf '\033[32m===========================================================\033[0m\n'

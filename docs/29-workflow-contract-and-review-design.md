@@ -323,10 +323,21 @@ server-owned indexed file set and normalizes unsupported clean claims to
 `partial`; a missing receipt, skipped input, or missing indexed file can never
 be rendered as a clean zero-finding result.
 
+The runner does not rely on the model remembering a free-form output schema.
+Only review Runs inject the `submit_review` stdio MCP tool. Its typed input
+requires the completion receipt and validates the entire result against a
+locally rebuilt copy of the frozen Review Plan before writing `REVIEW.json`.
+Validation errors are returned to the model as tool errors, so it can correct
+the rejected arguments in the same session. A plan-bound SHA-256 receipt is
+written beside the diff under `.git`; the entrypoint verifies it before upload,
+and rejects a direct file without a matching receipt or a file changed after
+the tool accepted it. This is a workflow-integrity receipt, not a security
+signature against another process running with the same filesystem identity.
+
 `partial` preserves and publishes any validated findings already produced, but
 the native review, mutable PR status comment, and Run detail all state that no
 clean conclusion was reached. `0 finding` is labelled clean only when both the
-Review Plan and completion receipt are complete. Review runs also use a hard
+Review Plan and accepted completion receipt are complete. Review runs also use a hard
 40-iteration ceiling; exhausting the runner ceiling fails visibly instead of
 falling through to a successful empty result.
 

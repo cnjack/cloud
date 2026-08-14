@@ -126,7 +126,7 @@ absent, so it never masks a standalone run's real outcome.
 runner/
 ├── Dockerfile           # debian-slim + git + ca-certs + ripgrep + prebuilt binaries
 ├── entrypoint.sh        # clone → config → drive ACP run → stream events → upload diff / report failure
-├── build.sh             # host cross-compile jcode+acpdrive+orchclient+mockllm → bin/, docker build
+├── build.sh             # host cross-compile jcode+acpdrive+orchclient+reviewmcp+mockllm → bin/, docker build
 ├── test.sh              # standalone headless proof (build, sidecar mock, no-TTY run, assert)
 ├── test-integration.sh  # FULL-LOOP proof: REST → runner (process launcher) → events/artifact → succeeded
 ├── acpdrive/            # headless ACP client (Go) + event emitter + ACP→event mapper
@@ -138,6 +138,9 @@ runner/
 ├── patches/             # empty — NO patch to jcode was required
 └── bin/                 # build output (gitignored)
 ```
+
+The review-only stdio MCP submission tool and receipt verifier are built from
+`orchestrator/cmd/reviewmcp/` into the runner image.
 
 ## Run it
 
@@ -230,11 +233,19 @@ plane over the per-run `RUN_TOKEN`.
 - `PR_HEAD` / `PR_BASE` are display/checkout branch names for review runs;
   `PR_HEAD_SHA` / `PR_BASE_SHA` are the required immutable revisions. The runner
   verifies both commits, computes their merge-base, builds the unified diff,
-  and POSTs a server-validated Review Plan before starting the Agent. The Agent
-  writes structured `REVIEW.json`; the runner POSTs it as
+  and POSTs a server-validated Review Plan before starting the Agent. Review
+  runs alone receive the `mcp__review__submit_review` stdio tool. Its typed
+  arguments carry the structured findings and mandatory completion receipt;
+  it rebuilds the same frozen Review Plan locally, rejects invalid paths,
+  changed-line anchors, or unsupported `complete` claims as tool errors, and
+  atomically writes `REVIEW.json` only after validation succeeds. A plan-bound
+  digest receipt lets the runner detect a missing tool submission or a result
+  changed after acceptance. The runner verifies that receipt and POSTs the result as
   `application/vnd.jcode.review+json` to
   `POST /internal/v1/runs/$RUN_ID/review`. Contract review runs cannot fall back
-  to legacy Markdown output.
+  to direct file output or legacy Markdown. Because validation errors return as
+  ordinary tool results, the same Agent session can correct its arguments and
+  retry without a second review pass.
 
 When wired to an orchestrator it reads `ORCH_BASE_URL`, `RUN_TOKEN` (with
 `RUN_ID`) for all of the above plus event streaming and diff-artifact upload.
