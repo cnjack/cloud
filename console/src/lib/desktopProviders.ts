@@ -38,6 +38,8 @@ export const DESKTOP_PROVIDERS: readonly DesktopProviderPreset[] = [
   { id: 'xiaomi', name: 'Xiaomi', baseUrl: 'https://api.xiaomimimo.com/v1' },
   { id: 'xiaomi-token-plan-cn', name: 'Xiaomi Token Plan (China)', baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1' },
   { id: 'ollama-cloud', name: 'Ollama Cloud', baseUrl: 'https://ollama.com/v1' },
+  { id: 'xai', name: 'xAI (Grok)', baseUrl: 'https://api.x.ai/v1' },
+  { id: 'github-copilot', name: 'GitHub Copilot', baseUrl: 'https://api.githubcopilot.com' },
   { id: 'kimi-for-coding', name: 'Kimi For Coding', baseUrl: 'https://api.kimi.com/coding/v1' },
   { id: 'tencent-tokenhub-ep', name: 'Tencent TokenHub Enterprise', baseUrl: 'https://tokenhub.tencentmaas.com/plan/v3' },
 ] as const;

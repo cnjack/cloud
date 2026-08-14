@@ -31,6 +31,8 @@ describe('Desktop provider registry parity', () => {
       ['xiaomi', 'Xiaomi'],
       ['xiaomi-token-plan-cn', 'Xiaomi Token Plan (China)'],
       ['ollama-cloud', 'Ollama Cloud'],
+      ['xai', 'xAI (Grok)'],
+      ['github-copilot', 'GitHub Copilot'],
       ['kimi-for-coding', 'Kimi For Coding'],
       ['tencent-tokenhub-ep', 'Tencent TokenHub Enterprise'],
     ]);
@@ -54,7 +56,13 @@ describe('Desktop provider registry parity', () => {
     const names = new Map<string, string>();
     for (const match of generated.matchAll(/^\s*"([^"]+)": \{\n\s*ID:\s*"[^"]+",\n\s*Name:\s*"([^"]+)"/gm)) names.set(match[1]!, match[2]!);
     const staticBlock = maintained.match(/var staticProviders = map\[string\]\*RegistryProvider\{([\s\S]*?)\n\}\n\n\/\/ staticProviderOrder/)?.[1] ?? '';
-    for (const match of staticBlock.matchAll(/^\s*"([^"]+)": \{\n\s*ID:\s*"[^"]+",\n\s*Name:\s*"([^"]+)"/gm)) names.set(match[1]!, match[2]!);
+    for (const [index, id] of staticOrder.entries()) {
+      const start = staticBlock.indexOf(`"${id}": {`);
+      const nextID = staticOrder[index + 1];
+      const end = nextID ? staticBlock.indexOf(`"${nextID}": {`, start) : staticBlock.length;
+      const name = staticBlock.slice(start, end).match(/\bName:\s*"([^"]+)"/)?.[1];
+      if (name) names.set(id, name);
+    }
 
     expect(DESKTOP_PROVIDERS.map(({ id, name }) => [id, name])).toEqual(
       [...generatedOrder, ...staticOrder].map((id) => [id, names.get(id)]),
