@@ -138,6 +138,7 @@ describe('RunDetailPage — resilient error states', () => {
           },
         ],
         checks: ['Validated every finding against a changed right-side line.'],
+        completion: { status: 'partial', reviewed_files: ['src/main.ts'], reasons: ['input_coverage_partial'] },
       },
       scm_grant: {
         provider: 'github',
@@ -196,7 +197,8 @@ describe('RunDetailPage — resilient error states', () => {
     expect(screen.getByText('Pull Request Review v1')).toBeTruthy();
     expect(screen.getByText('30m · project_override')).toBeTruthy();
     expect(screen.getByTestId('run-task-title').textContent).toBe('Fix pagination contract');
-    expect(screen.getByTestId('review-delivery-state').getAttribute('data-state')).toBe('posted');
+    expect(screen.getByTestId('review-delivery-state').getAttribute('data-state')).toBe('incomplete');
+    expect(screen.getByTestId('review-incomplete')).toBeTruthy();
     const coverage = screen.getByTestId('review-coverage');
     expect(coverage.querySelector('[data-coverage="partial"]')).toBeTruthy();
     expect(screen.getByText('1/2')).toBeTruthy();
@@ -1114,6 +1116,7 @@ describe('RunDetailPage — PR tab + review runs (blueprint §5)', () => {
         summary: 'This change is safe.',
         findings: [],
         checks: ['Inspected every changed file.'],
+        completion: { status: 'complete', reviewed_files: ['src/main.ts'], reasons: [] },
       },
     });
     const { client, ctl } = makeClient('member');
@@ -1127,6 +1130,27 @@ describe('RunDetailPage — PR tab + review runs (blueprint §5)', () => {
     // A review run has no Diff / PR tabs.
     expect(screen.queryByTestId('tab-diff')).toBeNull();
     expect(screen.queryByTestId('tab-pr')).toBeNull();
+  });
+
+  it('does not show a clean no-findings state for a partial review', async () => {
+    const review = baseRun({
+      kind: 'review',
+      status: 'succeeded',
+      finished_at: '2026-07-07T00:05:00Z',
+      review_posted_at: '2026-07-07T00:05:05Z',
+      review_result: {
+        summary: 'No issue was confirmed before the review stopped.',
+        findings: [],
+        completion: { status: 'partial', reviewed_files: ['src/main.ts'], reasons: ['budget_exhausted'] },
+      },
+    });
+    const { client, ctl } = makeClient('member');
+    ctl.getRun.mockResolvedValue(review);
+    renderPage(client, review);
+
+    expect(await screen.findByTestId('review-incomplete')).toBeTruthy();
+    expect(screen.queryByTestId('review-no-findings')).toBeNull();
+    expect(screen.getByTestId('review-delivery-state').getAttribute('data-state')).toBe('incomplete');
   });
 
   it('shows plan-pending before the runner uploads the deterministic review plan', async () => {

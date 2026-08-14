@@ -974,6 +974,12 @@ func cloneRun(run domain.Run) domain.Run {
 		result := *run.ReviewResult
 		result.Findings = append([]domain.ReviewFinding(nil), run.ReviewResult.Findings...)
 		result.Checks = append([]string(nil), run.ReviewResult.Checks...)
+		if run.ReviewResult.Completion != nil {
+			completion := *run.ReviewResult.Completion
+			completion.ReviewedFiles = append([]string(nil), run.ReviewResult.Completion.ReviewedFiles...)
+			completion.Reasons = append([]domain.ReviewIncompleteReason(nil), run.ReviewResult.Completion.Reasons...)
+			result.Completion = &completion
+		}
 		run.ReviewResult = &result
 	}
 	return run

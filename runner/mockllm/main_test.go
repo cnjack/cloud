@@ -29,6 +29,9 @@ func TestReviewPromptPublishesValidatorLimits(t *testing.T) {
 		"suggestion of at most 4000",
 		"integer from 80 through 100",
 		"do not add fields",
+		"The completion receipt is also part of the delivery contract",
+		"Never use complete merely because findings is empty",
+		"\"max_iterations\": $JCODE_MAX_ITERATIONS",
 	} {
 		if !strings.Contains(contract, want) {
 			t.Errorf("review protocol does not publish validator constraint %q", want)

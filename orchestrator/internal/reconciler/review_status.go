@@ -435,6 +435,10 @@ func reviewStatusStateForRun(run *domain.Run) domain.ReviewStatusState {
 			return domain.ReviewStatusFailed
 		}
 		if run.ReviewPostedAt != nil && run.DeliveryStatus == domain.DeliveryDelivered {
+			if run.ReviewResult == nil || run.ReviewResult.Completion == nil ||
+				run.ReviewResult.Completion.Status != domain.ReviewCompletionComplete {
+				return domain.ReviewStatusPartial
+			}
 			return domain.ReviewStatusCompleted
 		}
 		return domain.ReviewStatusPublishing

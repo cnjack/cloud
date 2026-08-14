@@ -1267,7 +1267,7 @@ func deleteUnreferencedPluginSecretVersionsTx(ctx context.Context, tx pgx.Tx, li
 						WHERE c.current_run_id=r.id AND NOT (
 							c.comment_id<>'' AND c.desired_state=c.applied_state
 							AND c.desired_body_hash=c.applied_body_hash
-							AND c.applied_state IN ('completed','failed','canceled','superseded')
+							AND c.applied_state IN ('completed','partial','failed','canceled','superseded')
 							AND c.observed_run_status=r.status
 							AND c.observed_run_phase=r.phase
 							AND c.observed_failure_reason=r.failure_reason
@@ -1317,7 +1317,7 @@ func deleteUnreferencedPluginSecretVersionsTx(ctx context.Context, tx pgx.Tx, li
 						WHERE c.current_run_id=r.id AND NOT (
 							c.comment_id<>'' AND c.desired_state=c.applied_state
 							AND c.desired_body_hash=c.applied_body_hash
-							AND c.applied_state IN ('completed','failed','canceled','superseded')
+							AND c.applied_state IN ('completed','partial','failed','canceled','superseded')
 							AND c.observed_run_status=r.status
 							AND c.observed_run_phase=r.phase
 							AND c.observed_failure_reason=r.failure_reason

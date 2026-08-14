@@ -66,6 +66,25 @@ func TestReviewStatusCommentsMigrationContract(t *testing.T) {
 	}
 }
 
+func TestReviewCompletionStatusMigrationContract(t *testing.T) {
+	sql, err := migrationsFS.ReadFile("migrations/0073_review_completion_status.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(string(sql)), " ")
+	for _, want := range []string{
+		"DROP CONSTRAINT IF EXISTS review_status_comments_desired_state_check",
+		"'queued','running','publishing','completed','partial','failed','canceled','superseded'",
+		"DROP CONSTRAINT IF EXISTS review_status_comments_applied_state_check",
+		"SET observed_review_posted = FALSE",
+		"COALESCE(review_run.review_result->'completion'->>'status', '') <> 'complete'",
+	} {
+		if !strings.Contains(normalized, want) {
+			t.Fatalf("0073 migration missing %q", want)
+		}
+	}
+}
+
 func TestMemReviewStatusCommentAtomicCreateAndRevisionReuse(t *testing.T) {
 	ctx := context.Background()
 	st, projectID, serviceID := seedMemReviewStatusStore(t)

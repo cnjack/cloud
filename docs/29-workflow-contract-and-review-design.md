@@ -313,6 +313,23 @@ not represented as a misleading partial `limit` skip. `plan_hash` is SHA-256 ove
 the canonical plan with `plan_hash` omitted and is the equality key for identical
 retry versus conflict.
 
+### 3.5 Review completion receipt
+
+The Review Result carries a separate `completion` receipt with
+`status=complete|partial|failed`, `reviewed_files`, and bounded reason codes.
+This closes the gap between deterministic input coverage and the reviewer's
+actual execution claim. The control plane compares `reviewed_files` with the
+server-owned indexed file set and normalizes unsupported clean claims to
+`partial`; a missing receipt, skipped input, or missing indexed file can never
+be rendered as a clean zero-finding result.
+
+`partial` preserves and publishes any validated findings already produced, but
+the native review, mutable PR status comment, and Run detail all state that no
+clean conclusion was reached. `0 finding` is labelled clean only when both the
+Review Plan and completion receipt are complete. Review runs also use a hard
+40-iteration ceiling; exhausting the runner ceiling fails visibly instead of
+falling through to a successful empty result.
+
 ## 4. Dispatch and runtime sequence
 
 ```mermaid
@@ -391,6 +408,11 @@ finding on a context or deleted line returns `invalid_review_anchor` and the
 entire output is rejected, preserving the existing all-or-nothing contract.
 For a rename, the plan indexes the new/right-side path; pure renames with no
 changed right-side lines cannot receive inline findings and appear as skipped.
+
+`ReviewResult.NormalizeAgainst(plan)` then validates the completion receipt.
+Unknown or duplicate reviewed paths are rejected. A missing receipt, incomplete
+indexed-file set, or partial Plan is stored as `completion.status=partial` with
+a deterministic reason. This normalization never deletes validated findings.
 
 ### 4.4 Model-aware retry and transient model failures
 
@@ -579,6 +601,11 @@ shows files, hunks and changed lines presented to the reviewer. States:
 - **Plan unavailable** — legacy Run; findings remain visible but are not labelled
   deterministic;
 - **Invalid output** — persistent failure with the rejected anchor reason.
+
+The result card independently shows **Complete**, **Partial**, or **Failed**
+execution. Partial/failed zero-finding results use a warning treatment and never
+the green no-findings treatment. Missing completion receipts from rolling or
+historical runners are displayed as partial/unknown, not inferred as complete.
 
 “No findings” is a result card, not a green coverage badge. Coverage and finding
 count are separate facts.

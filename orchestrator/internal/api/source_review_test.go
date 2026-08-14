@@ -65,7 +65,7 @@ func TestIngestStructuredReviewValidatesBeforePersisting(t *testing.T) {
 		return response
 	}
 
-	valid := `{"summary":"One verified defect.","findings":[{"path":"ledger.py","line":8,"severity":"P1","confidence":96,"title":"Balance guard is reversed","body":"Valid transfers are rejected while overdrafts proceed."}],"checks":["tests","changed lines"]}`
+	valid := `{"summary":"One verified defect.","findings":[{"path":"ledger.py","line":8,"severity":"P1","confidence":96,"title":"Balance guard is reversed","body":"Valid transfers are rejected while overdrafts proceed."}],"checks":["tests","changed lines"],"completion":{"status":"complete","reviewed_files":["ledger.py"]}}`
 	if response := post(valid); response.Code != http.StatusCreated {
 		t.Fatalf("valid review status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -84,6 +84,54 @@ func TestIngestStructuredReviewValidatesBeforePersisting(t *testing.T) {
 	after, _ := st.GetRun(ctx, run.ID)
 	if len(after.ReviewResult.Findings) != 1 {
 		t.Fatal("invalid structured upload replaced the validated result")
+	}
+}
+
+func TestIngestStructuredReviewWithoutCompletionBecomesPartial(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	project := &domain.Project{ID: domain.NewID(), Name: "review", CreatedAt: time.Now()}
+	if err := st.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	service := &domain.Service{ID: domain.NewID(), ProjectID: project.ID, Name: "repo", CreatedAt: time.Now()}
+	if err := st.CreateService(ctx, service); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.Run{
+		ID: domain.NewID(), ProjectID: project.ID, ServiceID: service.ID, Prompt: "review", Status: domain.StatusRunning,
+		Kind: domain.RunKindReview, CreatedAt: time.Now(), PRBaseSHA: strings.Repeat("a", 40), PRHeadSHA: strings.Repeat("b", 40),
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := domain.BuildReviewPlan(domain.ReviewPlanInput{
+		BaseSHA: run.PRBaseSHA, HeadSHA: run.PRHeadSHA, MergeBaseSHA: strings.Repeat("c", 40),
+		Diff: "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.SetReviewPlan(ctx, run.ID, *plan); err != nil {
+		t.Fatal(err)
+	}
+	server := New(st, &config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), sse.NewHub(), nil)
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/runs/"+run.ID+"/review", bytes.NewBufferString(`{"summary":"No findings.","findings":[]}`))
+	request.Header.Set("Content-Type", structuredReviewMediaType)
+	response := httptest.NewRecorder()
+	server.handleIngestReview(response, request, run.ID)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("review status=%d body=%s", response.Code, response.Body.String())
+	}
+	got, err := st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewResult == nil || got.ReviewResult.Completion == nil || got.ReviewResult.Completion.Status != domain.ReviewCompletionPartial {
+		t.Fatalf("review completion = %#v", got.ReviewResult)
+	}
+	if strings.Contains(got.ReviewOutput, "No high-confidence findings") {
+		t.Fatalf("partial result was stored as a clean review: %s", got.ReviewOutput)
 	}
 }
 

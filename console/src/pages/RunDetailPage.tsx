@@ -935,8 +935,9 @@ function WorkflowContractSection({ contract }: { contract?: WorkflowContract }) 
 
 function ReviewDeliveryState({ run }: { run: Run }) {
   const { t } = useTranslation();
+  const reviewComplete = run.review_result?.completion?.status === 'complete';
   const state = run.review_posted_at
-    ? 'posted'
+    ? (reviewComplete ? 'posted' : 'incomplete')
     : run.review_delivery_error
       ? 'error'
     : run.review_result
@@ -1020,6 +1021,8 @@ function ReviewStage({ testId, title, body, events }: { testId: string; title: s
 
 function ReviewResultPanel({ result }: { result: ReviewResult }) {
   const { t } = useTranslation();
+  const complete = result.completion?.status === 'complete';
+  const checks = result.checks ?? [];
   return (
     <section className={styles.reviewResult} data-testid="review-result">
       <header>
@@ -1027,9 +1030,19 @@ function ReviewResultPanel({ result }: { result: ReviewResult }) {
         <strong>{t('runDetail.review.result.count', { count: result.findings.length })}</strong>
       </header>
       <p className={styles.reviewSummary}>{result.summary}</p>
-      {result.findings.length === 0 ? (
+      {!complete && (
+        <div className={styles.reviewIncomplete} data-testid="review-incomplete" role="status">
+          <ShieldWarning size={18} weight="fill" aria-hidden="true" />
+          <div>
+            <strong>{t('runDetail.review.result.incompleteTitle')}</strong>
+            <p>{t('runDetail.review.result.incompleteBody')}</p>
+            {!!result.completion?.reasons?.length && <code>{result.completion.reasons.join(' · ')}</code>}
+          </div>
+        </div>
+      )}
+      {result.findings.length === 0 && complete ? (
         <div className={styles.reviewNoFindings} data-testid="review-no-findings"><Check size={18} weight="bold" aria-hidden="true" /><span>{t('runDetail.review.result.noFindings')}</span></div>
-      ) : (
+      ) : result.findings.length > 0 ? (
         <ol className={styles.findingList}>
           {result.findings.map((finding, index) => (
             <li key={`${finding.path}:${finding.line}:${index}`} className={styles.findingCard} data-severity={finding.severity}>
@@ -1043,11 +1056,11 @@ function ReviewResultPanel({ result }: { result: ReviewResult }) {
             </li>
           ))}
         </ol>
-      )}
-      {result.checks.length > 0 && (
+      ) : null}
+      {checks.length > 0 && (
         <details className={styles.reviewChecks}>
-          <summary>{t('runDetail.review.result.checks', { count: result.checks.length })}</summary>
-          <ul>{result.checks.map((check) => <li key={check}>{check}</li>)}</ul>
+          <summary>{t('runDetail.review.result.checks', { count: checks.length })}</summary>
+          <ul>{checks.map((check) => <li key={check}>{check}</li>)}</ul>
         </details>
       )}
     </section>

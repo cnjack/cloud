@@ -200,6 +200,11 @@ if [ "${RUN_ARCHIVE:-0}" = "1" ]; then
 fi
 RUN_TIMEOUT="${RUN_TIMEOUT:-43200s}"
 RUN_KIND="${RUN_KIND:-agent}"
+# Review runs are deliberately bounded below the general interactive default.
+# Hitting this hard iteration ceiling fails the run rather than allowing an
+# unfinished reviewer to manufacture a clean result.
+JCODE_MAX_ITERATIONS=1000
+[ "$RUN_KIND" = "review" ] && JCODE_MAX_ITERATIONS=40
 SOURCE_MODE="${SOURCE_MODE:-clone}"
 GIT_MODE="${GIT_MODE:-readonly}"
 # RUN_SESSION=1 (F7a / D22): multi-turn session mode, see the header comment
@@ -595,7 +600,12 @@ Write exactly one JSON object to REVIEW.json in the repository root:
       "suggestion": "optional exact replacement without markdown fences"
     }
   ],
-  "checks": ["specific context inspected or command run"]
+  "checks": ["specific context inspected or command run"],
+  "completion": {
+    "status": "complete|partial|failed",
+    "reviewed_files": ["every indexed repository-relative file actually inspected"],
+    "reasons": ["completion_unreported|input_coverage_partial|files_unreviewed|budget_exhausted|model_error|verification_incomplete|reviewer_incomplete"]
+  }
 }
 Use an empty findings array when no high-confidence defect exists. Do not add
 markdown fences or any text outside the JSON object. Keep the summary focused on
@@ -603,13 +613,21 @@ the conclusion and material risk; put commands, files inspected, and other
 verification detail in checks instead. Aim for at most 600 summary bytes. The
 summary, title, body, and checks are plain text; do not add markdown or
 @mentions to them. The upload validator is strict: do not add fields that are
-absent from the schema above. The hard summary limit is 1-2000 bytes. Keep checks
+absent from the schema above. The hard summary limit is between 1 and 2000 bytes. Keep checks
 to at most 12 entries, each 1-240 bytes.
 For every finding, use a safe repository-relative path (no absolute
 path, backslash, or '..'), line >= 1, end_line omitted or >= line, a title of
 1-160 bytes, a body of 1-4000 bytes, and an optional suggestion of at most 4000
 bytes. Confidence must be an integer from 80 through 100. These limits are part
 of the delivery contract: exceeding one rejects the entire review.
+The completion receipt is also part of the delivery contract. Use complete
+only after inspecting every changed text file in the diff and finishing all
+verification you started. Use partial or failed with at least one reason when
+a file, tool call, model step, budget, or verification remains incomplete.
+Never use complete merely because findings is empty. reviewed_files must list
+only safe repository-relative indexed text paths that you actually inspected;
+the control plane checks it against the immutable Review Plan and downgrades
+any unsupported clean claim to partial.
 EOF
 )"
 fi
@@ -684,11 +702,12 @@ cat > "$HOME/.jcode/config.json" <<JSON
     }
   },
   "model": "$MODEL_NAME",
+  "max_iterations": $JCODE_MAX_ITERATIONS,
   "default_mode": "full_access",
   "memory": { "enabled": $MEMORY_ENABLED }
 }
 JSON
-log "wrote $HOME/.jcode/config.json (provider=$MODEL_PROVIDER model=$MODEL_ID base_url=$MODEL_BASE_URL memory=$MEMORY_ENABLED)"
+log "wrote $HOME/.jcode/config.json (provider=$MODEL_PROVIDER model=$MODEL_ID base_url=$MODEL_BASE_URL memory=$MEMORY_ENABLED max_iterations=$JCODE_MAX_ITERATIONS)"
 
 # Test-only hook: stop right after workspace preparation + config write, BEFORE
 # the agent runs. It lets runner/test-persistent-reuse.sh exercise the REAL

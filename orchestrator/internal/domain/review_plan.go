@@ -259,6 +259,60 @@ func (r ReviewResult) ValidateAgainst(plan *ReviewPlan) error {
 	return nil
 }
 
+// NormalizeAgainst validates the structured result and turns any unverifiable
+// clean claim into an explicit partial receipt. Findings are preserved. The
+// server-owned Plan, rather than model prose, is authoritative for input and
+// file coverage.
+func (r *ReviewResult) NormalizeAgainst(plan *ReviewPlan) error {
+	if r == nil {
+		return errors.New("review result is required")
+	}
+	if err := r.ValidateAgainst(plan); err != nil {
+		return err
+	}
+	if r.Completion == nil {
+		r.Completion = &ReviewCompletion{
+			Status:  ReviewCompletionPartial,
+			Reasons: []ReviewIncompleteReason{ReviewReasonCompletionUnreported},
+		}
+		return nil
+	}
+
+	expected := make(map[string]bool, plan.IndexedFiles)
+	for _, file := range plan.Files {
+		if file.Status == "indexed" {
+			expected[file.Path] = true
+		}
+	}
+	for _, file := range r.Completion.ReviewedFiles {
+		if !expected[file] {
+			return fmt.Errorf("review completion references non-indexed file %q", file)
+		}
+	}
+	sort.Strings(r.Completion.ReviewedFiles)
+	if r.Completion.Status == ReviewCompletionComplete && len(r.Completion.ReviewedFiles) != len(expected) {
+		r.Completion.Status = ReviewCompletionPartial
+		addReviewCompletionReason(r.Completion, ReviewReasonFilesUnreviewed)
+	}
+	if plan.Coverage != ReviewCoverageComplete {
+		if r.Completion.Status == ReviewCompletionComplete {
+			r.Completion.Status = ReviewCompletionPartial
+		}
+		addReviewCompletionReason(r.Completion, ReviewReasonInputCoveragePartial)
+	}
+	sort.Slice(r.Completion.Reasons, func(i, j int) bool { return r.Completion.Reasons[i] < r.Completion.Reasons[j] })
+	return nil
+}
+
+func addReviewCompletionReason(completion *ReviewCompletion, reason ReviewIncompleteReason) {
+	for _, existing := range completion.Reasons {
+		if existing == reason {
+			return
+		}
+	}
+	completion.Reasons = append(completion.Reasons, reason)
+}
+
 type storedReviewPlan struct {
 	SchemaVersion int              `json:"schema_version"`
 	PlanHash      string           `json:"plan_hash"`

@@ -9,7 +9,8 @@ import (
 )
 
 const (
-	MaxReviewFindings = 8
+	MaxReviewFindings          = 8
+	MaxReviewCompletionReasons = 8
 
 	// Keep the composed review comfortably below common provider comment limits.
 	// Individual budgets preserve every finding's identity while bounding escaped
@@ -29,9 +30,60 @@ const (
 // Provider-specific Markdown is derived only after this structure crosses the
 // validation boundary.
 type ReviewResult struct {
-	Summary  string          `json:"summary"`
-	Findings []ReviewFinding `json:"findings"`
-	Checks   []string        `json:"checks,omitempty"`
+	Summary    string            `json:"summary"`
+	Findings   []ReviewFinding   `json:"findings"`
+	Checks     []string          `json:"checks,omitempty"`
+	Completion *ReviewCompletion `json:"completion,omitempty"`
+}
+
+// ReviewCompletion is the reviewer's bounded execution receipt. It is kept
+// separate from ReviewPlan input coverage: the Plan proves what entered the
+// review, while this receipt records which indexed files the reviewer claims
+// to have inspected and why it stopped. NormalizeAgainst independently checks
+// the receipt against the server-owned Plan before the result is persisted.
+type ReviewCompletion struct {
+	Status        ReviewCompletionStatus   `json:"status"`
+	ReviewedFiles []string                 `json:"reviewed_files"`
+	Reasons       []ReviewIncompleteReason `json:"reasons,omitempty"`
+}
+
+type ReviewCompletionStatus string
+
+const (
+	ReviewCompletionComplete ReviewCompletionStatus = "complete"
+	ReviewCompletionPartial  ReviewCompletionStatus = "partial"
+	ReviewCompletionFailed   ReviewCompletionStatus = "failed"
+)
+
+func (s ReviewCompletionStatus) Valid() bool {
+	switch s {
+	case ReviewCompletionComplete, ReviewCompletionPartial, ReviewCompletionFailed:
+		return true
+	}
+	return false
+}
+
+type ReviewIncompleteReason string
+
+const (
+	ReviewReasonCompletionUnreported   ReviewIncompleteReason = "completion_unreported"
+	ReviewReasonInputCoveragePartial   ReviewIncompleteReason = "input_coverage_partial"
+	ReviewReasonFilesUnreviewed        ReviewIncompleteReason = "files_unreviewed"
+	ReviewReasonBudgetExhausted        ReviewIncompleteReason = "budget_exhausted"
+	ReviewReasonModelError             ReviewIncompleteReason = "model_error"
+	ReviewReasonVerificationIncomplete ReviewIncompleteReason = "verification_incomplete"
+	ReviewReasonReviewerIncomplete     ReviewIncompleteReason = "reviewer_incomplete"
+)
+
+func (r ReviewIncompleteReason) Valid() bool {
+	switch r {
+	case ReviewReasonCompletionUnreported, ReviewReasonInputCoveragePartial,
+		ReviewReasonFilesUnreviewed, ReviewReasonBudgetExhausted,
+		ReviewReasonModelError, ReviewReasonVerificationIncomplete,
+		ReviewReasonReviewerIncomplete:
+		return true
+	}
+	return false
 }
 
 type ReviewFinding struct {
@@ -90,6 +142,51 @@ func (r ReviewResult) Validate() error {
 			return fmt.Errorf("check %d has invalid length", i+1)
 		}
 	}
+	if err := validateReviewCompletion(r.Completion); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateReviewCompletion(completion *ReviewCompletion) error {
+	if completion == nil {
+		return nil
+	}
+	if !completion.Status.Valid() {
+		return fmt.Errorf("review completion has invalid status %q", completion.Status)
+	}
+	if len(completion.ReviewedFiles) > MaxReviewFiles {
+		return fmt.Errorf("review completion has more than %d reviewed files", MaxReviewFiles)
+	}
+	seenFiles := make(map[string]bool, len(completion.ReviewedFiles))
+	for i, value := range completion.ReviewedFiles {
+		if !safeReviewPath(value) {
+			return fmt.Errorf("review completion file %d has an unsafe path", i+1)
+		}
+		if seenFiles[value] {
+			return fmt.Errorf("review completion file %d duplicates an existing path", i+1)
+		}
+		seenFiles[value] = true
+	}
+	if len(completion.Reasons) > MaxReviewCompletionReasons {
+		return fmt.Errorf("review completion has more than %d reasons", MaxReviewCompletionReasons)
+	}
+	seenReasons := make(map[ReviewIncompleteReason]bool, len(completion.Reasons))
+	for i, reason := range completion.Reasons {
+		if !reason.Valid() {
+			return fmt.Errorf("review completion reason %d is invalid", i+1)
+		}
+		if seenReasons[reason] {
+			return fmt.Errorf("review completion reason %d is duplicated", i+1)
+		}
+		seenReasons[reason] = true
+	}
+	if completion.Status == ReviewCompletionComplete && len(completion.Reasons) > 0 {
+		return errors.New("complete review completion cannot include incomplete reasons")
+	}
+	if completion.Status != ReviewCompletionComplete && len(completion.Reasons) == 0 {
+		return errors.New("incomplete review completion requires at least one reason")
+	}
 	return nil
 }
 
@@ -117,18 +214,25 @@ func (r ReviewResult) RenderGitHubSummary(includeFindings bool) string {
 
 func (r ReviewResult) renderSummary(includeFindings, githubAlerts bool) string {
 	count := len(r.Findings)
-	findingHeading := reviewFindingHeading(count)
+	complete := r.Completion != nil && r.Completion.Status == ReviewCompletionComplete
+	findingHeading := reviewFindingHeading(count, complete)
 	truncated := false
 	var b strings.Builder
 	if githubAlerts {
 		alertType := "NOTE"
-		if includeFindings && count > 0 {
+		if !complete {
+			alertType = "WARNING"
+		} else if includeFindings && count > 0 {
 			alertType = "WARNING"
 		} else if count > 0 {
 			alertType = "IMPORTANT"
 		}
 		fmt.Fprintf(&b, "> [!%s]\n> ## %s\n>\n", alertType, findingHeading)
 		switch {
+		case !complete && count == 0:
+			b.WriteString("> No findings were confirmed before review stopped. This is not a clean result.")
+		case !complete:
+			b.WriteString("> Confirmed findings are available, but review did not finish. This is not a clean result.")
 		case includeFindings && count > 0:
 			b.WriteString("> Inline comments could not be placed on the diff. Review the locations below.")
 		case count == 0:
@@ -148,6 +252,15 @@ func (r ReviewResult) renderSummary(includeFindings, githubAlerts bool) string {
 	summary, summaryTruncated := escapeReviewMarkdownBounded(strings.TrimSpace(r.Summary), maxRenderedSummaryTextBytes)
 	truncated = truncated || summaryTruncated
 	b.WriteString(summary)
+	if !complete {
+		b.WriteString("\n\n### Incomplete review\n\n")
+		b.WriteString("This review did not reach a clean conclusion")
+		if reasons := r.renderCompletionReasons(); reasons != "" {
+			b.WriteString(": ")
+			b.WriteString(reasons)
+		}
+		b.WriteString(".")
+	}
 	if includeFindings && count > 0 {
 		b.WriteString("\n\n### Findings")
 		findings := append([]ReviewFinding(nil), r.Findings...)
@@ -184,7 +297,10 @@ func (r ReviewResult) renderSummary(includeFindings, githubAlerts bool) string {
 	return b.String()
 }
 
-func reviewFindingHeading(count int) string {
+func reviewFindingHeading(count int, complete bool) string {
+	if !complete {
+		return "Review incomplete"
+	}
 	switch count {
 	case 0:
 		return "No high-confidence findings"
@@ -193,6 +309,33 @@ func reviewFindingHeading(count int) string {
 	default:
 		return fmt.Sprintf("%d validated findings", count)
 	}
+}
+
+func (r ReviewResult) renderCompletionReasons() string {
+	reasons := []ReviewIncompleteReason{ReviewReasonCompletionUnreported}
+	if r.Completion != nil && len(r.Completion.Reasons) > 0 {
+		reasons = r.Completion.Reasons
+	}
+	labels := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		switch reason {
+		case ReviewReasonCompletionUnreported:
+			labels = append(labels, "completion was not reported")
+		case ReviewReasonInputCoveragePartial:
+			labels = append(labels, "input coverage was partial")
+		case ReviewReasonFilesUnreviewed:
+			labels = append(labels, "one or more indexed files were not reviewed")
+		case ReviewReasonBudgetExhausted:
+			labels = append(labels, "budget exhausted")
+		case ReviewReasonModelError:
+			labels = append(labels, "the model failed")
+		case ReviewReasonVerificationIncomplete:
+			labels = append(labels, "candidate verification was incomplete")
+		case ReviewReasonReviewerIncomplete:
+			labels = append(labels, "the reviewer stopped before completion")
+		}
+	}
+	return strings.Join(labels, "; ")
 }
 
 func reviewSingleLine(value string) string {

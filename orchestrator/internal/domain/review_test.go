@@ -55,6 +55,7 @@ func TestReviewResultRenderSummaryUsesGitHubFormatting(t *testing.T) {
 		result := ReviewResult{
 			Summary: "No high-confidence defects found.",
 			Checks:  []string{"Inspected changed code"},
+			Completion: &ReviewCompletion{Status: ReviewCompletionComplete},
 		}
 		want := `> [!NOTE]
 > ## No high-confidence findings
@@ -83,6 +84,7 @@ No high\-confidence defects found\.
 	t.Run("review with inline findings", func(t *testing.T) {
 		result := ReviewResult{
 			Summary: "One defect found.",
+			Completion: &ReviewCompletion{Status: ReviewCompletionComplete},
 			Findings: []ReviewFinding{{
 				Path: "ledger.py", Line: 7, Severity: "P1", Confidence: 99,
 				Title: "Reversed guard", Body: "Valid transfers are rejected.",
@@ -102,6 +104,7 @@ No high\-confidence defects found\.
 	t.Run("fallback findings", func(t *testing.T) {
 		result := ReviewResult{
 			Summary: "Two defects found.",
+			Completion: &ReviewCompletion{Status: ReviewCompletionComplete},
 			Findings: []ReviewFinding{
 				{Path: "z.go", Line: 12, Severity: "P2", Confidence: 91, Title: "Late issue", Body: "The late path fails."},
 				{Path: "a.go", Line: 7, Severity: "P1", Confidence: 99, Title: "Reversed guard", Body: "Valid transfers are rejected."},
@@ -138,7 +141,7 @@ No high\-confidence defects found\.
 	})
 
 	t.Run("portable providers do not receive GitHub alert syntax", func(t *testing.T) {
-		result := ReviewResult{Summary: "No high-confidence defects found."}
+		result := ReviewResult{Summary: "No high-confidence defects found.", Completion: &ReviewCompletion{Status: ReviewCompletionComplete}}
 		body := result.RenderSummary(false)
 		for _, want := range []string{"## jcode review", "### No high-confidence findings", "### Summary\n\nNo high\\-confidence defects found\\."} {
 			if !strings.Contains(body, want) {
@@ -147,6 +150,24 @@ No high\-confidence defects found\.
 		}
 		if strings.Contains(body, "[!NOTE]") || strings.Contains(body, "[!WARNING]") {
 			t.Fatalf("portable review contains GitHub-only alert syntax:\n%s", body)
+		}
+	})
+
+	t.Run("partial zero-finding result never renders as clean", func(t *testing.T) {
+		result := ReviewResult{
+			Summary: "No issue was confirmed before the review stopped.",
+			Completion: &ReviewCompletion{
+				Status: ReviewCompletionPartial, Reasons: []ReviewIncompleteReason{ReviewReasonBudgetExhausted},
+			},
+		}
+		body := result.RenderGitHubSummary(false)
+		for _, want := range []string{"Review incomplete", "not a clean result", "budget exhausted"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("partial review missing %q:\n%s", want, body)
+			}
+		}
+		if strings.Contains(body, "No high-confidence findings") {
+			t.Fatalf("partial review rendered a clean heading:\n%s", body)
 		}
 	})
 

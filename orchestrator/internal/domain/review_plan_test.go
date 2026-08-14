@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -87,5 +88,90 @@ func TestReviewResultValidateAgainstPlan(t *testing.T) {
 	invalid.Findings[0].EndLine = 0
 	if err := invalid.ValidateAgainst(plan); err == nil || !strings.Contains(err.Error(), "changed right-side line") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReviewResultNormalizeCompletionAgainstPlan(t *testing.T) {
+	completePlan, err := BuildReviewPlan(ReviewPlanInput{
+		BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("c", 40),
+		Diff: `diff --git a/a.go b/a.go
+--- a/a.go
++++ b/a.go
+@@ -1 +1 @@
+-old
++new
+diff --git a/b.go b/b.go
+--- a/b.go
++++ b/b.go
+@@ -1 +1 @@
+-old
++new
+`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	partialPlan, err := BuildReviewPlan(ReviewPlanInput{
+		BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("c", 40),
+		Diff: reviewPlanFixture,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		plan        *ReviewPlan
+		completion  *ReviewCompletion
+		wantStatus  ReviewCompletionStatus
+		wantReasons []ReviewIncompleteReason
+	}{
+		{
+			name:        "missing receipt is partial",
+			plan:        completePlan,
+			wantStatus:  ReviewCompletionPartial,
+			wantReasons: []ReviewIncompleteReason{ReviewReasonCompletionUnreported},
+		},
+		{
+			name: "missing indexed file is partial",
+			plan: completePlan,
+			completion: &ReviewCompletion{
+				Status: ReviewCompletionComplete, ReviewedFiles: []string{"a.go"},
+			},
+			wantStatus:  ReviewCompletionPartial,
+			wantReasons: []ReviewIncompleteReason{ReviewReasonFilesUnreviewed},
+		},
+		{
+			name: "partial input cannot become clean",
+			plan: partialPlan,
+			completion: &ReviewCompletion{
+				Status: ReviewCompletionComplete, ReviewedFiles: []string{"a.go", "moved.txt"},
+			},
+			wantStatus:  ReviewCompletionPartial,
+			wantReasons: []ReviewIncompleteReason{ReviewReasonInputCoveragePartial},
+		},
+		{
+			name: "exact receipt is complete",
+			plan: completePlan,
+			completion: &ReviewCompletion{
+				Status: ReviewCompletionComplete, ReviewedFiles: []string{"b.go", "a.go"},
+			},
+			wantStatus: ReviewCompletionComplete,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ReviewResult{Summary: "Review finished.", Completion: tt.completion}
+			if err := result.NormalizeAgainst(tt.plan); err != nil {
+				t.Fatalf("NormalizeAgainst() error = %v", err)
+			}
+			if result.Completion == nil || result.Completion.Status != tt.wantStatus {
+				t.Fatalf("completion = %#v, want status %q", result.Completion, tt.wantStatus)
+			}
+			if !reflect.DeepEqual(result.Completion.Reasons, tt.wantReasons) {
+				t.Fatalf("reasons = %v, want %v", result.Completion.Reasons, tt.wantReasons)
+			}
+		})
 	}
 }

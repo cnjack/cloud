@@ -2066,6 +2066,8 @@ export default {
         title: '评审发现',
         count: '{count} 个发现',
         noFindings: '已索引变更中没有发现高置信度缺陷。',
+        incompleteTitle: '评审未完整完成',
+        incompleteBody: '本次评审没有得出可视为通过的结论。已确认的问题仍会保留，但零发现不代表此 PR 没有问题。',
         confidence: '置信度 {confidence}%',
         suggestion: '建议修改',
         checks: '{count} 项校验记录',

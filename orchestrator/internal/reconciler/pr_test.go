@@ -611,7 +611,7 @@ func TestReconcileStructuredReviewPostsInlineAndFallsBackOnInvalidAnchor(t *test
 	fake.Seed("jcloud", "seed", "jcode/run-structured", provider.PR{Number: 13})
 	run := seedReviewRun(t, st, "jcode/run-structured", "legacy")
 	result := domain.ReviewResult{
-		Summary: "One defect found.",
+		Summary: "One defect found.", Completion: &domain.ReviewCompletion{Status: domain.ReviewCompletionComplete},
 		Findings: []domain.ReviewFinding{{
 			Path: "ledger.py", Line: 7, Severity: "P1", Confidence: 99,
 			Title: "Reversed guard", Body: "Valid transfers are rejected.",
@@ -647,7 +647,7 @@ func TestReconcileStructuredReviewPostsInlineAndFallsBackOnInvalidAnchor(t *test
 
 func TestPostProviderReviewUsesProviderMarkdownDialect(t *testing.T) {
 	result := domain.ReviewResult{
-		Summary: "One defect found.",
+		Summary: "One defect found.", Completion: &domain.ReviewCompletion{Status: domain.ReviewCompletionComplete},
 		Findings: []domain.ReviewFinding{{
 			Path: "ledger.py", Line: 7, Severity: "P1", Confidence: 99,
 			Title: "Reversed guard", Body: "Valid transfers are rejected.",

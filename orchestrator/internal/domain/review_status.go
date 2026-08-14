@@ -36,6 +36,7 @@ const (
 	ReviewStatusRunning    ReviewStatusState = "running"
 	ReviewStatusPublishing ReviewStatusState = "publishing"
 	ReviewStatusCompleted  ReviewStatusState = "completed"
+	ReviewStatusPartial    ReviewStatusState = "partial"
 	ReviewStatusFailed     ReviewStatusState = "failed"
 	ReviewStatusCanceled   ReviewStatusState = "canceled"
 	ReviewStatusSuperseded ReviewStatusState = "superseded"
@@ -44,7 +45,7 @@ const (
 func (s ReviewStatusState) Valid() bool {
 	switch s {
 	case ReviewStatusQueued, ReviewStatusRunning, ReviewStatusPublishing,
-		ReviewStatusCompleted, ReviewStatusFailed, ReviewStatusCanceled,
+		ReviewStatusCompleted, ReviewStatusPartial, ReviewStatusFailed, ReviewStatusCanceled,
 		ReviewStatusSuperseded:
 		return true
 	}
@@ -55,7 +56,7 @@ func (s ReviewStatusState) Valid() bool {
 // review attempt. A later head revision may still reuse the Service+PR comment.
 func (s ReviewStatusState) Terminal() bool {
 	switch s {
-	case ReviewStatusCompleted, ReviewStatusFailed, ReviewStatusCanceled, ReviewStatusSuperseded:
+	case ReviewStatusCompleted, ReviewStatusPartial, ReviewStatusFailed, ReviewStatusCanceled, ReviewStatusSuperseded:
 		return true
 	}
 	return false
@@ -272,9 +273,11 @@ func reviewStatusCopyFor(state ReviewStatusState) reviewStatusCopy {
 	case ReviewStatusRunning:
 		return reviewStatusCopy{"Review in progress", "jcode is reviewing the captured pull request revision; the final review will be posted separately.", "NOTE"}
 	case ReviewStatusPublishing:
-		return reviewStatusCopy{"Publishing review", "jcode's analysis is complete; the native review is being published separately.", "IMPORTANT"}
+		return reviewStatusCopy{"Publishing review", "jcode's analysis has ended; the native review is being published separately.", "IMPORTANT"}
 	case ReviewStatusCompleted:
 		return reviewStatusCopy{"Review completed", "jcode's native review was published separately from this status comment.", "TIP"}
+	case ReviewStatusPartial:
+		return reviewStatusCopy{"Review incomplete", "jcode did not reach a clean conclusion; a partial native review was published separately.", "WARNING"}
 	case ReviewStatusFailed:
 		return reviewStatusCopy{"Review failed", "jcode review did not complete. No native review was published for this attempt.", "CAUTION"}
 	case ReviewStatusCanceled:

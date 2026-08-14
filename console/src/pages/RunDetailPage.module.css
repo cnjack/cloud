@@ -233,6 +233,11 @@
 .reviewResult > header > strong { color: var(--color-text-muted); font-family: var(--font-mono); font-size: var(--fs-tiny); font-weight: var(--fw-medium); }
 .reviewSummary { margin: 0; color: var(--color-text-muted); font-size: var(--fs-sm); line-height: 1.65; }
 .reviewNoFindings { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-4); border: 1px solid color-mix(in srgb, var(--status-succeeded-fg) 26%, var(--color-border)); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--status-succeeded-bg) 50%, var(--color-panel)); color: var(--status-succeeded-fg); font-size: var(--fs-caption); }
+.reviewIncomplete { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-4); border: 1px solid color-mix(in srgb, var(--status-scheduling-fg) 34%, var(--color-border)); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--status-scheduling-bg) 58%, var(--color-panel)); color: var(--status-scheduling-fg); }
+.reviewIncomplete > div { display: grid; gap: var(--space-1); }
+.reviewIncomplete strong { font-size: var(--fs-caption); }
+.reviewIncomplete p { margin: 0; color: var(--color-text-muted); font-size: var(--fs-caption); line-height: 1.5; }
+.reviewIncomplete code { color: var(--color-text-muted); font-size: var(--fs-tiny); }
 .findingList { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
 .findingCard { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--color-border); border-left-width: 3px; border-radius: var(--radius-lg); background: var(--color-bg-inset); }
 .findingCard[data-severity='P0'], .findingCard[data-severity='P1'] { border-left-color: var(--color-danger-fg); }

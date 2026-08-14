@@ -790,7 +790,12 @@ export interface ReviewFinding {
 export interface ReviewResult {
   summary: string;
   findings: ReviewFinding[];
-  checks: string[];
+  checks?: string[];
+  completion?: {
+    status: 'complete' | 'partial' | 'failed' | string;
+    reviewed_files: string[];
+    reasons?: string[];
+  };
 }
 
 export interface SCMGrant {

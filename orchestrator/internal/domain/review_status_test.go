@@ -12,6 +12,7 @@ func TestReviewStatusStateLifecycle(t *testing.T) {
 		ReviewStatusRunning,
 		ReviewStatusPublishing,
 		ReviewStatusCompleted,
+		ReviewStatusPartial,
 		ReviewStatusFailed,
 		ReviewStatusCanceled,
 		ReviewStatusSuperseded,
@@ -20,7 +21,7 @@ func TestReviewStatusStateLifecycle(t *testing.T) {
 		if !state.Valid() {
 			t.Fatalf("state %q is not valid", state)
 		}
-		wantTerminal := state == ReviewStatusCompleted || state == ReviewStatusFailed || state == ReviewStatusCanceled || state == ReviewStatusSuperseded
+		wantTerminal := state == ReviewStatusCompleted || state == ReviewStatusPartial || state == ReviewStatusFailed || state == ReviewStatusCanceled || state == ReviewStatusSuperseded
 		if got := state.Terminal(); got != wantTerminal {
 			t.Fatalf("state %q Terminal() = %v, want %v", state, got, wantTerminal)
 		}
@@ -113,8 +114,9 @@ func TestRenderReviewStatusCommentStates(t *testing.T) {
 	}{
 		{ReviewStatusQueued, "NOTE", "Review queued", "waiting for an available runner", "final review will be posted separately"},
 		{ReviewStatusRunning, "NOTE", "Review in progress", "reviewing the captured pull request revision", "final review will be posted separately"},
-		{ReviewStatusPublishing, "IMPORTANT", "Publishing review", "analysis is complete", "native review is being published separately"},
+		{ReviewStatusPublishing, "IMPORTANT", "Publishing review", "analysis has ended", "native review is being published separately"},
 		{ReviewStatusCompleted, "TIP", "Review completed", "native review was published", "separately from this status comment"},
+		{ReviewStatusPartial, "WARNING", "Review incomplete", "did not reach a clean conclusion", "partial native review was published"},
 		{ReviewStatusFailed, "CAUTION", "Review failed", "review did not complete", "No native review was published for this attempt"},
 		{ReviewStatusCanceled, "WARNING", "Review canceled", "review was canceled", "No native review was published for this attempt"},
 		{ReviewStatusSuperseded, "NOTE", "Review superseded", "newer pull request revision", "No native review was published for this attempt"},

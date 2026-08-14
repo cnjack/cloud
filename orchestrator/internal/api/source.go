@@ -412,7 +412,7 @@ func (s *Server) handleIngestReview(w http.ResponseWriter, r *http.Request, runI
 			return
 		}
 		if run.ReviewPlan != nil {
-			if err := result.ValidateAgainst(run.ReviewPlan); err != nil {
+			if err := result.NormalizeAgainst(run.ReviewPlan); err != nil {
 				writeError(w, http.StatusBadRequest, "invalid_review_result", err.Error())
 				return
 			}

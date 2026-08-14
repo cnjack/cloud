@@ -143,7 +143,7 @@ var scenarios = map[string]Scenario{
 	// "[review]" marker (see scenarioForRequest), regardless of MOCK_SCENARIO.
 	"review": {
 		ToolName:  "write",
-		ToolArgs:  `{"file_path":"REVIEW.json","content":"{\"summary\":\"One high-confidence defect was found.\",\"findings\":[{\"path\":\"ledger.py\",\"line\":7,\"severity\":\"P2\",\"confidence\":92,\"title\":\"Missing empty-input handling\",\"body\":\"The new branch accepts an empty input and reaches an invalid state.\"}],\"checks\":[\"Inspected the changed branch\"]}\n"}`,
+		ToolArgs:  `{"file_path":"REVIEW.json","content":"{\"summary\":\"One high-confidence defect was found.\",\"findings\":[{\"path\":\"ledger.py\",\"line\":7,\"severity\":\"P2\",\"confidence\":92,\"title\":\"Missing empty-input handling\",\"body\":\"The new branch accepts an empty input and reaches an invalid state.\"}],\"checks\":[\"Inspected the changed branch\"],\"completion\":{\"status\":\"complete\",\"reviewed_files\":[\"ledger.py\"]}}\n"}`,
 		FinalText: "Review complete. I wrote validated findings to REVIEW.json.",
 	},
 }

@@ -153,7 +153,14 @@ func TestReviewStatusStateForRun(t *testing.T) {
 		{"running", domain.Run{Status: domain.StatusRunning}, domain.ReviewStatusRunning},
 		{"awaiting input", domain.Run{Status: domain.StatusAwaitingInput}, domain.ReviewStatusRunning},
 		{"publishing", domain.Run{Status: domain.StatusSucceeded, DeliveryStatus: domain.DeliveryPending}, domain.ReviewStatusPublishing},
-		{"published", domain.Run{Status: domain.StatusSucceeded, DeliveryStatus: domain.DeliveryDelivered, ReviewPostedAt: &postedAt}, domain.ReviewStatusCompleted},
+		{"published", domain.Run{
+			Status: domain.StatusSucceeded, DeliveryStatus: domain.DeliveryDelivered, ReviewPostedAt: &postedAt,
+			ReviewResult: &domain.ReviewResult{Completion: &domain.ReviewCompletion{Status: domain.ReviewCompletionComplete}},
+		}, domain.ReviewStatusCompleted},
+		{"published partial", domain.Run{
+			Status: domain.StatusSucceeded, DeliveryStatus: domain.DeliveryDelivered, ReviewPostedAt: &postedAt,
+			ReviewResult: &domain.ReviewResult{Completion: &domain.ReviewCompletion{Status: domain.ReviewCompletionPartial}},
+		}, domain.ReviewStatusPartial},
 		{"delivery failed", domain.Run{Status: domain.StatusSucceeded, DeliveryStatus: domain.DeliveryFailed}, domain.ReviewStatusFailed},
 		{"run failed", domain.Run{Status: domain.StatusFailed}, domain.ReviewStatusFailed},
 		{"blocked", domain.Run{Status: domain.StatusBlocked}, domain.ReviewStatusFailed},
@@ -444,6 +451,11 @@ func TestReconcileReviewStatusCommentLifecycleAndIdempotency(t *testing.T) {
 	if _, err := st.MarkRunning(ctx, run.ID, "Running", rec.now()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.SetReviewResult(ctx, run.ID, domain.ReviewResult{
+		Summary: "No actionable findings.", Completion: &domain.ReviewCompletion{Status: domain.ReviewCompletionComplete},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	rec.reconcileReviewStatusComments(ctx)
 	if len(fake.Comments) != 1 || len(fake.UpdatedComments) != 1 ||
 		fake.UpdatedComments[0].ID != commentID || !strings.Contains(fake.UpdatedComments[0].Body, "Review in progress") {
@@ -671,6 +683,11 @@ func TestNativeReviewTickIsIndependentFromStatusCommentWorker(t *testing.T) {
 	wirePRStack(rec, st, fake)
 	run, key := seedReviewStatusRun(t, rec, st)
 	if _, err := st.SetReviewOutput(ctx, run.ID, "No actionable findings."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetReviewResult(ctx, run.ID, domain.ReviewResult{
+		Summary: "No actionable findings.", Completion: &domain.ReviewCompletion{Status: domain.ReviewCompletionComplete},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.ScheduleRun(ctx, run.ID, "review-job", "token-hash", "Scheduling"); err != nil {

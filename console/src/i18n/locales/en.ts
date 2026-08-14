@@ -2232,6 +2232,8 @@ export default {
         title: 'Review findings',
         count: '{count} findings',
         noFindings: 'No high-confidence defects were found in the indexed changes.',
+        incompleteTitle: 'Review incomplete',
+        incompleteBody: 'No clean conclusion was reached. Confirmed findings remain visible, but zero findings does not mean this pull request is clear.',
         confidence: '{confidence}% confidence',
         suggestion: 'Suggested change',
         checks: '{count} validation checks',
