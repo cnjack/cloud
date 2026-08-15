@@ -93,7 +93,7 @@ type ReviewFinding struct {
 	Severity   string `json:"severity"`
 	Confidence int    `json:"confidence"`
 	Title      string `json:"title"`
-	Body       string `json:"body"`
+	Body       string `json:"body" jsonschema_description:"Required. Write compact GitHub-flavored Markdown. Put Impact, evidence, and suggested fix in separate short paragraphs with a blank line between paragraphs. Put code identifiers, file paths, commands, and API routes in Markdown inline code. Do not add backslashes before Markdown punctuation."`
 	Suggestion string `json:"suggestion,omitempty"`
 }
 
@@ -249,7 +249,7 @@ func (r ReviewResult) renderSummary(includeFindings, githubAlerts bool) string {
 		}
 	}
 	b.WriteString("\n\n### Summary\n\n")
-	summary, summaryTruncated := escapeReviewMarkdownBounded(strings.TrimSpace(r.Summary), maxRenderedSummaryTextBytes)
+	summary, summaryTruncated := renderReviewMarkdownSubsetBounded(strings.TrimSpace(r.Summary), maxRenderedSummaryTextBytes)
 	truncated = truncated || summaryTruncated
 	b.WriteString(summary)
 	if !complete {
@@ -275,7 +275,7 @@ func (r ReviewResult) renderSummary(includeFindings, githubAlerts bool) string {
 			location, locationTruncated := escapeReviewHTMLBounded(
 				fmt.Sprintf("%s:%d", finding.Path, finding.Line), maxRenderedFindingPathBytes,
 			)
-			body, bodyTruncated := escapeReviewMarkdownBounded(strings.TrimSpace(finding.Body), maxRenderedFindingBodyBytes)
+			body, bodyTruncated := renderReviewMarkdownSubsetBounded(strings.TrimSpace(finding.Body), maxRenderedFindingBodyBytes)
 			truncated = truncated || titleTruncated || locationTruncated || bodyTruncated
 			fmt.Fprintf(&b, "\n\n#### %s · %s\n\n<code>%s</code> · %d%% confidence\n\n%s",
 				finding.Severity, title, location, finding.Confidence, body)
@@ -350,39 +350,100 @@ func escapeReviewHTMLBounded(value string, limit int) (string, bool) {
 	return encodeReviewTextBounded(value, limit, escapedReviewHTMLRune)
 }
 
+// renderReviewMarkdownSubsetBounded keeps review prose readable without
+// treating model output as arbitrary Markdown. It permits only paragraph
+// breaks, top-level unordered-list markers, and single-backtick inline code.
+// Everything else still crosses the same escaping and mention-neutralization
+// boundary used by plain review text.
+func renderReviewMarkdownSubsetBounded(value string, limit int) (string, bool) {
+	runes := []rune(normalizeReviewText(value))
+	encoded := boundedReviewText{limit: limit}
+	atLineStart := true
+	for i := 0; i < len(runes); {
+		if atLineStart && runes[i] == '-' && i+1 < len(runes) && runes[i+1] == ' ' {
+			if !encoded.append("- ") {
+				break
+			}
+			i += 2
+			atLineStart = false
+			continue
+		}
+		if runes[i] == '`' && (i == 0 || runes[i-1] != '`') {
+			end := i + 1
+			for end < len(runes) && runes[end] != '`' && runes[end] != '\n' {
+				end++
+			}
+			if end > i+1 && end < len(runes) && runes[end] == '`' &&
+				(end+1 == len(runes) || runes[end+1] != '`') {
+				var code strings.Builder
+				for _, r := range runes[i+1 : end] {
+					code.WriteString(escapedReviewInlineCodeRune(r))
+				}
+				if !encoded.append("`" + code.String() + "`") {
+					break
+				}
+				i = end + 1
+				atLineStart = false
+				continue
+			}
+		}
+		if !encoded.append(escapedReviewMarkdownRune(runes[i])) {
+			break
+		}
+		atLineStart = runes[i] == '\n'
+		i++
+	}
+	return encoded.result()
+}
+
 func normalizeReviewText(value string) string {
 	value = strings.ReplaceAll(value, "\r\n", "\n")
 	return strings.ReplaceAll(value, "\r", "\n")
 }
 
 func encodeReviewTextBounded(value string, limit int, encode func(rune) string) (string, bool) {
-	var segments []string
-	size := 0
-	truncated := false
+	encoded := boundedReviewText{limit: limit}
 	for _, r := range normalizeReviewText(value) {
-		segment := encode(r)
-		if size+len(segment) > limit {
-			truncated = true
+		if !encoded.append(encode(r)) {
 			break
 		}
-		segments = append(segments, segment)
-		size += len(segment)
 	}
-	if truncated {
-		for len(segments) > 0 && size+len(reviewTextTruncationMarker) > limit {
-			size -= len(segments[len(segments)-1])
-			segments = segments[:len(segments)-1]
+	return encoded.result()
+}
+
+type boundedReviewText struct {
+	segments  []string
+	size      int
+	limit     int
+	truncated bool
+}
+
+func (b *boundedReviewText) append(segment string) bool {
+	if b.size+len(segment) > b.limit {
+		b.truncated = true
+		return false
+	}
+	b.segments = append(b.segments, segment)
+	b.size += len(segment)
+	return true
+}
+
+func (b *boundedReviewText) result() (string, bool) {
+	if b.truncated {
+		for len(b.segments) > 0 && b.size+len(reviewTextTruncationMarker) > b.limit {
+			b.size -= len(b.segments[len(b.segments)-1])
+			b.segments = b.segments[:len(b.segments)-1]
 		}
 	}
-	var b strings.Builder
-	b.Grow(size + len(reviewTextTruncationMarker))
-	for _, segment := range segments {
-		b.WriteString(segment)
+	var result strings.Builder
+	result.Grow(b.size + len(reviewTextTruncationMarker))
+	for _, segment := range b.segments {
+		result.WriteString(segment)
 	}
-	if truncated {
-		b.WriteString(reviewTextTruncationMarker)
+	if b.truncated {
+		result.WriteString(reviewTextTruncationMarker)
 	}
-	return b.String(), truncated
+	return result.String(), b.truncated
 }
 
 func escapedReviewMarkdownRune(r rune) string {
@@ -423,6 +484,21 @@ func escapedReviewHTMLRune(r rune) string {
 	}
 }
 
+func escapedReviewInlineCodeRune(r rune) string {
+	switch r {
+	case '&':
+		return "&amp;"
+	case '<':
+		return "&lt;"
+	case '>':
+		return "&gt;"
+	case '@':
+		return "&#64;&#8203;"
+	default:
+		return string(r)
+	}
+}
+
 func reviewSuggestionFence(value string) string {
 	longest, current := 0, 0
 	for _, r := range value {
@@ -444,7 +520,7 @@ func reviewSuggestionFence(value string) string {
 
 func (f ReviewFinding) RenderInline() string {
 	title, titleTruncated := escapeReviewMarkdownBounded(reviewSingleLine(f.Title), maxRenderedFindingTitleBytes)
-	body, bodyTruncated := escapeReviewMarkdownBounded(strings.TrimSpace(f.Body), maxRenderedFindingBodyBytes)
+	body, bodyTruncated := renderReviewMarkdownSubsetBounded(strings.TrimSpace(f.Body), maxRenderedFindingBodyBytes)
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s · %s**\n\n%s\n\n_%d%% confidence_", f.Severity, title, body, f.Confidence)
 	if titleTruncated || bodyTruncated {

@@ -189,6 +189,31 @@ func TestGiteaCreateIssueComment(t *testing.T) {
 	}
 }
 
+func TestGiteaCreatePRReviewPreservesPortableMarkdown(t *testing.T) {
+	var gotAuth, gotPath string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+
+	markdown := "## jcode review\n\nOne defect in `ledger.py`.\n\n- The changed `guard` is reversed"
+	c, _ := NewGiteaClient(srv.URL, "tok-review")
+	if err := c.CreatePRReview(context.Background(), "jcloud", "seed", 7, markdown); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/v1/repos/jcloud/seed/pulls/7/reviews" || gotAuth != "token tok-review" {
+		t.Fatalf("path=%q auth=%q", gotPath, gotAuth)
+	}
+	if body["event"] != "COMMENT" || body["body"] != markdown {
+		t.Fatalf("review payload=%#v", body)
+	}
+}
+
 // TestFakeProviderIdempotencySeam sanity-checks the fake used by reconciler tests.
 func TestFakeProviderIdempotencySeam(t *testing.T) {
 	f := NewFakeProvider()

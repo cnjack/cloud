@@ -53,8 +53,8 @@ func TestReviewResultValidation(t *testing.T) {
 func TestReviewResultRenderSummaryUsesGitHubFormatting(t *testing.T) {
 	t.Run("clean review", func(t *testing.T) {
 		result := ReviewResult{
-			Summary: "No high-confidence defects found.",
-			Checks:  []string{"Inspected changed code"},
+			Summary:    "No high-confidence defects found.",
+			Checks:     []string{"Inspected changed code"},
 			Completion: &ReviewCompletion{Status: ReviewCompletionComplete},
 		}
 		want := `> [!NOTE]
@@ -83,7 +83,7 @@ No high\-confidence defects found\.
 
 	t.Run("review with inline findings", func(t *testing.T) {
 		result := ReviewResult{
-			Summary: "One defect found.",
+			Summary:    "One defect found.",
 			Completion: &ReviewCompletion{Status: ReviewCompletionComplete},
 			Findings: []ReviewFinding{{
 				Path: "ledger.py", Line: 7, Severity: "P1", Confidence: 99,
@@ -103,7 +103,7 @@ No high\-confidence defects found\.
 
 	t.Run("fallback findings", func(t *testing.T) {
 		result := ReviewResult{
-			Summary: "Two defects found.",
+			Summary:    "Two defects found.",
 			Completion: &ReviewCompletion{Status: ReviewCompletionComplete},
 			Findings: []ReviewFinding{
 				{Path: "z.go", Line: 12, Severity: "P2", Confidence: 91, Title: "Late issue", Body: "The late path fails."},
@@ -137,6 +137,42 @@ No high\-confidence defects found\.
 		}
 		if strings.Contains(body, "> First paragraph.") {
 			t.Fatalf("model summary should not turn the status alert into a text wall:\n%s", body)
+		}
+	})
+
+	t.Run("readable markdown subset survives provider rendering", func(t *testing.T) {
+		result := ReviewResult{
+			Summary:    "The projection revives `config.CustomModels`.\n\n- Removing `/api/models` no longer sticks\n- `model_state` remains stale",
+			Completion: &ReviewCompletion{Status: ReviewCompletionComplete},
+			Findings: []ReviewFinding{{
+				Path: "providers.go", Line: 1198, Severity: "P3", Confidence: 80,
+				Title: "Removed model returns", Body: "Impact: the removed `ModelRef` returns to the picker.\n\nEvidence: `handleUpdateProvider` never prunes `EnabledModels`.\n\nSuggested fix: prune stale refs before projecting `/api/models`.",
+			}},
+		}
+		for name, body := range map[string]string{
+			"github summary":   result.RenderGitHubSummary(false),
+			"portable summary": result.RenderSummary(true),
+			"inline finding":   result.Findings[0].RenderInline(),
+		} {
+			if name != "inline finding" {
+				for _, want := range []string{"`config.CustomModels`", "`/api/models`"} {
+					if !strings.Contains(body, want) {
+						t.Fatalf("%s escaped readable Markdown %q:\n%s", name, want, body)
+					}
+				}
+			}
+			if name != "inline finding" && !strings.Contains(body, "\n\n- Removing `/api/models`") {
+				t.Fatalf("%s did not preserve a Markdown list:\n%s", name, body)
+			}
+			if name == "inline finding" {
+				for _, want := range []string{
+					"`ModelRef`", "\n\nEvidence\\: `handleUpdateProvider`", "\n\nSuggested fix\\:", "`/api/models`",
+				} {
+					if !strings.Contains(body, want) {
+						t.Fatalf("inline finding did not preserve %q:\n%s", want, body)
+					}
+				}
+			}
 		}
 	})
 
@@ -179,7 +215,7 @@ No high\-confidence defects found\.
 			Suggestion: "before\n```\nafter",
 		}
 		result := ReviewResult{
-			Summary:  "Looks fine.\n\n> [!CAUTION]\n> Review failed @org/team & &#64;other/team",
+			Summary:  "Looks fine.\n\n> [!CAUTION]\n> Review failed @org/team & &#64;other/team\n\n`<script>@org/team</script>` [unsafe](javascript:alert(1))",
 			Findings: []ReviewFinding{finding},
 			Checks:   []string{"</details>\n\n@org/team"},
 		}
@@ -196,6 +232,9 @@ No high\-confidence defects found\.
 		if !strings.Contains(body, "&#64;&#8203;org") || !strings.Contains(body, "&amp;\\#64\\;other") {
 			t.Fatalf("mentions or entities were not neutralized:\n%s", body)
 		}
+		if strings.Contains(body, "<script>") || strings.Contains(body, "[unsafe](javascript:") {
+			t.Fatalf("restricted Markdown enabled model-controlled HTML or links:\n%s", body)
+		}
 		if !strings.Contains(body, "<code>docs/@scope/guide  two.md:7</code>") {
 			t.Fatalf("fallback location no longer preserves the exact path:\n%s", body)
 		}
@@ -208,6 +247,22 @@ No high\-confidence defects found\.
 			t.Fatalf("suggestion fence can be closed by its content:\n%s", inline)
 		}
 	})
+}
+
+func TestReviewMarkdownSubsetTruncatesWithoutOpeningFormatting(t *testing.T) {
+	value := strings.Repeat("a", maxRenderedSummaryTextBytes-5) + " `" + strings.Repeat("b", 100) + "`"
+	rendered, truncated := renderReviewMarkdownSubsetBounded(value, maxRenderedSummaryTextBytes)
+	if !truncated || len(rendered) > maxRenderedSummaryTextBytes {
+		t.Fatalf("rendered bytes=%d truncated=%v", len(rendered), truncated)
+	}
+	if strings.Count(rendered, "`")%2 != 0 {
+		t.Fatalf("truncation left an open inline-code span: %q", rendered)
+	}
+
+	unmatched, truncated := renderReviewMarkdownSubsetBounded("Unclosed `code", 100)
+	if truncated || unmatched != "Unclosed \\`code" {
+		t.Fatalf("unmatched inline-code marker was activated: %q truncated=%v", unmatched, truncated)
+	}
 }
 
 func TestReviewResultRenderedOutputStaysWithinProviderLimit(t *testing.T) {

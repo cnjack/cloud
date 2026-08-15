@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 func testReviewSubmitter(t *testing.T) (*reviewSubmitter, string, string) {
@@ -51,6 +52,64 @@ func completeReviewInput() submitReviewInput {
 		Completion: &domain.ReviewCompletion{
 			Status: domain.ReviewCompletionComplete, ReviewedFiles: []string{"alpha.go", "beta.go"},
 		},
+	}
+}
+
+func TestSubmitReviewToolSchemaRequiresReadableMarkdownProse(t *testing.T) {
+	tool := mcp.NewTool("submit_review", mcp.WithInputSchema[submitReviewInput]())
+	var schema map[string]any
+	if err := json.Unmarshal(tool.RawInputSchema, &schema); err != nil {
+		t.Fatalf("decode submit_review schema: %v", err)
+	}
+	object := func(value any, label string) map[string]any {
+		t.Helper()
+		result, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("%s is %T, want object", label, value)
+		}
+		return result
+	}
+	text := func(value any, label string) string {
+		t.Helper()
+		result, ok := value.(string)
+		if !ok {
+			t.Fatalf("%s is %T, want string", label, value)
+		}
+		return result
+	}
+	properties := object(schema["properties"], "schema.properties")
+	summary := object(properties["summary"], "schema.properties.summary")
+	findings := object(properties["findings"], "schema.properties.findings")
+	items := object(findings["items"], "schema.properties.findings.items")
+	findingProperties := object(items["properties"], "schema.properties.findings.items.properties")
+	body := object(findingProperties["body"], "schema.properties.findings.items.properties.body")
+
+	for _, tc := range []struct {
+		label       string
+		description string
+		wants       []string
+	}{
+		{"summary", text(summary["description"], "schema.properties.summary.description"), []string{
+			"compact GitHub-flavored Markdown", "2-4 short paragraphs or a short bullet list",
+			"Markdown inline code", "Do not add backslashes before Markdown punctuation",
+		}},
+		{"finding body", text(body["description"], "schema.properties.findings.items.properties.body.description"), []string{
+			"compact GitHub-flavored Markdown", "Impact, evidence, and suggested fix",
+			"blank line between paragraphs", "Markdown inline code",
+			"Do not add backslashes before Markdown punctuation",
+		}},
+	} {
+		for _, want := range tc.wants {
+			if !strings.Contains(tc.description, want) {
+				t.Errorf("%s schema description does not contain %q; description=%q", tc.label, want, tc.description)
+			}
+		}
+	}
+	for _, name := range []string{"findings", "checks", "completion"} {
+		property := object(properties[name], "schema.properties."+name)
+		if strings.TrimSpace(text(property["description"], "schema.properties."+name+".description")) == "" {
+			t.Errorf("schema.properties.%s.description is empty", name)
+		}
 	}
 }
 

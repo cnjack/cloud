@@ -65,7 +65,22 @@ func TestIngestStructuredReviewValidatesBeforePersisting(t *testing.T) {
 		return response
 	}
 
-	valid := `{"summary":"One verified defect.","findings":[{"path":"ledger.py","line":8,"severity":"P1","confidence":96,"title":"Balance guard is reversed","body":"Valid transfers are rejected while overdrafts proceed."}],"checks":["tests","changed lines"],"completion":{"status":"complete","reviewed_files":["ledger.py"]}}`
+	validResult := domain.ReviewResult{
+		Summary: "One verified defect in `transfer`.\n\nThe changed guard reverses the decision.",
+		Findings: []domain.ReviewFinding{{
+			Path: "ledger.py", Line: 8, Severity: "P1", Confidence: 96,
+			Title: "Balance guard is reversed", Body: "Impact: valid `transfer` calls are rejected.\n\nEvidence: the changed `if` branch is reversed.",
+		}},
+		Checks: []string{"tests", "changed lines"},
+		Completion: &domain.ReviewCompletion{
+			Status: domain.ReviewCompletionComplete, ReviewedFiles: []string{"ledger.py"},
+		},
+	}
+	validJSON, err := json.Marshal(validResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := string(validJSON)
 	if response := post(valid); response.Code != http.StatusCreated {
 		t.Fatalf("valid review status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -75,6 +90,12 @@ func TestIngestStructuredReviewValidatesBeforePersisting(t *testing.T) {
 	}
 	if got.ReviewResult == nil || len(got.ReviewResult.Findings) != 1 || got.ReviewOutput == "" {
 		t.Fatalf("structured review not persisted: %#v", got)
+	}
+	if got.ReviewResult.Summary != "One verified defect in `transfer`.\n\nThe changed guard reverses the decision." ||
+		got.ReviewResult.Findings[0].Body != "Impact: valid `transfer` calls are rejected.\n\nEvidence: the changed `if` branch is reversed." ||
+		!strings.Contains(got.ReviewOutput, "`transfer`") ||
+		!strings.Contains(got.ReviewOutput, "\n\nThe changed guard") {
+		t.Fatalf("readable Markdown did not survive ingestion: result=%#v output=%s", got.ReviewResult, got.ReviewOutput)
 	}
 
 	invalid := `{"summary":"Bad anchor.","findings":[{"path":"../secret","line":1,"severity":"P1","confidence":99,"title":"Unsafe","body":"No."}]}`

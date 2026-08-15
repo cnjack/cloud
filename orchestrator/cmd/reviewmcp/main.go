@@ -30,10 +30,10 @@ const (
 )
 
 type submitReviewInput struct {
-	Summary    string                   `json:"summary" jsonschema:"Required. At most 4 short sentences describing the conclusion and material risk."`
-	Findings   []domain.ReviewFinding   `json:"findings" jsonschema:"Required. Verified defects only, anchored to changed right-side lines; use an empty array when none qualify."`
-	Checks     []string                 `json:"checks" jsonschema:"Required. Specific files, callers, tests, and commands actually inspected."`
-	Completion *domain.ReviewCompletion `json:"completion" jsonschema:"Required execution receipt. Claim complete only after every indexed text file was actually inspected."`
+	Summary    string                   `json:"summary" jsonschema_description:"Required. Write compact GitHub-flavored Markdown in 2-4 short paragraphs or a short bullet list, using at most 4 short sentences focused on the conclusion and material risk. Put code identifiers, file paths, commands, and API routes in Markdown inline code. Do not add backslashes before Markdown punctuation."`
+	Findings   []domain.ReviewFinding   `json:"findings" jsonschema_description:"Required. Verified defects only, anchored to changed right-side lines; use an empty array when none qualify."`
+	Checks     []string                 `json:"checks" jsonschema_description:"Required. Specific files, callers, tests, and commands actually inspected."`
+	Completion *domain.ReviewCompletion `json:"completion" jsonschema_description:"Required execution receipt. Claim complete only after every indexed text file was actually inspected."`
 }
 
 type submissionReceipt struct {

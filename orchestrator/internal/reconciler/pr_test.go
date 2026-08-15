@@ -647,10 +647,10 @@ func TestReconcileStructuredReviewPostsInlineAndFallsBackOnInvalidAnchor(t *test
 
 func TestPostProviderReviewUsesProviderMarkdownDialect(t *testing.T) {
 	result := domain.ReviewResult{
-		Summary: "One defect found.", Completion: &domain.ReviewCompletion{Status: domain.ReviewCompletionComplete},
+		Summary: "One defect found in `ledger.py`.\n\n- The changed `guard` is reversed", Completion: &domain.ReviewCompletion{Status: domain.ReviewCompletionComplete},
 		Findings: []domain.ReviewFinding{{
 			Path: "ledger.py", Line: 7, Severity: "P1", Confidence: 99,
-			Title: "Reversed guard", Body: "Valid transfers are rejected.",
+			Title: "Reversed guard", Body: "Impact: valid `transfer` calls are rejected.\n\nEvidence: the changed `guard` is reversed.",
 		}},
 	}
 	run := &domain.Run{ReviewResult: &result}
@@ -662,6 +662,11 @@ func TestPostProviderReviewUsesProviderMarkdownDialect(t *testing.T) {
 		if fake.ReviewCount() != 1 || len(fake.Reviews[0].Comments) != 1 ||
 			!strings.Contains(fake.Reviews[0].Body, "> [!IMPORTANT]") || strings.Contains(fake.Reviews[0].Body, "### Findings") {
 			t.Fatalf("GitHub batch review=%+v", fake.Reviews)
+		}
+		if !strings.Contains(fake.Reviews[0].Body, "`ledger.py`") ||
+			!strings.Contains(fake.Reviews[0].Body, "\n\n- The changed `guard`") ||
+			!strings.Contains(fake.Reviews[0].Comments[0].Body, "\n\nEvidence\\: the changed `guard`") {
+			t.Fatalf("GitHub review lost readable Markdown: %+v", fake.Reviews[0])
 		}
 
 		fallback := provider.NewFakeProvider()
@@ -687,6 +692,9 @@ func TestPostProviderReviewUsesProviderMarkdownDialect(t *testing.T) {
 				"Inline comments are unavailable for this provider",
 				"### Findings",
 				"<code>ledger.py:7</code>",
+				"`ledger.py`",
+				"\n\n- The changed `guard`",
+				"\n\nEvidence\\: the changed `guard`",
 			} {
 				if !strings.Contains(portable.body, want) {
 					t.Fatalf("portable review missing %q:\n%s", want, portable.body)

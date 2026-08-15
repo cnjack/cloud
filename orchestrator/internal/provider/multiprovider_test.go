@@ -65,8 +65,9 @@ func TestGitHubClient(t *testing.T) {
 	if reviewBody["event"] != "COMMENT" || reviewBody["body"] != "looks good" {
 		t.Errorf("review body = %+v", reviewBody)
 	}
+	githubMarkdown := "One finding in `ledger.py`.\n\n- The changed `guard` is reversed"
 	if err := c.CreatePRReviewBatch(ctx, "o", "r", 11, PRReview{
-		Body: "One finding",
+		Body: githubMarkdown,
 		Comments: []PRReviewComment{{
 			Path: "ledger.py", Line: 7, Body: "**P1 · Reversed guard**",
 		}},
@@ -76,6 +77,9 @@ func TestGitHubClient(t *testing.T) {
 	comments, ok := reviewBody["comments"].([]any)
 	if reviewBody["event"] != "COMMENT" || !ok || len(comments) != 1 {
 		t.Fatalf("batch review body=%+v", reviewBody)
+	}
+	if reviewBody["body"] != githubMarkdown {
+		t.Fatalf("batch review lost Markdown: %#v", reviewBody["body"])
 	}
 	comment, _ := comments[0].(map[string]any)
 	if comment["path"] != "ledger.py" || comment["line"] != float64(7) || comment["side"] != "RIGHT" {
