@@ -200,6 +200,27 @@ func (c *GiteaClient) CreatePRReview(ctx context.Context, owner, repo string, pr
 	return c.do(ctx, http.MethodPost, path, map[string]any{"event": "COMMENT", "body": body}, nil)
 }
 
+// CreatePRReviewBatch posts one comment-only review with findings anchored to
+// changed right-side lines. Gitea represents a code-comment anchor as exactly
+// one old or new position, so a multi-line finding uses its ending right-side
+// line, matching the terminal line used by GitHub's range representation.
+func (c *GiteaClient) CreatePRReviewBatch(ctx context.Context, owner, repo string, prNumber int, review PRReview) error {
+	comments := make([]map[string]any, 0, len(review.Comments))
+	for _, comment := range review.Comments {
+		newPosition := comment.Line
+		if comment.EndLine > comment.Line {
+			newPosition = comment.EndLine
+		}
+		comments = append(comments, map[string]any{
+			"path": comment.Path, "body": comment.Body, "old_position": 0, "new_position": newPosition,
+		})
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews", owner, repo, prNumber)
+	return c.do(ctx, http.MethodPost, path, map[string]any{
+		"event": "COMMENT", "body": review.Body, "comments": comments,
+	}, nil)
+}
+
 // PRStatus returns the current state of a PR ("open"/"closed"/"merged").
 func (c *GiteaClient) PRStatus(ctx context.Context, owner, repo string, prNumber int) (*PR, error) {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, prNumber)

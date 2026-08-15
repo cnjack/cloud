@@ -681,7 +681,34 @@ func TestPostProviderReviewUsesProviderMarkdownDialect(t *testing.T) {
 		}
 	})
 
-	for _, gitProvider := range []domain.GitProvider{domain.ProviderGitea, domain.ProviderGitLab} {
+	t.Run("gitea batch and fallback", func(t *testing.T) {
+		fake := provider.NewFakeProvider()
+		if err := postProviderReview(context.Background(), fake, domain.ProviderGitea, "jcloud", "seed", 19, run); err != nil {
+			t.Fatal(err)
+		}
+		if fake.ReviewCount() != 1 || len(fake.Reviews[0].Comments) != 1 ||
+			!strings.Contains(fake.Reviews[0].Body, "## jcode review") ||
+			strings.Contains(fake.Reviews[0].Body, "### Findings") ||
+			strings.Contains(fake.Reviews[0].Body, "[!IMPORTANT]") {
+			t.Fatalf("Gitea batch review=%+v", fake.Reviews)
+		}
+		if !strings.Contains(fake.Reviews[0].Comments[0].Body, "Evidence\\: the changed `guard`") {
+			t.Fatalf("Gitea inline finding lost Markdown: %+v", fake.Reviews[0])
+		}
+
+		fallback := provider.NewFakeProvider()
+		fallback.BatchReviewErr = &provider.HTTPStatusError{Method: "POST", StatusCode: http.StatusUnprocessableEntity}
+		if err := postProviderReview(context.Background(), fallback, domain.ProviderGitea, "jcloud", "seed", 20, run); err != nil {
+			t.Fatal(err)
+		}
+		if fallback.ReviewCount() != 1 || len(fallback.Reviews[0].Comments) != 0 ||
+			!strings.Contains(fallback.Reviews[0].Body, "### Findings") ||
+			!strings.Contains(fallback.Reviews[0].Body, "<code>ledger.py:7</code>") {
+			t.Fatalf("Gitea fallback review=%+v", fallback.Reviews)
+		}
+	})
+
+	for _, gitProvider := range []domain.GitProvider{domain.ProviderGitLab} {
 		t.Run(string(gitProvider)+" portable fallback", func(t *testing.T) {
 			portable := &nonBatchReviewProvider{}
 			if err := postProviderReview(context.Background(), portable, gitProvider, "jcloud", "seed", 19, run); err != nil {

@@ -9,6 +9,8 @@ import (
 	"testing"
 )
 
+var _ BatchReviewProvider = (*GiteaClient)(nil)
+
 func TestSplitRepo(t *testing.T) {
 	cases := []struct {
 		in          string
@@ -211,6 +213,52 @@ func TestGiteaCreatePRReviewPreservesPortableMarkdown(t *testing.T) {
 	}
 	if body["event"] != "COMMENT" || body["body"] != markdown {
 		t.Fatalf("review payload=%#v", body)
+	}
+}
+
+func TestGiteaCreatePRReviewBatchMapsRightSideLines(t *testing.T) {
+	var gotPath string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":1,"state":"COMMENT"}`))
+	}))
+	defer srv.Close()
+
+	markdown := "## jcode review\n\nTwo findings."
+	c, _ := NewGiteaClient(srv.URL, "tok-review")
+	err := c.CreatePRReviewBatch(context.Background(), "jcloud", "seed", 7, PRReview{
+		Body: markdown,
+		Comments: []PRReviewComment{
+			{Path: "ledger.py", Line: 7, Body: "Single-line finding"},
+			{Path: "service.go", Line: 12, EndLine: 14, Body: "Multi-line finding"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/v1/repos/jcloud/seed/pulls/7/reviews" || body["event"] != "COMMENT" || body["body"] != markdown {
+		t.Fatalf("path=%q payload=%#v", gotPath, body)
+	}
+	comments, ok := body["comments"].([]any)
+	if !ok || len(comments) != 2 {
+		t.Fatalf("comments=%#v", body["comments"])
+	}
+	for i, want := range []struct {
+		path string
+		line float64
+		body string
+	}{
+		{"ledger.py", 7, "Single-line finding"},
+		{"service.go", 14, "Multi-line finding"},
+	} {
+		comment, ok := comments[i].(map[string]any)
+		if !ok || comment["path"] != want.path || comment["body"] != want.body ||
+			comment["new_position"] != want.line || comment["old_position"] != float64(0) {
+			t.Fatalf("comment %d=%#v, want path=%q new_position=%v old_position=0 body=%q", i, comment, want.path, want.line, want.body)
+		}
 	}
 }
 
