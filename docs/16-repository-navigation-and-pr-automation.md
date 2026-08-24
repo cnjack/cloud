@@ -134,7 +134,7 @@ The existing comment-id uniqueness remains unchanged.
 ### 3.1 Read
 
 ```http
-GET /api/v1/services/{service_id}/automations
+GET /api/v1/repositories/{service_id}/automations
 ```
 
 Member+ response:
@@ -152,7 +152,7 @@ review Automation.
 ### 3.2 Create
 
 ```http
-POST /api/v1/services/{service_id}/automations
+POST /api/v1/repositories/{service_id}/automations
 ```
 
 Owner body:

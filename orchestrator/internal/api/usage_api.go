@@ -155,11 +155,11 @@ func (s *Server) handleGetAccountUsage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetServiceUsage(w http.ResponseWriter, r *http.Request) {
 	service, err := s.st.GetService(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "service not found")
+		writeError(w, http.StatusNotFound, "not_found", "Repository not found")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		writeError(w, http.StatusInternalServerError, "internal", "could not load Repository")
 		return
 	}
 	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), service.ProjectID, domain.RoleViewer) {
@@ -175,7 +175,7 @@ func (s *Server) handleGetServiceUsage(w http.ResponseWriter, r *http.Request) {
 	query.ServiceID = service.ID
 	summary, err := s.st.GetUsageSummary(r.Context(), query)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load Service usage")
+		writeError(w, http.StatusInternalServerError, "internal", "could not load Repository usage")
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)

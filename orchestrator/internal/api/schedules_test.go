@@ -17,7 +17,7 @@ import (
 
 // schedulesURL is the service-scoped collection endpoint.
 func (f kanbanFixture) schedulesURL() string {
-	return f.ts.URL + "/api/v1/services/" + f.serviceID + "/schedules"
+	return f.ts.URL + "/api/v1/repositories/" + f.serviceID + "/schedules"
 }
 
 func (f kanbanFixture) scheduleURL(id string) string {

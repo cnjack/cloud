@@ -48,13 +48,13 @@ function renderPage(overrides: Partial<ApiClient> = {}) {
 }
 
 describe('ClusterModelsPage', () => {
-  it('keeps Custom model and Account/Project access controls aligned in their own columns', async () => {
+  it('keeps Custom model and Account access controls aligned in their own columns', async () => {
     renderPage();
     const card = await screen.findByTestId('provider-card-prv-plan');
     expect(within(card).getByRole('button', { name: 'Custom model' })).toBeTruthy();
     const grant = within(card).getByTestId('grant-count-mdl-plan');
     expect(within(grant).getByText('Account grant')).toBeTruthy();
-    expect(within(grant).getByText('Project grant')).toBeTruthy();
+    expect(within(grant).queryByText('Project grant')).toBeNull();
     expect(within(card).getByRole('button', { name: 'Manage access' })).toBeTruthy();
   });
 
@@ -132,28 +132,16 @@ describe('ClusterModelsPage', () => {
 	}));
   });
 
-  it('manages Project grants through the existing grant contract', async () => {
-    const client = renderPage();
-    await screen.findByTestId('provider-card-prv-plan');
-    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }));
-    fireEvent.click(await screen.findByRole('tab', { name: 'Projects' }));
-    const checkbox = await screen.findByRole('checkbox', { name: 'jcode Cloud' });
-    expect((checkbox as HTMLInputElement).checked).toBe(true);
-    fireEvent.click(checkbox);
-    await waitFor(() => expect(client.revokeModel).toHaveBeenCalledWith('mdl-plan', 'p1'));
-  });
-
-  it('manages Account grants independently from Project grants', async () => {
+  it('manages one Account grant for Cloud and Desktop', async () => {
     const client = renderPage();
     await screen.findByTestId('provider-card-prv-plan');
     fireEvent.click(screen.getByRole('button', { name: 'Manage access' }));
     const dialog = screen.getByRole('dialog', { name: 'Model access · Coding Plan' });
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Accounts' }));
     const checkbox = await within(dialog).findByRole('checkbox', { name: 'Ada Lovelace' });
     expect((checkbox as HTMLInputElement).checked).toBe(true);
     fireEvent.click(checkbox);
     await waitFor(() => expect(client.revokeModelFromAccount).toHaveBeenCalledWith('mdl-plan', 'u1'));
-    expect(client.revokeModel).not.toHaveBeenCalled();
+    expect(within(dialog).queryByRole('tab')).toBeNull();
   });
 
   it('refreshes the provider card after a failed verification probe', async () => {

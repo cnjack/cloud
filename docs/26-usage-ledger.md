@@ -223,7 +223,7 @@ All summary endpoints return the same shape:
 - `GET /api/v1/runs/{id}` adds `usage_summary`.
 - `GET /api/v1/projects/{id}/usage?from=&to=&group_by=service|automation|model`
   returns a summary and fixed-order grouped rows.
-- `GET /api/v1/services/{id}/usage?from=&to=`.
+- `GET /api/v1/repositories/{id}/usage?from=&to=`.
 - `GET /api/v1/automations/{aid}/usage?from=&to=`.
 - Service Kanban Card execution detail adds `usage_summary`, aggregated from
   the Card's linked Runs.

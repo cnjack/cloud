@@ -524,7 +524,7 @@ func TestPluginKanbanAutomationStopsAtBoardDriftAndRecovers(t *testing.T) {
 	}
 	if _, err := st.SetPluginKanbanOccurrenceBlocked(
 		ctx, existing.Occurrence.ID, "model_not_configured",
-		"Choose an allowed model for this Service.", "project_owner",
+		"Choose an allowed model for this Service.", "repository_owner",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -862,6 +862,95 @@ func TestPluginKanbanMissingCardMarksClaimUnavailable(t *testing.T) {
 	}
 }
 
+func TestPluginKanbanRevokedExecutionAccountGrantBlocksSameOccurrence(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	now := time.Now().UTC()
+	owner := &domain.User{ID: "workflow-owner", DisplayName: "Owner", CreatedAt: now}
+	identity := &domain.UserIdentity{
+		ID: "workflow-owner-identity", Provider: domain.ProviderGitea,
+		ProviderUID: "workflow-owner", Username: "owner", CreatedAt: now,
+	}
+	if _, err := st.CreateUserWithIdentity(ctx, owner, identity); err != nil {
+		t.Fatal(err)
+	}
+	project := &domain.Project{ID: "account-project", Name: "Personal", OwnerUserID: owner.ID, CreatedAt: now}
+	service := &domain.Service{
+		ID: "account-repository", ProjectID: project.ID, Name: "repo",
+		RepoKind: domain.RepoKindRaw, RawRepoURL: "https://git.test/acme/repo.git",
+		DefaultBranch: "main", CreatedAt: now,
+	}
+	if err := st.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateService(ctx, service); err != nil {
+		t.Fatal(err)
+	}
+	provider := &domain.ModelProvider{
+		ID: "account-provider", Name: "provider", Kind: "openai", BaseURL: "https://models.test/v1",
+		AuthType: domain.ModelProviderAuthNone, CatalogMode: domain.ModelProviderCatalogDisabled, CreatedAt: now,
+	}
+	model := &domain.Model{
+		ID: "account-model", ProviderID: provider.ID, Name: "Agent model", BaseURL: provider.BaseURL,
+		ModelName: "openai/agent-model", ModelID: "agent-model", Source: "custom", Enabled: true,
+		Capabilities: domain.ModelCapabilities{Reasoning: true}, CreatedAt: now,
+	}
+	if err := st.CreateModelProvider(ctx, provider); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateModel(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.GrantModelToAccount(ctx, model.ID, owner.ID, owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RevokeModelFromAccount(ctx, model.ID, owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	installation := &domain.PluginInstallation{
+		ID: "account-jtype", ProjectID: project.ID, Provider: domain.PluginJType,
+		Status: domain.PluginStatusEnabled, WorkspaceID: "ws", AccessTokenEnc: []byte("PLUGINPAT"), CreatedAt: now,
+	}
+	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	automation := &domain.PluginAutomation{
+		ID: "account-automation", ServiceID: service.ID, InstallationID: installation.ID,
+		Name: "Agent Board", TriggerKind: "kanban", RunKind: domain.RunKindAgent,
+		ModelID: model.ID, ModelEffort: "high", ExecutionAccountID: owner.ID,
+		Enabled: true, CreatedAt: now,
+	}
+	trigger := &domain.KanbanTrigger{
+		AutomationID: automation.ID, InstallationID: installation.ID,
+		BoardRef: "b", TriggerColumn: "agent", WorkColumn: "doing",
+	}
+	if err := st.CreatePluginAutomation(ctx, automation, nil, nil, trigger, nil); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := st.ObservePluginKanbanCard(ctx, store.PluginKanbanObservation{
+		AutomationID: automation.ID, ServiceID: service.ID, InstallationID: installation.ID,
+		WorkspaceID: "ws", DocumentID: "card", DocumentPath: "cards/card.md",
+		TriggerColumn: "agent", ObservedColumn: "agent", EventKey: "event:1", ObservedAt: now,
+	})
+	if err != nil || observed.Occurrence == nil {
+		t.Fatalf("observe=%+v err=%v", observed, err)
+	}
+	api := newFakeAPI()
+	api.addCardWithoutEvent("card", "cards/card.md", "b", "agent", "Task", "Do it", 1)
+	poller := &Poller{st: st, models: stubFor(true), now: func() time.Time { return now }}
+	poller.dispatchPluginKanbanOccurrence(
+		ctx, api, &domain.PluginAutomationSpec{Automation: *automation, Kanban: trigger},
+		observed.Occurrence, nil,
+	)
+	history, err := st.ListPluginKanbanOccurrences(ctx, automation.ID, "card", 10)
+	if err != nil || len(history) != 1 || history[0].ReasonCode != "model_not_authorized" {
+		t.Fatalf("history=%+v err=%v", history, err)
+	}
+	if runs, _ := st.ListRunsByService(ctx, service.ID, 10); len(runs) != 0 {
+		t.Fatalf("revoked grant dispatched %d runs", len(runs))
+	}
+}
+
 func TestPluginKanbanRepositoryBlockersAreTyped(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemStore()
@@ -887,7 +976,7 @@ func TestPluginKanbanRepositoryBlockersAreTyped(t *testing.T) {
 	poller := &Poller{st: st}
 
 	code, _, role := poller.pluginKanbanRepositoryBlocker(ctx, raw)
-	if code != "repository_not_configured" || role != "project_owner" {
+	if code != "repository_not_configured" || role != "repository_owner" {
 		t.Fatalf("raw blocker=%q role=%q", code, role)
 	}
 	raw.RawRepoURL = "https://git.test/acme/repo.git"
@@ -895,7 +984,7 @@ func TestPluginKanbanRepositoryBlockersAreTyped(t *testing.T) {
 		t.Fatalf("healthy raw repository blocker=%q", code)
 	}
 	code, _, role = poller.pluginKanbanRepositoryBlocker(ctx, providerService)
-	if code != "repository_unavailable" || role != "project_owner" {
+	if code != "repository_unavailable" || role != "repository_owner" {
 		t.Fatalf("provider blocker=%q role=%q", code, role)
 	}
 }

@@ -88,7 +88,7 @@ func setupKanban(t *testing.T, board fakeBoardValidator) kanbanFixture {
 	}
 	var pv projectView
 	decode(t, resp, &pv)
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pv.ID+"/services", tokens["owner"],
+	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pv.ID+"/repositories", tokens["owner"],
 		map[string]any{"name": "default", "repo_url": "https://git/x.git"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create service: %d", resp.StatusCode)
@@ -284,7 +284,7 @@ func TestProjectKanbanLinkServiceNotInProject(t *testing.T) {
 	p2 := do(t, "POST", f.ts.URL+"/api/v1/projects", f.tokens["owner"], map[string]any{"name": "p2"})
 	var pv2 projectView
 	decode(t, p2, &pv2)
-	s2 := do(t, "POST", f.ts.URL+"/api/v1/projects/"+pv2.ID+"/services", f.tokens["owner"],
+	s2 := do(t, "POST", f.ts.URL+"/api/v1/projects/"+pv2.ID+"/repositories", f.tokens["owner"],
 		map[string]any{"name": "default", "repo_url": "https://git/y.git"})
 	var svc2 domain.Service
 	decode(t, s2, &svc2)

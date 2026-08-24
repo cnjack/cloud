@@ -354,6 +354,24 @@ func (m *MemStore) ListServices(_ context.Context, projectID string) ([]domain.S
 	return out, nil
 }
 
+func (m *MemStore) ListRepositoriesForUser(_ context.Context, userID string) ([]domain.Service, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.Service, 0, len(m.services))
+	for _, repository := range m.services {
+		if userID != "" {
+			project := m.projects[repository.ProjectID]
+			_, member := m.members[repository.ProjectID+"|"+userID]
+			if project.OwnerUserID != userID && !member {
+				continue
+			}
+		}
+		out = append(out, repository)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
 func (m *MemStore) GetDefaultService(_ context.Context, projectID string) (*domain.Service, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

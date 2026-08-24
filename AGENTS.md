@@ -98,7 +98,7 @@ console/mobile — all end-to-end encrypted. Durable rules for this area:
     in `jcode/packages/jcode-ui-core`, then `jcode-ui`), then `pnpm install`
     in console/mobile. Rebuild + reinstall whenever jcode-ui source changes.
   - console-ci `verify` job: side-by-side checkouts (`path: cloud` +
-    cnjack/jcode at `path: jcode`, pinned `ref: feat/jcode-device-relay`)
+    cnjack/jcode at `path: jcode`, pinned `ref: codex/shared-conversation`)
     so the relative `file:` paths resolve; jcode packages are built before
     `pnpm install --frozen-lockfile`.
   - Image builds (images.yml, console-ci `image` job, `make -C deploy

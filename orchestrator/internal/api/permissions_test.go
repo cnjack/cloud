@@ -377,7 +377,7 @@ func TestCreateRunPermissionMode(t *testing.T) {
 	if err := st.CreateService(ctx, svc); err != nil {
 		t.Fatal(err)
 	}
-	url := ts.URL + "/api/v1/services/" + svc.ID + "/runs"
+	url := ts.URL + "/api/v1/repositories/" + svc.ID + "/runs"
 
 	// approval without session → 400 (a single-shot has nobody to ask).
 	resp := do(t, "POST", url, consoleToken, map[string]any{"prompt": "t", "permission_mode": "approval"})

@@ -171,7 +171,7 @@ func setupConnect(t *testing.T, withCipher bool) connectFixture {
 	}
 	var pv projectView
 	decode(t, resp, &pv)
-	sresp := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+pv.ID+"/services", adminTok,
+	sresp := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+pv.ID+"/repositories", adminTok,
 		map[string]any{"name": "default", "repo_url": "https://git/x.git"})
 	var svc domain.Service
 	decode(t, sresp, &svc)

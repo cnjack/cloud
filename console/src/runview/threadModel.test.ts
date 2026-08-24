@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { ThreadItem } from 'jcode-ui-core';
-import { toThreadItems, type CloudApproval } from './threadModel';
+import type { Approval, ThreadItem } from 'jcode-ui-core';
+import { toThreadItems } from './threadModel';
 import type { RunViewEvent } from './types';
 
 function ev(seq: number, type: string, payload: Record<string, unknown> = {}): RunViewEvent {
@@ -60,17 +60,13 @@ describe('toThreadItems — jcode-ui projection', () => {
       }),
     ]);
 
-    const approval = dataOf(items, 'approval')[0] as CloudApproval;
-    expect(approval).toMatchObject({ id: 'req-1', resolved: true, approved: false });
-    expect(approval.permission).toMatchObject({
-      requestId: 'req-1',
-      status: 'resolved',
-      resolvedOptionId: 'reject-id',
-      resolution: 'timeout',
+    const approval = dataOf(items, 'approval')[0] as Approval;
+    expect(approval).toMatchObject({
+      id: 'req-1', resolved: true, approved: false, resolvedOptionId: 'reject-id',
     });
-    expect(approval.permission.options).toEqual([
-      { optionId: 'allow-once-id', name: 'Allow once', kind: 'allow_once' },
-      { optionId: 'reject-id', name: 'Reject', kind: 'reject_once' },
+    expect(approval.options).toEqual([
+      { id: 'allow-once-id', label: 'Allow once', kind: 'allow_once' },
+      { id: 'reject-id', label: 'Reject', kind: 'deny' },
     ]);
   });
 

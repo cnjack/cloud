@@ -21,6 +21,9 @@ export function RunActivityList({
   filter,
   onFilterChange,
   canRun,
+  showFilters = true,
+  emptyTitle,
+  emptyDescription,
 }: {
   runs: readonly Run[];
   isLoading: boolean;
@@ -29,6 +32,9 @@ export function RunActivityList({
   filter: RunFilter;
   onFilterChange: (filter: RunFilter) => void;
   canRun: boolean;
+  showFilters?: boolean;
+  emptyTitle?: string;
+  emptyDescription?: string;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -39,7 +45,7 @@ export function RunActivityList({
           <span className={styles.eyebrow}>{t('runActivity.eyebrow')}</span>
           <h2 id="recent-tasks-heading">{t('runActivity.title')}</h2>
         </div>
-        <div className={styles.filters} aria-label={t('runActivity.filtersAria')}>
+        {showFilters && <div className={styles.filters} aria-label={t('runActivity.filtersAria')}>
           {([
             ['all', t('runActivity.filterAll')],
             ['sessions', t('runActivity.filterSessions')],
@@ -55,7 +61,7 @@ export function RunActivityList({
               {label}
             </button>
           ))}
-        </div>
+        </div>}
       </div>
 
       {isLoading ? (
@@ -65,13 +71,13 @@ export function RunActivityList({
       ) : runs.length === 0 ? (
         <EmptyState
           data-testid="runs-empty"
-          title={filter === 'all' ? t('runActivity.emptyTitleAll') : t('runActivity.emptyTitleFiltered', { filter })}
+          title={emptyTitle ?? (filter === 'all' ? t('runActivity.emptyTitleAll') : t('runActivity.emptyTitleFiltered', { filter }))}
           description={
-            filter === 'all'
+            emptyDescription ?? (filter === 'all'
               ? canRun
                 ? t('runActivity.emptyDescDispatch')
                 : t('runActivity.emptyDescNone')
-              : t('runActivity.emptyDescFiltered')
+              : t('runActivity.emptyDescFiltered'))
           }
         />
       ) : (

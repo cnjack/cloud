@@ -13,6 +13,8 @@ import { ApiError, type ApiClient } from '../api/client';
 import type { BoardEmbedLink } from '../api/types';
 import { pickOption } from '../test/select';
 
+const boardMockState = vi.hoisted(() => ({ columnKey: 'doing' }));
+
 vi.mock('jtype-board-react', () => ({
   JTypeBoard: (p: {
     workspaceId: string;
@@ -21,7 +23,7 @@ vi.mock('jtype-board-react', () => ({
     readOnly?: boolean;
     initialCardPath?: string;
     additionalCardRoots?: readonly string[];
-    renderCardSupplement?: (card: { id: string; title: string }) => ReactNode;
+    renderCardSupplement?: (card: { id: string; title: string; columnKey: string }) => ReactNode;
   }) => (
     <>
       <div
@@ -33,7 +35,7 @@ vi.mock('jtype-board-react', () => ({
         data-initial-card={p.initialCardPath}
         data-additional-card-roots={p.additionalCardRoots?.join(',')}
       />
-      {p.renderCardSupplement?.({ id: 'cards/payment.md', title: 'Payment card' })}
+      {p.renderCardSupplement?.({ id: 'cards/payment.md', title: 'Payment card', columnKey: boardMockState.columnKey })}
     </>
   ),
   JTypeApiError: class extends Error {
@@ -76,6 +78,12 @@ function makeApi(
   docsByWs: Record<string, { path: string; configId: string }[]>,
 ): ApiClient {
   return {
+    listAccountModels: async () => [{
+      id: 'model-1',
+      name: 'Demo model',
+      model_name: 'openai/demo',
+      capabilities: { reasoning: true, tools: true, image: false },
+    }],
     boardListDocuments: async (_pid: string, ws: string) =>
       (docsByWs[ws] ?? []).map((d) => ({
         id: `doc_${d.configId}`,
@@ -105,8 +113,8 @@ function makeApi(
       mergeStatus: 'accepted' as const,
     }),
     getServiceKanbanPolicy: async (serviceId: string) => ({
-      service_id: serviceId,
-      service_name: 'Service',
+      repository_id: serviceId,
+      repository_name: 'Repository',
       repository: 'acme/service',
       model: { label: 'Demo model' },
       board: { workspace_id: 'ws_team', ref: 'b_123' },
@@ -120,12 +128,12 @@ function makeApi(
   } as unknown as ApiClient;
 }
 
-function renderModal(api: ApiClient, links: BoardEmbedLink[], serviceId?: string) {
+function renderModal(api: ApiClient, links: BoardEmbedLink[], serviceId?: string, canManage = false) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
       <ApiProvider client={api}>
-        <KanbanBoardModal projectId="p1" serviceId={serviceId} links={links} onClose={() => {}} />
+        <KanbanBoardModal projectId="p1" serviceId={serviceId} links={links} canManage={canManage} onClose={() => {}} />
       </ApiProvider>
     </QueryClientProvider>,
   );
@@ -166,8 +174,10 @@ describe('KanbanBoardModal', () => {
       installation_id: 'jtype-1',
       board_ref: 'delivery.board',
       trigger_column: 'review',
-	  work_column: 'doing',
+      work_column: 'doing',
       done_column: 'done',
+      model_id: 'model-1',
+      model_effort: 'medium',
       enabled: true,
     }));
   });
@@ -211,6 +221,71 @@ describe('KanbanBoardModal', () => {
     expect(board.getAttribute('data-readonly')).toBe('true');
   });
 
+  it('lets a member run a Card with the Repository agent', async () => {
+    const createOccurrence = vi.fn(async () => ({
+      replayed: false,
+      occurrence: {
+        id: 'occ_manual',
+        status: 'received' as const,
+        summary: 'Card entry received',
+        reason: null,
+        repair_role: null,
+        requested_actor: { label: 'Member', precision: 'display_only' as const },
+        run: null,
+        receipt: { external: 'pending' as const, writeback: 'pending' as const },
+        created_at: '2026-08-25T00:00:00Z',
+        updated_at: '2026-08-25T00:00:00Z',
+      },
+    }));
+    const api = {
+      ...makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] }),
+      createServiceKanbanOccurrence: createOccurrence,
+    } as unknown as ApiClient;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ApiProvider client={api}>
+          <KanbanBoardModal
+            projectId="p1"
+            serviceId="svc_1"
+            links={[link()]}
+            canRun
+            onClose={() => {}}
+          />
+        </ApiProvider>
+      </QueryClientProvider>,
+    );
+
+    expect((await screen.findByTestId('jtype-board')).getAttribute('data-readonly')).toBe('false');
+    expect(screen.queryByTestId('kanban-column-editor')).toBeNull();
+    fireEvent.click(await screen.findByTestId('kanban-run-with-agent'));
+    await waitFor(() => expect(createOccurrence).toHaveBeenCalledWith('svc_1', {
+      workspace_id: 'ws_team',
+      document_path: 'cards/payment.md',
+      idempotency_key: expect.any(String),
+    }));
+  });
+
+  it('confirms before rerunning a Card that is already in Done', async () => {
+    boardMockState.columnKey = 'done';
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const createOccurrence = vi.fn();
+    try {
+      const api = {
+        ...makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] }),
+        createServiceKanbanOccurrence: createOccurrence,
+      } as unknown as ApiClient;
+      renderModal(api, [link({ done_column: 'done' })], 'svc_1', true);
+
+      fireEvent.click(await screen.findByTestId('kanban-run-with-agent'));
+      expect(confirm).toHaveBeenCalled();
+      expect(createOccurrence).not.toHaveBeenCalled();
+    } finally {
+      boardMockState.columnKey = 'doing';
+      confirm.mockRestore();
+    }
+  });
+
   it('shows the execution policy and blocked receipt inside native Card details', async () => {
     const listExecutions = vi.fn(async () => ({
       claim: { document_path: 'cards/payment.md', external_ref_available: true },
@@ -227,7 +302,7 @@ describe('KanbanBoardModal', () => {
         summary: 'Execution is blocked',
         reason: 'Choose an allowed model for this Service.',
         reason_code: 'model_not_configured',
-        repair_role: 'project_owner' as const,
+        repair_role: 'repository_owner' as const,
         requested_actor: { label: 'External editor', precision: 'display_only' as const },
         run: null,
         receipt: { external: 'written' as const, writeback: 'not_required' as const },
@@ -239,8 +314,8 @@ describe('KanbanBoardModal', () => {
     const api = {
       ...makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] }),
       getServiceKanbanPolicy: async () => ({
-        service_id: 'svc_1',
-        service_name: 'payments-api',
+        repository_id: 'svc_1',
+        repository_name: 'payments-api',
         repository: 'acme/payments',
         model: { id: 'model_1', label: 'Claude Sonnet' },
         board: { workspace_id: 'ws_team', ref: 'b_123' },
@@ -269,7 +344,7 @@ describe('KanbanBoardModal', () => {
     expect(screen.getByTestId('kanban-policy').textContent).toContain('Agent queue');
     const receipt = await screen.findByTestId('kanban-execution-current');
     expect(receipt.textContent).toContain('Model not configured');
-    expect(receipt.textContent).toContain('Project owner');
+    expect(receipt.textContent).toContain('Repository owner');
     expect(receipt.textContent).not.toContain('Card writeback pending');
     expect(screen.getByTestId('kanban-card-usage').textContent).toContain('800');
     expect(listExecutions).toHaveBeenCalledWith('svc_1', 'ws_team', 'cards/payment.md', undefined);
@@ -435,8 +510,10 @@ describe('KanbanBoardModal', () => {
       installation_id: 'jtype-1',
       board_ref: 'jtype.board',
       trigger_column: 'review',
-	  work_column: 'doing',
+      work_column: 'doing',
       done_column: 'done',
+      model_id: 'model-1',
+      model_effort: 'medium',
       enabled: true,
     }));
     expect(screen.getByTestId('jtype-board')).toBeTruthy();

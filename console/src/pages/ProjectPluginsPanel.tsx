@@ -79,7 +79,7 @@ export function pluginOperationErrorText(error: unknown, t: (key: string) => str
   }
 }
 
-export function ProjectPluginsPanel({ project }: { project: Project }) {
+export function ProjectPluginsPanel({ project, repositoryMode = false }: { project: Project; repositoryMode?: boolean }) {
   const { t } = useTranslation();
   const query = useProjectPlugins(project.id);
   const [consentProvider, setConsentProvider] = useState<ProviderKind | null>(null);
@@ -92,15 +92,23 @@ export function ProjectPluginsPanel({ project }: { project: Project }) {
   return (
     <section className={styles.surface} data-testid="project-plugins-panel">
       <div className={styles.intro}>
-        <p>{t('plugins.intro')}</p>
-        {!canManage && <p className={styles.readOnly}>{t('plugins.readOnly')}</p>}
+        <p>{repositoryMode ? t('repositories.connectionsIntro') : t('plugins.intro')}</p>
+        {!canManage && <p className={styles.readOnly}>{repositoryMode ? t('repositories.connectionsReadOnly') : t('plugins.readOnly')}</p>}
       </div>
       <div className={styles.grid}>
         {PROVIDERS.map((provider) => {
           const plugin = byProvider.get(provider) ?? disconnectedPlugin(provider);
           return (
             <article className={styles.card} key={provider} data-testid={`plugin-card-${provider}`}>
-              <Link className={styles.cardLink} to={`/projects/${encodeURIComponent(project.id)}/plugins/${provider}`}>
+              {repositoryMode ? <div className={styles.cardLink}>
+                <span className={styles.mark}><ProviderMark provider={provider} /></span>
+                <span className={styles.copy}>
+                  <strong>{providerName(provider)}</strong>
+                  <small>{plugin.external_account ?? plugin.account_name ?? plugin.workspace_id ?? t('plugins.notConnected')}</small>
+                </span>
+                <span className={styles.status} data-status={plugin.status}>{statusLabel(plugin.status, t)}</span>
+                <span className={styles.summary}>{t('repositories.connectionSummary', { repositories: plugin.service_count ?? 0, automations: plugin.automation_count ?? 0 })}</span>
+              </div> : <Link className={styles.cardLink} to={`/projects/${encodeURIComponent(project.id)}/plugins/${provider}`}>
                 <span className={styles.mark}><ProviderMark provider={provider} /></span>
                 <span className={styles.copy}>
                   <strong>{providerName(provider)}</strong>
@@ -108,7 +116,7 @@ export function ProjectPluginsPanel({ project }: { project: Project }) {
                 </span>
                 <span className={styles.status} data-status={plugin.status}>{statusLabel(plugin.status, t)}</span>
                 <span className={styles.summary}>{t('plugins.summary', { services: plugin.service_count ?? 0, automations: plugin.automation_count ?? 0 })}</span>
-              </Link>
+              </Link>}
               {canManage && plugin.status === 'not_connected' && (
                 <Button type="button" size="sm" variant="secondary" onClick={() => setConsentProvider(provider)}>
                   {t('plugins.connect')}
@@ -123,6 +131,7 @@ export function ProjectPluginsPanel({ project }: { project: Project }) {
         <PluginConsentModal
           projectId={project.id}
           provider={consentProvider}
+          repositoryMode={repositoryMode}
           onClose={() => setConsentProvider(null)}
         />
       )}
@@ -130,7 +139,7 @@ export function ProjectPluginsPanel({ project }: { project: Project }) {
   );
 }
 
-export function PluginConsentModal({ projectId, provider, onClose }: { projectId: string; provider: ProviderKind; onClose: () => void }) {
+export function PluginConsentModal({ projectId, provider, onClose, repositoryMode = false }: { projectId: string; provider: ProviderKind; onClose: () => void; repositoryMode?: boolean }) {
   const { t } = useTranslation();
   const install = useStartPluginInstall(projectId);
   const plugins = useProjectPlugins(projectId);
@@ -210,7 +219,7 @@ export function PluginConsentModal({ projectId, provider, onClose }: { projectId
         {provider !== 'github' && !deviceStart && <Button type="button" onClick={submit} disabled={!canContinue} loading={install.isPending}>{t('plugins.continueToProvider')}</Button>}
       </>}>
       <div className={styles.consent}>
-        <p>{t('plugins.consentIntro', { provider: providerName(provider) })}</p>
+        <p>{t(repositoryMode ? 'repositories.consentIntro' : 'plugins.consentIntro', { provider: providerName(provider) })}</p>
         <p><strong>{t('plugins.providerInstance')}:</strong> {providerCapabilities.data?.instance_url || (provider === 'github' ? 'https://github.com' : t('plugins.configuredClusterInstance'))}</p>
         <div>
           <strong>{t('plugins.requestedScopes')}</strong>
@@ -226,12 +235,12 @@ export function PluginConsentModal({ projectId, provider, onClose }: { projectId
         )}
         <ul>
           <li>{t('plugins.consentScope')}</li>
-          <li>{t('plugins.consentShared')}</li>
-          <li>{t('plugins.consentTasks')}</li>
-          <li>{t('plugins.consentPersistence')}</li>
-          <li>{t('plugins.consentPublic')}</li>
+          <li>{t(repositoryMode ? 'repositories.consentShared' : 'plugins.consentShared')}</li>
+          <li>{t(repositoryMode ? 'repositories.consentTasks' : 'plugins.consentTasks')}</li>
+          <li>{t(repositoryMode ? 'repositories.consentPersistence' : 'plugins.consentPersistence')}</li>
+          <li>{t(repositoryMode ? 'repositories.consentPublic' : 'plugins.consentPublic')}</li>
         </ul>
-        {provider !== 'github' && <label className={styles.checkbox}><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />{t('plugins.consentAcknowledge')}</label>}
+        {provider !== 'github' && <label className={styles.checkbox}><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />{t(repositoryMode ? 'repositories.consentAcknowledge' : 'plugins.consentAcknowledge')}</label>}
         {provider === 'github' && (
           <div className={styles.installations}>
             <strong>{t('plugins.githubChooseInstallation')}</strong>

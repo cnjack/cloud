@@ -249,7 +249,7 @@ func TestRunLifecycleAPI(t *testing.T) {
 	p := createProject(t, ts)
 
 	// Create run.
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "add a line"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create run: status=%d want 201", resp.StatusCode)
@@ -264,7 +264,7 @@ func TestRunLifecycleAPI(t *testing.T) {
 	}
 
 	// Empty prompt -> 400.
-	resp = do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp = do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "   "})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("empty prompt: status=%d want 400", resp.StatusCode)
@@ -299,7 +299,7 @@ func TestRunLifecycleAPI(t *testing.T) {
 func TestRetryLinksRetriedFrom(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]any{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -380,7 +380,7 @@ func TestRetryPreservesReviewIdentity(t *testing.T) {
 func TestCancelRun(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -410,7 +410,7 @@ func TestCancelRun(t *testing.T) {
 func TestCancelDeletesCommittedJobAndKeepsFields(t *testing.T) {
 	ts, st, fake := newTestServerWithLauncher(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -447,7 +447,7 @@ func TestCancelDeletesCommittedJobAndKeepsFields(t *testing.T) {
 func TestEventsListAfterSeq(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -478,7 +478,7 @@ func TestEventsListAfterSeq(t *testing.T) {
 func TestIngestAuthAndIdempotency(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -526,7 +526,7 @@ func TestIngestAuthAndIdempotency(t *testing.T) {
 func TestIngestRunFailureRefinesReason(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -555,7 +555,7 @@ func TestIngestRunFailureRefinesReason(t *testing.T) {
 func TestSSEReplayThenTerminal(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -620,7 +620,7 @@ func TestSSEReplayThenTerminal(t *testing.T) {
 func TestSSEClosesWhenTerminalDuringReplay(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -673,7 +673,7 @@ func TestSSEClosesWhenTerminalDuringReplay(t *testing.T) {
 func TestSSEOutOfOrderLiveEventsRecovered(t *testing.T) {
 	ts, st, hub := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -746,7 +746,7 @@ func waitForSubscriber(t *testing.T, hub *sse.Hub, runID string) {
 func TestIngestSeqIsServerAllocated(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -789,7 +789,7 @@ func TestIngestSeqIsServerAllocated(t *testing.T) {
 func TestSSEStreamAcceptsQueryToken(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -900,7 +900,7 @@ func TestSSEStreamClosesOnServerShutdown(t *testing.T) {
 func TestArtifactRoundTrip(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -945,7 +945,7 @@ func TestArtifactRoundTrip(t *testing.T) {
 func TestIngestRunGitRecordsBranch(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -976,7 +976,7 @@ func TestIngestRunGitRecordsBranch(t *testing.T) {
 func TestIngestPushFailedClassification(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -1010,7 +1010,7 @@ func TestIngestPushFailedClassification(t *testing.T) {
 func TestIngestRunResultRecordsOutcome(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)
@@ -1045,7 +1045,7 @@ func TestIngestRunResultRecordsOutcome(t *testing.T) {
 	}
 
 	// A run that reported no result serialises result:null (field always present).
-	resp = do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp = do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "other"})
 	var run2 domain.Run
 	decode(t, resp, &run2)
@@ -1062,7 +1062,7 @@ func TestIngestRunResultRecordsOutcome(t *testing.T) {
 func TestIngestRunResultUnknownOutcomeIgnored(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "task"})
 	var run domain.Run
 	decode(t, resp, &run)

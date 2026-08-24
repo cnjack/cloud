@@ -17,12 +17,12 @@ export default {
       "timedOut": "已逾時",
       "resolved": "已處理",
       "answered": "已回覆 — 正在等待 agent…",
-      "readonly": "唯讀 — 專案成員可以回覆。"
+      "readonly": "唯讀 — 儲存庫成員可以回覆。"
     }
   },
   "device": {
     "compose": {
-      "project": "專案目錄",
+      "project": "工作目錄",
       "model": "模型",
       "effort": "強度",
       "goal": "目標",
@@ -325,8 +325,11 @@ export default {
         "body": "配對過程中出現問題，請重試。"
       }
     },
+    "securityEyebrow": "裝置登入",
     "title": "授權裝置",
     "lede": "jcode Desktop 正在請求登入此雲端。輸入 Desktop 中顯示的驗證碼以繼續。",
+    "safetyTitle": "僅批准由你發起的請求",
+    "enterTitle": "輸入 Desktop 中的驗證碼",
     "codeLabel": "裝置驗證碼",
     "codeHint": "jcode Desktop 中顯示的 8 位驗證碼，形如 XXXX-XXXX。",
     "codeCell": "第 {n} 個字元，共 {total} 個",
@@ -341,6 +344,9 @@ export default {
     "deniedTitle": "裝置已拒絕",
     "deniedBody": "登入請求已被拒絕，jcode Desktop 將停止等待。",
     "another": "授權另一台裝置",
+    "unavailableTitle": "該登入請求已不可用",
+    "tryAnotherCode": "輸入其他驗證碼",
+    "backToDevices": "返回裝置列表",
     "errorNotFound": "沒有與該驗證碼匹配的待處理登入——它可能已過期。請從 jcode Desktop 重新發起登入。",
     "errorAlreadyDecided": "該登入請求已被批准或拒絕。",
     "errorGeneric": "無法授權裝置，請重試。"

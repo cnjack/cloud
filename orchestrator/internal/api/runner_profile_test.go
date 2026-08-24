@@ -42,7 +42,7 @@ func TestUpdateServiceRunnerProfileUsesClusterAllowlist(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := do(t, "PATCH", server.URL+"/api/v1/services/"+service.ID, consoleToken, map[string]any{
+	resp := do(t, "PATCH", server.URL+"/api/v1/repositories/"+service.ID, consoleToken, map[string]any{
 		"runner_profile": "go-node",
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -54,7 +54,7 @@ func TestUpdateServiceRunnerProfileUsesClusterAllowlist(t *testing.T) {
 		t.Fatalf("runner_profile=%q, want go-node", updated.RunnerProfile)
 	}
 
-	resp = do(t, "PATCH", server.URL+"/api/v1/services/"+service.ID, consoleToken, map[string]any{
+	resp = do(t, "PATCH", server.URL+"/api/v1/repositories/"+service.ID, consoleToken, map[string]any{
 		"runner_profile": "user-controlled-image",
 	})
 	if resp.StatusCode != http.StatusBadRequest {

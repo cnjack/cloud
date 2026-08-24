@@ -548,7 +548,7 @@ or encrypted data.
 
 - `GET/POST /api/v1/projects/{id}/agent-profiles`;
 - `GET/PATCH/DELETE /api/v1/agent-profiles/{id}`;
-- `POST /api/v1/services/{id}/runs/preflight`;
+- `POST /api/v1/repositories/{id}/runs/preflight`;
 - `GET /api/v1/runner-profiles` for Cluster Admin.
 
 Ship-R1 Console does not call or mock these endpoints.

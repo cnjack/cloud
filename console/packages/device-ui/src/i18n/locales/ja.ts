@@ -17,12 +17,12 @@ export default {
       "timedOut": "タイムアウトしました",
       "resolved": "解決済み",
       "answered": "回答済み — エージェントを待っています…",
-      "readonly": "読み取り専用 — プロジェクトメンバーが回答できます。"
+      "readonly": "読み取り専用 — リポジトリメンバーが回答できます。"
     }
   },
   "device": {
     "compose": {
-      "project": "プロジェクトディレクトリ",
+      "project": "作業ディレクトリ",
       "model": "モデル",
       "effort": "強度",
       "goal": "ゴール",
@@ -325,8 +325,11 @@ export default {
         "body": "ペアリング中に問題が発生しました。もう一度お試しください。"
       }
     },
+    "securityEyebrow": "デバイスのサインイン",
     "title": "デバイスを承認",
     "lede": "jcode Desktop がこのクラウドへのサインインを要求しています。Desktop に表示されたコードを入力してください。",
+    "safetyTitle": "自分で開始したリクエストのみ承認してください",
+    "enterTitle": "Desktop のコードを入力",
     "codeLabel": "デバイスコード",
     "codeHint": "jcode Desktop に表示される 8 文字のコード（例: XXXX-XXXX）。",
     "codeCell": "{total} 文字中 {n} 文字目",
@@ -341,6 +344,9 @@ export default {
     "deniedTitle": "デバイスを拒否しました",
     "deniedBody": "サインイン要求は拒否されました。jcode Desktop は待機を停止します。",
     "another": "別のデバイスを承認",
+    "unavailableTitle": "このサインインリクエストは利用できません",
+    "tryAnotherCode": "別のコードを入力",
+    "backToDevices": "デバイス一覧に戻る",
     "errorNotFound": "そのコードに一致する保留中のサインインはありません。期限切れの可能性があります。jcode Desktop からもう一度開始してください。",
     "errorAlreadyDecided": "そのサインインはすでに承認または拒否されています。",
     "errorGeneric": "デバイスを承認できませんでした。もう一度お試しください。"

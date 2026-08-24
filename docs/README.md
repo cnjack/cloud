@@ -26,6 +26,7 @@
 | [22-jtype-agent-work-prd.md](22-jtype-agent-work-prd.md) | jtype Card ↔ Agent Run 协作闭环、身份、自动化与 Usage PRD |
 | [23-kanban-execution-receipts.md](23-kanban-execution-receipts.md) | Kanban transition、occurrence、receipt、Card executions API 与 UI 实现合同 |
 | [27-pr-delivery-lifecycle.md](27-pr-delivery-lifecycle.md) | Agent 交付契约、Pull Request 模式与 Draft → Ready 生命周期 PRD |
+| [32-repository-agent-board-and-shared-conversation.md](32-repository-agent-board-and-shared-conversation.md) | Repository-only 产品合同、每仓库一个 Agent Board、共享 Conversation、缓存与 e2e 验收 |
 
 可视化蓝图(v1,早于存储/BYOK 细化):<https://claude.ai/code/artifact/68743dc8-aa5c-48f1-b712-fb8d974a2902>
 

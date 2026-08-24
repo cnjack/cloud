@@ -50,6 +50,7 @@ import { ProjectAutomationsPanel } from '../project-workspace/ProjectAutomations
 import { serviceMark, serviceProviderLabel, serviceSource } from '../project-workspace/presentation';
 import { KanbanBoardModal } from './KanbanBoardModal';
 import { ProjectUsagePanel } from './ProjectUsagePanel';
+import { RepositoryUsagePanel } from './RepositoryUsagePanel';
 import {
   ProjectSettingsPage,
   ProjectSettingsSubnav,
@@ -62,10 +63,40 @@ const MAX_RUN_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024;
 const MAX_RUN_ATTACHMENTS_SIZE_MIB = 100;
 const MAX_RUN_ATTACHMENTS_SIZE_BYTES = MAX_RUN_ATTACHMENTS_SIZE_MIB * 1024 * 1024;
+const LAST_ACCOUNT_MODEL_KEY = 'jcloud.last-model.v1:';
 
-export function ProjectDetailPage() {
+function readLastAccountModel(accountId: string): string {
+  try {
+    return window.localStorage.getItem(LAST_ACCOUNT_MODEL_KEY + (accountId || 'session')) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function rememberAccountModel(accountId: string, modelId: string) {
+  const key = LAST_ACCOUNT_MODEL_KEY + (accountId || 'session');
+  try {
+    if (modelId) window.localStorage.setItem(key, modelId);
+    else window.localStorage.removeItem(key);
+  } catch {
+    // A locked-down browser can disable storage; selection still works in-session.
+  }
+}
+
+export function ProjectDetailPage({
+  projectIdOverride,
+  repositoryIdOverride,
+  repositoryMode = false,
+  connectMode = false,
+}: {
+  projectIdOverride?: string;
+  repositoryIdOverride?: string;
+  repositoryMode?: boolean;
+  connectMode?: boolean;
+} = {}) {
   const { t } = useTranslation();
-  const { projectId = '' } = useParams();
+  const params = useParams();
+  const projectId = projectIdOverride ?? params.projectId ?? '';
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
@@ -106,13 +137,15 @@ export function ProjectDetailPage() {
   const role = p?.role ?? 'owner';
   const canRun = role !== 'viewer';
   const canManage = role === 'owner';
-  const workspaceLocation = resolveWorkspaceLocation(services, searchParams, canManage);
+  const locationParams = new URLSearchParams(searchParams);
+  if (repositoryIdOverride) locationParams.set('service', repositoryIdOverride);
+  const workspaceLocation = resolveWorkspaceLocation(services, locationParams, canManage);
   const activeServiceId = workspaceLocation.serviceId;
   const activeService = services.find((service) => service.id === activeServiceId);
   const serviceBranches = useServiceBranches(activeServiceId, canRun && !!activeService);
   const workspaceTab = workspaceLocation.tab;
-  const addOpen = searchParams.get('add') === 'service';
-  const projectSettingsOpen = canManage && searchParams.get('view') === 'project-settings';
+  const addOpen = connectMode || searchParams.get('add') === 'service';
+  const projectSettingsOpen = !repositoryMode && canManage && searchParams.get('view') === 'project-settings';
   const projectSettingsSection = resolveProjectSettingsSection(searchParams.get('settings'), canManage);
 
   useEffect(() => {
@@ -139,16 +172,17 @@ export function ProjectDetailPage() {
     setRunFilter('all');
     setRepoQuery('');
     setPickerInstallationId('');
-  }, [projectId]);
+  }, [projectId, repositoryIdOverride]);
 
   // Services are independently bound repositories. Switching services must
   // never retain a branch from the preceding repository; start from its stored
   // default and let branch discovery refine the selectable list.
   useEffect(() => {
     setSelectedBranch(activeService?.default_branch ?? '');
+    setSelectedModel(readLastAccountModel(auth?.me?.user.id ?? ''));
     setAttachments([]);
     setAttachmentError(undefined);
-  }, [activeService?.id, activeService?.default_branch]);
+  }, [activeService?.id, activeService?.default_branch, auth?.me?.user.id]);
 
 	// Only offer branches confirmed by the repository Plugin. If its stored
 	// default branch has disappeared upstream, choose the provider's marked
@@ -171,21 +205,22 @@ export function ProjectDetailPage() {
     if (!workspaceLocation.needsNormalization && !settingsNeedsNormalization) return;
     const next = new URLSearchParams(searchParams);
     if (workspaceLocation.needsNormalization) {
-      next.set('service', workspaceLocation.serviceId);
+      if (repositoryMode) next.delete('service');
+      else next.set('service', workspaceLocation.serviceId);
       next.set('tab', workspaceLocation.tab);
     }
     if (settingsNeedsNormalization) next.delete('settings');
     setSearchParams(next, { replace: true });
-  }, [p, projectSettingsOpen, projectSettingsSection, searchParams, setSearchParams, workspaceLocation]);
+  }, [p, projectSettingsOpen, projectSettingsSection, repositoryMode, searchParams, setSearchParams, workspaceLocation]);
 
   const pluginsQuery = useProjectPlugins(projectId, !!p && canRun);
   // Viewers cannot open Kanban manually, but may follow an Automation output
   // deep link into the same board with the host enforcing read-only access.
   const boardLinks = useProjectBoardLinks(projectId, !!p);
   const activeBoardLinks = (boardLinks.data ?? []).filter((link) => link.service_id === activeService?.id);
-  const jtypePluginEnabled = (pluginsQuery.data ?? []).some((plugin) =>
-    plugin.provider === 'jtype' && plugin.status === 'enabled' && !!plugin.workspace_id);
-  const canOpenKanban = !!activeService && canRun && (jtypePluginEnabled || activeBoardLinks.length > 0);
+  // Keep Agent Board discoverable even before JType is connected. The modal
+  // owns the fail-visible setup state and tells the owner what is missing.
+  const canOpenKanban = !!activeService && canRun;
   const hasServiceHeaderActions = canOpenKanban ||
     activeService?.repo_kind === 'provider' || (canManage && !!activeService);
   const availableGitPlugins = useMemo(
@@ -268,6 +303,12 @@ export function ProjectDetailPage() {
   };
 
   const selectService = (serviceId: string) => {
+    if (repositoryMode) {
+      const next = new URLSearchParams(searchParams);
+      next.set('tab', workspaceTab);
+      navigate(`/repositories/${encodeURIComponent(serviceId)}?${next.toString()}`);
+      return;
+    }
     const next = new URLSearchParams(searchParams);
     next.delete('view');
     next.delete('settings');
@@ -285,6 +326,10 @@ export function ProjectDetailPage() {
 
   const closeAddService = () => {
     if (createService.isPending) return;
+    if (connectMode) {
+      navigate('/repositories');
+      return;
+    }
     const next = new URLSearchParams(searchParams);
     next.delete('add');
     setSearchParams(next, { replace: true });
@@ -416,9 +461,16 @@ export function ProjectDetailPage() {
 
   const removeActiveService = () => {
     if (!activeService) return;
-    if (!window.confirm(t('projectDetail.deleteServiceConfirm', { name: activeService.name }))) return;
+    if (!window.confirm(repositoryMode
+      ? t('repositories.disconnectConfirm', { name: activeService.name })
+      : t('projectDetail.deleteServiceConfirm', { name: activeService.name }))) return;
     deleteService.mutate(activeService.id, {
       onSuccess: () => {
+        if (repositoryMode) {
+          navigate('/repositories', { replace: true });
+          toast.push({ kind: 'success', message: t('repositories.disconnected', { name: activeService.name }) });
+          return;
+        }
         const next = new URLSearchParams(searchParams);
         const firstRemaining = services.find((service) => service.id !== activeService.id);
         if (firstRemaining) next.set('service', firstRemaining.id);
@@ -429,7 +481,9 @@ export function ProjectDetailPage() {
       },
       onError: (error) => toast.push({
         kind: 'error',
-        message: error instanceof ApiError ? error.message : t('projectDetail.deleteServiceFailed'),
+        message: error instanceof ApiError ? error.message : repositoryMode
+          ? t('repositories.disconnectFailed')
+          : t('projectDetail.deleteServiceFailed'),
       }),
     });
   };
@@ -442,10 +496,14 @@ export function ProjectDetailPage() {
       provider_repo_id: String(repo.id),
       git_mode: 'draft_pr',
     }, {
-      onSuccess: () => {
+      onSuccess: (repository) => {
         toast.push({ kind: 'success', message: t('projectDetail.repoAdded', { name: repo.full_name }) });
-        closeAddService();
         setRepoQuery('');
+        if (repositoryMode) {
+          navigate(`/repositories/${encodeURIComponent(repository.id)}`, { replace: connectMode });
+          return;
+        }
+        closeAddService();
       },
       onError: (error) =>
         toast.push({
@@ -455,13 +513,13 @@ export function ProjectDetailPage() {
     });
   };
 
-  if (project.isLoading) return <LoadingBlock label={t('projectDetail.loadingProject')} />;
+  if (project.isLoading) return <LoadingBlock label={repositoryMode ? t('repositories.loadingOne') : t('projectDetail.loadingProject')} />;
   if (project.isError || !p) {
     return (
       <ErrorBlock
         error={project.error}
         onRetry={() => project.refetch()}
-        title={t('projectDetail.loadFailedTitle')}
+        title={repositoryMode ? t('repositories.loadOneError') : t('projectDetail.loadFailedTitle')}
       />
     );
   }
@@ -471,18 +529,19 @@ export function ProjectDetailPage() {
       <ProjectWorkspaceShell
         mode={projectSettingsOpen ? 'settings' : 'workspace'}
         workspaceChrome={projectSettingsOpen || services.length > 0}
-        projectName={p.name}
+        projectName={repositoryMode ? activeService?.repo_owner_name ?? activeService?.name ?? t('repositories.title') : p.name}
         services={services}
         activeServiceId={activeServiceId}
         activeTab={workspaceTab}
         canManage={canManage}
+        repositoryMode={repositoryMode}
         onSelectService={selectService}
         onSelectTab={setWorkspaceTab}
         railTop={
           <>
             <Wordmark />
-            <Link to="/" className={styles.workspaceProjectsLink}>
-              {t('projectDetail.projects')}
+            <Link to={repositoryMode ? '/repositories' : '/'} className={styles.workspaceProjectsLink}>
+              {repositoryMode ? t('repositories.title') : t('projectDetail.projects')}
             </Link>
           </>
         }
@@ -497,7 +556,7 @@ export function ProjectDetailPage() {
           />
         }
         railAction={
-          canRun && services.length > 0 ? (
+          !repositoryMode && canRun && services.length > 0 ? (
             <button
               type="button"
               className={styles.railAddService}
@@ -510,7 +569,7 @@ export function ProjectDetailPage() {
           ) : undefined
         }
         projectAction={
-          canManage ? (
+          !repositoryMode && canManage ? (
             <ProjectSettingsAction
               onClick={() => setProjectSettingsOpen(true)}
               active={projectSettingsOpen}
@@ -518,7 +577,7 @@ export function ProjectDetailPage() {
           ) : undefined
         }
         mobileActions={
-          canRun && services.length > 0 ? (
+          !repositoryMode && canRun && services.length > 0 ? (
             <button type="button" className={styles.mobileAddService} onClick={openAddService}>
               <Plus size={16} weight="regular" aria-hidden="true" />
               <span>{t('common.add')}</span>
@@ -528,7 +587,9 @@ export function ProjectDetailPage() {
         utility={
           <>
             <nav className={styles.workspaceBreadcrumbs} aria-label={t('projectDetail.breadcrumb')}>
-              <Link to="/">{t('projectDetail.projects')}</Link>
+              <Link to={repositoryMode ? '/repositories' : '/'}>
+                {repositoryMode ? t('repositories.title') : t('projectDetail.projects')}
+              </Link>
               <span aria-hidden>/</span>
               {projectSettingsOpen ? (
                 <button
@@ -540,7 +601,7 @@ export function ProjectDetailPage() {
                 >
                   <span>{p.name}</span>
                 </button>
-              ) : <span>{p.name}</span>}
+              ) : <span>{repositoryMode ? activeService?.name ?? p.name : p.name}</span>}
               {projectSettingsOpen && (
                 <>
                   <span aria-hidden>/</span>
@@ -635,11 +696,13 @@ export function ProjectDetailPage() {
                     className={styles.workspaceServiceAction}
                     onClick={removeActiveService}
                     disabled={deleteService.isPending}
-                    aria-label={t('projectDetail.deleteServiceAria', { name: activeService.name })}
+                    aria-label={repositoryMode
+                      ? t('repositories.disconnectAria', { name: activeService.name })
+                      : t('projectDetail.deleteServiceAria', { name: activeService.name })}
                     data-testid="delete-service"
                   >
                     <Trash size={16} aria-hidden="true" />
-                    <span>{t('projectDetail.deleteService')}</span>
+                    <span>{repositoryMode ? t('repositories.disconnect') : t('projectDetail.deleteService')}</span>
                   </button>
                 )}
               </div>
@@ -650,7 +713,7 @@ export function ProjectDetailPage() {
         {projectSettingsOpen ? (
           <ProjectSettingsPage
             project={p}
-            onDeleted={() => navigate('/')}
+            onDeleted={() => navigate(repositoryMode ? '/repositories' : '/')}
             activeSection={projectSettingsSection}
           />
         ) : workspaceTab === 'tasks' && (
@@ -660,12 +723,14 @@ export function ProjectDetailPage() {
                 <span className={styles.firstServiceIcon} aria-hidden="true">
                   <GitBranch size={22} weight="regular" />
                 </span>
-                <span className={styles.firstServiceEyebrow}>{t('projectDetail.firstServiceEyebrow')}</span>
-                <h2>{t('projectDetail.addRepoEmptyTitle')}</h2>
+                <span className={styles.firstServiceEyebrow}>{repositoryMode ? t('repositories.emptyEyebrow') : t('projectDetail.firstServiceEyebrow')}</span>
+                <h2>{repositoryMode ? t('repositories.emptyTitle') : t('projectDetail.addRepoEmptyTitle')}</h2>
                 <p>
-                  {canManage
-                    ? t('projectDetail.addRepoEmptyManage')
-                    : t('projectDetail.addRepoEmptyMember')}
+                  {repositoryMode
+                    ? t('repositories.emptyBody')
+                    : canManage
+                      ? t('projectDetail.addRepoEmptyManage')
+                      : t('projectDetail.addRepoEmptyMember')}
                 </p>
                 {canRun && (
                   <Button data-testid="empty-add-service" onClick={openAddService}>
@@ -689,6 +754,7 @@ export function ProjectDetailPage() {
                 effectiveDefaultModelName={effectiveModel?.name}
                 onSelectedModelChange={(modelID) => {
                   setSelectedModel(modelID);
+                  rememberAccountModel(auth?.me?.user.id ?? '', modelID);
                   setModelEffort('auto');
                 }}
                 effortEnabled={effortEnabled}
@@ -726,7 +792,7 @@ export function ProjectDetailPage() {
 
             {needsGitPlugin && !addOpen && services.length > 0 && (
               <p className={styles.addRepoNeedsIntegration} data-testid="add-repo-needs-plugin">
-                {t('projectDetail.memberNeedsIntegration')}
+                {repositoryMode ? t('repositories.providerRequired') : t('projectDetail.memberNeedsIntegration')}
               </p>
             )}
           </>
@@ -739,12 +805,15 @@ export function ProjectDetailPage() {
               services={services}
               canManage={canManage}
               initialServiceId={activeService?.id}
+              repositoryMode={repositoryMode}
             />
           </section>
         )}
 
         {!projectSettingsOpen && workspaceTab === 'usage' && (
-          <ProjectUsagePanel projectId={projectId} />
+          repositoryMode && activeService
+            ? <RepositoryUsagePanel repositoryId={activeService.id} />
+            : <ProjectUsagePanel projectId={projectId} />
         )}
 
         {!projectSettingsOpen && workspaceTab === 'settings' && canManage && (
@@ -765,7 +834,7 @@ export function ProjectDetailPage() {
       <Modal
         open={canRun && addOpen}
         onClose={closeAddService}
-        title={t('projectDetail.addService')}
+        title={repositoryMode ? t('repositories.connect') : t('projectDetail.addService')}
         data-testid="add-service-dialog"
         footer={
           <Button
@@ -788,7 +857,7 @@ export function ProjectDetailPage() {
             <div className={styles.repoPicker} data-testid="repo-picker">
               {availableGitPlugins.length > 0 && (
                 <label className={styles.pickerHint}>
-                  {t('plugins.projectPlugin')}
+                  {repositoryMode ? t('repositories.connection') : t('plugins.projectPlugin')}
                   <Select
                     value={effectiveInstallationId}
                     onChange={setPickerInstallationId}
@@ -844,10 +913,12 @@ export function ProjectDetailPage() {
             </div>
           ) : (
             <div className={styles.addRepoNeedsIntegration} data-testid="add-repo-needs-plugin">
-              <p>{t('projectDetail.memberNeedsIntegration')}</p>
+              <p>{repositoryMode ? t('repositories.providerRequired') : t('projectDetail.memberNeedsIntegration')}</p>
               {canManage && (
-                <Link to={`/projects/${encodeURIComponent(projectId)}?view=project-settings&settings=plugins`}>
-                  {t('projectDetail.configureProjectPlugins')}
+                <Link to={repositoryMode
+                  ? '/connections/repositories'
+                  : `/projects/${encodeURIComponent(projectId)}?view=project-settings&settings=plugins`}>
+                  {repositoryMode ? t('repositories.configureConnections') : t('projectDetail.configureProjectPlugins')}
                 </Link>
               )}
             </div>
@@ -861,7 +932,8 @@ export function ProjectDetailPage() {
           serviceId={activeService.id}
           links={activeBoardLinks}
           initialCardPath={kanbanCardPath || undefined}
-          canManage={canRun}
+          canManage={canManage}
+          canRun={canRun}
           onClose={() => {
             setKanbanOpen(false);
             setKanbanCardPath('');

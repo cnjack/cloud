@@ -140,23 +140,24 @@ type ServiceRepositoryBinding struct {
 // lives in one of the strongly typed trigger tables rather than an unvalidated
 // JSON blob.
 type PluginAutomation struct {
-	ID              string     `json:"id"`
-	ServiceID       string     `json:"service_id"`
-	InstallationID  string     `json:"installation_id,omitempty"`
-	Name            string     `json:"name"`
-	TriggerKind     string     `json:"trigger_kind"` // scm | kanban | cron
-	RunKind         RunKind    `json:"run_kind"`     // agent | review
-	PromptTemplate  string     `json:"prompt_template"`
-	ModelID         string     `json:"model_id,omitempty"`
-	ModelEffort     string     `json:"model_effort,omitempty"`
-	Enabled         bool       `json:"enabled"`
-	IgnoreJCode     bool       `json:"ignore_jcode"`
-	LastTriggeredAt *time.Time `json:"last_triggered_at,omitempty"`
-	LastRunID       string     `json:"last_run_id,omitempty"`
-	LastError       string     `json:"last_error,omitempty"`
-	CreatedBy       string     `json:"created_by,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID                 string     `json:"id"`
+	ServiceID          string     `json:"service_id"`
+	InstallationID     string     `json:"installation_id,omitempty"`
+	Name               string     `json:"name"`
+	TriggerKind        string     `json:"trigger_kind"` // scm | kanban | cron
+	RunKind            RunKind    `json:"run_kind"`     // agent | review
+	PromptTemplate     string     `json:"prompt_template"`
+	ModelID            string     `json:"model_id,omitempty"`
+	ModelEffort        string     `json:"model_effort,omitempty"`
+	ExecutionAccountID string     `json:"execution_account_id,omitempty"`
+	Enabled            bool       `json:"enabled"`
+	IgnoreJCode        bool       `json:"ignore_jcode"`
+	LastTriggeredAt    *time.Time `json:"last_triggered_at,omitempty"`
+	LastRunID          string     `json:"last_run_id,omitempty"`
+	LastError          string     `json:"last_error,omitempty"`
+	CreatedBy          string     `json:"created_by,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 // PluginAutomationSpec is the aggregate returned by the Automation API. Exactly

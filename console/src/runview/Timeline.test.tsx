@@ -10,22 +10,25 @@ function ev(seq: number, type: string, payload: Record<string, unknown> = {}): R
   return { seq, ts: new Date(seq * 1000).toISOString(), type, payload };
 }
 
-const actions: RuntimeActions = {
-  sendMessage: vi.fn(),
-  enqueueMessage: vi.fn(),
-  removeQueuedMessage: vi.fn(),
-  stop: vi.fn(),
-  resolveApproval: vi.fn(),
-  submitAskUser: vi.fn(),
-  editMessage: vi.fn(),
-};
-
 function renderTimeline(
   events: RunViewEvent[],
   opts: { isRunning?: boolean; permissions?: PermissionControls } = {},
 ) {
+  const actions: RuntimeActions = {
+    sendMessage: vi.fn(),
+    enqueueMessage: vi.fn(),
+    removeQueuedMessage: vi.fn(),
+    stop: vi.fn(),
+    resolveApproval: vi.fn(),
+    resolveApprovalOption: opts.permissions?.onDecide,
+    submitAskUser: vi.fn(),
+    editMessage: vi.fn(),
+  };
   const state = {
-    items: toThreadItems(events),
+    items: toThreadItems(events, {
+      decided: opts.permissions?.decided,
+      disabled: opts.permissions?.disabled,
+    }),
     isRunning: opts.isRunning ?? false,
     tokenSnapshot: null,
     goal: null,
@@ -40,7 +43,7 @@ function renderTimeline(
   };
   return render(
     <RuntimeProvider runtime={runtime}>
-      <Timeline events={events} isRunning={opts.isRunning} permissions={opts.permissions} />
+      <Timeline />
     </RuntimeProvider>,
   );
 }
@@ -68,7 +71,7 @@ describe('Timeline — task conversation rendering', () => {
       ev(1, 'agent.text', { text: '```sh\npnpm test\n```' }),
     ]);
 
-    const message = container.querySelector<HTMLElement>('[data-testid="thread-message-assistant"] [data-jcode-ui]');
+    const message = container.querySelector<HTMLElement>('[data-testid="thread-message-assistant"][data-jcode-ui]');
     const prose = message?.querySelector<HTMLElement>('.jcode-prose');
     expect(message?.getAttribute('data-jcode-ui')).toBe('');
     expect(prose?.classList.contains('jcode-prose')).toBe(true);
@@ -125,7 +128,7 @@ describe('Timeline — task conversation rendering', () => {
     ]);
 
     expect(container.querySelectorAll('[data-testid="thread-message-system"]')).toHaveLength(3);
-    expect(container.querySelectorAll('[data-testid="thread-message-system"] [data-jcode-ui]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-testid="thread-message-system"][data-jcode-ui]')).toHaveLength(3);
     expect(container.textContent).toContain('Session resumed');
     expect(container.textContent).toContain('Session finished (idle timeout)');
     expect(container.textContent).toContain('Final status: Succeeded');
@@ -167,7 +170,7 @@ describe('Timeline — task conversation rendering', () => {
       { permissions: { onDecide } },
     );
 
-    fireEvent.click(screen.getByTestId('permission-option-custom-allow'));
+    fireEvent.click(screen.getByRole('button', { name: 'Proceed' }));
     expect(onDecide).toHaveBeenCalledWith('req-1', 'custom-allow');
   });
 

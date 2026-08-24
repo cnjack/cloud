@@ -424,8 +424,9 @@ type projectModelsView struct {
 	EnvFallback bool              `json:"env_fallback"`
 }
 
-// handleListProjectModels lists the models a project is granted (member+). It
-// NEVER exposes base_url or the key — only id/name/model_name.
+// handleListProjectModels is retained as the hidden Repository-container read
+// route, but interactive users receive their direct Account grants. API keys
+// without an Account retain the legacy Project grant boundary.
 func (s *Server) handleListProjectModels(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	if _, err := s.st.GetProject(r.Context(), projectID); errors.Is(err, store.ErrNotFound) {
@@ -438,7 +439,28 @@ func (s *Server) handleListProjectModels(w http.ResponseWriter, r *http.Request)
 	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleViewer) {
 		return
 	}
-	granted, err := s.st.ListModelsForProject(r.Context(), projectID)
+	prin := principalFrom(r.Context())
+	var granted []domain.Model
+	var err error
+	if accountID := prin.userID(); accountID != "" {
+		granted, err = s.st.ListModelsForAccount(r.Context(), accountID)
+		if err == nil {
+			var owned []domain.Model
+			owned, err = s.st.ListModelsForProject(r.Context(), projectID)
+			seen := make(map[string]bool, len(granted))
+			for i := range granted {
+				seen[granted[i].ID] = true
+			}
+			for i := range owned {
+				if owned[i].ProjectID == projectID && !seen[owned[i].ID] {
+					granted = append(granted, owned[i])
+					seen[owned[i].ID] = true
+				}
+			}
+		}
+	} else {
+		granted, err = s.st.ListModelsForProject(r.Context(), projectID)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not list models")
 		return

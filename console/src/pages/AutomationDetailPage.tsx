@@ -16,9 +16,17 @@ import styles from './AutomationDetailPage.module.css';
 
 type Filter = '' | 'blocked' | 'running' | 'terminal';
 
-export function AutomationDetailPage() {
+export function AutomationDetailPage({
+  projectIdOverride,
+  repositoryIdOverride,
+}: {
+  projectIdOverride?: string;
+  repositoryIdOverride?: string;
+} = {}) {
   const { t } = useTranslation();
-  const { projectId = '', automationId = '' } = useParams();
+  const params = useParams();
+  const projectId = projectIdOverride ?? params.projectId ?? '';
+  const automationId = params.automationId ?? '';
   const project = useProject(projectId);
   const automation = useProjectAutomation(projectId, automationId);
   const [filter, setFilter] = useState<Filter>('');
@@ -65,7 +73,9 @@ export function AutomationDetailPage() {
 
   return (
     <main className={styles.page} data-testid="automation-detail-page">
-      <Link className={styles.back} to={`/projects/${encodeURIComponent(projectId)}?tab=automations&service=${encodeURIComponent(spec.automation.service_id)}`}>
+      <Link className={styles.back} to={repositoryIdOverride
+        ? `/repositories/${encodeURIComponent(repositoryIdOverride)}?tab=automations`
+        : `/projects/${encodeURIComponent(projectId)}?tab=automations&service=${encodeURIComponent(spec.automation.service_id)}`}>
         <ArrowLeft size={16} aria-hidden />{t('automationExecutions.back')}
       </Link>
       <header className={styles.head}>
@@ -76,7 +86,9 @@ export function AutomationDetailPage() {
           <p>{service?.name ?? spec.automation.service_id} · {triggerSummary}</p>
         </div>
         <div className={styles.headActions}>
-          <Link to={`/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automationId)}/edit?service=${encodeURIComponent(spec.automation.service_id)}`}>
+          <Link to={repositoryIdOverride
+            ? `/repositories/${encodeURIComponent(repositoryIdOverride)}/automations/${encodeURIComponent(automationId)}/edit`
+            : `/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automationId)}/edit?service=${encodeURIComponent(spec.automation.service_id)}`}>
             {t('projectAutomations.edit')}
           </Link>
           <Button onClick={triggerNow} disabled={!canRun || runNow.isPending}>

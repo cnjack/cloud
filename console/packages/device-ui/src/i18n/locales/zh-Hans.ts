@@ -17,12 +17,12 @@ export default {
       "timedOut": "已超时",
       "resolved": "已解决",
       "answered": "已回答 — 等待 agent…",
-      "readonly": "只读 — 项目成员可以回答。"
+      "readonly": "只读 — 仓库成员可以回答。"
     }
   },
   "device": {
     "compose": {
-      "project": "项目目录",
+      "project": "工作目录",
       "model": "模型",
       "effort": "强度",
       "goal": "目标",
@@ -325,8 +325,11 @@ export default {
         "body": "配对过程中出现问题，请重试。"
       }
     },
+    "securityEyebrow": "设备登录",
     "title": "授权设备",
     "lede": "jcode Desktop 正在请求登录此云端。输入 Desktop 中显示的验证码以继续。",
+    "safetyTitle": "仅批准由你发起的请求",
+    "enterTitle": "输入 Desktop 中的验证码",
     "codeLabel": "设备验证码",
     "codeHint": "jcode Desktop 中显示的 8 位验证码，形如 XXXX-XXXX。",
     "codeCell": "第 {n} 个字符，共 {total} 个",
@@ -341,6 +344,9 @@ export default {
     "deniedTitle": "设备已拒绝",
     "deniedBody": "登录请求已被拒绝，jcode Desktop 将停止等待。",
     "another": "授权另一台设备",
+    "unavailableTitle": "该登录请求已不可用",
+    "tryAnotherCode": "输入其他验证码",
+    "backToDevices": "返回设备列表",
     "errorNotFound": "没有与该验证码匹配的待处理登录——它可能已过期。请从 jcode Desktop 重新发起登录。",
     "errorAlreadyDecided": "该登录请求已被批准或拒绝。",
     "errorGeneric": "无法授权设备，请重试。"

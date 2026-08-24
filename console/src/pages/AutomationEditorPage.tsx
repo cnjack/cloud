@@ -93,9 +93,17 @@ function supportedActions(provider: string | undefined): ReadonlySet<NormalizedS
   return new Set();
 }
 
-export function AutomationEditorPage() {
+export function AutomationEditorPage({
+  projectIdOverride,
+  repositoryIdOverride,
+}: {
+  projectIdOverride?: string;
+  repositoryIdOverride?: string;
+} = {}) {
   const { t } = useTranslation();
-  const { projectId = '', automationId = '' } = useParams();
+  const params = useParams();
+  const projectId = projectIdOverride ?? params.projectId ?? '';
+  const automationId = params.automationId ?? '';
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const editing = !!automationId;
@@ -107,7 +115,7 @@ export function AutomationEditorPage() {
   const update = useUpdateProjectAutomation(projectId);
 
   const services = project.data?.services ?? [];
-  const initialService = searchParams.get('service') ?? '';
+  const initialService = repositoryIdOverride ?? searchParams.get('service') ?? '';
   const [name, setName] = useState(reviewPreset ? t('automationEditor.review.defaultName') : '');
   const [serviceId, setServiceId] = useState(initialService);
   const [kind, setKind] = useState<Exclude<AutomationTriggerKind, 'kanban'>>('scm');
@@ -281,7 +289,9 @@ export function AutomationEditorPage() {
       } : {}),
       ...(kind === 'cron' ? { cron: { cron_expr: cronExpr.trim(), output_mode: cronOutputMode } } : {}),
     };
-    const onSuccess = () => navigate(`/projects/${encodeURIComponent(projectId)}?tab=automations&service=${encodeURIComponent(serviceId)}`);
+    const onSuccess = () => navigate(repositoryIdOverride
+      ? `/repositories/${encodeURIComponent(repositoryIdOverride)}?tab=automations`
+      : `/projects/${encodeURIComponent(projectId)}?tab=automations&service=${encodeURIComponent(serviceId)}`);
     if (editing) update.mutate({ automationId, input }, { onSuccess });
     else create.mutate(input, { onSuccess });
   }
@@ -295,7 +305,9 @@ export function AutomationEditorPage() {
 
   return (
     <main className={styles.page} data-testid="automation-editor-page">
-      <Link className={styles.back} to={`/projects/${encodeURIComponent(projectId)}?tab=automations${serviceId ? `&service=${encodeURIComponent(serviceId)}` : ''}`}>
+      <Link className={styles.back} to={repositoryIdOverride
+        ? `/repositories/${encodeURIComponent(repositoryIdOverride)}?tab=automations`
+        : `/projects/${encodeURIComponent(projectId)}?tab=automations${serviceId ? `&service=${encodeURIComponent(serviceId)}` : ''}`}>
         <ArrowLeft size={16} aria-hidden />
         {t('projectAutomations.title')}
       </Link>

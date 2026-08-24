@@ -81,14 +81,14 @@ func TestAttachmentIntentValidatesNameSizeMIMEAndUser(t *testing.T) {
 	for _, in := range []map[string]any{{"name": "../x", "size_bytes": 1}, {"name": "x", "size_bytes": attachmentMaxBytes + 1}, {"name": "x", "size_bytes": 1, "content_type": "application/x-msdownload"}} {
 		b, _ := json.Marshal(in)
 		w := httptest.NewRecorder()
-		srv.handleCreateAttachmentIntent(w, attachmentReq(t, http.MethodPost, "/api/v1/services/"+svc.ID+"/attachments/intents", b, u))
+		srv.handleCreateAttachmentIntent(w, attachmentReq(t, http.MethodPost, "/api/v1/repositories/"+svc.ID+"/attachments/intents", b, u))
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("input=%v status=%d", in, w.Code)
 		}
 	}
 	b, _ := json.Marshal(map[string]any{"name": "notes.txt", "size_bytes": 3, "content_type": "text/plain"})
 	w := httptest.NewRecorder()
-	srv.handleCreateAttachmentIntent(w, attachmentReq(t, http.MethodPost, "/api/v1/services/"+svc.ID+"/attachments/intents", b, u))
+	srv.handleCreateAttachmentIntent(w, attachmentReq(t, http.MethodPost, "/api/v1/repositories/"+svc.ID+"/attachments/intents", b, u))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("valid intent=%d body=%s", w.Code, w.Body.String())
 	}
@@ -109,14 +109,14 @@ func TestAttachmentUploadRejectsLengthAndDeletesFailedObject(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
-	req := attachmentReq(t, http.MethodPut, "/api/v1/services/"+svc.ID+"/attachments/a/content", []byte("no"), u)
+	req := attachmentReq(t, http.MethodPut, "/api/v1/repositories/"+svc.ID+"/attachments/a/content", []byte("no"), u)
 	req.ContentLength = 2
 	srv.handleUploadAttachmentContent(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("length status=%d", w.Code)
 	}
 	w = httptest.NewRecorder()
-	req = attachmentReq(t, http.MethodPut, "/api/v1/services/"+svc.ID+"/attachments/a/content", []byte("yes"), u)
+	req = attachmentReq(t, http.MethodPut, "/api/v1/repositories/"+svc.ID+"/attachments/a/content", []byte("yes"), u)
 	req.ContentLength = 3
 	srv.handleUploadAttachmentContent(w, req)
 	if w.Code != http.StatusBadGateway || len(f.deleted) != 1 {
@@ -133,7 +133,7 @@ func TestAttachmentPresignFailureReleasesUploadClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
-	req := attachmentReq(t, http.MethodPut, "/api/v1/services/"+svc.ID+"/attachments/a/content", []byte("yes"), u)
+	req := attachmentReq(t, http.MethodPut, "/api/v1/repositories/"+svc.ID+"/attachments/a/content", []byte("yes"), u)
 	req.ContentLength = 3
 	srv.handleUploadAttachmentContent(w, req)
 	if w.Code != http.StatusBadGateway {

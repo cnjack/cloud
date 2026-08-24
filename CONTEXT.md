@@ -10,6 +10,18 @@ belongs next to the implementation and accepted decisions belong in
 - **Work Item** — durable team work. A jtype Card remains the truth for Kanban
   work; a provider Pull Request remains the truth for review work. Cloud does not
   create a second issue system.
+- **Repository** — the only user-visible source and execution target in the
+  personal product. Project may remain a hidden singleton policy boundary and a
+  legacy Service row may back the first implementation, but neither leaks into
+  new UI or Repository execution contracts. Temporary hidden-container
+  administration endpoints are migration plumbing, not product concepts.
+- **Agent Board** — the one existing JType Board optionally connected to a
+  Repository. A Board can belong to only one Repository. JType remains the Work
+  Item truth; Cloud stores only policy, occurrence, Run, and receipt state.
+- **Repository Agent Workflow** — the durable Repository policy that binds an
+  Agent Board, columns, fixed Automation model/effort, execution account, Agent
+  Profile, execution target, and Delivery behavior. Card transitions and the
+  Card's Run-with-agent action are adapters into the same occurrence interface.
 - **Trigger** — the fact that requests execution: Manual, JType transition, SCM
   event/comment, Cron occurrence, or scoped API call. Trigger implementations
   differ, but all must produce the same bounded trigger facts before dispatch.
@@ -28,7 +40,7 @@ belongs next to the implementation and accepted decisions belong in
   Project/model settings.
 - **Workflow Contract** — the immutable, schema-versioned execution contract
   compiled for one Run from a Workflow Definition revision, bounded trigger
-  facts, an Agent Profile revision, Service policy, LLM Selection, typed delivery
+  facts, an Agent Profile revision, Repository policy, LLM Selection, typed delivery
   outputs, and verification rules. Editing a profile or Automation never mutates
   an existing Run's contract.
 - **Run Readiness** — a server-side evaluation of a proposed Workflow Contract
@@ -61,6 +73,9 @@ belongs next to the implementation and accepted decisions belong in
   approves or merges automatically.
 - **Workspace Checkpoint** — an append-only reference to a stable Run workspace
   state. A PVC is a cache and resume substrate, not the checkpoint truth.
+- **Conversation** — the ordered Run/session timeline represented by
+  `jcode-ui-core` runtime types and rendered by `jcode-ui`. Desktop and Cloud are
+  transport adapters around this shared UI, not independent renderers.
 
 ## Invariants
 
@@ -75,3 +90,7 @@ belongs next to the implementation and accepted decisions belong in
    not bypass platform dispatch prerequisites or invent private dispatch paths.
 6. Multi-agent execution is opt-in orchestration over isolated review/work
    units. A role profile does not imply multi-agent execution.
+7. An Agent Board occurrence is the single dispatch seam. A Card transition and
+   Run-with-agent may not create separate Run paths.
+8. Account last-used model state belongs to interactive composition; unattended
+   Repository Agent Workflows use their persisted model and execution account.

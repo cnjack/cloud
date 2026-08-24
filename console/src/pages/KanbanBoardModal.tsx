@@ -27,10 +27,13 @@ import 'jtype-board-react/style.css';
 import { useApi } from '../api/ApiProvider';
 import {
   qk,
+  useAccountModels,
+  useCreateServiceKanbanOccurrence,
   useDeleteServiceKanban,
   usePluginBoards,
   useProjectPlugins,
   usePutServiceKanban,
+  useServiceKanban,
   useServiceKanbanCardExecutions,
   useServiceKanbanPolicy,
 } from '../api/queries';
@@ -142,6 +145,7 @@ interface Props {
   links: BoardEmbedLink[];
   initialCardPath?: string;
   canManage?: boolean;
+  canRun?: boolean;
   onClose: () => void;
 }
 
@@ -174,7 +178,7 @@ function KanbanPolicyStrip({ serviceId }: { serviceId: string }) {
       role={value.health.state === 'blocked' ? 'alert' : 'status'}
     >
       <div className={styles.policyLead}>
-        <strong>{value.service_name}</strong>
+        <strong>{value.repository_name}</strong>
         <span>{value.repository}</span>
       </div>
       <span>
@@ -199,7 +203,7 @@ function KanbanPolicyStrip({ serviceId }: { serviceId: string }) {
           : (
             <>
               {t('kanban.policyBlocked', { blocker })}
-              {value.health.repair_role === 'project_owner' && ` · ${t('kanban.projectOwner')}`}
+              {value.health.repair_role === 'repository_owner' && ` · ${t('kanban.repositoryOwner')}`}
               {value.health.repair_role === 'cluster_admin' && ` · ${t('kanban.clusterAdmin')}`}
             </>
           )}
@@ -231,13 +235,20 @@ function CardExecutionsSupplement({
   serviceId,
   workspaceId,
   documentPath,
+  currentColumn,
+  doneColumn,
+  canRun,
 }: {
   serviceId: string;
   workspaceId: string;
   documentPath: string;
+  currentColumn: string;
+  doneColumn?: string;
+  canRun: boolean;
 }) {
   const { t } = useTranslation();
   const query = useServiceKanbanCardExecutions(serviceId, workspaceId, documentPath);
+  const createOccurrence = useCreateServiceKanbanOccurrence(serviceId, workspaceId, documentPath);
   if (query.isLoading) {
     return <div className={styles.executionLoading} aria-label={t('kanban.loadingExecutions')}>{t('kanban.loadingExecutions')}</div>;
   }
@@ -254,13 +265,43 @@ function CardExecutionsSupplement({
   const pages = query.data?.pages ?? [];
   const executions = pages.flatMap((page) => page.items);
   const claim = pages[0]?.claim ?? null;
+  const current = executions[0];
+  const active = current != null && current.status !== 'terminal';
+  const runAction = canRun ? (
+    <div className={styles.executionActions}>
+      <Button
+        type="button"
+        size="sm"
+        disabled={active || createOccurrence.isPending}
+        loading={createOccurrence.isPending}
+        onClick={() => {
+          if (doneColumn && currentColumn === doneColumn && !window.confirm(t('kanban.rerunDoneConfirm'))) return;
+          createOccurrence.mutate(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+        }}
+        data-testid="kanban-run-with-agent"
+      >
+        {active ? t('kanban.agentRunActive') : t('kanban.runWithAgent')}
+      </Button>
+      {createOccurrence.isError && (
+        <span className={styles.executionActionError} role="alert">
+          {(createOccurrence.error as Error).message}
+        </span>
+      )}
+    </div>
+  ) : null;
   if (executions.length === 0) {
-    return <p className={styles.executionEmpty}>{t('kanban.noExecutions')}</p>;
+    return (
+      <div className={styles.executions} aria-label={t('kanban.executionsTitle')}>
+        {runAction}
+        <p className={styles.executionEmpty}>{t('kanban.noExecutions')}</p>
+      </div>
+    );
   }
-  const current = executions[0]!;
+  const currentExecution = current!;
   const history = executions.slice(1);
   return (
     <div className={styles.executions} aria-label={t('kanban.executionsTitle')}>
+      {runAction}
       {claim && !claim.external_ref_available && (
         <div className={styles.executionUnavailable} role="status">
           {t('kanban.cardUnavailable')}
@@ -271,28 +312,28 @@ function CardExecutionsSupplement({
       </div>
       <article
         className={styles.executionCurrent}
-        data-state={current.status === 'terminal' ? current.outcome : current.status}
+        data-state={currentExecution.status === 'terminal' ? currentExecution.outcome : currentExecution.status}
         data-testid="kanban-execution-current"
-        role={current.status === 'blocked' ? 'alert' : 'status'}
+        role={currentExecution.status === 'blocked' ? 'alert' : 'status'}
       >
         <div className={styles.executionHeading}>
-          <strong>{executionStateLabel(current, t)}</strong>
-          <time dateTime={current.updated_at}>{new Date(current.updated_at).toLocaleString()}</time>
+          <strong>{executionStateLabel(currentExecution, t)}</strong>
+          <time dateTime={currentExecution.updated_at}>{new Date(currentExecution.updated_at).toLocaleString()}</time>
         </div>
-        <p>{executionDescription(current, t)}</p>
+        <p>{executionDescription(currentExecution, t)}</p>
         <div className={styles.executionMeta}>
-          {current.requested_actor && (
-            <span>{t('kanban.requestedByExternal', { actor: current.requested_actor.label })}</span>
+          {currentExecution.requested_actor && (
+            <span>{t('kanban.requestedByExternal', { actor: currentExecution.requested_actor.label })}</span>
           )}
-          {current.repair_role === 'project_owner' && <span>{t('kanban.projectOwner')}</span>}
-          {current.repair_role === 'cluster_admin' && <span>{t('kanban.clusterAdmin')}</span>}
-          {current.run && <Link to={current.run.href}>{t('kanban.openRun')}</Link>}
-          {current.receipt.writeback === 'pending' && <span>{t('kanban.writebackPending')}</span>}
-          {current.receipt.writeback === 'unavailable' && <span>{t('kanban.writebackUnavailable')}</span>}
+          {currentExecution.repair_role === 'repository_owner' && <span>{t('kanban.repositoryOwner')}</span>}
+          {currentExecution.repair_role === 'cluster_admin' && <span>{t('kanban.clusterAdmin')}</span>}
+          {currentExecution.run && <Link to={currentExecution.run.href}>{t('kanban.openRun')}</Link>}
+          {currentExecution.receipt.writeback === 'pending' && <span>{t('kanban.writebackPending')}</span>}
+          {currentExecution.receipt.writeback === 'unavailable' && <span>{t('kanban.writebackUnavailable')}</span>}
         </div>
-        {current.usage_summary && (
+        {currentExecution.usage_summary && (
           <div className={styles.executionUsage}>
-            <UsageSummary value={current.usage_summary} compact />
+            <UsageSummary value={currentExecution.usage_summary} compact />
           </div>
         )}
       </article>
@@ -332,6 +373,7 @@ export function KanbanBoardModal({
   links,
   initialCardPath,
   canManage = false,
+  canRun = canManage,
   onClose,
 }: Props) {
   const { t } = useTranslation();
@@ -357,10 +399,14 @@ export function KanbanBoardModal({
   );
   const putBinding = usePutServiceKanban(projectId, serviceId);
   const deleteBinding = useDeleteServiceKanban(projectId, serviceId);
+  const binding = useServiceKanban(serviceId, !!serviceId && !!link);
+  const accountModels = useAccountModels(canManage);
   const [boardRef, setBoardRef] = useState('');
   const [triggerColumn, setTriggerColumn] = useState('');
 	const [workColumn, setWorkColumn] = useState('');
   const [doneColumn, setDoneColumn] = useState('');
+  const [workflowModelId, setWorkflowModelId] = useState('');
+  const [workflowEffort, setWorkflowEffort] = useState<'' | 'low' | 'medium' | 'high'>('');
   const previewBoard = (boards.data ?? []).find((board) => board.id === boardRef);
   const linkedBoard = link
     ? (boards.data ?? []).find((board) => board.id === link.board_ref)
@@ -393,6 +439,22 @@ export function KanbanBoardModal({
 	setWorkColumn(initialWorkColumn(board));
     setDoneColumn(initialDoneColumn(board));
   }, [link, linkedBoard, previewBoard]);
+
+  useEffect(() => {
+    const configured = binding.data?.automation;
+    if (configured?.model_id) setWorkflowModelId(configured.model_id);
+    else if (!workflowModelId && accountModels.data?.[0]?.id) setWorkflowModelId(accountModels.data[0].id);
+    if (configured?.model_effort) setWorkflowEffort(configured.model_effort);
+  }, [accountModels.data, binding.data, workflowModelId]);
+
+  const workflowModel = accountModels.data?.find((model) => model.id === workflowModelId);
+  const configuredWorkflow = binding.data?.automation;
+  const workflowSelectionChanged = workflowModelId !== (configuredWorkflow?.model_id ?? '')
+    || workflowEffort !== (configuredWorkflow?.model_effort ?? '');
+  useEffect(() => {
+    if (!workflowModel?.capabilities.reasoning) setWorkflowEffort('');
+    else if (!workflowEffort) setWorkflowEffort('medium');
+  }, [workflowEffort, workflowModel]);
 
   // Resolve the link's board_ref (config id) → the board's relativePath, over
   // the member+ proxy. Keyed on the selected link so switching boards refetches.
@@ -438,11 +500,42 @@ export function KanbanBoardModal({
                 />
                 {previewBoard && (
                   <div className={styles.columnGrid}>
+                    {accountModels.isLoading ? (
+                      <LoadingBlock label={t('kanban.loadingAccountModels')} />
+                    ) : accountModels.isError ? (
+                      <div className={styles.failDetail} role="alert">
+                        {t('kanban.accountModelsUnavailable')}
+                        <Button type="button" variant="ghost" size="sm" onClick={() => void accountModels.refetch()}>{t('common.retry')}</Button>
+                      </div>
+                    ) : (accountModels.data ?? []).length === 0 ? (
+                      <div className={styles.failDetail} role="alert">{t('kanban.accountModelRequired')}</div>
+                    ) : (
+                      <SelectField
+                        label={t('automationEditor.model')}
+                        value={workflowModelId}
+                        onChange={setWorkflowModelId}
+                        options={(accountModels.data ?? []).map((model) => ({ value: model.id, label: model.name }))}
+                        data-testid="kanban-workflow-model"
+                      />
+                    )}
+                    {workflowModel?.capabilities.reasoning && (
+                      <SelectField
+                        label={t('automationEditor.effort')}
+                        value={workflowEffort}
+                        onChange={(value) => setWorkflowEffort(value as 'low' | 'medium' | 'high')}
+                        options={[
+                          { value: 'low', label: t('automationEditor.effortLow') },
+                          { value: 'medium', label: t('automationEditor.effortMedium') },
+                          { value: 'high', label: t('automationEditor.effortHigh') },
+                        ]}
+                        data-testid="kanban-workflow-effort"
+                      />
+                    )}
                     <SelectField
                       label={t('kanban.triggerColumn')}
                       value={triggerColumn}
                       onChange={setTriggerColumn}
-                      options={columnOptions(previewBoard)}
+                      options={columnOptions(previewBoard).filter((column) => column.value !== workColumn && column.value !== doneColumn)}
                       data-testid="kanban-trigger-column"
                     />
                     <SelectField
@@ -458,7 +551,7 @@ export function KanbanBoardModal({
                       onChange={setDoneColumn}
                       options={[
                         { value: '', label: t('kanban.noDoneColumn') },
-                        ...columnOptions(previewBoard),
+                        ...columnOptions(previewBoard).filter((column) => column.value !== triggerColumn && column.value !== workColumn),
                       ]}
                       data-testid="kanban-done-column"
                     />
@@ -469,7 +562,7 @@ export function KanbanBoardModal({
             <div className={styles.setupActions}>
               <Button
                 type="button"
-				disabled={!canManage || !jtypePlugin || !previewBoard || !triggerColumn || !workColumn || putBinding.isPending}
+				disabled={!canManage || !jtypePlugin || !previewBoard || !workflowModelId || !triggerColumn || !workColumn || putBinding.isPending}
                 loading={putBinding.isPending}
                 onClick={() => putBinding.mutate({
                   installation_id: jtypePlugin!.id!,
@@ -479,6 +572,8 @@ export function KanbanBoardModal({
                   trigger_column: triggerColumn,
 				  work_column: workColumn,
                   done_column: doneColumn,
+                  model_id: workflowModelId,
+                  model_effort: workflowEffort,
                   enabled: true,
                 })}
                 data-testid="kanban-enable"
@@ -541,11 +636,42 @@ export function KanbanBoardModal({
                   <span className={styles.columnStatus} role="alert">{t('kanban.columnsUnavailable')}</span>
                 ) : (
                   <>
+                    {accountModels.isLoading ? (
+                      <LoadingBlock label={t('kanban.loadingAccountModels')} />
+                    ) : accountModels.isError ? (
+                      <div className={styles.failDetail} role="alert">
+                        {t('kanban.accountModelsUnavailable')}
+                        <Button type="button" variant="ghost" size="sm" onClick={() => void accountModels.refetch()}>{t('common.retry')}</Button>
+                      </div>
+                    ) : (accountModels.data ?? []).length === 0 ? (
+                      <div className={styles.failDetail} role="alert">{t('kanban.accountModelRequired')}</div>
+                    ) : (
+                      <SelectField
+                        label={t('automationEditor.model')}
+                        value={workflowModelId}
+                        onChange={setWorkflowModelId}
+                        options={(accountModels.data ?? []).map((model) => ({ value: model.id, label: model.name }))}
+                        data-testid="kanban-workflow-model"
+                      />
+                    )}
+                    {workflowModel?.capabilities.reasoning && (
+                      <SelectField
+                        label={t('automationEditor.effort')}
+                        value={workflowEffort}
+                        onChange={(value) => setWorkflowEffort(value as 'low' | 'medium' | 'high')}
+                        options={[
+                          { value: 'low', label: t('automationEditor.effortLow') },
+                          { value: 'medium', label: t('automationEditor.effortMedium') },
+                          { value: 'high', label: t('automationEditor.effortHigh') },
+                        ]}
+                        data-testid="kanban-workflow-effort"
+                      />
+                    )}
                     <SelectField
                       label={t('kanban.triggerColumn')}
                       value={triggerColumn}
                       onChange={setTriggerColumn}
-                      options={columnOptions(linkedBoard)}
+                      options={columnOptions(linkedBoard).filter((column) => column.value !== workColumn && column.value !== doneColumn)}
                       data-testid="kanban-trigger-column"
                     />
                     <SelectField
@@ -561,7 +687,7 @@ export function KanbanBoardModal({
                       onChange={setDoneColumn}
                       options={[
                         { value: '', label: t('kanban.noDoneColumn') },
-                        ...columnOptions(linkedBoard),
+                        ...columnOptions(linkedBoard).filter((column) => column.value !== triggerColumn && column.value !== workColumn),
                       ]}
                       data-testid="kanban-done-column"
                     />
@@ -572,8 +698,10 @@ export function KanbanBoardModal({
                         disabled={
                           !triggerColumn
 						  || !workColumn
+                          || !workflowModelId
                           || (
-                            triggerColumn === link.trigger_column
+                            !workflowSelectionChanged
+                            && triggerColumn === link.trigger_column
 							&& workColumn === (link.work_column ?? '')
                             && doneColumn === (link.done_column ?? '')
                           )
@@ -586,6 +714,8 @@ export function KanbanBoardModal({
                           trigger_column: triggerColumn,
 						  work_column: workColumn,
                           done_column: doneColumn,
+                          model_id: workflowModelId,
+                          model_effort: workflowEffort,
                           enabled: true,
                         })}
                         data-testid="kanban-columns-save"
@@ -629,13 +759,16 @@ export function KanbanBoardModal({
                 initialCardPath={initialCardPath}
                 additionalCardRoots={CLOUD_MANAGED_CARD_ROOTS}
                 live={false}
-                readOnly={!canManage}
+                readOnly={!canRun}
                 locale={boardLocale()}
                 renderCardSupplement={serviceId ? (card) => (
                   <CardExecutionsSupplement
                     serviceId={serviceId}
                     workspaceId={link.workspace_id}
                     documentPath={card.id}
+                    currentColumn={card.columnKey}
+                    doneColumn={link.done_column}
+                    canRun={canRun}
                   />
                 ) : undefined}
               />

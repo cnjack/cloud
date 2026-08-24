@@ -252,6 +252,7 @@ export interface ProjectAutomationAggregate {
   run_kind?: RunKind;
   model_id?: string;
   model_effort?: 'low' | 'medium' | 'high';
+  execution_account_id?: string;
   enabled: boolean;
   ignore_jcode: boolean;
   last_triggered_at?: string;
@@ -334,6 +335,8 @@ export interface ProjectAutomationSpec {
     board_ref: string;
     trigger_column: string;
     trigger_label?: string;
+    work_column?: string;
+    work_label?: string;
     done_column?: string;
     done_label?: string;
   };
@@ -377,8 +380,8 @@ export interface AutomationExecutionsPage {
 }
 export type ServiceKanbanBinding = ProjectAutomationSpec;
 export interface ServiceKanbanPolicy {
-  service_id: string;
-  service_name: string;
+  repository_id: string;
+  repository_name: string;
   repository: string;
   model: { id?: string; label: string };
   board: { workspace_id: string; ref: string };
@@ -389,7 +392,7 @@ export interface ServiceKanbanPolicy {
   health: {
     state: 'ready' | 'blocked';
     blocker: string | null;
-    repair_role?: 'project_owner' | 'cluster_admin' | null;
+    repair_role?: 'repository_owner' | 'cluster_admin' | null;
   };
 }
 export interface KanbanCardExecution {
@@ -399,7 +402,7 @@ export interface KanbanCardExecution {
   summary: string;
   reason: string | null;
   reason_code?: string;
-  repair_role: 'project_owner' | 'cluster_admin' | null;
+  repair_role: 'repository_owner' | 'cluster_admin' | null;
   requested_actor: { label: string; precision: 'display_only' } | null;
   run: { id: string; status: RunStatus; href: string } | null;
   receipt: {
@@ -417,12 +420,24 @@ export interface KanbanCardExecutionsPage {
   usage_summary: UsageSummary;
   next_cursor: string | null;
 }
+export interface CreateKanbanCardOccurrenceInput {
+  workspace_id: string;
+  document_path: string;
+  idempotency_key: string;
+}
+export interface CreateKanbanCardOccurrenceResponse {
+  occurrence: KanbanCardExecution;
+  replayed: boolean;
+}
 export interface PutServiceKanbanInput {
   installation_id: string;
   board_ref: string;
   trigger_column?: string;
-	work_column?: string;
+	work_column: string;
   done_column?: string;
+  model_id: string;
+  model_effort?: '' | 'low' | 'medium' | 'high';
+  execution_account_id?: string;
   enabled?: boolean;
 }
 /** @deprecated Transitional alias used only by the old mock; new UI uses ProjectAutomationSpec. */
@@ -1542,7 +1557,7 @@ export interface ResumeRunInput extends ResumeSessionOptions {
 }
 
 /**
- * PATCH /api/v1/services/{id} body (owner). Currently the console only edits the
+ * PATCH /api/v1/repositories/{id} body (owner). Currently the console only edits the
  * service's default model. default_model_id presence semantics: omitted =
  * unchanged; '' = clear the default; an id = set (server-validated to be granted).
  */

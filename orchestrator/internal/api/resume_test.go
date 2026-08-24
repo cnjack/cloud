@@ -320,7 +320,7 @@ func TestResumeViewerForbidden(t *testing.T) {
 func TestIngestRunSessionRecordsID(t *testing.T) {
 	ts, st, _ := newTestServer(t)
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]any{"prompt": "chat", "session": true})
 	var run domain.Run
 	decode(t, resp, &run)

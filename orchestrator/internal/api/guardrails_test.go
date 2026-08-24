@@ -14,7 +14,7 @@ import (
 // it. gitMode is "readonly" unless overridden.
 func createGiteaService(t *testing.T, ts *httptest.Server, pid, name, ownerName string) domain.Service {
 	t.Helper()
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": name, "owner_name": ownerName, "provider": "gitea",
 	})
 	if resp.StatusCode != http.StatusCreated {
@@ -242,7 +242,7 @@ func TestProviderAllowlistEnforcementRemoved(t *testing.T) {
 	svc := seedPluginBoundService(t, st, pid, "default", "acme/x")
 
 	// Run dispatch is not gated either (the model env-fallback lets it queue).
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("dispatch: status=%d want 201 (no provider gate)", resp.StatusCode)
 	}

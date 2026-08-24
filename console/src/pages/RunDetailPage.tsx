@@ -36,8 +36,7 @@ import { Wordmark } from '../components/Wordmark';
 import { useRunStream } from '../hooks/useRunStream';
 import { formatDateTime, formatDuration, shortId } from '../lib/format';
 import { ProjectWorkspaceShell } from '../project-workspace/ProjectWorkspaceShell';
-import { ProjectSettingsAction } from '../project-workspace/ProjectSettingsAction';
-import { Timeline, toThreadItems, type PermissionControls } from '../runview';
+import { Timeline, toThreadItems } from '../runview';
 import { followConversationScroll } from '../runview/conversationScroll';
 import styles from './RunDetailPage.module.css';
 
@@ -157,10 +156,7 @@ export function RunDetailPage() {
     };
   }, [project.data?.id, runId, status, stream.events.length, view]);
 
-  const permissionControls: PermissionControls = {
-    disabled: !canAct,
-    decided: permDecided,
-    onDecide: (requestId, optionId) => {
+  const decidePermission = useCallback((requestId: string, optionId: string) => {
       if (!canAct) return;
       setPermDecided((current) => ({ ...current, [requestId]: optionId }));
       respondPermission.mutate(
@@ -176,8 +172,7 @@ export function RunDetailPage() {
           },
         },
       );
-    },
-  };
+  }, [canAct, respondPermission, runId, t, toast]);
 
   const sendFollowUp = useCallback((text: string) => {
     setFailedSubmission(null);
@@ -211,7 +206,7 @@ export function RunDetailPage() {
 
   const runtimeItems = useMemo<ThreadItem[]>(() => {
     const current = run.data;
-    if (!current) return toThreadItems(stream.events);
+    if (!current) return toThreadItems(stream.events, { decided: permDecided, disabled: !canAct });
     return [
       {
         kind: 'message',
@@ -223,9 +218,9 @@ export function RunDetailPage() {
           timestamp: Date.parse(current.created_at),
         },
       },
-      ...toThreadItems(stream.events),
+      ...toThreadItems(stream.events, { decided: permDecided, disabled: !canAct }),
     ];
-  }, [run.data, stream.events]);
+  }, [canAct, permDecided, run.data, stream.events]);
 
   const runtime = useMemo<ChatRuntime>(() => {
     const state: RuntimeState = {
@@ -246,11 +241,12 @@ export function RunDetailPage() {
         onError: (error) => toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : t('runDetail.toast.cancelFailed') }),
       }),
       resolveApproval: () => {},
+      resolveApprovalOption: decidePermission,
       submitAskUser: () => {},
       editMessage: () => {},
     };
     return { getState: () => state, subscribe: () => () => {}, actions };
-  }, [cancel, continueSession, runId, runtimeItems, sendFollowUp, status, terminal, toast]);
+  }, [cancel, continueSession, decidePermission, runId, runtimeItems, sendFollowUp, status, terminal, toast]);
 
   if (run.isLoading) return <LoadingBlock label={t('runDetail.loadingRun')} />;
   if (!run.data) return <ErrorBlock error={run.error} onRetry={() => run.refetch()} title={t('runDetail.loadRunError')} />;
@@ -261,9 +257,9 @@ export function RunDetailPage() {
   const service = services.find((entry) => entry.id === current.service_id);
   const activeServiceId = service?.id ?? current.service_id ?? services[0]?.id ?? '';
   const serviceTasksPath = activeServiceId
-    ? `/projects/${current.project_id}?service=${encodeURIComponent(activeServiceId)}&tab=tasks`
-    : `/projects/${current.project_id}`;
-  const projectName = project.data?.name ?? t('runDetail.projectName', { id: shortId(current.project_id) });
+    ? `/repositories/${encodeURIComponent(activeServiceId)}?tab=tasks`
+    : '/repositories';
+  const repositoryName = service?.repo_owner_name ?? service?.name ?? t('runDetail.repositoryUnavailable');
   const terminalRun = isTerminal(current.status);
   const failed = current.status === 'failed';
   const isSession = current.session === true;
@@ -302,23 +298,21 @@ export function RunDetailPage() {
         <div className={styles.page} data-testid="run-workspace">
           <ProjectWorkspaceShell
             mode="detail"
-            projectName={projectName}
+            projectName={repositoryName}
             services={services}
             activeServiceId={activeServiceId}
             activeTab="tasks"
             canManage={(project.data?.role ?? 'owner') === 'owner'}
-            onSelectService={(serviceId) => navigate(`/projects/${current.project_id}?service=${encodeURIComponent(serviceId)}&tab=tasks`)}
-            onSelectTab={() => navigate(`/projects/${current.project_id}`)}
-            railTop={<><Wordmark /><Link to="/" className={styles.projectsLink}>{t('runDetail.nav.projects')}</Link></>}
-            railFooter={<div className={styles.railFooter}><span>{t('runDetail.railFooter')}</span><ThemeToggle /></div>}
-            projectAction={(project.data?.role ?? 'owner') === 'owner' ? (
-              <ProjectSettingsAction to={`/projects/${current.project_id}?service=${encodeURIComponent(activeServiceId)}&tab=tasks&view=project-settings`} />
-            ) : undefined}
+            repositoryMode
+            onSelectService={(serviceId) => navigate(`/repositories/${encodeURIComponent(serviceId)}?tab=tasks`)}
+            onSelectTab={() => navigate(serviceTasksPath)}
+            railTop={<><Wordmark /><Link to="/repositories" className={styles.projectsLink}>{t('runDetail.nav.repositories')}</Link></>}
+            railFooter={<div className={styles.railFooter}><span>{t('runDetail.repositoryWorkspace')}</span><ThemeToggle /></div>}
             utility={
               <>
                 <nav className={styles.breadcrumbs} aria-label={t('runDetail.breadcrumbLabel')}>
-                  <Link to="/">{t('runDetail.nav.projects')}</Link><span>/</span>
-                  <Link to={`/projects/${current.project_id}`}>{projectName}</Link><span>/</span>
+                  <Link to="/repositories">{t('runDetail.nav.repositories')}</Link><span>/</span>
+                  <Link to={serviceTasksPath}>{repositoryName}</Link><span>/</span>
                   <span>{t('runDetail.breadcrumb.tasks')}</span><span>/</span><span>{t('runDetail.breadcrumb.detail')}</span>
                 </nav>
                 <div className={styles.utilityActions} data-testid="run-utility-actions">
@@ -334,7 +328,7 @@ export function RunDetailPage() {
                 <div className={styles.taskTitleRow}>
                   <div>
                     <h1 className={styles.taskTitle} data-testid="run-task-title" title={isReview ? current.pr_title || current.prompt : current.prompt}>{isReview ? current.pr_title || t('runDetail.review.titleFallback', { number: current.pr_number || '—' }) : current.prompt}</h1>
-                    <p>{runKindLabel(current, t)} · {service?.name ?? t('runDetail.serviceUnavailable')} · {runOriginLabel(current, t)} · {formatDateTime(current.created_at)}</p>
+                    <p>{runKindLabel(current, t)} · {repositoryName} · {runOriginLabel(current, t)} · {formatDateTime(current.created_at)}</p>
                   </div>
                   <div className={styles.headerActions}>
                     <StatusBadge status={current.status} />
@@ -403,9 +397,9 @@ export function RunDetailPage() {
                           </div>}
 
                           {isReview ? (
-                            <ReviewWorkspace run={current} terminal={terminalRun} events={<Timeline events={stream.events} isRunning={live} permissions={permissionControls} />} />
+                            <ReviewWorkspace run={current} terminal={terminalRun} events={<Timeline />} />
                           ) : stream.events.length > 0 || live ? (
-                            <Timeline events={stream.events} isRunning={live} permissions={permissionControls} />
+                            <Timeline />
                           ) : (
                             <p className={styles.empty}>{terminalRun ? t('runDetail.noEvents') : t('runDetail.waitingForAgent')}</p>
                           )}
@@ -1192,8 +1186,6 @@ function ProvenanceSection({ provenance }: { provenance?: RunProvenance }) {
       </InspectorSection>
       <InspectorSection title={t('runDetail.inspector.executedFor')}>
         <dl className={styles.facts} data-testid="provenance-executed-for">
-          <InspectorFact label={t('runDetail.inspector.project')}>{executedFor?.project_label || unavailable}</InspectorFact>
-          <InspectorFact label={t('runDetail.inspector.service')}>{executedFor?.service_label || unavailable}</InspectorFact>
           <InspectorFact label={t('runDetail.inspector.repository')}>{executedFor?.repository || unavailable}</InspectorFact>
           <InspectorFact label={t('runDetail.modelLabel')}>
             <span className={styles.executedFor}>

@@ -184,7 +184,10 @@ func TestPGArtifactShareLifecycleMatchesMemoryStore(t *testing.T) {
 	st, _ := pgTestStore(t)
 	now := time.Now().UTC()
 	user := &domain.User{ID: domain.NewID(), DisplayName: "Artifact Share Test", CreatedAt: now}
-	identity := &domain.UserIdentity{ID: domain.NewID(), Provider: domain.ProviderGitHub, ProviderUID: "artifact-share-" + user.ID, CreatedAt: now}
+	identity := &domain.UserIdentity{
+		ID: domain.NewID(), Provider: domain.ProviderGitHub,
+		ProviderUID: "artifact-share-" + user.ID, AccessTokenEnc: []byte("test-ciphertext"), CreatedAt: now,
+	}
 	if _, err := st.CreateUserWithIdentity(ctx, user, identity); err != nil {
 		t.Fatal(err)
 	}

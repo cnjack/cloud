@@ -22,7 +22,7 @@ func TestDeleteServiceSkipsAlreadyCleanedJobs(t *testing.T) {
 	const n = 40
 	cleanedNames := make([]string, 0, n)
 	for i := 0; i < n; i++ {
-		resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken, map[string]any{"prompt": "done"})
+		resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken, map[string]any{"prompt": "done"})
 		var run domain.Run
 		decode(t, resp, &run)
 		jobName := "jcloud-run-" + run.ID
@@ -42,7 +42,7 @@ func TestDeleteServiceSkipsAlreadyCleanedJobs(t *testing.T) {
 	}
 
 	// One still-active run whose Job must be canceled and deleted.
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken, map[string]any{"prompt": "active"})
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken, map[string]any{"prompt": "active"})
 	var active domain.Run
 	decode(t, resp, &active)
 	activeJob := "jcloud-run-" + active.ID
@@ -57,7 +57,7 @@ func TestDeleteServiceSkipsAlreadyCleanedJobs(t *testing.T) {
 	}
 	fake.SetPVCExists(p.ServiceID, true)
 
-	resp = do(t, "DELETE", ts.URL+"/api/v1/services/"+p.ServiceID, consoleToken, nil)
+	resp = do(t, "DELETE", ts.URL+"/api/v1/repositories/"+p.ServiceID, consoleToken, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete: status=%d want 204", resp.StatusCode)
 	}

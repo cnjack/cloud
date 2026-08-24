@@ -390,6 +390,7 @@ export function createMockClient(): ApiClient {
     modelAccountGrants.set(id, new Set());
   }
   seedModel('mdl_gpt4o', 'GPT-4o (mock)', 'openai/gpt-4o');
+  if (DEMO_ME.user.id) modelAccountGrants.get('mdl_gpt4o')?.add(DEMO_ME.user.id);
 
   modelProviders.set('prv_openai', {
     id: 'prv_openai',
@@ -1777,6 +1778,16 @@ export function createMockClient(): ApiClient {
       return delay([...models.values()].map(modelView).reverse());
     },
 
+    async listAccountModels() {
+      const userID = DEMO_ME.user.id ?? '';
+      return delay([...models.values()]
+        .filter((model) => modelAccountGrants.get(model.id)?.has(userID))
+        .map((model) => ({
+          id: model.id, name: model.name, model_name: model.model_name,
+          capabilities: { ...model.capabilities },
+        })));
+    },
+
     async createModel(input: CreateModelInput): Promise<Model> {
       // Mirror the orchestrator's validation. AUTHORITATIVE rules live in
       // orchestrator/internal/api/models.go (validateBaseURL / validateModelName).
@@ -2290,6 +2301,14 @@ export function createMockClient(): ApiClient {
         created_at: nowISO(),
       });
     },
+    async listRepositories() {
+      return delay([...services.values()].flat().map((service) => structuredClone(service)));
+    },
+    async getRepository(repositoryId: string) {
+      const repository = [...services.values()].flat().find((service) => service.id === repositoryId);
+      if (!repository) throw new ApiError(404, 'repository not found');
+      return delay(structuredClone(repository));
+    },
     async getServiceKanban(serviceId: string): Promise<ProjectAutomationSpec> {
       const spec = [...projectAutomations.values()].find((item) =>
         item.automation.service_id === serviceId && item.automation.trigger_kind === 'kanban');
@@ -2303,8 +2322,8 @@ export function createMockClient(): ApiClient {
       if (!service || !spec?.kanban) throw new ApiError(404, 'Kanban is not enabled');
       const plugin = [...pluginList(service.project_id).values()].find((item) => item.id === spec.kanban!.installation_id);
       return delay({
-        service_id: serviceId,
-        service_name: service.name,
+        repository_id: serviceId,
+        repository_name: service.name,
         repository: service.repo_owner_name ?? service.raw_repo_url ?? '',
         model: { label: 'Demo model' },
         board: { workspace_id: plugin?.workspace_id ?? '', ref: spec.kanban.board_ref },
@@ -2314,7 +2333,7 @@ export function createMockClient(): ApiClient {
         health: {
           state: spec.automation.enabled ? 'ready' : 'blocked',
           blocker: spec.automation.enabled ? null : 'binding_disabled',
-          repair_role: spec.automation.enabled ? null : 'project_owner',
+          repair_role: spec.automation.enabled ? null : 'repository_owner',
         },
       });
     },
@@ -2326,6 +2345,24 @@ export function createMockClient(): ApiClient {
         next_cursor: null,
       });
     },
+    async createServiceKanbanOccurrence() {
+      const now = nowISO();
+      return delay({
+        occurrence: {
+          id: genId('occ'),
+          status: 'received' as const,
+          summary: 'Card entry received',
+          reason: null,
+          repair_role: null,
+          requested_actor: { label: 'You', precision: 'display_only' as const },
+          run: null,
+          receipt: { external: 'pending' as const, writeback: 'pending' as const },
+          created_at: now,
+          updated_at: now,
+        },
+        replayed: false,
+      });
+    },
     async putServiceKanban(serviceId, input): Promise<ProjectAutomationSpec> {
       const projectEntry = [...services.entries()].find(([, list]) => list.some((service) => service.id === serviceId));
       if (!projectEntry) throw new ApiError(404, 'service not found');
@@ -2335,12 +2372,15 @@ export function createMockClient(): ApiClient {
         service_id: serviceId,
         name: 'Kanban',
         prompt_template: 'Complete the task described by the JType card.',
+        model_id: input.model_id,
+		model_effort: input.model_effort || undefined,
         enabled: input.enabled ?? true,
         ignore_jcode: true,
         kanban: {
           installation_id: input.installation_id,
           board_ref: input.board_ref,
           trigger_column: input.trigger_column ?? existing?.kanban?.trigger_column ?? 'ai',
+          work_column: input.work_column,
           done_column: input.done_column ?? existing?.kanban?.done_column ?? 'done',
         },
       }, existing);

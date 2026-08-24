@@ -131,6 +131,13 @@ function makeClient(
       env_fallback: opts.models ? false : (opts.modelConfigured ?? true),
     }),
     listProjectAutomations: async () => opts.projectAutomations ?? [],
+	getServiceUsage: async () => ({
+		availability: 'available',
+		requests: 0,
+		capture: { reported: 0, partial: 0, unavailable: 0, parse_error: 0 },
+		tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+		costs: { reported: [], estimated: [], uncosted: [] },
+	}),
 	listServiceBranches: async () => opts.branches ?? [
 		{ name: 'main', default: true, protected: true },
 		{ name: 'release/2026.07', default: false },
@@ -191,6 +198,10 @@ function renderPage(
             <LocationProbe />
             <Routes>
               <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
+              <Route
+                path="/repositories/:repositoryId"
+                element={<ProjectDetailPage projectIdOverride="p1" repositoryIdOverride="svc_default" repositoryMode />}
+              />
               <Route path="/runs/:id" element={<div data-testid="run-page" />} />
               <Route path="/" element={<div data-testid="home" />} />
             </Routes>
@@ -244,6 +255,28 @@ function renderSwitchablePage(client: ApiClient) {
 }
 
 describe('ProjectDetailPage — single-repo composer', () => {
+  it('keeps the Repository workspace free of visible Project and Service concepts', async () => {
+    const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
+    const { container } = renderPage(client, undefined, '/repositories/svc_default');
+
+    await screen.findByRole('heading', { name: 'default' });
+    expect(container.textContent).not.toMatch(/\bProjects?\b|\bServices?\b/);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+    await screen.findByText('Repository automation');
+    expect(screen.getByRole('link', { name: /New automation/i }).getAttribute('href'))
+      .toBe('/repositories/svc_default/automations/new');
+    expect(container.textContent).not.toMatch(/\bProjects?\b|\bServices?\b/);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Repository settings' }));
+    await screen.findByText('Repository default model');
+    expect(container.textContent).not.toMatch(/\bProjects?\b|\bServices?\b/);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Usage' }));
+    await screen.findByTestId('repository-usage');
+    expect(container.textContent).not.toMatch(/\bProjects?\b|\bServices?\b/);
+  });
+
   it('carries the terminal list snapshot into the run detail cache on navigation', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
     const succeeded: Run = {
@@ -335,7 +368,7 @@ describe('ProjectDetailPage — project and service settings stay separate', () 
     fireEvent.click(projectCrumb);
 
     fireEvent.click(screen.getByRole('tab', { name: 'Service settings' }));
-    expect(await screen.findByText('Service default model')).toBeTruthy();
+    expect(await screen.findByText('Repository default model')).toBeTruthy();
     expect(screen.queryByTestId('project-settings-btn')).toBeNull();
   });
 
@@ -475,7 +508,7 @@ describe('ProjectDetailPage — model selection (D21)', () => {
     renderPage(client);
 
     const select = await screen.findByTestId('composer-model-select');
-    // "Service default" + the two granted models.
+    // "Repository default" + the two granted models.
     fireEvent.click(select);
     const options = await screen.findAllByRole('option');
     expect(options).toHaveLength(3);
@@ -483,14 +516,32 @@ describe('ProjectDetailPage — model selection (D21)', () => {
 
     // Pick a specific model, then dispatch.
     fireEvent.click(screen.getByRole('option', { name: 'Claude' }));
+    expect(window.localStorage.getItem('jcloud.last-model.v1:session')).toBe('m_claude');
     fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'go' } });
     fireEvent.click(screen.getByTestId('run-submit'));
 
     await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
     expect(calls.serviceRuns[0]!.input).toMatchObject({ prompt: 'go', model_id: 'm_claude' });
+    window.localStorage.removeItem('jcloud.last-model.v1:session');
   });
 
-  it('omits model_id when the composer keeps "Service default"', async () => {
+  it('restores the last model used by this Account across Repositories', async () => {
+    window.localStorage.setItem('jcloud.last-model.v1:session', 'm_claude');
+    const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
+      models: grantedModels,
+    });
+    renderPage(client);
+
+    expect((await screen.findByTestId('composer-model-select')).textContent).toContain('Claude');
+    fireEvent.change(screen.getByTestId('run-input'), { target: { value: 'remember me' } });
+    fireEvent.click(screen.getByTestId('run-submit'));
+
+    await waitFor(() => expect(calls.serviceRuns).toHaveLength(1));
+    expect(calls.serviceRuns[0]!.input.model_id).toBe('m_claude');
+    window.localStorage.removeItem('jcloud.last-model.v1:session');
+  });
+
+  it('omits model_id when the composer keeps "Repository default"', async () => {
     const { client, calls } = makeClient(project('owner', [svc('svc_default', 'default')]), {
       models: grantedModels,
     });
@@ -820,7 +871,7 @@ describe('ProjectDetailPage — workspace sections', () => {
     expect(screen.getByRole('heading', { name: 'web' })).toBeTruthy();
   });
 
-  it('loads Service Kanban bindings but hides the action without an enabled JType Plugin', async () => {
+  it('keeps Agent Board discoverable and fail-visible without an enabled JType Plugin', async () => {
     const { client } = makeClient(project('owner', [svc('svc_default', 'default')]));
     const retiredLinks = vi.fn(async () => []);
     (client as { listProjectBoardLinks?: unknown }).listProjectBoardLinks = retiredLinks;
@@ -828,7 +879,10 @@ describe('ProjectDetailPage — workspace sections', () => {
 
     await screen.findByTestId('run-input');
     expect(retiredLinks).toHaveBeenCalledWith('p1');
-    expect(screen.queryByTestId('project-kanban-btn')).toBeNull();
+    const boardButton = screen.getByTestId('project-kanban-btn');
+    expect(boardButton).toBeTruthy();
+    fireEvent.click(boardButton);
+    expect(await screen.findByTestId('kanban-modal-stub')).toBeTruthy();
     expect(screen.queryByTestId('project-kanban-retry')).toBeNull();
   });
 

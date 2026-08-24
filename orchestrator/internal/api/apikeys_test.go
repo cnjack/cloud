@@ -323,11 +323,11 @@ func TestAPIKeyScopedPrincipalPermissionMatrix(t *testing.T) {
 		want   int
 	}{
 		{"own project view (member read)", "GET", "/api/v1/projects/" + f.projectA, nil, http.StatusOK},
-		{"own project services (member read)", "GET", "/api/v1/projects/" + f.projectA + "/services", nil, http.StatusOK},
-		{"create run in own project (member write)", "POST", "/api/v1/services/" + f.serviceA + "/runs",
+		{"own project services (member read)", "GET", "/api/v1/projects/" + f.projectA + "/repositories", nil, http.StatusOK},
+		{"create run in own project (member write)", "POST", "/api/v1/repositories/" + f.serviceA + "/runs",
 			map[string]any{"prompt": "do it"}, http.StatusCreated},
 		{"cross-project read", "GET", "/api/v1/projects/" + f.projectB, nil, http.StatusForbidden},
-		{"cross-project services", "GET", "/api/v1/projects/" + f.projectB + "/services", nil, http.StatusForbidden},
+		{"cross-project services", "GET", "/api/v1/projects/" + f.projectB + "/repositories", nil, http.StatusForbidden},
 		{"owner action on OWN project (rename)", "PATCH", "/api/v1/projects/" + f.projectA,
 			map[string]any{"name": "renamed"}, http.StatusForbidden},
 		{"owner action: manage members", "POST", "/api/v1/projects/" + f.projectA + "/members",
@@ -377,7 +377,7 @@ func TestAPIKeyServiceMemberActionsAllowed(t *testing.T) {
 	f := setupAPIKeyFixture(t)
 	k := createAPIKey(t, f, "member-actions")
 
-	create := do(t, "POST", f.ts.URL+"/api/v1/services/"+f.serviceA+"/runs", k.Key, map[string]any{"prompt": "go"})
+	create := do(t, "POST", f.ts.URL+"/api/v1/repositories/"+f.serviceA+"/runs", k.Key, map[string]any{"prompt": "go"})
 	if create.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(create.Body)
 		t.Fatalf("create run: status=%d body=%s", create.StatusCode, b)
@@ -429,7 +429,7 @@ func TestAPIKeyIDORByResourceID(t *testing.T) {
 
 	// Seed a run in project B (as B's owner) so there is a concrete foreign
 	// resource id to attack.
-	createB := do(t, "POST", f.ts.URL+"/api/v1/services/"+f.serviceB+"/runs", f.otherOwnTok,
+	createB := do(t, "POST", f.ts.URL+"/api/v1/repositories/"+f.serviceB+"/runs", f.otherOwnTok,
 		map[string]any{"prompt": "b-task"})
 	if createB.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(createB.Body)
@@ -447,9 +447,9 @@ func TestAPIKeyIDORByResourceID(t *testing.T) {
 		{"read B's run by id", "GET", "/api/v1/runs/" + runB.ID, nil},
 		{"read B's run events by id", "GET", "/api/v1/runs/" + runB.ID + "/events", nil},
 		{"read B's run pr by id", "GET", "/api/v1/runs/" + runB.ID + "/pr", nil},
-		{"dispatch on B's service by id", "POST", "/api/v1/services/" + f.serviceB + "/runs",
+		{"dispatch on B's service by id", "POST", "/api/v1/repositories/" + f.serviceB + "/runs",
 			map[string]any{"prompt": "hijack"}},
-		{"list B's service runs by id", "GET", "/api/v1/services/" + f.serviceB + "/runs", nil},
+		{"list B's service runs by id", "GET", "/api/v1/repositories/" + f.serviceB + "/runs", nil},
 		{"list B's project runs by id", "GET", "/api/v1/projects/" + f.projectB + "/runs", nil},
 	}
 	for _, c := range cases {

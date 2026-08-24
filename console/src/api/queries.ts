@@ -66,6 +66,8 @@ export function automationExecutionPollInterval(
 export const qk = {
   me: ['me'] as const,
   projects: ['projects'] as const,
+  repositories: ['repositories'] as const,
+  repository: (id: string) => ['repository', id] as const,
   project: (id: string) => ['project', id] as const,
   runs: (projectId: string) => ['runs', projectId] as const,
   run: (runId: string) => ['run', runId] as const,
@@ -73,6 +75,7 @@ export const qk = {
   pr: (runId: string) => ['pr', runId] as const,
   system: ['system'] as const,
   models: ['models'] as const,
+  accountModels: ['account-models'] as const,
   modelProviders: ['model-providers'] as const,
   modelProviderCatalog: (id: string) => ['model-provider-catalog', id] as const,
   projectModelProviders: (projectId: string) => ['project-model-providers', projectId] as const,
@@ -107,6 +110,8 @@ export const qk = {
     ['automation-usage', automationId, from, to] as const,
   projectUsage: (projectId: string, groupBy: string, from: string, to: string) =>
     ['project-usage', projectId, groupBy, from, to] as const,
+  serviceUsage: (serviceId: string, from: string, to: string) =>
+    ['repository-usage', serviceId, from, to] as const,
   accountUsage: (groupBy: string, from: string, to: string) =>
     ['account-usage', groupBy, from, to] as const,
   providerCapabilities: (provider: ProviderKind) => ['provider-capabilities', provider] as const,
@@ -132,6 +137,26 @@ export function useProject(id: string) {
     queryKey: qk.project(id),
     queryFn: () => api.getProject(id),
     enabled: !!id,
+  });
+}
+
+export function useRepositories(enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.repositories,
+    queryFn: () => api.listRepositories(),
+    enabled,
+    staleTime: 15_000,
+  });
+}
+
+export function useRepository(id: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.repository(id),
+    queryFn: () => api.getRepository(id),
+    enabled: enabled && !!id,
+    staleTime: 15_000,
   });
 }
 
@@ -452,6 +477,18 @@ export function usePrewarmRunnerImage() {
 export function useModels(enabled = true) {
   const api = useApi();
   return useQuery({ queryKey: qk.models, queryFn: () => api.listModels(), enabled });
+}
+
+/** Direct Account grants used by headless Repository Agent Workflows. */
+export function useAccountModels(enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.accountModels,
+    queryFn: () => api.listAccountModels(),
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
 }
 
 export function useModelProviders(enabled = true) {
@@ -786,6 +823,17 @@ export function usePutServiceKanban(projectId: string, serviceId: string) {
   });
 }
 
+export function useServiceKanban(serviceId: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.serviceKanban(serviceId),
+    queryFn: () => api.getServiceKanban(serviceId),
+    enabled: enabled && !!serviceId,
+    retry: false,
+    staleTime: 15_000,
+  });
+}
+
 export function useServiceKanbanPolicy(serviceId: string, enabled = true) {
   const api = useApi();
   return useQuery({
@@ -819,6 +867,25 @@ export function useServiceKanbanCardExecutions(
       // Stop only once every known occurrence is terminal.
       return kanbanCardExecutionPollInterval(items);
     },
+  });
+}
+
+export function useCreateServiceKanbanOccurrence(
+  serviceId: string,
+  workspaceId: string,
+  documentPath: string,
+) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (idempotencyKey: string) => api.createServiceKanbanOccurrence(serviceId, {
+      workspace_id: workspaceId,
+      document_path: documentPath,
+      idempotency_key: idempotencyKey,
+    }),
+    onSuccess: () => qc.invalidateQueries({
+      queryKey: qk.serviceKanbanCardExecutions(serviceId, workspaceId, documentPath),
+    }),
   });
 }
 
@@ -1042,6 +1109,15 @@ export function useProjectUsage(
     queryKey: qk.projectUsage(projectId, groupBy, from, to),
     queryFn: () => api.getProjectUsage(projectId, groupBy, from, to),
     enabled: enabled && !!projectId,
+  });
+}
+
+export function useServiceUsage(serviceId: string, from: string, to: string, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.serviceUsage(serviceId, from, to),
+    queryFn: () => api.getServiceUsage(serviceId, from || undefined, to || undefined),
+    enabled: enabled && !!serviceId,
   });
 }
 

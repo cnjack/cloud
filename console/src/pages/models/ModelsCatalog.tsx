@@ -4,7 +4,7 @@
  * (ProjectModelsPanel). ONE implementation of provider cards, catalog discovery,
  * custom models, the provider form (with an Advanced custom-headers disclosure)
  * and per-model controls. The right-side control on each model row branches on
- * scope: cluster → Account/Project access management; project → an enable/disable Switch + edit +
+ * scope: cluster → Account access management; project → an enable/disable Switch + edit +
  * delete (jcode parity).
  *
  * The provider add/edit dialog state is CONTROLLED by the parent (`editor` /
@@ -28,12 +28,10 @@ import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { ApiError, apiErrorCode } from '../../api/client';
 import {
-  useProjects,
   useSearchUsers,
   useCreateModelPricingRevision,
   useModelPricingRevisions,
   useSetModelAccountGrant,
-  useSetModelGrant,
 } from '../../api/queries';
 import type {
   CatalogModel,
@@ -121,14 +119,12 @@ export function ModelsCatalog({ scope, editor, onEditorChange, searchable = true
   }).filter((provider) => !query || provider.models.length > 0 || `${provider.name} ${provider.kind} ${provider.base_url}`.toLowerCase().includes(query));
   const totalModels = list.reduce((sum, provider) => sum + provider.models.length, 0);
   const visibleModels = filtered.reduce((sum, provider) => sum + provider.models.length, 0);
-  const totalProjectGrants = list.reduce((sum, provider) => sum + (provider.project_grants ?? 0), 0);
   const totalAccountGrants = list.reduce((sum, provider) =>
     sum + provider.models.reduce((modelSum, model) => modelSum + (model.granted_account_ids?.length ?? 0), 0), 0);
   const summary = scope.kind === 'cluster'
     ? t('cluster.models.providersSummary', {
       providers: list.length,
       accountGrants: totalAccountGrants,
-      projectGrants: totalProjectGrants,
     })
     : t('projectSettings.models.providersSummary', { providers: list.length, models: totalModels });
 
@@ -245,7 +241,6 @@ function ModelRow({ api, provider, model }: { api: ModelsAdminApi; provider: Mod
   const [pricingOpen, setPricingOpen] = useState(false);
 
   if (api.scope.kind === 'cluster') {
-    const projectGrantCount = (model.granted_project_ids ?? []).length;
     const accountGrantCount = (model.granted_account_ids ?? []).length;
     return (
       <div className={styles.modelRow}>
@@ -253,7 +248,6 @@ function ModelRow({ api, provider, model }: { api: ModelsAdminApi; provider: Mod
         <CapabilityChips model={model} />
         <span className={styles.grantCount} data-testid={`grant-count-${model.id}`}>
           <span><b>{accountGrantCount}</b><small>{t('cluster.models.accountGrants', { count: accountGrantCount })}</small></span>
-          <span><b>{projectGrantCount}</b><small>{t('cluster.models.projectGrants', { count: projectGrantCount })}</small></span>
         </span>
         <div className={styles.modelControls}>
           <Button size="sm" variant="ghost" onClick={() => setPricingOpen(true)}>{t('usage.pricing')}</Button>
@@ -574,28 +568,20 @@ function CatalogDialog({ api, provider, open, onClose }: { api: ModelsAdminApi; 
   );
 }
 
-/** Cluster scope only: manage Account-wide Desktop access and Project run access. */
+/** Cluster scope only: one direct Account grant covers Desktop and Cloud runs. */
 function AccessDialog({ model, open, onClose }: { model: ProviderModel; open: boolean; onClose: () => void }) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<'accounts' | 'projects'>('accounts');
   const [search, setSearch] = useState('');
-  const projects = useProjects(open && tab === 'projects');
-  const accounts = useSearchUsers(search, open && tab === 'accounts');
-  const setProjectGrant = useSetModelGrant();
+  const accounts = useSearchUsers(search, open);
   const setAccountGrant = useSetModelAccountGrant();
   const toast = useToast();
-  const grantedProjects = model.granted_project_ids ?? [];
   const grantedAccounts = model.granted_account_ids ?? [];
 
   useEffect(() => {
     if (!open) return;
-    setTab('accounts');
     setSearch('');
   }, [open]);
 
-  const toggleProject = (projectId: string, next: boolean) => setProjectGrant.mutate({ modelId: model.id, projectId, granted: next }, {
-    onError: (error) => toast.push({ kind: 'error', message: errorMessage(error, t('cluster.models.grantUpdateError')) }),
-  });
   const toggleAccount = (userId: string, next: boolean) => setAccountGrant.mutate({ modelId: model.id, userId, granted: next }, {
     onError: (error) => toast.push({ kind: 'error', message: errorMessage(error, t('cluster.models.accountGrantUpdateError')) }),
   });
@@ -603,36 +589,20 @@ function AccessDialog({ model, open, onClose }: { model: ProviderModel; open: bo
   return (
     <Modal open={open} onClose={onClose} title={t('cluster.models.accessDialogTitle', { name: model.name })} footer={<Button onClick={onClose}>{t('common.done')}</Button>}>
       <p className={styles.dialogIntro}>{t('cluster.models.accessIntro')}</p>
-      <div className={styles.accessTabs} role="tablist" aria-label={t('cluster.models.accessTabsAria')}>
-        <button type="button" role="tab" aria-selected={tab === 'accounts'} data-active={tab === 'accounts' || undefined} onClick={() => setTab('accounts')}>{t('cluster.models.accessAccounts')}</button>
-        <button type="button" role="tab" aria-selected={tab === 'projects'} data-active={tab === 'projects' || undefined} onClick={() => setTab('projects')}>{t('cluster.models.accessProjects')}</button>
-      </div>
-      {tab === 'accounts' ? (
-        <section className={styles.accessPane} role="tabpanel">
-          <p className={styles.dialogIntro}>{t('cluster.models.accountAccessIntro')}</p>
-          <label className={styles.accountSearch}>
-            <MagnifyingGlass size={15} aria-hidden="true" />
-            <span className={styles.srOnly}>{t('cluster.models.accountSearchLabel')}</span>
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('cluster.models.accountSearchPlaceholder')} />
-          </label>
-          {accounts.isLoading ? <LoadingBlock label={t('cluster.models.loadingAccounts')} /> : (accounts.data ?? []).length === 0 ? <p className={styles.dialogIntro}>{t('cluster.models.noAccounts')}</p> : (
-            <div className={styles.grantList}>{(accounts.data ?? []).map((account) => {
-              const isGranted = grantedAccounts.includes(account.id);
-              return <label key={account.id}><input type="checkbox" aria-label={account.display_name} checked={isGranted} disabled={setAccountGrant.isPending} onChange={(event) => toggleAccount(account.id, event.target.checked)} /><span><strong>{account.display_name}</strong><small>{account.is_cluster_admin ? t('cluster.models.clusterAdminAccount') : t('cluster.models.allDesktops')}</small></span></label>;
-            })}</div>
-          )}
-        </section>
-      ) : (
-        <section className={styles.accessPane} role="tabpanel">
-          <p className={styles.dialogIntro}>{t('cluster.models.projectAccessIntro')}</p>
-          {projects.isLoading ? <LoadingBlock label={t('cluster.models.loadingProjects')} /> : (projects.data ?? []).length === 0 ? <p className={styles.dialogIntro}>{t('cluster.models.noProjects')}</p> : (
-            <div className={styles.grantList}>{(projects.data ?? []).map((project) => {
-              const isGranted = grantedProjects.includes(project.id);
-              return <label key={project.id}><input type="checkbox" aria-label={project.name} checked={isGranted} disabled={setProjectGrant.isPending} onChange={(event) => toggleProject(project.id, event.target.checked)} /><span><strong>{project.name}</strong><small>{t('cluster.models.servicesCount', { count: project.services?.length ?? 0 })}</small></span></label>;
-            })}</div>
-          )}
-        </section>
-      )}
+      <section className={styles.accessPane}>
+        <p className={styles.dialogIntro}>{t('cluster.models.accountAccessIntro')}</p>
+        <label className={styles.accountSearch}>
+          <MagnifyingGlass size={15} aria-hidden="true" />
+          <span className={styles.srOnly}>{t('cluster.models.accountSearchLabel')}</span>
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('cluster.models.accountSearchPlaceholder')} />
+        </label>
+        {accounts.isLoading ? <LoadingBlock label={t('cluster.models.loadingAccounts')} /> : (accounts.data ?? []).length === 0 ? <p className={styles.dialogIntro}>{t('cluster.models.noAccounts')}</p> : (
+          <div className={styles.grantList}>{(accounts.data ?? []).map((account) => {
+            const isGranted = grantedAccounts.includes(account.id);
+            return <label key={account.id}><input type="checkbox" aria-label={account.display_name} checked={isGranted} disabled={setAccountGrant.isPending} onChange={(event) => toggleAccount(account.id, event.target.checked)} /><span><strong>{account.display_name}</strong><small>{account.is_cluster_admin ? t('cluster.models.clusterAdminAccount') : t('cluster.models.allCloudAndDesktop')}</small></span></label>;
+          })}</div>
+        )}
+      </section>
     </Modal>
   );
 }

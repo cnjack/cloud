@@ -462,7 +462,7 @@ func TestResolverDoesNotCacheErrors(t *testing.T) {
 }
 
 func TestMessages(t *testing.T) {
-	if m := NotConfiguredMessage(""); !strings.Contains(m, "no LLM is configured") || strings.Contains(m, "http") {
+	if m := NotConfiguredMessage(""); !strings.Contains(m, "no LLM is authorized") || strings.Contains(m, "http") {
 		t.Fatalf("not-configured base msg wrong: %q", m)
 	}
 	if m := NotConfiguredMessage("http://console/"); !strings.HasSuffix(m, ": http://console") {

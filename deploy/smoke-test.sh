@@ -8,9 +8,9 @@
 #
 # Steps:
 #   1. curl /healthz
-#   2. POST /api/v1/projects (name only), then POST /api/v1/projects/{id}/services
-#      (repo_url = in-cluster git-seed)
-#   3. POST /api/v1/services/{id}/runs
+#   2. POST /api/v1/projects (hidden container), then seed the local rig's
+#      in-cluster git Repository + explicit e2e model authorization
+#   3. POST /api/v1/repositories/{id}/runs
 #   4. poll GET /api/v1/runs/{id} until terminal, watching the k8s Job appear
 #   5. print final status + (if present) artifact/events summary
 #   6. clean up: delete the test project (cascades runs) and kill the
@@ -27,6 +27,9 @@ KCTX=orbstack
 LOCAL_PORT=18080
 CONSOLE_TOKEN="${CONSOLE_TOKEN:-dev-console-token}"
 BASE="http://127.0.0.1:${LOCAL_PORT}"
+TOKEN="$CONSOLE_TOKEN"
+# shellcheck source=../e2e/lib.sh
+source "$HERE/../e2e/lib.sh"
 
 cur="$(kubectl config current-context 2>/dev/null || true)"
 if [ "$cur" != "$KCTX" ]; then
@@ -65,7 +68,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/healthz")
 [ "$code" = "200" ] || { echo "healthz returned $code" >&2; exit 1; }
 echo "    ok (200)"
 
-echo "[smoke] 2) create project, then attach the git-seed repo as a service"
+echo "[smoke] 2) create hidden workspace, then seed the local git Repository"
 PROJECT_JSON=$(curl -s -X POST "$BASE/api/v1/projects" \
   -H "Authorization: Bearer $CONSOLE_TOKEN" \
   -H "Content-Type: application/json" \
@@ -73,19 +76,14 @@ PROJECT_JSON=$(curl -s -X POST "$BASE/api/v1/projects" \
 echo "    $PROJECT_JSON"
 PROJECT_ID=$(echo "$PROJECT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null || true)
 [ -n "$PROJECT_ID" ] || { echo "no project id in response" >&2; exit 1; }
-echo "    project_id=$PROJECT_ID"
+echo "    hidden_workspace_id=$PROJECT_ID"
+seed_e2e_project_model "$PROJECT_ID"
+REPOSITORY_ID="$(seed_raw_repository "$PROJECT_ID" "default" "git://git.jcloud.svc.cluster.local/seed.git")"
+[ -n "$REPOSITORY_ID" ] || { echo "could not seed Repository fixture" >&2; exit 1; }
+echo "    repository_id=$REPOSITORY_ID"
 
-SERVICE_JSON=$(curl -s -X POST "$BASE/api/v1/projects/$PROJECT_ID/services" \
-  -H "Authorization: Bearer $CONSOLE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"default","repo_url":"git://git.jcloud.svc.cluster.local/seed.git","default_branch":"main"}')
-echo "    $SERVICE_JSON"
-SERVICE_ID=$(echo "$SERVICE_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null || true)
-[ -n "$SERVICE_ID" ] || { echo "no service id in response" >&2; exit 1; }
-echo "    service_id=$SERVICE_ID"
-
-echo "[smoke] 3) create run (service-scoped)"
-RUN_JSON=$(curl -s -X POST "$BASE/api/v1/services/$SERVICE_ID/runs" \
+echo "[smoke] 3) create run (Repository-scoped)"
+RUN_JSON=$(curl -s -X POST "$BASE/api/v1/repositories/$REPOSITORY_ID/runs" \
   -H "Authorization: Bearer $CONSOLE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"prompt":"Create a file called HELLO.txt with the text hello-from-smoke-test"}')

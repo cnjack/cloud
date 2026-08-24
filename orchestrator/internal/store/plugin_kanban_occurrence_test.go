@@ -157,6 +157,9 @@ func TestPGPluginKanbanOccurrenceRunClaimConcurrent(t *testing.T) {
 		history[0].Outcome != string(domain.StatusSucceeded) {
 		t.Fatalf("unavailable history=%+v err=%v", history, err)
 	}
+	if active, err := st.HasActivePluginKanbanOccurrences(ctx, automation.ID); err != nil || active {
+		t.Fatalf("terminal unavailable occurrence active=%v err=%v", active, err)
+	}
 	restored, err := st.ObservePluginKanbanCard(ctx, PluginKanbanObservation{
 		AutomationID: automation.ID, ServiceID: automation.ServiceID,
 		InstallationID: installation.ID, WorkspaceID: installation.WorkspaceID,
@@ -365,6 +368,43 @@ func TestPluginKanbanOccurrenceRunClaimIsAtomic(t *testing.T) {
 	}
 }
 
+func TestManualPluginKanbanOccurrenceCanRerunAfterTerminalUnavailable(t *testing.T) {
+	st, automation, trigger := seedPluginKanbanOccurrenceStore(t)
+	ctx := context.Background()
+	first, err := st.ObservePluginKanbanCard(ctx, PluginKanbanObservation{
+		AutomationID: automation.ID, ServiceID: automation.ServiceID,
+		InstallationID: trigger.InstallationID, WorkspaceID: "workspace",
+		DocumentID: "card", DocumentPath: "cards/payment.md",
+		TriggerColumn: trigger.TriggerColumn, DoneColumn: trigger.DoneColumn,
+		ObservedColumn: "backlog", EventKey: "manual:first", Manual: true,
+		ObservedAt: time.Now().UTC(),
+	})
+	if err != nil || first.Occurrence == nil {
+		t.Fatalf("first manual occurrence=%+v err=%v", first, err)
+	}
+	st.mu.Lock()
+	terminal := st.pluginKanbanOccurrences[first.Occurrence.ID]
+	terminal.State = domain.KanbanOccurrenceTerminal
+	terminal.WritebackState = "unavailable"
+	st.pluginKanbanOccurrences[terminal.ID] = terminal
+	st.mu.Unlock()
+
+	if active, err := st.HasActivePluginKanbanOccurrences(ctx, automation.ID); err != nil || active {
+		t.Fatalf("terminal unavailable occurrence active=%v err=%v", active, err)
+	}
+	second, err := st.ObservePluginKanbanCard(ctx, PluginKanbanObservation{
+		AutomationID: automation.ID, ServiceID: automation.ServiceID,
+		InstallationID: trigger.InstallationID, WorkspaceID: "workspace",
+		DocumentID: "card", DocumentPath: "cards/payment.md",
+		TriggerColumn: trigger.TriggerColumn, DoneColumn: trigger.DoneColumn,
+		ObservedColumn: "backlog", EventKey: "manual:second", Manual: true,
+		ObservedAt: time.Now().UTC().Add(time.Second),
+	})
+	if err != nil || !second.Created || second.Occurrence == nil || second.Occurrence.ID == first.Occurrence.ID {
+		t.Fatalf("second manual occurrence=%+v err=%v", second, err)
+	}
+}
+
 func TestPluginKanbanCardExecutionClaimAvailabilityAndCursor(t *testing.T) {
 	st, automation, trigger := seedPluginKanbanOccurrenceStore(t)
 	ctx := context.Background()
@@ -451,7 +491,7 @@ func TestPluginKanbanBlockedOccurrenceResumesAndTracksReceiptPhase(t *testing.T)
 
 	blocked, err := st.SetPluginKanbanOccurrenceBlocked(
 		context.Background(), first.Occurrence.ID,
-		"model_not_configured", "Choose a model for this Service.", "project_owner",
+		"model_not_configured", "Choose a model for this Repository.", "repository_owner",
 	)
 	if err != nil || blocked.State != domain.KanbanOccurrenceBlocked ||
 		blocked.ReceiptPhase != "blocked" || blocked.ReasonCode != "model_not_configured" ||
@@ -487,7 +527,7 @@ func TestPluginKanbanBlockedOccurrenceResumesAndTracksReceiptPhase(t *testing.T)
 	}
 	changed, err := st.SetPluginKanbanOccurrenceBlocked(
 		context.Background(), first.Occurrence.ID,
-		"repository_not_configured", "Configure a repository.", "project_owner",
+		"repository_not_configured", "Configure a repository.", "repository_owner",
 	)
 	if err != nil || changed.ReceiptWrittenAt != nil {
 		t.Fatalf("changed blocker did not reopen external receipt: %+v, %v", changed, err)
@@ -533,5 +573,23 @@ func TestPluginKanbanBlockedOccurrenceResumesAndTracksReceiptPhase(t *testing.T)
 		history[0].ReceiptPhase != PluginKanbanWritebackPending ||
 		history[0].ReceiptWrittenAt != nil {
 		t.Fatalf("resumed history = %+v, %v", history, err)
+	}
+}
+
+func TestHasActivePluginKanbanOccurrences(t *testing.T) {
+	st, automation, trigger := seedPluginKanbanOccurrenceStore(t)
+	result, err := st.ObservePluginKanbanCard(context.Background(), PluginKanbanObservation{
+		AutomationID: automation.ID, ServiceID: automation.ServiceID,
+		InstallationID: trigger.InstallationID, WorkspaceID: "workspace",
+		DocumentID: "card-active", DocumentPath: "cards/active.md",
+		TriggerColumn: trigger.TriggerColumn, ObservedColumn: trigger.TriggerColumn,
+		EventKey: "active-event", ObservedAt: time.Now().UTC(),
+	})
+	if err != nil || result.Occurrence == nil {
+		t.Fatalf("observe = %+v, %v", result, err)
+	}
+	active, err := st.HasActivePluginKanbanOccurrences(context.Background(), automation.ID)
+	if err != nil || !active {
+		t.Fatalf("active = %v, %v; want true", active, err)
 	}
 }

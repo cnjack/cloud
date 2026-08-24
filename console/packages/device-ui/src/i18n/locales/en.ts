@@ -17,12 +17,12 @@ export default {
       "timedOut": "timed out",
       "resolved": "resolved",
       "answered": "Answered — waiting for the agent…",
-      "readonly": "Read-only — a project member can answer."
+      "readonly": "Read-only — a Repository member can answer."
     }
   },
   "device": {
     "compose": {
-      "project": "Project directory",
+      "project": "Working directory",
       "model": "Model",
       "effort": "Effort",
       "goal": "Goal",
@@ -325,8 +325,11 @@ export default {
         "body": "Something went wrong while pairing. Try again."
       }
     },
+    "securityEyebrow": "Device sign-in",
     "title": "Authorize a device",
     "lede": "jcode Desktop is asking to sign in to this cloud. Enter the code shown in Desktop to continue.",
+    "safetyTitle": "Only approve a request you started",
+    "enterTitle": "Enter the code from Desktop",
     "codeLabel": "Device code",
     "codeHint": "The 8-character code shown in jcode Desktop, e.g. XXXX-XXXX.",
     "codeCell": "Character {n} of {total}",
@@ -341,6 +344,9 @@ export default {
     "deniedTitle": "Device denied",
     "deniedBody": "The sign-in request was rejected. jcode Desktop will stop waiting.",
     "another": "Authorize another device",
+    "unavailableTitle": "This sign-in request is no longer available",
+    "tryAnotherCode": "Try another code",
+    "backToDevices": "Back to devices",
     "errorNotFound": "No pending sign-in matches that code — it may have expired. Start sign-in again from jcode Desktop.",
     "errorAlreadyDecided": "That sign-in was already approved or denied.",
     "errorGeneric": "Could not authorize the device. Try again."

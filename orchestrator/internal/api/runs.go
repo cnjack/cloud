@@ -46,7 +46,7 @@ type createRunReq struct {
 	AttachmentStageIDs []string `json:"attachment_stage_ids"`
 }
 
-// handleCreateServiceRun is the run-creation endpoint: POST /services/{id}/runs.
+// handleCreateServiceRun is the run-creation endpoint: POST /repositories/{id}/runs.
 // Runs are always dispatched against a specific service; the former project-level
 // POST /projects/{id}/runs (which resolved a 'default' service) was removed with
 // the simple-mode shim.
@@ -820,7 +820,17 @@ func (s *Server) emitStatus(ctx context.Context, run *domain.Run) {
 // execute (CLAUDE.md red line #1). A resolve error is a 500.
 func (s *Server) selectModelForRun(w http.ResponseWriter, r *http.Request, svc *domain.Service, requested, notGrantedMsg string) (*string, string, bool) {
 	def := deref(svc.DefaultModelID)
-	sel, outcome, err := s.models.SelectModel(r.Context(), svc.ProjectID, def, strings.TrimSpace(requested))
+	accountID := principalFrom(r.Context()).userID()
+	var sel modelcfg.Selection
+	var outcome modelcfg.SelectOutcome
+	var err error
+	if accountID != "" {
+		sel, outcome, err = s.models.SelectModelForAccount(r.Context(), accountID, svc.ProjectID, def, strings.TrimSpace(requested))
+	} else {
+		// Project-scoped API keys and the service principal retain their existing
+		// non-personal grant boundary.
+		sel, outcome, err = s.models.SelectModel(r.Context(), svc.ProjectID, def, strings.TrimSpace(requested))
+	}
 	if err != nil {
 		s.log.Error("select model", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not resolve model configuration")

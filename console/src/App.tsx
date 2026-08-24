@@ -5,6 +5,11 @@ import { AppShell } from './components/AppShell';
 import { DeviceApiProvider } from './api/DeviceApiProvider';
 import { OnboardingGate } from './pages/OnboardingGate';
 import { ProjectsPage } from './pages/ProjectsPage';
+import { RepositoriesPage } from './pages/RepositoriesPage';
+import { RepositoryDetailPage } from './pages/RepositoryDetailPage';
+import { ConnectRepositoryPage } from './pages/ConnectRepositoryPage';
+import { CodeReviewsPage } from './pages/CodeReviewsPage';
+import { RepositoryAutomationPage } from './pages/RepositoryAutomationPage';
 import { NewProjectPage } from './pages/NewProjectPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { ProjectPluginDetailPage } from './pages/ProjectPluginDetailPage';
@@ -73,8 +78,17 @@ function AuthenticatedApp() {
       <AppShell>
         <DeviceApiProvider>
           <Routes>
-            <Route path="/" element={<Navigate to="/projects" replace />} />
+            <Route path="/" element={<Navigate to="/repositories" replace />} />
             <Route path="/setup" element={<SetupPage />} />
+            <Route path="/repositories" element={<RepositoriesPage />} />
+            <Route path="/repositories/connect" element={<ConnectRepositoryPage />} />
+            <Route path="/connections/repositories" element={<ConnectRepositoryPage connectionsOnly />} />
+            <Route path="/repositories/:repositoryId" element={<RepositoryDetailPage />} />
+            <Route path="/repositories/:repositoryId/automations/new" element={<RepositoryAutomationPage mode="edit" />} />
+            <Route path="/repositories/:repositoryId/automations/:automationId" element={<RepositoryAutomationPage mode="detail" />} />
+            <Route path="/repositories/:repositoryId/automations/:automationId/edit" element={<RepositoryAutomationPage mode="edit" />} />
+            <Route path="/code-reviews" element={<CodeReviewsPage />} />
+            {/* Legacy Project routes remain only for deep links during the UI migration. */}
             <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/projects/new" element={<NewProjectPage />} />
             <Route path="/projects/:projectId" element={<ProjectDetailPage />} />

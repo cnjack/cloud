@@ -219,7 +219,7 @@ creation success and Card movement are tracked separately.
 
 ### Policy
 
-`GET /api/v1/services/{service_id}/kanban/policy`
+`GET /api/v1/repositories/{service_id}/kanban/policy`
 
 Member-readable response:
 
@@ -247,7 +247,7 @@ The UI must not replace a blocked policy with a healthy-looking default.
 
 ### Card executions
 
-`GET /api/v1/services/{service_id}/kanban/card-executions`
+`GET /api/v1/repositories/{service_id}/kanban/card-executions`
 
 Query:
 

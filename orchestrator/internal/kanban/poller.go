@@ -428,7 +428,7 @@ func (p *Poller) dispatchPluginKanbanOccurrence(ctx context.Context, api Documen
 		if err != nil {
 			reasonCode := "card_read_unavailable"
 			reasonMessage := "JType could not read the source Card. Cloud will retry this occurrence."
-			repairRole := "project_owner"
+			repairRole := "repository_owner"
 			var jtypeErr *jtype.Error
 			if errors.As(err, &jtypeErr) && jtypeErr.StatusCode == http.StatusNotFound {
 				reasonCode = "card_unavailable"
@@ -446,22 +446,62 @@ func (p *Poller) dispatchPluginKanbanOccurrence(ctx context.Context, api Documen
 		value := jtype.ParseCard(full.Content)
 		card = &value
 	}
-	sel, outcome, err := p.models.SelectModel(ctx, svc.ProjectID, derefStr(svc.DefaultModelID), spec.Automation.ModelID)
-	if err != nil || outcome != modelcfg.SelectOK {
-		spec.Automation.LastError = "Automation model is unavailable."
-		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
-		p.blockPluginKanbanOccurrence(
-			ctx, api, spec, occurrence, svc, "model_not_configured",
-			"Choose an allowed model for this Service.", "project_owner",
-		)
-		return
+	var sel modelcfg.Selection
+	if spec.Automation.ExecutionAccountID != "" {
+		project, projectErr := p.st.GetProject(ctx, svc.ProjectID)
+		if projectErr != nil || project.OwnerUserID == "" || project.OwnerUserID != spec.Automation.ExecutionAccountID {
+			p.blockPluginKanbanOccurrence(
+				ctx, api, spec, occurrence, svc, "execution_account_not_owner",
+				"The configured execution account no longer owns this Repository.", "repository_owner",
+			)
+			return
+		}
+		models, listErr := p.st.ListModelsForAccount(ctx, spec.Automation.ExecutionAccountID)
+		if listErr != nil {
+			p.blockPluginKanbanOccurrence(
+				ctx, api, spec, occurrence, svc, "model_authorization_unavailable",
+				"Cloud could not validate the execution account model grant. This occurrence will retry.", "repository_owner",
+			)
+			return
+		}
+		for i := range models {
+			if models[i].ID == spec.Automation.ModelID {
+				sel = modelcfg.Selection{
+					ModelID: models[i].ID, ModelName: models[i].ModelName,
+					Capabilities: models[i].Capabilities,
+				}
+				break
+			}
+		}
+		if sel.ModelID == "" {
+			p.blockPluginKanbanOccurrence(
+				ctx, api, spec, occurrence, svc, "model_not_authorized",
+				"Authorize the selected model for the Repository execution account.", "repository_owner",
+			)
+			return
+		}
+	} else {
+		// Nullable legacy rows use their historical project grant until they are
+		// rewritten through the Repository Agent Board API, which always persists
+		// an execution account. New Workflows never enter this branch.
+		var outcome modelcfg.SelectOutcome
+		sel, outcome, err = p.models.SelectModel(ctx, svc.ProjectID, derefStr(svc.DefaultModelID), spec.Automation.ModelID)
+		if err != nil || outcome != modelcfg.SelectOK {
+			spec.Automation.LastError = "Automation model is unavailable."
+			_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
+			p.blockPluginKanbanOccurrence(
+				ctx, api, spec, occurrence, svc, "model_not_configured",
+				"Choose an allowed model for this Repository.", "repository_owner",
+			)
+			return
+		}
 	}
 	if !sel.SupportsEffort(spec.Automation.ModelEffort) {
 		spec.Automation.LastError = "The selected Automation model no longer supports reasoning effort."
 		_ = p.st.UpdatePluginAutomation(ctx, &spec.Automation)
 		p.blockPluginKanbanOccurrence(
 			ctx, api, spec, occurrence, svc, "model_effort_unsupported",
-			"Choose a supported reasoning effort for this Automation.", "project_owner",
+			"Choose a supported reasoning effort for this Agent Board.", "repository_owner",
 		)
 		return
 	}
@@ -486,7 +526,7 @@ func (p *Poller) dispatchPluginKanbanOccurrence(ctx context.Context, api Documen
 			p.blockPluginKanbanOccurrence(
 				ctx, api, spec, occurrence, svc, "card_claim_unavailable",
 				"JType could not move the Card into the configured work column. Cloud will retry this occurrence.",
-				"project_owner",
+				"repository_owner",
 			)
 			return
 		}
@@ -529,34 +569,34 @@ func (p *Poller) blockPluginKanbanOccurrence(
 // not a blocker: a valid Run may remain queued until capacity becomes free.
 func (p *Poller) pluginKanbanRepositoryBlocker(ctx context.Context, svc *domain.Service) (string, string, string) {
 	if svc == nil || svc.DeletingAt != nil {
-		return "service_unavailable", "The target Service is being deleted.", "project_owner"
+		return "repository_unavailable", "The target Repository is being deleted.", "repository_owner"
 	}
 	switch svc.RepoKind {
 	case domain.RepoKindRaw:
 		if strings.TrimSpace(svc.RawRepoURL) == "" {
-			return "repository_not_configured", "Configure a repository for this Service.", "project_owner"
+			return "repository_not_configured", "Configure this Repository source.", "repository_owner"
 		}
 		return "", "", ""
 	case domain.RepoKindProvider:
 		if !domain.ValidProvider(svc.Provider) || strings.TrimSpace(svc.RepoOwnerName) == "" {
-			return "repository_not_configured", "Choose a valid provider repository for this Service.", "project_owner"
+			return "repository_not_configured", "Choose a valid provider source for this Repository.", "repository_owner"
 		}
 	default:
-		return "repository_not_configured", "Configure a repository for this Service.", "project_owner"
+		return "repository_not_configured", "Configure this Repository source.", "repository_owner"
 	}
 
 	binding, err := p.st.GetServiceRepositoryBinding(ctx, svc.ID)
 	if err != nil || binding.InstallationID == "" || strings.TrimSpace(binding.CloneURL) == "" {
-		return "repository_unavailable", "Reconnect the Service repository Plugin.", "project_owner"
+		return "repository_unavailable", "Reconnect the Repository Provider.", "repository_owner"
 	}
 	installation, err := p.st.GetPluginInstallation(ctx, binding.InstallationID)
 	if err != nil || installation.Provider != domain.ProviderKind(svc.Provider) ||
 		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" {
-		return "provider_unavailable", "Repair the repository Provider connection.", "project_owner"
+		return "provider_unavailable", "Repair the repository Provider connection.", "repository_owner"
 	}
 	if (installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
 		(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
-		return "provider_unavailable", "Reconnect the repository Provider credential.", "project_owner"
+		return "provider_unavailable", "Reconnect the repository Provider credential.", "repository_owner"
 	}
 	cfg, err := p.st.GetProviderConfig(ctx, installation.Provider)
 	if err != nil || !cfg.PluginEnabled || strings.TrimSpace(cfg.BaseURL) == "" ||
@@ -647,8 +687,8 @@ func (p *Poller) projectPluginKanbanReceipt(ctx context.Context, api DocumentAPI
 	switch occurrence.ReceiptPhase {
 	case "blocked":
 		body += "jcode Cloud could not start this Card: " + occurrence.ReasonMessage
-		if occurrence.RepairRole == "project_owner" {
-			body += "\n\nNext: ask a Project owner to update the Automation or Service configuration."
+		if occurrence.RepairRole == "repository_owner" {
+			body += "\n\nNext: ask the Repository owner to repair the Agent Board configuration."
 		} else if occurrence.RepairRole == "cluster_admin" {
 			body += "\n\nNext: ask a cluster administrator to repair the required Provider."
 		}

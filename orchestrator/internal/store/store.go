@@ -96,6 +96,9 @@ type Store interface {
 	CreatePluginBoundService(ctx context.Context, s *domain.Service, binding *domain.ServiceRepositoryBinding) error
 	GetService(ctx context.Context, id string) (*domain.Service, error)
 	ListServices(ctx context.Context, projectID string) ([]domain.Service, error)
+	// ListRepositoriesForUser is the public Repository projection. An empty
+	// userID is reserved for the cluster service principal and returns all rows.
+	ListRepositoriesForUser(ctx context.Context, userID string) ([]domain.Service, error)
 	// GetDefaultService returns the project's service named "default" (the one
 	// the compatibility shim creates and routes to). ErrNotFound if absent.
 	GetDefaultService(ctx context.Context, projectID string) (*domain.Service, error)
@@ -637,6 +640,7 @@ type Store interface {
 	SetPluginKanbanOccurrenceReceiptPhase(ctx context.Context, occurrenceID, phase string) (*domain.PluginKanbanOccurrence, error)
 	MarkPluginKanbanOccurrenceReceipt(ctx context.Context, occurrenceID, phase string, writtenAt *time.Time, writebackError string) error
 	ListPluginKanbanOccurrences(ctx context.Context, automationID, documentID string, limit int) ([]domain.PluginKanbanOccurrence, error)
+	HasActivePluginKanbanOccurrences(ctx context.Context, automationID string) (bool, error)
 	GetPluginKanbanClaimByPath(ctx context.Context, automationID, workspaceID, documentPath string) (*domain.PluginKanbanClaim, error)
 	MarkPluginKanbanCardUnavailable(ctx context.Context, automationID, workspaceID, documentPath string, at time.Time) (bool, error)
 	ListPluginKanbanCardExecutions(ctx context.Context, automationID, serviceID, workspaceID, documentPath string, before *PluginKanbanOccurrenceCursor, limit int) ([]domain.PluginKanbanOccurrence, error)

@@ -296,9 +296,8 @@ func TestModelAccountGrants(t *testing.T) {
 		}
 	}
 
-	// Account-wide Desktop access is not a Project grant. Even as a Project
-	// owner, Bob cannot select this model for a Cloud run until that Project is
-	// granted separately.
+	// An Account grant now covers both Desktop and Cloud Repository runs. The
+	// hidden Project container does not require a second authorization.
 	accountProject := &domain.Project{
 		ID: domain.NewID(), Name: "account-only", OwnerUserID: bob.ID, CreatedAt: time.Now().UTC(),
 	}
@@ -314,8 +313,8 @@ func TestModelAccountGrants(t *testing.T) {
 		ts.URL+"/api/v1/projects/"+accountProject.ID+"/models", bobTok, nil)
 	var accountProjectModels projectModelsView
 	decode(t, resp, &accountProjectModels)
-	if len(accountProjectModels.Models) != 0 {
-		t.Fatalf("account grant leaked into Project models: %+v", accountProjectModels.Models)
+	if len(accountProjectModels.Models) != 1 || accountProjectModels.Models[0].ID != model.ID {
+		t.Fatalf("account grant missing from Repository models: %+v", accountProjectModels.Models)
 	}
 
 	// A project-owned model cannot be promoted into an account-wide entitlement.
@@ -384,7 +383,7 @@ type runModelView struct {
 // createRunBody POSTs a run and returns (status, decoded run, error body).
 func createRunBody(t *testing.T, ts *httptest.Server, serviceID string, body map[string]any) (int, runModelView, errorBody) {
 	t.Helper()
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+serviceID+"/runs", consoleToken, body)
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+serviceID+"/runs", consoleToken, body)
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	var run runModelView
@@ -577,14 +576,14 @@ func TestServiceDefaultModel(t *testing.T) {
 
 	// Set default to a non-granted model => 400 model_not_granted.
 	other := createModel(t, ts, "c", "http://c/v1", "p/c", "")
-	resp := do(t, "PATCH", ts.URL+"/api/v1/services/"+p.ServiceID, consoleToken, map[string]any{"default_model_id": other.ID})
+	resp := do(t, "PATCH", ts.URL+"/api/v1/repositories/"+p.ServiceID, consoleToken, map[string]any{"default_model_id": other.ID})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("default to ungranted: status=%d want 400", resp.StatusCode)
 	}
 	resp.Body.Close()
 
 	// Set default to a granted model => 200; it disambiguates the chain.
-	resp = do(t, "PATCH", ts.URL+"/api/v1/services/"+p.ServiceID, consoleToken, map[string]any{"default_model_id": a.ID})
+	resp = do(t, "PATCH", ts.URL+"/api/v1/repositories/"+p.ServiceID, consoleToken, map[string]any{"default_model_id": a.ID})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("set default: status=%d want 200", resp.StatusCode)
 	}
@@ -595,7 +594,7 @@ func TestServiceDefaultModel(t *testing.T) {
 	}
 
 	// Clear the default (explicit "") => back to ambiguous (two grants).
-	resp = do(t, "PATCH", ts.URL+"/api/v1/services/"+p.ServiceID, consoleToken, map[string]any{"default_model_id": ""})
+	resp = do(t, "PATCH", ts.URL+"/api/v1/repositories/"+p.ServiceID, consoleToken, map[string]any{"default_model_id": ""})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("clear default: status=%d want 200", resp.StatusCode)
 	}
@@ -847,7 +846,7 @@ func TestRetryAndReview409WhenModelNotConfigured(t *testing.T) {
 	ctx := context.Background()
 
 	p := createProject(t, ts)
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+p.ServiceID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+p.ServiceID+"/runs", consoleToken,
 		map[string]string{"prompt": "do it"})
 	var run struct {
 		ID string `json:"id"`

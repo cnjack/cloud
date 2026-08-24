@@ -41,11 +41,13 @@ export function ProjectAutomationsPanel({
   services,
   canManage,
   initialServiceId,
+  repositoryMode = false,
 }: {
   projectId: string;
   services: Service[];
   canManage: boolean;
   initialServiceId?: string;
+  repositoryMode?: boolean;
 }) {
   const { t } = useTranslation();
   const query = useProjectAutomations(projectId);
@@ -58,16 +60,25 @@ export function ProjectAutomationsPanel({
       && (filter === 'all' || item.automation.trigger_kind === filter)),
     [filter, initialServiceId, query.data],
   );
-  const createHref = `/projects/${encodeURIComponent(projectId)}/automations/new${
-    initialServiceId ? `?service=${encodeURIComponent(initialServiceId)}` : ''
-  }`;
+  const repositoryBase = initialServiceId
+    ? `/repositories/${encodeURIComponent(initialServiceId)}`
+    : '';
+  const createHref = repositoryMode
+    ? `${repositoryBase}/automations/new`
+    : `/projects/${encodeURIComponent(projectId)}/automations/new${
+      initialServiceId ? `?service=${encodeURIComponent(initialServiceId)}` : ''
+    }`;
   const githubService = services.find((service) =>
     service.provider === 'github' && (!initialServiceId || service.id === initialServiceId));
   const reviewAutomation = (query.data ?? []).find((item) =>
     item.automation.run_kind === 'review' && item.automation.service_id === githubService?.id);
-  const reviewHref = reviewAutomation
-    ? `/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(reviewAutomation.automation.id)}/edit?service=${encodeURIComponent(reviewAutomation.automation.service_id)}`
-    : `/projects/${encodeURIComponent(projectId)}/automations/new?service=${encodeURIComponent(githubService?.id ?? '')}&preset=review`;
+  const reviewHref = repositoryMode
+    ? reviewAutomation
+      ? `${repositoryBase}/automations/${encodeURIComponent(reviewAutomation.automation.id)}/edit`
+      : `${repositoryBase}/automations/new?preset=review`
+    : reviewAutomation
+      ? `/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(reviewAutomation.automation.id)}/edit?service=${encodeURIComponent(reviewAutomation.automation.service_id)}`
+      : `/projects/${encodeURIComponent(projectId)}/automations/new?service=${encodeURIComponent(githubService?.id ?? '')}&preset=review`;
 
   if (query.isLoading) return <LoadingBlock label={t('projectAutomations.loading')} />;
   if (query.isError) {
@@ -127,7 +138,9 @@ export function ProjectAutomationsPanel({
               <li key={automation.id} className={styles.row}>
                 <div>
                   <strong>
-                    <Link to={`/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automation.id)}`}>
+                    <Link to={repositoryMode
+                      ? `${repositoryBase}/automations/${encodeURIComponent(automation.id)}`
+                      : `/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automation.id)}`}>
                       {automation.name}
                     </Link>
                   </strong>
@@ -160,7 +173,9 @@ export function ProjectAutomationsPanel({
                     <span />
                   </button>
                   {canManage && (
-                    <Link to={`/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automation.id)}/edit?service=${encodeURIComponent(automation.service_id)}`}>
+                    <Link to={repositoryMode
+                      ? `${repositoryBase}/automations/${encodeURIComponent(automation.id)}/edit`
+                      : `/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automation.id)}/edit?service=${encodeURIComponent(automation.service_id)}`}>
                       {t('projectAutomations.edit')}
                     </Link>
                   )}

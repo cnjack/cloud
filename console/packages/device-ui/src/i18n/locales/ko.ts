@@ -17,12 +17,12 @@ export default {
       "timedOut": "시간 초과",
       "resolved": "처리됨",
       "answered": "응답함 — 에이전트를 기다리는 중…",
-      "readonly": "읽기 전용 — 프로젝트 멤버가 응답할 수 있습니다."
+      "readonly": "읽기 전용 — 리포지토리 멤버가 응답할 수 있습니다."
     }
   },
   "device": {
     "compose": {
-      "project": "프로젝트 디렉터리",
+      "project": "작업 디렉터리",
       "model": "모델",
       "effort": "강도",
       "goal": "목표",
@@ -325,8 +325,11 @@ export default {
         "body": "페어링 중 문제가 발생했습니다. 다시 시도하세요."
       }
     },
+    "securityEyebrow": "기기 로그인",
     "title": "기기 승인",
     "lede": "jcode Desktop이 이 클라우드에 로그인을 요청하고 있습니다. Desktop에 표시된 코드를 입력하세요.",
+    "safetyTitle": "직접 시작한 요청만 승인하세요",
+    "enterTitle": "Desktop의 코드 입력",
     "codeLabel": "기기 코드",
     "codeHint": "jcode Desktop에 표시된 8자리 코드입니다(예: XXXX-XXXX).",
     "codeCell": "{total}자 중 {n}번째",
@@ -341,6 +344,9 @@ export default {
     "deniedTitle": "기기가 거부되었습니다",
     "deniedBody": "로그인 요청이 거부되었습니다. jcode Desktop이 대기를 중단합니다.",
     "another": "다른 기기 승인",
+    "unavailableTitle": "이 로그인 요청은 더 이상 사용할 수 없습니다",
+    "tryAnotherCode": "다른 코드 입력",
+    "backToDevices": "기기 목록으로 돌아가기",
     "errorNotFound": "해당 코드와 일치하는 대기 중인 로그인이 없습니다. 만료되었을 수 있습니다. jcode Desktop에서 다시 시작하세요.",
     "errorAlreadyDecided": "해당 로그인은 이미 승인 또는 거부되었습니다.",
     "errorGeneric": "기기를 승인할 수 없습니다. 다시 시도하세요."

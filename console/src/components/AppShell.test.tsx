@@ -92,7 +92,7 @@ describe('AppShell — identity + role gating', () => {
     expect(screen.queryByTestId('cluster-nav')).toBeNull();
     const chip = screen.getByTestId('identity-chip');
     expect(chip.getAttribute('data-role')).toBe('project-admin');
-    expect(chip.textContent).toContain('Project admin');
+    expect(chip.textContent).toContain('Repository admin');
   });
 
   it('removes the global topbar for a project workspace route', () => {
