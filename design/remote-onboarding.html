@@ -1,0 +1,269 @@
+<!doctype html>
+<!--
+  UX DESIGN PROTOTYPE ONLY — no production route, API, or persistence is changed.
+
+  Product behavior
+  - Remote onboarding is a setup journey, not a permanent Remote management page.
+  - With no connected device, Work Home > Remote connection opens this page.
+  - With connected devices, the picker exposes "Connect a new device" at its foot.
+  - The browser authorization follows RFC 8628 device-code semantics.
+  - End-to-end encrypted client pairing follows authorization and expires in 10 minutes.
+  - Completing or cancelling returns to Unified Work Home; devices are then selected
+    from the composer's upper-left context picker.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud Remote device onboarding UX prototype." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <title>jcode Cloud — Remote onboarding UX</title>
+  <style>
+    :root {
+      --onboard-page: #eaeae6;
+      --onboard-shell: #f7f7f4;
+      --onboard-ink: #171716;
+      --onboard-orange: #ff8400;
+      --onboard-green: #238558;
+      --onboard-blue: #426aa3;
+      --onboard-shadow: 0 25px 72px -42px rgba(39,33,27,.44), 0 2px 8px rgba(39,33,27,.06);
+    }
+    html { min-width: 70rem; background: var(--onboard-page); }
+    body { background: var(--onboard-page); color: var(--onboard-ink); font-size: .8125rem; }
+    button { border: 0; cursor: pointer; }
+    .review-bar { position: sticky; top: 0; z-index: 30; height: 3.625rem; display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; border-bottom: 1px solid rgba(0,0,0,.09); background: rgba(247,247,244,.92); padding: 0 1.625rem; backdrop-filter: blur(14px); }
+    .review-title { display: flex; align-items: center; gap: .75rem; }
+    .review-title strong { font-size: .8125rem; font-weight: 650; }
+    .review-title span { color: var(--text-dim); font-size: .6875rem; }
+    .review-note { color: var(--text-faint); font-size: .625rem; }
+    .prototype-stage { padding: 1.75rem; }
+    .app-window { width: min(96.25rem,calc(100vw - 3.5rem)); height: min(58.125rem,calc(100vh - 7.125rem)); min-height: 47.5rem; margin: 0 auto; overflow: hidden; border: 1px solid #ced0ca; border-radius: 1.125rem; background: var(--surface); box-shadow: var(--onboard-shadow); }
+    .window-chrome { height: 2.625rem; display: flex; align-items: center; gap: .5rem; border-bottom: 1px solid var(--border); background: var(--onboard-shell); padding: 0 .9375rem; }
+    .traffic { width: .6875rem; height: .6875rem; border-radius: 50%; background: #ff5f57; }
+    .traffic:nth-child(2) { background: #febc2e; }
+    .traffic:nth-child(3) { background: #28c840; }
+    .chrome-label { margin-left: .625rem; color: var(--text-faint); font-size: .6875rem; }
+    .app-body { height: calc(100% - 2.625rem); display: grid; grid-template-rows: 3.375rem minmax(0,1fr); }
+    .app-header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 0 1.1875rem; }
+    .brand { display: flex; align-items: center; gap: .5rem; }
+    .brand img { width: 1.4375rem; height: 1.4375rem; border-radius: .375rem; }
+    .brand strong { font-family: var(--font-mono); font-size: .8125rem; letter-spacing: -.035em; }
+    .brand small { color: var(--text-faint); font-size: .5rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+    .avatar { width: 1.8125rem; height: 1.8125rem; display: grid; place-items: center; border-radius: 50%; background: #d7aa63; color: #352719; font-size: .625rem; font-weight: 700; }
+    .onboarding { min-height: 0; overflow: auto; }
+    .onboarding-inner { width: min(69rem,calc(100% - 5rem)); margin: 0 auto; padding: 2.25rem 0 4rem; }
+    .page-nav { min-height: 2rem; display: flex; align-items: center; justify-content: space-between; }
+    .back-link { display: inline-flex; align-items: center; gap: .4375rem; color: var(--text-dim); font-size: .6875rem; font-weight: 600; }
+    .back-link:hover { color: var(--text); }
+    .secure-label { display: inline-flex; align-items: center; gap: .375rem; color: var(--text-faint); font-size: .625rem; }
+    .hero { margin-top: 1.25rem; text-align: center; }
+    .hero h1 { margin-top: .5rem; font-size: clamp(2rem,3vw,2.75rem); font-weight: 650; letter-spacing: -.05em; line-height: 1.08; }
+    .hero p { max-width: 40rem; margin: .625rem auto 0; color: var(--text-dim); font-size: .75rem; }
+    .progress { width: min(35rem,100%); display: grid; grid-template-columns: repeat(3,1fr); margin: 1.75rem auto 0; }
+    .progress-step { position: relative; display: grid; justify-items: center; gap: .4375rem; color: var(--text-faint); font-size: .625rem; }
+    .progress-step:not(:last-child)::after { content: ""; position: absolute; z-index: 0; top: .75rem; left: calc(50% + 1rem); width: calc(100% - 2rem); height: 1px; background: var(--border-strong); }
+    .progress-dot { position: relative; z-index: 1; width: 1.5rem; height: 1.5rem; display: grid; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; background: var(--surface); font: .5625rem var(--font-mono); }
+    .progress-step.is-active, .progress-step.is-complete { color: var(--text); font-weight: 620; }
+    .progress-step.is-active .progress-dot { border-color: var(--onboard-orange); box-shadow: 0 0 0 4px #fff3e6; color: #9a4b00; }
+    .progress-step.is-complete .progress-dot { border-color: var(--onboard-green); background: #eaf5ef; color: var(--onboard-green); }
+    .progress-step.is-complete::after { background: #8ac2a6; }
+    .setup-shell { display: grid; grid-template-columns: 13.5rem minmax(0,1fr); gap: 1.125rem; margin-top: 1.5rem; }
+    .step-rail { align-self: start; overflow: hidden; border: 1px solid var(--border); border-radius: .75rem; background: #f8f8f6; }
+    .rail-head { padding: .875rem 1rem; border-bottom: 1px solid var(--border); }
+    .rail-head strong, .rail-head small { display: block; }
+    .rail-head strong { font-size: .75rem; }
+    .rail-head small { margin-top: .1875rem; color: var(--text-faint); font-size: .5625rem; }
+    .rail-list { padding: .4375rem; }
+    .rail-item { width: 100%; min-height: 3.25rem; display: grid; grid-template-columns: 1.5rem 1fr; align-items: center; gap: .625rem; border-radius: .5rem; background: transparent; padding: .4375rem .625rem; color: var(--text-dim); text-align: left; }
+    .rail-item.is-active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+    .rail-number { width: 1.375rem; height: 1.375rem; display: grid; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; font: .5625rem var(--font-mono); }
+    .rail-item.is-active .rail-number { border-color: var(--onboard-orange); color: #9a4b00; }
+    .rail-copy strong, .rail-copy small { display: block; }
+    .rail-copy strong { font-size: .65625rem; }
+    .rail-copy small { margin-top: .0625rem; color: var(--text-faint); font-size: .53125rem; }
+    .step-panel { min-height: 24rem; border: 1px solid var(--border); border-radius: .75rem; background: var(--surface); box-shadow: var(--shadow); }
+    .panel-body { padding: 1.625rem 1.75rem 1.25rem; }
+    .panel-kicker { display: inline-flex; align-items: center; gap: .375rem; color: var(--onboard-blue); font-size: .625rem; font-weight: 650; }
+    .panel-title { margin-top: .5rem; font-size: 1.375rem; font-weight: 650; letter-spacing: -.035em; }
+    .panel-copy { max-width: 44rem; margin-top: .375rem; color: var(--text-dim); font-size: .6875rem; }
+    .instruction-label { display: block; margin-top: 1.25rem; color: var(--text-faint); font-size: .5625rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    .command-box { min-height: 3.25rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: .5rem; border: 1px solid #2f302e; border-radius: .5rem; background: #1f201e; padding: 0 .875rem 0 1rem; color: #f3f3ee; }
+    .command-box code { font-size: .6875rem; }
+    .copy-button { width: 1.875rem; height: 1.875rem; display: grid; place-items: center; border-radius: .375rem; background: #343532; color: #c8c9c4; }
+    .copy-button:hover { background: #42433f; color: white; }
+    .code-entry { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: .5rem; margin-top: .5rem; }
+    .code-input { height: 2.625rem; border: 1px solid var(--border-strong); border-radius: .5rem; background: var(--surface); padding: 0 .75rem; font: .8125rem var(--font-mono); letter-spacing: .14em; text-transform: uppercase; outline: none; }
+    .code-input:focus { border-color: var(--onboard-orange); box-shadow: 0 0 0 3px #fff2e3; }
+    .button { min-height: 2.625rem; padding-inline: 1rem; }
+    .button-primary { border-color: var(--onboard-orange); background: var(--onboard-orange); color: #1c140c; }
+    .button-primary:hover { border-color: #f37a00; background: #f37a00; }
+    .support-note { display: flex; align-items: flex-start; gap: .625rem; margin-top: 1rem; border-radius: .5rem; background: #f4f5f2; padding: .75rem; color: var(--text-dim); font-size: .59375rem; }
+    .support-note .icon { margin-top: .0625rem; color: var(--text-faint); }
+    .support-note strong { display: block; margin-bottom: .125rem; color: var(--text); font-size: .625rem; }
+    .device-card { display: grid; grid-template-columns: 2.5rem minmax(0,1fr) auto; align-items: center; gap: .75rem; margin-top: 1.25rem; border: 1px solid var(--border); border-radius: .625rem; background: #fafaf8; padding: .875rem; }
+    .device-mark { width: 2.5rem; height: 2.5rem; display: grid; place-items: center; border: 1px solid var(--border); border-radius: .625rem; background: var(--surface); }
+    .device-copy strong, .device-copy small { display: block; }
+    .device-copy strong { font-size: .75rem; }
+    .device-copy small { margin-top: .125rem; color: var(--text-faint); font-size: .5625rem; }
+    .device-status { display: inline-flex; align-items: center; gap: .375rem; border-radius: 999px; background: var(--warning-bg); padding: .3125rem .5rem; color: var(--warning); font-size: .5625rem; }
+    .detail-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: .5rem; margin-top: .75rem; }
+    .detail { border: 1px solid var(--border-soft); border-radius: .5rem; padding: .6875rem .75rem; }
+    .detail span, .detail strong { display: block; }
+    .detail span { color: var(--text-faint); font-size: .53125rem; text-transform: uppercase; letter-spacing: .07em; }
+    .detail strong { margin-top: .25rem; font: .65625rem var(--font-mono); }
+    .panel-actions { min-height: 4.25rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-top: 1px solid var(--border); padding: .75rem 1.75rem; }
+    .expire-copy { display: flex; align-items: center; gap: .375rem; color: var(--text-faint); font-size: .5625rem; }
+    .action-group { display: flex; align-items: center; gap: .5rem; margin-left: auto; }
+    .pairing-visual { display: grid; grid-template-columns: 1fr 3.5rem 1fr; align-items: center; gap: .75rem; margin-top: 1.25rem; }
+    .pairing-node { min-height: 5rem; display: grid; place-items: center; gap: .375rem; border: 1px solid var(--border); border-radius: .625rem; background: #fafaf8; padding: .75rem; text-align: center; }
+    .pairing-node .icon { width: 1.375rem; height: 1.375rem; }
+    .pairing-node strong { font-size: .6875rem; }
+    .pairing-node small { color: var(--text-faint); font-size: .53125rem; }
+    .pairing-link { position: relative; height: 1px; background: #8bbca5; }
+    .pairing-link::after { content: "E2EE"; position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); border-radius: 999px; background: #eaf5ef; padding: .1875rem .375rem; color: var(--onboard-green); font: .5rem var(--font-mono); }
+    .waiting-card { display: flex; align-items: center; gap: .75rem; margin-top: .875rem; border: 1px solid #bfd1e9; border-radius: .5rem; background: #f0f5fb; padding: .75rem; color: #355c8a; }
+    .spinner { width: 1.25rem; height: 1.25rem; flex: 0 0 auto; border: 2px solid #bbcee4; border-top-color: var(--onboard-blue); border-radius: 50%; animation: spin .9s linear infinite; }
+    .waiting-copy strong, .waiting-copy small { display: block; }
+    .waiting-copy strong { font-size: .65625rem; }
+    .waiting-copy small { margin-top: .125rem; font-size: .53125rem; }
+    .success-card { display: flex; align-items: center; gap: .75rem; margin-top: .875rem; border: 1px solid #b9ddc9; border-radius: .5rem; background: #edf8f2; padding: .75rem; color: var(--onboard-green); }
+    .success-mark { width: 1.5rem; height: 1.5rem; display: grid; place-items: center; border-radius: 50%; background: var(--onboard-green); color: white; }
+    .success-copy strong, .success-copy small { display: block; }
+    .success-copy strong { font-size: .65625rem; }
+    .success-copy small { margin-top: .125rem; color: #4f7d64; font-size: .53125rem; }
+    .annotation { position: absolute; right: .9375rem; bottom: .9375rem; width: 15.75rem; border: 1px solid #dcc5a9; border-radius: .5625rem; background: rgba(255,250,242,.97); padding: .625rem .6875rem; box-shadow: 0 13px 30px -22px rgba(50,31,8,.5); color: #6c5237; font-size: .5625rem; }
+    .annotation strong { display: block; margin-bottom: .1875rem; color: #45311d; font-size: .59375rem; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-height: 53.125rem) {
+      .prototype-stage { padding-top: 1.125rem; }
+      .app-window { height: calc(100vh - 5.875rem); min-height: 42.5rem; }
+      .onboarding-inner { padding-top: 1.25rem; }
+      .hero { margin-top: .5rem; }
+      .hero h1 { font-size: 2rem; }
+      .progress { margin-top: 1rem; }
+      .setup-shell { margin-top: 1rem; }
+      .step-panel { min-height: 21rem; }
+      .panel-body { padding-top: 1.25rem; }
+    }
+  </style>
+</head>
+<body>
+  <header class="review-bar">
+    <div class="review-title"><strong>Remote onboarding</strong><span>UX revision 1 · setup-only route</span></div>
+    <span class="review-note">不恢复 Remote 导航；从 Composer 左上角工作区菜单进入</span>
+  </header>
+  <main class="prototype-stage">
+    <section class="app-window" aria-label="jcode Cloud Remote onboarding prototype">
+      <div class="window-chrome" aria-hidden="true"><span class="traffic"></span><span class="traffic"></span><span class="traffic"></span><span class="chrome-label">jcode Cloud · UX proposal</span></div>
+      <div class="app-body">
+        <header class="app-header">
+          <a class="brand" href="./account-repository-workspace-flow.html"><img src="./assets/app-icon.svg" alt="" /><strong>JCODE</strong><small>Cloud</small></a>
+          <span class="avatar" aria-label="Jack">JA</span>
+        </header>
+        <section class="onboarding">
+          <div class="onboarding-inner">
+            <nav class="page-nav" aria-label="Remote onboarding navigation"><a class="back-link" href="./account-repository-workspace-flow.html"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-left" /></svg>返回 Work Home</a><span class="secure-label"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-lock" /></svg>端到端加密连接</span></nav>
+            <header class="hero"><span class="eyebrow">Remote connection</span><h1>连接这台 jcode 设备</h1><p>只需完成一次登录授权和加密配对。之后从 Work Home 左上角选择设备与 workplace，直接开始任务。</p></header>
+            <div class="progress" aria-label="连接进度">
+              <div class="progress-step is-active" data-progress="1"><span class="progress-dot">1</span><span>登录 jcode</span></div>
+              <div class="progress-step" data-progress="2"><span class="progress-dot">2</span><span>确认设备</span></div>
+              <div class="progress-step" data-progress="3"><span class="progress-dot">3</span><span>加密配对</span></div>
+            </div>
+            <div class="setup-shell">
+              <aside class="step-rail" aria-label="连接步骤">
+                <div class="rail-head"><strong>新增 Remote 设备</strong><small>大约需要 1 分钟</small></div>
+                <div class="rail-list">
+                  <button class="rail-item is-active" type="button" data-rail="1"><span class="rail-number">1</span><span class="rail-copy"><strong>运行登录命令</strong><small>获取设备授权码</small></span></button>
+                  <button class="rail-item" type="button" data-rail="2" disabled><span class="rail-number">2</span><span class="rail-copy"><strong>确认设备身份</strong><small>批准账号访问</small></span></button>
+                  <button class="rail-item" type="button" data-rail="3" disabled><span class="rail-number">3</span><span class="rail-copy"><strong>完成加密配对</strong><small>在本地 jcode 中确认</small></span></button>
+                </div>
+              </aside>
+
+              <section class="step-panel" data-step="1">
+                <div class="panel-body">
+                  <span class="panel-kicker"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg>在需要连接的设备上</span>
+                  <h2 class="panel-title">运行 jcode login</h2>
+                  <p class="panel-copy">命令会生成一次性授权码，并自动打开浏览器。如果浏览器没有打开，也可以在下面手动输入 CLI 显示的授权码。</p>
+                  <span class="instruction-label">Terminal</span>
+                  <div class="command-box"><code>jcode login --cloud https://cloud.j-code.net</code><button class="copy-button" type="button" data-copy aria-label="复制命令"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-copy" /></svg></button></div>
+                  <label class="instruction-label" for="device-code">CLI 没有自动打开浏览器？输入授权码</label>
+                  <div class="code-entry"><input class="code-input" id="device-code" value="JCDX-4H7Q" autocomplete="one-time-code" /><button class="button button-primary" type="button" data-next="2">继续授权<svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></div>
+                  <div class="support-note"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-key" /></svg><span><strong>一次性设备授权</strong>授权码只用于把这次 CLI 登录关联到 Jack 的账号；超时或拒绝都会在 CLI 中明确显示。</span></div>
+                </div>
+                <footer class="panel-actions"><span class="expire-copy">没有安装 jcode？先完成本地安装后再连接。</span><a class="button" href="./account-repository-workspace-flow.html">取消</a></footer>
+              </section>
+
+              <section class="step-panel" data-step="2" hidden>
+                <div class="panel-body">
+                  <span class="panel-kicker"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-user" /></svg>登录为 Jack</span>
+                  <h2 class="panel-title">确认这台设备</h2>
+                  <p class="panel-copy">只有你刚刚在终端发起了登录，才批准这次请求。授权后，这台 jcode 设备可以接收你从 Cloud 发起的 Remote 任务。</p>
+                  <article class="device-card"><span class="device-mark"><svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="device-copy"><strong>dev-mbp-01</strong><small>macOS · jcode 0.8.4 · just now</small></span><span class="device-status">等待授权</span></article>
+                  <div class="detail-grid"><div class="detail"><span>授权码</span><strong>JCDX-4H7Q</strong></div><div class="detail"><span>Cloud</span><strong>cloud.j-code.net</strong></div><div class="detail"><span>设备指纹</span><strong>sha256: 91ac…f284</strong></div><div class="detail"><span>账号</span><strong>Jack</strong></div></div>
+                  <div class="support-note"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-lock" /></svg><span><strong>Cloud 只接收哈希指纹</strong>原始机器标识不会上传。重复登录同一台设备时，系统可通过 SHA-256 指纹识别并复用设备记录。</span></div>
+                </div>
+                <footer class="panel-actions"><span class="expire-copy"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-warning" /></svg>授权码将在 08:42 后过期</span><div class="action-group"><button class="button" type="button" data-back="1">拒绝并返回</button><button class="button button-primary" type="button" data-next="3">批准设备</button></div></footer>
+              </section>
+
+              <section class="step-panel" data-step="3" hidden>
+                <div class="panel-body">
+                  <span class="panel-kicker"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-lock" /></svg>最后一步</span>
+                  <h2 class="panel-title">在本地 jcode 中确认配对</h2>
+                  <p class="panel-copy">登录已经完成。现在由本地 jcode 审批客户端配对，为 Cloud 浏览器保存加密密钥；服务器只转发密文。</p>
+                  <div class="pairing-visual"><div class="pairing-node"><svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg><strong>dev-mbp-01</strong><small>本地 jcode</small></div><span class="pairing-link"></span><div class="pairing-node"><svg class="icon"><use href="./assets/icons.svg#i-user" /></svg><strong>Jack · Cloud</strong><small>当前浏览器</small></div></div>
+                  <div class="waiting-card" data-waiting><span class="spinner" aria-hidden="true"></span><span class="waiting-copy"><strong>等待 dev-mbp-01 批准配对</strong><small>请回到本地 jcode，确认显示的浏览器与账号信息。</small></span></div>
+                  <div class="success-card" data-success hidden><span class="success-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg></span><span class="success-copy"><strong>Remote 设备已连接</strong><small>dev-mbp-01 已可在 Work Home 的左上角工作区菜单中选择。</small></span></div>
+                  <div class="support-note"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-key" /></svg><span><strong>密钥只保存在客户端</strong>配对请求 10 分钟后过期；Cloud 服务端不会解析设备事件、命令或 capability 中的加密内容。</span></div>
+                </div>
+                <footer class="panel-actions"><span class="expire-copy" data-pairing-expiry>配对请求将在 09:57 后过期</span><div class="action-group"><button class="button" type="button" data-back="2">返回</button><button class="button button-primary" type="button" data-pairing-approve>模拟本地批准</button><a class="button button-primary" href="./account-repository-workspace-flow.html" data-finish hidden>返回 Work Home</a></div></footer>
+              </section>
+            </div>
+          </div>
+        </section>
+      </div>
+      <aside class="annotation"><strong>Remote onboarding</strong>它是新增设备的 setup route，不是常驻管理入口。无设备时直接进入；已有设备时从 Remote picker 底部进入。</aside>
+    </section>
+  </main>
+  <script>
+    (() => {
+      let currentStep = 1;
+      const steps = [...document.querySelectorAll('[data-step]')];
+      const progress = [...document.querySelectorAll('[data-progress]')];
+      const rail = [...document.querySelectorAll('[data-rail]')];
+      function showStep(step) {
+        currentStep = step;
+        steps.forEach(panel => { panel.hidden = Number(panel.dataset.step) !== step; });
+        progress.forEach(item => {
+          const value = Number(item.dataset.progress);
+          item.classList.toggle('is-active', value === step);
+          item.classList.toggle('is-complete', value < step);
+          const dot = item.querySelector('.progress-dot');
+          dot.innerHTML = value < step ? '<svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg>' : String(value);
+        });
+        rail.forEach(item => {
+          const value = Number(item.dataset.rail);
+          item.classList.toggle('is-active', value === step);
+          item.disabled = value > step;
+        });
+      }
+      document.querySelectorAll('[data-next]').forEach(button => button.addEventListener('click', () => showStep(Number(button.dataset.next))));
+      document.querySelectorAll('[data-back]').forEach(button => button.addEventListener('click', () => showStep(Number(button.dataset.back))));
+      rail.forEach(button => button.addEventListener('click', () => { const step = Number(button.dataset.rail); if (step <= currentStep) showStep(step); }));
+      document.querySelector('[data-copy]').addEventListener('click', event => {
+        navigator.clipboard?.writeText('jcode login --cloud https://cloud.j-code.net');
+        event.currentTarget.innerHTML = '<svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg>';
+        event.currentTarget.setAttribute('aria-label', '已复制');
+      });
+      document.querySelector('[data-pairing-approve]').addEventListener('click', event => {
+        document.querySelector('[data-waiting]').hidden = true;
+        document.querySelector('[data-success]').hidden = false;
+        document.querySelector('[data-pairing-expiry]').textContent = '加密密钥已保存在当前浏览器';
+        document.querySelector('[data-finish]').hidden = false;
+        event.currentTarget.hidden = true;
+      });
+      showStep(1);
+    })();
+  </script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 <!--
   UX DESIGN PROTOTYPE ONLY — no production route, API, or persistence is changed.
 
-  Revision 3 assumptions
+  Revision 4 assumptions
   - Welcome and Repository workspace are one continuous Work Home.
   - There is no left navigation rail and no separate Repository detail journey.
   - The composer owns context selection in its upper-left corner, matching jcode
@@ -10,7 +10,8 @@
   - Repository context reveals its workspace below the composer.
   - Remote context stays composer-only; Repository Tasks / Board / Reviews /
     Automations / Usage / Settings are not rendered below it.
-  - Personal Settings is opened from the avatar menu; Remote has no separate page.
+  - Personal Settings is opened from the avatar menu; Remote has no permanent
+    management page. First-time and add-device setup use remote-onboarding.html.
 -->
 <html lang="zh-CN">
 <head>
@@ -108,7 +109,7 @@
     .menu-group { padding: 6px; }
     .menu-group + .menu-group { border-top: 1px solid var(--line); }
     .menu-label { display: block; padding: 4px 8px 5px; color: var(--faint); font-size: 8.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
-    .menu-option { width: 100%; min-height: 42px; display: flex; align-items: center; gap: 9px; border-radius: 6px; background: transparent; padding: 0 8px; text-align: left; }
+    .menu-option { width: 100%; min-height: 42px; display: flex; align-items: center; gap: 9px; border-radius: 6px; background: transparent; padding: 0 8px; color: inherit; text-align: left; text-decoration: none; }
     .menu-option:hover, .menu-option.is-selected { background: var(--hover); }
     .menu-option-main { min-width: 0; flex: 1; }
     .menu-option-main strong, .menu-option-main small { display: block; }
@@ -199,7 +200,7 @@
 </head>
 <body>
   <header class="review-bar">
-    <div class="review-title"><strong>Unified Work Home</strong><span>UX revision 3 · single product surface</span></div>
+    <div class="review-title"><strong>Unified Work Home</strong><span>UX revision 4 · Remote onboarding restored</span></div>
     <span class="review-note">工作区选择器位于 Composer 左上角，与 jcode Desktop 一致</span>
   </header>
   <main class="prototype-stage">
@@ -243,6 +244,7 @@
                       <button class="menu-option" type="button" data-context-kind="remote" data-context-name="dev-mbp-01" data-provider="Remote" data-target="~/work/jcode" data-repository="cnjack/jcode"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="menu-option-main"><strong>dev-mbp-01</strong><small>macOS · 3 workplaces</small></span><span class="online-dot"></span></button>
                       <button class="menu-option" type="button" data-context-kind="remote" data-context-name="workstation-01" data-provider="Remote" data-target="~/src/jcloud" data-repository="platform/jcloud"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="menu-option-main"><strong>workstation-01</strong><small>Linux · 2 workplaces</small></span><span class="online-dot"></span></button>
                     </div>
+                    <div class="menu-footer"><a class="menu-option menu-action" href="./remote-onboarding.html"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-plus" /></svg></span><span class="menu-option-main"><strong>连接新设备</strong><small>运行 jcode login 并完成加密配对</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></a></div>
                   </div>
                 </div>
                 <div class="menu target-menu" data-target-menu hidden>
