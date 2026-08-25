@@ -4,6 +4,7 @@ import { Link, MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiProvider } from '../api/ApiProvider';
 import type { ApiClient } from '../api/client';
+import type { AccountRepositorySource } from '../api/types';
 import { AccountSettingsPage } from './AccountSettingsPage';
 
 vi.mock('../auth/AuthProvider', () => ({
@@ -19,11 +20,11 @@ vi.mock('../auth/AuthProvider', () => ({
   }),
 }));
 
-function renderPage(initialEntry = '/account/settings') {
+function renderPage(initialEntry = '/account/settings', sources: AccountRepositorySource[] = [{ provider: 'github', account: 'cnjack', status: 'ready' }]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const client = {
     listAccountModels: async () => [{ id: 'model-1', name: 'Codex', model_name: 'gpt-test', capabilities: { reasoning: true, tools: true, image: false } }],
-    listAccountRepositories: async () => ({ repositories: [], sources: [{ provider: 'github', account: 'cnjack', status: 'ready' }] }),
+    listAccountRepositories: async () => ({ repositories: [], sources }),
   } as unknown as ApiClient;
   return render(
     <QueryClientProvider client={queryClient}>
@@ -44,6 +45,7 @@ describe('AccountSettingsPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Git accounts' }));
     expect(screen.getByText('github/cnjack')).toBeTruthy();
     expect(screen.getByRole('link', { name: /Link Gitea/ }).getAttribute('href')).toBe('/auth/link/gitea');
+    expect(screen.queryByRole('link', { name: /Reauthorize GitHub/ })).toBeNull();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Models' }));
     expect(await screen.findByText('Codex')).toBeTruthy();
@@ -57,5 +59,18 @@ describe('AccountSettingsPage', () => {
 
     fireEvent.click(screen.getByRole('link', { name: 'External usage link' }));
     expect(screen.getByRole('tab', { name: 'Usage' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('puts a real reauthorization action on an unavailable linked account', async () => {
+    renderPage('/account/settings?section=connections', [{
+      provider: 'github',
+      account: 'cnjack',
+      status: 'unavailable',
+      message: 'Repository access is unavailable; reconnect this provider account',
+    }]);
+
+    const reauthorize = await screen.findByRole('link', { name: 'Reauthorize GitHub' });
+    expect(reauthorize.getAttribute('href')).toBe('/auth/link/github');
+    expect(screen.getByText('Repository access is unavailable; reconnect this provider account')).toBeTruthy();
   });
 });

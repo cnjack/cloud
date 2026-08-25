@@ -99,6 +99,8 @@ export function WorkHomePage() {
 
   const targets = catalog.data?.repositories ?? [];
   const activeTarget = targets.find((target) => repositoryKey(target) === selectedRepository);
+  const unavailableSource = catalog.data?.sources.find((source) => source.status === 'unavailable'
+    && (targets.length === 0 || source.provider === activeTarget?.provider));
   const activeRepository = matchingRepository(activeTarget, repositories.data ?? []);
   const selectedDevice = devices.data?.find((device) => device.id === selectedDeviceId);
   const onlineDevices = (devices.data ?? []).filter((device) => device.online);
@@ -235,8 +237,23 @@ export function WorkHomePage() {
           </form>
         )}
 
-        {contextKind === 'repository' && (catalog.isError || (!catalog.isLoading && targets.length === 0) || (!models.isLoading && !models.data?.length) || activeTarget?.execution_available === false) && (
-          <div className={styles.blocker} role="status">{catalog.isError ? t('repositories.accountLoadError') : targets.length === 0 ? t('repositories.linkAccount') : !models.data?.length ? t('repositories.authorizeModel') : activeTarget?.execution_error}</div>
+        {contextKind === 'repository' && (catalog.isError || unavailableSource || (!catalog.isLoading && targets.length === 0) || (!models.isLoading && !models.data?.length) || activeTarget?.execution_available === false) && (
+          <div className={styles.blocker} role="status">
+            <span>{catalog.isError
+              ? t('repositories.accountLoadError')
+              : unavailableSource?.message
+                ?? (targets.length === 0
+                  ? t('repositories.linkAccount')
+                  : !models.data?.length
+                    ? t('repositories.authorizeModel')
+                    : activeTarget?.execution_error)}</span>
+            {(catalog.isError || unavailableSource || targets.length === 0 || activeTarget?.execution_available === false) && (
+              <Link className={styles.blockerAction} to="/account/settings?section=connections">{t('repositories.reviewGitAccountAccess')}</Link>
+            )}
+            {!models.isLoading && !models.data?.length && (
+              <Link className={styles.blockerAction} to="/account/settings?section=models">{t('repositories.reviewModelAccess')}</Link>
+            )}
+          </div>
         )}
 
         {contextKind === 'repository' && activeTarget && (

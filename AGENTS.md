@@ -35,6 +35,11 @@ substitute a mock, fake implementation, or fallback that looks successful.
 - The UI disables an action when its required dependency is unavailable and
   explains the next step, such as configuring a model or contacting an
   administrator.
+- Error states must never be dead ends. When the user can recover, include an
+  in-context action or deep link to the exact settings surface that resolves
+  the dependency. Expired or rejected provider credentials must route to the
+  affected account and expose a Reauthorize action there; do not stop at a
+  passive `unavailable` badge.
 - Webhook and automation paths record or report why work could not run. They
   must never claim a result that was not produced.
 - Product manifests and default configuration must not point to `mockllm`,
