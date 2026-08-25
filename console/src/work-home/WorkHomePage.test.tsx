@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiProvider } from '../api/ApiProvider';
 import type { ApiClient } from '../api/client';
-import type { AccountRepositoryTarget, ProjectModel, Service } from '../api/types';
+import type { AccountRepositoryCatalog, AccountRepositoryTarget, ProjectModel, Service } from '../api/types';
 import { ToastProvider } from '../components/Toast';
 import { WorkHomePage } from './WorkHomePage';
 
@@ -32,14 +32,16 @@ const targets: AccountRepositoryTarget[] = [
 function renderPage({
   repositories = [],
   startAccountTask = vi.fn(),
+  catalog = { repositories: targets, sources: [] },
 }: {
   repositories?: Service[];
   startAccountTask?: ReturnType<typeof vi.fn>;
+  catalog?: AccountRepositoryCatalog;
 } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const client = {
     listRepositories: async () => repositories,
-    listAccountRepositories: async () => ({ repositories: targets, sources: [] }),
+    listAccountRepositories: async () => catalog,
     listAccountModels: async () => models,
     startAccountTask,
   } as unknown as ApiClient;
@@ -53,6 +55,7 @@ function renderPage({
               <Routes>
                 <Route path="/repositories" element={<WorkHomePage />} />
                 <Route path="/runs/:runId" element={<div data-testid="run-page" />} />
+                <Route path="/account/settings" element={<div data-testid="git-accounts-page" />} />
               </Routes>
             </MemoryRouter>
           </ToastProvider>
@@ -125,5 +128,40 @@ describe('WorkHomePage', () => {
     expect(screen.getByRole('menuitem', { name: 'Account usage' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: /Cluster settings/ })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Code reviews' })).toBeTruthy();
+  });
+
+  it('routes an unavailable Repository source to the exact Git accounts recovery section', async () => {
+    renderPage({
+      catalog: {
+        repositories: [],
+        sources: [{
+          provider: 'github',
+          account: 'cnjack',
+          status: 'unavailable',
+          message: 'Repository access is unavailable; reconnect this provider account',
+        }],
+      },
+    });
+
+    const recovery = await screen.findByRole('link', { name: 'Review Git account access' });
+    expect(recovery.getAttribute('href')).toBe('/account/settings?section=connections');
+    fireEvent.click(recovery);
+    expect(await screen.findByTestId('git-accounts-page')).toBeTruthy();
+  });
+
+  it('does not block a ready Repository because a different provider needs reauthorization', async () => {
+    renderPage({
+      catalog: {
+        repositories: targets,
+        sources: [
+          { provider: 'github', account: 'cnjack', status: 'ready' },
+          { provider: 'gitea', account: 'legacy', status: 'unavailable', message: 'Reconnect Gitea' },
+        ],
+      },
+    });
+
+    expect(await screen.findByRole('button', { name: /acme\/payments/ })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Review Git account access' })).toBeNull();
+    expect(screen.queryByText('Reconnect Gitea')).toBeNull();
   });
 });

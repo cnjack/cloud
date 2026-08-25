@@ -1,4 +1,4 @@
-import { ArrowLeft, CheckCircle, GitBranch, LinkSimple, Lightning, User } from '@phosphor-icons/react';
+import { ArrowLeft, CheckCircle, GitBranch, LinkSimple, Lightning, User, WarningCircle } from '@phosphor-icons/react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useRole } from '../api/ApiProvider';
 import { useAccountModels, useAccountRepositories } from '../api/queries';
@@ -22,6 +22,10 @@ const tabs: Array<[Section, string]> = [
 
 function sectionFromQuery(value: string | null): Section {
   return tabs.some(([id]) => id === value) ? value as Section : 'profile';
+}
+
+function providerName(provider: string, providers: Array<{ id: string; name: string }>): string {
+  return providers.find((candidate) => candidate.id === provider)?.name ?? provider;
 }
 
 export function AccountSettingsPage() {
@@ -70,16 +74,27 @@ export function AccountSettingsPage() {
           {section === 'connections' && (
             <SettingsSection icon={<GitBranch size={18} />} title="Git accounts" description="Repositories visible to these linked accounts appear directly in the Work Home context picker.">
               <div className={styles.cards}>
-                {(me?.identities ?? []).map((identity) => (
-                  <article key={`${identity.provider}:${identity.username}`}><CheckCircle size={19} /><span><strong>{identity.provider}/{identity.username}</strong><small>Connected to this account</small></span></article>
-                ))}
+                {(me?.identities ?? []).map((identity) => {
+                  const source = catalog.data?.sources.find((candidate) => candidate.provider === identity.provider && candidate.account === identity.username)
+                    ?? catalog.data?.sources.find((candidate) => candidate.provider === identity.provider);
+                  const unavailable = source?.status === 'unavailable';
+                  const name = providerName(identity.provider, auth?.providers ?? []);
+                  return (
+                    <article key={`${identity.provider}:${identity.username}`} data-state={unavailable ? 'unavailable' : 'ready'}>
+                      {unavailable ? <WarningCircle size={19} weight="fill" /> : <CheckCircle size={19} />}
+                      <span>
+                        <strong>{identity.provider}/{identity.username}</strong>
+                        <small>{unavailable ? source.message ?? 'Repository access is unavailable for this account.' : 'Connected to this account'}</small>
+                      </span>
+                      {unavailable && <a className={styles.reauthorize} href={`/auth/link/${identity.provider}`} aria-label={`Reauthorize ${name}`}>Reauthorize {name}</a>}
+                    </article>
+                  );
+                })}
                 {(auth?.providers ?? []).filter((provider) => !linked.has(provider.id)).map((provider) => (
                   <a key={provider.id} href={`/auth/link/${provider.id}`}><LinkSimple size={19} /><span><strong>Link {provider.name}</strong><small>Authorize repositories for this account</small></span></a>
                 ))}
               </div>
-              {catalog.isLoading ? <LoadingBlock label="Checking Repository access…" /> : catalog.isError ? <ErrorBlock title="Repository access unavailable" error={catalog.error} onRetry={() => void catalog.refetch()} /> : (
-                <div className={styles.sources}>{(catalog.data?.sources ?? []).map((source) => <span key={`${source.provider}:${source.account}`} data-state={source.status}><strong>{source.provider}</strong>{source.account} · {source.status}</span>)}</div>
-              )}
+              {catalog.isLoading ? <LoadingBlock label="Checking Repository access…" /> : catalog.isError ? <ErrorBlock title="Repository access unavailable" error={catalog.error} onRetry={() => void catalog.refetch()} /> : null}
             </SettingsSection>
           )}
 
