@@ -567,7 +567,7 @@ func TestSessionBundleEndpointAcceptsDelivery(t *testing.T) {
 	}
 }
 
-// TestCreateRunWithSessionFlag: POST /services/{id}/runs {session:true} creates a
+// TestCreateRunWithSessionFlag: POST /repositories/{id}/runs {session:true} creates a
 // session run; the default (no field) stays a single-shot run. A retry of a
 // session run preserves session-ness (run identity).
 func TestCreateRunWithSessionFlag(t *testing.T) {
@@ -580,7 +580,7 @@ func TestCreateRunWithSessionFlag(t *testing.T) {
 	_ = st.CreateService(ctx, svc)
 
 	// session:true → run.session set.
-	resp := do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken,
+	resp := do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken,
 		map[string]any{"prompt": "chat", "session": true})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create session run: status=%d want 201", resp.StatusCode)
@@ -592,7 +592,7 @@ func TestCreateRunWithSessionFlag(t *testing.T) {
 	}
 
 	// Omitted → single-shot.
-	resp = do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken,
+	resp = do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken,
 		map[string]any{"prompt": "one shot"})
 	var plain domain.Run
 	decode(t, resp, &plain)

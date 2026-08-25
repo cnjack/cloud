@@ -25,6 +25,7 @@ export function ProjectWorkspaceShell({
   mobileActions,
   header,
   children,
+  repositoryMode = false,
 }: {
   mode?: 'workspace' | 'detail' | 'settings';
   workspaceChrome?: boolean;
@@ -45,12 +46,11 @@ export function ProjectWorkspaceShell({
   mobileActions?: ReactNode;
   header?: ReactNode;
   children: ReactNode;
+  repositoryMode?: boolean;
 }) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const tabs: readonly WorkspaceTab[] = canManage
-    ? WORKSPACE_TABS
-    : WORKSPACE_TABS.filter((tab) => tab !== 'settings');
+  const tabs: readonly WorkspaceTab[] = WORKSPACE_TABS.filter((tab) => canManage || tab !== 'settings');
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
@@ -80,9 +80,9 @@ export function ProjectWorkspaceShell({
 
   return (
     <div className={styles.shell} data-testid="project-workspace-shell">
-      <aside className={styles.rail} aria-label={t('projectWorkspace.railServicesAria')}>
+      <aside className={styles.rail} aria-label={repositoryMode ? t('repositories.railAria') : t('projectWorkspace.railServicesAria')}>
         <div className={styles.railTop}>{railTop}</div>
-        <div className={styles.projectSummary} data-testid="project-summary">
+        {!repositoryMode && <div className={styles.projectSummary} data-testid="project-summary">
           <div className={styles.projectSummaryCopy}>
             <span className={styles.eyebrow}>{t('projectWorkspace.projectEyebrow')}</span>
             <strong title={projectName}>{projectName}</strong>
@@ -93,15 +93,15 @@ export function ProjectWorkspaceShell({
               {projectAction}
             </div>
           )}
-        </div>
+        </div>}
 
         <div className={styles.serviceArea}>
           <div className={styles.sectionHead}>
-            <span>{t('projectWorkspace.servicesHeading')}</span>
+            <span>{repositoryMode ? t('repositories.title') : t('projectWorkspace.servicesHeading')}</span>
             <span>{services.length}</span>
           </div>
           {services.length > 0 ? (
-            <nav className={styles.serviceList} aria-label={t('projectWorkspace.servicesHeading')}>
+            <nav className={styles.serviceList} aria-label={repositoryMode ? t('repositories.title') : t('projectWorkspace.servicesHeading')}>
               {services.map((service) => {
                 const selected = service.id === activeServiceId;
                 return (
@@ -128,7 +128,7 @@ export function ProjectWorkspaceShell({
               })}
             </nav>
           ) : (
-            <p className={styles.railEmpty}>{t('projectWorkspace.noServiceConnected')}</p>
+            <p className={styles.railEmpty}>{repositoryMode ? t('repositories.noneConnected') : t('projectWorkspace.noServiceConnected')}</p>
           )}
           {railAction && <div className={styles.railAction}>{railAction}</div>}
         </div>
@@ -136,7 +136,9 @@ export function ProjectWorkspaceShell({
         {railFooter && <div className={styles.railFooter}>{railFooter}</div>}
       </aside>
 
-      <section className={styles.surface} aria-label={t('projectWorkspace.workspaceAria', { projectName })}>
+      <section className={styles.surface} aria-label={repositoryMode
+        ? t('repositories.workspaceAria', { repositoryName: projectName })
+        : t('projectWorkspace.workspaceAria', { projectName })}>
         <div className={styles.utility}>
           <div className={styles.utilityContent}>{utility}</div>
           {mobileActions && <div className={styles.mobileActions}>{mobileActions}</div>}
@@ -145,7 +147,7 @@ export function ProjectWorkspaceShell({
         {mode === 'workspace' && workspaceChrome && (
           <>
             <header className={styles.header}>{header}</header>
-            <div className={styles.tabs} role="tablist" aria-label={t('projectWorkspace.tabsAria')} onKeyDown={onTabsKeyDown}>
+            <div className={styles.tabs} role="tablist" aria-label={repositoryMode ? t('repositories.tabsAria') : t('projectWorkspace.tabsAria')} onKeyDown={onTabsKeyDown}>
               {tabs.map((tab) => (
                 <button
                   key={tab}
@@ -165,7 +167,7 @@ export function ProjectWorkspaceShell({
                       ? t('projectWorkspace.tabAutomations')
                       : tab === 'usage'
                         ? t('usage.title')
-                        : t('projectWorkspace.tabServiceSettings')}
+                        : repositoryMode ? t('repositories.tabSettings') : t('projectWorkspace.tabServiceSettings')}
                 </button>
               ))}
             </div>

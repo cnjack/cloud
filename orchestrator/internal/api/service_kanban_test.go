@@ -23,6 +23,41 @@ type serviceKanbanBoardValidator struct {
 	calls *int
 }
 
+type serviceKanbanDiscovery struct {
+	docs      []jtype.Doc
+	documents map[string]*jtype.Document
+	calls     *int
+}
+
+func (d serviceKanbanDiscovery) ListWorkspaces(context.Context) ([]jtype.Workspace, error) {
+	return nil, nil
+}
+
+func (d serviceKanbanDiscovery) ListDocuments(context.Context, string) ([]jtype.Doc, error) {
+	if d.calls != nil {
+		*d.calls++
+	}
+	return d.docs, nil
+}
+
+func (d serviceKanbanDiscovery) GetDocument(_ context.Context, _ string, documentID string) (*jtype.Document, error) {
+	if d.calls != nil {
+		*d.calls++
+	}
+	if document, ok := d.documents[documentID]; ok {
+		return document, nil
+	}
+	return nil, jtype.ErrDocNotFound
+}
+
+func (d serviceKanbanDiscovery) GetBoard(context.Context, string, string) (*jtype.Board, error) {
+	return nil, jtype.ErrDocNotFound
+}
+
+func (d serviceKanbanDiscovery) GetBoardByDoc(context.Context, string, string) (*jtype.Board, error) {
+	return nil, jtype.ErrDocNotFound
+}
+
 func (v serviceKanbanBoardValidator) GetBoard(context.Context, string, string) (*jtype.Board, error) {
 	if v.calls != nil {
 		*v.calls++
@@ -76,7 +111,8 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 	registerTestServerStore(t, ts, st)
 	t.Cleanup(ts.Close)
 	ctx := context.Background()
-	project := &domain.Project{ID: "receipt-project", Name: "Receipt project"}
+	owner := mkUser(t, st, "receipt-owner")
+	project := &domain.Project{ID: "receipt-project", Name: "Receipt project", OwnerUserID: owner.ID}
 	service := &domain.Service{
 		ID: "receipt-service", ProjectID: project.ID, Name: "payments-api",
 		RepoKind: domain.RepoKindProvider, Provider: domain.ProviderGitea,
@@ -126,6 +162,7 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 	automation := &domain.PluginAutomation{
 		ID: "receipt-automation", ServiceID: service.ID, InstallationID: installation.ID,
 		Name: "Kanban", TriggerKind: "kanban", RunKind: domain.RunKindAgent, Enabled: true,
+		ModelID: "not-granted", ExecutionAccountID: owner.ID,
 	}
 	trigger := &domain.KanbanTrigger{
 		AutomationID: automation.ID, InstallationID: installation.ID,
@@ -146,7 +183,7 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 	}
 	if _, err := st.SetPluginKanbanOccurrenceBlocked(
 		ctx, observed.Occurrence.ID, "model_not_configured",
-		"Choose an allowed model for this Service.", "project_owner",
+		"Choose an allowed model for this Service.", "repository_owner",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -208,26 +245,26 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 	}
 	if _, err := st.SetPluginKanbanOccurrenceBlocked(
 		ctx, second.Occurrence.ID, "model_not_configured",
-		"Choose an allowed model for this Service.", "project_owner",
+		"Choose an allowed model for this Service.", "repository_owner",
 	); err != nil {
 		t.Fatal(err)
 	}
 
-	resp := do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+"/kanban/policy", consoleToken, nil)
+	resp := do(t, http.MethodGet, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board/policy", consoleToken, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("policy status=%d", resp.StatusCode)
 	}
 	var policy map[string]any
 	decode(t, resp, &policy)
-	if policy["service_name"] != "payments-api" || policy["repository"] != "acme/payments" ||
+	if policy["repository_name"] != "payments-api" || policy["repository"] != "acme/payments" ||
 		policy["trigger_column"].(map[string]any)["key"] != "agent" {
 		t.Fatalf("policy=%+v", policy)
 	}
 	health := policy["health"].(map[string]any)
-	if health["state"] != "blocked" || health["blocker"] != "model_not_configured" {
+	if health["state"] != "blocked" || health["blocker"] != "model_not_authorized" {
 		t.Fatalf("health=%+v", health)
 	}
-	if health["repair_role"] != "project_owner" {
+	if health["repair_role"] != "repository_owner" {
 		t.Fatalf("health repair role=%+v", health)
 	}
 
@@ -239,7 +276,7 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 	if err := st.UpdatePluginAutomation(ctx, &spec.Automation); err != nil {
 		t.Fatal(err)
 	}
-	resp = do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+"/kanban/policy", consoleToken, nil)
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board/policy", consoleToken, nil)
 	var driftPolicy map[string]any
 	decode(t, resp, &driftPolicy)
 	driftHealth := driftPolicy["health"].(map[string]any)
@@ -247,8 +284,8 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 		t.Fatalf("drift health=%+v", driftHealth)
 	}
 
-	resp = do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+
-		"/kanban/card-executions?workspace_id=workspace&document_path=cards%2Fpayment.md&limit=1",
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/repositories/"+service.ID+
+		"/agent-board/card-executions?workspace_id=workspace&document_path=cards%2Fpayment.md&limit=1",
 		consoleToken, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("executions status=%d", resp.StatusCode)
@@ -277,8 +314,8 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 		*executions.Usage.Tokens.Output != 30 {
 		t.Fatalf("Card usage=%+v", executions.Usage)
 	}
-	resp = do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+
-		"/kanban/card-executions?workspace_id=workspace&document_path=cards%2Fpayment.md&limit=1&before="+
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/repositories/"+service.ID+
+		"/agent-board/card-executions?workspace_id=workspace&document_path=cards%2Fpayment.md&limit=1&before="+
 		*executions.NextCursor, consoleToken, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("second executions page status=%d", resp.StatusCode)
@@ -293,16 +330,16 @@ func TestServiceKanbanPolicyAndCardExecutions(t *testing.T) {
 		t.Fatalf("earlier executions=%+v cursor=%v", earlier.Items, earlier.NextCursor)
 	}
 
-	resp = do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+
-		"/kanban/card-executions?workspace_id=workspace&document_path=cards%2Fpayment.md&before=not-a-cursor",
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/repositories/"+service.ID+
+		"/agent-board/card-executions?workspace_id=workspace&document_path=cards%2Fpayment.md&before=not-a-cursor",
 		consoleToken, nil)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid cursor status=%d want 400", resp.StatusCode)
 	}
 	resp.Body.Close()
 
-	resp = do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+
-		"/kanban/card-executions?workspace_id=other&document_path=cards%2Fpayment.md",
+	resp = do(t, http.MethodGet, ts.URL+"/api/v1/repositories/"+service.ID+
+		"/agent-board/card-executions?workspace_id=other&document_path=cards%2Fpayment.md",
 		consoleToken, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("cross-workspace status=%d want 404", resp.StatusCode)
@@ -320,7 +357,7 @@ func TestServiceKanbanExecutionMissingRunIsVisible(t *testing.T) {
 	if view.Status != domain.KanbanOccurrenceBlocked ||
 		view.ReasonCode != "run_unavailable" ||
 		view.Reason == nil ||
-		view.RepairRole == nil || *view.RepairRole != "project_owner" {
+		view.RepairRole == nil || *view.RepairRole != "repository_owner" {
 		t.Fatalf("missing Run view=%+v", view)
 	}
 }
@@ -353,9 +390,15 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 		t.Fatal(err)
 	}
 	member := mkUser(t, st, "service-kanban-member")
+	contributor := mkUser(t, st, "service-kanban-contributor")
 	viewer := mkUser(t, st, "service-kanban-viewer")
+	project.OwnerUserID = member.ID
+	if err := st.UpdateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
 	for _, membership := range []*domain.ProjectMember{
-		{ProjectID: project.ID, UserID: member.ID, Role: domain.RoleMember, CreatedAt: now},
+		{ProjectID: project.ID, UserID: member.ID, Role: domain.RoleOwner, CreatedAt: now},
+		{ProjectID: project.ID, UserID: contributor.ID, Role: domain.RoleMember, CreatedAt: now},
 		{ProjectID: project.ID, UserID: viewer.ID, Role: domain.RoleViewer, CreatedAt: now},
 	} {
 		if err := st.UpsertMember(ctx, membership); err != nil {
@@ -363,6 +406,7 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 		}
 	}
 	memberToken := mkSession(t, st, member.ID)
+	contributorToken := mkSession(t, st, contributor.ID)
 	viewerToken := mkSession(t, st, viewer.ID)
 	if err := st.UpsertProviderConfig(ctx, &domain.ProviderConfig{Provider: domain.PluginJType, BaseURL: "https://jtype.test", PluginEnabled: true, ConfigRevision: 1}); err != nil {
 		t.Fatal(err)
@@ -373,6 +417,26 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	}
 	installation := &domain.PluginInstallation{ID: domain.NewID(), ProjectID: project.ID, Provider: domain.PluginJType, Status: domain.PluginStatusEnabled, WorkspaceID: "workspace-1", AccessTokenEnc: sealed, ConfigRevision: 1, ConsentedAt: now, CreatedAt: now}
 	if err := st.CreatePluginInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	modelProvider := &domain.ModelProvider{
+		ID: domain.NewID(), Name: "agent-board-provider", Kind: "openai",
+		BaseURL: "https://models.test/v1", AuthType: domain.ModelProviderAuthNone,
+		CatalogMode: domain.ModelProviderCatalogDisabled, CreatedAt: now,
+	}
+	if err := st.CreateModelProvider(ctx, modelProvider); err != nil {
+		t.Fatal(err)
+	}
+	workflowModel := &domain.Model{
+		ID: domain.NewID(), ProviderID: modelProvider.ID, Name: "Agent model",
+		BaseURL: modelProvider.BaseURL, ModelName: "openai/agent-model", ModelID: "agent-model",
+		Capabilities: domain.ModelCapabilities{Reasoning: true, Tools: true},
+		Source:       "custom", Enabled: true, CreatedAt: now,
+	}
+	if err := st.CreateModel(ctx, workflowModel); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.GrantModelToAccount(ctx, workflowModel.ID, member.ID, member.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -386,11 +450,60 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", contributorToken, map[string]any{
 		"installation_id": installation.ID,
 		"board_ref":       "delivery.board",
 		"work_column":     "doing",
 		"enabled":         true,
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("member Agent Board write status=%d want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, map[string]any{
+		"installation_id": installation.ID,
+		"board_ref":       "delivery.board",
+		"work_column":     "doing",
+		"enabled":         true,
+	})
+	if resp.StatusCode != http.StatusBadRequest || errorCode(t, resp) != "model_required" {
+		t.Fatalf("missing workflow model status=%d", resp.StatusCode)
+	}
+
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, map[string]any{
+		"installation_id":      installation.ID,
+		"board_ref":            "delivery.board",
+		"work_column":          "doing",
+		"model_id":             "not-granted",
+		"execution_account_id": member.ID,
+		"enabled":              true,
+	})
+	if resp.StatusCode != http.StatusConflict || errorCode(t, resp) != "model_not_authorized" {
+		t.Fatalf("unauthorized workflow model status=%d", resp.StatusCode)
+	}
+
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, map[string]any{
+		"installation_id":      installation.ID,
+		"board_ref":            "delivery.board",
+		"work_column":          "doing",
+		"model_id":             workflowModel.ID,
+		"execution_account_id": member.ID,
+		"enabled":              true,
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("reasoning model without effort status=%d want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, map[string]any{
+		"installation_id":      installation.ID,
+		"board_ref":            "delivery.board",
+		"work_column":          "doing",
+		"model_id":             workflowModel.ID,
+		"model_effort":         "high",
+		"execution_account_id": member.ID,
+		"enabled":              true,
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("enable status=%d", resp.StatusCode)
@@ -398,6 +511,8 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	var created domain.PluginAutomationSpec
 	decode(t, resp, &created)
 	if created.Automation.TriggerKind != "kanban" || created.Kanban == nil ||
+		created.Automation.ModelID != workflowModel.ID || created.Automation.ModelEffort != "high" ||
+		created.Automation.ExecutionAccountID != member.ID ||
 		created.Kanban.BoardRef != "b_board" || created.Kanban.TriggerColumn != "ai" ||
 		created.Kanban.TriggerLabel != "Agent queue" ||
 		created.Kanban.WorkColumn != "doing" || created.Kanban.WorkLabel != "Doing" ||
@@ -407,10 +522,15 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	if validatorCalls != 1 {
 		t.Fatalf("initial path validation calls=%d want 1", validatorCalls)
 	}
+	resp = do(t, http.MethodDelete, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", contributorToken, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("member Agent Board delete status=%d want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
 
 	// GET returns the canonical board id. Round-tripping that current id must
 	// work without scanning JType board documents again.
-	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, map[string]any{
 		"installation_id": installation.ID,
 		"board_ref":       "b_board",
 		"enabled":         true,
@@ -423,7 +543,45 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 		t.Fatalf("canonical round-trip triggered live scan: calls=%d", validatorCalls)
 	}
 
-	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
+	plainModel := &domain.Model{
+		ID: domain.NewID(), ProviderID: modelProvider.ID, Name: "Plain model",
+		BaseURL: modelProvider.BaseURL, ModelName: "openai/plain-model", ModelID: "plain-model",
+		Capabilities: domain.ModelCapabilities{Tools: true}, Source: "custom", Enabled: true, CreatedAt: now,
+	}
+	if err := st.CreateModel(ctx, plainModel); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.GrantModelToAccount(ctx, plainModel.ID, member.ID, member.ID); err != nil {
+		t.Fatal(err)
+	}
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, map[string]any{
+		"installation_id": installation.ID,
+		"board_ref":       "b_board",
+		"model_id":        plainModel.ID,
+		"model_effort":    "",
+		"enabled":         true,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("plain model without effort status=%d", resp.StatusCode)
+	}
+	var plainUpdated domain.PluginAutomationSpec
+	decode(t, resp, &plainUpdated)
+	if plainUpdated.Automation.ModelID != plainModel.ID || plainUpdated.Automation.ModelEffort != "" {
+		t.Fatalf("plain model policy=%+v", plainUpdated.Automation)
+	}
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, map[string]any{
+		"installation_id": installation.ID,
+		"board_ref":       "b_board",
+		"model_id":        workflowModel.ID,
+		"model_effort":    "high",
+		"enabled":         true,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("restore reasoning model status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, map[string]any{
 		"installation_id": installation.ID,
 		"board_ref":       "delivery.board",
 		"trigger_column":  "review",
@@ -439,13 +597,13 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 		updated.Kanban.TriggerLabel != "Human review" || updated.Kanban.DoneColumn != "done" {
 		t.Fatalf("updated columns=%+v", updated.Kanban)
 	}
-	if validatorCalls != 2 {
-		t.Fatalf("column update validation calls=%d want 2", validatorCalls)
+	if validatorCalls != 1 {
+		t.Fatalf("column update did not reuse cached board metadata: calls=%d", validatorCalls)
 	}
 
 	// A canonical board id may only round-trip unchanged. Column edits need the
 	// board path so the server can fetch and validate the board schema.
-	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, map[string]any{
 		"installation_id": installation.ID,
 		"board_ref":       "b_board",
 		"trigger_column":  "ai",
@@ -456,11 +614,11 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 		t.Fatalf("unvalidated canonical column update status=%d want 400", resp.StatusCode)
 	}
 	resp.Body.Close()
-	if validatorCalls != 2 {
+	if validatorCalls != 1 {
 		t.Fatalf("canonical column update triggered live scan: calls=%d", validatorCalls)
 	}
 
-	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, map[string]any{
 		"installation_id": installation.ID,
 		"board_ref":       "delivery.board",
 		"trigger_column":  "missing",
@@ -471,11 +629,11 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 		t.Fatalf("invalid trigger column status=%d want 409", resp.StatusCode)
 	}
 	resp.Body.Close()
-	if validatorCalls != 3 {
-		t.Fatalf("invalid column validation calls=%d want 3", validatorCalls)
+	if validatorCalls != 1 {
+		t.Fatalf("invalid column check did not reuse cached board metadata: calls=%d", validatorCalls)
 	}
 
-	resp = do(t, http.MethodPut, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, map[string]any{
+	resp = do(t, http.MethodPut, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, map[string]any{
 		"installation_id": installation.ID,
 		"board_ref":       "b_untrusted",
 		"enabled":         true,
@@ -484,7 +642,7 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 		t.Fatalf("untrusted canonical id status=%d want 400", resp.StatusCode)
 	}
 	resp.Body.Close()
-	if validatorCalls != 3 {
+	if validatorCalls != 1 {
 		t.Fatalf("untrusted canonical id triggered live scan: calls=%d", validatorCalls)
 	}
 
@@ -625,8 +783,73 @@ func TestServiceKanbanUsesDefaultTriggerAndStaysOutOfAutomations(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	resp = do(t, http.MethodDelete, ts.URL+"/api/v1/services/"+service.ID+"/kanban", consoleToken, nil)
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("disable status=%d", resp.StatusCode)
+	// A Card action creates the same durable occurrence as a trigger-column
+	// entry. The client key makes transport retries idempotent, while a distinct
+	// click is rejected until the active occurrence finishes.
+	discoveryCalls := 0
+	srv.jtypeDiscoveryFor = func(*jtype.Factory, string) jtypeDiscovery {
+		return serviceKanbanDiscovery{
+			docs: []jtype.Doc{{ID: "card-payment", Path: "cards/payment.md"}},
+			documents: map[string]*jtype.Document{
+				"card-payment": {
+					Path:    "cards/payment.md",
+					Content: "---\nboard: b_board\nstatus: backlog\n---\nImplement payments",
+				},
+			},
+			calls: &discoveryCalls,
+		}
+	}
+	manualURL := ts.URL + "/api/v1/repositories/" + service.ID + "/agent-board/occurrences"
+	resp = do(t, http.MethodPost, manualURL, viewerToken, map[string]any{
+		"workspace_id": "workspace-1", "document_path": "cards/payment.md",
+		"idempotency_key": "click-1",
+	})
+	if resp.StatusCode != http.StatusForbidden || discoveryCalls != 0 {
+		t.Fatalf("viewer manual trigger status=%d discovery_calls=%d", resp.StatusCode, discoveryCalls)
+	}
+	resp.Body.Close()
+	resp = do(t, http.MethodPost, manualURL, memberToken, map[string]any{
+		"workspace_id": "workspace-1", "document_path": "cards/payment.md",
+		"idempotency_key": "click-1",
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		code := errorCode(t, resp)
+		history, _ := st.ListPluginKanbanOccurrences(ctx, created.Automation.ID, "card-payment", 10)
+		t.Fatalf("manual trigger status=%d code=%s history=%+v", resp.StatusCode, code, history)
+	}
+	var firstManual struct {
+		Occurrence serviceKanbanExecutionItem `json:"occurrence"`
+		Replayed   bool                       `json:"replayed"`
+	}
+	decode(t, resp, &firstManual)
+	if firstManual.Replayed || firstManual.Occurrence.ID == "" || firstManual.Occurrence.Status != domain.KanbanOccurrenceReceived {
+		t.Fatalf("manual trigger response=%+v", firstManual)
+	}
+	resp = do(t, http.MethodPost, manualURL, memberToken, map[string]any{
+		"workspace_id": "workspace-1", "document_path": "cards/payment.md",
+		"idempotency_key": "click-1",
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("manual replay status=%d", resp.StatusCode)
+	}
+	var replayedManual struct {
+		Occurrence serviceKanbanExecutionItem `json:"occurrence"`
+		Replayed   bool                       `json:"replayed"`
+	}
+	decode(t, resp, &replayedManual)
+	if !replayedManual.Replayed || replayedManual.Occurrence.ID != firstManual.Occurrence.ID {
+		t.Fatalf("manual replay response=%+v first=%+v", replayedManual, firstManual)
+	}
+	resp = do(t, http.MethodPost, manualURL, memberToken, map[string]any{
+		"workspace_id": "workspace-1", "document_path": "cards/payment.md",
+		"idempotency_key": "click-2",
+	})
+	if resp.StatusCode != http.StatusConflict || errorCode(t, resp) != "occurrence_active" {
+		t.Fatalf("active manual trigger status=%d", resp.StatusCode)
+	}
+
+	resp = do(t, http.MethodDelete, ts.URL+"/api/v1/repositories/"+service.ID+"/agent-board", consoleToken, nil)
+	if resp.StatusCode != http.StatusConflict || errorCode(t, resp) != "active_occurrences" {
+		t.Fatalf("disable with active occurrence status=%d", resp.StatusCode)
 	}
 }

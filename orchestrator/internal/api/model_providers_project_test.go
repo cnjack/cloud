@@ -348,7 +348,7 @@ func TestProjectOwnedModelDrivesRunSelection(t *testing.T) {
 
 // Case 8: cluster grants coexist with project-owned models (union), and a non-
 // empty usable set reports env_fallback=false even when the MODEL_* env is set.
-func TestProjectOwnedUnionWithClusterGrant(t *testing.T) {
+func TestProjectOwnedModelDoesNotInheritLegacyProjectGrant(t *testing.T) {
 	ts, _, proj, ownerTok, _, _ := projectRBACServer(t)
 
 	// Project-owned model.
@@ -358,7 +358,8 @@ func TestProjectOwnedUnionWithClusterGrant(t *testing.T) {
 	})
 	owned, _ := addProjectModel(t, ts, proj.ID, provider.ID, ownerTok, map[string]any{"name": "Owned", "model_id": "o1"})
 
-	// Cluster model granted to the project.
+	// A legacy Cluster model grant to the Project is intentionally ignored for
+	// interactive users; it must be granted to their Account instead.
 	clusterModel := createModel(t, ts, "cluster-gpt", "https://cluster.internal/v1", "openai/gpt-4o", "")
 	grant(t, ts, clusterModel.ID, proj.ID)
 
@@ -369,8 +370,8 @@ func TestProjectOwnedUnionWithClusterGrant(t *testing.T) {
 	for _, m := range pm.Models {
 		got[m.ID] = true
 	}
-	if len(pm.Models) != 2 || !got[owned.ID] || !got[clusterModel.ID] {
-		t.Fatalf("union usable set=%+v want {owned, cluster}", pm.Models)
+	if len(pm.Models) != 1 || !got[owned.ID] || got[clusterModel.ID] {
+		t.Fatalf("usable set=%+v want only project-owned model", pm.Models)
 	}
 	if pm.EnvFallback {
 		t.Fatal("env_fallback must be false when the usable set is non-empty")

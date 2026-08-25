@@ -47,7 +47,7 @@ function pickFiles(files: File[]) {
 describe('DeviceCompose rendering', () => {
   it('renders all five elements from capabilities', () => {
     render(<Rig />);
-    expect(screen.getByLabelText('Project directory')).toBeTruthy();
+    expect(screen.getByLabelText('Working directory')).toBeTruthy();
     expect(screen.getByLabelText('Model')).toBeTruthy();
     expect(screen.getByText('Effort')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Goal' })).toBeTruthy();
@@ -65,7 +65,7 @@ describe('DeviceCompose rendering', () => {
 
   it('hides only the empty sections for partial capabilities', () => {
     render(<Rig capabilities={{ projects: [{ path: '/repo/a', name: 'alpha' }] }} />);
-    expect(screen.getByLabelText('Project directory')).toBeTruthy();
+    expect(screen.getByLabelText('Working directory')).toBeTruthy();
     expect(screen.queryByLabelText('Model')).toBeNull();
     expect(screen.queryByText('Effort')).toBeNull();
     // Goal + attachments are client-side concepts — always present.
@@ -117,7 +117,7 @@ describe('composeExtras payload assembly', () => {
 describe('DeviceCompose interaction', () => {
   it('selecting project/model/effort and a goal flows into the payload', () => {
     render(<Rig />);
-    fireEvent.change(screen.getByLabelText('Project directory'), { target: { value: '/repo/a' } });
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/repo/a' } });
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'anthropic::claude-sonnet-4-5' } });
     fireEvent.click(screen.getByRole('button', { name: 'high' }));
     fireEvent.click(screen.getByRole('button', { name: 'Goal' }));

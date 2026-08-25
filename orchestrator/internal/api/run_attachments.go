@@ -77,7 +77,7 @@ func (s *Server) handleCreateAttachmentIntent(w http.ResponseWriter, r *http.Req
 		writeError(w, 500, "internal", "could not create attachment upload")
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"stage": stage, "upload_url": "/api/v1/services/" + svc.ID + "/attachments/" + stage.ID + "/content", "expires_at": stage.ExpiresAt})
+	writeJSON(w, http.StatusCreated, map[string]any{"stage": stage, "upload_url": "/api/v1/repositories/" + svc.ID + "/attachments/" + stage.ID + "/content", "expires_at": stage.ExpiresAt})
 }
 
 func allowedAttachmentContentType(v string) bool {

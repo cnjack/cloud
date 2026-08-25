@@ -43,21 +43,27 @@ j1_run() {
 
   [ -n "$pid" ] || { fail J1-S4 "cannot continue J1 without a project id"; return 1; }
 
-  local svc_resp svc_code svc_body sid
-  svc_resp="$(api_post_code "/projects/$pid/services" \
-    "{\"name\":\"default\",\"repo_url\":\"$SEED_REPO\",\"default_branch\":\"main\"}")"
-  svc_code="$(http_code "$svc_resp")"; svc_body="$(http_body "$svc_resp")"
-  assert_eq J1-S3 "POST /projects/{id}/services returns 201" "201" "$svc_code"
-  sid="$(printf '%s' "$svc_body" | jq -r '.id // empty')"
-  assert_nonempty J1-S3 "created service has id" "$sid"
-  [ -n "$sid" ] || { fail J1-S4 "cannot continue J1 without a service id"; return 1; }
+  if seed_e2e_project_model "$pid"; then
+    pass J1-S3 "authorized the e2e rig model for the hidden workspace"
+  else
+    fail J1-S3 "could not authorize the e2e rig model"
+    return 1
+  fi
 
-  # --- J1-S4: trigger a run (service-scoped), initial status queued --------
+  local sid
+  sid="$(seed_raw_repository "$pid" "default" "$SEED_REPO")"
+  assert_nonempty J1-S3 "seeded local Repository fixture has id" "$sid"
+  [ -n "$sid" ] || { fail J1-S4 "cannot continue J1 without a Repository id"; return 1; }
+
+  # --- J1-S4: trigger a run (Repository-scoped), initial status queued -----
   local run_resp run_code run_body rid status0
-  run_resp="$(api_post_code "/services/$sid/runs" \
+  run_resp="$(api_post_code "/repositories/$sid/runs" \
     "{\"prompt\":$(jq -Rn --arg p 'append a Hello line to README' '$p')}")"
   run_code="$(http_code "$run_resp")"; run_body="$(http_body "$run_resp")"
-  assert_eq J1-S4 "POST /services/{id}/runs returns 201" "201" "$run_code"
+  if [ "$run_code" != "201" ]; then
+    info "Repository Run create failed: $run_body"
+  fi
+  assert_eq J1-S4 "POST /repositories/{id}/runs returns 201" "201" "$run_code"
   rid="$(printf '%s' "$run_body" | jq -r '.id // empty')"
   status0="$(printf '%s' "$run_body" | jq -r '.status')"
   assert_nonempty J1-S4 "created run has run_id" "$rid"

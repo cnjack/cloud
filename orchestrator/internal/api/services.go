@@ -18,7 +18,7 @@ import (
 )
 
 // serviceInput is the normalized input for creating a service, shared by the
-// POST /projects/{id}/services handler and the POST /projects shim.
+// POST /projects/{id}/repositories handler and the POST /projects shim.
 type serviceInput struct {
 	Name          string
 	RepoURL       string // opaque URL; smart-parsed when OwnerName is empty
@@ -361,7 +361,13 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.DefaultModelID) != "" {
 		modelID := strings.TrimSpace(req.DefaultModelID)
-		models, modelErr := s.st.ListModelsForProject(r.Context(), projectID)
+		var models []domain.Model
+		var modelErr error
+		if accountID := principalFrom(r.Context()).userID(); accountID != "" {
+			models, modelErr = s.st.ListModelsForAccount(r.Context(), accountID)
+		} else {
+			models, modelErr = s.st.ListModelsForProject(r.Context(), projectID)
+		}
 		if modelErr != nil {
 			writeError(w, http.StatusInternalServerError, "internal", "could not validate service default model")
 			return
@@ -374,11 +380,11 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !granted {
-			writeError(w, http.StatusForbidden, "model_not_granted", "the default model is not authorized for this project")
+			writeError(w, http.StatusForbidden, "model_not_granted", "the default model is not authorized for this account")
 			return
 		}
 		svc.DefaultModelID = &modelID
-	} else if project.DefaultModelID != nil {
+	} else if principalFrom(r.Context()).userID() == "" && project.DefaultModelID != nil {
 		modelID := *project.DefaultModelID
 		svc.DefaultModelID = &modelID
 	}
@@ -719,20 +725,27 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Default model (D21): pointer presence — omitted = unchanged; "" = clear; an
-	// id must be granted to this service's project (else 400 model_not_granted).
+	// id must be granted directly to the interactive Account. Non-personal API
+	// principals retain the legacy Project grant boundary.
 	if req.DefaultModelID != nil {
 		id := strings.TrimSpace(*req.DefaultModelID)
 		if id == "" {
 			svc.DefaultModelID = nil
 		} else {
-			granted, gerr := s.projectGrantsModel(r.Context(), svc.ProjectID, id)
+			granted := false
+			var gerr error
+			if accountID := principalFrom(r.Context()).userID(); accountID != "" {
+				_, granted, gerr = s.executionAccountModel(r, accountID, id)
+			} else {
+				granted, gerr = s.projectGrantsModel(r.Context(), svc.ProjectID, id)
+			}
 			if gerr != nil {
 				writeError(w, http.StatusInternalServerError, "internal", "could not check model grant")
 				return
 			}
 			if !granted {
 				writeError(w, http.StatusBadRequest, "model_not_granted",
-					"that model is not authorized for this project — a cluster admin must grant it first")
+					"that model is not authorized for this account — a cluster admin must grant it first")
 				return
 			}
 			svc.DefaultModelID = &id

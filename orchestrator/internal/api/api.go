@@ -114,6 +114,7 @@ type Server struct {
 	// at create time. Production wraps *jtype.Factory.Client; a test injects a fake
 	// (ignoring the factory) so column validation is exercised without HTTP.
 	boardValidatorFor func(f *jtype.Factory, token string) boardValidator
+	agentBoardCache   *agentBoardMetadataCache
 	// jtypeDiscoveryFor builds a jtype discovery client (workspace + board pickers,
 	// D29) from a resolved Factory + token. Production wraps *jtype.Factory.Client;
 	// a test injects a fake so the owner-only discovery endpoints are exercised
@@ -178,6 +179,7 @@ type boardValidator interface {
 type jtypeDiscovery interface {
 	ListWorkspaces(ctx context.Context) ([]jtype.Workspace, error)
 	ListDocuments(ctx context.Context, workspace string) ([]jtype.Doc, error)
+	GetDocument(ctx context.Context, workspace, documentID string) (*jtype.Document, error)
 	GetBoard(ctx context.Context, workspace, boardRef string) (*jtype.Board, error)
 	GetBoardByDoc(ctx context.Context, workspace, docID string) (*jtype.Board, error)
 }
@@ -251,6 +253,7 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Default board validator: build a token-bound jtype client off the resolved
 	// factory. Overridden by tests with a fake that ignores the factory.
 	s.boardValidatorFor = func(f *jtype.Factory, token string) boardValidator { return f.Client(token) }
+	s.agentBoardCache = newAgentBoardMetadataCache(30*time.Second, 128)
 	// Default jtype discovery client (D29 pickers): same token-bound client; tests
 	// override with a fake.
 	s.jtypeDiscoveryFor = func(f *jtype.Factory, token string) jtypeDiscovery { return f.Client(token) }
@@ -437,6 +440,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/devices", s.authed(s.handleListDevices))
 	mux.Handle("GET /api/v1/account/settings", s.authed(s.handleGetAccountSettings))
 	mux.Handle("GET /api/v1/account/usage", s.authed(s.handleGetAccountUsage))
+	mux.Handle("GET /api/v1/account/models", s.authed(s.handleListAccountModels))
+	mux.Handle("GET /api/v1/account/repositories", s.authed(s.handleListAccountRepositories))
+	mux.Handle("POST /api/v1/account/tasks", s.authed(s.handleCreateAccountTask))
 	mux.Handle("PUT /api/v1/account/settings", s.authed(s.handlePutAccountSettings))
 	mux.Handle("GET /api/v1/devices/{id}", s.authed(s.handleGetDevice))
 	mux.Handle("DELETE /api/v1/devices/{id}", s.authed(s.handleDeleteDevice))
@@ -504,12 +510,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/automations/{aid}/usage", s.authed(s.handleGetAutomationUsage))
 	mux.Handle("POST /api/v1/automations/{aid}/executions", s.authed(s.handleRunAutomationNow))
 	mux.Handle("GET /api/v1/automations/{aid}/executions/{eid}", s.authed(s.handleGetAutomationExecution))
-	mux.Handle("GET /api/v1/services/{id}/kanban", s.authed(s.handleGetServiceKanban))
-	mux.Handle("GET /api/v1/services/{id}/usage", s.authed(s.handleGetServiceUsage))
-	mux.Handle("GET /api/v1/services/{id}/kanban/policy", s.authed(s.handleGetServiceKanbanPolicy))
-	mux.Handle("GET /api/v1/services/{id}/kanban/card-executions", s.authed(s.handleGetServiceKanbanCardExecutions))
-	mux.Handle("PUT /api/v1/services/{id}/kanban", s.authed(s.handlePutServiceKanban))
-	mux.Handle("DELETE /api/v1/services/{id}/kanban", s.authed(s.handleDeleteServiceKanban))
+	mux.Handle("GET /api/v1/repositories/{id}/agent-board", s.authed(s.handleGetServiceKanban))
+	mux.Handle("GET /api/v1/repositories/{id}/usage", s.authed(s.handleGetServiceUsage))
+	mux.Handle("GET /api/v1/repositories/{id}/agent-board/policy", s.authed(s.handleGetServiceKanbanPolicy))
+	mux.Handle("GET /api/v1/repositories/{id}/agent-board/card-executions", s.authed(s.handleGetServiceKanbanCardExecutions))
+	mux.Handle("POST /api/v1/repositories/{id}/agent-board/occurrences", s.authed(s.handleCreateServiceKanbanOccurrence))
+	mux.Handle("PUT /api/v1/repositories/{id}/agent-board", s.authed(s.handlePutServiceKanban))
+	mux.Handle("DELETE /api/v1/repositories/{id}/agent-board", s.authed(s.handleDeleteServiceKanban))
 	mux.Handle("GET /api/v1/projects/{id}/kanban/board/links", s.authed(s.handleListBoardEmbedLinks))
 	mux.Handle("GET /api/v1/projects/{id}/kanban/board/documents", s.authed(s.handleBoardListDocuments))
 	mux.Handle("GET /api/v1/projects/{id}/kanban/board/documents/{docID}", s.authed(s.handleBoardGetDocument))
@@ -552,19 +559,21 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/projects/{id}/members", s.authed(s.handleAddMember))
 	mux.Handle("DELETE /api/v1/projects/{id}/members/{userID}", s.authed(s.handleRemoveMember))
 
-	// Services (multitenant blueprint §4). A service is a repo config inside a
-	// project; runs are created against a service.
-	mux.Handle("POST /api/v1/projects/{id}/services", s.authed(s.handleCreateService))
-	mux.Handle("GET /api/v1/projects/{id}/services", s.authed(s.handleListServices))
-	mux.Handle("PATCH /api/v1/services/{id}", s.authed(s.handleUpdateService))
-	mux.Handle("DELETE /api/v1/services/{id}", s.authed(s.handleDeleteService))
-	// Branches are discovered from the Service's bound project plugin with a
+	// Repository is the public execution target. Project/Service remain storage
+	// and policy implementation details only.
+	mux.Handle("POST /api/v1/projects/{id}/repositories", s.authed(s.handleCreateService))
+	mux.Handle("GET /api/v1/projects/{id}/repositories", s.authed(s.handleListServices))
+	mux.Handle("GET /api/v1/repositories", s.authed(s.handleListRepositories))
+	mux.Handle("GET /api/v1/repositories/{id}", s.authed(s.handleGetRepository))
+	mux.Handle("PATCH /api/v1/repositories/{id}", s.authed(s.handleUpdateService))
+	mux.Handle("DELETE /api/v1/repositories/{id}", s.authed(s.handleDeleteService))
+	// Branches are discovered from the Repository's bound project plugin with a
 	// server-issued credential; the browser never receives a Git token.
-	mux.Handle("GET /api/v1/services/{id}/branches", s.authed(s.handleListServiceBranches))
-	mux.Handle("POST /api/v1/services/{id}/runs", s.authed(s.handleCreateServiceRun))
-	mux.Handle("POST /api/v1/services/{id}/attachments/intents", s.authed(s.handleCreateAttachmentIntent))
-	mux.Handle("PUT /api/v1/services/{id}/attachments/{stage}/content", s.authed(s.handleUploadAttachmentContent))
-	mux.Handle("GET /api/v1/services/{id}/runs", s.authed(s.handleListServiceRuns))
+	mux.Handle("GET /api/v1/repositories/{id}/branches", s.authed(s.handleListServiceBranches))
+	mux.Handle("POST /api/v1/repositories/{id}/runs", s.authed(s.handleCreateServiceRun))
+	mux.Handle("POST /api/v1/repositories/{id}/attachments/intents", s.authed(s.handleCreateAttachmentIntent))
+	mux.Handle("PUT /api/v1/repositories/{id}/attachments/{stage}/content", s.authed(s.handleUploadAttachmentContent))
+	mux.Handle("GET /api/v1/repositories/{id}/runs", s.authed(s.handleListServiceRuns))
 
 	// Run creation is service-scoped only (above); listing stays project-scoped.
 	mux.Handle("GET /api/v1/projects/{id}/runs", s.authed(s.handleListRuns))

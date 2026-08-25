@@ -16,7 +16,7 @@ import (
 // (so the list mirrors what they can actually access), falling back to the
 // global gitea PAT for the service principal / cluster admins with no linked
 // identity. The listing is read-only; adding a repo still goes through the
-// normal POST /projects/{id}/services authorization.
+// normal POST /projects/{id}/repositories authorization.
 func (s *Server) handleListProviderRepos(w http.ResponseWriter, r *http.Request) {
 	// Project-scoped API key (F12 / D24): forbidden. Repo enumeration is an
 	// onboarding / service-creation surface, not a member run action. Critically,

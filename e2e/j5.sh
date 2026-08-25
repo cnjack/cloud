@@ -156,10 +156,10 @@ j5_run() {
   # J5-S1: create a session run -> round 1 completes -> awaiting_input
   # ==========================================================================
   local run_resp run_code run_body rid status0 session0
-  run_resp="$(api_post_code "/services/$sid/runs" \
+  run_resp="$(api_post_code "/repositories/$sid/runs" \
     "$(jq -Rn --arg p 'session round 1: write a short status note' '{prompt:$p, session:true}')")"
   run_code="$(http_code "$run_resp")"; run_body="$(http_body "$run_resp")"
-  assert_eq J5-S1 "POST /services/{id}/runs {session:true} returns 201" "201" "$run_code"
+  assert_eq J5-S1 "POST /repositories/{id}/runs {session:true} returns 201" "201" "$run_code"
   rid="$(printf '%s' "$run_body" | jq -r '.id // empty')"
   status0="$(printf '%s' "$run_body" | jq -r '.status')"
   session0="$(printf '%s' "$run_body" | jq -r '.session')"

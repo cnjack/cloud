@@ -851,6 +851,8 @@ describe('mockClient — kanban board embed (Service Kanban)', () => {
     const binding = client.putServiceKanban(svc.id, {
       installation_id: plugin!.id!,
       board_ref: 'jtype.board',
+      work_column: 'doing',
+      model_id: 'mdl_gpt4o',
       enabled: true,
     });
     await flush(200);
@@ -878,7 +880,9 @@ describe('mockClient — kanban board embed (Service Kanban)', () => {
       installation_id: plugin.id!,
       board_ref: selected.ref,
       trigger_column: 'agent',
+      work_column: 'doing',
       done_column: 'shipped',
+      model_id: 'mdl_gpt4o',
       enabled: true,
     });
     await flush(200);

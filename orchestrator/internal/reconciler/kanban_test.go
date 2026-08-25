@@ -180,6 +180,31 @@ func TestWritebackSucceededPostsAndMoves(t *testing.T) {
 	}
 }
 
+func TestWritebackNoChangesStillMovesDone(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemStore()
+	run, _, _ := seedKanbanTerminal(t, st, domain.StatusSucceeded, "done")
+	if _, err := st.SetRunResult(ctx, run.ID, domain.RunResultNoChanges); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpdateRunDelivery(
+		ctx, run.ID, domain.DeliveryNotRequired, "", "", time.Now(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	fk := &fakeKanbanWriter{}
+	rec := wire(st, newWritebackRec(st), fk, "http://console")
+
+	rec.Tick(ctx)
+
+	if len(fk.comments) != 1 || !strings.Contains(fk.comments[0].body, "no code changes") {
+		t.Fatalf("no-change comment=%+v", fk.comments)
+	}
+	if len(fk.moves) != 1 || fk.moves[0].status != "done" {
+		t.Fatalf("successful no-change run must move Done: %+v", fk.moves)
+	}
+}
+
 func TestWritebackSucceededWaitsForDeliveryBeforeMovingDone(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemStore()

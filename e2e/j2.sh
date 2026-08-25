@@ -79,12 +79,12 @@ j2_run() {
 
   # --- J2-S5: (optional) fix repo then retry → succeeded ------------------
   # PATCH the SERVICE's repo_url to the good seed repo (repo edits are
-  # service-scoped now), then retry the failed original; the retry keeps the
+  # Repository-scoped now), then retry the failed original; the retry keeps the
   # same service_id so the corrected run should reach succeeded (PRD J2-S5).
   local patch_code
   curl -sS -o /dev/null -w '%{http_code}' -X PATCH \
     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-    -d "{\"repo_url\":\"$SEED_REPO\"}" "$API/services/$sid" >/tmp/j2-patch-code 2>/dev/null
+    -d "{\"repo_url\":\"$SEED_REPO\"}" "$API/repositories/$sid" >/tmp/j2-patch-code 2>/dev/null
   patch_code="$(cat /tmp/j2-patch-code)"; rm -f /tmp/j2-patch-code
   if [ "$patch_code" = "200" ]; then
     local fix_resp fix_body fix_rid fix_final

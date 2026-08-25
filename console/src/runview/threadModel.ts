@@ -1,4 +1,4 @@
-import type { Approval, Message, ThreadItem, ToolCall } from 'jcode-ui-core';
+import type { Approval, ApprovalOption, ThreadItem, ToolCall } from 'jcode-ui-core';
 import { groupTimeline } from './grouping';
 import { terminalStatusSeq } from './eventModel';
 import type {
@@ -7,27 +7,24 @@ import type {
   RunViewEvent,
 } from './types';
 
-/**
- * The published approval component exposes a fixed boolean allow/deny contract,
- * while Cloud must echo the exact option_id offered by ACP. Keep the package's
- * standard approval discriminant so the headless Thread can carry it, and retain
- * the lossless Cloud card for the host renderer.
- */
-export interface CloudApproval extends Approval {
-  permission: PermissionCardItem;
+export interface PermissionPresentationState {
+  decided?: Record<string, string>;
+  disabled?: boolean;
 }
 
-export interface CloudMessage extends Message {
-  /** Real Cloud author for a multi-user follow-up. */
-  author?: string;
-}
-
-export function toThreadItems(events: RunViewEvent[]): ThreadItem[] {
+export function toThreadItems(
+  events: RunViewEvent[],
+  permissionState: PermissionPresentationState = {},
+): ThreadItem[] {
   const finalStatusSeq = terminalStatusSeq(events);
-  return groupTimeline(events).map((item) => toThreadItem(item, finalStatusSeq));
+  return groupTimeline(events).map((item) => toThreadItem(item, finalStatusSeq, permissionState));
 }
 
-function toThreadItem(item: GroupedTimelineItem, finalStatusSeq?: number): ThreadItem {
+function toThreadItem(
+  item: GroupedTimelineItem,
+  finalStatusSeq: number | undefined,
+  permissionState: PermissionPresentationState,
+): ThreadItem {
   const timestamp = parseTimestamp(item.ts);
 
   switch (item.kind) {
@@ -45,7 +42,7 @@ function toThreadItem(item: GroupedTimelineItem, finalStatusSeq?: number): Threa
           timestamp,
           source: item.by || undefined,
           author: item.by || undefined,
-        } as CloudMessage,
+        },
       };
 
     case 'tool_card':
@@ -91,14 +88,16 @@ function toThreadItem(item: GroupedTimelineItem, finalStatusSeq?: number): Threa
 
     case 'permission_card': {
       const chosen = item.options.find((option) => option.optionId === item.resolvedOptionId);
-      const approval: CloudApproval = {
+      const approval: Approval = {
         id: item.requestId,
         tool_name: item.title,
         tool_args: JSON.stringify({ options: item.options }),
         is_external: false,
         resolved: item.status === 'resolved',
         approved: chosen?.kind.startsWith('allow') ?? false,
-        permission: item,
+        options: item.options.map(toApprovalOption),
+        resolvedOptionId: item.resolvedOptionId,
+        resolving: permissionState.disabled || !!permissionState.decided?.[item.requestId],
       };
       return { kind: 'approval', seq: item.seq, data: approval };
     }
@@ -153,6 +152,14 @@ function toThreadItem(item: GroupedTimelineItem, finalStatusSeq?: number): Threa
         timestamp,
       );
   }
+}
+
+function toApprovalOption(option: PermissionCardItem['options'][number]): ApprovalOption {
+  let kind: ApprovalOption['kind'] = 'custom';
+  if (option.kind === 'allow_once') kind = 'allow_once';
+  else if (option.kind === 'allow_always') kind = 'allow_always';
+  else if (option.kind.startsWith('reject') || option.kind === 'deny') kind = 'deny';
+  return { id: option.optionId, label: option.name, kind };
 }
 
 function message(

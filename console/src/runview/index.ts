@@ -10,7 +10,7 @@ export { PermissionCard } from '@jcloud/device-ui';
 export { groupTimeline } from './grouping';
 export { toTimelineItem, terminalStatusSeq } from './eventModel';
 export { toThreadItems } from './threadModel';
-export type { CloudApproval, CloudMessage } from './threadModel';
+export type { PermissionPresentationState } from './threadModel';
 
 export type {
   RunViewEvent,

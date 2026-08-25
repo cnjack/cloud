@@ -1,17 +1,19 @@
 package api
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/jtype"
-	"github.com/cnjack/jcloud/internal/modelcfg"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
@@ -21,12 +23,15 @@ const (
 )
 
 type serviceKanbanReq struct {
-	InstallationID string  `json:"installation_id"`
-	BoardRef       string  `json:"board_ref"`
-	TriggerColumn  *string `json:"trigger_column"`
-	WorkColumn     *string `json:"work_column"`
-	DoneColumn     *string `json:"done_column"`
-	Enabled        *bool   `json:"enabled"`
+	InstallationID     string  `json:"installation_id"`
+	BoardRef           string  `json:"board_ref"`
+	TriggerColumn      *string `json:"trigger_column"`
+	WorkColumn         *string `json:"work_column"`
+	DoneColumn         *string `json:"done_column"`
+	ModelID            string  `json:"model_id"`
+	ModelEffort        *string `json:"model_effort"`
+	ExecutionAccountID string  `json:"execution_account_id"`
+	Enabled            *bool   `json:"enabled"`
 }
 
 func (s *Server) serviceKanbanSpec(ctxReq *http.Request, svc *domain.Service) (*domain.PluginAutomationSpec, error) {
@@ -45,11 +50,11 @@ func (s *Server) serviceKanbanSpec(ctxReq *http.Request, svc *domain.Service) (*
 func (s *Server) loadServiceKanban(w http.ResponseWriter, r *http.Request, role domain.Role) (*domain.Service, *domain.PluginAutomationSpec, bool) {
 	svc, err := s.st.GetService(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, 404, "not_found", "service not found")
+		writeError(w, 404, "not_found", "repository not found")
 		return nil, nil, false
 	}
 	if err != nil {
-		writeError(w, 500, "internal", "could not load service")
+		writeError(w, 500, "internal", "could not load repository")
 		return nil, nil, false
 	}
 	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), svc.ProjectID, role) {
@@ -60,7 +65,7 @@ func (s *Server) loadServiceKanban(w http.ResponseWriter, r *http.Request, role 
 		return svc, nil, true
 	}
 	if err != nil {
-		writeError(w, 500, "internal", "could not load Service Kanban")
+		writeError(w, 500, "internal", "could not load Repository Agent Board")
 		return nil, nil, false
 	}
 	return svc, spec, true
@@ -72,17 +77,17 @@ func (s *Server) handleGetServiceKanban(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if spec == nil {
-		writeError(w, 404, "not_found", "Kanban is not enabled for this Service")
+		writeError(w, 404, "not_found", "Agent Board is not enabled for this Repository")
 		return
 	}
 	writeJSON(w, 200, spec)
 }
 
 type serviceKanbanPolicyView struct {
-	ServiceID   string `json:"service_id"`
-	ServiceName string `json:"service_name"`
-	Repository  string `json:"repository"`
-	Model       struct {
+	RepositoryID   string `json:"repository_id"`
+	RepositoryName string `json:"repository_name"`
+	Repository     string `json:"repository"`
+	Model          struct {
 		ID    string `json:"id,omitempty"`
 		Label string `json:"label"`
 	} `json:"model"`
@@ -116,11 +121,11 @@ func (s *Server) handleGetServiceKanbanPolicy(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if spec == nil || spec.Kanban == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Kanban is not enabled for this Service")
+		writeError(w, http.StatusNotFound, "not_found", "Agent Board is not enabled for this Repository")
 		return
 	}
 	view := serviceKanbanPolicyView{
-		ServiceID: svc.ID, ServiceName: svc.Name, Repository: svc.RepoOwnerName,
+		RepositoryID: svc.ID, RepositoryName: svc.Name, Repository: svc.RepoOwnerName,
 		Output: "comment_and_move_on_success",
 	}
 	if view.Repository == "" {
@@ -159,16 +164,16 @@ func (s *Server) handleGetServiceKanbanPolicy(w http.ResponseWriter, r *http.Req
 		}
 	}
 	if !spec.Automation.Enabled {
-		block("binding_disabled", "project_owner")
+		block("binding_disabled", "repository_owner")
 	}
 	if strings.TrimSpace(spec.Kanban.WorkColumn) == "" {
-		block("work_column_not_configured", "project_owner")
+		block("work_column_not_configured", "repository_owner")
 	}
 	installation, err := s.st.GetPluginInstallation(r.Context(), spec.Kanban.InstallationID)
 	if err != nil || installation.Provider != domain.PluginJType ||
 		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" ||
 		installation.WorkspaceID == "" || !installation.TokenSet() {
-		block("plugin_unavailable", "project_owner")
+		block("plugin_unavailable", "repository_owner")
 	} else {
 		view.Board.WorkspaceID = installation.WorkspaceID
 		cfg, cfgErr := s.st.GetProviderConfig(r.Context(), domain.PluginJType)
@@ -178,19 +183,19 @@ func (s *Server) handleGetServiceKanbanPolicy(w http.ResponseWriter, r *http.Req
 		}
 	}
 	if strings.HasPrefix(spec.Automation.LastError, "event_feed_unavailable:") {
-		block("event_feed_unavailable", "project_owner")
+		block("event_feed_unavailable", "repository_owner")
 	}
 	if strings.HasPrefix(spec.Automation.LastError, "bootstrap_unavailable:") {
-		block("bootstrap_unavailable", "project_owner")
+		block("bootstrap_unavailable", "repository_owner")
 	}
 	if strings.HasPrefix(spec.Automation.LastError, "card_index_unavailable:") {
-		block("card_index_unavailable", "project_owner")
+		block("card_index_unavailable", "repository_owner")
 	}
 	if strings.HasPrefix(spec.Automation.LastError, "board_validation_unavailable:") {
-		block("board_validation_unavailable", "project_owner")
+		block("board_validation_unavailable", "repository_owner")
 	}
 	if strings.HasPrefix(spec.Automation.LastError, "board_drift:") {
-		block("board_drift", "project_owner")
+		block("board_drift", "repository_owner")
 	}
 	if blocker, repairRole := s.serviceKanbanRepositoryBlocker(r, svc); blocker != "" {
 		block(blocker, repairRole)
@@ -198,17 +203,28 @@ func (s *Server) handleGetServiceKanbanPolicy(w http.ResponseWriter, r *http.Req
 	if s.cfg.DisableK8s {
 		block("runner_unavailable", "cluster_admin")
 	}
-	selection, outcome, selectErr := s.models.SelectModel(
-		r.Context(), svc.ProjectID, deref(svc.DefaultModelID), spec.Automation.ModelID,
-	)
-	if selectErr != nil || outcome != modelcfg.SelectOK {
-		block("model_not_configured", "project_owner")
+	project, ownerErr := s.st.GetProject(r.Context(), svc.ProjectID)
+	if ownerErr != nil {
+		block("repository_unavailable", "repository_owner")
+		view.Model.Label = "Not configured"
+	} else if spec.Automation.ExecutionAccountID == "" || project.OwnerUserID != spec.Automation.ExecutionAccountID {
+		block("execution_account_not_owner", "repository_owner")
+		view.Model.Label = "Not configured"
+	} else if model, authorized, selectErr := s.executionAccountModel(
+		r, spec.Automation.ExecutionAccountID, spec.Automation.ModelID,
+	); selectErr != nil {
+		block("model_authorization_unavailable", "repository_owner")
+		view.Model.Label = "Not configured"
+	} else if !authorized {
+		block("model_not_authorized", "repository_owner")
 		view.Model.Label = "Not configured"
 	} else {
-		view.Model.ID = selection.ModelID
-		view.Model.Label = selection.ModelName
-		if !selection.SupportsEffort(spec.Automation.ModelEffort) {
-			block("model_effort_unsupported", "project_owner")
+		view.Model.ID = model.ID
+		view.Model.Label = model.Name
+		effort := strings.TrimSpace(spec.Automation.ModelEffort)
+		if (model.Capabilities.Reasoning && (effort == "" || effort == "auto" || !domain.ValidModelEffort(effort))) ||
+			(!model.Capabilities.Reasoning && effort != "") {
+			block("model_effort_unsupported", "repository_owner")
 		}
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -216,33 +232,32 @@ func (s *Server) handleGetServiceKanbanPolicy(w http.ResponseWriter, r *http.Req
 
 func (s *Server) serviceKanbanRepositoryBlocker(r *http.Request, svc *domain.Service) (string, string) {
 	if svc == nil || svc.DeletingAt != nil {
-		return "service_unavailable", "project_owner"
+		return "repository_unavailable", "repository_owner"
 	}
 	switch svc.RepoKind {
 	case domain.RepoKindRaw:
 		if strings.TrimSpace(svc.RawRepoURL) == "" {
-			return "repository_not_configured", "project_owner"
+			return "repository_not_configured", "repository_owner"
 		}
 		return "", ""
 	case domain.RepoKindProvider:
 		if !domain.ValidProvider(svc.Provider) || strings.TrimSpace(svc.RepoOwnerName) == "" {
-			return "repository_not_configured", "project_owner"
+			return "repository_not_configured", "repository_owner"
 		}
 	default:
-		return "repository_not_configured", "project_owner"
+		return "repository_not_configured", "repository_owner"
 	}
 	binding, err := s.st.GetServiceRepositoryBinding(r.Context(), svc.ID)
 	if err != nil || binding.InstallationID == "" || strings.TrimSpace(binding.CloneURL) == "" {
-		return "repository_unavailable", "project_owner"
+		return "repository_unavailable", "repository_owner"
 	}
 	installation, err := s.st.GetPluginInstallation(r.Context(), binding.InstallationID)
 	if err != nil || installation.Provider != domain.ProviderKind(svc.Provider) ||
 		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" {
-		return "provider_unavailable", "project_owner"
+		return "provider_unavailable", "repository_owner"
 	}
-	if (installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
-		(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
-		return "provider_unavailable", "project_owner"
+	if !installation.RuntimeCredentialSet() {
+		return "provider_unavailable", "repository_owner"
 	}
 	cfg, err := s.st.GetProviderConfig(r.Context(), installation.Provider)
 	if err != nil || !cfg.PluginEnabled || strings.TrimSpace(cfg.BaseURL) == "" ||
@@ -258,7 +273,7 @@ func (s *Server) handleGetServiceKanbanCardExecutions(w http.ResponseWriter, r *
 		return
 	}
 	if spec == nil || spec.Kanban == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Kanban is not enabled for this Service")
+		writeError(w, http.StatusNotFound, "not_found", "Agent Board is not enabled for this Repository")
 		return
 	}
 	workspaceID := strings.TrimSpace(r.URL.Query().Get("workspace_id"))
@@ -269,7 +284,7 @@ func (s *Server) handleGetServiceKanbanCardExecutions(w http.ResponseWriter, r *
 	}
 	installation, err := s.st.GetPluginInstallation(r.Context(), spec.Kanban.InstallationID)
 	if err != nil || installation.WorkspaceID != workspaceID {
-		writeError(w, http.StatusNotFound, "not_found", "Card is not part of this Service Kanban")
+		writeError(w, http.StatusNotFound, "not_found", "Card is not part of this Repository Agent Board")
 		return
 	}
 	usage, err := s.st.GetUsageSummary(r.Context(), domain.UsageSummaryQuery{
@@ -353,6 +368,121 @@ func (s *Server) handleGetServiceKanbanCardExecutions(w http.ResponseWriter, r *
 			DocumentPath: claim.DocumentPath, ExternalRefAvailable: claim.ExternalRefAvailable,
 		},
 		Items: items, NextCursor: nextCursor, UsageSummary: usage,
+	})
+}
+
+type createServiceKanbanOccurrenceReq struct {
+	WorkspaceID    string `json:"workspace_id"`
+	DocumentPath   string `json:"document_path"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type createServiceKanbanOccurrenceView struct {
+	Occurrence serviceKanbanExecutionItem `json:"occurrence"`
+	Replayed   bool                       `json:"replayed"`
+}
+
+func (s *Server) handleCreateServiceKanbanOccurrence(w http.ResponseWriter, r *http.Request) {
+	svc, spec, ok := s.loadServiceKanban(w, r, domain.RoleMember)
+	if !ok {
+		return
+	}
+	if spec == nil || spec.Kanban == nil || !spec.Automation.Enabled {
+		writeError(w, http.StatusConflict, "agent_board_disabled", "Agent Board is not enabled for this Repository")
+		return
+	}
+	var req createServiceKanbanOccurrenceReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
+	req.DocumentPath = strings.TrimSpace(req.DocumentPath)
+	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	normalized := strings.ReplaceAll(req.DocumentPath, "\\", "/")
+	cleaned := path.Clean(normalized)
+	if req.WorkspaceID == "" || req.IdempotencyKey == "" || len(req.IdempotencyKey) > 256 ||
+		cleaned != normalized || strings.HasPrefix(cleaned, "/") ||
+		(!strings.HasPrefix(cleaned, "cards/") && !strings.HasPrefix(cleaned, "jcode-automation/")) ||
+		!strings.HasSuffix(strings.ToLower(cleaned), ".md") {
+		writeError(w, http.StatusBadRequest, "bad_request", "workspace_id, a valid Card document_path, and idempotency_key are required")
+		return
+	}
+	installation, err := s.st.GetPluginInstallation(r.Context(), spec.Kanban.InstallationID)
+	if err != nil || installation.ProjectID != svc.ProjectID || installation.Provider != domain.PluginJType ||
+		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" ||
+		installation.WorkspaceID != req.WorkspaceID {
+		writeError(w, http.StatusConflict, "plugin_unavailable", "reconnect the Repository JType Plugin before running this Card")
+		return
+	}
+	client, ok := s.pluginJtypeClient(w, r, installation)
+	if !ok {
+		return
+	}
+	documents, err := client.ListDocuments(r.Context(), req.WorkspaceID)
+	if err != nil {
+		s.writeDiscoveryError(w, req.WorkspaceID, err)
+		return
+	}
+	var documentID string
+	for i := range documents {
+		if documents[i].Path == cleaned {
+			documentID = documents[i].ID
+			break
+		}
+	}
+	if documentID == "" {
+		writeError(w, http.StatusNotFound, "card_not_found", "the Card is no longer available in JType")
+		return
+	}
+	document, err := client.GetDocument(r.Context(), req.WorkspaceID, documentID)
+	if err != nil {
+		s.writeDiscoveryError(w, req.WorkspaceID, err)
+		return
+	}
+	card := jtype.ParseCard(document.Content)
+	if document.Path != cleaned || card.Board != spec.Kanban.BoardRef || strings.TrimSpace(card.Status) == "" {
+		writeError(w, http.StatusConflict, "card_not_on_board", "the document is not a Card on this Repository Agent Board")
+		return
+	}
+	principal := principalFrom(r.Context())
+	actor := "Cloud user"
+	if principal != nil && principal.user != nil && strings.TrimSpace(principal.user.DisplayName) != "" {
+		actor = strings.TrimSpace(principal.user.DisplayName)
+	}
+	key := sha256.Sum256([]byte(documentID + "\x00" + req.IdempotencyKey))
+	result, err := s.st.ObservePluginKanbanCard(r.Context(), store.PluginKanbanObservation{
+		AutomationID: spec.Automation.ID, ServiceID: svc.ID,
+		InstallationID: installation.ID, WorkspaceID: req.WorkspaceID,
+		DocumentID: documentID, DocumentPath: cleaned,
+		TriggerColumn: spec.Kanban.TriggerColumn, DoneColumn: spec.Kanban.DoneColumn,
+		ObservedColumn: card.Status, EventKey: "manual:" + base64.RawURLEncoding.EncodeToString(key[:]),
+		ActorDisplay: actor, Manual: true, ObservedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not create the Card occurrence")
+		return
+	}
+	if result.Occurrence == nil {
+		code := "occurrence_active"
+		message := "this Card already has an active Agent run"
+		if result.SuppressedReason == store.PluginKanbanWritebackPending {
+			code = "writeback_pending"
+			message = "the previous Agent run is still writing its result back to this Card"
+		} else if result.SuppressedReason == "" {
+			writeError(w, http.StatusInternalServerError, "occurrence_not_created", "the Card occurrence was not created")
+			return
+		}
+		writeError(w, http.StatusConflict, code, message)
+		return
+	}
+	if result.SuppressedReason != "" {
+		writeError(w, http.StatusConflict, "occurrence_active", "this Card already has an active Agent run")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, createServiceKanbanOccurrenceView{
+		Occurrence: serviceKanbanExecutionView(*result.Occurrence, nil),
+		Replayed:   !result.Created,
 	})
 }
 
@@ -462,7 +592,7 @@ func serviceKanbanExecutionView(occurrence domain.PluginKanbanOccurrence, run *d
 		status = domain.KanbanOccurrenceBlocked
 		reasonCode = "run_unavailable"
 		reasonMessage = "The linked Cloud Run is no longer available."
-		repairRoleCode = "project_owner"
+		repairRoleCode = "repository_owner"
 	}
 	summary := "Card entry received"
 	switch status {
@@ -520,7 +650,7 @@ func serviceKanbanExecutionView(occurrence domain.PluginKanbanOccurrence, run *d
 }
 
 func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) {
-	svc, current, ok := s.loadServiceKanban(w, r, domain.RoleMember)
+	svc, current, ok := s.loadServiceKanban(w, r, domain.RoleOwner)
 	if !ok {
 		return
 	}
@@ -543,6 +673,64 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 400, "bad_request", "installation_id and board_ref are required")
 		return
 	}
+	modelID := strings.TrimSpace(req.ModelID)
+	modelEffort := ""
+	executionAccountID := strings.TrimSpace(req.ExecutionAccountID)
+	if current != nil {
+		if modelID == "" {
+			modelID = current.Automation.ModelID
+		}
+		modelEffort = current.Automation.ModelEffort
+		if executionAccountID == "" {
+			executionAccountID = current.Automation.ExecutionAccountID
+		}
+	}
+	if req.ModelEffort != nil {
+		modelEffort = strings.TrimSpace(*req.ModelEffort)
+	}
+	project, projectErr := s.st.GetProject(r.Context(), svc.ProjectID)
+	if projectErr != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not load repository owner")
+		return
+	}
+	if executionAccountID == "" {
+		executionAccountID = project.OwnerUserID
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	if enabled {
+		if modelID == "" {
+			writeError(w, http.StatusBadRequest, "model_required", "model_id is required when Agent Board is enabled")
+			return
+		}
+		if executionAccountID == "" {
+			writeError(w, http.StatusBadRequest, "execution_account_required", "execution_account_id is required when Agent Board is enabled")
+			return
+		}
+		if project.OwnerUserID == "" || executionAccountID != project.OwnerUserID {
+			writeError(w, http.StatusConflict, "execution_account_not_owner", "the execution account must own this repository")
+			return
+		}
+		model, authorized, modelErr := s.executionAccountModel(r, executionAccountID, modelID)
+		if modelErr != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "could not validate execution model")
+			return
+		}
+		if !authorized {
+			writeError(w, http.StatusConflict, "model_not_authorized", "the selected model is not authorized for the execution account")
+			return
+		}
+		if model.Capabilities.Reasoning && (modelEffort == "" || modelEffort == "auto" || !domain.ValidModelEffort(modelEffort)) {
+			writeError(w, http.StatusBadRequest, "bad_request", "model_effort must be one of low, medium, or high for a reasoning model")
+			return
+		}
+		if modelEffort != "" && !model.Capabilities.Reasoning {
+			writeError(w, http.StatusConflict, "model_effort_unsupported", "the selected model does not support reasoning effort")
+			return
+		}
+	}
 	triggerColumn := defaultKanbanTriggerColumn
 	workColumn := ""
 	doneColumn := defaultKanbanDoneColumn
@@ -560,27 +748,27 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 	if req.DoneColumn != nil {
 		doneColumn = strings.TrimSpace(*req.DoneColumn)
 	}
-	if triggerColumn == "" {
-		writeError(w, 400, "bad_request", "trigger_column is required")
+	if triggerColumn == "" || workColumn == "" {
+		writeError(w, 400, "bad_request", "trigger_column and work_column are required")
 		return
 	}
-	if workColumn != "" && (workColumn == triggerColumn || workColumn == doneColumn) {
-		writeError(w, 400, "bad_request", "work_column must differ from trigger_column and done_column")
+	if workColumn == triggerColumn || (doneColumn != "" && (doneColumn == triggerColumn || doneColumn == workColumn)) {
+		writeError(w, 400, "bad_request", "trigger_column, work_column, and configured done_column must be distinct")
 		return
 	}
 	in, err := s.st.GetPluginInstallation(r.Context(), req.InstallationID)
 	if err != nil || in.ProjectID != svc.ProjectID || in.Provider != domain.PluginJType || in.Status != domain.PluginStatusEnabled || in.LastHealthError != "" || in.WorkspaceID == "" {
-		writeError(w, 409, "plugin_unavailable", "enable and configure the Project JType Plugin first")
+		writeError(w, 409, "plugin_unavailable", "connect and configure the Repository JType Provider first")
 		return
 	}
 	cfg, err := s.st.GetProviderConfig(r.Context(), domain.PluginJType)
 	if err != nil || !cfg.PluginEnabled || strings.TrimSpace(cfg.BaseURL) == "" || cfg.ConfigRevision != in.ConfigRevision || !in.TokenSet() {
-		writeError(w, 409, "plugin_unavailable", "reconnect the Project JType Plugin before enabling Kanban")
+		writeError(w, 409, "plugin_unavailable", "reconnect the Repository JType Provider before enabling Agent Board")
 		return
 	}
 	token, tokenOK := s.pluginAccessToken(in)
 	if !tokenOK {
-		writeError(w, 409, "plugin_unavailable", "reconnect the Project JType Plugin before enabling Kanban")
+		writeError(w, 409, "plugin_unavailable", "reconnect the Repository JType Provider before enabling Agent Board")
 		return
 	}
 	canonicalBoardRef := ""
@@ -615,7 +803,12 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		factory := jtype.NewFactory(cfg.BaseURL, 20*time.Second)
-		board, boardErr := s.boardValidatorFor(factory, token).GetBoard(r.Context(), in.WorkspaceID, req.BoardRef)
+		cacheKey := strings.Join([]string{
+			in.ID, strconv.FormatInt(in.ConfigRevision, 10), in.WorkspaceID, req.BoardRef,
+		}, "|")
+		board, boardErr := s.agentBoardCache.get(r.Context(), cacheKey, func(ctx context.Context) (*jtype.Board, error) {
+			return s.boardValidatorFor(factory, token).GetBoard(ctx, in.WorkspaceID, req.BoardRef)
+		})
 		if boardErr != nil {
 			s.writeDiscoveryError(w, in.WorkspaceID, boardErr)
 			return
@@ -652,16 +845,12 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 		}
 		other, getErr := s.st.GetPluginAutomationSpec(r.Context(), item.ID)
 		if getErr == nil && other.Kanban != nil && other.Kanban.InstallationID == req.InstallationID && other.Kanban.BoardRef == canonicalBoardRef {
-			writeError(w, 409, "board_already_bound", "this board is already enabled for another Service")
+			writeError(w, 409, "board_already_bound", "this board is already connected to another Repository")
 			return
 		}
 	}
-	enabled := true
-	if req.Enabled != nil {
-		enabled = *req.Enabled
-	}
 	now := time.Now().UTC()
-	a := &domain.PluginAutomation{ID: domain.NewID(), ServiceID: svc.ID, InstallationID: req.InstallationID, Name: "Kanban", TriggerKind: "kanban", PromptTemplate: "Complete the task described by the JType card.", Enabled: enabled, IgnoreJCode: true, CreatedBy: principalFrom(r.Context()).userID(), CreatedAt: now}
+	a := &domain.PluginAutomation{ID: domain.NewID(), ServiceID: svc.ID, InstallationID: req.InstallationID, Name: "Agent Board", TriggerKind: "kanban", RunKind: domain.RunKindAgent, PromptTemplate: "Complete the task described by the JType card.", ModelID: modelID, ModelEffort: modelEffort, ExecutionAccountID: executionAccountID, Enabled: enabled, IgnoreJCode: true, CreatedBy: principalFrom(r.Context()).userID(), CreatedAt: now}
 	trigger := &domain.KanbanTrigger{
 		AutomationID: a.ID, InstallationID: req.InstallationID, BoardRef: canonicalBoardRef,
 		TriggerColumn: triggerColumn, TriggerLabel: triggerLabel,
@@ -671,7 +860,7 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 	if current == nil {
 		if err := s.st.CreatePluginAutomation(r.Context(), a, nil, nil, trigger, nil); err != nil {
 			if errors.Is(err, store.ErrAlreadyExists) {
-				writeError(w, 409, "board_already_bound", "this Service or board already has a Kanban binding")
+				writeError(w, 409, "board_already_bound", "this Repository or board already has an Agent Board connection")
 				return
 			}
 			writeError(w, 500, "internal", "could not enable Kanban")
@@ -684,7 +873,7 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 		trigger.AutomationID = a.ID
 		if err := s.st.ReplacePluginAutomationSpec(r.Context(), a, nil, nil, trigger, nil); err != nil {
 			if errors.Is(err, store.ErrAlreadyExists) {
-				writeError(w, 409, "board_already_bound", "this board is already enabled for another Service")
+				writeError(w, 409, "board_already_bound", "this board is already connected to another Repository")
 				return
 			}
 			writeError(w, 500, "internal", "could not update Kanban")
@@ -699,13 +888,35 @@ func (s *Server) handlePutServiceKanban(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, spec)
 }
 
+func (s *Server) executionAccountModel(r *http.Request, accountID, modelID string) (domain.Model, bool, error) {
+	models, err := s.st.ListModelsForAccount(r.Context(), strings.TrimSpace(accountID))
+	if err != nil {
+		return domain.Model{}, false, err
+	}
+	for i := range models {
+		if models[i].ID == modelID {
+			return models[i], true, nil
+		}
+	}
+	return domain.Model{}, false, nil
+}
+
 func (s *Server) handleDeleteServiceKanban(w http.ResponseWriter, r *http.Request) {
-	_, spec, ok := s.loadServiceKanban(w, r, domain.RoleMember)
+	_, spec, ok := s.loadServiceKanban(w, r, domain.RoleOwner)
 	if !ok {
 		return
 	}
 	if spec == nil {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	active, err := s.st.HasActivePluginKanbanOccurrences(r.Context(), spec.Automation.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not check Agent Board occurrences")
+		return
+	}
+	if active {
+		writeError(w, http.StatusConflict, "active_occurrences", "finish or resolve active Card executions before disconnecting this Agent Board")
 		return
 	}
 	// Disable new polling without deleting claims for already-started runs.

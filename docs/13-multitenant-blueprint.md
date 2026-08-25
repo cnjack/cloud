@@ -155,11 +155,11 @@ SSE/下载的 `?access_token=` 同样接受 session token 或 CONSOLE_TOKEN。
 
 ```
 POST /api/v1/projects                {name}                      → 建 project(owner=当前用户)
-POST /api/v1/projects/{id}/services  {name?,repo_url|{provider,owner_name},git_mode,default_branch?}
-GET  /api/v1/projects/{id}/services
-PATCH/DELETE /api/v1/services/{id}
-POST /api/v1/services/{id}/runs      {prompt}                    → 发 run
-GET  /api/v1/services/{id}/runs
+POST /api/v1/projects/{id}/repositories  {name?,repo_url|{provider,owner_name},git_mode,default_branch?}
+GET  /api/v1/projects/{id}/repositories
+PATCH/DELETE /api/v1/repositories/{id}
+POST /api/v1/repositories/{id}/runs      {prompt}                    → 发 run
+GET  /api/v1/repositories/{id}/runs
 POST /api/v1/runs/{id}/review                                    → 建 review run(kind=review,同 service)
 GET  /api/v1/runs/{id}/pr            → {url,state,review_runs:[...]}(state 实时查 provider,查不到给 unknown)
 

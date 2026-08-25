@@ -143,10 +143,53 @@ cleanup_projects() {
 # Domain helpers.
 # ---------------------------------------------------------------------------
 
-# create_project <name> <repo_url> -> prints "<project_id>\t<service_id>\t<http_code>".
-# Two-step now that a project is a pure container: POST /projects {name}, then
-# POST /projects/{id}/services (name 'default', branch main). The code is the
-# first failing step's (201 when both succeeded); ids may be empty on error.
+# seed_raw_repository <project_id> <name> <repo_url> -> prints the Repository id.
+# Bare Git URLs are intentionally absent from the product API. The local rig
+# still uses its in-cluster git daemon, so this helper creates only the raw
+# Repository fixture directly in Postgres; every product action then uses the
+# public Repository API.
+seed_raw_repository() {
+  local pid="$1" name="$2" repo_url="$3" sid pg_pod
+  case "$pid:$name:$repo_url" in
+    *[!a-zA-Z0-9_./:@-]*) return 1 ;;
+  esac
+  sid="e2e-repository-$(date +%s)-$RANDOM"
+  pg_pod="$(kubectl --context "$KCTX" -n "$NAMESPACE" get pod \
+    -l app.kubernetes.io/name=postgres -o jsonpath='{.items[0].metadata.name}')"
+  kubectl --context "$KCTX" -n "$NAMESPACE" exec "$pg_pod" -- \
+    psql -U jcloud -d jcloud -v ON_ERROR_STOP=1 -tAc \
+    "INSERT INTO services(id,project_id,name,repo_kind,raw_repo_url,default_branch,git_mode,created_at) VALUES(\$\$$sid\$\$,\$\$$pid\$\$,\$\$$name\$\$,\$\$raw\$\$,\$\$$repo_url\$\$,\$\$main\$\$,\$\$readonly\$\$,now()) RETURNING id" \
+    | sed -n '1p'
+}
+
+# seed_e2e_project_model <project_id>
+#
+# API-key journeys do not have a personal Account to receive an Account model
+# grant. Give their hidden Project container a real, explicitly labelled e2e
+# model that points at the rig's in-cluster mockllm. This is test setup only;
+# production manifests never reference mockllm and runtime paths still fail
+# visibly when no authorized model exists.
+seed_e2e_project_model() {
+  local pid="$1" pg_pod
+  case "$pid" in *[!a-zA-Z0-9_-]*) return 1 ;; esac
+  pg_pod="$(kubectl --context "$KCTX" -n "$NAMESPACE" get pod \
+    -l app.kubernetes.io/name=postgres -o jsonpath='{.items[0].metadata.name}')"
+  kubectl --context "$KCTX" -n "$NAMESPACE" exec "$pg_pod" -- \
+    psql -U jcloud -d jcloud -v ON_ERROR_STOP=1 -qAtc \
+    "INSERT INTO model_providers(id,name,kind,base_url,auth_type,catalog_mode,updated_by)
+       VALUES(\$\$e2e-mock-provider\$\$,\$\$E2E mockllm\$\$,\$\$custom\$\$,\$\$http://mockllm.jcloud.svc.cluster.local:8081/v1\$\$,\$\$none\$\$,\$\$disabled\$\$,\$\$e2e\$\$)
+       ON CONFLICT(id) DO UPDATE SET base_url=excluded.base_url,auth_type=excluded.auth_type,updated_at=now();
+     INSERT INTO model_configs(id,provider_id,name,base_url,model_name,model_id,context_window,supports_tools,model_source,enabled,updated_by)
+       VALUES(\$\$e2e-mock-model\$\$,\$\$e2e-mock-provider\$\$,\$\$E2E mock model\$\$,\$\$http://mockllm.jcloud.svc.cluster.local:8081/v1\$\$,\$\$mock/mock-model\$\$,\$\$mock-model\$\$,128000,true,\$\$custom\$\$,true,\$\$e2e\$\$)
+       ON CONFLICT(id) DO UPDATE SET base_url=excluded.base_url,enabled=true,updated_at=now();
+     INSERT INTO model_grants(model_id,project_id) VALUES(\$\$e2e-mock-model\$\$,\$\$$pid\$\$)
+       ON CONFLICT DO NOTHING;"
+}
+
+# create_project <name> <repo_url> -> prints "<project_id>\t<repository_id>\t<http_code>".
+# The Project is a hidden ownership/concurrency fixture and the raw Repository
+# is seeded by seed_raw_repository because the production connect API accepts
+# provider-selected repositories only.
 create_project() {
   local presp pcode pbody pid
   presp="$(api_post_code "/projects" "{\"name\":\"$1\"}")"
@@ -156,18 +199,20 @@ create_project() {
     printf '%s\t%s\t%s' "$pid" "" "$pcode"
     return
   fi
-  local sresp scode sbody sid
-  sresp="$(api_post_code "/projects/$pid/services" \
-    "{\"name\":\"default\",\"repo_url\":\"$2\",\"default_branch\":\"main\"}")"
-  scode="$(http_code "$sresp")"; sbody="$(http_body "$sresp")"
-  sid="$(printf '%s' "$sbody" | jq -r '.id // empty')"
+  seed_e2e_project_model "$pid" || {
+    printf '%s\t%s\t%s' "$pid" "" "500"
+    return
+  }
+  local scode sid
+  sid="$(seed_raw_repository "$pid" "default" "$2")"
+  if [ -n "$sid" ]; then scode="201"; else scode="500"; fi
   printf '%s\t%s\t%s' "$pid" "$sid" "$scode"
 }
 
 # create_run <service_id> <prompt> -> prints "<id>\t<http_code>".
-# Runs are service-scoped (the project-level POST /projects/{id}/runs is gone).
+# Runs are Repository-scoped (the project-level POST /projects/{id}/runs is gone).
 create_run() {
-  local resp; resp="$(api_post_code "/services/$1/runs" "{\"prompt\":$(jq -Rn --arg p "$2" '$p')}")"
+  local resp; resp="$(api_post_code "/repositories/$1/runs" "{\"prompt\":$(jq -Rn --arg p "$2" '$p')}")"
   local code body id
   code="$(http_code "$resp")"; body="$(http_body "$resp")"
   id="$(printf '%s' "$body" | jq -r '.id // empty')"
@@ -248,7 +293,7 @@ latency_spotcheck() {
 
   # Create a dedicated run and immediately open a live stream.
   local resp body rid
-  resp="$(api_post_code "/services/$sid/runs" "{\"prompt\":\"latency sample run\"}")"
+  resp="$(api_post_code "/repositories/$sid/runs" "{\"prompt\":\"latency sample run\"}")"
   body="$(http_body "$resp")"
   rid="$(printf '%s' "$body" | jq -r '.id // empty')"
   if [ -z "$rid" ]; then info "could not create latency run; skipping"; return 0; fi

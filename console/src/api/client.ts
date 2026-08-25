@@ -14,6 +14,8 @@ import type {
 } from 'jtype-board-react';
 import type {
   AddMemberInput,
+  AccountRepositoryCatalog,
+  AccountTaskResponse,
   ApiKey,
   ApiKeysEnvelope,
   AuthProviderInfo,
@@ -23,6 +25,8 @@ import type {
   ClusterProviderConfig,
   CreateApiKeyInput,
   CreateApiKeyResponse,
+  CreateKanbanCardOccurrenceInput,
+  CreateKanbanCardOccurrenceResponse,
   CreateProjectAutomationInput,
   CreateProjectInput,
   CreateModelInput,
@@ -58,7 +62,9 @@ import type {
   ScmProviderCapabilities,
   SetupStatus,
   SetupInput,
+  StartAccountTaskInput,
   ProjectModels,
+  ProjectModel,
   ProjectsEnvelope,
   ProviderRepo,
   Run,
@@ -128,6 +134,10 @@ export interface ApiClient {
   getMe(): Promise<Me>;
 
   listProjects(): Promise<Project[]>;
+  /** Repositories visible to the current Account; no Cloud association required. */
+  listAccountRepositories(q?: string): Promise<AccountRepositoryCatalog>;
+  /** Resolve an Account repository and create its task in one request. */
+  startAccountTask(input: StartAccountTaskInput): Promise<AccountTaskResponse>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(id: string): Promise<Project>;
   /** PATCH /projects/{id} — only the provided fields are updated (11-api.md §2.1). */
@@ -234,6 +244,8 @@ export interface ApiClient {
   /* ---- model catalog + account/project grants (D21) --------------------- */
   /** GET /api/v1/system/models — the whole catalog (cluster-admin). */
   listModels(): Promise<Model[]>;
+  /** GET /api/v1/account/models — models directly authorized for this Account. */
+  listAccountModels(): Promise<ProjectModel[]>;
   /** POST /api/v1/system/models — add a model (cluster-admin). */
   createModel(input: CreateModelInput): Promise<Model>;
   /** PATCH /api/v1/system/models/{id} — edit a model (cluster-admin). */
@@ -303,13 +315,17 @@ export interface ApiClient {
   revokeApiKey(projectId: string, keyId: string): Promise<void>;
 
   /* ---- services (blueprint §4) ------------------------------------------- */
-  /** GET /api/v1/projects/{id}/services — the project's repo configurations. */
+  /** GET /api/v1/repositories — every Repository visible to the current Account. */
+  listRepositories(): Promise<Service[]>;
+  /** GET /api/v1/repositories/{id} — one Repository detail. */
+  getRepository(repositoryId: string): Promise<Service>;
+  /** GET /api/v1/projects/{id}/repositories — the project's repo configurations. */
   listServices(projectId: string): Promise<Service[]>;
-  /** POST /api/v1/projects/{id}/services — add a repository to a project. */
+  /** POST /api/v1/projects/{id}/repositories — add a repository to a project. */
   createService(projectId: string, input: CreateServiceInput): Promise<Service>;
-  /** PATCH /api/v1/services/{id} — edit a service (owner); default model (D21). */
+  /** PATCH /api/v1/repositories/{id} — edit a service (owner); default model (D21). */
   updateService(serviceId: string, input: UpdateServiceInput): Promise<Service>;
-  /** DELETE /api/v1/services/{id} — stop runs and cascade-delete a service (owner). */
+  /** DELETE /api/v1/repositories/{id} — stop runs and cascade-delete a service (owner). */
   deleteService(serviceId: string): Promise<void>;
   /* ---- unified project plugins (plugin-platform v1) --------------------- */
   /** GET /projects/{id}/plugins — fixed Provider cards, member+ read. */
@@ -348,11 +364,12 @@ export interface ApiClient {
   getServiceKanban(serviceId: string): Promise<ServiceKanbanBinding>;
   getServiceKanbanPolicy(serviceId: string): Promise<ServiceKanbanPolicy>;
   listServiceKanbanCardExecutions(serviceId: string, workspaceId: string, documentPath: string, before?: string, limit?: number): Promise<KanbanCardExecutionsPage>;
+  createServiceKanbanOccurrence(serviceId: string, input: CreateKanbanCardOccurrenceInput): Promise<CreateKanbanCardOccurrenceResponse>;
   putServiceKanban(serviceId: string, input: PutServiceKanbanInput): Promise<ServiceKanbanBinding>;
   deleteServiceKanban(serviceId: string): Promise<void>;
   /** Lists branches through the Service's bound Plugin; never exposes a Git credential. */
   listServiceBranches(serviceId: string): Promise<ServiceBranch[]>;
-  /** POST /api/v1/services/{id}/runs — dispatch a run against a specific service. */
+  /** POST /api/v1/repositories/{id}/runs — dispatch a run against a specific service. */
   createServiceRun(serviceId: string, input: CreateRunInput): Promise<Run>;
   /** Stages one bounded Project attachment through Cloud; no object-store URL is exposed. */
   uploadRunAttachment(serviceId: string, file: File): Promise<RunAttachmentIntent>;
@@ -696,6 +713,8 @@ export function createHttpClient(
     // Model catalog + account/project grants (D21).
     listModels: async () =>
       (await req<{ models: Model[] }>('/system/models')).models ?? [],
+    listAccountModels: async () =>
+      (await req<{ models: ProjectModel[] }>('/account/models')).models ?? [],
     createModel: (input) =>
       req<Model>('/system/models', { method: 'POST', body: JSON.stringify(input) }),
     updateModel: (id, input) =>
@@ -771,27 +790,35 @@ export function createHttpClient(
     },
 
     // Services (blueprint §4).
+    listRepositories: async () =>
+      (await req<{ repositories: Service[] }>('/repositories')).repositories ?? [],
+    listAccountRepositories: (q) =>
+      req<AccountRepositoryCatalog>(`/account/repositories${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+    startAccountTask: (input) =>
+      req<AccountTaskResponse>('/account/tasks', { method: 'POST', body: JSON.stringify(input) }),
+    getRepository: (repositoryId) =>
+      req<Service>(`/repositories/${encodeURIComponent(repositoryId)}`),
     listServices: async (projectId) =>
       (
         await req<ServicesEnvelope>(
-          `/projects/${encodeURIComponent(projectId)}/services`,
+          `/projects/${encodeURIComponent(projectId)}/repositories`,
         )
       ).services,
 
     createService: (projectId, input) =>
-      req<Service>(`/projects/${encodeURIComponent(projectId)}/services`, {
+      req<Service>(`/projects/${encodeURIComponent(projectId)}/repositories`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
 
     updateService: (serviceId, input) =>
-      req<Service>(`/services/${encodeURIComponent(serviceId)}`, {
+      req<Service>(`/repositories/${encodeURIComponent(serviceId)}`, {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
 
     deleteService: (serviceId) =>
-      req<void>(`/services/${encodeURIComponent(serviceId)}`, { method: 'DELETE' }),
+      req<void>(`/repositories/${encodeURIComponent(serviceId)}`, { method: 'DELETE' }),
 
     listProjectPlugins: async (projectId) =>
       (await req<{ plugins: ProjectPlugin[] }>(`/projects/${encodeURIComponent(projectId)}/plugins`)).plugins ?? [],
@@ -869,7 +896,7 @@ export function createHttpClient(
     },
     getServiceUsage: (serviceId, from, to) => {
       const params = usageParams(from, to);
-      return req<UsageSummary>(`/services/${encodeURIComponent(serviceId)}/usage${params}`);
+      return req<UsageSummary>(`/repositories/${encodeURIComponent(serviceId)}/usage${params}`);
     },
     listModelPricingRevisions: async (modelId) =>
       (await req<{ pricing_revisions: ModelPricingRevision[] }>(
@@ -880,8 +907,8 @@ export function createHttpClient(
         method: 'POST',
         body: JSON.stringify(input),
       }),
-    getServiceKanban: (serviceId) => req<ServiceKanbanBinding>(`/services/${encodeURIComponent(serviceId)}/kanban`),
-    getServiceKanbanPolicy: (serviceId) => req<ServiceKanbanPolicy>(`/services/${encodeURIComponent(serviceId)}/kanban/policy`),
+    getServiceKanban: (serviceId) => req<ServiceKanbanBinding>(`/repositories/${encodeURIComponent(serviceId)}/agent-board`),
+    getServiceKanbanPolicy: (serviceId) => req<ServiceKanbanPolicy>(`/repositories/${encodeURIComponent(serviceId)}/agent-board/policy`),
     listServiceKanbanCardExecutions: (serviceId, workspaceId, documentPath, before, limit = 20) => {
       const params = new URLSearchParams({
         workspace_id: workspaceId,
@@ -890,25 +917,29 @@ export function createHttpClient(
       });
       if (before) params.set('before', before);
       return req<KanbanCardExecutionsPage>(
-        `/services/${encodeURIComponent(serviceId)}/kanban/card-executions?${params.toString()}`,
+        `/repositories/${encodeURIComponent(serviceId)}/agent-board/card-executions?${params.toString()}`,
       );
     },
-    putServiceKanban: (serviceId, input) => req<ServiceKanbanBinding>(`/services/${encodeURIComponent(serviceId)}/kanban`, {
+    createServiceKanbanOccurrence: (serviceId, input) => req<CreateKanbanCardOccurrenceResponse>(
+      `/repositories/${encodeURIComponent(serviceId)}/agent-board/occurrences`,
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+    putServiceKanban: (serviceId, input) => req<ServiceKanbanBinding>(`/repositories/${encodeURIComponent(serviceId)}/agent-board`, {
       method: 'PUT', body: JSON.stringify(input),
     }),
-    deleteServiceKanban: (serviceId) => req<void>(`/services/${encodeURIComponent(serviceId)}/kanban`, { method: 'DELETE' }),
+    deleteServiceKanban: (serviceId) => req<void>(`/repositories/${encodeURIComponent(serviceId)}/agent-board`, { method: 'DELETE' }),
 
     listServiceBranches: async (serviceId) =>
-      (await req<{ branches: ServiceBranch[] }>(`/services/${encodeURIComponent(serviceId)}/branches`)).branches ?? [],
+      (await req<{ branches: ServiceBranch[] }>(`/repositories/${encodeURIComponent(serviceId)}/branches`)).branches ?? [],
 
     createServiceRun: (serviceId, input) =>
-      req<Run>(`/services/${encodeURIComponent(serviceId)}/runs`, {
+      req<Run>(`/repositories/${encodeURIComponent(serviceId)}/runs`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
     uploadRunAttachment: async (serviceId, file) => {
       const intent = await req<RunAttachmentIntent>(
-        `/services/${encodeURIComponent(serviceId)}/attachments/intents`,
+        `/repositories/${encodeURIComponent(serviceId)}/attachments/intents`,
         {
           method: 'POST',
           body: JSON.stringify({

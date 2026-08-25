@@ -44,9 +44,6 @@ export type AuthStatus = 'probing' | 'setup_required' | 'unreachable' | 'unauthe
 /** Why we are at the sign-in screen (drives the message shown). */
 export type UnauthReason = 'none' | 'rejected' | 'expired' | 'signed-out';
 
-/** Post-login landing card variant, from the ?welcome= redirect param. */
-export type WelcomeKind = 'first-admin' | 'new';
-
 export type MeProbeResult =
   | { kind: 'ok'; me: Me }
   | { kind: 'unauthorized' }
@@ -118,10 +115,6 @@ export interface AuthContextValue {
   providers: AuthProviderInfo[];
   /** Set when a failed OAuth callback redirected with ?login_error=. */
   loginError: string | null;
-  /** Non-null right after an OAuth login (?welcome=) → shows the welcome card. */
-  welcome: WelcomeKind | null;
-  /** True right after a MANUAL console-token sign-in — shows the landing card. */
-  landing: boolean;
   demo: boolean;
   /** Stable getter for the http client (reads a ref, never goes stale). */
   getToken: () => string | undefined;
@@ -129,10 +122,6 @@ export interface AuthContextValue {
   login: (token: string) => Promise<{ ok: boolean; error?: string }>;
   /** Revoke the session (POST /auth/logout) and return to sign-in. */
   logout: () => void;
-  /** Dismiss the manual-login landing card and enter the console. */
-  enterConsole: () => void;
-  /** Dismiss the OAuth welcome card (also strips ?welcome= from the URL). */
-  dismissWelcome: () => void;
   retryProbe: () => void;
   /** Session-level 401 hook for the http client (session revoked/expired). */
   handleUnauthorized: () => void;
@@ -157,13 +146,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [reason, setReason] = useState<UnauthReason>('none');
   const [me, setMe] = useState<Me | null>(demo ? DEMO_ME : null);
   const [providers, setProviders] = useState<AuthProviderInfo[]>([]);
-  const [landing, setLanding] = useState(false);
-
-  // OAuth redirect flash params (read once at mount, then stripped from the URL).
-  const [welcome, setWelcome] = useState<WelcomeKind | null>(() => {
-    const w = readQueryParam('welcome');
-    return w === 'first-admin' || w === 'new' ? w : null;
-  });
   // Read once at mount; the param is stripped in the boot effect below.
   const [loginError] = useState<string | null>(() => {
     const e = readQueryParam('login_error');
@@ -262,7 +244,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           clearSignedOut(); // an explicit sign-in lifts the sign-out suppression
           tokenRef.current = trimmed;
           setMe(result.me);
-          setLanding(true); // manual sign-in → show the landing card once
           setStatus('ready');
           return { ok: true };
         case 'unauthorized':
@@ -287,8 +268,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     markSignedOut();
     tokenRef.current = undefined;
     setMe(null);
-    setLanding(false);
-    setWelcome(null);
     setReason('signed-out');
     setStatus('unauthenticated');
   }, []);
@@ -299,16 +278,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearStoredToken();
     tokenRef.current = undefined;
     setMe(null);
-    setLanding(false);
-    setWelcome(null);
     setReason('expired');
     setStatus('unauthenticated');
-  }, []);
-
-  const enterConsole = useCallback(() => setLanding(false), []);
-  const dismissWelcome = useCallback(() => {
-    setWelcome(null);
-    stripQueryParams(['welcome']);
   }, []);
 
   const value = useMemo<AuthContextValue>(
@@ -318,14 +289,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       me,
       providers,
       loginError,
-      welcome,
-      landing,
       demo,
       getToken,
       login,
       logout,
-      enterConsole,
-      dismissWelcome,
       retryProbe: runProbe,
       handleUnauthorized,
     }),
@@ -335,14 +302,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       me,
       providers,
       loginError,
-      welcome,
-      landing,
       demo,
       getToken,
       login,
       logout,
-      enterConsole,
-      dismissWelcome,
       runProbe,
       handleUnauthorized,
     ],

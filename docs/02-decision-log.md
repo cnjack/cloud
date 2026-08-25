@@ -349,3 +349,38 @@ workspace/board/document REST discovery；jtype 收紧 scope guard 后它正确�
 - **被否**：把公开 MCP client 直接放宽成 full（任何 MCP 客户端都获得管理面，权限面
   失控）；继续使用 mcp token 并逐个给 REST endpoint 开洞（以后新增 API 继续漏配，
   full 语义名存实亡）；只隐藏 403 或自动手填（认证问题未解决且制造“连接成功”的假象）。
+
+---
+
+### D39 · Repository-only Agent Board + shared Conversation
+
+个人产品只暴露 Repository：Project 保留为隐藏的单例 tenancy/policy/concurrency
+边界，Service 可暂作 Repository 的存储实现，但新的 UI、HTTP、错误和 telemetry 都不再
+出现 Project/Service。旧 Service API 不保留兼容 alias，orchestrator 与 Console 原子
+切换到 `/repositories/{id}`。
+
+每个 Repository 最多连接一个**已有** JType Board，一个 Board 只能属于一个
+Repository。Agent queue 拖卡与 Card 的 **Run with agent** 都只创建同一种 durable
+occurrence，再走同一 Run Readiness、Run、Delivery、receipt 和 writeback 路径；禁止按钮
+绕开 occurrence 私建 Run。trigger/work 必选且不同，Done 可选；`no_changes` 只要结构化
+结果、Delivery 和回写均成功，也可移动 Done。
+
+无人值守 Workflow 固定 Automation model/effort、Developer Profile 与 Cloud 执行位置，
+Repository owner 默认成为 `execution_account_id`，模型必须直接授权给该 Account；它与
+provenance/accountable identity 分离，撤权时返回 typed blocker，绝不借 Project grant 或
+上次 Composer model 回退。Repository 指令只读仓库 `AGENTS.md`。Code reviews 保持独立
+Reviewer 入口，调度继续使用全局/隐藏 Project 并发上限。
+
+Conversation 继续深化 D26：`jcode-ui-core` 持 runtime/event contract，`jcode-ui` 持完整
+渲染与交互，Desktop 和 Cloud 只实现 transport adapter。Cloud 不复制 Message、Markdown、
+tools、approval、pending 或 scroll renderer；host-specific lossless facts 只能走 typed
+extension seam。本轮共享组件已补齐 attributed author 与任意 approval option id，Cloud 直接
+通过 `Thread` 适配，不再保留私有 Timeline renderer。性能合同是：authoritative
+occurrence/Run/Delivery 不缓存；model materialization、
+JType Board schema、React Query detail 与 event projection 使用有界 TTL/显式失效/稳定快照，
+错误与授权失败不缓存。完整 API、状态机、缓存和 e2e 见
+[32-repository-agent-board-and-shared-conversation.md](32-repository-agent-board-and-shared-conversation.md)。
+
+- **被否**：Project/Service 继续作为产品层选择器；保留旧 Service API 双轨；每次拖卡读取
+  mutable last-used model；Run-with-agent 直接 POST Run；Cloud fork 一套 Conversation UI；
+  缓存 occurrence/permission/writeback 等权威状态；Remote 离线时静默回退 Cloud。

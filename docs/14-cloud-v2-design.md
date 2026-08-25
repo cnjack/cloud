@@ -193,7 +193,7 @@ reconciler 在现有并发闸(`max_concurrent_runs`)之外加一道 `max_live_se
 ## 3 · 多轮 session 时序(D22)
 
 ```
-1. 用户在 console composer 发第一条消息 → POST /api/v1/services/{id}/runs {prompt}(与今天相同)
+1. 用户在 console composer 发第一条消息 → POST /api/v1/repositories/{id}/runs {prompt}(与今天相同)
 2. reconciler 起 Job;runner 侧 acpdrive 完成 initialize → session/new → session/prompt(第一轮)
 3. 第一轮结束:
    a. 有 diff → 走既有 update-push 逻辑(bundle → orchestrator 代 push,复用同一 PR 分支)
@@ -246,7 +246,7 @@ POST   /api/v1/projects/{id}/integrations   {name?, provider, host, cred_type?, 
 GET    /api/v1/projects/{id}/integrations                                                → member+
 PATCH  /api/v1/integrations/{id}            {name?, token?}                              → owner+
 DELETE /api/v1/integrations/{id}                                                         → owner+
-PATCH  /api/v1/services/{id}                {integration_id?}                            → owner+/member(见 D19)
+PATCH  /api/v1/repositories/{id}                {integration_id?}                            → owner+/member(见 D19)
 ```
 
 - token 只写不读——响应体只回 `{id, name, provider, host, cred_type, created_at}`,不含 token 本身(同 identity token 惯例)。
@@ -270,8 +270,8 @@ POST   /api/v1/admin/models/{id}/grants    {project_id}     → 授权
 DELETE /api/v1/admin/models/{id}/grants/{project_id}        → 撤销
 
 GET    /api/v1/projects/{id}/models                  → member+,本 project 被授权的模型列表(无 key)
-PATCH  /api/v1/services/{id}         {default_model_id?}
-POST   /api/v1/services/{id}/runs    {prompt, model_id?}     → model_id 缺省用 service.default_model_id;
+PATCH  /api/v1/repositories/{id}         {default_model_id?}
+POST   /api/v1/repositories/{id}/runs    {prompt, model_id?}     → model_id 缺省用 service.default_model_id;
                                                                  不在授权列表 → 403 model_not_granted
 ```
 
@@ -313,8 +313,8 @@ GET /api/v1/runs/{id}   → 响应体新增 hibernation_tier(hot|warm|cold),供 
 ### 5.7 schedule(D24)
 
 ```
-POST   /api/v1/services/{id}/schedules   {cron_expr, prompt_template, model_id?, enabled?}   → owner+
-GET    /api/v1/services/{id}/schedules                                                        → member+
+POST   /api/v1/repositories/{id}/schedules   {cron_expr, prompt_template, model_id?, enabled?}   → owner+
+GET    /api/v1/repositories/{id}/schedules                                                        → member+
 PATCH  /api/v1/schedules/{id}            {cron_expr?, prompt_template?, model_id?, enabled?}   → owner+
 DELETE /api/v1/schedules/{id}                                                                  → owner+
 ```

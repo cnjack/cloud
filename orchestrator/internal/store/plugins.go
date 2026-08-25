@@ -455,7 +455,7 @@ func (s *PGStore) DeleteServiceRepositoryBinding(ctx context.Context, serviceID 
 	return nil
 }
 
-const pluginAutomationCols = `id,service_id,installation_id,name,trigger_kind,run_kind,prompt_template,model_id,model_effort,enabled,ignore_jcode,last_triggered_at,last_run_id,last_error,created_by,created_at,updated_at`
+const pluginAutomationCols = `id,service_id,installation_id,name,trigger_kind,run_kind,prompt_template,model_id,model_effort,execution_account_id,enabled,ignore_jcode,last_triggered_at,last_run_id,last_error,created_by,created_at,updated_at`
 
 func qualifiedPluginAutomationCols(alias string) string {
 	columns := strings.Split(pluginAutomationCols, ",")
@@ -470,8 +470,9 @@ func scanPluginAutomation(row pgx.Row) (*domain.PluginAutomation, error) {
 	var createdBy *string
 	var installationID *string
 	var modelID *string
+	var executionAccountID *string
 	var lastRunID *string
-	err := row.Scan(&a.ID, &a.ServiceID, &installationID, &a.Name, &a.TriggerKind, &a.RunKind, &a.PromptTemplate, &modelID, &a.ModelEffort, &a.Enabled, &a.IgnoreJCode, &a.LastTriggeredAt, &lastRunID, &a.LastError, &createdBy, &a.CreatedAt, &a.UpdatedAt)
+	err := row.Scan(&a.ID, &a.ServiceID, &installationID, &a.Name, &a.TriggerKind, &a.RunKind, &a.PromptTemplate, &modelID, &a.ModelEffort, &executionAccountID, &a.Enabled, &a.IgnoreJCode, &a.LastTriggeredAt, &lastRunID, &a.LastError, &createdBy, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -487,6 +488,9 @@ func scanPluginAutomation(row pgx.Row) (*domain.PluginAutomation, error) {
 	if modelID != nil {
 		a.ModelID = *modelID
 	}
+	if executionAccountID != nil {
+		a.ExecutionAccountID = *executionAccountID
+	}
 	if lastRunID != nil {
 		a.LastRunID = *lastRunID
 	}
@@ -501,7 +505,7 @@ func (s *PGStore) CreatePluginAutomation(ctx context.Context, a *domain.PluginAu
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `INSERT INTO automations_v2(id,service_id,installation_id,name,trigger_kind,run_kind,prompt_template,model_id,model_effort,enabled,ignore_jcode,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now())`, a.ID, a.ServiceID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.RunKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, nullStr(a.CreatedBy), a.CreatedAt); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO automations_v2(id,service_id,installation_id,name,trigger_kind,run_kind,prompt_template,model_id,model_effort,execution_account_id,enabled,ignore_jcode,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now())`, a.ID, a.ServiceID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.RunKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, nullStr(a.ExecutionAccountID), a.Enabled, a.IgnoreJCode, nullStr(a.CreatedBy), a.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			return ErrAlreadyExists
 		}
@@ -934,7 +938,7 @@ func (s *PGStore) ListPluginReviewAutomationsForRepository(ctx context.Context, 
 	return out, rows.Err()
 }
 func (s *PGStore) UpdatePluginAutomation(ctx context.Context, a *domain.PluginAutomation) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE automations_v2 SET name=$2,run_kind=$3,prompt_template=$4,model_id=$5,model_effort=$6,enabled=$7,ignore_jcode=$8,last_triggered_at=$9,last_run_id=$10,last_error=$11,updated_at=now() WHERE id=$1`, a.ID, a.Name, a.RunKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, a.LastTriggeredAt, a.LastRunID, a.LastError)
+	tag, err := s.pool.Exec(ctx, `UPDATE automations_v2 SET name=$2,run_kind=$3,prompt_template=$4,model_id=$5,model_effort=$6,execution_account_id=$7,enabled=$8,ignore_jcode=$9,last_triggered_at=$10,last_run_id=$11,last_error=$12,updated_at=now() WHERE id=$1`, a.ID, a.Name, a.RunKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, nullStr(a.ExecutionAccountID), a.Enabled, a.IgnoreJCode, a.LastTriggeredAt, a.LastRunID, a.LastError)
 	if err != nil {
 		return fmt.Errorf("update plugin automation: %w", err)
 	}
@@ -967,7 +971,7 @@ func (s *PGStore) ReplacePluginAutomationSpec(ctx context.Context, a *domain.Plu
 	if _, err = tx.Exec(ctx, `DELETE FROM automation_scm_actions WHERE automation_id=$1`, a.ID); err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `UPDATE automations_v2 SET installation_id=$2,name=$3,trigger_kind=$4,run_kind=$5,prompt_template=$6,model_id=$7,model_effort=$8,enabled=$9,ignore_jcode=$10,last_error=$11,updated_at=now() WHERE id=$1`, a.ID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.RunKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, a.Enabled, a.IgnoreJCode, a.LastError)
+	tag, err := tx.Exec(ctx, `UPDATE automations_v2 SET installation_id=$2,name=$3,trigger_kind=$4,run_kind=$5,prompt_template=$6,model_id=$7,model_effort=$8,execution_account_id=$9,enabled=$10,ignore_jcode=$11,last_error=$12,updated_at=now() WHERE id=$1`, a.ID, nullStr(a.InstallationID), a.Name, a.TriggerKind, a.RunKind, a.PromptTemplate, nullStr(a.ModelID), a.ModelEffort, nullStr(a.ExecutionAccountID), a.Enabled, a.IgnoreJCode, a.LastError)
 	if err != nil {
 		return err
 	}
@@ -1132,8 +1136,8 @@ func (s *PGStore) CreateRunPluginSnapshots(ctx context.Context, snapshots []doma
 			      AND pi.status='enabled' AND pi.last_health_error=''
 			      AND pc.plugin_enabled=TRUE AND pc.config_revision=pi.config_revision
 			      AND pi.credential_version_id<>''
-			      AND ((pi.provider='github' AND pi.github_installation_id<>'')
-			        OR (pi.provider<>'github' AND pi.access_token_enc IS NOT NULL))
+			      AND (pi.access_token_enc IS NOT NULL
+			        OR (pi.provider='github' AND pi.github_installation_id<>''))
 			  )`, runID); err != nil {
 			return fmt.Errorf("revalidate run plugin snapshots: %w", err)
 		}
@@ -1158,10 +1162,8 @@ func (s *PGStore) CreateRunPluginSnapshots(ctx context.Context, snapshots []doma
 			WHERE r.id=$1 AND pi.id=$2
 			  AND pi.status='enabled' AND pi.last_health_error=''
 			  AND pc.plugin_enabled=TRUE
-			  AND (
-			    (pi.provider='github' AND pi.github_installation_id<>'')
-			    OR (pi.provider<>'github' AND pi.access_token_enc IS NOT NULL)
-			  )
+			  AND (pi.access_token_enc IS NOT NULL
+			    OR (pi.provider='github' AND pi.github_installation_id<>''))
 			ON CONFLICT DO NOTHING`, snap.RunID, snap.InstallationID, snap.CreatedAt); err != nil {
 			return fmt.Errorf("create run plugin snapshot: %w", err)
 		}

@@ -27,5 +27,4 @@
 .actions [role='switch'][aria-checked='true'] { background: var(--color-text); }
 .actions [role='switch'][aria-checked='true'] span { transform: translateX(14px); }
 .empty { color: var(--color-text-faint); font-size: var(--fs-sm); }
-.warning { display: flex; gap: var(--space-2); padding: var(--space-3); border-left: 2px solid var(--color-accent); color: var(--color-text-dim); font-size: var(--fs-sm); }
 @media (max-width: 700px) { .head { align-items: flex-start; flex-direction: column; } .headActions { flex-wrap: wrap; } .row { grid-template-columns: 1fr; } .actions { justify-content: flex-start; } }

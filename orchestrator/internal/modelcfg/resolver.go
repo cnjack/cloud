@@ -76,6 +76,11 @@ func (r *Resolver) SelectModel(ctx context.Context, projectID, defaultModelID, r
 	return selectModel(ctx, r.st, r.cfg, projectID, defaultModelID, requested)
 }
 
+// SelectModelForAccount chooses a model using only direct Account grants.
+func (r *Resolver) SelectModelForAccount(ctx context.Context, accountID, projectID, defaultModelID, requested string) (Selection, SelectOutcome, error) {
+	return selectModelForAccount(ctx, r.st, r.cfg, accountID, projectID, defaultModelID, requested)
+}
+
 // Invalidate drops the whole materialisation cache so the next ResolveModel
 // re-reads the store. Called after every successful catalog write (create /
 // update / delete / grant / revoke).

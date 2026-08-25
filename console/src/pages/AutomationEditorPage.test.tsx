@@ -157,8 +157,8 @@ describe('AutomationEditorPage', () => {
   it('enables Card output only when Service Kanban is healthy and sends the explicit mode', async () => {
     const { create } = renderEditor({
       getServiceKanbanPolicy: async () => ({
-        service_id: 'svc-1',
-        service_name: 'API',
+        repository_id: 'svc-1',
+        repository_name: 'API',
         repository: 'acme/api',
         model: { id: 'glm-52', label: 'GLM 5.2' },
         board: { workspace_id: 'ws', ref: 'board' },
@@ -186,7 +186,7 @@ describe('AutomationEditorPage', () => {
     });
   });
 
-  it('keeps Card output visibly unavailable without a healthy Service Kanban policy', async () => {
+  it('keeps Card output visibly unavailable without a healthy Agent Board policy', async () => {
     renderEditor({
       getServiceKanbanPolicy: async () => {
         throw new Error('not configured');
@@ -196,7 +196,7 @@ describe('AutomationEditorPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cron' }));
     const option = await screen.findByRole('option', { name: /jtype Card/ }) as HTMLOptionElement;
     expect(option.disabled).toBe(true);
-    expect(screen.getByText('Enable a healthy Service Kanban policy before selecting Card output.')).toBeTruthy();
+    expect(screen.getByText('Connect a healthy Agent Board before selecting Card output.')).toBeTruthy();
   });
 
   it('keeps common SCM events visible and places the complete low-frequency matrix behind More events', async () => {

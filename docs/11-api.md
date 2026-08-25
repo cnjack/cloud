@@ -249,6 +249,18 @@ orchestrator 的兜底分类**不覆盖**它。
 
 所有端点要求 `Authorization: Bearer <CONSOLE_TOKEN>`。
 
+### 2.0 Account task composer
+
+个人 Cloud 的新任务入口按登录 Account 工作，不要求先创建或关联 Repository：
+
+| 端点 | 角色 | 说明 |
+|---|---|---|
+| `GET /api/v1/account/repositories?q?` | 登录 Account | 从 Account 已连接的 Git 身份实时列出可访问仓库；尚未在 Cloud 使用过的仓库也返回，`repository_id` 仅在内部详情已物化时出现；Provider 失败按 source 显式标记 unavailable |
+| `POST /api/v1/account/tasks` | 登录 Account | `{provider,provider_repo_id,prompt,base_branch?,model_id?,model_effort?,session?,permission_mode?}`；服务端验证当前账号仓库权限，在同一请求中按需创建/复用隐藏的个人 Project 与 Repository，再创建 Run；无需前置 connect Repository 请求 |
+
+service principal/API key 不能调用这两个 Account 入口。Provider 账号丢失、Cloud
+执行被禁用、模型未授权、分支失效等情况返回 typed error，绝不创建看似成功的 Run。
+
 ### 2.1 Projects
 
 #### `POST /api/v1/projects` — 创建 project
@@ -260,7 +272,7 @@ orchestrator 的兜底分类**不覆盖**它。
 ```
 
 - `name` 是**唯一**字段。project 是纯容器;仓库随后通过
-  `POST /projects/{id}/services` 附加(创建流是两步)。请求体带旧的
+  `POST /projects/{id}/repositories` 附加(创建流是两步)。请求体带旧的
   repo 字段(`repo_url` 等)会被**响亮拒绝**(`400`,DisallowUnknownFields),
   不再自动创建 default service。
 
@@ -337,7 +349,7 @@ orchestrator 的兜底分类**不覆盖**它。
 
 ### 2.2 Runs
 
-#### `GET /api/v1/services/{id}/branches` — 列出可选分支
+#### `GET /api/v1/repositories/{id}/branches` — 列出可选分支
 
 权限：Project `viewer+`。Service 必须绑定健康且启用的 Git Provider Plugin。
 Orchestrator 使用该 Installation 的凭据实时分页读取 Provider，不从用户请求拼接
@@ -360,7 +372,7 @@ Provider/Plugin 不可用返回类型化 `409` 或 `502`。Run 创建会再次�
 
 #### 附件 staging
 
-`POST /api/v1/services/{id}/attachments/intents` 创建十分钟有效的上传 stage。
+`POST /api/v1/repositories/{id}/attachments/intents` 创建十分钟有效的上传 stage。
 权限为 Project `member+`，且必须是登录用户（Service principal/API key 不能创建
 用户附件）。
 
@@ -388,7 +400,7 @@ Provider/Plugin 不可用返回类型化 `409` 或 `502`。Run 创建会再次�
     "expires_at": "2026-07-26T12:10:00Z",
     "created_at": "2026-07-26T12:00:00Z"
   },
-  "upload_url": "/api/v1/services/{id}/attachments/{stage}/content",
+  "upload_url": "/api/v1/repositories/{id}/attachments/{stage}/content",
   "expires_at": "2026-07-26T12:10:00Z"
 }
 ```
@@ -399,12 +411,12 @@ Cloud 生成。单文件为 1 byte–25 MiB。一个 Project/user 最多保留 2
 和 `application/octet-stream`。
 
 客户端随后对 `upload_url` 执行认证的
-`PUT /api/v1/services/{id}/attachments/{stage}/content`。此端点由 Cloud 代理到
+`PUT /api/v1/repositories/{id}/attachments/{stage}/content`。此端点由 Cloud 代理到
 对象存储，要求 HTTP `Content-Length` 与 intent 完全相等，并原子驱动
 `pending → uploading → uploaded`。失败时 stage 回到可重试的 `pending`（若仍未
 过期），成功返回 `204`。不存在直接暴露给浏览器的 presigned PUT。
 
-#### `POST /api/v1/services/{id}/runs` — 创建并入队 run
+#### `POST /api/v1/repositories/{id}/runs` — 创建并入队 run
 
 Run 一律**按 service 派发**(旧的项目级 `POST /projects/{id}/runs`——解析
 default service 的 shim——已移除;该路径现在只服务 GET,POST 得 `405`)。
@@ -792,8 +804,10 @@ console Cluster 页"同步最新镜像"按钮的触发端点。orchestrator 维�
 单行 `cluster_model_config` 演进为**provider-owned 多行模型目录** +
 **model↔project 授权表**。provider 持有 endpoint、认证方式、只写凭据与目录探测状态；
 model 持有上游 model id、context window、capabilities、Account grants 与
-Project grants。Account grant 仅用于该账号 Desktop 的 device-token
-`cloud_proxy`；Project grant 仅用于 Cloud run，两者并集展示但不互相扩大权限。
+Project grants。Account grant 用于该账号 Desktop 的 device-token
+`cloud_proxy`，也用于登录用户从 Account/Repository composer 创建的 Cloud Run；
+Project grant 保留给 service principal/API key 等无登录 Account 的执行路径。
+两者并集展示但不互相扩大权限。
 生效模型按 **run 所属 project** 解析(见 `internal/modelcfg`);D16 反向代理不变
 (真 key 永不进 pod)。**旧的 `GET/PUT/DELETE /api/v1/system/model` 已下线**,
 console 全部走以下新端点。api key **只写不读**(回显 `api_key_set` 布尔位),
@@ -817,8 +831,10 @@ console 全部走以下新端点。api key **只写不读**(回显 `api_key_set`
 | `PUT /api/v1/system/models/{id}/account-grants/{userId}` | cluster-admin | 授权某 Account 的所有当前及未来已认证 Desktop(幂等);model/account 不存在 → `404` |
 | `DELETE /api/v1/system/models/{id}/account-grants/{userId}` | cluster-admin | 立即撤销该 Account 所有 Desktop 的代理访问(幂等) |
 | `GET /api/v1/projects/{id}/models` | member+ | 本 project 被授权的模型 `{models:[{id,name,model_name}], env_fallback}`——**绝不含 base_url/key** |
-| `PATCH /api/v1/services/{id}` | owner | `{default_model_id?}`:见下方 presence 警示 |
-| `POST /api/v1/services/{id}/runs` | member+ | 新增可选 `{model_id?}`(composer 选);见下方解析链 |
+| `GET /api/v1/account/models` | 登录 Account | 当前账号直接获授权的 composer 模型；不混入旧 Project grants |
+| `POST /api/v1/account/tasks` | 登录 Account | `{model_id?}` 只能选择直接 Account grant（或隐藏个人 Project 自有模型） |
+| `PATCH /api/v1/repositories/{id}` | owner | `{default_model_id?}`:见下方 presence 警示 |
+| `POST /api/v1/repositories/{id}/runs` | member+ | 新增可选 `{model_id?}`(composer 选);见下方解析链 |
 
 `/system/models` 继续作为运行解析、旧管理调用与 grant 路径的兼容视图；Cluster
 Models 页面以 `/system/model-providers` 为管理入口。provider catalog 以**上游实时返回的
@@ -831,8 +847,8 @@ capabilities，不按名称猜测。display name、context window 与 capabiliti
 Account grant 与 Project grant 均只允许指向 `project_id IS NULL` 的
 Cluster-global model。Project-owned model 只能由其所属 Project 使用，尝试跨范围
 grant 返回 `409 model_not_grantable`。Account grant 不修改 Project membership，
-也不会让账号在 Cloud 中发起任何 Project run；目录与 device proxy 每次请求共用同一
-授权解析函数，撤销不经过缓存。
+它只授权该账号自己的 Account/Repository composer 与 device proxy，不授权其访问
+其他账号或 Project。目录与运行创建每次请求共用同一直接授权边界，撤销不经过缓存。
 
 > **⚠️ `default_model_id` 的 presence 语义与 `PATCH /projects` 不同(易踩坑)。**
 > 该字段用 `*string` 指针解码,故 **JSON 省略字段** 与 **显式 `null`** 都解成 nil =
@@ -965,7 +981,7 @@ github/gitlab 用各自公有主机。因此 integration 的 `host` 必须与之
 客户端**不跟随任何重定向**——host 是用户输入,30x 反弹到内网地址的请求被拒绝,
 3xx 以可见错误浮出。
 
-**service 创建 RBAC 放开(D19)**:`POST /api/v1/projects/{id}/services` 带
+**service 创建 RBAC 放开(D19)**:`POST /api/v1/projects/{id}/repositories` 带
 `integration_id` 时 **member 即可建**(校验:integration 属同 project;其 host 仍
 ∈ 集群白名单——纵深防御;目标 repo 在机器人 token **可达集**内,否则
 `400 repo_not_reachable`)——service 的 provider 由 integration 决定。不带
@@ -1012,8 +1028,8 @@ Schedule 对象(`GET`/`POST`/`PATCH` 的响应体):
 
 | 端点 | 角色 | 说明 |
 |---|---|---|
-| `GET /api/v1/services/{id}/schedules` | member+ | 该 service 的 schedules(`{schedules:[...]}`,含 `last_error`) |
-| `POST /api/v1/services/{id}/schedules` | owner | `{cron_expr, prompt, enabled?}`;`enabled` 缺省 `true`;cron 校验见下;返回 `201` + Schedule |
+| `GET /api/v1/repositories/{id}/schedules` | member+ | 该 service 的 schedules(`{schedules:[...]}`,含 `last_error`) |
+| `POST /api/v1/repositories/{id}/schedules` | owner | `{cron_expr, prompt, enabled?}`;`enabled` 缺省 `true`;cron 校验见下;返回 `201` + Schedule |
 | `PATCH /api/v1/schedules/{sid}` | owner | `{cron_expr?, prompt?, enabled?}`(pointer presence:缺省=不变);传 `cron_expr` 会重校验;`last_error` 由 poller 独占,PATCH 不动;**窗口重置**:`cron_expr` 实际变化、或 `enabled` 由 false→true 时,`last_fired_at` 原子重置为编辑时刻——新节奏/重开的首次触发从编辑时刻起算,**绝不补发编辑前已过去的边界**(与重启不补跑同一哲学);仅改 prompt 不重置 |
 | `DELETE /api/v1/schedules/{sid}` | owner | 删除该 schedule(`{deleted:sid}`) |
 
@@ -1043,7 +1059,7 @@ env:`SCHEDULE_POLL_INTERVAL`(默认 `30s`,`<=0` 禁用整个 schedule poller)。
 
 #### 2.5d.1 PR review Automations（已迁移到 Plugin Automation）
 
-> **历史段落**：此处曾描述 service 级 `GET/POST /api/v1/services/{id}/automations`
+> **历史段落**：此处曾描述 service 级 `GET/POST /api/v1/repositories/{id}/automations`
 > API（migration 0026，Gitea-first）。该 API 已被移除——migration 0043 清空了
 > `automations` 表并把 `runs.origin_automation_id` 的 FK 改指 `automations_v2`，
 > 对应的 handler、store CRUD 与 `domain.Automation` 类型也已从代码中删除。
@@ -1514,7 +1530,7 @@ provider_url/provider_repo`;runs 加 `git_branch/commit_sha/pr_url/pr_number`);
   integration bot token**(取第一个能解出凭据的 service);仓库上无 service / 无可用
   integration 凭据 → **无法回帖 → log+忽略**(诚实降级,绝不假成功)。
 
-### OAuth webhook 同步(`POST /api/v1/services/{id}/webhook`,幂等)
+### OAuth webhook 同步(`POST /api/v1/repositories/{id}/webhook`,幂等)
 
 - 角色:目标 project 的 `member+`;service principal / API key 没有可用的人类 OAuth
   身份,得到 `409 oauth_not_connected`。
@@ -1575,7 +1591,7 @@ Integration/PAT 流程，不得再据其创建新 UI 或调用旧 webhook sync A
 - Automation：`GET/POST /api/v1/projects/{id}/automations` 和
   `GET/PATCH/DELETE /api/v1/automations/{aid}`。正文必须恰有一个 `scm` 或 `cron`
   typed trigger；JType Kanban 改由
-  `GET/PUT/DELETE /api/v1/services/{id}/kanban` 管理默认触发，不在 Automation
+  `GET/PUT/DELETE /api/v1/repositories/{id}/kanban` 管理默认触发，不在 Automation
   列表中重复展示。
 
 ### OAuth state 与 Provider 配置

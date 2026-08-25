@@ -107,6 +107,13 @@ type PluginInstallation struct {
 
 func (p PluginInstallation) TokenSet() bool { return len(p.AccessTokenEnc) > 0 }
 
+// RuntimeCredentialSet reports whether this installation can issue a task
+// credential. Account-authorized GitHub uses the human OAuth token, while an
+// explicitly selected GitHub App installation mints a short-lived token.
+func (p PluginInstallation) RuntimeCredentialSet() bool {
+	return p.TokenSet() || (p.Provider == PluginGitHub && p.GitHubInstallID != "")
+}
+
 // PluginCredentialVersion is an encrypted launch-grant identity record. It is
 // never serialized over the public API. Reconnect/identity replacement creates
 // a new row; OAuth refresh-token rotation updates ciphertext only within the
@@ -140,23 +147,24 @@ type ServiceRepositoryBinding struct {
 // lives in one of the strongly typed trigger tables rather than an unvalidated
 // JSON blob.
 type PluginAutomation struct {
-	ID              string     `json:"id"`
-	ServiceID       string     `json:"service_id"`
-	InstallationID  string     `json:"installation_id,omitempty"`
-	Name            string     `json:"name"`
-	TriggerKind     string     `json:"trigger_kind"` // scm | kanban | cron
-	RunKind         RunKind    `json:"run_kind"`     // agent | review
-	PromptTemplate  string     `json:"prompt_template"`
-	ModelID         string     `json:"model_id,omitempty"`
-	ModelEffort     string     `json:"model_effort,omitempty"`
-	Enabled         bool       `json:"enabled"`
-	IgnoreJCode     bool       `json:"ignore_jcode"`
-	LastTriggeredAt *time.Time `json:"last_triggered_at,omitempty"`
-	LastRunID       string     `json:"last_run_id,omitempty"`
-	LastError       string     `json:"last_error,omitempty"`
-	CreatedBy       string     `json:"created_by,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID                 string     `json:"id"`
+	ServiceID          string     `json:"service_id"`
+	InstallationID     string     `json:"installation_id,omitempty"`
+	Name               string     `json:"name"`
+	TriggerKind        string     `json:"trigger_kind"` // scm | kanban | cron
+	RunKind            RunKind    `json:"run_kind"`     // agent | review
+	PromptTemplate     string     `json:"prompt_template"`
+	ModelID            string     `json:"model_id,omitempty"`
+	ModelEffort        string     `json:"model_effort,omitempty"`
+	ExecutionAccountID string     `json:"execution_account_id,omitempty"`
+	Enabled            bool       `json:"enabled"`
+	IgnoreJCode        bool       `json:"ignore_jcode"`
+	LastTriggeredAt    *time.Time `json:"last_triggered_at,omitempty"`
+	LastRunID          string     `json:"last_run_id,omitempty"`
+	LastError          string     `json:"last_error,omitempty"`
+	CreatedBy          string     `json:"created_by,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 // PluginAutomationSpec is the aggregate returned by the Automation API. Exactly
@@ -400,10 +408,13 @@ func (s RunPluginSnapshot) HasFrozenRuntimeMaterial() bool {
 	if !ValidProviderKind(s.Provider) || s.ProviderConfigRevision <= 0 || s.ProviderBaseURL == "" {
 		return false
 	}
+	if len(s.AccessTokenEnc) > 0 {
+		return true
+	}
 	if s.Provider == PluginGitHub {
 		return s.GitHubInstallID != "" && s.ProviderAppID != "" && len(s.ProviderAppPrivateKeyEnc) > 0
 	}
-	return len(s.AccessTokenEnc) > 0
+	return false
 }
 
 func (s RunPluginSnapshot) HasFrozenRepositoryGrant() bool {

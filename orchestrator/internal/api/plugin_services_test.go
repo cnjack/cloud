@@ -73,7 +73,7 @@ func TestPluginBoundServiceCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bare := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/services", consoleToken, map[string]any{
+	bare := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/repositories", consoleToken, map[string]any{
 		"name": "forbidden", "repo_url": providerServer.URL + "/acme/platform.git",
 	})
 	if bare.StatusCode != http.StatusBadRequest {
@@ -81,7 +81,7 @@ func TestPluginBoundServiceCreation(t *testing.T) {
 	}
 	bare.Body.Close()
 
-	created := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/services", consoleToken, map[string]any{
+	created := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/repositories", consoleToken, map[string]any{
 		"installation_id": installation.ID, "provider_repo_id": "42", "git_mode": "draft_pr",
 	})
 	if created.StatusCode != http.StatusCreated {
@@ -94,7 +94,7 @@ func TestPluginBoundServiceCreation(t *testing.T) {
 		service.GitMode != domain.GitModeDraftPR || service.PRReadyPolicy != domain.PRReadyPolicyLifecycleAware {
 		t.Fatalf("created Service=%+v", service)
 	}
-	policy := do(t, http.MethodPatch, ts.URL+"/api/v1/services/"+service.ID, consoleToken, map[string]any{
+	policy := do(t, http.MethodPatch, ts.URL+"/api/v1/repositories/"+service.ID, consoleToken, map[string]any{
 		"pr_ready_policy": "always_draft",
 	})
 	if policy.StatusCode != http.StatusOK {
@@ -114,7 +114,7 @@ func TestPluginBoundServiceCreation(t *testing.T) {
 		t.Fatalf("binding=%+v", binding)
 	}
 
-	branches := do(t, http.MethodGet, ts.URL+"/api/v1/services/"+service.ID+"/branches", consoleToken, nil)
+	branches := do(t, http.MethodGet, ts.URL+"/api/v1/repositories/"+service.ID+"/branches", consoleToken, nil)
 	if branches.StatusCode != http.StatusOK {
 		t.Fatalf("list branches status=%d want 200", branches.StatusCode)
 	}
@@ -129,7 +129,7 @@ func TestPluginBoundServiceCreation(t *testing.T) {
 		t.Fatalf("branch response=%+v", branchBody)
 	}
 
-	validBranch := do(t, http.MethodPost, ts.URL+"/api/v1/services/"+service.ID+"/runs", consoleToken, map[string]any{
+	validBranch := do(t, http.MethodPost, ts.URL+"/api/v1/repositories/"+service.ID+"/runs", consoleToken, map[string]any{
 		"prompt": "ship it", "base_branch": "trunk",
 	})
 	if validBranch.StatusCode != http.StatusCreated {
@@ -141,7 +141,7 @@ func TestPluginBoundServiceCreation(t *testing.T) {
 		t.Fatalf("run base branch=%q want trunk", run.BaseBranch)
 	}
 
-	missingBranch := do(t, http.MethodPost, ts.URL+"/api/v1/services/"+service.ID+"/runs", consoleToken, map[string]any{
+	missingBranch := do(t, http.MethodPost, ts.URL+"/api/v1/repositories/"+service.ID+"/runs", consoleToken, map[string]any{
 		"prompt": "ship it", "base_branch": "deleted-branch",
 	})
 	if missingBranch.StatusCode != http.StatusBadRequest {
@@ -158,7 +158,7 @@ func TestPluginBoundServiceCreation(t *testing.T) {
 	}
 
 	branchFailure = true
-	providerFailure := do(t, http.MethodPost, ts.URL+"/api/v1/services/"+service.ID+"/runs", consoleToken, map[string]any{
+	providerFailure := do(t, http.MethodPost, ts.URL+"/api/v1/repositories/"+service.ID+"/runs", consoleToken, map[string]any{
 		"prompt": "ship it", "base_branch": "trunk",
 	})
 	if providerFailure.StatusCode != http.StatusBadGateway {
@@ -173,7 +173,7 @@ func TestPluginBoundServiceCreation(t *testing.T) {
 	if providerFailureBody.Error.Code != "provider_error" {
 		t.Fatalf("provider failure error=%+v", providerFailureBody)
 	}
-	retarget := do(t, http.MethodPatch, ts.URL+"/api/v1/services/"+service.ID, consoleToken, map[string]any{
+	retarget := do(t, http.MethodPatch, ts.URL+"/api/v1/repositories/"+service.ID, consoleToken, map[string]any{
 		"provider": "gitlab", "owner_name": "other/private",
 	})
 	if retarget.StatusCode != http.StatusBadRequest {
@@ -185,7 +185,7 @@ func TestPluginBoundServiceCreation(t *testing.T) {
 		t.Fatalf("binding changed through Service PATCH: %+v err=%v", unchanged, err)
 	}
 
-	duplicate := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/services", consoleToken, map[string]any{
+	duplicate := do(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/repositories", consoleToken, map[string]any{
 		"name": "second", "installation_id": installation.ID, "provider_repo_id": "42",
 	})
 	if duplicate.StatusCode != http.StatusConflict {

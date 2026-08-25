@@ -19,7 +19,7 @@ import (
 // write time (invalid_cron / cron_too_frequent) so a bad expression is rejected
 // before it is ever stored, never silently ignored at fire time.
 
-// createScheduleReq is the POST /api/v1/services/{id}/schedules body. Enabled is a
+// createScheduleReq is the POST /api/v1/repositories/{id}/schedules body. Enabled is a
 // pointer so an omitted field defaults to true (a schedule you just created is
 // meant to run) while an explicit false is honoured.
 type createScheduleReq struct {

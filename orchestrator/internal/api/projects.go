@@ -14,7 +14,7 @@ import (
 )
 
 // projectReq is the create payload. A project is created empty (name only);
-// repositories are attached afterwards as services (POST /projects/{id}/services)
+// repositories are attached afterwards as services (POST /projects/{id}/repositories)
 // and guardrails are set via PATCH. The former repo-field compat shim that
 // auto-created a 'default' service was removed with the console's two-step flow.
 type projectReq struct {

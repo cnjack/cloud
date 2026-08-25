@@ -252,6 +252,7 @@ export interface ProjectAutomationAggregate {
   run_kind?: RunKind;
   model_id?: string;
   model_effort?: 'low' | 'medium' | 'high';
+  execution_account_id?: string;
   enabled: boolean;
   ignore_jcode: boolean;
   last_triggered_at?: string;
@@ -334,6 +335,8 @@ export interface ProjectAutomationSpec {
     board_ref: string;
     trigger_column: string;
     trigger_label?: string;
+    work_column?: string;
+    work_label?: string;
     done_column?: string;
     done_label?: string;
   };
@@ -377,8 +380,8 @@ export interface AutomationExecutionsPage {
 }
 export type ServiceKanbanBinding = ProjectAutomationSpec;
 export interface ServiceKanbanPolicy {
-  service_id: string;
-  service_name: string;
+  repository_id: string;
+  repository_name: string;
   repository: string;
   model: { id?: string; label: string };
   board: { workspace_id: string; ref: string };
@@ -389,7 +392,7 @@ export interface ServiceKanbanPolicy {
   health: {
     state: 'ready' | 'blocked';
     blocker: string | null;
-    repair_role?: 'project_owner' | 'cluster_admin' | null;
+    repair_role?: 'repository_owner' | 'cluster_admin' | null;
   };
 }
 export interface KanbanCardExecution {
@@ -399,7 +402,7 @@ export interface KanbanCardExecution {
   summary: string;
   reason: string | null;
   reason_code?: string;
-  repair_role: 'project_owner' | 'cluster_admin' | null;
+  repair_role: 'repository_owner' | 'cluster_admin' | null;
   requested_actor: { label: string; precision: 'display_only' } | null;
   run: { id: string; status: RunStatus; href: string } | null;
   receipt: {
@@ -417,12 +420,24 @@ export interface KanbanCardExecutionsPage {
   usage_summary: UsageSummary;
   next_cursor: string | null;
 }
+export interface CreateKanbanCardOccurrenceInput {
+  workspace_id: string;
+  document_path: string;
+  idempotency_key: string;
+}
+export interface CreateKanbanCardOccurrenceResponse {
+  occurrence: KanbanCardExecution;
+  replayed: boolean;
+}
 export interface PutServiceKanbanInput {
   installation_id: string;
   board_ref: string;
   trigger_column?: string;
-	work_column?: string;
+	work_column: string;
   done_column?: string;
+  model_id: string;
+  model_effort?: '' | 'low' | 'medium' | 'high';
+  execution_account_id?: string;
   enabled?: boolean;
 }
 /** @deprecated Transitional alias used only by the old mock; new UI uses ProjectAutomationSpec. */
@@ -491,6 +506,8 @@ export interface Service {
   name: string;
   repo_kind: RepoKind;
   provider?: GitProvider | string;
+  /** Stable numeric provider repository id used for account-level task reuse. */
+  provider_repo_id?: number;
   repo_owner_name?: string;
   /** Server-derived, browser-safe provider repository URL. */
   repo_html_url?: string;
@@ -1271,7 +1288,7 @@ export interface ProviderModel {
   granted_account_ids?: string[];
   /**
    * Project scope only: the per-model on/off toggle (jcode parity). Absent on the
-   * cluster view; the enable Switch renders only in project scope.
+   * cluster view; Account access is the only authorization control.
    */
   enabled?: boolean;
 }
@@ -1542,7 +1559,7 @@ export interface ResumeRunInput extends ResumeSessionOptions {
 }
 
 /**
- * PATCH /api/v1/services/{id} body (owner). Currently the console only edits the
+ * PATCH /api/v1/repositories/{id} body (owner). Currently the console only edits the
  * service's default model. default_model_id presence semantics: omitted =
  * unchanged; '' = clear the default; an id = set (server-validated to be granted).
  */
@@ -1581,6 +1598,43 @@ export interface ProviderRepo {
   default_branch: string;
   private: boolean;
   html_url?: string;
+}
+
+/** A repository visible through one of the current Account's linked providers. */
+export interface AccountRepositoryTarget {
+  provider: GitProvider;
+  provider_repo_id: string;
+  /** Present after this repository has task history or Repository settings. */
+  repository_id?: string;
+  full_name: string;
+  description?: string;
+  default_branch: string;
+  private: boolean;
+  html_url?: string;
+  execution_available?: boolean;
+  execution_error?: string;
+}
+
+export interface AccountRepositorySource {
+  provider: GitProvider;
+  account: string;
+  status: 'ready' | 'unavailable';
+  message?: string;
+}
+
+export interface AccountRepositoryCatalog {
+  repositories: AccountRepositoryTarget[];
+  sources: AccountRepositorySource[];
+}
+
+export interface StartAccountTaskInput extends CreateRunInput {
+  provider: GitProvider;
+  provider_repo_id: string;
+}
+
+export interface AccountTaskResponse {
+  run: Run;
+  repository: Service;
 }
 
 /**

@@ -141,7 +141,7 @@ snapshot.
 
 ## Service Kanban contract
 
-`GET|PUT|DELETE /api/v1/services/{id}/kanban` is the only mutation surface.
+`GET|PUT|DELETE /api/v1/repositories/{id}/kanban` is the only mutation surface.
 Owner and Member may enable or disable it; Viewer is read-only. `PUT` accepts
 the enabled Project JType Installation, the selected board path for a new or
 changed binding, and optional `trigger_column` / `done_column` values. The

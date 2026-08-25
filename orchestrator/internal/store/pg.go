@@ -301,6 +301,34 @@ func (s *PGStore) ListServices(ctx context.Context, projectID string) ([]domain.
 	return out, rows.Err()
 }
 
+func (s *PGStore) ListRepositoriesForUser(ctx context.Context, userID string) ([]domain.Service, error) {
+	query := `SELECT ` + serviceSelectCols + ` FROM services ORDER BY created_at ASC`
+	args := []any{}
+	if userID != "" {
+		query = `SELECT ` + serviceSelectCols + ` FROM services
+			WHERE project_id IN (
+				SELECT project_id FROM project_members WHERE user_id=$1
+				UNION SELECT id FROM projects WHERE owner_user_id=$1
+			)
+			ORDER BY created_at ASC`
+		args = append(args, userID)
+	}
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list repositories for user: %w", err)
+	}
+	defer rows.Close()
+	out := []domain.Service{}
+	for rows.Next() {
+		repository, scanErr := scanService(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, *repository)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) GetDefaultService(ctx context.Context, projectID string) (*domain.Service, error) {
 	return scanService(s.pool.QueryRow(ctx,
 		`SELECT `+serviceSelectCols+` FROM services WHERE project_id=$1 AND name='default'`, projectID))
@@ -1159,8 +1187,8 @@ func (s *PGStore) ClaimRunDispatch(ctx context.Context, id, jobName, tokenHash, 
 			FROM plugin_installations
 			WHERE id=$1 AND project_id=$2
 			  AND status='enabled' AND last_health_error=''
-			  AND ((provider='github' AND github_installation_id<>'')
-			    OR (provider<>'github' AND access_token_enc IS NOT NULL))
+			  AND (access_token_enc IS NOT NULL
+			    OR (provider='github' AND github_installation_id<>''))
 			FOR SHARE`, snap.InstallationID, cur.ProjectID).Scan(&lockedProvider, &installationRevision, &credentialVersionID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("%w: plugin %s", ErrDispatchClaimUnavailable, snap.InstallationID)

@@ -83,12 +83,12 @@ func TestRBACMatrix(t *testing.T) {
 			return r.StatusCode
 		}},
 		{"listServices", func(tok string) int {
-			r := do(t, "GET", f.ts.URL+"/api/v1/projects/"+pid+"/services", tok, nil)
+			r := do(t, "GET", f.ts.URL+"/api/v1/projects/"+pid+"/repositories", tok, nil)
 			defer r.Body.Close()
 			return r.StatusCode
 		}},
 		{"createRun", func(tok string) int {
-			r := do(t, "POST", f.ts.URL+"/api/v1/services/"+f.serviceID+"/runs", tok, map[string]any{"prompt": "hi"})
+			r := do(t, "POST", f.ts.URL+"/api/v1/repositories/"+f.serviceID+"/runs", tok, map[string]any{"prompt": "hi"})
 			defer r.Body.Close()
 			return r.StatusCode
 		}},
@@ -180,7 +180,7 @@ func TestTriggeredByRecordedForUser(t *testing.T) {
 	ctx := context.Background()
 
 	// Member triggers a run.
-	r := do(t, "POST", f.ts.URL+"/api/v1/services/"+f.serviceID+"/runs", f.tokens["member"],
+	r := do(t, "POST", f.ts.URL+"/api/v1/repositories/"+f.serviceID+"/runs", f.tokens["member"],
 		map[string]any{"prompt": "task"})
 	var run domain.Run
 	decode(t, r, &run)
@@ -216,7 +216,7 @@ func TestTriggeredByRecordedForUser(t *testing.T) {
 	}
 
 	// Service principal triggers a run => null triggered_by.
-	r2 := do(t, "POST", f.ts.URL+"/api/v1/services/"+f.serviceID+"/runs", consoleToken,
+	r2 := do(t, "POST", f.ts.URL+"/api/v1/repositories/"+f.serviceID+"/runs", consoleToken,
 		map[string]any{"prompt": "task2"})
 	var run2 domain.Run
 	decode(t, r2, &run2)

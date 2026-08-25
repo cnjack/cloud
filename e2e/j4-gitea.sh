@@ -68,10 +68,10 @@ j4_run() {
   [ -n "$pid" ] || { fail J-MR "cannot continue J4 without a project"; return 1; }
 
   local svc_resp svc_code svc_body sid
-  svc_resp="$(api_post_code "/projects/$pid/services" \
+  svc_resp="$(api_post_code "/projects/$pid/repositories" \
     "{\"name\":\"default\",\"provider\":\"gitea\",\"owner_name\":\"$GITEA_ORG/$GITEA_REPO\",\"git_mode\":\"draft_pr\",\"default_branch\":\"main\"}")"
   svc_code="$(http_code "$svc_resp")"; svc_body="$(http_body "$svc_resp")"
-  assert_eq J-MR "POST /projects/{id}/services (draft_pr) returns 201" "201" "$svc_code"
+  assert_eq J-MR "POST /projects/{id}/repositories (draft_pr) returns 201" "201" "$svc_code"
   sid="$(printf '%s' "$svc_body" | jq -r '.id // empty')"
   assert_nonempty J-MR "created draft_pr service has id" "$sid"
   local gm; gm="$(printf '%s' "$svc_body" | jq -r '.git_mode // empty')"

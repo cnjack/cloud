@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CodeBlock, Plus, Warning } from '@phosphor-icons/react';
+import { CodeBlock, Plus } from '@phosphor-icons/react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { ErrorBlock, LoadingBlock } from '../components/States';
@@ -36,16 +36,14 @@ const automationErrorLabel = (message: string, t: TFunction) => {
   return message;
 };
 
-export function ProjectAutomationsPanel({
+export function RepositoryAutomationsPanel({
   projectId,
-  services,
+  repository,
   canManage,
-  initialServiceId,
 }: {
   projectId: string;
-  services: Service[];
+  repository: Service;
   canManage: boolean;
-  initialServiceId?: string;
 }) {
   const { t } = useTranslation();
   const query = useProjectAutomations(projectId);
@@ -54,20 +52,18 @@ export function ProjectAutomationsPanel({
   const [filter, setFilter] = useState<'all' | AutomationTriggerKind>('all');
   const visible = useMemo(
     () => (query.data ?? []).filter((item) =>
-      (!initialServiceId || item.automation.service_id === initialServiceId)
+      item.automation.service_id === repository.id
       && (filter === 'all' || item.automation.trigger_kind === filter)),
-    [filter, initialServiceId, query.data],
+    [filter, query.data, repository.id],
   );
-  const createHref = `/projects/${encodeURIComponent(projectId)}/automations/new${
-    initialServiceId ? `?service=${encodeURIComponent(initialServiceId)}` : ''
-  }`;
-  const githubService = services.find((service) =>
-    service.provider === 'github' && (!initialServiceId || service.id === initialServiceId));
+  const repositoryBase = `/repositories/${encodeURIComponent(repository.id)}`;
+  const createHref = `${repositoryBase}/automations/new`;
+  const githubService = repository.provider === 'github' ? repository : undefined;
   const reviewAutomation = (query.data ?? []).find((item) =>
     item.automation.run_kind === 'review' && item.automation.service_id === githubService?.id);
   const reviewHref = reviewAutomation
-    ? `/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(reviewAutomation.automation.id)}/edit?service=${encodeURIComponent(reviewAutomation.automation.service_id)}`
-    : `/projects/${encodeURIComponent(projectId)}/automations/new?service=${encodeURIComponent(githubService?.id ?? '')}&preset=review`;
+    ? `${repositoryBase}/automations/${encodeURIComponent(reviewAutomation.automation.id)}/edit`
+    : `${repositoryBase}/automations/new?preset=review`;
 
   if (query.isLoading) return <LoadingBlock label={t('projectAutomations.loading')} />;
   if (query.isError) {
@@ -90,26 +86,13 @@ export function ProjectAutomationsPanel({
                 {reviewAutomation ? t('projectAutomations.review.manage') : t('projectAutomations.review.turnOn')}
               </Link>
             )}
-            {services.length ? (
-              <Link className={styles.secondaryLink} to={createHref}>
-                <Plus size={16} aria-hidden />
-                {t('projectAutomations.new')}
-              </Link>
-            ) : (
-              <span className={styles.secondaryLink} aria-disabled="true">
-                <Plus size={16} aria-hidden />
-                {t('projectAutomations.new')}
-              </span>
-            )}
+            <Link className={styles.secondaryLink} to={createHref}>
+              <Plus size={16} aria-hidden />
+              {t('projectAutomations.new')}
+            </Link>
           </div>
         )}
       </header>
-      {!services.length && (
-        <div className={styles.warning}>
-          <Warning size={17} aria-hidden />
-          {t('projectAutomations.noServices')}
-        </div>
-      )}
       <div className={styles.filters} aria-label={t('projectAutomations.filters')}>
         {(['all', 'scm', 'cron'] as const).map((kind) => (
           <button key={kind} type="button" aria-pressed={filter === kind} onClick={() => setFilter(kind)}>
@@ -127,7 +110,7 @@ export function ProjectAutomationsPanel({
               <li key={automation.id} className={styles.row}>
                 <div>
                   <strong>
-                    <Link to={`/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automation.id)}`}>
+                    <Link to={`${repositoryBase}/automations/${encodeURIComponent(automation.id)}`}>
                       {automation.name}
                     </Link>
                   </strong>
@@ -160,7 +143,7 @@ export function ProjectAutomationsPanel({
                     <span />
                   </button>
                   {canManage && (
-                    <Link to={`/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automation.id)}/edit?service=${encodeURIComponent(automation.service_id)}`}>
+                    <Link to={`${repositoryBase}/automations/${encodeURIComponent(automation.id)}/edit`}>
                       {t('projectAutomations.edit')}
                     </Link>
                   )}

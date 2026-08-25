@@ -269,12 +269,79 @@ func selectModel(ctx context.Context, st ConfigReader, cfg *config.Config, proje
 	}
 }
 
+// selectModelForAccount is the personal Repository selection chain. Account
+// grants are the authorization boundary; the hidden singleton Project is not.
+// A Repository default is still honored while it remains granted to the
+// Account, followed by the Account's sole model.
+func selectModelForAccount(ctx context.Context, st ConfigReader, cfg *config.Config, accountID, projectID, defaultModelID, requested string) (Selection, SelectOutcome, error) {
+	accounts, ok := st.(interface {
+		ListModelsForAccount(context.Context, string) ([]domain.Model, error)
+	})
+	if !ok {
+		return Selection{}, SelectOK, errors.New("account model grants are unavailable")
+	}
+	grants, err := accounts.ListModelsForAccount(ctx, accountID)
+	if err != nil {
+		return Selection{}, SelectOK, err
+	}
+	// A model whose provider is owned by the hidden personal container is
+	// available without a separate grant. Cluster models still require a direct
+	// Account grant; old Project grant rows are deliberately ignored.
+	owned, err := st.ListModelsForProject(ctx, projectID)
+	if err != nil {
+		return Selection{}, SelectOK, err
+	}
+	seen := make(map[string]bool, len(grants))
+	for i := range grants {
+		seen[grants[i].ID] = true
+	}
+	for i := range owned {
+		if owned[i].ProjectID == projectID && !seen[owned[i].ID] {
+			grants = append(grants, owned[i])
+			seen[owned[i].ID] = true
+		}
+	}
+	byID := make(map[string]domain.Model, len(grants))
+	for i := range grants {
+		byID[grants[i].ID] = grants[i]
+	}
+	pick := func(id string) Selection {
+		return Selection{ModelID: id, ModelName: byID[id].ModelName, Capabilities: byID[id].Capabilities}
+	}
+	if requested != "" {
+		if _, granted := byID[requested]; !granted {
+			return Selection{}, SelectNotGranted, nil
+		}
+		return pick(requested), SelectOK, nil
+	}
+	if defaultModelID != "" {
+		if _, granted := byID[defaultModelID]; granted {
+			return pick(defaultModelID), SelectOK, nil
+		}
+	}
+	switch {
+	case len(grants) == 1:
+		return pick(grants[0].ID), SelectOK, nil
+	case len(grants) >= 2:
+		return Selection{}, SelectNotSelected, nil
+	default:
+		total, countErr := st.CountModels(ctx)
+		if countErr != nil {
+			return Selection{}, SelectOK, countErr
+		}
+		if total == 0 && envConfigured(cfg) {
+			return Selection{ModelName: cfg.ModelName}, SelectOK, nil
+		}
+		return Selection{}, SelectNotConfigured, nil
+	}
+}
+
 // NotConfiguredMessage is the shared fail-visible explanation for a project with
 // no usable model (SelectNotConfigured / a materialisation that found none).
 // consoleURL, when non-empty, is appended as where to go (surfaces that can't
 // link, e.g. a PR comment).
 func NotConfiguredMessage(consoleURL string) string {
-	msg := "no LLM is configured for this project — contact a cluster admin to grant a model before runs can start"
+	msg := "no LLM is authorized for this account — contact a cluster admin to grant a model before runs can start"
 	if consoleURL != "" {
 		msg += ": " + strings.TrimRight(consoleURL, "/")
 	}
@@ -290,7 +357,7 @@ func NotSelectedMessage() string {
 // NotGrantedMessage is the fail-visible explanation when the composer requested a
 // model the project is not authorized to use.
 func NotGrantedMessage() string {
-	return "the selected model is not authorized for this project"
+	return "the selected model is not authorized for this account"
 }
 
 // NotGrantedReuseMessage is the fail-visible explanation when a retry/review would
@@ -298,5 +365,5 @@ func NotGrantedMessage() string {
 // the fix (set a service default, or pick another) rather than blaming a pick the
 // user did not just make.
 func NotGrantedReuseMessage() string {
-	return "the model this run used is no longer authorized for this project — set a default model on the service or pick another"
+	return "the model this run used is no longer authorized for this account — set a Repository default or pick another"
 }

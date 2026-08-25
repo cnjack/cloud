@@ -39,7 +39,7 @@ func TestServiceCRUDAPI(t *testing.T) {
 	pid := newProject(t, ts, "svc-crud")
 
 	// Create a provider service via smart-parsed repo_url.
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "web", "repo_url": "https://github.com/acme/web.git",
 	})
 	if resp.StatusCode != http.StatusCreated {
@@ -52,7 +52,7 @@ func TestServiceCRUDAPI(t *testing.T) {
 	}
 
 	// Duplicate name -> 409.
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "web", "repo_url": "https://github.com/acme/web.git",
 	})
 	if resp.StatusCode != http.StatusConflict {
@@ -61,7 +61,7 @@ func TestServiceCRUDAPI(t *testing.T) {
 	resp.Body.Close()
 
 	// List.
-	resp = do(t, "GET", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, nil)
+	resp = do(t, "GET", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, nil)
 	var list struct {
 		Services []domain.Service `json:"services"`
 	}
@@ -71,7 +71,7 @@ func TestServiceCRUDAPI(t *testing.T) {
 	}
 
 	// PATCH: switch to explicit provider owner_name + draft_pr.
-	resp = do(t, "PATCH", ts.URL+"/api/v1/services/"+svc.ID, consoleToken, map[string]any{
+	resp = do(t, "PATCH", ts.URL+"/api/v1/repositories/"+svc.ID, consoleToken, map[string]any{
 		"provider": "gitea", "owner_name": "acme/web2", "git_mode": "draft_pr", "default_branch": "trunk",
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -85,7 +85,7 @@ func TestServiceCRUDAPI(t *testing.T) {
 	}
 
 	// Create a run against the service, then delete cascades its history.
-	resp = do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "do it"})
+	resp = do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "do it"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create service run: status=%d want 201", resp.StatusCode)
 	}
@@ -95,8 +95,8 @@ func TestServiceCRUDAPI(t *testing.T) {
 		t.Fatalf("run not linked to service: %+v", run)
 	}
 
-	// GET /services/{id}/runs lists it.
-	resp = do(t, "GET", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, nil)
+	// GET /repositories/{id}/runs lists it.
+	resp = do(t, "GET", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken, nil)
 	var rl struct {
 		Runs []domain.Run `json:"runs"`
 	}
@@ -106,7 +106,7 @@ func TestServiceCRUDAPI(t *testing.T) {
 	}
 
 	// Delete with a run present -> 204 and the run history is cascaded.
-	resp = do(t, "DELETE", ts.URL+"/api/v1/services/"+svc.ID, consoleToken, nil)
+	resp = do(t, "DELETE", ts.URL+"/api/v1/repositories/"+svc.ID, consoleToken, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete service with runs: status=%d want 204", resp.StatusCode)
 	}
@@ -124,13 +124,13 @@ func TestDeleteServiceStopsRunsAndCleansRuntimeResources(t *testing.T) {
 	ts, st, fake := newTestServerWithLauncher(t, cleaner)
 	pid := newProject(t, ts, "svc-cascade")
 
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "web", "repo_url": "https://github.com/acme/web.git",
 	})
 	var svc domain.Service
 	decode(t, resp, &svc)
 
-	resp = do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "do it"})
+	resp = do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "do it"})
 	var run domain.Run
 	decode(t, resp, &run)
 	jobName := "run-" + run.ID[:8]
@@ -145,7 +145,7 @@ func TestDeleteServiceStopsRunsAndCleansRuntimeResources(t *testing.T) {
 	}
 	fake.SetPVCExists(svc.ID, true)
 
-	resp = do(t, "DELETE", ts.URL+"/api/v1/services/"+svc.ID, consoleToken, nil)
+	resp = do(t, "DELETE", ts.URL+"/api/v1/repositories/"+svc.ID, consoleToken, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete active service: status=%d want 204", resp.StatusCode)
 	}
@@ -184,12 +184,12 @@ func (c *recordingArchiveCleaner) Delete(_ context.Context, key string) error {
 func TestDeleteServiceCleanupFailureIsRetryableAndFencesNewRuns(t *testing.T) {
 	ts, st, fake := newTestServerWithLauncher(t)
 	pid := newProject(t, ts, "svc-retry-delete")
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "web", "repo_url": "https://github.com/acme/web.git",
 	})
 	var svc domain.Service
 	decode(t, resp, &svc)
-	resp = do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "do it"})
+	resp = do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "do it"})
 	var run domain.Run
 	decode(t, resp, &run)
 	jobName := "run-" + run.ID[:8]
@@ -198,7 +198,7 @@ func TestDeleteServiceCleanupFailureIsRetryableAndFencesNewRuns(t *testing.T) {
 	}
 
 	fake.DeleteErr = errors.New("temporary kube error")
-	resp = do(t, "DELETE", ts.URL+"/api/v1/services/"+svc.ID, consoleToken, nil)
+	resp = do(t, "DELETE", ts.URL+"/api/v1/repositories/"+svc.ID, consoleToken, nil)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("failed cleanup status=%d want 503", resp.StatusCode)
 	}
@@ -211,14 +211,14 @@ func TestDeleteServiceCleanupFailureIsRetryableAndFencesNewRuns(t *testing.T) {
 	if err != nil || canceled.Status != domain.StatusCanceled {
 		t.Fatalf("active run not canceled before cleanup failure: run=%+v err=%v", canceled, err)
 	}
-	resp = do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "must not queue"})
+	resp = do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "must not queue"})
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("dispatch during deletion status=%d want 409", resp.StatusCode)
 	}
 	resp.Body.Close()
 
 	fake.DeleteErr = nil
-	resp = do(t, "DELETE", ts.URL+"/api/v1/services/"+svc.ID, consoleToken, nil)
+	resp = do(t, "DELETE", ts.URL+"/api/v1/repositories/"+svc.ID, consoleToken, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("retry delete status=%d want 204", resp.StatusCode)
 	}
@@ -240,7 +240,7 @@ func TestDeleteServiceCleansWorkspacePVC(t *testing.T) {
 	ts, _, fake := newTestServerWithLauncher(t)
 	pid := newProject(t, ts, "svc-pvc")
 
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "web", "repo_url": "https://github.com/acme/web.git",
 	})
 	if resp.StatusCode != http.StatusCreated {
@@ -250,7 +250,7 @@ func TestDeleteServiceCleansWorkspacePVC(t *testing.T) {
 	decode(t, resp, &svc)
 
 	// Delete (no runs) -> 204 and the launcher is asked to delete ws-<serviceID>.
-	resp = do(t, "DELETE", ts.URL+"/api/v1/services/"+svc.ID, consoleToken, nil)
+	resp = do(t, "DELETE", ts.URL+"/api/v1/repositories/"+svc.ID, consoleToken, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete service: status=%d want 204", resp.StatusCode)
 	}
@@ -268,7 +268,7 @@ func TestServiceDraftPRRequiresProvider(t *testing.T) {
 	pid := newProject(t, ts, "svc-draft")
 
 	// Raw repo (git://) + draft_pr -> 400.
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "raw", "repo_url": "git://git/seed.git", "git_mode": "draft_pr",
 	})
 	if resp.StatusCode != http.StatusBadRequest {
@@ -277,7 +277,7 @@ func TestServiceDraftPRRequiresProvider(t *testing.T) {
 	resp.Body.Close()
 
 	// Provider repo + draft_pr -> 201.
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "prov", "owner_name": "o/n", "provider": "gitea", "git_mode": "draft_pr",
 	})
 	if resp.StatusCode != http.StatusCreated {
@@ -287,19 +287,19 @@ func TestServiceDraftPRRequiresProvider(t *testing.T) {
 }
 
 // TestRunDispatchIsServiceScoped pins the post-shim contract: runs are created
-// ONLY via POST /services/{id}/runs; the removed project-level POST
+// ONLY via POST /repositories/{id}/runs; the removed project-level POST
 // /projects/{id}/runs no longer routes (405 — the path only serves GET).
 func TestRunDispatchIsServiceScoped(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 	pid := newProject(t, ts, "scoped")
 
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "default", "repo_url": "git://git.jcloud.svc/seed.git",
 	})
 	var svc domain.Service
 	decode(t, resp, &svc)
 
-	resp = do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
+	resp = do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("service run: status=%d want 201", resp.StatusCode)
 	}
@@ -318,12 +318,12 @@ func TestRunDispatchIsServiceScoped(t *testing.T) {
 
 // TestProjectPatchRejectsRepoFields pins that PATCH /projects/{id} renames only:
 // legacy repo fields are rejected loudly (DisallowUnknownFields) — that shim was
-// removed; repo edits go through PATCH /services/{id}.
+// removed; repo edits go through PATCH /repositories/{id}.
 func TestProjectPatchRejectsRepoFields(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 	pid := newProject(t, ts, "patch")
 
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "default", "repo_url": "git://original/seed.git",
 	})
 	var svc domain.Service

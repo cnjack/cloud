@@ -862,6 +862,10 @@ func TestPGRunnerSeqAllocationAndDedupe(t *testing.T) {
 func TestPGConcurrentIngestNoCollision(t *testing.T) {
 	ctx := context.Background()
 	st, runID := pgTestStore(t)
+	initial, err := st.ListEvents(ctx, runID, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	const n = 40
 	var wg sync.WaitGroup
@@ -892,8 +896,8 @@ func TestPGConcurrentIngestNoCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2*n {
-		t.Fatalf("durable events = %d want %d (collision dropped some)", len(events), 2*n)
+	if len(events) != len(initial)+2*n {
+		t.Fatalf("durable events = %d want %d (collision dropped some)", len(events), len(initial)+2*n)
 	}
 	for i, e := range events {
 		if e.Seq != int64(i+1) {

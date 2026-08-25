@@ -342,7 +342,7 @@ describe('RunDetailPage — resilient error states', () => {
     expect(screen.getByTestId('run-inspector').textContent).toContain('Changes');
     expect(screen.getByTestId('run-inspector').textContent).toContain('Execution');
     expect(screen.getByTestId('run-back-to-project').getAttribute('href')).toBe(
-      '/projects/proj1?service=svc-1&tab=tasks',
+      '/repositories/svc-1?tab=tasks',
     );
     expect(screen.getByTestId('conversation-scroll').getAttribute('data-scrollbar')).toBe('hidden');
     expect(screen.queryByTestId('tab-events')).toBeNull();
@@ -400,9 +400,9 @@ describe('RunDetailPage — resilient error states', () => {
     expect(screen.getByTestId('provenance-accountable').textContent).toContain('Jack');
     expect(screen.getByTestId('provenance-accountable').textContent).toContain('Rule owner');
     expect(screen.getByTestId('provenance-trigger').textContent).toContain('JType Card #42');
-    expect(screen.getByTestId('provenance-executed-for').textContent).toContain('commerce');
-    expect(screen.getByTestId('provenance-executed-for').textContent).toContain('payments-api');
     expect(screen.getByTestId('provenance-executed-for').textContent).toContain('acme/payments');
+    expect(screen.getByTestId('provenance-executed-for').textContent).not.toContain('commerce');
+    expect(screen.getByTestId('provenance-executed-for').textContent).not.toContain('payments-api');
     expect(screen.getByTestId('provenance-executed-for').textContent).toContain('anthropic/claude-sonnet');
     expect(screen.getByTestId('provenance-executed-for').textContent).toContain('Dispatch-time snapshot');
     expect(screen.getByTestId('provenance-written-back').textContent).toContain('jcode Cloud Bot');
@@ -485,23 +485,20 @@ describe('RunDetailPage — resilient error states', () => {
     renderPage(client, run);
 
     expect((await screen.findByTestId('run-back-to-project')).getAttribute('href')).toBe(
-      '/projects/proj1?service=svc-2&tab=tasks',
+      '/repositories/svc-2?tab=tasks',
     );
   });
 
-  it('keeps Project navigation in the fixed rail on a run route', async () => {
+  it('keeps Repository navigation in the fixed rail on a run route', async () => {
     const { client, ctl } = makeClient('owner');
     const run = baseRun({ service_id: 'svc-1' });
     ctl.getRun.mockResolvedValue(run);
     renderPage(client, run);
 
     await screen.findByTestId('run-workspace');
-    const projectSettings = screen.getByTestId('project-settings-trigger');
-    expect(projectSettings.closest('[data-testid="project-administration"]')).toBeTruthy();
-    expect(projectSettings.closest('[data-testid="project-summary"]')).toBeTruthy();
-    expect(projectSettings.getAttribute('href')).toBe(
-      '/projects/proj1?service=svc-1&tab=tasks&view=project-settings',
-    );
+    expect(screen.queryByTestId('project-settings-trigger')).toBeNull();
+    expect(screen.queryByTestId('project-summary')).toBeNull();
+    expect(screen.getAllByRole('link', { name: 'Repositories' }).every((link) => link.getAttribute('href') === '/repositories')).toBe(true);
     expect(screen.getByTestId('project-workspace-scroll').getAttribute('data-scroll-owner')).toBe('detail');
   });
 
@@ -785,7 +782,7 @@ describe('RunDetailPage — model gate on Retry (Feature A)', () => {
 		renderPage(client, failed);
 
 		await waitFor(() => expect((screen.getByTestId('retry-btn') as HTMLButtonElement).disabled).toBe(true));
-		expect(screen.getByText('The original model is no longer available. Choose another project model.')).toBeTruthy();
+		expect(screen.getByText('The original model is no longer available. Choose another Account model.')).toBeTruthy();
 		expect(screen.getByTestId('retry-other-model-btn')).toBeTruthy();
 	});
 });
@@ -901,7 +898,7 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     await screen.findByTestId('session-panel');
     expect(screen.queryByLabelText('Message input')).toBeNull();
     const note = screen.getByTestId('session-pending-note');
-    expect(note.textContent).toContain('waiting for a free session slot');
+    expect(note.textContent).toContain('waiting for a free concurrency slot');
     expect(note.textContent).not.toContain('working');
   });
 

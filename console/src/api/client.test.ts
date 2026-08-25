@@ -84,13 +84,66 @@ describe('httpClient — request shaping', () => {
       provider_repo_id: '12345',
       git_mode: 'draft_pr',
     });
-    expect(calls[0]!.url).toBe('/api/v1/projects/p1/services');
+    expect(calls[0]!.url).toBe('/api/v1/projects/p1/repositories');
     const body = JSON.parse(calls[0]!.init!.body as string);
     expect(body).toEqual({
       name: 'default',
       installation_id: 'plugin-github',
       provider_repo_id: '12345',
       git_mode: 'draft_pr',
+    });
+  });
+
+  it('lists and loads Repositories through the public Repository facade', async () => {
+    const { calls } = mockFetch(({ url }) => url === '/api/v1/repositories'
+      ? { body: { repositories: [{ id: 'repo-1', name: 'payments' }] } }
+      : { body: { id: 'repo-1', name: 'payments' } });
+    const client = createHttpClient('t');
+
+    await expect(client.listRepositories()).resolves.toMatchObject([{ id: 'repo-1' }]);
+    await expect(client.getRepository('repo/1')).resolves.toMatchObject({ id: 'repo-1' });
+
+    expect(calls[0]!.url).toBe('/api/v1/repositories');
+    expect(calls[1]!.url).toBe('/api/v1/repositories/repo%2F1');
+  });
+
+  it('lists Account repositories and starts a task without a connect request', async () => {
+    const { calls } = mockFetch(({ url, init }) => {
+      if (url.startsWith('/api/v1/account/repositories')) {
+        return { body: { repositories: [{ provider: 'gitea', provider_repo_id: '42', full_name: 'acme/payments', default_branch: 'main', private: true }], sources: [] } };
+      }
+      return { status: 201, body: { run: { id: 'run-1' }, repository: { id: 'repo-1' }, request: JSON.parse(init!.body as string) } };
+    });
+    const client = createHttpClient('t');
+    await expect(client.listAccountRepositories('pay')).resolves.toMatchObject({ repositories: [{ provider_repo_id: '42' }] });
+    await expect(client.startAccountTask({
+      provider: 'gitea', provider_repo_id: '42', prompt: 'Fix checkout', model_id: 'model-1', session: true,
+    })).resolves.toMatchObject({ run: { id: 'run-1' }, repository: { id: 'repo-1' } });
+
+    expect(calls[0]!.url).toBe('/api/v1/account/repositories?q=pay');
+    expect(calls[1]!.url).toBe('/api/v1/account/tasks');
+    expect(calls[1]!.init!.method).toBe('POST');
+    expect(JSON.parse(calls[1]!.init!.body as string)).toEqual({
+      provider: 'gitea', provider_repo_id: '42', prompt: 'Fix checkout', model_id: 'model-1', session: true,
+    });
+  });
+
+  it('creates a manual Agent Board occurrence instead of a direct Run', async () => {
+    const { calls } = mockFetch(({ init }) => ({
+      status: 202,
+      body: { occurrence: { id: 'occ-1', status: 'received' }, replayed: false, request: JSON.parse(init!.body as string) },
+    }));
+    const client = createHttpClient('t');
+    await expect(client.createServiceKanbanOccurrence('repo/1', {
+      workspace_id: 'workspace-1',
+      document_path: 'cards/payment.md',
+      idempotency_key: 'click-1',
+    })).resolves.toMatchObject({ occurrence: { id: 'occ-1' }, replayed: false });
+
+    expect(calls[0]!.url).toBe('/api/v1/repositories/repo%2F1/agent-board/occurrences');
+    expect(calls[0]!.init!.method).toBe('POST');
+    expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({
+      workspace_id: 'workspace-1', document_path: 'cards/payment.md', idempotency_key: 'click-1',
     });
   });
 
@@ -143,7 +196,7 @@ describe('httpClient — request shaping', () => {
     }));
     const client = createHttpClient('t');
     await client.createServiceRun('s1', { prompt: 'do it' });
-    expect(calls[0]!.url).toBe('/api/v1/services/s1/runs');
+    expect(calls[0]!.url).toBe('/api/v1/repositories/s1/runs');
     expect(calls[0]!.init!.method).toBe('POST');
     expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ prompt: 'do it' });
   });
@@ -157,7 +210,7 @@ describe('httpClient — request shaping', () => {
       'service/1', 'workspace 1', 'cards/payment fix.md', 'opaque+/cursor', 12,
     );
     const url = new URL(calls[0]!.url, 'https://console.test');
-    expect(url.pathname).toBe('/api/v1/services/service%2F1/kanban/card-executions');
+    expect(url.pathname).toBe('/api/v1/repositories/service%2F1/agent-board/card-executions');
     expect(url.searchParams.get('workspace_id')).toBe('workspace 1');
     expect(url.searchParams.get('document_path')).toBe('cards/payment fix.md');
     expect(url.searchParams.get('before')).toBe('opaque+/cursor');
@@ -179,7 +232,7 @@ describe('httpClient — request shaping', () => {
               created_at: '2026-07-26T00:00:00Z',
               expires_at: '2026-07-26T00:10:00Z',
             },
-            upload_url: '/api/v1/services/s1/attachments/stage-1/content',
+            upload_url: '/api/v1/repositories/s1/attachments/stage-1/content',
             expires_at: '2026-07-26T00:10:00Z',
           },
         };
@@ -192,13 +245,13 @@ describe('httpClient — request shaping', () => {
     await expect(client.uploadRunAttachment('s1', file)).resolves.toMatchObject({
       stage: { id: 'stage-1', display_name: 'notes.txt' },
     });
-    expect(calls[0]!.url).toBe('/api/v1/services/s1/attachments/intents');
+    expect(calls[0]!.url).toBe('/api/v1/repositories/s1/attachments/intents');
     expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({
       name: 'notes.txt',
       content_type: 'text/plain',
       size_bytes: 5,
     });
-    expect(calls[1]!.url).toBe('/api/v1/services/s1/attachments/stage-1/content');
+    expect(calls[1]!.url).toBe('/api/v1/repositories/s1/attachments/stage-1/content');
     expect(calls[1]!.init).toMatchObject({ method: 'PUT', body: file, credentials: 'same-origin' });
     expect((calls[1]!.init!.headers as Record<string, string>).Authorization).toBe('Bearer t');
   });
@@ -211,7 +264,7 @@ describe('httpClient — request shaping', () => {
 		await expect(client.listServiceBranches('s1')).resolves.toEqual([
 			{ name: 'main', default: true, protected: true },
 		]);
-		expect(calls[0]!.url).toBe('/api/v1/services/s1/branches');
+		expect(calls[0]!.url).toBe('/api/v1/repositories/s1/branches');
 	});
 
   it('POSTs to cancel and retry endpoints, with an optional retry model override', async () => {
@@ -291,17 +344,17 @@ describe('httpClient — me / services / members (M4)', () => {
 
   it('lists + creates services and dispatches a service run', async () => {
     const { calls } = mockFetch(({ url, init }) => {
-      if (url.includes('/services/') && init?.method === 'DELETE') return { status: 204 };
-      if (url.endsWith('/services') && init?.method === 'POST')
+      if (url.includes('/repositories/') && init?.method === 'DELETE') return { status: 204 };
+      if (url.endsWith('/repositories') && init?.method === 'POST')
         return { status: 201, body: JSON.parse(init.body as string) };
-      if (url.endsWith('/services'))
+      if (url.endsWith('/repositories'))
         return { body: { services: [{ id: 's1', name: 'default' }] } };
       return { status: 201, body: { id: 'r9', ...JSON.parse(init!.body as string) } };
     });
     const client = createHttpClient('t');
 
     const list = await client.listServices('p1');
-    expect(calls[0]!.url).toBe('/api/v1/projects/p1/services');
+    expect(calls[0]!.url).toBe('/api/v1/projects/p1/repositories');
     expect(list[0]!.id).toBe('s1');
 
     await client.createService('p1', {
@@ -310,7 +363,7 @@ describe('httpClient — me / services / members (M4)', () => {
       provider_repo_id: '12345',
       git_mode: 'readonly',
     });
-    expect(calls[1]!.url).toBe('/api/v1/projects/p1/services');
+    expect(calls[1]!.url).toBe('/api/v1/projects/p1/repositories');
     expect(calls[1]!.init!.method).toBe('POST');
     expect(JSON.parse(calls[1]!.init!.body as string)).toEqual({
       name: 'web',
@@ -320,11 +373,11 @@ describe('httpClient — me / services / members (M4)', () => {
     });
 
     await client.createServiceRun('s1', { prompt: 'go' });
-    expect(calls[2]!.url).toBe('/api/v1/services/s1/runs');
+    expect(calls[2]!.url).toBe('/api/v1/repositories/s1/runs');
     expect(calls[2]!.init!.method).toBe('POST');
 
     await client.deleteService('s1');
-    expect(calls[3]!.url).toBe('/api/v1/services/s1');
+    expect(calls[3]!.url).toBe('/api/v1/repositories/s1');
     expect(calls[3]!.init!.method).toBe('DELETE');
   });
 

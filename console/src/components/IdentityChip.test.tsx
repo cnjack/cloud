@@ -98,6 +98,6 @@ describe('IdentityChip — fallback (no principal)', () => {
     render(<IdentityChip me={null} role="project-admin" />);
     const chip = screen.getByTestId('identity-chip');
     expect(chip.getAttribute('data-role')).toBe('project-admin');
-    expect(chip.textContent).toContain('Project admin');
+    expect(chip.textContent).toContain('Repository admin');
   });
 });

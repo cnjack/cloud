@@ -77,7 +77,7 @@ func TestCreateServicePersistsProviderRepoID(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 	pid := newProject(t, ts, "picker")
 
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "app", "provider": "gitea", "owner_name": "ai/app",
 		"git_mode": "draft_pr", "default_branch": "main", "provider_repo_id": 12345,
 	})

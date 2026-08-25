@@ -384,7 +384,7 @@ func TestMemberBuildsServiceViaIntegration(t *testing.T) {
 	})
 
 	// Member creates a service off the integration (reachable repo) → 201.
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", tokMember, map[string]any{
+	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", tokMember, map[string]any{
 		"name": "widget", "owner_name": "acme/widget", "integration_id": iv.ID,
 		"provider_repo_id": 42, "git_mode": "draft_pr",
 	})
@@ -402,7 +402,7 @@ func TestMemberBuildsServiceViaIntegration(t *testing.T) {
 	}
 
 	// Member BARE create (no integration) is still owner-only → 403.
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", tokMember, map[string]any{
+	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", tokMember, map[string]any{
 		"name": "bare", "repo_url": "https://git/x.git",
 	})
 	if resp.StatusCode != http.StatusForbidden {
@@ -411,7 +411,7 @@ func TestMemberBuildsServiceViaIntegration(t *testing.T) {
 	resp.Body.Close()
 
 	// A repo NOT reachable by the integration is rejected fail-visibly.
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", tokMember, map[string]any{
+	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", tokMember, map[string]any{
 		"name": "sneaky", "owner_name": "secret/private", "integration_id": iv.ID, "git_mode": "draft_pr",
 	})
 	if resp.StatusCode != http.StatusBadRequest {
@@ -441,7 +441,7 @@ func TestServiceBindMatchesByRepoID(t *testing.T) {
 	})
 
 	// The request still carries the OLD name but the picker's id.
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "widget", "owner_name": "acme/widget", "integration_id": iv.ID,
 		"provider_repo_id": 42, "git_mode": "draft_pr",
 	})
@@ -473,14 +473,14 @@ func TestServicePatchBindChecksReachability(t *testing.T) {
 	})
 
 	// An unbound service pointing at a repo the bot CANNOT see.
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "hidden", "owner_name": "secret/private", "provider": "gitea", "git_mode": "draft_pr",
 	})
 	var hidden domain.Service
 	decode(t, resp, &hidden)
 
 	// PATCH-bind → 400 repo_not_reachable (same gate as create).
-	resp = do(t, "PATCH", ts.URL+"/api/v1/services/"+hidden.ID, consoleToken, map[string]any{
+	resp = do(t, "PATCH", ts.URL+"/api/v1/repositories/"+hidden.ID, consoleToken, map[string]any{
 		"integration_id": iv.ID,
 	})
 	if resp.StatusCode != http.StatusBadRequest {
@@ -493,12 +493,12 @@ func TestServicePatchBindChecksReachability(t *testing.T) {
 	}
 
 	// A reachable service PATCH-binds fine (and canonicalises).
-	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp = do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "widget", "owner_name": "acme/widget", "provider": "gitea", "git_mode": "draft_pr",
 	})
 	var widget domain.Service
 	decode(t, resp, &widget)
-	resp = do(t, "PATCH", ts.URL+"/api/v1/services/"+widget.ID, consoleToken, map[string]any{
+	resp = do(t, "PATCH", ts.URL+"/api/v1/repositories/"+widget.ID, consoleToken, map[string]any{
 		"integration_id": iv.ID,
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -534,7 +534,7 @@ func TestServiceBindRejectsCrossProjectIntegration(t *testing.T) {
 		"provider": "gitea", "host": gitea.URL, "token": "good-pat",
 	})
 
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pb.ID+"/services", tokOwner, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pb.ID+"/repositories", tokOwner, map[string]any{
 		"name": "x", "owner_name": "acme/widget", "integration_id": iv.ID, "git_mode": "draft_pr",
 	})
 	if resp.StatusCode != http.StatusNotFound {
@@ -555,7 +555,7 @@ func TestIntegrationDeleteUnbindsServices(t *testing.T) {
 	_, iv := createIntegration(t, ts, consoleToken, pid, map[string]any{
 		"provider": "gitea", "host": gitea.URL, "token": "good-pat",
 	})
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "widget", "owner_name": "acme/widget", "integration_id": iv.ID,
 		"provider_repo_id": 42, "git_mode": "draft_pr",
 	})
@@ -588,7 +588,7 @@ func TestIntegrationDispatchHostGate(t *testing.T) {
 	_, iv := createIntegration(t, ts, consoleToken, pid, map[string]any{
 		"provider": "gitea", "host": gitea.URL, "token": "good-pat",
 	})
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "widget", "owner_name": "acme/widget", "integration_id": iv.ID,
 		"provider_repo_id": 42, "git_mode": "draft_pr",
 	})
@@ -596,7 +596,7 @@ func TestIntegrationDispatchHostGate(t *testing.T) {
 	decode(t, resp, &svc)
 
 	// Baseline: dispatch works while the host is allowed.
-	r1 := do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
+	r1 := do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
 	if r1.StatusCode != http.StatusCreated {
 		t.Fatalf("dispatch before tighten: status=%d want 201", r1.StatusCode)
 	}
@@ -607,7 +607,7 @@ func TestIntegrationDispatchHostGate(t *testing.T) {
 	cfg.AllowedGitHosts = []string{"github.com"}
 
 	// New run dispatch → 403 host_not_allowed.
-	r2 := do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "again"})
+	r2 := do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "again"})
 	if r2.StatusCode != http.StatusForbidden {
 		t.Fatalf("dispatch after tighten: status=%d want 403", r2.StatusCode)
 	}
@@ -650,7 +650,7 @@ func TestIntegrationDispatchHostGate(t *testing.T) {
 
 	// Widening back re-enables dispatch (level-based, no sticky state).
 	cfg.AllowedGitHosts = nil
-	r5 := do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "ok again"})
+	r5 := do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "ok again"})
 	if r5.StatusCode != http.StatusCreated {
 		t.Fatalf("dispatch after widen: status=%d want 201", r5.StatusCode)
 	}
@@ -670,7 +670,7 @@ func TestSourceFailsVisiblyOnIntegrationCredential(t *testing.T) {
 	_, iv := createIntegration(t, ts, consoleToken, pid, map[string]any{
 		"provider": "gitea", "host": gitea.URL, "token": "good-pat",
 	})
-	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/services", consoleToken, map[string]any{
+	resp := do(t, "POST", ts.URL+"/api/v1/projects/"+pid+"/repositories", consoleToken, map[string]any{
 		"name": "widget", "owner_name": "acme/widget", "integration_id": iv.ID,
 		"provider_repo_id": 42, "git_mode": "draft_pr",
 	})
@@ -690,7 +690,7 @@ func TestSourceFailsVisiblyOnIntegrationCredential(t *testing.T) {
 	}
 
 	// A run with its RUN_TOKEN, as the runner would hold it.
-	r1 := do(t, "POST", ts.URL+"/api/v1/services/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
+	r1 := do(t, "POST", ts.URL+"/api/v1/repositories/"+svc.ID+"/runs", consoleToken, map[string]any{"prompt": "go"})
 	var run domain.Run
 	decode(t, r1, &run)
 	tok, _ := auth.GenerateRunToken()

@@ -33,7 +33,11 @@ type PluginKanbanObservation struct {
 	EventKey       string
 	EventSequence  *int64
 	ActorDisplay   string
-	ObservedAt     time.Time
+	// Manual records an explicit "Run with agent" request. It bypasses the
+	// trigger-column edge check, but retains the same active-occurrence and
+	// writeback fences as event-driven dispatch.
+	Manual     bool
+	ObservedAt time.Time
 }
 
 type PluginKanbanObservationResult struct {
@@ -70,6 +74,22 @@ func classifyPluginKanbanEntry(
 	latestRunStatus domain.RunStatus,
 	in PluginKanbanObservation,
 ) (create bool, suppressed string) {
+	if in.Manual {
+		if !claimExists || latest == nil {
+			return true, ""
+		}
+		terminal := latest.State == domain.KanbanOccurrenceTerminal || latestRunStatus.Terminal()
+		if !terminal {
+			if latest.RunID != "" {
+				return false, PluginKanbanAlreadyRunning
+			}
+			return false, PluginKanbanOccurrenceActive
+		}
+		if latest.WritebackState == "pending" && claim.WritebackAt == nil {
+			return false, PluginKanbanWritebackPending
+		}
+		return true, ""
+	}
 	if in.ObservedColumn != in.TriggerColumn {
 		return false, ""
 	}
@@ -161,10 +181,13 @@ func (m *MemStore) ObservePluginKanbanCard(_ context.Context, in PluginKanbanObs
 	if in.ObservedColumn != in.TriggerColumn {
 		at := in.ObservedAt
 		claim.OutsideTriggerAt = &at
-		m.pluginKanbanClaims[key] = claim
-		return &PluginKanbanObservationResult{Claim: claim}, nil
+		if !in.Manual {
+			m.pluginKanbanClaims[key] = claim
+			return &PluginKanbanObservationResult{Claim: claim}, nil
+		}
+	} else {
+		claim.OutsideTriggerAt = nil
 	}
-	claim.OutsideTriggerAt = nil
 	if !create {
 		m.pluginKanbanClaims[key] = claim
 		result := &PluginKanbanObservationResult{Claim: claim, SuppressedReason: suppressed}
@@ -385,6 +408,18 @@ func (m *MemStore) ListPluginKanbanOccurrences(_ context.Context, automationID, 
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (m *MemStore) HasActivePluginKanbanOccurrences(_ context.Context, automationID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, occurrence := range m.pluginKanbanOccurrences {
+		if occurrence.AutomationID == automationID &&
+			(occurrence.State != domain.KanbanOccurrenceTerminal || occurrence.WritebackState == "pending") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *MemStore) GetPluginKanbanClaimByPath(_ context.Context, automationID, workspaceID, documentPath string) (*domain.PluginKanbanClaim, error) {
@@ -815,6 +850,18 @@ func (s *PGStore) ListPluginKanbanOccurrences(ctx context.Context, automationID,
 		out = append(out, *occurrence)
 	}
 	return out, rows.Err()
+}
+
+func (s *PGStore) HasActivePluginKanbanOccurrences(ctx context.Context, automationID string) (bool, error) {
+	var active bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM automation_kanban_occurrences
+		WHERE automation_id=$1 AND (state <> 'terminal' OR writeback_state = 'pending')
+	)`, automationID).Scan(&active)
+	if err != nil {
+		return false, fmt.Errorf("check active Kanban occurrences: %w", err)
+	}
+	return active, nil
 }
 
 func (s *PGStore) GetPluginKanbanClaimByPath(ctx context.Context, automationID, workspaceID, documentPath string) (*domain.PluginKanbanClaim, error) {

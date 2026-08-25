@@ -25,8 +25,8 @@ type retryRunReq struct {
 type createRunReq struct {
 	Prompt string `json:"prompt"`
 	// ModelID is the composer's optional model pick (D21). Empty => resolve via
-	// the service default / the project's sole granted model. Must be in the
-	// project's grant set (else 403 model_not_granted).
+	// the Repository default / the principal's sole granted model. Human Account
+	// runs use Account grants; service principals retain Project grants.
 	ModelID string `json:"model_id"`
 	// Session opts this run into multi-turn SESSION mode (D22): the run parks in
 	// awaiting_input between turns and accepts follow-up messages. Only valid for
@@ -46,7 +46,7 @@ type createRunReq struct {
 	AttachmentStageIDs []string `json:"attachment_stage_ids"`
 }
 
-// handleCreateServiceRun is the run-creation endpoint: POST /services/{id}/runs.
+// handleCreateServiceRun is the run-creation endpoint: POST /repositories/{id}/runs.
 // Runs are always dispatched against a specific service; the former project-level
 // POST /projects/{id}/runs (which resolved a 'default' service) was removed with
 // the simple-mode shim.
@@ -70,13 +70,23 @@ func (s *Server) handleCreateServiceRun(w http.ResponseWriter, r *http.Request) 
 // createRunForService is the shared body of the two run-creation endpoints. The
 // authorization + project/service existence checks are done by the callers.
 func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc *domain.Service) {
-	if svc.DeletingAt != nil {
-		writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
-		return
-	}
 	var req createRunReq
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	s.createRunForServiceRequest(w, r, svc, req, func(run *domain.Run) any { return run })
+}
+
+func (s *Server) createRunForServiceRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+	svc *domain.Service,
+	req createRunReq,
+	response func(*domain.Run) any,
+) {
+	if svc.DeletingAt != nil {
+		writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
 		return
 	}
 	req.Prompt = strings.TrimSpace(req.Prompt)
@@ -194,7 +204,7 @@ func (s *Server) createRunForService(w http.ResponseWriter, r *http.Request, svc
 	}
 	// Emit the initial run.status(queued) event so the stream has a first frame.
 	s.emitStatus(r.Context(), run)
-	writeJSON(w, http.StatusCreated, run)
+	writeJSON(w, http.StatusCreated, response(run))
 }
 
 func (s *Server) handleListServiceRuns(w http.ResponseWriter, r *http.Request) {
@@ -820,7 +830,17 @@ func (s *Server) emitStatus(ctx context.Context, run *domain.Run) {
 // execute (CLAUDE.md red line #1). A resolve error is a 500.
 func (s *Server) selectModelForRun(w http.ResponseWriter, r *http.Request, svc *domain.Service, requested, notGrantedMsg string) (*string, string, bool) {
 	def := deref(svc.DefaultModelID)
-	sel, outcome, err := s.models.SelectModel(r.Context(), svc.ProjectID, def, strings.TrimSpace(requested))
+	accountID := principalFrom(r.Context()).userID()
+	var sel modelcfg.Selection
+	var outcome modelcfg.SelectOutcome
+	var err error
+	if accountID != "" {
+		sel, outcome, err = s.models.SelectModelForAccount(r.Context(), accountID, svc.ProjectID, def, strings.TrimSpace(requested))
+	} else {
+		// Project-scoped API keys and the service principal retain their existing
+		// non-personal grant boundary.
+		sel, outcome, err = s.models.SelectModel(r.Context(), svc.ProjectID, def, strings.TrimSpace(requested))
+	}
 	if err != nil {
 		s.log.Error("select model", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "could not resolve model configuration")
