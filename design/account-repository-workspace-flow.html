@@ -1,0 +1,652 @@
+<!doctype html>
+<!--
+  UX DESIGN PROTOTYPE ONLY — no production route, API, or persistence is changed.
+
+  Assumptions
+  - The composer is the primary entry, matching current jcode interaction language.
+  - Repository is a lightweight context switch, not a resource users must connect first.
+  - Selecting a Repository reveals its Tasks / Board / Reviews / Automations / Usage / Settings
+    directly below the composer; there is no separate Repository index or detail journey.
+  - Personal Settings and Remote are account-level destinations.
+  - Remote is also promoted on Welcome so device control is easy to rediscover.
+
+  Intentional placeholders
+  - Counts and task titles are illustrative UX copy, not production data.
+  - Review, automation, usage and settings tabs are lightweight structure studies.
+  - This file explores information architecture before pixel-perfect visual polish.
+-->
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="jcode Cloud account composer, Repository workspace, personal settings and Remote UX flow." />
+  <link rel="icon" type="image/svg+xml" href="./assets/app-icon.svg" />
+  <title>jcode Cloud — Account workspace UX flow</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --font: Geist, "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      --page: #e9e9e5;
+      --shell: #f4f4f1;
+      --surface: #ffffff;
+      --surface-soft: #f7f7f5;
+      --surface-hover: #ededeb;
+      --ink: #171716;
+      --muted: #696b67;
+      --faint: #999b96;
+      --line: #deded9;
+      --line-strong: #c7c8c2;
+      --orange: #ff8400;
+      --orange-soft: #fff0df;
+      --green: #238558;
+      --green-soft: #e9f5ee;
+      --blue: #426aa3;
+      --blue-soft: #edf3fb;
+      --shadow: 0 24px 70px -42px rgba(37, 31, 24, .42), 0 2px 8px rgba(37, 31, 24, .06);
+      --ease: cubic-bezier(.16, 1, .3, 1);
+    }
+
+    * { box-sizing: border-box; }
+    * { margin: 0; }
+    html { min-width: 1180px; background: var(--page); }
+    body { min-height: 100vh; color: var(--ink); font: 13px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+    button, textarea, input, select { color: inherit; font: inherit; }
+    button { border: 0; cursor: pointer; }
+    a { color: inherit; text-decoration: none; }
+    svg, img { display: block; }
+    [hidden] { display: none !important; }
+    :focus-visible { outline: 2px solid #9d4d00; outline-offset: 2px; }
+
+    .icon { width: 17px; height: 17px; flex: 0 0 auto; }
+    .icon-sm { width: 14px; height: 14px; }
+    .mono { font-family: var(--mono); }
+
+    .review-bar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      border-bottom: 1px solid rgba(0, 0, 0, .09);
+      background: rgba(244, 244, 241, .92);
+      padding: 0 26px;
+      backdrop-filter: blur(14px);
+    }
+    .review-title { display: flex; align-items: center; gap: 12px; }
+    .review-title strong { font-size: 13px; font-weight: 640; }
+    .review-title span { color: var(--muted); font-size: 11px; }
+    .flow-nav { display: flex; align-items: center; gap: 5px; }
+    .flow-button {
+      min-height: 32px;
+      border-radius: 7px;
+      background: transparent;
+      padding: 5px 10px;
+      color: var(--muted);
+      font-size: 12px;
+      transition: 120ms var(--ease);
+    }
+    .flow-button:hover { background: var(--surface); color: var(--ink); }
+    .flow-button[aria-current="step"] { background: var(--ink); color: white; }
+
+    .prototype-stage { padding: 28px; }
+    .app-window {
+      width: min(1540px, calc(100vw - 56px));
+      height: min(930px, calc(100vh - 114px));
+      min-height: 760px;
+      margin: 0 auto;
+      overflow: hidden;
+      border: 1px solid #cfd0cb;
+      border-radius: 18px;
+      background: var(--shell);
+      box-shadow: var(--shadow);
+    }
+    .window-chrome {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid var(--line);
+      padding: 0 15px;
+    }
+    .traffic { width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; }
+    .traffic:nth-child(2) { background: #febc2e; }
+    .traffic:nth-child(3) { background: #28c840; }
+    .chrome-label { margin-left: 10px; color: var(--faint); font-size: 11px; }
+
+    .app-shell { height: calc(100% - 42px); display: grid; grid-template-columns: 258px minmax(0, 1fr); }
+    .rail { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); padding: 15px 12px 12px; }
+    .brand { height: 36px; display: flex; align-items: center; gap: 9px; padding: 0 8px 10px; }
+    .brand img { width: 22px; height: 22px; border-radius: 6px; }
+    .brand strong { font-family: var(--mono); font-size: 13px; letter-spacing: -.03em; }
+    .brand small { color: var(--faint); font-size: 8px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+    .primary-nav { display: grid; gap: 2px; margin-top: 12px; }
+    .nav-item {
+      min-height: 36px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-radius: 7px;
+      padding: 0 10px;
+      background: transparent;
+      color: #41423f;
+      text-align: left;
+      transition: 120ms var(--ease);
+    }
+    .nav-item:hover { background: var(--surface-hover); color: var(--ink); }
+    .nav-item.is-active { background: #e5e6e2; color: var(--ink); font-weight: 620; }
+    .nav-item .badge { margin-left: auto; color: var(--faint); font-size: 10px; }
+    .rail-section { min-height: 0; margin-top: 25px; }
+    .rail-label { display: flex; align-items: center; justify-content: space-between; padding: 0 10px 7px; color: var(--faint); font-size: 9px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
+    .recent-list { display: grid; gap: 2px; }
+    .recent-task { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; border-radius: 7px; padding: 8px 10px; }
+    .recent-task:hover { background: var(--surface-hover); }
+    .recent-copy { min-width: 0; }
+    .recent-copy strong { display: block; overflow: hidden; font-size: 11.5px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+    .recent-copy small { display: block; margin-top: 2px; overflow: hidden; color: var(--faint); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+    .cloud-mark { color: #77818b; }
+    .rail-spacer { flex: 1; }
+    .rail-footer { display: grid; gap: 4px; border-top: 1px solid var(--line); padding-top: 9px; }
+    .account-button { width: 100%; min-height: 40px; display: flex; align-items: center; gap: 9px; border-radius: 8px; background: transparent; padding: 5px 7px; text-align: left; }
+    .account-button:hover, .account-button.is-active { background: var(--surface-hover); }
+    .avatar { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 50%; background: #d7aa63; color: #352719; font-size: 10px; font-weight: 700; }
+    .account-copy { min-width: 0; flex: 1; }
+    .account-copy strong, .account-copy small { display: block; }
+    .account-copy strong { font-size: 11.5px; }
+    .account-copy small { color: var(--faint); font-size: 9.5px; }
+
+    .main { min-width: 0; min-height: 0; position: relative; overflow: hidden; background: var(--surface); }
+    .screen { height: 100%; overflow: auto; }
+    .screen-inner { width: min(1040px, calc(100% - 72px)); margin: 0 auto; padding: 54px 0 72px; }
+    .screen[data-screen="workspace"] .screen-inner { width: min(1120px, calc(100% - 64px)); padding-top: 28px; }
+
+    .welcome-hero { display: grid; justify-items: center; gap: 8px; padding-top: clamp(58px, 9vh, 100px); text-align: center; }
+    .eyebrow { color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    .welcome-hero h1 { font-size: clamp(34px, 4.2vw, 54px); font-weight: 650; letter-spacing: -.055em; line-height: 1.05; }
+    .welcome-hero p { color: var(--muted); font-size: 13px; }
+
+    .composer {
+      width: min(880px, 100%);
+      margin: 36px auto 0;
+      overflow: visible;
+      border: 1px solid var(--line-strong);
+      border-radius: 20px;
+      background: #fbfaf8;
+      box-shadow: 0 18px 50px -34px rgba(39, 28, 16, .44), 0 1px 2px rgba(39, 28, 16, .06);
+    }
+    .composer textarea { width: 100%; min-height: 116px; resize: none; border: 0; outline: 0; background: transparent; padding: 19px 21px 10px; font-size: 15px; line-height: 1.55; }
+    .composer textarea::placeholder { color: #a5a59f; }
+    .composer-tools { min-height: 57px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-top: 1px solid #ece9e4; padding: 8px 10px 8px 12px; }
+    .tool-group { min-width: 0; display: flex; align-items: center; gap: 5px; }
+    .tool-button { min-height: 34px; display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; background: transparent; padding: 0 9px; color: #52534f; font-size: 11px; }
+    .tool-button:hover { background: #efefec; color: var(--ink); }
+    .tool-button.icon-only { width: 34px; justify-content: center; padding: 0; }
+    .send-button { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; background: var(--orange); color: #1b130b; }
+    .send-button:hover { background: #f47b00; }
+
+    .repo-context { width: min(880px, 100%); margin: 13px auto 0; }
+    .repo-switch-row { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--line); }
+    .repo-switch { position: relative; }
+    .repo-switch-button { min-height: 34px; display: inline-flex; align-items: center; gap: 8px; border-radius: 8px; background: transparent; padding: 0 8px; font-weight: 620; }
+    .repo-switch-button:hover { background: var(--surface-hover); }
+    .repo-icon { width: 23px; height: 23px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); }
+    .branch-label { display: inline-flex; align-items: center; gap: 5px; color: var(--faint); font: 10px var(--mono); }
+    .repo-menu { position: absolute; z-index: 12; top: 39px; left: 0; width: 290px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 18px 45px -22px rgba(0, 0, 0, .38); }
+    .repo-search { padding: 9px; border-bottom: 1px solid var(--line); }
+    .repo-search input { width: 100%; height: 32px; border: 1px solid var(--line); border-radius: 6px; padding: 0 9px; outline: 0; }
+    .repo-options { padding: 5px; }
+    .repo-option { width: 100%; min-height: 39px; display: flex; align-items: center; gap: 9px; border-radius: 6px; background: transparent; padding: 0 8px; text-align: left; }
+    .repo-option:hover, .repo-option.is-selected { background: var(--surface-hover); }
+    .repo-option span:first-of-type { flex: 1; }
+    .repo-option small { color: var(--faint); font: 9px var(--mono); }
+    .context-note { color: var(--faint); font-size: 10px; }
+    .workspace-tabs { display: flex; align-items: center; gap: 3px; padding-top: 8px; }
+    .workspace-tab { min-height: 34px; border-radius: 7px; background: transparent; padding: 0 11px; color: var(--muted); font-size: 11.5px; }
+    .workspace-tab:hover { background: var(--surface-hover); color: var(--ink); }
+    .workspace-tab.is-active { background: #e9e9e6; color: var(--ink); font-weight: 620; }
+
+    .welcome-extras { width: min(880px, 100%); display: grid; grid-template-columns: 1.3fr .9fr; gap: 12px; margin: 28px auto 0; }
+    .quiet-panel { border: 1px solid var(--line); border-radius: 11px; background: var(--surface); }
+    .quiet-panel-head { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding: 0 13px; }
+    .quiet-panel-head strong { font-size: 11.5px; }
+    .text-link { display: inline-flex; align-items: center; gap: 5px; background: transparent; color: var(--muted); font-size: 10.5px; }
+    .text-link:hover { color: var(--ink); }
+    .activity-row, .device-row { min-height: 56px; display: flex; align-items: center; gap: 11px; padding: 0 13px; }
+    .activity-row + .activity-row { border-top: 1px solid var(--line); }
+    .activity-main { min-width: 0; flex: 1; }
+    .activity-main strong, .activity-main small { display: block; }
+    .activity-main strong { font-size: 11.5px; }
+    .activity-main small { margin-top: 2px; color: var(--faint); font-size: 9.5px; }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+
+    .workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .workspace-title { display: flex; align-items: center; gap: 9px; }
+    .workspace-title strong { font-size: 12px; }
+    .workspace-title span { color: var(--faint); font: 9.5px var(--mono); }
+    .compact-composer { margin-top: 17px; }
+    .compact-composer textarea { min-height: 74px; }
+    .workspace-context { width: min(100%, 980px); margin-left: auto; margin-right: auto; }
+    .tab-content { width: min(100%, 980px); margin: 22px auto 0; }
+    .content-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 14px; }
+    .content-heading h2 { font-size: 20px; font-weight: 650; letter-spacing: -.025em; }
+    .content-heading p { margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .secondary-button, .primary-button { min-height: 32px; display: inline-flex; align-items: center; gap: 6px; border-radius: 7px; padding: 0 11px; font-size: 10.5px; font-weight: 600; }
+    .secondary-button { border: 1px solid var(--line-strong); background: var(--surface); }
+    .secondary-button:hover { background: var(--surface-hover); }
+    .primary-button { background: var(--ink); color: white; }
+
+    .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .board-column { min-height: 255px; border: 1px solid var(--line); border-radius: 10px; background: #f6f6f4; padding: 11px; }
+    .board-column:nth-child(2) { background: var(--blue-soft); }
+    .board-column:nth-child(3) { background: var(--green-soft); }
+    .column-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; padding: 0 2px; }
+    .column-head strong { font-size: 11px; }
+    .column-head span { color: var(--faint); font-size: 9px; }
+    .card { border: 1px solid rgba(0, 0, 0, .08); border-radius: 8px; background: var(--surface); padding: 11px; box-shadow: 0 1px 2px rgba(0, 0, 0, .03); }
+    .card + .card { margin-top: 8px; }
+    .card strong { display: block; font-size: 11.5px; font-weight: 600; }
+    .card small { display: block; margin-top: 6px; color: var(--faint); font-size: 9px; }
+    .card-action { margin-top: 10px; display: inline-flex; align-items: center; gap: 5px; background: transparent; color: var(--blue); font-size: 9.5px; font-weight: 620; }
+
+    .list-panel { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; }
+    .list-row { min-height: 58px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 16px; padding: 0 14px; }
+    .list-row + .list-row { border-top: 1px solid var(--line); }
+    .list-row strong, .list-row small { display: block; }
+    .list-row strong { font-size: 11.5px; }
+    .list-row small { margin-top: 2px; color: var(--faint); font-size: 9.5px; }
+    .pill { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; background: var(--surface-hover); padding: 4px 8px; color: var(--muted); font-size: 9px; }
+    .pill.success { background: var(--green-soft); color: var(--green); }
+    .pill.info { background: var(--blue-soft); color: var(--blue); }
+
+    .usage-grid, .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .metric, .setting-card { border: 1px solid var(--line); border-radius: 10px; padding: 15px; }
+    .metric span, .setting-card > span { color: var(--faint); font-size: 9.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
+    .metric strong { display: block; margin-top: 12px; font: 25px/1 var(--mono); }
+    .metric small, .setting-card p { display: block; margin-top: 8px; color: var(--muted); font-size: 10px; }
+    .setting-line { min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; }
+    .setting-line strong { font-size: 11px; }
+    .select-like { min-height: 30px; min-width: 145px; display: inline-flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); padding: 0 9px; font-size: 10px; }
+
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); padding-bottom: 22px; }
+    .page-head h1 { font-size: 26px; font-weight: 650; letter-spacing: -.035em; }
+    .page-head p { max-width: 58ch; margin-top: 6px; color: var(--muted); font-size: 11.5px; }
+    .settings-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 34px; margin-top: 24px; }
+    .settings-nav { display: grid; align-content: start; gap: 3px; }
+    .settings-nav button { min-height: 34px; border-radius: 7px; background: transparent; padding: 0 10px; color: var(--muted); text-align: left; font-size: 11px; }
+    .settings-nav button.is-active { background: var(--surface-hover); color: var(--ink); font-weight: 620; }
+    .settings-content { display: grid; gap: 12px; }
+    .settings-section { border: 1px solid var(--line); border-radius: 10px; }
+    .settings-section-head { padding: 13px 14px; border-bottom: 1px solid var(--line); }
+    .settings-section-head strong { font-size: 11.5px; }
+    .settings-section-head p { margin-top: 3px; color: var(--muted); font-size: 9.5px; }
+    .settings-row { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 14px; }
+    .settings-row + .settings-row { border-top: 1px solid var(--line); }
+    .settings-row strong, .settings-row small { display: block; }
+    .settings-row strong { font-size: 10.5px; }
+    .settings-row small { margin-top: 2px; color: var(--faint); font-size: 9px; }
+
+    .remote-hero { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 70px; align-items: center; padding: 34px 0 30px; border-bottom: 1px solid var(--line); }
+    .remote-copy h1 { max-width: 620px; margin-top: 10px; font-size: 40px; font-weight: 650; letter-spacing: -.05em; line-height: 1.08; }
+    .remote-copy p { max-width: 58ch; margin-top: 13px; color: var(--muted); font-size: 12px; }
+    .remote-actions { display: flex; gap: 8px; margin-top: 20px; }
+    .remote-visual { min-height: 218px; display: grid; align-content: center; gap: 10px; border: 1px solid var(--line); border-radius: 14px; background: #f5f5f2; padding: 18px; }
+    .machine { display: flex; align-items: center; gap: 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 12px; }
+    .machine-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; background: #ededeb; }
+    .machine-copy { flex: 1; }
+    .machine-copy strong, .machine-copy small { display: block; }
+    .machine-copy strong { font-size: 11.5px; }
+    .machine-copy small { margin-top: 2px; color: var(--faint); font: 9px var(--mono); }
+    .remote-section { margin-top: 28px; }
+    .remote-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+    .remote-card { min-height: 138px; display: grid; align-content: space-between; border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+    .remote-card.is-offline { color: var(--muted); background: var(--surface-soft); }
+    .remote-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .remote-card strong { font-size: 11.5px; }
+    .remote-card small { display: block; margin-top: 3px; color: var(--faint); font: 9px var(--mono); }
+
+    .annotation {
+      position: absolute;
+      right: 16px;
+      bottom: 16px;
+      z-index: 8;
+      width: 245px;
+      border: 1px solid #dcc5a9;
+      border-radius: 9px;
+      background: rgba(255, 250, 242, .96);
+      padding: 11px 12px;
+      box-shadow: 0 13px 30px -22px rgba(50, 31, 8, .5);
+      color: #6c5237;
+      font-size: 9.5px;
+    }
+    .annotation strong { display: block; margin-bottom: 3px; color: #45311d; font-size: 10px; }
+
+    @media (max-height: 850px) {
+      .prototype-stage { padding-top: 18px; }
+      .app-window { height: calc(100vh - 94px); min-height: 690px; }
+      .welcome-hero { padding-top: 42px; }
+      .welcome-extras { margin-top: 20px; }
+      .screen-inner { padding-top: 38px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="review-bar">
+    <div class="review-title">
+      <strong>Account → Repository workspace</strong>
+      <span>UX flow · 单文件设计稿 · 非生产实现</span>
+    </div>
+    <nav class="flow-nav" aria-label="Prototype flow">
+      <button class="flow-button" type="button" data-flow="welcome" aria-current="step">01 Welcome</button>
+      <button class="flow-button" type="button" data-flow="workspace">02 Repository workspace</button>
+      <button class="flow-button" type="button" data-flow="settings">03 Personal settings</button>
+      <button class="flow-button" type="button" data-flow="remote">04 Remote</button>
+    </nav>
+  </header>
+
+  <main class="prototype-stage">
+    <section class="app-window" aria-label="jcode Cloud UX prototype">
+      <div class="window-chrome" aria-hidden="true">
+        <span class="traffic"></span><span class="traffic"></span><span class="traffic"></span>
+        <span class="chrome-label">jcode Cloud · UX proposal</span>
+      </div>
+
+      <div class="app-shell">
+        <aside class="rail">
+          <div class="brand">
+            <img src="./assets/app-icon.svg" alt="" />
+            <strong>JCODE</strong><small>Cloud</small>
+          </div>
+
+          <nav class="primary-nav" aria-label="Global navigation">
+            <button class="nav-item is-active" type="button" data-global="welcome">
+              <svg class="icon"><use href="./assets/icons.svg#i-plus" /></svg><span>新任务</span><span class="badge">⌘ N</span>
+            </button>
+            <button class="nav-item" type="button" data-global="reviews">
+              <svg class="icon"><use href="./assets/icons.svg#i-git" /></svg><span>Code reviews</span>
+            </button>
+            <button class="nav-item" type="button" data-global="automations">
+              <svg class="icon"><use href="./assets/icons.svg#i-bolt" /></svg><span>自动化</span>
+            </button>
+            <button class="nav-item" type="button" data-global="remote">
+              <svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg><span>Remote</span><span class="badge">2</span>
+            </button>
+          </nav>
+
+          <section class="rail-section">
+            <div class="rail-label"><span>最近</span><span>今天</span></div>
+            <div class="recent-list">
+              <button class="recent-task" type="button" data-global="workspace">
+                <span class="recent-copy"><strong>简化 Repository workspace</strong><small>cnjack/jcode · 4 分钟前</small></span>
+                <svg class="icon icon-sm cloud-mark"><use href="./assets/icons.svg#i-terminal" /></svg>
+              </button>
+              <button class="recent-task" type="button" data-global="workspace">
+                <span class="recent-copy"><strong>Review login callback</strong><small>cnjack/go-chat · 2 小时前</small></span>
+                <svg class="icon icon-sm cloud-mark"><use href="./assets/icons.svg#i-terminal" /></svg>
+              </button>
+            </div>
+          </section>
+
+          <div class="rail-spacer"></div>
+          <footer class="rail-footer">
+            <button class="account-button" type="button" data-global="settings">
+              <span class="avatar">JA</span>
+              <span class="account-copy"><strong>Jack</strong><small>个人工作区</small></span>
+              <svg class="icon icon-sm"><use href="./assets/icons.svg#i-sliders" /></svg>
+            </button>
+          </footer>
+        </aside>
+
+        <section class="main">
+          <section class="screen" data-screen="welcome">
+            <div class="screen-inner">
+              <header class="welcome-hero">
+                <span class="eyebrow">Jack 的个人工作区</span>
+                <h1>接下来想做什么？</h1>
+                <p>选择账号下可访问的 Repository，直接开始对话或任务。</p>
+              </header>
+
+              <form class="composer" data-composer>
+                <textarea aria-label="描述任务" placeholder="描述一个任务…"></textarea>
+                <div class="composer-tools">
+                  <div class="tool-group">
+                    <button class="tool-button icon-only" type="button" aria-label="添加"><svg class="icon"><use href="./assets/icons.svg#i-plus" /></svg></button>
+                    <button class="tool-button" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-lock" /></svg>请求批准⌄</button>
+                  </div>
+                  <div class="tool-group">
+                    <button class="tool-button" type="button">GLM-5.2⌄</button>
+                    <button class="tool-button" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>极高⌄</button>
+                    <button class="send-button" type="button" aria-label="发送"><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></button>
+                  </div>
+                </div>
+              </form>
+
+              <div class="repo-context">
+                <div class="repo-switch-row">
+                  <div class="repo-switch">
+                    <button class="repo-switch-button" type="button" data-repo-toggle aria-expanded="false">
+                      <span class="repo-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span>
+                      <span data-repo-label>选择 Repository</span><span>⌄</span>
+                    </button>
+                    <div class="repo-menu" data-repo-menu hidden>
+                      <div class="repo-search"><input type="search" placeholder="搜索账号下的 Repository…" /></div>
+                      <div class="repo-options">
+                        <button class="repo-option" type="button" data-repository="cnjack/jcode"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg><span>cnjack/jcode</span><small>main</small></button>
+                        <button class="repo-option" type="button" data-repository="cnjack/go-chat"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg><span>cnjack/go-chat</span><small>master</small></button>
+                        <button class="repo-option" type="button" data-repository="cnjack/jtype"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg><span>cnjack/jtype</span><small>main</small></button>
+                      </div>
+                    </div>
+                  </div>
+                  <span class="context-note">无需预先关联；列表来自账号的 Git 提供商</span>
+                </div>
+              </div>
+
+              <div class="welcome-extras">
+                <section class="quiet-panel">
+                  <header class="quiet-panel-head"><strong>继续最近任务</strong><button class="text-link" type="button">查看全部 <svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></header>
+                  <div class="activity-row"><span class="repo-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span class="activity-main"><strong>简化 Repository workspace</strong><small>cnjack/jcode · Cloud · 等待输入</small></span><span class="pill info">继续</span></div>
+                  <div class="activity-row"><span class="repo-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span class="activity-main"><strong>Review login callback</strong><small>cnjack/go-chat · Cloud · 已完成</small></span><span class="pill success">Done</span></div>
+                </section>
+                <section class="quiet-panel">
+                  <header class="quiet-panel-head"><strong>Remote</strong><button class="text-link" type="button" data-global="remote">管理设备 <svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></header>
+                  <div class="device-row"><span class="status-dot"></span><span class="activity-main"><strong>dev-mbp-01</strong><small>在线 · jcode 0.5.4</small></span><button class="secondary-button" type="button" data-global="remote">打开</button></div>
+                </section>
+              </div>
+            </div>
+          </section>
+
+          <section class="screen" data-screen="workspace" hidden>
+            <div class="screen-inner">
+              <header class="workspace-head">
+                <div class="workspace-title"><span class="repo-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><strong data-workspace-name>cnjack/jcode</strong><span>GitHub · main</span></div>
+                <button class="secondary-button" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg>打开 GitHub</button>
+              </header>
+
+              <form class="composer compact-composer" data-composer>
+                <textarea aria-label="在当前 Repository 中开始任务" placeholder="在当前 Repository 中开始新任务…"></textarea>
+                <div class="composer-tools">
+                  <div class="tool-group">
+                    <button class="tool-button icon-only" type="button" aria-label="添加"><svg class="icon"><use href="./assets/icons.svg#i-plus" /></svg></button>
+                    <button class="tool-button" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-lock" /></svg>请求批准⌄</button>
+                  </div>
+                  <div class="tool-group">
+                    <button class="tool-button" type="button">GLM-5.2⌄</button>
+                    <button class="tool-button" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>极高⌄</button>
+                    <button class="send-button" type="button" aria-label="发送"><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></button>
+                  </div>
+                </div>
+              </form>
+
+              <div class="repo-context workspace-context">
+                <div class="repo-switch-row">
+                  <div class="repo-switch">
+                    <button class="repo-switch-button" type="button" data-repo-toggle aria-expanded="false">
+                      <span class="repo-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span data-repo-label>cnjack/jcode</span><span>⌄</span>
+                    </button>
+                    <div class="repo-menu" data-repo-menu hidden>
+                      <div class="repo-search"><input type="search" placeholder="切换 Repository…" /></div>
+                      <div class="repo-options">
+                        <button class="repo-option is-selected" type="button" data-repository="cnjack/jcode"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg><span>cnjack/jcode</span><small>main</small></button>
+                        <button class="repo-option" type="button" data-repository="cnjack/go-chat"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg><span>cnjack/go-chat</span><small>master</small></button>
+                        <button class="repo-option" type="button" data-repository="cnjack/jtype"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg><span>cnjack/jtype</span><small>main</small></button>
+                      </div>
+                    </div>
+                  </div>
+                  <span class="branch-label"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg><span data-branch-label>main</span></span>
+                </div>
+                <nav class="workspace-tabs" aria-label="Repository workspace sections">
+                  <button class="workspace-tab" type="button" data-tab="tasks">Tasks</button>
+                  <button class="workspace-tab is-active" type="button" data-tab="board">Board</button>
+                  <button class="workspace-tab" type="button" data-tab="reviews">Reviews</button>
+                  <button class="workspace-tab" type="button" data-tab="automations">Automations</button>
+                  <button class="workspace-tab" type="button" data-tab="usage">Usage</button>
+                  <button class="workspace-tab" type="button" data-tab="repo-settings">Settings</button>
+                </nav>
+              </div>
+
+              <section class="tab-content" data-tab-panel="board">
+                <header class="content-heading"><div><h2>Board</h2><p>连接已有 Board，Card 可以直接交给 agent。</p></div><button class="secondary-button" type="button">Board settings</button></header>
+                <div class="board">
+                  <section class="board-column"><header class="column-head"><strong>Backlog</strong><span>2</span></header><article class="card"><strong>Fix login redirect</strong><small>#128 · updated 2h ago</small><button class="card-action" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>Run with agent</button></article><article class="card"><strong>Document remote handoff</strong><small>#131 · no assignee</small><button class="card-action" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>Run with agent</button></article></section>
+                  <section class="board-column"><header class="column-head"><strong>Agent queue</strong><span>1</span></header><article class="card"><strong>Simplify account composer</strong><small>Cloud · starting runner</small></article></section>
+                  <section class="board-column"><header class="column-head"><strong>Done</strong><span>1</span></header><article class="card"><strong>Remember last model</strong><small>Completed without code changes</small></article></section>
+                </div>
+              </section>
+
+              <section class="tab-content" data-tab-panel="tasks" hidden>
+                <header class="content-heading"><div><h2>Tasks</h2><p>这个 Repository 的对话、任务和运行状态。</p></div><button class="primary-button" type="button">New task</button></header>
+                <div class="list-panel"><div class="list-row"><span><strong>Simplify account composer</strong><small>Cloud · GLM-5.2 · updated 4m ago</small></span><span class="pill info">Running</span></div><div class="list-row"><span><strong>Remember last model</strong><small>Cloud · completed yesterday</small></span><span class="pill success">Done</span></div></div>
+              </section>
+
+              <section class="tab-content" data-tab-panel="reviews" hidden>
+                <header class="content-heading"><div><h2>Reviews</h2><p>Repository 范围内的 review；全局入口仍可查看所有 Repository。</p></div><button class="primary-button" type="button">Create code review</button></header>
+                <div class="list-panel"><div class="list-row"><span><strong>#284 Account-level task composer</strong><small>main ← feat/account-composer · requested by Jack</small></span><span class="pill info">Reviewing</span></div><div class="list-row"><span><strong>#279 Device relay copy updates</strong><small>main ← fix/device-copy</small></span><span class="pill success">Approved</span></div></div>
+              </section>
+
+              <section class="tab-content" data-tab-panel="automations" hidden>
+                <header class="content-heading"><div><h2>Automations</h2><p>定时任务、Board 触发和 Pull request review。</p></div><button class="primary-button" type="button">New automation</button></header>
+                <div class="list-panel"><div class="list-row"><span><strong>PR review on ready_for_review</strong><small>Pull request · main · account model</small></span><span class="pill success">Active</span></div><div class="list-row"><span><strong>Board → Agent queue</strong><small>Card enters Agent queue · Cloud</small></span><span class="pill success">Active</span></div><div class="list-row"><span><strong>Weekly architecture scan</strong><small>Every Monday 09:00</small></span><span class="pill">Paused</span></div></div>
+              </section>
+
+              <section class="tab-content" data-tab-panel="usage" hidden>
+                <header class="content-heading"><div><h2>Usage</h2><p>Repository 维度查看消耗，配额仍沿用全局并发上限。</p></div><button class="secondary-button" type="button">View account usage</button></header>
+                <div class="usage-grid"><article class="metric"><span>This month</span><strong>3.8M</strong><small>tokens across 28 runs</small></article><article class="metric"><span>Concurrent</span><strong>2 / 4</strong><small>using the account-wide limit</small></article><article class="metric"><span>Cloud runs</span><strong>21</strong><small>7 completed without code changes</small></article><article class="metric"><span>Reviews</span><strong>7</strong><small>4 approved · 3 with findings</small></article></div>
+              </section>
+
+              <section class="tab-content" data-tab-panel="repo-settings" hidden>
+                <header class="content-heading"><div><h2>Repository settings</h2><p>只保留这个 Repository 特有的执行策略。</p></div></header>
+                <div class="settings-grid"><article class="setting-card"><span>Git</span><div class="setting-line"><strong>Default branch</strong><span class="select-like">main <span>⌄</span></span></div><div class="setting-line"><strong>Delivery mode</strong><span class="select-like">Pull request <span>⌄</span></span></div></article><article class="setting-card"><span>Agent</span><div class="setting-line"><strong>Default model</strong><span class="select-like">Use personal default <span>⌄</span></span></div><div class="setting-line"><strong>Runner</strong><span class="select-like">Cloud <span>⌄</span></span></div></article><article class="setting-card"><span>Board</span><p>只能连接已有 Board；Done 列可选。</p><div class="setting-line"><strong>Connected Board</strong><span class="select-like">Engineering <span>⌄</span></span></div></article><article class="setting-card"><span>Instructions</span><p>直接读取 Repository 根目录中的 AGENTS.md，不再维护第二份说明。</p><div class="setting-line"><strong>AGENTS.md</strong><span class="pill success">Detected</span></div></article></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="screen" data-screen="settings" hidden>
+            <div class="screen-inner">
+              <header class="page-head"><div><span class="eyebrow">Personal settings</span><h1>Jack</h1><p>账号级偏好、Git 账号、个人模型授权和总用量；不再通过 Project 分配。</p></div><button class="secondary-button" type="button">保存更改</button></header>
+              <div class="settings-layout">
+                <nav class="settings-nav"><button class="is-active" type="button">General</button><button type="button">Git accounts</button><button type="button">Models</button><button type="button">Usage</button><button type="button">Preferences</button></nav>
+                <div class="settings-content">
+                  <section class="settings-section"><header class="settings-section-head"><strong>任务默认值</strong><p>Cloud 和 Desktop 使用同一套个人偏好。</p></header><div class="settings-row"><span><strong>默认模型</strong><small>每次切换后自动记住最近选择</small></span><span class="select-like">GLM-5.2 <span>⌄</span></span></div><div class="settings-row"><span><strong>推理强度</strong><small>新任务的默认 effort</small></span><span class="select-like">极高 <span>⌄</span></span></div><div class="settings-row"><span><strong>批准模式</strong><small>命令执行前的默认权限</small></span><span class="select-like">请求批准 <span>⌄</span></span></div></section>
+                  <section class="settings-section"><header class="settings-section-head"><strong>Git 提供商账号</strong><p>账号下可访问的 Repository 会直接出现在 Composer 中。</p></header><div class="settings-row"><span><strong>GitHub · cnjack</strong><small>Repository access available · refreshed 3m ago</small></span><span class="pill success">Connected</span></div><div class="settings-row"><span><strong>Gitea · jack</strong><small>Repository access available</small></span><span class="pill success">Connected</span></div></section>
+                  <section class="settings-section"><header class="settings-section-head"><strong>模型授权</strong><p>授权给个人后，账号下所有 Repository 都可以使用。</p></header><div class="settings-row"><span><strong>GLM-5.2</strong><small>Zhipu · account grant</small></span><span class="pill success">Authorized</span></div><div class="settings-row"><span><strong>GPT-5.6</strong><small>OpenAI · account grant</small></span><span class="pill success">Authorized</span></div></section>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="screen" data-screen="remote" hidden>
+            <div class="screen-inner">
+              <section class="remote-hero">
+                <div class="remote-copy"><span class="eyebrow">jcode Remote</span><h1>从任意地方，继续本机上的 jcode。</h1><p>设备通过 outbound-only relay 在线。选择一台设备即可查看并继续它的 conversation，Cloud 与 Desktop 使用同一套对话 UI。</p><div class="remote-actions"><button class="primary-button" type="button">打开 dev-mbp-01</button><button class="secondary-button" type="button">连接新设备</button></div></div>
+                <div class="remote-visual"><div class="machine"><span class="machine-icon"><svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="machine-copy"><strong>dev-mbp-01</strong><small>online · 2 sessions</small></span><span class="status-dot"></span></div><div class="machine"><span class="machine-icon"><svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="machine-copy"><strong>workstation-01</strong><small>online · idle</small></span><span class="status-dot"></span></div></div>
+              </section>
+              <section class="remote-section"><header class="content-heading"><div><h2>你的设备</h2><p>Remote 是独立入口，也会在 Welcome 中显示在线设备。</p></div><button class="secondary-button" type="button">Device settings</button></header><div class="remote-grid"><article class="remote-card"><div class="remote-card-top"><div><strong>dev-mbp-01</strong><small>macOS · online</small></div><span class="status-dot"></span></div><button class="text-link" type="button">2 个活动 conversation <svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></article><article class="remote-card"><div class="remote-card-top"><div><strong>workstation-01</strong><small>Linux · online</small></div><span class="status-dot"></span></div><button class="text-link" type="button">开始新 conversation <svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></article><article class="remote-card is-offline"><div class="remote-card-top"><div><strong>nas-01</strong><small>Linux · last seen 2d ago</small></div><span class="pill">Offline</span></div><button class="text-link" type="button">查看设备信息 <svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></article></div></section>
+            </div>
+          </section>
+
+          <aside class="annotation" data-annotation><strong>Page 01 · Welcome</strong>Composer 是入口；Repository 只负责切换上下文。Remote 作为全局导航和 Welcome 卡片双入口。</aside>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const screens = [...document.querySelectorAll('[data-screen]')];
+      const flowButtons = [...document.querySelectorAll('[data-flow]')];
+      const globalButtons = [...document.querySelectorAll('[data-global]')];
+      const accountButton = document.querySelector('.account-button');
+      const annotation = document.querySelector('[data-annotation]');
+      const annotations = {
+        welcome: ['Page 01 · Welcome', 'Composer 是入口；Repository 只负责切换上下文。Remote 作为全局导航和 Welcome 卡片双入口。'],
+        workspace: ['Page 02 · Repository workspace', '输入框不换位置。选中 Repository 后，在正下方展开 Tasks / Board / Reviews / Automations / Usage / Settings。'],
+        settings: ['Page 03 · Personal settings', '模型授权、默认模型、Git 账号和个人用量都归账号管理，不再依赖 Project。'],
+        remote: ['Page 04 · Remote', '独立 Remote welcome，强调继续本机 conversation；Cloud 与 Desktop 共用对话渲染。']
+      };
+
+      function showScreen(name) {
+        const target = ['welcome', 'workspace', 'settings', 'remote'].includes(name) ? name : 'welcome';
+        screens.forEach((screen) => { screen.hidden = screen.dataset.screen !== target; });
+        flowButtons.forEach((button) => {
+          if (button.dataset.flow === target) button.setAttribute('aria-current', 'step');
+          else button.removeAttribute('aria-current');
+        });
+        document.querySelectorAll('.nav-item').forEach((item) => item.classList.remove('is-active'));
+        accountButton.classList.toggle('is-active', target === 'settings');
+        const activeGlobal = document.querySelector(`.nav-item[data-global="${target === 'workspace' ? 'welcome' : target}"]`);
+        if (activeGlobal) activeGlobal.classList.add('is-active');
+        const copy = annotations[target];
+        annotation.innerHTML = `<strong>${copy[0]}</strong>${copy[1]}`;
+      }
+
+      flowButtons.forEach((button) => button.addEventListener('click', () => showScreen(button.dataset.flow)));
+      globalButtons.forEach((button) => button.addEventListener('click', () => {
+        const target = button.dataset.global;
+        if (target === 'reviews' || target === 'automations') {
+          showScreen('workspace');
+          document.querySelector(`[data-tab="${target}"]`)?.click();
+          return;
+        }
+        showScreen(target);
+      }));
+
+      document.querySelectorAll('[data-repo-toggle]').forEach((button) => {
+        button.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const menu = button.parentElement.querySelector('[data-repo-menu]');
+          document.querySelectorAll('[data-repo-menu]').forEach((other) => { if (other !== menu) other.hidden = true; });
+          menu.hidden = !menu.hidden;
+          button.setAttribute('aria-expanded', String(!menu.hidden));
+        });
+      });
+
+      const branches = { 'cnjack/jcode': 'main', 'cnjack/go-chat': 'master', 'cnjack/jtype': 'main' };
+      document.querySelectorAll('[data-repository]').forEach((option) => {
+        option.addEventListener('click', () => {
+          const repository = option.dataset.repository;
+          document.querySelectorAll('[data-repo-label]').forEach((label) => { label.textContent = repository; });
+          document.querySelectorAll('[data-workspace-name]').forEach((label) => { label.textContent = repository; });
+          document.querySelectorAll('[data-branch-label]').forEach((label) => { label.textContent = branches[repository]; });
+          document.querySelectorAll('[data-repository]').forEach((item) => item.classList.toggle('is-selected', item.dataset.repository === repository));
+          document.querySelectorAll('[data-repo-menu]').forEach((menu) => { menu.hidden = true; });
+          showScreen('workspace');
+        });
+      });
+
+      document.querySelectorAll('[data-tab]').forEach((tab) => {
+        tab.addEventListener('click', () => {
+          document.querySelectorAll('[data-tab]').forEach((item) => item.classList.toggle('is-active', item === tab));
+          document.querySelectorAll('[data-tab-panel]').forEach((panel) => { panel.hidden = panel.dataset.tabPanel !== tab.dataset.tab; });
+        });
+      });
+
+      document.querySelectorAll('[data-composer]').forEach((composer) => composer.addEventListener('submit', (event) => event.preventDefault()));
+      document.addEventListener('click', (event) => {
+        if (!event.target.closest('.repo-switch')) document.querySelectorAll('[data-repo-menu]').forEach((menu) => { menu.hidden = true; });
+      });
+    })();
+  </script>
+</body>
+</html>
