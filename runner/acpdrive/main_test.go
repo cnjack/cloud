@@ -303,14 +303,22 @@ func TestPermissionModeRequiresSessionIsFailVisible(t *testing.T) {
 	if err := checkPermissionModeRequiresSession("approval", true); err != nil {
 		t.Fatalf("approval + session mode should be valid: %v", err)
 	}
+	for _, mode := range []string{"plan", "auto"} {
+		if err := checkPermissionModeRequiresSession(mode, false); err == nil {
+			t.Fatalf("%s + non-session: want an error, got nil", mode)
+		}
+		if err := checkPermissionModeRequiresSession(mode, true); err != nil {
+			t.Fatalf("%s + session mode should be valid: %v", mode, err)
+		}
+	}
 	if err := checkPermissionModeRequiresSession("", false); err != nil {
 		t.Fatalf("unset permission mode should never fail: %v", err)
 	}
 	if err := checkPermissionModeRequiresSession("", true); err != nil {
 		t.Fatalf("unset permission mode + session mode should never fail: %v", err)
 	}
-	if err := checkPermissionModeRequiresSession("weird-typo", false); err != nil {
-		t.Fatalf("an unrecognized permission mode value should never fail (treated as full_access, per the D22 decision): %v", err)
+	if err := checkPermissionModeRequiresSession("weird-typo", true); err == nil {
+		t.Fatal("an unrecognized permission mode must fail instead of silently becoming full_access")
 	}
 }
 

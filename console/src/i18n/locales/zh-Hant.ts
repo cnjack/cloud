@@ -1667,7 +1667,7 @@ export default {
     label: '專案設定',
   },
 
-  codeReviewsPage: { eyebrow: '獨立工作流程', title: 'Code reviews', description: '集中查看各 Repository 的 Review Run，並與開發任務分開。', emptyTitle: '尚無 Code review', emptyDescription: '所有 Repository 的 Review Run 會集中顯示在這裡。' },
+  codeReviewsPage: { eyebrow: '獨立工作流程', title: 'Code reviews', description: '集中查看各 Repository 的 Review Run，並與開發任務分開。', createEyebrow: '新 Review', createTitle: '發起 Code review', createDescription: '選擇 Repository，以及由已完成 Cloud 任務建立的 Pull request。', loadingSources: '正在載入可 Review 的 Pull request…', sourcesError: '無法載入可 Review 的 Pull request。', noRepositories: '目前帳號沒有可用的 Repository。', connectRepository: '檢查 Git 帳號授權', repositoryLabel: 'Repository', pullRequestLabel: 'Pull request', noReviewablePr: '目前沒有可 Review 的 Cloud Pull request。', noReviewablePrDescription: '先從 Repository 任務建立 Pull request，然後返回這裡。', openWorkHome: '開啟 Work Home', openPullRequest: '開啟 Pull request', createAction: '建立 Code review', createSuccess: 'Code review 已開始。', createError: '無法開始 Code review。', emptyTitle: '尚無 Code review', emptyDescription: '所有 Repository 的 Review Run 會集中顯示在這裡。' },
   repositories: {
     eyebrow: '你的程式碼', title: 'Repositories',
     description: '一個 Repository 對應一個 Agent 工作區，包含 Board、任務、設定與 Code reviews。',

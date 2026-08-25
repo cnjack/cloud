@@ -76,6 +76,38 @@ func TestApprovalSessionSetsSessionModeAfterNewSession(t *testing.T) {
 	}
 }
 
+func TestPlanAndAutoSessionsSetExactSessionMode(t *testing.T) {
+	for _, mode := range []string{"plan", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			agentLog := filepath.Join(dir, "agent.ndjson")
+			cfg := fakeAgentConfig(t, dir, "end_turn", agentLog)
+			cfg.PermissionMode = mode
+			orch := newMockOrchestrator()
+			orch.nextPromptScript = []nextPromptStep{{status: http.StatusGone}}
+			ts := orch.server()
+			defer ts.Close()
+			cfg.OrchBaseURL, cfg.RunID, cfg.RunToken = ts.URL, "run-test", "tok"
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := runSession(ctx, cfg); err != nil {
+				t.Fatalf("runSession: %v", err)
+			}
+
+			for _, event := range readNDJSON(t, agentLog) {
+				if event["method"] == "session/set_mode" {
+					if event["mode_id"] != mode {
+						t.Fatalf("session/set_mode mode_id=%v want %s", event["mode_id"], mode)
+					}
+					return
+				}
+			}
+			t.Fatalf("session/set_mode(%s) was never called", mode)
+		})
+	}
+}
+
 // TestApprovalSessionSetsSessionModeAfterResume proves the SAME set_mode
 // contract holds on the --resume/session-load path (F8a's "两条路径都要处理
 // resume" requirement): session/load happens first, then session/set_mode

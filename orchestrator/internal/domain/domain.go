@@ -772,10 +772,13 @@ const (
 	EventPermissionResolved = "agent.permission_resolved"
 )
 
-// PermissionModeApproval is Run.PermissionMode's only non-default value (F8b):
-// the runner forwards jcode permission requests for interactive user approval
-// instead of auto-approving (""/full_access). Session runs only.
-const PermissionModeApproval = "approval"
+// Session permission modes mirror jcode's ACP session/set_mode ids. Empty is
+// the legacy full_access default; every non-empty mode is session-only.
+const (
+	PermissionModeApproval = "approval"
+	PermissionModePlan     = "plan"
+	PermissionModeAuto     = "auto"
+)
 
 // PermissionOption is one choice jcode offered for a permission request,
 // echoed verbatim through the agent.permission_request event and stored on the

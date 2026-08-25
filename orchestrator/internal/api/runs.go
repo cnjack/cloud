@@ -33,10 +33,8 @@ type createRunReq struct {
 	// kind=agent runs (which every composer/service run is). Default false =
 	// today's single-shot behaviour.
 	Session bool `json:"session"`
-	// PermissionMode (F8b): "" (default, full_access — the runner auto-approves)
-	// or "approval" — the runner forwards each jcode permission request for
-	// interactive user approval. Only valid together with session: true (a
-	// headless single-shot has nobody watching to answer), else 400.
+	// PermissionMode mirrors jcode's session modes. Empty/full_access is the
+	// legacy default; approval, plan, and auto require session:true.
 	PermissionMode string `json:"permission_mode"`
 	// BaseBranch overrides the Service default branch for this API-created task.
 	BaseBranch string `json:"base_branch"`
@@ -53,11 +51,11 @@ type createRunReq struct {
 func (s *Server) handleCreateServiceRun(w http.ResponseWriter, r *http.Request) {
 	svc, err := s.st.GetService(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "service not found")
+		writeError(w, http.StatusNotFound, "not_found", "Repository not found")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		writeError(w, http.StatusInternalServerError, "internal", "could not load Repository")
 		return
 	}
 	// Triggering a run requires member on the service's project.
@@ -86,7 +84,7 @@ func (s *Server) createRunForServiceRequest(
 	response func(*domain.Run) any,
 ) {
 	if svc.DeletingAt != nil {
-		writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
+		writeError(w, http.StatusConflict, "service_deleting", "Repository is being disconnected")
 		return
 	}
 	req.Prompt = strings.TrimSpace(req.Prompt)
@@ -116,7 +114,7 @@ func (s *Server) createRunForServiceRequest(
 			}
 		}
 		if !found {
-			writeError(w, http.StatusBadRequest, "invalid_base_branch", "the selected base branch is not available in this Service repository")
+			writeError(w, http.StatusBadRequest, "invalid_base_branch", "the selected base branch is not available in this Repository")
 			return
 		}
 	}
@@ -137,21 +135,21 @@ func (s *Server) createRunForServiceRequest(
 		}
 		return
 	}
-	// Permission mode (F8b): only "" / "approval", and approval only rides on a
-	// session run — validated up front so an invalid combination never queues.
+	// Every explicit jcode mode rides on a session run. Validate up front so an
+	// unsupported value never queues or silently degrades to full_access.
 	req.PermissionMode = strings.TrimSpace(req.PermissionMode)
 	switch req.PermissionMode {
-	case "":
-		// full_access — today's behaviour.
-	case domain.PermissionModeApproval:
+	case "", "full_access":
+		req.PermissionMode = ""
+	case domain.PermissionModeApproval, domain.PermissionModePlan, domain.PermissionModeAuto:
 		if !req.Session {
 			writeError(w, http.StatusBadRequest, "bad_request",
-				`permission_mode "approval" requires session mode (set "session": true) — a single-shot run has nobody watching to approve`)
+				`permission_mode "`+req.PermissionMode+`" requires session mode (set "session": true)`)
 			return
 		}
 	default:
 		writeError(w, http.StatusBadRequest, "bad_request",
-			`unknown permission_mode "`+req.PermissionMode+`" (valid: "" or "approval")`)
+			`unknown permission_mode "`+req.PermissionMode+`" (valid: "full_access", "approval", "plan", or "auto")`)
 		return
 	}
 	// Fail-visible gate (CLAUDE.md red line #1): resolve which model this run uses
@@ -188,7 +186,7 @@ func (s *Server) createRunForServiceRequest(
 	provenance.Stamp(r.Context(), s.st, run, nil)
 	if err := s.st.CreateRun(r.Context(), run); err != nil {
 		if errors.Is(err, store.ErrServiceDeleting) {
-			writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
+			writeError(w, http.StatusConflict, "service_deleting", "Repository is being disconnected")
 			return
 		}
 		if len(req.AttachmentStageIDs) > 0 && errors.Is(err, store.ErrNotFound) {
@@ -211,10 +209,10 @@ func (s *Server) handleListServiceRuns(w http.ResponseWriter, r *http.Request) {
 	serviceID := r.PathValue("id")
 	svc, err := s.st.GetService(r.Context(), serviceID)
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "service not found")
+		writeError(w, http.StatusNotFound, "not_found", "Repository not found")
 		return
 	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		writeError(w, http.StatusInternalServerError, "internal", "could not load Repository")
 		return
 	}
 	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), svc.ProjectID, domain.RoleViewer) {
@@ -358,7 +356,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	}
 	role, _, err := s.effectiveRole(r.Context(), prin, run.ProjectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not resolve project access")
+		writeError(w, http.StatusInternalServerError, "internal", "could not resolve Repository access")
 		return
 	}
 	run = projectRunForRole(run, role)
@@ -528,11 +526,11 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 	// fall through to a mutable service/project default.
 	svc, err := s.st.GetService(r.Context(), orig.ServiceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		writeError(w, http.StatusInternalServerError, "internal", "could not load Repository")
 		return
 	}
 	if svc.DeletingAt != nil {
-		writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
+		writeError(w, http.StatusConflict, "service_deleting", "Repository is being disconnected")
 		return
 	}
 	var modelID *string
@@ -561,7 +559,7 @@ func (s *Server) handleRetryRun(w http.ResponseWriter, r *http.Request) {
 		}
 		originalName := strings.TrimSpace(orig.ModelName)
 		if !s.envFallbackActive(r) || (originalName != "" && fallbackName != originalName) {
-			writeError(w, http.StatusConflict, "model_not_configured", "the model this run used is no longer configured — choose another project model")
+			writeError(w, http.StatusConflict, "model_not_configured", "the model this run used is no longer available — choose another Account-authorized model")
 			return
 		}
 		modelName = originalName
@@ -698,7 +696,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// session/load. Reject it up front with an actionable message instead.
 	if !s.cfg.PersistentWorkspace {
 		writeError(w, http.StatusConflict, "workspace_not_persistent",
-			"resuming a session needs a persistent workspace (the transcript lives on the service's PVC), which is not enabled on this cluster")
+			"resuming a session needs a persistent Repository workspace, which is not enabled on this cluster")
 		return
 	}
 	var req resumeRunReq
@@ -716,21 +714,21 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		switch strings.TrimSpace(*req.PermissionMode) {
 		case "", "full_access":
 			permissionMode = ""
-		case domain.PermissionModeApproval:
-			permissionMode = domain.PermissionModeApproval
+		case domain.PermissionModeApproval, domain.PermissionModePlan, domain.PermissionModeAuto:
+			permissionMode = strings.TrimSpace(*req.PermissionMode)
 		default:
 			writeError(w, http.StatusBadRequest, "bad_request",
-				`unknown permission_mode "`+strings.TrimSpace(*req.PermissionMode)+`" (valid: "full_access" or "approval")`)
+				`unknown permission_mode "`+strings.TrimSpace(*req.PermissionMode)+`" (valid: "full_access", "approval", "plan", or "auto")`)
 			return
 		}
 	}
 	svc, err := s.st.GetService(r.Context(), orig.ServiceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load service")
+		writeError(w, http.StatusInternalServerError, "internal", "could not load Repository")
 		return
 	}
 	if svc.DeletingAt != nil {
-		writeError(w, http.StatusConflict, "service_deleting", "service is being deleted")
+		writeError(w, http.StatusConflict, "service_deleting", "Repository is being disconnected")
 		return
 	}
 	// A resume is a fresh dispatch. Preserve the original model by default, or

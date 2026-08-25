@@ -404,6 +404,20 @@ func TestCreateRunPermissionMode(t *testing.T) {
 		t.Fatalf("created run: session=%v permission_mode=%q", run.Session, run.PermissionMode)
 	}
 
+	// Cloud's shared jcode composer also exposes plan and auto. They must remain
+	// explicit session modes rather than silently degrading to full_access.
+	for _, mode := range []string{"plan", "auto"} {
+		resp = do(t, "POST", url, consoleToken, map[string]any{"prompt": "t", "session": true, "permission_mode": mode})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("valid %s session: status=%d want 201", mode, resp.StatusCode)
+		}
+		var modeRun domain.Run
+		decode(t, resp, &modeRun)
+		if !modeRun.Session || modeRun.PermissionMode != mode {
+			t.Fatalf("created %s run: session=%v permission_mode=%q", mode, modeRun.Session, modeRun.PermissionMode)
+		}
+	}
+
 	// Retry of a finished approval session preserves the mode (run identity).
 	if _, err := st.CancelRun(ctx, run.ID, "CanceledByOperator", time.Now()); err != nil {
 		t.Fatal(err)

@@ -8,7 +8,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiProvider } from '../api/ApiProvider';
@@ -337,7 +337,8 @@ describe('RunDetailPage — resilient error states', () => {
     expect(screen.getByTestId('project-workspace-shell')).toBeTruthy();
     expect(screen.getByTestId('service-rail-svc-1')).toBeTruthy();
     expect(screen.getByTestId('run-status-header')).toBeTruthy();
-    expect(screen.getByTestId('run-initial-prompt').textContent).toContain('Add a line Hello');
+    expect(screen.getByTestId('thread-message-user').textContent).toContain('Add a line Hello');
+    expect(screen.queryByTestId('run-initial-prompt')).toBeNull();
     expect(screen.getByTestId('run-inspector').textContent).toContain('Run overview');
     expect(screen.getByTestId('run-inspector').textContent).toContain('Changes');
     expect(screen.getByTestId('run-inspector').textContent).toContain('Execution');
@@ -441,11 +442,23 @@ describe('RunDetailPage — resilient error states', () => {
     ctl.getRun.mockResolvedValue(run);
     renderPage(client, run);
 
-    const initial = await screen.findByTestId('run-initial-prompt');
-    expect(initial.querySelector('[data-jcode-ui]')).toBeTruthy();
+    const initial = await screen.findByTestId('thread-message-user');
+    expect(initial.hasAttribute('data-jcode-ui')).toBe(true);
     expect(initial.querySelector('h1')?.textContent).toBe('Task');
     expect([...initial.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['High', 'Safe']);
     expect(initial.querySelector('code')?.textContent).toBe('jcode-ui');
+  });
+
+  it('renders the initial prompt exactly once through the shared conversation', async () => {
+    const prompt = 'Verify shared conversation UI';
+    const { client, ctl } = makeClient('member');
+    const run = baseRun({ prompt, session: true, status: 'awaiting_input' });
+    ctl.getRun.mockResolvedValue(run);
+    renderPage(client, run);
+
+    expect(await screen.findByTestId('thread-message-user')).toBeTruthy();
+    expect(screen.queryByTestId('run-initial-prompt')).toBeNull();
+    expect(within(screen.getByTestId('conversation-scroll')).getAllByText(prompt)).toHaveLength(1);
   });
 
   it('returns to the run service instead of the first project service', async () => {
@@ -803,14 +816,13 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     const conversationScroll = screen.getByTestId('conversation-scroll');
     expect(conversationScroll.contains(panel)).toBe(false);
     expect(screen.getByTestId('conversation-column').contains(panel)).toBe(true);
-    expect(panel.querySelector('.jcode-chat-input')).toBeNull();
-    expect(panel.querySelector('[data-testid="conversation-composer"]')).toBeTruthy();
-    const input = (await screen.findByLabelText('Message input')) as HTMLTextAreaElement;
+    expect(panel.querySelector('.jcode-product-composer')).toBeTruthy();
+    expect(panel.querySelector('[data-testid="conversation-composer"]')).toBeNull();
+    const input = (await screen.findByLabelText('Continue this task…')) as HTMLTextAreaElement;
     const send = (await screen.findByLabelText('Send message')) as HTMLButtonElement;
     expect(screen.getByTestId('session-finish-btn')).toBeTruthy();
-    expect((screen.getByTestId('conversation-model-select') as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTestId('conversation-permission-select') as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText('Model and access apply when you resume.')).toBeTruthy();
+    expect(panel.querySelector('.jcode-product-composer-model-picker')).toBeNull();
+    expect(panel.querySelector('.jcode-product-composer-mode-picker')).toBeNull();
 
     // Empty input keeps Send disabled; typing enables it and submit calls the API.
     expect(send.disabled).toBe(true);
@@ -869,9 +881,9 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     await screen.findByTestId('session-panel');
     // The backend queues messages while running — the composer stays available,
     // with a placeholder saying the message is handled after this turn.
-    const input = (await screen.findByLabelText('Message input')) as HTMLTextAreaElement;
+    const input = (await screen.findByLabelText('Queue a follow-up — it will run after the current turn…')) as HTMLTextAreaElement;
     expect(input.placeholder).toContain('after the current turn');
-    const stop = (await screen.findByLabelText('Stop')) as HTMLButtonElement;
+    const stop = within(screen.getByTestId('session-panel')).getByRole('button', { name: 'Stop' }) as HTMLButtonElement;
     expect(stop).toBeTruthy();
     expect(screen.getByTestId('session-finish-btn')).toBeTruthy();
     // The Finish-vs-Cancel semantics hint is present where both actions coexist.
@@ -914,7 +926,7 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     (client as { sendMessage?: unknown }).sendMessage = sendMessage;
     renderPage(client, sessionRun);
 
-    const input = (await screen.findByLabelText('Message input')) as HTMLTextAreaElement;
+    const input = (await screen.findByLabelText('Continue this task…')) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: 'first message' } });
     fireEvent.click(screen.getByLabelText('Send message'));
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('run1', 'first message'));
@@ -938,7 +950,7 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     (client as { sendMessage?: unknown }).sendMessage = sendMessage;
     renderPage(client, sessionRun);
 
-    const input = (await screen.findByLabelText('Message input')) as HTMLTextAreaElement;
+    const input = (await screen.findByLabelText('Continue this task…')) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: 'do not lose this draft' } });
     fireEvent.click(screen.getByLabelText('Send message'));
 
@@ -952,6 +964,21 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
 describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
   const terminalSession = (overrides: Partial<Run> = {}) =>
     baseRun({ status: 'succeeded', finished_at: '2026-07-07T00:05:00Z', session: true, ...overrides });
+
+  it('reports Plan and Auto accurately in the run inspector', async () => {
+    const plan = terminalSession({ permission_mode: 'plan' });
+    const { client, ctl } = makeClient('viewer');
+    ctl.getRun.mockResolvedValue(plan);
+    const view = renderPage(client, plan);
+    expect(within(await screen.findByTestId('run-inspector')).getByText('Plan')).toBeTruthy();
+    view.unmount();
+
+    const auto = terminalSession({ permission_mode: 'auto' });
+    const next = makeClient('viewer');
+    next.ctl.getRun.mockResolvedValue(auto);
+    renderPage(next.client, auto);
+    expect(within(await screen.findByTestId('run-inspector')).getByText('Auto')).toBeTruthy();
+  });
 
   it('shows the Continue-session composer on a terminal session run and resumes', async () => {
     const run = terminalSession({ model_id: 'm_gpt', model_name: 'GPT-4o', permission_mode: 'approval' });
@@ -972,28 +999,27 @@ describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
     const conversationScroll = screen.getByTestId('conversation-scroll');
     expect(conversationScroll.contains(panel)).toBe(false);
     expect(screen.getByTestId('conversation-column').contains(panel)).toBe(true);
-    expect(panel.querySelector('.jcode-chat-input')).toBeNull();
-    expect(panel.querySelector('[data-testid="conversation-composer"]')).toBeTruthy();
-    const input = panel.querySelector('textarea[aria-label="Message input"]') as HTMLTextAreaElement;
+    expect(panel.querySelector('.jcode-product-composer')).toBeTruthy();
+    expect(panel.querySelector('[data-testid="conversation-composer"]')).toBeNull();
+    const input = panel.querySelector('textarea[aria-label="Continue this task…"]') as HTMLTextAreaElement;
     expect(input).toBeTruthy();
     const send = (await screen.findByLabelText('Send message')) as HTMLButtonElement;
     // Empty keeps Continue disabled; typing enables it and submit calls resume.
     expect(send.disabled).toBe(true);
-    fireEvent.click(screen.getByTestId('conversation-model-select'));
-    expect(await screen.findByLabelText('Filter models')).toBeTruthy();
-    expect(screen.getByRole('option', { name: /Claude.*anthropic\/claude/ })).toBeTruthy();
-    fireEvent.click(screen.getByRole('option', { name: /Claude.*anthropic\/claude/ }));
-    fireEvent.click(screen.getByTestId('conversation-permission-select'));
-    const planMode = screen.getByRole('option', { name: /Plan.*not available/i }) as HTMLButtonElement;
-    expect(planMode.disabled).toBe(true);
-    fireEvent.click(screen.getByRole('option', { name: 'Ask for approval' }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'GPT-4o' }));
+    expect(await screen.findByPlaceholderText('Filter models…')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Ask for approval' }));
+    const planMode = screen.getByRole('button', { name: /Plan.*Propose a plan first/i }) as HTMLButtonElement;
+    expect(planMode.disabled).toBe(false);
+    fireEvent.click(planMode);
     fireEvent.change(input, { target: { value: 'pick up where we left off' } });
     await waitFor(() => expect(send.disabled).toBe(false));
     fireEvent.click(send);
     await waitFor(() =>
       expect(resumeSession).toHaveBeenCalledWith('run1', 'pick up where we left off', {
         model_id: 'm_claude',
-        permission_mode: 'approval',
+        permission_mode: 'plan',
       }),
     );
   });
@@ -1039,7 +1065,7 @@ describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
       {
         code: 'workspace_not_persistent',
         message:
-          'resuming a session needs a persistent workspace (the transcript lives on the service\'s PVC), which is not enabled on this cluster',
+          'resuming a session needs a persistent Repository workspace, which is not enabled on this cluster',
       },
     ];
     for (const { code, message } of cases) {
@@ -1053,7 +1079,7 @@ describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
       const view = renderPage(client, run);
 
       const panel = await screen.findByTestId('resume-session-panel');
-      const input = panel.querySelector('textarea[aria-label="Message input"]') as HTMLTextAreaElement;
+      const input = panel.querySelector('textarea[aria-label="Continue this task…"]') as HTMLTextAreaElement;
       expect(input).toBeTruthy();
       fireEvent.change(input, { target: { value: 'go' } });
       fireEvent.click(await screen.findByLabelText('Send message'));

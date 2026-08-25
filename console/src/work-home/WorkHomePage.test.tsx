@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiProvider } from '../api/ApiProvider';
 import type { ApiClient } from '../api/client';
@@ -18,7 +19,7 @@ vi.mock('@jcloud/device-ui', async (importOriginal) => {
 });
 
 vi.mock('./RemoteComposer', () => ({
-  RemoteComposer: ({ device }: { device: { id: string } }) => <div data-testid="remote-composer">Remote composer {device.id}</div>,
+  RemoteComposer: ({ device, contextHeader }: { device: { id: string }; contextHeader?: ReactNode }) => <div data-testid="remote-composer">{contextHeader}Remote composer {device.id}</div>,
 }));
 
 const models: ProjectModel[] = [
@@ -42,6 +43,10 @@ function renderPage({
   const client = {
     listRepositories: async () => repositories,
     listAccountRepositories: async () => catalog,
+    listAccountRepositoryBranches: async () => [
+      { name: 'main', default: true, protected: true },
+      { name: 'develop', default: false },
+    ],
     listAccountModels: async () => models,
     startAccountTask,
   } as unknown as ApiClient;
@@ -119,6 +124,34 @@ describe('WorkHomePage', () => {
     })));
     expect(window.localStorage.getItem('jcloud.last-model.v1:session')).toBe('model-1');
     expect(await screen.findByTestId('run-page')).toBeTruthy();
+  });
+
+  it('uses the shared jcode controls for branch, mode, effort, and Goal', async () => {
+    const startAccountTask = vi.fn(async () => ({
+      run: { id: 'run-2', project_id: 'hidden', service_id: 'repo-1', prompt: 'Plan checkout', status: 'queued', kind: 'agent', phase: 'Queued', attempt: 1, created_at: '' },
+      repository: { id: 'repo-1', project_id: 'hidden', name: 'payments', repo_owner_name: 'acme/payments', repo_kind: 'provider', provider: 'github', default_branch: 'main', git_mode: 'draft_pr', created_at: '' },
+    }));
+    renderPage({ startAccountTask });
+
+    const branchButton = await screen.findByRole('button', { name: 'Base branch main' });
+    await waitFor(() => expect((branchButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(branchButton);
+    fireEvent.click(screen.getByRole('option', { name: 'develop' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ask for approval' }));
+    fireEvent.click(screen.getByText('Plan', { selector: 'span' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Effort: Default' }));
+    fireEvent.click(screen.getByText('high', { selector: 'span' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    fireEvent.click(screen.getByText('Goal'));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Describe a task' }), { target: { value: 'Plan checkout' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start task' }));
+
+    await waitFor(() => expect(startAccountTask).toHaveBeenCalledWith(expect.objectContaining({
+      base_branch: 'develop',
+      permission_mode: 'plan',
+      model_effort: 'high',
+      goal_mode: true,
+    })));
   });
 
   it('puts Personal, Account usage, and admin-only Cluster settings in the avatar menu', async () => {

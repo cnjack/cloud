@@ -267,6 +267,18 @@ describe('httpClient — request shaping', () => {
 		expect(calls[0]!.url).toBe('/api/v1/repositories/s1/branches');
 	});
 
+  it('lists branches for an Account-visible Repository before it is materialized', async () => {
+    const { calls } = mockFetch(() => ({
+      body: { branches: [{ name: 'main', default: true, protected: true }] },
+    }));
+    const client = createHttpClient('t');
+
+    await expect(client.listAccountRepositoryBranches('gitea', '42')).resolves.toEqual([
+      { name: 'main', default: true, protected: true },
+    ]);
+    expect(calls[0]!.url).toBe('/api/v1/account/repositories/gitea/42/branches');
+  });
+
   it('POSTs to cancel and retry endpoints, with an optional retry model override', async () => {
     const { calls } = mockFetch(() => ({ body: { id: 'r', status: 'canceled' } }));
     const client = createHttpClient('t');

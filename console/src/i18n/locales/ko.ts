@@ -1667,7 +1667,7 @@ export default {
     label: '프로젝트 설정',
   },
 
-  codeReviewsPage: { eyebrow: '독립 워크플로', title: 'Code reviews', description: 'Repository 전체의 Review Run을 구현 작업과 분리해 표시합니다.', emptyTitle: '아직 Code review가 없습니다', emptyDescription: '각 Repository의 Review Run이 여기에 표시됩니다.' },
+  codeReviewsPage: { eyebrow: '독립 워크플로', title: 'Code reviews', description: 'Repository 전체의 Review Run을 구현 작업과 분리해 표시합니다.', createEyebrow: '새 리뷰', createTitle: 'Code review 시작', createDescription: 'Repository와 완료된 Cloud 작업이 만든 Pull request를 선택합니다.', loadingSources: '리뷰 가능한 Pull request를 불러오는 중…', sourcesError: '리뷰 가능한 Pull request를 불러올 수 없습니다.', noRepositories: '이 계정에서 사용할 수 있는 Repository가 없습니다.', connectRepository: 'Git 계정 접근 확인', repositoryLabel: 'Repository', pullRequestLabel: 'Pull request', noReviewablePr: '리뷰할 수 있는 Cloud Pull request가 없습니다.', noReviewablePrDescription: 'Pull request를 여는 Repository 작업을 실행한 뒤 돌아오세요.', openWorkHome: 'Work Home 열기', openPullRequest: 'Pull request 열기', createAction: 'Code review 만들기', createSuccess: 'Code review가 시작되었습니다.', createError: 'Code review를 시작할 수 없습니다.', emptyTitle: '아직 Code review가 없습니다', emptyDescription: '각 Repository의 Review Run이 여기에 표시됩니다.' },
   repositories: {
     eyebrow: '내 코드', title: 'Repositories',
     description: 'Repository 하나가 Board, 작업, 설정, Code reviews를 가진 Agent 작업 공간 하나입니다.',

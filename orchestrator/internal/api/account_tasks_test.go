@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,6 +137,32 @@ func TestAccountRepositoryCatalogAndDirectTask(t *testing.T) {
 	if len(catalog.Repositories) != 1 || catalog.Repositories[0].ProviderRepoID != "42" ||
 		catalog.Repositories[0].FullName != "acme/payments" || catalog.Repositories[0].RepositoryID != "" {
 		t.Fatalf("catalog=%+v", catalog)
+	}
+
+	branchesResp := do(t, http.MethodGet, ts.URL+"/api/v1/account/repositories/gitea/42/branches", token, nil)
+	if branchesResp.StatusCode != http.StatusOK {
+		t.Fatalf("list Account Repository branches: status=%d", branchesResp.StatusCode)
+	}
+	var branchBody struct {
+		Branches      []serviceBranchView `json:"branches"`
+		DefaultBranch string              `json:"default_branch"`
+	}
+	decode(t, branchesResp, &branchBody)
+	if branchBody.DefaultBranch != "main" || len(branchBody.Branches) != 1 || branchBody.Branches[0].Name != "main" || !branchBody.Branches[0].Default {
+		t.Fatalf("branches=%+v default=%q", branchBody.Branches, branchBody.DefaultBranch)
+	}
+
+	invalidBranch := do(t, http.MethodPost, ts.URL+"/api/v1/account/tasks", token, map[string]any{
+		"provider": "gitea", "provider_repo_id": "42", "prompt": "run on a missing branch",
+		"base_branch": "missing", "model_id": accountTaskModelID, "session": true,
+	})
+	invalidBody, readErr := io.ReadAll(invalidBranch.Body)
+	invalidBranch.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if invalidBranch.StatusCode != http.StatusBadRequest || !strings.Contains(string(invalidBody), "Repository") || strings.Contains(string(invalidBody), "Service") {
+		t.Fatalf("invalid branch response: status=%d body=%s", invalidBranch.StatusCode, invalidBody)
 	}
 
 	start := func(prompt string) accountTaskResponse {

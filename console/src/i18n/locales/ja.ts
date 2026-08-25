@@ -1667,7 +1667,7 @@ export default {
     label: 'プロジェクト設定',
   },
 
-  codeReviewsPage: { eyebrow: '独立ワークフロー', title: 'Code reviews', description: 'Repository 横断の Review Run を実装タスクと分けて表示します。', emptyTitle: 'Code review はまだありません', emptyDescription: '各 Repository の Review Run がここに表示されます。' },
+  codeReviewsPage: { eyebrow: '独立ワークフロー', title: 'Code reviews', description: 'Repository 横断の Review Run を実装タスクと分けて表示します。', createEyebrow: '新しいレビュー', createTitle: 'Code review を開始', createDescription: 'Repository と、完了した Cloud タスクが作成した Pull request を選択します。', loadingSources: 'レビュー可能な Pull request を読み込み中…', sourcesError: 'レビュー可能な Pull request を読み込めませんでした。', noRepositories: 'このアカウントで利用できる Repository がありません。', connectRepository: 'Git アカウントアクセスを確認', repositoryLabel: 'Repository', pullRequestLabel: 'Pull request', noReviewablePr: 'レビュー可能な Cloud Pull request がありません。', noReviewablePrDescription: 'Pull request を作成する Repository タスクを実行してから戻ってください。', openWorkHome: 'Work Home を開く', openPullRequest: 'Pull request を開く', createAction: 'Code review を作成', createSuccess: 'Code review を開始しました。', createError: 'Code review を開始できませんでした。', emptyTitle: 'Code review はまだありません', emptyDescription: '各 Repository の Review Run がここに表示されます。' },
   repositories: {
     eyebrow: 'あなたのコード', title: 'Repositories',
     description: '1 つの Repository が、Board・タスク・設定・Code reviews を持つ 1 つの Agent ワークスペースです。',

@@ -208,6 +208,100 @@ func (s *Server) resolveAccountRepository(
 	return nil, identity, cfg, store.ErrNotFound
 }
 
+// handleListAccountRepositoryBranches exposes the branch names needed by the
+// Account task composer before a Repository has been materialized as a legacy
+// Service. The user's linked provider credential remains server-side.
+func (s *Server) handleListAccountRepositoryBranches(w http.ResponseWriter, r *http.Request) {
+	uid, ok := s.accountPrincipal(w, r)
+	if !ok {
+		return
+	}
+	providerName := domain.GitProvider(strings.TrimSpace(r.PathValue("provider")))
+	repositoryID := strings.TrimSpace(r.PathValue("repo"))
+	if !domain.ValidProvider(providerName) || repositoryID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "a valid provider and provider repository id are required")
+		return
+	}
+
+	repo, identity, cfg, err := s.resolveAccountRepository(r.Context(), uid, providerName, repositoryID)
+	if err != nil {
+		switch {
+		case errors.Is(err, credentials.ErrNoCredential):
+			writeError(w, http.StatusConflict, "provider_account_required", "reconnect this provider account to load Repository branches")
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "repository_not_found", "Repository is not visible to this Account")
+		default:
+			s.log.Warn("resolve Account Repository branches", "user_id", uid, "provider", providerName, "err", err)
+			writeError(w, http.StatusBadGateway, "provider_error", "could not load Repository branches from the provider")
+		}
+		return
+	}
+	if identity == nil || cfg == nil || s.creds == nil {
+		writeError(w, http.StatusConflict, "provider_account_required", "reconnect this provider account to load Repository branches")
+		return
+	}
+	token, err := s.creds.ResolveUserOAuth(r.Context(), providerName, identity.UserID)
+	if err != nil {
+		writeError(w, http.StatusConflict, "provider_account_required", "reconnect this provider account to load Repository branches")
+		return
+	}
+	client, err := provider.IntegrationClientWithScheme(providerName, cfg.BaseURL, token.Value, token.Scheme)
+	if err != nil {
+		s.log.Warn("create Account Repository branch client", "user_id", uid, "provider", providerName, "err", err)
+		writeError(w, http.StatusBadGateway, "provider_error", "could not connect to the Repository provider")
+		return
+	}
+	lister, ok := client.(provider.BranchLister)
+	if !ok {
+		writeError(w, http.StatusConflict, "provider_branches_unavailable", "this provider cannot list Repository branches")
+		return
+	}
+	owner, name, ok := provider.SplitRepo(repo.FullName)
+	if !ok {
+		writeError(w, http.StatusBadGateway, "provider_error", "the provider returned an invalid Repository path")
+		return
+	}
+
+	branches := make([]provider.Branch, 0)
+	for page := 1; page <= 20; page++ {
+		pageBranches, listErr := lister.ListBranches(r.Context(), owner, name, page, 100)
+		if listErr != nil {
+			s.log.Warn("list Account Repository branches", "user_id", uid, "provider", providerName, "repository", repo.FullName, "err", listErr)
+			writeError(w, http.StatusBadGateway, "provider_error", "could not load Repository branches from the provider")
+			return
+		}
+		branches = append(branches, pageBranches...)
+		if len(pageBranches) < 100 {
+			break
+		}
+	}
+
+	defaultBranch := strings.TrimSpace(repo.DefaultBranch)
+	seen := make(map[string]bool, len(branches))
+	views := make([]serviceBranchView, 0, len(branches))
+	for _, branch := range branches {
+		branchName := strings.TrimSpace(branch.Name)
+		if branchName == "" || seen[branchName] {
+			continue
+		}
+		seen[branchName] = true
+		views = append(views, serviceBranchView{
+			Name: branchName, Protected: branch.Protected, Default: branchName == defaultBranch,
+		})
+	}
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].Default != views[j].Default {
+			return views[i].Default
+		}
+		return strings.ToLower(views[i].Name) < strings.ToLower(views[j].Name)
+	})
+	confirmedDefault := ""
+	if seen[defaultBranch] {
+		confirmedDefault = defaultBranch
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"branches": views, "default_branch": confirmedDefault})
+}
+
 func (s *Server) ensurePersonalProject(ctx context.Context, uid string) (*domain.Project, error) {
 	projects, err := s.st.ListProjectsForUser(ctx, uid)
 	if err != nil {

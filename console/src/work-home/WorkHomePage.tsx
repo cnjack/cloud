@@ -1,7 +1,6 @@
 import {
   ArrowLeft,
   ArrowRight,
-  ArrowUp,
   CaretDown,
   Check,
   Cloud,
@@ -10,7 +9,7 @@ import {
   Plus,
   TerminalWindow,
 } from '@phosphor-icons/react';
-import { useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useDevices, type Device } from '@jcloud/device-ui';
@@ -22,41 +21,26 @@ import {
   useProjectModels,
   useRepositories,
   useRuns,
-  useStartAccountTask,
   useSystem,
   useUpdateService,
 } from '../api/queries';
 import type { AccountRepositoryTarget, Service } from '../api/types';
-import { ApiError } from '../api/client';
 import { useOptionalAuth } from '../auth/AuthProvider';
-import { Button } from '../components/Button';
 import { AccountHeader } from '../components/AccountHeader';
-import { Select } from '../components/Select';
-import { useToast } from '../components/Toast';
 import { RepositoryAutomationsPanel } from '../project-workspace/ProjectAutomationsPanel';
 import { RunActivityList } from '../project-workspace/RunActivityList';
 import { SettingsPanel } from '../project-workspace/SettingsPanel';
 import { KanbanBoardModal } from '../pages/KanbanBoardModal';
 import { RepositoryUsagePanel } from '../pages/RepositoryUsagePanel';
+import { AccountRepositoryComposer } from './AccountRepositoryComposer';
 import { RemoteComposer } from './RemoteComposer';
 import styles from './WorkHomePage.module.css';
 
 type WorkspaceTab = 'tasks' | 'board' | 'reviews' | 'automations' | 'usage' | 'settings';
 type ContextKind = 'repository' | 'remote';
-const LAST_ACCOUNT_MODEL_KEY = 'jcloud.last-model.v1:';
 
 function repositoryKey(target: AccountRepositoryTarget): string {
   return `${target.provider}:${target.provider_repo_id}`;
-}
-
-function storedModel(accountId: string): string {
-  try { return window.localStorage.getItem(LAST_ACCOUNT_MODEL_KEY + (accountId || 'session')) ?? ''; }
-  catch { return ''; }
-}
-
-function rememberModel(accountId: string, modelId: string) {
-  try { window.localStorage.setItem(LAST_ACCOUNT_MODEL_KEY + (accountId || 'session'), modelId); }
-  catch { /* The current in-memory selection remains usable. */ }
 }
 
 function providerLabel(provider: string): string {
@@ -80,17 +64,13 @@ export function WorkHomePage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const toast = useToast();
   const auth = useOptionalAuth();
   const catalog = useAccountRepositories();
   const models = useAccountModels();
   const repositories = useRepositories();
   const devices = useDevices();
-  const startTask = useStartAccountTask();
   const menuRef = useRef<HTMLDivElement>(null);
-  const [prompt, setPrompt] = useState('');
   const [selectedRepository, setSelectedRepository] = useState(searchParams.get('repository') ?? '');
-  const [selectedModel, setSelectedModel] = useState('');
   const [contextKind, setContextKind] = useState<ContextKind>('repository');
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [contextOpen, setContextOpen] = useState(false);
@@ -121,13 +101,6 @@ export function WorkHomePage() {
     const first = requested ?? targets.find((target) => target.execution_available !== false) ?? targets[0];
     if (first) setSelectedRepository(repositoryKey(first));
   }, [activeTarget, searchParams, targets]);
-
-  useEffect(() => {
-    if (!models.data?.length) { setSelectedModel(''); return; }
-    const remembered = storedModel(accountId);
-    const fallback = models.data[0]?.id ?? '';
-    setSelectedModel(models.data.some((model) => model.id === remembered) ? remembered : fallback);
-  }, [accountId, models.data]);
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
@@ -162,26 +135,6 @@ export function WorkHomePage() {
     setSearchParams(next, { replace: true });
   };
 
-  const canStart = contextKind === 'repository' && !!prompt.trim() && !!activeTarget
-    && activeTarget.execution_available !== false && !!selectedModel && !startTask.isPending;
-
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!canStart || !activeTarget) return;
-    rememberModel(accountId, selectedModel);
-    startTask.mutate({
-      provider: activeTarget.provider,
-      provider_repo_id: activeTarget.provider_repo_id,
-      prompt: prompt.trim(),
-      base_branch: activeTarget.default_branch,
-      model_id: selectedModel,
-      session: true,
-    }, {
-      onSuccess: ({ run }) => navigate(`/runs/${encodeURIComponent(run.id)}`),
-      onError: (error) => toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : t('repositories.startFailed') }),
-    });
-  };
-
   return (
     <div className={styles.page} data-testid="work-home">
       <AccountHeader />
@@ -195,25 +148,28 @@ export function WorkHomePage() {
 
         {contextKind === 'remote' && selectedDevice ? (
           <section className={styles.remoteSurface}>
-            <ContextPicker
-              activeTarget={activeTarget}
-              selectedDevice={selectedDevice}
-              targets={targets}
-              devices={onlineDevices}
-              open={contextOpen}
-              remotePicker={remotePicker}
-              menuRef={menuRef}
-              onToggle={() => setContextOpen((open) => !open)}
-              onRemoteOpen={() => onlineDevices.length === 0 ? navigate('/devices/guide') : setRemotePicker(true)}
-              onRemoteBack={() => setRemotePicker(false)}
-              onSelectRepository={selectRepository}
-              onSelectDevice={selectDevice}
-            />
-            <RemoteComposer device={selectedDevice} />
+            <RemoteComposer device={selectedDevice} contextHeader={<ContextPicker
+                activeTarget={activeTarget}
+                selectedDevice={selectedDevice}
+                targets={targets}
+                devices={onlineDevices}
+                open={contextOpen}
+                remotePicker={remotePicker}
+                menuRef={menuRef}
+                onToggle={() => setContextOpen((open) => !open)}
+                onRemoteOpen={() => onlineDevices.length === 0 ? navigate('/devices/guide') : setRemotePicker(true)}
+                onRemoteBack={() => setRemotePicker(false)}
+                onSelectRepository={selectRepository}
+                onSelectDevice={selectDevice}
+              />} />
           </section>
-        ) : (
-          <form className={styles.composer} onSubmit={submit} noValidate>
-            <ContextPicker
+        ) : activeTarget ? (
+          <AccountRepositoryComposer
+            target={activeTarget}
+            models={models.data ?? []}
+            modelsLoading={models.isLoading}
+            accountId={accountId}
+            contextPicker={<ContextPicker
               activeTarget={activeTarget}
               targets={targets}
               devices={onlineDevices}
@@ -225,17 +181,9 @@ export function WorkHomePage() {
               onRemoteBack={() => setRemotePicker(false)}
               onSelectRepository={selectRepository}
               onSelectDevice={selectDevice}
-            />
-            <textarea aria-label={t('repositories.taskAria')} placeholder={t('repositories.taskPlaceholder')} value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={3} />
-            <div className={styles.composerBar}>
-              <div className={styles.composerTools}><button type="button" className={styles.iconButton} aria-label="Add attachment"><Plus size={18} /></button><span className={styles.branch}><GitBranch size={15} />{activeTarget?.default_branch ?? '—'}</span></div>
-              <div className={styles.composerTools}>
-                <Select aria-label={t('taskComposer.modelAria')} value={selectedModel} onChange={(id) => { setSelectedModel(id); rememberModel(accountId, id); }} disabled={models.isLoading || !models.data?.length} placeholder={t('repositories.modelRequired')} options={(models.data ?? []).map((model) => ({ value: model.id, label: model.name }))} />
-                <Button type="submit" variant="primary" className={styles.sendButton} disabled={!canStart} loading={startTask.isPending} aria-label={t('repositories.startTask')}><ArrowUp size={19} weight="bold" /></Button>
-              </div>
-            </div>
-          </form>
-        )}
+            />}
+          />
+        ) : null}
 
         {contextKind === 'repository' && (catalog.isError || unavailableSource || (!catalog.isLoading && targets.length === 0) || (!models.isLoading && !models.data?.length) || activeTarget?.execution_available === false) && (
           <div className={styles.blocker} role="status">

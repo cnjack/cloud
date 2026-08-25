@@ -78,6 +78,8 @@ export const qk = {
   models: ['models'] as const,
   accountModels: ['account-models'] as const,
   accountRepositories: (q: string) => ['account-repositories', q] as const,
+  accountRepositoryBranches: (provider: string, providerRepoId: string) =>
+    ['account-repository-branches', provider, providerRepoId] as const,
   modelProviders: ['model-providers'] as const,
   modelProviderCatalog: (id: string) => ['model-provider-catalog', id] as const,
   projectModelProviders: (projectId: string) => ['project-model-providers', projectId] as const,
@@ -221,6 +223,22 @@ export function useAccountRepositories(q = '') {
   return useQuery({
     queryKey: qk.accountRepositories(q),
     queryFn: () => api.listAccountRepositories(q),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+/** Branches for a provider Repository that has not necessarily been materialized. */
+export function useAccountRepositoryBranches(
+  provider: string,
+  providerRepoId: string,
+  enabled = true,
+) {
+  const api = useApi();
+  return useQuery<ServiceBranch[]>({
+    queryKey: qk.accountRepositoryBranches(provider, providerRepoId),
+    queryFn: () => api.listAccountRepositoryBranches(provider, providerRepoId),
+    enabled: enabled && !!provider && !!providerRepoId,
     staleTime: 30_000,
     retry: false,
   });

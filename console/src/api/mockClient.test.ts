@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockClient } from './mockClient';
 import { ApiError, apiErrorCode, type ApiClient } from './client';
 import { initialEventState, reduceEvents } from './eventReducer';
-import type { RunEvent } from './types';
+import type { CreateRunInput, RunEvent } from './types';
 
 // The mock uses setTimeout for both request latency and playback. Fake timers
 // let us drive the whole lifecycle deterministically.
@@ -19,6 +19,7 @@ async function flush(ms: number) {
 async function makeProjectAndRun(
   client: ApiClient,
   prompt = 'Add a line Hello to README',
+  options: Omit<CreateRunInput, 'prompt'> = {},
 ) {
   const projectP = client.createProject({ name: 'demo' });
   await flush(500);
@@ -32,7 +33,7 @@ async function makeProjectAndRun(
   await flush(500);
   const service = await serviceP;
 
-  const runP = client.createServiceRun(service.id, { prompt });
+  const runP = client.createServiceRun(service.id, { prompt, ...options });
   await flush(500);
   const run = await runP;
   return { project, service, run };
@@ -101,6 +102,28 @@ describe('mockClient — lifecycle', () => {
     const canceled = await cancelP;
     expect(canceled.status).toBe('canceled');
     expect(canceled.finished_at).toBeTruthy();
+  });
+
+  it('preserves plan and auto modes across create, retry, and resume demo paths', async () => {
+    const client = createMockClient();
+    const { run } = await makeProjectAndRun(client, 'plan this', {
+      session: true,
+      permission_mode: 'plan',
+    });
+    expect(run.permission_mode).toBe('plan');
+
+    await flush(8000);
+    const finishP = client.finishSession(run.id);
+    await flush(300);
+    await finishP;
+
+    const retryP = client.retryRun(run.id);
+    await flush(300);
+    expect((await retryP).permission_mode).toBe('plan');
+
+    const resumeP = client.resumeSession(run.id, 'continue automatically', { permission_mode: 'auto' });
+    await flush(300);
+    expect((await resumeP).permission_mode).toBe('auto');
   });
 });
 

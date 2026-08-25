@@ -93,11 +93,10 @@ type sessionConfig struct {
 	RunID       string // RUN_ID
 	RunToken    string // RUN_TOKEN
 
-	// PermissionMode ("" or permissionModeApproval, F8a / D22 permission
-	// half): approval switches the session into jcode's approval ACP mode
-	// right after it is established (session/set_mode, below) and makes
-	// driverClient.RequestPermission forward requests for interactive
-	// approval instead of auto-allowing (permission.go). See main.go's
+	// PermissionMode mirrors jcode's approval/plan/auto ACP session modes.
+	// Approval additionally makes driverClient.RequestPermission forward
+	// requests for interactive approval instead of auto-allowing
+	// (permission.go). See main.go's
 	// checkPermissionModeRequiresSession for the fail-visible contract that
 	// keeps this out of the single-shot (non-session) path entirely.
 	PermissionMode string
@@ -262,8 +261,8 @@ func runSession(ctx context.Context, cfg sessionConfig) error {
 	}
 	client.live.Store(true)
 
-	// Approval mode (F8a / D22 permission half): switch the session into
-	// jcode's "approval" ACP mode right after it is established — covers
+	// An explicit mode switches the session through ACP immediately after it is
+	// established — covers
 	// BOTH the resume and fresh-session paths above, since sessionID is set
 	// either way by this point — and BEFORE the first session/prompt below,
 	// so no tool call in turn 1 can slip through under the config-file
@@ -274,18 +273,22 @@ func runSession(ctx context.Context, cfg sessionConfig) error {
 	// parameter (see acp-go-sdk types_gen.go), so session/set_mode is the
 	// only path — there is no "session/new with mode" alternative to prefer
 	// here. A failure is fail-visible: silently continuing in full_access
-	// would contradict the run's explicit RUN_PERMISSION_MODE=approval
+	// would contradict the run's explicit RUN_PERMISSION_MODE
 	// request (CLAUDE.md's fail-visible rule), so this is as fatal as a
 	// failed resume.
-	if cfg.PermissionMode == permissionModeApproval {
-		logf("[permission] setting session %s to approval mode (RUN_PERMISSION_MODE=approval)", sessionID)
+	if cfg.PermissionMode != "" {
+		logf("[permission] setting session %s to %s mode (RUN_PERMISSION_MODE=%s)", sessionID, cfg.PermissionMode, cfg.PermissionMode)
 		if _, err := conn.SetSessionMode(ctx, acp.SetSessionModeRequest{
 			SessionId: sessionID,
-			ModeId:    acp.SessionModeId(permissionModeApproval),
+			ModeId:    acp.SessionModeId(cfg.PermissionMode),
 		}); err != nil {
-			return fmt.Errorf("set session mode to approval: %s", describeErr(err))
+			return fmt.Errorf("set session mode to %s: %s", cfg.PermissionMode, describeErr(err))
 		}
-		logf("[permission] session %s is now in approval mode; RequestPermission will be forwarded (timeout=%s)", sessionID, cfg.permissionTimeout())
+		if cfg.PermissionMode == permissionModeApproval {
+			logf("[permission] session %s is now in approval mode; RequestPermission will be forwarded (timeout=%s)", sessionID, cfg.permissionTimeout())
+		} else {
+			logf("[permission] session %s is now in %s mode", sessionID, cfg.PermissionMode)
+		}
 	}
 
 	// Session mode always emits run.session (both resumed=true and =false):

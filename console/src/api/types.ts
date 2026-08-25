@@ -724,7 +724,7 @@ export interface Run {
    * user's answer (POST /runs/{id}/permission-response). Absent/"" =
    * full_access (auto-approve, the default). Only ever set on session runs.
    */
-  permission_mode?: 'approval' | '';
+  permission_mode?: 'approval' | 'plan' | 'auto' | '';
   /** When the run entered awaiting_input (idle-timeout epoch). */
   awaiting_since?: string | null;
   /**
@@ -1522,15 +1522,15 @@ export interface CreateRunInput {
    */
   session?: boolean;
   /**
-   * F8b: "approval" = ask the user before agent actions (the runner forwards
-   * every permission request for interactive approval). Only valid together
-   * with session: true (the server 400s otherwise). Omitted = full_access.
+   * jcode session mode. Approval forwards permission requests; plan and auto
+   * preserve their native jcode guardrails. Explicit modes require session.
+   * Omitted/full_access keeps the legacy unrestricted runner behavior.
    */
-  permission_mode?: 'approval';
-	/** Per-run OpenAI-compatible reasoning depth. */
-	model_effort?: 'auto' | 'low' | 'medium' | 'high';
-	/** Establish the task prompt as jcode's persistent goal at launch. */
-	goal_mode?: boolean;
+  permission_mode?: 'approval' | 'plan' | 'auto' | 'full_access';
+  /** Per-run OpenAI-compatible reasoning depth. */
+  model_effort?: 'auto' | 'low' | 'medium' | 'high';
+  /** Establish the task prompt as jcode's persistent goal at launch. */
+  goal_mode?: boolean;
   /** Opaque, already-uploaded attachment stages consumed by this Run. */
   attachment_stage_ids?: string[];
 }
@@ -1542,10 +1542,10 @@ export interface CreateRunInput {
  * fields preserve the original run's settings.
  */
 export interface ResumeSessionOptions {
-  /** Explicitly empty means resolve from the service default / project default / sole grant. */
+  /** Explicitly empty resolves from the Repository default or Account grants. */
   model_id?: string;
   /** `full_access` is explicit so an approval-mode original can be relaxed. */
-  permission_mode?: 'approval' | 'full_access';
+  permission_mode?: 'approval' | 'plan' | 'auto' | 'full_access';
 }
 
 /** POST /runs/{id}/retry. Omitted options preserve the original model. */

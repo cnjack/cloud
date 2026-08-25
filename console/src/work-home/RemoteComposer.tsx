@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { RuntimeProvider } from 'jcode-ui';
 import { ChatInput } from 'jcode-ui/product';
@@ -13,7 +13,7 @@ import {
 import { useToast } from '../components/Toast';
 import styles from './WorkHomePage.module.css';
 
-export function RemoteComposer({ device }: { device: Device }) {
+export function RemoteComposer({ device, contextHeader }: { device: Device; contextHeader?: ReactNode }) {
   const navigate = useNavigate();
   const toast = useToast();
   const { pending, issue, found, markSent, clear, isRetryingCommandState } = usePendingNewSession(device.id);
@@ -46,7 +46,7 @@ export function RemoteComposer({ device }: { device: Device }) {
         <div className={`${styles.remoteComposer} jcode-product`} data-testid="remote-composer">
           <fieldset disabled={isSendLocked || !device.online} aria-busy={isSendLocked}>
             <RuntimeProvider runtime={runtime}>
-              <ChatInput host={host} pickerPlacement="bottom" elevated />
+              <ChatInput host={host} pickerPlacement="bottom" elevated contextHeader={contextHeader} />
             </RuntimeProvider>
           </fieldset>
         </div>

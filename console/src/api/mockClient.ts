@@ -128,6 +128,15 @@ function badRequest(message: string): ApiError {
   });
 }
 
+type StoredPermissionMode = '' | 'approval' | 'plan' | 'auto';
+
+function storedPermissionMode(value: string | undefined): StoredPermissionMode {
+  const mode = value?.trim() ?? '';
+  if (mode === '' || mode === 'full_access') return '';
+  if (mode === 'approval' || mode === 'plan' || mode === 'auto') return mode;
+  throw badRequest(`unknown permission_mode "${mode}" (valid: "full_access", "approval", "plan", or "auto")`);
+}
+
 interface StoredRun extends Run {
   _events: RunEvent[];
   _diff?: string;
@@ -790,6 +799,16 @@ export function createMockClient(): ApiClient {
       });
     };
 
+    if (run.permission_mode === 'plan') {
+      schedule(run, 4200, () => {
+        emit(run, 'agent.text', {
+          text: 'Plan ready: update README.md by appending `Hello`. No tools were run in Plan mode.',
+        });
+        setStatus(run, 'awaiting_input');
+      });
+      return;
+    }
+
     if (run.permission_mode !== 'approval') {
       editAndFinish(4200);
       return;
@@ -886,7 +905,7 @@ export function createMockClient(): ApiClient {
     retriedFrom?: string,
     attempt = 1,
     session = false,
-    permissionMode: 'approval' | '' = '',
+    permissionMode: StoredPermissionMode = '',
     resumedFrom?: string,
     acpSessionId?: string,
   ): StoredRun {
@@ -1150,7 +1169,7 @@ export function createMockClient(): ApiClient {
 		});
 	  }
 	  const svc = services.get(orig.project_id)?.find((service) => service.id === orig.service_id);
-	  if (!svc) throw new ApiError(409, 'the service for this run is unavailable');
+	  if (!svc) throw new ApiError(409, 'the Repository for this run is unavailable');
 	  const modelId = resolveModelForRun(orig.project_id, svc, requestedModel ?? orig.model_id ?? undefined);
       // Retry preserves the run's identity (D22/F8b): session-ness and the
       // permission mode carry over, mirroring the orchestrator.
@@ -1161,7 +1180,7 @@ export function createMockClient(): ApiClient {
             orig.id,
             (orig.attempt ?? 1) + 1,
             orig.session === true,
-            orig.permission_mode === 'approval' ? 'approval' : '',
+			storedPermissionMode(orig.permission_mode),
 	  );
 	  run.model_id = modelId ?? undefined;
 	  run.model_name = modelId ? models.get(modelId)?.model_name : orig.model_name;
@@ -1199,10 +1218,10 @@ export function createMockClient(): ApiClient {
       // The demo assumes the cluster persistent-workspace switch is ON, so the
       // workspace_not_persistent 409 is a real-cluster-only path (not modelled).
       const permissionMode = options?.permission_mode === undefined
-        ? (orig.permission_mode === 'approval' ? 'approval' : '')
-        : options.permission_mode === 'approval' ? 'approval' : '';
+        ? storedPermissionMode(orig.permission_mode)
+        : storedPermissionMode(options.permission_mode);
       const svc = services.get(orig.project_id)?.find((service) => service.id === orig.service_id);
-      if (!svc) throw new ApiError(409, 'the service for this session is unavailable');
+      if (!svc) throw new ApiError(409, 'the Repository for this session is unavailable');
       const modelId = resolveModelForRun(
         orig.project_id,
         svc,
@@ -2338,6 +2357,15 @@ export function createMockClient(): ApiClient {
         sources: [{ provider: 'gitea', account: 'demo', status: 'ready' }],
       });
     },
+    async listAccountRepositoryBranches(provider: string, providerRepoId: string): Promise<ServiceBranch[]> {
+      const repository = DEMO_ACCOUNT_REPOSITORIES.find((repo) => String(repo.id) === providerRepoId);
+      if (provider !== 'gitea' || !repository) throw new ApiError(404, 'repository not found');
+      return delay([
+        { name: repository.default_branch || 'main', default: true, protected: true },
+        { name: 'develop', default: false },
+        { name: 'feature/demo', default: false },
+      ]);
+    },
     async startAccountTask(input: StartAccountTaskInput): Promise<AccountTaskResponse> {
       const target = DEMO_ACCOUNT_REPOSITORIES.find((repo) => String(repo.id) === input.provider_repo_id);
       if (input.provider !== 'gitea' || !target) throw new ApiError(404, 'repository not found');
@@ -2376,7 +2404,7 @@ export function createMockClient(): ApiClient {
       }
       const modelId = resolveModelForRun(projectId, service, input.model_id);
       const run = makeRun(projectId, service.id, input.prompt, undefined, 1, true,
-        input.permission_mode === 'approval' ? 'approval' : '');
+        storedPermissionMode(input.permission_mode));
       run.model_id = modelId ?? undefined;
       run.model_name = modelId ? models.get(modelId)?.model_name : undefined;
       return delay({ run: publicRun(run), repository: structuredClone(service) });
@@ -2679,9 +2707,10 @@ export function createMockClient(): ApiClient {
       // D21 resolution chain (mirrors orchestrator selectModel): composer pick →
       // service default → project default → the project's sole granted model → typed errors.
       const modelId = resolveModelForRun(projectId, svc, input.model_id);
-      // F8b (mirrors the orchestrator gate): "approval" only rides on a session.
-      if (input.permission_mode === 'approval' && input.session !== true) {
-        throw badRequest('permission_mode "approval" requires session mode');
+      // Explicit interactive jcode modes only ride on a session.
+      const permissionMode = storedPermissionMode(input.permission_mode);
+      if (permissionMode && input.session !== true) {
+        throw badRequest(`permission_mode "${permissionMode}" requires session mode`);
       }
       const run = makeRun(
         projectId,
@@ -2690,7 +2719,7 @@ export function createMockClient(): ApiClient {
         undefined,
         1,
         input.session === true,
-        input.permission_mode === 'approval' ? 'approval' : '',
+        permissionMode,
       );
       run.model_id = modelId ?? undefined;
       run.model_name = modelId ? models.get(modelId)?.model_name : undefined;

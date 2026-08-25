@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
-import { ArrowClockwise, ArrowLeft, ArrowSquareOut, CaretDown, Check, ClipboardText, Cpu, HandPalm, LockSimple, MagnifyingGlass, PaperPlaneTilt, Plus, ShieldWarning, Stop } from '@phosphor-icons/react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ArrowClockwise, ArrowLeft, ArrowSquareOut, Check, Cpu, ShieldWarning, Stop } from '@phosphor-icons/react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Message, RuntimeProvider, ToolRegistryProvider, type ThreadItem } from 'jcode-ui';
+import { RuntimeProvider, ToolRegistryProvider, type ThreadItem } from 'jcode-ui';
 import type { ChatRuntime, RuntimeActions, RuntimeState } from 'jcode-ui-core/runtime';
 import {
   useCancelRun,
@@ -38,6 +38,7 @@ import { formatDateTime, formatDuration, shortId } from '../lib/format';
 import { ProjectWorkspaceShell } from '../project-workspace/ProjectWorkspaceShell';
 import { Timeline, toThreadItems } from '../runview';
 import { followConversationScroll } from '../runview/conversationScroll';
+import { RunSessionComposer } from './RunSessionComposer';
 import styles from './RunDetailPage.module.css';
 
 function failureLabel(reason: FailureReason, t: TFunction): string {
@@ -50,6 +51,13 @@ function failureLabel(reason: FailureReason, t: TFunction): string {
     push_failed: t('runDetail.failure.pushFailed'),
   };
   return labels[reason];
+}
+
+function permissionModeLabel(mode: Run['permission_mode'], t: TFunction): string {
+  if (mode === 'approval') return t('runDetail.inspector.askBeforeActions');
+  if (mode === 'plan') return t('runDetail.permission.plan');
+  if (mode === 'auto') return t('device.composer.modeAuto');
+  return t('runDetail.permission.fullAccess');
 }
 
 type View = 'conversation' | 'diff' | 'pr';
@@ -385,23 +393,15 @@ export function RunDetailPage() {
                       ) : (
                         <>
                           <div className={styles.dateDivider}><span>{new Date(current.created_at).toLocaleDateString()}</span></div>
-                          {!isReview && <div className={styles.initialPrompt} data-testid="run-initial-prompt">
-                            <Message
-                              message={{
-                                id: `run-prompt-${current.id}`,
-                                role: 'user',
-                                content: current.prompt,
-                                timestamp: Date.parse(current.created_at),
-                              }}
-                            />
-                          </div>}
-
                           {isReview ? (
                             <ReviewWorkspace run={current} terminal={terminalRun} events={<Timeline />} />
-                          ) : stream.events.length > 0 || live ? (
-                            <Timeline />
                           ) : (
-                            <p className={styles.empty}>{terminalRun ? t('runDetail.noEvents') : t('runDetail.waitingForAgent')}</p>
+                            <>
+                              <Timeline />
+                              {stream.events.length === 0 && !live && (
+                                <p className={styles.empty}>{terminalRun ? t('runDetail.noEvents') : t('runDetail.waitingForAgent')}</p>
+                              )}
+                            </>
                           )}
                         </>
                       )}
@@ -516,14 +516,14 @@ function SessionComposer({
   if (sessionLive) {
     return (
       <div className={styles.sessionDock} data-testid="session-panel">
-        <ConversationComposer
+        <RunSessionComposer
+          runId={current.id}
           disabled={sendPending || cancelPending}
-          mode="follow-up"
+          configurable={false}
           running={sessionTurnRunning}
           placeholder={sessionAwaiting ? t('runDetail.composer.continuePlaceholder') : t('runDetail.composer.followUpPlaceholder')}
           currentModelId={current.model_id ?? ''}
-          currentModelName={current.model_name}
-          currentPermissionMode={current.permission_mode === 'approval' ? 'approval' : 'full_access'}
+          currentPermissionMode={current.permission_mode}
           models={models}
           onSend={onSend}
           onStop={onCancel}
@@ -541,287 +541,20 @@ function SessionComposer({
   return (
     <div className={styles.sessionDock} data-testid="resume-session-panel">
       <span className={styles.resumeHint}>{t('runDetail.session.resumeHint')}</span>
-      <ConversationComposer
+      <RunSessionComposer
+        runId={current.id}
         disabled={!modelConfigured || resumePending}
-        mode="resume"
+        configurable
         running={false}
         placeholder={t('runDetail.composer.continuePlaceholder')}
         currentModelId={current.model_id ?? ''}
-        currentModelName={current.model_name}
-        currentPermissionMode={current.permission_mode === 'approval' ? 'approval' : 'full_access'}
+        currentPermissionMode={current.permission_mode}
         models={models}
         onSend={onSend}
       />
       {failedSubmission?.kind === 'resume' && <FailedSubmissionNotice submission={failedSubmission} onRetry={() => onSend(failedSubmission.text, failedSubmission.options)} />}
     </div>
   );
-}
-
-function ConversationComposer({
-  disabled,
-  mode,
-  running,
-  placeholder,
-  currentModelId,
-  currentModelName,
-  currentPermissionMode,
-  models,
-  onSend,
-  onStop,
-}: {
-  disabled: boolean;
-  mode: 'follow-up' | 'resume';
-  running: boolean;
-  placeholder: string;
-  currentModelId: string;
-  currentModelName?: string;
-  currentPermissionMode: 'approval' | 'full_access';
-  models: readonly ProjectModel[];
-  onSend: (text: string, options?: ResumeSessionOptions) => void;
-  onStop?: () => void;
-}) {
-  const { t } = useTranslation();
-  const [text, setText] = useState('');
-  const [modelId, setModelId] = useState(currentModelId);
-  const [permissionMode, setPermissionMode] = useState(currentPermissionMode);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const configurable = mode === 'resume';
-  const modelOptions = useMemo(() => {
-    const options: ComposerModelOption[] = [{
-      value: '',
-      label: configurable ? t('runDetail.composer.serviceDefault') : currentModelName || t('runDetail.composer.serviceDefault'),
-      subline: configurable ? t('runDetail.composer.useServiceModel') : t('runDetail.composer.modelFixed'),
-    }];
-    if (currentModelId && !models.some((model) => model.id === currentModelId)) {
-      options.unshift({ value: currentModelId, label: currentModelName || currentModelId, subline: currentModelId });
-    }
-    return [...options, ...models.map((model) => ({ value: model.id, label: model.name, subline: model.model_name }))];
-  }, [configurable, currentModelId, currentModelName, models]);
-
-  useEffect(() => {
-    setModelId(currentModelId);
-    setPermissionMode(currentPermissionMode);
-  }, [currentModelId, currentPermissionMode, mode]);
-
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = 'auto';
-    textarea.style.height = `${Math.max(28, Math.min(textarea.scrollHeight, 200))}px`;
-  }, [text]);
-
-  const send = () => {
-    const prompt = text.trim();
-    if (!prompt || disabled) return;
-    onSend(prompt, configurable ? { model_id: modelId, permission_mode: permissionMode } : undefined);
-    setText('');
-  };
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    send();
-  };
-
-  return (
-    <form className={styles.conversationComposer} data-testid="conversation-composer" onSubmit={submit}>
-      <div className={styles.composerField}>
-        <textarea
-          ref={textareaRef}
-          className={styles.conversationInput}
-          aria-label={t('runDetail.composer.messageInput')}
-          placeholder={placeholder}
-          value={text}
-          rows={1}
-          disabled={disabled}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              send();
-            }
-          }}
-        />
-        <div className={styles.conversationControls}>
-          <div className={styles.composerSettings}>
-            <button className={styles.composerAdd} type="button" disabled title={t('runDetail.composer.attachmentsUnavailableTitle')} aria-label={t('runDetail.composer.attachmentsUnavailable')}>
-              <Plus size={16} weight="regular" aria-hidden="true" />
-            </button>
-            <PermissionPicker
-              value={permissionMode}
-              onChange={setPermissionMode}
-              disabled={disabled || !configurable}
-            />
-            {!configurable && <span className={styles.composerLocked}><LockSimple size={13} weight="regular" aria-hidden="true" />{t('runDetail.composer.modelAccessLocked')}</span>}
-          </div>
-          <div className={styles.conversationSubmit}>
-            <ModelPicker
-              value={modelId}
-              onChange={setModelId}
-              options={modelOptions}
-              disabled={disabled || !configurable}
-            />
-            {running && onStop && (
-              <button className={styles.composerStop} type="button" onClick={onStop} disabled={disabled} aria-label={t('runDetail.action.stop')}>
-                <Stop size={14} weight="fill" aria-hidden="true" /><span>{t('runDetail.action.stop')}</span>
-              </button>
-            )}
-            {(!running || text.trim()) && (
-              <button className={styles.composerSend} type="submit" disabled={disabled || !text.trim()} aria-label={t('runDetail.composer.sendMessage')}>
-                <PaperPlaneTilt size={14} weight="regular" aria-hidden="true" />
-                <span>{running ? t('runDetail.composer.queue') : t('runDetail.composer.send')}</span>
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    </form>
-  );
-}
-
-interface ComposerModelOption {
-  value: string;
-  label: string;
-  subline: string;
-}
-
-function ModelPicker({ value, onChange, options, disabled }: {
-  value: string;
-  onChange: (value: string) => void;
-  options: readonly ComposerModelOption[];
-  disabled: boolean;
-}) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const [filter, setFilter] = useState('');
-  const rootRef = useRef<HTMLDivElement>(null);
-  useDismissablePicker(rootRef, open, setOpen);
-  const selected = options.find((option) => option.value === value) ?? options[0];
-  const visible = options.filter((option) => `${option.label} ${option.subline}`.toLowerCase().includes(filter.trim().toLowerCase()));
-
-  return (
-    <div className={styles.composerPicker} ref={rootRef}>
-      <button
-        className={styles.composerTrigger}
-        type="button"
-        aria-label={t('runDetail.modelLabel')}
-        aria-expanded={open}
-        title={disabled ? t('runDetail.model.disabledTitle') : t('runDetail.model.chooseTitle')}
-        disabled={disabled}
-        data-testid="conversation-model-select"
-        onClick={(event) => { event.stopPropagation(); setOpen((current) => !current); }}
-      >
-        <Cpu size={16} weight="regular" aria-hidden="true" />
-        <span>{selected?.label ?? t('runDetail.modelLabel')}</span>
-        <CaretDown size={12} weight="bold" aria-hidden="true" />
-      </button>
-      {open && (
-        <div className={`${styles.composerMenu} ${styles.modelMenu}`} role="listbox" aria-label={t('runDetail.modelLabel')}>
-          <label className={styles.modelSearch}>
-            <MagnifyingGlass size={14} weight="regular" aria-hidden="true" />
-            <input aria-label={t('runDetail.model.filterModels')} value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={t('runDetail.model.filterModelsPlaceholder')} autoFocus />
-          </label>
-          <div className={styles.composerMenuLabel}>{t('runDetail.model.modelsHeading')}</div>
-          <div className={styles.modelOptions}>
-            {visible.map((option) => (
-              <button
-                key={option.value || 'service-default'}
-                className={styles.modelOption}
-                type="button"
-                role="option"
-                aria-selected={option.value === value}
-                onClick={() => { onChange(option.value); setOpen(false); setFilter(''); }}
-              >
-                <Cpu size={20} weight="regular" aria-hidden="true" />
-                <span><strong>{option.label}</strong><small>{option.subline}</small></span>
-                {option.value === value && <Check size={14} weight="bold" aria-hidden="true" />}
-              </button>
-            ))}
-            {visible.length === 0 && <span className={styles.noModelResults}>{t('runDetail.model.noMatchingModels')}</span>}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function PermissionPicker({ value, onChange, disabled }: {
-  value: 'approval' | 'full_access';
-  onChange: (value: 'approval' | 'full_access') => void;
-  disabled: boolean;
-}) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  useDismissablePicker(rootRef, open, setOpen);
-  const modes = [
-    { value: 'approval' as const, label: t('runDetail.permission.askForApproval'), subline: t('runDetail.permission.askForApprovalSub'), disabled: false, Icon: HandPalm },
-    { value: 'plan' as const, label: t('runDetail.permission.plan'), subline: t('runDetail.permission.planSub'), disabled: true, Icon: ClipboardText },
-    { value: 'full_access' as const, label: t('runDetail.permission.fullAccess'), subline: t('runDetail.permission.fullAccessSub'), disabled: false, Icon: ShieldWarning },
-  ];
-  const selected = modes.find((mode) => mode.value === value) ?? modes[0]!;
-
-  return (
-    <div className={styles.composerPicker} ref={rootRef}>
-      <button
-        className={`${styles.composerTrigger} ${value === 'full_access' ? styles.fullAccess : ''}`}
-        type="button"
-        aria-label={t('runDetail.permission.permissionMode')}
-        aria-expanded={open}
-        title={disabled ? t('runDetail.permission.disabledTitle') : t('runDetail.permission.chooseTitle')}
-        disabled={disabled}
-        data-testid="conversation-permission-select"
-        onClick={(event) => { event.stopPropagation(); setOpen((current) => !current); }}
-      >
-        <selected.Icon size={16} weight="regular" aria-hidden="true" />
-        <span>{selected.label}</span>
-        <CaretDown size={12} weight="bold" aria-hidden="true" />
-      </button>
-      {open && (
-        <div className={`${styles.composerMenu} ${styles.permissionMenu}`} role="listbox" aria-label={t('runDetail.permission.permissionMode')}>
-          {modes.map((mode) => (
-            <button
-              key={mode.value}
-              className={`${styles.permissionOption} ${mode.value === 'full_access' ? styles.permissionDanger : ''}`}
-              type="button"
-              role="option"
-              aria-label={mode.disabled ? `${mode.label} — ${mode.subline}` : mode.label}
-              aria-selected={mode.value === value}
-              disabled={mode.disabled}
-              onClick={() => {
-                if (mode.value === 'approval' || mode.value === 'full_access') onChange(mode.value);
-                setOpen(false);
-              }}
-            >
-              <mode.Icon size={18} weight="regular" aria-hidden="true" />
-              <span><strong>{mode.label}</strong><small>{mode.subline}</small></span>
-              {mode.value === value && <Check size={14} weight="bold" aria-hidden="true" />}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function useDismissablePicker(
-  rootRef: RefObject<HTMLElement>,
-  open: boolean,
-  setOpen: (open: boolean) => void,
-) {
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open, rootRef, setOpen]);
 }
 
 function RunInspector({
@@ -860,7 +593,7 @@ function RunInspector({
 			</InspectorFact>
 			{run.delivery_kind && <InspectorFact label={t('runDetail.inspector.deliveryKind')}>{deliveryKindLabel(run.delivery_kind, t)}</InspectorFact>}
 			{run.delivery_error && <InspectorFact label={t('runDetail.inspector.deliveryIssue')}>{run.delivery_error}</InspectorFact>}
-          <InspectorFact label={t('runDetail.inspector.permission')}>{run.permission_mode === 'approval' ? t('runDetail.inspector.askBeforeActions') : t('runDetail.permission.fullAccess')}</InspectorFact>
+          <InspectorFact label={t('runDetail.inspector.permission')}>{permissionModeLabel(run.permission_mode, t)}</InspectorFact>
           <InspectorFact label={t('runDetail.inspector.workspace')}>{run.k8s_job_name || t('runDetail.inspector.notReported')}</InspectorFact>
         </dl>
       </InspectorSection>

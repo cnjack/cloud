@@ -57,6 +57,34 @@ func TestApprovalSessionJobEnv(t *testing.T) {
 	}
 }
 
+func TestPlanAndAutoSessionJobEnv(t *testing.T) {
+	for _, mode := range []string{domain.PermissionModePlan, domain.PermissionModeAuto} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			rec, st, fake := testRec(t, 10)
+			pid, sid := seedSessionProject(t, st, &domain.Project{})
+			run := &domain.Run{ID: domain.NewID(), ProjectID: pid, ServiceID: sid, Prompt: "chat",
+				Status: domain.StatusQueued, Kind: domain.RunKindAgent, Session: true,
+				PermissionMode: mode, Attempt: 1, CreatedAt: time.Now()}
+			if err := st.CreateRun(ctx, run); err != nil {
+				t.Fatal(err)
+			}
+
+			rec.Tick(ctx)
+
+			if len(fake.Created) != 1 {
+				t.Fatalf("created %d jobs want 1", len(fake.Created))
+			}
+			if got := fake.Created[0].Env["RUN_PERMISSION_MODE"]; got != mode {
+				t.Fatalf("RUN_PERMISSION_MODE=%q want %q", got, mode)
+			}
+			if _, ok := fake.Created[0].Env["PERMISSION_TIMEOUT_SECONDS"]; ok {
+				t.Fatal("plan/auto must not inject the interactive approval timeout")
+			}
+		})
+	}
+}
+
 // TestApprovalSessionTimeoutScalesWithSmallTTL: a SHORT session TTL pulls the
 // permission timeout under the 300s ceiling (min(300, 400/4) = 100) — the
 // project override (not just the cluster default) drives the formula.

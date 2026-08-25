@@ -136,6 +136,8 @@ export interface ApiClient {
   listProjects(): Promise<Project[]>;
   /** Repositories visible to the current Account; no Cloud association required. */
   listAccountRepositories(q?: string): Promise<AccountRepositoryCatalog>;
+  /** Branches for an Account-visible Repository before it is materialized. */
+  listAccountRepositoryBranches(provider: string, providerRepoId: string): Promise<ServiceBranch[]>;
   /** Resolve an Account repository and create its task in one request. */
   startAccountTask(input: StartAccountTaskInput): Promise<AccountTaskResponse>;
   createProject(input: CreateProjectInput): Promise<Project>;
@@ -794,6 +796,12 @@ export function createHttpClient(
       (await req<{ repositories: Service[] }>('/repositories')).repositories ?? [],
     listAccountRepositories: (q) =>
       req<AccountRepositoryCatalog>(`/account/repositories${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+    listAccountRepositoryBranches: async (provider, providerRepoId) =>
+      (
+        await req<{ branches: ServiceBranch[] }>(
+          `/account/repositories/${encodeURIComponent(provider)}/${encodeURIComponent(providerRepoId)}/branches`,
+        )
+      ).branches ?? [],
     startAccountTask: (input) =>
       req<AccountTaskResponse>('/account/tasks', { method: 'POST', body: JSON.stringify(input) }),
     getRepository: (repositoryId) =>

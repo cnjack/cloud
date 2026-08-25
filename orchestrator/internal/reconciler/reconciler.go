@@ -2422,17 +2422,18 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 		if run.ResumedFrom != nil && run.AcpSessionID != "" {
 			env["RESUME_SESSION_ID"] = run.AcpSessionID
 		}
-		// Permission approval (F8b): switch acpdrive's RequestPermission into
-		// forwarding mode and bound each approval wait. Only for approval-mode
-		// session runs — anything else gets NEITHER var, so the runner keeps its
-		// full_access default (behaviour unchanged). timeoutSecs is the session
+		// Mirror every explicit jcode session mode into acpdrive. Approval also
+		// switches RequestPermission into forwarding mode and bounds each wait;
+		// plan/auto only need RUN_PERMISSION_MODE. timeoutSecs is the session
 		// TTL here, and the F8a contract requires the per-request approval
 		// timeout to sit WELL below it (the whole turn blocks inside
 		// RequestPermission): min(300s, TTL/4), floored at 1s (see
 		// permissionTimeoutSecs) so it can never silently expand back to the
 		// runner's own 300s default via a 0.
+		if run.PermissionMode != "" {
+			env["RUN_PERMISSION_MODE"] = run.PermissionMode
+		}
 		if run.PermissionMode == domain.PermissionModeApproval {
-			env["RUN_PERMISSION_MODE"] = domain.PermissionModeApproval
 			env["PERMISSION_TIMEOUT_SECONDS"] = strconv.FormatInt(permissionTimeoutSecs(timeoutSecs), 10)
 		}
 	}

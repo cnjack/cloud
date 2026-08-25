@@ -104,7 +104,11 @@ import (
 // internal/command/acp.go: acpModeApproval = "approval", matching
 // mode.SessionMode.String()). One constant keeps that coupling visible
 // instead of two string literals that could silently drift apart.
-const permissionModeApproval = "approval"
+const (
+	permissionModeApproval = "approval"
+	permissionModePlan     = "plan"
+	permissionModeAuto     = "auto"
+)
 
 // defaultPermissionTimeout is PERMISSION_TIMEOUT_SECONDS' fallback (F8a
 // contract): how long an approval-mode RequestPermission waits for a user
@@ -131,9 +135,8 @@ type cliOpts struct {
 	turnHook  string
 	resume    string
 	// permissionMode / permissionTimeout (F8a, D22 permission half): see the
-	// package doc comment and permission.go. permissionMode == "" (or
-	// anything other than permissionModeApproval) is the pre-F8a, unchanged
-	// full_access auto-allow behavior.
+	// package doc comment and permission.go. Empty is the legacy full_access
+	// behavior; approval, plan, and auto are explicit jcode session modes.
 	permissionMode    string
 	permissionTimeout time.Duration
 }
@@ -155,7 +158,7 @@ func parseFlags(args []string) (*cliOpts, error) {
 	fs.BoolVar(&o.session, "session", os.Getenv("RUN_SESSION") == "1", "multi-turn session mode: loop session/prompt over long-polled follow-up messages instead of exiting after one turn (env RUN_SESSION=1); see docs/14-cloud-v2-design.md §3 (D22)")
 	fs.StringVar(&o.turnHook, "turn-hook", os.Getenv("TURN_HOOK"), "path to a script run synchronously after each turn in --session mode (env TURN_HOOK); ignored when --session is false")
 	fs.StringVar(&o.resume, "resume", "", "resume an existing ACP session via session/load instead of creating a new one with session/new; the id must already exist in the agent's local session store (typically produced by a prior run.session event for the SAME persistent workspace, D23 ①②); a failed load is fail-visible (non-zero exit), never a silent fallback to a new session; deliberately NO env fallback — entrypoint.sh passes this explicitly, and only in session mode")
-	fs.StringVar(&o.permissionMode, "permission-mode", os.Getenv("RUN_PERMISSION_MODE"), "session permission mode (env RUN_PERMISSION_MODE): \"approval\" makes driverClient.RequestPermission forward each ACP permission request to the orchestrator for interactive user approval instead of auto-allowing; any other value (default \"\") is the unchanged full_access auto-allow fallback. Only meaningful with --session/RUN_SESSION=1 (D22) — approval without session mode is a fail-visible startup error, see checkPermissionModeRequiresSession.")
+	fs.StringVar(&o.permissionMode, "permission-mode", os.Getenv("RUN_PERMISSION_MODE"), "jcode session mode (env RUN_PERMISSION_MODE): approval, plan, auto, or empty for legacy full_access. Approval forwards permission requests to the orchestrator. Every explicit mode requires --session/RUN_SESSION=1; invalid values fail startup.")
 	fs.DurationVar(&o.permissionTimeout, "permission-timeout", envSecondsOr("PERMISSION_TIMEOUT_SECONDS", defaultPermissionTimeout), "how long an approval-mode RequestPermission waits for a user decision (env PERMISSION_TIMEOUT_SECONDS, in seconds) before defaulting to a deny-safe outcome (a reject-kind option, or Cancelled if none was offered) with resolution=timeout; keep it well below --timeout/RUN_TIMEOUT (see permission.go)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -181,10 +184,9 @@ func main() {
 	if prompt == "" {
 		fatal("prompt is required (--prompt or $TASK_PROMPT)")
 	}
-	// Fail-visible (F8a / D22): RUN_PERMISSION_MODE=approval only means
-	// anything in session mode. Checked here, BEFORE either the session or
-	// single-shot path starts, so a misconfigured run never gets partway
-	// through a single-shot turn under a silently-ignored approval request.
+	opts.permissionMode = strings.TrimSpace(opts.permissionMode)
+	// Every explicit jcode mode is session-only. Check before either execution
+	// path starts so invalid or unknown values never silently become full_access.
 	if err := checkPermissionModeRequiresSession(opts.permissionMode, session); err != nil {
 		fatal("%v", err)
 	}
@@ -564,19 +566,22 @@ func envSecondsOr(k string, def time.Duration) time.Duration {
 	return time.Duration(n) * time.Second
 }
 
-// checkPermissionModeRequiresSession enforces the fail-visible contract for
-// F8a / D22's permission approval mode: RUN_PERMISSION_MODE=approval only
-// does anything in session mode (jcode's session/set_mode + the
-// RequestPermission forwarding loop both live in runSession/session.go).
-// Requesting approval mode without session mode must never silently
-// downgrade to the full_access auto-allow fallback — it is a startup
-// configuration error instead (nil is returned when the combination is
-// valid, including "approval not requested at all").
+// checkPermissionModeRequiresSession keeps the runner aligned with jcode's
+// advertised session modes. Unknown values and non-session use both fail
+// visibly instead of falling through to full_access.
 func checkPermissionModeRequiresSession(permissionMode string, sessionMode bool) error {
-	if permissionMode == permissionModeApproval && !sessionMode {
-		return fmt.Errorf("RUN_PERMISSION_MODE=approval requires session mode (RUN_SESSION=1 / --session) — approval-mode permission forwarding only applies to multi-turn sessions (D22); refusing to silently fall back to full_access")
+	mode := strings.TrimSpace(permissionMode)
+	switch mode {
+	case "":
+		return nil
+	case permissionModeApproval, permissionModePlan, permissionModeAuto:
+		if !sessionMode {
+			return fmt.Errorf("RUN_PERMISSION_MODE=%s requires session mode (RUN_SESSION=1 / --session); refusing to silently fall back to full_access", mode)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported RUN_PERMISSION_MODE=%q (valid: approval, plan, auto, or empty)", mode)
 	}
-	return nil
 }
 
 func describeErr(err error) string {
