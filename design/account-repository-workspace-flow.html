@@ -5,8 +5,8 @@
   Revision 3 assumptions
   - Welcome and Repository workspace are one continuous Work Home.
   - There is no left navigation rail and no separate Repository detail journey.
-  - The composer owns context selection: GitHub / Gitea / GitLab repositories, or a
-    Remote device followed by one of its workplaces.
+  - The composer owns context selection: GitHub / Gitea / GitLab repositories, with
+    Remote connection exposed as a footer action matching jcode Desktop.
   - The content immediately below the composer always belongs to the selected context.
   - A Remote workplace may resolve to a Repository, so Board / Reviews / Automations
     stay available while execution happens on that device.
@@ -113,6 +113,16 @@
     .menu-option-main small { margin-top: 1px; color: var(--faint); font-size: 8.5px; }
     .provider-tag { border-radius: 4px; background: var(--soft); padding: 2px 5px; color: var(--faint); font: 8px var(--mono); }
     .online-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+    .menu-footer { border-top: 1px solid var(--line); padding: 6px; }
+    .menu-action { min-height: 38px; }
+    .menu-action .icon:last-child { color: var(--faint); }
+    .menu-subhead { min-height: 47px; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid var(--line); padding: 6px; }
+    .menu-back { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 6px; background: transparent; color: var(--muted); }
+    .menu-back:hover { background: var(--hover); color: var(--ink); }
+    .menu-subhead-copy { min-width: 0; }
+    .menu-subhead-copy strong, .menu-subhead-copy small { display: block; }
+    .menu-subhead-copy strong { font-size: 10.5px; }
+    .menu-subhead-copy small { color: var(--faint); font-size: 8.5px; }
 
     .context-workspace { margin-top: 20px; }
     .context-head { min-height: 45px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid var(--line); }
@@ -190,7 +200,7 @@
 <body>
   <header class="review-bar">
     <div class="review-title"><strong>Unified Work Home</strong><span>UX revision 3 · single product surface</span></div>
-    <span class="review-note">Repository / Remote workplace 从 Composer 切换 · 个人设置从头像进入</span>
+    <span class="review-note">Repository / 远程连接均从 Composer 工作区菜单进入 · 个人设置从头像进入</span>
   </header>
   <main class="prototype-stage">
     <section class="app-window" aria-label="jcode Cloud unified Work Home prototype">
@@ -209,7 +219,7 @@
         <section class="main">
           <section class="screen" data-screen="home">
             <div class="screen-inner">
-              <header class="work-hero"><span class="eyebrow">Jack 的个人工作区</span><h1>接下来想做什么？</h1><p>选择 Repository，或在 Remote 设备的 workplace 中继续工作。</p></header>
+              <header class="work-hero"><span class="eyebrow">Jack 的个人工作区</span><h1>接下来想做什么？</h1><p>选择 Repository，或从同一个工作区菜单发起远程连接。</p></header>
               <form class="composer" data-composer>
                 <textarea aria-label="描述任务" placeholder="描述一个任务…"></textarea>
                 <div class="composer-toolbar">
@@ -217,15 +227,21 @@
                   <div class="tool-group"><button class="tool-button" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-lock" /></svg>请求批准⌄</button><button class="tool-button" type="button">GLM-5.2⌄</button><button class="tool-button" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>极高⌄</button><button class="send-button" type="button" aria-label="发送"><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></div>
                 </div>
                 <div class="menu context-menu" data-context-menu hidden>
-                  <div class="menu-search"><input type="search" placeholder="搜索 Repository 或 Remote 设备…" /></div>
-                  <div class="menu-group"><span class="menu-label">Git repositories</span>
-                    <button class="menu-option is-selected" type="button" data-context-kind="repository" data-context-name="cnjack/jcode" data-provider="GitHub" data-target="main"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span class="menu-option-main"><strong>cnjack/jcode</strong><small>GitHub · updated 3m ago</small></span><span class="provider-tag">GH</span></button>
-                    <button class="menu-option" type="button" data-context-kind="repository" data-context-name="platform/jcloud" data-provider="Gitea" data-target="main"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span class="menu-option-main"><strong>platform/jcloud</strong><small>Gitea · updated 1h ago</small></span><span class="provider-tag">GT</span></button>
-                    <button class="menu-option" type="button" data-context-kind="repository" data-context-name="mobile/ios-app" data-provider="GitLab" data-target="develop"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span class="menu-option-main"><strong>mobile/ios-app</strong><small>GitLab · updated yesterday</small></span><span class="provider-tag">GL</span></button>
+                  <div data-context-root>
+                    <div class="menu-search"><input type="search" placeholder="搜索 Repository…" /></div>
+                    <div class="menu-group"><span class="menu-label">Git repositories</span>
+                      <button class="menu-option is-selected" type="button" data-context-kind="repository" data-context-name="cnjack/jcode" data-provider="GitHub" data-target="main"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span class="menu-option-main"><strong>cnjack/jcode</strong><small>GitHub · updated 3m ago</small></span><span class="provider-tag">GH</span></button>
+                      <button class="menu-option" type="button" data-context-kind="repository" data-context-name="platform/jcloud" data-provider="Gitea" data-target="main"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span class="menu-option-main"><strong>platform/jcloud</strong><small>Gitea · updated 1h ago</small></span><span class="provider-tag">GT</span></button>
+                      <button class="menu-option" type="button" data-context-kind="repository" data-context-name="mobile/ios-app" data-provider="GitLab" data-target="develop"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span class="menu-option-main"><strong>mobile/ios-app</strong><small>GitLab · updated yesterday</small></span><span class="provider-tag">GL</span></button>
+                    </div>
+                    <div class="menu-footer"><button class="menu-option menu-action" type="button" data-remote-open><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="menu-option-main"><strong>远程连接</strong><small>2 台 jcode 设备在线</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></div>
                   </div>
-                  <div class="menu-group"><span class="menu-label">Remote devices</span>
-                    <button class="menu-option" type="button" data-context-kind="remote" data-context-name="dev-mbp-01" data-provider="Remote" data-target="~/work/jcode" data-repository="cnjack/jcode"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="menu-option-main"><strong>dev-mbp-01</strong><small>macOS · 3 workplaces</small></span><span class="online-dot"></span></button>
-                    <button class="menu-option" type="button" data-context-kind="remote" data-context-name="workstation-01" data-provider="Remote" data-target="~/src/jcloud" data-repository="platform/jcloud"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="menu-option-main"><strong>workstation-01</strong><small>Linux · 2 workplaces</small></span><span class="online-dot"></span></button>
+                  <div data-remote-picker hidden>
+                    <div class="menu-subhead"><button class="menu-back" type="button" data-remote-back aria-label="返回 Repository"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-left" /></svg></button><span class="menu-subhead-copy"><strong>远程连接</strong><small>选择一台在线的 jcode 设备</small></span></div>
+                    <div class="menu-group"><span class="menu-label">Online devices</span>
+                      <button class="menu-option" type="button" data-context-kind="remote" data-context-name="dev-mbp-01" data-provider="Remote" data-target="~/work/jcode" data-repository="cnjack/jcode"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="menu-option-main"><strong>dev-mbp-01</strong><small>macOS · 3 workplaces</small></span><span class="online-dot"></span></button>
+                      <button class="menu-option" type="button" data-context-kind="remote" data-context-name="workstation-01" data-provider="Remote" data-target="~/src/jcloud" data-repository="platform/jcloud"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="menu-option-main"><strong>workstation-01</strong><small>Linux · 2 workplaces</small></span><span class="online-dot"></span></button>
+                    </div>
                   </div>
                 </div>
                 <div class="menu target-menu" data-target-menu hidden>
@@ -258,11 +274,14 @@
       const annotation = document.querySelector('[data-annotation]');
       const contextMenu = document.querySelector('[data-context-menu]');
       const targetMenu = document.querySelector('[data-target-menu]');
+      const contextRoot = document.querySelector('[data-context-root]');
+      const remotePicker = document.querySelector('[data-remote-picker]');
       const accountMenu = document.querySelector('[data-account-menu]');
       const accountToggle = document.querySelector('[data-account-toggle]');
       let context = { kind: 'repository', name: 'cnjack/jcode', provider: 'GitHub', target: 'main' };
       const annotations = { home: ['Unified Work Home','Welcome、Repository workspace 与 Remote workplace 合并为一个工作面；切换上下文后，下方内容原地更新。'], settings: ['Personal settings','从头像进入账号设置；模型授权、默认模型和 Git 提供商账号都归个人管理。'] };
       function useIcon(element,id) { const use = element?.querySelector('use'); if (use) use.setAttribute('href','./assets/icons.svg#'+id); }
+      function showContextRoot() { contextRoot.hidden = false; remotePicker.hidden = true; }
       function closeAccountMenu() { accountMenu.hidden = true; accountToggle.setAttribute('aria-expanded','false'); }
       function showScreen(name) {
         const target = ['home','settings'].includes(name) ? name : 'home';
@@ -289,8 +308,10 @@
       }
       document.querySelectorAll('[data-global]').forEach(button => button.addEventListener('click',() => showScreen(button.dataset.global)));
       accountToggle.addEventListener('click',event => { event.stopPropagation(); contextMenu.hidden = true; targetMenu.hidden = true; accountMenu.hidden = !accountMenu.hidden; accountToggle.setAttribute('aria-expanded',String(!accountMenu.hidden)); });
-      document.querySelector('[data-context-toggle]').addEventListener('click',event => { event.stopPropagation(); closeAccountMenu(); targetMenu.hidden = true; contextMenu.hidden = !contextMenu.hidden; event.currentTarget.setAttribute('aria-expanded',String(!contextMenu.hidden)); });
+      document.querySelector('[data-context-toggle]').addEventListener('click',event => { event.stopPropagation(); closeAccountMenu(); targetMenu.hidden = true; if (contextMenu.hidden) showContextRoot(); contextMenu.hidden = !contextMenu.hidden; event.currentTarget.setAttribute('aria-expanded',String(!contextMenu.hidden)); });
       document.querySelector('[data-target-toggle]').addEventListener('click',event => { event.stopPropagation(); closeAccountMenu(); contextMenu.hidden = true; targetMenu.hidden = !targetMenu.hidden; event.currentTarget.setAttribute('aria-expanded',String(!targetMenu.hidden)); });
+      document.querySelector('[data-remote-open]').addEventListener('click',() => { contextRoot.hidden = true; remotePicker.hidden = false; });
+      document.querySelector('[data-remote-back]').addEventListener('click',showContextRoot);
       document.querySelectorAll('[data-context-kind]').forEach(option => option.addEventListener('click',() => { context = { kind: option.dataset.contextKind, name: option.dataset.contextName, provider: option.dataset.provider, target: option.dataset.target, repository: option.dataset.repository }; document.querySelectorAll('[data-context-kind]').forEach(item => item.classList.toggle('is-selected',item === option)); contextMenu.hidden = true; renderContext(); }));
       document.querySelectorAll('[data-target-option]').forEach(option => option.addEventListener('click',() => { context.target = option.dataset.targetOption; context.repository = option.dataset.repository; const group = option.closest('.menu-group'); group.querySelectorAll('[data-target-option]').forEach(item => item.classList.toggle('is-selected',item === option)); targetMenu.hidden = true; renderContext(); }));
       document.querySelectorAll('[data-tab]').forEach(tab => tab.addEventListener('click',() => { document.querySelectorAll('[data-tab]').forEach(item => item.classList.toggle('is-active',item === tab)); document.querySelectorAll('[data-tab-panel]').forEach(panel => { panel.hidden = panel.dataset.tabPanel !== tab.dataset.tab; }); }));
