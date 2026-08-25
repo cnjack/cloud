@@ -1,16 +1,4 @@
-/*
- * ModelsCatalog — the shared, scope-parameterized model-provider catalog UI used
- * by both the cluster page (ClusterModelsPage) and the project-scoped manager
- * (ProjectModelsPanel). ONE implementation of provider cards, catalog discovery,
- * custom models, the provider form (with an Advanced custom-headers disclosure)
- * and per-model controls. The right-side control on each model row branches on
- * scope: cluster → Account access management; project → an enable/disable Switch + edit +
- * delete (jcode parity).
- *
- * The provider add/edit dialog state is CONTROLLED by the parent (`editor` /
- * `onEditorChange`) so the cluster page keeps its page-header "Add provider"
- * button while the project panel owns its own — one dialog, two placements.
- */
+/* Cluster model provider catalog with direct Account access management. */
 import {
   Check,
   Lightning,
@@ -23,7 +11,7 @@ import {
   Trash,
 } from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import type { FormEvent } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { ApiError, apiErrorCode } from '../../api/client';
@@ -67,35 +55,12 @@ function contextLabel(contextWindow: number, t: TFunction): string {
   return t('cluster.models.context', { value: contextWindow.toLocaleString() });
 }
 
-/** An accessible on/off switch (role="switch"). */
-export function Switch({ checked, onChange, disabled, label }: {
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  disabled?: boolean;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      className={styles.switch}
-      data-on={checked || undefined}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-    >
-      <span className={styles.switchKnob} aria-hidden="true" />
-    </button>
-  );
-}
-
 export interface ModelsCatalogProps {
   scope: ModelsScope;
   /** Controlled provider add/edit dialog state, owned by the parent. */
   editor: ModelProvider | 'new' | null;
   onEditorChange: (next: ModelProvider | 'new' | null) => void;
-  /** Cluster shows a search box over many providers; project scope hides it. */
+  /** The cluster catalog can optionally hide its search box. */
   searchable?: boolean;
 }
 
@@ -121,12 +86,10 @@ export function ModelsCatalog({ scope, editor, onEditorChange, searchable = true
   const visibleModels = filtered.reduce((sum, provider) => sum + provider.models.length, 0);
   const totalAccountGrants = list.reduce((sum, provider) =>
     sum + provider.models.reduce((modelSum, model) => modelSum + (model.granted_account_ids?.length ?? 0), 0), 0);
-  const summary = scope.kind === 'cluster'
-    ? t('cluster.models.providersSummary', {
-      providers: list.length,
-      accountGrants: totalAccountGrants,
-    })
-    : t('projectSettings.models.providersSummary', { providers: list.length, models: totalModels });
+  const summary = t('cluster.models.providersSummary', {
+    providers: list.length,
+    accountGrants: totalAccountGrants,
+  });
 
   return (
     <section className={styles.catalog} aria-labelledby="provider-catalog-title">
@@ -146,7 +109,7 @@ export function ModelsCatalog({ scope, editor, onEditorChange, searchable = true
       {providers.isLoading ? <LoadingBlock label={t('cluster.models.loadingProviders')} /> : providers.isError ? (
         <ErrorBlock error={providers.error} onRetry={() => providers.refetch()} title={t('cluster.models.loadProvidersError')} />
       ) : filtered.length === 0 ? (
-        <div className={styles.searchEmpty} role="status"><MagnifyingGlass size={24} aria-hidden="true" /><strong>{list.length ? t('cluster.models.noMatches') : (scope.kind === 'cluster' ? t('cluster.models.noProviders') : t('projectSettings.models.noProviders'))}</strong><span>{list.length ? t('cluster.models.noMatchesHint') : (scope.kind === 'cluster' ? t('cluster.models.noProvidersHint') : t('projectSettings.models.noProvidersHint'))}</span></div>
+        <div className={styles.searchEmpty} role="status"><MagnifyingGlass size={24} aria-hidden="true" /><strong>{list.length ? t('cluster.models.noMatches') : t('cluster.models.noProviders')}</strong><span>{list.length ? t('cluster.models.noMatchesHint') : t('cluster.models.noProvidersHint')}</span></div>
       ) : (
         <div className={styles.stack}>{filtered.map((provider) => <ProviderCard key={provider.id} api={api} provider={provider} onEdit={() => onEditorChange(provider)} />)}</div>
       )}
@@ -235,63 +198,25 @@ function CapabilityChips({ model }: { model: ProviderModel }) {
 
 function ModelRow({ api, provider, model }: { api: ModelsAdminApi; provider: ModelProvider; model: ProviderModel }) {
   const { t } = useTranslation();
-  const toast = useToast();
   const [grantsOpen, setGrantsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [pricingOpen, setPricingOpen] = useState(false);
 
-  if (api.scope.kind === 'cluster') {
-    const accountGrantCount = (model.granted_account_ids ?? []).length;
-    return (
-      <div className={styles.modelRow}>
-        <span className={styles.modelCopy}><strong>{model.name}</strong><small>{model.model_id} · {contextLabel(model.context_window, t)}</small></span>
-        <CapabilityChips model={model} />
-        <span className={styles.grantCount} data-testid={`grant-count-${model.id}`}>
-          <span><b>{accountGrantCount}</b><small>{t('cluster.models.accountGrants', { count: accountGrantCount })}</small></span>
-        </span>
-        <div className={styles.modelControls}>
-          <Button size="sm" variant="ghost" onClick={() => setPricingOpen(true)}>{t('usage.pricing')}</Button>
-          <Button size="sm" variant="ghost" onClick={() => setGrantsOpen(true)}>{t('cluster.models.manageAccess')}</Button>
-          <button className={styles.iconButton} type="button" aria-label={t('projectSettings.models.editModelAria', { name: model.name })} onClick={() => setEditOpen(true)}><PencilSimple size={16} aria-hidden="true" /></button>
-        </div>
-        <PricingRevisionDialog model={model} open={pricingOpen} onClose={() => setPricingOpen(false)} />
-        <AccessDialog model={model} open={grantsOpen} onClose={() => setGrantsOpen(false)} />
-        <CustomModelDialog api={api} provider={provider} model={model} open={editOpen} onClose={() => setEditOpen(false)} />
-      </div>
-    );
-  }
-
-  // Project scope: enable Switch + edit + delete.
-  const enabled = model.enabled !== false;
-  const toggleEnabled = () => api.updateModel?.mutate(
-    { providerId: provider.id, modelId: model.id, input: { enabled: !enabled } },
-    { onError: (error) => toast.push({ kind: 'error', message: errorMessage(error, t('projectSettings.models.updateModelError')) }) },
-  );
-  const deleteModel = () => {
-    if (!window.confirm(t('projectSettings.models.removeModelConfirm', { name: model.name }))) return;
-    api.deleteModel?.mutate(
-      { providerId: provider.id, modelId: model.id },
-      {
-        onSuccess: () => toast.push({ kind: 'success', message: t('projectSettings.models.modelRemoved') }),
-        onError: (error) => toast.push({ kind: 'error', message: errorMessage(error, t('projectSettings.models.removeModelError')) }),
-      },
-    );
-  };
-
+  const accountGrantCount = (model.granted_account_ids ?? []).length;
   return (
-    <div className={[styles.modelRow, styles.modelRowProject].join(' ')} data-testid={`model-row-${model.id}`}>
+    <div className={styles.modelRow}>
       <span className={styles.modelCopy}><strong>{model.name}</strong><small>{model.model_id} · {contextLabel(model.context_window, t)}</small></span>
       <CapabilityChips model={model} />
+      <span className={styles.grantCount} data-testid={`grant-count-${model.id}`}>
+        <span><b>{accountGrantCount}</b><small>{t('cluster.models.accountGrants', { count: accountGrantCount })}</small></span>
+      </span>
       <div className={styles.modelControls}>
-        <Switch
-          checked={enabled}
-          onChange={toggleEnabled}
-          disabled={api.updateModel?.isPending && api.updateModel?.variables?.modelId === model.id}
-          label={enabled ? t('projectSettings.models.disableAria', { name: model.name }) : t('projectSettings.models.enableAria', { name: model.name })}
-        />
+        <Button size="sm" variant="ghost" onClick={() => setPricingOpen(true)}>{t('usage.pricing')}</Button>
+        <Button size="sm" variant="ghost" onClick={() => setGrantsOpen(true)}>{t('cluster.models.manageAccess')}</Button>
         <button className={styles.iconButton} type="button" aria-label={t('projectSettings.models.editModelAria', { name: model.name })} onClick={() => setEditOpen(true)}><PencilSimple size={16} aria-hidden="true" /></button>
-        <button className={styles.iconButton} type="button" aria-label={t('projectSettings.models.deleteModelAria', { name: model.name })} onClick={deleteModel} disabled={api.deleteModel?.isPending && api.deleteModel?.variables?.modelId === model.id}><Trash size={16} aria-hidden="true" /></button>
       </div>
+      <PricingRevisionDialog model={model} open={pricingOpen} onClose={() => setPricingOpen(false)} />
+      <AccessDialog model={model} open={grantsOpen} onClose={() => setGrantsOpen(false)} />
       <CustomModelDialog api={api} provider={provider} model={model} open={editOpen} onClose={() => setEditOpen(false)} />
     </div>
   );
@@ -450,7 +375,7 @@ function CapabilityFields({ value, onChange }: { value: ModelCapabilities; onCha
 }
 
 /**
- * Add a custom model (both scopes) or, in project scope, edit an existing one.
+ * Add or edit a cluster model.
  * Editing PATCHes name / context_window / capabilities (the model_id is fixed).
  */
 function CustomModelDialog({ api, provider, open, onClose, model }: { api: ModelsAdminApi; provider: ModelProvider; open: boolean; onClose: () => void; model?: ProviderModel }) {
@@ -483,11 +408,7 @@ function CustomModelDialog({ api, provider, open, onClose, model }: { api: Model
         onSuccess: () => { toast.push({ kind: 'success', message: t('projectSettings.models.modelSaved') }); onClose(); },
         onError: (cause: unknown) => setError(errorMessage(cause, t('projectSettings.models.saveModelError'))),
       };
-      if (api.scope.kind === 'cluster') {
-        api.updateClusterModel?.mutate({ id: model.id, input }, options);
-      } else {
-        api.updateModel?.mutate({ providerId: provider.id, modelId: model.id, input }, options);
-      }
+      api.updateClusterModel.mutate({ id: model.id, input }, options);
       return;
     }
     api.createModel.mutate({ providerId: provider.id, input: { name: name.trim(), model_id: modelId.trim(), context_window: parsedContext, capabilities, source: 'custom' } }, {
@@ -497,9 +418,7 @@ function CustomModelDialog({ api, provider, open, onClose, model }: { api: Model
   };
 
   const formId = editing && model ? `custom-model-edit-${model.id}` : `custom-model-${provider.id}`;
-  const pending = editing
-    ? (api.scope.kind === 'cluster' ? api.updateClusterModel?.isPending : api.updateModel?.isPending)
-    : api.createModel.isPending;
+  const pending = editing ? api.updateClusterModel.isPending : api.createModel.isPending;
   return (
     <Modal open={open} onClose={onClose} title={editing && model ? t('projectSettings.models.editDialogTitle', { name: model.name }) : t('cluster.models.customDialogTitle', { name: provider.name })} footer={<><Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button><Button variant="primary" onClick={() => document.getElementById(formId)?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))} loading={pending}>{editing ? t('projectSettings.models.saveModel') : t('cluster.models.addCustomModel')}</Button></>}>
       <form id={formId} className={styles.dialogForm} onSubmit={submit}>
@@ -532,13 +451,9 @@ function CatalogDialog({ api, provider, open, onClose }: { api: ModelsAdminApi; 
       onSuccess: () => toast.push({ kind: 'success', message: t('cluster.models.metadataSynced', { name: configured.name }) }),
       onError: (error: unknown) => toast.push({ kind: 'error', message: errorMessage(error, t('cluster.models.syncMetadataError')) }),
     };
-    if (api.scope.kind === 'cluster') {
-      api.updateClusterModel?.mutate({ id: configured.id, input }, options);
-    } else {
-      api.updateModel?.mutate({ providerId: provider.id, modelId: configured.id, input }, options);
-    }
+    api.updateClusterModel.mutate({ id: configured.id, input }, options);
   };
-  const updatePending = api.scope.kind === 'cluster' ? api.updateClusterModel?.isPending : api.updateModel?.isPending;
+  const updatePending = api.updateClusterModel.isPending;
   return (
     <Modal open={open} onClose={onClose} title={t('cluster.models.catalogDialogTitle', { name: provider.name })}>
       {catalog.isLoading ? <LoadingBlock label={t('cluster.models.loadingCatalog')} /> : catalog.isError ? (
@@ -750,25 +665,5 @@ function ProviderDialog({ api, provider, configuredKinds, open, onClose }: { api
         {error && <p className={styles.formError} role="alert">{error}</p>}
       </form>
     </Modal>
-  );
-}
-
-/** A read-only rendering of the models available to a project (the union list). */
-export function GrantedModelsList({ models, envFallback, note }: { models: ReadonlyArray<{ id: string; name: string; model_name: string }>; envFallback: boolean; note?: ReactNode }) {
-  const { t } = useTranslation();
-  if (models.length === 0 && !envFallback) {
-    return <p className={styles.panelState}>{t('projectSettings.noModelConfigured')}</p>;
-  }
-  return (
-    <div className={styles.grantedList}>
-      {models.map((model) => (
-        <div key={model.id} className={styles.grantedRow}>
-          <span className={styles.grantedMark} aria-hidden>AI</span>
-          <span><strong>{model.name}</strong><code>{model.model_name}</code></span>
-          <small>{note ?? t('projectSettings.granted')}</small>
-        </div>
-      ))}
-      {envFallback && <p className={styles.panelState}>{t('projectSettings.envFallbackActive')}</p>}
-    </div>
   );
 }

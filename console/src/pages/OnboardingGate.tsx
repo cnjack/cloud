@@ -5,9 +5,7 @@
  *   probing            → connecting splash
  *   unreachable        → setup guide (copyable commands, auto-reprobe every 3s)
  *   unauthenticated    → sign-in: OAuth provider buttons + Advanced console token
- *   ready + welcome    → OAuth welcome card (first-admin / new)
- *   ready + landing    → manual console-token landing card
- *   ready              → the app
+ *   ready              → unified Work Home (OAuth and token sign-in converge)
  *
  * Demo mode (VITE_DEMO=1) never reaches this file's screens: AuthProvider boots
  * straight to 'ready' with a synthetic principal.
@@ -61,7 +59,7 @@ function CommandRow({ cmd, what }: { cmd: string; what: string }) {
   );
 }
 
-type GateVariant = 'probing' | 'setup' | 'signin' | 'welcome' | 'landing';
+type GateVariant = 'probing' | 'setup' | 'signin' | 'welcome';
 
 function GateAside({ variant }: { variant: GateVariant }) {
   const { t } = useTranslation();
@@ -261,70 +259,6 @@ function SignIn() {
   );
 }
 
-function WelcomeCard() {
-  const { t } = useTranslation();
-  const { welcome, dismissWelcome, me } = useAuth();
-  const firstAdmin = welcome === 'first-admin';
-  return (
-    <GateFrame variant="welcome">
-      <Card className={styles.card} data-testid="welcome-card" data-welcome={welcome ?? undefined}>
-        <h1 className={styles.title}>
-          {firstAdmin ? t('onboarding.welcomeFirstAdminTitle') : t('onboarding.welcomeGreeting', { name: me?.user.display_name ?? t('onboarding.friend') })}
-        </h1>
-        <p className={styles.lede}>
-          {firstAdmin
-            ? t('onboarding.welcomeFirstAdminLede')
-            : t('onboarding.welcomeLede')}
-        </p>
-        <div className={styles.footerRow}>
-          <span className={styles.autoNote}>{t('onboarding.signedInAs', { name: me?.user.display_name })}</span>
-          <Button variant="primary" onClick={dismissWelcome} autoFocus data-testid="welcome-enter">
-            {t('onboarding.getStarted')}
-          </Button>
-        </div>
-      </Card>
-    </GateFrame>
-  );
-}
-
-function Landing() {
-  const { t } = useTranslation();
-  const { me, enterConsole } = useAuth();
-  const identity = me?.identities?.[0];
-  return (
-    <GateFrame variant="landing">
-      <Card className={styles.card} data-testid="landing-card">
-        <h1 className={styles.title}>{t('onboarding.landingCardTitle')}</h1>
-        <p className={styles.lede}>{t('onboarding.landingLede')}</p>
-        <dl className={styles.facts}>
-          <div className={styles.fact}>
-            <dt>{t('onboarding.principal')}</dt>
-            <dd>{me?.user.display_name ?? '—'}</dd>
-          </div>
-          <div className={styles.fact}>
-            <dt>{t('onboarding.access')}</dt>
-            <dd>{me?.user.is_cluster_admin ? t('onboarding.accessClusterAdmin') : t('onboarding.accessMember')}</dd>
-          </div>
-          <div className={styles.fact}>
-            <dt>{t('onboarding.session')}</dt>
-            <dd>{me?.is_service ? t('onboarding.sessionConsoleToken') : t('onboarding.sessionUser')}</dd>
-          </div>
-          <div className={styles.fact}>
-            <dt>{t('onboarding.identity')}</dt>
-            <dd>{identity ? `${identity.provider}/${identity.username}` : '—'}</dd>
-          </div>
-        </dl>
-        <div className={styles.footerRow}>
-          <span className={styles.autoNote}>{t('onboarding.everythingHeadless')}</span>
-          <Button variant="primary" onClick={enterConsole} autoFocus>
-            {t('onboarding.enterConsole')}
-          </Button>
-        </div>
-      </Card>
-    </GateFrame>
-  );
-}
-
 function MobileConsentCard() {
   const { t } = useTranslation();
   const { me } = useAuth();
@@ -353,7 +287,7 @@ function MobileConsentCard() {
 
 export function OnboardingGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
-  const { status, landing, welcome } = useAuth();
+  const { status } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -391,7 +325,6 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
       if (isMobileClient) {
         return <MobileConsentCard />;
       }
-      if (welcome) return <WelcomeCard />;
-      return landing ? <Landing /> : <>{children}</>;
+      return <>{children}</>;
   }
 }

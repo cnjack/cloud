@@ -1,23 +1,13 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 import { AppShell } from './components/AppShell';
 import { DeviceApiProvider } from './api/DeviceApiProvider';
 import { OnboardingGate } from './pages/OnboardingGate';
-import { ProjectsPage } from './pages/ProjectsPage';
-import { RepositoriesPage } from './pages/RepositoriesPage';
-import { RepositoryDetailPage } from './pages/RepositoryDetailPage';
-import { ConnectRepositoryPage } from './pages/ConnectRepositoryPage';
+import { WorkHomePage } from './work-home/WorkHomePage';
 import { CodeReviewsPage } from './pages/CodeReviewsPage';
 import { RepositoryAutomationPage } from './pages/RepositoryAutomationPage';
-import { NewProjectPage } from './pages/NewProjectPage';
-import { ProjectDetailPage } from './pages/ProjectDetailPage';
-import { ProjectPluginDetailPage } from './pages/ProjectPluginDetailPage';
-import { AutomationEditorPage } from './pages/AutomationEditorPage';
-import { AutomationDetailPage } from './pages/AutomationDetailPage';
 import { RunDetailPage } from './pages/RunDetailPage';
-import { DevicesPage } from './pages/DevicesPage';
-import { DeviceWelcomePage } from './pages/DeviceWelcomePage';
 import { DeviceGuidePage } from './pages/DeviceGuidePage';
 import { DeviceSessionPage } from './pages/DeviceSessionPage';
 import { ClusterOverviewPage } from './pages/ClusterOverviewPage';
@@ -26,6 +16,7 @@ import { ClusterConnectionsPage } from './pages/ClusterConnectionsPage';
 import { DeviceAuthorizePage } from './pages/DeviceAuthorizePage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { SetupPage } from './pages/SetupPage';
+import { AccountSettingsPage } from './pages/AccountSettingsPage';
 import { SharedArtifactPage } from './pages/SharedArtifactPage';
 import { useToast } from './components/Toast';
 import { readQueryParam, stripQueryParams } from './lib/url';
@@ -73,33 +64,27 @@ function AuthenticatedApp() {
   useLinkFlash();
   return (
     // The gate owns everything before a verified session exists: environment
-    // setup guidance, sign-in, and the post-login welcome/landing cards.
+    // setup guidance and sign-in. Success enters Work Home directly.
     <OnboardingGate>
       <AppShell>
         <DeviceApiProvider>
           <Routes>
-            <Route path="/" element={<Navigate to="/repositories" replace />} />
+            <Route path="/" element={<WorkHomePage />} />
             <Route path="/setup" element={<SetupPage />} />
-            <Route path="/repositories" element={<RepositoriesPage />} />
+            <Route path="/repositories" element={<WorkHomePage />} />
             <Route path="/repositories/connect" element={<Navigate to="/repositories" replace />} />
-            <Route path="/connections/repositories" element={<ConnectRepositoryPage />} />
-            <Route path="/repositories/:repositoryId" element={<RepositoryDetailPage />} />
+            <Route path="/connections/repositories" element={<Navigate to="/account/settings?section=connections" replace />} />
+            <Route path="/repositories/:repositoryId" element={<LegacyRepositoryRedirect />} />
             <Route path="/repositories/:repositoryId/automations/new" element={<RepositoryAutomationPage mode="edit" />} />
             <Route path="/repositories/:repositoryId/automations/:automationId" element={<RepositoryAutomationPage mode="detail" />} />
             <Route path="/repositories/:repositoryId/automations/:automationId/edit" element={<RepositoryAutomationPage mode="edit" />} />
             <Route path="/code-reviews" element={<CodeReviewsPage />} />
-            {/* Legacy Project routes remain only for deep links during the UI migration. */}
-            <Route path="/projects" element={<ProjectsPage />} />
-            <Route path="/projects/new" element={<NewProjectPage />} />
-            <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
-            <Route path="/projects/:projectId/plugins/:provider" element={<ProjectPluginDetailPage />} />
-            <Route path="/projects/:projectId/automations/new" element={<AutomationEditorPage />} />
-            <Route path="/projects/:projectId/automations/:automationId" element={<AutomationDetailPage />} />
-            <Route path="/projects/:projectId/automations/:automationId/edit" element={<AutomationEditorPage />} />
+            <Route path="/account/settings" element={<AccountSettingsPage />} />
+            <Route path="/projects/*" element={<Navigate to="/" replace />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
-            <Route path="/devices" element={<DevicesPage />} />
+            <Route path="/devices" element={<Navigate to="/devices/guide" replace />} />
             <Route path="/devices/guide" element={<DeviceGuidePage />} />
-            <Route path="/devices/:deviceId" element={<DeviceWelcomePage />} />
+            <Route path="/devices/:deviceId" element={<LegacyDeviceRedirect />} />
             <Route path="/devices/:deviceId/sessions/:sessionId" element={<DeviceSessionPage />} />
             <Route path="/cluster" element={<ClusterOverviewPage />} />
             <Route path="/cluster/models" element={<ClusterModelsPage />} />
@@ -113,4 +98,14 @@ function AuthenticatedApp() {
       </AppShell>
     </OnboardingGate>
   );
+}
+
+function LegacyDeviceRedirect() {
+  const { deviceId = '' } = useParams();
+  return <Navigate to={`/?remote=${encodeURIComponent(deviceId)}`} replace />;
+}
+
+function LegacyRepositoryRedirect() {
+  const { repositoryId = '' } = useParams();
+  return <Navigate to={`/?repository=${encodeURIComponent(repositoryId)}`} replace />;
 }

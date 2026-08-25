@@ -1,0 +1,40 @@
+.page { min-height: 100dvh; background: var(--color-panel); color: var(--color-text); }
+.back { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--color-text-muted); font-size: var(--fs-caption); }
+.back:hover { color: var(--color-text); text-decoration: none; }
+.main { width: min(58rem, calc(100% - var(--space-12))); margin: 0 auto; padding: var(--space-12) 0 var(--space-20); }
+.title { max-width: 46rem; }
+.title > span { color: var(--color-text-faint); font-size: var(--fs-tiny); font-weight: var(--fw-bold); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+.title h1 { margin-top: var(--space-2); font-size: clamp(2rem, 5vw, 3rem); letter-spacing: -.05em; }
+.title p { margin-top: var(--space-2); color: var(--color-text-muted); line-height: var(--lh-normal); }
+.tabs { display: flex; gap: var(--space-1); overflow-x: auto; margin-top: var(--space-8); border-bottom: 1px solid var(--color-border); }
+.tabs button { min-height: var(--space-12); border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 0 var(--space-3); color: var(--color-text-muted); cursor: pointer; white-space: nowrap; }
+.tabs button[aria-selected='true'] { border-bottom-color: var(--color-text); color: var(--color-text); font-weight: var(--fw-semibold); }
+.surface { margin-top: var(--space-6); }
+.section { display: grid; gap: var(--space-6); }
+.section > header { display: flex; align-items: flex-start; gap: var(--space-3); }
+.section h2 { font-size: var(--fs-h1); }
+.section p { margin-top: var(--space-1); color: var(--color-text-muted); }
+.icon { width: var(--space-10); height: var(--space-10); display: grid; flex: none; place-items: center; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-bg-inset); }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-xl); }
+.facts div { min-height: 6rem; border-right: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); padding: var(--space-4); }
+.facts div:nth-child(2n) { border-right: 0; }
+.facts div:nth-last-child(-n+2) { border-bottom: 0; }
+.facts dt { color: var(--color-text-faint); font-size: var(--fs-caption); }
+.facts dd { margin: var(--space-2) 0 0; font-weight: var(--fw-semibold); }
+.cards, .modelList { display: grid; gap: var(--space-2); }
+.cards article, .cards a, .modelList article { min-height: var(--space-16); display: flex; align-items: center; gap: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: var(--space-3) var(--space-4); color: inherit; }
+.cards a:hover { background: var(--color-panel-hover); text-decoration: none; }
+.cards span, .modelList article > span:first-child { min-width: 0; flex: 1; }
+.cards strong, .cards small, .modelList strong, .modelList small { display: block; }
+.cards small, .modelList small { margin-top: var(--space-1); color: var(--color-text-faint); }
+.sources { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.sources span, .status { border-radius: var(--radius-pill); background: var(--color-bg-inset); padding: var(--space-2) var(--space-3); color: var(--color-text-muted); font-size: var(--fs-caption); }
+.sources strong { margin-right: var(--space-1); text-transform: capitalize; }
+.modelList article { justify-content: space-between; }
+.status { flex: none; color: var(--status-success-fg); }
+.empty { border: 1px solid var(--status-blocked-dot); border-radius: var(--radius-lg); background: var(--status-blocked-bg); padding: var(--space-4); color: var(--status-blocked-fg); }
+.inlineLink { width: fit-content; font-weight: var(--fw-semibold); }
+.preference { min-height: var(--space-16); display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); border-bottom: 1px solid var(--color-border); }
+.preference strong, .preference small { display: block; }
+.preference small { margin-top: var(--space-1); color: var(--color-text-faint); }
+@media (max-width: 40rem) { .main { width: calc(100% - var(--space-6)); padding-top: var(--space-8); } .facts { grid-template-columns: 1fr; } .facts div { border-right: 0; } .facts div:nth-last-child(-n+2) { border-bottom: 1px solid var(--color-border); } .facts div:last-child { border-bottom: 0; } }

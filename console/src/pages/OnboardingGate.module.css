@@ -14,8 +14,8 @@
 .state::before { width: 5px; height: 5px; border-radius: var(--radius-pill); background: var(--color-accent); content: ''; }
 .frame[data-variant='setup'] .state { border-color: color-mix(in srgb, var(--color-warning) 30%, var(--color-border)); background: var(--status-scheduling-bg); color: var(--status-scheduling-fg); }
 .frame[data-variant='setup'] .state::before { background: var(--color-warning); }
-.frame[data-variant='welcome'] .state, .frame[data-variant='landing'] .state { border-color: color-mix(in srgb, var(--color-success) 30%, var(--color-border)); background: var(--status-succeeded-bg); color: var(--status-succeeded-fg); }
-.frame[data-variant='welcome'] .state::before, .frame[data-variant='landing'] .state::before { background: var(--color-success); }
+.frame[data-variant='welcome'] .state { border-color: color-mix(in srgb, var(--color-success) 30%, var(--color-border)); background: var(--status-succeeded-bg); color: var(--status-succeeded-fg); }
+.frame[data-variant='welcome'] .state::before { background: var(--color-success); }
 .stage { display: grid; min-height: 0; flex: 1; place-items: center; overflow: auto; padding: 48px var(--space-8) var(--space-16); }
 .content { display: grid; width: min(100%, 48rem); grid-template-columns: minmax(0, 1fr) 15rem; gap: var(--space-16); align-items: start; }
 .frame[data-variant='landing'] .content { grid-template-columns: minmax(0, 34rem); justify-content: center; }
@@ -57,9 +57,6 @@
 .footerRow { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-2); }
 .autoNote { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--color-text-faint); font-size: var(--fs-caption); }
 .pulse { width: var(--space-2); height: var(--space-2); border-radius: var(--radius-pill); background: var(--color-warning); animation: gate-pulse 1.6s ease-in-out infinite; }
-.facts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-6); margin: 0; }
-.fact dt { color: var(--color-text-faint); font-size: var(--fs-tiny); letter-spacing: .6px; text-transform: uppercase; }
-.fact dd { margin: var(--space-1) 0 0; color: var(--color-text); font-family: var(--font-mono); font-size: var(--fs-sm); }
 @keyframes gate-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 
 @media (max-width: 860px) {

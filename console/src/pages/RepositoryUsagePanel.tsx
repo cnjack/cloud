@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useServiceUsage } from '../api/queries';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import { UsageSummary } from '../components/UsageSummary';
-import styles from './ProjectUsagePanel.module.css';
+import styles from './RepositoryUsagePanel.module.css';
 
 type RangePreset = '24h' | '7d' | '30d';
 

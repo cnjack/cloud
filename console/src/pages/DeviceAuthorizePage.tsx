@@ -69,13 +69,13 @@ export function DeviceAuthorizePage() {
       await postDeviceAuthorize(getToken(), normalized, approve);
       if (approve) {
         // The device row is created by the CLI's next token poll. Follow that
-        // short hand-off so approval lands on the exact welcome page instead
-        // of making the user find the device in the list.
+        // short hand-off so approval lands in the exact Remote context instead
+        // of a generic device management page.
         for (let attempt = 0; attempt < 40; attempt += 1) {
           try {
             const state = await getDeviceAuthorizeState(getToken(), normalized);
             if (state.device_id) {
-              navigate(`/devices/${state.device_id}`, { replace: true });
+              navigate(`/?remote=${encodeURIComponent(state.device_id)}`, { replace: true });
               return;
             }
           } catch {
@@ -83,7 +83,7 @@ export function DeviceAuthorizePage() {
           }
           await new Promise((resolve) => window.setTimeout(resolve, 250));
         }
-        navigate('/devices', { replace: true });
+        navigate('/devices/guide', { replace: true });
         return;
       }
       setApproved(approve);
@@ -140,7 +140,7 @@ export function DeviceAuthorizePage() {
                 <p className={styles.flowLede}>{unavailableMessage}</p>
                 <div className={styles.resultActions}>
                   <Button variant="primary" onClick={reset}>{t('device.tryAnotherCode')}</Button>
-                  <Button variant="ghost" onClick={() => navigate('/devices')}>{t('device.backToDevices')}</Button>
+                  <Button variant="ghost" onClick={() => navigate('/devices/guide')}>{t('device.backToDevices')}</Button>
                 </div>
               </div>
             ) : stage === 'done' ? (

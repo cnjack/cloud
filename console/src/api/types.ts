@@ -1288,7 +1288,7 @@ export interface ProviderModel {
   granted_account_ids?: string[];
   /**
    * Project scope only: the per-model on/off toggle (jcode parity). Absent on the
-   * cluster view; the enable Switch renders only in project scope.
+   * cluster view; Account access is the only authorization control.
    */
   enabled?: boolean;
 }

@@ -2,11 +2,11 @@
  * AuthProvider + OnboardingGate — the M4 auth gate state machine (probe = /me):
  *   - orchestrator down → setup guide; recovers → advances to sign-in
  *   - reachable, no session → sign-in (provider buttons + Advanced console token)
- *   - valid console token → landing card → app; stored valid token → straight in
+ *   - valid console token → app; stored valid token → straight in
  *   - stored token rejected → sign-in with rotation notice, stored copy cleared
  *   - session 401 (http-client hook) → back to sign-in
  *   - sign-out clears the stored token
- *   - OAuth ?welcome= → welcome card, then Get started → app (param stripped)
+ *   - OAuth ?welcome= → app (param stripped)
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -174,19 +174,15 @@ describe('OnboardingGate — sign-in layer (providers + Advanced)', () => {
     expect(screen.getByTestId('console-token-form')).toBeTruthy();
   });
 
-  it('signs in with a valid console token: landing card, stored token, then the app', async () => {
+  it('signs in with a valid console token and enters the unified Work Home directly', async () => {
     stubFetch({ current: 'up' }, { providers: [] });
     renderGate();
 
     await waitFor(() => expect(screen.getByTestId('sign-in')).toBeTruthy());
     await signInWithToken(VALID_TOKEN);
 
-    await waitFor(() => expect(screen.getByTestId('landing-card')).toBeTruthy());
-    expect(screen.getByText('Ada Lovelace')).toBeTruthy(); // principal fact
+    await waitFor(() => expect(screen.getByTestId('app')).toBeTruthy());
     expect(window.localStorage.getItem(TOKEN_STORAGE_KEY)).toBe(VALID_TOKEN);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Enter console' }));
-    expect(screen.getByTestId('app')).toBeTruthy();
   });
 
   it('rejects a bad token inline without leaving the sign-in screen', async () => {
@@ -220,19 +216,17 @@ describe('OnboardingGate — sign-in layer (providers + Advanced)', () => {
   });
 });
 
-describe('OnboardingGate — welcome card (OAuth redirect)', () => {
-  it('shows the first-admin welcome from ?welcome=first-admin, then enters the console', async () => {
+describe('OnboardingGate — unified Work Home (OAuth redirect)', () => {
+  it('uses Work Home as the first-admin welcome and clears the one-time marker', async () => {
     window.history.replaceState(null, '', '/?welcome=first-admin');
     stubFetch({ current: 'up' }, { cookieSession: true });
     renderGate();
 
-    await waitFor(() => expect(screen.getByTestId('welcome-card')).toBeTruthy());
-    expect(screen.getByText(/first user/i)).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('app')).toBeTruthy());
     // The param is stripped from the address bar so a refresh won't replay it.
     expect(window.location.search).not.toContain('welcome');
 
-    fireEvent.click(screen.getByTestId('welcome-enter'));
-    expect(screen.getByTestId('app')).toBeTruthy();
+    expect(screen.queryByTestId('welcome-card')).toBeNull();
   });
 });
 

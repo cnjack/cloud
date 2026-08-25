@@ -146,7 +146,10 @@ interface Props {
   initialCardPath?: string;
   canManage?: boolean;
   canRun?: boolean;
-  onClose: () => void;
+  /** Modal close callback. Optional when the Board is embedded in a page. */
+  onClose?: () => void;
+  /** Render the real Board directly in the Repository workspace instead of a dialog. */
+  embedded?: boolean;
 }
 
 function KanbanPolicyStrip({ serviceId }: { serviceId: string }) {
@@ -374,7 +377,8 @@ export function KanbanBoardModal({
   initialCardPath,
   canManage = false,
   canRun = canManage,
-  onClose,
+  onClose = () => {},
+  embedded = false,
 }: Props) {
   const { t } = useTranslation();
   const api = useApi();
@@ -468,15 +472,8 @@ export function KanbanBoardModal({
   });
   const failure = resolved.isError ? boardOpenErrorCopy(resolved.error, t) : null;
 
-  return (
-    <Modal
-      open
-      title={t('kanban.title')}
-      onClose={onClose}
-      size="wide"
-      data-testid="kanban-board-modal"
-    >
-      <div className={styles.wrap}>
+  const content = (
+      <div className={styles.wrap} data-testid={embedded ? 'kanban-board-panel' : undefined}>
         {!link && (
           <div className={styles.setupPanel} data-testid="kanban-enable-panel">
             <div className={styles.setupHeading}>
@@ -776,6 +773,19 @@ export function KanbanBoardModal({
           </>
         )}
       </div>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <Modal
+      open
+      title={t('kanban.title')}
+      onClose={onClose}
+      size="wide"
+      data-testid="kanban-board-modal"
+    >
+      {content}
     </Modal>
   );
 }

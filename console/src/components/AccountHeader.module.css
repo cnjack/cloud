@@ -1,0 +1,9 @@
+.header { position: sticky; top: 0; z-index: 30; height: var(--space-16); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--color-border-subtle); background: color-mix(in srgb, var(--color-panel) 94%, transparent); padding: 0 var(--space-6); backdrop-filter: blur(1rem); }
+.account { position: relative; }
+.trigger { display: inline-flex; align-items: center; gap: var(--space-2); border: 0; border-radius: var(--radius-pill); background: transparent; padding: var(--space-1); color: var(--color-text-muted); cursor: pointer; }
+.trigger:hover, .trigger[aria-expanded='true'] { background: var(--color-panel-hover); color: var(--color-text); }
+.avatar { width: var(--space-8); height: var(--space-8); display: grid; place-items: center; border-radius: var(--radius-pill); background: var(--color-code-bg); color: var(--color-text); font-size: var(--fs-tiny); font-weight: var(--fw-bold); }
+.menu { position: absolute; top: calc(100% + var(--space-2)); right: 0; z-index: 40; width: 15rem; overflow: hidden; border: 1px solid var(--color-border-strong); border-radius: var(--radius-xl); background: var(--color-panel); padding: var(--space-2); box-shadow: var(--shadow-3); }
+.menu a, .menu button { width: 100%; min-height: var(--space-10); display: flex; align-items: center; gap: var(--space-2); border: 0; border-radius: var(--radius-md); background: transparent; padding: 0 var(--space-3); color: var(--color-text-muted); text-align: left; cursor: pointer; }
+.menu a:hover, .menu button:hover { background: var(--color-panel-hover); color: var(--color-text); text-decoration: none; }
+.admin { margin-left: auto; border-radius: var(--radius-sm); background: var(--color-code-bg); padding: var(--space-1) var(--space-2); font: var(--fs-tiny) var(--font-mono); }

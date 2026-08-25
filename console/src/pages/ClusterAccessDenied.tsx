@@ -13,7 +13,7 @@ export function ClusterAccessDenied() {
           <h1>{t('cluster.accessDenied.title')}</h1>
           <p>{t('cluster.accessDenied.body')}</p>
           <div className={styles.notice}><Warning size={16} aria-hidden="true" /><span><strong>{t('cluster.accessDenied.noticeTitle')}</strong>{t('cluster.accessDenied.noticeBody')}</span></div>
-          <div><ActionLink to="/projects" variant="primary"><ArrowLeft size={14} aria-hidden="true" />{t('cluster.accessDenied.backToProjects')}</ActionLink></div>
+          <div><ActionLink to="/" variant="primary"><ArrowLeft size={14} aria-hidden="true" />{t('cluster.accessDenied.backToProjects')}</ActionLink></div>
         </div>
         <div className={styles.boundary} aria-hidden="true"><Lock size={24} /></div>
       </section>

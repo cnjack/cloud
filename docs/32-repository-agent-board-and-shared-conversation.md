@@ -1,6 +1,6 @@
 # 32 · Repository Agent Board and shared Conversation
 
-Status: approved product contract / implementation plan
+Status: approved product contract / implementation complete, deployment pending
 Date: 2026-08-25
 
 ## Outcome
@@ -77,6 +77,14 @@ names, UI copy, telemetry labels, and user-facing errors use Repository.
     the Account composer. First execution lazily creates its internal
     Repository record; Repository detail is optional and never a prerequisite
     for conversation or task creation.
+13. Welcome and Repository workspace are one Work Home. Successful OAuth or
+    token login enters the composer directly; there is no intermediate welcome
+    or landing card.
+14. Remote is a composer context, not a permanent management destination. A
+    dedicated Remote onboarding route remains for device login and pairing;
+    after approval it returns to the exact Remote context in Work Home.
+15. Cluster settings, Personal settings, Account usage, Code reviews, and sign
+    out live in the Account menu. Cluster settings is admin-only.
 
 ## HTTP contract
 
@@ -265,17 +273,26 @@ Database access paths retain these indexes:
 
 ## UI information architecture
 
-The personal Console uses this information architecture:
+The personal Console uses one Work Home information architecture:
 
 ```text
-New task
+Work Home
   ├─ Account prompt composer
-  └─ Repository picker: every repository visible to linked Git accounts
-Repositories (previously used, optional detail shortcuts)
-  └─ Repository detail: Tasks | Automations | Repository settings
-       └─ Agent Board from the Repository header
-Code reviews
-Provider accounts
+  │    └─ upper-left context picker
+  │         ├─ Repository: every repository visible to linked Git accounts
+  │         └─ Remote: online jcode devices and a Remote onboarding link
+  └─ selected Repository workspace
+       └─ Tasks | Board | Reviews | Automations | Usage | Settings
+
+Account menu
+  ├─ Code reviews
+  ├─ Personal settings (profile, Git accounts, models, usage, preferences)
+  ├─ Account usage
+  ├─ Cluster settings (Cluster Admin only)
+  └─ Sign out
+
+Remote onboarding (`/devices/guide`)
+  └─ jcode login → device-code authorization → encrypted pairing → Work Home
 ```
 
 Agent Board displays status, fixed automation model/effort, Cloud execution,
@@ -287,9 +304,13 @@ Repository Usage calls the Repository-scoped endpoint and never relabels a
 hidden-container aggregate as Repository data.
 
 Repository selection does not require a gear, existing internal Repository, or
-connection flow. Detail opens separately after first use for settings, Agent
-Board, and history. The Composer remembers its last interactive model per
-account; changing it never mutates the Agent Board model.
+connection flow. Repository detail is the lower part of Work Home after a
+selection; it is not a separate product page. The Composer remembers its last
+interactive model per account; changing it never mutates the Agent Board model.
+Selecting Remote hides the Repository tabs and renders the shared jcode
+composer. The old Project, Service, Repository-list/detail, and Remote-device
+management pages have no active Console route; legacy deep links redirect to
+Work Home or Remote onboarding.
 
 ## Test design before implementation
 
