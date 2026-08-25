@@ -2,7 +2,7 @@
 <!--
   UX DESIGN PROTOTYPE ONLY — no production route, API, or persistence is changed.
 
-  Revision 2 assumptions
+  Revision 3 assumptions
   - Welcome and Repository workspace are one continuous Work Home.
   - There is no left navigation rail and no separate Repository detail journey.
   - The composer owns context selection: GitHub / Gitea / GitLab repositories, or a
@@ -10,7 +10,7 @@
   - The content immediately below the composer always belongs to the selected context.
   - A Remote workplace may resolve to a Repository, so Board / Reviews / Automations
     stay available while execution happens on that device.
-  - Personal Settings and Remote device management remain account-level destinations.
+  - Personal Settings is opened from the avatar menu; Remote has no separate page.
 -->
 <html lang="zh-CN">
 <head>
@@ -46,10 +46,7 @@
     .review-title { display: flex; align-items: center; gap: 12px; }
     .review-title strong { font-size: 13px; font-weight: 650; }
     .review-title span { color: var(--muted); font-size: 11px; }
-    .flow-nav { display: flex; align-items: center; gap: 5px; }
-    .flow-button { min-height: 32px; border-radius: 7px; background: transparent; padding: 5px 11px; color: var(--muted); font-size: 12px; transition: 120ms var(--ease); }
-    .flow-button:hover { background: var(--surface); color: var(--ink); }
-    .flow-button[aria-current="step"] { background: var(--ink); color: white; }
+    .review-note { color: var(--faint); font-size: 10px; }
 
     .prototype-stage { padding: 28px; }
     .app-window { width: min(1540px,calc(100vw - 56px)); height: min(930px,calc(100vh - 114px)); min-height: 760px; margin: 0 auto; overflow: hidden; border: 1px solid #ced0ca; border-radius: 18px; background: var(--surface); box-shadow: var(--shadow); }
@@ -64,11 +61,20 @@
     .brand img { width: 23px; height: 23px; border-radius: 6px; }
     .brand strong { font-family: var(--mono); font-size: 13px; letter-spacing: -.035em; }
     .brand small { color: var(--faint); font-size: 8px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
-    .global-nav { display: flex; align-items: center; gap: 2px; }
-    .global-link { min-height: 32px; display: inline-flex; align-items: center; gap: 7px; border-radius: 7px; background: transparent; padding: 0 10px; color: var(--muted); font-size: 11px; }
-    .global-link:hover, .global-link.is-active { background: var(--hover); color: var(--ink); }
-    .header-separator { width: 1px; height: 22px; margin: 0 5px; background: var(--line); }
+    .account-control { position: relative; }
+    .avatar-button { min-height: 34px; display: flex; align-items: center; gap: 7px; border-radius: 999px; background: transparent; padding: 2px 5px 2px 3px; color: var(--muted); font-size: 10px; }
+    .avatar-button:hover, .avatar-button[aria-expanded="true"] { background: var(--hover); color: var(--ink); }
     .avatar { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 50%; background: #d7aa63; color: #352719; font-size: 10px; font-weight: 700; }
+    .account-menu { position: absolute; z-index: 24; top: 40px; right: 0; width: 220px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 20px 52px -24px rgba(0,0,0,.42); }
+    .account-head { display: flex; align-items: center; gap: 9px; border-bottom: 1px solid var(--line); padding: 11px; }
+    .account-head-copy { min-width: 0; }
+    .account-head-copy strong, .account-head-copy small { display: block; }
+    .account-head-copy strong { font-size: 10.5px; }
+    .account-head-copy small { margin-top: 1px; color: var(--faint); font-size: 8.5px; }
+    .account-actions { padding: 5px; }
+    .account-action { width: 100%; min-height: 36px; display: flex; align-items: center; gap: 9px; border-radius: 6px; background: transparent; padding: 0 8px; color: var(--muted); text-align: left; font-size: 10px; }
+    .account-action:hover { background: var(--hover); color: var(--ink); }
+    .account-action.danger { border-top: 1px solid var(--line); border-radius: 0; margin-top: 5px; padding-top: 5px; color: #9a341d; }
 
     .main { min-height: 0; position: relative; overflow: hidden; }
     .screen { height: 100%; overflow: auto; }
@@ -176,25 +182,6 @@
     .settings-row strong, .settings-row small { display: block; }
     .settings-row strong { font-size: 9.8px; }
     .settings-row small { margin-top: 2px; color: var(--faint); font-size: 8.5px; }
-    .remote-hero { display: grid; grid-template-columns: minmax(0,1fr) 370px; gap: 64px; align-items: center; padding: 24px 0 28px; border-bottom: 1px solid var(--line); }
-    .remote-copy h1 { max-width: 600px; margin-top: 9px; font-size: 38px; font-weight: 650; letter-spacing: -.05em; line-height: 1.08; }
-    .remote-copy p { max-width: 57ch; margin-top: 12px; color: var(--muted); font-size: 10.8px; }
-    .remote-actions { display: flex; gap: 8px; margin-top: 18px; }
-    .remote-visual { min-height: 195px; display: grid; align-content: center; gap: 9px; border: 1px solid var(--line); border-radius: 13px; background: #f5f5f2; padding: 17px; }
-    .machine { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 11px; }
-    .machine-icon { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 7px; background: #ededeb; }
-    .machine-copy { flex: 1; }
-    .machine-copy strong, .machine-copy small { display: block; }
-    .machine-copy strong { font-size: 10.5px; }
-    .machine-copy small { margin-top: 2px; color: var(--faint); font: 8.5px var(--mono); }
-    .remote-section { margin-top: 25px; }
-    .remote-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 9px; margin-top: 11px; }
-    .remote-card { min-height: 124px; display: grid; align-content: space-between; border: 1px solid var(--line); border-radius: 9px; padding: 13px; }
-    .remote-card.is-offline { color: var(--muted); background: var(--soft); }
-    .remote-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-    .remote-card strong { font-size: 10.5px; }
-    .remote-card small { display: block; margin-top: 3px; color: var(--faint); font: 8.5px var(--mono); }
-    .text-link { display: inline-flex; align-items: center; gap: 5px; background: transparent; color: var(--muted); font-size: 9px; }
     .annotation { position: absolute; right: 15px; bottom: 15px; z-index: 7; width: 252px; border: 1px solid #dcc5a9; border-radius: 9px; background: rgba(255,250,242,.97); padding: 10px 11px; box-shadow: 0 13px 30px -22px rgba(50,31,8,.5); color: #6c5237; font-size: 9px; }
     .annotation strong { display: block; margin-bottom: 3px; color: #45311d; font-size: 9.5px; }
     @media (max-height: 850px) { .prototype-stage { padding-top: 18px; } .app-window { height: calc(100vh - 94px); min-height: 680px; } .screen[data-screen="home"] .screen-inner { padding-top: 23px; } .composer textarea { min-height: 84px; } .tab-content { margin-top: 14px; } .board-column { min-height: 184px; } }
@@ -202,8 +189,8 @@
 </head>
 <body>
   <header class="review-bar">
-    <div class="review-title"><strong>Unified Work Home</strong><span>UX revision 2 · Welcome + Repository workspace 合一</span></div>
-    <nav class="flow-nav" aria-label="Prototype pages"><button class="flow-button" type="button" data-flow="home" aria-current="step">01 Work Home</button><button class="flow-button" type="button" data-flow="settings">02 Personal settings</button><button class="flow-button" type="button" data-flow="remote">03 Remote</button></nav>
+    <div class="review-title"><strong>Unified Work Home</strong><span>UX revision 3 · single product surface</span></div>
+    <span class="review-note">Repository / Remote workplace 从 Composer 切换 · 个人设置从头像进入</span>
   </header>
   <main class="prototype-stage">
     <section class="app-window" aria-label="jcode Cloud unified Work Home prototype">
@@ -211,12 +198,13 @@
       <div class="app-body">
         <header class="app-header">
           <button class="brand" type="button" data-global="home"><img src="./assets/app-icon.svg" alt="" /><strong>JCODE</strong><small>Cloud</small></button>
-          <nav class="global-nav" aria-label="Global navigation">
-            <button class="global-link" type="button" data-global-tab="reviews"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg>Code reviews</button>
-            <button class="global-link" type="button" data-global-tab="automations"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>Automations</button>
-            <button class="global-link" type="button" data-global="remote"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg>Remote <span class="pill success">2 online</span></button>
-            <span class="header-separator"></span><button class="global-link" type="button" data-global="settings"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-sliders" /></svg>Settings</button><button class="avatar" type="button" data-global="settings" aria-label="Personal settings">JA</button>
-          </nav>
+          <div class="account-control">
+            <button class="avatar-button" type="button" data-account-toggle aria-expanded="false"><span class="avatar">JA</span><span>Jack</span><span>⌄</span></button>
+            <div class="account-menu" data-account-menu hidden>
+              <div class="account-head"><span class="avatar">JA</span><span class="account-head-copy"><strong>Jack</strong><small>个人工作区</small></span></div>
+              <div class="account-actions"><button class="account-action" type="button" data-global="settings"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-sliders" /></svg>Personal settings</button><button class="account-action" type="button" data-global="settings"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-database" /></svg>Account usage</button><button class="account-action danger" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-left" /></svg>Sign out</button></div>
+            </div>
+          </div>
         </header>
         <section class="main">
           <section class="screen" data-screen="home">
@@ -236,13 +224,13 @@
                     <button class="menu-option" type="button" data-context-kind="repository" data-context-name="mobile/ios-app" data-provider="GitLab" data-target="develop"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span class="menu-option-main"><strong>mobile/ios-app</strong><small>GitLab · updated yesterday</small></span><span class="provider-tag">GL</span></button>
                   </div>
                   <div class="menu-group"><span class="menu-label">Remote devices</span>
-                    <button class="menu-option" type="button" data-context-kind="remote" data-context-name="dev-mbp-01" data-provider="Remote" data-target="~/work/jcode"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="menu-option-main"><strong>dev-mbp-01</strong><small>macOS · 3 workplaces</small></span><span class="online-dot"></span></button>
-                    <button class="menu-option" type="button" data-context-kind="remote" data-context-name="workstation-01" data-provider="Remote" data-target="~/src/jcloud"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="menu-option-main"><strong>workstation-01</strong><small>Linux · 2 workplaces</small></span><span class="online-dot"></span></button>
+                    <button class="menu-option" type="button" data-context-kind="remote" data-context-name="dev-mbp-01" data-provider="Remote" data-target="~/work/jcode" data-repository="cnjack/jcode"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="menu-option-main"><strong>dev-mbp-01</strong><small>macOS · 3 workplaces</small></span><span class="online-dot"></span></button>
+                    <button class="menu-option" type="button" data-context-kind="remote" data-context-name="workstation-01" data-provider="Remote" data-target="~/src/jcloud" data-repository="platform/jcloud"><span class="context-mark"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="menu-option-main"><strong>workstation-01</strong><small>Linux · 2 workplaces</small></span><span class="online-dot"></span></button>
                   </div>
                 </div>
                 <div class="menu target-menu" data-target-menu hidden>
                   <div class="menu-group" data-repository-targets><span class="menu-label">Branches</span><button class="menu-option is-selected" type="button" data-target-option="main"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg><span class="menu-option-main"><strong>main</strong><small>default branch</small></span></button><button class="menu-option" type="button" data-target-option="feat/work-home"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg><span class="menu-option-main"><strong>feat/work-home</strong><small>updated 14m ago</small></span></button></div>
-                  <div class="menu-group" data-remote-targets hidden><span class="menu-label">Workplaces on device</span><button class="menu-option is-selected" type="button" data-target-option="~/work/jcode"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-projects" /></svg><span class="menu-option-main"><strong>~/work/jcode</strong><small>cnjack/jcode · main</small></span></button><button class="menu-option" type="button" data-target-option="~/work/cloud"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-projects" /></svg><span class="menu-option-main"><strong>~/work/cloud</strong><small>platform/jcloud · main</small></span></button><button class="menu-option" type="button" data-target-option="~/scratch"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-projects" /></svg><span class="menu-option-main"><strong>~/scratch</strong><small>no Repository detected</small></span></button></div>
+                  <div class="menu-group" data-remote-targets hidden><span class="menu-label">Workplaces on device</span><button class="menu-option is-selected" type="button" data-target-option="~/work/jcode" data-repository="cnjack/jcode"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-projects" /></svg><span class="menu-option-main"><strong>~/work/jcode</strong><small>cnjack/jcode · main</small></span></button><button class="menu-option" type="button" data-target-option="~/work/cloud" data-repository="platform/jcloud"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-projects" /></svg><span class="menu-option-main"><strong>~/work/cloud</strong><small>platform/jcloud · main</small></span></button><button class="menu-option" type="button" data-target-option="~/scratch"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-projects" /></svg><span class="menu-option-main"><strong>~/scratch</strong><small>no Repository detected</small></span></button></div>
                 </div>
               </form>
               <section class="context-workspace">
@@ -251,16 +239,15 @@
                 <div class="remote-banner" data-remote-banner hidden><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg><span>Agent 将在 <strong data-remote-device>dev-mbp-01</strong> 的 <strong data-remote-workplace>~/work/jcode</strong> 执行；下方仍显示该 workplace 对应 Repository 的工作区。</span></div>
                 <section class="tab-content" data-tab-panel="board"><header class="content-heading"><div><h2>Board</h2><p>连接已有 Board，Card 可以直接交给 agent。</p></div><button class="secondary-button" type="button">Board settings</button></header><div class="board"><section class="board-column"><header class="column-head"><strong>Backlog</strong><span>2</span></header><article class="card"><strong>Fix login redirect</strong><small>#128 · updated 2h ago</small><button class="card-action" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>Run with agent</button></article><article class="card"><strong>Document remote handoff</strong><small>#131 · no assignee</small><button class="card-action" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>Run with agent</button></article></section><section class="board-column"><header class="column-head"><strong>Agent queue</strong><span>1</span></header><article class="card"><strong>Merge Welcome and workspace</strong><small>Cloud · starting runner</small></article></section><section class="board-column"><header class="column-head"><strong>Done</strong><span>1</span></header><article class="card"><strong>Remember last model</strong><small>Completed without code changes</small></article></section></div></section>
                 <section class="tab-content" data-tab-panel="tasks" hidden><header class="content-heading"><div><h2>Tasks</h2><p>当前 Repository 或 Remote workplace 的 conversation 与运行。</p></div><button class="primary-button" type="button">New task</button></header><div class="list-panel"><div class="list-row"><span><strong>Merge Welcome and workspace</strong><small>Cloud · GLM-5.2 · updated 4m ago</small></span><span class="pill info">Running</span></div><div class="list-row"><span><strong>Remember last model</strong><small>Cloud · completed yesterday</small></span><span class="pill success">Done</span></div></div></section>
-                <section class="tab-content" data-tab-panel="reviews" hidden><header class="content-heading"><div><h2>Reviews</h2><p>当前 Repository 的 review；顶部入口可以查看账号下全部 review。</p></div><button class="primary-button" type="button">Create code review</button></header><div class="list-panel"><div class="list-row"><span><strong>#284 Unified Work Home</strong><small>main ← feat/work-home · requested by Jack</small></span><span class="pill info">Reviewing</span></div><div class="list-row"><span><strong>#279 Device relay copy updates</strong><small>main ← fix/device-copy</small></span><span class="pill success">Approved</span></div></div></section>
+                <section class="tab-content" data-tab-panel="reviews" hidden><header class="content-heading"><div><h2>Code reviews</h2><p>当前 Repository 的独立 review 入口。</p></div><button class="primary-button" type="button">Create code review</button></header><div class="list-panel"><div class="list-row"><span><strong>#284 Unified Work Home</strong><small>main ← feat/work-home · requested by Jack</small></span><span class="pill info">Reviewing</span></div><div class="list-row"><span><strong>#279 Device relay copy updates</strong><small>main ← fix/device-copy</small></span><span class="pill success">Approved</span></div></div></section>
                 <section class="tab-content" data-tab-panel="automations" hidden><header class="content-heading"><div><h2>Automations</h2><p>定时任务、Board 触发和 Pull request review。</p></div><button class="primary-button" type="button">New automation</button></header><div class="list-panel"><div class="list-row"><span><strong>PR review on ready_for_review</strong><small>Pull request · main · account model</small></span><span class="pill success">Active</span></div><div class="list-row"><span><strong>Board → Agent queue</strong><small>Card enters Agent queue · selected execution target</small></span><span class="pill success">Active</span></div></div></section>
                 <section class="tab-content" data-tab-panel="usage" hidden><header class="content-heading"><div><h2>Usage</h2><p>当前 Repository 的消耗；并发仍沿用账号级上限。</p></div><button class="secondary-button" type="button">View account usage</button></header><div class="usage-grid"><article class="metric"><span>This month</span><strong>3.8M</strong><small>tokens across 28 runs</small></article><article class="metric"><span>Concurrent</span><strong>2 / 4</strong><small>using the account-wide limit</small></article><article class="metric"><span>Cloud runs</span><strong>21</strong><small>7 completed without code changes</small></article><article class="metric"><span>Reviews</span><strong>7</strong><small>4 approved · 3 with findings</small></article></div></section>
                 <section class="tab-content" data-tab-panel="repo-settings" hidden><header class="content-heading"><div><h2>Repository settings</h2><p>只保留当前 Repository 特有的执行策略。</p></div></header><div class="settings-grid"><article class="setting-card"><span>Git</span><div class="setting-line"><strong>Default branch</strong><span class="select-like">main <span>⌄</span></span></div><div class="setting-line"><strong>Delivery mode</strong><span class="select-like">Pull request <span>⌄</span></span></div></article><article class="setting-card"><span>Agent</span><div class="setting-line"><strong>Default model</strong><span class="select-like">Use personal default <span>⌄</span></span></div><div class="setting-line"><strong>Execution target</strong><span class="select-like" data-settings-target>Cloud <span>⌄</span></span></div></article><article class="setting-card"><span>Board</span><p>只能连接已有 Board；Done 列可选。</p><div class="setting-line"><strong>Connected Board</strong><span class="select-like">Engineering <span>⌄</span></span></div></article><article class="setting-card"><span>Instructions</span><p>直接读取 Repository 根目录中的 AGENTS.md。</p><div class="setting-line"><strong>AGENTS.md</strong><span class="pill success">Detected</span></div></article></div></section>
               </section>
             </div>
           </section>
-          <section class="screen" data-screen="settings" hidden><div class="screen-inner"><header class="page-head"><div><span class="eyebrow">Personal settings</span><h1>Jack</h1><p>账号级偏好、Git 账号、个人模型授权和总用量；不再通过 Project 分配。</p></div><button class="secondary-button" type="button">保存更改</button></header><div class="settings-layout"><nav class="settings-nav"><button class="is-active" type="button">General</button><button type="button">Git accounts</button><button type="button">Models</button><button type="button">Usage</button><button type="button">Preferences</button></nav><div class="settings-content"><section class="settings-section"><header class="settings-section-head"><strong>任务默认值</strong><p>Cloud 和 Desktop 使用同一套个人偏好。</p></header><div class="settings-row"><span><strong>默认模型</strong><small>每次切换后自动记住最近选择</small></span><span class="select-like">GLM-5.2 <span>⌄</span></span></div><div class="settings-row"><span><strong>推理强度</strong><small>新任务的默认 effort</small></span><span class="select-like">极高 <span>⌄</span></span></div></section><section class="settings-section"><header class="settings-section-head"><strong>Git 提供商账号</strong><p>账号下可访问的 Repository 会直接出现在 Composer 中。</p></header><div class="settings-row"><span><strong>GitHub · cnjack</strong><small>Repository access available</small></span><span class="pill success">Connected</span></div><div class="settings-row"><span><strong>Gitea · jack</strong><small>Repository access available</small></span><span class="pill success">Connected</span></div><div class="settings-row"><span><strong>GitLab · jack</strong><small>Repository access available</small></span><span class="pill success">Connected</span></div></section><section class="settings-section"><header class="settings-section-head"><strong>模型授权</strong><p>授权给个人后，账号下所有 Repository 都可以使用。</p></header><div class="settings-row"><span><strong>GLM-5.2</strong><small>Zhipu · account grant</small></span><span class="pill success">Authorized</span></div><div class="settings-row"><span><strong>GPT-5.6</strong><small>OpenAI · account grant</small></span><span class="pill success">Authorized</span></div></section></div></div></div></section>
-          <section class="screen" data-screen="remote" hidden><div class="screen-inner"><section class="remote-hero"><div class="remote-copy"><span class="eyebrow">jcode Remote</span><h1>从任意地方，继续本机上的 jcode。</h1><p>这里负责设备管理。日常启动入口已经合并进 Work Home 的上下文选择器。</p><div class="remote-actions"><button class="primary-button" type="button" data-select-device="dev-mbp-01">在 Work Home 打开</button><button class="secondary-button" type="button">连接新设备</button></div></div><div class="remote-visual"><div class="machine"><span class="machine-icon"><svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="machine-copy"><strong>dev-mbp-01</strong><small>online · 3 workplaces</small></span><span class="online-dot"></span></div><div class="machine"><span class="machine-icon"><svg class="icon"><use href="./assets/icons.svg#i-terminal" /></svg></span><span class="machine-copy"><strong>workstation-01</strong><small>online · 2 workplaces</small></span><span class="online-dot"></span></div></div></section><section class="remote-section"><header class="content-heading"><div><h2>你的设备</h2><p>在设备上选择 workplace 后，返回统一 Work Home。</p></div><button class="secondary-button" type="button">Device settings</button></header><div class="remote-grid"><article class="remote-card"><div class="remote-card-top"><div><strong>dev-mbp-01</strong><small>macOS · online</small></div><span class="online-dot"></span></div><button class="text-link" type="button" data-select-device="dev-mbp-01">选择 workplace <svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></article><article class="remote-card"><div class="remote-card-top"><div><strong>workstation-01</strong><small>Linux · online</small></div><span class="online-dot"></span></div><button class="text-link" type="button" data-select-device="workstation-01">选择 workplace <svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></article><article class="remote-card is-offline"><div class="remote-card-top"><div><strong>nas-01</strong><small>Linux · last seen 2d ago</small></div><span class="pill">Offline</span></div><button class="text-link" type="button">查看设备信息</button></article></div></section></div></section>
-          <aside class="annotation" data-annotation><strong>Page 01 · Unified Work Home</strong>Welcome 与 Repository workspace 不再切页。Composer 内选择 Repository 或 Remote workplace，下方工作区原地更新。</aside>
+          <section class="screen" data-screen="settings" hidden><div class="screen-inner"><header class="page-head"><div><span class="eyebrow">Personal settings</span><h1>Jack</h1><p>账号级偏好、Git 账号、个人模型授权和总用量；不再通过 Project 分配。</p></div><div class="tool-group"><button class="secondary-button" type="button" data-global="home">返回 Work Home</button><button class="secondary-button" type="button">保存更改</button></div></header><div class="settings-layout"><nav class="settings-nav"><button class="is-active" type="button">General</button><button type="button">Git accounts</button><button type="button">Models</button><button type="button">Usage</button><button type="button">Preferences</button></nav><div class="settings-content"><section class="settings-section"><header class="settings-section-head"><strong>任务默认值</strong><p>Cloud 和 Desktop 使用同一套个人偏好。</p></header><div class="settings-row"><span><strong>默认模型</strong><small>每次切换后自动记住最近选择</small></span><span class="select-like">GLM-5.2 <span>⌄</span></span></div><div class="settings-row"><span><strong>推理强度</strong><small>新任务的默认 effort</small></span><span class="select-like">极高 <span>⌄</span></span></div></section><section class="settings-section"><header class="settings-section-head"><strong>Git 提供商账号</strong><p>账号下可访问的 Repository 会直接出现在 Composer 中。</p></header><div class="settings-row"><span><strong>GitHub · cnjack</strong><small>Repository access available</small></span><span class="pill success">Connected</span></div><div class="settings-row"><span><strong>Gitea · jack</strong><small>Repository access available</small></span><span class="pill success">Connected</span></div><div class="settings-row"><span><strong>GitLab · jack</strong><small>Repository access available</small></span><span class="pill success">Connected</span></div></section><section class="settings-section"><header class="settings-section-head"><strong>模型授权</strong><p>授权给个人后，账号下所有 Repository 都可以使用。</p></header><div class="settings-row"><span><strong>GLM-5.2</strong><small>Zhipu · account grant</small></span><span class="pill success">Authorized</span></div><div class="settings-row"><span><strong>GPT-5.6</strong><small>OpenAI · account grant</small></span><span class="pill success">Authorized</span></div></section></div></div></div></section>
+          <aside class="annotation" data-annotation><strong>Unified Work Home</strong>产品只有一个主页面。Remote 只作为 Composer 上下文；Review、Automation、Settings 都不再占用顶部导航。</aside>
         </section>
       </div>
     </section>
@@ -268,25 +255,26 @@
   <script>
     (() => {
       const screens = [...document.querySelectorAll('[data-screen]')];
-      const flowButtons = [...document.querySelectorAll('[data-flow]')];
       const annotation = document.querySelector('[data-annotation]');
       const contextMenu = document.querySelector('[data-context-menu]');
       const targetMenu = document.querySelector('[data-target-menu]');
+      const accountMenu = document.querySelector('[data-account-menu]');
+      const accountToggle = document.querySelector('[data-account-toggle]');
       let context = { kind: 'repository', name: 'cnjack/jcode', provider: 'GitHub', target: 'main' };
-      const annotations = { home: ['Page 01 · Unified Work Home','Welcome 与 Repository workspace 不再切页。Composer 内选择 Repository 或 Remote workplace，下方工作区原地更新。'], settings: ['Page 02 · Personal settings','模型授权、默认模型和 Git 提供商账号都归个人管理，不再依赖 Project。'], remote: ['Page 03 · Remote management','Remote 页面只管理设备；日常启动入口已经合并进 Work Home 的上下文选择器。'] };
+      const annotations = { home: ['Unified Work Home','Welcome、Repository workspace 与 Remote workplace 合并为一个工作面；切换上下文后，下方内容原地更新。'], settings: ['Personal settings','从头像进入账号设置；模型授权、默认模型和 Git 提供商账号都归个人管理。'] };
       function useIcon(element,id) { const use = element?.querySelector('use'); if (use) use.setAttribute('href','./assets/icons.svg#'+id); }
+      function closeAccountMenu() { accountMenu.hidden = true; accountToggle.setAttribute('aria-expanded','false'); }
       function showScreen(name) {
-        const target = ['home','settings','remote'].includes(name) ? name : 'home';
+        const target = ['home','settings'].includes(name) ? name : 'home';
         screens.forEach(screen => { screen.hidden = screen.dataset.screen !== target; });
-        flowButtons.forEach(button => button.dataset.flow === target ? button.setAttribute('aria-current','step') : button.removeAttribute('aria-current'));
-        document.querySelectorAll('.global-link').forEach(button => button.classList.toggle('is-active',button.dataset.global === target));
         const copy = annotations[target]; annotation.innerHTML = `<strong>${copy[0]}</strong>${copy[1]}`;
+        closeAccountMenu();
       }
       function renderContext() {
         const remote = context.kind === 'remote';
         document.querySelector('[data-context-label]').textContent = context.name;
         document.querySelector('[data-target-label]').textContent = context.target;
-        document.querySelector('[data-workspace-title]').textContent = remote ? context.target.replace('~/work/','cnjack/').replace('~/src/','platform/') : context.name;
+        document.querySelector('[data-workspace-title]').textContent = remote ? (context.repository || 'No Repository detected') : context.name;
         document.querySelector('[data-workspace-meta]').textContent = remote ? `via ${context.name} · ${context.target}` : `${context.provider} · ${context.target}`;
         document.querySelector('[data-execution-place]').innerHTML = remote ? `<svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg>${context.name}` : `<svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg>Cloud runner`;
         document.querySelector('[data-remote-banner]').hidden = !remote;
@@ -299,17 +287,15 @@
         useIcon(document.querySelector('[data-target-icon]'),remote ? 'i-projects' : 'i-git');
         useIcon(document.querySelector('[data-summary-icon]'),remote ? 'i-projects' : 'i-git');
       }
-      flowButtons.forEach(button => button.addEventListener('click',() => showScreen(button.dataset.flow)));
       document.querySelectorAll('[data-global]').forEach(button => button.addEventListener('click',() => showScreen(button.dataset.global)));
-      document.querySelectorAll('[data-global-tab]').forEach(button => button.addEventListener('click',() => { showScreen('home'); document.querySelector(`[data-tab="${button.dataset.globalTab}"]`)?.click(); }));
-      document.querySelector('[data-context-toggle]').addEventListener('click',event => { event.stopPropagation(); targetMenu.hidden = true; contextMenu.hidden = !contextMenu.hidden; event.currentTarget.setAttribute('aria-expanded',String(!contextMenu.hidden)); });
-      document.querySelector('[data-target-toggle]').addEventListener('click',event => { event.stopPropagation(); contextMenu.hidden = true; targetMenu.hidden = !targetMenu.hidden; event.currentTarget.setAttribute('aria-expanded',String(!targetMenu.hidden)); });
-      document.querySelectorAll('[data-context-kind]').forEach(option => option.addEventListener('click',() => { context = { kind: option.dataset.contextKind, name: option.dataset.contextName, provider: option.dataset.provider, target: option.dataset.target }; document.querySelectorAll('[data-context-kind]').forEach(item => item.classList.toggle('is-selected',item === option)); contextMenu.hidden = true; renderContext(); }));
-      document.querySelectorAll('[data-target-option]').forEach(option => option.addEventListener('click',() => { context.target = option.dataset.targetOption; const group = option.closest('.menu-group'); group.querySelectorAll('[data-target-option]').forEach(item => item.classList.toggle('is-selected',item === option)); targetMenu.hidden = true; renderContext(); }));
-      document.querySelectorAll('[data-select-device]').forEach(button => button.addEventListener('click',() => { const name = button.dataset.selectDevice; context = { kind:'remote', name, provider:'Remote', target:name === 'dev-mbp-01' ? '~/work/jcode' : '~/src/jcloud' }; renderContext(); showScreen('home'); targetMenu.hidden = false; }));
+      accountToggle.addEventListener('click',event => { event.stopPropagation(); contextMenu.hidden = true; targetMenu.hidden = true; accountMenu.hidden = !accountMenu.hidden; accountToggle.setAttribute('aria-expanded',String(!accountMenu.hidden)); });
+      document.querySelector('[data-context-toggle]').addEventListener('click',event => { event.stopPropagation(); closeAccountMenu(); targetMenu.hidden = true; contextMenu.hidden = !contextMenu.hidden; event.currentTarget.setAttribute('aria-expanded',String(!contextMenu.hidden)); });
+      document.querySelector('[data-target-toggle]').addEventListener('click',event => { event.stopPropagation(); closeAccountMenu(); contextMenu.hidden = true; targetMenu.hidden = !targetMenu.hidden; event.currentTarget.setAttribute('aria-expanded',String(!targetMenu.hidden)); });
+      document.querySelectorAll('[data-context-kind]').forEach(option => option.addEventListener('click',() => { context = { kind: option.dataset.contextKind, name: option.dataset.contextName, provider: option.dataset.provider, target: option.dataset.target, repository: option.dataset.repository }; document.querySelectorAll('[data-context-kind]').forEach(item => item.classList.toggle('is-selected',item === option)); contextMenu.hidden = true; renderContext(); }));
+      document.querySelectorAll('[data-target-option]').forEach(option => option.addEventListener('click',() => { context.target = option.dataset.targetOption; context.repository = option.dataset.repository; const group = option.closest('.menu-group'); group.querySelectorAll('[data-target-option]').forEach(item => item.classList.toggle('is-selected',item === option)); targetMenu.hidden = true; renderContext(); }));
       document.querySelectorAll('[data-tab]').forEach(tab => tab.addEventListener('click',() => { document.querySelectorAll('[data-tab]').forEach(item => item.classList.toggle('is-active',item === tab)); document.querySelectorAll('[data-tab-panel]').forEach(panel => { panel.hidden = panel.dataset.tabPanel !== tab.dataset.tab; }); }));
       document.querySelector('[data-composer]').addEventListener('submit',event => event.preventDefault());
-      document.addEventListener('click',event => { if (!event.target.closest('.composer')) { contextMenu.hidden = true; targetMenu.hidden = true; } });
+      document.addEventListener('click',event => { if (!event.target.closest('.composer')) { contextMenu.hidden = true; targetMenu.hidden = true; } if (!event.target.closest('.account-control')) closeAccountMenu(); });
       renderContext();
     })();
   </script>
