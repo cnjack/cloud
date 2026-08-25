@@ -1136,8 +1136,8 @@ func (s *PGStore) CreateRunPluginSnapshots(ctx context.Context, snapshots []doma
 			      AND pi.status='enabled' AND pi.last_health_error=''
 			      AND pc.plugin_enabled=TRUE AND pc.config_revision=pi.config_revision
 			      AND pi.credential_version_id<>''
-			      AND ((pi.provider='github' AND pi.github_installation_id<>'')
-			        OR (pi.provider<>'github' AND pi.access_token_enc IS NOT NULL))
+			      AND (pi.access_token_enc IS NOT NULL
+			        OR (pi.provider='github' AND pi.github_installation_id<>''))
 			  )`, runID); err != nil {
 			return fmt.Errorf("revalidate run plugin snapshots: %w", err)
 		}
@@ -1162,10 +1162,8 @@ func (s *PGStore) CreateRunPluginSnapshots(ctx context.Context, snapshots []doma
 			WHERE r.id=$1 AND pi.id=$2
 			  AND pi.status='enabled' AND pi.last_health_error=''
 			  AND pc.plugin_enabled=TRUE
-			  AND (
-			    (pi.provider='github' AND pi.github_installation_id<>'')
-			    OR (pi.provider<>'github' AND pi.access_token_enc IS NOT NULL)
-			  )
+			  AND (pi.access_token_enc IS NOT NULL
+			    OR (pi.provider='github' AND pi.github_installation_id<>''))
 			ON CONFLICT DO NOTHING`, snap.RunID, snap.InstallationID, snap.CreatedAt); err != nil {
 			return fmt.Errorf("create run plugin snapshot: %w", err)
 		}

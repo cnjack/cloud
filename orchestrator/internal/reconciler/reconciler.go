@@ -2531,14 +2531,10 @@ func pluginInstallationEligible(in *domain.PluginInstallation) bool {
 	if in == nil || in.Status != domain.PluginStatusEnabled || in.LastHealthError != "" {
 		return false
 	}
-	// GitHub deliberately has no persisted OAuth/runtime access token: the
-	// internal issuer exchanges the installation id + encrypted App key for a
-	// short-lived token on each sync. Other providers need their encrypted
-	// project-scoped access token to be present before a run is snapshotted.
-	if in.Provider == domain.PluginGitHub {
-		return in.GitHubInstallID != ""
-	}
-	return in.TokenSet()
+	// GitHub supports both an Account OAuth grant and an App installation. The
+	// former is used by the account-level composer; the latter remains available
+	// for explicitly installed integrations.
+	return in.RuntimeCredentialSet()
 }
 
 func (r *Reconciler) pluginInstallationEligibleNow(ctx context.Context, in *domain.PluginInstallation) bool {

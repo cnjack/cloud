@@ -1159,8 +1159,7 @@ func (m *MemStore) ClaimRunDispatch(_ context.Context, id, jobName, tokenHash, p
 			installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" ||
 			!cfg.PluginEnabled || cfg.ConfigRevision != installation.ConfigRevision ||
 			installation.CredentialVersionID == "" ||
-			(installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
-			(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
+			!installation.RuntimeCredentialSet() {
 			return nil, fmt.Errorf("%w: plugin %s", ErrDispatchClaimUnavailable, snap.InstallationID)
 		}
 		if snap.InstallationID == requiredInstallationID {
@@ -3980,8 +3979,7 @@ func (m *MemStore) CreateRunPluginSnapshots(_ context.Context, snapshots []domai
 				installation.LastHealthError != "" ||
 				!configOK || !cfg.PluginEnabled || cfg.ConfigRevision != installation.ConfigRevision ||
 				installation.CredentialVersionID == "" ||
-				(installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
-				(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
+				!installation.RuntimeCredentialSet() {
 				delete(staged[runID], installationID)
 			}
 		}
@@ -4001,8 +3999,7 @@ func (m *MemStore) CreateRunPluginSnapshots(_ context.Context, snapshots []domai
 			installation.LastHealthError != "" ||
 			!configOK || !cfg.PluginEnabled || cfg.ConfigRevision != installation.ConfigRevision ||
 			installation.CredentialVersionID == "" ||
-			(installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
-			(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
+			!installation.RuntimeCredentialSet() {
 			continue
 		}
 		if snap.CreatedAt.IsZero() {

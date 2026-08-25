@@ -14,6 +14,8 @@ import type {
 } from 'jtype-board-react';
 import type {
   AddMemberInput,
+  AccountRepositoryCatalog,
+  AccountTaskResponse,
   ApiKey,
   ApiKeysEnvelope,
   AuthProviderInfo,
@@ -60,6 +62,7 @@ import type {
   ScmProviderCapabilities,
   SetupStatus,
   SetupInput,
+  StartAccountTaskInput,
   ProjectModels,
   ProjectModel,
   ProjectsEnvelope,
@@ -131,6 +134,10 @@ export interface ApiClient {
   getMe(): Promise<Me>;
 
   listProjects(): Promise<Project[]>;
+  /** Repositories visible to the current Account; no Cloud association required. */
+  listAccountRepositories(q?: string): Promise<AccountRepositoryCatalog>;
+  /** Resolve an Account repository and create its task in one request. */
+  startAccountTask(input: StartAccountTaskInput): Promise<AccountTaskResponse>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(id: string): Promise<Project>;
   /** PATCH /projects/{id} — only the provided fields are updated (11-api.md §2.1). */
@@ -785,6 +792,10 @@ export function createHttpClient(
     // Services (blueprint §4).
     listRepositories: async () =>
       (await req<{ repositories: Service[] }>('/repositories')).repositories ?? [],
+    listAccountRepositories: (q) =>
+      req<AccountRepositoryCatalog>(`/account/repositories${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+    startAccountTask: (input) =>
+      req<AccountTaskResponse>('/account/tasks', { method: 'POST', body: JSON.stringify(input) }),
     getRepository: (repositoryId) =>
       req<Service>(`/repositories/${encodeURIComponent(repositoryId)}`),
     listServices: async (projectId) =>

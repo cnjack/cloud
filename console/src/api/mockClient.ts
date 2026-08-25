@@ -21,6 +21,8 @@ import type {
 } from 'jtype-board-react';
 import type {
   AddMemberInput,
+  AccountRepositoryCatalog,
+  AccountTaskResponse,
   ApiKey,
   AutomationExecution,
   AutomationExecutionsPage,
@@ -34,6 +36,7 @@ import type {
   CreateRunInput,
   CreateServiceInput,
   FailureReason,
+  GitProvider,
   CreateModelInput,
   CreateModelProviderInput,
   CreateProviderModelInput,
@@ -69,6 +72,7 @@ import type {
   ResumeSessionOptions,
   RunStatus,
   Service,
+  StartAccountTaskInput,
   KanbanCardExecutionsPage,
   ServiceKanbanPolicy,
 	ServiceBranch,
@@ -194,6 +198,12 @@ const DEMO_USERS: UserSearchResult[] = [
 const DEMO_PLUGIN_REPOSITORIES: PluginRepositoryResource[] = [
   { id: 'repo-1', full_name: 'acme/demo', clone_url: 'https://example.test/acme/demo.git', html_url: 'https://example.test/acme/demo', default_branch: 'main', private: false },
   { id: 'repo-2', full_name: 'acme/platform', clone_url: 'https://example.test/acme/platform.git', html_url: 'https://example.test/acme/platform', default_branch: 'main', private: true },
+];
+
+const DEMO_ACCOUNT_REPOSITORIES = [
+  { id: 101, full_name: 'acme/demo', description: 'Demo web app', default_branch: 'main', private: false },
+  { id: 102, full_name: 'acme/api', description: 'Backend API', default_branch: 'main', private: true },
+  { id: 103, full_name: 'jcloud/seed', description: 'Seed repository', default_branch: 'main', private: false },
 ];
 
 /** "owner/name" from a provider-shaped http(s) URL, or "" otherwise. */
@@ -2304,6 +2314,73 @@ export function createMockClient(): ApiClient {
     async listRepositories() {
       return delay([...services.values()].flat().map((service) => structuredClone(service)));
     },
+    async listAccountRepositories(q = ''): Promise<AccountRepositoryCatalog> {
+      const needle = q.trim().toLowerCase();
+      const materialized = [...services.values()].flat();
+      const repositories = DEMO_ACCOUNT_REPOSITORIES
+        .filter((repo) => !needle || repo.full_name.toLowerCase().includes(needle))
+        .map((repo) => {
+          const service = materialized.find((candidate) =>
+            candidate.provider === 'gitea' && candidate.repo_owner_name === repo.full_name);
+          return {
+            provider: 'gitea' as GitProvider,
+            provider_repo_id: String(repo.id),
+            repository_id: service?.id,
+            full_name: repo.full_name,
+            description: repo.description,
+            default_branch: repo.default_branch,
+            private: repo.private,
+            execution_available: true,
+          };
+        });
+      return delay({
+        repositories,
+        sources: [{ provider: 'gitea', account: 'demo', status: 'ready' }],
+      });
+    },
+    async startAccountTask(input: StartAccountTaskInput): Promise<AccountTaskResponse> {
+      const target = DEMO_ACCOUNT_REPOSITORIES.find((repo) => String(repo.id) === input.provider_repo_id);
+      if (input.provider !== 'gitea' || !target) throw new ApiError(404, 'repository not found');
+      let projectId = '';
+      let service: Service | undefined;
+      for (const [pid, list] of services) {
+        service = list.find((candidate) => candidate.provider === input.provider &&
+          candidate.repo_owner_name === target.full_name);
+        if (service) {
+          projectId = pid;
+          break;
+        }
+      }
+      if (!service) {
+        const project = [...projects.values()][0] ?? {
+          id: genId('proj'),
+          name: 'Personal workspace',
+          created_at: nowISO(),
+        };
+        if (!projects.has(project.id)) registerProject(project);
+        projectId = project.id;
+        service = {
+          id: genId('svc'),
+          project_id: projectId,
+          name: target.full_name,
+          repo_kind: 'provider',
+          provider: 'gitea',
+          provider_repo_id: target.id,
+          repo_owner_name: target.full_name,
+          repo_html_url: mockRepoHTMLURL('gitea', target.full_name),
+          default_branch: target.default_branch,
+          git_mode: 'draft_pr',
+          created_at: nowISO(),
+        };
+        services.get(projectId)!.push(service);
+      }
+      const modelId = resolveModelForRun(projectId, service, input.model_id);
+      const run = makeRun(projectId, service.id, input.prompt, undefined, 1, true,
+        input.permission_mode === 'approval' ? 'approval' : '');
+      run.model_id = modelId ?? undefined;
+      run.model_name = modelId ? models.get(modelId)?.model_name : undefined;
+      return delay({ run: publicRun(run), repository: structuredClone(service) });
+    },
     async getRepository(repositoryId: string) {
       const repository = [...services.values()].flat().find((service) => service.id === repositoryId);
       if (!repository) throw new ApiError(404, 'repository not found');
@@ -2566,13 +2643,10 @@ export function createMockClient(): ApiClient {
       if (provider !== 'gitea') {
         throw new ApiError(403, `no ${provider} credential available — link your ${provider} account first`);
       }
-      const all = [
-        { id: 101, full_name: 'acme/demo', description: 'Demo web app', default_branch: 'main', private: false },
-        { id: 102, full_name: 'acme/api', description: 'Backend API', default_branch: 'main', private: true },
-        { id: 103, full_name: 'jcloud/seed', description: 'Seed repository', default_branch: 'main', private: false },
-      ];
       const needle = (q ?? '').trim().toLowerCase();
-      return delay(needle ? all.filter((r) => r.full_name.toLowerCase().includes(needle)) : all);
+      return delay(needle
+        ? DEMO_ACCOUNT_REPOSITORIES.filter((repo) => repo.full_name.toLowerCase().includes(needle))
+        : DEMO_ACCOUNT_REPOSITORIES);
     },
 
     async listServiceBranches(serviceId: string): Promise<ServiceBranch[]> {

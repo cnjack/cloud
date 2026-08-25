@@ -256,8 +256,7 @@ func (s *Server) serviceKanbanRepositoryBlocker(r *http.Request, svc *domain.Ser
 		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" {
 		return "provider_unavailable", "repository_owner"
 	}
-	if (installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
-		(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
+	if !installation.RuntimeCredentialSet() {
 		return "provider_unavailable", "repository_owner"
 	}
 	cfg, err := s.st.GetProviderConfig(r.Context(), installation.Provider)

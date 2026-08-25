@@ -249,6 +249,18 @@ orchestrator 的兜底分类**不覆盖**它。
 
 所有端点要求 `Authorization: Bearer <CONSOLE_TOKEN>`。
 
+### 2.0 Account task composer
+
+个人 Cloud 的新任务入口按登录 Account 工作，不要求先创建或关联 Repository：
+
+| 端点 | 角色 | 说明 |
+|---|---|---|
+| `GET /api/v1/account/repositories?q?` | 登录 Account | 从 Account 已连接的 Git 身份实时列出可访问仓库；尚未在 Cloud 使用过的仓库也返回，`repository_id` 仅在内部详情已物化时出现；Provider 失败按 source 显式标记 unavailable |
+| `POST /api/v1/account/tasks` | 登录 Account | `{provider,provider_repo_id,prompt,base_branch?,model_id?,model_effort?,session?,permission_mode?}`；服务端验证当前账号仓库权限，在同一请求中按需创建/复用隐藏的个人 Project 与 Repository，再创建 Run；无需前置 connect Repository 请求 |
+
+service principal/API key 不能调用这两个 Account 入口。Provider 账号丢失、Cloud
+执行被禁用、模型未授权、分支失效等情况返回 typed error，绝不创建看似成功的 Run。
+
 ### 2.1 Projects
 
 #### `POST /api/v1/projects` — 创建 project
@@ -792,8 +804,10 @@ console Cluster 页"同步最新镜像"按钮的触发端点。orchestrator 维�
 单行 `cluster_model_config` 演进为**provider-owned 多行模型目录** +
 **model↔project 授权表**。provider 持有 endpoint、认证方式、只写凭据与目录探测状态；
 model 持有上游 model id、context window、capabilities、Account grants 与
-Project grants。Account grant 仅用于该账号 Desktop 的 device-token
-`cloud_proxy`；Project grant 仅用于 Cloud run，两者并集展示但不互相扩大权限。
+Project grants。Account grant 用于该账号 Desktop 的 device-token
+`cloud_proxy`，也用于登录用户从 Account/Repository composer 创建的 Cloud Run；
+Project grant 保留给 service principal/API key 等无登录 Account 的执行路径。
+两者并集展示但不互相扩大权限。
 生效模型按 **run 所属 project** 解析(见 `internal/modelcfg`);D16 反向代理不变
 (真 key 永不进 pod)。**旧的 `GET/PUT/DELETE /api/v1/system/model` 已下线**,
 console 全部走以下新端点。api key **只写不读**(回显 `api_key_set` 布尔位),
@@ -817,6 +831,8 @@ console 全部走以下新端点。api key **只写不读**(回显 `api_key_set`
 | `PUT /api/v1/system/models/{id}/account-grants/{userId}` | cluster-admin | 授权某 Account 的所有当前及未来已认证 Desktop(幂等);model/account 不存在 → `404` |
 | `DELETE /api/v1/system/models/{id}/account-grants/{userId}` | cluster-admin | 立即撤销该 Account 所有 Desktop 的代理访问(幂等) |
 | `GET /api/v1/projects/{id}/models` | member+ | 本 project 被授权的模型 `{models:[{id,name,model_name}], env_fallback}`——**绝不含 base_url/key** |
+| `GET /api/v1/account/models` | 登录 Account | 当前账号直接获授权的 composer 模型；不混入旧 Project grants |
+| `POST /api/v1/account/tasks` | 登录 Account | `{model_id?}` 只能选择直接 Account grant（或隐藏个人 Project 自有模型） |
 | `PATCH /api/v1/repositories/{id}` | owner | `{default_model_id?}`:见下方 presence 警示 |
 | `POST /api/v1/repositories/{id}/runs` | member+ | 新增可选 `{model_id?}`(composer 选);见下方解析链 |
 
@@ -831,8 +847,8 @@ capabilities，不按名称猜测。display name、context window 与 capabiliti
 Account grant 与 Project grant 均只允许指向 `project_id IS NULL` 的
 Cluster-global model。Project-owned model 只能由其所属 Project 使用，尝试跨范围
 grant 返回 `409 model_not_grantable`。Account grant 不修改 Project membership，
-也不会让账号在 Cloud 中发起任何 Project run；目录与 device proxy 每次请求共用同一
-授权解析函数，撤销不经过缓存。
+它只授权该账号自己的 Account/Repository composer 与 device proxy，不授权其访问
+其他账号或 Project。目录与运行创建每次请求共用同一直接授权边界，撤销不经过缓存。
 
 > **⚠️ `default_model_id` 的 presence 语义与 `PATCH /projects` 不同(易踩坑)。**
 > 该字段用 `*string` 指针解码,故 **JSON 省略字段** 与 **显式 `null`** 都解成 nil =

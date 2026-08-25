@@ -87,12 +87,10 @@ export function ProjectDetailPage({
   projectIdOverride,
   repositoryIdOverride,
   repositoryMode = false,
-  connectMode = false,
 }: {
   projectIdOverride?: string;
   repositoryIdOverride?: string;
   repositoryMode?: boolean;
-  connectMode?: boolean;
 } = {}) {
   const { t } = useTranslation();
   const params = useParams();
@@ -144,7 +142,7 @@ export function ProjectDetailPage({
   const activeService = services.find((service) => service.id === activeServiceId);
   const serviceBranches = useServiceBranches(activeServiceId, canRun && !!activeService);
   const workspaceTab = workspaceLocation.tab;
-  const addOpen = connectMode || searchParams.get('add') === 'service';
+  const addOpen = searchParams.get('add') === 'service';
   const projectSettingsOpen = !repositoryMode && canManage && searchParams.get('view') === 'project-settings';
   const projectSettingsSection = resolveProjectSettingsSection(searchParams.get('settings'), canManage);
 
@@ -326,10 +324,6 @@ export function ProjectDetailPage({
 
   const closeAddService = () => {
     if (createService.isPending) return;
-    if (connectMode) {
-      navigate('/repositories');
-      return;
-    }
     const next = new URLSearchParams(searchParams);
     next.delete('add');
     setSearchParams(next, { replace: true });
@@ -500,7 +494,7 @@ export function ProjectDetailPage({
         toast.push({ kind: 'success', message: t('projectDetail.repoAdded', { name: repo.full_name }) });
         setRepoQuery('');
         if (repositoryMode) {
-          navigate(`/repositories/${encodeURIComponent(repository.id)}`, { replace: connectMode });
+          navigate(`/repositories/${encodeURIComponent(repository.id)}`, { replace: true });
           return;
         }
         closeAddService();

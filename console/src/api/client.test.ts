@@ -107,6 +107,27 @@ describe('httpClient — request shaping', () => {
     expect(calls[1]!.url).toBe('/api/v1/repositories/repo%2F1');
   });
 
+  it('lists Account repositories and starts a task without a connect request', async () => {
+    const { calls } = mockFetch(({ url, init }) => {
+      if (url.startsWith('/api/v1/account/repositories')) {
+        return { body: { repositories: [{ provider: 'gitea', provider_repo_id: '42', full_name: 'acme/payments', default_branch: 'main', private: true }], sources: [] } };
+      }
+      return { status: 201, body: { run: { id: 'run-1' }, repository: { id: 'repo-1' }, request: JSON.parse(init!.body as string) } };
+    });
+    const client = createHttpClient('t');
+    await expect(client.listAccountRepositories('pay')).resolves.toMatchObject({ repositories: [{ provider_repo_id: '42' }] });
+    await expect(client.startAccountTask({
+      provider: 'gitea', provider_repo_id: '42', prompt: 'Fix checkout', model_id: 'model-1', session: true,
+    })).resolves.toMatchObject({ run: { id: 'run-1' }, repository: { id: 'repo-1' } });
+
+    expect(calls[0]!.url).toBe('/api/v1/account/repositories?q=pay');
+    expect(calls[1]!.url).toBe('/api/v1/account/tasks');
+    expect(calls[1]!.init!.method).toBe('POST');
+    expect(JSON.parse(calls[1]!.init!.body as string)).toEqual({
+      provider: 'gitea', provider_repo_id: '42', prompt: 'Fix checkout', model_id: 'model-1', session: true,
+    });
+  });
+
   it('creates a manual Agent Board occurrence instead of a direct Run', async () => {
     const { calls } = mockFetch(({ init }) => ({
       status: 202,

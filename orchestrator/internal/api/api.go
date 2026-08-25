@@ -441,6 +441,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/account/settings", s.authed(s.handleGetAccountSettings))
 	mux.Handle("GET /api/v1/account/usage", s.authed(s.handleGetAccountUsage))
 	mux.Handle("GET /api/v1/account/models", s.authed(s.handleListAccountModels))
+	mux.Handle("GET /api/v1/account/repositories", s.authed(s.handleListAccountRepositories))
+	mux.Handle("POST /api/v1/account/tasks", s.authed(s.handleCreateAccountTask))
 	mux.Handle("PUT /api/v1/account/settings", s.authed(s.handlePutAccountSettings))
 	mux.Handle("GET /api/v1/devices/{id}", s.authed(s.handleGetDevice))
 	mux.Handle("DELETE /api/v1/devices/{id}", s.authed(s.handleDeleteDevice))

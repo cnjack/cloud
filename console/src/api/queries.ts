@@ -11,6 +11,7 @@ import {
 import { useApi } from './ApiProvider';
 import type {
   AddMemberInput,
+  StartAccountTaskInput,
   AutomationExecution,
   CreateProjectAutomationInput,
   CreateApiKeyInput,
@@ -76,6 +77,7 @@ export const qk = {
   system: ['system'] as const,
   models: ['models'] as const,
   accountModels: ['account-models'] as const,
+  accountRepositories: (q: string) => ['account-repositories', q] as const,
   modelProviders: ['model-providers'] as const,
   modelProviderCatalog: (id: string) => ['model-provider-catalog', id] as const,
   projectModelProviders: (projectId: string) => ['project-model-providers', projectId] as const,
@@ -209,6 +211,32 @@ export function useRuns(projectId: string) {
       const data = query.state.data as Run[] | undefined;
       if (!data) return false;
       return data.some((r) => !isTerminal(r.status)) ? 3000 : false;
+    },
+  });
+}
+
+/** Account repository catalog used by the global task composer. */
+export function useAccountRepositories(q = '') {
+  const api = useApi();
+  return useQuery({
+    queryKey: qk.accountRepositories(q),
+    queryFn: () => api.listAccountRepositories(q),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+/** Starts a task without requiring a visible Repository connect step. */
+export function useStartAccountTask() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: StartAccountTaskInput) => api.startAccountTask(input),
+    onSuccess: ({ run, repository }) => {
+      qc.setQueryData(qk.run(run.id), run);
+      qc.setQueryData(qk.repository(repository.id), repository);
+      qc.invalidateQueries({ queryKey: qk.repositories });
+      qc.invalidateQueries({ queryKey: ['account-repositories'] });
     },
   });
 }

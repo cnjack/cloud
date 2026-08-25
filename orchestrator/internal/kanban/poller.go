@@ -594,8 +594,7 @@ func (p *Poller) pluginKanbanRepositoryBlocker(ctx context.Context, svc *domain.
 		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" {
 		return "provider_unavailable", "Repair the repository Provider connection.", "repository_owner"
 	}
-	if (installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
-		(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
+	if !installation.RuntimeCredentialSet() {
 		return "provider_unavailable", "Reconnect the repository Provider credential.", "repository_owner"
 	}
 	cfg, err := p.st.GetProviderConfig(ctx, installation.Provider)

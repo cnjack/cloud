@@ -1,16 +1,15 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCreateProject, useProjects } from '../api/queries';
-import { ActionLink, PageHeader, SurfaceInner } from '../components/PageLayout';
+import { PageHeader, SurfaceInner } from '../components/PageLayout';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import { ProjectPluginsPanel } from './ProjectPluginsPanel';
-import { ProjectDetailPage } from './ProjectDetailPage';
 
 /**
  * Repository onboarding keeps the singleton Project as an implementation
  * boundary. The user never chooses, names, or navigates that container.
  */
-export function ConnectRepositoryPage({ connectionsOnly = false }: { connectionsOnly?: boolean }) {
+export function ConnectRepositoryPage() {
   const { t } = useTranslation();
   const projects = useProjects();
   const createProject = useCreateProject();
@@ -41,25 +40,14 @@ export function ConnectRepositoryPage({ connectionsOnly = false }: { connections
   }
   if (!personalProject) return <LoadingBlock label={t('repositories.preparing')} />;
 
-  if (connectionsOnly) {
-    return (
-      <SurfaceInner>
-        <PageHeader
-          eyebrow={t('repositories.eyebrow')}
-          title={t('repositories.connectionsTitle')}
-          description={t('repositories.connectionsDescription')}
-          actions={<ActionLink to="/repositories/connect" variant="primary">{t('repositories.chooseRepository')}</ActionLink>}
-        />
-        <ProjectPluginsPanel project={personalProject} repositoryMode />
-      </SurfaceInner>
-    );
-  }
-
   return (
-    <ProjectDetailPage
-      projectIdOverride={personalProject.id}
-      repositoryMode
-      connectMode
-    />
+    <SurfaceInner>
+      <PageHeader
+        eyebrow={t('repositories.eyebrow')}
+        title={t('repositories.connectionsTitle')}
+        description={t('repositories.connectionsDescription')}
+      />
+      <ProjectPluginsPanel project={personalProject} repositoryMode />
+    </SurfaceInner>
   );
 }

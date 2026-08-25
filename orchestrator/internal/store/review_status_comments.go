@@ -198,8 +198,8 @@ func lockReviewStatusGrantTx(ctx context.Context, tx pgx.Tx, intent *domain.Revi
 		WHERE pi.id=$1 AND pi.project_id=$2 AND pi.provider=$3
 		  AND pi.status='enabled' AND pi.last_health_error=''
 		  AND pi.credential_version_id<>''
-		  AND ((pi.provider='github' AND pi.github_installation_id<>'')
-		    OR (pi.provider<>'github' AND pi.access_token_enc IS NOT NULL))
+		  AND (pi.access_token_enc IS NOT NULL
+		    OR (pi.provider='github' AND pi.github_installation_id<>''))
 		FOR SHARE OF pi`, installationID, projectID, intent.Key.Provider).
 		Scan(&installationRevision, &credentialVersionID); err != nil {
 		return fmt.Errorf("%w: accepted review installation changed", ErrConflict)
@@ -669,8 +669,7 @@ func (m *MemStore) buildReviewStatusSnapshotLocked(run *domain.Run, intent *doma
 	if !ok || installation.ProjectID != run.ProjectID || domain.GitProvider(installation.Provider) != intent.Key.Provider ||
 		installation.Status != domain.PluginStatusEnabled || installation.LastHealthError != "" ||
 		installation.CredentialVersionID == "" ||
-		(installation.Provider == domain.PluginGitHub && installation.GitHubInstallID == "") ||
-		(installation.Provider != domain.PluginGitHub && !installation.TokenSet()) {
+		!installation.RuntimeCredentialSet() {
 		return domain.RunPluginSnapshot{}, false, fmt.Errorf("%w: accepted review installation changed", ErrConflict)
 	}
 	cfg, ok := m.providerConfigs[installation.Provider]

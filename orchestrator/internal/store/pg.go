@@ -1187,8 +1187,8 @@ func (s *PGStore) ClaimRunDispatch(ctx context.Context, id, jobName, tokenHash, 
 			FROM plugin_installations
 			WHERE id=$1 AND project_id=$2
 			  AND status='enabled' AND last_health_error=''
-			  AND ((provider='github' AND github_installation_id<>'')
-			    OR (provider<>'github' AND access_token_enc IS NOT NULL))
+			  AND (access_token_enc IS NOT NULL
+			    OR (provider='github' AND github_installation_id<>''))
 			FOR SHARE`, snap.InstallationID, cur.ProjectID).Scan(&lockedProvider, &installationRevision, &credentialVersionID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("%w: plugin %s", ErrDispatchClaimUnavailable, snap.InstallationID)

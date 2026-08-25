@@ -81,8 +81,8 @@ function AuthenticatedApp() {
             <Route path="/" element={<Navigate to="/repositories" replace />} />
             <Route path="/setup" element={<SetupPage />} />
             <Route path="/repositories" element={<RepositoriesPage />} />
-            <Route path="/repositories/connect" element={<ConnectRepositoryPage />} />
-            <Route path="/connections/repositories" element={<ConnectRepositoryPage connectionsOnly />} />
+            <Route path="/repositories/connect" element={<Navigate to="/repositories" replace />} />
+            <Route path="/connections/repositories" element={<ConnectRepositoryPage />} />
             <Route path="/repositories/:repositoryId" element={<RepositoryDetailPage />} />
             <Route path="/repositories/:repositoryId/automations/new" element={<RepositoryAutomationPage mode="edit" />} />
             <Route path="/repositories/:repositoryId/automations/:automationId" element={<RepositoryAutomationPage mode="detail" />} />

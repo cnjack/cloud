@@ -107,6 +107,13 @@ type PluginInstallation struct {
 
 func (p PluginInstallation) TokenSet() bool { return len(p.AccessTokenEnc) > 0 }
 
+// RuntimeCredentialSet reports whether this installation can issue a task
+// credential. Account-authorized GitHub uses the human OAuth token, while an
+// explicitly selected GitHub App installation mints a short-lived token.
+func (p PluginInstallation) RuntimeCredentialSet() bool {
+	return p.TokenSet() || (p.Provider == PluginGitHub && p.GitHubInstallID != "")
+}
+
 // PluginCredentialVersion is an encrypted launch-grant identity record. It is
 // never serialized over the public API. Reconnect/identity replacement creates
 // a new row; OAuth refresh-token rotation updates ciphertext only within the
@@ -401,10 +408,13 @@ func (s RunPluginSnapshot) HasFrozenRuntimeMaterial() bool {
 	if !ValidProviderKind(s.Provider) || s.ProviderConfigRevision <= 0 || s.ProviderBaseURL == "" {
 		return false
 	}
+	if len(s.AccessTokenEnc) > 0 {
+		return true
+	}
 	if s.Provider == PluginGitHub {
 		return s.GitHubInstallID != "" && s.ProviderAppID != "" && len(s.ProviderAppPrivateKeyEnc) > 0
 	}
-	return len(s.AccessTokenEnc) > 0
+	return false
 }
 
 func (s RunPluginSnapshot) HasFrozenRepositoryGrant() bool {

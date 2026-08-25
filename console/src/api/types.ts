@@ -506,6 +506,8 @@ export interface Service {
   name: string;
   repo_kind: RepoKind;
   provider?: GitProvider | string;
+  /** Stable numeric provider repository id used for account-level task reuse. */
+  provider_repo_id?: number;
   repo_owner_name?: string;
   /** Server-derived, browser-safe provider repository URL. */
   repo_html_url?: string;
@@ -1596,6 +1598,43 @@ export interface ProviderRepo {
   default_branch: string;
   private: boolean;
   html_url?: string;
+}
+
+/** A repository visible through one of the current Account's linked providers. */
+export interface AccountRepositoryTarget {
+  provider: GitProvider;
+  provider_repo_id: string;
+  /** Present after this repository has task history or Repository settings. */
+  repository_id?: string;
+  full_name: string;
+  description?: string;
+  default_branch: string;
+  private: boolean;
+  html_url?: string;
+  execution_available?: boolean;
+  execution_error?: string;
+}
+
+export interface AccountRepositorySource {
+  provider: GitProvider;
+  account: string;
+  status: 'ready' | 'unavailable';
+  message?: string;
+}
+
+export interface AccountRepositoryCatalog {
+  repositories: AccountRepositoryTarget[];
+  sources: AccountRepositorySource[];
+}
+
+export interface StartAccountTaskInput extends CreateRunInput {
+  provider: GitProvider;
+  provider_repo_id: string;
+}
+
+export interface AccountTaskResponse {
+  run: Run;
+  repository: Service;
 }
 
 /**
