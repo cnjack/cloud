@@ -5,8 +5,8 @@
   Revision 3 assumptions
   - Welcome and Repository workspace are one continuous Work Home.
   - There is no left navigation rail and no separate Repository detail journey.
-  - The composer owns context selection: GitHub / Gitea / GitLab repositories, with
-    Remote connection exposed as a footer action matching jcode Desktop.
+  - The composer owns context selection in its upper-left corner, matching jcode
+    Desktop: GitHub / Gitea / GitLab repositories plus a Remote connection action.
   - The content immediately below the composer always belongs to the selected context.
   - A Remote workplace may resolve to a Repository, so Board / Reviews / Automations
     stay available while execution happens on that device.
@@ -86,7 +86,8 @@
     .work-hero p { color: var(--muted); font-size: 11.5px; }
 
     .composer { position: relative; z-index: 8; width: min(850px,100%); margin: 25px auto 0; border: 1px solid var(--line-strong); border-radius: 18px; background: #fbfaf8; box-shadow: 0 20px 56px -36px rgba(38,28,17,.45), 0 1px 2px rgba(38,28,17,.06); }
-    .composer textarea { width: 100%; min-height: 101px; resize: none; border: 0; outline: 0; background: transparent; padding: 18px 20px 9px; font-size: 14px; line-height: 1.55; }
+    .composer-context-bar { min-height: 45px; display: flex; align-items: center; gap: 4px; padding: 7px 10px 2px; }
+    .composer textarea { width: 100%; min-height: 78px; resize: none; border: 0; outline: 0; background: transparent; padding: 9px 20px 12px; font-size: 14px; line-height: 1.55; }
     .composer textarea::placeholder { color: #a4a49f; }
     .composer-toolbar { min-height: 55px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #ece9e4; padding: 8px 10px; }
     .tool-group { min-width: 0; display: flex; align-items: center; gap: 4px; }
@@ -97,9 +98,9 @@
     .send-button { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; background: var(--orange); color: #1c140c; }
     .send-button:hover { background: #f37a00; }
 
-    .menu { position: absolute; z-index: 18; top: calc(100% + 7px); overflow: hidden; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 20px 52px -24px rgba(0,0,0,.42); }
-    .context-menu { left: 42px; width: 340px; }
-    .target-menu { left: 244px; width: 265px; }
+    .menu { position: absolute; z-index: 18; top: 45px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 20px 52px -24px rgba(0,0,0,.42); }
+    .context-menu { left: 10px; width: 340px; }
+    .target-menu { left: 202px; width: 265px; }
     .menu-search { padding: 9px; border-bottom: 1px solid var(--line); }
     .menu-search input { width: 100%; height: 32px; border: 1px solid var(--line); border-radius: 6px; padding: 0 9px; outline: 0; }
     .menu-group { padding: 6px; }
@@ -194,13 +195,13 @@
     .settings-row small { margin-top: 2px; color: var(--faint); font-size: 8.5px; }
     .annotation { position: absolute; right: 15px; bottom: 15px; z-index: 7; width: 252px; border: 1px solid #dcc5a9; border-radius: 9px; background: rgba(255,250,242,.97); padding: 10px 11px; box-shadow: 0 13px 30px -22px rgba(50,31,8,.5); color: #6c5237; font-size: 9px; }
     .annotation strong { display: block; margin-bottom: 3px; color: #45311d; font-size: 9.5px; }
-    @media (max-height: 850px) { .prototype-stage { padding-top: 18px; } .app-window { height: calc(100vh - 94px); min-height: 680px; } .screen[data-screen="home"] .screen-inner { padding-top: 23px; } .composer textarea { min-height: 84px; } .tab-content { margin-top: 14px; } .board-column { min-height: 184px; } }
+    @media (max-height: 850px) { .prototype-stage { padding-top: 18px; } .app-window { height: calc(100vh - 94px); min-height: 680px; } .screen[data-screen="home"] .screen-inner { padding-top: 23px; } .composer textarea { min-height: 62px; } .tab-content { margin-top: 14px; } .board-column { min-height: 184px; } }
   </style>
 </head>
 <body>
   <header class="review-bar">
     <div class="review-title"><strong>Unified Work Home</strong><span>UX revision 3 · single product surface</span></div>
-    <span class="review-note">Repository / 远程连接均从 Composer 工作区菜单进入 · 个人设置从头像进入</span>
+    <span class="review-note">工作区选择器位于 Composer 左上角，与 jcode Desktop 一致</span>
   </header>
   <main class="prototype-stage">
     <section class="app-window" aria-label="jcode Cloud unified Work Home prototype">
@@ -221,10 +222,11 @@
             <div class="screen-inner">
               <header class="work-hero"><span class="eyebrow">Jack 的个人工作区</span><h1>接下来想做什么？</h1><p>选择 Repository，或从同一个工作区菜单发起远程连接。</p></header>
               <form class="composer" data-composer>
+                <div class="composer-context-bar"><button class="tool-button is-context" type="button" data-context-toggle aria-expanded="false"><span class="context-mark"><svg class="icon icon-sm" data-context-icon><use href="./assets/icons.svg#i-git" /></svg></span><strong data-context-label>cnjack/jcode</strong><span>⌄</span></button><button class="tool-button" type="button" data-target-toggle aria-expanded="false"><svg class="icon icon-sm" data-target-icon><use href="./assets/icons.svg#i-git" /></svg><span data-target-label>main</span><span>⌄</span></button></div>
                 <textarea aria-label="描述任务" placeholder="描述一个任务…"></textarea>
                 <div class="composer-toolbar">
-                  <div class="tool-group"><button class="tool-button icon-only" type="button" aria-label="添加"><svg class="icon"><use href="./assets/icons.svg#i-plus" /></svg></button><button class="tool-button is-context" type="button" data-context-toggle aria-expanded="false"><span class="context-mark"><svg class="icon icon-sm" data-context-icon><use href="./assets/icons.svg#i-git" /></svg></span><strong data-context-label>cnjack/jcode</strong><span>⌄</span></button><button class="tool-button" type="button" data-target-toggle aria-expanded="false"><svg class="icon icon-sm" data-target-icon><use href="./assets/icons.svg#i-git" /></svg><span data-target-label>main</span><span>⌄</span></button></div>
-                  <div class="tool-group"><button class="tool-button" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-lock" /></svg>请求批准⌄</button><button class="tool-button" type="button">GLM-5.2⌄</button><button class="tool-button" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>极高⌄</button><button class="send-button" type="button" aria-label="发送"><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></div>
+                  <div class="tool-group"><button class="tool-button icon-only" type="button" aria-label="添加"><svg class="icon"><use href="./assets/icons.svg#i-plus" /></svg></button><button class="tool-button" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-lock" /></svg>请求批准⌄</button></div>
+                  <div class="tool-group"><button class="tool-button" type="button">GLM-5.2⌄</button><button class="tool-button" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>极高⌄</button><button class="send-button" type="button" aria-label="发送"><svg class="icon"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></div>
                 </div>
                 <div class="menu context-menu" data-context-menu hidden>
                   <div data-context-root>
