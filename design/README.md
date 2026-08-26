@@ -44,6 +44,7 @@ icons, and small prototype-only interactions live under `assets/`.
 | `desktop-devices-panel.html` | jcode Desktop devices panel: same-account devices and dispatched tasks |
 | `desktop-dispatch.html` | jcode Desktop task dispatch flow: compose, confirm, and dispatched states |
 | `desktop-remote-session.html` | jcode Desktop remote session view with running-on-device banner |
+| `conversation-work-home-v1.html` | Account-level Conversation rail beside Work Home, with Repository-grouped, recent, and current-context design variants |
 
 ## Layout contract
 

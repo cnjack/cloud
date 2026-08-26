@@ -1,0 +1,118 @@
+<!doctype html>
+<!--
+  Conversation Work Home · UX exploration v1 (prototype only)
+
+  Assumptions: the rail is an account-level Conversation index; Reviews stay
+  inside the Repository workspace; Repository, Remote, Task, Board Card, and
+  Conversation identity remain separate until the product logic is decided.
+  Every record below is example data.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>jcode Cloud · Conversation Work Home</title>
+  <link rel="icon" href="./assets/app-icon.svg" />
+  <link rel="stylesheet" href="./assets/prototype.css" />
+  <link rel="stylesheet" href="../console/packages/device-ui/src/product/productTokens.css" />
+  <link rel="stylesheet" href="./assets/conversation-work-home-v1.css" />
+</head>
+<body>
+  <a class="skip-link" href="#prototype">跳到设计稿</a>
+  <header class="review-bar">
+    <div><strong>Conversation Work Home · v1</strong><span>左侧账号级对话索引 · 示例数据</span></div>
+    <div class="review-actions">
+      <div class="variant-switch" aria-label="对话组织方式">
+        <button class="is-active" type="button" data-variant="repository">A · 按 Repository</button>
+        <button type="button" data-variant="recent">B · 最近使用</button>
+        <button type="button" data-variant="context">C · 当前上下文</button>
+      </div>
+      <button class="notes-trigger" type="button" data-notes-toggle aria-expanded="false"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-info" /></svg>待定逻辑 <b>5</b></button>
+    </div>
+  </header>
+
+  <main class="stage" id="prototype">
+    <section class="app-window" aria-label="jcode Cloud Conversation Work Home 设计稿">
+      <div class="window-chrome" aria-hidden="true"><i></i><i></i><i></i><span>jcode Cloud · Work Home</span></div>
+      <div class="app-shell jcode-product">
+        <aside class="conversation-rail" aria-label="Conversation 列表">
+          <header class="rail-brand"><a href="#"><img src="./assets/app-icon.svg" alt="" /><strong>JCODE</strong><small>Cloud</small></a><button type="button" data-rail-toggle aria-label="收起对话列表"><span></span><span></span></button></header>
+          <div class="rail-tools">
+            <button class="new-conversation is-active" type="button" data-new><svg class="icon"><use href="./assets/icons.svg#i-plus" /></svg><span>新对话</span><kbd>⌘ N</kbd></button>
+            <label class="search"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-search" /></svg><input type="search" placeholder="搜索对话" data-search /><kbd>⌘ K</kbd></label>
+          </div>
+          <div class="rail-label"><span data-list-label>按 Repository</span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-sliders" /></svg></div>
+
+          <div class="conversation-scroll">
+            <section data-view="repository">
+              <article class="repo-group is-open">
+                <button class="group-heading" type="button" data-group aria-expanded="true"><svg class="icon icon-sm caret"><use href="./assets/icons.svg#i-chevron-right" /></svg><span class="source-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span><strong>cnjack/jcode</strong><small>GitHub · main</small></span><em>3</em></button>
+                <div class="group-items">
+                  <button class="conversation" type="button" data-conversation data-title="修复 Composer 菜单层级" data-context="cnjack/jcode"><i class="state running"></i><span><strong>修复 Composer 菜单层级</strong><small>Agent 正在运行 · 4 分钟</small></span><time>现在</time></button>
+                  <button class="conversation" type="button" data-conversation data-title="简化 Repository workspace" data-context="cnjack/jcode"><i class="state"></i><span><strong>简化 Repository workspace</strong><small>完成 · 6 次消息</small></span><time>昨天</time></button>
+                  <button class="conversation" type="button" data-conversation data-title="Review login callback" data-context="cnjack/jcode"><i class="state attention"></i><span><strong>Review login callback</strong><small>等待确认</small></span><time>周一</time></button>
+                </div>
+              </article>
+              <article class="repo-group">
+                <button class="group-heading" type="button" data-group aria-expanded="false"><svg class="icon icon-sm caret"><use href="./assets/icons.svg#i-chevron-right" /></svg><span class="source-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span><strong>cnjack/go-chat</strong><small>GitHub · master</small></span><em>2</em></button>
+                <div class="group-items"><button class="conversation" type="button" data-conversation data-title="诊断 WebSocket 重连" data-context="cnjack/go-chat"><i class="state"></i><span><strong>诊断 WebSocket 重连</strong><small>完成 · 无代码变化</small></span><time>8月22日</time></button><button class="conversation" type="button" data-conversation data-title="整理消息存储设计" data-context="cnjack/go-chat"><i class="state"></i><span><strong>整理消息存储设计</strong><small>计划 · 11 次消息</small></span><time>8月18日</time></button></div>
+              </article>
+              <article class="repo-group">
+                <button class="group-heading" type="button" data-group aria-expanded="false"><svg class="icon icon-sm caret"><use href="./assets/icons.svg#i-chevron-right" /></svg><span class="source-icon remote"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span><strong>dev-mbp-01</strong><small>Remote · ~/work/jcode</small></span><em>2</em></button>
+                <div class="group-items"><button class="conversation" type="button" data-conversation data-title="本地验证 shared conversation" data-context="dev-mbp-01 · ~/work/jcode"><i class="state"></i><span><strong>本地验证 shared conversation</strong><small>远程会话 · 已同步</small></span><time>8月20日</time></button><button class="conversation" type="button" data-conversation data-title="检查 pnpm workspace" data-context="dev-mbp-01 · ~/work/jcode"><i class="state offline"></i><span><strong>检查 pnpm workspace</strong><small>设备离线</small></span><time>8月19日</time></button></div>
+              </article>
+            </section>
+
+            <section data-view="recent" hidden>
+              <p class="date-label">今天</p>
+              <button class="conversation flat" type="button" data-conversation data-title="修复 Composer 菜单层级" data-context="cnjack/jcode"><span class="source-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span><strong>修复 Composer 菜单层级</strong><small>cnjack/jcode · Agent 正在运行</small></span><time>现在</time></button>
+              <button class="conversation flat" type="button" data-conversation data-title="简化 Repository workspace" data-context="cnjack/jcode"><span class="source-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span><strong>简化 Repository workspace</strong><small>cnjack/jcode · 完成</small></span><time>昨天</time></button>
+              <p class="date-label">本周</p>
+              <button class="conversation flat" type="button" data-conversation data-title="Review login callback" data-context="cnjack/jcode"><span class="source-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span><strong>Review login callback</strong><small>cnjack/jcode · 等待确认</small></span><time>周一</time></button>
+              <button class="conversation flat" type="button" data-conversation data-title="本地验证 shared conversation" data-context="dev-mbp-01 · ~/work/jcode"><span class="source-icon remote"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg></span><span><strong>本地验证 shared conversation</strong><small>dev-mbp-01 · 已同步</small></span><time>8月20日</time></button>
+            </section>
+
+            <section data-view="context" hidden>
+              <div class="context-summary"><span class="source-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><span><strong>cnjack/jcode</strong><small>仅显示当前 Composer 上下文</small></span></div>
+              <button class="conversation" type="button" data-conversation data-title="修复 Composer 菜单层级" data-context="cnjack/jcode"><i class="state running"></i><span><strong>修复 Composer 菜单层级</strong><small>Agent 正在运行 · 4 分钟</small></span><time>现在</time></button>
+              <button class="conversation" type="button" data-conversation data-title="简化 Repository workspace" data-context="cnjack/jcode"><i class="state"></i><span><strong>简化 Repository workspace</strong><small>完成 · 6 次消息</small></span><time>昨天</time></button>
+              <button class="conversation" type="button" data-conversation data-title="Review login callback" data-context="cnjack/jcode"><i class="state attention"></i><span><strong>Review login callback</strong><small>等待确认</small></span><time>周一</time></button>
+              <button class="all-button" type="button" data-all>查看全部对话 <svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button>
+            </section>
+            <div class="empty" data-empty hidden><svg class="icon"><use href="./assets/icons.svg#i-search" /></svg><strong>没有匹配的对话</strong><small>换个标题或 Repository 名称试试。</small></div>
+          </div>
+          <footer class="rail-footer"><span><i></i>2 台设备在线</span><button type="button" data-theme aria-label="切换主题"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-moon" /></svg></button></footer>
+        </aside>
+
+        <section class="work-surface">
+          <header class="app-header"><button class="mobile-rail" type="button" data-rail-toggle aria-label="打开对话列表"><span></span><span></span></button><small data-surface-label>Work Home</small><div class="account"><button class="account-trigger" type="button" data-account aria-expanded="false"><span>JA</span>Jack⌄</button><button class="language" type="button">中</button><div class="account-menu" data-account-menu hidden><a href="./personal-settings-v1.html"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-user" /></svg>账号设置</a><a href="./cluster-settings-v1.html"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-cluster" /></svg>Cluster 设置 <b>管理员</b></a><button type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-left" /></svg>退出登录</button></div></div></header>
+
+          <div class="surface-scroll">
+            <section class="home-view" data-home>
+              <header class="hero"><span>Jack 的个人工作区</span><h1>接下来想做什么？</h1><p>选择当前账号可访问的 Repository，直接开始对话或任务。</p></header>
+              <form class="composer" data-composer>
+                <div class="context-row"><button type="button"><span class="source-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><strong>cnjack/jcode</strong>⌄</button><span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg>main</span></div>
+                <textarea aria-label="描述任务" placeholder="描述一个任务…" data-input></textarea>
+                <div class="toolbar jcode-product-composer-toolbar"><div><button type="button"><svg class="icon"><use href="./assets/icons.svg#i-plus" /></svg></button><span class="mode-anchor"><button type="button" data-mode aria-expanded="false"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-lock" /></svg>请求批准⌄</button><span class="mode-menu jcode-product-composer-mode-menu" data-mode-menu hidden><button type="button"><svg class="icon"><use href="./assets/icons.svg#i-lock" /></svg><span><strong>请求批准</strong><small>高影响操作前暂停确认</small></span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-check" /></svg></button><button type="button"><svg class="icon"><use href="./assets/icons.svg#i-database" /></svg><span><strong>计划</strong><small>先给出计划，不执行操作</small></span></button><button type="button"><svg class="icon"><use href="./assets/icons.svg#i-bolt" /></svg><span><strong>自动</strong><small>在安全边界内自主执行</small></span></button></span></span></div><div><button type="button"><img src="./assets/provider-zhipu.svg" alt="" />GLM-5.2⌄</button><button type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-bolt" /></svg>极高⌄</button><button class="send" type="submit" disabled data-send><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></div></div>
+              </form>
+
+              <section class="workspace"><header><div><span class="source-icon"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-git" /></svg></span><strong>cnjack/jcode</strong><small>GitHub · main</small></div><span><svg class="icon icon-sm"><use href="./assets/icons.svg#i-terminal" /></svg>Cloud runner</span></header><nav><button class="is-active" type="button">Tasks</button><button type="button">Board</button><button type="button">Reviews</button><button type="button">Automations</button><button type="button">Usage</button><button type="button">Settings</button></nav><div class="tasks"><span class="eyebrow">活动</span><h2>最近任务</h2><article><i class="state running"></i><span><strong>修复 Composer 菜单层级</strong><small>Agent 正在运行 · 4 分钟</small></span><button type="button">打开</button></article><article><i class="state"></i><span><strong>简化 Repository workspace</strong><small>昨天 · 完成</small></span><button type="button">打开</button></article></div></section>
+            </section>
+
+            <section class="preview" data-preview hidden>
+              <header><button type="button" data-back><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-left" /></svg>Work Home</button><div><small data-preview-context>cnjack/jcode</small><h1 data-preview-title>修复 Composer 菜单层级</h1></div><button type="button" aria-label="更多"><svg class="icon"><use href="./assets/icons.svg#i-more" /></svg></button></header>
+              <p class="prototype-notice"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-info" /></svg><span><strong>这里只验证列表与内容区的关系。</strong>Conversation 路由、Task 归属和 Remote 同步尚未决定。</span></p>
+              <div class="thread"><article><span class="avatar">JA</span><div><strong>Jack</strong><p>请检查这个问题并给出安全的修改建议。</p></div></article><article><img src="./assets/app-icon.svg" alt="" /><div><strong>jcode</strong><p>我已经定位到对应上下文。这里展示的是会话详情布局占位，不代表已经确定的数据模型。</p><aside><i class="state running"></i><span><strong>Agent 执行状态</strong><small>运行位置与 Repository 作为独立元数据展示</small></span></aside></div></article></div>
+              <form class="follow-up"><textarea rows="2" placeholder="继续对话…"></textarea><div><button type="button"><svg class="icon"><use href="./assets/icons.svg#i-plus" /></svg></button><span>GLM-5.2 · 请求批准</span><button class="send" type="button"><svg class="icon icon-sm"><use href="./assets/icons.svg#i-arrow-right" /></svg></button></div></form>
+            </section>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <aside class="decision-drawer" data-drawer hidden><header><div><span class="eyebrow">Design boundary</span><h2>这些逻辑暂时不实现</h2></div><button type="button" data-close aria-label="关闭">×</button></header><ol><li><strong>Conversation 与 Task 是否一对一？</strong><span>列表先使用中性 Conversation 语言，任务状态只作为元数据。</span></li><li><strong>Conversation 能否切换 Repository？</strong><span>原型固定显示创建时上下文，不提供迁移入口。</span></li><li><strong>Remote 会话如何合并？</strong><span>设备与 workspace 作为来源展示，不假设云端拥有完整历史。</span></li><li><strong>Board Card 是新建还是附着会话？</strong><span>保留 Run with agent 契约，本页不决定复用策略。</span></li><li><strong>归档、删除与重命名权限？</strong><span>需要先确定账号、Repository owner 与执行身份的关系。</span></li></ol><div class="recommendation"><strong>建议先验证 A</strong><p>按 Repository 分组最接近 jcode Desktop 的心智模型，同时允许 Remote 独立成组；真实数据证明跨仓库切换频繁后，再考虑 B。</p></div></aside>
+  <div class="backdrop" data-backdrop hidden></div>
+  <script src="./assets/conversation-work-home-v1.js"></script>
+</body>
+</html>
