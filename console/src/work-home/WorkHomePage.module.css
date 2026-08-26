@@ -8,7 +8,6 @@
 .accountComposer :global(.jcode-product-composer), .remoteComposer :global(.jcode-product-composer) { padding-top: 0 !important; }
 .accountComposer fieldset, .remoteComposer fieldset { min-width: 0; border: 0; }
 .context { position: relative; align-self: flex-start; margin: 0; }
-.contextOpen { z-index: 80; }
 .contextButton { min-height: var(--space-10); display: inline-flex; align-items: center; gap: var(--space-2); border: 0; border-radius: var(--radius-pill); background: transparent; padding: 0 var(--space-2); color: var(--color-text-muted); cursor: pointer; }
 .contextButton strong { max-width: min(22rem, 46vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .contextButton:hover, .contextButton[aria-expanded='true'] { background: var(--color-panel-hover); color: var(--color-text); }

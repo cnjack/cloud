@@ -88,6 +88,16 @@ describe('WorkHomePage', () => {
     expect(screen.getAllByText('acme/payments').length).toBeGreaterThanOrEqual(2);
   });
 
+  it('stacks the open Repository picker above the shared composer toolbar', async () => {
+    renderPage();
+    const contextButton = await screen.findByRole('button', { name: /Repository or Remote context acme\/payments/ });
+    fireEvent.click(contextButton);
+
+    expect(screen.getByRole('searchbox', { name: 'Search repositories' })).toBeTruthy();
+    expect(window.getComputedStyle(contextButton.parentElement!).zIndex)
+      .toBe('calc(var(--z-dropdown, 900) + 1)');
+  });
+
   it('renders every Repository workspace structure before the first task materializes storage', async () => {
     renderPage();
     await screen.findByRole('button', { name: /acme\/payments/ });

@@ -39,6 +39,8 @@ import styles from './WorkHomePage.module.css';
 type WorkspaceTab = 'tasks' | 'board' | 'reviews' | 'automations' | 'usage' | 'settings';
 type ContextKind = 'repository' | 'remote';
 
+const OPEN_CONTEXT_Z_INDEX = 'calc(var(--z-dropdown, 900) + 1)';
+
 function repositoryKey(target: AccountRepositoryTarget): string {
   return `${target.provider}:${target.provider_repo_id}`;
 }
@@ -277,7 +279,7 @@ function ContextPicker({
   onSelectRepository: (target: AccountRepositoryTarget) => void;
   onSelectDevice: (device: Device) => void;
 }) {
-  return <div className={[styles.context, open ? styles.contextOpen : ''].filter(Boolean).join(' ')} ref={menuRef}>
+  return <div className={styles.context} ref={menuRef} style={open ? { zIndex: OPEN_CONTEXT_Z_INDEX } : undefined}>
     <button type="button" className={styles.contextButton} onClick={onToggle} aria-expanded={open} aria-label={`Repository or Remote context ${selectedDevice?.name ?? activeTarget?.full_name ?? ''}`}>
       <span className={styles.contextMark}>{selectedDevice ? <TerminalWindow size={15} /> : <GitBranch size={15} />}</span>
       <strong>{selectedDevice?.name ?? activeTarget?.full_name ?? 'Repository'}</strong><CaretDown size={12} />
