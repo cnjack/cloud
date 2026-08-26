@@ -1,4 +1,4 @@
-import type { Approval, ApprovalOption, ThreadItem, ToolCall } from 'jcode-ui-core';
+import type { Approval, ApprovalOption, Message, ThreadItem, ToolCall } from 'jcode-ui-core';
 import { groupTimeline } from './grouping';
 import { terminalStatusSeq } from './eventModel';
 import type {
@@ -32,17 +32,21 @@ function toThreadItem(
       return message(item.seq, 'assistant', item.text, timestamp);
 
     case 'user_message':
+      // `author` is the Cloud attribution extension carried by the pinned
+      // shared-conversation package. The intersection keeps this adapter
+      // source-compatible with newer core packages that temporarily omit it.
+      const userMessage: Message & { author?: string } = {
+        id: `user-${item.seq}`,
+        role: 'user',
+        content: item.prompt,
+        timestamp,
+        source: item.by || undefined,
+        author: item.by || undefined,
+      };
       return {
         kind: 'message',
         seq: item.seq,
-        data: {
-          id: `user-${item.seq}`,
-          role: 'user',
-          content: item.prompt,
-          timestamp,
-          source: item.by || undefined,
-          author: item.by || undefined,
-        },
+        data: userMessage,
       };
 
     case 'tool_card':

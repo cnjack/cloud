@@ -821,8 +821,7 @@ describe('RunDetailPage — multi-turn session (D22)', () => {
     const input = (await screen.findByLabelText('Continue this task…')) as HTMLTextAreaElement;
     const send = (await screen.findByLabelText('Send message')) as HTMLButtonElement;
     expect(screen.getByTestId('session-finish-btn')).toBeTruthy();
-    expect(panel.querySelector('.jcode-product-composer-model-picker')).toBeNull();
-    expect(panel.querySelector('.jcode-product-composer-mode-picker')).toBeNull();
+    expect(screen.getByTestId('run-session-composer').className).toContain('runSessionComposerFixed');
 
     // Empty input keeps Send disabled; typing enables it and submit calls the API.
     expect(send.disabled).toBe(true);

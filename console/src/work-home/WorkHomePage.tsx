@@ -175,7 +175,7 @@ export function WorkHomePage() {
         <section className={styles.hero}>
           <span className={styles.eyebrow}>{t('repositories.composerEyebrow')}</span>
           <h1>{t('repositories.composerTitle')}</h1>
-          <p>{contextKind === 'remote' ? 'Continue on an online jcode device with the same conversation UI.' : t('repositories.composerDescription')}</p>
+          <p>{contextKind === 'remote' ? t('repositories.remoteComposerDescription') : t('repositories.composerDescription')}</p>
         </section>
 
         {contextKind === 'repository' && catalog.isPending && !catalog.data ? <WorkHomeSkeleton /> : contextKind === 'remote' && selectedDevice ? (
@@ -279,33 +279,36 @@ function ContextPicker({
   onSelectRepository: (target: AccountRepositoryTarget) => void;
   onSelectDevice: (device: Device) => void;
 }) {
+  const { t } = useTranslation();
   return <div className={styles.context} ref={menuRef} style={open ? { zIndex: OPEN_CONTEXT_Z_INDEX } : undefined}>
-    <button type="button" className={styles.contextButton} onClick={onToggle} aria-expanded={open} aria-label={`Repository or Remote context ${selectedDevice?.name ?? activeTarget?.full_name ?? ''}`}>
+    <button type="button" className={styles.contextButton} onClick={onToggle} aria-expanded={open} aria-label={t('repositories.contextAria', { context: selectedDevice?.name ?? activeTarget?.full_name ?? '' })}>
       <span className={styles.contextMark}>{selectedDevice ? <TerminalWindow size={15} /> : <GitBranch size={15} />}</span>
-      <strong>{selectedDevice?.name ?? activeTarget?.full_name ?? 'Repository'}</strong><CaretDown size={12} />
+      <strong>{selectedDevice?.name ?? activeTarget?.full_name ?? t('repositories.repositoryFallback')}</strong><CaretDown size={12} />
     </button>
     {open && <div className={styles.contextMenu}>
       {remotePicker ? <>
-        <header className={styles.menuHead}><button type="button" onClick={onRemoteBack} aria-label="Back to repositories"><ArrowLeft size={15} /></button><span><strong>Remote connection</strong><small>Choose an online jcode device</small></span></header>
-        <div className={styles.menuGroup}><span className={styles.menuLabel}>Online devices</span>{devices.map((device) => <button type="button" className={styles.menuOption} key={device.id} onClick={() => onSelectDevice(device)}><span className={styles.contextMark}><TerminalWindow size={15} /></span><span><strong>{device.name}</strong><small>{device.platform || 'jcode device'} · online</small></span><span className={styles.onlineDot} /></button>)}</div>
-        <footer className={styles.menuFooter}><Link to="/devices/guide"><span className={styles.contextMark}><Plus size={15} /></span><span><strong>Connect new device</strong><small>Run jcode login and complete encrypted pairing</small></span><ArrowRight size={15} /></Link></footer>
+        <header className={styles.menuHead}><button type="button" onClick={onRemoteBack} aria-label={t('repositories.remoteBack')}><ArrowLeft size={15} /></button><span><strong>{t('repositories.remoteConnection')}</strong><small>{t('repositories.remoteChooseDevice')}</small></span></header>
+        <div className={styles.menuGroup}><span className={styles.menuLabel}>{t('repositories.onlineDevices')}</span>{devices.map((device) => <button type="button" className={styles.menuOption} key={device.id} onClick={() => onSelectDevice(device)}><span className={styles.contextMark}><TerminalWindow size={15} /></span><span><strong>{device.name}</strong><small>{device.platform || t('repositories.jcodeDevice')} · {t('repositories.online')}</small></span><span className={styles.onlineDot} /></button>)}</div>
+        <footer className={styles.menuFooter}><Link to="/devices/guide"><span className={styles.contextMark}><Plus size={15} /></span><span><strong>{t('repositories.connectNewDevice')}</strong><small>{t('repositories.connectNewDeviceDescription')}</small></span><ArrowRight size={15} /></Link></footer>
       </> : <>
-        <div className={styles.menuSearch}><input type="search" aria-label="Search repositories" placeholder="Search repositories…" value={query} onChange={(event) => onQueryChange(event.target.value)} /></div>
-        <div className={styles.menuGroup}><span className={styles.menuLabel}>Git repositories</span>{searchLoading ? <RepositorySearchSkeleton /> : searchError ? <span className={styles.menuEmpty}>Repository search failed. Change the query or try again.</span> : <>{targets.map((target) => <button type="button" className={styles.menuOption} key={repositoryKey(target)} onClick={() => onSelectRepository(target)}><span className={styles.contextMark}><GitBranch size={15} /></span><span><strong>{target.full_name}</strong><small>{providerLabel(target.provider)} · {target.default_branch}</small></span>{repositoryKey(target) === (activeTarget ? repositoryKey(activeTarget) : '') && <Check size={14} />}</button>)}{targets.length === 0 && <span className={styles.menuEmpty}>No repositories match “{query}”.</span>}</>}</div>
-        <footer className={styles.menuFooter}><button type="button" onClick={onRemoteOpen} aria-label={`Remote connection ${devices.length} online`}><span className={styles.contextMark}><TerminalWindow size={15} /></span><span><strong>Remote connection</strong><small>{devices.length} jcode devices online</small></span><ArrowRight size={15} /></button></footer>
+        <div className={styles.menuSearch}><input type="search" aria-label={t('repositories.pickerSearchAria')} placeholder={t('repositories.pickerSearchPlaceholder')} value={query} onChange={(event) => onQueryChange(event.target.value)} /></div>
+        <div className={styles.menuGroup}><span className={styles.menuLabel}>{t('repositories.gitRepositories')}</span>{searchLoading ? <RepositorySearchSkeleton /> : searchError ? <span className={styles.menuEmpty}>{t('repositories.pickerSearchError')}</span> : <>{targets.map((target) => <button type="button" className={styles.menuOption} key={repositoryKey(target)} onClick={() => onSelectRepository(target)}><span className={styles.contextMark}><GitBranch size={15} /></span><span><strong>{target.full_name}</strong><small>{providerLabel(target.provider)} · {target.default_branch}</small></span>{repositoryKey(target) === (activeTarget ? repositoryKey(activeTarget) : '') && <Check size={14} />}</button>)}{targets.length === 0 && <span className={styles.menuEmpty}>{t('repositories.pickerNoMatch', { query })}</span>}</>}</div>
+        <footer className={styles.menuFooter}><button type="button" onClick={onRemoteOpen} aria-label={t('repositories.remoteConnectionAria', { count: devices.length })}><span className={styles.contextMark}><TerminalWindow size={15} /></span><span><strong>{t('repositories.remoteConnection')}</strong><small>{t('repositories.remoteOnlineCount', { count: devices.length })}</small></span><ArrowRight size={15} /></button></footer>
       </>}
     </div>}
   </div>;
 }
 
 function RepositorySearchSkeleton() {
-  return <div className={styles.menuSkeleton} data-testid="repository-search-skeleton" role="status" aria-label="Searching repositories">
+  const { t } = useTranslation();
+  return <div className={styles.menuSkeleton} data-testid="repository-search-skeleton" role="status" aria-label={t('repositories.searchingRepositories')}>
     {[0, 1, 2, 3].map((item) => <div className={styles.menuSkeletonRow} key={item}><span className={styles.skeletonMark} /><span><i /><i /></span></div>)}
   </div>;
 }
 
 function WorkHomeSkeleton() {
-  return <div className={styles.workHomeSkeleton} data-testid="work-home-skeleton" role="status" aria-label="Loading repositories">
+  const { t } = useTranslation();
+  return <div className={styles.workHomeSkeleton} data-testid="work-home-skeleton" role="status" aria-label={t('repositories.accountLoading')}>
     <div className={styles.skeletonComposer}><span className={styles.skeletonPill} /><span className={styles.skeletonPrompt} /><span className={styles.skeletonControls} /></div>
     <div className={styles.skeletonWorkspace}><div className={styles.skeletonIdentity} /><div className={styles.skeletonTabs}>{[0, 1, 2, 3, 4].map((item) => <span key={item} />)}</div><div className={styles.skeletonPanel}>{[0, 1, 2].map((item) => <span key={item} />)}</div></div>
   </div>;
@@ -317,6 +320,7 @@ function RepositoryWorkspace({ target, repository, tab, onTabChange }: {
   tab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
 }) {
+  const { t } = useTranslation();
   const projectId = repository?.project_id ?? '';
   const project = useProject(projectId);
   const runs = useRuns(projectId);
@@ -327,15 +331,22 @@ function RepositoryWorkspace({ target, repository, tab, onTabChange }: {
   const scopedRuns = useMemo(() => (runs.data ?? []).filter((run) => !repository || run.service_id === repository.id), [repository, runs.data]);
   const reviews = scopedRuns.filter((run) => run.kind === 'review');
   const links = (boardLinks.data ?? []).filter((link) => !repository || link.service_id === repository.id);
-  const tabs: Array<[WorkspaceTab, string]> = [['tasks', 'Tasks'], ['board', 'Board'], ['reviews', 'Reviews'], ['automations', 'Automations'], ['usage', 'Usage'], ['settings', 'Settings']];
+  const tabs: Array<[WorkspaceTab, string]> = [
+    ['tasks', t('repositories.workspaceTasks')],
+    ['board', t('repositories.workspaceBoard')],
+    ['reviews', t('repositories.workspaceReviews')],
+    ['automations', t('repositories.workspaceAutomations')],
+    ['usage', t('repositories.workspaceUsage')],
+    ['settings', t('repositories.workspaceSettings')],
+  ];
 
-  return <section className={styles.workspace} aria-label={`${target.full_name} Repository workspace`}>
-    <header className={styles.workspaceHead}><span className={styles.workspaceIdentity}><span className={styles.contextMark}><GitBranch size={15} /></span><strong>{target.full_name}</strong><small>{providerLabel(target.provider)} · {target.default_branch}</small></span><span className={styles.execution}><Cloud size={14} />Cloud runner</span></header>
-    <nav className={styles.tabs} role="tablist" aria-label="Repository workspace sections">{tabs.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? styles.activeTab : ''} onClick={() => onTabChange(id)}>{label}</button>)}</nav>
+  return <section className={styles.workspace} aria-label={t('repositories.workspaceAria', { repositoryName: target.full_name })}>
+    <header className={styles.workspaceHead}><span className={styles.workspaceIdentity}><span className={styles.contextMark}><GitBranch size={15} /></span><strong>{target.full_name}</strong><small>{providerLabel(target.provider)} · {target.default_branch}</small></span><span className={styles.execution}><Cloud size={14} />{t('repositories.cloudRunner')}</span></header>
+    <nav className={styles.tabs} role="tablist" aria-label={t('repositories.tabsAria')}>{tabs.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? styles.activeTab : ''} onClick={() => onTabChange(id)}>{label}</button>)}</nav>
     <div className={styles.panel} role="tabpanel">
-      {tab === 'tasks' && <RunActivityList runs={scopedRuns} isLoading={!!repository && runs.isLoading} error={runs.isError ? runs.error : undefined} onRetry={() => void runs.refetch()} filter="all" onFilterChange={() => {}} canRun showFilters={false} emptyTitle="No tasks in this Repository" emptyDescription="Describe a task above to start the first conversation." />}
-      {tab === 'board' && <section className={styles.boardPanel}><header className={styles.panelHead}><span><h2>Board</h2><p>Connect an existing Board and let Cards start this Repository's agent.</p></span></header>{repository ? <KanbanBoardModal projectId={projectId} serviceId={repository.id} links={links} canManage canRun embedded /> : <RepositoryBoardDefault />}</section>}
-      {tab === 'reviews' && <section><header className={styles.panelHead}><span><h2>Code reviews</h2><p>Independent review runs for this Repository.</p></span><Link className={styles.primaryLink} to={repository ? `/code-reviews?repository=${encodeURIComponent(repository.id)}` : '/code-reviews'}><GitPullRequest size={14} />Create code review</Link></header><RunActivityList runs={reviews} isLoading={!!repository && runs.isLoading} error={runs.isError ? runs.error : undefined} onRetry={() => void runs.refetch()} filter="reviews" onFilterChange={() => {}} canRun showFilters={false} emptyTitle="No code reviews yet" emptyDescription="Create a review without mixing it into implementation tasks." /></section>}
+      {tab === 'tasks' && <RunActivityList runs={scopedRuns} isLoading={!!repository && runs.isLoading} error={runs.isError ? runs.error : undefined} onRetry={() => void runs.refetch()} filter="all" onFilterChange={() => {}} canRun showFilters={false} emptyTitle={t('repositories.noTasksTitle')} emptyDescription={t('repositories.noTasksDescription')} />}
+      {tab === 'board' && <section className={styles.boardPanel}><header className={styles.panelHead}><span><h2>{t('repositories.workspaceBoard')}</h2><p>{t('repositories.boardDescription')}</p></span></header>{repository ? <KanbanBoardModal projectId={projectId} serviceId={repository.id} links={links} canManage canRun embedded /> : <RepositoryBoardDefault />}</section>}
+      {tab === 'reviews' && <section><header className={styles.panelHead}><span><h2>{t('repositories.codeReviews')}</h2><p>{t('repositories.reviewsDescription')}</p></span><Link className={styles.primaryLink} to={repository ? `/code-reviews?repository=${encodeURIComponent(repository.id)}` : '/code-reviews'}><GitPullRequest size={14} />{t('codeReviewsPage.createAction')}</Link></header><RunActivityList runs={reviews} isLoading={!!repository && runs.isLoading} error={runs.isError ? runs.error : undefined} onRetry={() => void runs.refetch()} filter="reviews" onFilterChange={() => {}} canRun showFilters={false} emptyTitle={t('codeReviewsPage.emptyTitle')} emptyDescription={t('repositories.reviewsEmptyDescription')} /></section>}
       {tab === 'automations' && <RepositoryAutomationsPanel projectId={projectId} repository={repository} canManage={!!repository && (project.data?.role ?? 'owner') === 'owner'} />}
       {tab === 'usage' && <RepositoryUsagePanel repositoryId={repository?.id} />}
       {tab === 'settings' && <SettingsPanel service={repository} preview={!repository ? { name: target.full_name, source: target.full_name, provider: providerLabel(target.provider), defaultBranch: target.default_branch, gitMode: 'draft_pr' } : undefined} models={projectModels.data?.models ?? []} modelState={projectModels.isError ? 'unverified' : projectModels.isLoading ? 'loading' : 'ready'} updating={updateService.isPending} onDefaultModelChange={(id) => repository && updateService.mutate({ serviceId: repository.id, input: { default_model_id: id } })} onPRReadyPolicyChange={(policy) => repository && updateService.mutate({ serviceId: repository.id, input: { pr_ready_policy: policy } })} runnerProfiles={system.data?.runner.profiles ?? []} onRunnerProfileChange={(profile) => repository && updateService.mutate({ serviceId: repository.id, input: { runner_profile: profile } })} onRetryModels={() => void projectModels.refetch()} />}
@@ -344,17 +355,18 @@ function RepositoryWorkspace({ target, repository, tab, onTabChange }: {
 }
 
 function RepositoryBoardDefault() {
+  const { t } = useTranslation();
   return <div className={styles.boardDefault} data-testid="repository-board-default">
     <div className={styles.boardDefaultState}>
-      <strong>No Board connected</strong>
-      <span>Connect an existing Board when you are ready. The Repository workspace itself is already available.</span>
+      <strong>{t('repositories.boardNotConnected')}</strong>
+      <span>{t('repositories.boardNotConnectedDescription')}</span>
     </div>
-    <div className={styles.boardDefaultColumns} aria-label="Default Agent Board workflow">
-      <article><span>Backlog</span><small>Cards waiting for work</small></article>
+    <div className={styles.boardDefaultColumns} aria-label={t('repositories.boardWorkflowAria')}>
+      <article><span>{t('repositories.boardBacklog')}</span><small>{t('repositories.boardBacklogDescription')}</small></article>
       <span aria-hidden="true">→</span>
-      <article><span>Agent queue</span><small>Cards that start jcode</small></article>
+      <article><span>{t('repositories.boardAgentQueue')}</span><small>{t('repositories.boardAgentQueueDescription')}</small></article>
       <span aria-hidden="true">→</span>
-      <article><span>Done (optional)</span><small>Successful results</small></article>
+      <article><span>{t('repositories.boardDoneOptional')}</span><small>{t('repositories.boardDoneDescription')}</small></article>
     </div>
   </div>;
 }

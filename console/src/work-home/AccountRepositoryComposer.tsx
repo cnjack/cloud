@@ -76,6 +76,7 @@ export function AccountRepositoryComposer({
   const [mode, setMode] = useState<AgentMode>('approval');
   const [effortOverrides, setEffortOverrides] = useState<Record<string, string>>({});
   const [goalArmed, setGoalArmed] = useState(false);
+  const composerRef = useRef<HTMLDivElement>(null);
 
   const providers = useMemo(() => buildProjectModelProviders(models), [models]);
   const modelRefs = useMemo(() => models.map(projectModelRef), [models]);
@@ -105,6 +106,12 @@ export function AccountRepositoryComposer({
       ?? models.find((model) => model.capabilities.tools);
     setSelectedModelId(selected?.id ?? '');
   }, [accountId, models]);
+
+  useEffect(() => {
+    // jcode-ui changes the goal placeholder dynamically, but the task input
+    // still needs one stable accessible name in every mode.
+    composerRef.current?.querySelector('textarea')?.setAttribute('aria-label', t('repositories.taskAria'));
+  }, [goalArmed, t]);
 
   const sendRef = useRef<(text: string) => void>(() => {});
   const runtime = useMemo(() => new AccountTaskRuntime((text) => sendRef.current(text)), []);
@@ -156,8 +163,8 @@ export function AccountRepositoryComposer({
     ...buildProductComposerStrings(t),
     placeholder: t('repositories.taskAria'),
     send: t('repositories.startTask'),
-    modelNoImages: 'Attachments become available after this Repository has an active conversation.',
-    modeCeilingHint: 'Cloud tasks support approval, plan, and auto modes.',
+    modelNoImages: t('repositories.attachmentsAfterConversation'),
+    modeCeilingHint: t('repositories.modeCeilingHint'),
   }), [t]);
 
   const host = useMemo<ProductComposerHost>(() => ({
@@ -206,38 +213,33 @@ export function AccountRepositoryComposer({
     label: branch.name,
   }));
 
-  return <div className={`${styles.accountComposer} jcode-product`} data-testid="account-repository-composer">
+  return <div ref={composerRef} className={`${styles.accountComposer} jcode-product`} data-testid="account-repository-composer">
     <RuntimeProvider runtime={runtime}>
-      <ChatInput
-        host={host}
-        pickerPlacement="bottom"
-        elevated
-        modelManagement={false}
-        modelFavorites={false}
-        sendDisabled={blocked}
-        contextHeader={<>
-          {contextPicker}
-          <span className={styles.branchPickerIcon}><GitBranch size={14} /></span>
-          <Select
-            aria-label={`Base branch ${selectedBranch || 'unavailable'}`}
-            className={styles.branchPicker}
-            value={selectedBranch}
-            onChange={setSelectedBranch}
-            options={branchOptions}
-            disabled={branches.isLoading || branches.isError || branchOptions.length === 0}
-            placeholder={branches.isLoading ? 'Loading branches…' : 'Branch unavailable'}
-          />
-        </>}
-      />
+      <div className={styles.composerContextHeader}>
+        {contextPicker}
+        <span className={styles.branchPickerIcon}><GitBranch size={14} /></span>
+        <Select
+          aria-label={t('repositories.baseBranchAria', { branch: selectedBranch || t('repositories.unavailable') })}
+          className={styles.branchPicker}
+          value={selectedBranch}
+          onChange={setSelectedBranch}
+          options={branchOptions}
+          disabled={branches.isLoading || branches.isError || branchOptions.length === 0}
+          placeholder={branches.isLoading ? t('repositories.loadingBranches') : t('repositories.branchUnavailable')}
+        />
+      </div>
+      <fieldset disabled={blocked} aria-busy={startTask.isPending}>
+        <ChatInput host={host} pickerPlacement="bottom" elevated />
+      </fieldset>
     </RuntimeProvider>
-    {startTask.isPending && <div className={styles.composerPending} role="status">Starting the Repository task…</div>}
+    {startTask.isPending && <div className={styles.composerPending} role="status">{t('repositories.startingRepositoryTask')}</div>}
     {branches.isError && <div className={styles.composerIssue} role="alert">
-      <span>{branches.error instanceof ApiError ? branches.error.message : 'Repository branches are unavailable.'}</span>
-      <Link to="/account/settings?section=connections">Review Git account access</Link>
+      <span>{branches.error instanceof ApiError ? branches.error.message : t('repositories.branchesUnavailable')}</span>
+      <Link to="/account/settings?section=connections">{t('repositories.reviewGitAccountAccess')}</Link>
     </div>}
     {!modelsLoading && models.length > 0 && !selectedModelId && <div className={styles.composerIssue} role="alert">
-      <span>No Account-authorized model supports agent tool use.</span>
-      <Link to="/account/settings?section=models">Review model access</Link>
+      <span>{t('repositories.noToolModel')}</span>
+      <Link to="/account/settings?section=models">{t('repositories.reviewModelAccess')}</Link>
     </div>}
   </div>;
 }

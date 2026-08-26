@@ -112,6 +112,12 @@
 .retryModelOptions small { color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); }
 
 .sessionDock { position: relative; z-index: 3; display: grid; flex: none; gap: var(--space-2); padding: var(--space-2) 0 var(--space-4); background: var(--color-panel); color: var(--color-text-faint); font-size: var(--fs-tiny); }
+.runSessionComposer :global(.jcode-product-composer .ws-bar),
+.runSessionComposer :global(.jcode-product-composer .ws-bar + div),
+.runSessionComposer :global(.jcode-product-composer-effort-picker) { display: none; }
+.runSessionComposer :global(.jcode-product-composer div:has(> .ws-bar)) { min-height: 0; }
+.runSessionComposerFixed :global(.jcode-product-composer-model-picker),
+.runSessionComposerFixed :global(.jcode-product-composer-mode-picker) { display: none; }
 .resumeHint { padding: 0 var(--space-2); color: var(--color-text-faint); }
 .sessionActions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: 0 var(--space-2); }
 .sessionActionButtons { display: flex; align-items: center; gap: var(--space-1); }

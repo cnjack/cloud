@@ -6,6 +6,7 @@ import { ChatInput, type AgentMode, type ProductComposerHost } from 'jcode-ui/pr
 import { normalizeState, type ChatRuntime, type RuntimeActions } from 'jcode-ui-core/runtime';
 import type { ProjectModel, ResumeSessionOptions } from '../api/types';
 import { buildProjectModelProviders, projectModelKey, projectModelRef } from '../lib/productComposerModels';
+import styles from './RunDetailPage.module.css';
 
 const CLOUD_SESSION_MODES: AgentMode[] = ['approval', 'plan', 'auto'];
 
@@ -41,6 +42,7 @@ export function RunSessionComposer({
   const [selectedModelId, setSelectedModelId] = useState('');
   const [mode, setMode] = useState<AgentMode>(() => cloudMode(currentPermissionMode));
   const [goalArmed, setGoalArmed] = useState(false);
+  const composerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const selected = availableModels.find((model) => model.id === currentModelId) ?? availableModels[0];
@@ -50,6 +52,12 @@ export function RunSessionComposer({
   useEffect(() => {
     setMode(cloudMode(currentPermissionMode));
   }, [currentPermissionMode, runId]);
+
+  useEffect(() => {
+    // The shared composer changes its visual placeholder for Goal mode. Keep
+    // the host-provided task label as a stable accessible name in every state.
+    composerRef.current?.querySelector('textarea')?.setAttribute('aria-label', placeholder);
+  }, [goalArmed, placeholder]);
 
   const providers = useMemo(() => buildProjectModelProviders(availableModels), [availableModels]);
   const modelRefs = useMemo(() => availableModels.map(projectModelRef), [availableModels]);
@@ -98,7 +106,7 @@ export function RunSessionComposer({
     queue: t('runDetail.composer.queue'),
     stop: t('runDetail.action.stop'),
     modelNoImages: t('runDetail.composer.attachmentsUnavailableTitle'),
-    modeCeilingHint: 'Cloud sessions support approval, plan, and auto modes.',
+    modeCeilingHint: t('runDetail.composer.modeCeilingHint'),
   }), [placeholder, t]);
 
   const host = useMemo<ProductComposerHost>(() => ({
@@ -135,17 +143,15 @@ export function RunSessionComposer({
     clearGoal: async () => {},
   }), [activeModelRef.model, activeModelRef.provider, goalArmed, mode, modelRefs, providers, runId, selectModel, strings]);
 
-  return <div className="jcode-product" data-testid="run-session-composer">
+  return <div
+    ref={composerRef}
+    className={`${styles.runSessionComposer} ${configurable ? '' : styles.runSessionComposerFixed} jcode-product`}
+    data-testid="run-session-composer"
+  >
     <RuntimeProvider runtime={runtime}>
-      <ChatInput
-        host={host}
-        modelManagement={false}
-        modelFavorites={false}
-        modelSelection={configurable && availableModels.length > 0}
-        modeSelection={configurable}
-        effortSelection={false}
-        sendDisabled={disabled}
-      />
+      <fieldset disabled={disabled}>
+        <ChatInput host={host} />
+      </fieldset>
     </RuntimeProvider>
   </div>;
 }

@@ -234,11 +234,12 @@ describe('WorkHomePage', () => {
     })));
   });
 
-  it('puts Personal, Account usage, and admin-only Cluster settings in the avatar menu', async () => {
+  it('merges Personal and usage settings into one Account settings entry', async () => {
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: /Account menu/ }));
-    expect(screen.getByRole('menuitem', { name: 'Personal settings' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: 'Account usage' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Account settings' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Personal settings' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Account usage' })).toBeNull();
     expect(screen.getByRole('menuitem', { name: /Cluster settings/ })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Code reviews' })).toBeTruthy();
   });
@@ -253,6 +254,14 @@ describe('WorkHomePage', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: '简体中文' }));
 
     expect(await screen.findByRole('heading', { name: '接下来想写什么？' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '任务' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '看板' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '代码审查' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '自动化' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '用量' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '设置' })).toBeTruthy();
+    expect(screen.getByText('云端 Runner')).toBeTruthy();
+    expect(screen.getByText('此 Repository 暂无任务')).toBeTruthy();
     expect(window.localStorage.getItem('jcloud_locale')).toBe('zh-Hans');
   });
 
