@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiProvider } from '../api/ApiProvider';
 import type { ApiClient } from '../api/client';
-import type { AccountRepositoryCatalog, AccountRepositoryTarget, ProjectModel, Service } from '../api/types';
+import type { AccountRepositoryCatalog, AccountRepositoryTarget, ProjectModel, Run, Service } from '../api/types';
 import { ToastProvider } from '../components/Toast';
 import { setLocale } from '../i18n';
 import { WorkHomePage } from './WorkHomePage';
@@ -33,11 +33,13 @@ const targets: AccountRepositoryTarget[] = [
 
 function renderPage({
   repositories = [],
+  runs = [],
   startAccountTask = vi.fn(),
   catalog = { repositories: targets, sources: [] },
   listAccountRepositories,
 }: {
   repositories?: Service[];
+  runs?: Run[];
   startAccountTask?: ReturnType<typeof vi.fn>;
   catalog?: AccountRepositoryCatalog;
   listAccountRepositories?: (q?: string, limit?: number) => Promise<AccountRepositoryCatalog>;
@@ -45,6 +47,8 @@ function renderPage({
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const client = {
     listRepositories: async () => repositories,
+    listRuns: async () => runs,
+    getProject: async (id: string) => ({ id, name: 'Personal workspace', created_at: '', services: repositories }),
     listAccountRepositories: listAccountRepositories ?? (async () => catalog),
     listAccountRepositoryBranches: async () => [
       { name: 'main', default: true, protected: true },
@@ -91,6 +95,35 @@ describe('WorkHomePage', () => {
       expect(screen.getByRole('tab', { name })).toBeTruthy();
     }
     expect(screen.getAllByText('acme/payments').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('shows account conversations grouped by Repository without mixing in code reviews', async () => {
+    const materializedRepositories: Service[] = [
+      { id: 'repo-payments', project_id: 'personal', name: 'payments', repo_kind: 'provider', provider: 'github', provider_repo_id: 42, repo_owner_name: 'acme/payments', default_branch: 'main', git_mode: 'draft_pr', created_at: '' },
+      { id: 'repo-docs', project_id: 'personal', name: 'docs', repo_kind: 'provider', provider: 'gitea', provider_repo_id: 43, repo_owner_name: 'acme/docs', default_branch: 'trunk', git_mode: 'draft_pr', created_at: '' },
+    ];
+    const conversationRuns: Run[] = [
+      { id: 'run-payments', project_id: 'personal', service_id: 'repo-payments', prompt: 'Fix checkout callback', status: 'running', created_at: '2026-08-27T08:00:00Z' },
+      { id: 'run-docs', project_id: 'personal', service_id: 'repo-docs', prompt: 'Refresh onboarding guide', status: 'succeeded', created_at: '2026-08-26T08:00:00Z' },
+      { id: 'review-payments', project_id: 'personal', service_id: 'repo-payments', kind: 'review', prompt: 'Review checkout PR', status: 'succeeded', created_at: '2026-08-27T09:00:00Z' },
+    ];
+
+    renderPage({ repositories: materializedRepositories, runs: conversationRuns });
+
+    const rail = within(await screen.findByTestId('conversation-rail'));
+    expect(await rail.findByText('acme/payments')).toBeTruthy();
+    expect(rail.getByText('acme/docs')).toBeTruthy();
+    expect(rail.getByRole('link', { name: /Fix checkout callback/ })).toBeTruthy();
+    expect(rail.getByRole('link', { name: /Refresh onboarding guide/ })).toBeTruthy();
+    expect(rail.queryByText('Review checkout PR')).toBeNull();
+
+    fireEvent.change(rail.getByRole('searchbox', { name: 'Search conversations' }), { target: { value: 'onboarding' } });
+    expect(rail.queryByText('Fix checkout callback')).toBeNull();
+    fireEvent.click(rail.getByRole('button', { name: 'Collapse conversations' }));
+    expect(screen.getByTestId('work-home').getAttribute('data-rail-collapsed')).toBe('true');
+    expect(rail.getByRole('button', { name: 'Expand conversations' })).toBeTruthy();
+    fireEvent.click(rail.getByRole('link', { name: /Refresh onboarding guide/ }));
+    expect(await screen.findByTestId('run-page')).toBeTruthy();
   });
 
   it('stacks the open Repository picker above the shared composer toolbar', async () => {

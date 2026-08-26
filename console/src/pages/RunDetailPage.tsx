@@ -14,6 +14,7 @@ import {
   useResumeSession,
   useRetryRun,
   useRun,
+  useRuns,
   useSendMessage,
   useProjectModels,
 } from '../api/queries';
@@ -27,17 +28,15 @@ import { PrPanel } from '../components/PrPanel';
 import { LoadingBlock, ErrorBlock, InlineHint } from '../components/States';
 import { Spinner } from '../components/Spinner';
 import { StatusBadge } from '../components/StatusBadge';
-import { LanguageToggle } from '../components/LanguageToggle';
+import { AccountHeader } from '../components/AccountHeader';
 import { Modal } from '../components/Modal';
-import { ThemeToggle } from '../components/ThemeToggle';
 import { useToast } from '../components/Toast';
 import { UsageSummary } from '../components/UsageSummary';
-import { Wordmark } from '../components/Wordmark';
 import { useRunStream } from '../hooks/useRunStream';
 import { formatDateTime, formatDuration, shortId } from '../lib/format';
-import { ProjectWorkspaceShell } from '../project-workspace/ProjectWorkspaceShell';
 import { Timeline, toThreadItems } from '../runview';
 import { followConversationScroll } from '../runview/conversationScroll';
+import { ConversationRail } from '../work-home/ConversationRail';
 import { RunSessionComposer } from './RunSessionComposer';
 import styles from './RunDetailPage.module.css';
 
@@ -71,6 +70,7 @@ export function RunDetailPage() {
   const { t } = useTranslation();
   const [view, setView] = useState<View>('conversation');
   const [failedSubmission, setFailedSubmission] = useState<FailedSubmission | null>(null);
+	const [conversationRailCollapsed, setConversationRailCollapsed] = useState(false);
 	const [retryDialogOpen, setRetryDialogOpen] = useState(false);
 	const [retryModelId, setRetryModelId] = useState('');
   const conversationRef = useRef<HTMLElement>(null);
@@ -89,6 +89,7 @@ export function RunDetailPage() {
   const streamFailed = stream.phase === 'error' && !stream.terminal;
   const run = useRun(runId, streamFailed);
   const project = useProject(run.data?.project_id ?? '');
+  const conversationRuns = useRuns(run.data?.project_id ?? '');
   const canAct = (project.data?.role ?? 'owner') !== 'viewer';
   const cancel = useCancelRun();
   const retry = useRetryRun();
@@ -303,33 +304,16 @@ export function RunDetailPage() {
   return (
     <RuntimeProvider runtime={runtime}>
       <ToolRegistryProvider>
-        <div className={styles.page} data-testid="run-workspace">
-          <ProjectWorkspaceShell
-            mode="detail"
-            projectName={repositoryName}
-            services={services}
-            activeServiceId={activeServiceId}
-            activeTab="tasks"
-            canManage={(project.data?.role ?? 'owner') === 'owner'}
-            repositoryMode
-            onSelectService={(serviceId) => navigate(`/repositories/${encodeURIComponent(serviceId)}?tab=tasks`)}
-            onSelectTab={() => navigate(serviceTasksPath)}
-            railTop={<><Wordmark /><Link to="/repositories" className={styles.projectsLink}>{t('runDetail.nav.repositories')}</Link></>}
-            railFooter={<div className={styles.railFooter}><span>{t('runDetail.repositoryWorkspace')}</span><ThemeToggle /></div>}
-            utility={
-              <>
-                <nav className={styles.breadcrumbs} aria-label={t('runDetail.breadcrumbLabel')}>
-                  <Link to="/repositories">{t('runDetail.nav.repositories')}</Link><span>/</span>
-                  <Link to={serviceTasksPath}>{repositoryName}</Link><span>/</span>
-                  <span>{t('runDetail.breadcrumb.tasks')}</span><span>/</span><span>{t('runDetail.breadcrumb.detail')}</span>
-                </nav>
-                <div className={styles.utilityActions} data-testid="run-utility-actions">
-                  <LanguageToggle />
-                  <ThemeToggle />
-                </div>
-              </>
-            }
-          >
+        <div className={styles.page} data-testid="run-workspace" data-rail-collapsed={conversationRailCollapsed || undefined}>
+          <ConversationRail
+            repositories={services}
+            runs={conversationRuns.data ?? [current]}
+            isLoading={conversationRuns.isLoading}
+            collapsed={conversationRailCollapsed}
+            onCollapsedChange={setConversationRailCollapsed}
+          />
+          <section className={styles.runSurface} data-testid="run-surface">
+            <AccountHeader sectionTitle={repositoryName} />
             <div className={styles.taskDetail}>
               <header className={styles.taskHeader} data-testid="run-status-header" data-status={current.status}>
                 <Link to={serviceTasksPath} className={styles.backToProject} data-testid="run-back-to-project"><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>{t('runDetail.recentTasks')}</span></Link>
@@ -441,7 +425,7 @@ export function RunDetailPage() {
                 />
               </div>
             </div>
-          </ProjectWorkspaceShell>
+          </section>
 		  <Modal
 			open={retryDialogOpen}
 			onClose={() => !retry.isPending && setRetryDialogOpen(false)}

@@ -33,6 +33,7 @@ import { SettingsPanel } from '../project-workspace/SettingsPanel';
 import { KanbanBoardModal } from '../pages/KanbanBoardModal';
 import { RepositoryUsagePanel } from '../pages/RepositoryUsagePanel';
 import { AccountRepositoryComposer } from './AccountRepositoryComposer';
+import { ConversationRail } from './ConversationRail';
 import { RemoteComposer } from './RemoteComposer';
 import styles from './WorkHomePage.module.css';
 
@@ -88,6 +89,7 @@ export function WorkHomePage() {
   const [remotePicker, setRemotePicker] = useState(false);
   const [repositoryQuery, setRepositoryQuery] = useState('');
   const [tab, setTab] = useState<WorkspaceTab>((searchParams.get('tab') as WorkspaceTab) || 'tasks');
+  const [conversationRailCollapsed, setConversationRailCollapsed] = useState(false);
 
   const normalizedRepositoryQuery = repositoryQuery.trim();
   const debouncedRepositoryQuery = useDebouncedValue(normalizedRepositoryQuery, 250);
@@ -106,6 +108,8 @@ export function WorkHomePage() {
   const unavailableSource = catalog.data?.sources.find((source) => source.status === 'unavailable'
     && (targets.length === 0 || source.provider === activeTarget?.provider));
   const activeRepository = matchingRepository(activeTarget, repositories.data ?? []);
+  const conversationProjectId = activeRepository?.project_id ?? repositories.data?.[0]?.project_id ?? '';
+  const conversations = useRuns(conversationProjectId);
   const selectedDevice = devices.data?.find((device) => device.id === selectedDeviceId);
   const onlineDevices = (devices.data ?? []).filter((device) => device.online);
   const accountId = auth?.me?.user.id ?? '';
@@ -168,10 +172,20 @@ export function WorkHomePage() {
   };
 
   return (
-    <div className={styles.page} data-testid="work-home">
-      <AccountHeader />
+    <div className={styles.page} data-testid="work-home" data-rail-collapsed={conversationRailCollapsed || undefined}>
+      <ConversationRail
+        repositories={repositories.data ?? []}
+        runs={conversations.data ?? []}
+        isLoading={repositories.isLoading || conversations.isLoading}
+        collapsed={conversationRailCollapsed}
+        onCollapsedChange={setConversationRailCollapsed}
+      />
 
-      <main className={styles.main}>
+      <section className={styles.surface} data-testid="work-home-surface">
+        <AccountHeader sectionTitle={t('repositories.conversationRailWorkHome')} />
+
+        <main className={styles.main}>
+          <div className={styles.mainInner}>
         <section className={styles.hero}>
           <span className={styles.eyebrow}>{t('repositories.composerEyebrow')}</span>
           <h1>{t('repositories.composerTitle')}</h1>
@@ -252,7 +266,9 @@ export function WorkHomePage() {
             onTabChange={(nextTab) => { setTab(nextTab); const next = new URLSearchParams(searchParams); next.set('tab', nextTab); setSearchParams(next, { replace: true }); }}
           />
         )}
-      </main>
+          </div>
+        </main>
+      </section>
     </div>
   );
 }

@@ -86,6 +86,10 @@ function makeClient(
     }),
     // The page reads the run's project to learn the requesting principal's role.
     getProject: async () => project,
+    // Conversation navigation is account-workspace chrome. Run detail keeps the
+    // same Repository-grouped rail instead of falling back to the legacy
+    // Repository picker shell.
+    listRuns: async () => [baseRun({ service_id: 'svc-1' })],
   };
   return { client: client as ApiClient, ctl };
 }
@@ -327,15 +331,18 @@ describe('RunDetailPage — resilient error states', () => {
     }
   });
 
-  it('uses the shared Project shell and the design task-detail hierarchy', async () => {
+  it('keeps the Repository-grouped conversation rail around the task detail', async () => {
     const { client, ctl } = makeClient('member');
     const run = baseRun({ service_id: 'svc-1' });
     ctl.getRun.mockResolvedValue(run);
     renderPage(client, run);
 
     expect(await screen.findByTestId('run-workspace')).toBeTruthy();
-    expect(screen.getByTestId('project-workspace-shell')).toBeTruthy();
-    expect(screen.getByTestId('service-rail-svc-1')).toBeTruthy();
+    expect(screen.getByTestId('conversation-rail')).toBeTruthy();
+    expect(screen.queryByTestId('project-workspace-shell')).toBeNull();
+    const activeConversation = screen.getByRole('link', { name: 'Add a line Hello to README' });
+    expect(activeConversation.getAttribute('href')).toBe('/runs/run1');
+    expect(activeConversation.getAttribute('aria-current')).toBe('page');
     expect(screen.getByTestId('run-status-header')).toBeTruthy();
     expect(screen.getByTestId('thread-message-user').textContent).toContain('Add a line Hello');
     expect(screen.queryByTestId('run-initial-prompt')).toBeNull();
@@ -502,7 +509,7 @@ describe('RunDetailPage — resilient error states', () => {
     );
   });
 
-  it('keeps Repository navigation in the fixed rail on a run route', async () => {
+  it('uses the flat account workspace shell on a run route', async () => {
     const { client, ctl } = makeClient('owner');
     const run = baseRun({ service_id: 'svc-1' });
     ctl.getRun.mockResolvedValue(run);
@@ -511,8 +518,9 @@ describe('RunDetailPage — resilient error states', () => {
     await screen.findByTestId('run-workspace');
     expect(screen.queryByTestId('project-settings-trigger')).toBeNull();
     expect(screen.queryByTestId('project-summary')).toBeNull();
-    expect(screen.getAllByRole('link', { name: 'Repositories' }).every((link) => link.getAttribute('href') === '/repositories')).toBe(true);
-    expect(screen.getByTestId('project-workspace-scroll').getAttribute('data-scroll-owner')).toBe('detail');
+    expect(screen.getByTestId('conversation-rail')).toBeTruthy();
+    expect(screen.getByTestId('run-surface')).toBeTruthy();
+    expect(screen.queryByTestId('project-workspace-scroll')).toBeNull();
   });
 
   it('keeps the cached run rendered when a refetch fails (no whole-page dead-end)', async () => {

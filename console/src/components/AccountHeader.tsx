@@ -9,7 +9,7 @@ import { Wordmark } from './Wordmark';
 import styles from './AccountHeader.module.css';
 
 /** The single global header for Work Home, account, review, and admin surfaces. */
-export function AccountHeader() {
+export function AccountHeader({ sectionTitle }: { sectionTitle?: string } = {}) {
   const { t } = useTranslation();
   const auth = useOptionalAuth();
   const role = useRole();
@@ -28,7 +28,7 @@ export function AccountHeader() {
   const name = auth?.me?.user.display_name || t('accountHeader.account');
   return (
     <header className={styles.header}>
-      <Wordmark />
+      {sectionTitle ? <span className={styles.sectionTitle}>{sectionTitle}</span> : <Wordmark />}
       <div className={styles.utilities}>
         <div className={styles.account} ref={ref}>
           <button type="button" className={styles.trigger} aria-label={t('accountHeader.menu')} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
