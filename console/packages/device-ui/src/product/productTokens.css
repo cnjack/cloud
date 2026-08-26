@@ -68,6 +68,18 @@
   z-index: var(--z-dropdown);
 }
 
+/* The Repository context control sits one layer above the idle toolbar so its
+   picker can cross the composer boundary. Raise the toolbar only while one of
+   its own menus is open; otherwise the context control would cover the mode,
+   model, or effort panel. */
+.jcode-product .jcode-product-composer-toolbar:has(
+  .jcode-product-composer-mode-menu,
+  .jcode-product-composer-model-menu,
+  .jcode-product-composer-effort-menu
+) {
+  z-index: calc(var(--z-dropdown) + 2);
+}
+
 .jcode-product .jcode-product-composer-model-menu {
   max-height: min(420px, calc(100dvh - 180px));
   overscroll-behavior: contain;

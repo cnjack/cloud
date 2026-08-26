@@ -1,4 +1,4 @@
-import { CaretDown, GitPullRequest, HardDrives, SignOut, User } from '@phosphor-icons/react';
+import { CaretDown, HardDrives, SignOut, User } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
@@ -35,7 +35,6 @@ export function AccountHeader() {
             <span className={styles.avatar}>{name.slice(0, 2).toUpperCase()}</span><span>{name}</span><CaretDown size={12} />
           </button>
           {open && <div className={styles.menu} role="menu">
-            <Link to="/code-reviews" role="menuitem"><GitPullRequest size={15} />{t('accountHeader.codeReviews')}</Link>
             <Link to="/account/settings" role="menuitem"><User size={15} />{t('accountHeader.settings')}</Link>
             {role === 'cluster-admin' && <Link to="/cluster" role="menuitem"><HardDrives size={15} />{t('accountHeader.clusterSettings')}<span className={styles.admin}>{t('accountHeader.admin')}</span></Link>}
             {auth?.logout && <button type="button" role="menuitem" onClick={() => void auth.logout()}><SignOut size={15} />{t('accountHeader.signOut')}</button>}

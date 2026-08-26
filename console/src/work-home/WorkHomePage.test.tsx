@@ -241,7 +241,19 @@ describe('WorkHomePage', () => {
     expect(screen.queryByRole('menuitem', { name: 'Personal settings' })).toBeNull();
     expect(screen.queryByRole('menuitem', { name: 'Account usage' })).toBeNull();
     expect(screen.getByRole('menuitem', { name: /Cluster settings/ })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: 'Code reviews' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Code reviews' })).toBeNull();
+  });
+
+  it('keeps an open shared composer menu inside the toolbar stacking context', async () => {
+    renderPage();
+    const modeButton = await screen.findByRole('button', { name: 'Ask for approval' });
+    fireEvent.click(modeButton);
+
+    const toolbar = modeButton.closest('.jcode-product-composer-toolbar');
+    expect(toolbar).toBeTruthy();
+    const menu = document.querySelector('.jcode-product-composer-mode-menu');
+    expect(menu).toBeTruthy();
+    expect(menu?.closest('.jcode-product-composer-toolbar')).toBe(toolbar);
   });
 
   it('places a persistent language switch to the right of the account control', async () => {
