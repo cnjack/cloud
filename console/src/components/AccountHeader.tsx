@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useRole } from '../api/ApiProvider';
 import { useOptionalAuth } from '../auth/AuthProvider';
+import { LanguageToggle } from './LanguageToggle';
 import { Wordmark } from './Wordmark';
 import styles from './AccountHeader.module.css';
 
@@ -26,17 +27,20 @@ export function AccountHeader() {
   return (
     <header className={styles.header}>
       <Wordmark />
-      <div className={styles.account} ref={ref}>
-        <button type="button" className={styles.trigger} aria-label="Account menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-          <span className={styles.avatar}>{name.slice(0, 2).toUpperCase()}</span><span>{name}</span><CaretDown size={12} />
-        </button>
-        {open && <div className={styles.menu} role="menu">
-          <Link to="/code-reviews" role="menuitem"><GitPullRequest size={15} />Code reviews</Link>
-          <Link to="/account/settings" role="menuitem"><User size={15} />Personal settings</Link>
-          <Link to="/account/settings?section=usage" role="menuitem"><Lightning size={15} />Account usage</Link>
-          {role === 'cluster-admin' && <Link to="/cluster" role="menuitem"><HardDrives size={15} />Cluster settings<span className={styles.admin}>Admin</span></Link>}
-          {auth?.logout && <button type="button" role="menuitem" onClick={() => void auth.logout()}><SignOut size={15} />Sign out</button>}
-        </div>}
+      <div className={styles.utilities}>
+        <div className={styles.account} ref={ref}>
+          <button type="button" className={styles.trigger} aria-label="Account menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+            <span className={styles.avatar}>{name.slice(0, 2).toUpperCase()}</span><span>{name}</span><CaretDown size={12} />
+          </button>
+          {open && <div className={styles.menu} role="menu">
+            <Link to="/code-reviews" role="menuitem"><GitPullRequest size={15} />Code reviews</Link>
+            <Link to="/account/settings" role="menuitem"><User size={15} />Personal settings</Link>
+            <Link to="/account/settings?section=usage" role="menuitem"><Lightning size={15} />Account usage</Link>
+            {role === 'cluster-admin' && <Link to="/cluster" role="menuitem"><HardDrives size={15} />Cluster settings<span className={styles.admin}>Admin</span></Link>}
+            {auth?.logout && <button type="button" role="menuitem" onClick={() => void auth.logout()}><SignOut size={15} />Sign out</button>}
+          </div>}
+        </div>
+        <LanguageToggle />
       </div>
     </header>
   );

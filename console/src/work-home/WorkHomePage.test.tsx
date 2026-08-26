@@ -7,6 +7,7 @@ import { ApiProvider } from '../api/ApiProvider';
 import type { ApiClient } from '../api/client';
 import type { AccountRepositoryCatalog, AccountRepositoryTarget, ProjectModel, Service } from '../api/types';
 import { ToastProvider } from '../components/Toast';
+import { setLocale } from '../i18n';
 import { WorkHomePage } from './WorkHomePage';
 
 const devices = [
@@ -74,7 +75,11 @@ function renderPage({
 }
 
 describe('WorkHomePage', () => {
-  beforeEach(() => window.localStorage.clear());
+  beforeEach(async () => {
+    window.localStorage.clear();
+    await setLocale('en');
+    window.localStorage.clear();
+  });
 
   it('combines the account composer and Repository workspace without Project or Service navigation', async () => {
     renderPage();
@@ -236,6 +241,19 @@ describe('WorkHomePage', () => {
     expect(screen.getByRole('menuitem', { name: 'Account usage' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: /Cluster settings/ })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Code reviews' })).toBeTruthy();
+  });
+
+  it('places a persistent language switch to the right of the account control', async () => {
+    renderPage();
+    const account = await screen.findByRole('button', { name: 'Account menu' });
+    const language = screen.getByRole('button', { name: 'Language' });
+
+    expect(account.compareDocumentPosition(language) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(language);
+    fireEvent.click(await screen.findByRole('menuitem', { name: '简体中文' }));
+
+    expect(await screen.findByRole('heading', { name: '接下来想写什么？' })).toBeTruthy();
+    expect(window.localStorage.getItem('jcloud_locale')).toBe('zh-Hans');
   });
 
   it('routes an unavailable Repository source to the exact Git accounts recovery section', async () => {
