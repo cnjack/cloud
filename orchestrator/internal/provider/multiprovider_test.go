@@ -209,6 +209,68 @@ func TestProviderBranchListersUseBoundRepositoryAndCredential(t *testing.T) {
 	}
 }
 
+func TestProviderRepoGettersResolveStableIDWithoutListing(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		newClient func(base string) (RepoGetter, error)
+		path      string
+		auth      string
+		body      string
+		fullName  string
+	}{
+		{
+			name:      "github",
+			newClient: func(base string) (RepoGetter, error) { return NewGitHubClient(base, "token") },
+			path:      "/repositories/42", auth: "Bearer token",
+			body:     `{"id":42,"full_name":"acme/platform","default_branch":"main","private":true}`,
+			fullName: "acme/platform",
+		},
+		{
+			name:      "gitlab",
+			newClient: func(base string) (RepoGetter, error) { return NewGitLabClient(base, "token") },
+			path:      "/projects/42", auth: "Bearer token",
+			body:     `{"id":42,"path_with_namespace":"acme/platform","default_branch":"main","visibility":"private"}`,
+			fullName: "acme/platform",
+		},
+		{
+			name:      "gitea",
+			newClient: func(base string) (RepoGetter, error) { return NewGiteaClientWithScheme(base, "token", "Bearer") },
+			path:      "/api/v1/repositories/42", auth: "Bearer token",
+			body:     `{"id":42,"full_name":"acme/platform","default_branch":"main","private":true}`,
+			fullName: "acme/platform",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.URL.EscapedPath(); got != tt.path {
+					t.Fatalf("path=%q want %q", got, tt.path)
+				}
+				if got := r.Header.Get("Authorization"); got != tt.auth {
+					t.Fatalf("authorization=%q want %q", got, tt.auth)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+			client, err := tt.newClient(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo, err := client.GetRepoByID(context.Background(), 42)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if repo.ID != 42 || repo.FullName != tt.fullName || repo.DefaultBranch != "main" || !repo.Private {
+				t.Fatalf("repository=%+v", repo)
+			}
+		})
+	}
+}
+
 // TestOAuthRefresh proves Refresh trades a refresh token for a fresh access
 // token via the token endpoint (grant_type=refresh_token).
 func TestOAuthRefresh(t *testing.T) {

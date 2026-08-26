@@ -300,6 +300,13 @@ type RepoLister interface {
 	ListRepos(ctx context.Context, query string, page, limit int) ([]Repo, error)
 }
 
+// RepoGetter resolves one repository by its provider-stable numeric ID. The
+// Account composer uses this after a user selects a bounded search result, so
+// branch loading and task creation never need to enumerate the whole account.
+type RepoGetter interface {
+	GetRepoByID(ctx context.Context, id int64) (*Repo, error)
+}
+
 // Branch is one repository branch available to the authenticated credential.
 // It deliberately omits provider-specific commit metadata: the task composer
 // only needs a stable ref name and the protection hint for display.

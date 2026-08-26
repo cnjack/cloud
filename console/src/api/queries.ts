@@ -77,7 +77,7 @@ export const qk = {
   system: ['system'] as const,
   models: ['models'] as const,
   accountModels: ['account-models'] as const,
-  accountRepositories: (q: string) => ['account-repositories', q] as const,
+  accountRepositories: (q: string, limit: number) => ['account-repositories', q, limit] as const,
   accountRepositoryBranches: (provider: string, providerRepoId: string) =>
     ['account-repository-branches', provider, providerRepoId] as const,
   modelProviders: ['model-providers'] as const,
@@ -218,12 +218,16 @@ export function useRuns(projectId: string) {
 }
 
 /** Account repository catalog used by the global task composer. */
-export function useAccountRepositories(q = '') {
+export function useAccountRepositories(q = '', limit = 12, enabled = true) {
   const api = useApi();
   return useQuery({
-    queryKey: qk.accountRepositories(q),
-    queryFn: () => api.listAccountRepositories(q),
-    staleTime: 30_000,
+    queryKey: qk.accountRepositories(q.trim(), limit),
+    queryFn: () => api.listAccountRepositories(q.trim(), limit),
+    enabled,
+    // Query data is shown immediately while a stale entry revalidates in the
+    // background: SWR semantics without another client cache dependency.
+    staleTime: 60_000,
+    gcTime: 30 * 60_000,
     retry: false,
   });
 }

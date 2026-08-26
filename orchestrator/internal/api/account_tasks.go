@@ -18,6 +18,11 @@ import (
 
 const accountExecutionConsentVersion = "account-repository-execution-v1"
 
+const (
+	defaultAccountRepositoryLimit = 12
+	maxAccountRepositoryLimit     = 50
+)
+
 type accountRepositoryTarget struct {
 	Provider           domain.GitProvider `json:"provider"`
 	ProviderRepoID     string             `json:"provider_repo_id"`
@@ -67,6 +72,7 @@ func (s *Server) accountProviderRepositories(
 	ctx context.Context,
 	identity *domain.UserIdentity,
 	query string,
+	limit int,
 ) ([]provider.Repo, *domain.ProviderConfig, error) {
 	if identity == nil || s.creds == nil {
 		return nil, nil, credentials.ErrNoCredential
@@ -87,19 +93,22 @@ func (s *Server) accountProviderRepositories(
 	if !ok {
 		return nil, cfg, errors.New("provider cannot list repositories")
 	}
-	const pageSize = 50
-	items := make([]provider.Repo, 0, pageSize)
-	for page := 1; page <= 20; page++ {
-		batch, listErr := lister.ListRepos(ctx, query, page, pageSize)
-		if listErr != nil {
-			return nil, cfg, listErr
-		}
-		items = append(items, batch...)
-		if len(batch) < pageSize {
-			break
-		}
+	items, err := lister.ListRepos(ctx, strings.TrimSpace(query), 1, limit)
+	if err != nil {
+		return nil, cfg, err
 	}
 	return items, cfg, nil
+}
+
+func accountRepositoryLimit(raw string) (int, error) {
+	if strings.TrimSpace(raw) == "" {
+		return defaultAccountRepositoryLimit, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > maxAccountRepositoryLimit {
+		return 0, errors.New("limit must be between 1 and 50")
+	}
+	return limit, nil
 }
 
 func (s *Server) accountOwnedProjectIDs(ctx context.Context, uid string) (map[string]bool, error) {
@@ -119,6 +128,16 @@ func (s *Server) accountOwnedProjectIDs(ctx context.Context, uid string) (map[st
 func (s *Server) handleListAccountRepositories(w http.ResponseWriter, r *http.Request) {
 	uid, ok := s.accountPrincipal(w, r)
 	if !ok {
+		return
+	}
+	limit, err := accountRepositoryLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(query) > 200 {
+		writeError(w, http.StatusBadRequest, "bad_request", "q must be at most 200 characters")
 		return
 	}
 	identities, err := s.st.ListIdentities(r.Context(), uid)
@@ -152,7 +171,7 @@ func (s *Server) handleListAccountRepositories(w http.ResponseWriter, r *http.Re
 			continue
 		}
 		seenProviders[identity.Provider] = true
-		repos, cfg, listErr := s.accountProviderRepositories(r.Context(), identity, r.URL.Query().Get("q"))
+		repos, cfg, listErr := s.accountProviderRepositories(r.Context(), identity, query, limit)
 		source := accountRepositorySource{Provider: identity.Provider, Account: identity.Username, Status: "ready"}
 		if listErr != nil {
 			source.Status = "unavailable"
@@ -196,16 +215,37 @@ func (s *Server) resolveAccountRepository(
 	if err != nil {
 		return nil, nil, nil, credentials.ErrNoCredential
 	}
-	repos, cfg, err := s.accountProviderRepositories(ctx, identity, "")
+	providerID, err := strconv.ParseInt(repositoryID, 10, 64)
+	if err != nil || providerID <= 0 {
+		return nil, identity, nil, store.ErrNotFound
+	}
+	cfg, err := s.st.GetProviderConfig(ctx, domain.ProviderKind(identity.Provider))
+	if err != nil || strings.TrimSpace(cfg.BaseURL) == "" {
+		return nil, identity, nil, store.ErrNotFound
+	}
+	if s.creds == nil {
+		return nil, identity, cfg, credentials.ErrNoCredential
+	}
+	token, err := s.creds.ResolveUserOAuth(ctx, identity.Provider, identity.UserID)
 	if err != nil {
 		return nil, identity, cfg, err
 	}
-	for i := range repos {
-		if strconv.FormatInt(repos[i].ID, 10) == repositoryID {
-			return &repos[i], identity, cfg, nil
-		}
+	client, err := provider.IntegrationClientWithScheme(identity.Provider, cfg.BaseURL, token.Value, token.Scheme)
+	if err != nil {
+		return nil, identity, cfg, err
 	}
-	return nil, identity, cfg, store.ErrNotFound
+	getter, ok := client.(provider.RepoGetter)
+	if !ok {
+		return nil, identity, cfg, errors.New("provider cannot resolve repositories by id")
+	}
+	repo, err := getter.GetRepoByID(ctx, providerID)
+	if status, isStatus := provider.IsProviderHTTPStatusError(err); isStatus && status == http.StatusNotFound {
+		return nil, identity, cfg, store.ErrNotFound
+	}
+	if err != nil {
+		return nil, identity, cfg, err
+	}
+	return repo, identity, cfg, nil
 }
 
 // handleListAccountRepositoryBranches exposes the branch names needed by the

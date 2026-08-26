@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -327,6 +328,26 @@ type giteaRepo struct {
 	HTMLURL       string `json:"html_url"`
 }
 
+func giteaRepoView(repo giteaRepo) *Repo {
+	return &Repo{
+		ID: repo.ID, FullName: repo.FullName, Description: repo.Description,
+		DefaultBranch: repo.DefaultBranch, Private: repo.Private, HTMLURL: repo.HTMLURL,
+	}
+}
+
+// GetRepoByID avoids replaying the complete /repos/search catalog when the
+// Account composer already has Gitea's stable repository ID.
+func (c *GiteaClient) GetRepoByID(ctx context.Context, id int64) (*Repo, error) {
+	if id <= 0 {
+		return nil, errors.New("repository id must be positive")
+	}
+	var raw giteaRepo
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repositories/%d", id), nil, &raw); err != nil {
+		return nil, err
+	}
+	return giteaRepoView(raw), nil
+}
+
 // ListRepos lists repositories visible to the token's user via /repos/search
 // (which scopes results to what the authenticated user may see, including their
 // private repos). Most recently updated first.
@@ -602,6 +623,7 @@ func (c *GiteaClient) doResponseWithLimit(ctx context.Context, method, path stri
 var _ Provider = (*GiteaClient)(nil)
 var _ ManagedIssueCommentProvider = (*GiteaClient)(nil)
 var _ RepoLister = (*GiteaClient)(nil)
+var _ RepoGetter = (*GiteaClient)(nil)
 var _ BranchLister = (*GiteaClient)(nil)
 var _ CurrentUser = (*GiteaClient)(nil)
 var _ CurrentUserIdentity = (*GiteaClient)(nil)

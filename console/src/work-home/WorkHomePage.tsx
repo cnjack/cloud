@@ -60,25 +60,47 @@ function matchingRepository(target: AccountRepositoryTarget | undefined, reposit
     && String(repository.provider_repo_id ?? '') === target.provider_repo_id);
 }
 
+function useDebouncedValue(value: string, delayMs: number): string {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timeout);
+  }, [delayMs, value]);
+  return debounced;
+}
+
 export function WorkHomePage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const auth = useOptionalAuth();
-  const catalog = useAccountRepositories();
+  const catalog = useAccountRepositories('', 12);
   const models = useAccountModels();
   const repositories = useRepositories();
   const devices = useDevices();
   const menuRef = useRef<HTMLDivElement>(null);
-  const [selectedRepository, setSelectedRepository] = useState(searchParams.get('repository') ?? '');
+  const [activeTarget, setActiveTarget] = useState<AccountRepositoryTarget>();
   const [contextKind, setContextKind] = useState<ContextKind>('repository');
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [contextOpen, setContextOpen] = useState(false);
   const [remotePicker, setRemotePicker] = useState(false);
+  const [repositoryQuery, setRepositoryQuery] = useState('');
   const [tab, setTab] = useState<WorkspaceTab>((searchParams.get('tab') as WorkspaceTab) || 'tasks');
 
+  const normalizedRepositoryQuery = repositoryQuery.trim();
+  const debouncedRepositoryQuery = useDebouncedValue(normalizedRepositoryQuery, 250);
+  const searchCatalog = useAccountRepositories(
+    debouncedRepositoryQuery,
+    20,
+    contextOpen && !remotePicker && debouncedRepositoryQuery.length > 0,
+  );
   const targets = catalog.data?.repositories ?? [];
-  const activeTarget = targets.find((target) => repositoryKey(target) === selectedRepository);
+  const pickerTargets = debouncedRepositoryQuery
+    ? searchCatalog.data?.repositories ?? []
+    : targets;
+  const repositorySearchLoading = normalizedRepositoryQuery !== debouncedRepositoryQuery
+    || (debouncedRepositoryQuery.length > 0 && searchCatalog.isPending);
+  const repositorySearchError = debouncedRepositoryQuery.length > 0 && searchCatalog.isError;
   const unavailableSource = catalog.data?.sources.find((source) => source.status === 'unavailable'
     && (targets.length === 0 || source.provider === activeTarget?.provider));
   const activeRepository = matchingRepository(activeTarget, repositories.data ?? []);
@@ -96,11 +118,17 @@ export function WorkHomePage() {
   }, [devices.data, searchParams]);
 
   useEffect(() => {
-    if (activeTarget || targets.length === 0) return;
-    const requested = targets.find((target) => target.repository_id === searchParams.get('repository'));
-    const first = requested ?? targets.find((target) => target.execution_available !== false) ?? targets[0];
-    if (first) setSelectedRepository(repositoryKey(first));
-  }, [activeTarget, searchParams, targets]);
+    setActiveTarget((current) => {
+      if (targets.length === 0) {
+        return catalog.data?.sources.some((source) => source.status === 'unavailable') ? undefined : current;
+      }
+      if (current) {
+        return targets.find((target) => repositoryKey(target) === repositoryKey(current)) ?? current;
+      }
+      const requested = targets.find((target) => target.repository_id === searchParams.get('repository'));
+      return requested ?? targets.find((target) => target.execution_available !== false) ?? targets[0];
+    });
+  }, [catalog.data?.sources, searchParams, targets]);
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
@@ -113,10 +141,11 @@ export function WorkHomePage() {
 
   const selectRepository = (target: AccountRepositoryTarget) => {
     setContextKind('repository');
-    setSelectedRepository(repositoryKey(target));
+    setActiveTarget(target);
     setSelectedDeviceId('');
     setContextOpen(false);
     setRemotePicker(false);
+    setRepositoryQuery('');
     const next = new URLSearchParams(searchParams);
     next.delete('remote');
     if (target.repository_id) next.set('repository', target.repository_id); else next.delete('repository');
@@ -129,6 +158,7 @@ export function WorkHomePage() {
     setSelectedDeviceId(device.id);
     setContextOpen(false);
     setRemotePicker(false);
+    setRepositoryQuery('');
     const next = new URLSearchParams(searchParams);
     next.delete('repository');
     next.set('remote', device.id);
@@ -146,18 +176,22 @@ export function WorkHomePage() {
           <p>{contextKind === 'remote' ? 'Continue on an online jcode device with the same conversation UI.' : t('repositories.composerDescription')}</p>
         </section>
 
-        {contextKind === 'remote' && selectedDevice ? (
+        {contextKind === 'repository' && catalog.isPending && !catalog.data ? <WorkHomeSkeleton /> : contextKind === 'remote' && selectedDevice ? (
           <section className={styles.remoteSurface}>
             <RemoteComposer device={selectedDevice} contextHeader={<ContextPicker
                 activeTarget={activeTarget}
                 selectedDevice={selectedDevice}
-                targets={targets}
+                targets={pickerTargets}
                 devices={onlineDevices}
                 open={contextOpen}
                 remotePicker={remotePicker}
+                query={repositoryQuery}
+                searchLoading={repositorySearchLoading}
+                searchError={repositorySearchError}
                 menuRef={menuRef}
                 onToggle={() => setContextOpen((open) => !open)}
-                onRemoteOpen={() => onlineDevices.length === 0 ? navigate('/devices/guide') : setRemotePicker(true)}
+                onQueryChange={setRepositoryQuery}
+                onRemoteOpen={() => { setRepositoryQuery(''); onlineDevices.length === 0 ? navigate('/devices/guide') : setRemotePicker(true); }}
                 onRemoteBack={() => setRemotePicker(false)}
                 onSelectRepository={selectRepository}
                 onSelectDevice={selectDevice}
@@ -171,13 +205,17 @@ export function WorkHomePage() {
             accountId={accountId}
             contextPicker={<ContextPicker
               activeTarget={activeTarget}
-              targets={targets}
+              targets={pickerTargets}
               devices={onlineDevices}
               open={contextOpen}
               remotePicker={remotePicker}
+              query={repositoryQuery}
+              searchLoading={repositorySearchLoading}
+              searchError={repositorySearchError}
               menuRef={menuRef}
               onToggle={() => setContextOpen((open) => !open)}
-              onRemoteOpen={() => onlineDevices.length === 0 ? navigate('/devices/guide') : setRemotePicker(true)}
+              onQueryChange={setRepositoryQuery}
+              onRemoteOpen={() => { setRepositoryQuery(''); onlineDevices.length === 0 ? navigate('/devices/guide') : setRemotePicker(true); }}
               onRemoteBack={() => setRemotePicker(false)}
               onSelectRepository={selectRepository}
               onSelectDevice={selectDevice}
@@ -219,7 +257,8 @@ export function WorkHomePage() {
 
 function ContextPicker({
   activeTarget, selectedDevice, targets, devices, open, remotePicker, menuRef,
-  onToggle, onRemoteOpen, onRemoteBack, onSelectRepository, onSelectDevice,
+  query, searchLoading, searchError,
+  onToggle, onQueryChange, onRemoteOpen, onRemoteBack, onSelectRepository, onSelectDevice,
 }: {
   activeTarget?: AccountRepositoryTarget;
   selectedDevice?: Device;
@@ -227,16 +266,18 @@ function ContextPicker({
   devices: Device[];
   open: boolean;
   remotePicker: boolean;
+  query: string;
+  searchLoading: boolean;
+  searchError: boolean;
   menuRef: RefObject<HTMLDivElement>;
   onToggle: () => void;
+  onQueryChange: (query: string) => void;
   onRemoteOpen: () => void;
   onRemoteBack: () => void;
   onSelectRepository: (target: AccountRepositoryTarget) => void;
   onSelectDevice: (device: Device) => void;
 }) {
-  const [query, setQuery] = useState('');
-  const visibleTargets = targets.filter((target) => target.full_name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
-  return <div className={styles.context} ref={menuRef}>
+  return <div className={[styles.context, open ? styles.contextOpen : ''].filter(Boolean).join(' ')} ref={menuRef}>
     <button type="button" className={styles.contextButton} onClick={onToggle} aria-expanded={open} aria-label={`Repository or Remote context ${selectedDevice?.name ?? activeTarget?.full_name ?? ''}`}>
       <span className={styles.contextMark}>{selectedDevice ? <TerminalWindow size={15} /> : <GitBranch size={15} />}</span>
       <strong>{selectedDevice?.name ?? activeTarget?.full_name ?? 'Repository'}</strong><CaretDown size={12} />
@@ -247,11 +288,24 @@ function ContextPicker({
         <div className={styles.menuGroup}><span className={styles.menuLabel}>Online devices</span>{devices.map((device) => <button type="button" className={styles.menuOption} key={device.id} onClick={() => onSelectDevice(device)}><span className={styles.contextMark}><TerminalWindow size={15} /></span><span><strong>{device.name}</strong><small>{device.platform || 'jcode device'} · online</small></span><span className={styles.onlineDot} /></button>)}</div>
         <footer className={styles.menuFooter}><Link to="/devices/guide"><span className={styles.contextMark}><Plus size={15} /></span><span><strong>Connect new device</strong><small>Run jcode login and complete encrypted pairing</small></span><ArrowRight size={15} /></Link></footer>
       </> : <>
-        <div className={styles.menuSearch}><input type="search" aria-label="Search repositories" placeholder="Search repositories…" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
-        <div className={styles.menuGroup}><span className={styles.menuLabel}>Git repositories</span>{visibleTargets.map((target) => <button type="button" className={styles.menuOption} key={repositoryKey(target)} onClick={() => onSelectRepository(target)}><span className={styles.contextMark}><GitBranch size={15} /></span><span><strong>{target.full_name}</strong><small>{providerLabel(target.provider)} · {target.default_branch}</small></span>{target === activeTarget && <Check size={14} />}</button>)}{visibleTargets.length === 0 && <span className={styles.menuEmpty}>No repositories match “{query}”.</span>}</div>
+        <div className={styles.menuSearch}><input type="search" aria-label="Search repositories" placeholder="Search repositories…" value={query} onChange={(event) => onQueryChange(event.target.value)} /></div>
+        <div className={styles.menuGroup}><span className={styles.menuLabel}>Git repositories</span>{searchLoading ? <RepositorySearchSkeleton /> : searchError ? <span className={styles.menuEmpty}>Repository search failed. Change the query or try again.</span> : <>{targets.map((target) => <button type="button" className={styles.menuOption} key={repositoryKey(target)} onClick={() => onSelectRepository(target)}><span className={styles.contextMark}><GitBranch size={15} /></span><span><strong>{target.full_name}</strong><small>{providerLabel(target.provider)} · {target.default_branch}</small></span>{repositoryKey(target) === (activeTarget ? repositoryKey(activeTarget) : '') && <Check size={14} />}</button>)}{targets.length === 0 && <span className={styles.menuEmpty}>No repositories match “{query}”.</span>}</>}</div>
         <footer className={styles.menuFooter}><button type="button" onClick={onRemoteOpen} aria-label={`Remote connection ${devices.length} online`}><span className={styles.contextMark}><TerminalWindow size={15} /></span><span><strong>Remote connection</strong><small>{devices.length} jcode devices online</small></span><ArrowRight size={15} /></button></footer>
       </>}
     </div>}
+  </div>;
+}
+
+function RepositorySearchSkeleton() {
+  return <div className={styles.menuSkeleton} data-testid="repository-search-skeleton" role="status" aria-label="Searching repositories">
+    {[0, 1, 2, 3].map((item) => <div className={styles.menuSkeletonRow} key={item}><span className={styles.skeletonMark} /><span><i /><i /></span></div>)}
+  </div>;
+}
+
+function WorkHomeSkeleton() {
+  return <div className={styles.workHomeSkeleton} data-testid="work-home-skeleton" role="status" aria-label="Loading repositories">
+    <div className={styles.skeletonComposer}><span className={styles.skeletonPill} /><span className={styles.skeletonPrompt} /><span className={styles.skeletonControls} /></div>
+    <div className={styles.skeletonWorkspace}><div className={styles.skeletonIdentity} /><div className={styles.skeletonTabs}>{[0, 1, 2, 3, 4].map((item) => <span key={item} />)}</div><div className={styles.skeletonPanel}>{[0, 1, 2].map((item) => <span key={item} />)}</div></div>
   </div>;
 }
 

@@ -92,7 +92,7 @@ The initial Repository facade uses the existing stable Repository id while the
 storage implementation may still resolve it to a Service row.
 
 ```text
-GET    /api/v1/account/repositories
+GET    /api/v1/account/repositories?q={query}&limit={1..50}
 POST   /api/v1/account/tasks
 
 GET    /api/v1/repositories
@@ -113,11 +113,18 @@ GET    /api/v1/repositories/{repositoryID}/agent-board/card-executions
 POST   /api/v1/repositories/{repositoryID}/agent-board/occurrences
 ```
 
-`GET /api/v1/account/repositories` is the composer catalog. It lists provider
-repositories from the Account OAuth identities and includes `repository_id`
-only when an internal Repository detail already exists. A provider failure is
-reported as an unavailable source; it is not replaced with a stale or fake
-catalog.
+`GET /api/v1/account/repositories` is the bounded composer catalog. It lists
+the first 12 provider repositories by default; `q` performs provider search and
+`limit` may request at most 50 results from each linked provider. The endpoint
+never walks every provider page as part of Work Home rendering. It includes
+`repository_id` only when an internal Repository detail already exists. A
+provider failure is reported as an unavailable source; it is not replaced with
+a fake catalog. The Console may show a fresh TanStack Query cache entry while
+it revalidates in the background and uses skeletons when no cache exists.
+
+After selection, branches and task creation resolve the provider repository by
+its stable numeric id. That lookup is one provider request and must not replay
+the Account catalog scan.
 
 `POST /api/v1/account/tasks` accepts provider, provider repository id, prompt,
 branch, model, and session options. The server verifies current Account access,

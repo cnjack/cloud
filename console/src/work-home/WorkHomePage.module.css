@@ -8,11 +8,12 @@
 .accountComposer :global(.jcode-product-composer), .remoteComposer :global(.jcode-product-composer) { padding-top: 0 !important; }
 .accountComposer fieldset, .remoteComposer fieldset { min-width: 0; border: 0; }
 .context { position: relative; align-self: flex-start; margin: 0; }
+.contextOpen { z-index: 80; }
 .contextButton { min-height: var(--space-10); display: inline-flex; align-items: center; gap: var(--space-2); border: 0; border-radius: var(--radius-pill); background: transparent; padding: 0 var(--space-2); color: var(--color-text-muted); cursor: pointer; }
 .contextButton strong { max-width: min(22rem, 46vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .contextButton:hover, .contextButton[aria-expanded='true'] { background: var(--color-panel-hover); color: var(--color-text); }
 .contextMark { width: var(--space-6); height: var(--space-6); display: grid; flex: 0 0 auto; place-items: center; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-panel); }
-.contextMenu { position: absolute; top: calc(100% + var(--space-2)); left: 0; z-index: 25; width: min(22rem, calc(100vw - var(--space-8))); overflow: hidden; border: 1px solid var(--color-border-strong); border-radius: var(--radius-xl); background: var(--color-panel); box-shadow: var(--shadow-3); }
+.contextMenu { position: absolute; top: calc(100% + var(--space-2)); left: 0; z-index: 100; width: min(22rem, calc(100vw - var(--space-8))); overflow: hidden; border: 1px solid var(--color-border-strong); border-radius: var(--radius-xl); background: var(--color-panel); box-shadow: var(--shadow-3); }
 .menuSearch { border-bottom: 1px solid var(--color-border); padding: var(--space-2); }
 .menuSearch input { width: 100%; height: var(--space-10); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-panel); padding: 0 var(--space-3); outline: 0; }
 .menuGroup { max-height: min(24rem, 55vh); padding: var(--space-2); overflow-y: auto; overscroll-behavior: contain; }
@@ -22,6 +23,7 @@
 .menuOption:hover, .menuFooter a:hover, .menuFooter button:hover { background: var(--color-panel-hover); text-decoration: none; }
 .menuOption > span:nth-child(2), .menuFooter span:nth-child(2) { min-width: 0; flex: 1; }
 .menuOption strong, .menuOption small, .menuFooter strong, .menuFooter small, .menuHead strong, .menuHead small { display: block; }
+.menuOption strong, .menuOption small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menuOption small, .menuFooter small, .menuHead small { color: var(--color-text-faint); font-size: var(--fs-tiny); }
 .menuFooter { border-top: 1px solid var(--color-border); padding: var(--space-2); }
 .menuHead { display: flex; align-items: center; gap: var(--space-2); border-bottom: 1px solid var(--color-border); padding: var(--space-2); }
@@ -61,6 +63,26 @@
 .remoteComposer fieldset { min-width: 0; border: 0; }
 .pendingRemote { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); border-radius: var(--radius-lg); background: var(--status-running-bg); padding: var(--space-3); color: var(--status-running-fg); }
 .pendingRemote span { font-size: var(--fs-caption); }
+.workHomeSkeleton { width: min(54rem, 100%); margin: var(--space-6) auto 0; }
+.skeletonComposer { height: 11rem; display: grid; grid-template-rows: auto 1fr auto; gap: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-2xl); background: var(--color-panel); padding: var(--space-4); box-shadow: var(--shadow-2); }
+.skeletonPill, .skeletonPrompt, .skeletonControls, .skeletonIdentity, .skeletonTabs span, .skeletonPanel span, .skeletonMark, .menuSkeletonRow i { display: block; border-radius: var(--radius-pill); background: linear-gradient(90deg, var(--color-bg-inset) 20%, var(--color-panel-hover) 42%, var(--color-bg-inset) 64%); background-size: 300% 100%; animation: repository-skeleton 1.4s ease-in-out infinite; }
+.skeletonPill { width: 10rem; height: var(--space-8); }
+.skeletonPrompt { width: 58%; height: var(--space-4); border-radius: var(--radius-md); }
+.skeletonControls { width: 18rem; max-width: 70%; height: var(--space-7); justify-self: end; }
+.skeletonWorkspace { margin-top: var(--space-6); }
+.skeletonIdentity { width: 14rem; height: var(--space-7); }
+.skeletonTabs { display: flex; gap: var(--space-4); margin-top: var(--space-5); padding-bottom: var(--space-3); border-bottom: 1px solid var(--color-border); }
+.skeletonTabs span { width: 4.5rem; height: var(--space-4); }
+.skeletonPanel { display: grid; gap: var(--space-3); margin-top: var(--space-6); }
+.skeletonPanel span { width: 100%; height: var(--space-14); border-radius: var(--radius-lg); }
+.menuSkeleton { display: grid; gap: var(--space-1); padding-top: var(--space-1); }
+.menuSkeletonRow { min-height: 3rem; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); }
+.skeletonMark { width: var(--space-6); height: var(--space-6); flex: 0 0 auto; border-radius: var(--radius-md); }
+.menuSkeletonRow > span:last-child { display: grid; flex: 1; gap: var(--space-2); }
+.menuSkeletonRow i:first-child { width: 72%; height: .72rem; }
+.menuSkeletonRow i:last-child { width: 42%; height: .55rem; }
+@keyframes repository-skeleton { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .skeletonPill, .skeletonPrompt, .skeletonControls, .skeletonIdentity, .skeletonTabs span, .skeletonPanel span, .skeletonMark, .menuSkeletonRow i { animation: none; } }
 @media (max-width: 52rem) {
   .main { width: calc(100% - var(--space-6)); padding-top: var(--space-8); }
   .workspaceHead { align-items: flex-start; flex-direction: column; padding-block: var(--space-3); }

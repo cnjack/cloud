@@ -2333,11 +2333,12 @@ export function createMockClient(): ApiClient {
     async listRepositories() {
       return delay([...services.values()].flat().map((service) => structuredClone(service)));
     },
-    async listAccountRepositories(q = ''): Promise<AccountRepositoryCatalog> {
+    async listAccountRepositories(q = '', limit = 12): Promise<AccountRepositoryCatalog> {
       const needle = q.trim().toLowerCase();
       const materialized = [...services.values()].flat();
       const repositories = DEMO_ACCOUNT_REPOSITORIES
         .filter((repo) => !needle || repo.full_name.toLowerCase().includes(needle))
+        .slice(0, limit)
         .map((repo) => {
           const service = materialized.find((candidate) =>
             candidate.provider === 'gitea' && candidate.repo_owner_name === repo.full_name);

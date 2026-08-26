@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -302,6 +303,27 @@ type githubRepo struct {
 	HTMLURL       string `json:"html_url"`
 }
 
+func githubRepoView(repo githubRepo) *Repo {
+	return &Repo{
+		ID: repo.ID, FullName: repo.FullName, Description: repo.Description,
+		DefaultBranch: repo.DefaultBranch, Private: repo.Private, HTMLURL: repo.HTMLURL,
+	}
+}
+
+// GetRepoByID uses GitHub's rename-proof repository endpoint. Auth still gates
+// the result to repositories visible to the linked Account.
+func (c *GitHubClient) GetRepoByID(ctx context.Context, id int64) (*Repo, error) {
+	if id <= 0 {
+		return nil, errors.New("repository id must be positive")
+	}
+	var raw githubRepo
+	requestURL := fmt.Sprintf("%s/repositories/%d", c.apiBase, id)
+	if err := doJSON(ctx, c.http, http.MethodGet, requestURL, c.auth(), c.accept(), nil, &raw); err != nil {
+		return nil, err
+	}
+	return githubRepoView(raw), nil
+}
+
 // ListRepos lists the token user's repositories (/user/repos: owned +
 // collaborator + org-member), most recently pushed first. GitHub has no q param
 // on this endpoint, so `query` is applied as a client-side substring filter on
@@ -442,5 +464,6 @@ func (c *GitHubClient) CurrentUser(ctx context.Context) (string, error) {
 var _ Provider = (*GitHubClient)(nil)
 var _ ManagedIssueCommentProvider = (*GitHubClient)(nil)
 var _ RepoLister = (*GitHubClient)(nil)
+var _ RepoGetter = (*GitHubClient)(nil)
 var _ BranchLister = (*GitHubClient)(nil)
 var _ CurrentUser = (*GitHubClient)(nil)

@@ -282,6 +282,27 @@ type gitlabProject struct {
 	WebURL            string `json:"web_url"`
 }
 
+func gitlabProjectView(project gitlabProject) *Repo {
+	return &Repo{
+		ID: project.ID, FullName: project.PathWithNamespace, Description: project.Description,
+		DefaultBranch: project.DefaultBranch, Private: project.Visibility == "private", HTMLURL: project.WebURL,
+	}
+}
+
+// GetRepoByID uses GitLab's numeric project endpoint so a selected search
+// result can be resolved without listing every project again.
+func (c *GitLabClient) GetRepoByID(ctx context.Context, id int64) (*Repo, error) {
+	if id <= 0 {
+		return nil, errors.New("repository id must be positive")
+	}
+	var raw gitlabProject
+	requestURL := fmt.Sprintf("%s/projects/%d", c.apiBase, id)
+	if err := doJSON(ctx, c.http, http.MethodGet, requestURL, c.auth(), "application/json", nil, &raw); err != nil {
+		return nil, err
+	}
+	return gitlabProjectView(raw), nil
+}
+
 // ListRepos lists projects the token's user is a member of (?membership=true),
 // most recently active first, with GitLab's own ?search filter. NOTE: the
 // minimal read_user login scope cannot list projects — the token needs
@@ -451,6 +472,7 @@ func (c *GitLabClient) CurrentUserIdentity(ctx context.Context) (ProviderUserIde
 var _ Provider = (*GitLabClient)(nil)
 var _ ManagedIssueCommentProvider = (*GitLabClient)(nil)
 var _ RepoLister = (*GitLabClient)(nil)
+var _ RepoGetter = (*GitLabClient)(nil)
 var _ BranchLister = (*GitLabClient)(nil)
 var _ CurrentUser = (*GitLabClient)(nil)
 var _ CurrentUserIdentity = (*GitLabClient)(nil)

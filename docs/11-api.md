@@ -255,11 +255,13 @@ orchestrator 的兜底分类**不覆盖**它。
 
 | 端点 | 角色 | 说明 |
 |---|---|---|
-| `GET /api/v1/account/repositories?q?` | 登录 Account | 从 Account 已连接的 Git 身份实时列出可访问仓库；尚未在 Cloud 使用过的仓库也返回，`repository_id` 仅在内部详情已物化时出现；Provider 失败按 source 显式标记 unavailable |
+| `GET /api/v1/account/repositories?q?&limit?` | 登录 Account | 从 Account 已连接的 Git 身份按需搜索可访问仓库；默认每个 Provider 只取首屏 12 条，搜索最多可请求 50 条且不会自动翻完整目录；尚未在 Cloud 使用过的仓库也返回，`repository_id` 仅在内部详情已物化时出现；Provider 失败按 source 显式标记 unavailable |
 | `POST /api/v1/account/tasks` | 登录 Account | `{provider,provider_repo_id,prompt,base_branch?,model_id?,model_effort?,session?,permission_mode?}`；服务端验证当前账号仓库权限，在同一请求中按需创建/复用隐藏的个人 Project 与 Repository，再创建 Run；无需前置 connect Repository 请求 |
 
 service principal/API key 不能调用这两个 Account 入口。Provider 账号丢失、Cloud
 执行被禁用、模型未授权、分支失效等情况返回 typed error，绝不创建看似成功的 Run。
+Composer 选中结果后，服务端通过 Provider 的稳定 repository id 直接解析仓库，
+不会为了加载分支或创建任务再次扫描 Account 的完整仓库目录。
 
 ### 2.1 Projects
 

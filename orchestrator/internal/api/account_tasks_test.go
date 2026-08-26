@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,24 +22,71 @@ import (
 
 const accountTaskModelID = "account-task-model"
 
-func newAccountTaskServer(t *testing.T) (*httptest.Server, *store.MemStore, string, string) {
+type accountProviderProbe struct {
+	mu          sync.Mutex
+	searches    []string
+	repoLookups []string
+}
+
+func (p *accountProviderProbe) recordSearch(rawQuery string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.searches = append(p.searches, rawQuery)
+}
+
+func (p *accountProviderProbe) recordRepoLookup(path string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.repoLookups = append(p.repoLookups, path)
+}
+
+func (p *accountProviderProbe) snapshot() ([]string, []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.searches...), append([]string(nil), p.repoLookups...)
+}
+
+func newAccountTaskServer(t *testing.T) (*httptest.Server, *store.MemStore, string, string, *accountProviderProbe) {
 	t.Helper()
+	probe := &accountProviderProbe{}
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v1/repos/acme/payments/branches" {
 			_ = json.NewEncoder(w).Encode([]map[string]any{{"name": "main", "protected": true}})
 			return
 		}
+		if r.URL.Path == "/api/v1/repositories/42" {
+			probe.recordRepoLookup(r.URL.Path)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 42, "full_name": "acme/payments", "default_branch": "main",
+				"private": true, "html_url": accountTaskProviderURL(r),
+			})
+			return
+		}
 		if r.URL.Path != "/api/v1/repos/search" {
 			http.NotFound(w, r)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok": true,
-			"data": []map[string]any{{
-				"id": 42, "full_name": "acme/payments", "default_branch": "main",
+		probe.recordSearch(r.URL.RawQuery)
+		count := 1
+		if r.URL.Query().Get("q") == "many" {
+			count, _ = strconv.Atoi(r.URL.Query().Get("limit"))
+		}
+		repositories := make([]map[string]any, 0, count)
+		for i := 0; i < count; i++ {
+			id := int64(42 + i)
+			name := "acme/payments"
+			if i > 0 {
+				name = "acme/repository-" + strconv.Itoa(i)
+			}
+			repositories = append(repositories, map[string]any{
+				"id": id, "full_name": name, "default_branch": "main",
 				"private": true, "html_url": accountTaskProviderURL(r),
-			}},
+			})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":   true,
+			"data": repositories,
 		})
 	}))
 	t.Cleanup(providerServer.Close)
@@ -90,7 +139,7 @@ func newAccountTaskServer(t *testing.T) (*httptest.Server, *store.MemStore, stri
 	srv := New(st, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), sse.NewHub(), nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return ts, st, mkSession(t, st, user.ID), user.ID
+	return ts, st, mkSession(t, st, user.ID), user.ID, probe
 }
 
 func accountTaskProviderURL(r *http.Request) string {
@@ -98,7 +147,7 @@ func accountTaskProviderURL(r *http.Request) string {
 }
 
 func TestAccountRepositoryCatalogAndDirectTask(t *testing.T) {
-	ts, st, token, accountID := newAccountTaskServer(t)
+	ts, st, token, accountID, probe := newAccountTaskServer(t)
 	ctx := context.Background()
 	other := &domain.User{ID: domain.NewID(), DisplayName: "Other", CreatedAt: time.Now().UTC()}
 	otherIdentity := &domain.UserIdentity{
@@ -138,6 +187,30 @@ func TestAccountRepositoryCatalogAndDirectTask(t *testing.T) {
 		catalog.Repositories[0].FullName != "acme/payments" || catalog.Repositories[0].RepositoryID != "" {
 		t.Fatalf("catalog=%+v", catalog)
 	}
+	searches, _ := probe.snapshot()
+	if len(searches) != 1 || !strings.Contains(searches[0], "limit=12") || !strings.Contains(searches[0], "page=1") {
+		t.Fatalf("initial provider searches=%v; want one page limited to 12", searches)
+	}
+
+	limitedResp := do(t, http.MethodGet, ts.URL+"/api/v1/account/repositories?q=many&limit=7", token, nil)
+	if limitedResp.StatusCode != http.StatusOK {
+		t.Fatalf("limited account repositories: status=%d", limitedResp.StatusCode)
+	}
+	var limited accountRepositoryCatalog
+	decode(t, limitedResp, &limited)
+	if len(limited.Repositories) != 7 {
+		t.Fatalf("limited catalog count=%d want 7", len(limited.Repositories))
+	}
+	searches, _ = probe.snapshot()
+	if len(searches) != 2 || !strings.Contains(searches[1], "q=many") || !strings.Contains(searches[1], "limit=7") || !strings.Contains(searches[1], "page=1") {
+		t.Fatalf("limited provider searches=%v; want one searched page", searches)
+	}
+
+	invalidLimit := do(t, http.MethodGet, ts.URL+"/api/v1/account/repositories?limit=51", token, nil)
+	if invalidLimit.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid account repository limit: status=%d want 400", invalidLimit.StatusCode)
+	}
+	invalidLimit.Body.Close()
 
 	branchesResp := do(t, http.MethodGet, ts.URL+"/api/v1/account/repositories/gitea/42/branches", token, nil)
 	if branchesResp.StatusCode != http.StatusOK {
@@ -150,6 +223,10 @@ func TestAccountRepositoryCatalogAndDirectTask(t *testing.T) {
 	decode(t, branchesResp, &branchBody)
 	if branchBody.DefaultBranch != "main" || len(branchBody.Branches) != 1 || branchBody.Branches[0].Name != "main" || !branchBody.Branches[0].Default {
 		t.Fatalf("branches=%+v default=%q", branchBody.Branches, branchBody.DefaultBranch)
+	}
+	_, repoLookups := probe.snapshot()
+	if len(repoLookups) != 1 || repoLookups[0] != "/api/v1/repositories/42" {
+		t.Fatalf("repository lookups=%v; want direct provider ID lookup", repoLookups)
 	}
 
 	invalidBranch := do(t, http.MethodPost, ts.URL+"/api/v1/account/tasks", token, map[string]any{
@@ -220,7 +297,7 @@ func TestAccountRepositoryCatalogAndDirectTask(t *testing.T) {
 }
 
 func TestAccountTaskRequiresHumanAccountAndKnownRepository(t *testing.T) {
-	ts, _, token, _ := newAccountTaskServer(t)
+	ts, _, token, _, _ := newAccountTaskServer(t)
 
 	resp := do(t, http.MethodPost, ts.URL+"/api/v1/account/tasks", consoleToken, map[string]any{
 		"provider": "gitea", "provider_repo_id": "42", "prompt": "run",

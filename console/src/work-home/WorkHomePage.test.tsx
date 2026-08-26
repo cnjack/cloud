@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,15 +34,17 @@ function renderPage({
   repositories = [],
   startAccountTask = vi.fn(),
   catalog = { repositories: targets, sources: [] },
+  listAccountRepositories,
 }: {
   repositories?: Service[];
   startAccountTask?: ReturnType<typeof vi.fn>;
   catalog?: AccountRepositoryCatalog;
+  listAccountRepositories?: (q?: string, limit?: number) => Promise<AccountRepositoryCatalog>;
 } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const client = {
     listRepositories: async () => repositories,
-    listAccountRepositories: async () => catalog,
+    listAccountRepositories: listAccountRepositories ?? (async () => catalog),
     listAccountRepositoryBranches: async () => [
       { name: 'main', default: true, protected: true },
       { name: 'develop', default: false },
@@ -52,6 +54,7 @@ function renderPage({
   } as unknown as ApiClient;
   return {
     startAccountTask,
+    queryClient,
     ...render(
       <QueryClientProvider client={queryClient}>
         <ApiProvider client={client} role="cluster-admin">
@@ -85,6 +88,20 @@ describe('WorkHomePage', () => {
     expect(screen.getAllByText('acme/payments').length).toBeGreaterThanOrEqual(2);
   });
 
+  it('renders the Work Home shell and skeleton before Repository data resolves', async () => {
+    let resolveCatalog!: (catalog: AccountRepositoryCatalog) => void;
+    const pendingCatalog = new Promise<AccountRepositoryCatalog>((resolve) => { resolveCatalog = resolve; });
+    renderPage({ listAccountRepositories: () => pendingCatalog });
+
+    expect(screen.getByRole('heading', { name: 'What should we code next?' })).toBeTruthy();
+    expect(screen.getByTestId('work-home-skeleton')).toBeTruthy();
+    expect(screen.queryByLabelText('Describe a task')).toBeNull();
+
+    resolveCatalog({ repositories: targets, sources: [] });
+    expect(await screen.findByLabelText('Describe a task')).toBeTruthy();
+    expect(screen.queryByTestId('work-home-skeleton')).toBeNull();
+  });
+
   it('switches the upper-left context to Remote and removes Repository workspace content', async () => {
     renderPage();
     const context = await screen.findByRole('button', { name: /acme\/payments/ });
@@ -98,12 +115,25 @@ describe('WorkHomePage', () => {
     expect(screen.getByRole('link', { name: /Connect new device/ }).getAttribute('href')).toBe('/devices/guide');
   });
 
-  it('searches every Repository available to the linked account in the context picker', async () => {
-    renderPage();
+  it('searches Repositories through the API and reuses the fresh SWR cache', async () => {
+    const listAccountRepositories = vi.fn(async (q = '', limit = 12) => ({
+      repositories: q === 'docs' ? [targets[1]!] : [targets[0]!],
+      sources: [],
+      limit,
+    }));
+    renderPage({ listAccountRepositories });
     fireEvent.click(await screen.findByRole('button', { name: /acme\/payments/ }));
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search repositories' }), { target: { value: 'docs' } });
-    expect(screen.getByRole('button', { name: /acme\/docs/ })).toBeTruthy();
-    expect(screen.getAllByRole('button', { name: /acme\/payments/ })).toHaveLength(1);
+    expect(await screen.findByTestId('repository-search-skeleton')).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /acme\/docs/ })).toBeTruthy();
+    await waitFor(() => expect(listAccountRepositories).toHaveBeenCalledWith('docs', 20));
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search repositories' }), { target: { value: '' } });
+    expect(await screen.findByRole('button', { name: /acme\/payments/ })).toBeTruthy();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search repositories' }), { target: { value: 'docs' } });
+    expect(await screen.findByRole('button', { name: /acme\/docs/ })).toBeTruthy();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 300)));
+    expect(listAccountRepositories.mock.calls.filter(([q]) => q === 'docs')).toHaveLength(1);
   });
 
   it('remembers the selected model and starts the chosen account Repository task', async () => {

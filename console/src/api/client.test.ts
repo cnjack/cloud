@@ -115,12 +115,12 @@ describe('httpClient — request shaping', () => {
       return { status: 201, body: { run: { id: 'run-1' }, repository: { id: 'repo-1' }, request: JSON.parse(init!.body as string) } };
     });
     const client = createHttpClient('t');
-    await expect(client.listAccountRepositories('pay')).resolves.toMatchObject({ repositories: [{ provider_repo_id: '42' }] });
+    await expect(client.listAccountRepositories('pay', 12)).resolves.toMatchObject({ repositories: [{ provider_repo_id: '42' }] });
     await expect(client.startAccountTask({
       provider: 'gitea', provider_repo_id: '42', prompt: 'Fix checkout', model_id: 'model-1', session: true,
     })).resolves.toMatchObject({ run: { id: 'run-1' }, repository: { id: 'repo-1' } });
 
-    expect(calls[0]!.url).toBe('/api/v1/account/repositories?q=pay');
+    expect(calls[0]!.url).toBe('/api/v1/account/repositories?q=pay&limit=12');
     expect(calls[1]!.url).toBe('/api/v1/account/tasks');
     expect(calls[1]!.init!.method).toBe('POST');
     expect(JSON.parse(calls[1]!.init!.body as string)).toEqual({

@@ -135,7 +135,7 @@ export interface ApiClient {
 
   listProjects(): Promise<Project[]>;
   /** Repositories visible to the current Account; no Cloud association required. */
-  listAccountRepositories(q?: string): Promise<AccountRepositoryCatalog>;
+  listAccountRepositories(q?: string, limit?: number): Promise<AccountRepositoryCatalog>;
   /** Branches for an Account-visible Repository before it is materialized. */
   listAccountRepositoryBranches(provider: string, providerRepoId: string): Promise<ServiceBranch[]>;
   /** Resolve an Account repository and create its task in one request. */
@@ -794,8 +794,12 @@ export function createHttpClient(
     // Services (blueprint §4).
     listRepositories: async () =>
       (await req<{ repositories: Service[] }>('/repositories')).repositories ?? [],
-    listAccountRepositories: (q) =>
-      req<AccountRepositoryCatalog>(`/account/repositories${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+    listAccountRepositories: (q = '', limit = 12) => {
+      const params = new URLSearchParams();
+      if (q.trim()) params.set('q', q.trim());
+      params.set('limit', String(limit));
+      return req<AccountRepositoryCatalog>(`/account/repositories?${params.toString()}`);
+    },
     listAccountRepositoryBranches: async (provider, providerRepoId) =>
       (
         await req<{ branches: ServiceBranch[] }>(
