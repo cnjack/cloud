@@ -42,23 +42,23 @@ export function RepositoryAutomationsPanel({
   canManage,
 }: {
   projectId: string;
-  repository: Service;
+  repository?: Service;
   canManage: boolean;
 }) {
   const { t } = useTranslation();
-  const query = useProjectAutomations(projectId);
+  const query = useProjectAutomations(projectId, !!repository);
   const update = useUpdateProjectAutomation(projectId);
   const remove = useDeleteProjectAutomation(projectId);
   const [filter, setFilter] = useState<'all' | AutomationTriggerKind>('all');
   const visible = useMemo(
-    () => (query.data ?? []).filter((item) =>
+    () => repository ? (query.data ?? []).filter((item) =>
       item.automation.service_id === repository.id
-      && (filter === 'all' || item.automation.trigger_kind === filter)),
-    [filter, query.data, repository.id],
+      && (filter === 'all' || item.automation.trigger_kind === filter)) : [],
+    [filter, query.data, repository?.id],
   );
-  const repositoryBase = `/repositories/${encodeURIComponent(repository.id)}`;
+  const repositoryBase = repository ? `/repositories/${encodeURIComponent(repository.id)}` : '';
   const createHref = `${repositoryBase}/automations/new`;
-  const githubService = repository.provider === 'github' ? repository : undefined;
+  const githubService = repository?.provider === 'github' ? repository : undefined;
   const reviewAutomation = (query.data ?? []).find((item) =>
     item.automation.run_kind === 'review' && item.automation.service_id === githubService?.id);
   const reviewHref = reviewAutomation
@@ -78,7 +78,7 @@ export function RepositoryAutomationsPanel({
           <h2>{t('projectAutomations.title')}</h2>
           <p>{t('projectAutomations.subtitle')}</p>
         </div>
-        {canManage && (
+        {canManage && repository && (
           <div className={styles.headActions}>
             {githubService && (
               <Link className={styles.primaryLink} to={reviewHref}>

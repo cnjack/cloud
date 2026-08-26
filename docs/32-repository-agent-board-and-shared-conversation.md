@@ -21,6 +21,14 @@ against a repository for the first time materializes the hidden Project/Service
 execution records and creates the Run in the same request; there is no prior
 "connect Repository" requirement or visible association state.
 
+Selecting a repository renders its complete Workspace immediately, even before
+those internal records exist. Tasks, Board, Reviews, Automations, Usage, and
+Settings use truthful empty states or documented defaults; first execution is
+only a persistence boundary and never a UI availability boundary. Read-only
+defaults do not fabricate successful API data. Task creation remains the
+current materialization operation; controls whose write APIs require a durable
+Repository id stay read-only until that prerequisite exists.
+
 Each Repository can connect at most one existing JType Board. The resulting
 Repository Agent Workflow has two equivalent Trigger producers:
 
@@ -85,6 +93,10 @@ names, UI copy, telemetry labels, and user-facing errors use Repository.
     after approval it returns to the exact Remote context in Work Home.
 15. Cluster settings, Personal settings, Account usage, Code reviews, and sign
     out live in the Account menu. Cluster settings is admin-only.
+16. An unmaterialized provider Repository still exposes the full Workspace.
+    Empty Automations and Usage retain their normal structure, Usage begins at
+    zero, and Settings shows inherited/default policy values. The UI never asks
+    the user to run a first task merely to reveal those sections.
 
 ## HTTP contract
 

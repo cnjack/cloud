@@ -57,6 +57,17 @@
 .panelHead { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-4); }
 .panelHead h2 { font-size: var(--fs-h1); }
 .panelHead p { margin-top: var(--space-1); color: var(--color-text-muted); }
+.boardDefault { display: grid; gap: var(--space-4); }
+.boardDefaultState { display: grid; gap: var(--space-1); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-bg-inset); padding: var(--space-4); }
+.boardDefaultState strong { color: var(--color-text); }
+.boardDefaultState span { color: var(--color-text-muted); font-size: var(--fs-caption); }
+.boardDefaultColumns { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: var(--space-2); }
+.boardDefaultColumns > span { color: var(--color-text-faint); }
+.boardDefaultColumns article { min-height: 6.5rem; display: grid; align-content: start; gap: var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius-xl); background: var(--color-panel); padding: var(--space-4); }
+.boardDefaultColumns article:nth-of-type(2) { background: color-mix(in srgb, var(--status-running-bg) 72%, var(--color-panel)); }
+.boardDefaultColumns article:nth-of-type(3) { background: color-mix(in srgb, var(--status-success-bg) 72%, var(--color-panel)); }
+.boardDefaultColumns article span { color: var(--color-text); font-weight: var(--fw-semibold); }
+.boardDefaultColumns article small { color: var(--color-text-faint); font-size: var(--fs-tiny); }
 .primaryLink { min-height: var(--space-10); display: inline-flex; align-items: center; gap: var(--space-2); border-radius: var(--radius-md); background: var(--color-text); padding: 0 var(--space-3); color: var(--color-panel); font-weight: var(--fw-semibold); }
 .primaryLink:hover { text-decoration: none; opacity: .86; }
 .remoteStack { display: grid; gap: var(--space-3); }
@@ -88,4 +99,6 @@
   .workspaceHead { align-items: flex-start; flex-direction: column; padding-block: var(--space-3); }
   .blocker { align-items: flex-start; flex-direction: column; }
   .tabs { overflow-x: auto; }
+  .boardDefaultColumns { grid-template-columns: 1fr; }
+  .boardDefaultColumns > span { display: none; }
 }

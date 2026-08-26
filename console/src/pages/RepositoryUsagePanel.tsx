@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useServiceUsage } from '../api/queries';
 import { ErrorBlock, LoadingBlock } from '../components/States';
 import { UsageSummary } from '../components/UsageSummary';
+import type { UsageSummary as UsageSummaryValue } from '../api/types';
 import styles from './RepositoryUsagePanel.module.css';
 
 type RangePreset = '24h' | '7d' | '30d';
@@ -18,7 +19,16 @@ const rangeLabelKey: Record<RangePreset, 'usage.range24h' | 'usage.range7' | 'us
   '30d': 'usage.range30',
 };
 
-export function RepositoryUsagePanel({ repositoryId }: { repositoryId: string }) {
+const emptyRepositoryUsage: UsageSummaryValue = {
+  availability: 'available',
+  reason: 'no_requests',
+  requests: 0,
+  capture: { reported: 0, partial: 0, unavailable: 0, parse_error: 0 },
+  tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+  costs: { reported: [], estimated: [], uncosted: [] },
+};
+
+export function RepositoryUsagePanel({ repositoryId }: { repositoryId?: string }) {
   const { t } = useTranslation();
   const [rangePreset, setRangePreset] = useState<RangePreset>('7d');
   const [rangeAnchor] = useState(() => Date.now());
@@ -26,12 +36,14 @@ export function RepositoryUsagePanel({ repositoryId }: { repositoryId: string })
     from: new Date(rangeAnchor - rangeMilliseconds[rangePreset]).toISOString(),
     to: new Date(rangeAnchor).toISOString(),
   }), [rangeAnchor, rangePreset]);
-  const query = useServiceUsage(repositoryId, range.from, range.to);
+  const query = useServiceUsage(repositoryId ?? '', range.from, range.to, !!repositoryId);
 
-  if (query.isLoading) return <LoadingBlock label={t('usage.loading')} />;
-  if (query.isError || !query.data) {
+  if (repositoryId && query.isLoading) return <LoadingBlock label={t('usage.loading')} />;
+  if (repositoryId && (query.isError || !query.data)) {
     return <ErrorBlock error={query.error} onRetry={() => void query.refetch()} title={t('usage.loadError')} />;
   }
+
+  const value = repositoryId ? query.data : emptyRepositoryUsage;
 
   return (
     <section className={styles.page} aria-label={t('usage.title')} data-testid="repository-usage">
@@ -53,7 +65,8 @@ export function RepositoryUsagePanel({ repositoryId }: { repositoryId: string })
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
         })}
       </p>
-      <UsageSummary value={query.data} />
+      {!repositoryId && <p className={styles.defaultNote} data-testid="repository-usage-default">No Repository runs yet. Usage starts at 0 and updates after the first request.</p>}
+      <UsageSummary value={value} />
     </section>
   );
 }

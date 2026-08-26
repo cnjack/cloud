@@ -88,6 +88,41 @@ describe('WorkHomePage', () => {
     expect(screen.getAllByText('acme/payments').length).toBeGreaterThanOrEqual(2);
   });
 
+  it('renders every Repository workspace structure before the first task materializes storage', async () => {
+    renderPage();
+    await screen.findByRole('button', { name: /acme\/payments/ });
+
+    expect(screen.queryByText(/materialize|first use/i)).toBeNull();
+    expect(screen.getByText('No tasks in this Repository')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Board' }));
+    expect(screen.getByRole('heading', { name: 'Board' })).toBeTruthy();
+    expect(screen.getByText('No Board connected')).toBeTruthy();
+    expect(screen.getByText('Agent queue')).toBeTruthy();
+    expect(screen.getByText('Done (optional)')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Reviews' }));
+    expect(screen.getByText('No code reviews yet')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Create code review' }).getAttribute('href')).toBe('/code-reviews');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Automations' }));
+    expect(screen.getByRole('heading', { name: 'Automations' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'All' })).toBeTruthy();
+    expect(screen.getByText('No Automations match this view.')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Usage' }));
+    expect(screen.getByTestId('repository-usage')).toBeTruthy();
+    expect(screen.getByTestId('repository-usage-default')).toBeTruthy();
+    expect(screen.getAllByText('0').length).toBeGreaterThanOrEqual(4);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Settings' }));
+    expect(screen.getByTestId('repository-default-settings')).toBeTruthy();
+    expect(screen.getAllByText('acme/payments').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('No Repository override')).toBeTruthy();
+    expect(screen.getByText('Lifecycle aware')).toBeTruthy();
+    expect(screen.getByText('default')).toBeTruthy();
+  });
+
   it('renders the Work Home shell and skeleton before Repository data resolves', async () => {
     let resolveCatalog!: (catalog: AccountRepositoryCatalog) => void;
     const pendingCatalog = new Promise<AccountRepositoryCatalog>((resolve) => { resolveCatalog = resolve; });

@@ -5,8 +5,17 @@ import type { PRReadyPolicy, ProjectModel, Service } from '../api/types';
 import { serviceProviderLabel, serviceSource } from './presentation';
 import styles from './SettingsPanel.module.css';
 
+export interface RepositorySettingsPreview {
+  name: string;
+  source: string;
+  provider: string;
+  defaultBranch: string;
+  gitMode: 'draft_pr' | 'readonly';
+}
+
 export function SettingsPanel({
   service,
+  preview,
   models,
   modelState,
   updating,
@@ -17,6 +26,7 @@ export function SettingsPanel({
   onRetryModels,
 }: {
   service: Service | undefined;
+  preview?: RepositorySettingsPreview;
   models: readonly ProjectModel[];
   modelState: 'loading' | 'ready' | 'unverified';
   updating: boolean;
@@ -27,7 +37,7 @@ export function SettingsPanel({
   onRetryModels: () => void;
 }) {
   const { t } = useTranslation();
-  if (!service) {
+  if (!service && !preview) {
     return (
       <section className={styles.empty}>
         <h2>{t('settingsPanel.emptyTitle')}</h2>
@@ -36,12 +46,18 @@ export function SettingsPanel({
     );
   }
 
+  const name = service?.name ?? preview!.name;
+  const source = service ? serviceSource(service) : preview!.source;
+  const provider = service ? serviceProviderLabel(service) : preview!.provider;
+  const defaultBranch = service?.default_branch ?? preview!.defaultBranch;
+  const gitMode = service?.git_mode ?? preview!.gitMode;
+
   return (
-    <section className={styles.panel} aria-labelledby="service-settings-heading">
+    <section className={styles.panel} aria-labelledby="service-settings-heading" data-testid={!service ? 'repository-default-settings' : undefined}>
       <div className={styles.head}>
         <div>
           <span className={styles.eyebrow}>{t('settingsPanel.eyebrow')}</span>
-          <h2 id="service-settings-heading">{service.name}</h2>
+          <h2 id="service-settings-heading">{name}</h2>
           <p>{t('settingsPanel.description')}</p>
         </div>
       </div>
@@ -50,19 +66,19 @@ export function SettingsPanel({
         <dl className={styles.facts}>
           <div>
             <dt>{t('settingsPanel.source')}</dt>
-            <dd><code>{serviceSource(service)}</code></dd>
+            <dd><code>{source}</code></dd>
           </div>
           <div>
             <dt>{t('settingsPanel.provider')}</dt>
-            <dd>{serviceProviderLabel(service)}</dd>
+            <dd>{provider}</dd>
           </div>
           <div>
             <dt>{t('settingsPanel.defaultBranch')}</dt>
-            <dd><code>{service.default_branch}</code></dd>
+            <dd><code>{defaultBranch}</code></dd>
           </div>
           <div>
             <dt>{t('settingsPanel.gitMode')}</dt>
-            <dd>{service.git_mode === 'draft_pr' ? t('settingsPanel.gitModePullRequest') : t('settingsPanel.gitModeReadOnly')}</dd>
+            <dd>{gitMode === 'draft_pr' ? t('settingsPanel.gitModePullRequest') : t('settingsPanel.gitModeReadOnly')}</dd>
           </div>
         </dl>
 
@@ -70,7 +86,9 @@ export function SettingsPanel({
           <span className={styles.eyebrow}>{t('settingsPanel.modelPolicyEyebrow')}</span>
           <h3 id="service-model-policy-heading">{t('settingsPanel.modelPolicyTitle')}</h3>
           <p>{t('settingsPanel.modelPolicyDescription')}</p>
-          {modelState === 'loading' ? (
+          {!service ? (
+            <p className={styles.unavailable} data-testid="repository-default-model">No Repository override</p>
+          ) : modelState === 'loading' ? (
             <p className={styles.unavailable} data-testid="service-model-policy-loading">
               {t('settingsPanel.modelsLoading')}
             </p>
@@ -100,16 +118,16 @@ export function SettingsPanel({
           )}
         </section>
 
-        {service.git_mode === 'draft_pr' && (
+        {gitMode === 'draft_pr' && (
           <section className={styles.policy} aria-labelledby="service-pr-policy-heading">
             <span className={styles.eyebrow}>{t('settingsPanel.deliveryPolicyEyebrow')}</span>
             <h3 id="service-pr-policy-heading">{t('settingsPanel.deliveryPolicyTitle')}</h3>
             <p>{t('settingsPanel.deliveryPolicyDescription')}</p>
             <Select
               aria-label={t('settingsPanel.deliveryPolicyAria')}
-              value={service.pr_ready_policy ?? 'always_draft'}
+              value={service ? service.pr_ready_policy ?? 'always_draft' : 'lifecycle_aware'}
               data-testid="service-pr-ready-policy-select"
-              disabled={updating}
+              disabled={updating || !service}
               onChange={(value) => onPRReadyPolicyChange(value as PRReadyPolicy)}
               options={[
                 { value: 'lifecycle_aware', label: t('settingsPanel.lifecycleAware') },
@@ -123,7 +141,16 @@ export function SettingsPanel({
           <span className={styles.eyebrow}>{t('settingsPanel.runtimePolicyEyebrow')}</span>
           <h3 id="service-runtime-policy-heading">{t('settingsPanel.runtimePolicyTitle')}</h3>
           <p>{t('settingsPanel.runtimePolicyDescription')}</p>
-          {runnerProfiles.length > 0 ? (
+          {!service ? (
+            <Select
+              aria-label={t('settingsPanel.runnerProfileAria')}
+              value="default"
+              data-testid="service-runner-profile-select"
+              disabled
+              onChange={onRunnerProfileChange}
+              options={[{ value: 'default', label: 'default' }]}
+            />
+          ) : runnerProfiles.length > 0 ? (
             <Select
               aria-label={t('settingsPanel.runnerProfileAria')}
               value={service.runner_profile || 'default'}
