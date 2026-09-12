@@ -2,7 +2,6 @@ import {
   CaretDown,
   CaretRight,
   ChatCircle,
-  GitBranch,
   MagnifyingGlass,
   Plus,
   SidebarSimple,
@@ -12,6 +11,8 @@ import { useTranslation } from 'react-i18next';
 import { Link, useLocation } from 'react-router-dom';
 import type { Run, RunStatus, Service } from '../api/types';
 import { Wordmark } from '../components/Wordmark';
+import { WorkspaceIdentity } from '../components/WorkspaceIdentity';
+import { repositoryWorkspacePath, workspaceTab } from './workspaceNavigation';
 import styles from './ConversationRail.module.css';
 
 interface ConversationGroup {
@@ -19,6 +20,7 @@ interface ConversationGroup {
   name: string;
   runs: Run[];
   newestAt: number;
+  available: boolean;
 }
 
 const STATUS_KEYS: Record<RunStatus, string> = {
@@ -48,12 +50,14 @@ export function ConversationRail({
   isLoading,
   collapsed,
   onCollapsedChange,
+  activeRepositoryId,
 }: {
   repositories: Service[];
   runs: Run[];
   isLoading: boolean;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
+  activeRepositoryId?: string;
 }) {
   const { t, i18n } = useTranslation();
   const location = useLocation();
@@ -78,6 +82,7 @@ export function ConversationRail({
         name: repositoryName(services.get(id), t('repositories.conversationRailRepositoryUnavailable')),
         runs: sortedRuns,
         newestAt: Date.parse(sortedRuns[0]?.created_at ?? '') || 0,
+        available: services.has(id),
       };
     }).sort((a, b) => b.newestAt - a.newestAt);
   }, [repositories, runs, t]);
@@ -127,13 +132,19 @@ export function ConversationRail({
             {visibleGroups.map((group) => {
               const open = normalizedQuery.length > 0 || !closedGroups.has(group.id);
               return <section className={styles.group} key={group.id}>
-                <button type="button" className={styles.groupButton} aria-expanded={open} onClick={() => toggleGroup(group.id)}>
+                <div className={styles.groupHeading} data-active={group.id === activeRepositoryId || undefined}>
+                <button type="button" className={styles.groupToggle} aria-expanded={open} aria-label={t('repositories.toggleConversations', { name: group.name })} aria-controls={`rail-conversations-${group.id}`} onClick={() => toggleGroup(group.id)}>
                   {open ? <CaretDown size={13} /> : <CaretRight size={13} />}
-                  <GitBranch size={14} />
-                  <span>{group.name}</span>
-                  <small>{group.runs.length}</small>
                 </button>
-                {open && <div className={styles.runList}>
+                {group.available ? <Link className={styles.repositoryLink}
+                  to={repositoryWorkspacePath(group.id, workspaceTab(new URLSearchParams(location.search).get('tab')))}
+                  aria-label={t('repositories.openRepository', { name: group.name })}
+                  aria-current={group.id === activeRepositoryId ? 'location' : undefined}>
+                  <WorkspaceIdentity name={group.name} />
+                  <small>{group.runs.length}</small>
+                </Link> : <span className={styles.repositoryLink}><WorkspaceIdentity name={group.name} /><small>{group.runs.length}</small></span>}
+                </div>
+                {open && <div className={styles.runList} id={`rail-conversations-${group.id}`}>
                   {group.runs.map((run) => {
                     const path = `/runs/${run.id}`;
                     const active = location.pathname === path;

@@ -311,9 +311,10 @@ export function RunDetailPage() {
             isLoading={conversationRuns.isLoading}
             collapsed={conversationRailCollapsed}
             onCollapsedChange={setConversationRailCollapsed}
+            activeRepositoryId={service?.id ?? current.service_id ?? undefined}
           />
           <section className={styles.runSurface} data-testid="run-surface">
-            <AccountHeader sectionTitle={repositoryName} />
+            <AccountHeader sectionTitle={t('repositories.conversationSection')} workspace={{ name: repositoryName, href: serviceTasksPath }} />
             <div className={styles.taskDetail}>
               <header className={styles.taskHeader} data-testid="run-status-header" data-status={current.status}>
                 <Link to={serviceTasksPath} className={styles.backToProject} data-testid="run-back-to-project"><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>{t('runDetail.recentTasks')}</span></Link>

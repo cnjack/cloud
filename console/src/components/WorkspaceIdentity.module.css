@@ -1,0 +1,12 @@
+.identity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--color-text);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+}
+.identity svg { flex: none; color: var(--color-text-muted); }
+.identity > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

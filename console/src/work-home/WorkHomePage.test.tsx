@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiProvider } from '../api/ApiProvider';
@@ -37,7 +37,11 @@ function renderPage({
   startAccountTask = vi.fn(),
   catalog = { repositories: targets, sources: [] },
   listAccountRepositories,
+  initialEntry = '/repositories',
+  historyControls = false,
 }: {
+  initialEntry?: string;
+  historyControls?: boolean;
   repositories?: Service[];
   runs?: Run[];
   startAccountTask?: ReturnType<typeof vi.fn>;
@@ -48,6 +52,8 @@ function renderPage({
   const client = {
     listRepositories: async () => repositories,
     listRuns: async () => runs,
+    listProjectBoardLinks: async () => [],
+    listProjectPlugins: async () => [],
     getProject: async (id: string) => ({ id, name: 'Personal workspace', created_at: '', services: repositories }),
     listAccountRepositories: listAccountRepositories ?? (async () => catalog),
     listAccountRepositoryBranches: async () => [
@@ -64,7 +70,8 @@ function renderPage({
       <QueryClientProvider client={queryClient}>
         <ApiProvider client={client} role="cluster-admin">
           <ToastProvider>
-            <MemoryRouter initialEntries={['/repositories']}>
+            <MemoryRouter initialEntries={[initialEntry]}>
+              {historyControls && <NavigationHistory />}
               <Routes>
                 <Route path="/repositories" element={<WorkHomePage />} />
                 <Route path="/runs/:runId" element={<div data-testid="run-page" />} />
@@ -77,6 +84,18 @@ function renderPage({
     ),
   };
 }
+
+function NavigationHistory() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  return <div><button onClick={() => navigate(-1)}>History back</button><button onClick={() => navigate(1)}>History forward</button><span data-testid="navigation-location">{location.pathname}{location.search}</span></div>;
+}
+
+const navigationRepositories = [
+  { id: 'repo-payments', project_id: 'personal', name: 'payments', repo_kind: 'provider', provider: 'github', provider_repo_id: 42, repo_owner_name: 'acme/payments', default_branch: 'main', git_mode: 'draft_pr', created_at: '' },
+  { id: 'repo-docs', project_id: 'personal', name: 'docs', repo_kind: 'provider', provider: 'gitea', provider_repo_id: 43, repo_owner_name: 'acme/docs', default_branch: 'trunk', git_mode: 'draft_pr', created_at: '' },
+] as Service[];
+const navigationRuns = navigationRepositories.map((repo) => ({ id: `run-${repo.id}`, project_id: 'personal', service_id: repo.id, prompt: `Task for ${repo.name}`, status: 'succeeded', created_at: '2026-09-12T00:00:00Z' })) as Run[];
 
 describe('WorkHomePage', () => {
   beforeEach(async () => {
@@ -124,6 +143,64 @@ describe('WorkHomePage', () => {
     expect(rail.getByRole('button', { name: 'Expand conversations' })).toBeTruthy();
     fireEvent.click(rail.getByRole('link', { name: /Refresh onboarding guide/ }));
     expect(await screen.findByTestId('run-page')).toBeTruthy();
+  });
+
+  it('keeps the header, rail selection and browser history in the same Repository section', async () => {
+    renderPage({ repositories: navigationRepositories, runs: navigationRuns, initialEntry: '/repositories?repository=repo-payments&tab=board', historyControls: true });
+    const header = within(await screen.findByRole('navigation', { name: 'Workspace location' }));
+    await waitFor(() => expect(header.getByText('acme/payments')).toBeTruthy());
+    expect(header.getByText('Board')).toBeTruthy();
+    const rail = within(screen.getByTestId('conversation-rail'));
+    const selected = rail.getByRole('link', { name: 'Open repository acme/payments' });
+    expect(selected.getAttribute('aria-current')).toBe('location');
+    fireEvent.click(rail.getByRole('button', { name: 'Toggle conversations for acme/payments' }));
+    expect(rail.queryByRole('link', { name: 'Task for payments' })).toBeNull();
+    expect(header.getByText('Board')).toBeTruthy();
+    fireEvent.click(rail.getByRole('link', { name: 'Open repository acme/docs' }));
+    await waitFor(() => expect(header.getByText('acme/docs')).toBeTruthy());
+    expect(header.queryByText('acme/payments')).toBeNull();
+    expect(header.getByText('Board')).toBeTruthy();
+    expect(rail.getByRole('link', { name: 'Open repository acme/docs' }).getAttribute('aria-current')).toBe('location');
+    fireEvent.click(screen.getByRole('button', { name: 'History back' }));
+    await waitFor(() => expect(header.getByText('acme/payments')).toBeTruthy());
+    expect(header.getByText('Board')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'History forward' }));
+    await waitFor(() => expect(header.getByText('acme/docs')).toBeTruthy());
+    fireEvent.click(screen.getByRole('tab', { name: 'Tasks' }));
+    expect(header.getByText('Tasks')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'History back' }));
+    await waitFor(() => expect(header.getByText('Board')).toBeTruthy());
+  });
+
+  it('resolves a linked Repository outside the first catalog page instead of showing another Repository', async () => {
+    const listAccountRepositories = vi.fn(async (q = '') => ({ repositories: q === 'acme/docs' ? [targets[1]!] : [targets[0]!], sources: [] }));
+    renderPage({ repositories: navigationRepositories, runs: navigationRuns, initialEntry: '/repositories?repository=repo-docs&tab=tasks', listAccountRepositories });
+    const header = within(await screen.findByRole('navigation', { name: 'Workspace location' }));
+    await waitFor(() => expect(listAccountRepositories).toHaveBeenCalledWith('acme/docs', 20));
+    expect(header.getByText('acme/docs')).toBeTruthy();
+    expect(header.queryByText('acme/payments')).toBeNull();
+    expect(await screen.findByRole('button', { name: /Repository or Remote context acme\/docs/ })).toBeTruthy();
+  });
+
+  it('shows an unavailable target instead of silently selecting the first Repository', async () => {
+    renderPage({ initialEntry: '/repositories?repository=missing&tab=board' });
+    expect(await screen.findByTestId('workspace-target-unavailable')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Repository or Remote context acme\/payments/ })).toBeNull();
+  });
+
+  it('does not retain a selected target after its provider access becomes unavailable', async () => {
+    let unavailable = false;
+    const listAccountRepositories = async (): Promise<AccountRepositoryCatalog> => unavailable
+      ? { repositories: [], sources: [{ provider: 'gitea', account: 'test', status: 'unavailable', message: 'Gitea session expired' }] }
+      : { repositories: targets, sources: [] };
+    const { queryClient } = renderPage({ listAccountRepositories });
+    fireEvent.click(await screen.findByRole('button', { name: /Repository or Remote context acme\/payments/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /acme\/docs/ }));
+    expect(screen.getByRole('button', { name: /Repository or Remote context acme\/docs/ })).toBeTruthy();
+    unavailable = true;
+    await act(async () => { await queryClient.invalidateQueries(); });
+    expect(await screen.findByText('Gitea session expired')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Repository or Remote context acme\/docs/ })).toBeNull();
   });
 
   it('stacks the open Repository picker above the shared composer toolbar', async () => {
@@ -186,13 +263,19 @@ describe('WorkHomePage', () => {
   });
 
   it('switches the upper-left context to Remote and removes Repository workspace content', async () => {
-    renderPage();
+    renderPage({ historyControls: true });
     const context = await screen.findByRole('button', { name: /acme\/payments/ });
     fireEvent.click(context);
     fireEvent.click(screen.getByRole('button', { name: /Remote connection/ }));
     fireEvent.click(screen.getByRole('button', { name: /dev-mbp-01/ }));
     expect(await screen.findByTestId('remote-composer')).toBeTruthy();
     expect(screen.queryByRole('tab', { name: 'Board' })).toBeNull();
+    expect(within(screen.getByRole('navigation', { name: 'Workspace location' })).getByText('dev-mbp-01')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'History back' }));
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Board' })).toBeTruthy());
+    expect(within(screen.getByRole('navigation', { name: 'Workspace location' })).getByText('acme/payments')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'History forward' }));
+    await waitFor(() => expect(screen.getByTestId('remote-composer')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: /Repository or Remote context dev-mbp-01/ }));
     fireEvent.click(screen.getByRole('button', { name: /Remote connection/ }));
     expect(screen.getByRole('link', { name: /Connect new device/ }).getAttribute('href')).toBe('/devices/guide');

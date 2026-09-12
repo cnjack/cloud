@@ -1881,6 +1881,7 @@ export default {
     emptyDescription: 'Review runs from every Repository will appear here.',
   },
   accountHeader: {
+    location: 'Workspace location',
     account: 'Account',
     menu: 'Account menu',
     codeReviews: 'Code reviews',
@@ -1935,6 +1936,12 @@ export default {
     appearanceDescription: 'Use light or dark theme.',
   },
   repositories: {
+    openRepository: 'Open repository {name}',
+    toggleConversations: 'Toggle conversations for {name}',
+    conversationSection: 'Conversation',
+    navigationUnavailable: 'This Repository is unavailable. Check your Git account access or choose another Repository.',
+    remoteUnavailable: 'This Remote device is unavailable. Reconnect it or choose another device.',
+
     eyebrow: 'Your code',
     title: 'Repositories',
     description: 'One Repository is one Agent workspace, with its own Board, tasks, settings, and code reviews.',
@@ -1964,7 +1971,7 @@ export default {
     conversationRailNew: 'New conversation',
     conversationRailSearchAria: 'Search conversations',
     conversationRailSearchPlaceholder: 'Search conversations…',
-    conversationRailByRepository: 'By Repository',
+    conversationRailByRepository: 'Recent repositories',
     conversationRailCollapse: 'Collapse conversations',
     conversationRailExpand: 'Expand conversations',
     conversationRailEmptyTitle: 'No conversations yet',

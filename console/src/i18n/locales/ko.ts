@@ -1672,6 +1672,7 @@ export default {
 
   codeReviewsPage: { eyebrow: '독립 워크플로', title: 'Code reviews', description: 'Repository 전체의 Review Run을 구현 작업과 분리해 표시합니다.', createEyebrow: '새 리뷰', createTitle: 'Code review 시작', createDescription: 'Repository와 완료된 Cloud 작업이 만든 Pull request를 선택합니다.', loadingSources: '리뷰 가능한 Pull request를 불러오는 중…', sourcesError: '리뷰 가능한 Pull request를 불러올 수 없습니다.', noRepositories: '이 계정에서 사용할 수 있는 Repository가 없습니다.', connectRepository: 'Git 계정 접근 확인', repositoryLabel: 'Repository', pullRequestLabel: 'Pull request', noReviewablePr: '리뷰할 수 있는 Cloud Pull request가 없습니다.', noReviewablePrDescription: 'Pull request를 여는 Repository 작업을 실행한 뒤 돌아오세요.', openWorkHome: 'Work Home 열기', openPullRequest: 'Pull request 열기', createAction: 'Code review 만들기', createSuccess: 'Code review가 시작되었습니다.', createError: 'Code review를 시작할 수 없습니다.', emptyTitle: '아직 Code review가 없습니다', emptyDescription: '각 Repository의 Review Run이 여기에 표시됩니다.' },
   accountHeader: {
+    location: '작업 공간 위치',
     account: '계정', menu: '계정 메뉴', codeReviews: '코드 리뷰', settings: '계정 설정', clusterSettings: '클러스터 설정', admin: '관리자', signOut: '로그아웃',
   },
   accountSettings: {
@@ -1690,6 +1691,12 @@ export default {
     language: '언어', languageDescription: '인터페이스 언어를 변경합니다.', appearance: '화면 모드', appearanceDescription: '라이트 또는 다크 테마를 사용합니다.',
   },
   repositories: {
+    openRepository: '리포지토리 {name} 열기',
+    toggleConversations: '{name} 대화 펼치기 또는 접기',
+    conversationSection: '대화',
+    navigationUnavailable: '이 리포지토리를 사용할 수 없습니다. Git 계정 권한을 확인하거나 다른 리포지토리를 선택하세요.',
+    remoteUnavailable: '이 원격 기기를 사용할 수 없습니다. 다시 연결하거나 다른 기기를 선택하세요.',
+
     eyebrow: '내 코드', title: 'Repositories',
     description: 'Repository 하나가 Board, 작업, 설정, Code reviews를 가진 Agent 작업 공간 하나입니다.',
     composerEyebrow: '계정 작업 공간', composerTitle: '다음에는 무엇을 코딩할까요?',
@@ -1702,7 +1709,7 @@ export default {
     pickerSearchError: 'Repository 검색에 실패했습니다. 검색어를 바꾸거나 다시 시도하세요.', pickerNoMatch: '“{query}”와 일치하는 Repository가 없습니다.',
     remoteConnectionAria: '원격 연결, {count}대 온라인', remoteOnlineCount: 'jcode 기기 {count}대 온라인', searchingRepositories: 'Repositories 검색 중',
     conversationRailAria: '대화', conversationRailWorkHome: '워크 홈', conversationRailNew: '새 대화',
-    conversationRailSearchAria: '대화 검색', conversationRailSearchPlaceholder: '대화 검색…', conversationRailByRepository: 'Repository별',
+    conversationRailSearchAria: '대화 검색', conversationRailSearchPlaceholder: '대화 검색…', conversationRailByRepository: '최근 리포지토리',
     conversationRailCollapse: '대화 패널 접기', conversationRailExpand: '대화 패널 펼치기', conversationRailEmptyTitle: '아직 대화가 없습니다',
     conversationRailEmptyDescription: '작업을 시작하면 첫 대화가 생성됩니다.', conversationRailNoMatch: '검색과 일치하는 대화가 없습니다.', conversationRailRepositoryUnavailable: 'Repository를 사용할 수 없습니다',
     workspaceTasks: '작업', workspaceBoard: '보드', workspaceReviews: '코드 리뷰', workspaceAutomations: '자동화', workspaceUsage: '사용량', workspaceSettings: '설정',

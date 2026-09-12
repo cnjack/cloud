@@ -343,6 +343,10 @@ describe('RunDetailPage — resilient error states', () => {
     const activeConversation = screen.getByRole('link', { name: 'Add a line Hello to README' });
     expect(activeConversation.getAttribute('href')).toBe('/runs/run1');
     expect(activeConversation.getAttribute('aria-current')).toBe('page');
+    const workspaceContext = within(screen.getByRole('navigation', { name: 'Workspace location' }));
+    expect(workspaceContext.getByText('jcloud/orchestrator')).toBeTruthy();
+    expect(workspaceContext.getByText('Conversation')).toBeTruthy();
+    expect(within(screen.getByTestId('conversation-rail')).getByRole('link', { name: 'Open repository jcloud/orchestrator' }).getAttribute('aria-current')).toBe('location');
     expect(screen.getByTestId('run-status-header')).toBeTruthy();
     expect(screen.getByTestId('thread-message-user').textContent).toContain('Add a line Hello');
     expect(screen.queryByTestId('run-initial-prompt')).toBeNull();

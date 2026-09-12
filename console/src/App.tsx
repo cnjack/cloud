@@ -105,7 +105,11 @@ function LegacyDeviceRedirect() {
   return <Navigate to={`/?remote=${encodeURIComponent(deviceId)}`} replace />;
 }
 
-function LegacyRepositoryRedirect() {
+export function LegacyRepositoryRedirect() {
   const { repositoryId = '' } = useParams();
-  return <Navigate to={`/?repository=${encodeURIComponent(repositoryId)}`} replace />;
+  const { search } = useLocation();
+  const params = new URLSearchParams(search);
+  params.delete('remote');
+  params.set('repository', repositoryId);
+  return <Navigate to={`/repositories?${params}`} replace />;
 }

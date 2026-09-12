@@ -1715,6 +1715,7 @@ export default {
     emptyDescription: '所有 Repository 的 Review Run 会集中显示在这里。',
   },
   accountHeader: {
+    location: '工作区位置',
     account: '账号',
     menu: '账号菜单',
     codeReviews: '代码审查',
@@ -1769,6 +1770,12 @@ export default {
     appearanceDescription: '使用浅色或深色主题。',
   },
   repositories: {
+    openRepository: '打开仓库 {name}',
+    toggleConversations: '展开或收起 {name} 的会话',
+    conversationSection: '会话',
+    navigationUnavailable: '此仓库不可用。请检查 Git 账号授权，或选择其他仓库。',
+    remoteUnavailable: '此远程设备不可用。请重新连接或选择其他设备。',
+
     eyebrow: '你的代码',
     title: 'Repositories',
     description: '一个 Repository 对应一个 Agent 工作区，并拥有独立的 Board、任务、设置和 Code reviews。',
@@ -1798,7 +1805,7 @@ export default {
     conversationRailNew: '新对话',
     conversationRailSearchAria: '搜索对话',
     conversationRailSearchPlaceholder: '搜索对话…',
-    conversationRailByRepository: '按 Repository',
+    conversationRailByRepository: '最近仓库',
     conversationRailCollapse: '收起对话栏',
     conversationRailExpand: '展开对话栏',
     conversationRailEmptyTitle: '暂无对话',

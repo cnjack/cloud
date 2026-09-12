@@ -35,10 +35,8 @@ import { RepositoryUsagePanel } from '../pages/RepositoryUsagePanel';
 import { AccountRepositoryComposer } from './AccountRepositoryComposer';
 import { ConversationRail } from './ConversationRail';
 import { RemoteComposer } from './RemoteComposer';
+import { repositoryWorkspacePath, workspaceTab, type WorkspaceTab } from './workspaceNavigation';
 import styles from './WorkHomePage.module.css';
-
-type WorkspaceTab = 'tasks' | 'board' | 'reviews' | 'automations' | 'usage' | 'settings';
-type ContextKind = 'repository' | 'remote';
 
 const OPEN_CONTEXT_Z_INDEX = 'calc(var(--z-dropdown, 900) + 1)';
 
@@ -82,13 +80,13 @@ export function WorkHomePage() {
   const repositories = useRepositories();
   const devices = useDevices();
   const menuRef = useRef<HTMLDivElement>(null);
-  const [activeTarget, setActiveTarget] = useState<AccountRepositoryTarget>();
-  const [contextKind, setContextKind] = useState<ContextKind>('repository');
-  const [selectedDeviceId, setSelectedDeviceId] = useState('');
+  const [chosenTarget, setChosenTarget] = useState<AccountRepositoryTarget>();
+  const selectedDeviceId = searchParams.get('remote') || '';
+  const contextKind = selectedDeviceId ? 'remote' : 'repository';
   const [contextOpen, setContextOpen] = useState(false);
   const [remotePicker, setRemotePicker] = useState(false);
   const [repositoryQuery, setRepositoryQuery] = useState('');
-  const [tab, setTab] = useState<WorkspaceTab>((searchParams.get('tab') as WorkspaceTab) || 'tasks');
+  const tab = workspaceTab(searchParams.get('tab'));
   const [conversationRailCollapsed, setConversationRailCollapsed] = useState(false);
 
   const normalizedRepositoryQuery = repositoryQuery.trim();
@@ -99,6 +97,29 @@ export function WorkHomePage() {
     contextOpen && !remotePicker && debouncedRepositoryQuery.length > 0,
   );
   const targets = catalog.data?.repositories ?? [];
+  const retainedChoice = targets.length === 0 && catalog.data?.sources.some((source) => source.status === 'unavailable')
+    ? undefined : chosenTarget;
+  const requestedRepositoryId = searchParams.get('repository') || '';
+  const requestedRepository = repositories.data?.find((repository) => repository.id === requestedRepositoryId);
+  const matchesRequested = (target: AccountRepositoryTarget) => !!requestedRepositoryId && (
+    target.repository_id === requestedRepositoryId || (requestedRepository != null
+      && target.provider === requestedRepository.provider
+      && target.provider_repo_id === String(requestedRepository.provider_repo_id))
+  );
+  const requestedFromCatalog = targets.find(matchesRequested);
+  const requestedFromChoice = retainedChoice && matchesRequested(retainedChoice) ? retainedChoice : undefined;
+  const lookupRequested = !!requestedRepository?.repo_owner_name && !catalog.isPending && !requestedFromCatalog && !requestedFromChoice;
+  const requestedCatalog = useAccountRepositories(requestedRepository?.repo_owner_name ?? '', 20, lookupRequested);
+  // The route wins over retained component state, including browser history.
+  // Resolve older repositories outside the bounded first catalog page by name,
+  // then require the stable provider id to match before rendering their workspace.
+  const activeTarget = requestedRepositoryId
+    ? requestedFromCatalog ?? requestedFromChoice ?? requestedCatalog.data?.repositories.find(matchesRequested)
+    : targets.find((target) => retainedChoice && repositoryKey(target) === repositoryKey(retainedChoice))
+      ?? retainedChoice ?? targets.find((target) => target.execution_available !== false) ?? targets[0];
+  const requestedPending = !!requestedRepositoryId && (repositories.isPending
+    || (!activeTarget && (catalog.isPending || (lookupRequested && requestedCatalog.isPending))));
+  const requestedUnavailable = !!requestedRepositoryId && !activeTarget && !requestedPending;
   const pickerTargets = debouncedRepositoryQuery
     ? searchCatalog.data?.repositories ?? []
     : targets;
@@ -115,28 +136,6 @@ export function WorkHomePage() {
   const accountId = auth?.me?.user.id ?? '';
 
   useEffect(() => {
-    const requestedDevice = searchParams.get('remote');
-    if (!requestedDevice || !devices.data) return;
-    const device = devices.data.find((candidate) => candidate.id === requestedDevice);
-    if (!device) return;
-    setContextKind('remote');
-    setSelectedDeviceId(device.id);
-  }, [devices.data, searchParams]);
-
-  useEffect(() => {
-    setActiveTarget((current) => {
-      if (targets.length === 0) {
-        return catalog.data?.sources.some((source) => source.status === 'unavailable') ? undefined : current;
-      }
-      if (current) {
-        return targets.find((target) => repositoryKey(target) === repositoryKey(current)) ?? current;
-      }
-      const requested = targets.find((target) => target.repository_id === searchParams.get('repository'));
-      return requested ?? targets.find((target) => target.execution_available !== false) ?? targets[0];
-    });
-  }, [catalog.data?.sources, searchParams, targets]);
-
-  useEffect(() => {
     const close = (event: MouseEvent) => {
       const node = event.target as Node;
       if (!menuRef.current?.contains(node)) setContextOpen(false);
@@ -146,30 +145,36 @@ export function WorkHomePage() {
   }, []);
 
   const selectRepository = (target: AccountRepositoryTarget) => {
-    setContextKind('repository');
-    setActiveTarget(target);
-    setSelectedDeviceId('');
+    setChosenTarget(target);
     setContextOpen(false);
     setRemotePicker(false);
     setRepositoryQuery('');
     const next = new URLSearchParams(searchParams);
     next.delete('remote');
-    if (target.repository_id) next.set('repository', target.repository_id); else next.delete('repository');
+    const repositoryId = target.repository_id ?? matchingRepository(target, repositories.data ?? [])?.id;
+    if (repositoryId) next.set('repository', repositoryId); else next.delete('repository');
     next.set('tab', tab);
-    setSearchParams(next, { replace: true });
+    if (next.toString() !== searchParams.toString()) setSearchParams(next);
   };
 
   const selectDevice = (device: Device) => {
-    setContextKind('remote');
-    setSelectedDeviceId(device.id);
     setContextOpen(false);
     setRemotePicker(false);
     setRepositoryQuery('');
     const next = new URLSearchParams(searchParams);
     next.delete('repository');
     next.set('remote', device.id);
-    setSearchParams(next, { replace: true });
+    if (next.toString() !== searchParams.toString()) setSearchParams(next);
   };
+
+  const sectionLabels: Record<WorkspaceTab, string> = {
+    tasks: t('repositories.workspaceTasks'), board: t('repositories.workspaceBoard'),
+    reviews: t('repositories.workspaceReviews'), automations: t('repositories.workspaceAutomations'),
+    usage: t('repositories.workspaceUsage'), settings: t('repositories.workspaceSettings'),
+  };
+  const workspaceName = contextKind === 'remote'
+    ? selectedDevice?.name
+    : activeTarget?.full_name ?? requestedRepository?.repo_owner_name;
 
   return (
     <div className={styles.page} data-testid="work-home" data-rail-collapsed={conversationRailCollapsed || undefined}>
@@ -179,10 +184,15 @@ export function WorkHomePage() {
         isLoading={repositories.isLoading || conversations.isLoading}
         collapsed={conversationRailCollapsed}
         onCollapsedChange={setConversationRailCollapsed}
+        activeRepositoryId={contextKind === 'repository' ? activeRepository?.id ?? requestedRepositoryId : undefined}
       />
 
       <section className={styles.surface} data-testid="work-home-surface">
-        <AccountHeader sectionTitle={t('repositories.conversationRailWorkHome')} />
+        <AccountHeader
+          sectionTitle={contextKind === 'remote' ? t('repositories.remoteConnection') : workspaceName ? sectionLabels[tab] : t('repositories.conversationRailWorkHome')}
+          workspace={workspaceName ? { name: workspaceName, kind: contextKind,
+            href: contextKind === 'repository' && activeRepository ? repositoryWorkspacePath(activeRepository.id) : undefined } : undefined}
+        />
 
         <main className={styles.main}>
           <div className={styles.mainInner} data-workspace-tab={contextKind === 'repository' ? tab : undefined}>
@@ -192,7 +202,7 @@ export function WorkHomePage() {
           <p>{contextKind === 'remote' ? t('repositories.remoteComposerDescription') : t('repositories.composerDescription')}</p>
         </section>
 
-        {contextKind === 'repository' && catalog.isPending && !catalog.data ? <WorkHomeSkeleton /> : contextKind === 'remote' && selectedDevice ? (
+        {contextKind === 'repository' && ((catalog.isPending && !catalog.data) || requestedPending) ? <WorkHomeSkeleton /> : contextKind === 'remote' && selectedDevice ? (
           <section className={styles.remoteSurface}>
             <RemoteComposer device={selectedDevice} contextHeader={<ContextPicker
                 activeTarget={activeTarget}
@@ -213,7 +223,7 @@ export function WorkHomePage() {
                 onSelectDevice={selectDevice}
               />} />
           </section>
-        ) : activeTarget ? (
+        ) : contextKind === 'repository' && activeTarget ? (
           <AccountRepositoryComposer
             target={activeTarget}
             models={models.data ?? []}
@@ -239,6 +249,16 @@ export function WorkHomePage() {
           />
         ) : null}
 
+        {contextKind === 'repository' && requestedUnavailable && <div className={styles.blocker} role="alert" data-testid="workspace-target-unavailable">
+          <span>{t('repositories.navigationUnavailable')}</span>
+          <Link className={styles.blockerAction} to="/account/settings?section=connections">{t('repositories.reviewGitAccountAccess')}</Link>
+          <Link className={styles.blockerAction} to="/repositories">{t('repositories.chooseRepository')}</Link>
+        </div>}
+        {contextKind === 'remote' && !selectedDevice && !devices.isLoading && <div className={styles.blocker} role="alert">
+          <span>{t('repositories.remoteUnavailable')}</span>
+          <Link className={styles.blockerAction} to="/devices/guide">{t('repositories.connectNewDevice')}</Link>
+        </div>}
+
         {contextKind === 'repository' && (catalog.isError || unavailableSource || (!catalog.isLoading && targets.length === 0) || (!models.isLoading && !models.data?.length) || activeTarget?.execution_available === false) && (
           <div className={styles.blocker} role="status">
             <span>{catalog.isError
@@ -263,7 +283,7 @@ export function WorkHomePage() {
             target={activeTarget}
             repository={activeRepository}
             tab={tab}
-            onTabChange={(nextTab) => { setTab(nextTab); const next = new URLSearchParams(searchParams); next.set('tab', nextTab); setSearchParams(next, { replace: true }); }}
+            onTabChange={(nextTab) => { if (nextTab === tab) return; const next = new URLSearchParams(searchParams); next.set('tab', nextTab); setSearchParams(next); }}
           />
         )}
           </div>

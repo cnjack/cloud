@@ -1,5 +1,5 @@
 .rail { min-width: 0; height: 100dvh; display: grid; grid-template-rows: var(--space-16) minmax(0, 1fr); overflow: hidden; border-right: 1px solid var(--color-border-subtle); background: var(--color-bg-inset); color: var(--color-text); }
-.header { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); border-bottom: 1px solid var(--color-border-subtle); padding: 0 var(--space-4); }
+.header { background: var(--color-panel); min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); border-bottom: 1px solid var(--color-border-subtle); padding: 0 var(--space-4); }
 .wordmark { min-width: 0; overflow: hidden; }
 .iconButton { width: var(--space-8); height: var(--space-8); display: grid; flex: none; place-items: center; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--color-text-muted); cursor: pointer; }
 .iconButton:hover { background: var(--color-panel-hover); color: var(--color-text); }
@@ -11,13 +11,18 @@
 .search input { min-width: 0; width: 100%; border: 0; background: transparent; padding: 0; outline: 0; color: var(--color-text); font: inherit; font-size: var(--fs-caption); }
 .search input::placeholder { color: var(--color-text-faint); }
 .conversations { min-height: 0; display: flex; flex: 1; flex-direction: column; overflow: hidden; }
-.conversations h2 { flex: none; margin: var(--space-2) var(--space-2) var(--space-1); color: var(--color-text-faint); font-size: var(--fs-tiny); font-weight: var(--fw-bold); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+.conversations h2 { flex: none; margin: var(--space-2) var(--space-2) var(--space-2); color: var(--color-text-muted); font-size: var(--fs-caption); font-weight: var(--fw-medium); }
 .groups { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: var(--space-1); }
 .group { margin-bottom: var(--space-1); }
-.groupButton { width: 100%; min-height: var(--space-9); display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); border: 0; border-radius: var(--radius-md); background: transparent; padding: 0 var(--space-2); color: var(--color-text-muted); text-align: left; cursor: pointer; }
-.groupButton:hover { background: var(--color-panel-hover); color: var(--color-text); }
-.groupButton span { overflow: hidden; color: var(--color-text); font-size: var(--fs-caption); font-weight: var(--fw-semibold); text-overflow: ellipsis; white-space: nowrap; }
-.groupButton small { color: var(--color-text-faint); font: var(--fs-tiny) var(--font-mono); }
+.groupHeading { min-width: 0; display: flex; align-items: center; border-radius: var(--radius-md); padding: var(--space-1); }
+.groupHeading:hover { background: var(--color-panel-hover); }
+.groupHeading[data-active='true'] { background: var(--color-panel); box-shadow: inset 0 0 0 1px var(--color-border); }
+.groupToggle { width: var(--space-6); height: var(--space-8); flex: none; display: grid; place-items: center; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); cursor: pointer; }
+.groupToggle:hover { background: var(--color-panel-hover); color: var(--color-text); }
+.repositoryLink { min-width: 0; min-height: var(--space-8); flex: 1; display: flex; align-items: center; gap: var(--space-2); border-radius: var(--radius-sm); padding-right: var(--space-2); color: var(--color-text); }
+.repositoryLink:hover { text-decoration: none; }
+.repositoryLink > span { flex: 1; }
+.repositoryLink small { flex: none; color: var(--color-text-faint); font: var(--fs-tiny) var(--font-mono); }
 .runList { position: relative; display: grid; margin-left: var(--space-4); padding-left: var(--space-3); }
 .runList::before { position: absolute; top: 0; bottom: var(--space-2); left: 0; width: 1px; background: var(--color-border); content: ''; }
 .run { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-2); border-radius: var(--radius-md); padding: var(--space-2); color: inherit; }

@@ -1,6 +1,11 @@
-.header { position: sticky; top: 0; z-index: 30; height: var(--space-16); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--color-border-subtle); background: color-mix(in srgb, var(--color-panel) 94%, transparent); padding: 0 var(--space-6); backdrop-filter: blur(1rem); }
+.header { position: sticky; top: 0; z-index: 30; height: var(--space-16); display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); border-bottom: 1px solid var(--color-border-subtle); background: var(--color-panel); padding: 0 var(--space-6); }
+.context { min-width: 0; display: flex; align-items: center; gap: var(--space-2); }
+.context > svg { flex: none; color: var(--color-text-faint); }
+.workspaceLink { min-width: 0; display: flex; border-radius: var(--radius-md); padding: var(--space-1) var(--space-2); margin-left: calc(-1 * var(--space-2)); }
+.workspaceLink:hover { background: var(--color-panel-hover); text-decoration: none; }
+.contextPage { flex: none; color: var(--color-text-muted); font-size: var(--fs-body); font-weight: var(--fw-medium); white-space: nowrap; }
 .sectionTitle { min-width: 0; overflow: hidden; color: var(--color-text-faint); font-size: var(--fs-caption); font-weight: var(--fw-medium); text-overflow: ellipsis; white-space: nowrap; }
-.utilities { display: flex; align-items: center; gap: var(--space-2); }
+.utilities { display: flex; flex: none; align-items: center; gap: var(--space-2); }
 .account { position: relative; }
 .trigger { display: inline-flex; align-items: center; gap: var(--space-2); border: 0; border-radius: var(--radius-pill); background: transparent; padding: var(--space-1); color: var(--color-text-muted); cursor: pointer; }
 .trigger:hover, .trigger[aria-expanded='true'] { background: var(--color-panel-hover); color: var(--color-text); }

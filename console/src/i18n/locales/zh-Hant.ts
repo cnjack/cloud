@@ -1672,6 +1672,7 @@ export default {
 
   codeReviewsPage: { eyebrow: '獨立工作流程', title: 'Code reviews', description: '集中查看各 Repository 的 Review Run，並與開發任務分開。', createEyebrow: '新 Review', createTitle: '發起 Code review', createDescription: '選擇 Repository，以及由已完成 Cloud 任務建立的 Pull request。', loadingSources: '正在載入可 Review 的 Pull request…', sourcesError: '無法載入可 Review 的 Pull request。', noRepositories: '目前帳號沒有可用的 Repository。', connectRepository: '檢查 Git 帳號授權', repositoryLabel: 'Repository', pullRequestLabel: 'Pull request', noReviewablePr: '目前沒有可 Review 的 Cloud Pull request。', noReviewablePrDescription: '先從 Repository 任務建立 Pull request，然後返回這裡。', openWorkHome: '開啟 Work Home', openPullRequest: '開啟 Pull request', createAction: '建立 Code review', createSuccess: 'Code review 已開始。', createError: '無法開始 Code review。', emptyTitle: '尚無 Code review', emptyDescription: '所有 Repository 的 Review Run 會集中顯示在這裡。' },
   accountHeader: {
+    location: '工作區位置',
     account: '帳號', menu: '帳號選單', codeReviews: '程式碼審查', settings: '帳號設定', clusterSettings: 'Cluster 設定', admin: '管理員', signOut: '登出',
   },
   accountSettings: {
@@ -1690,6 +1691,12 @@ export default {
     language: '語言', languageDescription: '變更介面語言。', appearance: '外觀', appearanceDescription: '使用淺色或深色主題。',
   },
   repositories: {
+    openRepository: '開啟儲存庫 {name}',
+    toggleConversations: '展開或收合 {name} 的對話',
+    conversationSection: '對話',
+    navigationUnavailable: '此儲存庫無法使用。請檢查 Git 帳號授權，或選擇其他儲存庫。',
+    remoteUnavailable: '此遠端裝置無法使用。請重新連線或選擇其他裝置。',
+
     eyebrow: '你的程式碼', title: 'Repositories',
     description: '一個 Repository 對應一個 Agent 工作區，包含 Board、任務、設定與 Code reviews。',
     composerEyebrow: '帳號工作區', composerTitle: '接下來想寫什麼？',
@@ -1702,7 +1709,7 @@ export default {
     pickerSearchError: 'Repository 搜尋失敗，請修改關鍵字或重試。', pickerNoMatch: '沒有與「{query}」相符的 Repository。',
     remoteConnectionAria: '遠端連線，{count} 台上線', remoteOnlineCount: '{count} 台 jcode 裝置上線', searchingRepositories: '正在搜尋 Repositories',
     conversationRailAria: '對話', conversationRailWorkHome: '工作首頁', conversationRailNew: '新對話',
-    conversationRailSearchAria: '搜尋對話', conversationRailSearchPlaceholder: '搜尋對話…', conversationRailByRepository: '按 Repository',
+    conversationRailSearchAria: '搜尋對話', conversationRailSearchPlaceholder: '搜尋對話…', conversationRailByRepository: '最近儲存庫',
     conversationRailCollapse: '收合對話欄', conversationRailExpand: '展開對話欄', conversationRailEmptyTitle: '尚無對話',
     conversationRailEmptyDescription: '開始一個任務來建立第一則對話。', conversationRailNoMatch: '沒有符合搜尋的對話。', conversationRailRepositoryUnavailable: 'Repository 無法使用',
     workspaceTasks: '任務', workspaceBoard: '看板', workspaceReviews: '程式碼審查', workspaceAutomations: '自動化', workspaceUsage: '用量', workspaceSettings: '設定',

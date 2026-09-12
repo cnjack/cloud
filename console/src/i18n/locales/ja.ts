@@ -1672,6 +1672,7 @@ export default {
 
   codeReviewsPage: { eyebrow: '独立ワークフロー', title: 'Code reviews', description: 'Repository 横断の Review Run を実装タスクと分けて表示します。', createEyebrow: '新しいレビュー', createTitle: 'Code review を開始', createDescription: 'Repository と、完了した Cloud タスクが作成した Pull request を選択します。', loadingSources: 'レビュー可能な Pull request を読み込み中…', sourcesError: 'レビュー可能な Pull request を読み込めませんでした。', noRepositories: 'このアカウントで利用できる Repository がありません。', connectRepository: 'Git アカウントアクセスを確認', repositoryLabel: 'Repository', pullRequestLabel: 'Pull request', noReviewablePr: 'レビュー可能な Cloud Pull request がありません。', noReviewablePrDescription: 'Pull request を作成する Repository タスクを実行してから戻ってください。', openWorkHome: 'Work Home を開く', openPullRequest: 'Pull request を開く', createAction: 'Code review を作成', createSuccess: 'Code review を開始しました。', createError: 'Code review を開始できませんでした。', emptyTitle: 'Code review はまだありません', emptyDescription: '各 Repository の Review Run がここに表示されます。' },
   accountHeader: {
+    location: 'ワークスペースの位置',
     account: 'アカウント', menu: 'アカウントメニュー', codeReviews: 'コードレビュー', settings: 'アカウント設定', clusterSettings: 'クラスター設定', admin: '管理者', signOut: 'サインアウト',
   },
   accountSettings: {
@@ -1690,6 +1691,12 @@ export default {
     language: '言語', languageDescription: 'インターフェースの言語を変更します。', appearance: '外観', appearanceDescription: 'ライトまたはダークテーマを使用します。',
   },
   repositories: {
+    openRepository: 'リポジトリ {name} を開く',
+    toggleConversations: '{name} の会話を展開または折りたたむ',
+    conversationSection: '会話',
+    navigationUnavailable: 'このリポジトリは利用できません。Git アカウントの権限を確認するか、別のリポジトリを選択してください。',
+    remoteUnavailable: 'このリモートデバイスは利用できません。再接続するか、別のデバイスを選択してください。',
+
     eyebrow: 'あなたのコード', title: 'Repositories',
     description: '1 つの Repository が、Board・タスク・設定・Code reviews を持つ 1 つの Agent ワークスペースです。',
     composerEyebrow: 'アカウントワークスペース', composerTitle: '次に何をコーディングしますか？',
@@ -1702,7 +1709,7 @@ export default {
     pickerSearchError: 'Repository の検索に失敗しました。検索語を変更するか、もう一度お試しください。', pickerNoMatch: '「{query}」に一致する Repository はありません。',
     remoteConnectionAria: 'リモート接続、オンライン {count} 台', remoteOnlineCount: '{count} 台の jcode デバイスがオンライン', searchingRepositories: 'Repositories を検索中',
     conversationRailAria: '会話', conversationRailWorkHome: 'ワークホーム', conversationRailNew: '新しい会話',
-    conversationRailSearchAria: '会話を検索', conversationRailSearchPlaceholder: '会話を検索…', conversationRailByRepository: 'Repository 別',
+    conversationRailSearchAria: '会話を検索', conversationRailSearchPlaceholder: '会話を検索…', conversationRailByRepository: '最近のリポジトリ',
     conversationRailCollapse: '会話欄を折りたたむ', conversationRailExpand: '会話欄を展開', conversationRailEmptyTitle: '会話はまだありません',
     conversationRailEmptyDescription: 'タスクを開始すると最初の会話が作成されます。', conversationRailNoMatch: '検索に一致する会話はありません。', conversationRailRepositoryUnavailable: 'Repository を利用できません',
     workspaceTasks: 'タスク', workspaceBoard: 'ボード', workspaceReviews: 'コードレビュー', workspaceAutomations: '自動化', workspaceUsage: '使用量', workspaceSettings: '設定',

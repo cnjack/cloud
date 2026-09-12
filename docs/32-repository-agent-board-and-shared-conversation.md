@@ -397,3 +397,18 @@ the previous application image; new nullable columns and indexes remain safe.
 Because Service routes are intentionally removed, orchestrator and Console are
 released in the same image workflow and the public smoke must verify both before
 the rollout is accepted.
+
+## Unified workspace navigation (2026-09-12)
+
+The persistent header and conversation rail describe the same workspace. The
+header shows the selected Repository (or Remote device) and current section.
+Repository identity uses the same icon, typography and truncation in both places;
+the logo header and account header share one continuous surface.
+
+A Repository name in the rail opens its workspace while retaining the current
+workspace section. Its separate disclosure button only expands/collapses the
+conversation list. The current Repository remains highlighted even when its
+conversations are collapsed. Run pages retain their parent Repository context.
+Repository links and section changes participate in browser history, and URL navigation is
+authoritative. A Repository outside the initial bounded catalog is resolved by a
+bounded provider search; unavailable targets never silently display another one.

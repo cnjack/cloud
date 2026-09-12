@@ -1,4 +1,4 @@
-import { CaretDown, HardDrives, SignOut, User } from '@phosphor-icons/react';
+import { CaretDown, CaretRight, HardDrives, SignOut, User } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
@@ -6,10 +6,14 @@ import { useRole } from '../api/ApiProvider';
 import { useOptionalAuth } from '../auth/AuthProvider';
 import { LanguageToggle } from './LanguageToggle';
 import { Wordmark } from './Wordmark';
+import { WorkspaceIdentity } from './WorkspaceIdentity';
 import styles from './AccountHeader.module.css';
 
 /** The single global header for Work Home, account, review, and admin surfaces. */
-export function AccountHeader({ sectionTitle }: { sectionTitle?: string } = {}) {
+export function AccountHeader({ sectionTitle, workspace }: {
+  sectionTitle?: string;
+  workspace?: { name: string; kind?: 'repository' | 'remote'; href?: string };
+} = {}) {
   const { t } = useTranslation();
   const auth = useOptionalAuth();
   const role = useRole();
@@ -28,7 +32,12 @@ export function AccountHeader({ sectionTitle }: { sectionTitle?: string } = {}) 
   const name = auth?.me?.user.display_name || t('accountHeader.account');
   return (
     <header className={styles.header}>
-      {sectionTitle ? <span className={styles.sectionTitle}>{sectionTitle}</span> : <Wordmark />}
+      {workspace ? <nav className={styles.context} aria-label={t('accountHeader.location')}>
+        {workspace.href
+          ? <Link className={styles.workspaceLink} to={workspace.href}><WorkspaceIdentity name={workspace.name} kind={workspace.kind} /></Link>
+          : <WorkspaceIdentity name={workspace.name} kind={workspace.kind} />}
+        {sectionTitle && <><CaretRight size={12} aria-hidden="true" /><span className={styles.contextPage} aria-current="page">{sectionTitle}</span></>}
+      </nav> : sectionTitle ? <span className={styles.sectionTitle}>{sectionTitle}</span> : <Wordmark />}
       <div className={styles.utilities}>
         <div className={styles.account} ref={ref}>
           <button type="button" className={styles.trigger} aria-label={t('accountHeader.menu')} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
