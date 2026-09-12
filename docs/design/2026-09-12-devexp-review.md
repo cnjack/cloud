@@ -1,5 +1,9 @@
 # Cloud runtime migration and developer experience review
 
+Verified online on 2026-09-12: Orchestrator and Console v0.0.156, using the
+verified v0.0.155 Cube Runner templates. Success, provider failure, checkpoint
+readback and sandbox cleanup passed. The linked Board displays its 20 cards.
+
 ## Review scope and acceptance cases
 
 Follow a real account from repository selection through a CubeSandbox session,
@@ -67,7 +71,8 @@ results are recorded after deployment below.
 
 ## Release and public verification
 
-- Cloud source: `90be07cfb96455bcbea69dd02e4a6ee4594d8c01`.
+- UI/Runner feedback source: `90be07cfb96455bcbea69dd02e4a6ee4594d8c01`.
+- Final control-plane source: `a82a5de952df87ea8e9dc3f00a77c02b52b19025`.
 - v0.0.154 images and all five templates passed. The final model diagnostic
   correction is bundled from jcode `1166a8e5217ddfff11b30cd59d1ff602b93ecbe5`
   in v0.0.155; its full pre-push checks and GitHub CI passed.
@@ -101,3 +106,28 @@ The deployed v0.0.155 guest binary was independently checked: its embedded VCS
 revision is `1166a8e5217ddfff11b30cd59d1ff602b93ecbe5`, confirming that the remaining
 fault was the proxy, rather than a stale template. The disposable inspection VM
 was deleted. The subsequent control-plane release reuses these verified templates.
+
+
+## Final acceptance
+
+[The v0.0.156 image workflow](https://github.com/cnjack/cloud/actions/runs/34687019710)
+passed. Orchestrator, migration init container and Console are pinned to v0.0.156;
+Runner images and all five template IDs remain pinned to verified v0.0.155.
+Both Deployments are Ready, schema version is 76, and the public Console served
+v0.0.156 during the following checks:
+
+- [Provider failure Run](https://cloud.j-code.net/runs/2f3ea6dd069c239d139a9c3c1b7ceddc):
+  now displays “Model access is not enabled” with activation/switch-model guidance;
+  ends Failed, saves its checkpoint and removes its sandbox (10:02:10 UTC).
+- [Successful Run](https://cloud.j-code.net/runs/395ae322558d1469a1c5c33691dc4a9d):
+  executes `pwd` against the real Cube guest and returns `/workspace`. Finish
+  retains provenance and captures 2/2 usage requests; the Run ends Succeeded,
+  saves its checkpoint and removes its sandbox (10:05:55 UTC).
+- Final provider listing and registry readback: zero Cloud-owned or inspection
+  sandboxes remain. The legacy prewarm DaemonSet and Pods are absent.
+- The temporary PostgreSQL test container, inspection VM, development worktrees
+  and migration stash were removed. Existing unrelated jcode/jtype edits remain.
+
+Environment-specific template IDs and the final deployment snapshot are retained
+locally in `deploy/cubesandbox/final-verification.generated.json`. UI screenshots
+are local artifacts, rather than public repository assets.
