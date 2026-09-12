@@ -315,6 +315,15 @@ func runSession(ctx context.Context, cfg sessionConfig) error {
 		}
 		stopReason := promptResp.StopReason
 		logf("[turn %d] completed stop_reason=%s", turn, stopReason)
+		switch stopReason {
+		case acp.StopReasonEndTurn, acp.StopReasonMaxTokens, acp.StopReasonMaxTurnRequests:
+			// Valid turn boundaries may still leave work for the next prompt.
+		default:
+			if stopReason == acp.StopReasonRefusal && client.terminal.ModelRateLimited() {
+				return fmt.Errorf("%w: [turn %d] stop_reason=%s", errModelRateLimited, turn, stopReason)
+			}
+			return fmt.Errorf("[turn %d] agent did not complete: stop_reason=%s", turn, stopReason)
+		}
 
 		if cfg.TurnHook != "" {
 			if err := runTurnHook(ctx, cfg.TurnHook, turn, sessionID, stopReason); err != nil {

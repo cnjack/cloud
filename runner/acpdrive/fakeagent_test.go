@@ -261,6 +261,7 @@ func (a *fakeAgent) Prompt(ctx context.Context, p acp.PromptRequest) (acp.Prompt
 			ToolCall: acp.ToolCallUpdate{
 				ToolCallId: acp.ToolCallId(a.permissionToolCallID),
 				Title:      acp.Ptr(a.permissionTitle),
+				RawInput:   map[string]any{"command": "go version"},
 			},
 		})
 		outcome, optionID := "error", ""

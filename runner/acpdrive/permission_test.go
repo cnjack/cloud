@@ -248,6 +248,10 @@ func TestApprovalPermissionForwardFullRoundTrip(t *testing.T) {
 		t.Fatalf("agent.permission_request events = %d, want exactly 1: %+v", len(reqEvents), reqEvents)
 	}
 	req := reqEvents[0]
+	args, ok := req.Payload["args"].(map[string]any)
+	if !ok || args["command"] != "go version" {
+		t.Fatalf("approval command missing from wire payload: %#v", req.Payload["args"])
+	}
 	requestID, _ := req.Payload["request_id"].(string)
 	if requestID == "" {
 		t.Fatalf("permission_request request_id is empty: %+v", req.Payload)

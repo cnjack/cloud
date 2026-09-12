@@ -309,6 +309,30 @@ func (m *mockOrchestrator) calls() (turnComplete []turnCompleteCall, nextPrompt 
 
 // --- tests ---
 
+// A completed ACP RPC is not necessarily a successful model turn. jcode
+// returns refusal for provider failures, including unavailable subscriptions.
+func TestSessionLoopRejectsUnsuccessfulStopReason(t *testing.T) {
+	for _, reason := range []string{"refusal", "cancelled", "unknown_future_reason"} {
+		t.Run(reason, func(t *testing.T) {
+			cfg := fakeAgentConfig(t, t.TempDir(), reason, "")
+			orch := newMockOrchestrator()
+			orch.nextPromptScript = []nextPromptStep{{status: http.StatusGone}}
+			ts := orch.server()
+			defer ts.Close()
+			cfg.OrchBaseURL, cfg.RunID, cfg.RunToken = ts.URL, "run-test", "tok"
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := runSession(ctx, cfg); err == nil || !strings.Contains(err.Error(), reason) {
+				t.Fatalf("stop_reason=%s should fail, got %v", reason, err)
+			}
+			completed, polled := orch.calls()
+			if len(completed) != 0 || polled != 0 {
+				t.Fatalf("unsuccessful turn was reported complete: completed=%v polls=%d", completed, polled)
+			}
+		})
+	}
+}
+
 // TestSessionLoopHappyPathMultipleTurns proves the core state machine: turn 1
 // (using --prompt) completes, 204s a couple of times (poll again immediately,
 // no backoff wait), a 200 delivers turn 2's prompt on the SAME session, turn 2

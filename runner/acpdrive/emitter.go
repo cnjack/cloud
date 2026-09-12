@@ -256,7 +256,7 @@ func (e *Emitter) EmitSession(acpSessionID string, resumed bool) {
 // key) is not the display order — the server allocates the authoritative
 // global seq at arrival — and F8b keys the approval UI on request_id, not on
 // event adjacency.
-func (e *Emitter) EmitPermissionRequestSync(ctx context.Context, requestID, toolCallID, title string, options []acp.PermissionOption) error {
+func (e *Emitter) EmitPermissionRequestSync(ctx context.Context, requestID, toolCallID, title string, options []acp.PermissionOption, rawInput any) error {
 	if e == nil {
 		// No control plane wired: there is no one to ask for approval, so the
 		// caller's timeout-deny path is the only safe answer.
@@ -278,6 +278,11 @@ func (e *Emitter) EmitPermissionRequestSync(ctx context.Context, requestID, tool
 		"title":        title,
 		"options":      opts,
 	}}
+	// Carry the agent's canonical approval presentation directly. Permission
+	// events can arrive before tool-call events, so UI correlation is insufficient.
+	if rawInput != nil {
+		ev.Payload["args"] = rawInput
+	}
 	e.mu.Unlock()
 
 	body, err := json.Marshal(map[string]any{"events": []event{ev}})

@@ -94,7 +94,7 @@ func (c *driverClient) forwardPermissionRequest(ctx context.Context, params acp.
 	pollCtx, cancel := context.WithTimeout(ctx, c.permissionTimeout)
 	defer cancel()
 
-	if err := c.emitter.EmitPermissionRequestSync(pollCtx, requestID, toolCallID, title, params.Options); err != nil {
+	if err := c.emitter.EmitPermissionRequestSync(pollCtx, requestID, toolCallID, title, params.Options, params.ToolCall.RawInput); err != nil {
 		// The control plane never accepted the request event within the
 		// permission budget: nobody can possibly approve a request they never
 		// saw, so this is the timeout-deny path WITHOUT polling (polling for
