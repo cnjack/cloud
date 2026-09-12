@@ -134,8 +134,10 @@ console/mobile — all end-to-end encrypted. Durable rules for this area:
 - The company task runtime is migrating to CubeSandbox. Follow
   `docs/design/cubesandbox-runtime.md` and `deploy/cubesandbox/README.md` for the
   tested storage contract and rollout. Cloud control-plane pods stay in Kubernetes.
-- Publish and register all five Cube Runner Profile templates for a release;
-  deploy immutable template IDs with `register-templates.py`. Reapply its
+- Publish and register all five Cube Runner Profile templates when Runner images
+  change. Orchestrator-only fixes may reuse verified immutable templates; keep
+  their actual Runner image versions pinned. Deploy template IDs with
+  `register-templates.py`. Reapply its
   generated ConfigMap merge patch after any company `apply -k`.
 - Never destroy a persistent sandbox before its workspace checkpoint is verified.
   Failed checkpoint/deletion must retain the resource and report the failure.

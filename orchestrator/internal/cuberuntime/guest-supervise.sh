@@ -17,7 +17,23 @@ echo running > "$control/state"
 setsid timeout --signal=TERM --kill-after=15 "${CUBE_JOB_TIMEOUT}s" \
   setpriv --reuid=10001 --regid=10001 --clear-groups --bounding-set=-all \
   --inh-caps=-all --ambient-caps=-all --no-new-privs \
-  /bin/bash --noprofile --norc -c '. /run/jcloud/config/runner-env.sh; export PATH="/run/jcloud/runtime/bin:/usr/local/go/bin:/home/jcode/go/bin:/usr/local/cargo/bin:$PATH"; exec /usr/local/bin/entrypoint.sh' &
+  /bin/bash --noprofile --norc -c '
+    set -eu
+    . /run/jcloud/config/runner-env.sh
+    export PATH="/run/jcloud/runtime/bin:/usr/local/go/bin:/home/jcode/go/bin:/usr/local/cargo/bin:$PATH"
+    # envd process sessions do not inherit all OCI image environment entries.
+    # Keep compiler installations read-only and caches in the runner HOME.
+    if [ -d /usr/local/rustup ]; then
+      export RUSTUP_HOME="${RUSTUP_HOME:-/usr/local/rustup}"
+      export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+      mkdir -p "$CARGO_HOME"
+    fi
+    if [ -d /usr/local/go ]; then
+      export GOPATH="${GOPATH:-$HOME/go}"
+    fi
+    cd /workspace
+    exec /usr/local/bin/entrypoint.sh
+  ' &
 child=$!
 echo "$child" > "$control/child-pid"
 wait "$child"

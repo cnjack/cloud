@@ -108,6 +108,15 @@ managed model/Plugin configuration and provider credentials.
 - The feature was rebased onto live release source `a0cbec6` before delivery,
   preserving repository conversation/agent-board changes. New migration versions
   are 0075 and 0076; a CI test rejects duplicate migration versions.
+- A node reboot at 2026-09-12 15:24 Beijing time interrupted three template
+  builds. Their stale pre-reboot job records were marked failed before retrying.
+  The interrupted default replica still routed cleanup to Pod IP
+  `10.233.106.239`; its routing was refreshed to the verified current Pod IP
+  `10.233.106.208`. Other existing templates and paused sandboxes were untouched.
+- Real compiler probes found that envd does not inherit the OCI toolchain
+  environment. The unprivileged launch step now restores Go/Rust paths and a
+  writable Cargo cache, and enters `/workspace` explicitly. This is independent
+  of the root helper environment and respects explicit task overrides.
 
 ## Design review gates
 

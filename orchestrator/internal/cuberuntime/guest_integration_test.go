@@ -26,7 +26,8 @@ func (v *dockerVM) ID() string { return v.name }
 func (v *dockerVM) Run(ctx context.Context, command string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	b, err := exec.CommandContext(ctx, "docker", "exec", v.name, "/bin/bash", "-c", command).CombinedOutput()
+	// Match envd's root process cwd, rather than the OCI WORKDIR.
+	b, err := exec.CommandContext(ctx, "docker", "exec", "-w", "/root", v.name, "/bin/bash", "-c", command).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("guest command: %w: %s", err, b)
 	}
@@ -123,6 +124,7 @@ func TestDockerGuestConfinementPluginCheckpointAndRestore(t *testing.T) {
 	entry := `#!/bin/bash
 set -euo pipefail
 test "$(id -u)" = 10001
+test "$PWD" = /workspace
 test "$HOME" = /home/jcode
 test "$TASK_PROMPT" = 'literal '\'' prompt $(id)'
 grep -q test-access "$HOME/.jcode/mcp.json"

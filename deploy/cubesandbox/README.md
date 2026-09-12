@@ -52,6 +52,13 @@ requests without an API key. The integration never copies Cube credentials to a
 task VM. API and envd/proxy connectivity are distinct; the WebUI login URL is not
 the control-plane API endpoint.
 
+An Orchestrator-only fix can reuse the already verified immutable Runner/template
+mapping. Pin the new Orchestrator image separately and keep `RUNNER_IMAGE` and
+`RUNNER_PROFILES_JSON` truthful to the templates in use. Template registration is
+serial by default, records native build job IDs, and treats CubeAPI 404 as pending
+until the native job completes. `--retry-failed` retries one recorded failed build
+after its cause has been repaired.
+
 ## Workspaces and recovery
 
 The installed S3 FUSE volume failed Git filesystem semantics in PoC. Tasks use
