@@ -147,6 +147,11 @@ func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, mode
 			if model.APIKey != "" {
 				pr.Out.Header.Set("Authorization", "Bearer "+model.APIKey)
 			}
+			// Error normalization and usage capture inspect JSON/SSE bytes. Let
+			// our transport negotiate and decode gzip; forwarding the client's
+			// Accept-Encoding prevents Go's automatic decompression and turns a
+			// valid compressed provider error into a generic upstream_http_*.
+			pr.Out.Header.Del("Accept-Encoding")
 			// Hop-by-hop headers are stripped by ReverseProxy; keep no extras.
 		},
 		ModifyResponse: func(resp *http.Response) error {

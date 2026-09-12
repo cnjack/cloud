@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -964,5 +965,29 @@ func TestLLMProxyCapturesFinalSSEUsageWithoutChangingChunks(t *testing.T) {
 			t.Fatal("final SSE usage was not recorded")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestLLMProxyPreservesCompressedProviderError(t *testing.T) {
+	const upstreamBody = `{"error":{"code":"AccessDenied.Unpurchased","type":"AccessDenied.Unpurchased","message":"Access to model denied. Please make sure you are eligible for using the model."}}`
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusForbidden)
+		gz := gzip.NewWriter(w)
+		_, _ = gz.Write([]byte(upstreamBody))
+		_ = gz.Close()
+	}))
+	defer up.Close()
+	ts, st := proxyTestServer(t, up.URL+"/v1", "realkey")
+	rid, tok := proxyRun(t, st)
+	resp := proxyPost(t, ts.URL, tok, "runs/"+rid+"/llm/v1/chat/completions", []byte("{}"))
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusForbidden || string(got) != upstreamBody {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, got)
 	}
 }

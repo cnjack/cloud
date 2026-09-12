@@ -64,3 +64,40 @@ old queued Cards or select a different execution account/model.
 Runtime PoC, design decisions, workspace migration and cleanup evidence are in
 [cubesandbox-runtime.md](cubesandbox-runtime.md). Final release and public smoke
 results are recorded after deployment below.
+
+## Release and public verification
+
+- Cloud source: `90be07cfb96455bcbea69dd02e4a6ee4594d8c01`.
+- v0.0.154 images and all five templates passed. The final model diagnostic
+  correction is bundled from jcode `1166a8e5217ddfff11b30cd59d1ff602b93ecbe5`
+  in v0.0.155; its full pre-push checks and GitHub CI passed.
+- [v0.0.155 image workflow](https://github.com/cnjack/cloud/actions/runs/34686299261)
+  and [jcode CI](https://github.com/cnjack/jcode/actions/runs/34686277782) passed.
+- Actual provider failures put `AccessDenied.Unpurchased` in `APIError.Code`,
+  separately from the human message. The final regression covers that structure
+  through a wrapped error, alongside text-only and generic invalid-key cases.
+- The jcode pre-push hook now clears checkout-specific Git environment variables.
+  Otherwise tests initializing temporary Git repositories inherit a linked
+  worktree's `GIT_DIR`. Full checks passed after isolation; the original local
+  UI changes remained intact.
+
+| Public Run | Version | Result and evidence |
+| --- | --- | --- |
+| `b4e577642041fb93c6490cc1237126f4` | 154 | Retry immediately showed the new queued state without old transcript; model rejection ended Failed, checkpoint saved, VM removed at 09:33:24 UTC. |
+| `9484fa96a1d04b782a8aae64411813aa` | 154 | Switched to the authorized Zhipu model. Actual approval command and expanded JSON parameters appeared before execution. README and 7 environment probes succeeded under UID 10001; git remained clean. Finish preserved provenance/usage, saved the checkpoint and removed the VM at 09:37:39 UTC. |
+
+All approval decisions in these checks were one-time approvals of the displayed
+read-only commands. The old five prewarm Pods and their DaemonSet remain removed.
+PostgreSQL, unrelated workloads and source workspace PVC backups are retained.
+
+A second live check exposed the remaining transport cause: Alibaba's error JSON
+was gzip encoded. Forwarding the caller's `Accept-Encoding` disabled Go's automatic
+upstream decompression, so Cloud's error normalizer replaced valid compressed JSON
+with `upstream_http_403`. The new HTTP regression reproduced that exact loss before
+the fix. The proxy now lets its own transport negotiate/decode compression before
+error normalization and usage inspection. The full Orchestrator suite passes.
+
+The deployed v0.0.155 guest binary was independently checked: its embedded VCS
+revision is `1166a8e5217ddfff11b30cd59d1ff602b93ecbe5`, confirming that the remaining
+fault was the proxy, rather than a stale template. The disposable inspection VM
+was deleted. The subsequent control-plane release reuses these verified templates.
