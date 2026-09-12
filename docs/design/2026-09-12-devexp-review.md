@@ -1,6 +1,6 @@
 # Cloud runtime migration and developer experience review
 
-Verified online on 2026-09-12: Orchestrator and Console v0.0.156, using the
+Verified online on 2026-09-12: Orchestrator v0.0.156 and Console v0.0.157, using the
 verified v0.0.155 Cube Runner templates. Success, provider failure, checkpoint
 readback and sandbox cleanup passed. The linked Board displays its 20 cards.
 
@@ -111,8 +111,9 @@ was deleted. The subsequent control-plane release reuses these verified template
 ## Final acceptance
 
 [The v0.0.156 image workflow](https://github.com/cnjack/cloud/actions/runs/34687019710)
-passed. Orchestrator, migration init container and Console are pinned to v0.0.156;
-Runner images and all five template IDs remain pinned to verified v0.0.155.
+passed. Orchestrator and its migration init container are pinned to v0.0.156;
+Console subsequently moved to v0.0.157 for the Card spacing fix. Runner images
+and all five template IDs remain pinned to verified v0.0.155.
 Both Deployments are Ready, schema version is 76, and the public Console served
 v0.0.156 during the following checks:
 
@@ -144,4 +145,8 @@ Acceptance checks: differently sized adjacent cards have 8px gaps; the last card
 has no extra trailing margin; ordinary host paragraphs still have 0px margins.
 The browser probe using the real application/Board styles passed those checks.
 All 559 Console tests, typecheck and production build passed with the same shared
-UI revision used by CI. Public Board geometry is verified after rollout.
+UI revision used by CI. Console v0.0.157 was then deployed after the
+[matching image workflow](https://github.com/cnjack/cloud/actions/runs/34690516613)
+passed. Public DOM measurement found all 20 cards; all 17 adjacent-card pairs
+(11 in Backlog and 6 in Done) measured exactly 8px. The real Board screenshot
+confirms the restored separation. Source commit: `6e96cd8343e16462c3eb60cad17f60a05adfaac5`.
