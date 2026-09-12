@@ -117,6 +117,11 @@ managed model/Plugin configuration and provider credentials.
   environment. The unprivileged launch step now restores Go/Rust paths and a
   writable Cargo cache, and enters `/workspace` explicitly. This is independent
   of the root helper environment and respects explicit task overrides.
+- The first public-path task exposed a custom-client regression: replacing the
+  SDK HTTP client also replaced its CubeProxy dialer. The adapter now preserves
+  the SDK data transport. A real-HTTP regression test checks virtual Host routing
+  without sandbox DNS, and the actual adapter's create/file/command/delete journey
+  passed against the supplied Cube deployment.
 
 ## Design review gates
 

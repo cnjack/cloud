@@ -33,10 +33,14 @@ type SDKBackend struct {
 }
 
 func NewSDKBackend(cfg cube.Config) *SDKBackend {
-	// Control/data endpoints are administrator configuration. Ignore ambient
-	// workstation proxy variables and preserve CubeProxy's virtual Host routing.
+	// Keep the SDK's separate data transport: it dials ProxyNodeIP while
+	// preserving the sandbox's virtual Host. WithHTTPClient replaces that dialer
+	// and would incorrectly send envd requests through public DNS.
+	if cfg.RequestTimeout == 0 {
+		cfg.RequestTimeout = 2 * time.Minute
+	}
 	h := &http.Client{Timeout: 2 * time.Minute, Transport: &http.Transport{MaxIdleConns: 32, MaxIdleConnsPerHost: 8, IdleConnTimeout: time.Minute}}
-	return &SDKBackend{client: cube.NewClient(cfg, cube.WithHTTPClient(h)), cfg: cfg, http: h}
+	return &SDKBackend{client: cube.NewClient(cfg), cfg: cfg, http: h}
 }
 
 type sdkVM struct{ sandbox *cube.Sandbox }
