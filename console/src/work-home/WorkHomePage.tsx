@@ -185,7 +185,7 @@ export function WorkHomePage() {
         <AccountHeader sectionTitle={t('repositories.conversationRailWorkHome')} />
 
         <main className={styles.main}>
-          <div className={styles.mainInner}>
+          <div className={styles.mainInner} data-workspace-tab={contextKind === 'repository' ? tab : undefined}>
         <section className={styles.hero}>
           <span className={styles.eyebrow}>{t('repositories.composerEyebrow')}</span>
           <h1>{t('repositories.composerTitle')}</h1>

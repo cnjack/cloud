@@ -852,7 +852,7 @@ function shortRevision(value: string): string {
 }
 
 function currentRunStatusLabel(status: Run['status'], t: TFunction): string {
-  return t(`status.${status}`);
+  return t(`run.statusName.${status}`);
 }
 
 function deliveryStatusLabel(status: Run['delivery_status'], t: TFunction): string {

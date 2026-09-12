@@ -1,6 +1,7 @@
 import type { Approval, ApprovalOption, Message, ThreadItem, ToolCall } from 'jcode-ui-core';
 import { groupTimeline } from './grouping';
 import { terminalStatusSeq } from './eventModel';
+import { i18n } from '../i18n';
 import type {
   GroupedTimelineItem,
   PermissionCardItem,
@@ -95,7 +96,7 @@ function toThreadItem(
       const approval: Approval = {
         id: item.requestId,
         tool_name: item.title,
-        tool_args: JSON.stringify({ options: item.options }),
+        tool_args: item.toolArgs ?? i18n.t('run.permissionArgumentsUnavailable'),
         is_external: false,
         resolved: item.status === 'resolved',
         approved: chosen?.kind.startsWith('allow') ?? false,

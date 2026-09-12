@@ -116,6 +116,11 @@ function boardOpenErrorCopy(error: unknown, t: TFunction): BoardOpenErrorCopy {
         title: t('kanban.unavailableTitle'),
         message: t('kanban.unavailableMsg'),
       };
+    case 'jtype_tls_invalid':
+      return {
+        title: t('kanban.tlsInvalidTitle'),
+        message: t('kanban.tlsInvalidMsg'),
+      };
     case 'jtype_unauthorized':
       return {
         title: t('kanban.unauthorizedTitle'),
@@ -622,6 +627,8 @@ export function KanbanBoardModal({
         ) : (
           <>
             {canManage && (
+              <details className={styles.columnDetails} open={!embedded} data-testid="kanban-column-details">
+                <summary>{t('kanban.columnSettings')}</summary>
               <div className={styles.columnEditor} data-testid="kanban-column-editor">
                 <div className={styles.columnEditorIntro}>
                   <strong>{t('kanban.columnSettings')}</strong>
@@ -737,6 +744,7 @@ export function KanbanBoardModal({
                   </span>
                 )}
               </div>
+              </details>
             )}
             {!link.enabled && (
               <div

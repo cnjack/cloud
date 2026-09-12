@@ -76,7 +76,7 @@ function GateAside({ variant }: { variant: GateVariant }) {
     return <aside className={styles.aside}><span className={styles.eyebrow}>{t('onboarding.sessionBoundary')}</span><h3>{t('onboarding.whatSignInEstablishes')}</h3><p>{t('onboarding.signInEstablishesBody')}</p><div className={styles.security}><Lock size={14} /><span>{t('onboarding.providerTokensServerSide')}</span></div></aside>;
   }
   if (variant === 'setup' || variant === 'probing') {
-    return <aside className={styles.aside}><span className={styles.eyebrow}>{t('onboarding.currentProbe')}</span><h3>{t('onboarding.whatConsoleKnows')}</h3><p>{t('onboarding.probeBody')}</p><dl className={styles.probeFacts}><div><dt>{t('onboarding.probeTarget')}</dt><dd>localhost:8080</dd></div><div><dt>{t('onboarding.probeResponse')}</dt><dd>{variant === 'setup' ? t('onboarding.probeUnreachable') : t('onboarding.probeWaiting')}</dd></div></dl></aside>;
+    return <aside className={styles.aside}><span className={styles.eyebrow}>{t('onboarding.currentProbe')}</span><h3>{t('onboarding.whatConsoleKnows')}</h3><p>{t('onboarding.probeBody')}</p><dl className={styles.probeFacts}><div><dt>{t('onboarding.probeTarget')}</dt><dd>{window.location.origin}/api/v1</dd></div><div><dt>{t('onboarding.probeResponse')}</dt><dd>{variant === 'setup' ? t('onboarding.probeUnreachable') : t('onboarding.probeWaiting')}</dd></div></dl></aside>;
   }
   return null;
 }

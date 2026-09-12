@@ -29,13 +29,14 @@ import { reconcileRunSnapshot, reconcileRunStatus } from '../api/runCache';
 export type StreamPhase = 'connecting' | 'live' | 'closed' | 'error';
 
 interface StreamStateWrap {
+  runId: string;
   state: EventState;
 }
 
 type Action =
-  | { kind: 'events'; events: RunEvent[] }
-  | { kind: 'hydrate'; state: EventState }
-  | { kind: 'reset' };
+  | { kind: 'events'; runId: string; events: RunEvent[] }
+  | { kind: 'hydrate'; runId: string; state: EventState }
+  | { kind: 'reset'; runId: string };
 
 // The list endpoint caps pages at 1,000. Runs above that threshold previously
 // spilled the rest of their history into SSE, where one React dispatch per
@@ -45,15 +46,16 @@ type Action =
 const REPLAY_PAGE_SIZE = 1000;
 
 function reducer(s: StreamStateWrap, a: Action): StreamStateWrap {
+  if (a.kind !== 'reset' && a.runId !== s.runId) return s;
   switch (a.kind) {
     case 'events': {
       const next = reduceEvents(s.state, a.events);
-      return next === s.state ? s : { state: next };
+      return next === s.state ? s : { runId: a.runId, state: next };
     }
     case 'hydrate':
-      return { state: a.state };
+      return { runId: a.runId, state: a.state };
     case 'reset':
-      return { state: initialEventState() };
+      return { runId: a.runId, state: initialEventState() };
   }
 }
 
@@ -61,6 +63,7 @@ export function useRunStream(runId: string, enabled = true) {
   const api = useApi();
   const qc = useQueryClient();
   const [wrap, dispatch] = useReducer(reducer, undefined, () => ({
+    runId,
     state: initialEventState(),
   }));
   const [phase, setPhase] = useState<StreamPhase>('connecting');
@@ -72,7 +75,10 @@ export function useRunStream(runId: string, enabled = true) {
   // without tearing down / re-running the subscribe effect.
   const handleRef = useRef<StreamHandle | null>(null);
 
-  const derivedStatus = wrap.state.derivedStatus;
+  // A route change renders before effects reset the reducer. Never expose or
+  // mirror another run's history during that render (especially its terminal state).
+  const currentState = wrap.runId === runId ? wrap.state : initialEventState();
+  const derivedStatus = currentState.derivedStatus;
   const terminal = derivedStatus ? isTerminal(derivedStatus) : false;
 
   // Mirror derived status into the run cache so the header updates live.
@@ -126,11 +132,11 @@ export function useRunStream(runId: string, enabled = true) {
 
   // The draft PR link can also arrive on a later run.status frame carrying
   // pr_url/pr_number (not the full run); patch those onto the cached run too.
-  const prURL = wrap.state.prURL;
-  const prNumber = wrap.state.prNumber;
-  const prDraft = wrap.state.prDraft;
-  const prReadyAt = wrap.state.prReadyAt;
-  const prState = wrap.state.prState;
+  const prURL = currentState.prURL;
+  const prNumber = currentState.prNumber;
+  const prDraft = currentState.prDraft;
+  const prReadyAt = currentState.prReadyAt;
+  const prState = currentState.prState;
   useEffect(() => {
     if (!prURL) return;
     qc.setQueryData<Run>(qk.run(runId), (prev) =>
@@ -160,7 +166,7 @@ export function useRunStream(runId: string, enabled = true) {
     let cancelled = false;
     let handle: StreamHandle | null = null;
 
-    dispatch({ kind: 'reset' });
+    dispatch({ kind: 'reset', runId });
     setPhase('connecting');
 
     (async () => {
@@ -190,7 +196,7 @@ export function useRunStream(runId: string, enabled = true) {
       if (cancelled) return;
       if (backlog.length) {
         const hydrated = reduceEvents(initialEventState(), backlog);
-        dispatch({ kind: 'hydrate', state: hydrated });
+        dispatch({ kind: 'hydrate', runId, state: hydrated });
         afterSeq = hydrated.lastSeq;
         // Only a fully paged terminal backlog is authoritative. If a later page
         // failed, SSE still needs to replay the missing tail.
@@ -210,10 +216,10 @@ export function useRunStream(runId: string, enabled = true) {
         onOpen: () => !cancelled && setPhase('live'),
         onFrame: (frame) => {
           if (cancelled) return;
-          dispatch({ kind: 'events', events: [frame.data] });
+          dispatch({ kind: 'events', runId, events: [frame.data] });
           // run.status frames may carry the full run object.
           const maybeRun = (frame.data as { run?: Run }).run;
-          if (maybeRun) {
+          if (maybeRun?.id === runId) {
             qc.setQueryData<Run>(qk.run(runId), (prev) =>
               reconcileRunSnapshot(prev, maybeRun),
             );
@@ -243,10 +249,10 @@ export function useRunStream(runId: string, enabled = true) {
   const reconnect = useCallback(() => setNonce((n) => n + 1), []);
 
   return {
-    events: wrap.state.events,
-    lastSeq: wrap.state.lastSeq,
+    events: currentState.events,
+    lastSeq: currentState.lastSeq,
     derivedStatus,
-    phase: terminal ? 'closed' : phase,
+    phase: wrap.runId !== runId ? 'connecting' : terminal ? 'closed' : phase,
     terminal,
     reconnect,
   };

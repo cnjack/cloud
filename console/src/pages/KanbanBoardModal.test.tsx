@@ -559,6 +559,20 @@ describe('KanbanBoardModal', () => {
     expect(screen.queryByTestId('jtype-board')).toBeNull();
   });
 
+  it('explains certificate failures without asking the user to reauthorize', async () => {
+    const api = makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] });
+    (api as { boardListDocuments?: unknown }).boardListDocuments = async () => {
+      throw new ApiError(503, 'certificate expired', {
+        error: { code: 'jtype_tls_invalid', message: 'certificate expired' },
+      });
+    };
+    renderModal(api, [link()]);
+    const panel = await screen.findByTestId('kanban-board-fail');
+    expect(within(panel).getByText('JType certificate needs renewal')).toBeTruthy();
+    expect(within(panel).getByText(/Ask the administrator to renew/)).toBeTruthy();
+    expect(within(panel).getByTestId('kanban-board-retry')).toBeTruthy();
+  });
+
   it('maps an unavailable jtype service to an actionable retry state', async () => {
     const api = makeApi({ ws_team: [{ path: 'jtype.board', configId: 'b_123' }] });
     (api as { boardListDocuments?: unknown }).boardListDocuments = async () => {

@@ -43,7 +43,7 @@ import type {
   CreateModelPricingRevisionInput,
 } from './types';
 import { isTerminal } from './types';
-import { reconcileRunSnapshot } from './runCache';
+import { reconcileRunMutation, reconcileRunSnapshot } from './runCache';
 
 export function kanbanCardExecutionPollInterval(
   items: readonly KanbanCardExecution[] | undefined,
@@ -255,7 +255,8 @@ export function useStartAccountTask() {
   return useMutation({
     mutationFn: (input: StartAccountTaskInput) => api.startAccountTask(input),
     onSuccess: ({ run, repository }) => {
-      qc.setQueryData(qk.run(run.id), run);
+      qc.setQueryData<Run>(qk.run(run.id), (current) => reconcileRunMutation(current, run));
+      qc.invalidateQueries({ queryKey: qk.run(run.id), exact: true });
       qc.setQueryData(qk.repository(repository.id), repository);
       qc.invalidateQueries({ queryKey: qk.repositories });
       qc.invalidateQueries({ queryKey: ['account-repositories'] });
@@ -276,6 +277,8 @@ export function useRun(runId: string, pollWhileNonTerminal = false) {
       );
     },
     enabled: !!runId,
+    // Mutation responses lack GET-only projections; hydrate details on entry.
+    staleTime: 0,
     // Polling fallback: when the live SSE stream is unavailable (e.g. a fatal
     // stream error), advance the run status by polling GET /runs/{id} while the
     // run is still non-terminal — mirroring the useRuns list-page pattern so the
@@ -301,7 +304,8 @@ export function useCreateServiceRun(projectId: string) {
       api.createServiceRun(serviceId, input),
     onSuccess: (run: Run) => {
       qc.invalidateQueries({ queryKey: qk.runs(projectId) });
-      qc.setQueryData(qk.run(run.id), run);
+      qc.setQueryData<Run>(qk.run(run.id), (current) => reconcileRunMutation(current, run));
+      qc.invalidateQueries({ queryKey: qk.run(run.id), exact: true });
     },
   });
 }
@@ -357,7 +361,8 @@ export function useCancelRun() {
   return useMutation({
     mutationFn: (runId: string) => api.cancelRun(runId),
     onSuccess: (run: Run) => {
-      qc.setQueryData(qk.run(run.id), run);
+      qc.setQueryData<Run>(qk.run(run.id), (current) => reconcileRunMutation(current, run));
+      qc.invalidateQueries({ queryKey: qk.run(run.id), exact: true });
       qc.invalidateQueries({ queryKey: qk.runs(run.project_id) });
     },
   });
@@ -369,7 +374,8 @@ export function useRetryRun() {
   return useMutation({
     mutationFn: ({ runId, options }: { runId: string; options?: RetryRunOptions }) => api.retryRun(runId, options),
     onSuccess: (run: Run) => {
-      qc.setQueryData(qk.run(run.id), run);
+      qc.setQueryData<Run>(qk.run(run.id), (current) => reconcileRunMutation(current, run));
+      qc.invalidateQueries({ queryKey: qk.run(run.id), exact: true });
       qc.invalidateQueries({ queryKey: qk.runs(run.project_id) });
     },
   });
@@ -387,7 +393,8 @@ export function useResumeSession() {
     mutationFn: ({ runId, prompt, options }: { runId: string; prompt: string; options?: ResumeSessionOptions }) =>
       api.resumeSession(runId, prompt, options),
     onSuccess: (run: Run) => {
-      qc.setQueryData(qk.run(run.id), run);
+      qc.setQueryData<Run>(qk.run(run.id), (current) => reconcileRunMutation(current, run));
+      qc.invalidateQueries({ queryKey: qk.run(run.id), exact: true });
       qc.invalidateQueries({ queryKey: qk.runs(run.project_id) });
     },
   });
@@ -419,7 +426,8 @@ export function useFinishSession() {
   return useMutation({
     mutationFn: (runId: string) => api.finishSession(runId),
     onSuccess: (run: Run) => {
-      qc.setQueryData(qk.run(run.id), run);
+      qc.setQueryData<Run>(qk.run(run.id), (current) => reconcileRunMutation(current, run));
+      qc.invalidateQueries({ queryKey: qk.run(run.id), exact: true });
       qc.invalidateQueries({ queryKey: qk.runs(run.project_id) });
     },
   });
@@ -483,7 +491,8 @@ export function useRequestReview() {
   return useMutation({
     mutationFn: (runId: string) => api.requestReview(runId),
     onSuccess: (run: Run, runId: string) => {
-      qc.setQueryData(qk.run(run.id), run);
+      qc.setQueryData<Run>(qk.run(run.id), (current) => reconcileRunMutation(current, run));
+      qc.invalidateQueries({ queryKey: qk.run(run.id), exact: true });
       qc.invalidateQueries({ queryKey: qk.pr(runId) });
       qc.invalidateQueries({ queryKey: qk.runs(run.project_id) });
     },

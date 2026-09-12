@@ -52,6 +52,7 @@ export default {
   },
 
   run: {
+    permissionArgumentsUnavailable: '이 이전 승인 요청에는 실제 인수가 기록되지 않았습니다.',
     thinking: '생각 중',
     thinkingAria: '생각 중…',
     projectMember: '리포지토리 멤버',
@@ -698,6 +699,8 @@ export default {
     columnsUnavailable: '열 옵션을 불러올 수 없습니다. JType 플러그인 연결을 확인하세요.',
     notConfiguredTitle: 'Kanban이 구성되어 있지 않습니다',
     notConfiguredMsg: '이 보드를 열려면 Cluster 관리자가 jtype 통합을 구성해야 합니다.',
+    tlsInvalidTitle: 'JType 인증서 복구가 필요합니다',
+    tlsInvalidMsg: 'JType의 HTTPS 인증서를 확인할 수 없습니다. 관리자에게 인증서 갱신 또는 복구를 요청한 후 다시 시도하세요.',
     unavailableTitle: 'Kanban을 사용할 수 없습니다',
     unavailableMsg: 'jtype 서비스에 연결할 수 없습니다. 서비스를 사용할 수 있을 때 다시 시도하세요.',
     unauthorizedTitle: 'Kanban 액세스에 주의가 필요합니다',

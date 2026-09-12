@@ -3,6 +3,12 @@
 .surface { min-width: 0; min-height: 0; display: grid; grid-template-rows: var(--space-16) minmax(0, 1fr); background: var(--color-panel); }
 .main { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .mainInner { width: min(62rem, calc(100% - var(--space-16))); margin: 0 auto; padding: var(--space-12) 0 var(--space-20); }
+/* Give the Board the available canvas while retaining the task composer and
+   repository switcher. The welcome heading belongs to the task landing state. */
+.mainInner[data-workspace-tab='board'] { width: calc(100% - var(--space-8)); padding-top: var(--space-4); }
+.mainInner[data-workspace-tab='board'] .hero { display: none; }
+.mainInner[data-workspace-tab='board'] .accountComposer { margin-top: 0; }
+.mainInner[data-workspace-tab='board'] .workspace { margin-top: var(--space-4); }
 .hero { display: grid; justify-items: center; gap: var(--space-2); text-align: center; }
 .hero h1 { font-size: clamp(2rem, 4vw, 3rem); font-weight: var(--fw-semibold); letter-spacing: -0.05em; line-height: var(--lh-tight); }
 .hero p { color: var(--color-text-muted); }

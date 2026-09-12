@@ -52,6 +52,7 @@ export default {
   },
 
   run: {
+    permissionArgumentsUnavailable: 'この以前の承認リクエストには実際の引数が保存されていません。',
     thinking: '考え中',
     thinkingAria: '考え中…',
     projectMember: 'リポジトリメンバー',
@@ -698,6 +699,8 @@ export default {
     columnsUnavailable: '列を読み込めませんでした。JType プラグイン接続を確認してください。',
     notConfiguredTitle: 'Kanban が設定されていません',
     notConfiguredMsg: 'このボードを開く前に、Cluster 管理者が jtype 連携を設定する必要があります。',
+    tlsInvalidTitle: 'JType の証明書に修復が必要です',
+    tlsInvalidMsg: 'JType の HTTPS 証明書を検証できません。管理者に証明書の更新または修復を依頼し、再試行してください。',
     unavailableTitle: 'Kanban は利用できません',
     unavailableMsg: 'jtype サービスに接続できませんでした。サービスが利用可能になったら再試行してください。',
     unauthorizedTitle: 'Kanban アクセスに対応が必要です',

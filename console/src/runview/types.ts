@@ -154,6 +154,7 @@ export interface PermissionRequestItem {
   requestId: string;
   toolCallId?: string;
   title: string;
+  toolArgs?: string;
   options: PermissionOptionView[];
 }
 

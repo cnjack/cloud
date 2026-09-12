@@ -148,6 +148,7 @@ export function toTimelineItem(ev: RunViewEvent): TimelineItem {
         requestId: String(p.request_id ?? ''),
         toolCallId: p.tool_call_id ? String(p.tool_call_id) : undefined,
         title: String(p.title ?? 'Permission required'),
+        toolArgs: p.args == null ? undefined : pretty(p.args),
         options,
       };
     }

@@ -29,3 +29,14 @@ export function reconcileRunStatus(
     ? current
     : { ...current, status: incomingStatus };
 }
+
+/** Mutation responses contain the stored Run, while GET also supplies projections. */
+export function reconcileRunMutation(current: Run | undefined, incoming: Run): Run {
+  if (!current || current.id !== incoming.id) return incoming;
+  return reconcileRunSnapshot(current, {
+    ...incoming,
+    provenance: incoming.provenance ?? current.provenance,
+    usage_summary: incoming.usage_summary ?? current.usage_summary,
+    scm_grant: incoming.scm_grant ?? current.scm_grant,
+  });
+}

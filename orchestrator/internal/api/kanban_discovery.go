@@ -221,6 +221,9 @@ func (s *Server) handleListJtypeBoards(w http.ResponseWriter, r *http.Request) {
 // blank 200.
 func (s *Server) writeDiscoveryError(w http.ResponseWriter, workspace string, err error) {
 	s.log.Warn("kanban discovery: jtype read", "workspace", workspace, "err", err)
+	if writeJTypeTLSFailure(w, err) {
+		return
+	}
 	var je *jtype.Error
 	if errors.As(err, &je) {
 		switch je.StatusCode {

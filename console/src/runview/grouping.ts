@@ -170,6 +170,7 @@ export function groupTimeline(events: RunViewEvent[]): GroupedTimelineItem[] {
           toolCallId: item.toolCallId,
           title: item.title,
           options: item.options,
+          toolArgs: item.toolArgs,
           status: 'pending',
         };
         permCards.set(item.requestId, card);

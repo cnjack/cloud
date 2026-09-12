@@ -160,6 +160,9 @@ func (s *Server) forwardBoardAPI(w http.ResponseWriter, r *http.Request, client 
 		// URL/host — log it, but return a GENERIC message so a project member can't
 		// probe the cluster's jtype address through the proxy.
 		s.log.Warn("board proxy: jtype request", "method", method, "path", path, "err", err)
+		if writeJTypeTLSFailure(w, err) {
+			return
+		}
 		writeError(w, http.StatusServiceUnavailable, "jtype_unreachable",
 			"could not reach jtype")
 		return

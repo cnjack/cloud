@@ -70,6 +70,30 @@ function wrapper(client: ApiClient) {
 }
 
 describe('useRunStream — cursor + lifecycle', () => {
+  it('isolates terminal history and cache writes when navigating to a new run', async () => {
+    const { client, streamCalls } = makeFakeClient([]);
+    client.listEvents = vi.fn(async (id: string) => id === 'old'
+      ? [textEvent(1, 'old response'), statusEvent(2, 'succeeded')]
+      : [statusEvent(1, 'queued')]);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const newRun = { id: 'new', status: 'queued', project_id: 'p', prompt: 'new', created_at: '' } as Run;
+    qc.setQueryData(qk.run('new'), newRun);
+    const Wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}><ApiProvider client={client}>{children}</ApiProvider></QueryClientProvider>
+    );
+    const { result, rerender } = renderHook(({ id }) => useRunStream(id), {
+      initialProps: { id: 'old' }, wrapper: Wrapper,
+    });
+    await waitFor(() => expect(result.current.terminal).toBe(true));
+    rerender({ id: 'new' });
+    expect(result.current.events.some(event => event.payload?.text === 'old response')).toBe(false);
+    expect(qc.getQueryData<Run>(qk.run('new'))?.status).toBe('queued');
+    await waitFor(() => expect(streamCalls.length).toBe(1));
+    act(() => streamCalls[0]!.cb.onFrame({ event: 'run.status', data: statusEvent(2, 'running') }));
+    await waitFor(() => expect(result.current.derivedStatus).toBe('running'));
+    expect(qc.getQueryData<Run>(qk.run('new'))?.status).toBe('running');
+  });
+
   it('never regresses a terminal run cache from stale backlog or full-run frames', async () => {
     const { client, streamCalls } = makeFakeClient([statusEvent(1, 'running')]);
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

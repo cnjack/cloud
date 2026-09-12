@@ -48,6 +48,7 @@ describe('toThreadItems — jcode-ui projection', () => {
       ev(1, 'agent.permission_request', {
         request_id: 'req-1',
         title: 'Run `make deploy`',
+        args: { command: 'make deploy', description: 'Deploy current changes' },
         options: [
           { option_id: 'allow-once-id', name: 'Allow once', kind: 'allow_once' },
           { option_id: 'reject-id', name: 'Reject', kind: 'reject_once' },
@@ -68,6 +69,8 @@ describe('toThreadItems — jcode-ui projection', () => {
       { id: 'allow-once-id', label: 'Allow once', kind: 'allow_once' },
       { id: 'reject-id', label: 'Reject', kind: 'deny' },
     ]);
+    expect(JSON.parse(approval.tool_args)).toEqual({ command: 'make deploy', description: 'Deploy current changes' });
+    expect(approval.tool_args).not.toContain('option_id');
   });
 
   it('renders lifecycle events and unknown events as visible system messages', () => {

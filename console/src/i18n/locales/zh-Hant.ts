@@ -52,6 +52,7 @@ export default {
   },
 
   run: {
+    permissionArgumentsUnavailable: '這條舊審批記錄未儲存實際參數。',
     thinking: '思考中',
     thinkingAria: '思考中…',
     projectMember: '儲存庫成員',
@@ -698,6 +699,8 @@ export default {
     columnsUnavailable: '無法載入欄選項，請檢查 JType 外掛連線。',
     notConfiguredTitle: 'Kanban 尚未設定',
     notConfiguredMsg: 'Cluster 管理員需先設定 jtype 整合，才能開啟此看板。',
+    tlsInvalidTitle: 'JType 憑證需要修復',
+    tlsInvalidMsg: '無法驗證 JType 的 HTTPS 憑證。請聯絡管理員續期或修復憑證，然後重試。',
     unavailableTitle: 'Kanban 無法使用',
     unavailableMsg: '無法連線到 jtype 服務。請在服務可用時重試。',
     unauthorizedTitle: 'Kanban 存取需要處理',

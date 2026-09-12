@@ -449,6 +449,9 @@ func boardStatusOrDefault(s string) string {
 // offending ref/workspace (and, for ambiguous, the candidate paths).
 func (s *Server) writeBoardValidationError(w http.ResponseWriter, workspace, boardRef string, err error) {
 	s.log.Warn("create kanban link: board validation", "workspace", workspace, "board", boardRef, "err", err)
+	if writeJTypeTLSFailure(w, err) {
+		return
+	}
 	var ambig *jtype.ErrBoardAmbiguousError
 	switch {
 	case errors.Is(err, jtype.ErrDocNotFound):

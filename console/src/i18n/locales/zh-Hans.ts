@@ -52,6 +52,7 @@ export default {
   },
 
   run: {
+    permissionArgumentsUnavailable: '这条旧审批记录未保存实际参数。',
     thinking: '思考中',
     thinkingAria: '思考中…',
     projectMember: '仓库成员',
@@ -698,6 +699,8 @@ export default {
     columnsUnavailable: '无法加载列选项，请检查 JType 插件连接。',
     notConfiguredTitle: 'Kanban 尚未配置',
     notConfiguredMsg: '在此看板可以打开之前，Cluster 管理员需要配置 jtype 集成。',
+    tlsInvalidTitle: 'JType 证书需要修复',
+    tlsInvalidMsg: '无法验证 JType 的 HTTPS 证书。请联系管理员续期或修复证书，然后重试。',
     unavailableTitle: 'Kanban 不可用',
     unavailableMsg: '无法连接 jtype 服务。请在服务可用时重试。',
     unauthorizedTitle: 'Kanban 访问需要关注',

@@ -28,6 +28,7 @@ export interface PermissionCardItem {
   requestId: string;
   toolCallId?: string;
   title: string;
+  toolArgs?: string;
   options: PermissionOptionView[];
   status: 'pending' | 'resolved';
   /** The option that actually took effect (resolved only; '' = none/cancelled). */

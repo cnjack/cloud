@@ -52,6 +52,7 @@ export default {
   },
 
   run: {
+    permissionArgumentsUnavailable: 'Arguments were not recorded for this older approval request.',
     thinking: 'Thinking',
     thinkingAria: 'Thinking…',
     projectMember: 'Repository member',
@@ -1033,6 +1034,8 @@ export default {
     columnsUnavailable: 'Column options could not be loaded. Check the JType Plugin connection.',
     notConfiguredTitle: 'Kanban is not configured',
     notConfiguredMsg: 'A cluster administrator needs to configure the jtype integration before this board can open.',
+    tlsInvalidTitle: 'JType certificate needs renewal',
+    tlsInvalidMsg: 'JType’s HTTPS certificate could not be verified. Ask the administrator to renew or repair it, then retry.',
     unavailableTitle: 'Kanban is unavailable',
     unavailableMsg: 'The jtype service could not be reached. Retry when the service is available.',
     unauthorizedTitle: 'Kanban access needs attention',
