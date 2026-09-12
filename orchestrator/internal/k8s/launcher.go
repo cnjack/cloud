@@ -48,6 +48,9 @@ const (
 	// anti-zombie timeout guardrail. Distinguished from JobFailed so the
 	// reconciler can classify failure_reason=timeout (PRD AC-12).
 	JobDeadlineExceeded
+	// Execution ended, but the workspace could not be safely checkpointed.
+	// The provider retains the sandbox for cleanup/recovery.
+	JobCheckpointFailed
 )
 
 // String renders a JobState for logs.
@@ -65,6 +68,8 @@ func (s JobState) String() string {
 		return "failed"
 	case JobDeadlineExceeded:
 		return "deadline_exceeded"
+	case JobCheckpointFailed:
+		return "checkpoint_failed"
 	default:
 		return "unknown"
 	}
@@ -78,6 +83,12 @@ type JobSpec struct {
 	Name string
 	// RunID is stamped into the jcloud.run-id label and the RUN_ID env var.
 	RunID string
+	// ServiceID and ProjectID identify the owner independently of storage names.
+	ServiceID string
+	ProjectID string
+	// RestoreArchiveURL is a control-plane-generated URL, distinct from any
+	// user-injected environment value with a similar name.
+	RestoreArchiveURL string
 	// Image is the already-resolved, administrator-allowlisted runtime profile
 	// image. Empty keeps backwards compatibility with the launcher's configured
 	// default image for maintenance Jobs and older callers.
@@ -169,3 +180,7 @@ type ImagePrewarmer interface {
 	// state is not an error.
 	RunnerImagePrewarmStatus(ctx context.Context) (PrewarmStatus, error)
 }
+
+// OrphanReaper handles provider resources that appear after an ambiguous create
+// response and after the corresponding terminal Run was already cleaned.
+type OrphanReaper interface{ ReapOrphanedJobs(context.Context) error }

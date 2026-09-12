@@ -129,6 +129,21 @@ console/mobile — all end-to-end encrypted. Durable rules for this area:
 
 ## Engineering workflow
 
+### Company CubeSandbox runtime
+
+- The company task runtime is migrating to CubeSandbox. Follow
+  `docs/design/cubesandbox-runtime.md` and `deploy/cubesandbox/README.md` for the
+  tested storage contract and rollout. Cloud control-plane pods stay in Kubernetes.
+- Publish and register all five Cube Runner Profile templates for a release;
+  deploy immutable template IDs with `register-templates.py`. Reapply its
+  generated ConfigMap merge patch after any company `apply -k`.
+- Never destroy a persistent sandbox before its workspace checkpoint is verified.
+  Failed checkpoint/deletion must retain the resource and report the failure.
+- Keep task-controlled environment out of root helpers. The runner uses UID
+  10001 without capabilities; envd access from that UID is blocked in IPv4/IPv6.
+- Real Cube credentials stay in the control plane. Model/Plugin settings live on
+  guest tmpfs and must not enter workspace checkpoints.
+
 ### Keep design prototypes page-scoped
 
 - Put each product page or major routed state in its own HTML document under

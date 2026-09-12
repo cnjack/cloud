@@ -38,6 +38,7 @@ type client struct {
 	token     string
 	providers map[string]bool
 	http      *http.Client
+	readerGID *int // Optional group-only access for a root writer in a Cube VM.
 }
 
 func main() {
@@ -65,6 +66,7 @@ func main() {
 		interval := fs.Duration("interval", 5*time.Minute, "credential refresh interval")
 		once := fs.Bool("once", false, "sync once and exit")
 		stopFile := fs.String("stop-file", "", "exit when this runner lifecycle file appears")
+		readerGID := fs.Int("reader-gid", -1, "optional read-only group for credentials (CubeSandbox root writer)")
 		_ = fs.Parse(os.Args[2:])
 		providerList, err := parseProviders(*providers)
 		if err != nil || len(providerList) == 0 {
@@ -82,6 +84,9 @@ func main() {
 			allowed[provider] = true
 		}
 		c := &client{base: base, runID: runID, token: token, providers: allowed, http: &http.Client{Timeout: 60 * time.Second}}
+		if *readerGID >= 0 {
+			c.readerGID = readerGID
+		}
 		if err := c.syncPluginCredentials(*dir, *interval, *once, *stopFile); err != nil {
 			fatal("sync-credentials: " + err.Error())
 		}
@@ -255,13 +260,26 @@ func (c *client) syncPluginCredentialsOnce(dir string) error {
 			return fmt.Errorf("credential endpoint returned Provider %q outside the run snapshot", body.Credentials[i].Provider)
 		}
 	}
-	return writePluginConfigs(dir, body.Credentials)
+	return writePluginConfigsForReader(dir, body.Credentials, c.readerGID)
 }
 
 func writePluginConfigs(dir string, credentials []pluginCredential) error {
+	return writePluginConfigsForReader(dir, credentials, nil)
+}
+
+func writePluginConfigsForReader(dir string, credentials []pluginCredential, readerGID *int) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create credential dir: %w", err)
 	}
+	if readerGID != nil {
+		if err := os.Chown(dir, -1, *readerGID); err != nil {
+			return err
+		}
+		if err := os.Chmod(dir, 0750); err != nil {
+			return err
+		}
+	}
+	writeSecretFile := func(path string, content []byte) error { return writeSecretFileForReader(path, content, readerGID) }
 	byProvider := map[string]pluginCredential{}
 	for _, credential := range credentials {
 		switch credential.Provider {
@@ -367,8 +385,22 @@ func pluginHost(baseURL string) (string, error) {
 }
 
 func writeSecretFile(path string, content []byte) error {
+	return writeSecretFileForReader(path, content, nil)
+}
+
+func writeSecretFileForReader(path string, content []byte, readerGID *int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
+	}
+	mode := os.FileMode(0600)
+	if readerGID != nil {
+		mode = 0640
+		if err := os.Chown(filepath.Dir(path), -1, *readerGID); err != nil {
+			return err
+		}
+		if err := os.Chmod(filepath.Dir(path), 0750); err != nil {
+			return err
+		}
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-")
 	if err != nil {
@@ -376,7 +408,13 @@ func writeSecretFile(path string, content []byte) error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o600); err != nil {
+	if readerGID != nil {
+		if err := tmp.Chown(-1, *readerGID); err != nil {
+			_ = tmp.Close()
+			return err
+		}
+	}
+	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -394,5 +432,5 @@ func writeSecretFile(path string, content []byte) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return err
 	}
-	return os.Chmod(path, 0o600)
+	return os.Chmod(path, mode)
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/cnjack/jcloud/internal/api"
 	"github.com/cnjack/jcloud/internal/automationcard"
 	"github.com/cnjack/jcloud/internal/config"
+	"github.com/cnjack/jcloud/internal/cuberuntime"
 	"github.com/cnjack/jcloud/internal/jtype"
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/kanban"
@@ -28,6 +29,7 @@ import (
 	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
 	"github.com/cnjack/jcloud/internal/version"
+	cube "github.com/tencentcloud/CubeSandbox/sdk/go"
 )
 
 func main() {
@@ -90,6 +92,20 @@ func run(log *slog.Logger) error {
 			Network:   cfg.RunnerNetwork,
 			ExtraArgs: cfg.RunnerDockerArgs,
 		})
+	case cfg.JobLauncher == "cubesandbox":
+		var objects cuberuntime.Objects
+		if cfg.ArchiveEnabled() {
+			objects, err = objstore.New(objstore.Config{Endpoint: cfg.S3Endpoint, Bucket: cfg.S3Bucket, AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey, Region: cfg.S3Region, ForcePathStyle: cfg.S3ForcePathStyle})
+			if err != nil {
+				return err
+			}
+		}
+		backend := cuberuntime.NewSDKBackend(cube.Config{APIURL: cfg.CubeAPIURL, APIKey: cfg.CubeAPIKey, ProxyNodeIP: cfg.CubeProxyHost, ProxyPortHTTP: cfg.CubeProxyPort, ProxyScheme: "http", SandboxDomain: "cube.app"})
+		launcher, err = cuberuntime.New(cuberuntime.Config{Owner: cfg.CubeOwner, DefaultImage: cfg.RunnerImage, Templates: cfg.CubeTemplateImages(), HTTPProxy: cfg.RunnerHTTPProxy, HTTPSProxy: cfg.RunnerHTTPSProxy, NoProxy: cfg.RunnerNoProxy}, backend, cuberuntime.NewPGRegistry(st.Pool(), cfg.CubeOwner), objects)
+		if err != nil {
+			return err
+		}
+		log.Info("using CubeSandbox launcher", "endpoint", cfg.CubeAPIURL, "owner", cfg.CubeOwner, "profiles", cfg.RunnerProfileNames())
 	default:
 		client, err := k8s.NewClient(k8s.Config{
 			Kubeconfig:            cfg.Kubeconfig,

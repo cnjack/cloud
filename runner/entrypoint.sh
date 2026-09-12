@@ -193,7 +193,7 @@ if [ "${RUN_ARCHIVE:-0}" = "1" ]; then
   # -sSf: silent but SHOW errors and fail (non-2xx => non-zero exit) so an upload
   # failure is fail-visible (the Job fails, the reconciler leaves the service
   # unarchived and retries — it never marks a service archived on a failed upload).
-  curl -sSf -X PUT --data-binary "@$ARCHIVE_TMP" "$ARCHIVE_UPLOAD_URL" \
+  curl -sSf --upload-file "$ARCHIVE_TMP" "$ARCHIVE_UPLOAD_URL" \
     || die agent_error "archive: upload to object storage failed"
   log "archive upload complete"
   exit 0

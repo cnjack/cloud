@@ -67,6 +67,29 @@ func seedProjectAndRun(t *testing.T, st *store.MemStore) domain.Run {
 	return *run
 }
 
+func TestRuntimeDrainPausesDispatchWhileFinishingExistingRuns(t *testing.T) {
+	r, st, fake := testRec(t, 2)
+	ctx := context.Background()
+	first := seedProjectAndRun(t, st)
+	r.Tick(ctx)
+	fake.SetState(k8s.JobName(first.ID), k8s.JobRunning)
+	r.Tick(ctx)
+	r.cfg.RuntimeDraining = true
+	second := seedProjectAndRun(t, st)
+	fake.SetState(k8s.JobName(first.ID), k8s.JobSucceeded)
+	r.Tick(ctx)
+	finished, _ := st.GetRun(ctx, first.ID)
+	queued, _ := st.GetRun(ctx, second.ID)
+	if finished.Status != domain.StatusSucceeded || queued.Status != domain.StatusQueued || len(fake.CreatedNames()) != 1 {
+		t.Fatalf("drain lost progress: first=%s second=%s jobs=%v", finished.Status, queued.Status, fake.CreatedNames())
+	}
+	r.cfg.RuntimeDraining = false
+	r.Tick(ctx)
+	if len(fake.CreatedNames()) != 2 {
+		t.Fatal("queued dispatch did not resume")
+	}
+}
+
 func TestSnapshotRunPluginsPinsEligibleInstallations(t *testing.T) {
 	r, st, _ := testRec(t, 1)
 	run := seedProjectAndRun(t, st)

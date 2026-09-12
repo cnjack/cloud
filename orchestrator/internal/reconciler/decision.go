@@ -74,6 +74,9 @@ type Decision struct {
 //     for queued runs it is ignored.
 //   - hasCapacity gates queued -> scheduling only.
 func decide(run domain.Run, jobState k8s.JobState, hasCapacity bool) Decision {
+	if jobState == k8s.JobCheckpointFailed && (run.Status == domain.StatusScheduling || run.Status == domain.StatusRunning || run.Status == domain.StatusAwaitingInput) {
+		return Decision{Action: ActionMarkFailed, FailureReason: domain.FailureSetupFailed, FailureMsg: "workspace checkpoint failed; the CubeSandbox is retained and cleanup will retry before another run can use this workspace"}
+	}
 	switch run.Status {
 	case domain.StatusQueued:
 		if hasCapacity {

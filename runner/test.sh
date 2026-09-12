@@ -152,8 +152,8 @@ pass "no TUI escape codes in logs"
 # both agent turns must have reached the mock (turn1 tool call + turn2 finish)
 MOCKLOG="$(docker logs "$MOCK_CTR" 2>&1 || true)"
 echo "----- mockllm log -----"; echo "$MOCKLOG"; echo "-----------------------"
-echo "$MOCKLOG" | grep -q 'turn2=false' || fail "mock never saw turn 1 (tool call)"
-echo "$MOCKLOG" | grep -q 'turn2=true'  || fail "mock never saw turn 2 (final message)"
+echo "$MOCKLOG" | grep -Eq 'tool_results=0 done=false' || fail "mock never saw turn 1 (tool call)"
+echo "$MOCKLOG" | grep -Eq 'tool_results=[1-9][0-9]* done=true' || fail "mock never saw a tool result followed by the final message"
 pass "both agent turns reached the mock (full loop)"
 
 echo

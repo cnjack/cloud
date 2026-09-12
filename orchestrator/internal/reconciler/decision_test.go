@@ -16,6 +16,8 @@ func TestDecide(t *testing.T) {
 		wantAction  Action
 		wantReason  domain.FailureReason
 	}{
+		{"running+checkpoint failure -> visible failure", domain.StatusRunning, k8s.JobCheckpointFailed, true, ActionMarkFailed, domain.FailureSetupFailed},
+		{"awaiting+checkpoint failure -> visible failure", domain.StatusAwaitingInput, k8s.JobCheckpointFailed, true, ActionMarkFailed, domain.FailureSetupFailed},
 		// queued
 		{"queued+capacity -> create", domain.StatusQueued, k8s.JobUnknown, true, ActionCreateJob, ""},
 		{"queued+no capacity -> none", domain.StatusQueued, k8s.JobUnknown, false, ActionNone, ""},

@@ -83,9 +83,16 @@ type Config struct {
 	// runs each runner as a local `docker run` container for local dev and the
 	// full-loop integration test (see runner/test-integration.sh). "process"
 	// needs no cluster and RUNNER_IMAGE must be a locally-available image.
-	JobLauncher      string   // JOB_LAUNCHER, default "kubernetes"
-	RunnerNetwork    string   // RUNNER_NETWORK — docker network for process launcher (optional)
-	RunnerDockerArgs []string // RUNNER_DOCKER_ARGS — extra `docker run` args, space-split (optional)
+	JobLauncher      string // JOB_LAUNCHER, default "kubernetes"
+	RuntimeDraining  bool   // Pause new dispatch during provider/workspace cutover.
+	CubeAPIURL       string
+	CubeAPIKey       string
+	CubeProxyHost    string
+	CubeProxyPort    int
+	CubeOwner        string
+	CubeTemplates    map[string]string // Runtime profile name -> immutable template ID.
+	RunnerNetwork    string            // RUNNER_NETWORK — docker network for process launcher (optional)
+	RunnerDockerArgs []string          // RUNNER_DOCKER_ARGS — extra `docker run` args, space-split (optional)
 
 	// Gitea draft-PR integration. GiteaURL is the Gitea root; GiteaToken is a PAT
 	// with repo write scope. In M3 the CONTROL PLANE (not the runner) uses these to
@@ -265,6 +272,12 @@ func Load() (*Config, error) {
 		WorkspacePVCSize:       getenv("WORKSPACE_PVC_SIZE", "10Gi"),
 		WorkspaceStorageClass:  os.Getenv("WORKSPACE_STORAGE_CLASS"),
 		JobLauncher:            getenv("JOB_LAUNCHER", "kubernetes"),
+		RuntimeDraining:        getbool("RUNTIME_DRAINING", false),
+		CubeAPIURL:             os.Getenv("CUBE_API_URL"),
+		CubeAPIKey:             os.Getenv("CUBE_API_KEY"),
+		CubeProxyHost:          os.Getenv("CUBE_PROXY_NODE_IP"),
+		CubeProxyPort:          getint("CUBE_PROXY_PORT_HTTP", 30080),
+		CubeOwner:              getenv("CUBE_RUNTIME_OWNER", "jcloud"),
 		RunnerNetwork:          os.Getenv("RUNNER_NETWORK"),
 		RunnerDockerArgs:       strings.Fields(os.Getenv("RUNNER_DOCKER_ARGS")),
 		GiteaURL:               os.Getenv("GITEA_URL"),
@@ -318,6 +331,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	c.RunnerProfiles = profiles
+	if err := c.validateRuntime(); err != nil {
+		return nil, err
+	}
 	if c.UsageRawRetention <= 0 {
 		return nil, fmt.Errorf("USAGE_RAW_RETENTION must be positive")
 	}

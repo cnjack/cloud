@@ -41,10 +41,11 @@ type systemVersion struct {
 }
 
 type systemCapacity struct {
-	MaxConcurrentRuns int `json:"max_concurrent_runs"`
-	Running           int `json:"running"`
-	Queued            int `json:"queued"`
-	Scheduling        int `json:"scheduling"`
+	MaxConcurrentRuns int  `json:"max_concurrent_runs"`
+	Running           int  `json:"running"`
+	Queued            int  `json:"queued"`
+	Scheduling        int  `json:"scheduling"`
+	SchedulingPaused  bool `json:"scheduling_paused"`
 }
 
 type systemGuardrails struct {
@@ -157,6 +158,7 @@ func (s *Server) handleGetSystem(w http.ResponseWriter, r *http.Request) {
 			Running:           counts[domain.StatusRunning],
 			Queued:            counts[domain.StatusQueued],
 			Scheduling:        counts[domain.StatusScheduling],
+			SchedulingPaused:  s.cfg.RuntimeDraining,
 		},
 		Guardrails: systemGuardrails{
 			RunTimeoutSeconds: s.cfg.RunTimeoutSecs,
@@ -302,6 +304,8 @@ func launcherKind(jobLauncher string, disableK8s bool) string {
 		return "disabled"
 	case jobLauncher == "process":
 		return "process"
+	case jobLauncher == "cubesandbox":
+		return "cubesandbox"
 	default:
 		return "kubernetes"
 	}

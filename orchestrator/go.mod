@@ -6,12 +6,14 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/tencentcloud/CubeSandbox/sdk/go v0.0.0-20260828011722-cc275f1b584c
 	golang.org/x/net v0.55.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/text v0.37.0
 	k8s.io/api v0.31.3
 	k8s.io/apimachinery v0.31.3
 	k8s.io/client-go v0.31.3
+	sigs.k8s.io/yaml v1.4.0
 )
 
 require (
@@ -61,5 +63,4 @@ require (
 	k8s.io/utils v0.0.0-20240711033017-18e509b52bc8 // indirect
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
-	sigs.k8s.io/yaml v1.4.0 // indirect
 )

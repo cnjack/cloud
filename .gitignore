@@ -15,3 +15,6 @@ coverage/
 
 # Real deployment credentials (applied out-of-band by make up)
 deploy/secrets/*.local.yaml
+deploy/cubesandbox/*.generated.json
+deploy/cubesandbox/backups/
+__pycache__/

@@ -311,6 +311,11 @@ func (r *Reconciler) Run(ctx context.Context) {
 // Tick performs one reconcile pass over all non-terminal runs. Exported so tests
 // (and the integration test) can drive a single deterministic pass.
 func (r *Reconciler) Tick(ctx context.Context) {
+	if reaper, ok := r.launcher.(k8s.OrphanReaper); ok {
+		if err := reaper.ReapOrphanedJobs(ctx); err != nil {
+			r.log.Warn("reconcile: late runtime allocation cleanup", "err", err)
+		}
+	}
 	r.reconcileWebhookReceiptRetention(ctx)
 	r.reconcileExpiredAttachmentStages(ctx)
 	r.reconcilePluginSecretVersionRetention(ctx)
@@ -1785,6 +1790,9 @@ func (r *Reconciler) initializeDelivery(ctx context.Context, run *domain.Run) *d
 // non-existent Job is a no-op, so this is safe on the normal first-create path.
 // See finding "token regen + idempotent CreateJob mismatch".
 func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domain.Project) bool {
+	if r.cfg.RuntimeDraining {
+		return false
+	}
 	// Guardrails are a hard input: Tick loads the run's project before scheduling
 	// and passes it here. A nil project would mean scheduling blind (no timeout /
 	// injected-env / concurrency guardrail) — a silent downgrade (CLAUDE.md red
@@ -2057,6 +2065,9 @@ func (r *Reconciler) createJob(ctx context.Context, run *domain.Run, proj *domai
 	spec := k8s.JobSpec{
 		Name:              jobName,
 		RunID:             run.ID,
+		ServiceID:         run.ServiceID,
+		ProjectID:         run.ProjectID,
+		RestoreArchiveURL: restoreURL,
 		Image:             runnerImage,
 		Env:               env,
 		TimeoutSeconds:    jobDeadline,
@@ -2206,6 +2217,9 @@ func (r *Reconciler) archiveService(ctx context.Context, c store.ArchiveCandidat
 	}
 	switch state {
 	case k8s.JobMissing:
+		if r.cfg.RuntimeDraining {
+			return
+		}
 		exists, err := r.launcher.WorkspacePVCExists(ctx, c.ServiceID)
 		if err != nil {
 			r.log.Warn("reconcile archive: check pvc exists", "service", c.ServiceID, "err", err)
@@ -2221,7 +2235,8 @@ func (r *Reconciler) archiveService(ctx context.Context, c store.ArchiveCandidat
 			return
 		}
 		spec := k8s.JobSpec{
-			Name: jobName,
+			Name:      jobName,
+			ServiceID: c.ServiceID,
 			// No RunID: this is a maintenance Job, not a run. The label is left empty.
 			Env: map[string]string{
 				"RUN_ARCHIVE":        "1",
