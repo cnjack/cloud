@@ -131,3 +131,17 @@ v0.0.156 during the following checks:
 Environment-specific template IDs and the final deployment snapshot are retained
 locally in `deploy/cubesandbox/final-verification.generated.json`. UI screenshots
 are local artifacts, rather than public repository assets.
+
+## Card spacing follow-up
+
+The user's intended layout has uniform space between cards. Browser measurement
+showed the actual adjacent card gap was 0px: Cloud's unlayered universal margin
+reset overrode JType's layered `space-y-2` utility. The reset now belongs to the
+base layer, allowing the Board's native 8px spacing to apply. The compact-screen
+column editor rule was also corrected to retain its single-column layout.
+
+Acceptance checks: differently sized adjacent cards have 8px gaps; the last card
+has no extra trailing margin; ordinary host paragraphs still have 0px margins.
+The browser probe using the real application/Board styles passed those checks.
+All 559 Console tests, typecheck and production build passed with the same shared
+UI revision used by CI. Public Board geometry is verified after rollout.

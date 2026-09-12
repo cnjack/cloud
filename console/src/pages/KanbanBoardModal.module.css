@@ -311,11 +311,7 @@
   }
 
   .columnGrid,
-  .columnDetails { border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
-.columnDetails > summary { padding: var(--space-3) var(--space-4); cursor: pointer; color: var(--color-text-muted); font-size: var(--fs-caption); }
-.columnDetails > summary:hover { color: var(--color-text); background: var(--color-panel-hover); }
-.columnDetails .columnEditor { border: 0; border-top: 1px solid var(--color-border); }
-.columnEditor {
+  .columnEditor {
     grid-template-columns: 1fr;
   }
 
