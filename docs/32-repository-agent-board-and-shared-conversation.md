@@ -412,3 +412,12 @@ conversations are collapsed. Run pages retain their parent Repository context.
 Repository links and section changes participate in browser history, and URL navigation is
 authoritative. A Repository outside the initial bounded catalog is resolved by a
 bounded provider search; unavailable targets never silently display another one.
+
+Validated in Console v0.0.158 (source `1674dfaf1dfa72abb1dde2b1177be21eea720f71`):
+564 tests, typecheck, design-token lint and production build passed, followed by
+[the image workflow](https://github.com/cnjack/cloud/actions/runs/34692056374).
+Public UI checks switched between the real jcode and workflow-test repositories,
+retained Board, toggled the conversation lists independently, and used browser
+back/forward between Tasks and Board. Header and rail identities both measured
+13px / weight 600 with 16px icons; both top-bar segments measured 64px. All 20
+Board cards remained visible with all 17 adjacent gaps still measuring 8px.
