@@ -19,8 +19,8 @@ Approved visual/interaction contract: `design/work-home-refresh.html` and
 | Devices, workspace and session routes | Loading/error/empty/offline/pairing tests; encrypted content gated including title | Pending |
 | Device authorization and pairing | Real existing pairing flow retained, no simulated actions | Pending |
 | Repository/account usage and cluster surfaces | Scope filters and API-backed data, responsive rendering | Pending |
-| Release | Full Console tests/typecheck, relevant Go/PG tests, exact CI source SHA | Pending |
-| Deployment and acceptance | Immutable image/digest, migrations/readiness, authenticated public-path UI/API checks | Pending |
+| Release | Full Console tests/typecheck, relevant Go/PG tests, exact CI source SHA | Verified: Cloud v0.0.159 at 6721a81; Console 598 tests, shared UI 151 tests, Go/PG suites and image CI passed |
+| Deployment and acceptance | Immutable image/digest, migrations/readiness, authenticated public-path UI/API checks | v0.0.159 deployed; authenticated home, real execution, approvals, follow-up and checkpoint save/restore verified; remaining surfaces pending |
 
 ## Verified starting state
 
@@ -229,3 +229,94 @@ passed (39 focused tests). The sibling full Go, build, vet and lint passed after
 fresh catalog generation. Runner persistent reuse/protocol regression passed.
 OAuth cancellation now explicitly covers completion racing cancellation and
 idempotent retries preserving an existing login. Public acceptance is pending.
+
+### Final release transport
+
+The final Console CI at `e98a795` passed 598 tests, typecheck, token lint and
+production build (run 35694806413); shared device UI passed 151 tests. The later
+`6721a81` commit changes only release transport and its operational documentation.
+`actionlint` passed. Aliyun upload stalled twice after GHCR publication. A separate
+Docker-engine mirror task verified existing-layer access using the same CI
+identity but also stalled on new layers. Local Docker had no push permission; no
+credentials were replaced or extracted. Those diagnostic/superseded runs were
+cancelled without changing production.
+
+The explicit `publish_aliyun=false` dispatch (run 35696790296) publishes all core
+and five Cube images to GHCR. Default dual-registry publication remains enabled,
+and the release tag records mirror availability. Company Cube-host HTTPS access
+to GHCR was verified. Deployment must use the new release's GHCR digests and
+register all five templates with `--registry ghcr.io/cnjack`.
+
+### Deployment checkpoint (2026-09-22)
+
+Release `v0.0.159` completed at source `6721a81` in run 35696790296.
+The company Orchestrator and migration init container use immutable digest
+`sha256:04961afc2948b172ada698d7184668d76bffdeb7842f14e4fb66ca5c73c9b195`.
+The rollout is ready; migrations 77–79 and the authenticated public system
+version were verified. Console was held on `v0.0.158` until the five new Cube
+templates became ready, then switched to `v0.0.159` at digest
+`sha256:2d9026bb8f8b2ef86158eb159eb0e9efe0e3020da99f1a808c449e31bc29c8d6`.
+Both public Deployments are ready and their pod image IDs match those digests.
+
+The sibling device changes were merged in jcode PR 213 and released as
+`v0.13.6` at `41cf89ab7306d9948d2d7a2358302dfd377eeda6`. The official macOS
+arm64 CLI checksum and embedded version were verified without replacing the
+user's installed binary.
+
+The first default-template build failed on a registry HTTP/2 stream error.
+Its failed receipt is retained. The replacement native job
+`5a232b96-7cdb-4a41-b2f1-2dd68c512c53` also failed on an HTTP/2 stream error
+after 47,869,765 bytes. Restarting the local observer with `--wait-timeout 21600`
+had reused that same receipt and job; its later failure was native and terminal.
+Observation expiry never cancels the native build. Read transport failures have
+bounded retries; template creation is not retried implicitly. Four operational
+unit tests pass. The user chose to keep waiting on the current download and
+explicitly declined adding a temporary CI runner; none was registered.
+
+Authenticated public acceptance is ongoing. Local encrypted device/draft
+journeys do not substitute for public acceptance, and
+personal ChatGPT authorization/inference still requires a real completed flow.
+
+### Verified public-image transport recovery
+
+After the second native download failed, the five public release images were
+downloaded with HTTP/1.1 through the existing Mac network path, without a CI
+runner or private registry credentials. All 46 distinct blobs passed size and
+SHA-256 verification; all image configs identify Linux amd64. Manifest bytes
+were retained unchanged. The default digest matches the failed native job's
+published source digest exactly. The bundle was transferred over the existing
+SSH connection, and all 46 blobs passed a second full hash check on the Cube
+host. A temporary read-only source served only these public images to the host
+and cluster network. All five native artifacts reached READY and their source
+digests matched the published manifests. The complete mapping was applied and
+read back before restarting Orchestrator; the subsequent Console rollout passed.
+
+| Profile | Ready template |
+| --- | --- |
+| default | `tpl-68235888234c42e48d5a15c2` |
+| go-node | `tpl-980bff750e874bf88ac4ea2c` |
+| python | `tpl-b5a1fa11e2c94429b0946090` |
+| rust | `tpl-1bc62cc897264fa69473743f` |
+| polyglot | `tpl-f336c3a0ef844c1fa5d96fc7` |
+
+### Authenticated public runtime acceptance
+
+The existing Jack account created QA run `5a0b1f9fa9f7c9947d136a31fb49776d`
+in `cnjack/jcode-cloud-workflow-e2e-20260801` through the new public Console.
+The actual GLM-5.2 stream and tool events reported `/workspace`, UID `10001`,
+`x86_64`, and a clean Git working tree. The browser individually approved the
+`id -u` and `uname -m` requests; session-wide auto-approval was not enabled.
+A follow-up executed `pwd` in the same conversation. Finish session reached
+`succeeded`; PostgreSQL confirmed `checkpoint_saved=true` and cleanup completed.
+
+Continuing the completed conversation created run
+`6356b58c27161e7c312c8a2936cb45bf` through the real resume endpoint (201).
+Its distinct sandbox `87349feeadb24ccebc4b437be2012a5e` uses the new Python
+template, confirmed by the Cube API. It again returned `/workspace` and a clean
+Git working tree. The approved metadata-only command reported
+`root:jcode 750 /var/lib/jcloud-restore`, confirming the restore directory created
+by bootstrap. Stop reached `canceled`; PostgreSQL again confirmed
+`checkpoint_saved=true` and completed cleanup. The browser reported no warning
+or error logs during these journeys. They did not commit, push, or create pull
+requests. Remaining public page/mobile and personal authorization journeys are
+still required; the overall acceptance is not complete.
