@@ -52,6 +52,13 @@ requests without an API key. The integration never copies Cube credentials to a
 task VM. API and envd/proxy connectivity are distinct; the WebUI login URL is not
 the control-plane API endpoint.
 
+When the Aliyun mirror is unavailable, manually dispatch `images.yml` with
+`publish_aliyun=false`. The default remains dual-registry publication. The release
+tag explicitly records mirror availability. Wait for every image job to pass,
+register with `--registry ghcr.io/cnjack`, and pin both control-plane Deployments
+(including the migration init container) to that release's GHCR digests. Never
+point a GHCR-only release at missing Aliyun tags or reuse unrelated templates.
+
 An Orchestrator-only fix can reuse the already verified immutable Runner/template
 mapping. Pin the new Orchestrator image separately and keep `RUNNER_IMAGE` and
 `RUNNER_PROFILES_JSON` truthful to the templates in use. Template registration is

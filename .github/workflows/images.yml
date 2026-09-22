@@ -28,6 +28,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish_aliyun:
+        description: Publish the Aliyun mirror as well as GHCR
+        type: boolean
+        default: true
 
 # Serialize releases so two overlapping runs cannot publish the same version.
 concurrency:
@@ -38,6 +43,7 @@ env:
   REGISTRY: ghcr.io
   ALIYUN_REGISTRY: registry.cn-shanghai.aliyuncs.com
   ALIYUN_NAMESPACE: jcode-cloud
+  PUBLISH_ALIYUN: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_aliyun }}
 
 jobs:
   version:
@@ -89,6 +95,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Log in to Aliyun ACR
         uses: docker/login-action@v3
+        if: env.PUBLISH_ALIYUN == 'true'
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
           username: ${{ secrets.ALIYUN_DOCKER_REGISTRY_USERNAME }}
@@ -98,7 +105,7 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-orchestrator
-            ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/jcloud-orchestrator
+            ${{ env.PUBLISH_ALIYUN == 'true' && format('{0}/{1}/jcloud-orchestrator', env.ALIYUN_REGISTRY, env.ALIYUN_NAMESPACE) || '' }}
           tags: |
             type=raw,value=v${{ needs.version.outputs.version }}
             type=raw,value=latest
@@ -151,6 +158,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Log in to Aliyun ACR
         uses: docker/login-action@v3
+        if: env.PUBLISH_ALIYUN == 'true'
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
           username: ${{ secrets.ALIYUN_DOCKER_REGISTRY_USERNAME }}
@@ -160,7 +168,7 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-runner
-            ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/jcloud-runner
+            ${{ env.PUBLISH_ALIYUN == 'true' && format('{0}/{1}/jcloud-runner', env.ALIYUN_REGISTRY, env.ALIYUN_NAMESPACE) || '' }}
           tags: |
             type=raw,value=v${{ needs.version.outputs.version }}
             type=raw,value=latest
@@ -203,6 +211,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Log in to Aliyun ACR
         uses: docker/login-action@v3
+        if: env.PUBLISH_ALIYUN == 'true'
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
           username: ${{ secrets.ALIYUN_DOCKER_REGISTRY_USERNAME }}
@@ -212,7 +221,7 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-runner-${{ matrix.profile }}
-            ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/jcloud-runner-${{ matrix.profile }}
+            ${{ env.PUBLISH_ALIYUN == 'true' && format('{0}/{1}/jcloud-runner-{2}', env.ALIYUN_REGISTRY, env.ALIYUN_NAMESPACE, matrix.profile) || '' }}
           tags: |
             type=raw,value=v${{ needs.version.outputs.version }}
             type=raw,value=latest
@@ -267,6 +276,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/login-action@v3
+        if: env.PUBLISH_ALIYUN == 'true'
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
           username: ${{ secrets.ALIYUN_DOCKER_REGISTRY_USERNAME }}
@@ -276,7 +286,7 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-cube-${{ matrix.profile }}
-            ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/jcloud-cube-${{ matrix.profile }}
+            ${{ env.PUBLISH_ALIYUN == 'true' && format('{0}/{1}/jcloud-cube-{2}', env.ALIYUN_REGISTRY, env.ALIYUN_NAMESPACE, matrix.profile) || '' }}
           tags: |
             type=raw,value=v${{ needs.version.outputs.version }}
             type=sha,format=long
@@ -331,6 +341,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Log in to Aliyun ACR
         uses: docker/login-action@v3
+        if: env.PUBLISH_ALIYUN == 'true'
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
           username: ${{ secrets.ALIYUN_DOCKER_REGISTRY_USERNAME }}
@@ -340,7 +351,7 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/jcloud-console
-            ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/jcloud-console
+            ${{ env.PUBLISH_ALIYUN == 'true' && format('{0}/{1}/jcloud-console', env.ALIYUN_REGISTRY, env.ALIYUN_NAMESPACE) || '' }}
           tags: |
             type=raw,value=v${{ needs.version.outputs.version }}
             type=raw,value=latest
@@ -406,5 +417,5 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git tag -a "v$VERSION" -m "Release v$VERSION (GHCR; Aliyun mirror: $PUBLISH_ALIYUN)"
           git push origin "v$VERSION"
