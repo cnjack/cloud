@@ -1,0 +1,2 @@
+Temporary remote draft delivery acceptance fixture.
+This branch will be closed without merging.
