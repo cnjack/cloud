@@ -1,7 +1,7 @@
 import { useAccountAttachments } from './useAccountAttachments';
 import { useAccountProfile } from '../api/accountProfile';
 import { GitBranch } from '@phosphor-icons/react';
-import { buildProductComposerStrings } from '@jcloud/device-ui';
+import { buildProductComposerStrings, iconForDeviceProvider } from '@jcloud/device-ui';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
@@ -202,6 +202,7 @@ export function AccountRepositoryComposer({
     projectPath: target.full_name,
     tasks: [],
     strings,
+    resolveProviderIcon: iconForDeviceProvider,
     selectModel,
     selectMode: setMode,
     setEffort,

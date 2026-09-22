@@ -109,6 +109,8 @@
 .retryModelOptions small { color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); }
 
 .sessionDock { position: relative; z-index: 3; display: grid; flex: none; gap: var(--space-2); padding: var(--space-2) 0 var(--space-4); background: var(--color-panel); color: var(--color-text-faint); font-size: var(--fs-tiny); }
+.runSessionComposer fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.runSessionComposer :global(.jcode-product-composer) { padding: 0 !important; }
 .runSessionComposer :global(.jcode-product-composer .ws-bar),
 .runSessionComposer :global(.jcode-product-composer .ws-bar + div),
 .runSessionComposer :global(.jcode-product-composer-effort-picker) { display: none; }
@@ -246,7 +248,15 @@
 .page { grid-template-columns: 248px minmax(0, 1fr); padding: 10px 10px 10px 0; background: var(--color-bg); }
 .runSurface { grid-template-rows: 56px minmax(0, 1fr); border: 1px solid var(--color-border); border-radius: 13px; }
 .taskHeader { padding: 24px 30px 20px; }
-.taskTitle { font-size: 22px; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; letter-spacing: -.5px; }
+.taskTitle { font-size: 22px; line-height: 1.4; letter-spacing: -.5px; }
 .taskLayout { grid-template-columns: minmax(0, 1fr) 260px; gap: 26px; padding: 0 28px; }
-@media(max-width: 1150px) { .page { grid-template-columns: 218px minmax(0, 1fr); } .taskLayout { grid-template-columns: minmax(0, 1fr); } }
+@media(max-width: 1150px) {
+  .page { grid-template-columns: 218px minmax(0, 1fr); }
+  /* History scrolls inside the full-height conversation. Supplemental facts
+     remain reachable below it without pushing the composer off screen. */
+  .taskLayout { display: block; overflow-y: auto; }
+  .conversationColumn { height: 100%; min-height: 0; }
+  .inspector { overflow: visible; }
+}
 @media(max-width: 832px) { .page, .page[data-rail-collapsed='true'] { grid-template-columns: 0 minmax(0, 1fr); padding: 0; } .runSurface { border: 0; border-radius: 0; } .taskHeader { padding: 18px; } .taskLayout { padding: 0 18px; } .taskTitle { font-size: 20px; } }
+@media(max-width: 700px) { .taskTitleRow { align-items: stretch; gap: var(--space-2); } }

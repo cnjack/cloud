@@ -12,7 +12,11 @@
 .eyebrow { color: var(--color-text-faint); font-size: var(--fs-tiny); font-weight: var(--fw-bold); letter-spacing: var(--tracking-label); text-transform: uppercase; }
 .accountComposer, .remoteSurface { position: relative; width: min(54rem, 100%); margin: var(--space-6) auto 0; }
 .accountComposer :global(.jcode-product-composer), .remoteComposer :global(.jcode-product-composer) { padding-top: 0 !important; }
-.accountComposer fieldset, .remoteComposer fieldset { min-width: 0; border: 0; }
+.accountComposer fieldset, .remoteComposer fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+/* Contain the shared toolbar's stacking levels below the repository menu. */
+.accountComposer fieldset { position: relative; z-index: 0; }
+/* The shared welcome composer has two cards. Keep only its inner input card. */
+.accountComposer :global(.jcode-product-composer > div:has(textarea)) { border: 0; padding: 0 !important; box-shadow: none; background: transparent; }
 .composerContextHeader { position: absolute; top: var(--space-2); left: var(--space-4); z-index: calc(var(--z-dropdown, 900) + 1); display: flex; align-items: center; gap: var(--space-1); }
 .accountComposer :global(.jcode-product-composer .ws-bar), .accountComposer :global(.jcode-product-composer .ws-bar + div) { display: none; }
 .accountComposer :global(.jcode-product-composer div:has(> .ws-bar)) { min-height: var(--space-10); }

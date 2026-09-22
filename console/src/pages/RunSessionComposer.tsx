@@ -1,4 +1,4 @@
-import { buildProductComposerStrings } from '@jcloud/device-ui';
+import { buildProductComposerStrings, iconForDeviceProvider } from '@jcloud/device-ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { RuntimeProvider } from 'jcode-ui';
@@ -126,6 +126,7 @@ export function RunSessionComposer({
     projectPath: '',
     tasks: [],
     strings,
+    resolveProviderIcon: iconForDeviceProvider,
     selectModel,
     selectMode: setMode,
     setEffort: () => {},

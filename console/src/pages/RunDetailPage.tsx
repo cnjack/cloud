@@ -327,7 +327,7 @@ export function RunDetailPage() {
                     {noChanges && <span className={styles.noChangesBadge} data-testid="no-changes-badge">{t('runDetail.noChangesBadge')}</span>}
                     {!terminalRun && canAct && <Button variant="secondary" size="sm" onClick={doCancel} loading={cancel.isPending} data-testid="cancel-btn"><Stop size={15} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.stop')}</span></Button>}
 					{terminalRun && canAct && <Button variant="secondary" size="sm" onClick={() => doRetry()} loading={retry.isPending && !retryDialogOpen} disabled={!modelGate.configured || projectModels.isLoading || !sameModelRetryAvailable} data-testid="retry-btn"><ArrowClockwise size={15} weight="regular" aria-hidden="true" /><span>{t('runDetail.action.retry')}</span></Button>}
-					{terminalRun && canAct && retryModelOptions.length > 0 && <Button variant="secondary" size="sm" onClick={() => {
+					{terminalRun && !current.session && canAct && retryModelOptions.length > 0 && <Button variant="secondary" size="sm" onClick={() => {
 						const first = retryModelOptions[0];
 						if (!first) return;
 						setRetryModelId(first.id);

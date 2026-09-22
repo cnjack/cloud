@@ -756,7 +756,7 @@ export function KanbanBoardModal({
                 <strong>{t('kanban.linkDisabledTitle')}</strong> {t('kanban.linkDisabledBody')}
               </div>
             )}
-            <div className={styles.board}>
+            <div className={`${styles.board} ${embedded ? styles.embeddedBoard : ''}`}>
               <JTypeBoard
                 client={proxyClient}
                 workspaceId={link.workspace_id}

@@ -20,6 +20,12 @@ function show(overrides: Partial<ApiClient> = {}) {
 const intent: RunAttachmentIntent = {stage:{id:'stage-1',project_id:'private',display_name:'brief.txt',content_type:'text/plain',size_bytes:5,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+600000).toISOString()},upload_url:'/upload',expires_at:new Date(Date.now()+600000).toISOString()};
 describe('Account task submission',()=>{
   beforeEach(async()=>{window.localStorage.clear();await setLocale('en');});
+  it('renders the provider SVG in the model picker instead of a letter placeholder', async()=>{
+    show();
+    const composer=await screen.findByTestId('account-repository-composer');
+    await waitFor(()=>expect(composer.querySelector('.provider-icon svg')).toBeTruthy());
+    expect(composer.querySelector('.provider-icon-fallback')).toBeNull();
+  });
   it('submits persisted defaults using the personal catalog ID despite an identical granted upstream model',async()=>{
     const {startAccountTask}=show();
     const input=await screen.findByLabelText('Describe a task');

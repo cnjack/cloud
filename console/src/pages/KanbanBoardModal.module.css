@@ -157,6 +157,9 @@
   overflow: auto;
 }
 
+.embeddedBoard { min-height: 32rem; }
+.embeddedBoard :global(.jtb-root) { height: max(32rem, 60dvh); }
+
 .executions {
   display: grid;
   gap: var(--space-3);

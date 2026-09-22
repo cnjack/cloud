@@ -1008,6 +1008,8 @@ describe('RunDetailPage — session resume (F9b / D23 ①②)', () => {
     renderPage(client, run);
 
     const panel = await screen.findByTestId('resume-session-panel');
+    expect(within(screen.getByTestId('run-status-header')).queryByTestId('retry-other-model-btn')).toBeNull();
+    await waitFor(() => expect(panel.querySelector('.provider-icon svg')).toBeTruthy());
     const conversationScroll = screen.getByTestId('conversation-scroll');
     expect(conversationScroll.contains(panel)).toBe(false);
     expect(screen.getByTestId('conversation-column').contains(panel)).toBe(true);
