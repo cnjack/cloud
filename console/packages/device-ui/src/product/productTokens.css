@@ -145,7 +145,7 @@
     margin-left: auto;
   }
 
-  .jcode-product .jcode-product-composer-toolbar button {
+  .jcode-product .jcode-product-composer-toolbar > div > button {
     flex-shrink: 0;
     white-space: nowrap;
   }
