@@ -17,3 +17,4 @@
 
 .header { height: 56px; flex-shrink: 0; padding: 0 24px; }
 @media(max-width: 832px) { .header { padding-left: 54px; padding-right: 14px; gap: 8px; } }
+@media(max-width: 520px) { .trigger > span:not(.avatar) { display: none; } }
