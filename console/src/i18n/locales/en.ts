@@ -133,6 +133,8 @@ export default {
     "pairToRead": "Connect this browser to read the conversation."
 },
   cloudDeviceGuide: {
+    installHint: 'Install the latest jcode on this device to use Remote workspace features.',
+    download: 'Download or update jcode',
     "secure": "End-to-end encrypted connection",
     "section": "Remote connection",
     "title": "Connect a jcode device",
@@ -1639,6 +1641,7 @@ export default {
     outputRun: 'Create a Run directly',
     outputCard: 'Create a jtype Card, then use Agent Board',
     outputHint: 'Card output preserves the jtype Work Item and uses the normal Kanban claim and writeback loop.',
+    openBoardSettings: 'Open Agent Board settings',
     outputCardUnavailable: 'Connect a healthy Agent Board before selecting Card output.',
     create: 'Create Automation',
     save: 'Save Automation',

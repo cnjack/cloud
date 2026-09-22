@@ -133,6 +133,8 @@ export default {
     "pairToRead": "このブラウザーをペアリングすると会話を閲覧できます。"
 },
   cloudDeviceGuide: {
+    installHint: 'リモートワークスペース機能を使用するには、このデバイスに最新版の jcode をインストールしてください。',
+    download: 'jcode をダウンロード・更新',
     "secure": "エンドツーエンド暗号化接続",
     "section": "リモート接続",
     "title": "jcode デバイスを接続",
@@ -1526,6 +1528,7 @@ export default {
     cronExpression: 'Cron 式', cronHint: '5 フィールドの Cron 式を使用します。最小間隔はサーバーで強制されます。',
     outputMode: '出力', outputRun: 'Run を直接作成', outputCard: 'jtype Card を作成して Agent Board で実行',
     outputHint: 'Card 出力は jtype の作業項目を残し、通常の Kanban 受付・書き戻しフローを使用します。',
+    openBoardSettings: 'Agent Board の設定を開く',
     outputCardUnavailable: '正常な Agent Board を接続してから Card 出力を選択してください。',
     create: '自動化を作成', save: '自動化を保存',
     review: {

@@ -533,9 +533,11 @@ export function AutomationEditorPage({
                   <option value="create_card" disabled={!cardOutputReady}>{t('automationEditor.outputCard')}</option>
                 </select>
               </label>
-              <small>{!cardOutputReady
-                ? kanbanPolicy.data?.health.blocker ?? t('automationEditor.outputCardUnavailable')
-                : t('automationEditor.outputHint')}</small>
+              {cardOutputReady ? <small>{t('automationEditor.outputHint')}</small> : <>
+                <small>{t('automationEditor.outputCardUnavailable')}</small>
+                {kanbanPolicy.data?.health.blocker && <small>{t(`kanban.policyBlockers.${kanbanPolicy.data.health.blocker}`, { defaultValue: '' })}</small>}
+                {serviceId && <Link to={`/repositories?repository=${encodeURIComponent(serviceId)}&tab=board`}>{t('automationEditor.openBoardSettings')}</Link>}
+              </>}
             </div>
           )}
         </section>}

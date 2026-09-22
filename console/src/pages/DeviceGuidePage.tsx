@@ -55,6 +55,7 @@ export function DeviceGuidePage() {
             <div className={styles.panelBody}>
               <span className={styles.kicker}><TerminalWindow size={16} />{t('cloudDeviceGuide.onDevice')}</span>
               <h2>{t('cloudDeviceGuide.runLogin')}</h2>
+              <p>{t('cloudDeviceGuide.installHint')} <a href="https://github.com/cnjack/jcode/releases/latest" target="_blank" rel="noreferrer">{t('cloudDeviceGuide.download')}</a></p>
               <p>{t('cloudDeviceGuide.commandDescription')}</p>
               <label>{t('cloudDeviceGuide.terminal')}</label>
               <div className={styles.command}><code>{COMMAND}</code><button type="button" aria-label={t(copied ? 'common.copied' : 'cloudDeviceGuide.copyCommand')} onClick={async () => { try { await navigator.clipboard.writeText(COMMAND); setCopied(true); setCopyError(false); } catch { setCopyError(true); } }}>{copied ? <Check size={17} /> : <Copy size={17} />}</button></div>

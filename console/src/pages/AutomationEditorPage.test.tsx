@@ -197,6 +197,24 @@ describe('AutomationEditorPage', () => {
     const option = await screen.findByRole('option', { name: /jtype Card/ }) as HTMLOptionElement;
     expect(option.disabled).toBe(true);
     expect(screen.getByText('Connect a healthy Agent Board before selecting Card output.')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Open Agent Board settings' }).getAttribute('href')).toBe('/repositories?repository=svc-1&tab=board');
+  });
+
+  it('explains a disabled Board binding and links to recovery instead of exposing a raw blocker', async () => {
+    const policy = vi.fn(async () => ({
+      repository_id: 'svc-1', repository_name: 'API', repository: 'acme/api',
+      model: { id: 'glm-52', label: 'GLM 5.2' }, board: { workspace_id: 'ws', ref: 'board' },
+      trigger_column: { key: 'agent', label: 'Agent' }, done_column: {}, output: 'comment_only' as const,
+      health: { state: 'blocked' as const, blocker: 'binding_disabled' },
+    }));
+    renderEditor({ getServiceKanbanPolicy: policy });
+    await screen.findByRole('heading', { name: 'Create Automation' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cron' }));
+    await waitFor(() => expect(policy).toHaveBeenCalled());
+    expect((screen.getByRole('option', { name: /jtype Card/ }) as HTMLOptionElement).disabled).toBe(true);
+    expect(await screen.findByText('Automation disabled')).toBeTruthy();
+    expect(screen.queryByText('binding_disabled')).toBeNull();
+    expect(screen.getByRole('link', { name: 'Open Agent Board settings' }).getAttribute('href')).toBe('/repositories?repository=svc-1&tab=board');
   });
 
   it('keeps common SCM events visible and places the complete low-frequency matrix behind More events', async () => {

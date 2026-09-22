@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -7,9 +7,9 @@ import type { ApiClient } from '../api/client';
 import type { Role } from '../api/config';
 import { AppShell } from './AppShell';
 
-function renderShell(role: Role, initialEntry = '/') {
+function renderShell(role: Role, initialEntry = '/', overrides: Partial<ApiClient> = {}) {
   const qc = new QueryClient();
-  const client = { listRepositories: async () => [] } as unknown as ApiClient;
+  const client = { listRepositories: async () => [], ...overrides } as unknown as ApiClient;
   return render(
     <QueryClientProvider client={qc}>
       <ApiProvider client={client} role={role}>
@@ -22,6 +22,16 @@ function renderShell(role: Role, initialEntry = '/') {
 }
 
 describe('AppShell — unified account information architecture', () => {
+  it.each(['new', 'auto-1', 'auto-1/edit'])('keeps repository identity on automation %s', async (suffix) => {
+    renderShell('cluster-admin', `/repositories/repo-1/automations/${suffix}`, {
+      listRepositories: async () => [{ id: 'repo-1', project_id: 'p1', name: 'API', repo_owner_name: 'acme/api', repo_kind: 'provider', provider: 'github', default_branch: 'main', git_mode: 'draft_pr', created_at: '' }],
+      listRuns: async () => [],
+    });
+    const location = await screen.findByRole('navigation', { name: 'Workspace location' });
+    expect(within(location).getByRole('link', { name: /acme\/api/ }).getAttribute('href')).toBe('/repositories?repository=repo-1&tab=automations');
+    expect(within(location).getByText('Automations')).toBeTruthy();
+  });
+
   it('puts Cluster settings in the account menu for a cluster-admin', () => {
     renderShell('cluster-admin', '/cluster');
     fireEvent.click(screen.getByRole('button', { name: 'Account menu' }));

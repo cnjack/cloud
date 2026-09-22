@@ -133,6 +133,8 @@ export default {
     "pairToRead": "이 브라우저를 페어링하면 대화를 볼 수 있습니다."
 },
   cloudDeviceGuide: {
+    installHint: '원격 작업 공간 기능을 사용하려면 이 기기에 최신 jcode를 설치하세요.',
+    download: 'jcode 다운로드 또는 업데이트',
     "secure": "종단 간 암호화 연결",
     "section": "원격 연결",
     "title": "jcode 기기 연결",
@@ -1526,6 +1528,7 @@ export default {
     cronExpression: 'Cron 표현식', cronHint: '5개 필드 Cron 표현식을 사용합니다. 최소 간격은 서버에서 적용됩니다.',
     outputMode: '출력', outputRun: 'Run 직접 생성', outputCard: 'jtype Card 생성 후 Agent Board에서 실행',
     outputHint: 'Card 출력은 jtype 작업 항목을 유지하고 표준 Kanban 접수 및 기록 흐름을 사용합니다.',
+    openBoardSettings: 'Agent Board 설정 열기',
     outputCardUnavailable: '정상 상태의 Agent Board를 연결한 후 Card 출력을 선택하세요.',
     create: '자동화 만들기', save: '자동화 저장',
     review: {

@@ -133,6 +133,8 @@ export default {
     "pairToRead": "配對此瀏覽器後才能查看對話。"
 },
   cloudDeviceGuide: {
+    installHint: '在這台裝置上安裝最新版 jcode，以使用遠端工作區功能。',
+    download: '下載或更新 jcode',
     "secure": "端對端加密連線",
     "section": "遠端連線",
     "title": "連接 jcode 裝置",
@@ -1526,6 +1528,7 @@ export default {
     cronExpression: 'Cron 表達式', cronHint: '使用五段式 Cron 表達式；伺服器會強制執行最小時間間隔。',
     outputMode: '輸出方式', outputRun: '直接建立 Run', outputCard: '先建立 jtype Card，再由 Agent Board 執行',
     outputHint: 'Card 輸出會保留 jtype 工作項目，並沿用標準看板受理與回寫閉環。',
+    openBoardSettings: '開啟 Agent Board 設定',
     outputCardUnavailable: '請先連接健康的 Agent Board，再選擇 Card 輸出。',
     create: '建立自動化', save: '儲存自動化',
     review: {
