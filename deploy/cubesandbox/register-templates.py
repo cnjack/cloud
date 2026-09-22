@@ -19,6 +19,20 @@ import urllib.request
 PROFILES = ("default", "go-node", "python", "rust", "polyglot")
 
 
+def read_json(opener, request):
+    """Retry only read transport failures; template mutations retain their receipts."""
+    for attempt in range(3):
+        try:
+            with opener.open(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == 2:
+                raise
+            time.sleep(2)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--release", required=True, help="immutable published version, e.g. v0.0.150")
@@ -31,18 +45,21 @@ def main():
     p.add_argument("--output", default="deploy/cubesandbox/runtime-config.generated.json")
     p.add_argument("--apply", action="store_true")
     p.add_argument("--workers", type=int, default=1, help="bounded template build concurrency")
+    p.add_argument("--wait-timeout", type=int, default=900,
+                   help="seconds to observe each native build; timing out does not cancel it")
     p.add_argument("--retry-failed", action="store_true", help="redo a recorded failed build after its cause is repaired")
     args = p.parse_args()
     if not re.fullmatch(r"v\d+\.\d+\.\d+", args.release):
         p.error("--release must be an immutable version")
+    if args.wait_timeout <= 0:
+        p.error("--wait-timeout must be positive")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def api(path):
         headers = {}
         if os.environ.get("CUBE_API_KEY"):
             headers["Authorization"] = "Bearer " + os.environ["CUBE_API_KEY"]
-        with opener.open(urllib.request.Request(args.api.rstrip("/") + path, headers=headers), timeout=30) as r:
-            return json.load(r)
+        return read_json(opener, urllib.request.Request(args.api.rstrip("/") + path, headers=headers))
 
     existing = api("/templates")
 
@@ -84,7 +101,7 @@ def main():
             receipt_path.write_text(json.dumps({"image": image, "template_id": template_id, "job_id": job_id}, indent=2) + "\n")
         save_receipt()
         print(f"{profile}: tracking {template_id} job={job_id}", flush=True)
-        deadline = time.monotonic() + 900
+        deadline = time.monotonic() + args.wait_timeout
         last_phase = None
         retried = False
         while time.monotonic() < deadline:
@@ -117,7 +134,8 @@ def main():
             elif state == "FAILED":
                 raise RuntimeError(f"{profile}: template build failed; inspect {template_id} in CubeSandbox")
             time.sleep(5)
-        raise RuntimeError(f"{profile}: timed out waiting for {template_id}")
+        raise RuntimeError(f"{profile}: timed out observing {template_id}; native build is not cancelled. "
+                           "Rerun with the same receipt and a longer --wait-timeout to resume tracking.")
 
     if not 1 <= args.workers <= 2:
         p.error("--workers must be 1 or 2")

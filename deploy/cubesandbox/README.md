@@ -66,6 +66,14 @@ serial by default, records native build job IDs, and treats CubeAPI 404 as pendi
 until the native job completes. `--retry-failed` retries one recorded failed build
 after its cause has been repaired.
 
+For a slow registry download, pass `--wait-timeout 21600` to observe each native
+build for up to six hours (default: 900 seconds). An observation timeout does not
+cancel the native build. Keep its generated receipt and rerun with the same
+release, registry and output path to resume tracking the existing job. Do not
+delete receipts or create replacement builds merely because polling timed out.
+Transport failures on read requests are retried three times; HTTP errors remain
+visible to the pending/error handling and template mutations are not retried.
+
 ## Workspaces and recovery
 
 The installed S3 FUSE volume failed Git filesystem semantics in PoC. Tasks use
