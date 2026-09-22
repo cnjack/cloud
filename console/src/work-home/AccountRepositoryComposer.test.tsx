@@ -38,7 +38,7 @@ describe('Account task submission',()=>{
     const upload=vi.fn().mockRejectedValueOnce(new Error('Storage temporarily unavailable')).mockResolvedValueOnce(intent);
     const {startAccountTask}=show({uploadAccountAttachment:upload});
     fireEvent.change(await screen.findByLabelText('Describe a task'),{target:{value:'Read brief'}});
-    fireEvent.change(screen.getByLabelText('Add files'),{target:{files:[new File(['brief'],'brief.txt',{type:'text/plain'})]}});
+    fireEvent.change(screen.getByLabelText('Attach files'),{target:{files:[new File(['brief'],'brief.txt',{type:'text/plain'})]}});
     await screen.findByText('Storage temporarily unavailable');
     expect((screen.getByRole('button',{name:'Start task'}) as HTMLButtonElement).disabled).toBe(true);
     expect(startAccountTask).not.toHaveBeenCalled();
@@ -47,6 +47,18 @@ describe('Account task submission',()=>{
     fireEvent.click(screen.getByRole('button',{name:'Start task'}));
     await waitFor(()=>expect(startAccountTask).toHaveBeenCalledWith(expect.objectContaining({attachment_stage_ids:['stage-1']})));
     expect(upload).toHaveBeenCalledWith('github','42',expect.any(File));
+  });
+
+  it('uses one plus-menu file entry and routes dropped files through account staging', async () => {
+    const upload = vi.fn().mockResolvedValue(intent);
+    show({uploadAccountAttachment: upload});
+    const composer = await screen.findByTestId('account-repository-composer');
+    expect(screen.queryByRole('button', {name:'Add files'})).toBeNull();
+    fireEvent.click(screen.getByRole('button', {name:'Add'}));
+    expect(screen.getByRole('menuitem', {name:'Attach files'})).toBeTruthy();
+    fireEvent.drop(composer.querySelector('.jcode-product-composer')!, { dataTransfer: { types:['Files'], files:[new File(['brief'],'brief.txt',{type:'text/plain'})] } });
+    await waitFor(() => expect(upload).toHaveBeenCalledWith('github','42',expect.any(File)));
+    await screen.findByText('Attached');
   });
   it('retains a rejected prompt for retry instead of losing it when the shared input clears',async()=>{
     const start=vi.fn().mockRejectedValueOnce(new Error('Busy')).mockResolvedValueOnce({run:{id:'retry'},repository:{id:'repo'}});

@@ -57,7 +57,7 @@ describe('Timeline — task conversation rendering', () => {
 
     expect(screen.getAllByTestId('thread-message-assistant')).toHaveLength(1);
     expect(container.querySelector('[data-testid="thread-message-assistant"] strong')?.textContent).toBe('world');
-    expect(screen.getByText('JCODE')).toBeTruthy();
+    expect(screen.getByRole('article', { name: 'JCODE' })).toBeTruthy();
   });
 
   it('keeps fenced code chrome scoped and copies from the header action', async () => {

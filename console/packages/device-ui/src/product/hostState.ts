@@ -114,7 +114,8 @@ export interface DeviceComposerState {
   effortOverrides: Record<string, string>;
   /** Next message becomes the session goal (chat.send goal_armed). */
   goalArmed: boolean;
-  /** Workspace override ('' = device default project). */
+  /** Workspace selection is resolved from metadata or explicit user selection. */
+  workspaceKind?: 'project' | 'scratch';
   projectPath: string;
 }
 
@@ -136,8 +137,7 @@ export function initialDeviceComposerState(current?: { provider: string; id: str
  * still advertises it. Returns undefined when nothing applies (payload stays
  * byte-identical to a plain text send).
  *
- * goal_armed is NOT handled here — a goal send carries `{goal_armed: true}`
- * alone (the connector gives it priority over every other compose field).
+ * Goal sends reuse the workspace fields; other facets follow the goal contract.
  */
 export function buildSendExtras(
   state: DeviceComposerState,
@@ -163,7 +163,11 @@ export function buildSendExtras(
   // projectPath can come from the device-side workspace browser, so it is not
   // necessarily part of the capabilities snapshot captured at connector
   // startup. The browser has already confirmed that the directory exists.
-  if (state.projectPath) extras.project_path = state.projectPath;
+  if (state.workspaceKind === 'scratch') extras.workspace_kind = 'scratch';
+  else if (state.projectPath) {
+    extras.project_path = state.projectPath;
+    if (state.workspaceKind) extras.workspace_kind = state.workspaceKind;
+  }
   if (images && images.length > 0) extras.images = images;
   return Object.keys(extras).length > 0 ? extras : undefined;
 }

@@ -194,6 +194,7 @@ export function AccountRepositoryComposer({
     favoriteModels: [],
     recentModels: modelRefs,
     imageSupport: false,
+    stageAttachments: attachments.add,
     effortOverrides: profile.data?.preferences.effort ? { [`${activeModelRef.provider}/${activeModelRef.model}`]: profile.data.preferences.effort, ...effortOverrides } : effortOverrides,
     slashCommands: [],
     hasMessages: false,
@@ -219,7 +220,7 @@ export function AccountRepositoryComposer({
     setGoal: async (objective: string) => ({ objective, status: 'active' as const }),
     clearGoal: async () => {},
   }), [
-    activeModelRef.model, activeModelRef.provider, effortOverrides, goalArmed, mode,
+    attachments.add, activeModelRef.model, activeModelRef.provider, effortOverrides, goalArmed, mode,
     modelRefs, providers, selectModel, setEffort, strings, target, profile.data?.preferences.effort,
   ]);
 

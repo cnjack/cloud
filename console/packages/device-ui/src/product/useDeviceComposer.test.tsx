@@ -14,6 +14,8 @@ import { initialDeviceSessionState } from '../deviceview/sessionReducer';
 import { useDeviceComposer } from './useDeviceComposer';
 
 const CAPS: Device['capabilities'] = {
+  current_workspace: {path:'/home/jack/a',kind:'project'},
+  workspace_actions: ['scratch'],
   projects: [{ path: '/home/jack/a', name: 'a' }],
   models: [{ provider: 'anthropic', id: 'claude-opus-4', label: 'Claude Opus 4' }],
   efforts: ['low', 'medium', 'high'],
@@ -94,6 +96,32 @@ beforeEach(() => {
 });
 
 describe('useDeviceComposer', () => {
+  it('creates Chat without a project override and restores recorded scratch metadata', async () => {
+    const {api, sends} = makeFakeApi();
+    const {result, unmount} = renderHook(() => useDeviceComposer({deviceId:'dev-1',sessionId:'new',device:DEVICE}), {wrapper:wrapper(api)});
+    expect(result.current.host.projectPath).toBe('/home/jack/a');
+    await act(async () => { await result.current.host.startScratchWorkspace!(); });
+    act(() => result.current.runtime.actions.sendMessage('Start a Chat'));
+    await waitFor(() => expect(sends).toHaveLength(1));
+    expect(sends[0]?.extras).toEqual({workspace_kind:'scratch'});
+    unmount();
+    const restored = renderHook(() => useDeviceComposer({deviceId:'dev-1',sessionId:'saved-chat',device:DEVICE,initialWorkspace:{path:'/scratch/unique',kind:'scratch'}}), {wrapper:wrapper(api)});
+    expect(restored.result.current.host.projectPath).toBe('/scratch/unique');
+    expect(restored.result.current.host.workspaceKind).toBe('scratch');
+  });
+  it('does not pretend an old connector has a current folder or Chat support', async () => {
+    const {api,sends} = makeFakeApi();
+    const device = {...DEVICE,capabilities:{projects:CAPS!.projects}};
+    const {result} = renderHook(() => useDeviceComposer({deviceId:'dev-1',sessionId:'new',device}),{wrapper:wrapper(api)});
+    expect(result.current.host.projectPath).toBe('');
+    expect(result.current.host.startScratchWorkspace).toBeUndefined();
+    act(() => result.current.runtime.actions.sendMessage('Do not silently start'));
+    expect(sends).toHaveLength(0);
+    await act(async () => { await result.current.host.switchWorkspace('/home/jack/a'); });
+    act(() => result.current.runtime.actions.sendMessage('Explicit folder'));
+    await waitFor(() => expect(sends).toHaveLength(1));
+    expect(sends[0]?.extras).toEqual({workspace_kind:'project',project_path:'/home/jack/a'});
+  });
   it('projects capabilities onto the host state model', () => {
     const { api } = makeFakeApi();
     const { result } = renderHook(
@@ -234,7 +262,7 @@ describe('useDeviceComposer', () => {
   it('assembles mode + model/effort/project extras from the compose state', async () => {
     const { api, sends } = makeFakeApi();
     const { result } = renderHook(
-      () => useDeviceComposer({ deviceId: 'dev-1', sessionId: 'sess-1', device: DEVICE }),
+      () => useDeviceComposer({ deviceId: 'dev-1', sessionId: 'new', device: DEVICE }),
       { wrapper: wrapper(api) },
     );
     act(() => {
@@ -251,13 +279,14 @@ describe('useDeviceComposer', () => {
       ]);
     });
     expect(sends[0]).toEqual({
-      sessionId: 'sess-1',
+      sessionId: 'new',
       text: 'hello',
       mode: 'plan',
       extras: {
         model: { provider: 'anthropic', id: 'claude-opus-4' },
         effort: 'high',
         project_path: '/home/jack/a',
+        workspace_kind: 'project',
         images: [{ data: 'aGk=', media_type: 'image/png' }],
       },
     });

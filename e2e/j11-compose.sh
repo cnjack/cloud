@@ -4,8 +4,8 @@
 # jcode-cloud-relay/modules/M12-compose.md). Drives the M12 compose loop
 # against the live orchestrator with a REAL `jcode web` process (temp HOME,
 # mockllm as the model), logged in via the J10 visual (web control plane)
-# flow — no CLI. A node WebCrypto client (j9-client.mjs) pairs via the QR
-# offer flow, then sends an encrypted chat.send carrying all five compose
+# flow — no CLI login. A node WebCrypto client (j9-client.mjs) pairs via
+# an explicitly approved device pairing, then sends an encrypted chat.send carrying all five compose
 # facets (project_path / model / effort / goal / attachments) and verifies
 # them server-side, on-device, and in the durable replay.
 #
@@ -29,8 +29,8 @@
 #           finding: the ~2.9MB sealed command exceeds the connector's 1MB
 #           poll-response read cap, so the command is orphaned in `delivered`
 #           (no ack, no file on disk, queue unharmed); a nonexistent
-#           project_path -> the local control plane mkdirs it and the command
-#           acks `acked` (asserted + recorded as the actual semantics)
+#           project_path -> recorded as the explicit workspace; the command
+#           acks `acked` without creating the directory until a tool needs it
 #   J11-S6  M20 mode ceiling: mode=full_access chat.send -> command acks
 #           `failed`, CEK-decrypted ack result carries
 #           mode_not_allowed_for_cloud; mode=auto still acks `acked`
@@ -60,6 +60,10 @@ J11_ATT_B64="aGVsbG8tYXR0YWNobWVudA==" # base64("hello-attachment")
 J11_HOME=""; J11_WS=""; J11_WEB_PID=""; J11_MOCK_PF_PID=""; J11_DEVICE_ID=""
 
 j11_psql() {
+  if [ -n "${J11_POSTGRES_CONTAINER:-}" ]; then
+    docker exec "$J11_POSTGRES_CONTAINER" psql -U "${J11_POSTGRES_USER:-jcloud}" -d "${J11_POSTGRES_DB:-jcloud}" -tAc "$1"
+    return
+  fi
   kubectl --context "$KCTX" -n "$NAMESPACE" exec deploy/postgres -- \
     psql -U jcloud -d jcloud -tAc "$1"
 }
@@ -82,14 +86,13 @@ j11_seed_session() {
 # DELETE CASCADE removes sessions, devices, device_tokens, device_sessions,
 # device_events, device_commands, device_pairings, device_pairing_offers).
 j11_cleanup() {
-  [ -n "$J11_WEB_PID" ] && kill "$J11_WEB_PID" 2>/dev/null
+  if [ -n "$J11_WEB_PID" ]; then kill "$J11_WEB_PID" 2>/dev/null; wait "$J11_WEB_PID" 2>/dev/null || true; fi
   [ -n "$J11_MOCK_PF_PID" ] && kill "$J11_MOCK_PF_PID" 2>/dev/null
   [ -n "$J11_HOME" ] && rm -rf "$J11_HOME"
   [ -n "$J11_WS" ] && rm -rf "$J11_WS"
   rm -rf "$J11_PROJ_A" "$J11_PROJ_B" "$J11_PROJ_MISSING"
   J11_WEB_PID=""; J11_MOCK_PF_PID=""; J11_HOME=""; J11_WS=""
-  kubectl --context "$KCTX" -n "$NAMESPACE" exec deploy/postgres -- \
-    psql -U jcloud -d jcloud -c "DELETE FROM users WHERE id='$J11_USER_ID'" >/dev/null 2>&1 || true
+  j11_psql "DELETE FROM users WHERE id='$J11_USER_ID'" >/dev/null 2>&1 || true
 }
 
 # User-session-authenticated helpers (the client API requires a real user
@@ -166,9 +169,11 @@ j11_run() {
     return 1
   fi
 
+  if [ "${J11_MOCK_ALREADY_RUNNING:-0}" != "1" ]; then
   kubectl --context "$KCTX" -n "$NAMESPACE" port-forward svc/mockllm \
     "$J11_MOCK_PORT:8081" >/tmp/j11-mockllm-pf.log 2>&1 &
   J11_MOCK_PF_PID=$!
+  fi
   local mock_ready="false" i
   for i in $(seq 1 20); do
     if curl -sS -o /dev/null "http://127.0.0.1:$J11_MOCK_PORT/health" 2>/dev/null; then
@@ -203,7 +208,7 @@ j11_run() {
 }
 JSON
 
-  ( cd "$J11_WS" && exec env HOME="$J11_HOME" "$JCODE_BIN" web \
+  ( cd "$J11_WS" && exec env HOME="$J11_HOME" JCODE_CLOUD_SECRET_BACKEND=file JCODE_NO_BROWSER=1 "$JCODE_BIN" web \
       --port "$J11_WEB_PORT" --host 127.0.0.1 --open=false \
       >>"$J11_HOME/web.log" 2>&1 ) &
   J11_WEB_PID=$!
@@ -291,28 +296,19 @@ JSON
       "$(jq -r --arg p "$proj" '(.sessions[$p] // []) | length > 0' "$seed_idx" 2>/dev/null)"
   done
 
-  # --- pair a node client via the QR offer flow (J10 pattern) ---------------
-  local offer_id secret qr
-  resp="$(j11_local_post_code "/api/cloud/pairing-offer" '{}')"
-  qr="$(printf '%s' "$(http_body "$resp")" | jq -r '.qr // empty')"
-  offer_id="$(printf '%s' "$(http_body "$resp")" | jq -r '.offer_id // empty')"
-  secret="$(printf '%s' "${qr#jcode://pair?}" | tr '&' '\n' | sed -n 's/^secret=//p')"
-  if [ -z "$offer_id" ] || [ -z "$secret" ]; then
-    fail J11-S1 "could not mint a pairing offer (body: $(printf '%.200s' "$(http_body "$resp")"))"
-    return 1
-  fi
-  node "$J11_NODE_CLIENT" keygen "$J11_HOME/client-priv.b64" >"$J11_HOME/client-pub.b64" 2>"$J11_HOME/node.log" || {
-    fail J11-S1 "node keygen failed ($(cat "$J11_HOME/node.log"))"
-    return 1
-  }
-  resp="$(j11_post_code "/api/v1/pairing-offers/$offer_id/claim" \
-    "{\"secret\":\"$secret\",\"label\":\"e2e-compose-client\",\"kty\":\"P-256\",\"pubkey\":\"$(cat "$J11_HOME/client-pub.b64")\"}")"
+  # Pair a WebCrypto client through the current device-pairing contract.
+  node "$J11_NODE_CLIENT" keygen "$J11_HOME/client-priv.b64" >"$J11_HOME/client-pub.b64" 2>"$J11_HOME/node.log" || return 1
+  resp="$(j11_post_code "/api/v1/devices/$J11_DEVICE_ID/pairings" \
+    "{\"label\":\"e2e-compose-client\",\"kty\":\"P-256\",\"pubkey\":\"$(cat "$J11_HOME/client-pub.b64")\"}")"
   local pid
   pid="$(printf '%s' "$(http_body "$resp")" | jq -r '.pairing_id // empty')"
   if [ -z "$pid" ]; then
-    fail J11-S1 "offer claim returned no pairing_id (body: $(printf '%.200s' "$(http_body "$resp")"))"
+    fail J11-S1 "pairing request failed"
     return 1
   fi
+  env HOME="$J11_HOME" JCODE_CLOUD_SECRET_BACKEND=file "$JCODE_BIN" cloud approve "$pid" >"$J11_HOME/approve.log" 2>&1 || {
+    fail J11-S1 "device could not approve test client"; return 1;
+  }
   local pstatus="" pview
   for i in $(seq 1 90); do
     pview="$(http_body "$(j11_get_code "/api/v1/devices/$J11_DEVICE_ID/pairings/$pid")")"
@@ -320,7 +316,7 @@ JSON
     [ "$pstatus" = "approved" ] && break
     sleep 1
   done
-  assert_eq J11-S1 "QR pairing auto-approves (offer claim, no approve action)" "approved" "$pstatus"
+  assert_eq J11-S1 "device approves the WebCrypto test client" "approved" "$pstatus"
   printf '%s' "$pview" | jq -r '.wrap // empty' >"$J11_HOME/wrap.json"
   local key_gen
   key_gen="$(node "$J11_NODE_CLIENT" unwrap "$J11_HOME/wrap.json" "$J11_HOME/client-priv.b64" "$J11_HOME/cek.json" 2>>"$J11_HOME/node.log")"
@@ -354,6 +350,8 @@ JSON
     "true" "$caps_ok"
   if [ "$caps_ok" = "true" ]; then
     info "  decrypted capabilities: $(printf '%s' "$caps" | jq -c '{projects:[.projects[].path], models, efforts}')"
+    assert_eq J11-S1 "current folder matches the local control plane" "$(j11_local_get /api/status | jq -r '.project')" "$(printf '%s' "$caps" | jq -r '.current_workspace.path')"
+    assert_contains J11-S1 "Chat workspace creation is advertised" "$(printf '%s' "$caps" | jq -r '.workspace_actions | join(",")')" "scratch"
     local caps_models caps_efforts
     caps_models="$(printf '%s' "$caps" | jq -r '[.models[]? | .provider + "/" + .id] | join(",")')"
     assert_contains J11-S1 "capabilities.models advertises the mockllm model" "$caps_models" "mock/mock-model"
@@ -405,6 +403,13 @@ JSON
 
   local sstatus="" sbody
   for i in $(seq 1 90); do
+    # Cloud now correctly starts at approval mode. Approve only this rig's
+    # deterministic mock write, preserving the production permission ceiling.
+    local approval_id
+    approval_id="$(j11_local_get "/api/approval/pending?task_id=$sid" | jq -r '.[]? | select(.tool_name=="write") | .id' | head -1)"
+    if [ -n "$approval_id" ]; then
+      j11_local_post_code /api/approval "{\"id\":\"$approval_id\",\"task_id\":\"$sid\",\"approved\":true}" >/dev/null
+    fi
     sbody="$(http_body "$(j11_get_code "/api/v1/devices/$J11_DEVICE_ID/sessions")")"
     sstatus="$(printf '%s' "$sbody" | jq -r --arg s "$sid" \
       '.sessions[]? | select(.session_id==$s) | .status' 2>/dev/null)"
@@ -518,10 +523,8 @@ EOF
   assert_true J11-S5 "no oversized file landed in the inbox" \
     "$([ -z "$(find "$J11_HOME/.jcode/inbox" -name 'big.bin' 2>/dev/null)" ] && echo true || echo false)"
 
-  # (b) nonexistent project_path: the local control plane does NOT reject it —
-  # POST /api/sessions {pwd} creates the missing directory and the session
-  # runs there (verified live: the dir appears with the mockllm artifact). The
-  # command therefore acks ok; assert the actual semantics and record them.
+  # (b) A missing explicit path is retained in session metadata. Directory
+  # creation is deferred until a tool writes; activation does not mkdir it.
   printf '{"text":"bad project","channel":"console","project_path":"%s"}' "$J11_PROJ_MISSING" \
     >"$J11_HOME/plain-badproj.json"
   resp="$(j11_seal_send "$J11_HOME/plain-badproj.json")"
@@ -530,10 +533,10 @@ EOF
   local bp_cmd bp_st
   bp_cmd="$(printf '%s' "$(http_body "$resp")" | jq -r '.command_id // empty')"
   bp_st="$(j11_wait_command "$bp_cmd")"
-  assert_eq J11-S5 "nonexistent project_path -> acked (control plane mkdirs the missing dir; recorded behavior)" \
+  assert_eq J11-S5 "nonexistent project_path -> acked (explicit path retained; recorded behavior)" \
     "acked" "$bp_st"
-  assert_true J11-S5 "the nonexistent project dir was created on-device" \
-    "$([ -d "$J11_PROJ_MISSING" ] && echo true || echo false)"
+  assert_true J11-S5 "explicit missing folder is retained in recorded metadata" \
+    "$(jq -r --arg p "$J11_PROJ_MISSING" '(.sessions[$p] // []) | length > 0' "$J11_HOME/.jcode/sessions/session.json")"
   info "  nonexistent-project ack result (decrypted): $(j11_open_result "$bp_cmd" | head -c 200)"
 
   # --- J11-S6: M20 mode ceiling -------------------------------------------------
@@ -561,6 +564,30 @@ EOF
   auto_cmd="$(printf '%s' "$(http_body "$resp")" | jq -r '.command_id // empty')"
   auto_st="$(j11_wait_command "$auto_cmd")"
   assert_eq J11-S6 "mode=auto chat.send still acks ok" "acked" "$auto_st"
+
+  # J11-S7: encrypted Chat creation allocates independent workspaces and leaves
+  # the Desktop foreground untouched. Refresh reads recorded metadata.
+  local foreground previous="" chat_cmd chat_sid chat_path index_path
+  foreground="$(j11_local_get /api/status | jq -c '{session_id,project,workspace_kind}')"
+  for i in 1 2; do
+    printf '{"text":"reply pong","workspace_kind":"scratch","channel":"console"}' >"$J11_HOME/plain-chat.json"
+    resp="$(j11_seal_send "$J11_HOME/plain-chat.json")"
+    assert_eq J11-S7 "Chat command accepted" "202" "$(http_code "$resp")"
+    chat_cmd="$(printf '%s' "$(http_body "$resp")" | jq -r '.command_id')"
+    assert_eq J11-S7 "Chat command acked" "acked" "$(j11_wait_command "$chat_cmd")"
+    chat_sid="$(j11_open_result "$chat_cmd" | jq -r '.session_id')"
+    index_path="$J11_HOME/.jcode/sessions/session.json"
+    for wait_index in $(seq 1 30); do
+      chat_path="$(jq -r --arg s "$chat_sid" '.sessions | to_entries[] | select(any(.value[]; .uuid==$s and .workspace_kind=="scratch")) | .key' "$index_path")"
+      [ -n "$chat_path" ] && break
+      sleep 1
+    done
+    assert_nonempty J11-S7 "recorded metadata restores Chat folder" "$chat_path"
+    assert_true J11-S7 "each Chat has its own directory" "$([ -n "$chat_path" ] && [ "$chat_path" != "$previous" ] && [ -d "$chat_path" ] && echo true || echo false)"
+    assert_eq J11-S7 "Desktop foreground remains unchanged" "$foreground" "$(j11_local_get /api/status | jq -c '{session_id,project,workspace_kind}')"
+    assert_not_contains J11-S7 "Chat request remains encrypted in storage" "$(j11_psql "SELECT convert_from(payload,'UTF8') FROM device_commands WHERE id='$chat_cmd'")" "workspace_kind"
+    previous="$chat_path"
+  done
 }
 
 # Standalone execution.

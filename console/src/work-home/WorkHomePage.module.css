@@ -13,15 +13,15 @@
 .accountComposer, .remoteSurface { position: relative; width: min(54rem, 100%); margin: var(--space-6) auto 0; }
 .accountComposer :global(.jcode-product-composer), .remoteComposer :global(.jcode-product-composer) { padding-top: 0 !important; }
 .accountComposer fieldset, .remoteComposer fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
-/* Contain the shared toolbar's stacking levels below the repository menu. */
-.accountComposer fieldset { position: relative; z-index: 0; }
+/* All composer popups share the page overlay level; no intermediate stacking contexts. */
+.accountComposer fieldset { position: relative; }
 /* The shared welcome composer has two cards. Keep only its inner input card. */
-.accountComposer :global(.jcode-product-composer > div:has(textarea)) { border: 0; padding: 0 !important; box-shadow: none; background: transparent; }
-.composerContextHeader { position: absolute; top: var(--space-2); left: var(--space-4); z-index: calc(var(--z-dropdown, 900) + 1); display: flex; align-items: center; gap: var(--space-1); }
+.accountComposer :global(.jcode-product-composer > div:has(textarea)), .remoteComposer :global(.jcode-product-composer > div:has(textarea)) { border: 0; padding: 0 !important; box-shadow: none; background: transparent; }
+.composerContextHeader { position: absolute; top: var(--space-2); left: var(--space-4); display: flex; align-items: center; gap: var(--space-1); }
 .accountComposer :global(.jcode-product-composer .ws-bar), .accountComposer :global(.jcode-product-composer .ws-bar + div) { display: none; }
 .accountComposer :global(.jcode-product-composer div:has(> .ws-bar)) { min-height: var(--space-10); }
-.remoteContextHeader { position: absolute; top: var(--space-2); left: var(--space-4); z-index: calc(var(--z-dropdown, 900) + 1); }
-.remoteComposer :global(.jcode-product-composer div:has(> .ws-bar)) { padding-left: min(14rem, 42vw) !important; }
+.remoteContextHeader { position: relative; margin-bottom: var(--space-2); }
+.remoteComposer :global(.jcode-product-composer div:has(> .ws-bar)) { padding-left: 0 !important; }
 .context { position: relative; align-self: flex-start; margin: 0; }
 .contextButton { min-height: var(--space-10); display: inline-flex; align-items: center; gap: var(--space-2); border: 0; border-radius: var(--radius-pill); background: transparent; padding: 0 var(--space-2); color: var(--color-text-muted); cursor: pointer; }
 .contextButton strong { max-width: min(22rem, 46vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -127,7 +127,7 @@
 .hero p { font-size: 13px; }
 .eyebrow { display: none; }
 .accountComposer, .remoteSurface { width: 100%; margin-top: 24px; }
-.composerContextHeader { position: relative; top: auto; left: auto; padding-bottom: 10px; z-index: 40; }
+.composerContextHeader { position: relative; top: auto; left: auto; padding-bottom: 10px; z-index: auto; }
 .accountComposer :global(.jcode-product-composer div:has(> .ws-bar)) { display: none; }
 .contextButton { border-radius: 6px; font-size: 13px; padding-left: 0; }
 .workspace { margin-top: 28px; }
@@ -150,3 +150,5 @@
 .attachments button { border: 0; background: transparent; color: inherit; cursor: pointer; display: inline-flex; }
 .failedPrompt { margin: 12px; padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; }
 .failedPrompt p { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
+
+.contextMenu { z-index: var(--z-dropdown, 900); }

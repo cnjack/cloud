@@ -1,4 +1,4 @@
-import { Paperclip, X } from '@phosphor-icons/react';
+import { X } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useApi } from '../api/ApiProvider';
@@ -10,7 +10,6 @@ type Upload = { id: number; file: File; intent?: RunAttachmentIntent; error?: st
 export function useAccountAttachments(target: AccountRepositoryTarget, disabled: boolean) {
   const api = useApi();
   const { t } = useTranslation();
-  const input = useRef<HTMLInputElement>(null);
   const nextID = useRef(0);
   const [byRepository, setByRepository] = useState<Record<string, Upload[]>>({});
   const [validation, setValidation] = useState('');
@@ -30,10 +29,9 @@ export function useAccountAttachments(target: AccountRepositoryTarget, disabled:
       update(upload.id, { intent, pending: false });
     } catch (error) { update(upload.id, { pending: false, error: error instanceof Error ? error.message : t('cloudRefresh.uploadFailed') }); }
   };
-  const pending = uploads.some(upload => upload.pending);
   const blocked = !!validation || uploads.some(upload => upload.pending || upload.error || !upload.intent || expired(upload));
   const add = (files: File[]) => {
-    if (!files.length) return;
+    if (disabled || !files.length) return;
     if (files.length + uploads.length > 10 || files.some(file => file.size === 0 || file.size > 25 * 1024 * 1024)
       || [...uploads.map(upload => upload.file), ...files].reduce((total,file) => total + file.size, 0) > 100 * 1024 * 1024) {
       setValidation(t('cloudRefresh.attachmentLimits')); return;
@@ -45,12 +43,10 @@ export function useAccountAttachments(target: AccountRepositoryTarget, disabled:
   };
   return {
     blocked,
+    add,
     stageIDs: uploads.flatMap(upload => upload.intent ? [upload.intent.stage.id] : []),
     clear: () => setByRepository(current => ({ ...current, [key]: [] })),
     view: <div className={styles.attachmentArea}>
-      <input ref={input} type="file" multiple hidden aria-label={t('cloudRefresh.addAttachments')} disabled={disabled || pending}
-        onChange={event => { add(Array.from(event.target.files ?? [])); event.target.value = ''; }} />
-      <button className={styles.attachmentButton} type="button" disabled={disabled || pending} onClick={() => input.current?.click()}><Paperclip size={16}/>{t('cloudRefresh.addAttachments')}</button>
       {!!uploads.length && <ul className={styles.attachments}>{uploads.map(upload => <li key={upload.id}>
         <span>{upload.file.name}</span><small>{upload.pending ? t('cloudRefresh.uploading') : expired(upload) ? t('cloudRefresh.attachmentExpired') : upload.error || t('cloudRefresh.attachmentReady')}</small>
         {(upload.error || expired(upload)) && <button type="button" disabled={disabled} onClick={() => void uploadFile(upload)}>{t('common.retry')}</button>}

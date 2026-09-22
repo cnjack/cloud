@@ -47,11 +47,16 @@ export function RemoteComposer({ device, contextHeader }: { device: Device; cont
         <DevicePairingCard deviceId={device.id} guideLink={<Link to="/devices/guide">{t('repositories.remoteSetup')}</Link>} />
         <DevicePairingApprovals deviceId={device.id} />
         <DeviceModelNotice device={device} />
+        {!host.projectPath && host.workspaceKind !== 'scratch' && <div className={styles.composerIssue} role="alert">
+          <span>{t('device.productComposer.workspaceUnavailable')}</span>
+          <Link to="/devices/guide">{t('repositories.remoteSetup')}</Link>
+          <button type="button" onClick={() => host.refreshModels()}>{t('common.retry')}</button>
+        </div>}
         <div className={`${styles.remoteComposer} jcode-product`} data-testid="remote-composer">
           {contextHeader && <div className={styles.remoteContextHeader}>{contextHeader}</div>}
           <fieldset disabled={isSendLocked || !device.online} aria-busy={isSendLocked}>
             <RuntimeProvider runtime={runtime}>
-              <ChatInput host={host} pickerPlacement="bottom" elevated />
+              <ChatInput host={host} pickerPlacement="bottom" elevated sendDisabled={!host.projectPath && host.workspaceKind !== 'scratch'} />
             </RuntimeProvider>
           </fieldset>
         </div>

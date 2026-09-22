@@ -70,6 +70,7 @@ function DeviceSessionContent({ device, session }: { device: Device; session: De
     streamState: state,
     sessionRunning: session?.status === 'running',
     hasMessages: !emptyTimeline,
+    initialWorkspace: session?.meta?.project ? { path: session.meta.project, kind: session.meta.workspace_kind ?? 'project' } : undefined,
     initialModel: session?.meta?.provider && session.meta.model
       ? { provider: session.meta.provider, id: session.meta.model }
       : null,

@@ -145,8 +145,10 @@ export function WorkHomePage() {
       const node = event.target as Node;
       if (!menuRef.current?.contains(node)) setContextOpen(false);
     };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
+    document.addEventListener('click', close, true);
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setContextOpen(false); };
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('click', close, true); document.removeEventListener('keydown', escape); };
   }, []);
 
   useEffect(() => { if (searchParams.get('picker') === '1') setContextOpen(true); }, [searchParams]);

@@ -44,6 +44,7 @@ export interface Device {
 /** The device-side compose surface mirrored by the connector (M12). */
 export interface DeviceCapabilities {
   workspace_actions?: string[];
+  current_workspace?: { path: string; kind: 'project' | 'scratch' };
   projects?: DeviceCapabilityProject[];
   models?: DeviceCapabilityModel[];
   /** Model selected in desktop settings when capabilities were mirrored. */
@@ -102,6 +103,7 @@ export interface ComposeImage {
  * passes them through untouched.
  */
 export interface SendMessageExtras {
+  workspace_kind?: 'project' | 'scratch';
   project_path?: string;
   model?: { provider: string; id: string };
   effort?: string;
@@ -110,7 +112,7 @@ export interface SendMessageExtras {
   /**
    * M14: when true the payload text IS the goal objective — the connector
    * POSTs /api/goal {objective, start:true} and ignores every other compose
-   * field (goal takes priority over mode/model/images/session options).
+   * field except the workspace selection (goal takes priority over mode/model/images).
    */
   goal_armed?: boolean;
   /** M14: vision images attached to the message ({data, media_type, name}). */
@@ -119,6 +121,7 @@ export interface SendMessageExtras {
 
 /** jcode SessionMeta as relayed by the device (passthrough JSON). */
 export interface DeviceSessionMeta {
+  workspace_kind?: 'project' | 'scratch';
   title?: string;
   /** Project working directory (jcode SessionMeta.project). */
   project?: string;

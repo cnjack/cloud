@@ -406,3 +406,33 @@ plaintext fallback. The device model catalog additionally declares an optional
 `protocol` (currently `codex_responses` for personal ChatGPT connections). Updated
 devices carry it into the proxy model configuration, using their scoped device
 token; upstream OAuth credentials remain solely in the control plane.
+
+### Composer workspace selection (September 2026)
+
+The encrypted capabilities envelope adds `current_workspace: {path, kind}`
+(`kind` is `project` or `scratch`), read from the local control plane's current
+status, and `workspace_actions: ["...", "scratch"]`. No plaintext device fields
+are added. A missing current workspace is a visible unavailable state, not a
+fabricated "device default". Clients may select a known/browsed folder explicitly.
+
+A new `chat.send` accepts encrypted `workspace_kind: "scratch"` with no
+`project_path`, requesting a fresh isolated Chat directory. An explicit folder
+uses `workspace_kind: "project"` and its absolute `project_path`. These fields
+also apply to goal creation. Existing conversations retain their recorded
+workspace; session metadata (`project`, `workspace_kind`) restores the displayed
+selection. The connector passes the selection to the non-foreground local
+`/api/sessions/activate` contract, which allocates scratch directories and does
+not change the Desktop foreground. Older connectors cannot offer Chat creation;
+clients explain the required upgrade instead of silently submitting to a folder.
+
+Regression cases to verify before shipping:
+- Home files are selected from the composer + menu, or pasted/dropped; upload
+  progress, retry, removal, limits and staged IDs remain correct.
+- Repository, permission, model and effort popovers have one active surface;
+  the opened surface stays above content and within desktop/mobile bounds.
+- Remote device-only composer has no reserved context gap or outer card shadow.
+- Current folder comes from encrypted capabilities; missing data is recoverable.
+- Chat creates distinct scratch sessions, explicit folders remain project
+  sessions, goal creation respects the workspace, and refresh restores metadata.
+- Invalid workspace kinds or scratch + folder combinations fail before effects;
+  relay activation preserves the existing Desktop foreground and E2EE boundary.

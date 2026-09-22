@@ -59,6 +59,8 @@ export interface UseDeviceComposerOptions {
   sessionRunning?: boolean;
   /** hasMessages drives the composer's welcome ↔ docked layout. */
   hasMessages?: boolean;
+  /** Authoritative workspace from decrypted session metadata. */
+  initialWorkspace?: { path: string; kind: 'project' | 'scratch' };
   /** Existing-session model from SessionMeta, used before event replay lands. */
   initialModel?: { provider: string; id: string } | null;
   /**
@@ -156,7 +158,7 @@ function withoutRepeatedSelectionEvents(events: DeviceViewEvent[]): DeviceViewEv
 }
 
 export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComposer {
-  const { deviceId, sessionId, device, streamState, sessionRunning, hasMessages, initialModel, onError, onSent } = options;
+  const { deviceId, sessionId, device, streamState, sessionRunning, hasMessages, initialModel, initialWorkspace, onError, onSent } = options;
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const deviceApi = useDeviceApi();
@@ -181,6 +183,12 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
       effortOverrides: readJson(`jcloud:composer:effort:${deviceId}`, {}),
     };
   });
+  const workspaceTouched = useRef(false);
+  useEffect(() => {
+    const workspace = sessionId === 'new' ? capabilities?.current_workspace : initialWorkspace;
+    if (workspaceTouched.current) return;
+    setCompose(state => ({ ...state, projectPath: workspace?.path ?? '', workspaceKind: workspace?.kind }));
+  }, [capabilities?.current_workspace?.path, capabilities?.current_workspace?.kind, initialWorkspace?.path, initialWorkspace?.kind, sessionId]);
   const persistSelection = useCallback((state: DeviceComposerState) => {
     writeJson(selectionKey, {
       mode: state.mode,
@@ -253,6 +261,10 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
 
   const sendRef = useRef<(text: string, images?: ChatImage[]) => void>(() => {});
   sendRef.current = (text, images) => {
+    if (sessionId === 'new' && !composeRef.current.projectPath && composeRef.current.workspaceKind !== 'scratch') {
+      appendLocalError(t('device.productComposer.workspaceUnavailable'));
+      return;
+    }
     if (sessionId === 'new') {
       if (newSessionLockedRef.current) return;
       newSessionLockedRef.current = true;
@@ -262,9 +274,9 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
     let mode: string | undefined;
     let extras: SendMessageExtras | undefined;
     if (state.goalArmed) {
-      // Goal takes priority over every other compose field (relay contract):
-      // the text IS the objective, sent as {text, goal_armed: true}.
-      extras = { goal_armed: true };
+      // Goal changes the text into an objective, while retaining its workspace.
+      const workspace = buildSendExtras(state, capabilities);
+      extras = { goal_armed: true, ...(workspace?.project_path ? { project_path: workspace.project_path } : {}), ...(workspace?.workspace_kind ? { workspace_kind: workspace.workspace_kind } : {}) };
       setCompose((c) => ({ ...c, goalArmed: false }));
     } else {
       extras = buildSendExtras(state, capabilities, images);
@@ -493,8 +505,16 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
   const switchWorkspace = useCallback(async (path: string) => {
     // No device-side project-switch API: the choice rides the next message's
     // project_path extra. (Same-path "new session" desktop semantics N/A.)
-    setCompose((c) => ({ ...c, projectPath: path }));
-  }, []);
+    if (sessionId !== 'new') throw new Error(t('device.productComposer.workspaceNewConversation'));
+    workspaceTouched.current = true;
+    setCompose((c) => ({ ...c, projectPath: path, workspaceKind: 'project' }));
+  }, [sessionId, t]);
+
+  const startScratchWorkspace = useCallback(async () => {
+    if (sessionId !== 'new') throw new Error(t('device.productComposer.workspaceNewConversation'));
+    workspaceTouched.current = true;
+    setCompose(c => ({ ...c, projectPath: '', workspaceKind: 'scratch' }));
+  }, [sessionId, t]);
 
   const browseFolders = useCallback(
     (path?: string) => deviceApi.browseFolders(deviceId, path),
@@ -521,6 +541,8 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
       goalArmed: compose.goalArmed,
       sessionId,
       projectPath: compose.projectPath,
+      workspaceKind: compose.workspaceKind,
+      startScratchWorkspace: sessionId === 'new' && capabilities?.workspace_actions?.includes('scratch') ? startScratchWorkspace : undefined,
       tasks,
       strings,
       resolveProviderIcon: iconForDeviceProvider,
@@ -574,6 +596,7 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
       setGoalArmed,
       browseFolders,
       switchWorkspace,
+      startScratchWorkspace,
     ],
   );
 
