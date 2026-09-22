@@ -59,6 +59,15 @@ register with `--registry ghcr.io/cnjack`, and pin both control-plane Deployment
 (including the migration init container) to that release's GHCR digests. Never
 point a GHCR-only release at missing Aliyun tags or reuse unrelated templates.
 
+If a registry transport repeatedly fails, `--template-registry` can select a
+temporary mirror for Cube build inputs while `--registry` retains the published
+Runner image identity in the ConfigMap. Before using it, verify every mirrored
+manifest and blob against the published SHA-256 and size. A mirror must serve
+the original manifest bytes; rebuilding or recompressing is not an equivalent
+release. Keep its endpoint in the build receipt and record the resulting native
+artifact digest. Remove a temporary mirror only after all five templates are
+ready and their runtime behavior has been verified.
+
 An Orchestrator-only fix can reuse the already verified immutable Runner/template
 mapping. Pin the new Orchestrator image separately and keep `RUNNER_IMAGE` and
 `RUNNER_PROFILES_JSON` truthful to the templates in use. Template registration is

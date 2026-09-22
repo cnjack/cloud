@@ -39,6 +39,7 @@ def main():
     p.add_argument("--api", default="http://192.168.10.194:31000")
     p.add_argument("--ssh", default="root@192.168.10.194")
     p.add_argument("--registry", default="registry.cn-shanghai.aliyuncs.com/jcode-cloud")
+    p.add_argument("--template-registry", help="optional digest-verified mirror for Cube build inputs only")
     p.add_argument("--owner", default="jcloud-company")
     p.add_argument("--context", default="wangwenhui@local")
     p.add_argument("--namespace", default="jcode")
@@ -71,7 +72,7 @@ def main():
         return json.loads(result.stdout)
 
     def register(profile):
-        image = f"{args.registry}/jcloud-cube-{profile}:{args.release}"
+        image = f"{args.template_registry or args.registry}/jcloud-cube-{profile}:{args.release}"
         alias = f"jcloud-{profile}-{args.release.replace('.', '-')}"
         receipt_path = Path(args.output).with_name(f"template-{profile}-{args.release}.generated.json")
         receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else None
