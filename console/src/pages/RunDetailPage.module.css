@@ -33,7 +33,7 @@
 }
 
 .page[data-rail-collapsed='true'] { grid-template-columns: var(--space-16) minmax(0, 1fr); }
-.runSurface { min-width: 0; min-height: 0; display: grid; grid-template-rows: var(--space-16) minmax(0, 1fr); overflow: hidden; background: var(--color-panel); }
+.runSurface { isolation: isolate; grid-template-columns: minmax(0, 1fr); min-width: 0; min-height: 0; display: grid; grid-template-rows: var(--space-16) minmax(0, 1fr); overflow: hidden; background: var(--color-panel); }
 
 .taskDetail { display: flex; height: 100%; min-height: 0; flex-direction: column; background: var(--color-panel); }
 .taskHeader { z-index: 4; display: grid; flex: none; gap: 10px; padding: 13px 22px 14px; border-bottom: 1px solid var(--color-border); background: var(--color-panel); }
