@@ -14,6 +14,8 @@ import type {
 } from 'jtype-board-react';
 import type {
   AddMemberInput,
+  GitProvider,
+  AccountProfile,
   AccountRepositoryCatalog,
   AccountTaskResponse,
   ApiKey,
@@ -40,6 +42,7 @@ import type {
   MembersEnvelope,
   Model,
   ModelProvider,
+  ModelAuthorization,
   ModelProviderVerification,
   ProviderModel,
   PrInfo,
@@ -247,6 +250,20 @@ export interface ApiClient {
   /** GET /api/v1/system/models — the whole catalog (cluster-admin). */
   listModels(): Promise<Model[]>;
   /** GET /api/v1/account/models — models directly authorized for this Account. */
+  createChatGPTProvider(name: string): Promise<ModelProvider>;
+  modelAuthorization(id: string, action: 'status' | 'start' | 'poll'): Promise<ModelAuthorization>;
+  cancelModelAuthorization(id: string): Promise<void>;
+  listAccountModelProviders(): Promise<ModelProvider[]>;
+  createAccountModelProvider(input: CreateModelProviderInput): Promise<ModelProvider>;
+  updateAccountModelProvider(id: string, input: UpdateModelProviderInput): Promise<ModelProvider>;
+  deleteAccountModelProvider(id: string): Promise<void>;
+  verifyAccountModelProvider(id: string): Promise<ModelProviderVerification>;
+  accountModelProviderCatalog(id: string): Promise<CatalogModel[]>;
+  createAccountProviderModel(id: string, input: CreateProviderModelInput): Promise<ProviderModel>;
+  updateAccountProviderModel(providerId: string, modelId: string, input: UpdateProviderModelInput): Promise<ProviderModel>;
+  deleteAccountProviderModel(providerId: string, modelId: string): Promise<void>;
+  getAccountProfile(): Promise<AccountProfile>;
+  updateAccountProfile(input: AccountProfile): Promise<AccountProfile>;
   listAccountModels(): Promise<ProjectModel[]>;
   /** POST /api/v1/system/models — add a model (cluster-admin). */
   createModel(input: CreateModelInput): Promise<Model>;
@@ -375,6 +392,7 @@ export interface ApiClient {
   createServiceRun(serviceId: string, input: CreateRunInput): Promise<Run>;
   /** Stages one bounded Project attachment through Cloud; no object-store URL is exposed. */
   uploadRunAttachment(serviceId: string, file: File): Promise<RunAttachmentIntent>;
+  uploadAccountAttachment(provider: GitProvider, repoID: string, file: File): Promise<RunAttachmentIntent>;
   /**
    * GET /providers/{id}/repos?q= — the Drone-style onboarding picker: repos the
    * caller's provider credential can see. 403 when no credential is linked.
@@ -715,6 +733,20 @@ export function createHttpClient(
     // Model catalog + account/project grants (D21).
     listModels: async () =>
       (await req<{ models: Model[] }>('/system/models')).models ?? [],
+    createChatGPTProvider: name => req<ModelProvider>('/account/model-providers/chatgpt', { method: 'POST', body: JSON.stringify({ name }) }),
+    modelAuthorization: (id, action) => req<ModelAuthorization>(`/account/model-providers/${encodeURIComponent(id)}/authorization${action === 'poll' ? '/poll' : ''}`, { method: action === 'status' ? 'GET' : 'POST' }),
+    cancelModelAuthorization: id => req<void>(`/account/model-providers/${encodeURIComponent(id)}/authorization`, { method: 'DELETE' }),
+    listAccountModelProviders: async () => (await req<{ providers: ModelProvider[] }>('/account/model-providers')).providers ?? [],
+    createAccountModelProvider: input => req<ModelProvider>('/account/model-providers', { method: 'POST', body: JSON.stringify(input) }),
+    updateAccountModelProvider: (id, input) => req<ModelProvider>(`/account/model-providers/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
+    deleteAccountModelProvider: id => req<void>(`/account/model-providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    verifyAccountModelProvider: id => req<ModelProviderVerification>(`/account/model-providers/${encodeURIComponent(id)}/verify`, { method: 'POST' }),
+    accountModelProviderCatalog: async id => (await req<{ models: CatalogModel[] }>(`/account/model-providers/${encodeURIComponent(id)}/catalog`)).models ?? [],
+    createAccountProviderModel: (id, input) => req<ProviderModel>(`/account/model-providers/${encodeURIComponent(id)}/models`, { method: 'POST', body: JSON.stringify(input) }),
+    updateAccountProviderModel: (providerId, modelId, input) => req<ProviderModel>(`/account/model-providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`, { method: 'PATCH', body: JSON.stringify(input) }),
+    deleteAccountProviderModel: (providerId, modelId) => req<void>(`/account/model-providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}`, { method: 'DELETE' }),
+    getAccountProfile: () => req<AccountProfile>('/account/profile'),
+    updateAccountProfile: (input) => req<AccountProfile>('/account/profile', { method: 'PUT', body: JSON.stringify(input) }),
     listAccountModels: async () =>
       (await req<{ models: ProjectModel[] }>('/account/models')).models ?? [],
     createModel: (input) =>
@@ -949,6 +981,31 @@ export function createHttpClient(
         method: 'POST',
         body: JSON.stringify(input),
       }),
+    uploadAccountAttachment: async (provider, repoID, file) => {
+      const intent = await req<RunAttachmentIntent>(
+        `/account/repositories/${encodeURIComponent(provider)}/${encodeURIComponent(repoID)}/attachments/intents`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: file.name,
+            content_type: file.type || 'application/octet-stream',
+            size_bytes: file.size,
+          }),
+        },
+      );
+      const res = await fetch(intent.upload_url, {
+        method: 'PUT',
+        body: file,
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': file.type || 'application/octet-stream',
+          ...authHeaders(getToken()),
+        },
+      });
+      if (res.status === 401) opts.onUnauthorized?.();
+      if (!res.ok) return parseError(res);
+      return intent;
+    },
     uploadRunAttachment: async (serviceId, file) => {
       const intent = await req<RunAttachmentIntent>(
         `/repositories/${encodeURIComponent(serviceId)}/attachments/intents`,

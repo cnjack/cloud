@@ -27,6 +27,7 @@ import (
 	"github.com/cnjack/jcloud/internal/k8s"
 	"github.com/cnjack/jcloud/internal/kanbancfg"
 	"github.com/cnjack/jcloud/internal/modelcfg"
+	"github.com/cnjack/jcloud/internal/modeloauth"
 	"github.com/cnjack/jcloud/internal/provider"
 	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
@@ -88,7 +89,8 @@ type Server struct {
 	// models resolves (and caches) the effective LLM configuration (Feature A).
 	// Shared with the reconciler via Models() so a console PUT/DELETE's
 	// Invalidate() is immediately visible to Job scheduling. Never nil.
-	models *modelcfg.Resolver
+	models     *modelcfg.Resolver
+	modelOAuth *modeloauth.Service
 	// modelProviderHTTP performs the server-side model-provider verify/catalog
 	// probe (GET base_url/models) for BOTH the cluster-admin and the project-owner
 	// endpoints. It has a short timeout AND an SSRF dial guard (guardedDialContext)
@@ -230,6 +232,7 @@ func New(st store.Store, cfg *config.Config, log *slog.Logger, hub *sse.Hub, lau
 	// Effective-model resolver (Feature A): one cached instance for every gate
 	// (run create/retry/review, webhook, and — via Models() — the reconciler).
 	s.models = modelcfg.NewResolver(st, s.cipher, cfg)
+	s.modelOAuth = modeloauth.New(st, s.cipher)
 	// Provider verify/catalog probe client. The transport's DialContext carries the
 	// SSRF guard (see ssrf.go); the guard reads s.allowPrivateModelHosts at dial
 	// time so a test can opt out for an httptest (127.0.0.1) upstream.
@@ -440,9 +443,27 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/devices", s.authed(s.handleListDevices))
 	mux.Handle("GET /api/v1/account/settings", s.authed(s.handleGetAccountSettings))
 	mux.Handle("GET /api/v1/account/usage", s.authed(s.handleGetAccountUsage))
+	mux.Handle("GET /api/v1/account/profile", s.authed(s.handleGetAccountProfile))
+	mux.Handle("PUT /api/v1/account/profile", s.authed(s.handleUpdateAccountProfile))
 	mux.Handle("GET /api/v1/account/models", s.authed(s.handleListAccountModels))
+	mux.Handle("POST /api/v1/account/model-providers/chatgpt", s.authed(s.handleCreateChatGPTProvider))
+	mux.Handle("GET /api/v1/account/model-providers/{id}/authorization", s.authed(s.handleModelAuthorization))
+	mux.Handle("POST /api/v1/account/model-providers/{id}/authorization", s.authed(s.handleModelAuthorization))
+	mux.Handle("POST /api/v1/account/model-providers/{id}/authorization/poll", s.authed(s.handleModelAuthorization))
+	mux.Handle("DELETE /api/v1/account/model-providers/{id}/authorization", s.authed(s.handleModelAuthorization))
+	mux.Handle("GET /api/v1/account/model-providers", s.authed(s.handleListModelProviders))
+	mux.Handle("POST /api/v1/account/model-providers", s.authed(s.handleCreateModelProvider))
+	mux.Handle("PATCH /api/v1/account/model-providers/{id}", s.authed(s.handleUpdateModelProvider))
+	mux.Handle("DELETE /api/v1/account/model-providers/{id}", s.authed(s.handleDeleteModelProvider))
+	mux.Handle("POST /api/v1/account/model-providers/{id}/verify", s.authed(s.handleVerifyModelProvider))
+	mux.Handle("GET /api/v1/account/model-providers/{id}/catalog", s.authed(s.handleModelProviderCatalog))
+	mux.Handle("POST /api/v1/account/model-providers/{id}/models", s.authed(s.handleCreateProviderModel))
+	mux.Handle("PATCH /api/v1/account/model-providers/{id}/models/{mid}", s.authed(s.handleUpdateProjectProviderModel))
+	mux.Handle("DELETE /api/v1/account/model-providers/{id}/models/{mid}", s.authed(s.handleDeleteProjectProviderModel))
+
 	mux.Handle("GET /api/v1/account/repositories", s.authed(s.handleListAccountRepositories))
 	mux.Handle("GET /api/v1/account/repositories/{provider}/{repo}/branches", s.authed(s.handleListAccountRepositoryBranches))
+	mux.Handle("POST /api/v1/account/repositories/{provider}/{repo}/attachments/intents", s.authed(s.handleCreateAccountAttachmentIntent))
 	mux.Handle("POST /api/v1/account/tasks", s.authed(s.handleCreateAccountTask))
 	mux.Handle("PUT /api/v1/account/settings", s.authed(s.handlePutAccountSettings))
 	mux.Handle("GET /api/v1/devices/{id}", s.authed(s.handleGetDevice))
@@ -454,6 +475,9 @@ func (s *Server) Handler() http.Handler {
 	// 404 as a transient routing failure and retrying a destructive request.
 	mux.Handle("DELETE /api/v1/devices/{id}/sessions/{sid}", s.authed(s.handleRejectDeviceSessionDelete))
 	mux.Handle("POST /api/v1/devices/{id}/workspace/browse", s.authed(s.handleDeviceBrowseWorkspace))
+	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/changes", s.authed(s.handleDeviceSessionChanges))
+	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/draft-pr/preview", s.authed(s.handleDeviceSessionDraftPreview))
+	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/draft-pr", s.authed(s.handleDeviceSessionDraftPR))
 	mux.Handle("GET /api/v1/devices/{id}/commands/{cid}", s.authed(s.handleGetDeviceCommand))
 	mux.Handle("GET /api/v1/devices/{id}/stream", s.authedStream(s.handleDeviceStream))
 	mux.Handle("POST /api/v1/devices/{id}/sessions/{sid}/messages", s.authed(s.handleDeviceSendMessage))

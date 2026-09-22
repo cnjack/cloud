@@ -3,6 +3,18 @@
 These files are visual and interaction references. They are not runtime assets,
 and the sample records in them are never a source of product data.
 
+## Current unified Cloud proposal
+
+Start at `work-home-refresh.html` or `cloud-map.html`. These pages and the
+`cloud-*.html` suite share the updated Work Home shell. All product navigation
+inside this suite stays within it; older prototypes below remain historical
+references. See `cloud-suite.md` for scope, runtime gaps, and verification.
+
+- Repository: Tasks, Board, Reviews/detail, Automations/editor, Usage, Settings.
+- Account: Profile, Git connections, Models, Preferences, Account usage, Cluster.
+- Remote: Device list, Device workspace, Login/pairing, Remote conversation.
+- Conversation: Cloud task detail, tool records, approvals, changes, follow-ups.
+
 ## Approved Project Settings decision
 
 Option A is the product contract: keep the Project / Service rail, place the
@@ -18,6 +30,7 @@ icons, and small prototype-only interactions live under `assets/`.
 | Prototype | Product surface |
 | --- | --- |
 | `index.html` | Prototype directory only |
+| `work-home-refresh.html` | Work Home redesign proposal: compact context/composer, recent tasks, empty and model-unavailable states; see `work-home-refresh.md` |
 | `projects.html` | Project list, populated state |
 | `projects-empty.html` | First-run Project list empty state |
 | `new-project.html` | Create Project editor |

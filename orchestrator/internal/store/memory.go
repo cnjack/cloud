@@ -17,6 +17,7 @@ import (
 // and idempotency semantics as PGStore so tests exercise real behaviour without
 // a database. It is safe for concurrent use.
 type MemStore struct {
+	modelOAuth               map[string][]byte
 	mu                       sync.Mutex
 	workflowRunTimeoutSecs   int64
 	workflowSessionTTLSecs   int64
@@ -2254,7 +2255,7 @@ func (m *MemStore) CreateModelProvider(_ context.Context, p *domain.ModelProvide
 	// (COALESCE(project_id,'')), so the cluster and each project can name a
 	// provider the same thing.
 	for _, existing := range m.modelProviders {
-		if existing.Name == p.Name && existing.ProjectID == p.ProjectID {
+		if existing.Name == p.Name && existing.ProjectID == p.ProjectID && existing.OwnerUserID == p.OwnerUserID {
 			return ErrAlreadyExists
 		}
 	}
@@ -2310,10 +2311,12 @@ func (m *MemStore) UpdateModelProvider(_ context.Context, p *domain.ModelProvide
 		return ErrNotFound
 	}
 	for id, existing := range m.modelProviders {
-		if id != p.ID && existing.Name == p.Name && existing.ProjectID == p.ProjectID {
+		if id != p.ID && existing.Name == p.Name && existing.ProjectID == p.ProjectID && existing.OwnerUserID == p.OwnerUserID {
 			return ErrAlreadyExists
 		}
 	}
+	p.ProjectID = m.modelProviders[p.ID].ProjectID
+	p.OwnerUserID = m.modelProviders[p.ID].OwnerUserID
 	p.UpdatedAt = time.Now().UTC()
 	m.modelProviders[p.ID] = cloneModelProvider(*p)
 	for id, mod := range m.models {
@@ -2391,6 +2394,7 @@ func (m *MemStore) DeleteModelProvider(_ context.Context, id string) error {
 		}
 	}
 	delete(m.modelProviders, id)
+	delete(m.modelOAuth, id)
 	return nil
 }
 
@@ -2436,7 +2440,7 @@ func (m *MemStore) CreateModel(_ context.Context, mod *domain.Model) error {
 	// the PG transaction below; do this check before assigning mod.ProviderID.
 	if mod.ProviderID == "" {
 		for _, provider := range m.modelProviders {
-			if provider.Name == mod.Name && provider.ProjectID == mod.ProjectID {
+			if provider.Name == mod.Name && provider.ProjectID == mod.ProjectID && provider.OwnerUserID == "" {
 				return ErrAlreadyExists
 			}
 		}
@@ -2550,7 +2554,7 @@ func (m *MemStore) UpdateModel(_ context.Context, mod *domain.Model) error {
 		// downgrade it to none (mirrors the PG UpdateModel sync).
 		if len(mod.APIKeyEnc) > 0 {
 			provider.AuthType = domain.ModelProviderAuthAPIKey
-		} else if provider.AuthType != domain.ModelProviderAuthServiceIdentity {
+		} else if provider.AuthType != domain.ModelProviderAuthServiceIdentity && provider.AuthType != domain.ModelProviderAuthOAuth {
 			provider.AuthType = domain.ModelProviderAuthNone
 		}
 		provider.UpdatedAt = time.Now().UTC()
@@ -2586,7 +2590,7 @@ func (m *MemStore) ListModelsForProject(_ context.Context, projectID string) ([]
 	var out []domain.Model
 	for id, mod := range m.models {
 		ownedEnabled := mod.ProjectID == projectID && mod.Enabled
-		if ownedEnabled || m.modelGrants[grantKey(id, projectID)] {
+		if m.modelProviders[mod.ProviderID].OwnerUserID == "" && (ownedEnabled || m.modelGrants[grantKey(id, projectID)]) {
 			out = append(out, cloneModel(mod))
 		}
 	}
@@ -2616,7 +2620,7 @@ func (m *MemStore) ListProjectIDsForModel(_ context.Context, modelID string) ([]
 func (m *MemStore) GrantModel(_ context.Context, modelID, projectID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.models[modelID]; !ok {
+	if model, ok := m.models[modelID]; !ok || m.modelProviders[model.ProviderID].OwnerUserID != "" {
 		return ErrNotFound
 	}
 	if _, ok := m.projects[projectID]; !ok {
@@ -2654,7 +2658,8 @@ func (m *MemStore) ListModelsForAccount(_ context.Context, userID string) ([]dom
 	var out []domain.Model
 	for modelID, model := range m.models {
 		_, granted := m.modelAccountGrants[accountGrantKey(modelID, userID)]
-		if model.ProjectID == "" && granted {
+		owner := m.modelProviders[model.ProviderID].OwnerUserID
+		if (owner == userID && owner != "" && model.Enabled) || (owner == "" && model.ProjectID == "" && granted) {
 			out = append(out, cloneModel(model))
 		}
 	}
@@ -2683,7 +2688,7 @@ func (m *MemStore) GrantModelToAccount(_ context.Context, modelID, userID, grant
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	model, ok := m.models[modelID]
-	if !ok || model.ProjectID != "" {
+	if !ok || model.ProjectID != "" || m.modelProviders[model.ProviderID].OwnerUserID != "" {
 		return ErrNotFound
 	}
 	if _, ok := m.users[userID]; !ok {

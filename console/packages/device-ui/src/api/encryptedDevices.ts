@@ -18,7 +18,7 @@
  */
 import { decryptJson, encryptJson, isEnvelope } from '../devicecrypto/envelope';
 import type { DeviceCrypto } from '../devicecrypto/provider';
-import type { BrowseFoldersResult, Device, DeviceApi, DeviceSession, DeviceSessionEvent, DeviceStreamFrame } from './devices';
+import type { BrowseFoldersResult, DeviceDraftPRResult, DeviceWorkspaceChanges, Device, DeviceApi, DeviceSession, DeviceSessionEvent, DeviceStreamFrame } from './devices';
 
 export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceApi {
   /** Open an envelope when we hold the key; pass everything else through. */
@@ -31,6 +31,44 @@ export function withDeviceCrypto(api: DeviceApi, crypto: DeviceCrypto): DeviceAp
 
   return {
     ...api,
+
+    prepareWorkspaceDraftPR: async (deviceId, sessionId) => {
+      const key = await crypto.getKey(deviceId);
+      if (!key) throw new Error('Pair this browser with the device before reviewing a draft pull request');
+      const envelope = await encryptJson(key, (await crypto.getKeyGen(deviceId)) ?? 1, { session_id: sessionId });
+      const state = await api.prepareWorkspaceDraftPREnvelope(deviceId, sessionId, envelope);
+      if (!isEnvelope(state.result)) throw new Error('The device returned an unencrypted preview. Upgrade jcode on the device and retry.');
+      const result = await open<unknown>(deviceId, state.result);
+      if (state.status === 'failed') throw new Error((result as { error?: string })?.error ?? 'Could not prepare the draft preview');
+      const changes = result as DeviceWorkspaceChanges;
+      if (!changes || changes.session_id !== sessionId || !Array.isArray(changes.files) || !changes.base_sha) throw new Error('The draft preview could not be verified. Refresh and retry.');
+      return changes;
+    },
+    createWorkspaceDraftPR: async (deviceId, sessionId, request) => {
+      const key = await crypto.getKey(deviceId);
+      if (!key) throw new Error('Pair this browser with the device before creating a draft pull request');
+      const envelope = await encryptJson(key, (await crypto.getKeyGen(deviceId)) ?? 1, { ...request, session_id: sessionId });
+      const state = await api.createWorkspaceDraftPREnvelope(deviceId, sessionId, envelope);
+      if (!isEnvelope(state.result)) throw new Error('The device returned an unencrypted delivery result. Upgrade jcode on the device and retry.');
+      const result = await open<unknown>(deviceId, state.result);
+      if (state.status === 'failed') throw new Error((result as { error?: string })?.error ?? 'Could not create a draft pull request');
+      const delivery = result as DeviceDraftPRResult;
+      if (!delivery || !/^https:\/\//.test(delivery.url) || !delivery.branch) throw new Error('The device could not confirm the draft pull request. Retry to check the existing delivery branch.');
+      return delivery;
+    },
+    inspectWorkspace: async (deviceId, sessionId) => {
+      const key = await crypto.getKey(deviceId);
+      if (!key) throw new Error('Pair this browser with the device before inspecting workspace changes');
+      const keyGen = (await crypto.getKeyGen(deviceId)) ?? 1;
+      const envelope = await encryptJson(key, keyGen, { session_id: sessionId });
+      const state = await api.inspectWorkspaceEnvelope(deviceId, sessionId, envelope);
+      if (!isEnvelope(state.result)) throw new Error('The device returned an unencrypted inspection result. Upgrade jcode on the device and retry.');
+      const result = await open<unknown>(deviceId, state.result);
+      if (state.status === 'failed') throw new Error((result as { error?: string })?.error ?? 'Could not inspect the device workspace');
+      const changes = result as DeviceWorkspaceChanges;
+      if (!changes || changes.session_id !== sessionId || !Array.isArray(changes.files)) throw new Error('The inspection result does not belong to this session. Refresh and retry.');
+      return changes;
+    },
 
     listDevices: async () => {
       const devices = await api.listDevices();

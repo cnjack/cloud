@@ -43,6 +43,7 @@ export interface Device {
 
 /** The device-side compose surface mirrored by the connector (M12). */
 export interface DeviceCapabilities {
+  workspace_actions?: string[];
   projects?: DeviceCapabilityProject[];
   models?: DeviceCapabilityModel[];
   /** Model selected in desktop settings when capabilities were mirrored. */
@@ -210,8 +211,41 @@ export interface DeviceStreamHandle {
   close: () => void;
 }
 
+export interface DeviceWorkspaceChanges {
+  session_id: string;
+  workspace: string;
+  repository: string;
+  branch: string;
+  head: string;
+  remote_url: string;
+  revision: string;
+  base_sha: string;
+  base_branch: string;
+  truncated: boolean;
+  files: DeviceWorkspaceChangedFile[];
+}
+export interface DeviceWorkspaceChangedFile {
+  path: string;
+  status: string;
+  patch: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  truncated: boolean;
+}
+
+export interface DeviceDraftPRRequest { repository_url: string; revision: string; base_sha: string; paths: string[]; title: string; body: string; }
+export interface DeviceDraftPRResult { url: string; branch: string; commit?: string; base: string; }
+
 export interface DeviceApi {
   listDevices(): Promise<Device[]>;
+  /** Session-bound inspection is available only through the E2EE wrapper. */
+  prepareWorkspaceDraftPR(deviceId: string, sessionId: string): Promise<DeviceWorkspaceChanges>;
+  prepareWorkspaceDraftPREnvelope(deviceId: string, sessionId: string, envelope: DeviceEnvelope): Promise<DeviceCommandState>;
+  createWorkspaceDraftPR(deviceId: string, sessionId: string, request: DeviceDraftPRRequest): Promise<DeviceDraftPRResult>;
+  createWorkspaceDraftPREnvelope(deviceId: string, sessionId: string, envelope: DeviceEnvelope): Promise<DeviceCommandState>;
+  inspectWorkspace(deviceId: string, sessionId: string): Promise<DeviceWorkspaceChanges>;
+  inspectWorkspaceEnvelope(deviceId: string, sessionId: string, envelope: DeviceEnvelope): Promise<DeviceCommandState>;
   listSessions(deviceId: string): Promise<DeviceSession[]>;
   /** Read a device command state, including its opaque/decrypted ACK result. */
   getCommandState(deviceId: string, commandId: string): Promise<DeviceCommandState>;
@@ -301,8 +335,8 @@ export function createDeviceApi(token: TokenSource, options: DeviceApiOptions = 
   const commandState = (deviceId: string, commandId: string) =>
     req<DeviceCommandState>(`${dev(deviceId)}/commands/${encodeURIComponent(commandId)}`);
 
-  async function waitForCommand(deviceId: string, commandId: string): Promise<DeviceCommandState> {
-    const deadline = Date.now() + 15_000;
+  async function waitForCommand(deviceId: string, commandId: string, timeout = 15_000): Promise<DeviceCommandState> {
+    const deadline = Date.now() + timeout;
     for (;;) {
       const state = await commandState(deviceId, commandId);
       if (state.status === 'acked' || state.status === 'failed') return state;
@@ -320,6 +354,21 @@ export function createDeviceApi(token: TokenSource, options: DeviceApiOptions = 
   }
 
   return {
+    prepareWorkspaceDraftPR: async () => { throw new Error('Pair this browser with the device before reviewing a draft pull request'); },
+    prepareWorkspaceDraftPREnvelope: async (deviceId, sessionId, envelope) => {
+      const accepted = await req<SendMessageResult>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}/draft-pr/preview`, { method: 'POST', body: JSON.stringify({ envelope }) });
+      return waitForCommand(deviceId, accepted.command_id, 35_000);
+    },
+    createWorkspaceDraftPR: async () => { throw new Error('Pair this browser with the device before creating a draft pull request'); },
+    createWorkspaceDraftPREnvelope: async (deviceId, sessionId, envelope) => {
+      const accepted = await req<SendMessageResult>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}/draft-pr`, { method: 'POST', body: JSON.stringify({ envelope }) });
+      return waitForCommand(deviceId, accepted.command_id, 35_000);
+    },
+    inspectWorkspace: async () => { throw new Error('Pair this browser with the device before inspecting workspace changes'); },
+    inspectWorkspaceEnvelope: async (deviceId, sessionId, envelope) => {
+      const accepted = await req<SendMessageResult>(`${dev(deviceId)}/sessions/${encodeURIComponent(sessionId)}/changes`, { method: 'POST', body: JSON.stringify({ envelope }) });
+      return waitForCommand(deviceId, accepted.command_id);
+    },
     listDevices: async () => (await req<{ devices: Device[] }>('/devices')).devices ?? [],
 
     listSessions: async (deviceId) =>

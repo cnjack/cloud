@@ -5,8 +5,11 @@ import (
 	"sync"
 	"time"
 
+	"fmt"
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
+	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/modeloauth"
 )
 
 // resolverTTL is the safety-net freshness bound for a cached materialisation. The
@@ -60,6 +63,31 @@ func (r *Resolver) ResolveModel(ctx context.Context, modelID string) (Resolved, 
 	v, err := resolveModel(ctx, r.st, r.cipher, r.cfg, modelID)
 	if err != nil {
 		return Resolved{}, err // never cache an error
+	}
+	if v.ProviderID != "" {
+		if st, ok := r.st.(interface {
+			GetModelProvider(context.Context, string) (*domain.ModelProvider, error)
+			modeloauth.Store
+		}); ok {
+			provider, err := st.GetModelProvider(ctx, v.ProviderID)
+			if err != nil {
+				return Resolved{}, err
+			}
+			if provider.AuthType == domain.ModelProviderAuthOAuth {
+				if provider.OwnerUserID == "" || provider.Kind != modeloauth.Kind || provider.BaseURL != modeloauth.BaseURL {
+					return Resolved{}, fmt.Errorf("invalid personal OAuth provider")
+				}
+				token, headers, err := modeloauth.New(st, r.cipher).Credential(ctx, provider.ID)
+				if err != nil {
+					return Resolved{}, err
+				}
+				v.APIKey = token
+				v.APIKeySet = true
+				v.Headers = headers
+				v.Protocol = modeloauth.Protocol
+				v.BaseURL = modeloauth.BaseURL
+			}
+		}
 	}
 	r.mu.Lock()
 	r.cache[modelID] = cacheEntry{v: v, at: r.now()}

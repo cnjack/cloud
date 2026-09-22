@@ -671,6 +671,12 @@ case "$MODEL_BASE_URL" in
   */v1) : ;;                           # already /v1-terminated — keep as-is
   *)    MODEL_BASE_URL="$MODEL_BASE_URL/v1" ;;
 esac
+# Protocol comes from the selected managed provider, never from repository env.
+MODEL_PROTOCOL="${MODEL_PROTOCOL:-}"
+case "$MODEL_PROTOCOL" in
+  ""|codex_responses) : ;;
+  *) die setup_failed "unsupported model protocol" ;;
+esac
 REVIEW_MCP_JSON=""
 if [ "$RUN_KIND" = "review" ]; then
   if [ "${JCLOUD_PREP_ONLY:-0}" != "1" ]; then
@@ -701,6 +707,7 @@ cat > "$HOME/.jcode/config.json" <<JSON
     "$MODEL_PROVIDER": {
       "api_key": "$MODEL_API_KEY",
       "base_url": "$MODEL_BASE_URL",
+      "protocol": "$MODEL_PROTOCOL",
       "custom_models": [
         { "id": "$MODEL_ID", "name": "$MODEL_ID", "tool_call": true, "context": 128000 }
       ]

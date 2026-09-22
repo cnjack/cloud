@@ -1293,7 +1293,7 @@ export interface ProviderModel {
   enabled?: boolean;
 }
 
-export type ModelProviderAuthType = 'api_key' | 'service_identity' | 'none';
+export type ModelProviderAuthType = 'api_key' | 'service_identity' | 'none' | 'oauth';
 export type ModelProviderCatalogMode = 'auto' | 'disabled';
 
 /**
@@ -1304,7 +1304,17 @@ export type ModelProviderCatalogMode = 'auto' | 'disabled';
  * scope carries `project_id` instead and omits `project_grants`. Both fields are
  * optional so the one shared type serves both scopes.
  */
+export interface ModelAuthorization {
+  state: 'pending' | 'ready' | 'expired' | 'requires_reauth';
+  user_code?: string;
+  verification_uri?: string;
+  expires_at?: string;
+  interval_seconds?: number;
+  login?: string;
+}
+
 export interface ModelProvider {
+  authorization?: ModelAuthorization;
   id: string;
   name: string;
   kind: string;
@@ -1407,6 +1417,10 @@ export interface UpdateModelInput {
  * project. Carries ONLY id/name/model_name (never the base_url or key).
  */
 export interface ProjectModel {
+  authorization_state?: ModelAuthorization["state"];
+  provider_id?: string;
+  provider_name?: string;
+  provider_kind?: string;
   id: string;
   name: string;
   model_name: string;
@@ -1695,3 +1709,13 @@ export interface StreamFrame {
   event: RunEventType | string;
   data: RunEvent & { run?: Run };
 }
+
+export interface AccountPreferences {
+  default_model_id: string;
+  permission_mode: '' | 'approval' | 'auto' | 'plan';
+  effort: '' | 'auto' | 'low' | 'medium' | 'high';
+  send_key: '' | 'enter' | 'mod_enter';
+  language: '' | 'en' | 'zh-Hans' | 'zh-Hant' | 'ja' | 'ko';
+  theme: '' | 'light' | 'dark';
+}
+export interface AccountProfile { display_name: string; preferences: AccountPreferences }

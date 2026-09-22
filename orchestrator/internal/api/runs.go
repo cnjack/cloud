@@ -850,6 +850,22 @@ func (s *Server) selectModelForRun(w http.ResponseWriter, r *http.Request, svc *
 			return nil, sel.ModelName, true // env fallback → model_id NULL, name snapshotted
 		}
 		id := sel.ModelID
+		selected, lookupErr := s.st.GetModel(r.Context(), id)
+		if lookupErr != nil {
+			writeError(w, 503, "model_unavailable", "could not verify selected model")
+			return nil, "", false
+		}
+		provider, lookupErr := s.st.GetModelProvider(r.Context(), selected.ProviderID)
+		if lookupErr != nil {
+			writeError(w, 503, "model_unavailable", "could not verify selected model provider")
+			return nil, "", false
+		}
+		if provider.AuthType == domain.ModelProviderAuthOAuth {
+			if _, resolveErr := s.models.ResolveModel(r.Context(), id); resolveErr != nil {
+				writeError(w, 409, "model_reauthorization_required", resolveErr.Error())
+				return nil, "", false
+			}
+		}
 		return &id, sel.ModelName, true
 	case modelcfg.SelectNotGranted:
 		writeError(w, http.StatusForbidden, "model_not_granted", notGrantedMsg)

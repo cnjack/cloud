@@ -108,6 +108,8 @@ export function useDevicePairing(deviceId: string, deps: DevicePairingDeps = {})
                 const privateKey = await importPairingPrivateKey(stored.privateKeyJwk);
                 const { cek, keyGen } = await unwrapCek(privateKey, state.wrap);
                 await crypto.store.put(deviceId, { ...stored, cek, keyGen });
+                qc.invalidateQueries({ queryKey: dqk.deviceSessions(deviceId) });
+                qc.invalidateQueries({ queryKey: dqk.devices });
               }
               if (!cancelled) setPhase('ready');
               return;
@@ -214,15 +216,18 @@ export function useDevicePairing(deviceId: string, deps: DevicePairingDeps = {})
             });
             await sessions.delete(deviceId);
             sessionRef.current = null;
-            if (cancelled) return;
-            setPairingId(null);
-            setPhase('ready');
+            // Storing the key can synchronously unlock DevicePairingGate and
+            // unmount this card. Cache invalidation must still run after that
+            // unmount, otherwise capabilities remain cached as ciphertext.
             // Refetch so already-cached ciphertext re-renders as plaintext.
             // The devices row must be invalidated too: it carries the sealed
             // capabilities envelope, and without a refetch the composer
             // pickers (models/projects/slash) stay empty until a full reload.
             qc.invalidateQueries({ queryKey: dqk.deviceSessions(deviceId) });
             qc.invalidateQueries({ queryKey: dqk.devices });
+            if (cancelled) return;
+            setPairingId(null);
+            setPhase('ready');
             return;
           }
           case 'denied':

@@ -1,13 +1,16 @@
+import { useState } from 'react';
+import type { ModelProvider } from '../api/types';
+import { ModelsCatalog } from './models/ModelsCatalog';
+import { Button } from '../components/Button';
 import { ArrowLeft, CheckCircle, GitBranch, LinkSimple, Lightning, User, WarningCircle } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useRole } from '../api/ApiProvider';
 import { useAccountModels, useAccountRepositories } from '../api/queries';
 import { useOptionalAuth } from '../auth/AuthProvider';
-import { LanguageToggle } from '../components/LanguageToggle';
+import { AccountProfileForm } from './AccountProfileForm';
 import { AccountHeader } from '../components/AccountHeader';
 import { ErrorBlock, LoadingBlock } from '../components/States';
-import { ThemeToggle } from '../components/ThemeToggle';
 import { AccountUsagePanel } from './AccountUsagePanel';
 import styles from './AccountSettingsPage.module.css';
 
@@ -34,6 +37,7 @@ export function AccountSettingsPage() {
   const auth = useOptionalAuth();
   const role = useRole();
   const [params, setParams] = useSearchParams();
+  const [providerEditor, setProviderEditor] = useState<ModelProvider | 'new' | null>(null);
   const section = sectionFromQuery(params.get('section'));
   const catalog = useAccountRepositories();
   const models = useAccountModels(section === 'models');
@@ -48,7 +52,7 @@ export function AccountSettingsPage() {
 
   return (
     <div className={styles.page} data-testid="account-settings">
-      <AccountHeader />
+      <AccountHeader sectionTitle={t('accountSettings.title')} />
       <main className={styles.main}>
         <Link to="/" className={styles.back}><ArrowLeft size={15} />{t('accountSettings.back')}</Link>
         <header className={styles.title}>
@@ -64,11 +68,10 @@ export function AccountSettingsPage() {
         <section className={styles.surface} role="tabpanel">
           {section === 'profile' && (
             <SettingsSection icon={<User size={18} />} title={t('accountSettings.profileTitle')} description={t('accountSettings.profileDescription')}>
+              <AccountProfileForm section="profile" />
               <dl className={styles.facts}>
-                <div><dt>{t('accountSettings.displayName')}</dt><dd>{me?.user.display_name ?? t('accountSettings.currentAccount')}</dd></div>
                 <div><dt>{t('accountSettings.accountId')}</dt><dd>{me?.user.id ?? t('accountSettings.sessionAccount')}</dd></div>
                 <div><dt>{t('accountSettings.role')}</dt><dd>{role === 'cluster-admin' ? t('accountSettings.clusterAdministrator') : t('accountSettings.member')}</dd></div>
-                <div><dt>{t('accountSettings.executionIdentity')}</dt><dd>{t('accountSettings.repositoryOwnerDefault')}</dd></div>
               </dl>
             </SettingsSection>
           )}
@@ -80,13 +83,14 @@ export function AccountSettingsPage() {
                   const source = catalog.data?.sources.find((candidate) => candidate.provider === identity.provider && candidate.account === identity.username)
                     ?? catalog.data?.sources.find((candidate) => candidate.provider === identity.provider);
                   const unavailable = source?.status === 'unavailable';
+                  const verified = source?.status === 'ready' && !catalog.isError;
                   const name = providerName(identity.provider, auth?.providers ?? []);
                   return (
-                    <article key={`${identity.provider}:${identity.username}`} data-state={unavailable ? 'unavailable' : 'ready'}>
-                      {unavailable ? <WarningCircle size={19} weight="fill" /> : <CheckCircle size={19} />}
+                    <article key={`${identity.provider}:${identity.username}`} data-state={unavailable ? 'unavailable' : verified ? 'ready' : 'unknown'}>
+                      {unavailable ? <WarningCircle size={19} weight="fill" /> : verified ? <CheckCircle size={19} /> : <GitBranch size={19} />}
                       <span>
                         <strong>{identity.provider}/{identity.username}</strong>
-                        <small>{unavailable ? source.message ?? t('accountSettings.repositoryAccessUnavailable') : t('accountSettings.connected')}</small>
+                        <small>{unavailable ? source.message ?? t('accountSettings.repositoryAccessUnavailable') : verified ? t('accountSettings.connected') : catalog.isError ? t('accountSettings.repositoryAccessUnavailable') : t('accountSettings.checkingRepositoryAccess')}</small>
                       </span>
                       {unavailable && <a className={styles.reauthorize} href={`/auth/link/${identity.provider}`} aria-label={t('accountSettings.reauthorize', { provider: name })}>{t('accountSettings.reauthorize', { provider: name })}</a>}
                     </article>
@@ -96,15 +100,21 @@ export function AccountSettingsPage() {
                   <a key={provider.id} href={`/auth/link/${provider.id}`} aria-label={t('accountSettings.linkProvider', { provider: provider.name })}><LinkSimple size={19} /><span><strong>{t('accountSettings.linkProvider', { provider: provider.name })}</strong><small>{t('accountSettings.authorizeRepositories')}</small></span></a>
                 ))}
               </div>
+              {!(me?.identities.length || auth?.providers.length) && <div className={styles.empty} role="status">{t('cloudRefresh.noGitProviders')} {role === 'cluster-admin' && <Link to="/cluster/connections">{t('accountSettings.gitAccountsTab')}</Link>}</div>}
               {catalog.isLoading ? <LoadingBlock label={t('accountSettings.checkingRepositoryAccess')} /> : catalog.isError ? <ErrorBlock title={t('accountSettings.repositoryAccessUnavailableTitle')} error={catalog.error} onRetry={() => void catalog.refetch()} /> : null}
             </SettingsSection>
           )}
 
-          {section === 'models' && (
+          {section === 'models' && me?.is_service && <p role="status">{t('cloudRefresh.accountRequired')}</p>}
+          {section === 'models' && !me?.is_service && (
             <SettingsSection icon={<Lightning size={18} />} title={t('accountSettings.modelsTitle')} description={t('accountSettings.modelsDescription')}>
+              <div><Button onClick={() => setProviderEditor('new')}>{t('cluster.models.addProvider')}</Button></div>
+              <ModelsCatalog scope={{ kind: 'account' }} editor={providerEditor} onEditorChange={setProviderEditor} />
+              <h3>{t('cloudRefresh.availableModels')}</h3>
               {models.isLoading ? <LoadingBlock label={t('accountSettings.loadingModels')} /> : models.isError ? <ErrorBlock title={t('accountSettings.modelAccessUnavailable')} error={models.error} onRetry={() => void models.refetch()} /> : (models.data ?? []).length === 0 ? (
-                <div className={styles.empty} role="status">{t('accountSettings.noModels')}</div>
+                <div className={styles.empty} role="status">{t('cloudRefresh.personalModelsEmpty')}</div>
               ) : <div className={styles.modelList}>{(models.data ?? []).map((model) => <article key={model.id}><span><strong>{model.name}</strong><small>{model.model_name}</small></span><span className={styles.status}>{t('accountSettings.modelAuthorized')}</span></article>)}</div>}
+              <AccountProfileForm section="models" />
               {role === 'cluster-admin' && <Link to="/cluster/models" className={styles.inlineLink}>{t('accountSettings.manageAuthorizations')}</Link>}
             </SettingsSection>
           )}
@@ -113,8 +123,7 @@ export function AccountSettingsPage() {
 
           {section === 'preferences' && (
             <SettingsSection icon={<User size={18} />} title={t('accountSettings.preferencesTitle')} description={t('accountSettings.preferencesDescription')}>
-              <div className={styles.preference}><span><strong>{t('accountSettings.language')}</strong><small>{t('accountSettings.languageDescription')}</small></span><LanguageToggle /></div>
-              <div className={styles.preference}><span><strong>{t('accountSettings.appearance')}</strong><small>{t('accountSettings.appearanceDescription')}</small></span><ThemeToggle /></div>
+              <AccountProfileForm section="preferences" />
             </SettingsSection>
           )}
         </section>

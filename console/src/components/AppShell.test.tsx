@@ -9,7 +9,7 @@ import { AppShell } from './AppShell';
 
 function renderShell(role: Role, initialEntry = '/') {
   const qc = new QueryClient();
-  const client = {} as ApiClient;
+  const client = { listRepositories: async () => [] } as unknown as ApiClient;
   return render(
     <QueryClientProvider client={qc}>
       <ApiProvider client={client} role={role}>
@@ -66,9 +66,10 @@ describe('AppShell — unified account information architecture', () => {
   });
 
   it('renders a Remote conversation as a full product workspace', () => {
-    const { container } = renderShell('cluster-admin', '/devices/device-1/sessions/session-1');
-    expect(container.querySelector('[data-device-session="true"]')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Account menu' })).toBeNull();
+    renderShell('cluster-admin', '/devices/device-1/sessions/session-1');
+    expect(screen.getByTestId('utility-workspace')).toBeTruthy();
+    expect(screen.getByTestId('conversation-rail')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Account menu' })).toBeTruthy();
   });
 
   it('renders device authorization outside account navigation', () => {

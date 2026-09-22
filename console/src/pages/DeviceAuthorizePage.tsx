@@ -75,7 +75,7 @@ export function DeviceAuthorizePage() {
           try {
             const state = await getDeviceAuthorizeState(getToken(), normalized);
             if (state.device_id) {
-              navigate(`/?remote=${encodeURIComponent(state.device_id)}`, { replace: true });
+              navigate(`/devices/${encodeURIComponent(state.device_id)}`, { replace: true });
               return;
             }
           } catch {

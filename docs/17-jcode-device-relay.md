@@ -310,3 +310,99 @@ Artifact 分享不复用账号 CEK，也不依赖 relay online。每次用户显
 - 服务端搜索/统计会话内容（E2E 下不可能）
 - 离线唤醒本地 jcode
 - 原生推送通知（APNs/FCM，后续迭代）
+
+## 7. Remote workspace inspection and delivery (Cloud refresh)
+
+**Implementation status:** the previous relay has no session-scoped Changes/PR
+contract. The following extension is being implemented with the Cloud refresh;
+clients must not infer its support from an online device or fake empty changes.
+
+### 7.1 Session-scoped workspace changes
+
+- The local control plane exposes `GET /api/sessions/{id}/changes`. It resolves
+  that exact session's recorded workspace (or its live engine), never the active
+  tab's workspace. A missing session/workspace/Git repository is a visible error.
+- This is a read-only view of **current workspace changes relative to HEAD**,
+  including staged, unstaged and untracked files; it does not claim every change
+  was authored by this task. The UI labels that scope explicitly.
+- Response fields: `session_id`, `workspace`, `repository`, `branch`, `head`,
+  `remote_url` (credentials removed), `revision`, and `entries` containing
+  `file`, `patch`, `status`, `additions`, `deletions`. Oversized/binary previews
+  must have an explicit limitation, never appear as a clean workspace.
+- Cloud exposes `POST /api/v1/devices/{id}/sessions/{sid}/changes` with
+  `{envelope}` only. It enqueues `workspace.changes` with the outer session ID
+  and returns the normal command ID. It never parses the decrypted payload or
+  result. Ownership, offline and expiry gates match other device commands.
+- The connector delegates to the exact local session endpoint; it seals the
+  result through the existing uplink path. The encrypted capabilities advertise
+  `workspace_actions: ["changes"]` only after the handler is available. Older
+  devices show an in-context upgrade action; the UI does not silently hide the
+  designed inspector or show zero changed files.
+- Acceptance covers inactive-session isolation, missing/invalid workspaces,
+  real Git changes (including untracked files), output limits, no writes during
+  inspection, and encrypted command/ack persistence. Add the relay journey to
+  the existing e2e harness before declaring this extension accepted.
+
+### 7.2 Draft PR delivery
+
+Creating a PR is a separate explicit action
+following review of the returned changes. Bind it to the inspected revision and
+session, fail on a changed workspace, preserve unrelated existing changes, and
+retain recoverable branch/push state if provider publication fails. Neither a
+chat message promising a PR nor a successful push is proof that a PR exists.
+The Cloud refresh cannot be marked fully accepted before delivery is implemented
+or the user explicitly approves postponing this designed behavior.
+
+#### 7.2.1 Draft delivery execution (implementation contract)
+
+`workspace.draft_pr` routes to local `POST /api/sessions/{id}/draft-pr` with
+an encrypted payload containing `session_id`, `repository_url`, the inspected
+`revision`, `base_sha`, selected `paths`, a
+`title` and optional `body`. The desktop resolves the repository's GitHub
+identity through its existing authenticated `gh` installation. Missing `gh`,
+login, origin, or Git identity is an actionable failure; Cloud never receives
+those credentials and never changes the device's authenticated principal.
+
+The local endpoint inspects the exact session again and rejects a changed or
+truncated revision before any publication. It applies only the selected,
+reviewed patches to a temporary Git index based on the reviewed target commit, writes
+a commit with `commit-tree`, and creates a deterministic delivery branch.
+It does not check out a branch, run `git add` on the user's index, or change
+workspace files. The branch identity binds session, HEAD, revision, paths,
+title and body; retry reuses that branch and an existing draft PR. No force
+push is allowed. The PR is opened against the repository's default branch;
+the user reviews the selected files and target before submitting.
+
+A failed push or provider call retains the prepared local branch and returns
+its name in the encrypted error. A successful push followed by a failed PR
+creation explicitly reports that the branch exists remotely; retry queries
+for an existing PR before creating one. Success requires a provider-returned
+PR URL, never merely an exit-zero local commit. Non-GitHub origins fail with
+an actionable provider-support message; they must not be reported as delivered.
+
+Acceptance cases: stale revision rejects before mutation; selected-only tree;
+original index/branch/worktree unchanged; deterministic retry; no force push;
+missing credentials visible; returned PR URL validated against the selected
+repository; encrypted command/result storage; actual authenticated GitHub
+journey with a draft PR on a bounded acceptance repository.
+
+
+`workspace.draft_preview` is a separate encrypted, explicit review action:
+Cloud `POST .../sessions/{sid}/draft-pr/preview` forwards to local
+`GET /api/sessions/{id}/draft-pr/preview`. The device verifies the GitHub default
+branch, fetches its commit if absent locally, and returns the full working-tree
+diff against that commit (including already committed branch changes). This
+preview includes `base_sha`, `base_branch`, repository URL, revision and files.
+Submission rechecks the base and revision before applying selected patches to
+the temporary index. Existing feature-branch commits are reviewed file by file,
+never automatically included merely because the workspace HEAD contains them.
+The origin push URL must identify the same repository shown in the preview.
+
+
+Every workspace command includes an encrypted `session_id` matching the routed
+session, which must still opt into Cloud synchronization. ACK encryption failures
+must fail closed; paths, patches and delivery results are never uploaded in a
+plaintext fallback. The device model catalog additionally declares an optional
+`protocol` (currently `codex_responses` for personal ChatGPT connections). Updated
+devices carry it into the proxy model configuration, using their scoped device
+token; upstream OAuth credentials remain solely in the control plane.

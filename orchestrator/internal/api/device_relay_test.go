@@ -899,3 +899,49 @@ func TestDevicePairingGate(t *testing.T) {
 	}
 	resp.Body.Close()
 }
+
+func TestClientSessionChangesRequiresOpaquePayload(t *testing.T) {
+	fx := setupDevice(t)
+	_, deviceID, owner := onlineDevice(t, fx)
+	path := fx.ts.URL + "/api/v1/devices/" + deviceID + "/sessions/session-exact/changes"
+	resp := do(t, http.MethodPost, path, owner, map[string]any{})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("plaintext status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = do(t, http.MethodPost, path, owner, map[string]any{"envelope": map[string]any{"enc": "test-ciphertext", "data": "opaque"}})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("encrypted status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	cmds, err := fx.st.DeliverPendingDeviceCommands(t.Context(), deviceID, 64)
+	if err != nil || len(cmds) != 1 || cmds[0].Kind != domain.DeviceCmdWorkspaceChanges || cmds[0].SessionID == nil || *cmds[0].SessionID != "session-exact" {
+		t.Fatalf("commands=%+v err=%v", cmds, err)
+	}
+	if !strings.Contains(string(cmds[0].Envelope), "test-ciphertext") {
+		t.Fatal("opaque payload was replaced")
+	}
+}
+
+func TestClientSessionDraftPRRequiresOpaquePayload(t *testing.T) {
+	fx := setupDevice(t)
+	_, deviceID, owner := onlineDevice(t, fx)
+	path := fx.ts.URL + "/api/v1/devices/" + deviceID + "/sessions/session-exact/draft-pr"
+	resp := do(t, http.MethodPost, path, owner, map[string]any{})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("plaintext status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = do(t, http.MethodPost, path, owner, map[string]any{"envelope": map[string]any{"enc": "test-ciphertext", "data": "opaque"}})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("encrypted status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	cmds, err := fx.st.DeliverPendingDeviceCommands(t.Context(), deviceID, 64)
+	if err != nil || len(cmds) != 1 || cmds[0].Kind != domain.DeviceCmdWorkspaceDraftPR || cmds[0].SessionID == nil || *cmds[0].SessionID != "session-exact" {
+		t.Fatalf("commands=%+v err=%v", cmds, err)
+	}
+	if !strings.Contains(string(cmds[0].Envelope), "test-ciphertext") {
+		t.Fatal("opaque payload was replaced")
+	}
+}

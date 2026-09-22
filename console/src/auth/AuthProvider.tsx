@@ -123,6 +123,8 @@ export interface AuthContextValue {
   /** Revoke the session (POST /auth/logout) and return to sign-in. */
   logout: () => void;
   retryProbe: () => void;
+  /** Apply a display name returned by a successful account profile save. */
+  setDisplayName?: (name: string) => void;
   /** Session-level 401 hook for the http client (session revoked/expired). */
   handleUnauthorized: () => void;
 }
@@ -294,6 +296,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       retryProbe: runProbe,
+      setDisplayName: (name: string) => setMe(current => current ? { ...current, user: { ...current.user, display_name: name } } : current),
       handleUnauthorized,
     }),
     [

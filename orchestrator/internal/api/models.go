@@ -34,10 +34,14 @@ type modelAdminView struct {
 // capabilities are public product metadata used to render valid composer
 // controls; a member NEVER sees the base_url or key.
 type modelMemberView struct {
-	ID           string                   `json:"id"`
-	Name         string                   `json:"name"`
-	ModelName    string                   `json:"model_name"`
-	Capabilities domain.ModelCapabilities `json:"capabilities"`
+	AuthorizationState string                   `json:"authorization_state,omitempty"`
+	ProviderID         string                   `json:"provider_id"`
+	ProviderName       string                   `json:"provider_name"`
+	ProviderKind       string                   `json:"provider_kind"`
+	ID                 string                   `json:"id"`
+	Name               string                   `json:"name"`
+	ModelName          string                   `json:"model_name"`
+	Capabilities       domain.ModelCapabilities `json:"capabilities"`
 }
 
 // adminModel builds the admin view, fetching the model's grants.
@@ -85,6 +89,14 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]modelAdminView, 0, len(models))
 	for i := range models {
+		provider, err := s.st.GetModelProvider(r.Context(), models[i].ProviderID)
+		if err != nil {
+			writeError(w, 500, "internal", "could not load model provider")
+			return
+		}
+		if provider.OwnerUserID != "" {
+			continue
+		}
 		out = append(out, s.adminModel(r, &models[i]))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": out})
@@ -164,6 +176,9 @@ type patchModelReq struct {
 // handleUpdateModel updates a catalog model (cluster-admin only).
 func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 	if !s.requireClusterAdmin(w, r) {
+		return
+	}
+	if !s.requireGlobalModel(w, r) {
 		return
 	}
 	m, err := s.st.GetModel(r.Context(), r.PathValue("id"))
@@ -249,6 +264,9 @@ func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 	if !s.requireClusterAdmin(w, r) {
 		return
 	}
+	if !s.requireGlobalModel(w, r) {
+		return
+	}
 	if err := s.st.DeleteModel(r.Context(), r.PathValue("id")); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "model not found")
@@ -270,6 +288,9 @@ func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 // Idempotent (PUT). A missing model or project is a 404.
 func (s *Server) handleGrantModel(w http.ResponseWriter, r *http.Request) {
 	if !s.requireClusterAdmin(w, r) {
+		return
+	}
+	if !s.requireGlobalModel(w, r) {
 		return
 	}
 	modelID := r.PathValue("id")
@@ -316,6 +337,9 @@ func (s *Server) handleRevokeModel(w http.ResponseWriter, r *http.Request) {
 	if !s.requireClusterAdmin(w, r) {
 		return
 	}
+	if !s.requireGlobalModel(w, r) {
+		return
+	}
 	modelID := r.PathValue("id")
 	projectID := r.PathValue("projectID")
 	if err := s.st.RevokeModel(r.Context(), modelID, projectID); err != nil {
@@ -341,6 +365,9 @@ func (s *Server) handleRevokeModel(w http.ResponseWriter, r *http.Request) {
 // authentication remains mandatory; browser sessions cannot call cloud_proxy.
 func (s *Server) handleGrantModelToAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.requireClusterAdmin(w, r) {
+		return
+	}
+	if !s.requireGlobalModel(w, r) {
 		return
 	}
 	modelID := r.PathValue("id")
@@ -391,6 +418,9 @@ func (s *Server) handleGrantModelToAccount(w http.ResponseWriter, r *http.Reques
 // so there is no authorization cache to invalidate.
 func (s *Server) handleRevokeModelFromAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.requireClusterAdmin(w, r) {
+		return
+	}
+	if !s.requireGlobalModel(w, r) {
 		return
 	}
 	modelID := r.PathValue("id")
@@ -465,12 +495,10 @@ func (s *Server) handleListProjectModels(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "internal", "could not list models")
 		return
 	}
-	out := make([]modelMemberView, 0, len(granted))
-	for i := range granted {
-		out = append(out, modelMemberView{
-			ID: granted[i].ID, Name: granted[i].Name, ModelName: granted[i].ModelName,
-			Capabilities: granted[i].Capabilities,
-		})
+	out, err := s.executionModelViews(r.Context(), granted)
+	if err != nil {
+		writeError(w, 500, "internal", "could not load model providers")
+		return
 	}
 	writeJSON(w, http.StatusOK, projectModelsView{Models: out, EnvFallback: s.envFallbackActive(r)})
 }

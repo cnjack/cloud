@@ -6,6 +6,7 @@ import { ApiProvider } from '../api/ApiProvider';
 import type { ApiClient } from '../api/client';
 import type { AccountRepositorySource } from '../api/types';
 import { setLocale } from '../i18n';
+import { ToastProvider } from '../components/Toast';
 import { AccountSettingsPage } from './AccountSettingsPage';
 
 vi.mock('../auth/AuthProvider', () => ({
@@ -24,6 +25,8 @@ vi.mock('../auth/AuthProvider', () => ({
 function renderPage(initialEntry = '/account/settings', sources: AccountRepositorySource[] = [{ provider: 'github', account: 'cnjack', status: 'ready' }]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const client = {
+    listAccountModelProviders: async () => [],
+    getAccountProfile: async () => ({ display_name: "Jack", preferences: {} }),
     listAccountModels: async () => [{ id: 'model-1', name: 'Codex', model_name: 'gpt-test', capabilities: { reasoning: true, tools: true, image: false } }],
     listAccountRepositories: async () => ({ repositories: [], sources }),
   } as unknown as ApiClient;
@@ -32,7 +35,7 @@ function renderPage(initialEntry = '/account/settings', sources: AccountReposito
       <ApiProvider client={client} role="cluster-admin">
         <MemoryRouter initialEntries={[initialEntry]}>
           <Link to="/account/settings?section=usage">External usage link</Link>
-          <AccountSettingsPage />
+          <ToastProvider><AccountSettingsPage /></ToastProvider>
         </MemoryRouter>
       </ApiProvider>
     </QueryClientProvider>,
@@ -62,7 +65,7 @@ describe('AccountSettingsPage', () => {
 
   it('tracks the requested section when account-menu navigation changes the query', async () => {
     renderPage('/account/settings?section=models');
-    expect(screen.getByRole('heading', { name: 'Model access' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Models and providers' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('link', { name: 'External usage link' }));
     expect(screen.getByRole('tab', { name: 'Usage' }).getAttribute('aria-selected')).toBe('true');
@@ -86,13 +89,13 @@ describe('AccountSettingsPage', () => {
     renderPage();
 
     expect(screen.getByRole('heading', { name: '账号设置' })).toBeTruthy();
-    expect(screen.getByRole('link', { name: '返回 Work Home' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: '返回工作台' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '个人资料' })).toBeTruthy();
     expect(screen.getByText('账号资料')).toBeTruthy();
-    expect(screen.getByText('Repository 默认 owner')).toBeTruthy();
+    expect(screen.queryByText('Repository 默认 owner')).toBeNull();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Git 账号' }));
-    expect(screen.getByText('已连接到此账号')).toBeTruthy();
+    expect(await screen.findByText('已连接到此账号')).toBeTruthy();
     expect(screen.getByRole('link', { name: '关联 Gitea' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('tab', { name: '模型' }));

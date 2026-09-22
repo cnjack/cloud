@@ -89,6 +89,7 @@ function makeClient(
     // Conversation navigation is account-workspace chrome. Run detail keeps the
     // same Repository-grouped rail instead of falling back to the legacy
     // Repository picker shell.
+    listRepositories: async () => project.services ?? [],
     listRuns: async () => [baseRun({ service_id: 'svc-1' })],
   };
   return { client: client as ApiClient, ctl };

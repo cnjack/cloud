@@ -14,3 +14,6 @@
 .menu a, .menu button { width: 100%; min-height: var(--space-10); display: flex; align-items: center; gap: var(--space-2); border: 0; border-radius: var(--radius-md); background: transparent; padding: 0 var(--space-3); color: var(--color-text-muted); text-align: left; cursor: pointer; }
 .menu a:hover, .menu button:hover { background: var(--color-panel-hover); color: var(--color-text); text-decoration: none; }
 .admin { margin-left: auto; border-radius: var(--radius-sm); background: var(--color-code-bg); padding: var(--space-1) var(--space-2); font: var(--fs-tiny) var(--font-mono); }
+
+.header { height: 56px; flex-shrink: 0; padding: 0 24px; }
+@media(max-width: 832px) { .header { padding-left: 54px; padding-right: 14px; gap: 8px; } }

@@ -1,0 +1,10 @@
+.body { display: grid; gap: 20px; padding: 4px 0; }
+.identity { display: flex; align-items: flex-start; gap: 12px; }
+.identity p, .hint { color: var(--color-text-muted); font-size: 13px; line-height: 1.6; margin: 5px 0 0; }
+.login { display: block; margin-top: 5px; color: var(--color-text-muted); }
+.authorization { display: grid; gap: 16px; padding: 22px; background: var(--color-bg-inset); border: 1px solid var(--color-border); border-radius: 12px; text-align: center; }
+.authorization p { margin: 0; }
+.authorization code { font-size: 26px; letter-spacing: .14em; font-weight: 650; user-select: all; }
+.authorization a { color: var(--color-text); text-decoration: underline; text-underline-offset: 4px; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; }
+.error { color: var(--status-failed-fg); background: var(--status-failed-bg); border-radius: 8px; padding: 12px; font-size: 13px; }

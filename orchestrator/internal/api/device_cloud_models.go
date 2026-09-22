@@ -5,9 +5,11 @@ import (
 	"sort"
 
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/modeloauth"
 )
 
 type deviceCloudModelView struct {
+	Protocol        string                   `json:"protocol,omitempty"`
 	ModelID         string                   `json:"model_id"`
 	ProviderID      string                   `json:"provider_id"`
 	Kind            string                   `json:"kind"`
@@ -44,7 +46,11 @@ func (s *Server) accessibleDeviceCloudModels(r *http.Request, userID string) (ma
 			}
 			providers[model.ProviderID] = provider
 		}
-		out[model.ID] = deviceCloudModelView{
+		protocol := ""
+		if provider.AuthType == domain.ModelProviderAuthOAuth {
+			protocol = modeloauth.Protocol
+		}
+		out[model.ID] = deviceCloudModelView{Protocol: protocol,
 			ModelID: model.ID, ProviderID: model.ProviderID,
 			Kind: provider.Kind, ProviderName: provider.Name,
 			ModelName: model.Name, UpstreamModelID: model.ModelID,
@@ -78,7 +84,11 @@ func (s *Server) accessibleDeviceCloudModels(r *http.Request, userID string) (ma
 			if model.ProjectID != "" {
 				scope, scopeID, scopeName = "project", model.ProjectID, project.Name
 			}
-			out[model.ID] = deviceCloudModelView{
+			protocol := ""
+			if provider.AuthType == domain.ModelProviderAuthOAuth {
+				protocol = modeloauth.Protocol
+			}
+			out[model.ID] = deviceCloudModelView{Protocol: protocol,
 				ModelID: model.ID, ProviderID: model.ProviderID,
 				Kind: provider.Kind, ProviderName: provider.Name,
 				ModelName: model.Name, UpstreamModelID: model.ModelID,

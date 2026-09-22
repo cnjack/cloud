@@ -555,11 +555,7 @@ type updateProjectProviderModelReq struct {
 }
 
 func (s *Server) handleUpdateProjectProviderModel(w http.ResponseWriter, r *http.Request) {
-	projectID := r.PathValue("id")
-	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleOwner) {
-		return
-	}
-	provider, ok := s.projectOwnedProvider(w, r, projectID)
+	provider, ok := s.providerForModelMutation(w, r)
 	if !ok {
 		return
 	}
@@ -611,11 +607,7 @@ func (s *Server) handleUpdateProjectProviderModel(w http.ResponseWriter, r *http
 }
 
 func (s *Server) handleDeleteProjectProviderModel(w http.ResponseWriter, r *http.Request) {
-	projectID := r.PathValue("id")
-	if !s.authorizeProject(r.Context(), w, principalFrom(r.Context()), projectID, domain.RoleOwner) {
-		return
-	}
-	provider, ok := s.projectOwnedProvider(w, r, projectID)
+	provider, ok := s.providerForModelMutation(w, r)
 	if !ok {
 		return
 	}

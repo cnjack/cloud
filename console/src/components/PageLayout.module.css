@@ -45,3 +45,6 @@
   .definition { grid-template-columns: 1fr; gap: var(--space-1); }
   .definition dd { text-align: left; }
 }
+
+.heading h1 { font-size: 25px; letter-spacing: -.7px; line-height: 1.3; }
+.heading p { font-size: 13px; }

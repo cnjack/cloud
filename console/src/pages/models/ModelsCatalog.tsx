@@ -11,6 +11,7 @@ import {
   Trash,
 } from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import type { FormEvent } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -42,6 +43,7 @@ import { DESKTOP_PROVIDERS, desktopProvider } from '../../lib/desktopProviders';
 import type { ModelsAdminApi, ModelsScope } from './scope';
 import { useModelsAdminApi } from './scope';
 import styles from './ModelsCatalog.module.css';
+import { ModelAuthorizationDialog } from './ModelAuthorizationDialog';
 
 const EMPTY_CAPABILITIES: ModelCapabilities = { reasoning: false, tools: false, image: false };
 
@@ -73,6 +75,18 @@ export function ModelsCatalog({ scope, editor, onEditorChange, searchable = true
   const api = useModelsAdminApi(scope);
   const providers = api.providersQuery;
   const [search, setSearch] = useState('');
+  const [authorization, setAuthorization] = useState<ModelProvider | 'new' | null>(null);
+  const [params, setParams] = useSearchParams();
+  const requestedProvider = params.get('provider');
+  useEffect(() => {
+    if (scope.kind !== 'account' || !requestedProvider) return;
+    const selected = providers.data?.find(item => item.id === requestedProvider);
+    if (selected?.auth_type === 'oauth') setAuthorization(selected);
+  }, [requestedProvider, providers.data, scope.kind]);
+  const closeAuthorization = () => {
+    setAuthorization(null);
+    if (requestedProvider) setParams(current => { const next = new URLSearchParams(current); next.delete('provider'); return next; }, { replace: true });
+  };
 
   const query = searchable ? search.trim().toLowerCase() : '';
   const list = providers.data ?? [];
@@ -86,7 +100,7 @@ export function ModelsCatalog({ scope, editor, onEditorChange, searchable = true
   const visibleModels = filtered.reduce((sum, provider) => sum + provider.models.length, 0);
   const totalAccountGrants = list.reduce((sum, provider) =>
     sum + provider.models.reduce((modelSum, model) => modelSum + (model.granted_account_ids?.length ?? 0), 0), 0);
-  const summary = t('cluster.models.providersSummary', {
+  const summary = scope.kind === 'account' ? t('cloudRefresh.personalModelsDescription') : t('cluster.models.providersSummary', {
     providers: list.length,
     accountGrants: totalAccountGrants,
   });
@@ -104,16 +118,17 @@ export function ModelsCatalog({ scope, editor, onEditorChange, searchable = true
           <span className={styles.result}><b>{visibleModels}</b> {t('cluster.models.resultCount', { total: totalModels })}</span>
         </div>
       )}
-      <div className={styles.heading}><div><h2 id="provider-catalog-title">{t('cluster.models.configuredProviders')}</h2><p>{summary}</p></div></div>
+      <div className={styles.heading}><div><h2 id="provider-catalog-title">{t('cluster.models.configuredProviders')}</h2><p>{summary}</p></div>{scope.kind === 'account' && <Button size="sm" variant="ghost" onClick={() => setAuthorization('new')}>{t('modelAuthorization.connect')}</Button>}</div>
 
       {providers.isLoading ? <LoadingBlock label={t('cluster.models.loadingProviders')} /> : providers.isError ? (
         <ErrorBlock error={providers.error} onRetry={() => providers.refetch()} title={t('cluster.models.loadProvidersError')} />
       ) : filtered.length === 0 ? (
         <div className={styles.searchEmpty} role="status"><MagnifyingGlass size={24} aria-hidden="true" /><strong>{list.length ? t('cluster.models.noMatches') : t('cluster.models.noProviders')}</strong><span>{list.length ? t('cluster.models.noMatchesHint') : t('cluster.models.noProvidersHint')}</span></div>
       ) : (
-        <div className={styles.stack}>{filtered.map((provider) => <ProviderCard key={provider.id} api={api} provider={provider} onEdit={() => onEditorChange(provider)} />)}</div>
+        <div className={styles.stack}>{filtered.map((provider) => <ProviderCard key={provider.id} api={api} provider={provider} onEdit={() => provider.auth_type === 'oauth' ? setAuthorization(provider) : onEditorChange(provider)} />)}</div>
       )}
 
+      <ModelAuthorizationDialog open={authorization !== null} provider={authorization === 'new' ? null : authorization} onClose={closeAuthorization} />
       <ProviderDialog
         api={api}
         provider={editor === 'new' ? null : editor}
@@ -132,8 +147,8 @@ function ProviderCard({ api, provider, onEdit }: { api: ModelsAdminApi; provider
   const remove = api.deleteProvider;
   const [customOpen, setCustomOpen] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
-  const authLabel = provider.auth_type === 'service_identity' ? t('cluster.models.authServiceIdentity') : provider.api_key_set ? t('cluster.models.authKeySet') : provider.auth_type === 'none' ? t('cluster.models.authKeyless') : t('cluster.models.authKeyMissing');
-  const authTone: 'success' | 'warning' = provider.auth_type !== 'api_key' || provider.api_key_set ? 'success' : 'warning';
+  const authLabel = provider.auth_type === 'oauth' ? t(`modelAuthorization.state.${provider.authorization?.state ?? 'requires_reauth'}`) : provider.auth_type === 'service_identity' ? t('cluster.models.authServiceIdentity') : provider.api_key_set ? t('cluster.models.authKeySet') : provider.auth_type === 'none' ? t('cluster.models.authKeyless') : t('cluster.models.authKeyMissing');
+  const authTone: 'success' | 'warning' = provider.auth_type === 'oauth' ? (provider.authorization?.state === 'ready' ? 'success' : 'warning') : provider.auth_type !== 'api_key' || provider.api_key_set ? 'success' : 'warning';
   const verified = provider.last_verified_at && !provider.last_verification_error;
 
   const testProvider = () => verify.mutate(provider.id, {
@@ -155,11 +170,12 @@ function ProviderCard({ api, provider, onEdit }: { api: ModelsAdminApi; provider
         <ProviderIcon kind={provider.kind} name={provider.name} />
         <div className={styles.providerCopy}>
           <div className={styles.providerTitle}><h2>{provider.name}</h2>{provider.kind === 'custom' && <StatusLabel>{t('cluster.models.customLabel')}</StatusLabel>}<StatusLabel tone={authTone}>{authLabel}</StatusLabel></div>
-          <p><span className={styles.mono}>{provider.base_url}</span><span aria-hidden="true"> · </span>{provider.auth_type === 'service_identity' ? t('cluster.models.credKeylessIdentity') : provider.api_key_set ? t('cluster.models.credConfigured') : provider.auth_type === 'none' ? t('cluster.models.credNoneRequired') : t('cluster.models.credRequired')}</p>
-          {provider.last_verification_error && <p className={styles.providerError}>{t('cluster.models.lastTest', { error: provider.last_verification_error })}</p>}
+          <p><span className={styles.mono}>{provider.base_url}</span><span aria-hidden="true"> · </span>{provider.auth_type === 'oauth' ? provider.authorization?.login || 'ChatGPT' : provider.auth_type === 'service_identity' ? t('cluster.models.credKeylessIdentity') : provider.api_key_set ? t('cluster.models.credConfigured') : provider.auth_type === 'none' ? t('cluster.models.credNoneRequired') : t('cluster.models.credRequired')}</p>
+          {provider.last_verification_error && <p className={styles.providerError}>{t('cluster.models.lastTest', { error: provider.last_verification_error })} <button type="button" className={styles.textButton} onClick={onEdit}>{t('cloudRefresh.updateCredentials')}</button></p>}
         </div>
         <div className={styles.providerActions}>
           <Button size="sm" variant="ghost" onClick={testProvider} loading={verify.isPending}>{verified && <Check size={13} aria-hidden="true" />}{verified ? t('cluster.models.verified') : t('cluster.models.test')}</Button>
+          {provider.auth_type === 'oauth' && <Button size="sm" variant="ghost" onClick={onEdit}>{t('modelAuthorization.reauthorize')}</Button>}
           <button className={styles.iconButton} type="button" aria-label={t('cluster.models.editProviderAria', { name: provider.name })} onClick={onEdit}><SlidersHorizontal size={16} aria-hidden="true" /></button>
           <button className={styles.iconButton} type="button" aria-label={t('cluster.models.removeProviderAria', { name: provider.name })} onClick={deleteProvider} disabled={remove.isPending}><Trash size={16} aria-hidden="true" /></button>
         </div>
@@ -207,16 +223,20 @@ function ModelRow({ api, provider, model }: { api: ModelsAdminApi; provider: Mod
     <div className={styles.modelRow}>
       <span className={styles.modelCopy}><strong>{model.name}</strong><small>{model.model_id} · {contextLabel(model.context_window, t)}</small></span>
       <CapabilityChips model={model} />
-      <span className={styles.grantCount} data-testid={`grant-count-${model.id}`}>
+      {api.scope.kind === 'cluster' && <span className={styles.grantCount} data-testid={`grant-count-${model.id}`}>
         <span><b>{accountGrantCount}</b><small>{t('cluster.models.accountGrants', { count: accountGrantCount })}</small></span>
-      </span>
+      </span>}
       <div className={styles.modelControls}>
-        <Button size="sm" variant="ghost" onClick={() => setPricingOpen(true)}>{t('usage.pricing')}</Button>
-        <Button size="sm" variant="ghost" onClick={() => setGrantsOpen(true)}>{t('cluster.models.manageAccess')}</Button>
+        {api.scope.kind === 'account' && <><Button size="sm" variant="ghost" disabled={api.updateClusterModel.isPending} onClick={() => api.updateClusterModel.mutate({ id: model.id, input: { enabled: model.enabled === false } })}>{t(model.enabled === false ? 'cloudRefresh.enable' : 'cloudRefresh.disable')}</Button><button type="button" className={styles.iconButton} aria-label={t('cloudRefresh.deleteModel', { name: model.name })} disabled={api.deleteModel.isPending} onClick={() => { if(window.confirm(t('cloudRefresh.deleteModelConfirm', { name: model.name }))) api.deleteModel.mutate({ providerId: provider.id, id: model.id }); }}><Trash size={15} /></button></>}
+
+        {api.scope.kind === 'cluster' && <Button size="sm" variant="ghost" onClick={() => setPricingOpen(true)}>{t('usage.pricing')}</Button>}
+        {api.scope.kind === 'cluster' && <Button size="sm" variant="ghost" onClick={() => setGrantsOpen(true)}>{t('cluster.models.manageAccess')}</Button>}
         <button className={styles.iconButton} type="button" aria-label={t('projectSettings.models.editModelAria', { name: model.name })} onClick={() => setEditOpen(true)}><PencilSimple size={16} aria-hidden="true" /></button>
       </div>
-      <PricingRevisionDialog model={model} open={pricingOpen} onClose={() => setPricingOpen(false)} />
-      <AccessDialog model={model} open={grantsOpen} onClose={() => setGrantsOpen(false)} />
+      {api.scope.kind === 'cluster' && <PricingRevisionDialog model={model} open={pricingOpen} onClose={() => setPricingOpen(false)} />}
+      {api.scope.kind === 'cluster' && <AccessDialog model={model} open={grantsOpen} onClose={() => setGrantsOpen(false)} />}
+      {api.updateClusterModel.isError && <p role="alert">{errorMessage(api.updateClusterModel.error, t('projectSettings.models.saveModelError'))}</p>}
+      {api.deleteModel.isError && <p role="alert">{errorMessage(api.deleteModel.error, t('cluster.models.removeError'))}</p>}
       <CustomModelDialog api={api} provider={provider} model={model} open={editOpen} onClose={() => setEditOpen(false)} />
     </div>
   );
@@ -645,7 +665,7 @@ function ProviderDialog({ api, provider, configuredKinds, open, onClose }: { api
           {advancedOpen && (
             <div className={styles.headerFields}>
               <TextField label={t('cluster.models.baseUrlLabel')} required value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" />
-              <SelectField label={t('cluster.models.authLabel')} value={authType} onChange={(value) => setAuthType(value as ModelProviderAuthType)} options={[{ value: 'api_key', label: t('cluster.models.authApiKey') }, { value: 'service_identity', label: t('cluster.models.authServiceIdentityOption') }, { value: 'none', label: t('cluster.models.authNone') }]} />
+              <SelectField label={t('cluster.models.authLabel')} value={authType} onChange={(value) => setAuthType(value as ModelProviderAuthType)} options={[{ value: 'api_key', label: t('cluster.models.authApiKey') }, ...(api.scope.kind === 'cluster' ? [{ value: 'service_identity', label: t('cluster.models.authServiceIdentityOption') }] : []), { value: 'none', label: t('cluster.models.authNone') }]} />
               <SelectField label={t('cluster.models.catalogLabel')} value={catalogMode} onChange={(value) => setCatalogMode(value as ModelProviderCatalogMode)} options={[{ value: 'auto', label: t('cluster.models.catalogAuto') }, { value: 'disabled', label: t('cluster.models.catalogDisabled') }]} />
               <span className={styles.headerHint}>{provider?.headers_set ? t('cluster.models.headersConfiguredHint') : t('cluster.models.headersHint')}</span>
               {headerRows.map((row, index) => (

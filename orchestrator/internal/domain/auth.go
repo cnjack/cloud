@@ -46,11 +46,12 @@ func (r Role) AtLeast(min Role) bool { return r.rank() >= min.rank() }
 // User is a human principal. The first user to log in becomes the cluster admin
 // (blueprint §2). A user may have several linked identities across providers.
 type User struct {
-	ID             string    `json:"id"`
-	DisplayName    string    `json:"display_name"`
-	AvatarURL      string    `json:"avatar_url"`
-	IsClusterAdmin bool      `json:"is_cluster_admin"`
-	CreatedAt      time.Time `json:"created_at"`
+	Preferences    AccountPreferences `json:"-"`
+	ID             string             `json:"id"`
+	DisplayName    string             `json:"display_name"`
+	AvatarURL      string             `json:"avatar_url"`
+	IsClusterAdmin bool               `json:"is_cluster_admin"`
+	CreatedAt      time.Time          `json:"created_at"`
 }
 
 // UserIdentity is a provider account linked to a User. The access/refresh tokens

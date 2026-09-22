@@ -80,6 +80,7 @@ const (
 
 // Store is the durable persistence contract for the orchestrator.
 type Store interface {
+	WithModelOAuth(context.Context, string, func([]byte) ([]byte, error)) error
 	// Projects
 	CreateProject(ctx context.Context, p *domain.Project) error
 	GetProject(ctx context.Context, id string) (*domain.Project, error)
@@ -491,7 +492,7 @@ type Store interface {
 	// RevokeModel removes a project's grant. A missing grant is a no-op (not an
 	// error) so revoke is idempotent.
 	RevokeModel(ctx context.Context, modelID, projectID string) error
-	// ListModelsForAccount returns cluster-global models directly granted to an
+	// ListModelsForAccount returns enabled personal models and cluster models directly granted to an
 	// account. Every authenticated, non-revoked Desktop for that account inherits
 	// this entitlement; Project-owned models are never returned.
 	ListModelsForAccount(ctx context.Context, userID string) ([]domain.Model, error)
@@ -681,6 +682,8 @@ type Store interface {
 	CreateUserWithIdentity(ctx context.Context, u *domain.User, id *domain.UserIdentity) (firstUser bool, err error)
 	// GetUser returns a user by id (ErrNotFound if absent).
 	GetUser(ctx context.Context, id string) (*domain.User, error)
+	GetAccountProfile(ctx context.Context, userID string) (*domain.AccountProfile, error)
+	UpdateAccountProfile(ctx context.Context, userID string, settings domain.AccountProfile) error
 	// GetIdentity looks up an identity by its provider + provider_uid (the login
 	// key). ErrNotFound if no such identity.
 	GetIdentity(ctx context.Context, provider domain.GitProvider, providerUID string) (*domain.UserIdentity, error)

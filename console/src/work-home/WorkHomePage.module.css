@@ -3,10 +3,7 @@
 .surface { min-width: 0; min-height: 0; display: grid; grid-template-rows: var(--space-16) minmax(0, 1fr); background: var(--color-panel); }
 .main { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .mainInner { width: min(62rem, calc(100% - var(--space-16))); margin: 0 auto; padding: var(--space-12) 0 var(--space-20); }
-/* Give the Board the available canvas while retaining the task composer and
-   repository switcher. The welcome heading belongs to the task landing state. */
-.mainInner[data-workspace-tab='board'] { width: calc(100% - var(--space-8)); padding-top: var(--space-4); }
-.mainInner[data-workspace-tab='board'] .hero { display: none; }
+.hero { display: none; }
 .mainInner[data-workspace-tab='board'] .accountComposer { margin-top: 0; }
 .mainInner[data-workspace-tab='board'] .workspace { margin-top: var(--space-4); }
 .hero { display: grid; justify-items: center; gap: var(--space-2); text-align: center; }
@@ -116,3 +113,36 @@
   .boardDefaultColumns { grid-template-columns: 1fr; }
   .boardDefaultColumns > span { display: none; }
 }
+
+/* Shared Cloud workspace: one canvas across every repository tab. */
+.page { grid-template-columns: 248px minmax(0, 1fr); padding: 10px 10px 10px 0; background: var(--color-bg); }
+.surface { border: 1px solid var(--color-border); border-radius: 13px; overflow: hidden; grid-template-rows: 56px minmax(0, 1fr); }
+.mainInner { width: min(1040px, calc(100% - 80px)); padding: 38px 0 60px; }
+.hero { justify-items: start; text-align: left; gap: 7px; }
+.hero h1 { font-size: 26px; font-weight: 600; letter-spacing: -.8px; }
+.hero p { font-size: 13px; }
+.eyebrow { display: none; }
+.accountComposer, .remoteSurface { width: 100%; margin-top: 24px; }
+.composerContextHeader { position: relative; top: auto; left: auto; padding-bottom: 10px; z-index: 40; }
+.accountComposer :global(.jcode-product-composer div:has(> .ws-bar)) { display: none; }
+.contextButton { border-radius: 6px; font-size: 13px; padding-left: 0; }
+.workspace { margin-top: 28px; }
+.workspaceHead { display: none; }
+.tabs { padding: 0; border-bottom: 1px solid var(--color-border); gap: 22px; }
+.tabs button { min-height: 43px; border-radius: 0; padding: 0 2px; border-bottom: 2px solid transparent; font-size: 13px; }
+.tabs .activeTab { border-bottom-color: var(--color-accent); background: transparent; }
+.panel { margin-top: 24px; }
+.panelHead h2 { font-size: 17px; }
+.panelHead p { font-size: 12px; }
+@media(max-width: 1150px) { .page { grid-template-columns: 218px minmax(0, 1fr); } .mainInner { width: calc(100% - 48px); } }
+@media(max-width: 832px) { .page, .page[data-rail-collapsed='true'] { grid-template-columns: 0 minmax(0, 1fr); padding: 0; } .surface { border: 0; border-radius: 0; } .mainInner { width: calc(100% - 32px); padding-top: 26px; } .hero h1 { font-size: 24px; } .tabs { gap: 20px; } }
+
+.attachmentArea { padding: 0 12px; font-size: 12px; color: var(--color-text-muted); }
+.attachmentButton { display: inline-flex; gap: 5px; align-items: center; border: 0; background: transparent; color: inherit; padding: 5px 0; cursor: pointer; }
+.attachments { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 6px 0; }
+.attachments li { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 5px 8px; border: 1px solid var(--color-border); border-radius: 7px; max-width: 100%; }
+.attachments li > span { overflow-wrap: anywhere; }
+.attachments small { max-width: 280px; overflow-wrap: anywhere; }
+.attachments button { border: 0; background: transparent; color: inherit; cursor: pointer; display: inline-flex; }
+.failedPrompt { margin: 12px; padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; }
+.failedPrompt p { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }

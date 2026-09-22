@@ -1356,3 +1356,23 @@ func TestReconcileTokenStableAcrossFailedPersist(t *testing.T) {
 		t.Fatal("persisted token hash does not match the live Job's RUN_TOKEN (runner would 401)")
 	}
 }
+
+func TestManagedProtocolOverlayWithoutEffort(t *testing.T) {
+	env := map[string]string{"MODEL_NAME": "openai-codex/fixture-model", "MODEL_PROTOCOL": "codex_responses", "MODEL_BASE_URL": "http://orchestrator/internal/llm", "MODEL_API_KEY": "run-token"}
+	raw, err := jcodeEffortConfigBase64(env, "", true)
+	if err != nil || raw == "" {
+		t.Fatalf("protocol overlay missing %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err = json.Unmarshal(decoded, &value); err != nil {
+		t.Fatal(err)
+	}
+	provider := value["providers"].(map[string]any)["openai-codex"].(map[string]any)
+	if provider["protocol"] != "codex_responses" || provider["api_key"] != "run-token" {
+		t.Fatalf("protocol not propagated %+v", provider)
+	}
+}

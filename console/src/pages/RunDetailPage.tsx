@@ -14,7 +14,6 @@ import {
   useResumeSession,
   useRetryRun,
   useRun,
-  useRuns,
   useSendMessage,
   useProjectModels,
 } from '../api/queries';
@@ -36,6 +35,7 @@ import { useRunStream } from '../hooks/useRunStream';
 import { formatDateTime, formatDuration, shortId } from '../lib/format';
 import { Timeline, toThreadItems } from '../runview';
 import { followConversationScroll } from '../runview/conversationScroll';
+import { useAccountNavigation } from '../work-home/useAccountNavigation';
 import { ConversationRail } from '../work-home/ConversationRail';
 import { RunSessionComposer } from './RunSessionComposer';
 import styles from './RunDetailPage.module.css';
@@ -89,7 +89,7 @@ export function RunDetailPage() {
   const streamFailed = stream.phase === 'error' && !stream.terminal;
   const run = useRun(runId, streamFailed);
   const project = useProject(run.data?.project_id ?? '');
-  const conversationRuns = useRuns(run.data?.project_id ?? '');
+  const navigation = useAccountNavigation();
   const canAct = (project.data?.role ?? 'owner') !== 'viewer';
   const cancel = useCancelRun();
   const retry = useRetryRun();
@@ -306,9 +306,7 @@ export function RunDetailPage() {
       <ToolRegistryProvider>
         <div className={styles.page} data-testid="run-workspace" data-rail-collapsed={conversationRailCollapsed || undefined}>
           <ConversationRail
-            repositories={services}
-            runs={conversationRuns.data ?? [current]}
-            isLoading={conversationRuns.isLoading}
+            {...navigation}
             collapsed={conversationRailCollapsed}
             onCollapsedChange={setConversationRailCollapsed}
             activeRepositoryId={service?.id ?? current.service_id ?? undefined}
@@ -320,7 +318,7 @@ export function RunDetailPage() {
                 <Link to={serviceTasksPath} className={styles.backToProject} data-testid="run-back-to-project"><ArrowLeft size={16} weight="regular" aria-hidden="true" /><span>{t('runDetail.recentTasks')}</span></Link>
                 <div className={styles.taskTitleRow}>
                   <div>
-                    <h1 className={styles.taskTitle} data-testid="run-task-title" title={isReview ? current.pr_title || current.prompt : current.prompt}>{isReview ? current.pr_title || t('runDetail.review.titleFallback', { number: current.pr_number || '—' }) : current.prompt}</h1>
+                    <h1 className={styles.taskTitle} data-testid="run-task-title" title={isReview ? current.pr_title || current.prompt : current.prompt}>{isReview ? current.pr_title || t('runDetail.review.titleFallback', { number: current.pr_number || '—' }) : current.prompt || t('repositories.conversationSection')}</h1>
                     <p>{runKindLabel(current, t)} · {repositoryName} · {runOriginLabel(current, t)} · {formatDateTime(current.created_at)}</p>
                   </div>
                   <div className={styles.headerActions}>

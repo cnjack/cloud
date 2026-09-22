@@ -21,3 +21,17 @@
 @media (max-width: 608px) {
   .header { align-items: flex-start; flex-direction: column; }
 }
+
+.composerFieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
+
+.sessionShell { display:flex; flex-direction:column; height:100%; min-height:0; gap:20px; padding:24px 32px; }
+.sessionShell > a { color:var(--color-text-muted); font-size:12px; flex:none; }
+.page { height:auto; min-height:0; flex:1; }
+@media(max-width:650px) { .sessionShell { padding:18px 16px; gap:16px; } }
+
+.contentGrid { display:flex; flex:1; gap:28px; min-height:0; }
+.conversation { min-width:0; }
+@media(max-width:800px) { .contentGrid { flex-direction:column; overflow:auto; gap:24px; } .conversation { min-height:450px; flex:none; } }
+
+.timeline { flex:1; min-height:0; overflow:auto; }
+.emptyHistory { flex:1; display:flex; align-items:center; justify-content:center; margin:0; }

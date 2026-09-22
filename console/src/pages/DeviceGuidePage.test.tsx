@@ -14,7 +14,7 @@ describe('Remote onboarding', () => {
     expect(screen.getByRole('heading', { name: 'Connect a jcode device' })).toBeTruthy();
     expect(screen.queryByText('Device management')).toBeNull();
     expect(screen.getByText(COMMAND)).toBeTruthy();
-    expect(screen.getByRole('link', { name: /dev-mbp-01/ }).getAttribute('href')).toBe('/?remote=device-1');
+    expect(screen.getByRole('link', { name: /dev-mbp-01/ }).getAttribute('href')).toBe('/devices/device-1');
     fireEvent.change(screen.getByLabelText('Enter the code shown by the CLI'), { target: { value: 'JCDX-4H7Q' } });
     fireEvent.click(screen.getByRole('button', { name: /Continue authorization/ }));
     expect(screen.getByTestId('authorization')).toBeTruthy();

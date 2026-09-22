@@ -2,10 +2,10 @@ import type { ModelRef, ProviderInfo } from 'jcode-ui/product';
 import type { ProjectModel } from '../api/types';
 
 export function projectModelRef(model: ProjectModel): ModelRef {
+  // Upstream names are not unique across personal and granted providers.
+  // The composer must round-trip the catalog identity used by task authorization.
   const slash = model.model_name.indexOf('/');
-  return slash > 0
-    ? { provider: model.model_name.slice(0, slash), model: model.model_name.slice(slash + 1) }
-    : { provider: 'cloud', model: model.model_name };
+  return { provider: model.provider_id || model.id, model: slash > 0 ? model.model_name.slice(slash + 1) : model.model_name };
 }
 
 export function projectModelKey(model: ProjectModel): string {
@@ -17,10 +17,11 @@ export function buildProjectModelProviders(models: readonly ProjectModel[]): Pro
   const grouped = new Map<string, ProviderInfo>();
   for (const model of models) {
     const ref = projectModelRef(model);
+    const kind = model.provider_kind || (model.model_name.includes('/') ? model.model_name.split('/')[0]! : 'cloud');
     const provider = grouped.get(ref.provider) ?? {
       id: ref.provider,
-      name: ref.provider === 'cloud' ? 'Cloud' : ref.provider,
-      kind: ref.provider,
+      name: model.provider_name || (kind === 'cloud' ? 'Cloud' : kind),
+      kind,
       source: 'cloud' as const,
       models: [],
     };

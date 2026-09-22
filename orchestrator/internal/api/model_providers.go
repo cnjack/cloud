@@ -12,10 +12,12 @@ import (
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/modelmetadata"
+	"github.com/cnjack/jcloud/internal/modeloauth"
 	"github.com/cnjack/jcloud/internal/store"
 )
 
 type providerModelAdminView struct {
+	Enabled           bool                     `json:"enabled"`
 	ID                string                   `json:"id"`
 	ProviderID        string                   `json:"provider_id"`
 	Name              string                   `json:"name"`
@@ -29,6 +31,7 @@ type providerModelAdminView struct {
 }
 
 type modelProviderAdminView struct {
+	Authorization         *modeloauth.Status              `json:"authorization,omitempty"`
 	ID                    string                          `json:"id"`
 	Name                  string                          `json:"name"`
 	Kind                  string                          `json:"kind"`
@@ -55,7 +58,7 @@ func providerModelView(m domain.Model, projectGrants, accountGrants []string) pr
 		accountGrants = []string{}
 	}
 	return providerModelAdminView{
-		ID: m.ID, ProviderID: m.ProviderID, Name: m.Name, ModelID: m.ModelID,
+		ID: m.ID, ProviderID: m.ProviderID, Name: m.Name, ModelID: m.ModelID, Enabled: m.Enabled,
 		RuntimeModelName: m.ModelName, ContextWindow: m.ContextWindow,
 		Capabilities: m.Capabilities, Source: m.Source,
 		GrantedProjectIDs: projectGrants, GrantedAccountIDs: accountGrants,
@@ -83,8 +86,18 @@ func (s *Server) modelProviderView(ctx context.Context, p domain.ModelProvider) 
 		}
 		modelViews = append(modelViews, providerModelView(model, grants, accountGrants))
 	}
+	var authorization *modeloauth.Status
+	if p.AuthType == domain.ModelProviderAuthOAuth {
+		status, err := s.modelOAuth.Status(ctx, p.ID)
+		if err != nil {
+			return modelProviderAdminView{}, err
+		}
+		// Codes are exposed only by the explicit authorization endpoint.
+		authorization = &modeloauth.Status{State: status.State, Login: status.Login}
+	}
 	return modelProviderAdminView{
-		ID: p.ID, Name: p.Name, Kind: p.Kind, BaseURL: p.BaseURL,
+		Authorization: authorization,
+		ID:            p.ID, Name: p.Name, Kind: p.Kind, BaseURL: p.BaseURL,
 		AuthType: p.AuthType, APIKeySet: p.APIKeySet(), HeadersSet: p.HeadersSet(), CatalogMode: p.CatalogMode,
 		CatalogAvailable: p.CatalogAvailable, LastVerifiedAt: p.LastVerifiedAt,
 		LastVerificationError: p.LastVerificationError, Models: modelViews,
@@ -94,7 +107,7 @@ func (s *Server) modelProviderView(ctx context.Context, p domain.ModelProvider) 
 }
 
 func (s *Server) handleListModelProviders(w http.ResponseWriter, r *http.Request) {
-	if !s.requireClusterAdmin(w, r) {
+	if !s.requireProviderManager(w, r) {
 		return
 	}
 	providers, err := s.st.ListModelProviders(r.Context())
@@ -104,6 +117,13 @@ func (s *Server) handleListModelProviders(w http.ResponseWriter, r *http.Request
 	}
 	out := make([]modelProviderAdminView, 0, len(providers))
 	for _, provider := range providers {
+		if accountProviderRoute(r) {
+			if provider.OwnerUserID != principalFrom(r.Context()).userID() {
+				continue
+			}
+		} else if provider.OwnerUserID != "" {
+			continue
+		}
 		view, err := s.modelProviderView(r.Context(), provider)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", "could not list provider models")
@@ -157,7 +177,7 @@ func parseCatalogMode(raw string) (domain.ModelProviderCatalogMode, bool) {
 }
 
 func (s *Server) handleCreateModelProvider(w http.ResponseWriter, r *http.Request) {
-	if !s.requireClusterAdmin(w, r) {
+	if !s.requireProviderManager(w, r) {
 		return
 	}
 	var req createModelProviderReq
@@ -183,6 +203,10 @@ func (s *Server) handleCreateModelProvider(w http.ResponseWriter, r *http.Reques
 	authType, ok := parseProviderAuth(req.AuthType)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "bad_request", "auth_type must be api_key, service_identity, or none")
+		return
+	}
+	if accountProviderRoute(r) && authType == domain.ModelProviderAuthServiceIdentity {
+		writeError(w, 400, "unsupported_auth", "personal providers support API keys or keyless endpoints")
 		return
 	}
 	catalogMode, ok := parseCatalogMode(req.CatalogMode)
@@ -215,6 +239,9 @@ func (s *Server) handleCreateModelProvider(w http.ResponseWriter, r *http.Reques
 		available := false
 		provider.CatalogAvailable = &available
 	}
+	if accountProviderRoute(r) {
+		provider.OwnerUserID = principalFrom(r.Context()).userID()
+	}
 	if err := s.st.CreateModelProvider(r.Context(), provider); err != nil {
 		if errors.Is(err, store.ErrAlreadyExists) {
 			writeError(w, http.StatusConflict, "conflict", "a model provider named '"+name+"' already exists")
@@ -242,7 +269,7 @@ type updateModelProviderReq struct {
 }
 
 func (s *Server) handleUpdateModelProvider(w http.ResponseWriter, r *http.Request) {
-	if !s.requireClusterAdmin(w, r) {
+	if !s.requireProviderManager(w, r) {
 		return
 	}
 	provider, err := s.st.GetModelProvider(r.Context(), r.PathValue("id"))
@@ -254,9 +281,16 @@ func (s *Server) handleUpdateModelProvider(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "internal", "could not load model provider")
 		return
 	}
+	if !s.canManageProvider(w, r, provider) {
+		return
+	}
 	var req updateModelProviderReq
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	if provider.AuthType == domain.ModelProviderAuthOAuth && (req.Kind != nil || req.BaseURL != nil || req.AuthType != nil || req.APIKey != nil || req.Headers != nil || req.CatalogMode != nil) {
+		writeError(w, 400, "managed_provider_immutable", "OAuth endpoints and credentials are managed; use Reauthorize to update access")
 		return
 	}
 	if req.Name != nil {
@@ -330,6 +364,10 @@ func (s *Server) handleUpdateModelProvider(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	provider.UpdatedBy = principalFrom(r.Context()).userID()
+	if accountProviderRoute(r) && provider.AuthType == domain.ModelProviderAuthServiceIdentity {
+		writeError(w, 400, "unsupported_auth", "personal providers support API keys or keyless endpoints")
+		return
+	}
 	if err := s.st.UpdateModelProvider(r.Context(), provider); err != nil {
 		if errors.Is(err, store.ErrAlreadyExists) {
 			writeError(w, http.StatusConflict, "conflict", "a model provider with that name already exists")
@@ -348,7 +386,7 @@ func (s *Server) handleUpdateModelProvider(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleDeleteModelProvider(w http.ResponseWriter, r *http.Request) {
-	if !s.requireClusterAdmin(w, r) {
+	if _, ok := s.loadManagedProvider(w, r); !ok {
 		return
 	}
 	if err := s.st.DeleteModelProvider(r.Context(), r.PathValue("id")); err != nil {
@@ -428,8 +466,18 @@ func (s *Server) requestProviderModels(ctx context.Context, p *domain.ModelProvi
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		strings.TrimRight(p.BaseURL, "/")+"/models", nil)
+	endpoint := strings.TrimRight(p.BaseURL, "/") + "/models"
+	if p.AuthType == domain.ModelProviderAuthOAuth {
+		if p.Kind != modeloauth.Kind || p.BaseURL != modeloauth.BaseURL {
+			return nil, fmt.Errorf("invalid managed provider endpoint")
+		}
+		credential, headers, err = s.modelOAuth.Credential(ctx, p.ID)
+		if err != nil {
+			return nil, err
+		}
+		endpoint = modeloauth.BaseURL + "/models?client_version=0.144.1"
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +493,9 @@ func (s *Server) requestProviderModels(ctx context.Context, p *domain.ModelProvi
 	if credential != "" {
 		request.Header.Set("Authorization", "Bearer "+credential)
 	}
-	return s.modelProviderHTTP.Do(request)
+	client := *s.modelProviderHTTP
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return client.Do(request)
 }
 
 func decodeProviderCatalog(resp *http.Response) ([]catalogModelView, error) {
@@ -478,6 +528,9 @@ func decodeProviderCatalog(resp *http.Response) ([]catalogModelView, error) {
 // the IDs returned by the provider's live /models endpoint. Exact provider and
 // model IDs are required; unknown entries remain explicitly unknown.
 func enrichProviderCatalog(providerKind string, models []catalogModelView) {
+	if providerKind == modeloauth.Kind {
+		providerKind = "openai"
+	}
 	for i := range models {
 		metadata, ok := modelmetadata.Lookup(providerKind, models[i].ID)
 		if !ok {
@@ -494,6 +547,9 @@ func enrichProviderCatalog(providerKind string, models []catalogModelView) {
 // catalog creates, including requests from older clients that only submit the
 // model ID. Custom models keep their explicitly authored metadata untouched.
 func applyCatalogMetadata(providerKind string, model *domain.Model) {
+	if providerKind == modeloauth.Kind {
+		providerKind = "openai"
+	}
 	if model.Source != "catalog" {
 		return
 	}
@@ -532,7 +588,7 @@ func writeProviderResponseError(w http.ResponseWriter, resp *http.Response) {
 }
 
 func (s *Server) handleModelProviderCatalog(w http.ResponseWriter, r *http.Request) {
-	if !s.requireClusterAdmin(w, r) {
+	if !s.requireProviderManager(w, r) {
 		return
 	}
 	provider, err := s.st.GetModelProvider(r.Context(), r.PathValue("id"))
@@ -544,12 +600,19 @@ func (s *Server) handleModelProviderCatalog(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "internal", "could not load model provider")
 		return
 	}
+	if !s.canManageProvider(w, r, provider) {
+		return
+	}
 	if provider.CatalogMode == domain.ModelProviderCatalogDisabled {
 		writeError(w, http.StatusConflict, "catalog_unavailable", "this provider does not expose a model catalog; add a custom model")
 		return
 	}
 	resp, err := s.requestProviderModels(r.Context(), provider)
 	if err != nil {
+		if errors.Is(err, modeloauth.ErrReauthorize) || errors.Is(err, modeloauth.ErrPending) {
+			writeError(w, 409, "model_reauthorization_required", err.Error())
+			return
+		}
 		code := "provider_unreachable"
 		message := "could not reach the model provider"
 		if provider.AuthType == domain.ModelProviderAuthAPIKey && !provider.APIKeySet() {
@@ -572,7 +635,12 @@ func (s *Server) handleModelProviderCatalog(w http.ResponseWriter, r *http.Reque
 		writeProviderResponseError(w, resp)
 		return
 	}
-	models, err := decodeProviderCatalog(resp)
+	var models []catalogModelView
+	if provider.AuthType == domain.ModelProviderAuthOAuth {
+		models, err = decodeChatGPTCatalog(resp)
+	} else {
+		models, err = decodeProviderCatalog(resp)
+	}
 	if err != nil {
 		available := false
 		s.recordProviderVerification(r.Context(), provider, &available, "invalid model catalog")
@@ -586,7 +654,7 @@ func (s *Server) handleModelProviderCatalog(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleVerifyModelProvider(w http.ResponseWriter, r *http.Request) {
-	if !s.requireClusterAdmin(w, r) {
+	if !s.requireProviderManager(w, r) {
 		return
 	}
 	provider, err := s.st.GetModelProvider(r.Context(), r.PathValue("id"))
@@ -598,9 +666,16 @@ func (s *Server) handleVerifyModelProvider(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "internal", "could not load model provider")
 		return
 	}
+	if !s.canManageProvider(w, r, provider) {
+		return
+	}
 	started := time.Now()
 	resp, err := s.requestProviderModels(r.Context(), provider)
 	if err != nil {
+		if errors.Is(err, modeloauth.ErrReauthorize) || errors.Is(err, modeloauth.ErrPending) {
+			writeError(w, 409, "model_reauthorization_required", err.Error())
+			return
+		}
 		message := "could not reach the model provider"
 		if provider.AuthType == domain.ModelProviderAuthAPIKey && !provider.APIKeySet() {
 			writeError(w, http.StatusConflict, "provider_credential_missing", "configure the provider API key before testing it")
@@ -644,7 +719,7 @@ type createProviderModelReq struct {
 }
 
 func (s *Server) handleCreateProviderModel(w http.ResponseWriter, r *http.Request) {
-	if !s.requireClusterAdmin(w, r) {
+	if !s.requireProviderManager(w, r) {
 		return
 	}
 	provider, err := s.st.GetModelProvider(r.Context(), r.PathValue("id"))
@@ -654,6 +729,9 @@ func (s *Server) handleCreateProviderModel(w http.ResponseWriter, r *http.Reques
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load model provider")
+		return
+	}
+	if !s.canManageProvider(w, r, provider) {
 		return
 	}
 	var req createProviderModelReq
@@ -685,7 +763,7 @@ func (s *Server) handleCreateProviderModel(w http.ResponseWriter, r *http.Reques
 	}
 	now := time.Now().UTC()
 	model := &domain.Model{
-		ID: domain.NewID(), ProviderID: provider.ID, Name: name,
+		ID: domain.NewID(), ProviderID: provider.ID, Name: name, ProjectID: provider.ProjectID,
 		BaseURL: provider.BaseURL, ModelName: provider.Kind + "/" + modelID,
 		ModelID: modelID, APIKeyEnc: append([]byte(nil), provider.APIKeyEnc...),
 		HeadersEnc:    append([]byte(nil), provider.HeadersEnc...),

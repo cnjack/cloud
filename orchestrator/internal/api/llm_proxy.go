@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/cnjack/jcloud/internal/domain"
 	"github.com/cnjack/jcloud/internal/modelcfg"
+	"github.com/cnjack/jcloud/internal/modeloauth"
 )
 
 // llmProxyTransport is the reverse proxy's upstream transport. Dial + header
@@ -114,6 +116,15 @@ func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, mode
 	// by the cloned outgoing URL and preserved.
 	rest := r.PathValue("rest")
 	forwardPath := composeUpstreamPath(target.Path, rest)
+	if model.Protocol == modeloauth.Protocol {
+		// This credential is scoped to the managed Responses surface, never arbitrary
+		// account endpoints supplied through the runner-controlled wildcard path.
+		if r.Method != http.MethodPost || (rest != "v1/responses" && rest != "responses") {
+			writeError(w, 400, "unsupported_model_operation", "this account requires the Responses protocol")
+			return
+		}
+		forwardPath = strings.TrimRight(target.Path, "/") + "/responses"
+	}
 	requestID := domain.NewID()
 
 	rp := &httputil.ReverseProxy{
@@ -131,6 +142,7 @@ func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, mode
 			// Always drop the runner's inbound RUN_TOKEN Authorization first so it
 			// never reaches the upstream, regardless of what replaces it below.
 			pr.Out.Header.Del("Authorization")
+			pr.Out.Header.Del("Cookie")
 			// Apply the provider's custom headers (jcode advanced-form parity). Set
 			// BEFORE the managed key so a keyed provider's managed Authorization wins
 			// (set last), while a keyless provider's custom Authorization survives.
@@ -155,6 +167,15 @@ func (s *Server) proxyResolvedModel(w http.ResponseWriter, r *http.Request, mode
 			// Hop-by-hop headers are stripped by ReverseProxy; keep no extras.
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			if model.Protocol == modeloauth.Protocol && (resp.StatusCode == 401 || resp.StatusCode == 403) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err := s.modelOAuth.Reject(ctx, model.ProviderID, model.APIKey)
+				cancel()
+				if err != nil {
+					s.log.Warn("could not record rejected model authorization", "provider", model.ProviderID)
+				}
+				s.models.Invalidate()
+			}
 			if err := normalizeUpstreamError(resp); err != nil {
 				return err
 			}

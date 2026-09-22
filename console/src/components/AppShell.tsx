@@ -1,11 +1,10 @@
 import type { ReactNode } from 'react';
 import { matchPath, useLocation } from 'react-router-dom';
-import { AccountHeader } from './AccountHeader';
 import styles from './AppShell.module.css';
+import { UtilityWorkspace } from './UtilityWorkspace';
 
 const FULL_WORKSPACE_ROUTES = [
   '/runs/:runId',
-  '/devices/:deviceId/sessions/:sessionId',
 ] as const;
 
 const OWN_HEADER_ROUTES = [
@@ -52,13 +51,9 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   if (ownsHeader) {
     const isWorkHome = matches(pathname, '/') || matches(pathname, '/repositories');
-    return <div className={styles.accountSurface} data-work-home={isWorkHome || undefined}>{children}</div>;
+    if (isWorkHome || pathname === '/setup') return <div className={styles.accountSurface} data-work-home={isWorkHome || undefined}>{children}</div>;
+    return <UtilityWorkspace ownsHeader>{children}</UtilityWorkspace>;
   }
 
-  return (
-    <div className={styles.accountSurface}>
-      <AccountHeader />
-      <main className={styles.accountSurfaceContent}>{children}</main>
-    </div>
-  );
+  return <UtilityWorkspace>{children}</UtilityWorkspace>;
 }

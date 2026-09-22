@@ -12,7 +12,7 @@
 .srOnly { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .result { flex: none; color: var(--color-text-faint); font-family: var(--font-mono); font-size: var(--fs-tiny); }
 .result b { color: var(--color-text); font-weight: var(--fw-semibold); }
-.heading { padding-bottom: var(--space-3); }
+.heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding-bottom: var(--space-3); }
 .heading h2 { font-size: 15px; font-weight: var(--fw-semibold); letter-spacing: -.2px; }
 .heading p { color: var(--color-text-muted); font-size: var(--fs-caption); }
 .stack { display: grid; gap: var(--space-3); }

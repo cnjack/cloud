@@ -51,3 +51,8 @@
 .existing a span { min-width: 0; flex: 1; }
 .panel footer { min-height: 56px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--color-border); padding: 0 var(--space-6); color: var(--color-text-faint); font-size: var(--fs-caption); }
 @media (max-width: 48rem) { .main { width: calc(100% - var(--space-6)); } .layout { grid-template-columns: 1fr; } .rail { display: none; } .codeRow { grid-template-columns: 1fr; } .progress strong { font-size: var(--fs-tiny); } }
+
+.page { min-height: 0; }
+.hero { text-align: left; }
+.hero h1 { font-size: 25px; letter-spacing: -.7px; }
+.hero p { margin-left: 0; font-size: 13px; }

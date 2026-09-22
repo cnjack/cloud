@@ -42,6 +42,14 @@ function fakeInner(overrides: Partial<DeviceApi> = {}): FakeInner {
   const browseEnvelopeBodies: unknown[] = [];
   const api: DeviceApi = {
     listDevices: async () => [],
+    prepareWorkspaceDraftPR: async () => { throw new Error('encryption required'); },
+    prepareWorkspaceDraftPREnvelope: async () => ({ status: 'failed' }),
+    createWorkspaceDraftPR: async () => { throw new Error('encryption required'); },
+    createWorkspaceDraftPREnvelope: async () => ({ status: 'failed' }),
+    inspectWorkspace: async () => { throw new Error('encryption required'); },
+    inspectWorkspaceEnvelope: async () => ({ status: 'failed' }),
+    listPairings: async () => [],
+    respondPairing: async () => {},
     listSessions: async () => [],
     getCommandState: async () => ({ status: 'pending' }),
     listSessionEvents: async () => [],
@@ -63,7 +71,7 @@ function fakeInner(overrides: Partial<DeviceApi> = {}): FakeInner {
       approvalEnvelopeBodies.push(envelope);
     },
     createPairing: async () => ({ pairing_id: 'p1', status: 'pending' }),
-    getPairing: async () => ({ status: 'pending' }),
+    getPairing: async () => ({ status: 'pending', key_gen: 1 }),
     deleteDevice: async () => {},
     streamDevice: (_d, cb: DeviceStreamCallbacks) => {
       for (const f of frames) cb.onFrame(f);
@@ -355,3 +363,52 @@ describe('withDeviceCrypto writes', () => {
 // Type-level guard: sessions from the fake stay structurally compatible.
 const _session: DeviceSession = { session_id: 's', status: 'idle', meta: null, updated_at: '' };
 void _session;
+
+
+describe('encrypted workspace inspection', () => {
+  it('seals requests, opens results and binds them to the requested session', async () => {
+    const result = { session_id: 's1', workspace: '/private/repo', files: [{ path: 'secret-name.ts', patch: '+private content' }] };
+    const send = vi.fn(async () => ({ status: 'acked' as const, result: await sealedMeta(result) }));
+    const inner = fakeInner({ inspectWorkspaceEnvelope: send });
+    const { store, crypto } = cryptoWithCek();
+    await store.put(DEVICE, { cek: CEK_RAW, keyGen: 1 });
+    const api = withDeviceCrypto(inner.api, crypto);
+    expect(await api.inspectWorkspace(DEVICE, 's1')).toEqual(result);
+    const args = send.mock.calls[0] as unknown as [string, string, unknown];
+    expect(args.slice(0, 2)).toEqual([DEVICE, 's1']);
+    expect(isEnvelope(args[2])).toBe(true);
+    expect(JSON.stringify(args[2])).not.toContain('private');
+    await expect(api.inspectWorkspace(DEVICE, 'other-session')).rejects.toThrow('does not belong');
+  });
+
+  it('refuses missing keys and plaintext inspection results', async () => {
+    const send = vi.fn(async () => ({ status: 'acked' as const, result: { session_id: 's1', files: [] } }));
+    const inner = fakeInner({ inspectWorkspaceEnvelope: send });
+    const { store, crypto } = cryptoWithCek();
+    const api = withDeviceCrypto(inner.api, crypto);
+    await expect(api.inspectWorkspace(DEVICE, 's1')).rejects.toThrow('Pair this browser');
+    expect(send).not.toHaveBeenCalled();
+    await store.put(DEVICE, { cek: CEK_RAW, keyGen: 1 });
+    await expect(api.inspectWorkspace(DEVICE, 's1')).rejects.toThrow('unencrypted');
+  });
+});
+
+it('seals the reviewed draft identity and rejects plaintext delivery acknowledgments', async () => {
+  const review = { session_id: 's1', base_sha: 'reviewed-base', files: [], revision: 'reviewed-revision' };
+  const prepare = vi.fn(async () => ({ status: 'acked' as const, result: await sealedMeta(review) }));
+  const publish = vi.fn(async () => ({ status: 'acked' as const, result: await sealedMeta({ url: 'https://github.com/owner/repo/pull/1', branch: 'jcode/reviewed' }) }));
+  const inner = fakeInner({ prepareWorkspaceDraftPREnvelope: prepare, createWorkspaceDraftPREnvelope: publish });
+  const { store, crypto } = cryptoWithCek();
+  await store.put(DEVICE, { cek: CEK_RAW, keyGen: 1 });
+  const api = withDeviceCrypto(inner.api, crypto);
+  expect(await api.prepareWorkspaceDraftPR(DEVICE, 's1')).toEqual(review);
+  const request = { repository_url: 'https://github.com/owner/repo', base_sha: 'reviewed-base', revision: 'reviewed-revision', paths: ['private-file.ts'], title: 'Reviewed title', body: 'Private body' };
+  expect((await api.createWorkspaceDraftPR(DEVICE, 's1', request)).url).toContain('/pull/1');
+  const args = publish.mock.calls[0] as unknown as [string, string, unknown];
+  expect(args.slice(0, 2)).toEqual([DEVICE, 's1']);
+  const key = await importCek(CEK_RAW);
+  expect(await decryptJson(key, args[2] as never)).toEqual({ session_id: 's1', ...request });
+  expect(JSON.stringify(args[2])).not.toContain('private-file');
+  const plaintext = withDeviceCrypto(fakeInner({ createWorkspaceDraftPREnvelope: async () => ({ status: 'acked', result: { url: 'https://github.com/owner/repo/pull/1', branch: 'branch' } }) }).api, crypto);
+  await expect(plaintext.createWorkspaceDraftPR(DEVICE, 's1', request)).rejects.toThrow('unencrypted');
+});

@@ -2277,14 +2277,14 @@ func (s *PGStore) GetRunBundle(ctx context.Context, runID string) ([]byte, error
 
 const modelProviderCols = `id, name, kind, base_url, auth_type, api_key_enc, catalog_mode,
 	catalog_available, last_verified_at, last_verification_error, created_at, updated_at, updated_by,
-	project_id, headers_enc`
+	project_id, headers_enc, owner_user_id`
 
 func scanModelProvider(row pgx.Row) (*domain.ModelProvider, error) {
 	var p domain.ModelProvider
-	var projectID *string
+	var projectID, ownerUserID *string
 	err := row.Scan(&p.ID, &p.Name, &p.Kind, &p.BaseURL, &p.AuthType, &p.APIKeyEnc,
 		&p.CatalogMode, &p.CatalogAvailable, &p.LastVerifiedAt, &p.LastVerificationError,
-		&p.CreatedAt, &p.UpdatedAt, &p.UpdatedBy, &projectID, &p.HeadersEnc)
+		&p.CreatedAt, &p.UpdatedAt, &p.UpdatedBy, &projectID, &p.HeadersEnc, &ownerUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -2293,6 +2293,9 @@ func scanModelProvider(row pgx.Row) (*domain.ModelProvider, error) {
 	}
 	if projectID != nil {
 		p.ProjectID = *projectID
+	}
+	if ownerUserID != nil {
+		p.OwnerUserID = *ownerUserID
 	}
 	return &p, nil
 }
@@ -2304,11 +2307,11 @@ func (s *PGStore) CreateModelProvider(ctx context.Context, p *domain.ModelProvid
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO model_providers (id, name, kind, base_url, auth_type, api_key_enc,
 		 catalog_mode, catalog_available, last_verified_at, last_verification_error,
-		 created_at, updated_at, updated_by, project_id, headers_enc)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12,$13,$14)`,
+		 created_at, updated_at, updated_by, project_id, headers_enc, owner_user_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12,$13,$14,$15)`,
 		p.ID, p.Name, p.Kind, p.BaseURL, p.AuthType, p.APIKeyEnc, p.CatalogMode,
 		p.CatalogAvailable, p.LastVerifiedAt, p.LastVerificationError, p.CreatedAt, p.UpdatedBy,
-		nullStr(p.ProjectID), p.HeadersEnc)
+		nullStr(p.ProjectID), p.HeadersEnc, nullStr(p.OwnerUserID))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrAlreadyExists
@@ -2578,8 +2581,8 @@ func (s *PGStore) UpdateModel(ctx context.Context, m *domain.Model) error {
 				`SELECT auth_type FROM model_providers WHERE id=$1`, m.ProviderID).Scan(&current); err != nil {
 				return fmt.Errorf("read provider auth type: %w", err)
 			}
-			if current == domain.ModelProviderAuthServiceIdentity {
-				authType = domain.ModelProviderAuthServiceIdentity
+			if current == domain.ModelProviderAuthServiceIdentity || current == domain.ModelProviderAuthOAuth {
+				authType = current
 			}
 		}
 		if _, err := tx.Exec(ctx,
@@ -2648,8 +2651,8 @@ func (s *PGStore) ListModelsForProject(ctx context.Context, projectID string) ([
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+prefixCols("mc", modelCols)+`
 		 FROM model_configs mc
-		 WHERE (mc.project_id = $1 AND mc.enabled)
-		    OR mc.id IN (SELECT model_id FROM model_grants WHERE project_id = $1)
+		 WHERE NOT EXISTS (SELECT 1 FROM model_providers p WHERE p.id=mc.provider_id AND p.owner_user_id IS NOT NULL)
+		   AND ((mc.project_id = $1 AND mc.enabled) OR mc.id IN (SELECT model_id FROM model_grants WHERE project_id = $1))
 		 ORDER BY mc.created_at DESC`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list models for project: %w", err)
@@ -2692,6 +2695,13 @@ func (s *PGStore) ListProjectIDsForModel(ctx context.Context, modelID string) ([
 // GrantModel authorizes a project to use a model (idempotent). A bad model/
 // project id trips the FK and is normalised to ErrNotFound.
 func (s *PGStore) GrantModel(ctx context.Context, modelID, projectID string) error {
+	var personal bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM model_configs m JOIN model_providers p ON p.id=m.provider_id WHERE m.id=$1 AND p.owner_user_id IS NOT NULL)`, modelID).Scan(&personal); err != nil {
+		return err
+	}
+	if personal {
+		return ErrNotFound
+	}
 	_, err := s.pool.Exec(ctx,
 		`WITH granted AS (
 		   INSERT INTO model_grants (model_id, project_id) VALUES ($1,$2)
@@ -2731,8 +2741,9 @@ func (s *PGStore) ListModelsForAccount(ctx context.Context, userID string) ([]do
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+prefixCols("mc", modelCols)+`
 		 FROM model_configs mc
-		 JOIN model_account_grants mag ON mag.model_id=mc.id
-		 WHERE mag.user_id=$1 AND mc.project_id IS NULL
+		 JOIN model_providers provider ON provider.id=mc.provider_id
+		 WHERE (provider.owner_user_id=$1 AND mc.enabled)
+		 OR (provider.owner_user_id IS NULL AND mc.project_id IS NULL AND EXISTS (SELECT 1 FROM model_account_grants mag WHERE mag.model_id=mc.id AND mag.user_id=$1))
 		 ORDER BY mc.created_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list models for account: %w", err)
@@ -2774,7 +2785,7 @@ func (s *PGStore) GrantModelToAccount(ctx context.Context, modelID, userID, gran
 	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO model_account_grants (model_id,user_id,granted_by)
 		 SELECT mc.id,$2,NULLIF($3,'') FROM model_configs mc
-		 WHERE mc.id=$1 AND mc.project_id IS NULL
+		 WHERE mc.id=$1 AND mc.project_id IS NULL AND NOT EXISTS (SELECT 1 FROM model_providers p WHERE p.id=mc.provider_id AND p.owner_user_id IS NOT NULL)
 		 ON CONFLICT (model_id,user_id) DO NOTHING`,
 		modelID, userID, grantedBy)
 	if err != nil {

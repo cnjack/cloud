@@ -116,7 +116,10 @@ const (
 	// DeviceCmdWorkspaceBrowse asks the desktop to list one local directory.
 	// The result is returned through the command ack and remains opaque to the
 	// orchestrator when E2EE is active.
-	DeviceCmdWorkspaceBrowse = "workspace.browse"
+	DeviceCmdWorkspaceBrowse       = "workspace.browse"
+	DeviceCmdWorkspaceChanges      = "workspace.changes"
+	DeviceCmdWorkspaceDraftPreview = "workspace.draft_preview"
+	DeviceCmdWorkspaceDraftPR      = "workspace.draft_pr"
 )
 
 // DeviceCommand lifecycle states (docs/17 §5): pending (queued) → delivered

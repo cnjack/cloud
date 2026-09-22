@@ -1,3 +1,5 @@
+import { useAccountAttachments } from './useAccountAttachments';
+import { useAccountProfile } from '../api/accountProfile';
 import { GitBranch } from '@phosphor-icons/react';
 import { buildProductComposerStrings } from '@jcloud/device-ui';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -70,6 +72,10 @@ export function AccountRepositoryComposer({
   const navigate = useNavigate();
   const toast = useToast();
   const startTask = useStartAccountTask();
+  const profile = useAccountProfile();
+  const attachments = useAccountAttachments(target, startTask.isPending);
+  const [failedPrompt, setFailedPrompt] = useState('');
+  const defaultsApplied = useRef(false);
   const branches = useAccountRepositoryBranches(target.provider, target.provider_repo_id);
   const [selectedBranch, setSelectedBranch] = useState(target.default_branch);
   const [selectedModelId, setSelectedModelId] = useState('');
@@ -77,6 +83,12 @@ export function AccountRepositoryComposer({
   const [effortOverrides, setEffortOverrides] = useState<Record<string, string>>({});
   const [goalArmed, setGoalArmed] = useState(false);
   const composerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!profile.data || defaultsApplied.current) return;
+    defaultsApplied.current = true;
+    setMode(profile.data.preferences.permission_mode || 'approval');
+  }, [profile.data]);
 
   const providers = useMemo(() => buildProjectModelProviders(models), [models]);
   const modelRefs = useMemo(() => models.map(projectModelRef), [models]);
@@ -101,11 +113,13 @@ export function AccountRepositoryComposer({
       setSelectedModelId('');
       return;
     }
+    if (accountId && profile.isPending) return;
     const remembered = storedModel(accountId);
-    const selected = models.find((model) => model.id === remembered && model.capabilities.tools)
+    const preferred = profile.data?.preferences.default_model_id || remembered;
+    const selected = models.find((model) => model.id === preferred && model.capabilities.tools)
       ?? models.find((model) => model.capabilities.tools);
-    setSelectedModelId(selected?.id ?? '');
-  }, [accountId, models]);
+    setSelectedModelId(current => models.some(model => model.id === current && model.capabilities.tools) ? current : selected?.id ?? '');
+  }, [accountId, models, profile.data?.preferences.default_model_id, profile.isPending]);
 
   useEffect(() => {
     // jcode-ui changes the goal placeholder dynamically, but the task input
@@ -118,8 +132,10 @@ export function AccountRepositoryComposer({
 
   sendRef.current = (text: string) => {
     const prompt = text.trim();
-    if (!prompt || !selectedModelId || !selectedBranch || branches.isLoading || branches.isError) return;
-    const effort = effortOverrides[`${activeModelRef.provider}/${activeModelRef.model}`];
+    if (blocked || !prompt || !selectedModelId || !selectedBranch || branches.isLoading || branches.isError) return;
+    const effort = activeModel?.capabilities.reasoning
+      ? effortOverrides[`${activeModelRef.provider}/${activeModelRef.model}`] || profile.data?.preferences.effort : undefined;
+    setFailedPrompt('');
     rememberModel(accountId, selectedModelId);
     startTask.mutate({
       provider: target.provider,
@@ -131,15 +147,17 @@ export function AccountRepositoryComposer({
       permission_mode: mode,
       model_effort: (effort || 'auto') as 'auto' | 'low' | 'medium' | 'high',
       goal_mode: goalArmed,
+      attachment_stage_ids: attachments.stageIDs,
     }, {
       onSuccess: ({ run }) => {
+        attachments.clear();
         setGoalArmed(false);
         navigate(`/runs/${encodeURIComponent(run.id)}`);
       },
-      onError: (error) => toast.push({
-        kind: 'error',
-        message: error instanceof ApiError ? error.message : t('repositories.startFailed'),
-      }),
+      onError: (error) => {
+        setFailedPrompt(prompt);
+        toast.push({ kind: 'error', message: error instanceof ApiError ? error.message : t('repositories.startFailed') });
+      },
     });
   };
 
@@ -176,7 +194,7 @@ export function AccountRepositoryComposer({
     favoriteModels: [],
     recentModels: modelRefs,
     imageSupport: false,
-    effortOverrides,
+    effortOverrides: profile.data?.preferences.effort ? { [`${activeModelRef.provider}/${activeModelRef.model}`]: profile.data.preferences.effort, ...effortOverrides } : effortOverrides,
     slashCommands: [],
     hasMessages: false,
     goalArmed,
@@ -201,10 +219,11 @@ export function AccountRepositoryComposer({
     clearGoal: async () => {},
   }), [
     activeModelRef.model, activeModelRef.provider, effortOverrides, goalArmed, mode,
-    modelRefs, providers, selectModel, setEffort, strings, target,
+    modelRefs, providers, selectModel, setEffort, strings, target, profile.data?.preferences.effort,
   ]);
 
-  const blocked = modelsLoading || !selectedModelId || branches.isLoading || branches.isError
+  const requiresAuthorization = !!activeModel?.authorization_state && activeModel.authorization_state !== 'ready';
+  const blocked = requiresAuthorization || attachments.blocked || profile.isFetching || profile.isError || modelsLoading || !selectedModelId || branches.isLoading || branches.isError
     || !selectedBranch || target.execution_available === false || startTask.isPending;
   const branchOptions = (branches.data ?? []).map((branch) => ({
     value: branch.name,
@@ -228,10 +247,14 @@ export function AccountRepositoryComposer({
           placeholder={branches.isLoading ? t('repositories.loadingBranches') : t('repositories.branchUnavailable')}
         />
       </div>
-      <fieldset disabled={blocked} aria-busy={startTask.isPending}>
-        <ChatInput host={host} pickerPlacement="bottom" elevated />
+      {attachments.view}
+      <fieldset disabled={startTask.isPending} aria-busy={startTask.isPending}>
+        <ChatInput host={host} pickerPlacement="bottom" elevated sendDisabled={blocked} modelManagement={false} modelFavorites={false} />
       </fieldset>
     </RuntimeProvider>
+    {requiresAuthorization && <div className={styles.composerIssue} role="alert"><span>{t('modelAuthorization.state.requires_reauth')}</span><Link to={`/account/settings?section=models&provider=${encodeURIComponent(activeModel?.provider_id ?? '')}`}>{t('modelAuthorization.reauthorize')}</Link></div>}
+    {failedPrompt && <div className={styles.failedPrompt} role="alert"><strong>{t('repositories.startFailed')}</strong><p>{failedPrompt}</p><button type="button" disabled={blocked} onClick={() => sendRef.current(failedPrompt)}>{t('common.retry')}</button></div>}
+    {profile.isError && <div className={styles.composerIssue} role="alert"><span>{profile.error.message}</span><Link to="/account/settings?section=preferences">{t('accountSettings.preferencesTab')}</Link><button type="button" onClick={() => void profile.refetch()}>{t('common.retry')}</button></div>}
     {startTask.isPending && <div className={styles.composerPending} role="status">{t('repositories.startingRepositoryTask')}</div>}
     {branches.isError && <div className={styles.composerIssue} role="alert">
       <span>{branches.error instanceof ApiError ? branches.error.message : t('repositories.branchesUnavailable')}</span>

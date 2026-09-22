@@ -1,27 +1,12 @@
-import {
-  CaretDown,
-  CaretRight,
-  ChatCircle,
-  MagnifyingGlass,
-  Plus,
-  SidebarSimple,
-} from '@phosphor-icons/react';
-import { useMemo, useState } from 'react';
+import { ArrowRight, ChatCircle, GitBranch, MagnifyingGlass, Plus, SidebarSimple, SlidersHorizontal, TerminalWindow } from '@phosphor-icons/react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useLocation } from 'react-router-dom';
+import { useOptionalAuth } from '../auth/AuthProvider';
 import type { Run, RunStatus, Service } from '../api/types';
 import { Wordmark } from '../components/Wordmark';
-import { WorkspaceIdentity } from '../components/WorkspaceIdentity';
 import { repositoryWorkspacePath, workspaceTab } from './workspaceNavigation';
 import styles from './ConversationRail.module.css';
-
-interface ConversationGroup {
-  id: string;
-  name: string;
-  runs: Run[];
-  newestAt: number;
-  available: boolean;
-}
 
 const STATUS_KEYS: Record<RunStatus, string> = {
   queued: 'components.statusBadge.queued',
@@ -51,6 +36,8 @@ export function ConversationRail({
   collapsed,
   onCollapsedChange,
   activeRepositoryId,
+  error,
+  onRetry,
 }: {
   repositories: Service[];
   runs: Run[];
@@ -58,64 +45,56 @@ export function ConversationRail({
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   activeRepositoryId?: string;
+  error?: unknown;
+  onRetry?: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const location = useLocation();
   const [query, setQuery] = useState('');
-  const [closedGroups, setClosedGroups] = useState<Set<string>>(() => new Set());
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobile, setMobile] = useState(() => window.matchMedia?.('(max-width: 832px)').matches ?? false);
+  useEffect(() => {
+    const query = window.matchMedia?.('(max-width: 832px)');
+    if (!query) return;
+    const update = () => { setMobile(query.matches); setMobileOpen(false); };
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  const auth = useOptionalAuth();
   const normalizedQuery = query.trim().toLocaleLowerCase();
-
-  const groups = useMemo(() => {
-    const services = new Map(repositories.map((repository) => [repository.id, repository]));
-    const grouped = new Map<string, Run[]>();
-    for (const run of runs) {
-      if (run.kind === 'review') continue;
-      const id = run.service_id || 'unavailable';
-      const existing = grouped.get(id) ?? [];
-      existing.push(run);
-      grouped.set(id, existing);
-    }
-    return [...grouped.entries()].map(([id, repositoryRuns]): ConversationGroup => {
-      const sortedRuns = [...repositoryRuns].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-      return {
-        id,
-        name: repositoryName(services.get(id), t('repositories.conversationRailRepositoryUnavailable')),
-        runs: sortedRuns,
-        newestAt: Date.parse(sortedRuns[0]?.created_at ?? '') || 0,
-        available: services.has(id),
-      };
-    }).sort((a, b) => b.newestAt - a.newestAt);
-  }, [repositories, runs, t]);
-
-  const visibleGroups = useMemo(() => {
-    if (!normalizedQuery) return groups;
-    return groups.flatMap((group) => {
-      const repositoryMatches = group.name.toLocaleLowerCase().includes(normalizedQuery);
-      const matchingRuns = repositoryMatches
-        ? group.runs
-        : group.runs.filter((run) => run.prompt.toLocaleLowerCase().includes(normalizedQuery));
-      return matchingRuns.length > 0 ? [{ ...group, runs: matchingRuns }] : [];
-    });
-  }, [groups, normalizedQuery]);
-
-  const toggleGroup = (id: string) => {
-    setClosedGroups((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
+  useEffect(() => { setMobileOpen(false); }, [location.pathname, location.search]);
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setMobileOpen(false); };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [mobileOpen]);
+  const latest = useMemo(() => [...runs].filter(run => run.kind !== 'review')
+    .sort((a,b) => Date.parse(b.created_at) - Date.parse(a.created_at)), [runs]);
+  const visibleRuns = latest.filter(run => !normalizedQuery || run.prompt.toLocaleLowerCase().includes(normalizedQuery)
+    || repositoryName(repositories.find(repo => repo.id === run.service_id), '').toLocaleLowerCase().includes(normalizedQuery)).slice(0, normalizedQuery ? 30 : 6);
+  const recentRepositories = useMemo(() => [...repositories].sort((a,b) => {
+    const index = (id: string) => { const i = latest.findIndex(run => run.service_id === id); return i < 0 ? Number.MAX_SAFE_INTEGER : i; };
+    return index(a.id)-index(b.id);
+  }).slice(0,5), [repositories,latest]);
+  const accountName = auth?.me?.user.display_name || t('accountHeader.account');
+  const selectedTab = workspaceTab(new URLSearchParams(location.search).get('tab'));
+  const toggleRail = () => {
+    if (mobile) setMobileOpen(value => !value);
+    else onCollapsedChange(!collapsed);
   };
 
-  return <aside className={styles.rail} data-testid="conversation-rail" data-collapsed={collapsed || undefined} aria-label={t('repositories.conversationRailAria')}>
+  return <aside className={styles.rail} data-testid="conversation-rail" data-collapsed={collapsed || undefined} data-mobile-open={mobileOpen || undefined} aria-label={t('repositories.conversationRailAria')}>
     <header className={styles.header}>
       <span className={styles.wordmark}><Wordmark /></span>
-      <button type="button" className={styles.iconButton} onClick={() => onCollapsedChange(!collapsed)} aria-label={collapsed ? t('repositories.conversationRailExpand') : t('repositories.conversationRailCollapse')}>
+      <button type="button" className={styles.iconButton} onClick={toggleRail} aria-expanded={mobile ? mobileOpen : !collapsed} aria-label={(mobile ? !mobileOpen : collapsed) ? t('repositories.conversationRailExpand') : t('repositories.conversationRailCollapse')}>
         <SidebarSimple size={18} />
       </button>
     </header>
 
+    {mobileOpen && <button type="button" className={styles.drawerBackdrop} tabIndex={-1} aria-label={t('common.close')} onClick={() => setMobileOpen(false)} />}
     <div className={styles.body}>
-      <Link className={styles.newConversation} to="/repositories" aria-label={t('repositories.conversationRailNew')}>
+      <Link className={styles.newConversation} to={activeRepositoryId ? repositoryWorkspacePath(activeRepositoryId) : '/repositories'} aria-label={t('repositories.conversationRailNew')}>
         <Plus size={17} /><span>{t('repositories.conversationRailNew')}</span>
       </Link>
 
@@ -125,44 +104,29 @@ export function ConversationRail({
         <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} aria-label={t('repositories.conversationRailSearchAria')} placeholder={t('repositories.conversationRailSearchPlaceholder')} />
       </label>
 
-      <section className={styles.conversations} aria-labelledby="conversation-rail-title">
-        <h2 id="conversation-rail-title">{t('repositories.conversationRailByRepository')}</h2>
-        {isLoading && groups.length === 0 ? <ConversationRailSkeleton /> : visibleGroups.length > 0 ? (
-          <div className={styles.groups}>
-            {visibleGroups.map((group) => {
-              const open = normalizedQuery.length > 0 || !closedGroups.has(group.id);
-              return <section className={styles.group} key={group.id}>
-                <div className={styles.groupHeading} data-active={group.id === activeRepositoryId || undefined}>
-                <button type="button" className={styles.groupToggle} aria-expanded={open} aria-label={t('repositories.toggleConversations', { name: group.name })} aria-controls={`rail-conversations-${group.id}`} onClick={() => toggleGroup(group.id)}>
-                  {open ? <CaretDown size={13} /> : <CaretRight size={13} />}
-                </button>
-                {group.available ? <Link className={styles.repositoryLink}
-                  to={repositoryWorkspacePath(group.id, workspaceTab(new URLSearchParams(location.search).get('tab')))}
-                  aria-label={t('repositories.openRepository', { name: group.name })}
-                  aria-current={group.id === activeRepositoryId ? 'location' : undefined}>
-                  <WorkspaceIdentity name={group.name} />
-                  <small>{group.runs.length}</small>
-                </Link> : <span className={styles.repositoryLink}><WorkspaceIdentity name={group.name} /><small>{group.runs.length}</small></span>}
-                </div>
-                {open && <div className={styles.runList} id={`rail-conversations-${group.id}`}>
-                  {group.runs.map((run) => {
-                    const path = `/runs/${run.id}`;
-                    const active = location.pathname === path;
-                    return <Link className={styles.run} to={path} key={run.id} aria-label={run.prompt} aria-current={active ? 'page' : undefined}>
-                    <span className={styles.runIcon}><ChatCircle size={13} /></span>
-                    <span className={styles.runCopy}><strong>{run.prompt}</strong><small><i data-status={run.status} /><span>{t(STATUS_KEYS[run.status])}</span><time dateTime={run.created_at}>{runTime(run.created_at, i18n.resolvedLanguage || i18n.language)}</time></small></span>
-                    </Link>;
-                  })}
-                </div>}
-              </section>;
-            })}
-          </div>
-        ) : <div className={styles.empty}>
-          <ChatCircle size={18} />
-          <strong>{normalizedQuery ? t('repositories.conversationRailNoMatch') : t('repositories.conversationRailEmptyTitle')}</strong>
-          {!normalizedQuery && <span>{t('repositories.conversationRailEmptyDescription')}</span>}
-        </div>}
+      {error != null && <div className={styles.empty} role="alert"><span>{t('cloudRefresh.navigationFailed')}</span><button type="button" onClick={onRetry}>{t('common.retry')}</button></div>}
+      <section className={styles.recentRepos} aria-label={t('cloudRefresh.recentRepositories')}>
+        <h2>{t('cloudRefresh.recentRepositories')}</h2>
+        {recentRepositories.map(repository => <Link key={repository.id} to={repositoryWorkspacePath(repository.id, selectedTab)}
+          className={styles.repositoryShortcut} aria-current={repository.id === activeRepositoryId ? 'location' : undefined}
+          aria-label={t('repositories.openRepository', {name: repositoryName(repository, '')})}>
+          <GitBranch size={16} /><span>{repositoryName(repository, '')}</span>
+        </Link>)}
       </section>
+      <Link to="/devices" className={styles.deviceLink} aria-current={location.pathname.startsWith('/devices') ? 'page' : undefined}><TerminalWindow size={17} /><span>{t('cloudRefresh.remoteDevices')}</span><ArrowRight size={13} /></Link>
+      <section className={styles.conversations} aria-labelledby="conversation-rail-title">
+        <h2 id="conversation-rail-title">{t('cloudRefresh.recentConversations')}</h2>
+        {isLoading && !latest.length ? <ConversationRailSkeleton /> : visibleRuns.length ? <div className={styles.flatRuns}>
+          {visibleRuns.map(run => <Link className={styles.run} to={`/runs/${run.id}`} key={run.id} aria-label={run.prompt} aria-current={location.pathname === `/runs/${run.id}` ? 'page' : undefined}>
+            <span className={styles.runCopy}><strong>{run.prompt || t('repositories.conversationSection')}</strong><small><i data-status={run.status} /><span>{t(STATUS_KEYS[run.status])}</span><time dateTime={run.created_at}>{runTime(run.created_at, i18n.resolvedLanguage || i18n.language)}</time></small></span>
+          </Link>)}
+        </div> : <div className={styles.empty}><ChatCircle size={18} /><strong>{normalizedQuery ? t('repositories.conversationRailNoMatch') : t('repositories.conversationRailEmptyTitle')}</strong></div>}
+      </section>
+      <footer className={styles.footer}>
+        <Link to={`/repositories?picker=1${activeRepositoryId ? `&repository=${encodeURIComponent(activeRepositoryId)}` : ''}`}><GitBranch size={16}/><span>{t('cloudRefresh.allRepositories')}</span><ArrowRight size={13}/></Link>
+        <Link to="/account/settings" aria-current={location.pathname === '/account/settings' ? 'page' : undefined}><SlidersHorizontal size={16}/><span>{t('accountHeader.settings')}</span></Link>
+        <Link className={styles.identity} to="/account/settings?section=profile"><span className={styles.avatar}>{accountName.slice(0,2).toUpperCase()}</span><span><strong>{accountName}</strong><small>{t('cloudRefresh.personalWorkspace')}</small></span></Link>
+      </footer>
     </div>
   </aside>;
 }

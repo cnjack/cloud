@@ -131,6 +131,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: cnjack/jcode
+          # Includes reviewed remote delivery and Cloud-managed Responses support.
+          ref: a4559969cd7c8bb516810685c157dfdb00108fce
           path: jcode
       - uses: actions/setup-go@v5
         with:

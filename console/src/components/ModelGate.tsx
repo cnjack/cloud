@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { ArrowRight } from '@phosphor-icons/react';
 import { useProjectModels } from '../api/queries';
+import { useOptionalAuth } from '../auth/AuthProvider';
 import { useRole } from '../api/ApiProvider';
 import styles from './ModelGate.module.css';
 
@@ -37,6 +38,8 @@ export interface ModelGate {
 export function useModelGate(projectId: string, enabled = true): ModelGate {
   const q = useProjectModels(projectId, enabled);
   const isClusterAdmin = useRole() === 'cluster-admin';
+  const auth = useOptionalAuth();
+  const personal = !!auth?.me && !auth.me.is_service;
   const { t } = useTranslation();
 
   if (!enabled) return { configured: true, notice: null };
@@ -71,8 +74,8 @@ export function useModelGate(projectId: string, enabled = true): ModelGate {
     configured: false,
     notice: (
       <div className={styles.notice} role="alert" data-testid="model-not-configured">
-        <span className={styles.text}>{t('components.modelGate.notConfigured')}</span>
-        {isClusterAdmin ? (
+        <span className={styles.text}>{t(personal ? 'cloudRefresh.personalModelsEmpty' : 'components.modelGate.notConfigured')}</span>
+        {personal ? <Link to="/account/settings?section=models" className={styles.link} data-testid="model-config-link">{t('accountSettings.modelsTab')}<ArrowRight size={15} /></Link> : isClusterAdmin ? (
           <Link to="/system" className={styles.link} data-testid="model-config-link">
             <span>{t('components.modelGate.grantLink')}</span>
             <ArrowRight size={15} weight="regular" aria-hidden="true" />

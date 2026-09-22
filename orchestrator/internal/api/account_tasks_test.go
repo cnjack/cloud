@@ -46,7 +46,7 @@ func (p *accountProviderProbe) snapshot() ([]string, []string) {
 	return append([]string(nil), p.searches...), append([]string(nil), p.repoLookups...)
 }
 
-func newAccountTaskServer(t *testing.T) (*httptest.Server, *store.MemStore, string, string, *accountProviderProbe) {
+func newAccountTaskServer(t *testing.T, configure ...func(*Server)) (*httptest.Server, *store.MemStore, string, string, *accountProviderProbe) {
 	t.Helper()
 	probe := &accountProviderProbe{}
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -137,6 +137,9 @@ func newAccountTaskServer(t *testing.T) (*httptest.Server, *store.MemStore, stri
 
 	cfg := withTestModel(&config.Config{ConsoleToken: consoleToken, MasterKey: key})
 	srv := New(st, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), sse.NewHub(), nil)
+	for _, configureServer := range configure {
+		configureServer(srv)
+	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, st, mkSession(t, st, user.ID), user.ID, probe

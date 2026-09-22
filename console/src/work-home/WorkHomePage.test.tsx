@@ -74,6 +74,7 @@ function renderPage({
               {historyControls && <NavigationHistory />}
               <Routes>
                 <Route path="/repositories" element={<WorkHomePage />} />
+                <Route path="/devices/:deviceId" element={<div data-testid="device-workspace-page" />} />
                 <Route path="/runs/:runId" element={<div data-testid="run-page" />} />
                 <Route path="/account/settings" element={<div data-testid="git-accounts-page" />} />
               </Routes>
@@ -106,7 +107,7 @@ describe('WorkHomePage', () => {
 
   it('combines the account composer and Repository workspace without Project or Service navigation', async () => {
     renderPage();
-    expect(await screen.findByRole('heading', { name: 'What should we code next?' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'What would you like to work on?' })).toBeTruthy();
     expect(screen.queryByText(/^Projects$/)).toBeNull();
     expect(screen.queryByText(/^Services$/)).toBeNull();
     expect(await screen.findByRole('button', { name: /acme\/payments/ })).toBeTruthy();
@@ -116,7 +117,7 @@ describe('WorkHomePage', () => {
     expect(screen.getAllByText('acme/payments').length).toBeGreaterThanOrEqual(2);
   });
 
-  it('shows account conversations grouped by Repository without mixing in code reviews', async () => {
+  it('shows recent repositories and account conversations without mixing in code reviews', async () => {
     const materializedRepositories: Service[] = [
       { id: 'repo-payments', project_id: 'personal', name: 'payments', repo_kind: 'provider', provider: 'github', provider_repo_id: 42, repo_owner_name: 'acme/payments', default_branch: 'main', git_mode: 'draft_pr', created_at: '' },
       { id: 'repo-docs', project_id: 'personal', name: 'docs', repo_kind: 'provider', provider: 'gitea', provider_repo_id: 43, repo_owner_name: 'acme/docs', default_branch: 'trunk', git_mode: 'draft_pr', created_at: '' },
@@ -153,8 +154,7 @@ describe('WorkHomePage', () => {
     const rail = within(screen.getByTestId('conversation-rail'));
     const selected = rail.getByRole('link', { name: 'Open repository acme/payments' });
     expect(selected.getAttribute('aria-current')).toBe('location');
-    fireEvent.click(rail.getByRole('button', { name: 'Toggle conversations for acme/payments' }));
-    expect(rail.queryByRole('link', { name: 'Task for payments' })).toBeNull();
+    expect(rail.getByRole('link', { name: 'Task for payments' })).toBeTruthy();
     expect(header.getByText('Board')).toBeTruthy();
     fireEvent.click(rail.getByRole('link', { name: 'Open repository acme/docs' }));
     await waitFor(() => expect(header.getByText('acme/docs')).toBeTruthy());
@@ -180,6 +180,13 @@ describe('WorkHomePage', () => {
     expect(header.getByText('acme/docs')).toBeTruthy();
     expect(header.queryByText('acme/payments')).toBeNull();
     expect(await screen.findByRole('button', { name: /Repository or Remote context acme\/docs/ })).toBeTruthy();
+  });
+
+  it('restores an unmaterialized repository from its stable provider identity after reload', async () => {
+    renderPage({ initialEntry: '/repositories?target=gitea%3A43&repositoryName=acme%2Fdocs&tab=board' });
+    expect(await screen.findByRole('button', { name: /Repository or Remote context acme\/docs/ })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Board' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.queryByRole('button', { name: /Repository or Remote context acme\/payments/ })).toBeNull();
   });
 
   it('shows an unavailable target instead of silently selecting the first Repository', async () => {
@@ -253,7 +260,7 @@ describe('WorkHomePage', () => {
     const pendingCatalog = new Promise<AccountRepositoryCatalog>((resolve) => { resolveCatalog = resolve; });
     renderPage({ listAccountRepositories: () => pendingCatalog });
 
-    expect(screen.getByRole('heading', { name: 'What should we code next?' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'What would you like to work on?' })).toBeTruthy();
     expect(screen.getByTestId('work-home-skeleton')).toBeTruthy();
     expect(screen.queryByLabelText('Describe a task')).toBeNull();
 
@@ -262,23 +269,17 @@ describe('WorkHomePage', () => {
     expect(screen.queryByTestId('work-home-skeleton')).toBeNull();
   });
 
-  it('switches the upper-left context to Remote and removes Repository workspace content', async () => {
+  it('opens the selected device workspace and keeps browser history', async () => {
     renderPage({ historyControls: true });
-    const context = await screen.findByRole('button', { name: /acme\/payments/ });
-    fireEvent.click(context);
+    fireEvent.click(await screen.findByRole('button', { name: /acme\/payments/ }));
     fireEvent.click(screen.getByRole('button', { name: /Remote connection/ }));
     fireEvent.click(screen.getByRole('button', { name: /dev-mbp-01/ }));
-    expect(await screen.findByTestId('remote-composer')).toBeTruthy();
-    expect(screen.queryByRole('tab', { name: 'Board' })).toBeNull();
-    expect(within(screen.getByRole('navigation', { name: 'Workspace location' })).getByText('dev-mbp-01')).toBeTruthy();
+    expect(await screen.findByTestId('device-workspace-page')).toBeTruthy();
+    expect(screen.getByTestId('navigation-location').textContent).toBe('/devices/device-1');
     fireEvent.click(screen.getByRole('button', { name: 'History back' }));
     await waitFor(() => expect(screen.getByRole('tab', { name: 'Board' })).toBeTruthy());
-    expect(within(screen.getByRole('navigation', { name: 'Workspace location' })).getByText('acme/payments')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'History forward' }));
-    await waitFor(() => expect(screen.getByTestId('remote-composer')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /Repository or Remote context dev-mbp-01/ }));
-    fireEvent.click(screen.getByRole('button', { name: /Remote connection/ }));
-    expect(screen.getByRole('link', { name: /Connect new device/ }).getAttribute('href')).toBe('/devices/guide');
+    expect(await screen.findByTestId('device-workspace-page')).toBeTruthy();
   });
 
   it('searches Repositories through the API and reuses the fresh SWR cache', async () => {
@@ -381,7 +382,7 @@ describe('WorkHomePage', () => {
     fireEvent.click(language);
     fireEvent.click(await screen.findByRole('menuitem', { name: '简体中文' }));
 
-    expect(await screen.findByRole('heading', { name: '接下来想写什么？' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: '下一步，想做什么？' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '任务' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '看板' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '代码审查' })).toBeTruthy();

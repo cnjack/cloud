@@ -2407,6 +2407,7 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 		"MODEL_BASE_URL": r.llmProxyBaseURL(run.ID),
 		"MODEL_API_KEY":  token, // RUN_TOKEN — the proxy's runToken gate verifies it.
 		"MODEL_NAME":     model.ModelName,
+		"MODEL_PROTOCOL": model.Protocol,
 		"RUN_TOKEN":      token,
 		"RUN_KIND":       string(kind),
 	}
@@ -2504,7 +2505,7 @@ func (r *Reconciler) jobEnv(ctx context.Context, run *domain.Run, token string, 
 // plane and carried as base64 so the Kubernetes init shell never interpolates a
 // model URL or RUN_TOKEN (both may legally contain quote/newline characters).
 func jcodeEffortConfigBase64(env map[string]string, effort string, persistentWorkspace bool) (string, error) {
-	if effort == "" {
+	if effort == "" && env["MODEL_PROTOCOL"] == "" {
 		return "", nil
 	}
 	modelName := env["MODEL_NAME"]
@@ -2524,7 +2525,7 @@ func jcodeEffortConfigBase64(env map[string]string, effort string, persistentWor
 	}
 	config := map[string]any{
 		"providers": map[string]any{provider: map[string]any{
-			"api_key": env["MODEL_API_KEY"], "base_url": baseURL, "reasoning_effort": effort,
+			"api_key": env["MODEL_API_KEY"], "base_url": baseURL, "reasoning_effort": effort, "protocol": env["MODEL_PROTOCOL"],
 			"custom_models": []map[string]any{{"id": modelID, "name": modelID, "tool_call": true, "context": 128000}},
 		}},
 		"model": modelName, "default_mode": "full_access",

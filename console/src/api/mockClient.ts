@@ -1807,6 +1807,20 @@ export function createMockClient(): ApiClient {
       return delay([...models.values()].map(modelView).reverse());
     },
 
+    async createChatGPTProvider() { throw new Error('Model authorization is unavailable in demo mode.'); },
+    async modelAuthorization() { throw new Error('Model authorization is unavailable in demo mode.'); },
+    async cancelModelAuthorization() { throw new Error('Model authorization is unavailable in demo mode.'); },
+    async listAccountModelProviders() { throw new Error('Personal provider management is unavailable in demo mode.'); },
+    async createAccountModelProvider() { throw new Error('Personal provider management is unavailable in demo mode.'); },
+    async updateAccountModelProvider() { throw new Error('Personal provider management is unavailable in demo mode.'); },
+    async deleteAccountModelProvider() { throw new Error('Personal provider management is unavailable in demo mode.'); },
+    async verifyAccountModelProvider() { throw new Error('Personal provider management is unavailable in demo mode.'); },
+    async accountModelProviderCatalog() { throw new Error('Personal provider management is unavailable in demo mode.'); },
+    async createAccountProviderModel() { throw new Error('Personal provider management is unavailable in demo mode.'); },
+    async updateAccountProviderModel() { throw new Error('Personal provider management is unavailable in demo mode.'); },
+    async deleteAccountProviderModel() { throw new Error('Personal provider management is unavailable in demo mode.'); },
+    async getAccountProfile() { throw new Error('Account profile persistence is unavailable in demo mode.'); },
+    async updateAccountProfile() { throw new Error('Account profile persistence is unavailable in demo mode.'); },
     async listAccountModels() {
       const userID = DEMO_ME.user.id ?? '';
       return delay([...models.values()]
@@ -2727,6 +2741,7 @@ export function createMockClient(): ApiClient {
       return delay(publicRun(run));
     },
 
+    async uploadAccountAttachment() { throw new Error('Attachments require a connected Cloud account.'); },
     async uploadRunAttachment(serviceId: string, file: File) {
       const service = [...services.values()].flat().find((candidate) => candidate.id === serviceId);
       if (!service) throw new ApiError(404, 'service not found');

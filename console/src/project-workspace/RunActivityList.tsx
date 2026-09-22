@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
@@ -38,6 +39,14 @@ export function RunActivityList({
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
+  const [query, setQuery] = useState('');
+  const [status, setStatus] = useState<'all' | 'active' | 'attention' | 'completed'>('all');
+  const matchesStatus = (run: Run, group: typeof status) => group === 'all'
+    || (group === 'active' && ['queued', 'scheduling', 'running'].includes(run.status))
+    || (group === 'attention' && ['awaiting_input', 'blocked', 'failed'].includes(run.status))
+    || (group === 'completed' && ['succeeded', 'canceled'].includes(run.status));
+  const visible = runs.filter((run) => matchesStatus(run, status) && `${run.prompt} ${run.id}`.toLowerCase().includes(query.trim().toLowerCase()))
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   return (
     <section className={styles.section} aria-labelledby="recent-tasks-heading">
       <div className={styles.head}>
@@ -64,6 +73,10 @@ export function RunActivityList({
         </div>}
       </div>
 
+      <div className={styles.toolbar}>
+        <div className={styles.statusFilters}>{(['all', 'active', 'attention', 'completed'] as const).map((group) => <button key={group} type="button" aria-pressed={status === group} onClick={() => setStatus(group)}>{t(`cloudRefresh.${group}`)}<span>{runs.filter((run) => matchesStatus(run, group)).length}</span></button>)}</div>
+        <input type="search" aria-label={t('cloudRefresh.searchTasks')} placeholder={t('cloudRefresh.searchTasks')} value={query} onChange={(event) => setQuery(event.target.value)} />
+      </div>
       {isLoading ? (
         <LoadingBlock label={t('runActivity.loadingTasks')} />
       ) : error ? (
@@ -80,9 +93,9 @@ export function RunActivityList({
               : t('runActivity.emptyDescFiltered'))
           }
         />
-      ) : (
+      ) : !visible.length ? <EmptyState title={t('cloudRefresh.noMatch')} description={t('cloudRefresh.noMatchDescription')} action={<button type="button" onClick={() => { setStatus('all'); setQuery(''); }}>{t('cloudRefresh.clearFilters')}</button>} /> : (
         <ul className={styles.list} data-testid="runs-activity" aria-label={t('runActivity.title')}>
-          {runs.map((run) => (
+          {visible.map((run) => (
             <li key={run.id}>
               <Link
                 to={`/runs/${run.id}`}

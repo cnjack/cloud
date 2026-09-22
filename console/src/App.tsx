@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
+import { AccountPreferencesBoundary } from './components/AccountPreferencesBoundary';
 import { AppShell } from './components/AppShell';
 import { DeviceApiProvider } from './api/DeviceApiProvider';
 import { OnboardingGate } from './pages/OnboardingGate';
@@ -8,6 +9,7 @@ import { WorkHomePage } from './work-home/WorkHomePage';
 import { CodeReviewsPage } from './pages/CodeReviewsPage';
 import { RepositoryAutomationPage } from './pages/RepositoryAutomationPage';
 import { RunDetailPage } from './pages/RunDetailPage';
+import { DeviceListPage, DeviceWorkspacePage } from './pages/DeviceWorkspacePage';
 import { DeviceGuidePage } from './pages/DeviceGuidePage';
 import { DeviceSessionPage } from './pages/DeviceSessionPage';
 import { ClusterOverviewPage } from './pages/ClusterOverviewPage';
@@ -66,7 +68,7 @@ function AuthenticatedApp() {
     // The gate owns everything before a verified session exists: environment
     // setup guidance and sign-in. Success enters Work Home directly.
     <OnboardingGate>
-      <AppShell>
+      <AccountPreferencesBoundary><AppShell>
         <DeviceApiProvider>
           <Routes>
             <Route path="/" element={<WorkHomePage />} />
@@ -82,9 +84,9 @@ function AuthenticatedApp() {
             <Route path="/account/settings" element={<AccountSettingsPage />} />
             <Route path="/projects/*" element={<Navigate to="/" replace />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
-            <Route path="/devices" element={<Navigate to="/devices/guide" replace />} />
+            <Route path="/devices" element={<DeviceListPage />} />
             <Route path="/devices/guide" element={<DeviceGuidePage />} />
-            <Route path="/devices/:deviceId" element={<LegacyDeviceRedirect />} />
+            <Route path="/devices/:deviceId" element={<DeviceWorkspacePage />} />
             <Route path="/devices/:deviceId/sessions/:sessionId" element={<DeviceSessionPage />} />
             <Route path="/cluster" element={<ClusterOverviewPage />} />
             <Route path="/cluster/models" element={<ClusterModelsPage />} />
@@ -95,14 +97,9 @@ function AuthenticatedApp() {
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </DeviceApiProvider>
-      </AppShell>
+      </AppShell></AccountPreferencesBoundary>
     </OnboardingGate>
   );
-}
-
-function LegacyDeviceRedirect() {
-  const { deviceId = '' } = useParams();
-  return <Navigate to={`/?remote=${encodeURIComponent(deviceId)}`} replace />;
 }
 
 export function LegacyRepositoryRedirect() {

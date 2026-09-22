@@ -934,6 +934,7 @@ type ModelProviderAuthType string
 
 const (
 	ModelProviderAuthAPIKey          ModelProviderAuthType = "api_key"
+	ModelProviderAuthOAuth           ModelProviderAuthType = "oauth"
 	ModelProviderAuthServiceIdentity ModelProviderAuthType = "service_identity"
 	ModelProviderAuthNone            ModelProviderAuthType = "none"
 )
@@ -950,7 +951,9 @@ const (
 // CatalogAvailable is nil until the endpoint has been tested, false when a live
 // probe proves /models unavailable, and true after a successful catalog request.
 type ModelProvider struct {
-	ID string `json:"id"`
+	// OwnerUserID owns a personal provider; mutually exclusive with ProjectID.
+	OwnerUserID string `json:"owner_user_id,omitempty"`
+	ID          string `json:"id"`
 	// ProjectID owns this provider (project-scoped, M1). "" (SQL NULL) means the
 	// provider is cluster-global — the pre-M1 behavior, cluster-admin managed.
 	ProjectID string                `json:"project_id,omitempty"`

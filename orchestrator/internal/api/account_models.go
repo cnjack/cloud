@@ -1,17 +1,40 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"sort"
 
 	"github.com/cnjack/jcloud/internal/domain"
 )
 
-type accountModelView struct {
-	ID           string                   `json:"id"`
-	Name         string                   `json:"name"`
-	ModelName    string                   `json:"model_name"`
-	Capabilities domain.ModelCapabilities `json:"capabilities"`
+type accountModelView = modelMemberView
+
+// Provider labels disambiguate identical upstream model names without exposing
+// credentials, endpoints, or an unrelated account's provider metadata.
+func (s *Server) executionModelViews(ctx context.Context, models []domain.Model) ([]modelMemberView, error) {
+	providers, err := s.st.ListModelProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]domain.ModelProvider, len(providers))
+	for _, provider := range providers {
+		byID[provider.ID] = provider
+	}
+	out := make([]modelMemberView, 0, len(models))
+	for _, model := range models {
+		provider := byID[model.ProviderID]
+		authorizationState := ""
+		if provider.AuthType == domain.ModelProviderAuthOAuth {
+			status, err := s.modelOAuth.Status(ctx, provider.ID)
+			if err != nil {
+				return nil, err
+			}
+			authorizationState = status.State
+		}
+		out = append(out, modelMemberView{AuthorizationState: authorizationState, ID: model.ID, Name: model.Name, ModelName: model.ModelName, Capabilities: model.Capabilities, ProviderID: model.ProviderID, ProviderName: provider.Name, ProviderKind: provider.Kind})
+	}
+	return out, nil
 }
 
 func (s *Server) handleListAccountModels(w http.ResponseWriter, r *http.Request) {
@@ -25,13 +48,12 @@ func (s *Server) handleListAccountModels(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "internal", "could not load account models")
 		return
 	}
-	out := make([]accountModelView, 0, len(models))
-	for i := range models {
-		out = append(out, accountModelView{
-			ID: models[i].ID, Name: models[i].Name, ModelName: models[i].ModelName,
-			Capabilities: models[i].Capabilities,
-		})
+	out, err := s.executionModelViews(r.Context(), models)
+	if err != nil {
+		writeError(w, 500, "internal", "could not load model providers")
+		return
 	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	writeJSON(w, http.StatusOK, map[string]any{"models": out})
 }

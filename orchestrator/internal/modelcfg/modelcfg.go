@@ -50,6 +50,7 @@ const (
 // is the DECRYPTED key (empty when the endpoint needs none); callers must NEVER
 // serialise it to API clients — expose only APIKeySet.
 type Resolved struct {
+	Protocol   string
 	Source     Source
 	ModelID    string // catalog model id; "" for the env fallback / none
 	ProviderID string

@@ -1,4 +1,6 @@
 import { ArrowLeft, ArrowRight, Check, Copy, LockKey, TerminalWindow } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
+import { ErrorBlock } from '../components/States';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useDevices } from '@jcloud/device-ui';
@@ -8,12 +10,14 @@ import styles from './DeviceGuidePage.module.css';
 
 const COMMAND = 'jcode login --cloud https://cloud.j-code.net';
 
-/** Setup-only Remote onboarding. Later selection and conversations live in Work Home. */
+/** Setup-only Remote onboarding. Later selection and conversations live in the device workspace. */
 export function DeviceGuidePage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const devices = useDevices();
   const [code, setCode] = useState('');
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
   const normalized = sanitizeCode(code).slice(0, 8);
 
   const authorize = () => {
@@ -22,53 +26,55 @@ export function DeviceGuidePage() {
 
   return (
     <div className={styles.page} data-testid="device-guide">
-      <AccountHeader />
+      <AccountHeader sectionTitle={t('cloudRefresh.remoteDevices')} />
       <main className={styles.main}>
-        <nav className={styles.secure}><Link to="/" className={styles.back}><ArrowLeft size={15} />Back to Work Home</Link><span><LockKey size={15} />End-to-end encrypted connection</span></nav>
+        <nav className={styles.secure}><Link to="/devices" className={styles.back}><ArrowLeft size={15} />{t('cloudRefresh.backDevices')}</Link><span><LockKey size={15} />{t('cloudDeviceGuide.secure')}</span></nav>
         <header className={styles.hero}>
-          <span>Remote connection</span>
-          <h1>Connect a jcode device</h1>
-          <p>Complete login once. The device then appears in the upper-left context picker in Work Home—there is no separate Remote workspace or device management page.</p>
+          <span>{t('cloudDeviceGuide.section')}</span>
+          <h1>{t('cloudDeviceGuide.title')}</h1>
+          <p>{t('cloudDeviceGuide.description')}</p>
         </header>
 
-        <ol className={styles.progress} aria-label="Remote onboarding steps">
-          <li data-state="active"><span>1</span><strong>Log in to jcode</strong></li>
-          <li><span>2</span><strong>Approve device</strong></li>
-          <li><span>3</span><strong>Encrypted pairing</strong></li>
+        <ol className={styles.progress} aria-label={t('cloudDeviceGuide.steps')}>
+          <li data-state="active"><span>1</span><strong>{t('cloudDeviceGuide.login')}</strong></li>
+          <li><span>2</span><strong>{t('cloudDeviceGuide.approve')}</strong></li>
+          <li><span>3</span><strong>{t('cloudDeviceGuide.pair')}</strong></li>
         </ol>
 
         <section className={styles.layout}>
           <aside className={styles.rail}>
-            <strong>New Remote device</strong><small>About one minute</small>
+            <strong>{t('cloudDeviceGuide.newDevice')}</strong><small>{t('cloudDeviceGuide.minute')}</small>
             <ol>
-              <li data-state="active"><span>1</span><p><strong>Run the login command</strong><small>Get a one-time device code</small></p></li>
-              <li><span>2</span><p><strong>Confirm device identity</strong><small>Approve account access</small></p></li>
-              <li><span>3</span><p><strong>Complete pairing</strong><small>Approve in local jcode</small></p></li>
+              <li data-state="active"><span>1</span><p><strong>{t('cloudDeviceGuide.runCommand')}</strong><small>{t('cloudDeviceGuide.getCode')}</small></p></li>
+              <li><span>2</span><p><strong>{t('cloudDeviceGuide.confirmIdentity')}</strong><small>{t('cloudDeviceGuide.approveAccount')}</small></p></li>
+              <li><span>3</span><p><strong>{t('cloudDeviceGuide.completePair')}</strong><small>{t('cloudDeviceGuide.approveLocal')}</small></p></li>
             </ol>
           </aside>
 
           <section className={styles.panel}>
             <div className={styles.panelBody}>
-              <span className={styles.kicker}><TerminalWindow size={16} />On the device you want to connect</span>
-              <h2>Run jcode login</h2>
-              <p>The command creates a one-time authorization code and normally opens this browser automatically. If it does not, enter the code below.</p>
-              <label>Terminal</label>
-              <div className={styles.command}><code>{COMMAND}</code><button type="button" aria-label={copied ? 'Copied' : 'Copy login command'} onClick={() => { void navigator.clipboard?.writeText(COMMAND); setCopied(true); }}>{copied ? <Check size={17} /> : <Copy size={17} />}</button></div>
-              <label htmlFor="remote-device-code">Enter the code shown by the CLI</label>
+              <span className={styles.kicker}><TerminalWindow size={16} />{t('cloudDeviceGuide.onDevice')}</span>
+              <h2>{t('cloudDeviceGuide.runLogin')}</h2>
+              <p>{t('cloudDeviceGuide.commandDescription')}</p>
+              <label>{t('cloudDeviceGuide.terminal')}</label>
+              <div className={styles.command}><code>{COMMAND}</code><button type="button" aria-label={t(copied ? 'common.copied' : 'cloudDeviceGuide.copyCommand')} onClick={async () => { try { await navigator.clipboard.writeText(COMMAND); setCopied(true); setCopyError(false); } catch { setCopyError(true); } }}>{copied ? <Check size={17} /> : <Copy size={17} />}</button></div>
+              {copyError && <p role="alert">{t('cloudDeviceGuide.copyError')}</p>}
+              <label htmlFor="remote-device-code">{t('cloudDeviceGuide.enterCode')}</label>
               <div className={styles.codeRow}>
                 <input id="remote-device-code" value={code} onChange={(event) => setCode(event.target.value)} placeholder="JCDX-4H7Q" autoComplete="one-time-code" />
-                <button type="button" className={styles.primary} disabled={normalized.length !== 8} onClick={authorize}>Continue authorization<ArrowRight size={15} /></button>
+                <button type="button" className={styles.primary} disabled={normalized.length !== 8} onClick={authorize}>{t('cloudDeviceGuide.continue')}<ArrowRight size={15} /></button>
               </div>
-              <div className={styles.note}><LockKey size={18} /><span><strong>Cloud only routes ciphertext</strong>The device code links this login to your account. Pairing keys stay in jcode and this browser; the server never parses device command payloads.</span></div>
+              <div className={styles.note}><LockKey size={18} /><span><strong>{t('cloudDeviceGuide.ciphertext')}</strong>{t('cloudDeviceGuide.ciphertextDescription')}</span></div>
 
+              {devices.isError && <ErrorBlock error={devices.error} onRetry={() => void devices.refetch()} />}
               {(devices.data ?? []).length > 0 && (
                 <div className={styles.existing}>
-                  <header><strong>Already connected</strong><small>Select one in Work Home, or continue above to add another device.</small></header>
-                  {(devices.data ?? []).map((device) => <Link key={device.id} to={`/?remote=${encodeURIComponent(device.id)}`}><TerminalWindow size={17} /><span><strong>{device.name}</strong><small>{device.platform || 'jcode device'} · {device.online ? 'online' : 'offline'}</small></span><ArrowRight size={15} /></Link>)}
+                  <header><strong>{t('cloudDeviceGuide.connected')}</strong><small>{t('cloudDeviceGuide.connectedDescription')}</small></header>
+                  {(devices.data ?? []).map((device) => <Link key={device.id} to={`/devices/${encodeURIComponent(device.id)}`}><TerminalWindow size={17} /><span><strong>{device.name}</strong><small>{device.platform || t('repositories.jcodeDevice')} · {t(device.online ? 'repositories.online' : 'device.list.offline')}</small></span><ArrowRight size={15} /></Link>)}
                 </div>
               )}
             </div>
-            <footer><span>The authorization code expires visibly in jcode.</span><Link to="/">Cancel</Link></footer>
+            <footer><span>{t('cloudDeviceGuide.expires')}</span><Link to="/devices">{t('common.cancel')}</Link></footer>
           </section>
         </section>
       </main>

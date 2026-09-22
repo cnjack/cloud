@@ -813,18 +813,18 @@ Project grant 保留给 service principal/API key 等无登录 Account 的执行
 生效模型按 **run 所属 project** 解析(见 `internal/modelcfg`);D16 反向代理不变
 (真 key 永不进 pod)。**旧的 `GET/PUT/DELETE /api/v1/system/model` 已下线**,
 console 全部走以下新端点。api key **只写不读**(回显 `api_key_set` 布尔位),
-`base_url`/明文 key **只对 cluster-admin 可见**。
+`base_url` 只在对应范围的管理接口中可见；任何接口都不回显明文 key。
 
 | 端点 | 角色 | 说明 |
 |---|---|---|
-| `GET /api/v1/system/model-providers` | cluster-admin | provider 全量，内嵌 models、capabilities、`granted_account_ids`、`granted_project_ids`、聚合 `project_grants`；只回 `api_key_set`，绝不含明文 key |
+| `GET /api/v1/system/model-providers` | cluster-admin | 非个人 provider，内嵌 models、capabilities、`granted_account_ids`、`granted_project_ids`、聚合 `project_grants`；只回 `api_key_set`，绝不含明文 key |
 | `POST /api/v1/system/model-providers` | cluster-admin | `{name,kind,base_url,auth_type,api_key?,catalog_mode}`；`auth_type ∈ {api_key,service_identity,none}`，`catalog_mode ∈ {auto,disabled}` |
 | `PATCH /api/v1/system/model-providers/{id}` | cluster-admin | 字段皆可选；provider identity/endpoint/credential 变化会清掉旧 verification，并原子同步子 model 的运行时 endpoint、key 与 `{kind}/{model_id}` 名称 |
 | `DELETE /api/v1/system/model-providers/{id}` | cluster-admin | 删除 provider；models 与 grants 级联，service 默认模型/run FK 按既有约束清理 |
 | `POST /api/v1/system/model-providers/{id}/verify` | cluster-admin | 探测 provider 与 `/models`；成功回 `{reachable,catalog_available,latency_ms}`，失败写入可见 verification 状态并回 typed error |
 | `GET /api/v1/system/model-providers/{id}/catalog` | cluster-admin | 读取上游 `/models`；对精确匹配的 Desktop provider kind + model id，用构建期 models.dev 快照补充 name/context/capabilities，并标记 `metadata_source=models.dev`；目录关闭/不支持时 `409 catalog_unavailable`，绝不补 synthetic fallback catalog |
 | `POST /api/v1/system/model-providers/{id}/models` | cluster-admin | `{name,model_id,context_window,capabilities,source?}`；`source ∈ {custom,catalog}`，同 provider 下 `model_id` 与 display name 唯一；不同 provider 可配置同名/同上游 id 模型 |
-| `GET /api/v1/system/models` | cluster-admin | 目录全量(含 `api_key_set` + `granted_account_ids` + `granted_project_ids`,不含明文 key) |
+| `GET /api/v1/system/models` | cluster-admin | 非个人模型目录(含 `api_key_set` + `granted_account_ids` + `granted_project_ids`,不含明文 key) |
 | `POST /api/v1/system/models` | cluster-admin | `{name, base_url, model_name, api_key?}`;`base_url` 须 http(s),`model_name` 须 `provider/model`,name 唯一(重名 `409`);有 key 但无 `JCLOUD_MASTER_KEY` → `409 cipher_not_configured` |
 | `PATCH /api/v1/system/models/{id}` | cluster-admin | 字段皆可选(省略=不变);`api_key` 省略=不变、`""`=清空(keyless)、有值=轮换 |
 | `DELETE /api/v1/system/models/{id}` | cluster-admin | 删除;grants 级联,`services.default_model_id`/`runs.model_id` 置 NULL |
@@ -833,8 +833,8 @@ console 全部走以下新端点。api key **只写不读**(回显 `api_key_set`
 | `PUT /api/v1/system/models/{id}/account-grants/{userId}` | cluster-admin | 授权某 Account 的所有当前及未来已认证 Desktop(幂等);model/account 不存在 → `404` |
 | `DELETE /api/v1/system/models/{id}/account-grants/{userId}` | cluster-admin | 立即撤销该 Account 所有 Desktop 的代理访问(幂等) |
 | `GET /api/v1/projects/{id}/models` | member+ | 本 project 被授权的模型 `{models:[{id,name,model_name}], env_fallback}`——**绝不含 base_url/key** |
-| `GET /api/v1/account/models` | 登录 Account | 当前账号直接获授权的 composer 模型；不混入旧 Project grants |
-| `POST /api/v1/account/tasks` | 登录 Account | `{model_id?}` 只能选择直接 Account grant（或隐藏个人 Project 自有模型） |
+| `GET /api/v1/account/models` | 登录 Account | 当前账号自有的已启用个人模型及直接获授权的 Cluster 模型；不混入旧 Project grants |
+| `POST /api/v1/account/tasks` | 登录 Account | `{model_id?}` 只能选择个人模型、直接 Account grant（或隐藏个人 Project 自有模型） |
 | `PATCH /api/v1/repositories/{id}` | owner | `{default_model_id?}`:见下方 presence 警示 |
 | `POST /api/v1/repositories/{id}/runs` | member+ | 新增可选 `{model_id?}`(composer 选);见下方解析链 |
 
@@ -846,11 +846,66 @@ capabilities，不按名称猜测。display name、context window 与 capabiliti
 时显式落库；已有 catalog model 只有管理员点击“同步元数据”才会被快照覆盖，人工修正
 不会在 GET 时被静默改写。
 
-Account grant 与 Project grant 均只允许指向 `project_id IS NULL` 的
+Account grant 与 Project grant 均只允许指向 `project_id IS NULL AND owner_user_id IS NULL` 的
 Cluster-global model。Project-owned model 只能由其所属 Project 使用，尝试跨范围
 grant 返回 `409 model_not_grantable`。Account grant 不修改 Project membership，
 它只授权该账号自己的 Account/Repository composer 与 device proxy，不授权其访问
 其他账号或 Project。目录与运行创建每次请求共用同一直接授权边界，撤销不经过缓存。
+
+### Personal profile, preferences, and providers
+
+`GET /api/v1/account/profile` returns `{display_name, preferences}` for the
+session's human account. `PUT` replaces that profile; it never accepts a user ID.
+The display name is trimmed and must contain 1–100 Unicode characters. Preferences
+are persisted in `users.preferences` and include:
+
+- `default_model_id`: empty or an enabled, tool-capable model authorized to this
+  account. Invalid/revoked selection returns `409 model_not_authorized`.
+- `permission_mode`: empty, `approval`, `auto`, or `plan`.
+- `effort`: empty, `auto`, `low`, `medium`, or `high`.
+- `send_key`: empty, `enter`, or `mod_enter`.
+- `language`: empty, `en`, `zh-Hans`, `zh-Hant`, `ja`, or `ko`.
+- `theme`: empty, `light`, or `dark`.
+
+Unsupported preferences return `400 invalid_preferences`. Non-human principals
+return `403 account_required`. This profile is separate from the existing
+end-to-end encrypted `/account/settings` mesh document.
+
+Personal provider routes use the same credential/catalog schemas as the cluster
+routes, with ownership assigned exclusively from the session:
+
+| Route | Behavior |
+| --- | --- |
+| `GET/POST /api/v1/account/model-providers` | List/create the account's personal providers |
+| `PATCH/DELETE /api/v1/account/model-providers/{id}` | Owner-only update/delete |
+| `POST /api/v1/account/model-providers/{id}/verify` | Probe the actual endpoint; persist verification errors |
+| `GET /api/v1/account/model-providers/{id}/catalog` | Fetch the actual upstream catalog |
+| `POST /api/v1/account/model-providers/{id}/models` | Add a model to this provider |
+| `PATCH/DELETE /api/v1/account/model-providers/{id}/models/{mid}` | Update/remove its model; PATCH supports `enabled` |
+
+`owner_user_id` is immutable and mutually exclusive with `project_id`. Provider
+names are unique within their account, so different accounts can use the same
+name. API keys and custom headers are encrypted and write-only. Personal routes
+accept API key or keyless authentication, never the control plane's service
+identity. Cross-account access returns `404`, including requests made by a
+cluster administrator. Cluster mutation and grant routes also reject personal
+provider/model IDs; private credentials cannot be reassigned through grants.
+Account deletion cascades through personal providers and models.
+
+The account and interactive repository model lists include `provider_id`,
+`provider_name`, and `provider_kind` alongside model identity and capabilities.
+Clients use the provider/catalog identity to distinguish identical upstream
+model names. These projections never contain credentials or endpoint URLs.
+
+`POST /api/v1/account/repositories/{provider}/{repo}/attachments/intents` accepts
+`{name, content_type, size_bytes}` before the first task exists. It verifies the
+caller's linked provider identity, materializes an account-owned repository, and
+returns the existing `{stage, upload_url, expires_at}` upload intent. Only the
+Cloud proxy upload URL is exposed. Storage absence returns
+`409 attachments_unavailable` before repository creation. Existing per-file
+25 MiB, 10-file/100 MiB task limits and 10-minute stage expiry apply. Pass completed
+`attachment_stage_ids` to `/account/tasks`; finalization requires the same account
+and project and consumes stages atomically with task creation.
 
 > **⚠️ `default_model_id` 的 presence 语义与 `PATCH /projects` 不同(易踩坑)。**
 > 该字段用 `*string` 指针解码,故 **JSON 省略字段** 与 **显式 `null`** 都解成 nil =
@@ -1664,3 +1719,29 @@ image 在 Job init 时按 snapshot 注入 `gh`/GitHub Skill、`glab`/GitLab Skil
 | AC-11 并发隔离 | 每 run 独立 Job + 独立 `(run_id,seq)` 事件空间 |
 | AC-12 墙钟超时判 failed(timeout) | §6 `activeDeadlineSeconds` / `RUN_TIMEOUT_SECONDS` |
 | AC-13 CLI 等价 | 同一 `/api/v1` 端点,CLI 与控制台共用 |
+
+
+### Personal ChatGPT model authorization
+
+- `POST /api/v1/account/model-providers/chatgpt` accepts `{name}` and creates an
+  owner-only, pinned ChatGPT connection (`auth_type: oauth`). It does not authorize
+  access or fabricate a model catalog.
+- `GET /api/v1/account/model-providers/{id}/authorization` returns a persisted
+  state: `requires_reauth`, `pending`, `expired`, or `ready`.
+- `POST` to the same endpoint starts a fresh device-code authorization. Pending
+  responses include `user_code`, the fixed `verification_uri`, `expires_at`, and
+  `interval_seconds`. The user completes authorization on the provider page.
+- `POST .../authorization/poll` advances the flow, enforcing the polling interval.
+  `DELETE .../authorization` cancels it; cancelling a reauthorization preserves
+  the previous connection when it still has a credential.
+- Provider listings expose only authorization `state` and optional `login`.
+  Refresh/access tokens, device polling credentials and upstream account IDs are
+  encrypted and never returned. Reauthorization pins the original account;
+  connecting a different account requires a separate provider.
+- The existing catalog/verify routes use a fresh credential and the live provider
+  catalog. A rejected connection returns `409 model_reauthorization_required`;
+  recovery opens `/account/settings?section=models&provider={id}`. Enabled models
+  expose `authorization_state` to disable task submission when reauthorization
+  is known to be required. Dispatch rechecks the credential as the authority.
+- OAuth endpoint, kind, authentication and credential headers cannot be patched
+  through generic provider editing. Model metadata/toggle edits retain OAuth.

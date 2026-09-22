@@ -11,6 +11,7 @@ import {
   usePendingNewSession,
   type Device,
 } from '@jcloud/device-ui';
+import { DeviceModelNotice } from '../components/DeviceModelNotice';
 import { useToast } from '../components/Toast';
 import styles from './WorkHomePage.module.css';
 
@@ -45,6 +46,7 @@ export function RemoteComposer({ device, contextHeader }: { device: Device; cont
         {!device.online && <div className={styles.blocker} role="alert">{t('repositories.deviceOffline')}</div>}
         <DevicePairingCard deviceId={device.id} guideLink={<Link to="/devices/guide">{t('repositories.remoteSetup')}</Link>} />
         <DevicePairingApprovals deviceId={device.id} />
+        <DeviceModelNotice device={device} />
         <div className={`${styles.remoteComposer} jcode-product`} data-testid="remote-composer">
           {contextHeader && <div className={styles.remoteContextHeader}>{contextHeader}</div>}
           <fieldset disabled={isSendLocked || !device.online} aria-busy={isSendLocked}>

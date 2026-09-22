@@ -610,3 +610,43 @@ func (s *Server) handleDeviceApproval(w http.ResponseWriter, r *http.Request) {
 		"decision":    req.Decision,
 	})
 }
+
+// handleDeviceSessionChanges routes an opaque, session-bound inspection command.
+// File names, paths and patches remain inside end-to-end encrypted payloads.
+func (s *Server) handleDeviceSessionChanges(w http.ResponseWriter, r *http.Request) {
+	s.handleDeviceSessionWorkspaceCommand(w, r, domain.DeviceCmdWorkspaceChanges)
+}
+func (s *Server) handleDeviceSessionDraftPreview(w http.ResponseWriter, r *http.Request) {
+	s.handleDeviceSessionWorkspaceCommand(w, r, domain.DeviceCmdWorkspaceDraftPreview)
+}
+func (s *Server) handleDeviceSessionDraftPR(w http.ResponseWriter, r *http.Request) {
+	s.handleDeviceSessionWorkspaceCommand(w, r, domain.DeviceCmdWorkspaceDraftPR)
+}
+func (s *Server) handleDeviceSessionWorkspaceCommand(w http.ResponseWriter, r *http.Request, kind string) {
+	d := s.authorizeDevice(w, r, r.PathValue("id"))
+	if d == nil {
+		return
+	}
+	sid := r.PathValue("sid")
+	if sid == "" || sid == "new" {
+		writeError(w, http.StatusBadRequest, "bad_request", "an existing session id is required")
+		return
+	}
+	var req struct {
+		Envelope json.RawMessage `json:"envelope"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.Envelope) == 0 {
+		writeError(w, http.StatusConflict, "pairing_required", "pair this client and send an encrypted inspection command")
+		return
+	}
+	env, err := commandEnvelopePayload(req.Envelope)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	s.enqueueDeviceCommandRaw(w, r, d, kind, &sid, env)
+}

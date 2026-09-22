@@ -33,6 +33,7 @@ import { SettingsPanel } from '../project-workspace/SettingsPanel';
 import { KanbanBoardModal } from '../pages/KanbanBoardModal';
 import { RepositoryUsagePanel } from '../pages/RepositoryUsagePanel';
 import { AccountRepositoryComposer } from './AccountRepositoryComposer';
+import { useAccountNavigation } from './useAccountNavigation';
 import { ConversationRail } from './ConversationRail';
 import { RemoteComposer } from './RemoteComposer';
 import { repositoryWorkspacePath, workspaceTab, type WorkspaceTab } from './workspaceNavigation';
@@ -83,7 +84,7 @@ export function WorkHomePage() {
   const [chosenTarget, setChosenTarget] = useState<AccountRepositoryTarget>();
   const selectedDeviceId = searchParams.get('remote') || '';
   const contextKind = selectedDeviceId ? 'remote' : 'repository';
-  const [contextOpen, setContextOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(searchParams.get('picker') === '1');
   const [remotePicker, setRemotePicker] = useState(false);
   const [repositoryQuery, setRepositoryQuery] = useState('');
   const tab = workspaceTab(searchParams.get('tab'));
@@ -100,26 +101,31 @@ export function WorkHomePage() {
   const retainedChoice = targets.length === 0 && catalog.data?.sources.some((source) => source.status === 'unavailable')
     ? undefined : chosenTarget;
   const requestedRepositoryId = searchParams.get('repository') || '';
+  const requestedTargetKey = searchParams.get('target') || '';
+  const requestedTargetName = searchParams.get('repositoryName') || '';
+  const hasRequestedTarget = !!(requestedRepositoryId || requestedTargetKey);
   const requestedRepository = repositories.data?.find((repository) => repository.id === requestedRepositoryId);
-  const matchesRequested = (target: AccountRepositoryTarget) => !!requestedRepositoryId && (
+  const matchesRequested = (target: AccountRepositoryTarget) => hasRequestedTarget && (
+    (!requestedRepositoryId && repositoryKey(target) === requestedTargetKey) ||
     target.repository_id === requestedRepositoryId || (requestedRepository != null
       && target.provider === requestedRepository.provider
       && target.provider_repo_id === String(requestedRepository.provider_repo_id))
   );
   const requestedFromCatalog = targets.find(matchesRequested);
   const requestedFromChoice = retainedChoice && matchesRequested(retainedChoice) ? retainedChoice : undefined;
-  const lookupRequested = !!requestedRepository?.repo_owner_name && !catalog.isPending && !requestedFromCatalog && !requestedFromChoice;
-  const requestedCatalog = useAccountRepositories(requestedRepository?.repo_owner_name ?? '', 20, lookupRequested);
+  const requestedName = requestedRepository?.repo_owner_name || requestedTargetName;
+  const lookupRequested = !!requestedName && !catalog.isPending && !requestedFromCatalog && !requestedFromChoice;
+  const requestedCatalog = useAccountRepositories(requestedName, 20, lookupRequested);
   // The route wins over retained component state, including browser history.
   // Resolve older repositories outside the bounded first catalog page by name,
   // then require the stable provider id to match before rendering their workspace.
-  const activeTarget = requestedRepositoryId
+  const activeTarget = hasRequestedTarget
     ? requestedFromCatalog ?? requestedFromChoice ?? requestedCatalog.data?.repositories.find(matchesRequested)
     : targets.find((target) => retainedChoice && repositoryKey(target) === repositoryKey(retainedChoice))
       ?? retainedChoice ?? targets.find((target) => target.execution_available !== false) ?? targets[0];
-  const requestedPending = !!requestedRepositoryId && (repositories.isPending
+  const requestedPending = hasRequestedTarget && (repositories.isPending
     || (!activeTarget && (catalog.isPending || (lookupRequested && requestedCatalog.isPending))));
-  const requestedUnavailable = !!requestedRepositoryId && !activeTarget && !requestedPending;
+  const requestedUnavailable = hasRequestedTarget && !activeTarget && !requestedPending;
   const pickerTargets = debouncedRepositoryQuery
     ? searchCatalog.data?.repositories ?? []
     : targets;
@@ -129,8 +135,7 @@ export function WorkHomePage() {
   const unavailableSource = catalog.data?.sources.find((source) => source.status === 'unavailable'
     && (targets.length === 0 || source.provider === activeTarget?.provider));
   const activeRepository = matchingRepository(activeTarget, repositories.data ?? []);
-  const conversationProjectId = activeRepository?.project_id ?? repositories.data?.[0]?.project_id ?? '';
-  const conversations = useRuns(conversationProjectId);
+  const navigation = useAccountNavigation();
   const selectedDevice = devices.data?.find((device) => device.id === selectedDeviceId);
   const onlineDevices = (devices.data ?? []).filter((device) => device.online);
   const accountId = auth?.me?.user.id ?? '';
@@ -144,6 +149,8 @@ export function WorkHomePage() {
     return () => document.removeEventListener('mousedown', close);
   }, []);
 
+  useEffect(() => { if (searchParams.get('picker') === '1') setContextOpen(true); }, [searchParams]);
+
   const selectRepository = (target: AccountRepositoryTarget) => {
     setChosenTarget(target);
     setContextOpen(false);
@@ -151,8 +158,10 @@ export function WorkHomePage() {
     setRepositoryQuery('');
     const next = new URLSearchParams(searchParams);
     next.delete('remote');
+    next.delete('picker');
     const repositoryId = target.repository_id ?? matchingRepository(target, repositories.data ?? [])?.id;
-    if (repositoryId) next.set('repository', repositoryId); else next.delete('repository');
+    if (repositoryId) { next.set('repository', repositoryId); next.delete('target'); next.delete('repositoryName'); }
+    else { next.delete('repository'); next.set('target', repositoryKey(target)); next.set('repositoryName', target.full_name); }
     next.set('tab', tab);
     if (next.toString() !== searchParams.toString()) setSearchParams(next);
   };
@@ -161,10 +170,7 @@ export function WorkHomePage() {
     setContextOpen(false);
     setRemotePicker(false);
     setRepositoryQuery('');
-    const next = new URLSearchParams(searchParams);
-    next.delete('repository');
-    next.set('remote', device.id);
-    if (next.toString() !== searchParams.toString()) setSearchParams(next);
+    navigate(`/devices/${encodeURIComponent(device.id)}`);
   };
 
   const sectionLabels: Record<WorkspaceTab, string> = {
@@ -179,9 +185,7 @@ export function WorkHomePage() {
   return (
     <div className={styles.page} data-testid="work-home" data-rail-collapsed={conversationRailCollapsed || undefined}>
       <ConversationRail
-        repositories={repositories.data ?? []}
-        runs={conversations.data ?? []}
-        isLoading={repositories.isLoading || conversations.isLoading}
+        {...navigation}
         collapsed={conversationRailCollapsed}
         onCollapsedChange={setConversationRailCollapsed}
         activeRepositoryId={contextKind === 'repository' ? activeRepository?.id ?? requestedRepositoryId : undefined}
@@ -198,8 +202,8 @@ export function WorkHomePage() {
           <div className={styles.mainInner} data-workspace-tab={contextKind === 'repository' ? tab : undefined}>
         <section className={styles.hero}>
           <span className={styles.eyebrow}>{t('repositories.composerEyebrow')}</span>
-          <h1>{t('repositories.composerTitle')}</h1>
-          <p>{contextKind === 'remote' ? t('repositories.remoteComposerDescription') : t('repositories.composerDescription')}</p>
+          <h1>{t('cloudRefresh.homeTitle')}</h1>
+          <p>{contextKind === 'remote' ? t('repositories.remoteComposerDescription') : t('cloudRefresh.homeDescription')}</p>
         </section>
 
         {contextKind === 'repository' && ((catalog.isPending && !catalog.data) || requestedPending) ? <WorkHomeSkeleton /> : contextKind === 'remote' && selectedDevice ? (
@@ -248,6 +252,14 @@ export function WorkHomePage() {
             />}
           />
         ) : null}
+
+        {contextKind === 'repository' && !activeTarget && !catalog.isPending && <ContextPicker
+          targets={pickerTargets} devices={onlineDevices} open={contextOpen} remotePicker={remotePicker}
+          query={repositoryQuery} searchLoading={repositorySearchLoading} searchError={repositorySearchError}
+          menuRef={menuRef} onToggle={() => setContextOpen(open => !open)} onQueryChange={setRepositoryQuery}
+          onRemoteOpen={() => { onlineDevices.length ? setRemotePicker(true) : navigate('/devices/guide'); }}
+          onRemoteBack={() => setRemotePicker(false)} onSelectRepository={selectRepository} onSelectDevice={selectDevice}
+        />}
 
         {contextKind === 'repository' && requestedUnavailable && <div className={styles.blocker} role="alert" data-testid="workspace-target-unavailable">
           <span>{t('repositories.navigationUnavailable')}</span>

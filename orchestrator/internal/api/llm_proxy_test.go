@@ -18,6 +18,8 @@ import (
 	"github.com/cnjack/jcloud/internal/auth"
 	"github.com/cnjack/jcloud/internal/config"
 	"github.com/cnjack/jcloud/internal/domain"
+	"github.com/cnjack/jcloud/internal/modelcfg"
+	"github.com/cnjack/jcloud/internal/modeloauth"
 	"github.com/cnjack/jcloud/internal/sse"
 	"github.com/cnjack/jcloud/internal/store"
 )
@@ -989,5 +991,44 @@ func TestLLMProxyPreservesCompressedProviderError(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusForbidden || string(got) != upstreamBody {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, got)
+	}
+}
+
+func TestManagedResponsesProxyPinsOperationAndStripsSessionCredentials(t *testing.T) {
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Errorf("incorrect managed path %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer upstream-oauth" || r.Header.Get("ChatGPT-Account-ID") != "reviewed-account" {
+			t.Error("managed identity not injected")
+		}
+		if r.Header.Get("Cookie") != "" {
+			t.Error("Cloud browser session forwarded")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"fixture","output":[]}`)
+	}))
+	defer upstream.Close()
+	server := New(store.NewMemStore(), &config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), sse.NewHub(), nil)
+	resolved := modelcfg.Resolved{Source: modelcfg.SourceCatalog, Protocol: modeloauth.Protocol, BaseURL: upstream.URL + "/backend-api/codex", APIKey: "upstream-oauth", Headers: map[string]string{"ChatGPT-Account-ID": "reviewed-account"}}
+	for _, path := range []string{"v1/responses", "v1/chat/completions", "../../account"} {
+		request := httptest.NewRequest("POST", "http://cloud.test/internal/llm/"+path, strings.NewReader(`{"model":"fixture"}`))
+		request.SetPathValue("rest", path)
+		request.Header.Set("Authorization", "Bearer run-token")
+		request.Header.Set("Cookie", "jcloud_session=private")
+		response := httptest.NewRecorder()
+		server.proxyResolvedModel(response, request, resolved, usageSubject{})
+		expected := 400
+		if path == "v1/responses" {
+			expected = 200
+		}
+		if response.Code != expected {
+			t.Fatalf("%s status %d", path, response.Code)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("invalid operation reached upstream: %d", calls)
 	}
 }

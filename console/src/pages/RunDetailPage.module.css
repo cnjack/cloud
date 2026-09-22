@@ -242,3 +242,11 @@
   .page { grid-template-columns: var(--space-16) minmax(0, 1fr); }
   .taskDetail { height: 100%; min-height: 0; }
 }
+
+.page { grid-template-columns: 248px minmax(0, 1fr); padding: 10px 10px 10px 0; background: var(--color-bg); }
+.runSurface { grid-template-rows: 56px minmax(0, 1fr); border: 1px solid var(--color-border); border-radius: 13px; }
+.taskHeader { padding: 24px 30px 20px; }
+.taskTitle { font-size: 22px; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; letter-spacing: -.5px; }
+.taskLayout { grid-template-columns: minmax(0, 1fr) 260px; gap: 26px; padding: 0 28px; }
+@media(max-width: 1150px) { .page { grid-template-columns: 218px minmax(0, 1fr); } .taskLayout { grid-template-columns: minmax(0, 1fr); } }
+@media(max-width: 832px) { .page, .page[data-rail-collapsed='true'] { grid-template-columns: 0 minmax(0, 1fr); padding: 0; } .runSurface { border: 0; border-radius: 0; } .taskHeader { padding: 18px; } .taskLayout { padding: 0 18px; } .taskTitle { font-size: 20px; } }

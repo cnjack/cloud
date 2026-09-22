@@ -143,6 +143,22 @@ describe('useDevicePairing', () => {
     expect(await decryptText(key, env)).toBe(JSON.stringify({ title: 'paired' }));
   });
 
+  it('invalidates ciphertext caches when storing the key unmounts the pairing gate', async () => {
+    const rig = makeRig();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(['devices'], [{ capabilities: { enc: 'sealed' } }]);
+    qc.setQueryData(['device-sessions', DEVICE], [{ meta: { enc: 'sealed' } }]);
+    const view = renderHook(() => useDevicePairing(DEVICE, { sessions: rig.sessions, pollMs: 5 }), { wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}><DeviceApiProvider api={rig.api} crypto={rig.crypto}>{children}</DeviceApiProvider></QueryClientProvider> });
+    await waitFor(() => expect(view.result.current.phase).toBe('idle'));
+    act(() => view.result.current.start());
+    await waitFor(() => expect(view.result.current.phase).toBe('pending'));
+    const unsubscribe = rig.cekStore.subscribe(() => view.unmount());
+    act(() => rig.approve());
+    await waitFor(() => expect(qc.getQueryState(['devices'])?.isInvalidated).toBe(true));
+    expect(qc.getQueryState(['device-sessions', DEVICE])?.isInvalidated).toBe(true);
+    unsubscribe();
+  });
+
   it('keeps slow approval polls single-flight while unwrapping the CEK', async () => {
     const rig = makeRig();
     const getPairing = rig.api.getPairing.bind(rig.api);
