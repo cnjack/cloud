@@ -48,7 +48,7 @@ export function RemoteComposer({ device, contextHeader }: { device: Device; cont
         <DevicePairingApprovals deviceId={device.id} />
         <DeviceModelNotice device={device} />
         {!host.projectPath && host.workspaceKind !== 'scratch' && <div className={styles.composerIssue} role="alert">
-          <span>{t('device.productComposer.workspaceUnavailable')}</span>
+          <span>{t('device.composer.workspaceUnavailable')}</span>
           <Link to="/devices/guide">{t('repositories.remoteSetup')}</Link>
           <button type="button" onClick={() => host.refreshModels()}>{t('common.retry')}</button>
         </div>}

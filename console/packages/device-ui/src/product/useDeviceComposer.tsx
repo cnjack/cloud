@@ -262,7 +262,7 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
   const sendRef = useRef<(text: string, images?: ChatImage[]) => void>(() => {});
   sendRef.current = (text, images) => {
     if (sessionId === 'new' && !composeRef.current.projectPath && composeRef.current.workspaceKind !== 'scratch') {
-      appendLocalError(t('device.productComposer.workspaceUnavailable'));
+      appendLocalError(t('device.composer.workspaceUnavailable'));
       return;
     }
     if (sessionId === 'new') {
@@ -505,13 +505,13 @@ export function useDeviceComposer(options: UseDeviceComposerOptions): DeviceComp
   const switchWorkspace = useCallback(async (path: string) => {
     // No device-side project-switch API: the choice rides the next message's
     // project_path extra. (Same-path "new session" desktop semantics N/A.)
-    if (sessionId !== 'new') throw new Error(t('device.productComposer.workspaceNewConversation'));
+    if (sessionId !== 'new') throw new Error(t('device.composer.workspaceNewConversation'));
     workspaceTouched.current = true;
     setCompose((c) => ({ ...c, projectPath: path, workspaceKind: 'project' }));
   }, [sessionId, t]);
 
   const startScratchWorkspace = useCallback(async () => {
-    if (sessionId !== 'new') throw new Error(t('device.productComposer.workspaceNewConversation'));
+    if (sessionId !== 'new') throw new Error(t('device.composer.workspaceNewConversation'));
     workspaceTouched.current = true;
     setCompose(c => ({ ...c, projectPath: '', workspaceKind: 'scratch' }));
   }, [sessionId, t]);
