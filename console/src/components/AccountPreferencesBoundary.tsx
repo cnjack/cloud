@@ -22,6 +22,8 @@ export function AccountPreferencesBoundary({ children }: { children: ReactNode }
     if (profile.data?.preferences.send_key !== 'mod_enter' || !(target instanceof HTMLTextAreaElement)
       || !target.closest('.jcode-product') || event.key !== 'Enter' || event.metaKey || event.ctrlKey
       || event.nativeEvent.isComposing || event.keyCode === 229) return;
+    // Enter selects the highlighted slash command before it becomes a send key.
+    if (target.closest('.jcode-chat-input')?.querySelector('.jcode-chat-input__slash button')) return;
     // Leave the browser's newline default intact, while preventing the shared
     // composer's Enter-to-send handler. Modified Enter continues through it.
     event.stopPropagation();

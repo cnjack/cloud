@@ -9,6 +9,12 @@ vi.mock('../i18n',()=>({setLocale:apply.locale}));
 vi.mock('../theme',()=>({setTheme:apply.theme}));
 beforeEach(()=>{vi.clearAllMocks();state.userID='alice';state.sendKey='mod_enter';state.language='en';state.theme='light';});
 describe('Persisted account preferences',()=>{
+ it('lets the shared composer select a slash command with Enter',()=>{
+  const keydown=vi.fn();
+  render(<AccountPreferencesBoundary><div className="jcode-product"><div className="jcode-chat-input"><div className="jcode-chat-input__slash"><button>/help</button></div><textarea aria-label="Chat" onKeyDown={keydown}/></div></div></AccountPreferencesBoundary>);
+  fireEvent.keyDown(screen.getByLabelText('Chat'),{key:'Enter'});
+  expect(keydown).toHaveBeenCalledTimes(1);
+ });
  it('keeps plain Enter as a newline and leaves modified Enter, IME, and unrelated fields to their owners',()=>{
   const keydown=vi.fn();
   render(<AccountPreferencesBoundary><div className="jcode-product"><textarea aria-label="Chat" onKeyDown={keydown}/></div><textarea aria-label="Notes" onKeyDown={keydown}/></AccountPreferencesBoundary>);
