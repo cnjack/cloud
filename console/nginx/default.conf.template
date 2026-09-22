@@ -66,11 +66,15 @@ server {
         add_header Cache-Control "no-store" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
-        try_files $uri /index.html;
+        # Serve the entry file within this location; an internal redirect to
+        # /index.html would drop the fragment-safe headers above.
+        try_files /index.html =404;
     }
 
-    # SPA fallback.
+    # Revalidate entry documents: heuristic caching can otherwise resurrect an
+    # old UI after a successful deployment when the user returns to a route.
     location / {
+        add_header Cache-Control "no-cache" always;
         try_files $uri /index.html;
     }
 }
