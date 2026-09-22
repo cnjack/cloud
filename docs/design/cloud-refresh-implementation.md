@@ -7,20 +7,20 @@ Approved visual/interaction contract: `design/work-home-refresh.html` and
 
 | Requirement | Evidence required | Status |
 | --- | --- | --- |
-| Consistent shell on task, board, reviews, automation, usage, settings and devices | Route tests plus desktop/mobile browser screenshots | Pending |
-| Account → Repository → Task navigation | No Project navigation, repository picker/search, history and back navigation tests | Pending |
-| Composer context/drafts/model/branch/permission | Real submission payload and state retention tests; actionable dependency errors | Pending |
-| Search and status filtering | Combined filters and empty/no-match tests against real run records | Pending |
-| Board and automations | Existing jtype and automation API operations, errors and editing journeys | Pending |
-| Review detail, conversation, approvals, diff and follow-up | Real run/event API tests and authenticated UI journey | Pending |
-| Account profile and task defaults | User-scoped persistence, validation, authorization and consumer tests | Pending |
-| Personal model provider management | Encrypted credentials, owner isolation, API/UI tests, runtime resolution | Pending |
-| Git connections and recovery | Existing real OAuth links, expired credential states | Pending |
-| Devices, workspace and session routes | Loading/error/empty/offline/pairing tests; encrypted content gated including title | Pending |
-| Device authorization and pairing | Real existing pairing flow retained, no simulated actions | Pending |
-| Repository/account usage and cluster surfaces | Scope filters and API-backed data, responsive rendering | Pending |
-| Release | Full Console tests/typecheck, relevant Go/PG tests, exact CI source SHA | Verified: Cloud v0.0.159 at 6721a81; Console 598 tests, shared UI 151 tests, Go/PG suites and image CI passed |
-| Deployment and acceptance | Immutable image/digest, migrations/readiness, authenticated public-path UI/API checks | v0.0.159 deployed; authenticated home, real execution, approvals, follow-up and checkpoint save/restore verified; remaining surfaces pending |
+| Consistent shell on task, board, reviews, automation, usage, settings and devices | Route tests plus desktop/mobile browser screenshots | Verified publicly at desktop/mobile sizes; automation repository header and Board recovery link verified after v0.0.161 rollout |
+| Account → Repository → Task navigation | No Project navigation, repository picker/search, history and back navigation tests | Verified: public repository picker, task routes and same-context Board; route regression tests pass |
+| Composer context/drafts/model/branch/permission | Real submission payload and state retention tests; actionable dependency errors | Verified: public repository/model selection and Ask submission, real approval/follow-up/resume; automated draft/context cases pass |
+| Search and status filtering | Combined filters and empty/no-match tests against real run records | Verified publicly with real QA run and combined no-match filter; Clear filters restores results |
+| Board and automations | Existing jtype and automation API operations, errors and editing journeys | Public connected Board and automation editing/readback verified; existing owner/config blockers visible; API regression tests pass |
+| Review detail, conversation, approvals, diff and follow-up | Real run/event API tests and authenticated UI journey | Verified: real public review c1e2fbd1e22549eef8b23daeab79bb30 and QA task journeys; encrypted remote diff/draft verified on local integration rig |
+| Account profile and task defaults | User-scoped persistence, validation, authorization and consumer tests | API/UI regression cases passed; public profile/defaults/preferences render existing values without changing user settings |
+| Personal model provider management | Encrypted credentials, owner isolation, API/UI tests, runtime resolution | Tests and local real authorization start passed; public ChatGPT start blocked by upstream unsupported_country_region_territory (403); completed personal authorization/inference unverified |
+| Git connections and recovery | Existing real OAuth links, expired credential states | Existing github/cnjack connection and recovery UI verified; automated expired/rejected credential cases pass |
+| Devices, workspace and session routes | Loading/error/empty/offline/pairing tests; encrypted content gated including title | Public online/offline devices, existing paired encrypted history and mobile routes verified; installed v0.13.5 correctly gates new inspector features pending device upgrade |
+| Device authorization and pairing | Real existing pairing flow retained, no simulated actions | Real local encrypted pairing passed; public existing pairing works and setup/code route verified; no new security grant made during acceptance |
+| Repository/account usage and cluster surfaces | Scope filters and API-backed data, responsive rendering | Public repository 8/8 captured requests, device-account usage empty state, cluster capacity/models/connections and 390px layout verified |
+| Release | Full Console tests/typecheck, relevant Go/PG tests, exact CI source SHA | Verified: Console v0.0.163 at 60dc9f2; 603 tests, typecheck, build and CI passed; backend/Runner v0.0.159 retains the verified Go/PG and shared UI 151-test evidence |
+| Deployment and acceptance | Immutable image/digest, migrations/readiness, authenticated public-path UI/API checks | Console v0.0.163 and backend/Runner v0.0.159 deployed and ready; public runtime, page/mobile navigation and HTTP headers verified; full ChatGPT authorization/inference externally blocked |
 
 ## Verified starting state
 
@@ -320,3 +320,114 @@ by bootstrap. Stop reached `canceled`; PostgreSQL again confirmed
 or error logs during these journeys. They did not commit, push, or create pull
 requests. Remaining public page/mobile and personal authorization journeys are
 still required; the overall acceptance is not complete.
+
+### Public surface acceptance and follow-up corrections
+
+The public account selected `cnjack/jcode` through the repository picker. Its
+Board stays at the repository route and renders the real connected JType Board.
+The existing binding reports `execution_account_not_owner`; acceptance did not
+change its execution identity, permissions, columns, or model. The QA repository
+shows its unconnected Board configuration. Existing automation values load in
+the editor, and Cancel returns to the same repository. No user automation was
+changed. Search, status filters, empty states, review details, account and
+repository settings, usage, and cluster surfaces were inspected against live data.
+
+The previously paired public browser decrypted an existing online device session.
+The device runs v0.13.5 and correctly requires an upgrade for the new workspace
+inspector. Its older session was read only. Remote device/session/preferences and
+cluster connection pages were inspected at 390px without horizontal overflow.
+
+Public acceptance found three recoverability/context gaps: repository automation
+routes showed only Account in the global header, blocked Card output showed a raw
+blocker code, and device setup lacked an upgrade link. Commit `d3d53cb` fixes those
+with repository identity, localized reason and exact Board settings navigation,
+and an official jcode release link in all five locales. Tests were first run red
+(6 failures), then green: 602 Console tests, typecheck, token lint and build passed.
+
+A personal QA connection named `Cloud acceptance ChatGPT` was created but received
+no credential. A bounded diagnostic using the same fixed public client ID and
+HTTP request from the production Orchestrator confirmed upstream JSON error
+`unsupported_country_region_territory`, `request_forbidden`, HTTP 403. No auth
+code or token was printed, and the diagnostic binary was removed. The production
+exit region is unsupported by the provider; reauthorization alone cannot repair
+this. Full personal ChatGPT authorization and inference remain externally blocked.
+
+### Responsive acceptance correction
+
+A 390px public screenshot exposed a clipped Start task button despite
+`document.scrollWidth == innerWidth`: the inner workspace grid had an implicit
+447px column, while its 390px parent hid the overflow. Commit `ea57545` constrains
+that column with `minmax(0, 1fr)` and hides redundant account display-name text
+on small screens while retaining the avatar, menu and accessible label. Layout
+checks on the explicitly labelled local demo at 320px, 390px and 1440px verified
+Start task and Language button bounds and readable repository context; these
+layout-only checks do not substitute for public runtime acceptance. All 602
+Console tests, typecheck, token lint and production build passed again. The final
+Console release will include both acceptance fixes.
+
+The temporary public-image mirror process on the Cube host was stopped after all
+five artifacts were ready and a public Python task had used the new template.
+The temporary bundle/source directory were removed; a fresh connection check
+confirmed port 18769 was no longer listening. Native templates and production
+Runner pins remain at the verified v0.0.159 artifacts.
+
+A second public mobile interaction check found that the composer toolbar could
+paint above the navigation drawer and intercept the Remote devices link. A DOM
+hit test confirmed the intercepted element, rather than a routing/API failure.
+Commit `b4b8935` gives the Home, utility and Run surfaces independent stacking
+contexts below the rail, and applies the same bounded grid column to Run detail.
+The local mobile regression verified that the hit target is now `/devices`, the
+drawer is visually unobstructed, and clicking navigates and closes the drawer.
+All 602 Console tests, typecheck, token lint and production build passed.
+
+Public v0.0.161 readback confirmed the automation editor header links to the
+same repository Automations tab. Its disabled Card option now shows localized
+`Automation disabled` copy, and Open Agent Board settings navigates to that
+repository's Board. Device setup exposes the official latest-release URL. These
+checks also passed with the account UI rendered in Simplified Chinese.
+
+### Public mobile navigation and cache verification
+
+After v0.0.162 rollout, the public browser verified 390px Home → Devices,
+QA Run → Devices and encrypted Remote conversation → Account settings. DOM hit
+tests identified the intended links, each click reached the expected route, and
+content stayed within the viewport. No browser warning/error logs were recorded.
+The Run and Remote routes used existing records; no user conversation was sent to.
+
+A direct navigation to `/` initially reused an old cached entry document even
+though both the live Pod and a fresh public HTTP request returned the new bundle.
+Browser Reload revalidated it and loaded the exact v0.0.162 assets. Commit
+`60dc9f2` adds `Cache-Control: no-cache` to the SPA handler. Real nginx:1.27-alpine
+checks verified `/`, `/devices`, and `/index.html` return HTML with no-cache.
+The same check exposed that the share handler's internal redirect dropped its
+existing privacy/CSP headers. Serving index.html inside the share location keeps
+`no-store`, `no-referrer`, and `frame-ancestors 'none'`; the real `/s/` HTTP test
+passed. The temporary nginx container was removed. Console 603 tests, typecheck,
+token lint and build passed, plus the final affected configuration tests.
+
+### Final deployment record (2026-09-22)
+
+Console `v0.0.163`, source `60dc9f2df9c6a78a3bddc049920c5a35de7742a7`,
+completed image run `35708840658` and Console CI `35708835824` successfully.
+The live Console image and ready Pod `console-8558c96dcd-bfdc8` match immutable
+digest `sha256:9594e0132f0dfd97313619c89b2240f0af58c8aaed2ba304b36548a6f9d45925`.
+Orchestrator, migrations and all five runtime template/image pins remain on
+the verified `v0.0.159`; the subsequent changes are Console-only.
+
+The public `/` and `/devices` endpoints returned HTTP 200 with no-cache. The
+public `/s/header-acceptance` route returned the static viewer entry with no-store,
+no-referrer and the intended frame-ancestors policy; no artifact was created.
+Live nginx configuration validation passed. The authenticated browser reloaded
+and rendered bundle `index-BgUGYCYN.js`, matching the fresh public HTML and live
+image, and the final desktop homepage screenshot was inspected. Browsers holding
+a document cached before this fix may need a refresh once to obtain the new
+response policy; the release URL can include a version query to avoid old entries.
+
+All requested product surfaces are implemented and deployed. Full personal
+ChatGPT authorization/inference remains unverified because the upstream rejects
+the production exit region. The user has been asked whether to accept the current
+model journeys and retain ChatGPT as a follow-up; no reduced scope is assumed
+without their answer. Existing remote clients must upgrade to released jcode
+v0.13.6 to use the new workspace inspector/draft delivery capabilities; public
+old-client gating and existing encrypted sessions were verified, while new
+capabilities have real encrypted local integration and draft-PR evidence above.
